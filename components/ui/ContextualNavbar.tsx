@@ -96,6 +96,7 @@ import {
   Gauge,
   RefreshCw,
   SlidersHorizontal,
+  Check,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -351,7 +352,10 @@ export function PlatformDestinationsNav({
                   ].join(" ")}
                 />
                 <Icon size={14} strokeWidth={1.75} className="shrink-0" />
-                <span className="flex-1 truncate">{d.label}</span>
+                {/* it2 — with the Space list nested beneath, the destination reads
+                    "Current Space" (the list names and marks it), so the Space's
+                    name appears once, not twice. */}
+                <span className="flex-1 truncate">{d.id === "space" && spaces.length > 1 ? "Current Space" : d.label}</span>
               </Link>
               {d.id === "space" && spaces.length > 1 && (
                 <PlatformSpaceSwitchList pathname={pathname} spaces={spaces} current={current} />
@@ -393,7 +397,10 @@ function PlatformSpaceSwitchList({
               selected ? "font-medium text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]",
             ].join(" ")}
           >
-            <span className="truncate">{s.name}</span>
+            <span className="min-w-0 flex-1 truncate">{s.name}</span>
+            {/* it2 — the current Space is marked, not just weighted. */}
+            {selected && <Check size={12} aria-hidden className="shrink-0 text-[var(--meridian-400)]" />}
+            {selected && <span className="sr-only"> (current)</span>}
           </Link>
         );
       })}
@@ -864,9 +871,27 @@ export function SpaceMode({
         <SpaceControls currencyControl={currencyControl} onManage={onManage} className="mb-3" />
 
         <div className="flex items-center gap-2">
+          {/* it2 — on the platform axis the Space's name already reads in the
+              Space list above, so this block is headed "Workspaces" + the access
+              chip, with no name / meta line (the name stays the accessible heading). */}
+          {onPlatformAxis ? (
+            <h1 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+              <span className="sr-only">{identity.name} · </span>Workspaces
+            </h1>
+          ) : (
           <h1 className="truncate text-[15px] font-semibold text-[var(--text-primary)]">
             {identity.name}
           </h1>
+          )}
+          {onPlatformAxis && identity.accessChip && (
+            <span
+              className="rounded-full px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]"
+              style={{ background: "var(--surface-hover)", border: "1px solid var(--border-hairline)" }}
+              data-access-chip
+            >
+              <span className="sr-only">Access: </span>{identity.accessChip}
+            </span>
+          )}
           {identity.shared && (
             <span
               className="rounded-full px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]"
@@ -876,7 +901,7 @@ export function SpaceMode({
             </span>
           )}
         </div>
-        <p className="mt-1 text-[11px] text-[var(--text-muted)]">{identity.subtitle}</p>
+        {!onPlatformAxis && <p className="mt-1 text-[11px] text-[var(--text-muted)]">{identity.subtitle}</p>}
         {identity.updatedLabel && (
           <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{identity.updatedLabel}</p>
         )}
@@ -896,7 +921,7 @@ export function SpaceMode({
             Jobs · …), inside the Space block so they read as THIS Space's
             destinations, attached to its identity. */}
         {workspaceNav && workspaceNav.items.length > 0 && (
-          <div className="mt-4">
+          <div className={onPlatformAxis ? "mt-2" : "mt-4"}>
             <SpaceWorkspaceNav nav={workspaceNav} />
           </div>
         )}

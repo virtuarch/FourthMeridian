@@ -58,7 +58,7 @@ import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { recentExecutions, type Fetched } from "./operations-model";
 import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
 import { DayBars, DayBarsLegend, DAY_BAR_COLORS } from "../ops-visual/DayBars";
-import { StatusWord, UnifiedJobs, JOBS_URL, SCHEDULER_URL, HISTORY_URL } from "../ops-visual/UnifiedJobs";
+import { StatusWord, UnifiedJobs, JOBS_URL, SCHEDULER_URL, HISTORY_URL, OPERATIONS_URL, ENV_STATUS_URL } from "../ops-visual/UnifiedJobs";
 import {
   attentionTotal,
   executionDays,
@@ -123,10 +123,10 @@ export function heroModel(args: {
   const issues = args.attention.data
     ? args.groups.length === 0 ? "Nothing needs attention" : `${n(args.groups.length)} issue${args.groups.length === 1 ? "" : "s"} need${args.groups.length === 1 ? "s" : ""} attention`
     : args.attention.loading ? "Reading attention…" : "Attention unavailable";
-  const caption = args.evidence.state === "inactive" ? `${issues} · scheduler not active on this deployment` : issues;
-  const basisLine = args.evidence.state === "inactive" ? "Scheduler not active on this deployment"
-    : args.evidence.state === "active" ? "Scheduler active" : "Scheduler state unknown";
-  return { verdict, checked: o ? hhmm(o.checkedAt) : null, caption, basisLine, kpis: args.kpis };
+  const caption = args.evidence.state !== "inactive" ? issues
+    : args.evidence.preview ? `${issues} · scheduled jobs don't run on Preview`
+    : `${issues} · scheduler not active on this deployment`;
+  return { verdict, checked: o ? hhmm(o.checkedAt) : null, caption, kpis: args.kpis };
 }
 
 // ── The surface (prop-driven, fetch-free — every state renders in a test) ────
@@ -149,13 +149,15 @@ export interface OperationsLeadSurfaceProps {
   onSelectJob: (job: string) => void;
   /** Start times of recent manual runs (operations GET) — excluded from wake evidence. */
   manualStarts?: readonly string[] | null;
+  /** it2 — env-status `deploymentEnv` (null/absent = unknown): crons fire on Production only. */
+  deploymentEnv?: string | null;
 }
 
 export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
-  const evidence = schedulerEvidence(p.jobs, p.scheduler, p.manualStarts ?? null);
+  const evidence = schedulerEvidence(p.jobs, p.scheduler, p.manualStarts ?? null, p.deploymentEnv ?? null);
   const groups = p.attention.data ? groupAttention(p.attention.data, evidence, p.jobs.data) : [];
   const trend = executionDays(p.history.data, p.nowMs, TREND_DAYS);
-  const kpis = healthKpis({ jobs: p.jobs, scheduler: p.scheduler, attention: p.attention, groups, days7: trend.slice(-7) });
+  const kpis = healthKpis({ jobs: p.jobs, scheduler: p.scheduler, attention: p.attention, groups, days7: trend.slice(-7), manualStarts: p.manualStarts ?? null });
   const hero = heroModel({ overview: p.overview, evidence, groups, attention: p.attention, kpis });
   const composition = p.jobs.data ? outcomeComposition(p.jobs.data) : [];
   const board = p.hasHosted(OVERVIEW_KEY);
@@ -164,6 +166,7 @@ export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
   const refresh = p.daily.data ? refreshDays(p.daily.data, p.nowMs, TREND_DAYS) : null;
   const unobservedDays = trend.filter((d) => !d.observed).length;
   const trendRuns = trend.reduce((a, d) => a + d.succeeded + d.failed + d.other, 0);
+  const jobsTotal = composition.reduce((a, c) => a + c.value, 0);
 
   const openGroup = (g: AttentionGroup) => {
     if (g.action.kind === "job") p.onSelectJob(g.action.job);
@@ -193,9 +196,12 @@ export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
           <Surface className="flex-1 p-4 sm:p-5">
             {p.history.data ? (
               <>
-                <DayBars days={trend} ariaLabel="Scheduled job executions per UTC day" />
+                <DayBars days={trend} ariaLabel="Job executions per UTC day" />
                 <Caption>
-                  {evidence.state === "inactive" && trendRuns === 0
+                  {/* it2 — on Preview the bars can only be runs an operator started. */}
+                  {evidence.state === "inactive" && evidence.preview
+                    ? trendRuns > 0 ? "Manual runs only — scheduled jobs don't run on Preview" : "No executions — scheduled jobs don't run on Preview"
+                    : evidence.state === "inactive" && trendRuns === 0
                     ? "No scheduled execution observed on this deployment"
                     : `${n(trendRuns)} executions · ${TREND_DAYS} UTC days${unobservedDays ? ` · ${unobservedDays} without data` : ""}`}
                 </Caption>
@@ -213,6 +219,8 @@ export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
               viewMode="donut"
               itemNoun="job"
               formatValue={(v) => n(v)}
+              // it2 — the centre counts JOBS (Σ slices), not slices ("14 / jobs", never "14 / 2 jobs").
+              centerTotal={{ value: jobsTotal, label: jobsTotal === 1 ? "job" : "jobs" }}
               centerTone="neutral"
               emptyHeadline={p.jobs.loading ? "Reading job health…" : p.jobs.error ? "Job health unavailable" : "No scheduled jobs reported"}
             />
@@ -331,7 +339,9 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
   const daily = useSharedWidgetFetch<RefreshDailySeries>("/api/platform/platform-ops/refresh/daily");
   const executions = useSharedWidgetFetch<ExecutionPageDTO>("/api/platform/platform-ops/refresh/executions?limit=5");
   // Same URL as the unified jobs card (shared session fetch — one request).
-  const operations = useSharedWidgetFetch<{ recent?: { startedAt: string }[] }>("/api/platform/platform-ops/operations");
+  const operations = useSharedWidgetFetch<{ recent?: { startedAt: string }[] }>(OPERATIONS_URL);
+  // it2 — the deployment environment (shared with the jobs card: one request).
+  const envStatus = useSharedWidgetFetch<{ deploymentEnv?: string }>(ENV_STATUS_URL);
   // One clock read per mount (relative ages + the day axis), never during render.
   const [nowMs] = useState(() => Date.now());
   const [drawer, setDrawer] = useState<OperationsDrawer | null>(null);
@@ -364,6 +374,7 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
       <OperationsLeadSurface
         overview={overview} attention={attention} jobs={jobs} scheduler={scheduler} history={history} daily={daily} executions={executions}
         nowMs={nowMs} hasHosted={hasHosted} manualStarts={operations.data?.recent?.map((r) => r.startedAt) ?? null}
+        deploymentEnv={envStatus.data?.deploymentEnv ?? null}
         jobsSlot={<UnifiedJobs mode="summary" access={access} nowMs={nowMs} selected={job} onSelect={setJob} />}
         onOpenDrawer={setDrawer} onOpenWorkspace={onOpenWorkspace} onSelectExecution={setExecution}
         onSelectJob={(j) => (hasHosted(JOBS_KEY) ? setJob(j) : onOpenWorkspace(JOBS_VIEW))}

@@ -57,6 +57,8 @@ export const JOBS_URL = "/api/platform/platform-ops/job-health";
 export const SCHEDULER_URL = "/api/platform/platform-ops/scheduler";
 export const HISTORY_URL = "/api/platform/platform-ops/history";
 export const OPERATIONS_URL = "/api/platform/platform-ops/operations";
+/** it2 — the deployment environment (`deploymentEnv`): scheduler evidence reads it first. */
+export const ENV_STATUS_URL = "/api/platform/platform-ops/env-status";
 
 /** Summary mode shows this many rows (the rows past MOBILE_ROWS hide below md). */
 export const SUMMARY_ROWS = 5;
@@ -286,12 +288,14 @@ export interface UnifiedJobsSurfaceProps {
   feedback: Feedback | null;
   onDry: (c: OperationCommand) => void;
   onRun: (c: OperationCommand) => void;
+  /** it2 — env-status `deploymentEnv` (null/absent = unknown). */
+  deploymentEnv?: string | null;
 }
 
 export function UnifiedJobsSurface(p: UnifiedJobsSurfaceProps) {
   const [query, setQuery] = useState("");
   const a = jobAccess(p.access);
-  const evidence = schedulerEvidence(p.jobs, p.scheduler, p.operations.data?.recent?.map((r) => r.startedAt) ?? null);
+  const evidence = schedulerEvidence(p.jobs, p.scheduler, p.operations.data?.recent?.map((r) => r.startedAt) ?? null, p.deploymentEnv ?? null);
   // Review nit — while operations is loading, pass null (not []) so a manual job
   // never briefly reads "Not offered on this deployment".
   const commands = p.operations.data?.commands ?? null;
@@ -400,6 +404,7 @@ export function UnifiedJobs({ mode, access, nowMs, selected: selectedProp, onSel
   const scheduler = useSharedWidgetFetch<SchedulerObservationResponse>(SCHEDULER_URL);
   const history = useSharedWidgetFetch<OperationalHistoryResult>(HISTORY_URL);
   const operations = useSharedWidgetFetch<OperationsResponse>(OPERATIONS_URL);
+  const envStatus = useSharedWidgetFetch<{ deploymentEnv?: string }>(ENV_STATUS_URL);
   const publishJobs = useSharedWidgetPublish<PlatformJobHealthResponse>(JOBS_URL);
   const publishOps = useSharedWidgetPublish<OperationsResponse>(OPERATIONS_URL);
 
@@ -447,7 +452,8 @@ export function UnifiedJobs({ mode, access, nowMs, selected: selectedProp, onSel
   return (
     <>
       <UnifiedJobsSurface mode={mode} jobs={jobs} scheduler={scheduler} history={history} operations={operations} access={access}
-        nowMs={nowMs} selected={selected} onSelect={onSelect} acting={acting} feedback={feedback} onDry={onDry} onRun={onRun} />
+        nowMs={nowMs} selected={selected} onSelect={onSelect} acting={acting} feedback={feedback} onDry={onDry} onRun={onRun}
+        deploymentEnv={envStatus.data?.deploymentEnv ?? null} />
       {confirming && (
         <ConfirmDialog
           open
