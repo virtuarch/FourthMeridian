@@ -19,6 +19,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describeAttempts, operationLabel } from "@/components/platform/widgets/refresh-format";
+import { getPlatformWorkspaceComposition } from "@/lib/platform/workspaces";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -126,8 +127,13 @@ function main() {
     check("registered as a section", /key:\s*"ops_provider_operations"/.test(policy));
     check("mapped to its widget", /ops_provider_operations:\s*OpsProviderOperationsWidget/.test(dashboard));
 
-    const providers = workspaces.match(/workspaceId:\s*"platform-providers",\s*sections:\s*\[([^\]]*)\]/)?.[1] ?? "";
-    const refresh = workspaces.match(/workspaceId:\s*"platform-refresh",\s*sections:\s*\[([^\]]*)\]/)?.[1] ?? "";
+    // PLATFORM OPS PHASE 1 UX — re-ruled: compositions are built from VIEWS
+    // (the workspace's `sections` is their derived union), so the placement is
+    // read from the runtime composition rather than regex-matched from source.
+    // "Refresh" is now Operations › Pipeline.
+    void workspaces;
+    const providers = (getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-providers")?.sections ?? []).join(",");
+    const refresh = (getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-overview")?.views?.find((v) => v.id === "pipeline")?.sections ?? []).map(String).join(",");
 
     check("appears under Providers", /ops_provider_operations/.test(providers));
     check("does NOT also appear under Refresh (no duplication)", !/ops_provider_operations/.test(refresh));
@@ -137,8 +143,13 @@ function main() {
       "Providers order matches the approved sequence",
       order.join() ===
         [
+          // PLATFORM OPS PHASE 1 UX — re-ruled to the owner-approved view order:
+          // Health (health · operations · freshness) → Connections (diagnostics ·
+          // cleanup) → Usage & delivery (api usage · email). Freshness moved up
+          // into Health; nothing else changed order.
           "ops_provider_health",
           "ops_provider_operations",
+          "ops_resource_freshness",
           // P-10 — connection health renders once, in Pipeline.
           "ops_connection_diagnostics",
           // Provider cleanup follows per-connection diagnostics deliberately:
@@ -147,7 +158,6 @@ function main() {
           // invisible while the Item kept billing at Plaid.
           "ops_provider_cleanup",
           "ops_api_usage",
-          "ops_resource_freshness",
           "ops_email_delivery",
         ].join(),
       order.join(),

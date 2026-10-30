@@ -21,7 +21,7 @@ import { Radio, ChevronRight } from "lucide-react";
 import { WidgetMessage, useWidgetFetch, type PlatformSection } from "../widget-kit";
 import { DistributionBar, Provenance, SectionSurface, ToneBadge, TwoLine, Unavailable } from "../platform-surface";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { resolvePlatformDestination } from "@/lib/platform/workspaces";
 import type { ProviderHealthResponse } from "@/app/api/platform/platform-ops/provider-health/route";
 import type { EmailHealthResponse } from "@/app/api/platform/platform-ops/email-health/route";
 import type { ProviderHealth } from "@/lib/platform/provider-health";
@@ -53,7 +53,7 @@ function LastSuccessCell({ row, nowMs }: { row: ProviderRowView; nowMs?: number 
 
 function ActionCell({ row, onOpen }: { row: ProviderRowView; onOpen?: (workspaceId: string) => void }) {
   if ("unavailable" in row.action) return <Unavailable reason={row.action.unavailable} />;
-  const def = getPlatformWorkspace(row.action.workspaceId);
+  const def = resolvePlatformDestination(row.action.workspaceId);
   if (!onOpen || !def) return <Unavailable reason="no workspace switcher on this host" />;
   const id = row.action.workspaceId;
   return (

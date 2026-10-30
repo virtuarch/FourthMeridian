@@ -99,12 +99,15 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
       "at must not require CONTROL, or operators will be over-granted just to " +
       "see the state they are responsible for.",
     // Representative, not exhaustive — every /api/platform read route is in this
-    // family. These four are pinned so the claim stays checkable at a glance.
+    // family. These are pinned so the claim stays checkable at a glance.
     routes: [
       "app/api/platform/platform-ops/refresh/summary/route.ts",
       "app/api/platform/platform-ops/scheduler/route.ts",
       "app/api/platform/platform-ops/connection-health/route.ts",
       "app/api/platform/customer-success/sync-issues/route.ts",
+      // PLATFORM OPS PHASE 1 UX — the read-only Policy Group catalogue for
+      // Policies › Policy groups (looking at policy needs READ, never CONTROL).
+      "app/api/platform/platform-ops/policy-groups/route.ts",
     ],
   },
 

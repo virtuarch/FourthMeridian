@@ -52,7 +52,7 @@ import {
   type FetchedResource,
 } from "./OpsPlatformHealthWidget";
 import { GROUP_DOORWAY, GROUP_LABEL, LEAD_ROWS, SURFACE_FOOTNOTE, alertsView, envView } from "./platform-health-view";
-import { PLATFORM_AREA_WORKSPACES, getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { PLATFORM_AREA_WORKSPACES, resolvePlatformDestination } from "@/lib/platform/workspaces";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -509,11 +509,12 @@ function main() {
     check("no negative margin", !/(^|\s)-m[trbl]?-\d/.test(layoutClasses), layoutClasses);
     check("no breakpoint scoping on the overlay", !/(sm|md|lg|xl):/.test(doorwayClass), doorwayClass);
     check("the doorway labels are the registry's workspace labels",
-      doorways.map((d) => d.visible).join(",") === "Controls,Providers,Providers,Controls", // P-10
+      // PLATFORM OPS PHASE 1 UX — re-ruled: alerts → Policies › Alerts, configuration → Policies › Platform defaults.
+      doorways.map((d) => d.visible).join(",") === "Alerts,Providers,Providers,Platform defaults",
       doorways.map((d) => d.visible).join(","));
 
     for (const group of ["alerts", "providers", "freshness", "configuration"] as const) {
-      const def = getPlatformWorkspace(GROUP_DOORWAY[group]);
+      const def = resolvePlatformDestination(GROUP_DOORWAY[group]);
       check(`${group} opens a real workspace (${GROUP_DOORWAY[group]})`, def != null);
       check(`${group}'s doorway is labelled from the registry`,
         def != null && doorways.some((d) => d.visible === def.label && d.aria.includes(GROUP_LABEL[group])),
@@ -521,8 +522,12 @@ function main() {
     }
     const overview = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.find((w) => w.workspaceId === "platform-overview");
     for (const group of ["alerts", "providers", "freshness", "configuration"] as const) {
+      // PLATFORM OPS PHASE 1 UX — re-ruled: a target may name a VIEW of a
+      // doorway workspace (Policies › Alerts); the WORKSPACE it opens must be one
+      // the Overview offers a doorway into.
+      const doorwayWorkspaces = (overview?.doorways ?? []).map((id) => resolvePlatformDestination(id)?.workspaceId);
       check(`${group}'s target is a composed Overview doorway`,
-        (overview?.doorways ?? []).includes(GROUP_DOORWAY[group]), (overview?.doorways ?? []).join(","));
+        doorwayWorkspaces.includes(resolvePlatformDestination(GROUP_DOORWAY[group])?.workspaceId), (overview?.doorways ?? []).join(","));
     }
     for (const d of doorways) {
       check(`accessible name starts with the visible label (${d.visible})`, d.aria.startsWith(d.visible), d.aria);

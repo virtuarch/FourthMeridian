@@ -36,7 +36,7 @@ export const AGGREGATE_NOTE = "Aggregate only — no per-user attribution on thi
 export const NO_LEDGER_NOTE = "No actual-charge ledger exists; all figures are estimates with provenance.";
 export const AI_WINDOW_DAYS = 30;
 /** AI COST CONTROLS — the Overview adds no fetch for the budget; this doorway sentence points at the reading. */
-export const BUDGET_DOORWAY_NOTE = "Budget utilization — the rolling-24 h fleet estimate against its alert threshold, per-customer allowance use and the pause state — is read in AI and costs → AI Budget.";
+export const BUDGET_DOORWAY_NOTE = "Budget utilization — the rolling-24 h fleet estimate against its alert threshold, per-customer allowance use and the pause state — is read in AI & Costs → AI Budget.";
 
 export function fmtUsd(v: number): string {
   return `$${v.toFixed(2)}`;

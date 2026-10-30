@@ -22,6 +22,9 @@ import type { OperatorFeedItem, OperatorFeedResponse } from "@/lib/platform/acti
 import type { OverviewBlockProps } from "./block-contract";
 import { BlockDoorway } from "./block-doorway";
 import { FEED_EMPTY_TEXT, reasonLabel, relativeText, resultTone, resultWord, utcStamp } from "./activity-feed-view";
+// PLATFORM OPS PHASE 1 UX — Jobs is a view of Operations (formerly "platform-jobs");
+// the ONE spelling of that destination lives beside the Jobs block (no lib value import here).
+import { JOBS_MATRIX_DOORWAY as JOBS_VIEW } from "./JobsMatrixBlock";
 
 const EVIDENCE_BTN = "rounded-[var(--radius-sm)] border px-2 py-0.5 text-[11px] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)]";
 
@@ -60,7 +63,7 @@ function FeedRow({ item, nowMs, onOpenWorkspace, onInspectExecution }: {
           </button>
         )}
         {item.evidence.jobRunId && onOpenWorkspace && (
-          <button type="button" className={EVIDENCE_BTN} style={{ borderColor: "var(--border-hairline)" }} onClick={() => onOpenWorkspace("platform-jobs")}
+          <button type="button" className={EVIDENCE_BTN} style={{ borderColor: "var(--border-hairline)" }} onClick={() => onOpenWorkspace(JOBS_VIEW)}
             aria-label={`Open Jobs for run …${item.evidence.jobRunId.slice(-6)}`}>
             Open Jobs · run …{item.evidence.jobRunId.slice(-6)}
           </button>
@@ -81,7 +84,7 @@ export function ActivityFeedSurface({ state, nowMs, onOpenWorkspace, onInspectEx
       icon={UserCog}
       title="Recent operator activity"
       count={data?.items.length}
-      actions={<BlockDoorway label="Jobs" workspaceId="platform-jobs" onOpenWorkspace={onOpenWorkspace} />}
+      actions={<BlockDoorway label="Jobs" workspaceId={JOBS_VIEW} onOpenWorkspace={onOpenWorkspace} />}
       footnote={data ? data.note : "Last 20 recorded actions on platform objects; security events live in Security Operations."}
     >
       {state.loading || !data ? (

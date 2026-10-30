@@ -83,7 +83,8 @@ console.log("2. rows — one per authority, never merged, never invented");
   check("last success is the ISO when present, a reason when absent", "iso" in plaid.lastSuccess && "unavailable" in oxr.lastSuccess);
   check("threshold is not emitted ⇒ Unavailable with that reason", isUnavailable(plaid.threshold) && plaid.threshold.unavailable === THRESHOLD_NOT_EMITTED);
   check("affected connections are not listed ⇒ 'not listed' (never parsed from prose)", isUnavailable(plaid.affected) && plaid.affected.unavailable === AFFECTED_NOT_LISTED);
-  check("Plaid's doorway is Pipeline; OXR's is Jobs", "workspaceId" in plaid.action && plaid.action.workspaceId === "platform-refresh" && "workspaceId" in oxr.action && oxr.action.workspaceId === "platform-jobs");
+  // PLATFORM OPS PHASE 1 UX — re-ruled: Pipeline and Jobs are VIEWS of Operations now.
+  check("Plaid's doorway is Pipeline; OXR's is Jobs", "workspaceId" in plaid.action && plaid.action.workspaceId === "platform-overview:pipeline" && "workspaceId" in oxr.action && oxr.action.workspaceId === "platform-overview:jobs");
   check("provider rows carry the detail record for the drawer", plaid.detail?.key === "PLAID");
 
   check("Resend is labelled by its own authority", resend.authority === RESEND_AUTHORITY);
@@ -117,7 +118,7 @@ console.log("4. the surface");
   check("tone words render as text (never colour alone)", html.includes(">Operational<") && html.includes(">Stale data<"));
   check("Resend row names its authority and says no verdict", html.includes(RESEND_AUTHORITY) && html.includes(RESEND_NO_VERDICT));
   check("OpenAI row says no authority", html.includes(OPENAI_NO_AUTHORITY) && html.includes(NO_AUTHORITY));
-  check("doorways name their workspaces", html.includes("Pipeline →") && html.includes("Jobs →") && html.includes("AI and costs →")); // P-10
+  check("doorways name their workspaces", html.includes("Pipeline →") && html.includes("Jobs →") && html.includes("AI &amp; Costs →")); // P-10; Phase 1 UX relabel "AI & Costs" (escaped in markup)
   check("last success is relative over UTC", html.includes("2h 0m ago") && html.includes("14 Oct 10:00 UTC"));
   check("the trust bar is scoped to the provider-health authority", html.includes("provider-health authority only (2 providers)"));
   const noHost = renderToStaticMarkup(createElement(ProviderHealthSurface, { title: "Provider health", providers: ok(providersOk), email: ok(emailOk), nowMs: NOW }));

@@ -35,7 +35,7 @@ import { AlertTriangle, ChevronRight, KeyRound, RefreshCw } from "lucide-react";
 import { WidgetMessage, useWidgetFetch } from "../../widget-kit";
 import { BigStat, DistributionBar, GroupLabel, PillGroup, SectionSurface, TONE_COLOR, ToneBadge, TwoLine, Unavailable } from "../../platform-surface";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { platformViewTarget, resolvePlatformDestination } from "@/lib/platform/workspaces";
 import { relTime } from "../job-health-format";
 import type { AttentionResponse } from "@/lib/platform/ops/attention";
 import type { AttentionAction, AttentionItem, UserImpactCore, UserImpactRow } from "@/lib/platform/ops/attention-core";
@@ -82,7 +82,10 @@ const LINK_CLASS =
 const WRITE_CLASS =
   "inline-flex items-center gap-1 rounded-[var(--radius-sm)] border px-2 py-0.5 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--meridian-400)] disabled:opacity-40";
 
-const workspaceLabel = (id: string): string | null => getPlatformWorkspace(id)?.label ?? null;
+// PLATFORM OPS PHASE 1 UX — a target may be a view (Operations › Jobs) or a
+// retired id the read model still carries; the destination resolver names both.
+const workspaceLabel = (id: string): string | null => resolvePlatformDestination(id)?.label ?? null;
+const JOBS_VIEW = platformViewTarget("platform-overview", "jobs");
 
 // ── Cells ─────────────────────────────────────────────────────────────────────
 
@@ -140,10 +143,10 @@ function ActionCell({ item, canWrite, busy, onOpenWorkspace, onWrite }: {
         );
       }
     } else if (a.kind === "run-now") {
-      const label = workspaceLabel("platform-jobs");
+      const label = workspaceLabel(JOBS_VIEW);
       if (onOpenWorkspace && label) {
         rendered.push(
-          <button key="run-now" type="button" onClick={() => onOpenWorkspace("platform-jobs")} aria-label={`${actionLabel(a, label)} — ${item.entity.label}`} className={LINK_CLASS}>
+          <button key="run-now" type="button" onClick={() => onOpenWorkspace(JOBS_VIEW)} aria-label={`${actionLabel(a, label)} — ${item.entity.label}`} className={LINK_CLASS}>
             {actionLabel(a, label)} →
           </button>,
         );

@@ -117,7 +117,7 @@ async function main() {
     const feed = buildOperatorFeed(rows, label, NOW.toISOString());
     check("scope + depth + note", feed.scope === "PLATFORM_OPS" && feed.depth.requested === OPERATOR_FEED_DEPTH && feed.depth.returned === 2 && /Security Operations/.test(feed.note));
     check("the grant row is dropped; order is newest first", feed.items.map((i) => i.id).join() === "f1,f3");
-    check("policy change: platform-setting target opaque, Policies workspace", feed.items[0].target === "platform setting …wallet" && feed.items[0].evidence.workspace === "platform-policies");
+    check("policy change: platform-setting target opaque, Policies workspace", feed.items[0].target === "platform setting …wallet" && feed.items[0].evidence.workspace === "platform-policies:defaults"); // PLATFORM OPS PHASE 1 UX — Policies › Platform defaults
     check("reauth: REFUSED result word kept, Providers workspace", feed.items[1].result === "REFUSED" && feed.items[1].evidence.workspace === "platform-providers");
     const empty = buildOperatorFeed([], label, NOW.toISOString());
     check("empty feed: zero items, depth returned 0, not an error", empty.items.length === 0 && empty.depth.returned === 0);

@@ -230,7 +230,8 @@ function main() {
     check("references are opaque tails typed by kind", text.includes("item …zz9988") && text.includes("account …ww7766") && text.includes("space …sp4455"));
     check("an AI roll-up row says it exposes no reference and carries its count", text.includes("no reference exposed") && /AI failure ×2/.test(text) && !/AI failure ×1\b/.test(text), text);
     check("a refresh row's evidence opens the execution panel", /aria-label="Inspect execution …f1a2b3 for item …zz9988"/.test(html) && /aria-label="Inspect execution …p4c5d6 for account …ww7766"/.test(html));
-    check("an AI / Brief row's evidence is a registry-labelled doorway to AI", /Open AI and costs — evidence for AI · provider call/.test(html) && /Open AI and costs — evidence for Brief · generation/.test(html), html);
+    // PLATFORM OPS PHASE 1 UX — re-ruled: the AI workspace is labelled "AI & Costs" (escaped in markup).
+    check("an AI / Brief row's evidence is a registry-labelled doorway to AI", /Open AI &amp; Costs — evidence for AI · provider call/.test(html) && /Open AI &amp; Costs — evidence for Brief · generation/.test(html), html);
     check("impact kinds are not severity badges (the table's badge count is unchanged)", badgeWords(html).length === data.items.length, badgeWords(html).join(","));
     check("impact header is hidden below md and the cells carry their column word", /class="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid"/.test(html) && /text-\[10px\] uppercase tracking-wide text-\[var\(--text-faint\)\] md:hidden">Reference</.test(html));
     check("the identity rule is the group's hint, reachable by assistive technology (aria-label + title)", html.includes(`aria-label="${IMPACT_FOOTNOTE}"`) && html.includes(`title="${IMPACT_FOOTNOTE}"`), html.match(/aria-label="User-impacting[^"]*"/)?.[0]);
