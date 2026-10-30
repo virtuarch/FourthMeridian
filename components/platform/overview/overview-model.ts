@@ -144,6 +144,26 @@ export function trailingPoints<T extends { day: string }>(days: readonly T[] | n
   return (days ?? []).slice(-TREND_DAYS).map((d) => ({ key: d.day, value: value(d), ...(tone ? { tone } : {}) }));
 }
 
+/**
+ * R1 review fix — the last TREND_DAYS CALENDAR days (UTC) ending on `endIso`'s
+ * day, from a SPARSE per-day series (e.g. AI usage, which only returns days that
+ * have rows). Missing days are gaps (null), never zero and never silently
+ * replaced by older days, so a "14 d" tile always covers exactly 14 days.
+ */
+export function calendarPoints<T extends { day: string }>(days: readonly T[] | null | undefined, value: (d: T) => number | null, endIso: string | null | undefined, tone?: StatusTone): MiniBarPoint[] {
+  if (!endIso) return trailingPoints(days, value, tone);
+  const end = Date.parse(`${endIso.slice(0, 10)}T00:00:00.000Z`);
+  if (Number.isNaN(end)) return trailingPoints(days, value, tone);
+  const byDay = new Map((days ?? []).map((d) => [d.day.slice(0, 10), d] as const));
+  const out: MiniBarPoint[] = [];
+  for (let i = TREND_DAYS - 1; i >= 0; i--) {
+    const key = new Date(end - i * 86_400_000).toISOString().slice(0, 10);
+    const d = byDay.get(key);
+    out.push({ key, value: d ? value(d) : null, ...(tone ? { tone } : {}) });
+  }
+  return out;
+}
+
 /** Sum of the observed values (gaps excluded); null when nothing was observed. */
 export function sumObserved(points: readonly MiniBarPoint[]): number | null {
   const observed = points.filter((p) => p.value != null);
@@ -216,11 +236,12 @@ export function overviewStatus(signals: OverviewSignals): OverviewStatus {
     if (o.status === "error") return { verdict: { word: "Unknown", tone: "muted" }, title: `Platform health could not be read — ${o.error}`, checkedAt: null, facts, authoritative: true };
     const worst = o.data.worst;
     const notHealthy = o.data.domains.filter((d) => d.state !== "HEALTHY" && d.state !== "UNKNOWN").length;
+    const unknown = o.data.domains.filter((d) => d.state === "UNKNOWN").length;
     return {
       verdict: { word: STATE_WORD[worst], tone: STATE_TONE[worst] },
       title: STATE_TITLE[worst],
       checkedAt: o.data.checkedAt,
-      facts: [{ label: "Domains not healthy", value: `${notHealthy} of ${o.data.domains.length}`, tone: notHealthy > 0 ? "warn" : undefined }, ...facts],
+      facts: [{ label: "Domains not healthy", value: `${notHealthy} of ${o.data.domains.length}${unknown > 0 ? ` · ${unknown} unknown` : ""}`, tone: notHealthy > 0 ? "warn" : undefined }, ...facts],
       authoritative: true,
     };
   }
@@ -301,6 +322,12 @@ export function attentionQueue(signals: OverviewSignals, spaces: readonly Overvi
   let answered = 0;
   let sources = 0;
 
+  // R1 review fix — Platform Ops attention already carries active sync incidents
+  // (id `incident:<SyncIssue id>`); Customer Success lists the same incidents.
+  // When CS answered, its row is the one kept, so an incident appears once.
+  const csIncidentIds = new Set(
+    signals.CUSTOMER_SUCCESS?.syncIssues.status === "ok" ? signals.CUSTOMER_SUCCESS.syncIssues.data.items.map((x) => `incident:${x.id}`) : [],
+  );
   const ops = signals.PLATFORM_OPS;
   if (ops) {
     sources++;
@@ -312,6 +339,7 @@ export function attentionQueue(signals: OverviewSignals, spaces: readonly Overvi
       const list: QueueItem[] = [];
       lists.push(list);
       for (const it of a.data.items) {
+        if (csIncidentIds.has(it.id)) continue;
         list.push(item("PLATFORM_OPS", spaces, now, {
           key: `ops:${it.id}`, severity: it.severity, title: it.entity.label, why: it.problem, since: it.since,
           href: platformWorkspaceHref("PLATFORM_OPS", it.evidence.workspace), actionLabel: "Inspect",
@@ -438,15 +466,20 @@ export function spaceTiles(signals: OverviewSignals, spaces: readonly OverviewSp
         return { value: total === null ? null : count(total), points, caption: `UTC days · last ${points.length} · refresh ledger`, note: d.floor ? "floor — older days not loaded" : undefined, asOf: d.envelope?.checkedAt ?? null };
       }));
       tiles.push(tileFrom(base("ops-ai-calls", `AI calls · ${TREND_DAYS} d`, "count", "MEASURED", platformWorkspaceHref("PLATFORM_OPS", "platform-ai")), ops.aiTrend, (d) => {
-        const points = trailingPoints(d.days, (x) => x.calls);
+        const points = calendarPoints(d.days, (x) => x.calls, d.checkedAt);
         const total = sumObserved(points);
         return { value: total === null ? null : count(total), points, caption: `UTC days · last ${points.length} · usage counters`, asOf: d.checkedAt };
       }));
       tiles.push(tileFrom(base("ops-ai-spend", `AI spend · ${TREND_DAYS} d`, "usd", "ESTIMATED", platformWorkspaceHref("PLATFORM_OPS", "platform-ai", "costs")), ops.aiTrend, (d) => {
-        const points = trailingPoints(d.days, (x) => x.estimatedSpendUsd);
+        const points = calendarPoints(d.days, (x) => x.estimatedSpendUsd, d.checkedAt);
         const total = d.pricingConfigured ? sumObserved(points) : null;
         const inWindow = new Set(points.map((p) => p.key));
-        const unpriced = (d.unpricedDays ?? []).filter((x) => inWindow.has(x)).length;
+        // A day with usage but no estimate is unpriced whether or not the reader
+        // listed it in unpricedDays — never silently excluded from the note.
+        const usedDays = new Set((d.days ?? []).map((x) => x.day.slice(0, 10)));
+        const unpricedSet = new Set((d.unpricedDays ?? []).filter((x) => inWindow.has(x)));
+        for (const p of points) if (p.value == null && usedDays.has(p.key)) unpricedSet.add(p.key);
+        const unpriced = unpricedSet.size;
         return {
           value: total === null ? null : usd(total),
           points: d.pricingConfigured ? points : [],
@@ -473,7 +506,7 @@ export function spaceTiles(signals: OverviewSignals, spaces: readonly OverviewSp
 
     if (space.area === "GROWTH_REVENUE" && signals.GROWTH_REVENUE) {
       tiles.push(tileFrom(base("growth-signups", "Sign-ups · 7 d", "count", "MEASURED"), signals.GROWTH_REVENUE.analytics, (d) => {
-        const points = trailingPoints(d.registrations.perDay, (x) => x.count);
+        const points = trailingPoints(d.registrations.perDay, (x) => x.count).slice(-7);
         return { value: count(d.registrations.last7d), points, caption: `UTC days · last ${points.length} · ${count(d.registrations.last30d)} in 30 d`, asOf: d.checkedAt };
       }));
     }

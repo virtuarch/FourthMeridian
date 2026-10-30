@@ -25,6 +25,7 @@ import {
   spaceTiles,
   sumObserved,
   trailingPoints,
+  calendarPoints,
   type OverviewSignals,
 } from "./overview/overview-model";
 import { PlatformAiPlaceholder, PLATFORM_AI_COPY } from "./PlatformAiPlaceholder";
@@ -229,6 +230,23 @@ console.log("Platform AI page: guarded like the Overview, honest, no controls, n
   check("the AI path is not a Space route and stands in no area", !isPlatformSpaceRoute(PLATFORM_AI_HREF) && platformAreaFromPath(PLATFORM_AI_HREF) === null);
   check("it is a STATIC sibling of [area] (static segments win; [area] is untouched)",
     existsSync(path.join(ROOT, "app/(shell)/dashboard/platform/ai/page.tsx")) && existsSync(path.join(ROOT, "app/(shell)/dashboard/platform/[area]/page.tsx")));
+}
+
+console.log("R1 review fixes");
+{
+  // An incident carried by BOTH Ops attention (incident:<id>) and CS incidents appears once.
+  const both = attentionQueue({ ...FULL, PLATFORM_OPS: { ...FULL.PLATFORM_OPS!, attention: ok({ checkedAt: NOW.toISOString(), counts: { critical: 1 }, items: [
+    { id: "incident:c1", severity: "critical" as const, entity: { label: "Chase" }, problem: "Item login required", since: "2026-10-30T09:00:00.000Z", evidence: { workspace: "platform-overview" } },
+  ] }) } }, SPACES, NOW);
+  const chase = both.items.filter((x) => /Chase/.test(x.title));
+  check("a sync incident held by both Ops attention and CS appears exactly once", chase.length === 1, both.items.map((x) => x.title).join(" | "));
+  // Sparse AI series: exactly TREND_DAYS calendar days ending on checkedAt, missing days are gaps.
+  const sparse = [{ day: "2026-10-01", calls: 5 }, { day: "2026-10-29", calls: 3 }, { day: "2026-10-30", calls: 2 }];
+  const pts = calendarPoints(sparse, (x) => x.calls, "2026-10-30T12:00:00.000Z");
+  check("calendar window is exactly TREND_DAYS long", pts.length === TREND_DAYS);
+  check("…ends on checkedAt's day and starts TREND_DAYS-1 days earlier", pts.at(-1)!.key === "2026-10-30" && pts[0].key === "2026-10-17");
+  check("…days outside the window never leak in (Oct 1 excluded)", sumObserved(pts) === 5);
+  check("…missing days are gaps (null), not zero", pts.filter((x) => x.value === null).length === TREND_DAYS - 2);
 }
 
 if (failures > 0) {

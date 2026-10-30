@@ -31,7 +31,7 @@ export function PlatformSpaceSwitcher({ spaces, currentArea }: { spaces: readonl
       </summary>
       <nav
         aria-label="Platform Spaces"
-        className="absolute left-0 top-full z-30 mt-1 flex w-64 max-w-[calc(100vw-2rem)] flex-col gap-0.5 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-1"
+        className="absolute right-0 top-full z-30 mt-1 flex w-64 max-w-[calc(100vw-2rem)] flex-col gap-0.5 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-1"
         style={{ background: "var(--glass-regular)", backdropFilter: "blur(30px) saturate(160%)", WebkitBackdropFilter: "blur(30px) saturate(160%)", boxShadow: "var(--shadow-e2)" }}
       >
         {spaces.map((s) => {
