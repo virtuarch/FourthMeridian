@@ -432,7 +432,7 @@ function RegisterForm() {
 export default function RegisterPage() {
   return (
     <AuthCard width="md">
-      <AuthHeader title="Create your account" subtitle="Set up your personal finance dashboard" />
+      <AuthHeader title="Create your account" subtitle="Bring your whole financial life into context" />
 
       <Suspense fallback={<p className="text-center text-sm text-[var(--text-muted)]">Loading…</p>}>
         <RegisterForm />

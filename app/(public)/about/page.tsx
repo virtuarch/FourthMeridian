@@ -13,7 +13,7 @@ import { ABOUT } from "@/content/marketing/copy";
 export const metadata: Metadata = {
   title: "About — Fourth Meridian",
   description:
-    "Why Fourth Meridian exists: an AI-native wealth management platform built around " +
+    "Why Fourth Meridian exists: AI-powered financial understanding, built around " +
     "one honest reading of your financial position — trusted more, looked at less. Closed beta.",
 };
 
