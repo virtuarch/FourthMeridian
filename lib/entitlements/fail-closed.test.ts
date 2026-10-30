@@ -43,6 +43,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 const ROOT = process.cwd();
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+const code = (rel: string) => read(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 const strip = (rel: string) => read(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 const now = new Date("2026-10-30T00:00:00Z");
 
@@ -289,10 +290,14 @@ async function main(): Promise<void> {
     check("alert rule: registered, live, on by default, reads the policy-assignments authority",
       !!rule && rule.live && rule.defaultEnabled && rule.authority === "policy-assignments" && rule.kind === "policy-assignment");
     const sig = evaluatePolicyAssignmentInvalid(rule!, h);
-    check("alert: one breach per listed customer + one :unlisted remainder", sig.length === POLICY_ASSIGNMENT_ISSUE_CAP + 1 && sig.at(-1)!.dedupeKey === "policy-assignment-invalid:unlisted");
-    check("alert: critical when enforced, dedupe on the opaque tail", sig.every((s) => s.severity === "critical") && sig[0].dedupeKey === "policy-assignment-invalid:zzzz01");
+    check("alert: one breach per listed customer + one :unlisted remainder", sig.length === POLICY_ASSIGNMENT_ISSUE_CAP + 1 && sig.at(-1)!.dedupeKey === "policy-assignment-invalid:critical:unlisted");
+    // Review fix: severity is part of the dedupe key, so a state change is never
+    // suppressed by an older breach inside the re-notify window.
+    check("alert: critical when enforced, dedupe on severity + the opaque tail", sig.every((s) => s.severity === "critical") && sig[0].dedupeKey === "policy-assignment-invalid:critical:zzzz01");
     check("alert: summaries carry opaque refs only", !/@|cuserzzzz01|cuser000000/.test(JSON.stringify(sig)) && /user …zzzz01/.test(sig[0].summary));
-    check("alert: warning when the switch is off", evaluatePolicyAssignmentInvalid(rule!, { ...h, enforced: false }).every((s) => s.severity === "warning"));
+    // Review fix: no EMAIL while the switch is off (nothing is refused; legacy
+    // unassigned accounts would page daily) — the Attention item carries the warning.
+    check("alert: no breach while the switch is off", evaluatePolicyAssignmentInvalid(rule!, { ...h, enforced: false }).length === 0);
     check("alert: nothing affected ⇒ no breach", evaluatePolicyAssignmentInvalid(rule!, { ...h, total: 0, unassigned: 0, unknown: 0, items: [], truncated: false }).length === 0);
     const viaEngine = evaluateAlertRules({ jobHealth: null, connectionHealth: null, resourceFreshness: null, aiFailures: null, aiSpend: null, syncIncidents: null, policyAssignments: h }, () => true);
     check("alert: the canonical evaluation dispatches the rule", viaEngine.filter((s) => s.kind === "policy-assignment").length === sig.length);
@@ -318,7 +323,21 @@ async function main(): Promise<void> {
     check("resolve.ts stays pure (no env / db import)", !/@\/lib\/env|@\/lib\/db|process\.env/.test(resolve));
   }
 
-  if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
+  console.log("review fix — Investments cannot be started by a fail-closed customer");
+{
+  const en = code("app/api/plaid/investments/enable/route.ts");
+  check("investments enable refuses fail-closed before the limiter and any provider call",
+    en.indexOf('refuseIfFailClosed(await entitlementsForUser(user.id), "Enable Investments")') > -1
+      && en.indexOf('refuseIfFailClosed(await entitlementsForUser(user.id), "Enable Investments")') < en.indexOf("limitByUser(")
+      && en.indexOf('refuseIfFailClosed(await entitlementsForUser(user.id), "Enable Investments")') < en.indexOf("refreshPlaidItem("));
+  const lt = code("app/api/plaid/link-token/route.ts");
+  check("an investments-consent link token is refused when fail-closed (plain update mode still repairs)",
+    /if \(consentParam === "investments"\) \{[\s\S]{0,200}refuseIfFailClosed\(/.test(lt));
+  const ah = code("lib/entitlements/assignment-health.ts");
+  check("affected parties exclude deactivated / non-customer accounts", /deactivatedAt: null, policyAssignment: \{ is: null \}/.test(ah) && /user: \{ role: "USER" as const, deactivatedAt: null \}/.test(ah));
+}
+
+if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");
 }
 

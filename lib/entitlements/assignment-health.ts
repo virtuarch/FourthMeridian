@@ -22,18 +22,18 @@ import { POLICY_ASSIGNMENT_ISSUE_CAP, buildPolicyAssignmentHealth, type PolicyAs
 /** The narrow read surface (systemDb satisfies it; tests hand a fake). Counts and finds only. */
 export interface PolicyAssignmentReadClient {
   user: {
-    count(args: { where: { role: "USER"; policyAssignment: { is: null } } }): Promise<number>;
+    count(args: { where: { role: "USER"; deactivatedAt: null; policyAssignment: { is: null } } }): Promise<number>;
     findMany(args: {
-      where: { role: "USER"; policyAssignment: { is: null } };
+      where: { role: "USER"; deactivatedAt: null; policyAssignment: { is: null } };
       select: { id: true; createdAt: true };
       orderBy: { createdAt: "asc" };
       take: number;
     }): Promise<{ id: string; createdAt: Date }[]>;
   };
   customerPolicyAssignment: {
-    count(args: { where: { policyGroup: { notIn: string[] } } }): Promise<number>;
+    count(args: { where: { policyGroup: { notIn: string[] }; user: { role: "USER"; deactivatedAt: null } } }): Promise<number>;
     findMany(args: {
-      where: { policyGroup: { notIn: string[] } };
+      where: { policyGroup: { notIn: string[] }; user: { role: "USER"; deactivatedAt: null } };
       select: { userId: true; policyGroup: true; assignedAt: true };
       orderBy: { assignedAt: "asc" };
       take: number;
@@ -47,8 +47,10 @@ export async function loadPolicyAssignmentHealth(opts: {
   const client = opts.client ?? (systemDb as unknown as PolicyAssignmentReadClient);
   const cap = opts.cap ?? POLICY_ASSIGNMENT_ISSUE_CAP;
   const known = Object.keys(POLICY_GROUPS);
-  const unassignedWhere = { role: "USER" as const, policyAssignment: { is: null } };
-  const unknownWhere = { policyGroup: { notIn: known } };
+  // Review fix: only accounts that can use the product — deactivated (incl.
+  // pending-deletion) accounts and non-customer roles are not affected parties.
+  const unassignedWhere = { role: "USER" as const, deactivatedAt: null, policyAssignment: { is: null } };
+  const unknownWhere = { policyGroup: { notIn: known }, user: { role: "USER" as const, deactivatedAt: null } };
   const [unassignedCount, unassignedRows, unknownCount, unknownRows] = await Promise.all([
     client.user.count({ where: unassignedWhere }),
     client.user.findMany({ where: unassignedWhere, select: { id: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: cap }),

@@ -45,6 +45,7 @@ import { withPlaidItemSyncLock, type SyncLockResult } from "@/lib/plaid/sync-loc
 import { runFullRefresh } from "@/lib/plaid/refresh-execution";
 import { limitByUser } from "@/lib/rate-limit";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
+import { entitlementsForUser, refuseIfFailClosed } from "@/lib/entitlements/consume";
 
 interface EnableBody {
   plaidItemId?: string;
@@ -62,6 +63,12 @@ interface EnableBody {
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
+
+  // Owner ruling (2026-10-30) — a missing / invalid policy assignment fails
+  // closed: enabling Investments starts a new paid Plaid product AND a full
+  // refresh, so it is refused before the limiter, admission or any provider call.
+  const failClosed = refuseIfFailClosed(await entitlementsForUser(user.id), "Enable Investments");
+  if (failClosed) return failClosed;
 
   // Each call triggers a full Plaid refresh (external API + DB writes). A
   // legitimate user enables Investments on a handful of connections, not

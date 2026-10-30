@@ -347,11 +347,18 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
  *  only words it. Opaque `user …abc123` references only — never an email or a name. */
 export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: PolicyAssignmentHealth): AlertSignal[] {
   if (p.total <= 0) return [];
-  const severity: AlertSeverity = p.enforced ? "critical" : "warning";
+  // Review fix: while the switch is OFF nothing is refused, and legacy accounts
+  // created before assignment rows existed would page every day. The exposure is
+  // shown (warning) in Platform Ops › Attention instead; the ALERT (email) fires
+  // only once enforcement makes it a live refusal.
+  if (!p.enforced) return [];
+  const severity: AlertSeverity = "critical";
   const state = p.enforced ? "FAIL CLOSED (paid features refused)" : "resolving to the Beta default (switch off)";
   const out: AlertSignal[] = p.items.map((i) => ({
     ruleId: rule.id, kind: rule.kind, severity,
-    dedupeKey: `${rule.id}:${i.ref.slice(-6)}`,
+    // Severity in the key, so a state change is never suppressed by an older,
+    // lower-severity breach inside the re-notify window.
+    dedupeKey: `${rule.id}:${severity}:${i.ref.slice(-6)}`,
     summary: i.reason === "UNASSIGNED"
       ? `Customer ${i.ref} has no policy-group assignment — ${state}. Assign a valid policy group in Customer Success.`
       : `Customer ${i.ref} is assigned unknown policy group "${i.unknownKey ?? ""}" — ${state}. Assign a valid policy group in Customer Success.`,
@@ -359,7 +366,7 @@ export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: Po
   const unlisted = p.total - p.items.length;
   if (unlisted > 0) {
     out.push({
-      ruleId: rule.id, kind: rule.kind, severity, dedupeKey: `${rule.id}:unlisted`,
+      ruleId: rule.id, kind: rule.kind, severity, dedupeKey: `${rule.id}:${severity}:unlisted`,
       summary: `${unlisted} further customer(s) with a missing or invalid policy-group assignment beyond the ${p.items.length} listed (cap ${p.cap}); total ${p.total} (${p.unassigned} unassigned, ${p.unknown} unknown key) — ${state}.`,
     });
   }
