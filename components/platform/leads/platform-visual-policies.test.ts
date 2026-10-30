@@ -369,7 +369,7 @@ console.log("6. Policy editor — gated affordances, edit → review → confirm
     cost: { platformAllowanceUsd: null, current: null, measured30dUsd: null, measuredNote: "Measured AI spend per policy group is not yet available." },
     defaultPolicyGroup: "BETA_FULL_ACCESS_V1", failClosedEnforced: false, checkedAt: "2026-10-30T10:00:00.000Z",
   };
-  const draft = { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", description: "d", values: { ...POLICY_GROUPS.BETA_FULL_ACCESS_V1.values } as Record<string, boolean | number> };
+  const draft = { key: "BETA_FULL_ACCESS_V1", label: "Beta — full access (v1)", description: POLICY_GROUPS.BETA_FULL_ACCESS_V1.description, values: { ...POLICY_GROUPS.BETA_FULL_ACCESS_V1.values } as Record<string, boolean | number> };
   const body = (over: Record<string, unknown>) => renderToStaticMarkup(createElement(editorModule.PolicyEditorBody, {
     mode: { kind: "edit", key: "BETA_FULL_ACCESS_V1" }, step: "edit", data: DATA, detail, draft, onDraft: noop, reason: EMPTY_OPERATOR_REASON, onReason: noop, busy: false, feedback: null, ...over,
   } as never));
@@ -396,6 +396,12 @@ console.log("6. Policy editor — gated affordances, edit → review → confirm
   const review = body({ step: "review", draft: changed });
   const rt = text(review);
   check("review: each changed entitlement before → after", /data-change="aiDailyUsdAllowance"/.test(review) && /\$5 → \$8/.test(rt) && /3 → 4/.test(rt) && (review.match(/data-change=/g) ?? []).length === 2);
+  {
+    const described = text(body({ step: "review", draft: { ...draft, description: "A new description" } }));
+    check("review: a description-only edit is listed (not 'No entitlement changes')", /Description\s*Edited/.test(described) && !/No entitlement changes/.test(described));
+    check("history: a description-only version reads 'description edited', never '0 changes'",
+      editorModel.versionSummaryText({ kind: "UPDATED", changes: [], descriptionChanged: true }) === "Edited · description edited");
+  }
   check("review: customers affected (counts)", /12 customers assigned · 2 with Founder/.test(rt));
   check("review: COST EXPOSURE = customers × allowance, labelled an estimated ceiling, was / now (10×$8 + 2×$20 = $120; was $90)",
     /\$120/.test(rt) && /was \$90/.test(rt) && /Estimated ceiling · max estimated AI spend \/ day/.test(rt));

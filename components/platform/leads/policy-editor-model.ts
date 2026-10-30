@@ -240,12 +240,14 @@ export function defaultBlocker(detail: PolicyGroupDetailResponse | null): string
 export function versionSummaryText(summary: Record<string, unknown>): string {
   const kind = String(summary.kind ?? "");
   const changes = Array.isArray(summary.changes) ? summary.changes.length : 0;
-  const dims = `${n(changes)} change${changes === 1 ? "" : "s"}`;
+  // Entitlement changes first; a version that only renamed / redescribed says that instead of "0 changes".
+  const textOnly = [summary.label ? "renamed" : null, summary.descriptionChanged ? "description edited" : null].filter(Boolean).join(" · ");
+  const dims = changes === 0 && textOnly ? textOnly : `${n(changes)} change${changes === 1 ? "" : "s"}`;
   switch (kind) {
     case "SEEDED": return "Seeded from the code catalogue";
     case "CREATED": return summary.from ? `Created from ${String(summary.from)} · ${dims}` : `Created · ${dims}`;
     case "ROLLED_BACK": return `Restored version ${String(summary.restoredVersion ?? "?")} · ${dims}`;
-    case "UPDATED": return `Edited · ${dims}${summary.label ? " · renamed" : ""}`;
+    case "UPDATED": return `Edited · ${dims}${changes > 0 && summary.label ? " · renamed" : ""}`;
     default: return dims;
   }
 }

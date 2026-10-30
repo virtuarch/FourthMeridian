@@ -43,7 +43,6 @@ import type { PolicyGroupDetailResponse } from "@/lib/platform/policies/policy-g
 import { useSharedWidgetFetch, useSharedWidgetPublish } from "../workspace-session";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { OperatorReasonField, EMPTY_OPERATOR_REASON, reasonPayload, type OperatorReasonValue } from "../widgets/OperatorReasonField";
-import { Meter } from "./visual-kit";
 import { PolicyGroupHistoryView, groupDetailUrl } from "./PolicyGroupHistory";
 import {
   ARCHIVE_NOTE, DEFAULT_NOTE, ESTIMATED_CEILING_LABEL, archiveBlocker, changeLines, clampInput, costExposure, customersAffectedLine,
@@ -94,7 +93,6 @@ function NumberControl({ row, onChange, disabled }: { row: Extract<RowModel, { k
       <input type="range" aria-label={`${row.label} slider`} min={0} max={sliderMax} step={1} value={sliderValue} disabled={disabled}
         onChange={(e) => onChange(isFloor ? row.presets[Number(e.target.value)] : Number(e.target.value))}
         className="h-6 w-full min-w-0 accent-[var(--meridian-400)]" />
-      <Meter pct={row.pct} tone="info" label={`${row.label}: ${row.text} ${row.ceilingText}`} />
     </div>
   );
 }
@@ -155,12 +153,15 @@ export function PolicyEditorBody(p: PolicyEditorBodyProps) {
       : p.mode.kind === "new" ? p.data.policyGroups.find((g) => g.isDefault)?.values ?? null : current;
     const lines = changeLines(p.data.dimensions, source, p.draft.values);
     const cost = costExposure(isNew ? null : p.detail, current ? Number(current.aiDailyUsdAllowance) : null, Number(p.draft.values.aiDailyUsdAllowance ?? 0));
-    const renamed = modeKey !== null && current !== null && p.data.policyGroups.find((g) => g.key === modeKey)?.label !== p.draft.label;
+    const currentGroup = modeKey !== null ? p.data.policyGroups.find((g) => g.key === modeKey) : undefined;
+    const renamed = currentGroup !== undefined && current !== null && currentGroup.label !== p.draft.label;
+    // A description-only edit is still a change — say so instead of "No entitlement changes".
+    const redescribed = currentGroup !== undefined && current !== null && (currentGroup.description ?? "") !== (p.draft.description ?? "");
     return (
       <div className="flex min-w-0 flex-col gap-5" data-editor-step="review">
         <section aria-label="Change summary" className="flex min-w-0 flex-col gap-2">
           <h3 className={H3}>{isNew ? `New group · ${p.draft.key} (from ${p.mode.kind === "clone" ? p.mode.from : "the default"})` : p.mode.kind === "restore" ? `Restore version ${p.mode.toVersion}` : "Changes"}</h3>
-          {lines.length === 0 && !renamed ? (
+          {lines.length === 0 && !renamed && !redescribed ? (
             <p className="text-[11px] text-[var(--text-muted)]">{isNew ? "Same values as its source." : "No entitlement changes."}</p>
           ) : (
             <ul aria-label="Changed entitlements" className="flex flex-col">
@@ -168,6 +169,12 @@ export function PolicyEditorBody(p: PolicyEditorBodyProps) {
                 <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-t border-[var(--border-hairline)] py-1.5 text-[11px] first:border-t-0">
                   <span className="truncate text-[var(--text-secondary)]">Name</span>
                   <span className="truncate tabular-nums text-[var(--text-primary)]">{p.draft.label}</span>
+                </li>
+              )}
+              {redescribed && (
+                <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-t border-[var(--border-hairline)] py-1.5 text-[11px] first:border-t-0" data-change="description">
+                  <span className="truncate text-[var(--text-secondary)]">Description</span>
+                  <span className="truncate text-[var(--text-primary)]">Edited</span>
                 </li>
               )}
               {lines.map((l) => (
