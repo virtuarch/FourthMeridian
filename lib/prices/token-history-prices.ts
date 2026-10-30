@@ -116,7 +116,8 @@ export async function acquireTokenHistoricalCloses(args: {
   if (!req) return none("NOTHING_TO_DO");
 
   const budget = args.budget ?? defaultCoinGeckoBudget(client);
-  const remaining = await budget.remaining();
+  // Token history spends the TOKEN share, so native quotes keep their reserved part of the day.
+  const remaining = await budget.remaining("token");
   if (remaining === null || remaining < 1) return none("BUDGET", remaining === null ? "CoinGecko budget unreadable — nothing spent" : "CoinGecko daily budget reached");
 
   const meter: Record<string, number> = {};
@@ -145,12 +146,17 @@ export async function acquireTokenHistoricalCloses(args: {
     });
     inserted = r.count;
   }
-  // The marker records what was ASKED and answered; an OK range extends the one it continued.
-  const nextMarker: TokenPriceHistoryMarker = outcome === "OK"
-    ? { fromISO: marker?.outcome === "OK" && marker.fromISO <= req.fromISO ? marker.fromISO : req.fromISO, toISO: req.toISO, attemptedAt: now.toISOString(), outcome }
-    : { fromISO: marker?.fromISO ?? req.fromISO, toISO: marker?.toISO ?? req.toISO, attemptedAt: now.toISOString(), outcome };
+  // The marker records what the vendor actually RETURNED (through its last
+  // close), never merely what was asked — a short answer is re-asked for its tail.
+  const lastReturned = closes.length ? closes[closes.length - 1].dateISO : null;
+  const nextMarker: TokenPriceHistoryMarker = outcome === "OK" && lastReturned
+    ? { fromISO: marker?.outcome === "OK" && marker.fromISO <= req.fromISO ? marker.fromISO : req.fromISO, toISO: lastReturned, attemptedAt: now.toISOString(), outcome }
+    : { fromISO: marker?.fromISO ?? req.fromISO, toISO: marker?.toISO ?? addDay(req.fromISO, -1), attemptedAt: now.toISOString(), outcome };
   try {
-    const existing = (alias?.metadata && typeof alias.metadata === "object" ? alias.metadata : {}) as Record<string, unknown>;
+    // Re-read immediately before writing (a narrow read-modify-write): the quote
+    // marker another sync may have written since our first read is preserved.
+    const fresh = await client.instrumentAlias.findUnique({ where, select: { metadata: true } });
+    const existing = (fresh?.metadata && typeof fresh.metadata === "object" ? fresh.metadata : {}) as Record<string, unknown>;
     await client.instrumentAlias.update({ where, data: { metadata: { ...existing, priceHistory: nextMarker } as unknown as Prisma.InputJsonValue } });
   } catch { /* an optimisation; the insert-only archive already dedupes */ }
   return {
