@@ -382,3 +382,11 @@ Old `?workspace=` ids alias to the new four. Customer Success keeps assignment a
 
 Free / Paid / Pro values and prices are **not** decisions for now: Phase 2 ships the editor; the owner fills the numbers in the Policies UI, with Phase 3's economics beside them.
 
+## 20. Owner rulings (2026-10-30)
+
+1. **Operator 2FA — APPROVED for Preview only.** Done: `OPERATOR_TOTP_ENFORCEMENT=enforce` on Preview (develop branch scope), develop redeployed. Production enforcement needs separate approval. Verification steps: enrolment, existing-session enforcement, privileged API denial, recovery-code sign-in, disable → re-enrolment.
+2. **Policy-group definitions — APPROVED:** create / edit / clone / archive / any modification requires **PLATFORM_OPS CONTROL + operator reason + audit trail**. Customer Success may **assign existing groups** and issue **bounded, time-limited exceptions within centrally defined limits**; it may not modify definitions, exceed platform safety limits, or grant operator privileges. (Built in Phase 2/4.)
+3. **Missing / invalid assignment — APPROVED WITH MODIFICATION: fail closed.** Never fall back to Beta or any paid-capability group. Deny unverified paid entitlements and **new** costly operations; **preserve** login, existing records and safe read-only access; never delete data, disconnect accounts or rewrite assignments. Raise an **actionable operator alert identifying the affected assignment**; correcting the assignment restores normal entitlements automatically (resolved per request — no repair job). Implemented as its own PR behind a Preview-first switch; not deployed to Production without separate approval.
+
+Phase 1 UX continues behaviour-preserving and separate from the policy engine (PR #132).
+
