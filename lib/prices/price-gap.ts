@@ -21,6 +21,7 @@
 
 import { AssetClass, PriceBasis, type Prisma, type PrismaClient } from "@prisma/client";
 import { licensedInterval } from "@/lib/crypto/position-coverage";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import type { ChainCoverage, ChainCoverageCaveat } from "@/lib/crypto/chain-movement";
 import { minusDaysISO, yesterdayUTCISO } from "./config";
 import { routingKeyFor } from "./coverage-binding.core";
@@ -151,11 +152,18 @@ export async function earliestRawCloseByInstrument(client: Client, instrumentIds
   return out;
 }
 
-/** Licensed balance intervals, through the ONE licence reader (position-coverage.ts licensedInterval). */
+/**
+ * Licensed NATIVE balance intervals, through the ONE licence reader
+ * (position-coverage.ts licensedInterval). Token instruments are excluded: a
+ * token licence (SPL / ERC-20 history) on an unpriced mint has no price floor,
+ * and counting it would leave the whole account with no revaluation floor —
+ * native wealth history would never be revalued (token rows are valued by
+ * lib/crypto/token-valuation.ts, under their own licences).
+ */
 export async function cryptoHolderLicences(client: Client, accountIds: readonly string[]): Promise<HolderLicence[]> {
   if (accountIds.length === 0) return [];
   const rows = await client.positionCoverage.findMany({
-    where: { financialAccountId: { in: [...accountIds] }, instrument: { assetClass: AssetClass.CRYPTO } },
+    where: { financialAccountId: { in: [...accountIds] }, instrument: { assetClass: AssetClass.CRYPTO, ...NOT_TOKEN_INSTRUMENT } },
     select: { financialAccountId: true, instrumentId: true, kind: true, coveredFromDate: true, coveredToDate: true, caveats: true, source: true },
   });
   const out: HolderLicence[] = [];

@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { minusDaysISO } from "./config";
 import {
   valuedFromISO, planPriceGaps, acquireHistoricalPriceGaps, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
-  priceGapAttemptKey, revaluationOwedFromISO, revalueHoldersAfterPriceGaps, revaluationAttemptKey, REVALUATION_RESERVE_MS,
+  priceGapAttemptKey, revaluationOwedFromISO, cryptoHolderLicences, revalueHoldersAfterPriceGaps, revaluationAttemptKey, REVALUATION_RESERVE_MS,
   type HolderLicence, type InstrumentPriceFacts, type PriceGapDeps, type RevaluationDeps, type RevaluationOwed,
 } from "./price-gap";
 
@@ -238,6 +238,26 @@ async function main() {
     check("the sweep runs the gap pass AFTER its ordinary regeneration, bounded by the wake",
       sweep.indexOf("revalueHoldersAfterPriceGaps(") > sweep.indexOf("await regenerateWealthHistoryForAccounts(") && sweep.indexOf("await regenerateWealthHistoryForAccounts(") > 0
         && /deadlineMs: \(wake \? wake\.startedAt\.getTime\(\) : runStartedAt\.getTime\(\)\) \+ WAKE_SAFE_MS/.test(sweep) && !/acquireHistoricalPriceGaps\(/.test(sweep));
+  }
+
+  console.log("token licences never block native revaluation (#120 review)");
+  {
+    // A SOL wallet: native SOL licensed, plus an airdropped spam token whose SPL history licence committed.
+    const rows = [
+      { financialAccountId: "acct", instrumentId: "sol", token: false, kind: "COMPLETE", coveredFromDate: new Date("2026-01-01T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z"), caveats: [], source: "solana-rpc" },
+      { financialAccountId: "acct", instrumentId: "spam", token: true, kind: "COMPLETE", coveredFromDate: new Date("2026-03-01T00:00:00Z"), coveredToDate: new Date("2026-10-27T00:00:00Z"), caveats: [], source: "solana-rpc-spl+account-continuity" },
+    ];
+    // Fake client honouring the relation filter the way Postgres would: NOT { aliases: { some: token } } drops token instruments.
+    const fake = { positionCoverage: { findMany: async (q: { where: { instrument?: { NOT?: { aliases?: unknown } } } }) =>
+      rows.filter((r) => !(q.where.instrument?.NOT?.aliases && r.token)) } };
+    const lics = await cryptoHolderLicences(fake as unknown as Parameters<typeof cryptoHolderLicences>[0], ["acct"]);
+    check("holder licences exclude token instruments (NOT_TOKEN_INSTRUMENT)", lics.length === 1 && lics[0].instrumentId === "sol", JSON.stringify(lics));
+    // And what that protects: with the spam licence counted, the unpriced token leaves NO floor ⇒ no revaluation.
+    const floors = new Map([["sol", "2025-11-01"]]); // the spam token has no RAW_CLOSE
+    const owedNative = revaluationOwedFromISO({ licences: new Map(lics.map((l) => [l.instrumentId, l.licensedFromISO])), floors, earliestSnapshotISO: "2026-06-01" });
+    const owedWithToken = revaluationOwedFromISO({ licences: new Map([["sol", "2026-01-01"], ["spam", "2026-03-01"]]), floors, earliestSnapshotISO: "2026-06-01" });
+    check("…so the native wallet is still revalued when its price floor deepens (a token licence would block it)",
+      owedNative !== null && owedWithToken === null, `${JSON.stringify(owedNative)} vs ${JSON.stringify(owedWithToken)}`);
   }
 
   if (failures > 0) { console.error(`\nprice-gap: ${failures} failed.`); process.exit(1); }
