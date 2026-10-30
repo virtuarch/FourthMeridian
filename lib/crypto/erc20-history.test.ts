@@ -779,7 +779,7 @@ async function main(): Promise<void> {
       && probeAllowance({ probesToday: null, tokenRemaining: 80, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 0
       && probeAllowance({ probesToday: 0, tokenRemaining: null, tokenShareCap: 150, dailyCap: 20, heldReserve: 0.5 }) === 0);
     check("F1: the probe count lives on the durable ledger, apart from COINGECKO's own rows", (ERC20_PROBE_USAGE_PROVIDER as string) !== COINGECKO_USAGE_PROVIDER
-      && /apiUsageCounter\.findMany/.test(read("lib", "crypto", "erc20-history-prices.ts")));
+      && /apiUsageCounter\.findMany/.test(read("lib", "crypto", "token-history-probe.ts")));
 
     // F2 — a never-held token (zero-value transfers only) is neither probed nor priced.
     for (const k of Object.keys(meta)) delete meta[k];

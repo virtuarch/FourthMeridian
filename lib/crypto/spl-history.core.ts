@@ -959,3 +959,13 @@ export function orderMints(mints: readonly SplMintState[], isPriced: (mint: stri
 export function currentByAddress(entries: ReadonlyArray<{ tokenAccount: string; mint: string; amount: bigint }>): Map<string, { mint: string; amount: bigint }> {
   return new Map(entries.map((e) => [e.tokenAccount, { mint: e.mint, amount: e.amount }]));
 }
+
+/**
+ * How one run's SPL historical price acquisition ended (spl-history.ts
+ * `SplRunOutcome.prices`): COMPLETE; ALLOWANCE_EXHAUSTED — a never-priced (sold)
+ * mint needed a first-time quote probe and the durable probe allowance was 0;
+ * BUDGET_STOPPED — the CoinGecko TOKEN share ran out. Same severities as ERC-20's.
+ */
+export type SplPriceRunStatus = "COMPLETE" | "ALLOWANCE_EXHAUSTED" | "BUDGET_STOPPED";
+/** Severity order for combining runs: the worst outcome wins. */
+export const SPL_PRICE_RUN_SEVERITY: Record<SplPriceRunStatus, number> = { COMPLETE: 0, ALLOWANCE_EXHAUSTED: 2, BUDGET_STOPPED: 3 };

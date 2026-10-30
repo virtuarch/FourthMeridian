@@ -103,6 +103,7 @@ import {
 import type { EthBackfillStore, EthBackfillDeps, EthBackfillOutcome } from "@/lib/crypto/eth-history-backfill";
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps, type Erc20HistoryPassSummary } from "@/lib/crypto/erc20-history-pass";
 import { erc20HistoryConfig, type Erc20HistoryConfig } from "@/lib/crypto/erc20-history.core";
+import { SPL_PRICE_RUN_SEVERITY, type SplPriceRunStatus } from "@/lib/crypto/spl-history.core";
 import { effectiveDailyUsage, incrementalMeter, meterTotal, type IncrementalMeter, type MeterRecorder } from "@/lib/usage/provider-budget.core";
 import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
 import type { PriceGapRun, RevaluationOwed, RevaluationRun } from "@/lib/prices/price-gap";
@@ -170,7 +171,7 @@ export interface SolBackfillJobSummary {
   /** ERC-20 token history's pass (lib/crypto/erc20-history-pass.ts) — part of Ethereum's phase. */
   ethTokens?: Erc20HistoryPassSummary;
   /** Re-review F4 — SPL historical price acquisition, when any wallet's stopped short (absent ⇒ none did). */
-  splPrices?: { status: "BUDGET_STOPPED"; reason: string | null; mintsSkipped: number; wallets: number };
+  splPrices?: { status: Exclude<SplPriceRunStatus, "COMPLETE">; reason: string | null; mintsSkipped: number; wallets: number };
   /**
    * THE JOB'S OWN OUTCOME (re-review F4) — a SUMMARY field, read from
    * `JobRun.summary.outcome` / `JobRun.summary.partialReasons` (Platform Ops can
@@ -589,7 +590,10 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
           const sp = r.tokens?.prices;
           if (sp && sp.status !== "COMPLETE") {
             const prev = summary.splPrices;
-            summary.splPrices = { status: sp.status, reason: sp.reason, mintsSkipped: (prev?.mintsSkipped ?? 0) + sp.mintsSkipped, wallets: (prev?.wallets ?? 0) + 1 };
+            // Worst wins across wallets (BUDGET_STOPPED over ALLOWANCE_EXHAUSTED), as ERC-20's pass.
+            const worse = !prev || SPL_PRICE_RUN_SEVERITY[sp.status] > SPL_PRICE_RUN_SEVERITY[prev.status];
+            summary.splPrices = { status: worse ? sp.status : prev.status, reason: worse ? sp.reason : prev.reason,
+              mintsSkipped: (prev?.mintsSkipped ?? 0) + sp.mintsSkipped, wallets: (prev?.wallets ?? 0) + 1 };
           }
           const o = r.backfill;
           if (o) {
