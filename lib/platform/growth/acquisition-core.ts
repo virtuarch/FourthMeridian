@@ -203,38 +203,7 @@ export function buildAcquisition(facts: AcquisitionFacts, now: Date, windowDays:
     return { weekStart, size: ids.length, cells };
   });
 
-  const first = (rows: readonly UserInstant[]) => {
-    const m = new Map<string, Date>();
-    for (const r of rows) { const p = m.get(r.userId); if (!p || r.at < p) m.set(r.userId, r.at); }
-    return m;
-  };
-  const last = (rows: readonly UserInstant[]) => {
-    const m = new Map<string, Date>();
-    for (const r of rows) { const p = m.get(r.userId); if (!p || r.at > p) m.set(r.userId, r.at); }
-    return m;
-  };
-  const fs = first(facts.funnel.firstSessions);
-  const fa = first(facts.funnel.firstAiTurns);
-  const fb = first(facts.funnel.firstBriefViews);
-  const le = last(facts.funnel.lastEngagements);
-  const fc = firstConnections(facts.funnel);
-  const through = new Map<string, number>();
-  for (const u of facts.funnel.users) {
-    const reached = stageReachedAt(u, {
-      firstSession: fs.get(u.id), firstConnection: fc.get(u.id), firstAiTurn: fa.get(u.id),
-      firstBriefView: fb.get(u.id), lastEngagement: le.get(u.id),
-    });
-    through.set(u.id, FUNNEL_STAGE_ORDER.indexOf(furthestStage(reached)));
-  }
-  const onboardingRows: CohortRow[] = weeks.map((weekStart) => {
-    const ids = members.get(weekStart) ?? [];
-    const cells: CohortCell[] = ONBOARDING_STAGES.map((stage) => {
-      const idx = FUNNEL_STAGE_ORDER.indexOf(stage);
-      const num = ids.filter((id) => (through.get(id) ?? 0) >= idx).length;
-      return { state: "value", num, den: ids.length };
-    });
-    return { weekStart, size: ids.length, cells };
-  });
+  const onboarding = buildOnboardingCohorts(facts.funnel, today);
 
   const notes: string[] = [
     "UTC days and hours.",
@@ -256,10 +225,57 @@ export function buildAcquisition(facts: AcquisitionFacts, now: Date, windowDays:
     sourcesUnrecorded,
     timeOfWeek: { signIns, signInTotal, chatTurns, chatTotal },
     retention: { offsets: RETENTION_OFFSETS, rows: retentionRows },
-    onboarding: {
-      stages: ONBOARDING_STAGES.map((key) => ({ key, label: FUNNEL_STAGE_LABELS[key] })),
-      rows: onboardingRows,
-    },
+    onboarding,
     notes,
   };
+}
+
+/**
+ * Per account: the index (in FUNNEL_STAGE_ORDER) of the furthest stage reached
+ * THROUGH — the strict funnel, the one `stageReachedAt` + `furthestStage`.
+ * Shared by the Growth cohorts and the Customer Success stage distribution.
+ */
+export function funnelThrough(funnel: CohortFunnelFacts): Map<string, number> {
+  const first = (rows: readonly UserInstant[]) => {
+    const m = new Map<string, Date>();
+    for (const r of rows) { const p = m.get(r.userId); if (!p || r.at < p) m.set(r.userId, r.at); }
+    return m;
+  };
+  const last = (rows: readonly UserInstant[]) => {
+    const m = new Map<string, Date>();
+    for (const r of rows) { const p = m.get(r.userId); if (!p || r.at > p) m.set(r.userId, r.at); }
+    return m;
+  };
+  const fs = first(funnel.firstSessions);
+  const fa = first(funnel.firstAiTurns);
+  const fb = first(funnel.firstBriefViews);
+  const le = last(funnel.lastEngagements);
+  const fc = firstConnections(funnel);
+  const through = new Map<string, number>();
+  for (const u of funnel.users) {
+    const reached = stageReachedAt(u, {
+      firstSession: fs.get(u.id), firstConnection: fc.get(u.id), firstAiTurn: fa.get(u.id),
+      firstBriefView: fb.get(u.id), lastEngagement: le.get(u.id),
+    });
+    through.set(u.id, FUNNEL_STAGE_ORDER.indexOf(furthestStage(reached)));
+  }
+  return through;
+}
+
+/** Registration-week cohorts × onboarding stage: got through the stage ÷ cohort size (as of today). */
+export function buildOnboardingCohorts(funnel: CohortFunnelFacts, today: string): AcquisitionResponse["onboarding"] {
+  const through = funnelThrough(funnel);
+  const weeks = cohortWeeks(today);
+  const members = new Map<string, string[]>(weeks.map((w) => [w, []]));
+  for (const u of funnel.users) members.get(isoMonday(dayOf(u.createdAt)))?.push(u.id);
+  const rows: CohortRow[] = weeks.map((weekStart) => {
+    const ids = members.get(weekStart) ?? [];
+    const cells: CohortCell[] = ONBOARDING_STAGES.map((stage) => {
+      const idx = FUNNEL_STAGE_ORDER.indexOf(stage);
+      const num = ids.filter((id) => (through.get(id) ?? 0) >= idx).length;
+      return { state: "value", num, den: ids.length };
+    });
+    return { weekStart, size: ids.length, cells };
+  });
+  return { stages: ONBOARDING_STAGES.map((key) => ({ key, label: FUNNEL_STAGE_LABELS[key] })), rows };
 }

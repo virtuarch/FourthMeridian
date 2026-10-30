@@ -496,7 +496,7 @@ console.log("Phase 1 UX · views");
       && getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views?.[0].id === "groups");
 
   check("areas not yet redesigned are unchanged: no views outside PLATFORM_OPS and GROWTH_REVENUE",
-    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS" && a !== "GROWTH_REVENUE" && a !== "SECURITY_OPS").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS" && a !== "GROWTH_REVENUE" && a !== "SECURITY_OPS" && a !== "CUSTOMER_SUCCESS").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
   // PLATFORM SPACES 2.0 — Growth is ONE dashboard view (lead "growth") hosting
   // all seven former sections, the beta signup list among them.
   {
@@ -517,7 +517,7 @@ console.log("Phase 1 UX · views");
       // VISUAL SPEC §5 — one dashboard view; its id stays "ai" (default URL unchanged).
       "platform-ai": ["ai"],
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
-    }) && Object.keys(platformAreaViewIds("CUSTOMER_SUCCESS")).length === 0);
+    }) && Object.keys(platformAreaViewIds("MERCHANT_OPS")).length === 0);
 
   // The view validator: unknown ⇒ default, never a ghost; no views ⇒ null.
   const ids = ["overview", "jobs", "pipeline"];
@@ -566,6 +566,8 @@ console.log("Customer Success · Customers + Incidents");
     cs.map((w) => w.workspaceId).join(",") === "platform-overview,platform-incidents", cs.map((w) => w.workspaceId).join(","));
   check("customers on the first, sync incidents on the second; nothing else moved",
     cs[0].sections.join() === "cs_customers" && cs[1]?.sections.join() === "cs_sync_issues");
+  check("PLATFORM SPACES 2.0 — Customers is one dashboard view (lead 'customer-success') hosting the audited list",
+    cs[0].views?.length === 1 && cs[0].views[0].lead === "customer-success" && JSON.stringify(cs[0].views[0].hosted) === JSON.stringify(["cs_customers"]) && cs[0].views[0].sections.length === 0);
   check("Incidents is a registered Platform identity with a nav-resolvable icon",
     getPlatformWorkspace("platform-incidents")?.label === "Incidents"
       && /WORKSPACE_ICONS_BY_NAME[^{]*\{[^}]*\bTriangleAlert,/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));

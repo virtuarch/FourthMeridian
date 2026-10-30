@@ -57,9 +57,11 @@ const DETECTOR_LABELS: Record<string, string> = {
 };
 
 /** Words for a code: a known label, else the code with underscores spaced (never a raw identifier). */
+const ACRONYMS: Readonly<Record<string, string>> = { ai: "AI", totp: "TOTP", "2fa": "2FA", ip: "IP", cs: "CS", api: "API", plaid: "Plaid" };
+
 export function humanize(code: string, labels: Record<string, string>): string {
   if (labels[code]) return labels[code];
-  const s = code.replace(/_/g, " ").toLowerCase();
+  const s = code.replace(/_/g, " ").toLowerCase().split(" ").map((w) => ACRONYMS[w] ?? w).join(" ");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
