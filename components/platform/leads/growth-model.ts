@@ -16,7 +16,7 @@ import type { DayBar, Fetched, Kpi } from "../ops-visual/ops-visual-model";
 import type { HeroModel } from "../ops-visual/HealthHero";
 import type { FunnelBarStage } from "../charts/FunnelBars";
 import type { ShareBar } from "../charts/ShareBars";
-import { WEEKDAYS, pct, type HeatAxis, type HeatCell } from "../charts/heatmap-model";
+import { pct, type HeatAxis, type HeatCell } from "../charts/heatmap-model";
 
 export type GrowthWindow = "30" | "90";
 export type GrowthDrawer = "signups" | "analytics" | "funnel" | "users" | "activity" | "policy";
@@ -138,19 +138,7 @@ export function funnelStages(p: ProductAnalyticsResponse): FunnelBarStage[] {
 
 // ── Heatmap readouts ─────────────────────────────────────────────────────────
 
-const valueOf = (c: HeatCell): number => (c.kind === "value" ? c.v : 0);
-
-export function describeCalendarCell(day: string | null, cell: HeatCell, noun: string): string {
-  const when = day ? new Date(`${day}T00:00:00.000Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : "";
-  if (cell.kind === "noData") return `${when} · no data (before recording began)`;
-  return `${when} · ${plural(valueOf(cell), noun)}`;
-}
-
-export function describeWeekHourCell(r: number, c: number, cell: HeatCell, noun: string, total: number): string {
-  const h = String(c).padStart(2, "0");
-  const v = valueOf(cell);
-  return `${WEEKDAYS[r]} ${h}:00–${h}:59 UTC · ${plural(v, noun)}${total > 0 ? ` · ${pct(v, total)} of ${n(total)}` : ""}`;
-}
+export { describeCalendarCell, describeWeekHourCell } from "../charts/heat-readouts";
 
 export function describeCohortCell(row: CohortRow, colLabel: string, cell: HeatCell, what: string): string {
   const head = `Week of ${shortDay(row.weekStart)} · ${colLabel}`;
