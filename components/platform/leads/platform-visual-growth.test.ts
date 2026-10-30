@@ -110,9 +110,16 @@ console.log("4. heatmap kit — zero vs no data vs in progress, denominators, la
   check("time-of-week readout names the UTC hour and the share of the total", describeWeekHourCell(1, 9, { kind: "value", v: 3 }, "sign-in", 12) === "Tue 09:00–09:59 UTC · 3 sign-ins · 25% of 12");
 }
 
+console.log("4b. shares of a stated whole — adoption is the authority's share of accounts, sources include the unrecorded");
+{
+  const html = render();
+  check("adoption reads 44% (4 of 9 accounts), never a share of the bars' sum", html.includes("data-share-bars") && html.includes(">44%<"));
+  check("the hero counts every registered account (the funnel's base)", html.includes("9 accounts"));
+}
+
 console.log("5. lead source rules (the Ops 2.0 ratchet, extended to Growth)");
 {
-  for (const f of ["components/platform/leads/GrowthLead.tsx", "components/platform/leads/growth-model.ts", "components/platform/charts/HeatGrid.tsx", "components/platform/charts/heatmap-model.ts", "components/platform/charts/FunnelBars.tsx"]) {
+  for (const f of ["components/platform/leads/GrowthLead.tsx", "components/platform/leads/growth-model.ts", "components/platform/charts/HeatGrid.tsx", "components/platform/charts/heatmap-model.ts", "components/platform/charts/FunnelBars.tsx", "components/platform/charts/ShareBars.tsx"]) {
     const src = strip(f);
     check(`${f}: no CONTROL / canControl / canWrite / matchMedia / raw fetch`,
       !/\bCONTROL\b|canControl|canWrite|matchMedia|innerWidth|\bfetch\(/.test(src));

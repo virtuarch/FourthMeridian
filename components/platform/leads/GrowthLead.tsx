@@ -40,11 +40,12 @@ import { DayBars } from "../ops-visual/DayBars";
 import type { Fetched } from "../ops-visual/ops-visual-model";
 import { HeatGrid } from "../charts/HeatGrid";
 import { FunnelBars } from "../charts/FunnelBars";
+import { ShareBars } from "../charts/ShareBars";
 import { calendarLayout, cohortLayout, weekHourLayout } from "../charts/heatmap-model";
 import {
-  BETA_LIST_KEY, GROWTH_COLORS, GROWTH_DRAWERS, ONBOARDING_SHORT, RETENTION_COLS, TIME_OF_WEEK_MIN_EVENTS, activeBars, adoptionItems,
+  BETA_LIST_KEY, GROWTH_COLORS, GROWTH_DRAWERS, ONBOARDING_SHORT, RETENTION_COLS, TIME_OF_WEEK_MIN_EVENTS, activeBars, adoptionBars,
   cohortCellText, cohortHasHistory, countBars, describeCalendarCell, describeCohortCell, describeWeekHourCell, funnelStages,
-  growthHero, seriesCaption, sourceItems, waitlistItems, type GrowthDrawer, type GrowthWindow,
+  growthHero, seriesCaption, sourceBars, sourceWhole, waitlistItems, type GrowthDrawer, type GrowthWindow,
 } from "./growth-model";
 
 const n = (v: number) => v.toLocaleString("en-US");
@@ -70,11 +71,11 @@ function AcquisitionCard({ acq }: { acq: Fetched<AcquisitionResponse> }) {
       <Surface className="flex-1 p-4 sm:p-5">
         {a ? (
           <>
-            <DayBars days={countBars(days)} height={180} noun={noun} palette={ONE}
+            <DayBars days={countBars(days)} height={236} noun={noun} palette={ONE}
               ariaLabel={series === "requests" ? "Distinct beta requesters per UTC day" : "New accounts per UTC day"} />
             <Caption>
               {series === "requests"
-                ? `${n(a.requests.total)} distinct requesters · each counted once per day · ${days.length} UTC days${days.some((d) => d.count === null) ? ` · recorded from ${a.coverage.requestsFrom ?? "—"}` : ""}`
+                ? `${n(a.requests.total)} distinct requesters · ${days.length} UTC days${days.some((d) => d.count === null) ? ` · recorded from ${a.coverage.requestsFrom ?? "—"}` : ""} · bars count each requester once a day`
                 : seriesCaption(days, noun)}
             </Caption>
           </>
@@ -94,7 +95,7 @@ function ActiveUsersCard({ pa }: { pa: Fetched<ProductAnalyticsResponse> }) {
       <Surface className="flex-1 p-4 sm:p-5">
         {p ? (
           <>
-            <DayBars days={activeBars(p, series)} height={160} noun="account" palette={ONE}
+            <DayBars days={activeBars(p, series)} height={260} noun="account" palette={ONE}
               ariaLabel={series === "engaged" ? "Accounts with meaningful product activity per UTC day" : "Accounts with an authenticated session per UTC day"} />
             <Caption>
               {series === "engaged"
@@ -220,11 +221,13 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
           hint={<span className="text-[11px] text-[var(--text-faint)]">{a ? `${a.windowDays} d` : ""}</span>}>
           <Surface className="flex-1 p-4 sm:p-5">
             {a ? (
-              <>
-                <BreakdownWidget items={sourceItems(a)} viewMode="bar" itemNoun="requester" formatValue={n}
-                  emptyHeadline={a.sourcesUnrecorded > 0 ? "No requester in the window carried a source" : "No beta requests in the window"} />
-                {a.sourcesUnrecorded > 0 && <Caption>{`${n(a.sourcesUnrecorded)} with no recorded source (direct or untagged)`}</Caption>}
-              </>
+              sourceWhole(a) > 0 ? (
+                <>
+                  <ShareBars items={sourceBars(a)} ariaLabel="Beta requesters by first recorded source" noun="requester"
+                    denominator={`of ${n(sourceWhole(a))} requesters in ${a.windowDays} d`} />
+                  <Caption>First submission&apos;s UTM source or referrer · direct visits carry none</Caption>
+                </>
+              ) : <ChartMessage>No beta requests in the window</ChartMessage>
             ) : <Loading f={p.acq} what="sources" />}
           </Surface>
         </Block>
@@ -250,7 +253,7 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
             {a && onboarding ? (
               a.onboarding.rows.some((r) => r.size > 0) ? (
                 <>
-                  <HeatGrid layout={onboarding} rowHeight={24} labelWidth={74} domainMax={1} cellText={cohortCellText}
+                  <HeatGrid layout={onboarding} rowHeight={26} labelWidth={74} domainMax={1} cellText={cohortCellText}
                     legend={{ low: "0%", high: "100%" }}
                     ariaLabel="Share of each registration week's accounts that got through each onboarding stage"
                     describe={(r, c, cell) => describeCohortCell(a.onboarding.rows[r], a.onboarding.stages[c].label, cell, "accounts")} />
@@ -270,8 +273,8 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
             hint={<span className="text-[11px] text-[var(--text-faint)]">30 d</span>}>
             <Surface className="flex-1 p-4 sm:p-5">
               {pa ? (
-                <BreakdownWidget items={adoptionItems(pa)} viewMode="bar" itemNoun="feature" formatValue={(v) => `${n(v)} accounts`}
-                  emptyHeadline="No feature use in the last 30 days" />
+                <ShareBars items={adoptionBars(pa)} ariaLabel="Accounts using each feature: used in the last 30 days; Connections = currently held" noun="account"
+                  denominator={`of ${n(pa.registrations.total)} registered accounts · one account can use several · Connections = held now`} />
               ) : <Loading f={p.pa} what="adoption" />}
             </Surface>
           </Block>
