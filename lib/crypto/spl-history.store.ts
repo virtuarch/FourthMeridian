@@ -101,7 +101,7 @@ export function prismaSplHistoryStore(accountId: string, connectionId: string, d
       const meta = (await loadTokenAliasMetadata(db, [assetKey])).get(assetKey);
       if (!meta) return { inserted: 0, earliestISO: null };
       const r = await acquireTokenHistoricalCloses({ client: db, instrumentId: meta.instrumentId, assetKey, fromISO: m.fromISO, toISO: m.toISO });
-      return { inserted: r.inserted, earliestISO: r.earliestISO };
+      return { inserted: r.inserted, earliestISO: r.earliestISO, status: r.status };
     },
   };
 }

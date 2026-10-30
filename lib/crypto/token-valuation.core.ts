@@ -325,6 +325,37 @@ export function cryptoDayHeldUnvalued(f: {
   return { tokenPriceMissing, heldUnvalued: tokenPriceMissing || nativeHeldUnvalued || (nativeRefused && heldToken) };
 }
 
+/**
+ * PR #122 delta re-review F2 — THE BINDING'S WHOLE TOKEN DAY DECISION, pure.
+ *
+ * Regeneration used to build the gate's token input inline (and only a source
+ * regex pinned it). This is that construction, so a behavioural test runs the
+ * exact rows → tokens → gate → "may tokens join the total" path the binding
+ * runs. `rows` is the shape `loadTokenDayRows` returns (null when the Space has
+ * no token rows); `native` is the day's native valuation.
+ */
+export interface TokenDayRowsLike {
+  observationsByAccount: ReadonlyMap<string, readonly TokenObservationRow[]>;
+  prices: readonly TokenPriceRow[];
+  identity: ReadonlyMap<string, { excluded?: boolean }>;
+}
+export function cryptoTokenDayDecision(
+  native: { licensed: boolean; positionCount: number },
+  rows: TokenDayRowsLike | null,
+  dISO: string,
+): { heldUnvalued: boolean; tokenPriceMissing: boolean; tokensJoin: boolean; valuedTokenUsd: number[] } {
+  const tokens: TokenDayValue[] = [];
+  const excluded = (id: string) => rows?.identity.get(id)?.excluded === true; // explicit classification only
+  if (rows) for (const obs of rows.observationsByAccount.values()) tokens.push(...tokensValueOnDay(obs, rows.prices, dISO).tokens);
+  const gate = cryptoDayHeldUnvalued({ native, tokens, excluded });
+  // Tokens join the day's total only where native is itself valued and no held token is unpriced.
+  const tokensJoin = native.licensed && !gate.tokenPriceMissing;
+  const valuedTokenUsd = tokensJoin
+    ? tokens.filter((v) => v.state === "VALUED" && v.valueUsd !== null && !excluded(v.instrumentId)).map((v) => v.valueUsd!)
+    : [];
+  return { ...gate, tokensJoin, valuedTokenUsd };
+}
+
 /** Does this state keep the wallet's history from reading complete? */
 export function tokenValuationLimits(v: ReconstructedTokenValuation): boolean {
   return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER" || v === "VALUED_WITH_GAPS" || v === "NO_MARKET";

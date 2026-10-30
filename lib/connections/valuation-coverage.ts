@@ -35,7 +35,7 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
   });
   const tok = await pricedTokenDisclosure(client, accountIds);
   const { trackedFromISO: tokensTrackedFromISO, pricesFromISO: tokenPricesFromISO } = tok;
-  const tokenValuation = { notValuedYet: tok.notValuedYet, withoutMarket: tok.withoutMarket, valuedUntilEarlier: tok.valuedUntilEarlier, valuedWithGaps: tok.valuedWithGaps, gapsToISO: tok.gapsToISO, excluded: tok.excluded };
+  const tokenValuation = { notValuedYet: tok.notValuedYet, withoutMarket: tok.withoutMarket, valuedUntilEarlier: tok.valuedUntilEarlier, valuedUntilRange: tok.valuedUntilRange, valuedWithGaps: tok.valuedWithGaps, gapsToISO: tok.gapsToISO, excluded: tok.excluded };
   if (!coverage.length) return deriveValuationCoverage([], new Map(), tokensTrackedFromISO, tokenPricesFromISO, tokenValuation);
 
   const instrumentIds = [...new Set(coverage.map((c) => c.instrumentId))];
@@ -75,7 +75,7 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
  * Dates and counts only.
  */
 async function pricedTokenDisclosure(client: Client, accountIds: string[]): Promise<{
-  trackedFromISO: string | null; pricesFromISO: string | null; notValuedYet: number; withoutMarket: number; valuedUntilEarlier: number; valuedWithGaps: number; gapsToISO: string | null; excluded: number;
+  trackedFromISO: string | null; pricesFromISO: string | null; notValuedYet: number; withoutMarket: number; valuedUntilEarlier: number; valuedUntilRange: { fromISO: string | null; toISO: string } | null; valuedWithGaps: number; gapsToISO: string | null; excluded: number;
 }> {
   const [firsts, licensedRows] = await Promise.all([
     client.positionObservation.groupBy({
@@ -96,7 +96,7 @@ async function pricedTokenDisclosure(client: Client, accountIds: string[]): Prom
     const prev = licensed.get(c.instrumentId);
     if (!prev || f < prev) licensed.set(c.instrumentId, f);
   }
-  if (!firsts.length && !licensed.size) return { trackedFromISO: null, pricesFromISO: null, notValuedYet: 0, withoutMarket: 0, valuedUntilEarlier: 0, valuedWithGaps: 0, gapsToISO: null, excluded: 0 };
+  if (!firsts.length && !licensed.size) return { trackedFromISO: null, pricesFromISO: null, notValuedYet: 0, withoutMarket: 0, valuedUntilEarlier: 0, valuedUntilRange: null, valuedWithGaps: 0, gapsToISO: null, excluded: 0 };
   const firstIds = firsts.map((f) => f.instrumentId);
   const licensedIds = [...licensed.keys()];
   const [everPriced, closeFacts, aliases] = await Promise.all([
@@ -131,14 +131,19 @@ async function pricedTokenDisclosure(client: Client, accountIds: string[]): Prom
     if (!prev || RANK[v] > RANK[prev]) worst.set(r.instrumentId, v);
   }
   let notValuedYet = 0, withoutMarket = 0, valuedUntilEarlier = 0, valuedWithGaps = 0, excluded = 0;
+  let valuedUntilRange: { fromISO: string | null; toISO: string } | null = null;
   const pricedFrom: string[] = [];
   for (const [id, v] of worst) {
     if (v === 'NOT_VALUED_YET') notValuedYet++;
     else if (v === 'NO_MARKET') withoutMarket++;
     else if (v === 'VALUED_FROM_LATER') pricedFrom.push(closeFacts.get(id)!.fromISO);
-    else if (v === 'VALUED_UNTIL_EARLIER') valuedUntilEarlier++;
+    else if (v === 'VALUED_UNTIL_EARLIER') {
+      valuedUntilEarlier++;
+      const cf = closeFacts.get(id)!;
+      if (!valuedUntilRange || cf.toISO < valuedUntilRange.toISO) valuedUntilRange = { fromISO: cf.fromISO, toISO: cf.toISO };
+    }
     else if (v === 'VALUED_WITH_GAPS') valuedWithGaps++;
     else if (v === 'EXCLUDED') excluded++;
   }
-  return { trackedFromISO, pricesFromISO: pricedFrom.sort().at(-1) ?? null, notValuedYet, withoutMarket, valuedUntilEarlier, valuedWithGaps, gapsToISO: valuedWithGaps ? gapsToISO : null, excluded };
+  return { trackedFromISO, pricesFromISO: pricedFrom.sort().at(-1) ?? null, notValuedYet, withoutMarket, valuedUntilEarlier, valuedUntilRange, valuedWithGaps, gapsToISO: valuedWithGaps ? gapsToISO : null, excluded };
 }

@@ -133,8 +133,14 @@ export interface WalletInstrumentHistory {
    * price is never $0.
    */
   tokensNotValuedYet: number;
-  /** F4/S1/F3 — valued over only PART of their held period (prices start later, end earlier, or leave interior gaps). Disclosed, not a balance limit. */
+  /** F4 — priced only from INSIDE their held period (older held days unpriced). Disclosed, not a balance limit. */
   tokensValuedFromLater: number;
+  /** S1 / re-review F3 — prices STOP inside their held period: the RECENT held days are unpriced. */
+  tokensValuedUntilEarlier: number;
+  /** …the valued span of the one whose prices stop earliest. */
+  tokenValuedUntilRange: { fromISO: string | null; toISO: string } | null;
+  /** Delta F3 — interior held days no close serves. */
+  tokensValuedWithGaps: number;
   /** …and those confirmed to have no (liquid) market — never valued, disclosed. Never-held tokens count nowhere (F2). */
   tokensWithoutMarket: number;
   /** Explicitly classified (spam / non-economic) — never valued, never limiting, counted apart (owner clarification). */
@@ -284,19 +290,26 @@ export async function loadWalletInstrumentHistory(
     }
     tokens.sort((x, y) => (x.held === y.held ? x.label.localeCompare(y.label) : x.held ? -1 : 1));
 
-    let tokensNotValuedYet = 0, tokensWithoutMarket = 0, tokensValuedFromLater = 0, tokensExcluded = 0;
+    let tokensNotValuedYet = 0, tokensWithoutMarket = 0, tokensValuedFromLater = 0, tokensValuedUntilEarlier = 0, tokensValuedWithGaps = 0, tokensExcluded = 0;
+    let tokenValuedUntilRange: { fromISO: string | null; toISO: string } | null = null;
     for (const [id, c] of cov) {
       const alias = aliasByInstrument.get(id);
       const licence = licensedInterval(c);
       if (!parseTokenAssetKey(alias?.assetKey) || licence === null) continue;
       const v = reconstructedTokenValuation({ licence, held: heldSpans.get(`${a.id}|${id}`) ?? null, closesFromISO: closeFacts.get(id)?.fromISO ?? null, closesToISO: closeFacts.get(id)?.toISO ?? null, closeDatesISO: closeFacts.get(id)?.datesISO ?? [] }, alias?.metadata);
       if (v === "NOT_VALUED_YET") tokensNotValuedYet++;
-      else if (v === "VALUED_FROM_LATER" || v === "VALUED_UNTIL_EARLIER" || v === "VALUED_WITH_GAPS") tokensValuedFromLater++; // partly valued
+      else if (v === "VALUED_FROM_LATER") tokensValuedFromLater++;
+      else if (v === "VALUED_UNTIL_EARLIER") {
+        tokensValuedUntilEarlier++;
+        const cf = closeFacts.get(id)!;
+        if (!tokenValuedUntilRange || cf.toISO < tokenValuedUntilRange.toISO) tokenValuedUntilRange = { fromISO: cf.fromISO, toISO: cf.toISO };
+      }
+      else if (v === "VALUED_WITH_GAPS") tokensValuedWithGaps++;
       else if (v === "NO_MARKET") tokensWithoutMarket++;
       else if (v === "EXCLUDED") tokensExcluded++;
     }
     const h = { accountId: a.id, chain, native: nativeFacet, tokens, tokenHistorySupported: TOKEN_HISTORY_CHAINS.has(chain),
-      tokenInventoryComplete: inventory.get(a.id) === true, tokensNotValuedYet, tokensValuedFromLater, tokensWithoutMarket, tokensExcluded };
+      tokenInventoryComplete: inventory.get(a.id) === true, tokensNotValuedYet, tokensValuedFromLater, tokensValuedUntilEarlier, tokenValuedUntilRange, tokensValuedWithGaps, tokensWithoutMarket, tokensExcluded };
     out.set(a.id, { ...h, complete: walletHistoryComplete(h) });
   }
   return out;

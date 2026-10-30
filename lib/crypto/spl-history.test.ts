@@ -151,7 +151,7 @@ interface MemStore extends SplHistoryStore {
   priceCalls: Array<{ mint: string; fromISO: string; toISO: string }>;
   cursor(): string | null;
 }
-function memStore(initial: string | null, priced: ReadonlySet<string> = new Set()): MemStore {
+function memStore(initial: string | null, priced: ReadonlySet<string> = new Set(), priceStatus?: string): MemStore {
   let cursor = initial;
   const rows = new Map<string, Map<string, number>>();
   const coverage = new Map<string, ChainCoverage>();
@@ -175,7 +175,7 @@ function memStore(initial: string | null, priced: ReadonlySet<string> = new Set(
       coverage.set(m.mint, m.coverage);
     },
     async pricedMints(mints) { return new Set(mints.filter((m) => priced.has(m))); },
-    async acquirePrices(m) { priceCalls.push({ mint: m.mint, fromISO: m.fromISO, toISO: m.toISO }); return { inserted: 0, earliestISO: null }; },
+    async acquirePrices(m) { priceCalls.push({ mint: m.mint, fromISO: m.fromISO, toISO: m.toISO }); return { inserted: 0, earliestISO: null, ...(priceStatus ? { status: priceStatus } : {}) }; },
   };
 }
 
@@ -228,6 +228,12 @@ async function main() {
     check("the incoming transfer the owner never signed is in the history (account-indexed, 6.25 on Oct 6)", store.rows.get(USDC)?.get("2026-10-06") === 6.25, String(store.rows.get(USDC)?.get("2026-10-06")));
     check("the outcome reports rows and the earliest impacted day (snapshot regeneration input)", o.rowsWritten === 27 && o.impactedFromISO === "2026-10-02", `${o.rowsWritten} ${o.impactedFromISO}`);
     check("historical prices are requested for the PRICED mint over its licence", store.priceCalls.length === 1 && store.priceCalls[0].fromISO === "2026-10-02");
+    check("re-review F4: a price run that was not stopped reports COMPLETE", o.prices.status === "COMPLETE" && o.prices.reason === null && o.prices.mintsSkipped === 0, JSON.stringify(o.prices));
+    // Re-review F4 (SPL ≡ ERC-20) — the shared path's BUDGET status is never discarded.
+    const budgetStore = memStore(watchedCursor(), new Set([USDC]), "BUDGET");
+    const { o: ob } = await runOnce(c, budgetStore, { freshSource: "NATIVE" });
+    check("re-review F4: the token budget stopping SPL pricing ⇒ prices BUDGET_STOPPED with a reason (not silent)",
+      ob.prices.status === "BUDGET_STOPPED" && /budget/.test(ob.prices.reason ?? "") && ob.prices.mintsSkipped === 1 && ob.stoppedBecause === "DONE", JSON.stringify(ob.prices));
     // Request cost: 2 anchors + per account (1 sig page + 1 head page) + one getTransaction per distinct signature (cache).
     check("request cost is the anchor + one signature page per account + each transaction once", meter.getTokenAccountsByOwner === 2 && meter.getSignaturesForAddress === 2 && meter.getTransaction === 6, JSON.stringify(meter));
     const st = stateOf(store);

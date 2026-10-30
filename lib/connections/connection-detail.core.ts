@@ -21,6 +21,7 @@ import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { relativeUpdated, type ConnectionTone } from "@/lib/connections/connection-summary";
 import { tokenCaptureSupported } from "@/lib/crypto/token-asset";
 import { unsupportedReasonText, type Erc20UnsupportedReason } from "@/lib/crypto/erc20-history.core";
+import { laterHoldingsUnpricedText, tokenPriceGapsText } from "@/lib/connections/valuation-coverage.core";
 
 // ── Overview: account groups ─────────────────────────────────────────────────
 
@@ -274,22 +275,29 @@ export function tokenHistoryText(t: WalletTokens[number]): string {
  * histories (balances are verified; prices are a separate fact): which tokens'
  * held days lack historical prices, never a value. Null when nothing applies.
  */
-export function tokenValuationText(notValuedYet: number | undefined, partlyValued: number | undefined, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number): string | null {
+export function tokenValuationText(
+  notValuedYet: number | undefined, valuedFromLater: number | undefined, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number,
+  more: { valuedUntilEarlier?: number; valuedUntilRange?: { fromISO: string | null; toISO: string } | null; withGaps?: number } = {},
+): string | null {
   // NO_MARKET is a legitimate unpriced holding (owner clarification) — counted with the others.
-  const n = (notValuedYet ?? 0) + (partlyValued ?? 0) + (withoutMarket ?? 0);
+  // Only tokens whose OLDER held days are unpriced say "older" (re-review F3): prices that
+  // stop early leave the RECENT days unpriced, and interior gaps are said as gaps.
+  const n = (notValuedYet ?? 0) + (valuedFromLater ?? 0) + (withoutMarket ?? 0);
+  const later = laterHoldingsUnpricedText(more.valuedUntilEarlier ?? 0, more.valuedUntilRange, (iso) => fmtDay(iso) ?? iso);
+  const gaps = tokenPriceGapsText(more.withGaps ?? 0);
   const x = excluded ?? 0;
-  if (n <= 0 && x <= 0) return null;
+  if (n <= 0 && !later && !gaps && x <= 0) return null;
   const through = verifiedThroughISO ? `Balance history verified through ${fmtDay(verifiedThroughISO)}. ` : "";
-  const unpriced = n > 0 ? `Older holdings exist but lack historical prices (${n === 1 ? "1 token" : `${n} tokens`}) — those days aren’t valued, never counted as zero.` : "";
-  const excl = x > 0 ? `${unpriced ? " " : ""}${x === 1 ? "1 token" : `${x} tokens`} excluded as spam or non-economic.` : "";
-  return `${through}${unpriced}${excl}`;
+  const unpriced = n > 0 ? `Older holdings exist but lack historical prices (${n === 1 ? "1 token" : `${n} tokens`}) — those days aren’t valued, never counted as zero.` : null;
+  const excl = x > 0 ? `${x === 1 ? "1 token" : `${x} tokens`} excluded as spam or non-economic.` : null;
+  return `${through}${[unpriced, later, gaps, excl].filter((t): t is string => t !== null).join(" ")}`;
 }
 
 /** Token limitations for the History tab, derived from the facets (never a per-chain constant). */
-function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined, notValuedYet?: number, valuedFromLater?: number, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number): string[] {
+function tokenLimitations(chain: string | null, sym: string, tokens: WalletTokens | undefined, notValuedYet?: number, valuedFromLater?: number, verifiedThroughISO?: string | null, withoutMarket?: number, excluded?: number, more: Parameters<typeof tokenValuationText>[5] = {}): string[] {
   const kind = tokenKind(chain);
   if (!kind || !tokenCaptureSupported(chain)) return [];
-  const extra = tokenValuationText(notValuedYet, valuedFromLater, verifiedThroughISO, withoutMarket, excluded);
+  const extra = tokenValuationText(notValuedYet, valuedFromLater, verifiedThroughISO, withoutMarket, excluded, more);
   if (extra) return [...tokenLimitations(chain, sym, tokens), extra];
   if (!tokens) return [];
   if (tokens.length === 0) return [`No ${kind} token balances have been recorded for this wallet. Native ${sym} history is shown above.`];
@@ -319,7 +327,8 @@ export function connectionHistory(
     }
     const chain = accounts.find((a) => a.chain)?.chain?.toUpperCase() ?? null;
     const sym = nativeAssetSymbol(chain) ?? "native";
-    const tokenNote = tokenLimitations(chain, sym, wh.tokens, wh.tokensNotValuedYet, wh.tokensValuedFromLater, wh.licensedToISO, wh.tokensWithoutMarket, wh.tokensExcluded);
+    const tokenNote = tokenLimitations(chain, sym, wh.tokens, wh.tokensNotValuedYet, wh.tokensValuedFromLater, wh.licensedToISO, wh.tokensWithoutMarket, wh.tokensExcluded,
+      { valuedUntilEarlier: wh.tokensValuedUntilEarlier, valuedUntilRange: wh.tokenValuedUntilRange, withGaps: wh.tokensValuedWithGaps });
     const tokenFacets = (wh.tokens ?? []).map((t, n) => ({ key: `${t.label}-${n}`, label: `${t.label} history`, text: tokenHistoryText(t) }));
     if (wh.licensed) {
       const fromISO = wh.activityFromISO ?? wh.licensedFromISO;

@@ -168,6 +168,10 @@ export interface ConnectionIntelligenceStatus {
     tokensNotValuedYet?: number;
     /** F4 — tokens valued only from a price floor inside their held period (limiting, as native). */
     tokensValuedFromLater?: number;
+    /** Re-review F3 — prices stop inside the held period (recent held days unpriced), with the valued span; and interior price gaps. */
+    tokensValuedUntilEarlier?: number;
+    tokenValuedUntilRange?: { fromISO: string | null; toISO: string } | null;
+    tokensValuedWithGaps?: number;
     /** Legitimate unpriced holdings with no (liquid) market, and explicitly excluded tokens — counted apart. */
     tokensWithoutMarket?: number;
     tokensExcluded?: number;

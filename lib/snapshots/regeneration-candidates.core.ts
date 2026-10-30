@@ -194,3 +194,47 @@ export function detectDiscontinuities(
   }
   return out;
 }
+
+/**
+ * PR #122 delta re-review F1 — THE PER-DAY PERSISTENCE DECISION, pure.
+ *
+ * What the binding does with one day's `regenerateDay` result against the stored
+ * row: a full WRITE (UPDATED), a PATCH of only the authorised fields
+ * (write-partial with a non-empty patch), and/or a status-only STAMP.
+ *
+ * THE STAMP RULE. A day whose computed crypto verdict differs from the stored
+ * one is stamped (the status column ALONE) whenever nothing else carries the
+ * verdict — including a write-partial day whose patch is EMPTY. That case used to
+ * persist nothing, so a stored row kept a stale verdict: a wallet emptied today
+ * whose day held an unpriced token kept `crypto = 0` under a null status (read
+ * as an asserted $0), and a native-only row stamped "supported" before token
+ * history existed stayed "supported" while understated.
+ *
+ * Only rows regeneration owns are stamped: an existing ESTIMATED row
+ * (`isEstimated === true`). A frozen observation, or a day with no stored row,
+ * is never stamped — the class the metadata-only stamp has always handled.
+ */
+export interface StoredRowForPersistence extends StoredSnapshotComponents {
+  isEstimated: boolean;
+  cryptoValuationStatus: string | null;
+}
+export interface DayPersistencePlan {
+  /** Counted in `dispositions`; null for a write-partial day that changed nothing (never counted). */
+  disposition: RegenerationDisposition | null;
+  write: boolean;
+  patch: NonNullable<DayRegenResult["fieldPatch"]> | null;
+  stamp: NonNullable<DayRegenResult["cryptoValuationStatus"]> | null;
+}
+export function planDayPersistence(res: DayRegenResult, prior: StoredRowForPersistence | null): DayPersistencePlan {
+  const owned = prior !== null && prior.isEstimated === true;
+  const verdictDiffers = res.cryptoValuationStatus !== null && prior !== null && prior.cryptoValuationStatus !== res.cryptoValuationStatus;
+  if (res.action === "write-partial") {
+    const p = res.fieldPatch ?? {};
+    const patch = Object.keys(p).length > 0 && prior ? p : null;
+    // A non-empty patch carries the verdict itself; an empty one must still record it.
+    return { disposition: patch ? "UPDATED" : null, write: false, patch, stamp: !patch && owned && verdictDiffers ? res.cryptoValuationStatus : null };
+  }
+  const candidate = classifyRegeneration(res, prior);
+  const write = candidate.disposition === "UPDATED" && res.fields !== null;
+  return { disposition: candidate.disposition, write, patch: null, stamp: !write && owned && verdictDiffers ? res.cryptoValuationStatus : null };
+}

@@ -30,7 +30,8 @@ import { runErc20HistoryStep, type Erc20HistoryStore, type Erc20TokenWrite, type
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps } from "./erc20-history-pass";
 import { queuedCheckpoint, serializeCheckpoint, parseCheckpoint } from "./eth-history-backfill.core";
 import { walletHistoryComplete, facetFromCoverage, TOKEN_HISTORY_CHAINS } from "./wallet-instrument-history";
-import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits, tokenDayMissingRequiredPrice, tokenHasNoMarket, tokenValuationExclusion, cryptoDayHeldUnvalued, tokenCloseGaps } from "./token-valuation.core";
+import { tokensValueOnDay, tokenValueOnDay, reconstructedTokenValuation, tokenValuationLimits, tokenDayMissingRequiredPrice, tokenHasNoMarket, tokenValuationExclusion, cryptoDayHeldUnvalued, cryptoTokenDayDecision, tokenCloseGaps } from "./token-valuation.core";
+import { planDayPersistence } from "@/lib/snapshots/regeneration-candidates.core";
 import { regenerateDay } from "@/lib/snapshots/regenerate-history.core";
 import { valueCryptoDay } from "./historical-crypto-valuation.core";
 import { heldSpanFrom } from "./token-held-spans";
@@ -40,7 +41,7 @@ import { loadValuationCoverage } from "@/lib/connections/valuation-coverage";
 import { IS_TOKEN_INSTRUMENT } from "./token-asset";
 import type { ChainCoverage } from "./chain-movement";
 import { tokenHistoryText, connectionHealth, connectionHistory, tokenValuationText } from "@/lib/connections/connection-detail.core";
-import { deriveValuationCoverage, valuationCoverageNote } from "@/lib/connections/valuation-coverage.core";
+import { deriveValuationCoverage, valuationCoverageNote, laterHoldingsUnpricedText, tokenPriceGapsText } from "@/lib/connections/valuation-coverage.core";
 import { acquireTokenHistoricalCloses, TOKEN_HISTORY_PRICE_SOURCE } from "@/lib/prices/token-history-prices";
 import { fetchCoinGeckoTokenDailyClosesUsd, TOKEN_HISTORICAL_PRICE_SEAM } from "@/lib/prices/providers/coingecko";
 import { coinGeckoUsageToday, TOKEN_HISTORY_METRIC_PREFIX, COINGECKO_USAGE_NETWORK, COINGECKO_USAGE_PROVIDER } from "@/lib/prices/coingecko-budget";
@@ -882,8 +883,8 @@ async function main(): Promise<void> {
     const h3 = await wh("2025-03-01");
     check("F4: priced only from inside its held period ⇒ counted partly valued; balance still complete", h3.tokensValuedFromLater === 1 && h3.complete === true);
     const h3g = await wh("2025-01-01", { drop: gapDrop });
-    check("F3: interior price gaps over held days ⇒ counted partly valued on the wallet (History copy); balance still complete",
-      h3g.tokensValuedFromLater === 1 && h3g.tokensNotValuedYet === 0 && h3g.complete === true, JSON.stringify({ l: h3g.tokensValuedFromLater }));
+    check("F3: interior price gaps over held days ⇒ counted as GAPS on the wallet (History copy); balance still complete",
+      h3g.tokensValuedWithGaps === 1 && h3g.tokensValuedFromLater === 0 && h3g.tokensNotValuedYet === 0 && h3g.complete === true, JSON.stringify({ g: h3g.tokensValuedWithGaps, l: h3g.tokensValuedFromLater }));
     const h4 = await wh("2025-01-01", { spam: true });
     check("F2: a never-held spam token beside it never makes the wallet limited", h4.tokensNotValuedYet === 0 && h4.tokensWithoutMarket === 0 && h4.complete === true, JSON.stringify(h4));
     const conn = { id: "c", provider: "WALLET", state: "active" } as never;
@@ -906,8 +907,10 @@ async function main(): Promise<void> {
     check("S1 rule: a tail within the tolerance is still VALUED; interior gaps are not inspected (as native)",
       reconstructedTokenValuation({ licence: LIC, held: { fromISO: "2025-01-10", toISO: null }, closesFromISO: "2025-01-01", closesToISO: "2026-10-25" }, {}) === "VALUED");
     const c6 = await loadValuationCoverage(covClient({ closes: "2025-01-01", closesTo: "2025-03-31" }) as never, "space");
-    check("S1: the chart discloses a token whose prices end before it was sold", c6?.tokensValuedUntilEarlier === 1
-      && /Older token holdings exist but lack historical prices/.test(valuationCoverageNote(c6, "2025-01-01") ?? ""), JSON.stringify(c6));
+    const n6s1 = valuationCoverageNote(c6, "2025-01-01") ?? "";
+    check("S1 / re-review F3: the chart discloses a token whose prices end before it was sold — as LATER holdings, with the valued span, never 'older'",
+      c6?.tokensValuedUntilEarlier === 1 && /Token valuation available Jan 1, 2025 – Mar 31, 2025; later token holdings lack historical prices \(1 token\) — those days aren’t valued, never counted as zero\./.test(n6s1)
+      && !/Older token holdings/.test(n6s1), n6s1);
 
     // Delta F3 — ONE row kind (RAW_CLOSE) for first/last/gaps: a recent INTRADAY quote never extends close coverage.
     const c7 = await loadValuationCoverage(covClient({ closes: "2025-01-01", closesTo: "2025-03-31", intradayTo: "2026-10-27" }) as never, "space");
@@ -933,7 +936,21 @@ async function main(): Promise<void> {
     const c9 = await loadValuationCoverage(covClient({ closes: "2025-01-01", drop: ["2026-01-05", "2026-01-06", "2026-01-07"] }) as never, "space");
     check("F3: a gap AFTER it was sold is not a held-day gap (nothing disclosed)", !c9?.tokensValuedWithGaps, JSON.stringify(c9));
     const h5 = await wh("2025-01-01", { closesTo: "2025-03-31" });
-    check("S1: closes ending before the sale ⇒ counted partly valued (disclosed), balance unaffected", h5.tokensValuedFromLater === 1 && h5.complete === true, JSON.stringify(h5));
+    check("S1: closes ending before the sale ⇒ counted as valued-until-earlier (disclosed), balance unaffected",
+      h5.tokensValuedUntilEarlier === 1 && h5.tokensValuedFromLater === 0 && h5.tokenValuedUntilRange?.toISO === "2025-03-31" && h5.complete === true, JSON.stringify(h5));
+    // Re-review F3 — the History-tab copy for each case: older / later / gaps, never confused.
+    const vt = (o: Parameters<typeof tokenValuationText>[5], older = 0) => tokenValuationText(0, older, null, 0, 0, o) ?? "";
+    const later = vt({ valuedUntilEarlier: 1, valuedUntilRange: { fromISO: "2025-01-01", toISO: "2025-03-31" } });
+    check("F3 copy: prices stopping early ⇒ 'Token valuation available Jan 1, 2025 – Mar 31, 2025; later token holdings lack historical prices' (never 'Older')",
+      /^Token valuation available Jan 1, 2025 – Mar 31, 2025; later token holdings lack historical prices \(1 token\) — those days aren’t valued, never counted as zero\.$/.test(later) && !/Older/.test(later), later);
+    const older = vt({}, 2);
+    check("F3 copy: prices starting late keep the owner's 'Older holdings exist but lack historical prices'", /^Older holdings exist but lack historical prices \(2 tokens\)/.test(older), older);
+    const gaps = vt({ withGaps: 2 });
+    check("F3 copy: interior gaps say gaps", /^2 tokens have gaps in their historical prices — held days without a price aren’t valued, never counted as zero\.$/.test(gaps), gaps);
+    const mixed = tokenValuationText(1, 0, "2026-10-27", 0, 1, { valuedUntilEarlier: 1, valuedUntilRange: { fromISO: null, toISO: "2025-03-31" }, withGaps: 1 }) ?? "";
+    check("F3 copy: mixed — balance verified, older, later, gaps and excluded each said once, no $",
+      /^Balance history verified through Oct 27, 2026\. Older holdings exist .*\(1 token\).* Token valuation available through Mar 31, 2025; later token holdings .* 1 token has gaps in its historical prices .* 1 token excluded as spam or non-economic\.$/.test(mixed) && !/\$/.test(mixed), mixed);
+    check("F3 copy (chart): the shared sentence helpers", laterHoldingsUnpricedText(0, null, (x) => x) === null && tokenPriceGapsText(1) === "1 token has gaps in its historical prices — held days without a price aren’t valued, never counted as zero.");
 
     // F3 — a page that fails persistently: restarts are bounded, re-reads are not progress, the backoff engages.
     const fm3 = newMem();
@@ -1122,8 +1139,81 @@ async function main(): Promise<void> {
     }
     // Wiring pin (complements the behavioural checks above): the binding feeds the gate into the day input.
     const regenSrc = read("lib", "snapshots", "regenerate-history.ts");
-    check("F1 wiring: regeneration computes the day gate and passes digitalAssetHeldUnvalued into regenerateDay",
-      /cryptoDayHeldUnvalued\(\{/.test(regenSrc) && /digitalAssetHeldUnvalued = gate\.heldUnvalued;/.test(regenSrc) && /\n\s+digitalAssetHeldUnvalued,\n/.test(regenSrc));
+    check("F1 wiring: regeneration runs the ONE token day decision and passes digitalAssetHeldUnvalued into regenerateDay",
+      /cryptoTokenDayDecision\(/.test(regenSrc) && /digitalAssetHeldUnvalued = tokenDay\.heldUnvalued;/.test(regenSrc) && /\n\s+digitalAssetHeldUnvalued,\n/.test(regenSrc)
+      && /const plan = planDayPersistence\(res, prior \?\? null\);/.test(regenSrc) && /if \(applyWrites && plan\.stamp !== null\) metadataOnlyStamps\.push/.test(regenSrc));
+
+    // Re-review F2 — BEHAVIOURAL: the binding's token-input construction (rows → tokens → gate → join),
+    // run exactly as the binding runs it. Kills M10 (the gate handed no tokens).
+    {
+      const rows = (prices: { instrumentId: string; dateISO: string; basis: "RAW_CLOSE" | "INTRADAY"; priceUsd: number }[], excl: string[] = []) => ({
+        observationsByAccount: new Map([["w1", [{ instrumentId: "usdt", dateISO: "2025-05-30", quantity: 640 }]], ["w2", [{ instrumentId: "spam", dateISO: "2025-05-30", quantity: 0 }]]]),
+        prices, identity: new Map([["usdt", { excluded: excl.includes("usdt") }], ["spam", {}]]),
+      });
+      const ok = { licensed: true, positionCount: 0 };
+      const d1 = cryptoTokenDayDecision(ok, rows([]), "2025-06-01");
+      check("F2: rows with an unpriced held token ⇒ heldUnvalued, tokens do not join", d1.heldUnvalued && d1.tokenPriceMissing && !d1.tokensJoin && d1.valuedTokenUsd.length === 0, JSON.stringify(d1));
+      const d2 = cryptoTokenDayDecision(ok, rows([{ instrumentId: "usdt", dateISO: "2025-06-01", basis: "RAW_CLOSE", priceUsd: 1 }]), "2025-06-01");
+      check("F2: priced ⇒ joins with its USD value", !d2.heldUnvalued && d2.tokensJoin && d2.valuedTokenUsd.join() === "640");
+      const d3 = cryptoTokenDayDecision(ok, rows([], ["usdt"]), "2025-06-01");
+      check("F2: explicitly excluded ⇒ not blocking, not valued", !d3.heldUnvalued && d3.tokensJoin && d3.valuedTokenUsd.length === 0);
+      const d4 = cryptoTokenDayDecision({ licensed: false, positionCount: 0 }, rows([{ instrumentId: "usdt", dateISO: "2025-06-01", basis: "RAW_CLOSE", priceUsd: 1 }]), "2025-06-01");
+      check("F2: native refused + held token ⇒ heldUnvalued, nothing joins", d4.heldUnvalued && !d4.tokensJoin);
+      check("F2: no token rows ⇒ nothing blocks (native unaffected)", !cryptoTokenDayDecision(ok, null, "2025-06-01").heldUnvalued);
+      // …and through the day core: emptied-today wallet ⇒ never $0.
+      const r = regenerateDay({ date: "2025-06-01", existingIsEstimated: true,
+        existing: { stocks: 0, crypto: 640, total: 640, cash: 100, savings: 0, debt: 0, netWorth: 740, totalAssets: 740, netLiquid: 100, cashOnHand: 100 },
+        base: { totalInvestments: 0, totalDigitalAssets: 0, totalChecking: 100, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+        investmentValue: 0, investmentTier: "derived", hasInvestmentEvidence: false, digitalAssetValue: 0, digitalAssetTier: "estimated",
+        hasDigitalAssetEvidence: d1.tokensJoin, digitalAssetHeldUnvalued: d1.heldUnvalued, cashCardTier: "derived", membershipChangedSince: false });
+      check("F2: rows → decision → regenerateDay ⇒ crypto preserved, unavailable", r.cryptoValuationStatus === "unavailable" && r.components?.find((c) => c.component === "crypto")?.action === "preserved");
+    }
+
+    // Re-review F1 — BINDING PERSISTENCE DECISION (planDayPersistence, what the binding executes):
+    // a changed verdict is recorded on an owned row even when the partial patch is EMPTY.
+    {
+      const row = (crypto: number, status: string | null, isEstimated = true) => ({ stocks: 0, crypto, total: crypto, cash: 100, savings: 0, debt: 0, netWorth: 100 + crypto, totalAssets: 100 + crypto, netLiquid: 100, cashOnHand: 100, isEstimated, cryptoValuationStatus: status });
+      const dayFor = (prior: ReturnType<typeof row> | null, o: { heldUnvalued: boolean; evidence: boolean; value: number }) => regenerateDay({
+        date: "2025-06-01", existingIsEstimated: prior ? prior.isEstimated : null, existing: prior,
+        base: { totalInvestments: 0, totalDigitalAssets: 0, totalChecking: 100, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+        investmentValue: 0, investmentTier: "derived", hasInvestmentEvidence: false, digitalAssetValue: o.value, digitalAssetTier: "estimated",
+        hasDigitalAssetEvidence: o.evidence, digitalAssetHeldUnvalued: o.heldUnvalued, cashCardTier: "derived", membershipChangedSince: false });
+      // Scenario A — an earlier run wrote crypto = 0 under a null status (read as an asserted $0).
+      const priorA = row(0, null);
+      const resA = dayFor(priorA, { heldUnvalued: true, evidence: false, value: 0 });
+      const planA = planDayPersistence(resA, priorA);
+      check("F1 (A): emptied-today wallet, stored crypto 0 / status null ⇒ write-partial, EMPTY patch, yet the verdict is STAMPED 'unavailable'",
+        resA.action === "write-partial" && Object.keys(resA.fieldPatch ?? {}).length === 0 && planA.patch === null && !planA.write && planA.stamp === "unavailable", JSON.stringify({ a: resA.action, p: resA.fieldPatch, planA }));
+      // Scenario B — a native-only row stamped "supported"; a held unpriced token now appears.
+      const priorB = row(500, "supported");
+      const resB = dayFor(priorB, { heldUnvalued: true, evidence: false, value: 0 });
+      const planB = planDayPersistence(resB, priorB);
+      check("F1 (B): a 'supported' row whose day now holds an unpriced token ⇒ stamped 'unavailable' (no financial field touched)",
+        resB.action === "write-partial" && planB.patch === null && planB.stamp === "unavailable" && !planB.write, JSON.stringify(planB));
+      // Reverse — prices arrive later: the row re-earns "supported".
+      const priorR = row(500, "unavailable");
+      const resR = dayFor(priorR, { heldUnvalued: false, evidence: true, value: 500 });
+      const planR = planDayPersistence(resR, priorR);
+      check("F1 (reverse): prices arrive, value unchanged ⇒ UNCHANGED, stamped back to 'supported'",
+        planR.disposition === "UNCHANGED" && !planR.write && planR.stamp === "supported", JSON.stringify(planR));
+      const resR2 = dayFor(priorR, { heldUnvalued: false, evidence: true, value: 640 });
+      const planR2 = planDayPersistence(resR2, priorR);
+      check("F1 (reverse): prices arrive with a new value ⇒ a full WRITE carrying 'supported' (no separate stamp)",
+        planR2.write && planR2.disposition === "UPDATED" && planR2.stamp === null && resR2.cryptoValuationStatus === "supported");
+      // Never a row class regeneration does not own.
+      const frozen = row(0, null, false);
+      check("F1: a frozen (observed) row is never stamped", planDayPersistence(dayFor(frozen, { heldUnvalued: true, evidence: false, value: 0 }), frozen).stamp === null);
+      // …even when an amendment reaches it (the core then decides a verdict): the stamp still never touches a row class regeneration does not own.
+      const amendRes = regenerateDay({ ...{ date: "2025-06-01", existingIsEstimated: false, existing: frozen,
+        base: { totalInvestments: 0, totalDigitalAssets: 0, totalChecking: 100, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+        investmentValue: 0, investmentTier: "derived" as const, hasInvestmentEvidence: false, digitalAssetValue: 0, digitalAssetTier: "estimated" as const,
+        hasDigitalAssetEvidence: false, digitalAssetHeldUnvalued: true, cashCardTier: "derived" as const, membershipChangedSince: false }, isAmendment: true });
+      check("F1: an amendment's verdict on a frozen row is never written as a status-only stamp",
+        amendRes.cryptoValuationStatus === "unavailable" && planDayPersistence(amendRes, frozen).stamp === null, JSON.stringify({ a: amendRes.action, v: amendRes.cryptoValuationStatus }));
+      check("F1: no stored row ⇒ nothing stamped (never creates a row)", planDayPersistence(dayFor(null, { heldUnvalued: true, evidence: false, value: 0 }), null).stamp === null);
+      const same = row(0, "unavailable");
+      check("F1: an already-correct verdict is not re-stamped (idempotent)", planDayPersistence(dayFor(same, { heldUnvalued: true, evidence: false, value: 0 }), same).stamp === null);
+    }
     check("RULING 2: the exclusion rule is ONE function for SPL and ERC-20 (alias metadata, no chain branch)",
       /excluded: tokenValuationExclusion\(a\.metadata\) !== null/.test(read("lib", "crypto", "token-valuation.ts")) && tokenHasNoMarket({ quote: { outcome: "THIN" } }));
 

@@ -169,6 +169,26 @@ export interface SolBackfillJobSummary {
   eth?: EthBackfillPassSummary;
   /** ERC-20 token history's pass (lib/crypto/erc20-history-pass.ts) — part of Ethereum's phase. */
   ethTokens?: Erc20HistoryPassSummary;
+  /** Re-review F4 — SPL historical price acquisition, when any wallet's stopped short (absent ⇒ none did). */
+  splPrices?: { status: "BUDGET_STOPPED"; reason: string | null; mintsSkipped: number; wallets: number };
+  /**
+   * Re-review F4 — THE JOB'S VERDICT on its own work, beside the runner's binary
+   * succeeded/failed (which says only that the run did not crash): PARTIAL when
+   * historical token prices (SPL or ERC-20) stopped short — a budget stop, an
+   * exhausted probe allowance or the per-run token limit — so a stopped run never
+   * reads as "done". `partialReasons` names each. Set on every return.
+   */
+  outcome?: "COMPLETE" | "PARTIAL";
+  partialReasons?: string[];
+}
+
+/** PURE (re-review F4) — the job's outcome from its summary: PARTIAL when any token price run stopped short. */
+export function solBackfillJobOutcome(s: Pick<SolBackfillJobSummary, "splPrices" | "ethTokens">): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
+  const reasons: string[] = [];
+  if (s.splPrices) reasons.push(`SPL_PRICES_${s.splPrices.status}: ${s.splPrices.reason ?? s.splPrices.status}`);
+  const erc = s.ethTokens?.prices;
+  if (erc && erc.status !== "COMPLETE") reasons.push(`ERC20_PRICES_${erc.status}: ${erc.reason ?? erc.status}`);
+  return { outcome: reasons.length > 0 ? "PARTIAL" : "COMPLETE", partialReasons: reasons };
 }
 
 export interface EthBackfillPassSummary {
@@ -331,7 +351,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     requests: { total: 0 }, estimatedUnits: 0, dailyRequestsUsedBefore: 0, providerRequestsUsedBefore: null,
     dailyRequestCap: cfg.dailyRequestCap, priceGaps: { acquired: 0, inserted: 0, failures: 0, deferred: 0 }, holdersMarkedPending: 0,
     holdersFlagFailed: 0, revaluationsRederived: 0,
-    budgetMs: 0, stoppedBecause: "DISABLED", deferred: 0,
+    budgetMs: 0, stoppedBecause: "DISABLED", deferred: 0, outcome: "COMPLETE", partialReasons: [],
   };
   if (!cfg.enabled) return summary;
   const deps = opts.deps ?? await productionDeps();
@@ -484,6 +504,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     if (btcPlan) summary.btc = { ...btcPlan.summary, stoppedBecause: "NO_WORK" };
     if (ethPlan) summary.eth = { ...ethPlan.summary, dailyRequestCap: cfg.dailyRequestCap, stoppedBecause: "NO_WORK" };
     if (tokenPlan) summary.ethTokens = { ...tokenPlan.summary, dailyRequestCap: cfg.dailyRequestCap };
+    Object.assign(summary, solBackfillJobOutcome(summary));
     return summary;
   }
 
@@ -556,6 +577,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
               beforeRequest: take, meter, requestBudget: allowance, now: deps.now } });
           summary.walletsRun++;
           await flushUsage();
+          // Re-review F4 — an SPL price run the token budget stopped is reported, never silent.
+          const sp = r.tokens?.prices;
+          if (sp && sp.status !== "COMPLETE") {
+            const prev = summary.splPrices;
+            summary.splPrices = { status: sp.status, reason: sp.reason, mintsSkipped: (prev?.mintsSkipped ?? 0) + sp.mintsSkipped, wallets: (prev?.wallets ?? 0) + 1 };
+          }
           const o = r.backfill;
           if (o) {
             summary.signaturesProcessed += o.signaturesProcessed;
@@ -690,6 +717,8 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   summary.requests = { ...meter, total: total() }; // (Solana's pass set the same when it ran)
 
   await revalueOtherHolders();
+  Object.assign(summary, solBackfillJobOutcome(summary));
+  if (summary.outcome === "PARTIAL") console.warn(`[${SOL_BACKFILL_JOB}] PARTIAL — ${summary.partialReasons!.join(" | ")}`);
   return summary;
 }
 
