@@ -21,6 +21,8 @@ export interface ShareBar {
 }
 
 const n = (v: number) => v.toLocaleString("en-US");
+/** A tiny non-zero share never reads "0%" beside a visible bar. */
+const pctText = (share: number, count: number) => (count > 0 && Math.round(share * 100) === 0 ? "<1%" : `${Math.round(share * 100)}%`);
 
 export function ShareBars({ items, ariaLabel, noun, denominator }: {
   items: readonly ShareBar[];
@@ -31,13 +33,14 @@ export function ShareBars({ items, ariaLabel, noun, denominator }: {
   denominator: string;
 }) {
   return (
-    <ul aria-label={ariaLabel} className="flex min-w-0 flex-col gap-2.5" data-share-bars>
+    <div className="min-w-0" data-share-bars>
+    <ul aria-label={ariaLabel} className="flex min-w-0 flex-col gap-2.5">
       {items.map((i) => (
         <li key={i.key} className="min-w-0">
           <span className="flex min-w-0 items-baseline justify-between gap-2">
             <span className="min-w-0 truncate text-xs text-[var(--text-primary)]">{i.label}</span>
             <span className="shrink-0 text-xs tabular-nums">
-              <span className="font-medium text-[var(--text-primary)]">{i.share === null ? "—" : `${Math.round(i.share * 100)}%`}</span>
+              <span className="font-medium text-[var(--text-primary)]">{i.share === null ? "—" : pctText(i.share, i.count)}</span>
               <span className="ml-1.5 text-[11px] text-[var(--text-muted)]">{`${n(i.count)} ${i.count === 1 ? noun : `${noun}s`}`}</span>
             </span>
           </span>
@@ -49,7 +52,8 @@ export function ShareBars({ items, ariaLabel, noun, denominator }: {
           </span>
         </li>
       ))}
-      <li className="text-[10px] text-[var(--text-muted)]">{`Shares are ${denominator}`}</li>
     </ul>
+    <p className="mt-2.5 text-[10px] text-[var(--text-muted)]">{`Shares are ${denominator}`}</p>
+    </div>
   );
 }

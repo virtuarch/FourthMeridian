@@ -273,8 +273,8 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
             hint={<span className="text-[11px] text-[var(--text-faint)]">30 d</span>}>
             <Surface className="flex-1 p-4 sm:p-5">
               {pa ? (
-                <ShareBars items={adoptionBars(pa)} ariaLabel="Accounts that used each feature in the last 30 days" noun="account"
-                  denominator={`of ${n(pa.registrations.total)} registered accounts · one account can use several`} />
+                <ShareBars items={adoptionBars(pa)} ariaLabel="Accounts using each feature: used in the last 30 days; Connections = currently held" noun="account"
+                  denominator={`of ${n(pa.registrations.total)} registered accounts · one account can use several · Connections = held now`} />
               ) : <Loading f={p.pa} what="adoption" />}
             </Surface>
           </Block>

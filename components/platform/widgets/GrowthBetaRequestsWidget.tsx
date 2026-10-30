@@ -399,15 +399,15 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                   </button>
                 ))}
               </span>
-              <label className="order-last flex min-h-11 min-w-0 basis-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:order-none sm:max-w-xs sm:flex-1 sm:basis-auto lg:min-h-8">
+              <button type="button" onClick={() => setSort((s) => (s === "newest" ? "oldest" : "newest"))} aria-label={`Sort: ${sort} first`}
+                className="inline-flex min-h-11 sm:order-3 items-center gap-1 rounded-[var(--radius-xs)] px-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
+                <ArrowUpDown size={12} aria-hidden /> {sort === "newest" ? "Newest" : "Oldest"}
+              </button>
+              <label className="flex min-h-11 min-w-0 basis-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:order-2 sm:max-w-xs sm:flex-1 sm:basis-auto lg:min-h-8">
                 <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
                 <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tab === "pending" ? "Search email or source" : "Search email"}
                   aria-label="Search beta signups" className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
               </label>
-              <button type="button" onClick={() => setSort((s) => (s === "newest" ? "oldest" : "newest"))} aria-label={`Sort: ${sort} first`}
-                className="inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-xs)] px-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
-                <ArrowUpDown size={12} aria-hidden /> {sort === "newest" ? "Newest" : "Oldest"}
-              </button>
             </div>
 
             {/* ── The list: compact table ≥ lg, two-line rows below ────────── */}
