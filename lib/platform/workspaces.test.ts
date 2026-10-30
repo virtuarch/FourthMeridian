@@ -496,7 +496,7 @@ console.log("Phase 1 UX · views");
       && getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views?.[0].id === "groups");
 
   check("areas not yet redesigned are unchanged: no views outside PLATFORM_OPS and GROWTH_REVENUE",
-    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS" && a !== "GROWTH_REVENUE").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS" && a !== "GROWTH_REVENUE" && a !== "SECURITY_OPS").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
   // PLATFORM SPACES 2.0 — Growth is ONE dashboard view (lead "growth") hosting
   // all seven former sections, the beta signup list among them.
   {
@@ -517,7 +517,7 @@ console.log("Phase 1 UX · views");
       // VISUAL SPEC §5 — one dashboard view; its id stays "ai" (default URL unchanged).
       "platform-ai": ["ai"],
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
-    }) && Object.keys(platformAreaViewIds("SECURITY_OPS")).length === 0);
+    }) && Object.keys(platformAreaViewIds("CUSTOMER_SUCCESS")).length === 0);
 
   // The view validator: unknown ⇒ default, never a ghost; no views ⇒ null.
   const ids = ["overview", "jobs", "pipeline"];
@@ -579,6 +579,9 @@ console.log("Security · Posture + Audit + Operator actions");
   check("the two feeds are composed directly, no longer absorbed",
     sec[1]?.sections.join() === "sec_audit_feed" && sec[2]?.sections.join() === "sec_operator_actions"
       && !("sec_audit_feed" in PLATFORM_SECTION_REPRESENTATION) && !("sec_operator_actions" in PLATFORM_SECTION_REPRESENTATION));
+  check("PLATFORM SPACES 2.0 — the Overview is one dashboard view (lead 'security') hosting the posture widget",
+    sec[0]?.views?.length === 1 && sec[0].views[0].lead === "security" && sec[0].views[0].sections.length === 0
+      && JSON.stringify(sec[0].views[0].hosted) === JSON.stringify(["sec_auth_posture"]) && sec[0].sections.join() === "sec_auth_posture");
   check("anomalies and sessions stay absorbed by the posture host",
     PLATFORM_SECTION_REPRESENTATION.sec_anomalies === "sec_auth_posture" && PLATFORM_SECTION_REPRESENTATION.sec_sessions === "sec_auth_posture");
   const nav = readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8");

@@ -134,7 +134,7 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth";
+export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -325,7 +325,16 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     // BETA V2 — one "Security posture" surface (hosted by the first composed key,
     // sec_auth_posture; SecurityPostureWidget) absorbs the four former card-grain
     // widgets, which stay registered and are REPRESENTED by the host below.
-    { workspaceId: "platform-overview", sections: ["sec_auth_posture"] },
+    // PLATFORM SPACES 2.0 — the Overview is ONE analytical security dashboard
+    // (components/platform/leads/SecurityLead.tsx): failed sign-ins hero ·
+    // sign-in activity · 2FA coverage · failures by weekday × hour · reasons ·
+    // event calendar · detector windows (and what is NOT recorded) · operator
+    // activity. The posture widget (and the sections it absorbs) is HOSTED
+    // unchanged in a drawer.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [{ id: "overview", label: "Security", lead: "security", sections: [], hosted: ["sec_auth_posture"] }],
+    }),
     // Redesign §4.9 — Audit and Operator actions as their own workspaces.
     { workspaceId: "platform-audit", sections: ["sec_audit_feed"] },
     { workspaceId: "platform-operator-actions", sections: ["sec_operator_actions"] },

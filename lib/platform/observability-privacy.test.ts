@@ -74,6 +74,9 @@ const READERS = [
   // are an md5 digest computed in SQL; ids are joins, never output).
   "lib/platform/growth/acquisition.ts",
   "lib/platform/growth/acquisition-core.ts",
+  // PLATFORM SPACES 2.0 — the Security analytics reader + core (GROUP BY in SQL: day, code, count).
+  "lib/platform/security/analytics.ts",
+  "lib/platform/security/analytics-core.ts",
   // PLATFORM OPS PHASE 1 UX — the shared Policy Group catalogue reader (counts only).
   "lib/platform/policy-groups-read.ts",
 ];
@@ -98,6 +101,8 @@ const ROUTES = [
   "app/api/platform/growth-revenue/product-analytics/route.ts",
   // PLATFORM SPACES 2.0 — the Growth acquisition route (GROWTH_REVENUE READ; gate pinned below).
   "app/api/platform/growth-revenue/acquisition/route.ts",
+  // PLATFORM SPACES 2.0 — the Security analytics route (SECURITY_OPS READ; gate pinned below).
+  "app/api/platform/security-ops/analytics/route.ts",
   // PLATFORM OPS PHASE 1 UX — the Policy Group catalogue, PLATFORM_OPS READ (gate pinned in its route.test.ts).
   "app/api/platform/platform-ops/policy-groups/route.ts",
 ];
@@ -184,6 +189,21 @@ console.log("source · PLATFORM SPACES 2.0 — the acquisition route is a GROWTH
   check("the acquisition reader selects no name, username or user relation", !/\b(name|username)\s*:\s*true/.test(reader) && !/user:\s*\{\s*select/.test(reader));
   const dto = strip("lib/platform/growth/acquisition-types.ts");
   check("the acquisition DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName|requesterKey)\??\s*:/m.test(dto));
+}
+
+console.log("source · PLATFORM SPACES 2.0 — the Security analytics route is a SECURITY_OPS READ gate; the reader aggregates in SQL");
+{
+  const route = strip("app/api/platform/security-ops/analytics/route.ts");
+  check("the security analytics route requires SECURITY_OPS READ and returns the error first",
+    /requirePlatformAccess\(\s*["']SECURITY_OPS["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the security analytics route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
+    !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+  const reader = strip("lib/platform/security/analytics.ts");
+  check("the security reader reads through fm_system only", /systemDb/.test(reader) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(reader));
+  check("the security reader never reads the identifier, key, IP or user agent", !/"ipAddress"|"userAgent"|ipAddress:\s*true|userAgent:\s*true|->>\s*'?(identifier|key)'?|"identifier"|"key"\)/.test(reader));
+  check("the security reader only extracts reason / type / result codes from metadata", (reader.match(/byDay\([^)]*"(\w+)"/g) ?? []).every((m) => /"(reason|type|result)"/.test(m)));
+  const dto = strip("lib/platform/security/analytics-types.ts");
+  check("the security DTO declares no identity field", !/^\s*(userId|email|username|name|identifier|ipAddress|userAgent)\??\s*:/m.test(dto));
 }
 
 console.log("runtime · builders emit no customer material even when fed it");
