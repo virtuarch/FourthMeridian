@@ -41,12 +41,19 @@ export function DayBars({
   ariaLabel,
   height = 200,
   noun = "execution",
+  palette = DAY_BAR_COLORS,
 }: {
   days: readonly DayBar[];
   ariaLabel: string;
   height?: number;
   /** Singular noun for the tooltip ("execution", "refresh"). */
   noun?: string;
+  /**
+   * The three stack colours (default: succeeded / other / failed). A series that
+   * stacks something other than outcomes (prompt vs completion tokens on AI &
+   * Costs) passes its own, so a token is never drawn in a failure colour.
+   */
+  palette?: { readonly succeeded: string; readonly other: string; readonly failed: string };
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
@@ -114,9 +121,9 @@ export function DayBars({
               );
             }
             const segs = [
-              { k: "succeeded", v: d.succeeded, c: DAY_BAR_COLORS.succeeded },
-              { k: "other", v: d.other, c: DAY_BAR_COLORS.other },
-              { k: "failed", v: d.failed, c: DAY_BAR_COLORS.failed },
+              { k: "succeeded", v: d.succeeded, c: palette.succeeded },
+              { k: "other", v: d.other, c: palette.other },
+              { k: "failed", v: d.failed, c: palette.failed },
             ];
             let base = 0;
             return (

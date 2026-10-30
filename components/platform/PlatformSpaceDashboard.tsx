@@ -71,6 +71,7 @@ import type { PlatformViewLeadProps, RenderHosted } from "./leads/lead-contract"
 import { OperationsLead } from "./leads/OperationsLead";
 import { PipelineLead } from "./leads/PipelineLead";
 import { ProvidersLead } from "./leads/ProvidersLead";
+import { AiCostsLead } from "./leads/AiCostsLead";
 import { PlatformAreaHero } from "./PlatformAreaHero";
 import { PlatformSpaceSwitcher } from "./PlatformSpaceSwitcher";
 import { usePlatformNav } from "@/components/ui/PlatformNavContext";
@@ -208,6 +209,7 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   operations: OperationsLead,
   pipeline:   PipelineLead,
   providers:  ProvidersLead,
+  "ai-costs": AiCostsLead,
 };
 
 /**

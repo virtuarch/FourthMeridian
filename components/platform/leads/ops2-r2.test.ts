@@ -4,8 +4,8 @@
  * The Operations and Providers redesign, pinned:
  *   A. the Operations default screen shows ≤ 5 items per section, never renders
  *      a fleet control, and opens every former widget only from a drawer;
- *   B. the Providers master lists only providers a reader REPORTS, ≤ 5 per
- *      section, and never prints a number for an unknown allowance or cost;
+ *   B. Providers lists only providers a reader REPORTS and never prints a
+ *      number for an unknown cap or cost (visual spec §5 dashboard);
  *   C. connection diagnostics (with its history-recovery panel) and provider
  *      cleanup are HOSTED unchanged: rendered by the registry with the
  *      operator's access, never imported or re-gated by a lead;
@@ -20,9 +20,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ProviderDetail, ProvidersLeadSurface, ProvidersMaster } from "./ProvidersLead";
+import { ProviderDetail, ProvidersDrawerBody, ProvidersLeadSurface } from "./ProvidersLead";
 import { PipelineLeadSurface, pipelineKpis } from "./PipelineLead";
-import { ALLOWANCE_UNKNOWN, FLEET_DIAGNOSTICS, NOT_ASSESSED, groupEntities, providerEntities, type ProviderInputs } from "./providers-model";
+import { CAP_UNKNOWN, FLEET_DIAGNOSTICS, NOT_ASSESSED, failuresText, providerEntities, type ProviderInputs } from "./providers-model";
 import { PLATFORM_AREA_WORKSPACES, PLATFORM_SECTION_REPRESENTATION, viewComposedKeys } from "@/lib/platform/workspaces";
 import { PlatformWorkspaceBody } from "../PlatformSpaceDashboard";
 
@@ -92,6 +92,11 @@ console.log("A2. Pipeline — KPI + top failures + drawers, the table inline");
 }
 
 // ── B. Providers ─────────────────────────────────────────────────────────────
+// PLATFORM OPS VISUAL SPEC §5 — the R2 master–detail list was REPLACED by the
+// Providers dashboard (hero · sync trend · health donut · tiles · one drawer).
+// The honesty pins carry over (only REPORTED providers; no number for an unknown
+// cap or cost); the dashboard itself is pinned in
+// components/platform/leads/platform-visual-providers-ai.test.ts.
 
 const health = (key: string, label: string, trust: string, over: Record<string, unknown> = {}) => ({
   key, label, kind: key === "PLAID" ? "BANKING" : "FX", trust, availability: 1, lastSuccessAt: AGO(30), lastFailureAt: null, latencyMs: 900,
@@ -100,6 +105,11 @@ const health = (key: string, label: string, trust: string, over: Record<string, 
   syncFailures: 0, errorRate: 0, callsToday: 10, calls30d: 300,
   notes: key === "PLAID" ? ["Plaid exposes no pollable quota/billing API — quota is not reportable."] : [], ...over,
 });
+const aiTrend = { since: "2026-10-01", days: [
+  { day: "2026-10-02", calls: 3, promptTokens: 900, completionTokens: 100, estimatedSpendUsd: 1 },
+  { day: "2026-10-29", calls: 5, promptTokens: 1000, completionTokens: 200, estimatedSpendUsd: 0.5 },
+  { day: "2026-10-30", calls: 2, promptTokens: 400, completionTokens: 50, estimatedSpendUsd: 0.25 },
+], totals: { calls: 10, promptTokens: 2300, completionTokens: 350, estimatedSpendUsd: 1.75 }, models: ["gpt"], pricingConfigured: true, tier: "estimated", unpricedTokens: 0, unpricedDays: [], checkedAt: AGO(0) };
 const providerInputs = (over: Partial<ProviderInputs> = {}): ProviderInputs => ({
   health: ok({ checkedAt: AGO(1), counts: {}, providers: [health("PLAID", "Plaid", "OPERATIONAL"), health("OPEN_EXCHANGE_RATES", "Open Exchange Rates", "STALE", { syncFailures: 2 })] }),
   apiUsage: ok({ since: AGO(43200), providers: [
@@ -111,54 +121,44 @@ const providerInputs = (over: Partial<ProviderInputs> = {}): ProviderInputs => (
   ], models: [{ metric: "chat:gpt", promptTokens30d: 1, completionTokens30d: 1 }], pricingConfigured: true, estimatedSpendUsd: 4.2, unpricedTokens: 0, unpricedDays: [] }),
   email: ok({ windowDays: 7, counts: { sent: 9, captured: 1, error: 2, skipped: 0, total: 12 }, recentErrors: [{ id: "m1", error: "550 rejected", at: AGO(60) }] }),
   plaid: ok({ priceAuthority: { configured: true, tier: "ESTIMATED", rates: [], note: "" }, cycles: [{ label: "current", agree: true, cycle: { start: "2026-10-01", end: "2026-10-31" }, during: { usd: 12.5, unpricedItemMonths: 0 }, atEnd: { usd: 12.5 } }] }),
-  operations: ok({ window: { from: AGO(1440), to: AGO(0) }, deterministic: true, indeterminacyReason: null, checkedAt: AGO(1), totalCalls: 50, tier: "observed",
-    operations: [{ provider: "PLAID", operation: "transactionsSync", calls: 50, succeeded: 47, failed: 3, rateLimited: 1, meanDurationMs: 1, maxDurationMs: 1, attemptDistribution: [], maxAttempt: 1, paginationConfounded: false, attemptSemantics: "" }] }),
+  operations: ok({ window: { from: "2026-10-24", to: "2026-10-30" }, deterministic: false, indeterminacyReason: "open", checkedAt: AGO(1), totalCalls: 50, tier: "observed",
+    operations: [{ provider: "PLAID", operation: "transactionsSync", calls: 50, succeeded: 49, failed: 1, rateLimited: 1, meanDurationMs: 1, maxDurationMs: 1, attemptDistribution: [], maxAttempt: 1, paginationConfounded: false, attemptSemantics: "" }] }),
+  trend: ok(aiTrend),
+  nowMs: NOW,
   ...over,
 } as never);
 
-console.log("B. Providers — one row per REPORTED provider, honest allowance and cost");
+console.log("B. Providers — one entity per REPORTED provider, honest cap and cost");
 {
   const ents = providerEntities(providerInputs());
   check("providers are exactly those the readers report", ents.map((e) => e.key).sort().join() === "ALCHEMY,COINGECKO,ESPLORA,OPENAI,OPEN_EXCHANGE_RATES,PLAID,RESEND", ents.map((e) => e.key).join());
-  check("grouped into sections of ≤ 5", groupEntities(ents).every((g) => g.items.length <= 5) && groupEntities(ents).map((g) => g.label).join() === "Banking & market data,Wallet networks,Platform services");
-  check("no provider has a known allowance (no reader exposes one)", ents.every((e) => e.allowance.known === false));
+  check("no provider has a known cap (no reader exposes one)", ents.every((e) => e.cap === CAP_UNKNOWN));
   const byKey = new Map(ents.map((e) => [e.key, e] as const));
   check("status: provider-health words for Plaid / OXR; 'Not assessed' (muted) elsewhere",
     byKey.get("PLAID")!.status.word === "Operational" && byKey.get("OPEN_EXCHANGE_RATES")!.status.word === "Stale data"
       && ["ALCHEMY", "ESPLORA", "COINGECKO", "OPENAI", "RESEND"].every((k) => byKey.get(k)!.status.word === NOT_ASSESSED && byKey.get(k)!.status.tone === "muted"));
-  check("spend: ESTIMATED only where a rate card answered (Plaid cycle, OpenAI tokens), else UNKNOWN",
+  check("spend: ESTIMATED only where a rate card answered (Plaid cycle, OpenAI tokens this cycle), else UNKNOWN",
     byKey.get("PLAID")!.spend.kind === "ESTIMATED" && byKey.get("OPENAI")!.spend.kind === "ESTIMATED"
       && ["ALCHEMY", "ESPLORA", "COINGECKO", "RESEND", "OPEN_EXCHANGE_RATES"].every((k) => byKey.get(k)!.spend.kind === "UNKNOWN"));
-  check("errors: provider-health failed runs + ProviderCall failures / rate limits + delivery errors",
-    byKey.get("PLAID")!.errors.text === "3 failed calls · 1 rate-limited" && byKey.get("OPEN_EXCHANGE_RATES")!.errors.text === "2 failed runs"
-      && byKey.get("RESEND")!.errors.text === "2 delivery errors" && byKey.get("ALCHEMY")!.errors.text === "errors not recorded");
-
-  const master = renderToStaticMarkup(createElement(ProvidersMaster, { entities: ents, selected: "PLAID", onSelect: () => {}, hasHosted: () => true, loading: false }));
-  check("every master list shows ≤ 5 rows", lists(master).every((l) => l.items <= 5), JSON.stringify(lists(master)));
-  // Each row is one <button>: split the master into rows and inspect each.
-  const rows = master.split(/<button type="button"/).slice(1);
-  const rowFor = (label: string) => rows.find((r) => r.includes(`>${label}<`)) ?? "";
-  for (const label of ["Alchemy", "Esplora (Blockstream)", "CoinGecko", "Resend", "Open Exchange Rates"]) {
-    const r = rowFor(label);
-    check(`${label}: row prints 'allowance unknown' and no number/currency for allowance or cost`, r.includes(ALLOWANCE_UNKNOWN) && !/\$/.test(r) && />Unknown</.test(r));
-  }
-  check("Plaid row: spend is an estimate labelled as such; allowance still unknown", /Spend · est\./.test(rowFor("Plaid")) && /\$12\.50/.test(rowFor("Plaid")) && rowFor("Plaid").includes(ALLOWANCE_UNKNOWN));
-  check("fleet diagnostics: Connections · Resource freshness · Usage ledger", /Connections/.test(master) && /Resource freshness/.test(master) && /Usage ledger/.test(master));
+  check("failures 7 d: ProviderCall failures / rate limits + delivery errors; else 'not recorded'",
+    failuresText(byKey.get("PLAID")!) === "1 failed · 7 d · 1 rate-limited" && failuresText(byKey.get("RESEND")!) === "2 failed · 7 d"
+      && failuresText(byKey.get("ALCHEMY")!) === "failures not recorded" && byKey.get("OPEN_EXCHANGE_RATES")!.failedRuns === 2);
 
   // When a reader fails: the registry pair stays visible and says so; nothing is invented.
   const down = providerEntities(providerInputs({ health: failed("Request failed (500)") as never, apiUsage: failed("Request failed (500)") as never, operations: failed("x") as never }));
   check("provider-health down ⇒ Plaid / OXR listed as 'Unavailable' (muted), not dropped",
     down.filter((e) => ["PLAID", "OPEN_EXCHANGE_RATES"].includes(e.key)).every((e) => e.status.word === "Unavailable" && e.status.tone === "muted"));
   check("api-usage down ⇒ no OpenAI / wallet rows are invented", !down.some((e) => ["OPENAI", "ALCHEMY", "ESPLORA", "COINGECKO"].includes(e.key)));
-  check("…and OpenAI spend is UNKNOWN (never $0) when usage is unread", providerEntities(providerInputs({ apiUsage: { data: { ...(providerInputs().apiUsage.data as object), estimatedSpendUsd: null } , loading: false, error: null } as never })).find((e) => e.key === "OPENAI")!.spend.kind === "UNKNOWN");
+  check("…and OpenAI spend is UNKNOWN (never $0) when usage is unpriced",
+    providerEntities(providerInputs({ trend: ok({ ...aiTrend, pricingConfigured: false }) as never })).find((e) => e.key === "OPENAI")!.spend.kind === "UNKNOWN");
 
-  // The detail.
-  const detail = (key: string, hasHosted = (_k: string) => true) => renderToStaticMarkup(createElement(ProviderDetail, { e: byKey.get(key)!, hasHosted, renderHosted: (k: string) => createElement("div", { "data-hosted": k }), onSelect: () => {}, onOpenWorkspace: () => {} }));
+  // The detail (inside the one drawer).
+  const detail = (key: string, hasHosted = (_k: string) => true) => renderToStaticMarkup(createElement(ProviderDetail, { e: byKey.get(key)!, hasHosted, renderHosted: (k: string) => createElement("div", { "data-hosted": k }), onOpenWorkspace: () => {}, onOpenFleet: () => {}, nowMs: NOW }));
   const alchemy = text(detail("ALCHEMY"));
-  check("detail: allowance tile is '—' + 'allowance unknown' with an Unknown chip, never a number", /Allowance Unknown — allowance unknown/.test(alchemy));
-  check("detail: unknown spend is '—' + its reason, never $0", /Spend Unknown — no rate card for this provider/.test(alchemy) && !/\$0/.test(alchemy));
+  check("detail: cap tile is '—' + 'cap unknown' with an Unknown chip, never a number", /Cap Unknown — cap unknown/.test(alchemy));
+  check("detail: unknown spend is '—' + its reason, never $0", /Spend · this cycle Unknown — no rate card for this provider/.test(alchemy) && !/\$0/.test(alchemy));
   check("detail: usage today with the persisted 7 d / 30 d windows (no invented daily series)", /Calls today Measured 500/.test(alchemy) && /7 d 4,000 · 30 d 9,000/.test(alchemy));
-  check("detail: wallet providers link to connection diagnostics", /Connection diagnostics/.test(alchemy));
+  check("detail: wallet providers reach connection diagnostics", /All connections/.test(alchemy) && /Connection diagnostics/.test(alchemy));
   const plaidDetail = detail("PLAID");
   check("detail: technical diagnostics are lazily-mounted disclosures (nothing hosted renders until opened)", /aria-expanded="false"/.test(plaidDetail) && !/data-hosted=/.test(plaidDetail) && /Provider health \(all providers\)/.test(plaidDetail));
   check("detail: Resend shows deliveries + recent errors (email delivery hosted)", /Deliveries · 7 d/.test(text(detail("RESEND"))) && /550 rejected/.test(detail("RESEND")) && /Email delivery/.test(detail("RESEND")));
@@ -166,29 +166,30 @@ console.log("B. Providers — one row per REPORTED provider, honest allowance an
 
 // ── C. Connection diagnostics hosted unchanged ───────────────────────────────
 
-console.log("C. Connection diagnostics + provider cleanup — hosted, never re-gated");
+console.log("C. Connection diagnostics + provider cleanup — hosted, never re-gated, mounted once");
 {
+  const ents = providerEntities(providerInputs());
   const hosted: string[] = [];
-  const html = renderToStaticMarkup(createElement(ProvidersLeadSurface, {
-    inputs: providerInputs(), selected: "diag:connections", sheetOpen: false, onSelect: () => {}, onCloseSheet: () => {},
+  const html = renderToStaticMarkup(createElement(ProvidersDrawerBody, {
+    drawer: { kind: "fleet", id: "diag:connections" }, entities: ents, nowMs: NOW, onOpenDrawer: () => {},
     hasHosted: () => true, renderHosted: (k: string) => { hosted.push(k); return createElement("div", { "data-hosted": k }); }, onOpenWorkspace: () => {},
   }));
-  check("the Connections detail renders BOTH hosted widgets through renderHosted", hosted.join() === "ops_connection_diagnostics,ops_provider_cleanup" && /data-hosted="ops_connection_diagnostics"/.test(html));
-  // R2 review fix — a MOBILE selection open in the sheet must not ALSO mount in
-  // the CSS-hidden desktop pane (double fetches, duplicate dialogs/ids).
-  const mobileHosted: string[] = [];
+  check("the Connections drawer renders BOTH hosted widgets through renderHosted, each exactly once",
+    hosted.join() === "ops_connection_diagnostics,ops_provider_cleanup" && /data-hosted="ops_connection_diagnostics"/.test(html), hosted.join());
+  // R2 review fix, kept — a hosted widget must never mount twice (duplicate
+  // fetches / dialogs / ids). The dashboard has ONE drawer whose body exists only
+  // while it is open, and nothing hosted renders on the default screen.
+  const onDefault: string[] = [];
   renderToStaticMarkup(createElement(ProvidersLeadSurface, {
-    inputs: providerInputs(), selected: "diag:connections", sheetOpen: true, desktopDetail: false, onSelect: () => {}, onCloseSheet: () => {},
-    hasHosted: () => true, renderHosted: (k: string) => { mobileHosted.push(k); return createElement("div", { "data-hosted": k }); }, onOpenWorkspace: () => {},
-  }));
-  check("with a mobile selection open, the hidden desktop pane mounts nothing (no double mount)",
-    !mobileHosted.includes("ops_connection_diagnostics") || mobileHosted.filter((k) => k === "ops_connection_diagnostics").length <= 1);
+    inputs: providerInputs(), daily: loading, drawer: null, onOpenDrawer: () => {}, onCloseDrawer: () => {},
+    hasHosted: () => true, renderHosted: (k: string) => { onDefault.push(k); return createElement("div", { "data-hosted": k }); }, onOpenWorkspace: () => {},
+  } as never));
+  check("the default screen mounts no hosted widget", onDefault.length === 0, onDefault.join());
   const lead = code("components/platform/leads/ProvidersLead.tsx");
-  check("…desktop pane is gated on desktopDetail, and a mobile selection is released when its sheet closes",
-    /\{current && desktopDetail && \(/.test(lead) && /desktopDetail=\{!sheetOpen && origin !== "mobile"\}/.test(lead)
-      && /if \(origin === "mobile"\) \{ setSelected\(null\); setOrigin\(null\); \}/.test(lead));
+  check("…exactly ONE DetailDrawer, opened only with a body; no second (desktop) detail pane",
+    (lead.match(/<DetailDrawer\b/g) ?? []).length === 1 && /open=\{p\.drawer !== null && body !== null\}/.test(lead) && !/desktopDetail|lg:col-span-7">\s*\{current/.test(lead));
   check("FLEET_DIAGNOSTICS names the connection widget + cleanup together", FLEET_DIAGNOSTICS[0].keys.join() === "ops_connection_diagnostics,ops_provider_cleanup");
-  for (const f of ["ProvidersLead.tsx", "providers-model.ts", "OperationsLead.tsx", "PipelineLead.tsx"]) {
+  for (const f of ["ProvidersLead.tsx", "providers-model.ts", "OperationsLead.tsx", "PipelineLead.tsx", "AiCostsLead.tsx", "ai-costs-model.ts"]) {
     const src = code(`components/platform/leads/${f}`);
     check(`${f}: imports neither the diagnostics widget nor the recovery panel (hosted, never re-wrapped)`, !/OpsConnectionDiagnosticsWidget|WalletHistoryRecoveryPanel|OpsProviderCleanupWidget|OpsManualOperationsWidget/.test(src));
   }
@@ -212,6 +213,8 @@ console.log("D. Dashboard + composition");
     operations: code("components/platform/leads/OperationsLead.tsx"),
     pipeline: code("components/platform/leads/PipelineLead.tsx"),
     providers: code("components/platform/leads/ProvidersLead.tsx") + code("components/platform/leads/providers-model.ts"),
+    // VISUAL SPEC §5 — the AI & Costs dashboard hosts the former AI / Costs views' widgets.
+    "ai-costs": code("components/platform/leads/AiCostsLead.tsx"),
   };
   for (const w of ops) for (const v of w.views ?? []) {
     if (!v.lead) continue;
@@ -222,11 +225,13 @@ console.log("D. Dashboard + composition");
   // Every key the Phase 1 composition rendered is still reachable from some view.
   const BEFORE = ["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline", "ops_scheduler", "ops_job_health", "ops_manual_operations", "ops_history",
     "ops_refresh_executions", "ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage", "ops_provider_health", "ops_provider_operations", "ops_resource_freshness",
-    "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_email_delivery"];
+    "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_email_delivery",
+    // VISUAL SPEC §5 — and every AI & Costs key (now hosted in its dashboard's drawers).
+    "ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_brief_ops", "ops_plaid_usage", "ops_cost"];
   const reachable = new Set(ops.flatMap((w) => (w.views ?? []).flatMap((v) => [...viewComposedKeys(v)])));
   // …or absorbed by a reachable key (ops_manual_operations → ops_job_health, spec §3).
   const ok2 = (k: string) => reachable.has(k) || (PLATFORM_SECTION_REPRESENTATION[k] !== undefined && reachable.has(PLATFORM_SECTION_REPRESENTATION[k]));
-  check("every Operations / Providers key composed before R2 is still reachable", BEFORE.every(ok2), BEFORE.filter((k) => !ok2(k)).join());
+  check("every Operations / Providers / AI & Costs key composed before is still reachable", BEFORE.every(ok2), BEFORE.filter((k) => !ok2(k)).join());
 
   const row = (key: string) => ({ id: `row-${key}`, key, label: `DB::${key}` });
   const overview = ops[0].views![0];
@@ -239,7 +244,7 @@ console.log("D. Dashboard + composition");
 // ── E. Source rules ──────────────────────────────────────────────────────────
 
 console.log("E. Source rules (leads)");
-for (const f of ["OperationsLead.tsx", "PipelineLead.tsx", "ProvidersLead.tsx", "lead-kit.tsx", "operations-model.ts", "providers-model.ts", "lead-contract.ts"]) {
+for (const f of ["OperationsLead.tsx", "PipelineLead.tsx", "ProvidersLead.tsx", "AiCostsLead.tsx", "visual-kit.tsx", "lead-kit.tsx", "operations-model.ts", "providers-model.ts", "ai-costs-model.ts", "lead-contract.ts"]) {
   const src = code(`components/platform/leads/${f}`);
   check(`${f}: no access-level literal / control flag (capability ratchet)`, !/\bCONTROL\b/.test(src) && !/canControl/.test(src));
   check(`${f}: no viewport read (responsive by classes)`, !/matchMedia|innerWidth/.test(src));

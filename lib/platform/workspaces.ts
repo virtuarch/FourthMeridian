@@ -134,7 +134,7 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers";
+export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -209,7 +209,10 @@ export function platformViewTarget(workspaceId: string, viewId: string): string 
  */
 export const PLATFORM_WORKSPACE_ALIASES: Readonly<Record<string, { readonly workspaceId: string; readonly viewId?: string }>> = {
   "platform-trends":  { workspaceId: "platform-overview" },
-  "platform-costs":   { workspaceId: "platform-ai", viewId: "costs" },
+  // PLATFORM OPS VISUAL SPEC §5 — AI & Costs is ONE analytical dashboard; the
+  // former "costs" view (Plaid usage + operational cost) is in its drawers, so
+  // the retired economics id lands on that dashboard.
+  "platform-costs":   { workspaceId: "platform-ai" },
   "platform-jobs":    { workspaceId: "platform-overview", viewId: "jobs" },
   "platform-refresh": { workspaceId: "platform-overview", viewId: "pipeline" },
 };
@@ -260,15 +263,17 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       ],
     }),
     // ── Providers — "is each provider trustworthy, and what does it cost us?" ──
-    // PLATFORM OPS 2.0 (R2) — ONE master–detail view: a compact row per provider
-    // a reader reports (status · usage vs a KNOWN allowance · errors · spend with
-    // provenance), the selected provider's detail beside it (desktop) or as a
-    // sheet (mobile). The former Health / Connections / Usage views' widgets are
-    // HOSTED unchanged inside the provider details and the "Fleet diagnostics"
-    // rows (connection diagnostics + its history recovery, provider cleanup,
-    // resource freshness, the API-usage ledger, email delivery). The single view
-    // keeps the id "health" so every existing deep link (?view=health) and the
-    // canonical default URL stay byte-identical; retired view ids fall back to it.
+    // PLATFORM OPS VISUAL SPEC §5 — ONE analytical dashboard in the accepted
+    // Operations grammar (components/platform/leads/ProvidersLead.tsx):
+    // integration-health hero · sync activity · health distribution · provider
+    // tiles (status · usage vs a KNOWN cap — none is exposed, so "cap unknown" ·
+    // failures 7 d · spend with provenance). A tile opens the provider drawer,
+    // which HOSTS the technical widgets unchanged (provider operations / health,
+    // resource freshness, usage ledger, email delivery; connection diagnostics +
+    // its history recovery and provider cleanup for Plaid / wallet networks); the
+    // fleet-wide ones are also one drawer each. The single view keeps the id
+    // "health" so every existing deep link (?view=health) and the canonical
+    // default URL stay byte-identical; retired view ids fall back to it.
     withViews({
       workspaceId: "platform-providers",
       views: [
@@ -276,14 +281,20 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
           hosted: ["ops_provider_health", "ops_provider_operations", "ops_resource_freshness", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_email_delivery"] },
       ],
     }),
-    // ── AI & Costs (P-10) — usage (invocations + the day-grain trend, once),
-    // spend against controls and Daily Brief operations; then provider
-    // economics and operational cost. Composition only — no second spend engine.
+    // ── AI & Costs (P-10) — PLATFORM OPS VISUAL SPEC §5: ONE analytical
+    // dashboard (components/platform/leads/AiCostsLead.tsx): estimated-spend
+    // hero (billed = Unknown) · daily spend · cost by surface · tokens &
+    // invocations · cost by provider · budget utilisation · customers · the
+    // Economics (Phase 3) slot. The former AI and Costs views' widgets are
+    // HOSTED unchanged in its drawers (Invocations · Daily Brief · Usage ledger
+    // · Budget & controls · Plaid & operational cost), so the second tab row is
+    // gone; the retired "costs" view id falls back to this one (and the
+    // platform-costs alias lands here). Composition only — no second spend engine.
     withViews({
       workspaceId: "platform-ai",
       views: [
-        { id: "ai", label: "AI", sections: ["ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_brief_ops"] },
-        { id: "costs", label: "Costs", icon: "Gauge", sections: ["ops_plaid_usage", "ops_cost"] },
+        { id: "ai", label: "AI & Costs", lead: "ai-costs", sections: [],
+          hosted: ["ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_brief_ops", "ops_plaid_usage", "ops_cost"] },
       ],
     }),
     // ── Policies (formerly "Controls") — declared policy. ONE section,
