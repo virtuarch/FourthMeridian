@@ -117,9 +117,24 @@ export interface PlatformWorkspaceView {
   readonly label: string;
   /** Optional lucide icon NAME for a doorway that opens this view directly. */
   readonly icon?: string;
-  /** Ordered entries this view renders. */
+  /** Ordered entries this view renders INLINE (below its lead, when it has one). */
   readonly sections: readonly PlatformViewSection[];
+  /** PLATFORM OPS 2.0 (R2) — the view's summary-first LEAD: a presentation
+   *  component (components/platform/PlatformSpaceDashboard.tsx PLATFORM_VIEW_LEADS)
+   *  rendered above `sections`. It reads existing READ routes only and computes
+   *  no authority; it is where the 3–5-item summary of the view lives. */
+  readonly lead?: PlatformViewLead;
+  /** PLATFORM OPS 2.0 (R2) — section keys this view reaches ONLY through its
+   *  lead's drawers / detail panes (never inline). Each still renders through the
+   *  platform widget registry, gated by its enabled DB row, with the operator's
+   *  access — so a hosted widget keeps its exact behaviour and gating. Counted in
+   *  the workspace's `sections` union, so reachability and parity guards read
+   *  hosted keys as composed (pinned in workspaces.test.ts). */
+  readonly hosted?: readonly string[];
 }
+
+/** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
+export type PlatformViewLead = "operations" | "pipeline" | "providers";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -150,10 +165,15 @@ export function viewSectionKey(entry: PlatformViewSection): string {
   return typeof entry === "string" ? entry : entry.key;
 }
 
+/** Every section key a view composes: its inline sections, then its hosted keys. */
+export function viewComposedKeys(view: PlatformWorkspaceView): readonly string[] {
+  return [...view.sections.map(viewSectionKey), ...(view.hosted ?? [])];
+}
+
 /** The ordered union of section keys a list of views composes (first occurrence wins). */
 function unionOfViews(views: readonly PlatformWorkspaceView[]): readonly string[] {
   const out: string[] = [];
-  for (const v of views) for (const e of v.sections) { const k = viewSectionKey(e); if (!out.includes(k)) out.push(k); }
+  for (const v of views) for (const k of viewComposedKeys(v)) if (!out.includes(k)) out.push(k);
   return out;
 }
 
@@ -202,21 +222,32 @@ export function aliasedPlatformViewId(id: string | null | undefined): string | n
 export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWorkspaceComposition[]> = {
   PLATFORM_OPS: [
     // ── Operations — "is the platform working, and is the work running?" ──────
-    // Overview is the COCKPIT: one verdict per operational domain from
-    // ops_overview, then the consolidated Platform Health surface (alerts,
-    // provider health, resource freshness, rate limits, environment — see
-    // PLATFORM_SECTION_REPRESENTATION), then the incident and event timelines
-    // (P-10). Jobs (formerly its own workspace): the scheduler observation, the
-    // per-job health table, the manual Run Now / Dry Run controls and the job
-    // history series. Pipeline (formerly "platform-refresh"): the execution ROWS
-    // first, then outcomes, source health and per-account coverage.
+    // PLATFORM OPS 2.0 (R2) — summary-first. The default view is the OPERATIONS
+    // lead (status header · top-5 attention · jobs & activity KPIs + five recent
+    // executions · deliberate manual-operations entry · detail doorways), ≈ one
+    // screen. Everything it summarises stays reachable through its drawers:
+    //   ops_overview          the full status board, attention list (with its
+    //                         resync / reauth actions) and the other overview blocks
+    //   ops_platform_health   "Platform health" drawer
+    //   ops_convergence +
+    //   ops_timeline          "Incidents" drawer
+    //   ops_manual_operations "Run an operation…" drawer (fleet CONTROL + reason +
+    //                         confirmation + pre-run audit unchanged — #131)
+    // Jobs is the DETAIL view of the scheduler work (the full job table with its
+    // execution panel, the scheduler observation, the history series) — manual
+    // operations left it: a fleet command is never a casual button on a view.
+    // Pipeline is a detail view: KPI + top failures lead, the paginated
+    // execution table inline, the endpoint roll-up / connection health /
+    // coverage in drawers.
     withViews({
       workspaceId: "platform-overview",
       label: "Operations",
       views: [
-        { id: "overview", label: "Overview", sections: ["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline"] },
-        { id: "jobs", label: "Jobs", icon: "Timer", sections: ["ops_scheduler", "ops_job_health", "ops_manual_operations", "ops_history"] },
-        { id: "pipeline", label: "Pipeline", icon: "RefreshCw", sections: ["ops_refresh_executions", "ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage"] },
+        { id: "overview", label: "Overview", lead: "operations", sections: [],
+          hosted: ["ops_overview", "ops_platform_health", "ops_convergence", "ops_timeline", "ops_manual_operations"] },
+        { id: "jobs", label: "Jobs", icon: "Timer", sections: ["ops_job_health", "ops_scheduler", "ops_history"] },
+        { id: "pipeline", label: "Pipeline", icon: "RefreshCw", lead: "pipeline", sections: ["ops_refresh_executions"],
+          hosted: ["ops_refresh_summary", "ops_connection_health", "ops_refresh_coverage"] },
       ],
       doorways: [
         platformViewTarget("platform-overview", "jobs"), platformViewTarget("platform-overview", "pipeline"),
@@ -224,16 +255,20 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       ],
     }),
     // ── Providers — "is each provider trustworthy, and what does it cost us?" ──
-    // Health interpretation → observed behaviour → freshness; then per-connection
-    // diagnostics with `ops_provider_cleanup` right after it (those REVOKED
-    // items appear in none of the health surfaces); then consumption + delivery.
-    // Connection health renders once, in Operations › Pipeline (P-10).
+    // PLATFORM OPS 2.0 (R2) — ONE master–detail view: a compact row per provider
+    // a reader reports (status · usage vs a KNOWN allowance · errors · spend with
+    // provenance), the selected provider's detail beside it (desktop) or as a
+    // sheet (mobile). The former Health / Connections / Usage views' widgets are
+    // HOSTED unchanged inside the provider details and the "Fleet diagnostics"
+    // rows (connection diagnostics + its history recovery, provider cleanup,
+    // resource freshness, the API-usage ledger, email delivery). The single view
+    // keeps the id "health" so every existing deep link (?view=health) and the
+    // canonical default URL stay byte-identical; retired view ids fall back to it.
     withViews({
       workspaceId: "platform-providers",
       views: [
-        { id: "health", label: "Health", sections: ["ops_provider_health", "ops_provider_operations", "ops_resource_freshness"] },
-        { id: "connections", label: "Connections", sections: ["ops_connection_diagnostics", "ops_provider_cleanup"] },
-        { id: "usage", label: "Usage & delivery", sections: ["ops_api_usage", "ops_email_delivery"] },
+        { id: "health", label: "Providers", lead: "providers", sections: [],
+          hosted: ["ops_provider_health", "ops_provider_operations", "ops_resource_freshness", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_email_delivery"] },
       ],
     }),
     // ── AI & Costs (P-10) — usage (invocations + the day-grain trend, once),

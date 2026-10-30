@@ -6,6 +6,10 @@
  * caller orders and selects the items (its authority decides priority); this
  * renders at most `limit` of them, and only `mobileLimit` below `sm`.
  *
+ * R2 — the next action is a link (`href`, e.g. into another Space) OR an
+ * in-place opener (`onSelect`, e.g. a DetailDrawer holding the full list and
+ * its gated actions). Either way the row is ONE target ≥ 44 px.
+ *
  * States are explicit and honest: `loading` says so; an `empty` queue is only
  * claimed by the caller when every source answered; `notes` carry the sources
  * that could not be read ("… unavailable"), never folded into "nothing to do".
@@ -25,17 +29,22 @@ export interface AttentionQueueItem {
   why: string;
   /** Short context ("Customer Success · 2 h ago"). */
   meta?: string;
-  /** The ONE next action. */
-  action: { label: string; href: string };
+  /** The ONE next action: a link, or an in-place opener (a drawer). */
+  action: { label: string; href: string } | { label: string; onSelect: () => void };
 }
 
 export interface AttentionViewAll {
   key: string;
   label: string;
-  href: string;
+  /** A link — or, with `onSelect`, an in-place opener ("View all (n)"). */
+  href?: string;
+  onSelect?: () => void;
   /** Total behind the doorway; a floor is worded by the caller ("≥50"). */
   count: string;
 }
+
+const ROW = "group flex min-h-11 items-start gap-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]";
+const DOORWAY = "inline-flex min-h-11 items-center text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:min-h-8";
 
 export function AttentionQueue({
   title = "Needs attention",
@@ -62,14 +71,10 @@ export function AttentionQueue({
     <Surface as="section" className="flex flex-col gap-3 p-4 sm:p-5">
       <h2 className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">{title}</h2>
       {shown.length > 0 ? (
-        <ul className="flex flex-col divide-y divide-[var(--border-hairline)]">
-          {shown.map((it, i) => (
-            <li key={it.key} className={i >= mobileLimit ? "max-sm:hidden" : undefined}>
-              <Link
-                href={it.action.href}
-                prefetch={false}
-                className="group flex min-h-11 items-start gap-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
-              >
+        <ul aria-label={title} className="flex flex-col divide-y divide-[var(--border-hairline)]">
+          {shown.map((it, i) => {
+            const body = (
+              <>
                 <span className="mt-0.5 w-[68px] shrink-0"><ToneBadge word={it.severity.word} tone={it.severity.tone} /></span>
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate text-sm font-medium text-[var(--text-primary)]">{it.title}</span>
@@ -78,9 +83,18 @@ export function AttentionQueue({
                 </span>
                 <span className="mt-0.5 hidden shrink-0 text-[11px] text-[var(--text-muted)] group-hover:text-[var(--text-primary)] sm:inline">{it.action.label}</span>
                 <ChevronRight size={14} aria-hidden className="mt-1 shrink-0 text-[var(--text-muted)]" />
-              </Link>
-            </li>
-          ))}
+              </>
+            );
+            return (
+              <li key={it.key} className={i >= mobileLimit ? "max-sm:hidden" : undefined}>
+                {"href" in it.action ? (
+                  <Link href={it.action.href} prefetch={false} className={ROW}>{body}</Link>
+                ) : (
+                  <button type="button" onClick={it.action.onSelect} aria-haspopup="dialog" className={`${ROW} w-full text-left`}>{body}</button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       ) : loading ? (
         <p role="status" className="text-xs text-[var(--text-muted)]">Reading…</p>
@@ -94,15 +108,14 @@ export function AttentionQueue({
       )}
       {viewAll.length > 0 && (
         <nav aria-label="View all" className="flex flex-wrap gap-x-4 gap-y-1 border-t border-[var(--border-hairline)] pt-2">
-          {viewAll.map((v) => (
-            <Link
-              key={v.key}
-              href={v.href}
-              prefetch={false}
-              className="inline-flex min-h-11 items-center text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:min-h-8"
-            >
+          {viewAll.map((v) => v.href ? (
+            <Link key={v.key} href={v.href} prefetch={false} className={DOORWAY}>
               View all in {v.label} ({v.count})
             </Link>
+          ) : (
+            <button key={v.key} type="button" onClick={v.onSelect} aria-haspopup="dialog" className={DOORWAY}>
+              {v.label} ({v.count})
+            </button>
           ))}
         </nav>
       )}

@@ -70,6 +70,10 @@ console.log("AttentionQueue");
   check("each row: severity word + subject + why + ONE action link (≥ 44 px)", /Warning/.test(html) && (html.match(/<a [^>]*class="group flex min-h-11/g) ?? []).length === 5);
   check("'View all in <Space> (n)' doorway", text(html).includes("View all in Ops (7)"));
   check("loading says so", /role="status"[^>]*>Reading…/.test(r(AttentionQueue, { items: [], loading: true })));
+  // R2 — an in-place action (a drawer opener) instead of a link: still ONE ≥ 44 px target per row.
+  const inPlace = r(AttentionQueue, { items: items.slice(0, 2).map((it) => ({ ...it, action: { label: "Resync", onSelect: () => {} } })), viewAll: [{ key: "v", label: "View all", count: "9", onSelect: () => {} }] });
+  check("R2: an onSelect action renders one dialog-opening button per row (no link), ≥ 44 px", !/<a /.test(inPlace) && (inPlace.match(/<button type="button" aria-haspopup="dialog" class="group flex min-h-11/g) ?? []).length === 2);
+  check("R2: an in-place 'View all (n)' is a button", text(inPlace).includes("View all (9)") && (inPlace.match(/<button /g) ?? []).length === 3);
   check("empty claims nothing unless the caller vouches", text(r(AttentionQueue, { items: [] })) === "Needs attention" && text(r(AttentionQueue, { items: [], emptyText: "All clear" })).endsWith("All clear"));
 }
 
@@ -77,6 +81,8 @@ console.log("EntityRow / HistoryList");
 {
   const row = r(EntityRow, { name: "Plaid", status: { word: "Degraded", tone: "warn" }, metrics: [{ label: "a", value: 1 }, { label: "b", value: 2 }, { label: "c", value: 3 }], href: "/p" });
   check("row: name + status word, ≤ 2 metrics, one link ≥ 44 px", /Degraded/.test(row) && !text(row).includes(" c ") && (row.match(/<a /g) ?? []).length === 1 && /min-h-11/.test(row));
+  const summarised = r(EntityRow, { name: "Alchemy", summary: "500 calls today · errors not recorded", metrics: [{ label: "a", value: 1 }], onSelect: () => {} });
+  check("R2: a row's one-line summary renders at every width (not inside the sm-only metric columns)", /<span class="truncate text-\[11px\][^"]*">500 calls today · errors not recorded<\/span>/.test(summarised));
   check("row without href is a button (opens a drawer)", /<button type="button"/.test(r(EntityRow, { name: "x", onSelect: () => {} })));
   const hist = r(HistoryList, { entries: Array.from({ length: 8 }, (_, i) => ({ key: `h${i}`, at: "2026-10-30T10:00:00Z", title: `E${i}` })), fullHref: "/h" });
   check("history: five rows + 'View full history'", (hist.match(/<li /g) ?? []).length === 5 && text(hist).includes("View full history") && text(hist).includes("2026-10-30 10:00 UTC"));
@@ -96,6 +102,9 @@ console.log("ControlledActionSurface — deliberate, confirmation-gated");
     (html.match(/<button /g) ?? []).length === 1 && /aria-haspopup="dialog"/.test(html) && text(html).includes("Review…"));
   check("no commit/confirm button is rendered inline (it exists only in the dialog)", !/Yes, run now|Yes, purge/.test(html) && !/role="alertdialog"/.test(html));
   check("an unavailable action is listed with its reason and no opener", text(html).includes("Your grant does not allow this") && !/Review Purge/.test(html));
+  const opener = r(ControlledActionSurface, { title: "Manual operations", actions: [{ id: "o", label: "Run or dry-run", description: "d", authority: "Requires write access", opens: { label: "Run an operation…", onOpen: () => {} } }] });
+  check("R2: an 'opens' action's ONLY inline control is its dialog opener (no Review…, no commit)",
+    (opener.match(/<button /g) ?? []).length === 1 && /aria-haspopup="dialog"[^>]*>Run an operation…</.test(opener) && !/Review…/.test(opener) && !/role="alertdialog"/.test(opener));
   check("authority is stated in words for every action", text(html).includes("Requires write access") && text(html).includes("Requires elevated access"));
 }
 

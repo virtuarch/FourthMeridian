@@ -63,9 +63,14 @@ import {
   resolvePlatformDestination,
   viewSectionKey,
   type PlatformSectionVariant,
+  type PlatformViewLead,
   type PlatformViewSection,
   type PlatformWorkspaceView,
 } from "@/lib/platform/workspaces";
+import type { PlatformViewLeadProps, RenderHosted } from "./leads/lead-contract";
+import { OperationsLead } from "./leads/OperationsLead";
+import { PipelineLead } from "./leads/PipelineLead";
+import { ProvidersLead } from "./leads/ProvidersLead";
 import { PlatformAreaHero } from "./PlatformAreaHero";
 import { PlatformSpaceSwitcher } from "./PlatformSpaceSwitcher";
 import { usePlatformNav } from "@/components/ui/PlatformNavContext";
@@ -196,6 +201,18 @@ const PLATFORM_WIDGET_REGISTRY: Record<
 };
 
 /**
+ * PLATFORM OPS 2.0 (R2) — the view LEADS: lead id → its summary-first component
+ * (lib/platform/workspaces.ts `PlatformWorkspaceView.lead`). A lead is not a
+ * section: it has no DB row and no anchor; it reads existing READ routes and
+ * reaches the view's HOSTED sections only through `renderHosted` below.
+ */
+const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLeadProps>> = {
+  operations: OperationsLead,
+  pipeline:   PipelineLead,
+  providers:  ProvidersLead,
+};
+
+/**
  * The scroll-anchor id for a composed section, derived from its section KEY (the
  * stable composition identity — labels are editable DB text and would move the
  * anchor under the sidebar). ONE derivation, used by both the rendered wrapper
@@ -246,6 +263,8 @@ export function platformChromeSections(
 
 /** Stable empty composition — keeps the sections memo from re-firing per render. */
 const NO_SECTION_KEYS: readonly PlatformViewSection[] = [];
+/** Stable "hosts nothing" list (a view without a lead). */
+const NO_HOSTED_KEYS: readonly string[] = [];
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
@@ -347,6 +366,8 @@ export function PlatformWorkspaceBody({
   dbByKey,
   onOpen,
   access = READ_ONLY_ACCESS,
+  lead,
+  hosted = NO_HOSTED_KEYS,
 }: {
   sectionKeys: readonly PlatformViewSection[];
   doorways?:   readonly string[];
@@ -356,12 +377,48 @@ export function PlatformWorkspaceBody({
    *  read it; the server gate decides. Optional and FAIL-SAFE: an absent value
    *  renders every widget as READ-only. */
   access?:     SpaceMountAccess;
+  /** PLATFORM OPS 2.0 (R2) — the view's summary-first lead, rendered first. */
+  lead?:       PlatformViewLead;
+  /** The view's HOSTED keys — rendered only when the lead asks (drawers / detail). */
+  hosted?:     readonly string[];
 }) {
   const rows = resolveWorkspaceRows(sectionKeys, dbByKey);
+  const Lead = lead ? PLATFORM_VIEW_LEADS[lead] : null;
+
+  // A hosted key renders exactly as an inline section would: the same registry
+  // widget, its enabled DB row, the same access — so gating (WRITE / control-
+  // plane flags, reasons, confirmations) stays inside the widget, unchanged.
+  // A key outside this view's `hosted`, without an enabled row, or without a
+  // widget renders nothing (fails safe, like an inline section).
+  const hasHosted = (key: string): boolean =>
+    hosted.includes(key) && dbByKey.has(key) && PLATFORM_WIDGET_REGISTRY[key] != null;
+  const renderHosted: RenderHosted = (key, onOpenWorkspace) => {
+    if (!hasHosted(key)) return null;
+    const row = dbByKey.get(key)!;
+    const Widget = PLATFORM_WIDGET_REGISTRY[key];
+    return <Widget section={row} onOpenWorkspace={onOpenWorkspace ?? onOpen} access={access} />;
+  };
 
   return (
     <div className="flex flex-col gap-8 md:gap-10 pb-16">
-      {rows.length === 0 ? (
+      {Lead && (
+        <WorkspaceSessionProvider>
+          <Lead renderHosted={renderHosted} hasHosted={hasHosted} onOpenWorkspace={onOpen} access={access} />
+          {rows.length > 0 && (
+            <div className="flex flex-col gap-8 md:gap-10">
+              {rows.map(({ row }) => {
+                const Widget = PLATFORM_WIDGET_REGISTRY[row.key];
+                return (
+                  <div key={row.id} id={platformSectionAnchor(row.key)} className="scroll-mt-20">
+                    <Widget section={row} onOpenWorkspace={onOpen} access={access} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </WorkspaceSessionProvider>
+      )}
+      {Lead ? null : rows.length === 0 ? (
         <p className="text-sm text-[var(--text-secondary)]">No sections enabled for this workspace.</p>
       ) : (
         /* OPS-2C-6 — the workspace owns the operational session. Widgets reading
@@ -531,7 +588,9 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
           {/* The area's editorial lede opens its Overview — the "operating
               environment" identity. Detail workspaces and views (Jobs/Providers/…)
               skip it and lead straight with their content. */}
-          {active.workspaceId === "platform-overview" && isDefaultView && (
+          {/* PLATFORM OPS 2.0 (R2) — a view with a summary-first LEAD opens on
+              its status header instead (no editorial paragraph above verdicts). */}
+          {active.workspaceId === "platform-overview" && isDefaultView && !activeViewDef?.lead && (
             <PlatformAreaHero area={area} accessLevel={accessLevel} />
           )}
           <PlatformWorkspaceBody
@@ -546,6 +605,8 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
             dbByKey={dbByKey}
             access={mountContext.access}
             onOpen={setActiveTab}
+            lead={activeViewDef?.lead}
+            hosted={activeViewDef?.hosted}
           />
         </div>
       ) : (

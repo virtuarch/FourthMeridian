@@ -8,6 +8,11 @@
  * opens the Atlas ConfirmDialog. The commit button exists ONLY inside that
  * dialog — this primitive renders no destructive button inline.
  *
+ * R2 — an action may instead `opens` a deliberate surface (a DetailDrawer that
+ * hosts an existing, fully gated widget — e.g. Manual operations with its own
+ * reason + confirmation + audit). Its only inline control is then that opener
+ * ("Run an operation…"); it still commits nothing inline.
+ *
  * `requireReason` embeds the shared OperatorReasonField in the dialog and keeps
  * the confirm disabled until a reason code is chosen; the payload is handed to
  * `onConfirm`. An action the operator may not run is listed with its
@@ -33,11 +38,14 @@ export interface ControlledAction {
   description: string;
   /** The authority it needs, in words ("Requires write access"). */
   authority: string;
-  confirm: { title: string; message: string; confirmLabel: string; destructive?: boolean };
+  /** Present for a confirm-in-place action; absent for an `opens` action. */
+  confirm?: { title: string; message: string; confirmLabel: string; destructive?: boolean };
   requireReason?: boolean;
   /** When set the action is listed but cannot be opened. */
   unavailableReason?: string | null;
-  onConfirm: (reason: { code: OperatorReasonFieldCode; note?: string } | null) => Promise<void> | void;
+  onConfirm?: (reason: { code: OperatorReasonFieldCode; note?: string } | null) => Promise<void> | void;
+  /** R2 — open a deliberate surface instead (a drawer hosting a gated widget). */
+  opens?: { label: string; onOpen: () => void };
 }
 
 export function ControlledActionSurface({ title, actions }: { title: string; actions: readonly ControlledAction[] }) {
@@ -52,7 +60,7 @@ export function ControlledActionSurface({ title, actions }: { title: string; act
     setReason(EMPTY_OPERATOR_REASON);
   };
   const commit = async () => {
-    if (!open) return;
+    if (!open?.onConfirm) return;
     const payload = reasonPayload(reason);
     if (open.requireReason && !payload) return;
     setBusy(true);
@@ -81,6 +89,15 @@ export function ControlledActionSurface({ title, actions }: { title: string; act
             </span>
             {a.unavailableReason ? (
               <span className="text-[11px] text-[var(--text-muted)]">{a.unavailableReason}</span>
+            ) : a.opens ? (
+              <button
+                type="button"
+                onClick={a.opens.onOpen}
+                aria-haspopup="dialog"
+                className="min-h-11 rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-3 text-xs text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+              >
+                {a.opens.label}
+              </button>
             ) : (
               <button
                 type="button"
@@ -95,7 +112,7 @@ export function ControlledActionSurface({ title, actions }: { title: string; act
           </li>
         ))}
       </ul>
-      {open && (
+      {open?.confirm && (
         <ConfirmDialog
           open
           onClose={close}
