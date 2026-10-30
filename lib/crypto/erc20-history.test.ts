@@ -35,6 +35,7 @@ import { planDayPersistence } from "@/lib/snapshots/regeneration-candidates.core
 import { regenerateDay } from "@/lib/snapshots/regenerate-history.core";
 import { valueCryptoDay } from "./historical-crypto-valuation.core";
 import { heldSpanFrom } from "./token-held-spans";
+import { solBackfillJobOutcome } from "@/jobs/sol-history-backfill";
 import { resolveEvidenceFloor } from "@/lib/snapshots/historical-work-window";
 import { loadWalletInstrumentHistory } from "./wallet-instrument-history";
 import { loadValuationCoverage } from "@/lib/connections/valuation-coverage";
@@ -657,6 +658,25 @@ async function main(): Promise<void> {
         ok ? s4.prices.status === "COMPLETE" && s4.stoppedBecause === "ALL_RUN"
           : s4.prices.status === "BUDGET_STOPPED" && s4.stoppedBecause === "PRICES_INCOMPLETE" && /budget/.test(s4.prices.reason ?? "") && s4.prices.tokensSkipped === 1,
         JSON.stringify({ p: s4.prices, b: s4.stoppedBecause }));
+    }
+
+    // N1 — a price step that THROWS is swallowed (the pass continues) but reported: STEP_FAILED, never ALL_RUN.
+    {
+      const pm5 = newMem();
+      const pchain5: Chain = { head: 3000, calls: [], txs: [tx(USDC, 100, OTHER, WALLET, 1_000_000)] };
+      const d5: Erc20HistoryPassDeps = {
+        wallets: async () => [{ accountId: ACC, connectionId: "c1", cursor: pm5.cursor }],
+        step: ({ todayISO, deps: d }) => runErc20HistoryStep({ accountId: ACC, store: memStore(pm5), todayISO }, { ...d, eth: { ...d.eth, transport: transport(pchain5), throttleRetries: 0 } }),
+        setPending: async (_a, mutate) => { const s0 = readErc20Section(pm5.cursor, ACC).section!; pm5.cursor = withErc20Section(pm5.cursor, ACC, mutate(s0)); return true; },
+        acquirePrices: async () => { throw new Error("held-span read failed"); },
+      };
+      const s5 = await runErc20HistoryPass(await planErc20History(d5, cfg, "2026-10-28"), d5, cfg,
+        { ...baseCtx, regenerateUnderLock: async (_w: unknown, _f: string, stamp: number) => ({ outcome: "DONE" as const, stamp }) });
+      check("N1: a THROWING price step ⇒ prices STEP_FAILED with the reason and tokens counted; pass PRICES_INCOMPLETE (not done)",
+        s5.prices.status === "STEP_FAILED" && s5.stoppedBecause === "PRICES_INCOMPLETE" && /step failed.*held-span read failed/.test(s5.prices.reason ?? "") && s5.prices.tokensSkipped >= 1 && s5.walletsRun === 1,
+        JSON.stringify({ p: s5.prices, b: s5.stoppedBecause }));
+      const job = solBackfillJobOutcome({ ethTokens: { prices: s5.prices } as never });
+      check("N1: …which the job reports as outcome PARTIAL (ERC20_PRICES_STEP_FAILED)", job.outcome === "PARTIAL" && /^ERC20_PRICES_STEP_FAILED: /.test(job.partialReasons[0] ?? ""), JSON.stringify(job));
     }
 
     // S3 — the pass meter reaches the ledger WHILE a step sends (every 100 calls), not only after it.

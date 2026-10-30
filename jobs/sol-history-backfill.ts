@@ -590,7 +590,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
           const sp = r.tokens?.prices;
           if (sp && sp.status !== "COMPLETE") {
             const prev = summary.splPrices;
-            // Worst wins across wallets (BUDGET_STOPPED over ALLOWANCE_EXHAUSTED), as ERC-20's pass.
+            // Worst wins across wallets (STEP_FAILED > BUDGET_STOPPED > ALLOWANCE_EXHAUSTED), as ERC-20's pass.
             const worse = !prev || SPL_PRICE_RUN_SEVERITY[sp.status] > SPL_PRICE_RUN_SEVERITY[prev.status];
             summary.splPrices = { status: worse ? sp.status : prev.status, reason: worse ? sp.reason : prev.reason,
               mintsSkipped: (prev?.mintsSkipped ?? 0) + sp.mintsSkipped, wallets: (prev?.wallets ?? 0) + 1 };

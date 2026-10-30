@@ -21,7 +21,9 @@
  * metric, unit "attempts"; the daily-cap env name) — AND they only spend while
  * the CoinGecko TOKEN share keeps a reserve (the reserve env name, default half
  * of the share) untouched for HELD-token quotes and history closes. An
- * unreadable ledger or budget ⇒ no probe.
+ * unreadable ledger or budget ⇒ no probe. The SPL and ERC-20 reserves are
+ * separate env settings (SPL_HISTORY_PROBE_HELD_RESERVE, ERC20_HISTORY_PROBE_HELD_RESERVE),
+ * and setting either to 0 lets that chain's probes spend into the held-quote part.
  *
  * NEVER HELD. A token whose rows never show a positive balance is not probed:
  * there is nothing to value.

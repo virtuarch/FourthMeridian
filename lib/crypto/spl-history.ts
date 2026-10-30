@@ -119,7 +119,8 @@ export interface SplRunOutcome {
    * ALLOWANCE_EXHAUSTED when a never-priced (sold) mint needed a first-time quote
    * probe and the durable probe allowance was 0 (it stays NOT_VALUED_YET for a
    * later run); or BUDGET_STOPPED when the shared CoinGecko token share ran out
-   * (the remaining committed mints were not priced this run). Worst wins. Never
+   * (the remaining committed mints were not priced this run); or STEP_FAILED when
+   * the price/probe step threw for a mint (swallowed, the run continues). Worst wins. Never
    * silent: the job reports it as a PARTIAL outcome.
    */
   prices: { status: SplPriceRunStatus; reason: string | null; mintsSkipped: number };
@@ -232,6 +233,7 @@ export async function runSplTokenHistory(
   // off) cannot vouch for discovery: NATIVE becomes a WALK, a WALK starts over.
   if (!nativeWatchIntact(state, native)) state = demoteToWalk(state, native);
   let priced = new Set<string>();
+  let pricesBudgetStopped = false;
   const isPriced = (m: string) => priced.has(m);
   const accountsBefore = state.accounts.length;
   /** Did this run change the state beyond the last cursor it committed (e.g. a merge of finds)? */
@@ -626,7 +628,7 @@ export async function runSplTokenHistory(
       // EVERY licensed mint is handed over, not only the priced ones: a mint sold
       // before capture has no quote marker, and the store's first-time probe
       // (spl-history-prices.ts) decides — a mint with a marker is never probed.
-      if (args.store.acquirePrices && outcome.prices.status === "BUDGET_STOPPED") {
+      if (args.store.acquirePrices && pricesBudgetStopped) {
         outcome.prices.mintsSkipped++; // the token share is spent: not asked again this run (said, never silent)
       } else if (args.store.acquirePrices) {
         const markPrices = (status: SplPriceRunStatus, reason: string) => {
@@ -642,9 +644,14 @@ export async function runSplTokenHistory(
           }
           if (p.status === "BUDGET") {
             if (p.probe !== "REFUSED") outcome.prices.mintsSkipped++;
+            pricesBudgetStopped = true; // a flag, not the status: a worse STEP_FAILED must not re-open spending
             markPrices("BUDGET_STOPPED", "CoinGecko token budget reached; remaining SPL mints not priced this run");
           }
-        } catch { /* prices are retried on the next commit or tail; never fail the step */ }
+        } catch (e) {
+          // Retried on the next commit or tail; never fails the step — but never silent either.
+          outcome.prices.mintsSkipped++;
+          markPrices("STEP_FAILED", `SPL price/probe step failed; mint(s) not priced this run: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+        }
       }
     }
 

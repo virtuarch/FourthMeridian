@@ -964,8 +964,10 @@ export function currentByAddress(entries: ReadonlyArray<{ tokenAccount: string; 
  * How one run's SPL historical price acquisition ended (spl-history.ts
  * `SplRunOutcome.prices`): COMPLETE; ALLOWANCE_EXHAUSTED — a never-priced (sold)
  * mint needed a first-time quote probe and the durable probe allowance was 0;
- * BUDGET_STOPPED — the CoinGecko TOKEN share ran out. Same severities as ERC-20's.
+ * BUDGET_STOPPED — the CoinGecko TOKEN share ran out; STEP_FAILED — the price/probe
+ * step itself threw for a mint (an alias or held-span read, …): swallowed so the run
+ * continues, but reported. Same severities as ERC-20's.
  */
-export type SplPriceRunStatus = "COMPLETE" | "ALLOWANCE_EXHAUSTED" | "BUDGET_STOPPED";
+export type SplPriceRunStatus = "COMPLETE" | "ALLOWANCE_EXHAUSTED" | "BUDGET_STOPPED" | "STEP_FAILED";
 /** Severity order for combining runs: the worst outcome wins. */
-export const SPL_PRICE_RUN_SEVERITY: Record<SplPriceRunStatus, number> = { COMPLETE: 0, ALLOWANCE_EXHAUSTED: 2, BUDGET_STOPPED: 3 };
+export const SPL_PRICE_RUN_SEVERITY: Record<SplPriceRunStatus, number> = { COMPLETE: 0, ALLOWANCE_EXHAUSTED: 2, BUDGET_STOPPED: 3, STEP_FAILED: 4 };

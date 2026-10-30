@@ -199,7 +199,10 @@ export async function runErc20HistoryPass(
               fromISO = minISO(fromISO, day);
             }
           } catch (e) {
-            console.warn("[erc20-history] historical token prices failed (non-fatal):", e instanceof Error ? e.message : String(e));
+            // Non-fatal for the run, but never silent: the job reads it as PARTIAL.
+            const msg = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+            console.warn("[erc20-history] historical token prices failed (non-fatal):", msg);
+            markPrices("STEP_FAILED", `historical token price step failed; ${candidates.length} token(s) not priced this run: ${msg}`, candidates.length);
           }
         }
       }

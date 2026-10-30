@@ -967,6 +967,55 @@ async function main() {
     const { o: o3 } = await runOnce(c, s3, { freshSource: "NATIVE" });
     check("probe: a refused probe AND a budget stop ⇒ BUDGET_STOPPED (worst wins), the mint counted once",
       o3.prices.status === "BUDGET_STOPPED" && o3.prices.mintsSkipped === 1, JSON.stringify(o3.prices));
+    // N1 — a throw inside the price/probe step (alias / held-span read) is swallowed, but REPORTED.
+    const s4 = memStore(watchedCursor(), new Set());
+    s4.acquirePrices = async () => { throw new Error("held-span read failed"); };
+    const { o: o4 } = await runOnce(c, s4, { freshSource: "NATIVE" });
+    check("probe N1: a failed price/probe step ⇒ prices STEP_FAILED with a reason, mint counted — never COMPLETE",
+      o4.prices.status === "STEP_FAILED" && /step failed.*held-span read failed/.test(o4.prices.reason ?? "") && o4.prices.mintsSkipped === 1, JSON.stringify(o4.prices));
+    check("probe N1: …and the run itself does not fail (mint COMPLETE, DONE)",
+      o4.stoppedBecause === "DONE" && o4.failure === null && o4.mintsCommitted.some((x) => x.mint === BONK && x.status === "COMPLETE"), JSON.stringify({ s: o4.stoppedBecause, f: o4.failure }));
+    // Two sold mints: the order of failure and budget stop must not matter, and a budget stop is final for the run.
+    const c2 = new Chain();
+    const a1 = "AtaBonkSold22222222222222222222222222222222", a2 = "AtaUsdcSold22222222222222222222222222222222";
+    c2.tx("2026-10-02", 9, [OWNER, a1], c2.create(a1, BONK, { decimals: 5 }));
+    c2.tx("2026-10-02", 10, [OWNER, a2], c2.create(a2, USDC));
+    c2.tx("2026-10-03", 9, [OTHER, a1], mv(a1, 10_000_000));
+    c2.tx("2026-10-03", 10, [OTHER, a2], mv(a2, 10_000_000));
+    c2.tx("2026-10-09", 9, [OWNER, a1, OTHER], mv(a1, -10_000_000));
+    c2.tx("2026-10-09", 10, [OWNER, a2, OTHER], mv(a2, -10_000_000));
+    const seq = (answers: Array<"THROW" | "BUDGET" | "OK">) => {
+      const st = memStore(watchedCursor(), new Set());
+      let n = 0;
+      st.acquirePrices = async (m) => {
+        st.priceCalls.push({ mint: m.mint, fromISO: m.fromISO, toISO: m.toISO });
+        const a = answers[n++];
+        if (a === "THROW") throw new Error("alias read failed");
+        return { inserted: 0, earliestISO: null, status: a === "BUDGET" ? "BUDGET" : "THIN_OR_UNPRICED", probe: "NOT_NEEDED" };
+      };
+      return st;
+    };
+    const s5 = seq(["BUDGET", "OK"]);
+    const { o: o5 } = await runOnce(c2, s5, { freshSource: "NATIVE" });
+    check("probe N1: after a budget stop the next mint is not asked (counted skipped)",
+      s5.priceCalls.length === 1 && o5.prices.status === "BUDGET_STOPPED" && o5.prices.mintsSkipped === 2, JSON.stringify({ c: s5.priceCalls.length, p: o5.prices }));
+    const s6 = seq(["THROW", "BUDGET"]);
+    const { o: o6 } = await runOnce(c2, s6, { freshSource: "NATIVE" });
+    check("probe N1: a failure then a budget stop ⇒ STEP_FAILED (worst wins), both mints counted",
+      s6.priceCalls.length === 2 && o6.prices.status === "STEP_FAILED" && o6.prices.mintsSkipped === 2, JSON.stringify({ c: s6.priceCalls.length, p: o6.prices }));
+    // A third sold mint: after THROW then BUDGET (status STEP_FAILED), the budget stop must still be final.
+    const a3 = "AtaSpamSold22222222222222222222222222222222";
+    c2.tx("2026-10-02", 11, [OWNER, a3], c2.create(a3, SPAM));
+    c2.tx("2026-10-03", 11, [OTHER, a3], mv(a3, 10_000_000));
+    c2.tx("2026-10-09", 11, [OWNER, a3, OTHER], mv(a3, -10_000_000));
+    const s8 = seq(["THROW", "BUDGET", "OK"]);
+    const { o: o8 } = await runOnce(c2, s8, { freshSource: "NATIVE" });
+    check("probe N1: failure, then budget stop ⇒ the third mint is NOT asked (the stop is a flag, not the status)",
+      s8.priceCalls.length === 2 && o8.prices.status === "STEP_FAILED" && o8.prices.mintsSkipped === 3, JSON.stringify({ c: s8.priceCalls.length, p: o8.prices }));
+    const s7 = seq(["BUDGET", "THROW", "OK"]);
+    const { o: o7 } = await runOnce(c2, s7, { freshSource: "NATIVE" });
+    check("probe N1: a budget stop is final even when the status is worse (no further mint asked)",
+      s7.priceCalls.length === 1 && o7.prices.status === "BUDGET_STOPPED" && o7.prices.mintsSkipped === 3, JSON.stringify({ c: s7.priceCalls.length, p: o7.prices }));
   }
 
   console.log(`\n${passes} passed, ${failures} failed`);

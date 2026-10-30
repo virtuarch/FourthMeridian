@@ -16,7 +16,7 @@ import {
   ERC20_PROBE_LEDGER, ERC20_PROBE_USAGE_PROVIDER, ERC20_PROBE_USAGE_METRIC, ERC20_PROBE_USAGE_UNIT, ERC20_PROBE_RETRY_MS,
   erc20ProbeConfig, defaultProbeGate,
 } from "./erc20-history-prices";
-import { TOKEN_PROBE_RETRY_MS, tokenProbeConfig } from "./token-history-probe";
+import { TOKEN_PROBE_RETRY_MS, tokenProbeConfig, probeAllowance } from "./token-history-probe";
 import { splTokenAssetKey } from "./token-asset";
 import { reconstructedTokenValuation, tokenValuationLimits } from "./token-valuation.core";
 import { SPL_PRICE_RUN_SEVERITY } from "./spl-history.core";
@@ -189,6 +189,14 @@ async function main() {
     w3.spentToken(70);
     const r3 = await w3.run({ probeGate: w3.gate({ SPL_HISTORY_PROBE_HELD_RESERVE: "0.9" }) });
     check("the reserve is configurable (SPL_HISTORY_PROBE_HELD_RESERVE)", r3.probe === "REFUSED" && w3.probes.length === 0);
+    // N3 — a non-integer share × reserve rounds the reserve UP (never spends into the held part).
+    // Cap 252 × 0.6 ⇒ share floor(151.2) = 151; reserve ceil(151 × 0.5 = 75.5) = 76. Spent 75 ⇒ remaining 76 = the reserve.
+    const w4 = world();
+    w4.spentToken(75);
+    const r4 = await w4.run({ probeGate: w4.gate({ COINGECKO_DAILY_CALL_CAP: "252" }) });
+    check("N3: a fractional reserve (75.5) is rounded UP — at 76 remaining no probe is sent", r4.probe === "REFUSED" && w4.probes.length === 0, JSON.stringify(r4));
+    check("N3: probeAllowance rounds the reserve up (151 × 0.5 ⇒ 76)",
+      probeAllowance({ probesToday: 0, tokenRemaining: 80, tokenShareCap: 151, dailyCap: 20, heldReserve: 0.5 }) === 4);
   }
 
   console.log("an unreadable ledger");
@@ -213,6 +221,19 @@ async function main() {
     const v = valuation(w.meta, null);
     check("an unanswered probe (vendor failure) leaves the mint NOT_VALUED_YET (disclosed, limiting), attempt still counted",
       r.probe === "PROBED" && r.inserted === 0 && v === "NOT_VALUED_YET" && tokenValuationLimits(v) && w.probesRecorded() === 1, JSON.stringify({ r, v }));
+  }
+
+  console.log("N1: a failed read is never a silent probe");
+  {
+    const w = world();
+    (w.client.positionObservation as { groupBy: unknown }).groupBy = async () => { throw new Error("held-span read failed"); };
+    const err = await w.run().then(() => null, (e: unknown) => e);
+    check("N1: an unreadable held-span read throws to the run loop (which reports STEP_FAILED) — no probe sent, no attempt counted",
+      err instanceof Error && /held-span/.test(err.message) && w.probes.length === 0 && w.probesRecorded() === 0);
+    const w2 = world();
+    (w2.client.instrumentAlias as { findUnique: unknown }).findUnique = async () => { throw new Error("alias read failed"); };
+    const err2 = await w2.run().then(() => null, (e: unknown) => e);
+    check("N1: an unreadable alias read throws to the run loop — no probe, nothing priced", err2 instanceof Error && w2.probes.length === 0 && w2.inserted.length === 0);
   }
 
   console.log("flag-gated");
@@ -245,6 +266,8 @@ async function main() {
     const reason = "quote-probe allowance exhausted; never-priced SPL mint(s) left NOT_VALUED_YET for a later run";
     const job = solBackfillJobOutcome({ splPrices: { status: "ALLOWANCE_EXHAUSTED", reason, mintsSkipped: 1, wallets: 1 } });
     check("an ALLOWANCE_EXHAUSTED SPL price run ⇒ job outcome PARTIAL (SPL_PRICES_ALLOWANCE_EXHAUSTED)", job.outcome === "PARTIAL" && job.partialReasons[0] === `SPL_PRICES_ALLOWANCE_EXHAUSTED: ${reason}`, JSON.stringify(job));
+    const failed = solBackfillJobOutcome({ splPrices: { status: "STEP_FAILED", reason: "SPL price/probe step failed; mint(s) not priced this run: x", mintsSkipped: 1, wallets: 1 } });
+    check("N1: a STEP_FAILED SPL price run ⇒ job outcome PARTIAL (SPL_PRICES_STEP_FAILED)", failed.outcome === "PARTIAL" && /^SPL_PRICES_STEP_FAILED: SPL price\/probe step failed/.test(failed.partialReasons[0] ?? ""), JSON.stringify(failed));
     check("BUDGET_STOPPED outranks ALLOWANCE_EXHAUSTED (worst wins)", SPL_PRICE_RUN_SEVERITY.BUDGET_STOPPED > SPL_PRICE_RUN_SEVERITY.ALLOWANCE_EXHAUSTED && SPL_PRICE_RUN_SEVERITY.ALLOWANCE_EXHAUSTED > SPL_PRICE_RUN_SEVERITY.COMPLETE);
   }
 
