@@ -185,7 +185,9 @@ async function main() {
     check("incremental, NO_CHANGE, nothing historical changed", r?.mode === "NO_CHANGE" && r.impactedFromISO === null, JSON.stringify(outcome).slice(0, 200));
     check("no write at all: the rows and coverage already say this", s.state.applies === 0 && snapshot(s.state.rows) === before);
     check(`bounded RPC work (${stats.requests} requests, ${stats.calls} calls) — vs ${base.stats.requests} for the full rebuild`,
-      stats.requests <= 30 && stats.requests * 10 < base.stats.requests);
+      // ×5, not ×10: since the EARLY ORIGIN the full rebuild itself stops at the
+      // wallet's origin instead of walking to Byzantium, so it is far cheaper.
+      stats.requests <= 30 && stats.requests * 5 < base.stats.requests);
     check("no genesis scan: nothing below the day before the boundary was read", stats.minBlock > HEAD1 - 10_000, String(stats.minBlock));
   }
 

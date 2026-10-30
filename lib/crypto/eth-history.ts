@@ -125,6 +125,12 @@
  * a decade costs almost nothing; only an active one is expensive, and it is
  * expensive in proportion to how much actually happened to it.
  *
+ * …except for the years BEFORE a wallet existed: the right-to-left walk still
+ * pays per chunk to prove them empty. The EARLY ORIGIN (see `acquireEthHistory`)
+ * closes that remainder with one extra probe once a proven boundary shows a
+ * never-used, empty EOA whose address a signed transaction has proven
+ * key-derived.
+ *
  * ── WHAT THIS LAYER REFUSES TO DO ────────────────────────────────────────────
  * It emits no `flowType`, no category, no merchant, no "sale". It reads ERC-20
  * balances not at all. It declares no completeness it cannot PROVE — and,
@@ -362,6 +368,12 @@ export interface EthHistoryDeps {
   deadlineMs?: number;
   /** The clock `deadlineMs` is read against. Default Date.now. */
   now?: () => number;
+  /**
+   * `false` disables the EARLY ORIGIN, so the proof walks every chunk to the
+   * window start. It changes cost only, never the result — which is exactly what
+   * the tests compare it for, and why it is safe as an operational lever.
+   */
+  earlyOrigin?: boolean;
 }
 
 /**
@@ -538,6 +550,24 @@ export interface EthHistoryAcquisition {
   /** Diagnostics — never branched on. */
   probesUsed: number;
   rpcReads:   number;
+  /**
+   * EARLY ORIGIN (2026-10-28). The proven boundary B at which the proof closed
+   * the whole remainder `[lo, B]` in one step instead of walking it chunk by
+   * chunk (see `acquireEthHistory`). Absent when the run walked. Diagnostics —
+   * never branched on: the cursor and coverage already say everything a full
+   * walk would have said.
+   */
+  originProvenAtBlock?: number;
+}
+
+/**
+ * True when a PROVEN boundary state looks like the address's ORIGIN: a plain
+ * EOA that has never originated a transaction and holds nothing. Only a gate —
+ * it decides when the one extra probe at the window start is worth spending,
+ * and proves nothing by itself. The proof is `provablyUnchanged(lo, B)`.
+ */
+export function looksLikeOrigin(state: EthAccountState): boolean {
+  return isPlainEoa(state) && state.nonce === BigInt(0) && state.balance === BigInt(0);
 }
 
 // ── Acquisition ──────────────────────────────────────────────────────────────
@@ -559,6 +589,15 @@ interface AcquireArgs {
    * ignored: the run starts at `toBlock`, exactly as without one.
    */
   cursor?:   EthHistoryCursor;
+  /**
+   * EARLY ORIGIN premise carried by the caller: an earlier run over this same
+   * proof generation already PROVED (from a receipt) that the address signed a
+   * transaction — the history worker passes it when its stored movements hold a
+   * `FEE`, which only an own transaction produces. Absent or false: the run
+   * must find such a receipt itself before it may close early. Never a guess:
+   * a caller that does not know passes nothing, and the run walks.
+   */
+  ownerSigned?: boolean;
 }
 
 /**
@@ -717,6 +756,124 @@ export async function acquireEthHistory(
   // pointless invariant 22 forbids.
   let throttledOut = false;
 
+  // ── Block evidence: raw header + receipts, memoised ────────────────────────
+  // Read by the EARLY ORIGIN's key proof during the walk AND by the evidence
+  // phase after it — one fetch per change block either way.
+  const rawEvidence = new Map<number, { header: unknown; receipts: unknown }>();
+  async function blockRaw(b: number): Promise<{ header: unknown; receipts: unknown }> {
+    const hit = rawEvidence.get(b);
+    if (hit) return hit;
+    const tag = "0x" + b.toString(16);
+    const [header, receipts] = await callBatchWithBackoff(
+      [
+        { method: "eth_getBlockByNumber", params: [tag, false] },
+        { method: "eth_getBlockReceipts", params: [tag] },
+      ],
+      transport,
+      { retries: throttleRetries, sleepImpl },
+    );
+    rpcReads += 2;
+    const raw = { header, receipts };
+    rawEvidence.set(b, raw);
+    if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
+    return raw;
+  }
+
+  /**
+   * ── EARLY ORIGIN: close `[lo, B]` in ONE step of the SAME proof ────────────
+   *
+   * The walk below proves right to left, chunk by chunk, all the way to `lo` —
+   * for a full rebuild that is Byzantium. A wallet first active in 2025 then
+   * pays for ~17M blocks it never touched, every one of them proving an
+   * interval empty that was obviously empty.
+   *
+   * THE RULE. At a proven boundary B (a block the walk already probed):
+   *
+   *   K   the address is KEY-DERIVED — proven by a receipt with `from` equal to
+   *       it (this run's change blocks, or `args.ownerSigned` from an earlier
+   *       step of the same proof). The sender of a transaction is RECOVERED
+   *       from its ECDSA signature, so a private key hashes to this address;
+   *   G   code(B) == "0x"  ∧  nonce(B) == 0  ∧  balance(B) == 0  (`looksLikeOrigin`);
+   *   P   code(lo) == "0x" ∧  nonce(lo) == nonce(B) ∧ balance(lo) == balance(B)
+   *       — `provablyUnchanged(lo, B)`, the walk's own pruning predicate, read
+   *       with ONE extra probe at the window start;
+   *
+   * ⟹ no balance change in (lo, B], and provenFrom := lo.
+   *
+   * WHY, case by case — every way a balance can fall, at or before B:
+   *   - a transaction the address originated (value, gas, a revert's gas):
+   *     bumps its nonce, and nonce(B) == 0.
+   *   - code running in its context: needs code. For a key-derived address
+   *     code can arrive only by EIP-7702 delegation (no CREATE/CREATE2 can
+   *     target it — that would need a 160-bit address collision between a key
+   *     and a CREATE2 output, ~2^80 work even when one party picks both), and every
+   *     7702 authorization, valid or sponsored, increments the authority's
+   *     nonce (EIP-7702: "increase the nonce of authority by one") — so none
+   *     happened by B. Pre-Prague no delegation existed at all.
+   *   - a contract CREATEd at the address and later SELFDESTRUCTed (any block
+   *     pre-Cancun, the same transaction since EIP-6780), which leaves nonce 0
+   *     and no code behind and could have swept a balance pre-funded at a
+   *     COUNTERFACTUAL CREATE2 address: impossible under K, for the same
+   *     second-preimage reason. WITHOUT K this is the one case that state
+   *     reads at the endpoints cannot see — which is why K is required and the
+   *     run otherwise WALKS (fail closed). A receive-only address (never
+   *     signed anything) therefore never closes early.
+   *   - code at B or at the anchor: G demands code(B) empty; code at the anchor
+   *     is a proof hole before any of this runs (`isPlainEoa(at(hi))`); code at
+   *     lo fails P. All three are checked.
+   * Nothing else debits: CALL value leaves the caller; SELFDESTRUCT pays OUT of
+   * the destructing contract; coinbase fees and post-Shapella withdrawals are
+   * credits with no transaction. So the balance up to B never decreased, and
+   * ending at 0 it was 0 throughout — any credit of ANY kind would still be
+   * there. Genesis allocations likewise. The pre-Byzantium irregularities (the
+   * DAO fork debited listed CONTRACT accounts) are outside the window: `lo` is
+   * never below EARLIEST_PROVABLE_BLOCK, and the licence never reaches before
+   * it — K and G alone would say the balance was 0 even then, and the
+   * acquisition still claims nothing earlier than `lo`.
+   *
+   * WHAT IS LICENSED. Exactly the walk's result: `provenFrom` becomes `lo`, so
+   * the cursor reaches the window start (`stoppedBecause` WINDOW_START or
+   * PROVABLE_FLOOR by the same rule), the opening balance is state(lo).balance
+   * (0), coverage starts at `lo`'s date — the deepest block the proof READ,
+   * never earlier — and no movement exists in (lo, B] to be found or invented.
+   * A wallet first active at block N is COMPLETE from `lo` with a proven zero
+   * balance until N; nothing below `lo` is claimed. The worker's floor check
+   * and BALANCE_BEFORE_PROVABLE_FLOOR are unaffected (a balance at the floor
+   * fails G), as are the forward phase and the incremental suffix (their `lo`
+   * already holds a balance; G fires only where it is zero and P then lands on
+   * `lo` itself).
+   *
+   * COST. G reads states the proof already holds; K reads receipts the
+   * evidence phase fetches anyway (memoised in `blockRaw`); only P spends —
+   * ONE probe triple at `lo`, budget-bounded, deadline-bounded and metered like
+   * every other. Any failure falls back to the walk's own behaviour: a stale
+   * contract at `lo` lets the walk continue; a budget miss or throttle ends
+   * this step at the last proven boundary. The shortcut can only SKIP work
+   * the walk would have proven empty, never change what is licensed.
+   */
+  let originProvenAt: number | null = null;
+  let ownerSigned = args.ownerSigned === true;
+  async function keyDerived(): Promise<boolean> {
+    if (ownerSigned) return true;
+    for (const b of changeBlocks) {
+      const { receipts } = await blockRaw(b);
+      if (!Array.isArray(receipts)) continue; // the evidence phase refuses it
+      if ((receipts as ReceiptView[]).some((r) => typeof r.from === "string" && r.from.toLowerCase() === address)) {
+        ownerSigned = true;
+        return true;
+      }
+    }
+    return false;
+  }
+  async function closesToWindowStart(b: number): Promise<boolean> {
+    if (deps.earlyOrigin === false || b <= lo) return false;
+    const s = states.get(b);
+    if (!s || !looksLikeOrigin(s)) return false;
+    if (!(await keyDerived())) return false;
+    if (!(await probe([lo]))) return false;
+    return provablyUnchanged(at(lo), s);
+  }
+
   try {
     if (!(await probe([hi]))) {
       return empty({ kind: "PARTIAL", coveredFromISO: null, coveredToISO: null,
@@ -724,12 +881,20 @@ export async function acquireEthHistory(
     }
     if (!isPlainEoa(at(hi))) proofHole = true;
 
+    // A wallet with no history at all yet (anchor itself at the origin) — only
+    // on a fresh run: a resumed one's boundary was the last run's to check.
+    if (!proofHole && provenFrom === hi && await closesToWindowStart(hi)) {
+      originProvenAt = hi; provenFrom = lo;
+    }
+
     while (!proofHole && !budgetExhausted && provenFrom > lo) {
       const chunkLo = Math.max(lo, provenFrom - chunkBlocks);
       const found = await enumerate(chunkLo, provenFrom);
       if (proofHole || budgetExhausted) break;
       changeBlocks.push(...found);
       provenFrom = chunkLo;
+      // The chunk just closed at `chunkLo`, whose state `enumerate` read.
+      if (await closesToWindowStart(chunkLo)) { originProvenAt = chunkLo; provenFrom = lo; }
     }
   } catch (e) {
     if (!(e instanceof EthThrottleError)) throw e;
@@ -779,23 +944,13 @@ export async function acquireEthHistory(
 
   try {
   for (const b of changeBlocks) {
-    const tag = "0x" + b.toString(16);
-    const [header, receipts] = await callBatchWithBackoff(
-      [
-        { method: "eth_getBlockByNumber", params: [tag, false] },
-        { method: "eth_getBlockReceipts", params: [tag] },
-      ],
-      transport,
-      { retries: throttleRetries, sleepImpl },
-    );
-    rpcReads += 2;
+    const { header, receipts } = await blockRaw(b);
     const ev = blockEvidence(b, address, at(b).balance - at(b - 1).balance, header, receipts);
     for (const m of movementsForBlock(ev, address)) {
       movements.push(m);
       if (earliestISO === null || m.dateISO < earliestISO) earliestISO = m.dateISO;
       if (latestISO   === null || m.dateISO > latestISO)   latestISO   = m.dateISO;
     }
-    if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
   }
   } catch (e) {
     // Evidence for a block the proof already found could not be fetched. The
@@ -874,6 +1029,7 @@ export async function acquireEthHistory(
     anchorBalanceWei:  at(hi).balance,
     openingBalanceWei: at(provenFrom)?.balance ?? null,
     probesUsed, rpcReads,
+    ...(originProvenAt !== null ? { originProvenAtBlock: originProvenAt } : {}),
   };
 }
 
