@@ -65,6 +65,16 @@ async function main() {
   const C = await import("./policy-group-catalogue");
   fake.reset();
   C.invalidatePolicyGroupCatalogue();
+  // Review fix 3 — the row locks are parameterised $queryRaw; answer them from the fake's PolicyGroup rows.
+  const order: string[] = [];
+  const answerLocks = () => {
+    fake.queryRaw = (sql, values) => {
+      if (!/FROM "PolicyGroup" WHERE "key" = \? FOR (UPDATE|SHARE)$/.test(sql.trim())) throw new Error(`unexpected raw SQL: ${sql}`);
+      order.push(sql.includes("FOR UPDATE") ? "lock:update" : "lock:share");
+      return fake.rows("PolicyGroup", { key: values[0] as string }).map((r) => ({ key: r.key, archivedAt: r.archivedAt ?? null }));
+    };
+  };
+  answerLocks();
   seedBeta();
   // Customers: 3 on Beta (one with Founder), none elsewhere yet.
   for (const [i, overlay] of [[1, null], [2, null], [3, FOUNDER_INTERNAL_V1.key]] as const) {
@@ -155,6 +165,24 @@ async function main() {
     check("an unassigned, non-default group ⇒ archived (row kept)", ok.ok && fake.one("PolicyGroup", { key: "PRO_V1_COPY" })!.archivedAt instanceof Date);
     const twice = await W.archivePolicyGroup({ key: "PRO_V1_COPY", reason: REASON, actor: ACTOR });
     check("archiving twice ⇒ VALIDATION", !twice.ok && twice.code === "VALIDATION");
+    const lockSql = fake.raw.filter((r) => /FOR UPDATE/.test(r.sql));
+    check("review fix 3: archive takes a FOR UPDATE row lock, parameterised (the key is a bound value, never in the SQL text)",
+      lockSql.length >= 1 && lockSql.every((r) => r.values[0] !== undefined && !r.sql.includes(String(r.values[0]))));
+    order.length = 0;
+    fake.on("CustomerPolicyAssignment", "count", () => { order.push("count"); return undefined; });
+    const u2 = fake.seed("User", { email: "trial@example.test", username: "trial1", passwordHash: "x", role: "USER" });
+    void u2;
+    await W.createPolicyGroup({ key: "LOCK_ORDER_V1", label: "Lock order", from: "DEFAULT", reason: REASON, actor: ACTOR });
+    await W.archivePolicyGroup({ key: "LOCK_ORDER_V1", reason: REASON, actor: ACTOR });
+    check("review fix 3: the lock is taken BEFORE the assignments are counted", order[0] === "lock:update" && order.indexOf("count") > 0, order);
+    fake.clearHooks();
+    const builtIn = await W.setDefaultPolicyGroup({ key: "PRO_V1", expectedDefaultKey: DEFAULT_POLICY_GROUP, reason: REASON, actor: ACTOR });
+    const archBeta = await W.archivePolicyGroup({ key: DEFAULT_POLICY_GROUP, reason: REASON, actor: ACTOR });
+    check("review fix 6: a BUILT-IN group (Beta, not the default) ⇒ NOT_EDITABLE 'Built-in groups cannot be archived'",
+      builtIn.ok && !archBeta.ok && archBeta.code === "NOT_EDITABLE" && /Built-in groups cannot be archived/.test(archBeta.error) && fake.one("PolicyGroup", { key: DEFAULT_POLICY_GROUP })!.archivedAt == null);
+    await W.setDefaultPolicyGroup({ key: DEFAULT_POLICY_GROUP, expectedDefaultKey: "PRO_V1", reason: REASON, actor: ACTOR });
+    const cloneArchived = await W.createPolicyGroup({ key: "FROM_ARCHIVED_V1", label: "x", from: "PRO_V1_COPY", reason: REASON, actor: ACTOR });
+    check("review fix 7: cloning FROM an archived group ⇒ NOT_EDITABLE, nothing written", !cloneArchived.ok && cloneArchived.code === "NOT_EDITABLE" && !fake.one("PolicyGroup", { key: "FROM_ARCHIVED_V1" }));
     const editArchived = await W.updatePolicyGroup({ key: "PRO_V1_COPY", expectedVersion: 1, values: { ...BETA, exportsPerDay: 9 }, reason: REASON, actor: ACTOR });
     check("an archived group cannot be edited ⇒ NOT_EDITABLE", !editArchived.ok && editArchived.code === "NOT_EDITABLE");
     check("no PolicyGroup or version row was ever deleted", fake.callsTo("PolicyGroup", "delete").length + fake.callsTo("PolicyGroup", "deleteMany").length + fake.callsTo("PolicyGroupVersion", "delete").length + fake.callsTo("PolicyGroupVersion", "deleteMany").length === 0);
@@ -178,7 +206,18 @@ async function main() {
     check("the partial unique index refuses a second default (P2002)", threw === "P2002");
     const back = await W.setDefaultPolicyGroup({ key: DEFAULT_POLICY_GROUP, expectedDefaultKey: "PRO_V1", reason: REASON, actor: ACTOR });
     check("moved back to Beta", back.ok && fake.rows("PolicyGroup", { isDefault: true }).map((r) => r.key).join() === DEFAULT_POLICY_GROUP);
-    check("ONE POLICY_GROUP_DEFAULT_CHANGED row per move", audits(AuditAction.POLICY_GROUP_DEFAULT_CHANGED).length === 2);
+    check("ONE POLICY_GROUP_DEFAULT_CHANGED row per move", audits(AuditAction.POLICY_GROUP_DEFAULT_CHANGED).length === 4);
+    // Review fix 4 — a concurrent archive lands between the unset and the set.
+    const auditsBefore = audits().length;
+    fake.on("PolicyGroup", "updateMany", (args) => {
+      if ((args.data as { isDefault?: boolean }).isDefault === true) { const r = fake.one("PolicyGroup", { key: "PRO_V1" })!; r.archivedAt = new Date(); }
+      return undefined;
+    });
+    const raced = await W.setDefaultPolicyGroup({ key: "PRO_V1", expectedDefaultKey: DEFAULT_POLICY_GROUP, reason: REASON, actor: ACTOR });
+    fake.clearHooks();
+    check("review fix 4: set-default on a row archived meanwhile ⇒ CONFLICT (409)", !raced.ok && raced.code === "CONFLICT", raced);
+    check("…the unset ROLLED BACK: Beta is still the one default, no audit row", fake.rows("PolicyGroup", { isDefault: true }).map((r) => r.key).join() === DEFAULT_POLICY_GROUP && audits().length === auditsBefore);
+    fake.one("PolicyGroup", { key: "PRO_V1" })!.archivedAt = null;
   }
 
   console.log("6. audit rows");
@@ -187,8 +226,8 @@ async function main() {
     check("every policy-group action is reason-required and listed in the Security operator feed",
       [AuditAction.POLICY_GROUP_CREATED, AuditAction.POLICY_GROUP_UPDATED, AuditAction.POLICY_GROUP_ROLLED_BACK, AuditAction.POLICY_GROUP_ARCHIVED, AuditAction.POLICY_GROUP_DEFAULT_CHANGED]
         .every((a) => REASON_REQUIRED_ACTIONS.has(a) && OPERATOR_ACTION_FEED_ACTIONS.includes(a)));
-    check("all 8 rows (2 created, 2 edited, 1 restored, 1 archived, 2 default moves): by the operator, target POLICY_GROUP, area PLATFORM_OPS, reason code + note, SUCCESS, no userId column",
-      rows.length === 8 && rows.every((r) => {
+    check("all 12 rows (3 created, 2 edited, 1 restored, 2 archived, 4 default moves; refusals write none): by the operator, target POLICY_GROUP, area PLATFORM_OPS, reason code + note, SUCCESS, no userId column",
+      rows.length === 12 && rows.every((r) => {
         const m = r.metadata as Record<string, any>;
         return r.performedByAdminId === ACTOR.userId && r.userId == null && m.target.kind === "POLICY_GROUP" && m.actor.area === "PLATFORM_OPS"
           && m.reason.code === "POLICY_ROLLOUT" && m.reason.note === "editor test" && m.result === "SUCCESS";
@@ -217,7 +256,15 @@ async function main() {
     check("the write service never writes CustomerPolicyAssignment (counts only)", !/customerPolicyAssignment\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(/.test(w) && /customerPolicyAssignment\.count\(/.test(w));
     check("the write service never touches a ceiling, an overlay or the fail-closed set", !/ENTITLEMENT_DIMENSIONS|OVERLAYS|FAIL_CLOSED_VALUES|FOUNDER/.test(w));
     check("every operation runs in ONE transaction and invalidates the cache after commit", (w.match(/return run\(client,/g) ?? []).length === 5 && /if \(r\.ok\) invalidatePolicyGroupCatalogue\(\);/.test(w));
-    check("raw SQL nowhere in the editor's server code", ["lib/platform/policies/policy-groups-write.ts", "lib/platform/policies/policy-group-catalogue.ts", "lib/platform/policies/policy-group-detail.ts"].every((f) => !/\$(executeRaw|queryRaw)/.test(code(f))));
+    // Review fix 3 — the ONLY raw SQL is the row lock: one parameterised (tagged-template) SELECT … FOR UPDATE in
+    // archive and one SELECT … FOR SHARE in the CS assignment; no Unsafe variant, no executeRaw, nothing else.
+    const w2 = code("lib/platform/policies/policy-groups-write.ts");
+    check("raw SQL in the write service = exactly one tagged-template FOR UPDATE lock",
+      (w2.match(/\$queryRaw/g) ?? []).length === 1 && /\$queryRaw`SELECT "key" FROM "PolicyGroup" WHERE "key" = \$\{input\.key\} FOR UPDATE`/.test(w2) && !/Unsafe|\$executeRaw/.test(w2));
+    const a2 = code("lib/platform/customer/assign.ts");
+    check("raw SQL in the CS assignment = exactly one tagged-template FOR SHARE re-check",
+      (a2.match(/\$queryRaw/g) ?? []).length === 2 /* type + call */ && /\$queryRaw<\{ archivedAt: Date \| null \}\[\]>`SELECT "archivedAt" FROM "PolicyGroup" WHERE "key" = \$\{input\.policyGroup\} FOR SHARE`/.test(a2) && !/Unsafe|\$executeRaw/.test(a2));
+    check("no raw SQL in the catalogue loader or the detail read", ["lib/platform/policies/policy-group-catalogue.ts", "lib/platform/policies/policy-group-detail.ts"].every((f) => !/\$(executeRaw|queryRaw)/.test(code(f))));
   }
 
   console.log("8. the catalogue loader");
@@ -234,7 +281,13 @@ async function main() {
     C.invalidatePolicyGroupCatalogue();
     fake.on("PolicyGroup", "findMany", () => { throw Object.assign(new Error('relation "PolicyGroup" does not exist'), { code: "P2021" }); });
     const c = await C.loadPolicyGroupCatalogue();
-    check("a failed read serves the LAST GOOD catalogue (never throws)", c.groups[DEFAULT_POLICY_GROUP].version === 4);
+    check("a failed read serves the LAST GOOD catalogue (never throws)", c.groups[DEFAULT_POLICY_GROUP].version === 4 && c.source === "DB");
+    // Review fix 2 — the last good read has a maximum age; past it, the strict code fallback.
+    C.invalidatePolicyGroupCatalogue();
+    C.ageLastGoodPolicyGroupCatalogueForTests(C.LAST_GOOD_MAX_AGE_MS + 1_000);
+    const old = await C.loadPolicyGroupCatalogue();
+    check("a failed read with a last good OLDER than 5 min ⇒ the CODE_FALLBACK (strict), not the stale DB catalogue",
+      C.LAST_GOOD_MAX_AGE_MS === 300_000 && old.source === "CODE_FALLBACK" && old.groups.PRO_V1 === undefined);
     fake.clearHooks();
     const r = await C.readPolicyGroupCatalogue({});
     check("a client without the delegates (an old generated client) ⇒ the code catalogue", r.source === "CODE" && r.defaultKey === DEFAULT_POLICY_GROUP);

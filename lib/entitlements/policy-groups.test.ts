@@ -92,12 +92,16 @@ console.log("2. The catalogue");
   const edited = { ...BETA, exportsPerDay: 5 };
   const cat = buildPolicyGroupCatalogue(
     [row({ key: DEFAULT_POLICY_GROUP, isDefault: true, builtIn: true, currentVersion: 2 }), row({ key: "PRO_V1" }), row({ key: "BROKEN_V1" }), row({ key: "OLD_V1", archivedAt: new Date("2026-10-01") })],
-    [ver(DEFAULT_POLICY_GROUP, 1, BETA), ver(DEFAULT_POLICY_GROUP, 2, edited), ver("PRO_V1", 1, { ...BETA, maxConnections: 25 }), ver("BROKEN_V1", 1, { ...BETA, maxConnections: 999 }), ver("OLD_V1", 1, BETA)],
+    [ver(DEFAULT_POLICY_GROUP, 1, BETA), ver(DEFAULT_POLICY_GROUP, 2, edited), ver("PRO_V1", 1, { ...BETA, maxConnections: 25 }), ver("BROKEN_V1", 1, { ...BETA, maxConnections: "lots" }), ver("OLD_V1", 1, BETA)],
     NOW,
   );
   check("a DB row WINS over the code group of the same key (current version 2)", cat.groups[DEFAULT_POLICY_GROUP].source === "DB" && cat.groups[DEFAULT_POLICY_GROUP].values?.exportsPerDay === 5 && cat.groups[DEFAULT_POLICY_GROUP].version === 2);
   check("a DB-only group is defined", cat.groups.PRO_V1?.valid === true && cat.groups.PRO_V1.values?.maxConnections === 25);
-  check("an out-of-range stored version ⇒ INVALID, values null (never a guessed value)", cat.groups.BROKEN_V1.valid === false && cat.groups.BROKEN_V1.values === null && cat.groups.BROKEN_V1.invalidReasons.length > 0);
+  check("a STRUCTURALLY unusable stored version (wrong type) ⇒ INVALID, values null (never a guessed value)", cat.groups.BROKEN_V1.valid === false && cat.groups.BROKEN_V1.values === null && cat.groups.BROKEN_V1.invalidReasons.length > 0);
+  for (const [name, values] of [["NaN", { ...BETA, exportsPerDay: NaN }], ["Infinity", { ...BETA, exportsPerDay: Infinity }], ["a non-object", "everything"], ["an array", [1, 2]], ["null", null], ["a string boolean", { ...BETA, conversations: "yes" }]] as const) {
+    const c = buildPolicyGroupCatalogue([row({ key: "X_V1" })], [ver("X_V1", 1, values)], NOW);
+    check(`unusable at read: ${name} ⇒ INVALID`, c.groups.X_V1.valid === false && c.groups.X_V1.values === null);
+  }
   const noVersion = buildPolicyGroupCatalogue([row({ key: "GHOST_V1", currentVersion: 3 })], [ver("GHOST_V1", 1, BETA)], NOW);
   check("a row whose current version is missing ⇒ INVALID", noVersion.groups.GHOST_V1.valid === false);
   check("archived is reported, still valid (never strands a customer)", cat.groups.OLD_V1.archived && cat.groups.OLD_V1.valid);
@@ -110,7 +114,7 @@ console.log("2. The catalogue");
   check("a moved default: PRO_V1 is the default, Beta is not", moved.defaultKey === "PRO_V1" && moved.groups.PRO_V1.isDefault && !moved.groups[DEFAULT_POLICY_GROUP].isDefault);
   const archivedDefault = buildPolicyGroupCatalogue([row({ key: "PRO_V1", isDefault: true, archivedAt: NOW })], [ver("PRO_V1", 1, BETA)], NOW);
   check("an archived default row is ignored ⇒ the code default", archivedDefault.defaultKey === DEFAULT_POLICY_GROUP);
-  const invalidDefault = buildPolicyGroupCatalogue([row({ key: "PRO_V1", isDefault: true })], [ver("PRO_V1", 1, { conversations: true })], NOW);
+  const invalidDefault = buildPolicyGroupCatalogue([row({ key: "PRO_V1", isDefault: true })], [ver("PRO_V1", 1, { conversations: "on" })], NOW);
   check("an INVALID DB default stays the default (its customers fail closed — never silently Beta)", invalidDefault.defaultKey === "PRO_V1" && !invalidDefault.groups.PRO_V1.valid);
   check("codeFallbackCatalogue is marked CODE_FALLBACK with the code groups", codeFallbackCatalogue().source === "CODE_FALLBACK" && codeFallbackCatalogue().defaultKey === DEFAULT_POLICY_GROUP);
 
@@ -134,7 +138,9 @@ console.log("3. Resolution");
       const a = JSON.stringify(resolveEffectiveEntitlements(f, undefined, { failClosed }));
       const b = JSON.stringify(resolveEffectiveEntitlements(f, undefined, { failClosed, catalogue: CODE_CATALOGUE }));
       const c = JSON.stringify(resolveEffectiveEntitlements(f, undefined, { failClosed, catalogue: codeFallbackCatalogue() }));
-      check(`back-compat ${name} (switch ${failClosed ? "on" : "off"}): code catalogue ≡ no option ≡ fallback (byte-identical)`, a === b && b === c);
+      // Review fix 2: the FALLBACK is strict for an assigned key it does not hold (it may be a DB-only group).
+      if (name === "unknown") check(`back-compat ${name} (switch ${failClosed ? "on" : "off"}): code catalogue ≡ no option; the fallback fails closed instead`, a === b && JSON.parse(c).failClosedReason === "CATALOGUE_UNAVAILABLE");
+      else check(`back-compat ${name} (switch ${failClosed ? "on" : "off"}): code catalogue ≡ no option ≡ fallback (byte-identical)`, a === b && b === c);
     }
   }
   const seededDay1 = buildPolicyGroupCatalogue([row({ key: DEFAULT_POLICY_GROUP, isDefault: true, builtIn: true })], [ver(DEFAULT_POLICY_GROUP, 1, BETA)], NOW);
@@ -166,7 +172,7 @@ console.log("3. Resolution");
       DIMENSION_KEYS.every((k) => broken.dimensions[k].value === FAIL_CLOSED_VALUES[k]) && broken.dimensions.aiDailyUsdAllowance.value === 0);
     check("…the group key is still reported (known, not 'unknown')", broken.policyGroup === "BROKEN_V1" && broken.policyGroupKnown && broken.unknownPolicyGroup === null);
   }
-  const invalidDefault = buildPolicyGroupCatalogue([row({ key: "PRO_V1", isDefault: true })], [ver("PRO_V1", 1, { conversations: true })], NOW);
+  const invalidDefault = buildPolicyGroupCatalogue([row({ key: "PRO_V1", isDefault: true })], [ver("PRO_V1", 1, { conversations: "on" })], NOW);
   const unassignedOff = resolveEffectiveEntitlements(null, undefined, { catalogue: invalidDefault });
   check("unassigned with an INVALID default, switch off ⇒ fail closed (INVALID_POLICY_GROUP), not Beta", unassignedOff.failClosed && unassignedOff.failClosedReason === "INVALID_POLICY_GROUP");
   const unassignedOn = resolveEffectiveEntitlements(null, undefined, { catalogue: cat, failClosed: true });
@@ -181,6 +187,74 @@ console.log("3. Resolution");
   let loads = 0;
   check("loader: `loadCatalogue` is called when no catalogue is given", (await loadEffectiveEntitlements(client, "u", { loadCatalogue: async () => { loads++; return cat; } })).dimensions.maxConnections.value === 25 && loads === 1);
   check("loader: neither ⇒ the code catalogue (PRO_V1 unknown ⇒ default)", (await loadEffectiveEntitlements(client, "u")).policyGroupKnown === false);
+
+  // ── 3b. Review fix 1 — tolerant at read, strict at write ─────────────────
+  console.log("3b. A registry change never fails closed the customer base (tolerant read)");
+  {
+    // (a) The registry GAINS a dimension after Beta's version was stored: a real
+    // mutation of the registry (restored in finally), not a simulation.
+    const dims = ENTITLEMENT_DIMENSIONS as unknown as Record<string, unknown>;
+    const keys = DIMENSION_KEYS as unknown as string[];
+    const codeBeta = BETA_FULL_ACCESS_V1.values as unknown as Record<string, unknown>;
+    dims.syntheticFeature = { kind: "count", ceiling: 7, label: "Synthetic feature", description: "test", category: "ai" };
+    keys.push("syntheticFeature");
+    codeBeta.syntheticFeature = 4;
+    try {
+      const stored = { ...BETA, exportsPerDay: 5 }; // written BEFORE the dimension existed
+      delete (stored as Record<string, unknown>).syntheticFeature;
+      const c = buildPolicyGroupCatalogue(
+        [row({ key: DEFAULT_POLICY_GROUP, isDefault: true, builtIn: true }), row({ key: "PRO_V1" })],
+        [ver(DEFAULT_POLICY_GROUP, 1, stored), ver("PRO_V1", 1, stored)], NOW);
+      check("(a) the stored Beta stays VALID (no INVALID_POLICY_GROUP for the whole base)", c.groups[DEFAULT_POLICY_GROUP].valid && c.groups.PRO_V1.valid);
+      const e = resolveEffectiveEntitlements(facts(DEFAULT_POLICY_GROUP), undefined, { catalogue: c, failClosed: true });
+      check("(a) Beta customers are not fail-closed; every existing value unchanged (exports 5 as stored)",
+        !e.failClosed && e.dimensions.exportsPerDay.value === 5 && e.dimensions.aiTurnsPerMinute.value === BETA.aiTurnsPerMinute && e.dimensions.conversations.value === true);
+      check("(a) the new dimension takes the CODE group's value (4)", (e.dimensions as Record<string, { value: unknown }>).syntheticFeature?.value === 4);
+      check("(a) the fill is reported to operators", (c.groups[DEFAULT_POLICY_GROUP].readAdjustments ?? []).some((a) => /Synthetic feature: not in the stored version/.test(a)));
+      check("(a) WRITES stay strict: the same stored values are refused as a new version", !validateEntitlementValues(stored).ok);
+    } finally {
+      delete dims.syntheticFeature; keys.splice(keys.indexOf("syntheticFeature"), 1); delete codeBeta.syntheticFeature;
+    }
+    // A DB-only group missing an EXISTING dimension takes that dimension's fail-closed value, per dimension.
+    const partial = { ...BETA } as Record<string, unknown>;
+    delete partial.maxConnections;
+    const p = buildPolicyGroupCatalogue([row({ key: "PRO_V1" })], [ver("PRO_V1", 1, partial)], NOW);
+    check("a DB-only group missing maxConnections ⇒ that dimension only is FAIL_CLOSED (0); the rest are kept",
+      p.groups.PRO_V1.valid && p.groups.PRO_V1.values?.maxConnections === FAIL_CLOSED_VALUES.maxConnections && p.groups.PRO_V1.values?.exportsPerDay === BETA.exportsPerDay);
+
+    // (b) A ceiling is LOWERED below a stored value (real registry mutation, restored).
+    const mc = ENTITLEMENT_DIMENSIONS.maxConnections as unknown as { ceiling: number };
+    const cd = ENTITLEMENT_DIMENSIONS.manualBankRefreshCooldownMinutes as unknown as { ceiling: number };
+    const oldMc = mc.ceiling, oldCd = cd.ceiling;
+    mc.ceiling = 8; cd.ceiling = 90;
+    try {
+      const c = buildPolicyGroupCatalogue([row({ key: DEFAULT_POLICY_GROUP, isDefault: true, builtIn: true })], [ver(DEFAULT_POLICY_GROUP, 1, BETA)], NOW);
+      const e = resolveEffectiveEntitlements(facts(DEFAULT_POLICY_GROUP), undefined, { catalogue: c, failClosed: true });
+      check("(b) lowered ceiling: Beta stays valid, NOT fail-closed", c.groups[DEFAULT_POLICY_GROUP].valid && !e.failClosed);
+      check("(b) the count is clamped to the new ceiling (10 ⇒ 8); the floor raised to the new minimum (60 ⇒ 90)",
+        e.dimensions.maxConnections.value === 8 && e.dimensions.manualBankRefreshCooldownMinutes.value === 90);
+      check("(b) every other dimension unchanged", e.dimensions.exportsPerDay.value === BETA.exportsPerDay && e.dimensions.aiTurnsPerHour.value === BETA.aiTurnsPerHour);
+    } finally { mc.ceiling = oldMc; cd.ceiling = oldCd; }
+    const extra = buildPolicyGroupCatalogue([row({ key: "PRO_V1" })], [ver("PRO_V1", 1, { ...BETA, retiredDimension: 3, maxConnections: -2, exportsPerDay: 2.7 })], NOW);
+    check("unknown extra keys are ignored at read; a negative count reads 0, a fractional one is floored",
+      extra.groups.PRO_V1.valid && !("retiredDimension" in (extra.groups.PRO_V1.values ?? {})) && extra.groups.PRO_V1.values?.maxConnections === 0 && extra.groups.PRO_V1.values?.exportsPerDay === 2);
+  }
+
+  // ── 3c. Review fix 2 — a read failure is never more permissive ───────────
+  console.log("3c. Under the code fallback, an assigned DB-only key fails closed (switch off too)");
+  {
+    for (const failClosed of [false, true]) {
+      const e = resolveEffectiveEntitlements(facts("PRO_V1", FOUNDER_INTERNAL_V1.key), { aiDailyUsdAllowanceUsd: 9 }, { catalogue: codeFallbackCatalogue(), failClosed });
+      check(`code fallback, switch ${failClosed ? "on" : "off"}: a DB-only key ⇒ FAIL_CLOSED_VALUES (CATALOGUE_UNAVAILABLE), never Beta`,
+        e.failClosed && e.failClosedReason === "CATALOGUE_UNAVAILABLE" && DIMENSION_KEYS.every((k) => e.dimensions[k].value === FAIL_CLOSED_VALUES[k]));
+    }
+    const beta = resolveEffectiveEntitlements(facts(DEFAULT_POLICY_GROUP), undefined, { catalogue: codeFallbackCatalogue() });
+    check("code fallback: a Beta customer still gets code Beta", !beta.failClosed && beta.dimensions.exportsPerDay.value === BETA.exportsPerDay);
+    const un = resolveEffectiveEntitlements(null, undefined, { catalogue: codeFallbackCatalogue() });
+    check("code fallback, switch off: an UNASSIGNED customer keeps today's default path (Beta, POLICY_DEFAULT)", !un.failClosed && un.dimensions.exportsPerDay.source === "POLICY_DEFAULT");
+    const codeOnly = resolveEffectiveEntitlements(facts("RETIRED_V0"), undefined, { catalogue: CODE_CATALOGUE });
+    check("the plain CODE catalogue (no read attempted) keeps today's unknown-key behaviour (switch off ⇒ default)", !codeOnly.failClosed);
+  }
 
   // ── 4. Preview + exposure ────────────────────────────────────────────────
   console.log("4. Preview + cost exposure");

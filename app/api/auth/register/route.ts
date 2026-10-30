@@ -201,6 +201,9 @@ export async function POST(req: NextRequest) {
     // PolicyGroup table (or a failed read) cannot abort registration — it
     // simply assigns Beta exactly as before. Never Free / Paid / Pro unless an
     // operator deliberately made such a group the default.
+    // ⚠️ Under the CODE FALLBACK (read failed, no recent good read) this is code
+    // Beta even if an operator had moved the default — accepted (review fix 2):
+    // Beta is the owner-ruled default, and the alternative is refusing signups.
     const defaultPolicyGroup = (await loadPolicyGroupCatalogue()).defaultKey;
 
     // ── Create user + space atomically ───────────────────────────────────

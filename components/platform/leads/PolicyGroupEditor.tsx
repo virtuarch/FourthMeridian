@@ -337,9 +337,12 @@ function EditorPanel({ mode, data, onClose, onDone, onMode }: {
           <button type="button" role="menuitem" className={`${PILL} justify-start border-0`} disabled={defaultWhy !== null}
             onClick={() => { setMenu(false); setReason(EMPTY_OPERATOR_REASON); setStep("default"); }}><Star size={13} aria-hidden /> Make default</button>
           <span className="px-3 text-[10px] text-[var(--text-faint)]">{defaultWhy ?? DEFAULT_NOTE}</span>
-          <button type="button" role="menuitem" className={`${PILL} justify-start border-0`} disabled={archiveWhy !== null}
-            onClick={() => { setMenu(false); setReason(EMPTY_OPERATOR_REASON); setStep("archive"); }}><Archive size={13} aria-hidden /> Archive</button>
-          <span className="px-3 text-[10px] text-[var(--text-faint)]">{archiveWhy ?? ARCHIVE_NOTE}</span>
+          {/* Built-in groups are never archived (ruling) — no Archive item at all. */}
+          {!detail?.group.builtIn && (<>
+            <button type="button" role="menuitem" className={`${PILL} justify-start border-0`} disabled={archiveWhy !== null}
+              onClick={() => { setMenu(false); setReason(EMPTY_OPERATOR_REASON); setStep("archive"); }} data-archive-item><Archive size={13} aria-hidden /> Archive</button>
+            <span className="px-3 text-[10px] text-[var(--text-faint)]">{archiveWhy ?? ARCHIVE_NOTE}</span>
+          </>)}
         </span>
       )}
     </span>
@@ -422,8 +425,9 @@ export function usePolicyGroupEditor(access: SpaceMountAccess | undefined, data:
 export function GroupEditButtons({ groupKey, label, actions, archived }: { groupKey: string; label: string; actions: PolicyEditActions; archived: boolean }) {
   return (
     <span className="flex flex-wrap items-center gap-2" data-group-edit={groupKey}>
+      {/* An archived group is retired: neither edited nor cloned (the server refuses both). */}
       {!archived && <button type="button" className={PILL} onClick={() => actions.onEdit(groupKey)} aria-haspopup="dialog" aria-label={`Edit ${label}`}><Pencil size={12} aria-hidden /> Edit</button>}
-      <button type="button" className={PILL} onClick={() => actions.onClone(groupKey)} aria-haspopup="dialog" aria-label={`Clone ${label}`}><Copy size={12} aria-hidden /> Clone</button>
+      {!archived && <button type="button" className={PILL} onClick={() => actions.onClone(groupKey)} aria-haspopup="dialog" aria-label={`Clone ${label}`}><Copy size={12} aria-hidden /> Clone</button>}
     </span>
   );
 }

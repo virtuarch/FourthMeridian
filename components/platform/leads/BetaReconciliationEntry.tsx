@@ -34,7 +34,7 @@ import type { AttentionResponse } from "@/lib/platform/ops/attention";
 import { useSharedWidgetFetch, useSharedWidgetPublish } from "../workspace-session";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { OperatorReasonField, EMPTY_OPERATOR_REASON, reasonPayload, type OperatorReasonValue } from "../widgets/OperatorReasonField";
-import { RECONCILE_GUARANTEE, reconcileConfirmCount, reconcileEntryLabel, reconcileOutcome, shortName } from "./policies-model";
+import { RECONCILE_GUARANTEE, reconcileBlockedLine, reconcileConfirmCount, reconcileEntryLabel, reconcileOutcome, shortName } from "./policies-model";
 
 export const RECONCILE_URL = "/api/platform/platform-ops/policies/reconcile-beta";
 const POLICY_GROUPS_URL = "/api/platform/platform-ops/policy-groups";
@@ -43,7 +43,13 @@ const ATTENTION_URL = "/api/platform/platform-ops/attention";
 const ENTRY = "inline-flex min-h-11 items-center gap-1.5 rounded-full border border-[var(--border-hairline)] px-3 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--surface-inset)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8";
 
 /** PURE presentation of the entry (prop-driven; every state renders in a test). */
-export function BetaReconciliationButton({ eligible, onSelect, group }: { eligible: number | null | undefined; onSelect: () => void; group?: string }) {
+export function BetaReconciliationButton({ eligible, onSelect, group, blocked }: {
+  eligible: number | null | undefined; onSelect: () => void; group?: string; blocked?: "ARCHIVED" | "INVALID" | null;
+}) {
+  // Beta archived / unusable: say so (eligible-but-blocked) — no button, never another group.
+  const blockedLine = reconcileBlockedLine(eligible, blocked, group);
+  if (blockedLine) return <span data-beta-blocked className="text-[11px]" style={{ color: TONE_COLOR.warn }}>{blockedLine}</span>;
+  if (blocked) return null;
   const label = reconcileEntryLabel(eligible, group);
   if (!label) return null;
   return (
@@ -75,7 +81,7 @@ function Reconcile() {
   const [reason, setReason] = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; tone: StatusTone } | null>(null);
-  // POLICY EDITOR — the entry names the DEFAULT group it assigns (Beta unless the default moved).
+  // The entry names the group it assigns — always the built-in Beta (its current label).
   const group = dryRun.data?.groupLabel ? shortName(dryRun.data.groupLabel) : "Beta";
 
   const refresh = useCallback(async () => {
@@ -112,7 +118,7 @@ function Reconcile() {
   return (
     <>
       {feedback && <span role="status" className="text-[11px]" style={{ color: TONE_COLOR[feedback.tone] }}>{feedback.text}</span>}
-      <BetaReconciliationButton eligible={dryRun.data?.eligible} group={group}
+      <BetaReconciliationButton eligible={dryRun.data?.eligible} group={group} blocked={dryRun.data?.blocked ?? null}
         onSelect={() => { setReason(EMPTY_OPERATOR_REASON); setFeedback(null); setConfirming(dryRun.data?.eligible ?? null); }} />
       {confirming !== null && (
         <ConfirmDialog

@@ -68,7 +68,7 @@ export type EntitlementSource = "POLICY" | "POLICY_DEFAULT" | "OVERLAY" | "CEILI
  * STORED definition is invalid — the last fails closed regardless of the
  * rollout switch, because no valid plan exists to fall back to honestly.
  */
-export type FailClosedReason = "UNASSIGNED" | "UNKNOWN_POLICY_GROUP" | "INVALID_POLICY_GROUP";
+export type FailClosedReason = "UNASSIGNED" | "UNKNOWN_POLICY_GROUP" | "INVALID_POLICY_GROUP" | "CATALOGUE_UNAVAILABLE";
 
 /** Resolver options. `failClosed` is the rollout switch's value, handed in by the loader (the resolver stays pure). */
 export interface ResolveOptions {
@@ -200,7 +200,14 @@ export function resolveEffectiveEntitlements(
   // resolve to: an assigned group whose stored version is invalid, or an
   // unassigned / unknown customer whose DEFAULT group is invalid. Never
   // "unlimited", never silently Beta.
-  if ((options.failClosed === true && !known) || planValues === null) {
+  //
+  // REVIEW FIX 2 — a catalogue READ FAILURE is never more permissive: when the
+  // definitions in force are the CODE FALLBACK (the DB read failed, no recent
+  // good read), an ASSIGNED key the fallback does not hold (a DB-only group)
+  // FAILS CLOSED whatever the rollout switch says — it must not silently
+  // become Beta. (Unassigned customers keep today's switch-governed path.)
+  const fallbackUnknown = catalogue.source === "CODE_FALLBACK" && assigned && assignedGroup === undefined;
+  if ((options.failClosed === true && !known) || planValues === null || fallbackUnknown) {
     for (const key of DIMENSION_KEYS) {
       const asked = (FAIL_CLOSED_VALUES as EntitlementValues)[key];
       const { value, clamped } = clamp(key, asked);
@@ -213,6 +220,7 @@ export function resolveEffectiveEntitlements(
     }
     const reason: FailClosedReason = invalidAssigned || (planValues === null && (known || !(options.failClosed === true)))
       ? "INVALID_POLICY_GROUP"
+      : fallbackUnknown ? "CATALOGUE_UNAVAILABLE"
       : assigned ? "UNKNOWN_POLICY_GROUP" : "UNASSIGNED";
     return {
       policyGroup: groupKey,

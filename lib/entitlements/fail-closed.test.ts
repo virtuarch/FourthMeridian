@@ -267,7 +267,7 @@ async function main(): Promise<void> {
         [{ key: "PRO_V1", label: "Pro", description: "", isDefault: false, builtIn: false, archivedAt: null, currentVersion: 1 },
          { key: "BROKEN_V1", label: "Broken", description: "", isDefault: false, builtIn: false, archivedAt: null, currentVersion: 1 }],
         [{ groupKey: "PRO_V1", version: 1, values: POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, createdAt: now },
-         { groupKey: "BROKEN_V1", version: 1, values: {}, createdAt: now }], now);
+         { groupKey: "BROKEN_V1", version: 1, values: "unusable", createdAt: now }], now);
       fake.calls.length = 0;
       await loadPolicyAssignmentHealth({ client: fake, enforced: true, now, catalogue: db });
       check("reads: a valid DB group is known; an invalid stored group is NOT (its customers are reported)",

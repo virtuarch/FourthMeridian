@@ -61,6 +61,11 @@ async function main() {
   fake.reset();
   freshCache();
   invalidatePolicyGroupCatalogue();
+  // Review fix 3 — the row locks (archive FOR UPDATE, CS assign FOR SHARE) answered from the fake's rows.
+  fake.queryRaw = (sql, values) => {
+    if (!/FROM "PolicyGroup" WHERE "key" = \? FOR (UPDATE|SHARE)$/.test(sql.trim())) throw new Error(`unexpected raw SQL: ${sql}`);
+    return fake.rows("PolicyGroup", { key: values[0] as string }).map((r) => ({ key: r.key, archivedAt: r.archivedAt ?? null }));
+  };
   // groupBy is computed from the fake's rows (the fake never stubs it silently).
   fake.on("CustomerPolicyAssignment", "groupBy", (args) => {
     const by = args.by as string[];
@@ -184,6 +189,8 @@ async function main() {
 
     const archDefault = await archive(control.cookie, DEFAULT_POLICY_GROUP, { reason: REASON });
     t.check("archive the default → 409 NOT_EDITABLE", archDefault.status === 409 && archDefault.body.code === "NOT_EDITABLE");
+    const archBuiltIn = await archive(control.cookie, DEFAULT_POLICY_GROUP, { reason: REASON });
+    t.check("archive a BUILT-IN group → 409 NOT_EDITABLE", archBuiltIn.status === 409 && archBuiltIn.body.code === "NOT_EDITABLE");
     const proCustomer = customer("procust", "PRO_V1");
     const archAssigned = await archive(control.cookie, "PRO_V1", { reason: REASON });
     t.check("archive a group with an assignment → 409 CONFLICT (reassign first)", archAssigned.status === 409 && archAssigned.body.code === "CONFLICT" && /assigned/.test(archAssigned.body.error));
@@ -194,6 +201,11 @@ async function main() {
     t.check("make default with a stale expectedDefaultKey → 409", staleDefault.status === 409);
     const md = await makeDefault(control.cookie, "PRO_V1", { expectedDefaultKey: DEFAULT_POLICY_GROUP, reason: REASON });
     t.check("make default → 200 (previous Beta)", md.status === 200 && md.body.previousDefault === DEFAULT_POLICY_GROUP);
+    const archBetaNotDefault = await archive(control.cookie, DEFAULT_POLICY_GROUP, { reason: REASON });
+    t.check("…Beta, no longer the default, is STILL not archivable (built-in) → 409 'Built-in groups cannot be archived'",
+      archBetaNotDefault.status === 409 && /Built-in groups cannot be archived/.test(String(archBetaNotDefault.body.error)));
+    const cloneArchived = await create(control.cookie, { key: "FROM_TRIAL_V1", label: "x", from: "PRO_V1_TRIAL", reason: REASON });
+    t.check("clone FROM an archived group → 409 NOT_EDITABLE", cloneArchived.status === 409 && cloneArchived.body.code === "NOT_EDITABLE");
     t.check("…exactly one default row", fake.rows("PolicyGroup", { isDefault: true }).map((r) => r.key).join() === "PRO_V1");
     const back = await makeDefault(control.cookie, DEFAULT_POLICY_GROUP, { expectedDefaultKey: "PRO_V1", reason: REASON });
     t.check("…and back to Beta (owner ruling: Beta is the default)", back.status === 200);

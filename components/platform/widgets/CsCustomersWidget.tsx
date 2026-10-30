@@ -264,7 +264,10 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                   <Section title="Cohort & policy">
                     <Row label="Cohorts" value={detail.cohorts.length ? detail.cohorts.map((c) => `${c.label} (${c.source.toLowerCase()}, ${ago(c.joinedAt)})`).join("; ") : "none recorded"} />
                     <Row label="Policy group" value={`${detail.policy.policyGroupLabel}${detail.policy.assigned || detail.policy.failClosed ? "" : " — default, no assignment recorded"}`} />
-                    {detail.policy.failClosed && <Row label="Fail closed" value={detail.policy.failClosedReason === "UNASSIGNED" ? "No assignment recorded — assign a policy group below to restore the plan." : "The assigned key is not a policy group — assign a valid one below to restore the plan."} />}
+                    {detail.policy.failClosed && <Row label="Fail closed" value={detail.policy.failClosedReason === "UNASSIGNED" ? "No assignment recorded — assign a policy group below to restore the plan."
+                      : detail.policy.failClosedReason === "INVALID_POLICY_GROUP" ? "The assigned group's stored definition is unusable — fix the group in Policies or assign another below."
+                      : detail.policy.failClosedReason === "CATALOGUE_UNAVAILABLE" ? "Policy-group definitions could not be read — restricted until they can (no action needed here)."
+                      : "The assigned key is not a policy group — assign a valid one below to restore the plan."} />}
                     {detail.policy.unknownPolicyGroup && <Row label="Assigned key unknown" value={detail.policy.unknownPolicyGroup} />}
                     <Row label="Overlay" value={detail.policy.overlayLabel ?? "none"} />
                     <ul className="mt-1 flex flex-col gap-1">

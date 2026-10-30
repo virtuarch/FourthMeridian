@@ -15,10 +15,21 @@
  *      without the migration, or a read failure, resolves exactly as before;
  *   3. otherwise the key is UNKNOWN (the resolver's existing unknown path).
  *
- * STORED VALUES ARE RE-VALIDATED AT READ (validateEntitlementValues). A version
- * with a missing, ill-typed, out-of-range or unknown dimension makes its GROUP
- * INVALID: `values` is null and the resolver FAILS CLOSED for its customers —
- * never "unlimited", never silently Beta.
+ * STRICT AT WRITE, TOLERANT AT READ (review fix 1). Writes validate strictly
+ * (validateEntitlementValues). A STORED version is NORMALISED at read
+ * (normaliseStoredValues) so a change to the code registry — a new dimension,
+ * a lowered ceiling — never fails closed the whole customer base:
+ *   · a dimension MISSING from the stored version takes the CODE group's value
+ *     for the same key when the group is a code group, else that dimension's
+ *     FAIL_CLOSED value (per dimension, not the whole group);
+ *   · an over-ceiling count is clamped to the ceiling, a floor below its
+ *     minimum is raised to it, a boolean is AND-ed with its ceiling, a negative
+ *     count becomes 0, a fractional one is floored;
+ *   · unknown extra keys are ignored.
+ * Only a STRUCTURALLY unusable version — not an object, or a known dimension
+ * of the wrong type / NaN / non-finite, or a missing version row — makes its
+ * GROUP INVALID: `values` is null and the resolver FAILS CLOSED for its
+ * customers — never "unlimited", never silently Beta.
  *
  * THE DEFAULT GROUP (what registration assigns; what an unassigned customer
  * resolves to while the fail-closed switch is off) is the one non-archived,
@@ -29,7 +40,7 @@
  */
 
 import {
-  COHORTS, DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, OVERLAYS, POLICY_GROUPS,
+  COHORTS, DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, FAIL_CLOSED_VALUES, OVERLAYS, POLICY_GROUPS,
   type EntitlementDimensionKey, type EntitlementValue, type EntitlementValues,
 } from "./catalogue";
 
@@ -93,6 +104,47 @@ export function validateEntitlementValues(raw: unknown): ValuesValidation {
   return errors.length > 0 ? { ok: false, errors } : { ok: true, values: out as unknown as EntitlementValues };
 }
 
+export type StoredValuesNormalisation =
+  | { ok: true; values: EntitlementValues; adjustments: string[] }
+  | { ok: false; errors: string[] };
+
+/**
+ * READ-TIME normalisation of a stored version (see the header). `codeValues` is
+ * the code group's values for the same key (null for a DB-only group). The
+ * `adjustments` say, for an operator, what was filled or clamped.
+ */
+export function normaliseStoredValues(raw: unknown, codeValues: EntitlementValues | null): StoredValuesNormalisation {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { ok: false, errors: ["The stored values are not an object."] };
+  const obj = raw as Record<string, unknown>;
+  const errors: string[] = [];
+  const adjustments: string[] = [];
+  const out: Record<string, EntitlementValue> = {};
+  for (const key of DIMENSION_KEYS) {
+    const d = ENTITLEMENT_DIMENSIONS[key];
+    const v = obj[key];
+    if (v === undefined) {
+      const filled = codeValues ? codeValues[key] : FAIL_CLOSED_VALUES[key];
+      out[key] = filled;
+      adjustments.push(`${d.label}: not in the stored version — ${codeValues ? "the code group's value" : "the restricted (fail-closed) value"} ${String(filled)} applies.`);
+      continue;
+    }
+    if (d.kind === "boolean") {
+      if (typeof v !== "boolean") { errors.push(`${d.label}: stored value is not on/off.`); continue; }
+      const b = v && (d.ceiling as boolean);
+      if (b !== v) adjustments.push(`${d.label}: stored on, the platform allows off only.`);
+      out[key] = b;
+      continue;
+    }
+    if (typeof v !== "number" || !Number.isFinite(v)) { errors.push(`${d.label}: stored value is not a number.`); continue; }
+    const n = Math.max(0, Math.floor(v));
+    const ceiling = d.ceiling as number;
+    const c = d.kind === "minutes-floor" ? Math.max(n, ceiling) : Math.min(n, ceiling);
+    if (c !== v) adjustments.push(`${d.label}: stored ${v}, ${d.kind === "minutes-floor" ? "raised to the platform minimum" : "clamped to the platform ceiling"} ${c}.`);
+    out[key] = c;
+  }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, values: out as unknown as EntitlementValues, adjustments };
+}
+
 /** UPPER_SNAKE, starts with a letter, 3–48 chars. */
 export const POLICY_GROUP_KEY_PATTERN = /^[A-Z][A-Z0-9_]{2,47}$/;
 export const POLICY_GROUP_LABEL_MAX = 60;
@@ -135,6 +187,8 @@ export interface CatalogueGroup {
   valid: boolean;
   /** Why the stored definition is invalid (operator-facing; never customer data). */
   invalidReasons: readonly string[];
+  /** What read-time normalisation filled or clamped in a valid stored version (operator-facing). */
+  readAdjustments?: readonly string[];
   archived: boolean;
   archivedAt: string | null;
   isDefault: boolean;
@@ -206,10 +260,12 @@ export function buildPolicyGroupCatalogue(
   const groups: Record<string, CatalogueGroup> = {};
   for (const r of rows) {
     const v = current.get(`${r.key}#${r.currentVersion}`);
-    const check = v ? validateEntitlementValues(v.values) : { ok: false as const, errors: [`Version ${r.currentVersion} is missing.`] };
+    const codeValues = r.key in POLICY_GROUPS ? POLICY_GROUPS[r.key].values : null;
+    const check = v ? normaliseStoredValues(v.values, codeValues) : { ok: false as const, errors: [`Version ${r.currentVersion} is missing.`] };
     groups[r.key] = {
       key: r.key, label: r.label, description: r.description,
       values: check.ok ? check.values : null, valid: check.ok, invalidReasons: check.ok ? [] : check.errors,
+      readAdjustments: check.ok ? check.adjustments : [],
       archived: r.archivedAt !== null, archivedAt: r.archivedAt?.toISOString() ?? null,
       isDefault: false, builtIn: r.builtIn, version: r.currentVersion, source: "DB",
       effectiveFrom: (v?.createdAt ?? loadedAt).toISOString().slice(0, 10),

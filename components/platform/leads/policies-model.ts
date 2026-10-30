@@ -387,6 +387,12 @@ export function reconcileEntryLabel(eligible: number | null | undefined, group =
   return `Assign ${group} to ${eligible.toLocaleString("en-US")} unassigned account${eligible === 1 ? "" : "s"}`;
 }
 
+/** Beta blocked (archived / unusable): the eligible count is said, never assigned elsewhere; null when not blocked or nobody is eligible. */
+export function reconcileBlockedLine(eligible: number | null | undefined, blocked: "ARCHIVED" | "INVALID" | null | undefined, group = "Beta"): string | null {
+  if (!blocked || !eligible || eligible <= 0) return null;
+  return `${eligible.toLocaleString("en-US")} unassigned account${eligible === 1 ? "" : "s"} · ${group} is ${blocked === "ARCHIVED" ? "archived" : "unusable"} — not assigned`;
+}
+
 /** The confirmation's exact-count sentence. */
 export function reconcileConfirmCount(eligible: number, group = "Beta"): string {
   return `${eligible.toLocaleString("en-US")} active account${eligible === 1 ? "" : "s"} without an assignment will be placed on ${group}.`;

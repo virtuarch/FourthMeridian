@@ -20,7 +20,7 @@ import path from "node:path";
 import { AuditAction, OPERATOR_ACTION_FEED_ACTIONS } from "@/lib/audit-actions";
 import { REASON_REQUIRED_ACTIONS } from "@/lib/audit";
 import { DEFAULT_POLICY_GROUP, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
-import { CODE_CATALOGUE } from "@/lib/entitlements/policy-groups";
+import { CODE_CATALOGUE, buildPolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 
 /** Hermetic: the code catalogue (production uses the cached loader). */
 const CODE = async () => CODE_CATALOGUE;
@@ -144,12 +144,34 @@ async function main() {
   {
     const src = code(MODULE);
     const groupLiterals = Object.keys(POLICY_GROUPS).filter((k) => src.includes(`"${k}"`));
-    // POLICY EDITOR — the group is the catalogue's DEFAULT (the DB default row, else
-    // the code DEFAULT_POLICY_GROUP = Beta), the same key registration assigns.
-    check("the module names no group key literal — only the catalogue default", groupLiterals.length === 0 && /policyGroup: groupKey/.test(src) && /const groupKey = \(await loadCatalogue\(\)\)\.defaultKey;/.test(src));
-    check("with no DB default the catalogue default IS Beta (code fallback)", CODE_CATALOGUE.defaultKey === DEFAULT_POLICY_GROUP);
+    // Ruling (review correction): the TARGET is the built-in Beta whatever the DB default is.
+    check("the module names no group key literal — only DEFAULT_POLICY_GROUP", groupLiterals.length === 0 && /policyGroup: groupKey/.test(src) && /const groupKey = DEFAULT_POLICY_GROUP;/.test(src)
+      && !/defaultKey/.test(src));
     check("no Free / Paid / Pro anywhere in the module", !/\b(FREE|PAID|PRO)(_|\b)/i.test(src));
     check("the default IS the beta group", DEFAULT_POLICY_GROUP === "BETA_FULL_ACCESS_V1");
+  }
+
+  console.log("\n3b. Beta archived / unusable ⇒ blocked, never another group");
+  {
+    const mk = (archivedAt: Date | null, values: unknown, defaultKey: string) => buildPolicyGroupCatalogue(
+      [{ key: DEFAULT_POLICY_GROUP, label: "Beta", description: "", isDefault: defaultKey === DEFAULT_POLICY_GROUP, builtIn: true, archivedAt, currentVersion: 1 },
+       { key: "PAID_V1", label: "Paid", description: "", isDefault: defaultKey === "PAID_V1", builtIn: false, archivedAt: null, currentVersion: 1 }],
+      [{ groupKey: DEFAULT_POLICY_GROUP, version: 1, values, createdAt: new Date() }, { groupKey: "PAID_V1", version: 1, values: POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, createdAt: new Date() }], new Date());
+    const read: BetaReconciliationReadClient = { user: { count: async () => 2 }, customerPolicyAssignment: { count: async () => 0 } };
+    const moved = mk(null, POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, "PAID_V1");
+    const d = await readBetaReconciliation(read, new Date(), async () => moved);
+    check("the DB default moved to PAID_V1 ⇒ the target is STILL Beta, not blocked", d.groupKey === DEFAULT_POLICY_GROUP && d.blocked === null);
+    const applied = fakeClient(["u_a"]);
+    const r = await applyBetaReconciliation({ expectedEligible: 1, reason: REASON, actor: ACTOR }, applied.client, async () => moved);
+    check("…and the apply assigns Beta (never the moved default)", r.ok && r.groupKey === DEFAULT_POLICY_GROUP);
+    for (const [why, cat] of [["ARCHIVED", mk(new Date(), POLICY_GROUPS[DEFAULT_POLICY_GROUP].values, "PAID_V1")], ["INVALID", mk(null, "garbage", "PAID_V1")]] as const) {
+      const dd = await readBetaReconciliation(read, new Date(), async () => cat);
+      check(`Beta ${why}: the dry run reports eligible-but-blocked`, dd.eligible === 2 && dd.blocked === why && dd.groupKey === DEFAULT_POLICY_GROUP);
+      const f = fakeClient(["u_a"]);
+      const rr = await applyBetaReconciliation({ expectedEligible: 1, reason: REASON, actor: ACTOR }, f.client, async () => cat);
+      check(`Beta ${why}: the apply REFUSES (BLOCKED) — no transaction, no row, no audit, never PAID_V1`,
+        !rr.ok && rr.code === "BLOCKED" && rr.blocked === why && f.calls.length === 0);
+    }
   }
 
   console.log("\n4. registration default — new accounts are born on Beta");

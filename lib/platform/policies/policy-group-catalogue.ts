@@ -20,9 +20,12 @@
  * within the TTL.
  *
  * NEVER THROWS. A failed read (an environment without the migration — relation
- * does not exist — or a transient error) serves the last good catalogue, else
- * the CODE catalogue, marked CODE_FALLBACK and retried after 5 s: resolution
- * then behaves exactly as before the editor existed. It never invents values.
+ * does not exist — or a transient error) serves the last good catalogue while
+ * it is at most LAST_GOOD_MAX_AGE_MS (5 min) old, else the CODE catalogue,
+ * marked CODE_FALLBACK and retried after 5 s. It never invents values, and a
+ * fallback is never MORE permissive (review fix 2): under CODE_FALLBACK the
+ * resolver fails closed every customer ASSIGNED to a key the code catalogue
+ * does not hold (a DB-only group), whatever the rollout switch says.
  */
 
 import "server-only";
@@ -34,6 +37,8 @@ import {
 
 export const CATALOGUE_TTL_MS = 30_000;
 export const CATALOGUE_FAILURE_RETRY_MS = 5_000;
+/** The oldest last-good catalogue a failed read may serve; past it, the code fallback (strict). */
+export const LAST_GOOD_MAX_AGE_MS = 5 * 60_000;
 
 /** The narrow read surface (systemDb satisfies it; a fake without the delegates reads as the code catalogue). */
 export interface PolicyGroupCatalogueReadClient {
@@ -64,9 +69,14 @@ export async function readPolicyGroupCatalogue(client: PolicyGroupCatalogueReadC
 }
 
 let cached: { catalogue: PolicyGroupCatalogue; expiresAt: number } | null = null;
-let lastGood: PolicyGroupCatalogue | null = null;
+let lastGood: { catalogue: PolicyGroupCatalogue; at: number } | null = null;
 let inFlight: Promise<PolicyGroupCatalogue> | null = null;
 let generation = 0;
+
+/** TEST-ONLY — age the last good read (so the max-age path is provable without a clock seam). */
+export function ageLastGoodPolicyGroupCatalogueForTests(ms: number): void {
+  if (lastGood) lastGood = { ...lastGood, at: lastGood.at - ms };
+}
 
 /** Drop the cached catalogue (called after every local write, and by tests). */
 export function invalidatePolicyGroupCatalogue(): void {
@@ -84,12 +94,13 @@ export function loadPolicyGroupCatalogue(): Promise<PolicyGroupCatalogue> {
   const p = (async () => {
     try {
       const catalogue = await readPolicyGroupCatalogue(systemDb as unknown as PolicyGroupCatalogueReadClient);
-      if (gen === generation) { cached = { catalogue, expiresAt: Date.now() + CATALOGUE_TTL_MS }; lastGood = catalogue; }
+      if (gen === generation) { cached = { catalogue, expiresAt: Date.now() + CATALOGUE_TTL_MS }; lastGood = { catalogue, at: Date.now() }; }
       return catalogue;
     } catch (error) {
-      console.error("[policy-group-catalogue] read failed; serving", lastGood ? "the last good catalogue" : "the code catalogue", "—",
+      const recent = lastGood !== null && Date.now() - lastGood.at <= LAST_GOOD_MAX_AGE_MS ? lastGood.catalogue : null;
+      console.error("[policy-group-catalogue] read failed; serving", recent ? "the last good catalogue" : "the code catalogue (strict fallback)", "—",
         error instanceof Error ? error.message.split("\n")[0].slice(0, 200) : "unknown error");
-      const fallback = lastGood ?? codeFallbackCatalogue();
+      const fallback = recent ?? codeFallbackCatalogue();
       if (gen === generation) cached = { catalogue: fallback, expiresAt: Date.now() + CATALOGUE_FAILURE_RETRY_MS };
       return fallback;
     } finally {

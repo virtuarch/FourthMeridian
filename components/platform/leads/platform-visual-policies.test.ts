@@ -406,8 +406,17 @@ console.log("6. Policy editor — gated affordances, edit → review → confirm
   const arch = text(body({ step: "archive" }));
   check("archive: says nothing is deleted, with a reason", /Nothing is deleted/.test(arch) && /Choose a reason/.test(arch));
   check("archive is blocked while customers are assigned, and for the default (said, not hidden)",
-    /12 customers are assigned/.test(String(editorModel.archiveBlocker({ ...detail, group: { ...detail.group, isDefault: false } } as never)))
+    /12 customers are assigned/.test(String(editorModel.archiveBlocker({ ...detail, group: { ...detail.group, isDefault: false, builtIn: false } } as never)))
       && /default group cannot be archived/.test(String(editorModel.archiveBlocker(detail as never))));
+
+  check("review fix 6: a BUILT-IN group says it cannot be archived; the overflow renders no Archive item for it",
+    /Built-in groups cannot be archived/.test(String(editorModel.archiveBlocker({ ...detail, group: { ...detail.group, isDefault: false }, assignments: { ...detail.assignments, customers: 0 } } as never)))
+      && /\{!detail\?\.group\.builtIn && \(<>/.test(code("components/platform/leads/PolicyGroupEditor.tsx")));
+  check("review fix 7: an archived card offers neither Edit nor Clone",
+    !/<button/.test(renderToStaticMarkup(createElement(editorModule.GroupEditButtons, { groupKey: "OLD_V1", label: "Old", actions, archived: true }))));
+  const blocked = renderToStaticMarkup(createElement(BetaReconciliationButton, { eligible: 3, onSelect: noop, blocked: "ARCHIVED" }));
+  check("review fix 5: Beta archived ⇒ the entry says eligible-but-blocked, no button (never another group)",
+    /data-beta-blocked/.test(blocked) && !/<button/.test(blocked) && /3 unassigned accounts · Beta is archived — not assigned/.test(text(blocked)));
 
   // History.
   const hist = renderToStaticMarkup(createElement(historyModule.PolicyGroupHistoryView, { detail: detail as never, loading: false, error: null }));

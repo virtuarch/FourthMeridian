@@ -218,6 +218,7 @@ export function archiveBlocker(detail: PolicyGroupDetailResponse | null): string
   if (!detail) return null;
   if (detail.group.archived) return "Already archived.";
   if (detail.group.isDefault) return "The default group cannot be archived — make another group the default first.";
+  if (detail.group.builtIn) return "Built-in groups cannot be archived.";
   if (detail.assignments.customers > 0) {
     const c = detail.assignments.customers;
     return `${n(c)} customer${c === 1 ? " is" : "s are"} assigned — reassign in Customer Success first.`;

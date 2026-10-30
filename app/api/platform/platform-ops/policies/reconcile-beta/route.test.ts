@@ -192,6 +192,26 @@ async function main() {
       d.eligible === 0 && d.excluded.deactivated === 1 && d.excluded.nonCustomerRoles === 1 && d.excluded.unknownAssignments === 2, d);
   }
 
+  t.section("7. Beta archived ⇒ eligible-but-BLOCKED; the apply refuses and never assigns another group");
+  {
+    const { invalidatePolicyGroupCatalogue } = await import("@/lib/platform/policies/policy-group-catalogue");
+    fake.seed("PolicyGroup", { key: DEFAULT_POLICY_GROUP, label: "Beta — full access (v1)", isDefault: false, builtIn: true, currentVersion: 1, archivedAt: new Date() });
+    fake.seed("PolicyGroupVersion", { groupKey: DEFAULT_POLICY_GROUP, version: 1, values: { conversations: true }, label: "Beta", changeSummary: {}, reasonCode: "POLICY_ROLLOUT" });
+    fake.seed("PolicyGroup", { key: "PAID_V1", label: "Paid", isDefault: true, builtIn: false, currentVersion: 1 });
+    fake.seed("PolicyGroupVersion", { groupKey: "PAID_V1", version: 1, values: { conversations: true }, label: "Paid", changeSummary: {}, reasonCode: "POLICY_ROLLOUT" });
+    invalidatePolicyGroupCatalogue();
+    const late = account();
+    const d = (await get(read.cookie)).body as DryRun & { blocked?: string | null };
+    t.check("dry run: eligible 1, target Beta, blocked ARCHIVED", d.eligible === 1 && d.groupKey === DEFAULT_POLICY_GROUP && d.blocked === "ARCHIVED", d);
+    const creates = fake.callsTo("CustomerPolicyAssignment", "createMany").length;
+    const r = await post(control2.cookie, { reason: REASON, expectedEligible: 1 });
+    t.check("POST → 409 BLOCKED with a clear message", r.status === 409 && r.body.code === "BLOCKED" && /archived/.test(String(r.body.error)), r.body);
+    t.check("…nothing assigned (no createMany; the account still has no row — never PAID_V1)",
+      fake.callsTo("CustomerPolicyAssignment", "createMany").length === creates && !fake.one("CustomerPolicyAssignment", { userId: late }));
+    const refusal = fake.rows("AuditLog", { action: "PLATFORM_CONTROL_REFUSED" }).at(-1);
+    t.check("…recorded as a refusal (NOT_EDITABLE)", (refusal?.metadata as { refusal?: string })?.refusal === "NOT_EDITABLE");
+  }
+
   // The 5 / 60 s per-operator limiter is pinned at source in
   // lib/platform/policies/reconcile-beta.test.ts (route-env turns rate limiting off).
 

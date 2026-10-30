@@ -15,7 +15,9 @@
  *   rollbackPolicyGroup   POLICY_GROUP_ROLLED_BACK     a NEW version whose values equal an
  *                                                      earlier version's (history is append-only)
  *   archivePolicyGroup    POLICY_GROUP_ARCHIVED        refused while ANY assignment names the
- *                                                      group, and for the default group
+ *                                                      group (counted under a FOR UPDATE row
+ *                                                      lock), for the default group, and for
+ *                                                      built-in groups
  *   setDefaultPolicyGroup POLICY_GROUP_DEFAULT_CHANGED moves the default; affects NEW
  *                                                      registrations only — never an assignment
  *
@@ -42,10 +44,10 @@ import { systemDb } from "@/lib/db";
 import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import {
-  diffEntitlementValues, validateEntitlementValues, validateGroupDescription, validateGroupLabel, validateNewGroupKey,
+  diffEntitlementValues, normaliseStoredValues, validateEntitlementValues, validateGroupDescription, validateGroupLabel, validateNewGroupKey,
   type DimensionChange, type PolicyGroupCatalogue,
 } from "@/lib/entitlements/policy-groups";
-import type { EntitlementValues } from "@/lib/entitlements/catalogue";
+import { POLICY_GROUPS, type EntitlementValues } from "@/lib/entitlements/catalogue";
 import {
   invalidatePolicyGroupCatalogue, readPolicyGroupCatalogue, type PolicyGroupCatalogueReadClient,
 } from "./policy-group-catalogue";
@@ -93,6 +95,11 @@ export interface PolicyGroupWriteClient { $transaction<T>(fn: (tx: Tx) => Promis
 
 const refuse = (code: PolicyGroupRefusalCode, error: string, errors?: string[]) => ({ ok: false as const, code, error, ...(errors ? { errors } : {}) });
 
+/** Thrown inside a transaction to ROLL BACK what it already wrote and answer a refusal (never a 500). */
+class RefusalRollback extends Error {
+  constructor(readonly refusal: { ok: false; code: PolicyGroupRefusalCode; error: string }) { super(refusal.error); this.name = "RefusalRollback"; }
+}
+
 function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 }
@@ -104,6 +111,7 @@ async function run<T>(client: PolicyGroupWriteClient, fn: (tx: Tx) => Promise<Po
     if (r.ok) invalidatePolicyGroupCatalogue();
     return r;
   } catch (e) {
+    if (e instanceof RefusalRollback) return e.refusal;
     if (isUniqueViolation(e)) return refuse("CONFLICT", "Someone else changed policy groups at the same time — reload and review again.");
     throw e;
   }
@@ -170,6 +178,9 @@ export async function createPolicyGroup(input: CreatePolicyGroupInput, client: P
     const source = catalogue.groups[fromKey];
     if (!source) return refuse("NOT_FOUND", `Policy group "${String(input.from).slice(0, 64)}" does not exist.`);
     if (!source.valid || !source.values) return refuse("VALIDATION", "The source group's stored definition is invalid; it cannot be cloned.");
+    // Review fix 7 — an archived group is retired; cloning it would resurrect a retired definition.
+    // (No path needs it: "New group" starts from the default, which can never be archived.)
+    if (source.archived) return refuse("NOT_EDITABLE", "An archived group cannot be cloned — clone an active group instead.");
     if (await tx.policyGroup.findUnique({ where: { key: key.key }, select: { key: true } })) {
       return refuse("CONFLICT", `A policy group "${key.key}" already exists.`);
     }
@@ -227,7 +238,8 @@ async function appendVersion(tx: Tx, plan: NewVersionPlan, reason: OperatorReaso
     return refuse("CONFLICT", `The group changed since you opened it (now version ${row.currentVersion}) — reload and review again.`);
   }
   const current = await tx.policyGroupVersion.findUnique({ where: { groupKey_version: { groupKey: plan.key, version: row.currentVersion } } });
-  const currentCheck = current ? validateEntitlementValues(current.values) : null;
+  // The stored version as the resolver reads it (tolerant normalisation), so the diff is against what is in force.
+  const currentCheck = current ? normaliseStoredValues(current.values, POLICY_GROUPS[plan.key]?.values ?? null) : null;
   const before = currentCheck?.ok ? currentCheck.values : null;
   const changes = diffEntitlementValues(before, plan.values);
   const labelChanged = row.label !== plan.label;
@@ -312,10 +324,17 @@ export interface ArchivePolicyGroupInput { key: string; reason: OperatorReason; 
 
 export async function archivePolicyGroup(input: ArchivePolicyGroupInput, client: PolicyGroupWriteClient = systemDb): Promise<PolicyGroupWriteResult<{ key: string; archivedAt: string }>> {
   return run(client, async (tx) => {
+    // REVIEW FIX 3 — lock the group row (FOR UPDATE) BEFORE counting assignments:
+    // a concurrent Customer Success assignment re-reads it FOR SHARE inside its own
+    // transaction, so either it commits first (and is counted here) or it waits and
+    // then sees archivedAt and refuses. Parameterised tagged template only.
+    await tx.$queryRaw`SELECT "key" FROM "PolicyGroup" WHERE "key" = ${input.key} FOR UPDATE`;
     const row = await tx.policyGroup.findUnique({ where: { key: input.key } });
     if (!row) return refuse("NOT_FOUND", `Policy group "${input.key.slice(0, 64)}" does not exist.`);
     if (row.archivedAt) return refuse("VALIDATION", "The group is already archived.");
     if (row.isDefault) return refuse("NOT_EDITABLE", "The default group cannot be archived — make another group the default first.");
+    // Review fix 6 (ruling) — built-in groups (the seeded Beta) are never archived.
+    if (row.builtIn) return refuse("NOT_EDITABLE", "Built-in groups cannot be archived.");
     const counts = await assignedCounts(tx, input.key);
     if (counts.customers > 0) {
       return refuse("CONFLICT", `${counts.customers} customer${counts.customers === 1 ? " is" : "s are"} assigned to this group — reassign them in Customer Success before archiving.`);
@@ -352,7 +371,10 @@ export async function setDefaultPolicyGroup(input: SetDefaultPolicyGroupInput, c
     if (previous !== input.expectedDefaultKey) return refuse("CONFLICT", `The default changed since you opened it (now ${previous}) — reload and review again.`);
     if (previous === input.key) return refuse("VALIDATION", "The group is already the default.");
     await tx.policyGroup.updateMany({ where: { isDefault: true }, data: { isDefault: false } });
-    await tx.policyGroup.update({ where: { key: input.key }, data: { isDefault: true } });
+    // REVIEW FIX 4 — only a NON-ARCHIVED row may become the default; a concurrent
+    // archive makes this 0 rows ⇒ CONFLICT and the unset above rolls back.
+    const set = await tx.policyGroup.updateMany({ where: { key: input.key, archivedAt: null }, data: { isDefault: true } });
+    if (set.count !== 1) throw new RefusalRollback(refuse("CONFLICT", "The group changed (it may have been archived) — reload and review again."));
     await audit(tx, input.actor, AuditAction.POLICY_GROUP_DEFAULT_CHANGED, input.key, input.reason,
       { before: { defaultPolicyGroup: previous }, after: { defaultPolicyGroup: input.key } },
       { previousDefault: previous, appliesTo: "NEW_REGISTRATIONS_ONLY", assignmentsChanged: 0 });
