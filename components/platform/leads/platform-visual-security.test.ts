@@ -60,8 +60,11 @@ console.log("3. figures");
   const t = totals(S);
   check("credential 8 · blocked 4 · denials 1", t.credential === 8 && t.blocked === 4 && t.denials === 1);
   const rows = coverageRows(S);
-  check("operator 2FA 1 of 2 while ENFORCED reads bad (someone cannot enter); customers optional reads neutral",
-    rows[0].tone === "bad" && rows[0].enforcement.startsWith("Enforced") && rows[2].enforcement === "Optional");
+  check("operator 2FA 1 of 2 while ENFORCED is contained (warn: must enroll before access); optional users read neutral",
+    rows[0].tone === "warn" && /must enroll before access/.test(rows[0].enforcement) && rows[2].enforcement === "Optional" && rows[2].tone === "muted");
+  const unenforced = coverageRows({ ...S, twoFactor: { ...S.twoFactor, enforcement: { ...S.twoFactor.enforcement, operators: false } } });
+  check("operator 2FA gap while NOT enforced is the real exposure (bad)", unenforced[0].tone === "bad" && /without a second factor/.test(unenforced[0].enforcement));
+  check("one failed sign-in is routine: the KPI warns only when a detector tripped", securityKpis(ok).find((k) => k.key === "failed")?.tone === undefined);
   check("KPI 2FA reads 'x of y'", securityKpis(ok).find((k) => k.key === "operators2fa")?.value === "1 of 2");
 }
 

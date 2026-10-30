@@ -46,6 +46,7 @@ const REASON_LABELS: Record<string, string> = {
   pending_deletion: "Account pending deletion",
   account_deactivated: "Account deactivated",
   system_admin_disabled: "Disabled admin account",
+  unspecified: "Reason not recorded",
 };
 
 const DETECTOR_LABELS: Record<string, string> = {
@@ -99,15 +100,16 @@ export function buildSecurityAnalytics(facts: SecurityAnalyticsFacts, now: Date,
   }
   for (const r of facts.refusals) { const d = at(r.day); if (d) d.controlRefusals += r.count; }
 
-  const opDays: OperatorDay[] = keys.map((day) => ({ day, success: 0, failure: 0, refused: 0 }));
+  const opDays: OperatorDay[] = keys.map((day) => ({ day, success: 0, failure: 0, refused: 0, unknown: 0 }));
   let opTotal = 0;
   for (const r of facts.operatorByResult) {
     const i = index.get(r.day);
     if (i === undefined) continue;
-    // A pre-envelope row carries no result: it happened, so it counts as done.
-    if (r.key === "FAILURE") opDays[i].failure += r.count;
+    // A pre-envelope row carries no result: it is "not recorded", never assumed done (the feeds read it as unknown too).
+    if (r.key === "SUCCESS") opDays[i].success += r.count;
+    else if (r.key === "FAILURE") opDays[i].failure += r.count;
     else if (r.key === "REFUSED") opDays[i].refused += r.count;
-    else opDays[i].success += r.count;
+    else opDays[i].unknown += r.count;
     opTotal += r.count;
   }
 
@@ -123,7 +125,7 @@ export function buildSecurityAnalytics(facts: SecurityAnalyticsFacts, now: Date,
     days,
     failedByHour: grid,
     failureReasons: [...reasons.entries()]
-      .map(([reason, count]) => ({ reason, label: humanize(reason, REASON_LABELS), kind: credential.has(reason) ? "credential" as const : "blocked" as const, count }))
+      .map(([reason, count]) => ({ reason, label: humanize(reason, REASON_LABELS), kind: credential.has(reason) ? "credential" as const : "gate" as const, count }))
       .sort(byCount),
     detectorTypes: [...detectors.entries()].map(([type, count]) => ({ type, label: humanize(type, DETECTOR_LABELS), count })).sort(byCount),
     operators: {
@@ -137,7 +139,8 @@ export function buildSecurityAnalytics(facts: SecurityAnalyticsFacts, now: Date,
     floor: facts.floor,
     notes: [
       "UTC days and hours. Counts only — no address, identifier or network detail leaves the database.",
-      "A failed sign-in is not an incident: credential failures are wrong passwords or codes; blocked sign-ins had the right password but the account could not enter.",
+      "A failed sign-in is not an incident: credential failures are wrong passwords or codes; account-gate refusals were stopped by the account's state (unverified, deactivated, pending deletion, disabled admin) — not by a wrong password.",
+      "Operator activity counts only rows with an acting operator; a customer's own deactivation or reactivation is not operator activity. Rows written before results were recorded read \"result not recorded\".",
       "Access-denial records are written at most once per operator and Space per hour, so they are a floor.",
       "Detector windows are automatic threshold trips (lib/security/anomalies), not investigated incidents.",
     ],

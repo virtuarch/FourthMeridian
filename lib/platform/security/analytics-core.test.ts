@@ -38,18 +38,20 @@ console.log("1. day series — credential vs blocked, denials vs detector window
   check("an access denial is not a detector trip", d.accessDenials === 2 && d.detectorTrips === 1);
   check("rows outside the window are ignored", r.failureReasons.find((x) => x.reason === "invalid_password")?.count === 3);
   check("reasons are labelled in words, ranked, with their kind", r.failureReasons[0].label === "Wrong password" && r.failureReasons[0].kind === "credential");
+  check("a missing reason is 'Reason not recorded', an account-gate refusal (never a wrong password)",
+    r.failureReasons.find((x) => x.reason === "unspecified")?.label === "Reason not recorded" && r.failureReasons.find((x) => x.reason === "email_unverified")?.kind === "gate");
   check("detector types exclude access denials and are labelled", r.detectorTypes.length === 1 && r.detectorTypes[0].label === "Repeated failures from one network");
   check("refused CONTROL changes land on their day", r.days[29].controlRefusals === 1);
 }
 
-console.log("2. operators — result split; a pre-envelope row counts as done");
+console.log("2. operators — result split; a pre-envelope row is NOT RECORDED, never assumed done");
 {
   const r = buildSecurityAnalytics(base({
     operatorByResult: [{ day: "2026-11-20", key: "SUCCESS", count: 2 }, { day: "2026-11-20", key: "REFUSED", count: 1 }, { day: "2026-11-20", key: null, count: 1 }, { day: "2026-11-20", key: "FAILURE", count: 1 }],
     operatorByAction: [{ key: "BETA_ACCESS_APPROVED", count: 1 }, { key: "PLATFORM_JOB_RUN", count: 4 }],
   }), NOW, 30);
   const d = r.operators.days[29];
-  check("success / failure / refused", d.success === 3 && d.failure === 1 && d.refused === 1 && r.operators.total === 5);
+  check("success / failure / refused / not recorded", d.success === 2 && d.failure === 1 && d.refused === 1 && d.unknown === 1 && r.operators.total === 5, d);
   check("top actions ranked and labelled", r.operators.topActions[0].action === "PLATFORM_JOB_RUN" && r.operators.topActions[0].label === "Platform job run");
 }
 

@@ -66,9 +66,9 @@ function ActivityCard({ f }: { f: Fetched<SecurityAnalyticsResponse> }) {
           series === "signins" ? (
             <>
               <DayBars days={signInBars(s)} height={236} noun="sign-in attempt" palette={SIGN_IN_PALETTE}
-                ariaLabel="Sign-in attempts per UTC day: successful, blocked and credential failures" />
-              <div className="mt-2"><DayBarsLegend items={[{ label: "Successful", color: SIGN_IN_PALETTE.succeeded }, { label: "Blocked (right password, account could not enter)", color: SIGN_IN_PALETTE.other }, { label: "Credential failure", color: SIGN_IN_PALETTE.failed }]} /></div>
-              <Caption>{`${n(t.signIns)} successful · ${n(t.blocked)} blocked · ${n(t.credential)} credential failures · ${s.windowDays} UTC days`}</Caption>
+                ariaLabel="Sign-in attempts per UTC day: successful, refused by an account gate, and credential failures" />
+              <div className="mt-2"><DayBarsLegend items={[{ label: "Successful", color: SIGN_IN_PALETTE.succeeded }, { label: "Account gate (not a wrong password)", color: SIGN_IN_PALETTE.other }, { label: "Credential failure", color: SIGN_IN_PALETTE.failed }]} /></div>
+              <Caption>{`${n(t.signIns)} successful · ${n(t.blocked)} account gate · ${n(t.credential)} credential failures · ${s.windowDays} UTC days`}</Caption>
             </>
           ) : (
             <>
@@ -130,7 +130,7 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
                     {r.total === 0 ? "none" : `${n(r.enrolled)} of ${n(r.total)}`}
                   </span>
                 </div>
-                {r.pct === null ? <span className="block h-2 w-full rounded-full border border-dashed border-[var(--border-hairline-strong)]" />
+                {r.pct === null ? <span role="img" aria-label={`${r.label}: no accounts`} className="block h-2 w-full rounded-full border border-dashed border-[var(--border-hairline-strong)]" />
                   : <Meter pct={r.pct} tone={r.tone} label={`${r.label} with two-factor enabled`} />}
                 <span className="text-[10px] text-[var(--text-muted)]">{r.enforcement}</span>
               </div>
@@ -167,7 +167,7 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
               <ChartMessage>{`No failed sign-ins in ${s.windowDays} days`}</ChartMessage>
             ) : (
               <ShareBars items={reasonBars(s)} ariaLabel="Failed sign-ins by reason" noun="attempt"
-                denominator={`of ${n(s.failureReasons.reduce((a, r) => a + r.count, 0))} failed sign-ins · "blocked" = right password, account could not enter`} />
+                denominator={`of ${n(s.failureReasons.reduce((a, r) => a + r.count, 0))} failed sign-ins · "account gate" = stopped by the account's state, not a wrong password`} />
             )}
           </Surface>
         </Block>
@@ -182,7 +182,7 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
                 <HeatGrid layout={cal} rowHeight={18} labelWidth={30}
                   ariaLabel={`Security events per UTC day, last ${s.windowDays} days: ${n(events)}`}
                   describe={(r, c, cell) => `${describeCalendarCell(cal.dayAt(r, c), cell, "event")}${eventBreakdown(s, cal.dayAt(r, c))}`} />
-                <Caption>{`${n(events)} events · failed sign-ins, denials, detector windows, refused changes`}</Caption>
+                <Caption>{`${n(events)} events · failed sign-ins, access denials, refused changes (detector windows excluded — they derive from the failures)`}</Caption>
               </>
             ) : <Loading f={p.f} what="events" />}
           </Surface>
@@ -224,9 +224,12 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
             {s ? (
               <>
                 <DayBars days={operatorBars(s)} height={200} noun="operator action" palette={OPERATOR_PALETTE}
-                  ariaLabel="Audited operator actions per UTC day: done, refused and failed" />
-                <div className="mt-2"><DayBarsLegend items={[{ label: "Done", color: OPERATOR_PALETTE.succeeded }, { label: "Refused", color: OPERATOR_PALETTE.other }, { label: "Failed", color: OPERATOR_PALETTE.failed }]} /></div>
-                <Caption>{`${n(s.operators.total)} audited operator actions · ${s.windowDays} UTC days`}</Caption>
+                  ariaLabel="Audited operator actions per UTC day: done, result not recorded, refused or failed" />
+                <div className="mt-2"><DayBarsLegend items={[{ label: "Done", color: OPERATOR_PALETTE.succeeded }, { label: "Result not recorded", color: OPERATOR_PALETTE.other }, { label: "Refused or failed", color: OPERATOR_PALETTE.failed }]} /></div>
+                <Caption>{(() => {
+                  const sum = s.operators.days.reduce((a, d) => ({ refused: a.refused + d.refused, failure: a.failure + d.failure, unknown: a.unknown + d.unknown }), { refused: 0, failure: 0, unknown: 0 });
+                  return `${n(s.operators.total)} operator actions · ${n(sum.refused)} refused · ${n(sum.failure)} failed${sum.unknown ? ` · ${n(sum.unknown)} result not recorded` : ""} · ${s.windowDays} UTC days`;
+                })()}</Caption>
               </>
             ) : <Loading f={p.f} what="operator activity" />}
           </Surface>

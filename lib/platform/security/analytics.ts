@@ -26,12 +26,14 @@ export const SECURITY_ANALYTICS_GROUP_CAP = 10_000;
 type Raw = { day: string; key: string | null; count: bigint | number };
 const toDayCounts = (rows: readonly Raw[]): DayCount[] => rows.map((r) => ({ day: r.day, key: r.key, count: Number(r.count) }));
 
-async function byDay(client: SecurityAnalyticsDb, actions: readonly string[], keyPath: string | null, since: Date): Promise<Raw[]> {
+async function byDay(client: SecurityAnalyticsDb, actions: readonly string[], keyPath: string | null, since: Date, operatorOnly = false): Promise<Raw[]> {
   const key = keyPath === null ? Prisma.sql`NULL::text` : Prisma.sql`"metadata"->>${keyPath}`;
+  // Operator activity = rows an operator performed (the operator-actions feed's own predicate).
+  const actor = operatorOnly ? Prisma.sql`AND "performedByAdminId" IS NOT NULL` : Prisma.empty;
   return client.$queryRaw<Raw[]>`
     SELECT to_char("createdAt", 'YYYY-MM-DD') AS day, ${key} AS key, count(*) AS count
       FROM "AuditLog"
-     WHERE "action" IN (${Prisma.join([...actions])}) AND "createdAt" >= ${since}
+     WHERE "action" IN (${Prisma.join([...actions])}) AND "createdAt" >= ${since} ${actor}
      GROUP BY 1, 2
      LIMIT ${SECURITY_ANALYTICS_GROUP_CAP}`;
 }
@@ -50,11 +52,11 @@ export async function loadSecurityAnalyticsFacts(client: SecurityAnalyticsDb, no
        GROUP BY 1, 2`,
     byDay(client, [AuditAction.SECURITY_ANOMALY_DETECTED], "type", since),
     byDay(client, [AuditAction.PLATFORM_CONTROL_REFUSED], null, since),
-    byDay(client, feed, "result", since),
+    byDay(client, feed, "result", since, true),
     client.$queryRaw<{ key: string; count: bigint | number }[]>`
       SELECT "action" AS key, count(*) AS count
         FROM "AuditLog"
-       WHERE "action" IN (${Prisma.join([...feed])}) AND "createdAt" >= ${since}
+       WHERE "action" IN (${Prisma.join([...feed])}) AND "createdAt" >= ${since} AND "performedByAdminId" IS NOT NULL
        GROUP BY 1`,
     client.platformGrant.findMany({
       where: { status: "ACTIVE" }, distinct: ["userId"],
@@ -87,7 +89,7 @@ export async function loadSecurityAnalyticsFacts(client: SecurityAnalyticsDb, no
       admins: cov(admins),
       enforcement: {
         allUsers: allUsersSetting === "true",
-        // require_totp_system_admin cannot be turned off (lib/platform-settings.ts).
+        // SYSTEM_ADMIN TOTP is mandatory in code, whatever the setting says (lib/auth-totp-policy.ts).
         systemAdmins: true,
         operators: env.isOperatorTotpEnforced,
       },

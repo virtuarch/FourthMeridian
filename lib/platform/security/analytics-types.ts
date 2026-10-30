@@ -16,7 +16,7 @@ export interface SecurityDay {
   signIns: number;
   /** LOGIN_FAILED with a credential-guess reason (lib/security/anomalies CREDENTIAL_GUESS_REASONS). */
   failedCredential: number;
-  /** LOGIN_FAILED with a blocked-but-correct reason (unverified, deactivated, pending deletion, disabled admin…). */
+  /** LOGIN_FAILED refused by an account gate, not a wrong password or code (unverified, deactivated, pending deletion, disabled admin, reason not recorded). */
   failedBlocked: number;
   /** Platform access-denial records (throttled at write: ≤ 1 per user × area per hour — a floor). */
   accessDenials: number;
@@ -26,7 +26,8 @@ export interface SecurityDay {
   controlRefusals: number;
 }
 
-export interface OperatorDay { day: string; success: number; failure: number; refused: number }
+/** Operator actions (rows with an acting operator) by recorded result; `unknown` = a row written before results were recorded. */
+export interface OperatorDay { day: string; success: number; failure: number; refused: number; unknown: number }
 
 export interface Coverage2fa { enrolled: number; total: number }
 
@@ -39,7 +40,7 @@ export interface SecurityAnalyticsResponse {
   /** Failed sign-ins (all reasons) by weekday (Mon = 0) × UTC hour over the window. */
   failedByHour: number[][];
   /** Failed sign-ins by reason code over the window, most first. */
-  failureReasons: { reason: string; label: string; kind: "credential" | "blocked"; count: number }[];
+  failureReasons: { reason: string; label: string; kind: "credential" | "gate"; count: number }[];
   /** Detector trips by detector type over the window (access denials excluded). */
   detectorTypes: { type: string; label: string; count: number }[];
   operators: {

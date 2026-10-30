@@ -47,8 +47,14 @@ export function totals(s: SecurityAnalyticsResponse): Totals {
 }
 
 const coverageText = (c: Coverage2fa) => (c.total === 0 ? "none" : `${n(c.enrolled)} of ${n(c.total)}`);
-const coverageTone = (c: Coverage2fa, enforced: boolean): StatusTone =>
-  c.total === 0 ? "muted" : c.enrolled === c.total ? "ok" : enforced ? "bad" : "warn";
+/**
+ * Enforced + not enrolled = that person cannot get a session until they enroll
+ * (contained) → warn. NOT enforced + not enrolled = an operator who can act
+ * without a second factor (exposure) → bad. Customers are a product choice
+ * (optional unless required) → never alarming while optional.
+ */
+const coverageTone = (c: Coverage2fa, enforced: boolean, optionalIsNeutral = false): StatusTone =>
+  c.total === 0 ? "muted" : c.enrolled === c.total ? "ok" : enforced ? "warn" : optionalIsNeutral ? "muted" : "bad";
 
 export function securityKpis(f: Fetched<SecurityAnalyticsResponse>): Kpi[] {
   const s = f.data;
@@ -62,12 +68,13 @@ export function securityKpis(f: Fetched<SecurityAnalyticsResponse>): Kpi[] {
   const tf = s.twoFactor;
   return [
     { key: "signIns", label: "Sign-ins", value: n(t.signIns), sub: `${s.windowDays} d · successful` },
-    { key: "failed", label: "Failed sign-ins", value: n(t.credential + t.blocked), sub: `${n(t.credential)} credential · ${n(t.blocked)} blocked`,
-      tone: t.credential + t.blocked > 0 ? "warn" : undefined },
+    // A mistyped password is routine — the tile only warns when a detector threshold tripped.
+    { key: "failed", label: "Failed sign-ins", value: n(t.credential + t.blocked), sub: `${n(t.credential)} credential · ${n(t.blocked)} account gate`,
+      tone: t.detector > 0 ? "warn" : undefined },
     { key: "operators2fa", label: "Operator 2FA", value: coverageText(tf.operators), sub: tf.enforcement.operators ? "enforced" : "not enforced",
       tone: coverageTone(tf.operators, tf.enforcement.operators) },
-    { key: "customers2fa", label: "Customer 2FA", value: coverageText(tf.customers), sub: tf.enforcement.allUsers ? "required" : "optional",
-      tone: tf.customers.total > 0 && tf.customers.enrolled < tf.customers.total && tf.enforcement.allUsers ? "bad" : undefined },
+    { key: "customers2fa", label: "User 2FA", value: coverageText(tf.customers), sub: tf.enforcement.allUsers ? "required" : "optional",
+      tone: coverageTone(tf.customers, tf.enforcement.allUsers, true) === "muted" ? undefined : coverageTone(tf.customers, tf.enforcement.allUsers, true) },
   ];
 }
 
@@ -97,13 +104,18 @@ export function controlBars(s: SecurityAnalyticsResponse): DayBar[] {
   return s.days.map((d) => ({ day: d.day, succeeded: d.controlRefusals, other: d.accessDenials, failed: d.detectorTrips, observed: true }));
 }
 
+/** Done · result not recorded · refused or failed (refusals are also in the access-control series). */
 export function operatorBars(s: SecurityAnalyticsResponse): DayBar[] {
-  return s.operators.days.map((d) => ({ day: d.day, succeeded: d.success, other: d.refused, failed: d.failure, observed: true }));
+  return s.operators.days.map((d) => ({ day: d.day, succeeded: d.success, other: d.unknown, failed: d.refused + d.failure, observed: true }));
 }
 
-/** Every security event per day (failed sign-ins + denials + detector windows + refusals) — the calendar's series. */
+/**
+ * PRIMARY security events per day — failed sign-ins + access denials + refused
+ * changes. Detector windows are excluded: they are DERIVED from the same failed
+ * sign-ins and would count one attempt twice.
+ */
 export function eventDays(s: SecurityAnalyticsResponse): AcquisitionDay[] {
-  return s.days.map((d) => ({ day: d.day, count: d.failedCredential + d.failedBlocked + d.accessDenials + d.detectorTrips + d.controlRefusals }));
+  return s.days.map((d) => ({ day: d.day, count: d.failedCredential + d.failedBlocked + d.accessDenials + d.controlRefusals }));
 }
 
 export function eventBreakdown(s: SecurityAnalyticsResponse, day: string | null): string {
@@ -111,9 +123,8 @@ export function eventBreakdown(s: SecurityAnalyticsResponse, day: string | null)
   if (!d) return "";
   const parts = [
     d.failedCredential ? `${n(d.failedCredential)} credential` : null,
-    d.failedBlocked ? `${n(d.failedBlocked)} blocked` : null,
+    d.failedBlocked ? `${n(d.failedBlocked)} account gate` : null,
     d.accessDenials ? `${n(d.accessDenials)} denied` : null,
-    d.detectorTrips ? `${n(d.detectorTrips)} detector` : null,
     d.controlRefusals ? `${n(d.controlRefusals)} refused` : null,
   ].filter(Boolean);
   return parts.length ? ` (${parts.join(" · ")})` : "";
@@ -122,7 +133,7 @@ export function eventBreakdown(s: SecurityAnalyticsResponse, day: string | null)
 export function reasonBars(s: SecurityAnalyticsResponse): ShareBar[] {
   const whole = s.failureReasons.reduce((a, r) => a + r.count, 0);
   return s.failureReasons.map((r) => ({
-    key: r.reason, label: `${r.label}${r.kind === "blocked" ? " · blocked" : ""}`, count: r.count, share: whole > 0 ? r.count / whole : null, muted: r.kind === "blocked",
+    key: r.reason, label: `${r.label}${r.kind === "gate" ? " · account gate" : ""}`, count: r.count, share: whole > 0 ? r.count / whole : null, muted: r.kind === "gate",
   }));
 }
 
@@ -134,14 +145,16 @@ export interface CoverageRow { key: string; label: string; enrolled: number; tot
 
 export function coverageRows(s: SecurityAnalyticsResponse): CoverageRow[] {
   const tf = s.twoFactor;
-  const row = (key: string, label: string, c: Coverage2fa, enforced: boolean, word: [string, string]): CoverageRow => ({
+  const row = (key: string, label: string, c: Coverage2fa, enforced: boolean, word: [string, string], optionalIsNeutral = false): CoverageRow => ({
     key, label, enrolled: c.enrolled, total: c.total, pct: c.total > 0 ? (c.enrolled / c.total) * 100 : null,
-    enforcement: enforced ? word[0] : word[1], tone: coverageTone(c, enforced),
+    enforcement: enforced ? (c.enrolled < c.total ? `${word[0]} · the rest must enroll before access` : word[0]) : word[1],
+    tone: coverageTone(c, enforced, optionalIsNeutral),
   });
   return [
-    row("operators", "Operators", tf.operators, tf.enforcement.operators, ["Enforced at sign-in to Platform", "Not enforced"]),
+    row("operators", "Operators", tf.operators, tf.enforcement.operators, ["Enforced at Platform sign-in", "Not enforced — operators can act without a second factor"]),
     row("admins", "System admins", tf.admins, tf.enforcement.systemAdmins, ["Always required", "Not required"]),
-    row("customers", "Customers", tf.customers, tf.enforcement.allUsers, ["Required for all users", "Optional"]),
+    // Every active USER account — operators hold USER accounts too.
+    row("users", "User accounts", tf.customers, tf.enforcement.allUsers, ["Required for all users", "Optional"], true),
   ];
 }
 
