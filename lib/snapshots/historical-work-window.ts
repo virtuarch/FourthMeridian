@@ -16,7 +16,7 @@
 
 import { db } from "@/lib/db";
 import { AssetClass, InvestmentCoverageOutcome } from "@prisma/client";
-import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
+import { IS_TOKEN_INSTRUMENT, NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import {
   earliestImpactedFrom,
   planHistoricalWorkWindow,
@@ -156,14 +156,14 @@ async function resolveBlockingPriceFloor(
  * date this reaches can still be refused for lack of prices or ownership.
  * Nothing here asserts a value.
  */
-async function resolveEvidenceFloor(financialAccountIds: string[]): Promise<string | null> {
+export async function resolveEvidenceFloor(financialAccountIds: string[], client: typeof db = db): Promise<string | null> {
   if (financialAccountIds.length === 0) return null;
   const scope = { financialAccountId: { in: financialAccountIds } };
 
-  const [tx, event, coverage, position] = await Promise.all([
-    db.transaction.aggregate({ where: { ...scope, deletedAt: null }, _min: { date: true } }),
-    db.investmentEvent.aggregate({ where: { ...scope, deletedAt: null, supersededById: null }, _min: { date: true } }),
-    db.investmentEventCoverage.aggregate({
+  const [tx, event, coverage, position, tokenLicence] = await Promise.all([
+    client.transaction.aggregate({ where: { ...scope, deletedAt: null }, _min: { date: true } }),
+    client.investmentEvent.aggregate({ where: { ...scope, deletedAt: null, supersededById: null }, _min: { date: true } }),
+    client.investmentEventCoverage.aggregate({
       where: {
         ...scope,
         outcome:              InvestmentCoverageOutcome.COMPLETE,
@@ -172,9 +172,17 @@ async function resolveEvidenceFloor(financialAccountIds: string[]): Promise<stri
       },
       _min: { earliestReturnedDate: true },
     }),
-    db.positionObservation.aggregate({
-      where: { ...scope, deletedAt: null, supersededById: null, instrument: NOT_TOKEN_INSTRUMENT },
+    // Every position row, token rows included — the floor only ever WIDENS (as on develop).
+    client.positionObservation.aggregate({
+      where: { ...scope, deletedAt: null, supersededById: null },
       _min:  { date: true },
+    }),
+    // PR #122 re-review F5 — a token's LICENSED start (SPL / ERC-20 history) widens
+    // the window too: its reconstructed days must be regenerable, even where the
+    // earliest row is later (a licence reaches back to the opening it proved).
+    client.positionCoverage.aggregate({
+      where: { ...scope, kind: { in: ["COMPLETE", "PARTIAL"] }, coveredFromDate: { not: null }, instrument: IS_TOKEN_INSTRUMENT },
+      _min:  { coveredFromDate: true },
     }),
   ]);
 
@@ -183,6 +191,7 @@ async function resolveEvidenceFloor(financialAccountIds: string[]): Promise<stri
     event._min.date,
     coverage._min.earliestReturnedDate,
     position._min.date,
+    tokenLicence._min.coveredFromDate,
   ].filter((d): d is Date => d != null);
 
   if (candidates.length === 0) return null;

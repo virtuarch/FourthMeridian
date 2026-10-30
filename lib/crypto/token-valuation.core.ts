@@ -125,32 +125,52 @@ export function tokenReadWindow(fromISO: string, toISO: string, staleAfterDays: 
   return { observationsFromISO: obsFrom, pricesFromISO: minusDay(fromISO), toISO };
 }
 
-// ── Reconstructed tokens: are their historical days valued? (PR #122 review B1) ──
+// ── Reconstructed tokens: are their historical days valued? (PR #122 review B1, re-review F2/F4) ──
 
 /**
  * A token with LICENSED reconstructed history (SPL / ERC-20 history), held now
- * or long since exited, is in one of three valuation states for its history:
+ * or long since exited, is in one of five valuation states for its history.
+ * `held` is when it was actually held (quantity > 0), clamped to the licence;
+ * `closesFromISO` is its first stored historical close (RAW_CLOSE), or null.
  *
- *   VALUED          historical closes are stored for it (RAW_CLOSE) — its days
- *                   are valued from the first one (an earlier licence start is
- *                   disclosed as `tokenPricesFromISO`, valuation-coverage.core);
- *   NO_MARKET       the vendor answered: not listed, or listed below the
- *                   liquidity floor (thin) — it is never valued, honestly, the
- *                   same rule as a held unpriced token ("Not valued");
- *   NOT_VALUED_YET  anything else — never quoted (a token sold before capture
- *                   began has no current quote), quoted but no closes yet, the
- *                   budget ran out, the vendor returned an empty range. Its days
- *                   contribute nothing; the wallet must not read complete while
- *                   one exists, and the chart says so.
+ *   NEVER_HELD        no positive balance ever (e.g. zero-value spam transfers):
+ *                     nothing to value — never probed, never counted (F2);
+ *   VALUED            closes start on or before its first held day — its held
+ *                     period is valued (a still-held token's newest days by the
+ *                     day rule as usual);
+ *   VALUED_FROM_LATER closes start INSIDE its held period: valued only from
+ *                     there. The native rule (a later price floor ⇒ limited):
+ *                     disclosed as `tokenPricesFromISO`, and LIMITING (F4);
+ *   NO_MARKET         none of its held days priced, and the vendor said (when
+ *                     last asked): not listed, or thin — never valued;
+ *   NOT_VALUED_YET    none of its held days priced, for any other reason —
+ *                     never quoted (sold before capture began), closes not yet
+ *                     acquired, or closes that begin only AFTER it was last held
+ *                     (held only before the vendor's price window — F4).
  *
- * Inputs are the token's alias metadata (the quote marker `quote` and the price
- * history marker `priceHistory`, read loosely — this module imports nothing)
- * and whether any RAW_CLOSE exists for it. A missing price is never $0.
+ * VALUED_FROM_LATER and NOT_VALUED_YET keep the wallet from reading complete.
+ * Inputs are read loosely (alias metadata: `quote`, `priceHistory`). A missing
+ * price is never $0.
  */
-export type ReconstructedTokenValuation = "VALUED" | "NO_MARKET" | "NOT_VALUED_YET";
+export type ReconstructedTokenValuation = "NEVER_HELD" | "VALUED" | "VALUED_FROM_LATER" | "NO_MARKET" | "NOT_VALUED_YET";
 
-export function reconstructedTokenValuation(hasHistoricalClose: boolean, aliasMetadata: unknown): ReconstructedTokenValuation {
-  if (hasHistoricalClose) return "VALUED";
+export interface ReconstructedTokenFacts {
+  licence: { fromISO: string; toISO: string };
+  /** When it was held (quantity > 0); `toISO` null = still held. Null = never held. */
+  held: { fromISO: string; toISO: string | null } | null;
+  closesFromISO: string | null;
+}
+
+export function reconstructedTokenValuation(f: ReconstructedTokenFacts, aliasMetadata: unknown): ReconstructedTokenValuation {
+  if (!f.held) return "NEVER_HELD";
+  const heldFrom = f.held.fromISO > f.licence.fromISO ? f.held.fromISO : f.licence.fromISO;
+  const heldTo = f.held.toISO === null || f.held.toISO > f.licence.toISO ? f.licence.toISO : f.held.toISO;
+  if (heldFrom > heldTo) return "NEVER_HELD"; // held only outside the licence: no licensed day to value
+  if (f.closesFromISO !== null) {
+    if (f.closesFromISO <= heldFrom) return "VALUED";
+    if (f.closesFromISO <= heldTo) return "VALUED_FROM_LATER";
+    // Closes begin only after it was last held: none of its held days is valued.
+  }
   const m = (aliasMetadata && typeof aliasMetadata === "object" ? aliasMetadata : {}) as {
     quote?: { outcome?: unknown; pricedAt?: unknown }; priceHistory?: { outcome?: unknown };
   };
@@ -159,4 +179,9 @@ export function reconstructedTokenValuation(hasHistoricalClose: boolean, aliasMe
   if (m.priceHistory?.outcome === "UNLISTED") return "NO_MARKET";
   if ((q === "UNLISTED" || q === "INVALID") && typeof m.quote?.pricedAt !== "string") return "NO_MARKET";
   return "NOT_VALUED_YET";
+}
+
+/** Does this state keep the wallet's history from reading complete? */
+export function tokenValuationLimits(v: ReconstructedTokenValuation): boolean {
+  return v === "NOT_VALUED_YET" || v === "VALUED_FROM_LATER";
 }

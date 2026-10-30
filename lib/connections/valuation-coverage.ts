@@ -12,7 +12,8 @@ import type { PrismaClient } from '@prisma/client';
 import { grantsBalanceDisclosure } from '@/lib/account-privacy';
 import { deriveValuationCoverage, type ValuationCoverage } from './valuation-coverage.core';
 import { IS_TOKEN_INSTRUMENT, NOT_TOKEN_INSTRUMENT, TOKEN_ALIAS_PROVIDER, WALLET_TOKEN_POSITION_SOURCE } from '@/lib/crypto/token-asset';
-import { reconstructedTokenValuation } from '@/lib/crypto/token-valuation.core';
+import { reconstructedTokenValuation, type ReconstructedTokenValuation } from '@/lib/crypto/token-valuation.core';
+import { loadTokenHeldSpans } from '@/lib/crypto/token-held-spans';
 import { coverageFromRow, licensedInterval } from '@/lib/crypto/position-coverage';
 
 type Client = Pick<PrismaClient, 'spaceAccountLink' | 'positionCoverage' | 'priceObservation' | 'positionObservation' | 'instrumentAlias'>;
@@ -63,8 +64,9 @@ export async function loadValuationCoverage(client: Client, spaceId: string): Pr
  * token sold before capture began has no observation at all, so it is read
  * from its licence, never from `firsts`), classified by the one rule
  * (token-valuation.core `reconstructedTokenValuation`):
- *   · VALUED — valued from its first stored close; `pricesFromISO` is the latest
- *     such first close among those whose licence starts earlier;
+ *   · VALUED_FROM_LATER — priced only from inside its held period; `pricesFromISO`
+ *     is the latest such first close (F4: limiting, as native's later price floor);
+ *   · NEVER_HELD — no positive balance ever: not counted at all (F2);
  *   · NOT_VALUED_YET — counted and disclosed (and the wallet is never complete);
  *   · NO_MARKET — counted and disclosed (never valued, never zero).
  * Dates and counts only.
@@ -105,14 +107,22 @@ async function pricedTokenDisclosure(client: Client, accountIds: string[]): Prom
     .filter((d): d is string => d !== null).sort()[0] ?? null;
   const firstClose = new Map(closes.map((p) => [p.instrumentId, day(p._min.date)]));
   const meta = new Map(aliases.map((a) => [a.instrumentId, a.metadata]));
+  // F2/F4 — per (account, token): when it was actually held; never-held tokens count nowhere.
+  const held = await loadTokenHeldSpans(client as never, accountIds, licensedIds);
+  const RANK: Record<ReconstructedTokenValuation, number> = { NOT_VALUED_YET: 4, VALUED_FROM_LATER: 3, NO_MARKET: 2, VALUED: 1, NEVER_HELD: 0 };
+  const worst = new Map<string, ReconstructedTokenValuation>();
+  for (const r of live) {
+    const licence = licensedInterval(coverageFromRow(r))!;
+    const v = reconstructedTokenValuation({ licence, held: held.get(`${r.financialAccountId}|${r.instrumentId}`) ?? null, closesFromISO: firstClose.get(r.instrumentId) ?? null }, meta.get(r.instrumentId));
+    const prev = worst.get(r.instrumentId);
+    if (!prev || RANK[v] > RANK[prev]) worst.set(r.instrumentId, v);
+  }
   let notValuedYet = 0, withoutMarket = 0;
   const pricedFrom: string[] = [];
-  for (const [id, from] of licensed) {
-    const close = firstClose.get(id) ?? null;
-    const v = reconstructedTokenValuation(close !== null, meta.get(id));
+  for (const [id, v] of worst) {
     if (v === 'NOT_VALUED_YET') notValuedYet++;
     else if (v === 'NO_MARKET') withoutMarket++;
-    else if (close && from < close) pricedFrom.push(close);
+    else if (v === 'VALUED_FROM_LATER') pricedFrom.push(firstClose.get(id)!);
   }
   return { trackedFromISO, pricesFromISO: pricedFrom.sort().at(-1) ?? null, notValuedYet, withoutMarket };
 }

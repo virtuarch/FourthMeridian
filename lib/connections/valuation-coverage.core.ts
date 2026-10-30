@@ -112,7 +112,7 @@ export function valuationCoverageNote(cov: ValuationCoverage | null, chartFromIS
     : null;
   const k = cov.tokensWithoutMarket ?? 0;
   const noMarketNote = k > 0
-    ? `${k === 1 ? "1 token" : `${k} tokens`} with verified history ${k === 1 ? "has" : "have"} no reliable market price, so ${k === 1 ? "it isn’t" : "they aren’t"} counted (never as zero).`
+    ? `${k === 1 ? "1 token" : `${k} tokens`} with verified history ${k === 1 ? "isn’t" : "aren’t"} counted — no reliable market price was found for ${k === 1 ? "it" : "them"} when last checked (never counted as zero).`
     : null;
   return [priceNote, tokenNote, tokenPriceNote, notYetNote, noMarketNote].filter((x): x is string => x !== null).join(" ") || null;
 }

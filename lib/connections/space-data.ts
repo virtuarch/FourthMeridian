@@ -513,6 +513,7 @@ async function loadConnectionIntelligence(
       })));
       walletHistory.walletComplete = perInstrument.length > 0 && perInstrument.every((h) => h.complete);
       walletHistory.tokensNotValuedYet = perInstrument.reduce((n, h) => n + h.tokensNotValuedYet, 0);
+      walletHistory.tokensValuedFromLater = perInstrument.reduce((n, h) => n + h.tokensValuedFromLater, 0);
       walletHistory.chain = chains[0] ?? null;
     }
     if (walletHistory && c.provider === "WALLET") {

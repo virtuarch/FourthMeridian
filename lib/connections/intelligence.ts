@@ -166,6 +166,8 @@ export interface ConnectionIntelligenceStatus {
      * days are not valued yet: no stored historical price. Counts only.
      */
     tokensNotValuedYet?: number;
+    /** F4 — tokens valued only from a price floor inside their held period (limiting, as native). */
+    tokensValuedFromLater?: number;
     /** The wallet's chain token (e.g. "SOL"), for chain-specific token wording. */
     chain?: string | null;
   } | null;
