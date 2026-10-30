@@ -805,7 +805,8 @@ export async function acquireEthHistory(
    *     bumps its nonce, and nonce(B) == 0.
    *   - code running in its context: needs code. For a key-derived address
    *     code can arrive only by EIP-7702 delegation (no CREATE/CREATE2 can
-   *     target it — that would be a 160-bit keccak second preimage), and every
+   *     target it — that would need a 160-bit address collision between a key
+   *     and a CREATE2 output, ~2^80 work even when one party picks both), and every
    *     7702 authorization, valid or sponsored, increments the authority's
    *     nonce (EIP-7702: "increase the nonce of authority by one") — so none
    *     happened by B. Pre-Prague no delegation existed at all.
@@ -845,9 +846,10 @@ export async function acquireEthHistory(
    * COST. G reads states the proof already holds; K reads receipts the
    * evidence phase fetches anyway (memoised in `blockRaw`); only P spends —
    * ONE probe triple at `lo`, budget-bounded, deadline-bounded and metered like
-   * every other. Any failure (budget, throttle, a stale contract at `lo`)
-   * leaves the walk to continue: the shortcut can only SKIP work the walk
-   * would have proven empty, never change what is licensed.
+   * every other. Any failure falls back to the walk's own behaviour: a stale
+   * contract at `lo` lets the walk continue; a budget miss or throttle ends
+   * this step at the last proven boundary. The shortcut can only SKIP work
+   * the walk would have proven empty, never change what is licensed.
    */
   let originProvenAt: number | null = null;
   let ownerSigned = args.ownerSigned === true;
