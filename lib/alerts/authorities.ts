@@ -17,6 +17,7 @@ import type { ConnectionHealthResult } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
+import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 
 /** The authority a rule reads. `provider-quota` names the not-yet-shipped
  *  OPS-5 S3 authority the dormant `quota-low` rule will bind to.
@@ -31,6 +32,7 @@ export type AlertAuthority =
   | "ai-failures"
   | "ai-spend"
   | "sync-incidents"
+  | "policy-assignments"
   | "provider-quota";
 
 /**
@@ -95,4 +97,7 @@ export interface AuthorityOutputs {
   aiSpend: AiSpendHealth | null;
   /** OBS-004 — active sync incidents (null = did not gather). */
   syncIncidents: SyncIncidentHealth | null;
+  /** Owner ruling (2026-10-30) — missing / invalid customer policy-group assignments
+   *  (lib/entitlements/assignment-health.ts). Optional: absent = did not gather. */
+  policyAssignments?: PolicyAssignmentHealth | null;
 }

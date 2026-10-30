@@ -27,6 +27,7 @@ import type { ConnectionHealthResult, HealthState } from "@/lib/connections/heal
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
+import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -338,6 +339,33 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
   return out;
 }
 
+/** Owner ruling (2026-10-30) — missing / invalid customer policy-group assignments → one
+ *  breach PER CUSTOMER (dedupe on the opaque reference, so a newly affected customer pages
+ *  on its own clock), plus one `:unlisted` breach when the authority's capped list is a
+ *  floor. Critical while the fail-closed switch is enforced (the customer is being
+ *  refused now); warning while it is off. The authority decided who is affected; this
+ *  only words it. Opaque `user …abc123` references only — never an email or a name. */
+export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: PolicyAssignmentHealth): AlertSignal[] {
+  if (p.total <= 0) return [];
+  const severity: AlertSeverity = p.enforced ? "critical" : "warning";
+  const state = p.enforced ? "FAIL CLOSED (paid features refused)" : "resolving to the Beta default (switch off)";
+  const out: AlertSignal[] = p.items.map((i) => ({
+    ruleId: rule.id, kind: rule.kind, severity,
+    dedupeKey: `${rule.id}:${i.ref.slice(-6)}`,
+    summary: i.reason === "UNASSIGNED"
+      ? `Customer ${i.ref} has no policy-group assignment — ${state}. Assign a valid policy group in Customer Success.`
+      : `Customer ${i.ref} is assigned unknown policy group "${i.unknownKey ?? ""}" — ${state}. Assign a valid policy group in Customer Success.`,
+  }));
+  const unlisted = p.total - p.items.length;
+  if (unlisted > 0) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity, dedupeKey: `${rule.id}:unlisted`,
+      summary: `${unlisted} further customer(s) with a missing or invalid policy-group assignment beyond the ${p.items.length} listed (cap ${p.cap}); total ${p.total} (${p.unassigned} unassigned, ${p.unknown} unknown key) — ${state}.`,
+    });
+  }
+  return out;
+}
+
 // ── THE canonical evaluation ────────────────────────────────────────────────────
 
 /**
@@ -377,6 +405,9 @@ export function evaluateAlertRules(
         break;
       case "sync-incident":
         if (authorities.syncIncidents) signals.push(...evaluateSyncIncidentCritical(rule, authorities.syncIncidents));
+        break;
+      case "policy-assignment":
+        if (authorities.policyAssignments) signals.push(...evaluatePolicyAssignmentInvalid(rule, authorities.policyAssignments));
         break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;

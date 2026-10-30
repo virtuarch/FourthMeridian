@@ -13,6 +13,8 @@
  *   alerts        loadLatestAlertEvaluation  (firing NOW) + loadRecentAlertRuns (history, kept apart)
  *   incidents     getIncidentPreview         (active, ordered, subjects resolved) → D5 projection,
  *                 + getIncidentDetail for the correlated few, to name an execution as evidence
+ *   policy-assignments loadPolicyAssignmentHealth (missing / invalid customer policy-group
+ *                 assignments, capped 25 + exact counts; opaque customer reference only)
  *
  * BEST-EFFORT PER AUTHORITY. A reader that throws contributes no rows and is
  * NAMED in `authoritiesFailed`; the others still answer. Absence of rows from a
@@ -53,6 +55,9 @@ import {
 import { queryRefreshExecutions } from "@/lib/platform/refresh/execution-query";
 import { getAiFailureHealth } from "@/lib/platform/ai/failures";
 import { getBriefOps } from "@/lib/platform/ai/brief-ops";
+// Owner ruling (2026-10-30) — the policy-assignment authority (its own bounded,
+// read-only fm_system read; this file still imports no database client).
+import { loadPolicyAssignmentHealth } from "@/lib/entitlements/assignment-health";
 
 /** Active incidents asked for. More than the preview's six; still a floor when exceeded. */
 export const ATTENTION_INCIDENT_LIMIT = 20;
@@ -117,7 +122,7 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
   const freshnessP = attempt("resource-freshness", () => checkResourceFreshness(undefined, now));
 
   const impactSince = new Date(now.getTime() - USER_IMPACT_WINDOW_HOURS * 3_600_000);
-  const [connections, jobs, resources, providers, alerts, incidents, history, impactRefresh, impactAi, impactBrief] = await Promise.all([
+  const [connections, jobs, resources, providers, alerts, incidents, history, impactRefresh, impactAi, impactBrief, policyAssignments] = await Promise.all([
     connectionsP,
     attempt("job-health", () => checkScheduledJobHealth(undefined, now)),
     freshnessP,
@@ -142,6 +147,7 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
       const ops = await getBriefOps("24h");
       return { counts: ops.counts, rows: ops.rows };
     }),
+    attempt("policy-assignments", () => loadPolicyAssignmentHealth({ now })),
   ]);
 
   const core = buildAttention(
@@ -161,6 +167,7 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
       resources,
       alerts,
       incidents,
+      policyAssignments,
     },
     now,
   );

@@ -24,6 +24,7 @@ import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { detailAccountLabel } from "@/lib/platform/incidents/account-label";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 import { staleWindowMs } from "@/lib/connections/health";
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
@@ -80,7 +81,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   if (!user) return null;
 
   const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, plaid, wallets, policies, manualAssets, lastEngagements, firstAiTurn, firstBriefView] = await Promise.all([
-    loadEffectiveEntitlements(client, userId),
+    loadEffectiveEntitlements(client, userId, entitlementLoadOptions()),
     client.customerCohort.findMany({ where: { userId }, orderBy: { joinedAt: "asc" }, select: { cohort: true, joinedAt: true, source: true } }),
     client.betaAccessRequest.findUnique({ where: { email: user.email },
       select: { id: true, status: true, createdAt: true, decidedAt: true, invitedAt: true, inviteExpiresAt: true, redeemedAt: true } }),

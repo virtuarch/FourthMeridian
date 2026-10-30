@@ -69,6 +69,8 @@ const REASON_LABEL: Record<string, string> = {
 const SOURCE_TONE: Record<string, string> = {
   POLICY: "var(--text-secondary)", POLICY_DEFAULT: "var(--text-muted)", OVERLAY: "var(--accent-warning)", CEILING: "var(--accent-positive)",
   USER_OVERRIDE: "var(--accent-warning)", PLATFORM_SETTING: "var(--text-secondary)",
+  // FAIL CLOSED (owner ruling, 2026-10-30) — a missing/invalid assignment's restricted value.
+  FAIL_CLOSED: "var(--accent-negative)",
 };
 
 function fmtValue(v: boolean | number): string { return typeof v === "boolean" ? (v ? "on" : "off") : String(v); }
@@ -261,7 +263,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
 
                   <Section title="Cohort & policy">
                     <Row label="Cohorts" value={detail.cohorts.length ? detail.cohorts.map((c) => `${c.label} (${c.source.toLowerCase()}, ${ago(c.joinedAt)})`).join("; ") : "none recorded"} />
-                    <Row label="Policy group" value={`${detail.policy.policyGroupLabel}${detail.policy.assigned ? "" : " — default, no assignment recorded"}`} />
+                    <Row label="Policy group" value={`${detail.policy.policyGroupLabel}${detail.policy.assigned || detail.policy.failClosed ? "" : " — default, no assignment recorded"}`} />
+                    {detail.policy.failClosed && <Row label="Fail closed" value={detail.policy.failClosedReason === "UNASSIGNED" ? "No assignment recorded — assign a policy group below to restore the plan." : "The assigned key is not a policy group — assign a valid one below to restore the plan."} />}
                     {detail.policy.unknownPolicyGroup && <Row label="Assigned key unknown" value={detail.policy.unknownPolicyGroup} />}
                     <Row label="Overlay" value={detail.policy.overlayLabel ?? "none"} />
                     <ul className="mt-1 flex flex-col gap-1">

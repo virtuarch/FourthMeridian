@@ -139,7 +139,9 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
     const dim = e.dimensions.aiDailyUsdAllowance;
     const allowanceUsd = Number(dim.value);
     const todayUsd = today.get(userId) ?? 0;
-    const source: CustomerBudgetView["allowanceSource"] = dim.source === "POLICY_DEFAULT" ? "POLICY" : dim.source;
+    // This Economics view resolves WITHOUT the fail-closed option (it projects the plan's allowance, as before);
+    // FAIL_CLOSED therefore cannot occur here and is folded with POLICY_DEFAULT only to satisfy the frozen union.
+    const source: CustomerBudgetView["allowanceSource"] = dim.source === "POLICY_DEFAULT" || dim.source === "FAIL_CLOSED" ? "POLICY" : dim.source;
     return {
       ref: opaqueUserRef(userId),
       rolling24hUsd, todayUsd, allowanceUsd, allowanceSource: source,

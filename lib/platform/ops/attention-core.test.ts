@@ -123,7 +123,12 @@ const incidents: NonNullable<AttentionInputs["incidents"]> = {
   activeTotal: 2, truncated: false,
 };
 
-const full: AttentionInputs = { connections, jobs, providers, resources, alerts, incidents };
+// Owner ruling (2026-10-30) — the seventh authority (policy assignments); a clean read here so the
+// existing composition assertions are unchanged. Its own rows are pinned in lib/entitlements/fail-closed.test.ts.
+const policyAssignments: NonNullable<AttentionInputs["policyAssignments"]> = {
+  checkedAt: now.toISOString(), enforced: false, unassigned: 0, unknown: 0, total: 0, items: [], cap: 25, truncated: false,
+};
+const full: AttentionInputs = { connections, jobs, providers, resources, alerts, incidents, policyAssignments };
 
 // ── Composition ──────────────────────────────────────────────────────────────
 
@@ -187,10 +192,13 @@ console.log("failed authorities and floors");
 {
   const partial = buildAttention({ ...full, jobs: null, incidents: null }, now);
   check("failed readers are NAMED", partial.authorities.failed.join(",") === "job-health,incidents");
-  check("the rest still answer", partial.authorities.checked.length === 4 && partial.items.some((i) => i.entity.kind === "connection"));
-  check("ATTENTION_AUTHORITIES lists every reader exactly once", ATTENTION_AUTHORITIES.length === 6 && new Set(ATTENTION_AUTHORITIES).size === 6);
-  const empty = buildAttention({ connections: { total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: { jobs: [] }, providers: { ...providers, providers: [] }, resources: { ...resources, resources: [] }, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false } }, now);
-  check("nothing wrong → zero rows and six authorities checked", empty.items.length === 0 && empty.authorities.checked.length === 6 && empty.floors.length === 0);
+  // Owner ruling (2026-10-30) — 7 authorities now, so 5 answer when two fail.
+  check("the rest still answer", partial.authorities.checked.length === 5 && partial.items.some((i) => i.entity.kind === "connection"));
+  // Owner ruling (2026-10-30) — policy-assignments is the seventh reader.
+  check("ATTENTION_AUTHORITIES lists every reader exactly once", ATTENTION_AUTHORITIES.length === 7 && new Set(ATTENTION_AUTHORITIES).size === 7 && ATTENTION_AUTHORITIES.includes("policy-assignments"));
+  const empty = buildAttention({ connections: { total: 2, counts: { HEALTHY: 2, STALE: 0, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 0, REVOKED: 0 }, unhealthy: [], retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy" }, jobs: { jobs: [] }, providers: { ...providers, providers: [] }, resources: { ...resources, resources: [] }, alerts: { latest: null, titles: {} }, incidents: { items: [], activeTotal: 0, truncated: false }, policyAssignments }, now);
+  // Owner ruling (2026-10-30) — seven authorities (policy-assignments added).
+  check("nothing wrong → zero rows and seven authorities checked", empty.items.length === 0 && empty.authorities.checked.length === 7 && empty.floors.length === 0);
   const capped = buildAttention({ ...full, connections: { ...connections, total: 40, counts: { ...connections.counts, HEALTHY: 2 } } }, now);
   check("a capped connection list is captioned as a floor", capped.floors.some((f) => /Connections: 3 of 38 unhealthy shown/.test(f)), capped.floors.join(" | "));
   const trunc = buildAttention({ ...full, incidents: { ...incidents, activeTotal: 25, truncated: true } }, now);

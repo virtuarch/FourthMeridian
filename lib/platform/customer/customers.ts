@@ -40,15 +40,27 @@ export interface CustomerListRow extends CustomerRollup {
 
 export interface CustomerList { total: number; customers: CustomerListRow[] }
 
+/** The id tail of an opaque `user …abc123` reference (or a bare 6+ character token), else null. */
+export function opaqueRefTail(search: string): string | null {
+  const m = /^(?:user\s*)?(?:…|\.\.\.)?\s*([A-Za-z0-9_-]{6,})$/.exec(search.trim());
+  return m ? m[1] : null;
+}
+
 export async function listCustomers(opts: { search?: string; limit?: number; now?: Date } = {}, client = systemDb): Promise<CustomerList> {
   const now = opts.now ?? new Date();
   const search = (opts.search ?? "").trim();
   const limit = Math.min(CUSTOMER_LIST_MAX, Math.max(1, Math.floor(opts.limit ?? 50)));
+  // Owner ruling (2026-10-30) — operator surfaces that minimise identity (Platform
+  // Ops Attention, the alert email) name a customer as `user …abc123`; searching
+  // that reference here (or its bare 6+ character tail) finds the account by its
+  // id suffix, so the policy-assignment alert is actionable in Customer Success.
+  const idTail = opaqueRefTail(search);
   const where = search
     ? { OR: [
         { email: { contains: search, mode: "insensitive" as const } },
         { name: { contains: search, mode: "insensitive" as const } },
         { username: { contains: search, mode: "insensitive" as const } },
+        ...(idTail ? [{ id: { endsWith: idTail } }] : []),
       ] }
     : {};
 

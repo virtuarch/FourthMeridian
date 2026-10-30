@@ -48,11 +48,17 @@ import type { ExecutionRowDTO } from "@/lib/platform/refresh/execution-query-cor
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { BriefOps } from "@/lib/platform/ai/brief-ops";
 import { platformViewTarget } from "@/lib/platform/workspaces";
+import { describePolicyAssignmentIssue, type PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 
 /** PLATFORM OPS PHASE 1 UX — alert rules live in Policies › Alerts (the default
  *  Policies view is Policy groups). Jobs / Pipeline targets keep their retired
  *  ids, which resolve to Operations › Jobs / Pipeline (PLATFORM_WORKSPACE_ALIASES). */
 const ALERTS_VIEW = platformViewTarget("platform-policies", "alerts");
+/** Owner ruling (2026-10-30) — the Policies › Policy groups view, which carries the
+ *  unassigned / unknown-assignment COUNTS beside the catalogue. The fix itself is a
+ *  Customer Success action (a different Platform area); the row's problem sentence
+ *  names it and the opaque reference to search for. */
+const POLICY_GROUPS_VIEW = platformViewTarget("platform-policies", "groups");
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -60,11 +66,12 @@ export type AttentionSeverity = "critical" | "error" | "warning" | "info";
 
 export const ATTENTION_SEVERITY_RANK: Record<AttentionSeverity, number> = { critical: 0, error: 1, warning: 2, info: 3 };
 
-export type AttentionEntityKind = "connection" | "job" | "provider" | "resource" | "alert-rule" | "incident";
+export type AttentionEntityKind = "connection" | "job" | "provider" | "resource" | "alert-rule" | "incident" | "customer";
 
 export interface AttentionEntity {
   kind: AttentionEntityKind;
-  /** Institution / job name / provider label / resource label / rule title / subject label. */
+  /** Institution / job name / provider label / resource label / rule title / subject label /
+   *  a customer's OPAQUE `user …abc123` reference (never an email, name or whole id). */
   label: string;
   /** An OPAQUE reference the actions need (a connection id). Never a customer id. */
   ref?: string;
@@ -74,7 +81,7 @@ export type AttentionEvidence =
   /** A RefreshExecution the operator can inspect in place. */
   | { kind: "execution"; id: string; workspace: "platform-refresh" }
   /** The workspace that holds the full read. (`ai` / `brief` — BETA V1 user-impact rows.) */
-  | { kind: "connection" | "job" | "provider" | "resource" | "alert" | "incident" | "ai" | "brief"; id?: string; workspace: string };
+  | { kind: "connection" | "job" | "provider" | "resource" | "alert" | "incident" | "ai" | "brief" | "policy-assignment"; id?: string; workspace: string };
 
 export type AttentionAction =
   | { kind: "open-workspace"; workspace: string }
@@ -103,6 +110,8 @@ export const ATTENTION_AUTHORITIES = [
   "resource-freshness",
   "alert-evaluation",
   "incidents",
+  // Owner ruling (2026-10-30) — missing / invalid customer policy-group assignments.
+  "policy-assignments",
 ] as const;
 export type AttentionAuthority = (typeof ATTENTION_AUTHORITIES)[number];
 
@@ -127,6 +136,9 @@ export interface AttentionInputs {
   /** `latest: null` = evaluator never ran (an answer); outer null = loader failed. */
   alerts: { latest: AlertLatestEvaluation | null; titles: Readonly<Record<string, string>> } | null;
   incidents: { items: readonly PlatformIncidentProjection[]; activeTotal: number; truncated: boolean } | null;
+  /** Owner ruling (2026-10-30) — the policy-assignment read (lib/entitlements/assignment-health.ts).
+   *  Absent (undefined) is treated exactly like null: NOT read, so the authority is named as failed. */
+  policyAssignments?: PolicyAssignmentHealth | null;
 }
 
 export interface AttentionCore {
@@ -170,6 +182,12 @@ export const SEVERITY_OF = {
     warning: "warning",
     info: "info",
   } as Record<SyncIssueSeverity, AttentionSeverity>,
+  /** Owner ruling (2026-10-30): enforced ⇒ the customer is being refused paid features now (a
+   *  person must act); not enforced ⇒ the exposure is visible BEFORE the switch is turned on. */
+  policyAssignment: {
+    enforced: "error",
+    dormant: "warning",
+  } as Record<"enforced" | "dormant", AttentionSeverity>,
 } as const;
 
 // ── Formatting (pure, clock-injected) ────────────────────────────────────────
@@ -336,6 +354,20 @@ function incidentItems(i: NonNullable<AttentionInputs["incidents"]>): AttentionI
     }));
 }
 
+function policyAssignmentItems(p: PolicyAssignmentHealth): AttentionItem[] {
+  const severity = SEVERITY_OF.policyAssignment[p.enforced ? "enforced" : "dormant"];
+  return p.items.map((i) => ({
+    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${i.ref.slice(-6)}`,
+    severity,
+    entity: { kind: "customer" as const, label: i.ref },
+    problem: describePolicyAssignmentIssue(i, p.enforced),
+    since: i.since,
+    evidence: { kind: "policy-assignment" as const, id: i.reason, workspace: POLICY_GROUPS_VIEW },
+    actions: [{ kind: "open-workspace" as const, workspace: POLICY_GROUPS_VIEW }],
+    basis: "policy-assignment read (USER accounts with no CustomerPolicyAssignment row; rows whose policyGroup is not in the catalogue) under the POLICY_ASSIGNMENT_FAIL_CLOSED switch; since = the assignment's time for an unknown key, the account's creation for an unassigned one; identity = opaque reference only",
+  }));
+}
+
 // ── Composition ──────────────────────────────────────────────────────────────
 
 export function sortAttention(items: readonly AttentionItem[]): AttentionItem[] {
@@ -382,6 +414,14 @@ export function buildAttention(inputs: AttentionInputs, now: Date): AttentionCor
       floors.push(`Incidents: ${inputs.incidents.items.length} of ${inputs.incidents.activeTotal}${inputs.incidents.truncated ? "+" : ""} active shown (a floor, not a total).`);
     }
   } else failed.push("incidents");
+
+  if (inputs.policyAssignments) {
+    checked.push("policy-assignments");
+    items.push(...policyAssignmentItems(inputs.policyAssignments));
+    if (inputs.policyAssignments.truncated) {
+      floors.push(`Policy assignments: ${inputs.policyAssignments.items.length} of ${inputs.policyAssignments.total} affected customers shown (${inputs.policyAssignments.unassigned} unassigned, ${inputs.policyAssignments.unknown} unknown key) — the list is capped at ${inputs.policyAssignments.cap}; the counts are exact.`);
+    }
+  } else failed.push("policy-assignments");
 
   const sorted = sortAttention(items);
   return { items: sorted, counts: countBySeverity(sorted), authorities: { checked, failed }, floors };

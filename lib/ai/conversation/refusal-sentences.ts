@@ -73,6 +73,10 @@ export const allowanceExhaustedSentence = (surfaceLabel: string, amount: string)
 export const planUnavailableSentence = (surfaceLabel: string): string =>
   `${surfaceLabel} isn’t available on your plan.`;
 
+/** FAIL CLOSED (owner ruling, 2026-10-30) — a missing or invalid plan assignment: honest, non-alarming. */
+export const planNeedsAttentionSentence = (surfaceLabel: string): string =>
+  `${surfaceLabel} is paused: your account’s plan needs attention, so new requests are on hold until it’s fixed. Your data is safe and nothing was changed.`;
+
 /** The surface label every Conversations refusal is built with. */
 export const CONVERSATIONS_LABEL = 'Conversations';
 
@@ -85,6 +89,7 @@ const EXACT: ReadonlySet<string> = new Set<string>([
   allowanceUnavailableSentence(CONVERSATIONS_LABEL),
   allowanceUnpricedSentence(CONVERSATIONS_LABEL),
   planUnavailableSentence(CONVERSATIONS_LABEL),
+  planNeedsAttentionSentence(CONVERSATIONS_LABEL),
 ]);
 
 /**
