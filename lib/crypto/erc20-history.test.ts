@@ -1140,7 +1140,7 @@ async function main(): Promise<void> {
     // Wiring pin (complements the behavioural checks above): the binding feeds the gate into the day input.
     const regenSrc = read("lib", "snapshots", "regenerate-history.ts");
     check("F1 wiring: regeneration runs the ONE token day decision and passes digitalAssetHeldUnvalued into regenerateDay",
-      /cryptoTokenDayDecision\(/.test(regenSrc) && /digitalAssetHeldUnvalued = tokenDay\.heldUnvalued;/.test(regenSrc) && /\n\s+digitalAssetHeldUnvalued,\n/.test(regenSrc)
+      /const tokenDay = cryptoTokenDayDecision\(\s*\{ licensed: cryptoDayValuation\.licensed, positionCount: cryptoDayValuation\.positionCount \}, tokenRows, dISO\);/.test(regenSrc) && /digitalAssetHeldUnvalued = tokenDay\.heldUnvalued;/.test(regenSrc) && /\n\s+digitalAssetHeldUnvalued,\n/.test(regenSrc)
       && /const plan = planDayPersistence\(res, prior \?\? null\);/.test(regenSrc) && /if \(applyWrites && plan\.stamp !== null\) metadataOnlyStamps\.push/.test(regenSrc));
 
     // Re-review F2 — BEHAVIOURAL: the binding's token-input construction (rows → tokens → gate → join),
@@ -1157,6 +1157,9 @@ async function main(): Promise<void> {
       check("F2: priced ⇒ joins with its USD value", !d2.heldUnvalued && d2.tokensJoin && d2.valuedTokenUsd.join() === "640");
       const d3 = cryptoTokenDayDecision(ok, rows([], ["usdt"]), "2025-06-01");
       check("F2: explicitly excluded ⇒ not blocking, not valued", !d3.heldUnvalued && d3.tokensJoin && d3.valuedTokenUsd.length === 0);
+      // Re-review M11c — an excluded token that HAS a price still never joins the crypto total.
+      const d3p = cryptoTokenDayDecision(ok, rows([{ instrumentId: "usdt", dateISO: "2025-06-01", basis: "RAW_CLOSE", priceUsd: 1 }], ["usdt"]), "2025-06-01");
+      check("F2/M11c: an EXCLUDED token with a price serving the day is never added to the total", !d3p.heldUnvalued && d3p.tokensJoin && d3p.valuedTokenUsd.length === 0, JSON.stringify(d3p));
       const d4 = cryptoTokenDayDecision({ licensed: false, positionCount: 0 }, rows([{ instrumentId: "usdt", dateISO: "2025-06-01", basis: "RAW_CLOSE", priceUsd: 1 }]), "2025-06-01");
       check("F2: native refused + held token ⇒ heldUnvalued, nothing joins", d4.heldUnvalued && !d4.tokensJoin);
       check("F2: no token rows ⇒ nothing blocks (native unaffected)", !cryptoTokenDayDecision(ok, null, "2025-06-01").heldUnvalued);

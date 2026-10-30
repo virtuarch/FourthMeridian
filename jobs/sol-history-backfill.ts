@@ -172,11 +172,19 @@ export interface SolBackfillJobSummary {
   /** Re-review F4 — SPL historical price acquisition, when any wallet's stopped short (absent ⇒ none did). */
   splPrices?: { status: "BUDGET_STOPPED"; reason: string | null; mintsSkipped: number; wallets: number };
   /**
-   * Re-review F4 — THE JOB'S VERDICT on its own work, beside the runner's binary
-   * succeeded/failed (which says only that the run did not crash): PARTIAL when
-   * historical token prices (SPL or ERC-20) stopped short — a budget stop, an
-   * exhausted probe allowance or the per-run token limit — so a stopped run never
-   * reads as "done". `partialReasons` names each. Set on every return.
+   * THE JOB'S OWN OUTCOME (re-review F4) — a SUMMARY field, read from
+   * `JobRun.summary.outcome` / `JobRun.summary.partialReasons` (Platform Ops can
+   * surface it later). Deliberately NOT the JobRun status: `lib/jobs/run.ts`
+   * `succeeded | failed` is a shared contract meaning "did the run crash", and a
+   * budget stop is by design, not a failure — the run still SUCCEEDS.
+   *
+   *   outcome "COMPLETE"  every historical token price run asked what it owed;
+   *   outcome "PARTIAL"   a token price run (SPL or ERC-20) stopped short: the
+   *                       CoinGecko token budget, an exhausted probe allowance,
+   *                       or the per-run token limit — the rest resumes later.
+   *   partialReasons      one entry per stop, `<SPL|ERC20>_PRICES_<STATUS>: <why>`
+   *                       (e.g. "SPL_PRICES_BUDGET_STOPPED: CoinGecko token budget
+   *                       reached; …"); empty when COMPLETE. Set on every return.
    */
   outcome?: "COMPLETE" | "PARTIAL";
   partialReasons?: string[];
