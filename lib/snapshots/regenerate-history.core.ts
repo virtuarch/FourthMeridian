@@ -215,6 +215,11 @@ export interface DayRegenInput {
    * (docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md's
    * principle, which A9 broke without anyone deciding to). See
    * docs/initiatives/wealth-timeline/WEALTH_TIMELINE_AMENDMENT_SYSTEM_PROPOSAL.md §9.
+   *
+   * 2026-10-30 — decided PER REVOKED LINK, not Space-wide: the binding sets this
+   * from `membershipChangedOn` (below), true only when a revoked account could
+   * have contributed to THIS day's stored row. See "MEMBERSHIP GUARD, PER
+   * REVOKED LINK" at the end of this module.
    */
   membershipChangedSince: boolean;
   /**
@@ -600,4 +605,148 @@ export function writableRows(results: readonly DayRegenResult[]): DayRegenResult
 export function patchableRows(results: readonly DayRegenResult[]): DayRegenResult[] {
   return results.filter((r) =>
     r.action === "write-partial" && r.fieldPatch !== null && Object.keys(r.fieldPatch).length > 0);
+}
+
+// ── MEMBERSHIP GUARD, PER REVOKED LINK ──────────────────────────────────────
+//
+// The MEMBERSHIP CHANGED guard above protects one invariant: automatic regen
+// never rewrites a day whose stored row may carry the contribution of an account
+// that has since been revoked from the Space, because regeneration only sees the
+// CURRENTLY ACTIVE links and would silently drop it.
+//
+// It used to be decided Space-wide and by date alone — "was ANY link revoked
+// after day d" — so a single revocation froze every earlier day for every
+// account. Measured on Preview (2026-10-28): a manual asset linked, valued and
+// revoked on the same day blocked all 365 prior days of a Space whose SOL/BTC
+// position history and prices were complete, pinning it at 32 snapshot rows.
+//
+// The guard is now asked PER REVOKED LINK: day d is blocked iff some revoked
+// link's account COULD HAVE contributed to d's stored row, i.e. d lies inside
+// [contributesFrom, revokedOn). `revokedOn` keeps the previous truncation (the
+// UTC day of revokedAt; that day itself is not blocked, exactly as before).
+//
+// ── WHAT BOUNDS A CONTRIBUTION (found, not assumed) ─────────────────────────
+//
+// A stored row may have been written by any historical writer, not only the
+// current one, so a floor is only usable when EVERY writer that could have
+// produced the row respected it:
+//
+//   cash / savings (Plaid)   — walked back from today's balance across the
+//                              window; held-flat accounts (REG-2) floor at the
+//                              epoch. No safe floor  ⇒ UNBOUNDED.
+//   cards / loans / debt     — same walk-back or held flat. UNBOUNDED.
+//   investments              — historicalHoldingsForWindow runs with
+//                              holdConstantBeforeEarliest, so today's quantity
+//                              is projected onto days before the first position.
+//                              UNBOUNDED.
+//   crypto wallets           — the current engine bounds a spine wallet at its
+//                              earliest PositionObservation, but earlier writers
+//                              (Part-A constant-quantity carry, "independent of
+//                              the per-account floor … spans the whole window")
+//                              wrote today's quantity onto every day, and
+//                              backfill holds crypto flat from its earliest
+//                              transaction. A stored row can therefore carry a
+//                              wallet before its position evidence. UNBOUNDED.
+//   manual real asset        — valued ONLY from its valuation ledger: nothing
+//                              before the first anchor (manualAssetHistoryFloor,
+//                              RWA-2B); before RWA-2B it had no transactions, so
+//                              computeAccountFloors put it at `today` in both
+//                              backfill and regen (or, pre-2026-07-14, at the
+//                              account/link createdAt). The live writer only
+//                              ever wrote it on days it was linked. So it is
+//                              bounded below by the EARLIEST of: first anchor,
+//                              link createdAt, account createdAt, earliest
+//                              transaction, earliest valuation row of any
+//                              currency, acquisition date. AssetValuation is
+//                              append-only (RLS: SELECT + INSERT for tenants).
+//                              A LEGACY asset (balance-only) or one with no
+//                              anchor has no ledger floor ⇒ UNBOUNDED.
+//   anything else / unknown / evidence that failed to load ⇒ UNBOUNDED.
+//
+// UNBOUNDED means "blocks every day before revokedOn" — the previous behaviour.
+// The rule fails closed: only a positively-established floor ever unblocks a day.
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Why a revoked link's account has (or has not) a lower bound on its contribution. */
+export type RevokedLinkEvidence =
+  | {
+      kind: "MANUAL_REAL_ASSET";
+      /** THE engine floor: manualAssetHistoryFloor (first resolved anchor), null when none. */
+      firstAnchorISO: string | null;
+      /**
+       * Earliest AssetValuation row of ANY currency. The resolver drops rows not in
+       * the asset's current currency, so a currency change could move the first
+       * anchor later than the one an earlier run valued from. Null when none.
+       */
+      earliestValuationRowISO: string | null;
+      /** ManualAssetProfile.acquisitionDate (a possible purchase-price anchor), null when none. */
+      acquisitionISO: string | null;
+      /** Balance-only legacy asset — no ledger floor exists. */
+      isLegacy: boolean;
+      /** Earliest Transaction on the account (any), null when none. */
+      earliestTransactionISO: string | null;
+      /** FinancialAccount.createdAt, UTC day. */
+      accountCreatedISO: string;
+    }
+  | { kind: "UNBOUNDED"; why: string };
+
+export interface RevokedLinkFacts {
+  linkId: string;
+  financialAccountId: string;
+  /** SpaceAccountLink.createdAt, UTC day. */
+  linkCreatedISO: string;
+  /** SpaceAccountLink.revokedAt truncated to its UTC day. */
+  revokedOnISO: string;
+  evidence: RevokedLinkEvidence;
+}
+
+/** The days one revoked link blocks: [contributesFromISO, revokedOnISO). */
+export interface RevokedLinkWindow {
+  linkId: string;
+  financialAccountId: string;
+  /** Null = no established floor: every day before revokedOnISO is blocked. */
+  contributesFromISO: string | null;
+  revokedOnISO: string;
+  /** Machine-readable basis for the floor (or for its absence). */
+  basis: string;
+}
+
+/**
+ * The interval of days a revoked link's account could have contributed to.
+ * Pure and total; any malformed or missing input fails closed (UNBOUNDED).
+ */
+export function revokedLinkContributionWindow(f: RevokedLinkFacts): RevokedLinkWindow {
+  const unbounded = (basis: string): RevokedLinkWindow => ({
+    linkId: f.linkId, financialAccountId: f.financialAccountId,
+    contributesFromISO: null, revokedOnISO: f.revokedOnISO, basis,
+  });
+  const e = f.evidence;
+  if (e.kind !== "MANUAL_REAL_ASSET") return unbounded(`UNBOUNDED:${e.why}`);
+  if (e.isLegacy) return unbounded("UNBOUNDED:MANUAL_ASSET_LEGACY_NO_LEDGER");
+  if (e.firstAnchorISO === null) return unbounded("UNBOUNDED:MANUAL_ASSET_NO_ANCHOR");
+  const bounds = [e.firstAnchorISO, f.linkCreatedISO, e.accountCreatedISO];
+  for (const b of [e.earliestTransactionISO, e.earliestValuationRowISO, e.acquisitionISO]) {
+    if (b !== null) bounds.push(b);
+  }
+  if (!bounds.every((b) => typeof b === "string" && ISO_DAY.test(b))) {
+    return unbounded("UNBOUNDED:MALFORMED_EVIDENCE");
+  }
+  const from = bounds.reduce((m, b) => (b < m ? b : m));
+  return {
+    linkId: f.linkId, financialAccountId: f.financialAccountId,
+    contributesFromISO: from, revokedOnISO: f.revokedOnISO,
+    basis: "MANUAL_ASSET_LEDGER_FLOOR",
+  };
+}
+
+/** The revoked links whose contribution window contains `dISO`. */
+export function blockingRevokedLinks(windows: readonly RevokedLinkWindow[], dISO: string): RevokedLinkWindow[] {
+  return windows.filter((w) =>
+    dISO < w.revokedOnISO && (w.contributesFromISO === null || dISO >= w.contributesFromISO));
+}
+
+/** DayRegenInput.membershipChangedSince for `dISO` — true iff any revoked link blocks it. */
+export function membershipChangedOn(windows: readonly RevokedLinkWindow[], dISO: string): boolean {
+  return blockingRevokedLinks(windows, dISO).length > 0;
 }

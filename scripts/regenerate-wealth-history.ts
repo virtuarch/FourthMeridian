@@ -107,6 +107,13 @@ async function main(): Promise<void> {
     `frozen ${res.skippedFrozen}, unsupported(flat-preserved) ${res.skippedUnsupported}, ` +
     `membership-changed(untouched) ${res.skippedMembershipChanged}`,
   );
+  // 2026-10-30 — the per-link membership guard: which revoked link blocks which range.
+  for (const b of res.membershipBlocks) {
+    console.log(
+      `  ⚠ revoked link ${b.linkId} (account ${b.financialAccountId}) blocks ` +
+      `[${b.contributesFromISO ?? "every earlier day"} … ${b.revokedOnISO}) — ${b.basis}; ${b.blockedDays} day(s) in this window`,
+    );
+  }
   if (res.skippedMembershipChanged > 0) {
     console.log(
       `⚠ ${res.skippedMembershipChanged} day(s) left untouched because an account was removed from this Space after that date. ` +
