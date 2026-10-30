@@ -27,7 +27,7 @@
 
 import type { ChainCoverage, ChainMovement } from "./chain-movement";
 import {
-  acquireEthHistory, finalizedBlockNumber, EARLIEST_PROVABLE_BLOCK, ETH_HISTORY_SOURCE, type EthHistoryDeps,
+  acquireEthHistory, finalizedBlockNumber, EARLIEST_PROVABLE_BLOCK, ETH_HISTORY_SOURCE, ETHEREUM_NETWORK_ID, type EthHistoryDeps,
 } from "./eth-history";
 import type { EthHistoryResult } from "./eth-history-sync";
 import type { EthIncrementalFallback } from "./eth-history-incremental";
@@ -84,9 +84,18 @@ export interface EthBackfillOutcome {
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** True when this proof generation's stored movements already prove the address signed a transaction. */
-export function ownerSignedIn(movements: readonly { role: string }[]): boolean {
-  return movements.some((m) => m.role === "FEE");
+/**
+ * True when this proof generation's stored movements already prove THIS
+ * address signed a transaction on Ethereum: a FEE movement owned by the
+ * address on the Ethereum network. A FEE row for another address or network
+ * (a corrupted or foreign checkpoint) proves nothing about this one.
+ */
+export function ownerSignedIn(
+  movements: readonly { role: string; ownedAddress: string; networkId: string }[],
+  ownerAddress: string,
+): boolean {
+  const owner = ownerAddress.toLowerCase();
+  return movements.some((m) => m.role === "FEE" && m.networkId === ETHEREUM_NETWORK_ID && m.ownedAddress.toLowerCase() === owner);
 }
 
 export async function runEthHistoryBackfill(
@@ -175,7 +184,7 @@ export async function runEthHistoryBackfill(
           ? { provenFromBlock: cp.provenFromBlock, anchorBlock: cp.anchorBlock, reachedWindowStart: false } : undefined,
         // EARLY ORIGIN key proof carried across steps: a FEE movement exists only
         // where a receipt's `from` is this address — a transaction it signed.
-        ownerSigned: ownerSignedIn(cp.movements),
+        ownerSigned: ownerSignedIn(cp.movements, store.walletAddress),
       }, { ...ethDeps, probeBudget: probesLeft, chunkBlocks: cp.chunkBlocks });
     } catch (e) {
       return fail("PROVIDER_FAILED", `acquisition failed: ${msg(e)}`);

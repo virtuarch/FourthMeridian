@@ -36,7 +36,8 @@ import {
 } from "./eth-history";
 import { reconcileMovementsAgainstBalance, type ChainCoverage, type ChainMovement } from "./chain-movement";
 import { queuedCheckpoint, serializeCheckpoint, parseCheckpoint, type EthBackfillCheckpoint } from "./eth-history-backfill.core";
-import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore } from "./eth-history-backfill";
+import { runEthHistoryBackfill, ownerSignedIn, EthCheckpointConflictError, type EthBackfillStore } from "./eth-history-backfill";
+import { ETHEREUM_NETWORK_ID } from "./eth-history";
 import type { EthHistoryResult } from "./eth-history-sync";
 import { replayEthHistory } from "./eth-history-rows";
 import { readFileSync } from "fs";
@@ -478,7 +479,18 @@ async function main() {
     check("the inline sync acquires through acquireEthHistory and never disables the early origin",
       /acquireEthHistory\(/.test(sync) && !/earlyOrigin/.test(sync));
     check("the worker carries the key proof and never disables the early origin",
-      /ownerSigned:\s*ownerSignedIn\(cp\.movements\)/.test(bf) && !/earlyOrigin/.test(bf));
+      /ownerSigned:\s*ownerSignedIn\(cp\.movements, store\.walletAddress\)/.test(bf) && !/earlyOrigin/.test(bf));
+    // The key proof is THIS address on Ethereum: a FEE row for another address or network proves nothing.
+    const me = "0xAbC0000000000000000000000000000000000001";
+    const fee = (ownedAddress: string, networkId = ETHEREUM_NETWORK_ID, role = "FEE") => ({ role, ownedAddress, networkId });
+    check("ownerSignedIn: a FEE row owned by the address on Ethereum proves signing (case-insensitive)",
+      ownerSignedIn([fee(me.toLowerCase())], me));
+    check("ownerSignedIn: a FEE row for ANOTHER address proves nothing",
+      !ownerSignedIn([fee("0x0000000000000000000000000000000000000002")], me));
+    check("ownerSignedIn: a FEE row on another network proves nothing",
+      !ownerSignedIn([fee(me, "eip155:137")], me));
+    check("ownerSignedIn: a non-FEE row owned by the address proves nothing",
+      !ownerSignedIn([fee(me, ETHEREUM_NETWORK_ID, "TRANSFER")], me) && !ownerSignedIn([], me));
     check("the rule lives in ONE place: looksLikeOrigin is defined only in eth-history.ts",
       !/function looksLikeOrigin|provablyUnchanged\(/.test(sync + bf));
   }
