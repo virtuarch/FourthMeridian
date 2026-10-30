@@ -28,10 +28,9 @@ import {
   Shield,
   type LucideIcon,
 } from "lucide-react";
-import { PRIMARY_NAV, PLATFORM_DIRECTORY_HREF, isPrimaryDestActive, navContext, type PrimaryDestId } from "@/lib/space-nav";
-import { usePlatformDestinations, type PlatformItem } from "@/components/ui/ContextualNavbar";
-import { platformAreaHref } from "@/lib/platform/directory";
-import { PLATFORM_AREAS } from "@/lib/platform/policy";
+import { PRIMARY_NAV, isPrimaryDestActive, navContext, type PrimaryDestId } from "@/lib/space-nav";
+import { platformDestinations, type PlatformDestinationId, type PlatformSpaceOption } from "@/lib/platform/nav";
+import { usePlatformNav } from "@/components/ui/PlatformNavContext";
 
 const NAV_ICONS: Record<PrimaryDestId, LucideIcon> = {
   brief: Newspaper,
@@ -45,32 +44,31 @@ export function BottomNav() {
   const pathname = usePathname();
   // P-1 — the Platform context gets its own bar; the personal bar is unchanged.
   const platformContext = navContext(pathname) === "platform";
-  const platform = usePlatformDestinations(platformContext);
+  // R1 — the Current Space comes from the ONE Platform nav provider (granted
+  // Spaces loaded server-side by the layout; no fetch here, no pop-in).
+  const { current } = usePlatformNav();
   return platformContext
-    ? <PlatformBottomBar pathname={pathname} platform={platform} />
+    ? <PlatformBottomBar pathname={pathname} current={current} />
     : <BottomNavBar pathname={pathname} />;
 }
 
-/** P-1 — at most this many granted areas beside Overview (five slots in all). */
-export const PLATFORM_BAR_AREAS = 4;
+const PLATFORM_ICONS: Record<PlatformDestinationId, LucideIcon> = {
+  overview: LayoutGrid,
+  ai: Sparkles,
+  space: Shield,
+};
 
 /**
- * P-1 — the mobile bar in the PLATFORM context: Overview (the Platform
- * directory, /dashboard/platform) + up to four granted areas, in the access-
- * derived order /api/spaces returns (the sidebar's one source). One Shield
- * icon for every area, as the sidebar's Platform list does. The way back to
- * Personal is the header's Personal | Platform switch. Labels come from the
- * area registry (navLabel), never from a literal here.
+ * Platform Operations 2.0 R1 — the mobile bar in the PLATFORM context: EXACTLY
+ * three destinations, Overview · AI · Current Space (lib/platform/nav
+ * `platformDestinations`, the same list the desktop rail's top block renders).
+ * The third is labelled with the selected Space's real name (a granted row,
+ * never a literal) and lights on any /dashboard/platform/<AREA> route; switching
+ * Space happens in the Space's own header (mobile) or the rail (desktop), so
+ * the three never change. The way back to Personal is the header's switch.
  */
-export function PlatformBottomBar({ pathname, platform }: { pathname: string | null; platform: readonly PlatformItem[] }) {
-  const items: { key: string; label: string; href: string; Icon: LucideIcon; on: boolean }[] = [
-    { key: "platform-overview", label: "Overview", href: PLATFORM_DIRECTORY_HREF, Icon: LayoutGrid, on: pathname === PLATFORM_DIRECTORY_HREF },
-    ...platform.slice(0, PLATFORM_BAR_AREAS).map((p) => {
-      const href = platformAreaHref(p.platformArea);
-      const meta = PLATFORM_AREAS[p.platformArea as keyof typeof PLATFORM_AREAS];
-      return { key: p.id, label: meta?.navLabel ?? p.name, href, Icon: Shield, on: pathname === href || (pathname ?? "").startsWith(`${href}/`) };
-    }),
-  ];
+export function PlatformBottomBar({ pathname, current }: { pathname: string | null; current: PlatformSpaceOption | null }) {
+  const items = platformDestinations(pathname, current);
   return (
     <nav
       aria-label="Platform"
@@ -83,25 +81,28 @@ export function PlatformBottomBar({ pathname, platform }: { pathname: string | n
       }}
     >
       <div className="flex h-14 items-stretch">
-        {items.map(({ key, label, href, Icon, on }) => (
-          <Link
-            key={key}
-            href={href}
-            prefetch={false}
-            aria-current={on ? "true" : undefined}
-            aria-label={label}
-            className="flex flex-1 flex-col items-center justify-center gap-1"
-          >
-            <span className={["grid size-7 place-items-center rounded-full", "transition-[background-color,color] duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-              on ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"].join(" ")}>
-              <Icon size={16} strokeWidth={on ? 2.25 : 1.75} />
-            </span>
-            <span className={["text-[10px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
-              on ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]"].join(" ")}>
-              {label}
-            </span>
-          </Link>
-        ))}
+        {items.map(({ id, label, href, on }) => {
+          const Icon = PLATFORM_ICONS[id];
+          return (
+            <Link
+              key={id}
+              href={href}
+              prefetch={false}
+              aria-current={on ? "true" : undefined}
+              aria-label={label}
+              className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]"
+            >
+              <span className={["grid size-7 place-items-center rounded-full", "transition-[background-color,color] duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                on ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"].join(" ")}>
+                <Icon size={16} strokeWidth={on ? 2.25 : 1.75} />
+              </span>
+              <span className={["max-w-full truncate text-[10px] leading-none transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)]",
+                on ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]"].join(" ")}>
+                {label}
+              </span>
+            </Link>
+          );
+        })}
       </div>
     </nav>
   );

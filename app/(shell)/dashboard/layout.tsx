@@ -8,7 +8,10 @@ import { enforceTotpPageGate } from "@/lib/auth/totp-page-gate";
 import { resolveEffectiveSpaceConversion } from "@/lib/money/server-context";
 import { DEFAULT_DISPLAY_CURRENCY } from "@/lib/currency";
 import { yesterdayUTCISO } from "@/lib/fx/config";
-import { hasActivePlatformGrants } from "@/lib/platform/directory.server";
+import { cookies } from "next/headers";
+import { hasActivePlatformGrants, loadPlatformDirectory } from "@/lib/platform/directory.server";
+import { PLATFORM_SPACE_COOKIE, resolveCurrentPlatformSpace, type PlatformSpaceOption } from "@/lib/platform/nav";
+import { displaySpaceName } from "@/lib/format";
 import { readAppNoticeStatus } from "@/lib/platform/notices/app-notice-status";
 import { ReactNode } from "react";
 
@@ -46,6 +49,28 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // /api/spaces call beside the sidebar's one. SYSTEM_ADMIN never reaches this
   // layout (proxy.ts sends them to /admin), so there is no special case.
   const hasPlatformGrants = await hasActivePlatformGrants(session.user.id);
+
+  // Platform Operations 2.0 R1 — the Platform context's Current Space, rendered
+  // on the FIRST paint (mobile bar label, desktop rail). Operators only: the
+  // granted Platform Spaces through the one tenant read site, and the remembered
+  // `fm_platform_space` cookie resolved AGAINST those grants — an unknown,
+  // forged or revoked value is not found and the first granted Space is used.
+  // Display only: the Space page re-checks the grant on every request. Fails
+  // quiet to "no Platform Spaces" (the bar then shows its fallback, never a
+  // guessed Space).
+  let platformSpaces: PlatformSpaceOption[] = [];
+  let platformArea: string | null = null;
+  if (hasPlatformGrants) {
+    try {
+      const rows = await loadPlatformDirectory(session.user.id);
+      platformSpaces = rows.map((r) => ({ id: r.id, name: displaySpaceName(r.name), area: r.area }));
+      const remembered = (await cookies()).get(PLATFORM_SPACE_COOKIE)?.value ?? null;
+      platformArea = resolveCurrentPlatformSpace(platformSpaces, null, remembered)?.area ?? null;
+    } catch {
+      platformSpaces = [];
+      platformArea = null;
+    }
+  }
 
   // UNIFIED NOTICES — the notice rail's first status (maintenance + this user's
   // 2FA reminder), so maintenance is on the first paint with no layout shift.
@@ -88,7 +113,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   return (
     <DisplayCurrencyProvider currency={displayCurrency}>
-      <DashboardChrome hasPlatformGrants={hasPlatformGrants} noticeStatus={noticeStatus}>{children}</DashboardChrome>
+      <DashboardChrome hasPlatformGrants={hasPlatformGrants} platformSpaces={platformSpaces} platformArea={platformArea} noticeStatus={noticeStatus}>{children}</DashboardChrome>
     </DisplayCurrencyProvider>
   );
 }

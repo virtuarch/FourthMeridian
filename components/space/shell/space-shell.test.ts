@@ -66,6 +66,10 @@ type _SlotApiKeys = Expect<Equal<
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
   | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility"
   | "onLeave" | "compactRailOptions" | "compactTitleOnly" | "children"
+  // Platform Ops 2.0 R1 — `titleAccessory`: an optional node beside the compact
+  // title (the Platform Space switcher). Customer Spaces never pass it, so their
+  // markup is unchanged (desktop-baseline RENDERED gate).
+  | "titleAccessory"
 >>;
 // v2.7 R1 — `compactViewSelector` moved to PerspectiveShell's controls row and the
 // v2.7 P0 `compactTimeSlot` portal slot is deleted (one TimelineLens, in flow).
