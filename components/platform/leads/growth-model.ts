@@ -156,7 +156,7 @@ export const cohortCellText = (cell: HeatCell): string | null =>
 
 /** Column labels short enough for a 390 px grid; the readout names the full stage. */
 export const ONBOARDING_SHORT: Readonly<Record<string, string>> = {
-  verified: "Verified", firstSession: "Session", firstConnection: "Connected", firstAiTurn: "AI", firstBriefViewed: "Brief",
+  verified: "Verified", firstSession: "Session", firstConnection: "Connect", firstAiTurn: "AI", firstBriefViewed: "Brief",
 };
 
 export const RETENTION_COLS: HeatAxis[] = Array.from({ length: 8 }, (_, k) => ({ key: `w${k}`, label: `W${k}`, shown: true }));

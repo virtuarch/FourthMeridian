@@ -37,5 +37,12 @@ check("failed read → '—' KPIs", merchantKpis({ data: null, loading: false, e
 const html = renderToStaticMarkup(createElement(MerchantLeadSurface, { f: { data: m, loading: false, error: null }, period: "30", onPeriod: () => {} }));
 check("hero, review link to /merchant-ops, provenance bars, decision bars", html.includes("75% linked") && html.includes('href="/merchant-ops"') && html.includes("data-share-bars") && html.includes("data-day-bars"));
 check("no payment / settlement / processing figures implied", !/settle|payment volume|processing (failure|success)|chargeback/i.test(html.replace(/processes no payments/g, "")));
+{
+  const empty = buildMerchantOverview({ totalTransactions: 10, resolvedTransactions: 1, bySource: [{ key: null, count: 10 }], merchants: 1, aliasesBySource: [], userRules: 0, decisions: [], byTier: [], aliasDays: [], ruleDays: [] }, NOW, 30);
+  const h = renderToStaticMarkup(createElement(MerchantLeadSurface, { f: { data: empty, loading: false, error: null }, period: "30", onPeriod: () => {} }));
+  check("no decisions → one compact review row, never an empty chart", h.includes("data-review-empty") && !h.includes('aria-label="Merge-review decisions per UTC day'));
+  const hidden = renderToStaticMarkup(createElement(MerchantLeadSurface, { f: { data: m, loading: false, error: null }, period: "30", onPeriod: () => {}, reviewAvailable: false }));
+  check("the review link follows its section row", !hidden.includes("data-review-link"));
+}
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall checks passed");

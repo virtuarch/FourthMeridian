@@ -204,7 +204,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
             className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
         </label>
         <button type="submit" className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold lg:min-h-8" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
-        {list && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{list.customers.length < list.total ? `${list.customers.length} of ${list.total}` : `${list.total}`} customer{list.total === 1 ? "" : "s"}</span>}
+        {list && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]" data-list-population>{listPopulation(list)}</span>}
       </form>
 
       {loading && <WidgetMessage loading />}
@@ -226,7 +226,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     <td className="px-2 py-2.5 align-middle">
                       <button type="button" onClick={(e) => { e.stopPropagation(); select(c.id); }} aria-haspopup="dialog" className="block max-w-full truncate text-left font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{operatorDisplayName(c)}</button>
                       <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
-                        {rollupCells(c as CustomerRow, nowMs).map((cell, i) => <span key={cell.key}>{i > 0 ? " · " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>)}
+                        {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => <span key={cell.key}>{i > 0 ? " · " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>)}
                       </span>
                     </td>
                     <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
@@ -251,8 +251,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <span className="truncate text-[11px] text-[var(--text-muted)]">
                         {c.funnelStage ?? "—"} · {c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"} · {c.cohorts.length ? c.cohorts.join(", ") : "no cohort"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
                       </span>
-                      <span className="flex flex-wrap gap-x-2 text-[11px] tabular-nums text-[var(--text-muted)]">
-                        {rollupCells(c as CustomerRow, nowMs).map((cell, i) => (
+                      <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
+                        {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => (
                           <span key={cell.key}>{i > 0 ? "· " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>
                         ))}
                       </span>
@@ -527,4 +527,20 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="min-w-0 max-w-full break-words text-right text-[var(--text-primary)]">{value}</span>
     </div>
   );
+}
+
+/**
+ * The list's population in words. The list is EVERY account the search
+ * returns (deactivated ones and operators' own accounts included); the
+ * dashboard hero counts ACTIVE role-USER customers — so the line names both
+ * parts instead of one ambiguous "customers" figure.
+ */
+export function listPopulation(list: CustomerListResponse): string {
+  const rows = list.customers;
+  const deactivated = rows.filter((c) => c.deactivatedAt).length;
+  const activeCustomers = rows.filter((c) => !c.deactivatedAt && c.role === "USER").length;
+  const other = rows.length - deactivated - activeCustomers;
+  const shown = rows.length < list.total ? `${rows.length} of ${list.total} accounts` : `${list.total} account${list.total === 1 ? "" : "s"}`;
+  const parts = [`${activeCustomers} active customer${activeCustomers === 1 ? "" : "s"}`, deactivated ? `${deactivated} deactivated` : null, other ? `${other} admin` : null].filter(Boolean);
+  return `${shown} · ${parts.join(" · ")}`;
 }
