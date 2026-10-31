@@ -330,11 +330,13 @@ export function PoliciesLeadSurface(p: PoliciesLeadSurfaceProps) {
         <HealthHero model={{ ...policiesHeroModel(p.groups), actions: {
           groups: { label: "Show the policy groups", onSelect: () => goToSection("policies-groups") },
           // Only with customers to show: the attention list carries each one.
-          ...(p.groups.data && (coverage(p.groups.data).unassigned > 0 || coverage(p.groups.data).unknown > 0) ? {
+          ...(p.groups.data && coverage(p.groups.data).unassigned > 0 ? {
             unassigned: { label: "Open the affected customers in Attention", onSelect: () => p.onOpenWorkspace(ATTENTION_WORKSPACE) },
+          } : {}),
+          ...(p.groups.data && coverage(p.groups.data).unknown > 0 ? {
             unknown: { label: "Open the affected customers in Attention", onSelect: () => p.onOpenWorkspace(ATTENTION_WORKSPACE) },
           } : {}),
-          overlays: { label: "Show the comparison", onSelect: () => goToSection("policies-matrix") },
+          overlays: { label: "Show each group with its overlays", onSelect: () => goToSection("policies-groups") },
         } }} />
         {(exposed > 0 || p.reconcileSlot) && (
           <div className="mt-2 flex flex-wrap items-center justify-end gap-x-4 gap-y-2 empty:hidden">

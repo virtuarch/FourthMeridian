@@ -91,6 +91,13 @@ export function goToSection(id: string): void {
     el.style.scrollMarginTop = "112px";
     el.scrollIntoView({ behavior: "smooth", block: "start" });
     if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+    // A named, visibly focused landing: the section takes its heading as its name.
+    const heading = el.querySelector("h2, h3");
+    if (heading && !el.hasAttribute("aria-labelledby")) {
+      if (!heading.id) heading.id = `${id}-heading`;
+      el.setAttribute("aria-labelledby", heading.id);
+    }
+    el.classList.add("rounded-[var(--radius-lg)]", "outline-none", "focus-visible:ring-2", "focus-visible:ring-[var(--meridian-400)]");
     el.focus({ preventScroll: true });
   });
 }

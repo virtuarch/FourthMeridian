@@ -23,9 +23,9 @@ console.log("1. HealthHero — an action makes a real button; no action stays a 
   check("no actions ⇒ no buttons, the Personal compact strip", !plain.includes("<button") && plain.includes("data-compact-kpi-strip"));
   const html = renderToStaticMarkup(createElement(HealthHero, { model: { ...model, actions: { a: { label: "Open A", onSelect: () => {} }, c: { label: "Open C", onSelect: () => {}, dialog: true } } } }));
   check("two actionable KPIs ⇒ a button each at both widths (compact + desktop) = 4", (html.match(/<button/g) ?? []).length === 4);
-  check("the button names the figure and what opens", html.includes('aria-label="A: 1 — Open A"'));
-  check("a drawer action says so (aria-haspopup=dialog)", /aria-label="C: 3 — Open C"[^>]*aria-haspopup="dialog"|aria-haspopup="dialog"[^>]*aria-label="C: 3 — Open C"/.test(html));
-  check("static KPIs carry no chevron and no button", !/aria-label="B: 2/.test(html));
+  check("the button names the figure and what opens", html.includes('aria-label="A: 1, x — Open A"'));
+  check("a drawer action says so (aria-haspopup=dialog)", /aria-label="C: 3, z — Open C"[^>]*aria-haspopup="dialog"|aria-haspopup="dialog"[^>]*aria-label="C: 3, z — Open C"/.test(html));
+  check("static KPIs are a named group, never a button", /role="group" aria-label="B: 2, y"/.test(html) && !/<button[^>]*aria-label="B: 2/.test(html));
 }
 
 console.log("2. every Platform Space wires its KPIs to something it renders");
@@ -35,7 +35,9 @@ console.log("2. every Platform Space wires its KPIs to something it renders");
     const src = read(`components/platform/leads/${f}.tsx`);
     const ids = [...src.matchAll(/goToSection\("([a-z0-9-]+)"\)/g)].map((m) => m[1]);
     const missing = ids.filter((id) => !src.includes(`id="${id}"`));
-    check(`${f}: has KPI actions, and every section it scrolls to exists in the same lead`, /actions: \{/.test(src) && missing.length === 0, missing);
+    // A target hidden below lg would be a dead click on a phone.
+    const hidden = ids.filter((id) => new RegExp(`id="${id}"[^>]*max-lg:hidden`).test(src));
+    check(`${f}: has KPI actions; every section it scrolls to exists and is visible at every width`, /actions: \{/.test(src) && missing.length === 0 && hidden.length === 0, { missing, hidden });
   }
 }
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

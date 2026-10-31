@@ -192,7 +192,7 @@ export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
         healthy: { label: "Open the Jobs list", onSelect: () => p.onOpenWorkspace(JOBS_VIEW) },
         attention: { label: "Show what needs attention", onSelect: () => goToSection("ops-attention") },
         runs: { label: "Show the execution trend", onSelect: () => goToSection("ops-trend") },
-        success: { label: "Show job outcomes", onSelect: () => goToSection("ops-composition") },
+        success: { label: "Show succeeded and failed executions per day", onSelect: () => goToSection("ops-trend") },
       } }} />
 
       {/* B — Execution trend (7) · Outcome composition (5). */}

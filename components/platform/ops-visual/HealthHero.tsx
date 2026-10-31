@@ -133,11 +133,11 @@ export function HealthHero({ model }: { model: HeroModel }) {
               const tile = "min-w-0 rounded-[var(--radius-lg)] border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-3 py-2.5";
               return a ? (
                 <button key={k.key} type="button" onClick={a.onSelect} aria-haspopup={a.dialog ? "dialog" : undefined}
-                  aria-label={`${k.label}: ${k.value} — ${a.label}`} className={`${TILE_BUTTON} ${tile} min-h-11 transition-colors hover:border-[var(--border-hairline-strong)]`} data-compact-kpi={k.key} data-kpi-action>
+                  aria-label={`${k.label}: ${k.value}, ${k.sub} — ${a.label}`} className={`${TILE_BUTTON} ${tile} min-h-11 transition-colors hover:border-[var(--border-hairline-strong)]`} data-compact-kpi={k.key} data-kpi-action>
                   {body}
                 </button>
               ) : (
-                <div key={k.key} className={tile} data-compact-kpi={k.key}>{body}</div>
+                <div key={k.key} className={tile} role="group" aria-label={`${k.label}: ${k.value}, ${k.sub}`} data-compact-kpi={k.key}>{body}</div>
               );
             })}
           </div>
@@ -172,12 +172,12 @@ export function HealthHero({ model }: { model: HeroModel }) {
             return (
               <Surface key={k.key} className={`min-w-0 ${a ? "transition-colors hover:border-[var(--border-hairline-strong)]" : ""}`}>
                 {a ? (
-                  <button type="button" onClick={a.onSelect} aria-haspopup={a.dialog ? "dialog" : undefined} aria-label={`${k.label}: ${k.value} — ${a.label}`}
+                  <button type="button" onClick={a.onSelect} aria-haspopup={a.dialog ? "dialog" : undefined} aria-label={`${k.label}: ${k.value}, ${k.sub} — ${a.label}`}
                     className={`${TILE_BUTTON} px-4 py-3.5`} data-kpi-action={k.key}>
                     {inner}
                   </button>
                 ) : (
-                  <div className="px-4 py-3.5">{inner}</div>
+                  <div className="px-4 py-3.5" role="group" aria-label={`${k.label}: ${k.value}, ${k.sub}`}>{inner}</div>
                 )}
               </Surface>
             );
