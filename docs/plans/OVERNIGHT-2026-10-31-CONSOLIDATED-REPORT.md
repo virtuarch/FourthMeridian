@@ -76,7 +76,7 @@ For every migration: `migrate status` reported up to date; new tables have RLS e
   - Publish and activate need fresh CONTROL plus a reason, audited in the same transaction.
   - The owner-approval gate requires a System Admin approval bound to the exact version.
 - **AI authoring.** The model receives template text only, never customer data. Output is validated server-side. It honours the global Cost Freeze (`readGlobalCostFreeze`).
-- **Cost Freeze (Claude 2).** Two independent traces covered all 22 Plaid call sites and every vendor host: zero paid calls when frozen or unknown, and blocked jobs report SKIPPED. Revaluation under freeze only stamps status in the DB and makes no paid calls (Claude 2's three conditions are verified).
+- **Cost Freeze (Claude 2).** Two independent traces covered all 22 Plaid call sites and every vendor host: zero paid calls when frozen or unknown, and blocked jobs report SKIPPED. Revaluation under freeze only stamps status in the DB and makes no paid calls (Claude 2's three conditions are verified). The B2 automation engine also stops under the freeze: each send fails closed and the job reports SKIPPED (verified by Claude 2 in the #187 review).
 - **Live paid-provider usage.** All revaluation passes made zero paid calls. The ETH completion used 67 Alchemy calls.
 
 ## 5. Production changes: verification and rollback status
@@ -119,6 +119,7 @@ The deployed Preview app uses this role through `DATABASE_URL`, so Preview is do
 3. **Separation of duties for automations:** today one System Admin can both approve and activate via break-glass.
 4. **Post-deploy smoke:** add a Vercel Deployment Protection bypass secret so Preview smoke can actually reach the app.
 5. **Production promotion:** all of tonight's work is on Preview only. A release needs separate approval. Migrations 1–5 must precede the code that depends on them.
+6. **Plaid (no action recommended):** nothing to disconnect. Every path that starts a Plaid subscription is gated while frozen.
 
 **Defaults taken, reported for awareness** (say so to change any):
 - O-17: lifecycle suppression of AWARENESS applies to email and automation sends only.
