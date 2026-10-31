@@ -20,6 +20,8 @@ import {
   DuplicateProviderEvent,
   handleResendWebhook,
   isExpectedUnmatchable,
+  parseResendEvent,
+  reconcileEvent,
   MEASURING_EVENT_WHERE,
   UNMATCHED_GRACE_MS,
   MAX_WEBHOOK_BODY_BYTES,
@@ -469,7 +471,42 @@ async function main() {
     const young = await handleResendWebhook(signed(body("email.bounced", "msg-elsewhere-2", {}, edge)), deps(s.store).d);
     check("…one just inside the window is still a 409", young.status === 409);
     check("the grace is keyed on the event's created_at, not the per-attempt svix timestamp",
-      /now\.getTime\(\) - parsed\.occurredAt\.getTime\(\) < UNMATCHED_GRACE_MS/.test(readFileSync(join(process.cwd(), "lib/notifications/delivery/provider-events.ts"), "utf8")));
+      /const age = now\.getTime\(\) - Math\.min\(parsed\.occurredAt\.getTime\(\), now\.getTime\(\)\);\s*if \(parsed\.providerTimed === true && age < UNMATCHED_GRACE_MS\)/.test(readFileSync(join(process.cwd(), "lib/notifications/delivery/provider-events.ts"), "utf8")));
+  }
+
+  console.log("\nNIT N1/N2: the F2 age logic");
+  {
+    // N1 — no top-level created_at: occurredAt falls back to svix-timestamp (re-stamped per attempt).
+    const s = memStore([]);
+    const noCreated = JSON.stringify({ type: "email.delivered", data: { email_id: "msg-no-created" } });
+    const r = await handleResendWebhook(signed(noCreated), deps(s.store).d);
+    check("N1: an unknown id with NO created_at is stored UNMATCHED at once (no endless 409)",
+      r.status === 200 && r.body.outcome === "UNMATCHED" && s.events.size === 1, r.body);
+    const garbage = JSON.stringify({ type: "email.delivered", created_at: "not-a-date", data: { email_id: "msg-bad-created" } });
+    const r2 = await handleResendWebhook(signed(garbage), deps(s.store).d);
+    check("N1: an unparseable created_at counts as absent (stored UNMATCHED)", r2.status === 200 && r2.body.outcome === "UNMATCHED");
+    const p = parseResendEvent(JSON.parse(noCreated), new Date("2026-10-31T11:59:59Z"), NOW);
+    check("N1: the parse marks it providerTimed=false, occurredAt = the svix fallback", p.kind === "handled" && p.providerTimed === false && p.occurredAt.toISOString() === "2026-10-31T11:59:59.000Z", p);
+    const young = await handleResendWebhook(signed(body("email.delivered", "msg-young-1")), deps(s.store).d);
+    check("N1: WITH a young created_at the grace window still applies (409)", young.status === 409);
+  }
+  {
+    // N2 — a created_at in the future (provider clock skew).
+    const future = "2026-10-31T13:00:00.000Z"; // NOW + 1 h
+    const p = parseResendEvent(JSON.parse(body("email.delivered", "msg-skew", {}, future)), NOW, NOW);
+    check("N2: a future created_at is clamped to now", p.kind === "handled" && p.occurredAt.getTime() === NOW.getTime() && p.providerTimed === true, p);
+    const s = memStore([]);
+    const r = await handleResendWebhook(signed(body("email.delivered", "msg-skew", {}, future)), deps(s.store).d);
+    check("N2: unmatched + future created_at ⇒ age 0 ⇒ inside the window (409), never a negative age", r.status === 409);
+    const skewed = { type: "delivered" as const, providerMessageId: "msg-skew-2", occurredAt: new Date(NOW.getTime() + 3_600_000), providerTimed: true };
+    const early = await reconcileEvent(s.store, skewed, "msg_skew_2", NOW);
+    check("N2: reconcile treats a future instant as age 0 (retry), not a negative age", early.kind === "retry");
+    const later = await reconcileEvent(s.store, skewed, "msg_skew_2", new Date(skewed.occurredAt.getTime() + UNMATCHED_GRACE_MS));
+    check("N2: retries are bounded by the skew + the grace: then it is stored UNMATCHED", later.kind === "stored" && later.event.outcome === "UNMATCHED", later.kind);
+    const m = memStore([acceptedRow()]);
+    await handleResendWebhook(signed(body("email.delivered", "msg-resend-1", {}, future)), deps(m.store).d);
+    check("N2: a matched future-stamped delivered gets deliveredAt = now, never a future instant",
+      m.ledger[1]?.deliveredAt?.getTime() === NOW.getTime(), m.ledger[1]?.deliveredAt);
   }
 
   console.log("\nREVIEW F3: measured.delivered ignores UNMATCHED events");
