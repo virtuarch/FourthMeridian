@@ -75,6 +75,8 @@ export function summaryLine(counts: PlatformJobHealthCounts): string {
   if (counts.failing > 0) parts.push(`${counts.failing} failing`);
   if (counts.overdue > 0) parts.push(`${counts.overdue} overdue`);
   if (counts.neverRan > 0) parts.push(`${counts.neverRan} ${NEVER_RAN_WORD}`);
+  // Counts carry no reasons: worded for both causes (a cost freeze or a plan restriction).
+  if ((counts.skipped ?? 0) > 0) parts.push(`${counts.skipped} skipped (cost freeze / plan restriction)`);
   if (counts.running > 0) parts.push(`${counts.running} running`);
   parts.push(`${counts.healthy} healthy`);
   return parts.join(" · ");

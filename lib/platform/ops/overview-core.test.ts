@@ -68,6 +68,16 @@ console.log("sources");
 
 console.log("jobs");
 {
+  {
+    // BETA LIFECYCLE L2 follow-up — a cost freeze must never read HEALTHY.
+    const frozen = deriveJobs({ healthy: 3, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 2, skipped: 4 }, null, now);
+    check("skipped > 0 → DEGRADED, the skip in the headline, a warn fact — never \"all are healthy\"",
+      frozen.state === "DEGRADED" && /4 jobs skipped/.test(frozen.headline) && !/all are healthy/.test(frozen.headline)
+        && frozen.facts.some((f) => f.label.startsWith("Skipped") && f.value === "4" && f.tone === "warn"), JSON.stringify(frozen));
+    const allSkipped = deriveJobs({ healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0, skipped: 5 }, null, now);
+    check("every job skipped → recorded (DEGRADED), not \"No job has recorded a run yet\"",
+      allSkipped.state === "DEGRADED" && !/No job has recorded/.test(allSkipped.headline), JSON.stringify(allSkipped));
+  }
   check("nothing recorded → UNKNOWN", deriveJobs({ healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 11 }, null, now).state === "UNKNOWN");
   check("healthy + never-ran → HEALTHY with the count in the headline", (() => { const d = deriveJobs({ healthy: 1, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 10 }, null, now); return d.state === "HEALTHY" && /10 never ran/.test(d.headline); })());
   check("overdue → STALE", deriveJobs({ healthy: 3, running: 0, overdue: 1, failing: 0, dead: 0, neverRan: 0 }, null, now).state === "STALE");

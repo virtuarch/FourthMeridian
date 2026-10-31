@@ -25,6 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceContext } from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
+import { claimReAddSyncWindowAtomic } from "@/lib/connections/re-add-sync-window";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
@@ -92,17 +93,16 @@ async function claimReAddSyncWindow(userId: string, connectionId: string | null)
     const e = await entitlementsForUser(userId);
     const cooldownMs = cooldownMsFromMinutes(Number(e.dimensions.manualBankRefreshCooldownMinutes.value));
     const now = new Date();
-    // A KEYED update with the window as an extra condition (RLS-PREP-C: never a
-    // count-returning bulk write on the tenant role): a hidden row or a window
-    // still open RAISES (P2025), which is the "no sync" answer below.
-    await withTenantDb(userId, (tx) => tx.connection.update({
-      where: { id: connectionId, userId, OR: [{ lastManualRefreshAt: null }, { lastManualRefreshAt: { lte: new Date(now.getTime() - cooldownMs) } }] },
-      data:  { lastManualRefreshAt: now },
-      select: { id: true },
-    }));
-    return true;
+    const windowOpensAt = new Date(now.getTime() - cooldownMs);
+    // Follow-up N5 — ONE atomic statement: the window check and the claim are
+    // the same UPDATE … WHERE … RETURNING, so two concurrent re-adds cannot
+    // both pass (no read-then-write gap). On the tenant role under RLS: a row
+    // that is not ours is simply not updated (no row returned ⇒ no sync). Not
+    // a count-returning bulk write: it returns the claimed key, or nothing.
+    // (lib/connections/re-add-sync-window.ts — proven on real Postgres by the
+    // RLS foreground suite, check 72.)
+    return await withTenantDb(userId, (tx) => claimReAddSyncWindowAtomic(tx, { connectionId, userId, now, windowOpensAt }));
   } catch (e) {
-    if ((e as { code?: string } | null)?.code === "P2025") return false; // the window is still open (or the row is not ours)
     console.warn("[POST /api/accounts/wallet] re-add sync window unreadable; no sync (fail closed):", e instanceof Error ? e.message : e);
     return false;
   }
@@ -453,14 +453,20 @@ export async function POST(req: NextRequest) {
     // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
     // this user's own archived account — no cross-owner behavior involved.
     // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
-    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+    const archivedConnectionId = await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+    // Follow-up N4 — delete-then-re-add must not be a way around the window:
+    // a reactivation also takes one sync per wallet per entitled window.
+    const reactivateSync: BillableDecision = billable.allowed && !(await claimReAddSyncWindow(userId, archivedConnectionId))
+      ? { allowed: false, reason: "NOT_ENTITLED" } : billable;
 
     // BTC wallet sync v1 — populate the confirmed balance + USD value on
     // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
     // explorer/price failure the account stays visible and "pending" and a
     // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
     // regen so the snapshot captures the freshly-synced balance.
-    const archivedSync = await syncWalletBestEffort(archivedFa.id, chain, billable);
+    const archivedSync = reactivateSync.allowed || !billable.allowed
+      ? await syncWalletBestEffort(archivedFa.id, chain, billable)
+      : { ok: false, errorCode: "COOLDOWN", reason: "This wallet was synced recently; the next scheduled refresh will update it." };
 
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
@@ -469,7 +475,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
     }
-    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id, billable);
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id, reactivateSync);
 
     // An AuditLog INSERT is refused loudly or not at all (`fm_app_ins` is
     // WITH CHECK (true)); it is a phase of its own because it follows network work.
