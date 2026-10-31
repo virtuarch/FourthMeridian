@@ -121,11 +121,14 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   const since = new Date(now.getTime() - AI_WINDOW_DAYS * 86_400_000);
   const [events, inviteAudit, issues, executions, webhooks, invocations, userActions, connectionActions] = await Promise.all([
     client.betaAccessRequestEvent.findMany({ where: { email: user.email }, orderBy: { receivedAt: "asc" }, select: { receivedAt: true, source: true } }),
-    request ? client.auditLog.findFirst({
-      where: { action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_INVITATION_CREATED, AuditAction.BETA_INVITATION_RESENT] },
+    // PR B — two rows: an issuance row and its EMAIL_OUTCOME can share a
+    // millisecond, and the outcome (written after the send) wins that tie.
+    request ? client.auditLog.findMany({
+      where: { action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_INVITATION_CREATED, AuditAction.BETA_INVITATION_RESENT, AuditAction.BETA_INVITATION_EMAIL_OUTCOME] },
         metadata: { path: ["betaRequestId"], equals: request.id } },
-      orderBy: { createdAt: "desc" }, select: { createdAt: true, metadata: true },
-    }) : Promise.resolve(null),
+      orderBy: { createdAt: "desc" }, take: 2, select: { createdAt: true, metadata: true, action: true },
+    }).then((rows) => rows.find((r) => r.createdAt.getTime() === rows[0].createdAt.getTime() && r.action === AuditAction.BETA_INVITATION_EMAIL_OUTCOME) ?? rows[0] ?? null)
+      : Promise.resolve(null),
     client.syncIssue.findMany({
       where: { resolved: false, OR: [{ plaidItemId: { in: itemIds } }, { financialAccountId: { in: accountIds } }] },
       orderBy: { lastOccurredAt: "desc" }, take: 50,

@@ -37,11 +37,11 @@ console.log("\nB. every named path hashes");
 const PATHS = [
   "app/api/auth/forgot-password/route.ts",
   "app/api/auth/reset-password/route.ts",
-  "app/api/platform/growth-revenue/requests/[id]/approve/route.ts",
   "app/api/platform/growth-revenue/requests/[id]/deny/route.ts",
-  "app/api/platform/growth-revenue/requests/[id]/resend/route.ts",
   "app/api/platform/growth-revenue/requests/[id]/revoke/route.ts",
-  "app/api/platform/growth-revenue/invitations/route.ts",
+  // PR B — approve / resend / direct invite / extend audit through THE issuance
+  // mechanism; the routes themselves write no audit row.
+  "lib/platform/growth/invitation-issue.ts",
   "app/api/admin/security/users/[userId]/2fa-reset/route.ts",
 ];
 for (const rel of PATHS) {

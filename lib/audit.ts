@@ -254,6 +254,10 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.BETA_MODE_CHANGED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.BETA_INVITATION_REVOKED,
+  // PR B — changing the invitation validity policy, and extending an issued
+  // invitation without rotating its token, are consequential and carry a reason.
+  AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
+  AuditAction.BETA_INVITATION_EXTENDED,
   AuditAction.MERCHANT_MERGE_APPLIED,
   AuditAction.MERCHANT_MERGE_DISMISSED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit

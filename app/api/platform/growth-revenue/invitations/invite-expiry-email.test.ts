@@ -78,23 +78,23 @@ async function main() {
   const { POST: RESEND } = (await import("@/app/api/platform/growth-revenue/requests/[id]/resend/route")) as unknown as { POST: IdH };
   const { POST: DIRECT } = (await import("@/app/api/platform/growth-revenue/invitations/route")) as unknown as { POST: H };
 
-  t.section("approve (14-day TTL)");
+  t.section("approve (the configured validity — default 7 days, PR B)");
   {
     const email = "approve-invitee@example.test";
     const w = await world(email, "PENDING");
     const r = await invoke(APPROVE as never, request(`/api/platform/growth-revenue/requests/${w.req.id}/approve`, { method: "POST", cookie: w.cookie }), { id: w.req.id });
     t.check("approve → 200", r.status === 200, r.body);
-    assertEmailMatchesRow("approve", email, 14);
+    assertEmailMatchesRow("approve", email, 7);
     assertOrigin("approve", email, "request");
   }
 
-  t.section("resend (14-day TTL)");
+  t.section("resend (the configured validity — no longer forced to 14 days, PR B)");
   {
     const email = "resend-invitee@example.test";
     const w = await world(email, "APPROVED");
     const r = await invoke(RESEND as never, request(`/api/platform/growth-revenue/requests/${w.req.id}/resend`, { method: "POST", cookie: w.cookie }), { id: w.req.id });
     t.check("resend → 200", r.status === 200, r.body);
-    assertEmailMatchesRow("resend", email, 14);
+    assertEmailMatchesRow("resend", email, 7);
     assertOrigin("resend of a legacy row (no events, no audit → not determinable)", email, "request");
   }
 
@@ -132,7 +132,7 @@ async function main() {
     assertOrigin(`direct ${days}d`, email, "direct");
   }
 
-  t.section("default direct invite (no expiresDays → route default)");
+  t.section("default direct invite (no expiresDays → the configured validity)");
   {
     const email = "direct-default@example.test";
     const w = await world("unrelated@example.test", "PENDING");

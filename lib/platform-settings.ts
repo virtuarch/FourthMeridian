@@ -31,6 +31,9 @@ import {
 } from "@/lib/platform/settings/descriptor.core";
 import { ENTITLEMENT_DIMENSIONS } from "@/lib/entitlements/catalogue";
 import { AI_COST_CONTROL_DEFAULTS, AI_SPEND_RULE_IDS } from "@/lib/platform/ai/cost-controls.types";
+import {
+  INVITATION_VALIDITY_DEFAULT_DAYS, INVITATION_VALIDITY_MAX_DAYS, INVITATION_VALIDITY_MIN_DAYS,
+} from "@/lib/platform/growth/invitation-issue.core";
 
 export { PlatformSettingValidationError } from "@/lib/platform/settings/descriptor.core";
 export type { SettingDescriptor, SettingValidation, SettingWriteSurface, PolicyClass } from "@/lib/platform/settings/descriptor.core";
@@ -114,6 +117,13 @@ export const PlatformSettingKey = {
   ALERT_RULE_ENABLED_AI_SPEND_USER_HIGH:  "alert_rule_enabled:ai-spend-user-high",
   ALERT_RULE_ENABLED_AI_SPEND_FLEET_HIGH: "alert_rule_enabled:ai-spend-fleet-high",
   AI_PAID_REQUESTS_PAUSED:     "ai_paid_requests_paused",
+  // PR B (2026-10-31) — how long a NEW beta invitation stays redeemable, in
+  // whole days (1–30, default 7). Read and written only through
+  // lib/platform/growth/invitation-policy.ts (GROWTH_REVENUE WRITE, a reason,
+  // optimistic version, audit in the same transaction); every issuance path
+  // (approve, direct invite, resend) takes its expiry from it. Changing it
+  // never alters an invitation already issued — that is the audited Extend.
+  BETA_INVITATION_VALIDITY_DAYS: "beta_invitation_validity_days",
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -183,6 +193,8 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   // Ships OFF, and absence IS off (ABSENT_MEANS_OFF): the default documents the
   // contract; the admission reader tells MISSING from INVALID itself.
   ai_paid_requests_paused:      String(AI_COST_CONTROL_DEFAULTS["killSwitch.paused"]),
+  // Owner ruling 2026-10-31: 7 calendar days (the bounds live beside the issuance rules).
+  beta_invitation_validity_days: String(INVITATION_VALIDITY_DEFAULT_DAYS),
 };
 
 /** The catalogue ceiling of the per-customer daily allowance — the platform value's upper bound, derived. */
@@ -375,6 +387,14 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
     "While on, every new paid AI request — Conversations, the Daily Brief and harness runs — is refused before the allowance is judged and before the provider is reached. No override lifts it. Absence is off; an unreadable value also refuses.",
     "ABSENT_MEANS_OFF",
   ),
+  beta_invitation_validity_days: {
+    key: "beta_invitation_validity_days", label: "Beta invitation validity (days)",
+    description: `How many days a NEW beta invitation stays redeemable — approve, direct invite and resend alike — unless the operator chooses a different validity for that one invitation. Whole days, ${INVITATION_VALIDITY_MIN_DAYS}–${INVITATION_VALIDITY_MAX_DAYS}. Changing it never alters invitations already issued; extending one of those is a separate, audited action.`,
+    class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: INVITATION_VALIDITY_MIN_DAYS, max: INVITATION_VALIDITY_MAX_DAYS,
+    default: DEFAULTS.beta_invitation_validity_days, missingRow: "FALLBACK_TO_DEFAULT",
+    writeSurfaces: ["GROWTH_REVENUE"], writeCapability: "WRITE",
+    operatorConfigurable: true, resettable: true,
+  },
 };
 
 export function listSettingDescriptors(): Descriptor[] {

@@ -247,6 +247,18 @@ export const AuditAction = {
   BETA_INVITATION_CREATED:  "BETA_INVITATION_CREATED",
   BETA_INVITATION_RESENT:   "BETA_INVITATION_RESENT",
   BETA_INVITATION_REVOKED:  "BETA_INVITATION_REVOKED",
+  // PR B (2026-10-31) — the one issuance mechanism (lib/platform/growth/invitation-issue.ts).
+  //   VALIDITY_CHANGED  the beta_invitation_validity_days setting changed (reason
+  //                     required; before/after in the same transaction).
+  //   EXTENDED          an issued invitation's expiry moved, token KEPT, no email
+  //                     (reason required; before/after expiry).
+  //   EMAIL_OUTCOME     the provider hand-off of an invite email, appended AFTER
+  //                     the issuance commit (the issuance row itself commits with
+  //                     the state change, before any email leaves). Readers of the
+  //                     last invite-email status read it beside the issuance rows.
+  BETA_INVITATION_VALIDITY_CHANGED: "BETA_INVITATION_VALIDITY_CHANGED",
+  BETA_INVITATION_EXTENDED:         "BETA_INVITATION_EXTENDED",
+  BETA_INVITATION_EMAIL_OUTCOME:    "BETA_INVITATION_EMAIL_OUTCOME",
   // PO-3C — the LAUNCH axis (development/beta/live), separate from the signup gate.
   PRODUCT_STATUS_CHANGED:   "PRODUCT_STATUS_CHANGED",
   // PO-4A — Platform Operations per-connection controls. An operator triggered a
@@ -528,6 +540,8 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.BETA_INVITATION_CREATED,
   AuditAction.BETA_INVITATION_RESENT,
   AuditAction.BETA_INVITATION_REVOKED,
+  AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
+  AuditAction.BETA_INVITATION_EXTENDED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
