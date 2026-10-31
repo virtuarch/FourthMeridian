@@ -113,11 +113,13 @@ console.log("1b. Invitation validity (PR B) — READ sees text, the editor only 
     ["validity input", /id="growth-invitation-validity"/g],
     ["reason field", /<OperatorReasonField/g],
     ["Save", /onClick=\{save\}/g],
+    ["Reset to default", /onClick=\{resetToDefault\}/g],
   ] as const) {
     const r = allGated(src, re, ranges);
     check(`${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);
   }
-  check("the PUT is only reachable from the gated Save", (src.match(/method: "PUT"/g) ?? []).length === 1 && /async function save\(\)/.test(src));
+  check("the PUT / DELETE are reachable only from the gated Save / Reset", /submit\("PUT"/.test(src) && /submit\("DELETE"/.test(src)
+    && (src.match(/submit\("/g) ?? []).length === 2 && !/method: "(PUT|DELETE)",/.test(src));
   check("READ holders see the value as plain text", /Invitations valid \$\{daysLabel\(data\.validityDays\)\}/.test(src));
   check("reads through the shared workspace session", src.includes("useSharedWidgetFetch<InvitationPolicyReadModel>(INVITATION_POLICY_URL)"));
   check("the stale 14-day copy is gone", !/14-day/.test(widget));

@@ -224,14 +224,19 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     const row = plan.row;
     const { count } = plan.action === "approve"
       ? await tx.betaAccessRequest.updateMany({
-          where: { id: row.id, status: { in: [BetaAccessRequestStatus.PENDING, BetaAccessRequestStatus.DENIED] } },
+          // The status ACTUALLY READ (PENDING or DENIED), never "either": a
+          // request denied or revoked after this operator read it PENDING must
+          // not be approved by the stale click (and its audit `before` is true).
+          where: { id: row.id, status: row.status },
           data:  { status: BetaAccessRequestStatus.APPROVED, ...issued, decidedAt: now, decidedById: input.actor.userId },
         })
       : await tx.betaAccessRequest.updateMany({
-          // Optimistic on the hash observed: a concurrent reissue (or a revoke,
-          // which nulls it and flips DENIED) makes this match nothing.
+          // Optimistic on the hash AND expiry observed: a concurrent reissue, a
+          // revoke (nulls the hash, flips DENIED) or an extend (moves the
+          // expiry) makes this match nothing — never a silent overwrite.
           where: {
             id: row.id, status: BetaAccessRequestStatus.APPROVED, inviteTokenHash: plan.expectedHash,
+            inviteExpiresAt: row.inviteExpiresAt,
             ...(expectedInvitedAt !== undefined ? { invitedAt: expectedInvitedAt } : {}),
           },
           data:  issued,
@@ -251,10 +256,13 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     const after = await loadRow(client, { id: requestId });
     if (plan.action === "approve") {
       if (after?.status === BetaAccessRequestStatus.APPROVED) return { ok: true, outcome: "alreadyApproved", requestId };
-      return refuse(after?.status === BetaAccessRequestStatus.REDEEMED ? refusal("REDEEMED") : refusal("CONFLICT"));
+      if (after?.status === BetaAccessRequestStatus.REDEEMED) return refuse(refusal("REDEEMED"));
+      return refuse(refusal("CONFLICT", "This request changed since you opened it (it was denied, revoked or re-queued). Reload and decide again."));
     }
-    if (after?.status === BetaAccessRequestStatus.APPROVED) return { ok: true, outcome: "alreadyReissued", requestId };
-    return refuse(refusal("NOT_APPROVED"));
+    if (after?.status !== BetaAccessRequestStatus.APPROVED) return refuse(refusal("NOT_APPROVED"));
+    // The token moved ⇒ another reissue won. Same token, different expiry ⇒ an extend landed.
+    if (after.inviteTokenHash !== plan.expectedHash) return { ok: true, outcome: "alreadyReissued", requestId };
+    return refuse(refusal("CONFLICT", "This invitation was extended while you were resending it. Reload and try again."));
   }
 
   // 4. Email, after commit.
@@ -293,7 +301,7 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
 // ── Extend: move the expiry, KEEP the token, send nothing ─────────────────────
 
 export interface ExtendInput {
-  client: Pick<PrismaClient, "$transaction" | "betaAccessRequest" | "auditLog">;
+  client: Pick<PrismaClient, "$transaction" | "betaAccessRequest" | "auditLog" | "user">;
   actor: OperatorActionInput["actor"];
   requestId: string;
   validityDays: unknown;
@@ -315,7 +323,8 @@ export async function extendBetaInvitation(input: ExtendInput): Promise<ExtendRe
   const expiresAt = expiryFor(now, p.days);
 
   const row = await client.betaAccessRequest.findUnique({ where: { id: input.requestId }, select: ROW_SELECT });
-  const plan = planExtend(row ? { ...row, status: row.status as InviteRowFacts["status"] } : null);
+  const hasAccount = row ? (await client.user.findUnique({ where: { email: row.email }, select: { id: true } })) != null : false;
+  const plan = planExtend(row ? { ...row, status: row.status as InviteRowFacts["status"] } : null, hasAccount, expiresAt);
   if (plan.action === "refuse") return { ok: false, ...plan.refusal };
   const facts = plan.row;
 

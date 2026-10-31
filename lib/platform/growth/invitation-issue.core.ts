@@ -112,7 +112,8 @@ export type IssueRefusalCode =
   | "LIVE_INVITE"
   | "INVALID_VALIDITY"
   | "INVALID_EMAIL"
-  | "CONFLICT";
+  | "CONFLICT"
+  | "WOULD_SHORTEN";
 
 export interface IssueRefusal {
   code: IssueRefusalCode;
@@ -123,7 +124,7 @@ export interface IssueRefusal {
 
 const STATUS_OF: Record<IssueRefusalCode, IssueRefusal["status"]> = {
   NOT_FOUND: 404, INVALID_VALIDITY: 400, INVALID_EMAIL: 400,
-  REDEEMED: 409, ACCOUNT_EXISTS: 409, NOT_APPROVED: 409, DENIED: 409, LIVE_INVITE: 409, CONFLICT: 409,
+  REDEEMED: 409, ACCOUNT_EXISTS: 409, NOT_APPROVED: 409, DENIED: 409, LIVE_INVITE: 409, CONFLICT: 409, WOULD_SHORTEN: 409,
 };
 
 export function refusal(code: IssueRefusalCode, message?: string): IssueRefusal {
@@ -140,6 +141,7 @@ const DEFAULT_MESSAGE: Record<IssueRefusalCode, string> = {
   INVALID_VALIDITY: BOUNDS_REASON,
   INVALID_EMAIL:    "A valid email is required.",
   CONFLICT:         "This invitation changed while your action was being saved. Reload and try again.",
+  WOULD_SHORTEN:    "That would shorten this invitation. Extend only lengthens it — use Revoke to end an invitation early.",
 };
 
 /** What the I/O layer must do. `expectedHash` is the optimistic token for a rotation. */
@@ -189,10 +191,19 @@ export type ExtendPlan =
   | { action: "extend"; row: InviteRowFacts }
   | { action: "refuse"; refusal: IssueRefusal };
 
-export function planExtend(row: InviteRowFacts | null): ExtendPlan {
+/**
+ * Extend NEVER shortens: the new expiry must be strictly later than the current
+ * one (ending an invitation early is Revoke). An expired invitation may be
+ * revived. An address that already has an account cannot be extended (as approve).
+ */
+export function planExtend(row: InviteRowFacts | null, accountExists: boolean, newExpiresAt: Date): ExtendPlan {
   if (!row) return { action: "refuse", refusal: refusal("NOT_FOUND") };
   if (row.status !== "APPROVED") {
     return { action: "refuse", refusal: refusal("NOT_APPROVED", "Only an approved, un-redeemed invitation can be extended.") };
+  }
+  if (accountExists) return { action: "refuse", refusal: refusal("ACCOUNT_EXISTS") };
+  if (row.inviteExpiresAt && newExpiresAt.getTime() <= row.inviteExpiresAt.getTime()) {
+    return { action: "refuse", refusal: refusal("WOULD_SHORTEN") };
   }
   return { action: "extend", row };
 }

@@ -11,6 +11,10 @@
  *        The setting write and its audit row commit in ONE transaction
  *        (lib/platform/growth/invitation-policy.ts).
  *
+ * DELETE { version, reason } → reset to the default (the override row is
+ *        deleted; origin DEFAULT). Same gate, reason, version check and
+ *        same-transaction audit (BETA_INVITATION_VALIDITY_CHANGED, after = default).
+ *
  * Changing this applies to NEW invitations only (approve, direct invite and
  * resend). Invitations already issued keep their expiry; Extend moves one.
  */
@@ -20,7 +24,7 @@ import { systemDb } from "@/lib/db";
 import { requireFreshPlatformAccess, requirePlatformAccess } from "@/lib/platform/authorize";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
-import { readInvitationPolicy, updateInvitationValidity } from "@/lib/platform/growth/invitation-policy";
+import { readInvitationPolicy, resetInvitationValidity, updateInvitationValidity } from "@/lib/platform/growth/invitation-policy";
 import { parseRequiredReason } from "@/lib/platform/growth/invitation-http";
 
 export const runtime = "nodejs";
@@ -55,4 +59,26 @@ export async function PUT(req: NextRequest) {
     { error: r.reason, code: r.code, model: r.model },
     { status: r.code === "CONFLICT" ? 409 : 400 },
   );
+}
+
+export async function DELETE(req: NextRequest) {
+  const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
+  if (err) return err;
+
+  const body = (await req.json().catch(() => ({}))) as { version?: unknown; reason?: unknown };
+  if (typeof body.version !== "string") {
+    return NextResponse.json({ error: "version is required (the configured value you loaded)." }, { status: 400 });
+  }
+  const reason = parseRequiredReason(body.reason);
+  if (!reason.ok) return reason.response;
+
+  const r = await resetInvitationValidity(systemDb, {
+    expectedVersion: body.version,
+    reason: reason.reason,
+    actor: operatorActorFrom(auth, "GROWTH_REVENUE"),
+    ipAddress: getClientIp(req),
+    userAgent: req.headers.get("user-agent"),
+  });
+  if (r.ok) return NextResponse.json(r.model);
+  return NextResponse.json({ error: r.reason, code: r.code, model: r.model }, { status: 409 });
 }

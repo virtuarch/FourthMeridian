@@ -73,9 +73,9 @@ async function main() {
   const { POST: RESEND } = (await import("@/app/api/platform/growth-revenue/requests/[id]/resend/route")) as unknown as { POST: IdH };
   const { POST: EXTEND } = (await import("@/app/api/platform/growth-revenue/requests/[id]/extend/route")) as unknown as { POST: IdH };
   const { POST: DIRECT } = (await import("@/app/api/platform/growth-revenue/invitations/route")) as unknown as { POST: H };
-  const policyRoute = (await import("@/app/api/platform/growth-revenue/invitation-policy/route")) as unknown as { GET: H; PUT: H };
+  const policyRoute = (await import("@/app/api/platform/growth-revenue/invitation-policy/route")) as unknown as { GET: H; PUT: H; DELETE: H };
   const { issueBetaInvitation } = await import("./invitation-issue");
-  const { redeemBetaInvite, InviteNotConsumedError } = await import("@/lib/registration-policy");
+  const { redeemBetaInvite, InviteNotConsumedError, validateInvite } = await import("@/lib/registration-policy");
 
   const approve = (id: string, body?: unknown) =>
     invoke(APPROVE as never, request(`/api/platform/growth-revenue/requests/${id}/approve`, { method: "POST", cookie: admin.cookie, body }), { id });
@@ -136,13 +136,37 @@ async function main() {
     const ok2 = await putPolicy({ validityDays: 14, version: ok.body.version, reason: REASON });
     t.check("the current version → 200 (14)", ok2.status === 200 && ok2.body.validityDays === 14, ok2.body);
 
+    // Reset = delete the override, same gate / reason / version / audit.
+    const delPolicy = (body: unknown) =>
+      invoke(policyRoute.DELETE as never, request("/api/platform/growth-revenue/invitation-policy", { method: "DELETE", cookie: admin.cookie, body }));
+    const dNoReason = await delPolicy({ version: ok2.body.version });
+    t.check("DELETE without a reason → 400, override kept", dNoReason.status === 400 && fake.one("PlatformSetting", { key: KEY })?.value === "14", dNoReason.body);
+    const dStale = await delPolicy({ version: ok.body.version, reason: REASON });
+    t.check("DELETE with a stale version → 409, override kept", dStale.status === 409 && fake.one("PlatformSetting", { key: KEY })?.value === "14", dStale.body);
+    const auditsBefore = audits("BETA_INVITATION_VALIDITY_CHANGED").length;
+    const dOk = await delPolicy({ version: ok2.body.version, reason: REASON });
+    const last = audits("BETA_INVITATION_VALIDITY_CHANGED").at(-1)?.metadata as { change?: { before?: { validityDays?: number }; after?: { validityDays?: number; origin?: string } } } | undefined;
+    t.check("DELETE (current version) → 200, row gone, model back to DEFAULT 7", dOk.status === 200 && !fake.one("PlatformSetting", { key: KEY })
+      && dOk.body.validityDays === 7 && dOk.body.origin === "DEFAULT" && dOk.body.version === null, dOk.body);
+    t.check("reset audited in the same write: before 14 → after 7 / DEFAULT", audits("BETA_INVITATION_VALIDITY_CHANGED").length === auditsBefore + 1
+      && last?.change?.before?.validityDays === 14 && last?.change?.after?.validityDays === 7 && last?.change?.after?.origin === "DEFAULT", last);
+    const dNone = await delPolicy({ version: ok2.body.version, reason: REASON });
+    t.check("DELETE when the default is already in force → 409", dNone.status === 409, dNone.body);
+    fake.seed("PlatformSetting", { key: KEY, value: "14" });
+    const ver = fake.one("PlatformSetting", { key: KEY })!.updatedAt as Date;
+    fake.on("AuditLog", "create", () => { throw new Error("audit store down"); }, { once: true });
+    let rThrew = false;
+    try { await delPolicy({ version: ver.toISOString(), reason: REASON }); } catch { rThrew = true; }
+    t.check("reset audit failure ⇒ the override is NOT deleted (one transaction)", rThrew && fake.one("PlatformSetting", { key: KEY })?.value === "14");
+
     // READ holder can GET but not PUT.
     const reader = fake.seed("User", { email: "reader@example.test", username: "reader", passwordHash: "x", emailVerifiedAt: new Date(), role: "USER", totpEnabled: true, totpSecret: "x" });
     fake.seed("PlatformGrant", { userId: reader.id, area: "GROWTH_REVENUE", level: "READ", status: "ACTIVE" });
     const rs = await signIn(fake, reader.id as string);
     const rg = await getPolicy(rs.cookie);
     const rp = await putPolicy({ validityDays: 3, version: ok2.body.version, reason: REASON }, rs.cookie);
-    t.check("GROWTH_REVENUE READ → GET 200, PUT 403", rg.status === 200 && rg.body.validityDays === 14 && rp.status === 403, [rg.status, rp.status]);
+    const rd = await invoke(policyRoute.DELETE as never, request("/api/platform/growth-revenue/invitation-policy", { method: "DELETE", cookie: rs.cookie, body: { version: ver.toISOString(), reason: REASON } }));
+    t.check("GROWTH_REVENUE READ → GET 200, PUT 403, DELETE 403", rg.status === 200 && rg.body.validityDays === 14 && rp.status === 403 && rd.status === 403, [rg.status, rp.status, rd.status]);
   }
 
   // ── 2. Every kind uses the setting; the override is honoured and bounded ───
@@ -231,6 +255,38 @@ async function main() {
       && [d1.body.code, d2.body.code].includes("LIVE_INVITE"), [d1.body, d2.body]);
     t.check("direct ×2 → one row, one email, one audit", fake.rows("BetaAccessRequest", { email: "race-direct@example.test" }).length === 1
       && sentTo("race-direct@example.test").length === 1 && audits("BETA_INVITATION_CREATED").length === 1);
+
+    // Read PENDING → a concurrent deny/revoke lands → the stale approve must lose.
+    const denyBetween = (id: unknown) => fake.on("BetaAccessRequest", "updateMany", () => {
+      const r = row({ id }); r.status = "DENIED"; r.inviteTokenHash = null; r.inviteExpiresAt = null; return undefined;
+    }, { once: true });
+    const sp = fake.seed("BetaAccessRequest", { email: "stale-approve@example.test", status: "PENDING" });
+    denyBetween(sp.id);
+    const sa = await approve(sp.id as string);
+    t.check("approve that read PENDING, then a deny landed → 409 CONFLICT, still DENIED, no token, no email, no audit",
+      sa.status === 409 && sa.body.code === "CONFLICT" && row({ id: sp.id }).status === "DENIED" && row({ id: sp.id }).inviteTokenHash === null
+      && sentTo("stale-approve@example.test").length === 0
+      && !audits("BETA_ACCESS_APPROVED").some((a) => (a.metadata as { betaRequestId?: string }).betaRequestId === sp.id), sa.body);
+    const sd = fake.seed("BetaAccessRequest", { email: "stale-direct@example.test", status: "PENDING" });
+    denyBetween(sd.id);
+    const sdr = await direct({ email: "stale-direct@example.test" });
+    t.check("direct that read PENDING, then a deny landed → 409 CONFLICT, still DENIED, no email (direct never overturns DENIED)",
+      sdr.status === 409 && sdr.body.code === "CONFLICT" && row({ id: sd.id }).status === "DENIED" && row({ id: sd.id }).inviteTokenHash === null
+      && sentTo("stale-direct@example.test").length === 0, sdr.body);
+    const dn = fake.seed("BetaAccessRequest", { email: "read-denied@example.test", status: "DENIED" });
+    const dnr = await approve(dn.id as string);
+    const dnAudit = audits("BETA_ACCESS_APPROVED").find((a) => (a.metadata as { betaRequestId?: string }).betaRequestId === dn.id);
+    t.check("approving a row READ as DENIED is still allowed, and its audit says before = DENIED",
+      dnr.status === 200 && row({ id: dn.id }).status === "APPROVED" && (dnAudit?.metadata as { change?: { before?: { status?: string } } })?.change?.before?.status === "DENIED", dnr.body);
+
+    // Resend vs a concurrent extend (same token, expiry moved): the resend loses.
+    const rx = fake.seed("BetaAccessRequest", { email: "resend-vs-extend@example.test", status: "APPROVED", inviteTokenHash: "h-rx", inviteExpiresAt: new Date(Date.now() + DAY_MS), invitedAt: new Date() });
+    const extended = new Date(Date.now() + 9 * DAY_MS);
+    fake.on("BetaAccessRequest", "updateMany", () => { row({ id: rx.id }).inviteExpiresAt = extended; return undefined; }, { once: true });
+    const rxr = await resend(rx.id as string);
+    t.check("resend racing an extend → 409 CONFLICT, the extend stands (token + expiry), no email",
+      rxr.status === 409 && rxr.body.code === "CONFLICT" && row({ id: rx.id }).inviteTokenHash === "h-rx"
+      && (row({ id: rx.id }).inviteExpiresAt as Date).getTime() === extended.getTime() && sentTo("resend-vs-extend@example.test").length === 0, rxr.body);
   }
 
   // ── 4. Direct-invite rules ─────────────────────────────────────────────────
@@ -312,28 +368,50 @@ async function main() {
       const rr = await extend(x.id as string, { validityDays: 5, reason: REASON });
       t.check(`${status} → 409 NOT_APPROVED, untouched`, rr.status === 409 && rr.body.code === "NOT_APPROVED" && row({ id: x.id }).inviteExpiresAt == null, rr.body);
     }
+    // Extend never shortens; an expired invite may be revived; an account blocks it.
+    const longer = fake.seed("BetaAccessRequest", { email: "ext-long@example.test", status: "APPROVED", inviteTokenHash: "h-long", inviteExpiresAt: new Date(Date.now() + 10 * DAY_MS), invitedAt: new Date() });
+    const sh = await extend(longer.id as string, { validityDays: 5, reason: REASON });
+    t.check("extend to an EARLIER expiry → 409 WOULD_SHORTEN (use revoke), untouched, not audited",
+      sh.status === 409 && sh.body.code === "WOULD_SHORTEN" && /revoke/i.test(String(sh.body.error))
+      && row({ id: longer.id }).inviteTokenHash === "h-long" && audits("BETA_INVITATION_EXTENDED").length === 1, sh.body);
+    const dead = fake.seed("BetaAccessRequest", { email: "ext-dead@example.test", status: "APPROVED", inviteTokenHash: "h-dead", inviteExpiresAt: new Date(Date.now() - 2 * DAY_MS), invitedAt: new Date(Date.now() - 9 * DAY_MS) });
+    const rev = await extend(dead.id as string, { validityDays: 3, reason: REASON });
+    t.check("extend an EXPIRED invite → 200 revived (same token, expiry in the future)", rev.status === 200 && row({ id: dead.id }).inviteTokenHash === "h-dead"
+      && (row({ id: dead.id }).inviteExpiresAt as Date).getTime() > Date.now(), rev.body);
+    const acct = fake.seed("BetaAccessRequest", { email: "ext-member@example.test", status: "APPROVED", inviteTokenHash: "h-m", inviteExpiresAt: new Date(Date.now() + DAY_MS), invitedAt: new Date() });
+    fake.seed("User", { email: "ext-member@example.test", username: "extmember", passwordHash: "x", emailVerifiedAt: new Date() });
+    const am = await extend(acct.id as string, { validityDays: 5, reason: REASON });
+    t.check("extend for an address that already has an account → 409 ACCOUNT_EXISTS, untouched", am.status === 409 && am.body.code === "ACCOUNT_EXISTS"
+      && (row({ id: acct.id }).inviteExpiresAt as Date).getTime() < Date.now() + 2 * DAY_MS, am.body);
+
     // A concurrent resend between the read and the write.
     fake.on("BetaAccessRequest", "updateMany", () => { row({ id: r.id }).inviteTokenHash = "rotated"; return undefined; }, { once: true });
     const raced = await extend(r.id as string, { validityDays: 9, reason: REASON });
     t.check("token rotated in between → 409 CONFLICT, nothing written or audited", raced.status === 409 && raced.body.code === "CONFLICT"
-      && (row({ id: r.id }).inviteExpiresAt as Date).getTime() === got && audits("BETA_INVITATION_EXTENDED").length === 1, raced.body);
+      && (row({ id: r.id }).inviteExpiresAt as Date).getTime() === got && audits("BETA_INVITATION_EXTENDED").length === 2, raced.body);
   }
 
   // ── 6. Redemption enforces expiry in the WRITE ─────────────────────────────
-  t.section("6. redemption: the consuming write re-checks expiry");
+  t.section("6. redemption: expiry enforced by validateInvite; single use enforced by the write");
   {
+    // The consuming write itself keeps its status-only predicate: fm_auth (the
+    // role redemption runs as under strict RLS) may read only ("id","status") —
+    // migration 20261002000600 — so an expiry or token-hash predicate there would
+    // be "permission denied". Expiry is enforced by validateInvite, before it.
     await world();
-    const expired = fake.seed("BetaAccessRequest", { email: "late@example.test", status: "APPROVED", inviteTokenHash: "h-late", inviteExpiresAt: new Date(Date.now() - 1000) });
-    let err: unknown = null;
-    try { await redeemBetaInvite(db as never, { requestId: expired.id as string, redeemedUserId: "u1" }); } catch (e) { err = e; }
-    t.check("an expired APPROVED invite is NOT consumed (InviteNotConsumedError), row untouched",
-      err instanceof InviteNotConsumedError && row({ id: expired.id }).status === "APPROVED" && row({ id: expired.id }).inviteTokenHash === "h-late");
-    const live = fake.seed("BetaAccessRequest", { email: "ontime@example.test", status: "APPROVED", inviteTokenHash: "h-live", inviteExpiresAt: new Date(Date.now() + DAY_MS) });
+    const { hashResetToken } = await import("@/lib/password-reset-token");
+    fake.seed("BetaAccessRequest", { email: "late@example.test", status: "APPROVED", inviteTokenHash: hashResetToken("late-token"), inviteExpiresAt: new Date(Date.now() - 1000) });
+    const v = await validateInvite("late-token");
+    t.check("an expired token is rejected by validateInvite (the register gate)", v.valid === false && v.email === null);
+    const live = fake.seed("BetaAccessRequest", { email: "ontime@example.test", status: "APPROVED", inviteTokenHash: hashResetToken("live-token"), inviteExpiresAt: new Date(Date.now() + DAY_MS) });
+    const lv = await validateInvite("live-token");
+    t.check("a live token validates and binds its email", lv.valid && lv.email === "ontime@example.test" && lv.requestId === live.id);
     await redeemBetaInvite(db as never, { requestId: live.id as string, redeemedUserId: "u2" });
     t.check("a live invite is consumed once (REDEEMED, hash nulled)", row({ id: live.id }).status === "REDEEMED" && row({ id: live.id }).inviteTokenHash === null);
     let again: unknown = null;
     try { await redeemBetaInvite(db as never, { requestId: live.id as string, redeemedUserId: "u3" }); } catch (e) { again = e; }
     t.check("a second redemption is refused (single use)", again instanceof InviteNotConsumedError);
+    t.check("the redeemed token no longer validates", (await validateInvite("live-token")).valid === false);
   }
 
   // ── 7. UTC arithmetic ──────────────────────────────────────────────────────

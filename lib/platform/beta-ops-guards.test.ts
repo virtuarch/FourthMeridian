@@ -54,6 +54,15 @@ for (const w of WRAPPERS) {
   const m = src(ISSUANCE);
   check("issuance has no unconditional upsert", !/\.upsert\(/.test(m));
   check("issuance mints with the shared hash + beta-invite template", m.includes("hashResetToken") && m.includes('"beta-invite"'));
+  // The in-memory fake restores the WHOLE store on rollback, so it cannot tell a
+  // write through `tx` from one through the outer client; pin it at the source.
+  const pol = src(POLICY);
+  check("validity policy: every setting write and its audit go through the transaction client",
+    /createSettingIfAbsent\(tx, /.test(pol) && /updateSettingIfVersion\(tx, /.test(pol) && /deleteSettingIfVersion\(tx, /.test(pol)
+      && (pol.match(/recordOperatorAction\(tx, /g) ?? []).length === 2 && !/(SettingIfAbsent|SettingIfVersion|recordOperatorAction)\(client/.test(pol));
+  check("issuance: the row writes and the issuance / extend audits go through the transaction client",
+    (m.match(/tx\.betaAccessRequest\.(updateMany|createMany)\(/g) ?? []).length === 4 && !/client\.betaAccessRequest\.(update|updateMany|create|createMany)\(/.test(m)
+      && /recordOperatorAction\(tx, \{\s*actor: input\.actor,\s*action,/.test(m) && /recordOperatorAction\(tx, \{\s*actor: input\.actor,\s*action: AuditAction\.BETA_INVITATION_EXTENDED/.test(m));
   check("issuance has no TTL constant of its own (expiry from the policy or the override)", !/24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/.test(m) && !/\b14\b/.test(m));
 }
 

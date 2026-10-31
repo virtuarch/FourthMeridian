@@ -5,6 +5,10 @@
  *
  *   readInvitationPolicy        the read model Growth shows (and the issuance
  *                               module's source of the default validity).
+ *   resetInvitationValidity     DELETE the override row (reset = delete, so the
+ *                               code default is in force with origin DEFAULT),
+ *                               same version check, reason and same-transaction
+ *                               audit (after = the default).
  *   updateInvitationValidity    validated (1–30, refused — never clamped),
  *                               optimistic on the row's updatedAt (a stale
  *                               version ⇒ CONFLICT, nothing written), and the
@@ -24,7 +28,7 @@ import type { PrismaClient } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import {
-  PlatformSettingKey, PlatformSettingValidationError, createSettingIfAbsent, updateSettingIfVersion,
+  PlatformSettingKey, PlatformSettingValidationError, createSettingIfAbsent, deleteSettingIfVersion, updateSettingIfVersion,
 } from "@/lib/platform-settings";
 import {
   INVITATION_VALIDITY_DEFAULT_DAYS, INVITATION_VALIDITY_MAX_DAYS, INVITATION_VALIDITY_MIN_DAYS,
@@ -120,6 +124,55 @@ export async function updateInvitationValidity(
     }
     if (err instanceof PlatformSettingValidationError) {
       return { ok: false, code: "VALIDATION", reason: err.reason, model: await readInvitationPolicy(client) };
+    }
+    throw err;
+  }
+}
+
+export interface ResetInvitationValidityInput {
+  /** The version (ISO updatedAt) the caller observed. Reset requires an observed override. */
+  expectedVersion: string;
+  reason: OperatorReason;
+  actor: OperatorActionInput["actor"];
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
+export async function resetInvitationValidity(
+  client: WriteClient,
+  input: ResetInvitationValidityInput,
+): Promise<InvitationPolicyMutationResult> {
+  try {
+    const model = await client.$transaction(async (tx) => {
+      const before = await tx.platformSetting.findUnique({ where: { key: KEY }, select: { value: true, updatedAt: true } });
+      if (!before) throw new PolicyConflict("There is no override to reset; the default is already in force.");
+      if (!versionMatches(input.expectedVersion, before)) {
+        throw new PolicyConflict("The invitation validity changed since you loaded it.");
+      }
+      const deleted = await deleteSettingIfVersion(tx, KEY, before.updatedAt);
+      if (!deleted) throw new PolicyConflict("The invitation validity changed while the reset was being saved.");
+      const prev = modelOf(before);
+      const next = modelOf(null);
+      await recordOperatorAction(tx, {
+        actor: input.actor,
+        action: AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
+        target: { kind: "PLATFORM_SETTING", id: KEY },
+        reason: input.reason,
+        change: {
+          before: { validityDays: prev.validityDays, origin: prev.origin, version: prev.version },
+          after:  { validityDays: next.validityDays, origin: next.origin, version: next.version },
+        },
+        result: "SUCCESS",
+        detail: { key: KEY, previous: prev.validityDays, new: next.validityDays, reset: true },
+        ipAddress: input.ipAddress ?? null,
+        userAgent: input.userAgent ?? null,
+      });
+      return next;
+    });
+    return { ok: true, model };
+  } catch (err) {
+    if (err instanceof PolicyConflict) {
+      return { ok: false, code: "CONFLICT", reason: err.message, model: await readInvitationPolicy(client) };
     }
     throw err;
   }

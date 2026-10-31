@@ -50,21 +50,31 @@ export function InvitationValidityControl({ canWrite }: { canWrite: boolean }) {
 
   async function save() {
     if (!data || !changed) return;
+    await submit("PUT", { validityDays: n }, `Saved. New invitations are valid ${daysLabel(n)}.`);
+  }
+
+  async function resetToDefault() {
+    if (!data || data.origin !== "CONFIGURED") return;
+    await submit("DELETE", {}, `Reset. New invitations are valid ${daysLabel(data.default)} (the default).`);
+  }
+
+  async function submit(method: "PUT" | "DELETE", fields: Record<string, unknown>, okText: string) {
+    if (!data) return;
     const r = reasonPayload(reason);
     if (!r) return;
     setSaving(true);
     setNote(null);
     try {
       const res = await fetch(INVITATION_POLICY_URL, {
-        method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ validityDays: n, version: data.version, reason: r }),
+        method, credentials: "same-origin", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...fields, version: data.version, reason: r }),
       });
       const body = (await res.json().catch(() => ({}))) as Partial<InvitationPolicyReadModel> & { error?: string; model?: InvitationPolicyReadModel };
       if (res.ok) {
         publish(body as InvitationPolicyReadModel);
         setDraft(null);
         setReason(EMPTY_OPERATOR_REASON);
-        setNote({ tone: "ok", text: `Saved. New invitations are valid ${daysLabel(n)}.` });
+        setNote({ tone: "ok", text: okText });
       } else if (res.status === 409 && body.model) {
         publish(body.model);
         setNote({ tone: "warn", text: `Someone changed this since you loaded it — it is now ${daysLabel(body.model.validityDays)}. Review, then save again.` });
@@ -108,14 +118,25 @@ export function InvitationValidityControl({ canWrite }: { canWrite: boolean }) {
               {`${data.min}–${data.max} · default ${data.default}`}
             </span>
           </div>
-          {changed && (
+          {(changed || data.origin === "CONFIGURED") && (
             <>
               <OperatorReasonField value={reason} onChange={setReason} disabled={saving} />
-              <button type="button" onClick={save} disabled={saving || reasonPayload(reason) === null}
-                className="inline-flex min-h-11 w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold disabled:opacity-40 lg:min-h-8"
-                style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
-                {saving && <Loader2 size={13} className="animate-spin" aria-hidden />} Save
-              </button>
+              <span className="flex flex-wrap items-center gap-2">
+                {changed && (
+                  <button type="button" onClick={save} disabled={saving || reasonPayload(reason) === null}
+                    className="inline-flex min-h-11 w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold disabled:opacity-40 lg:min-h-8"
+                    style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
+                    {saving && <Loader2 size={13} className="animate-spin" aria-hidden />} Save
+                  </button>
+                )}
+                {data.origin === "CONFIGURED" && !changed && (
+                  <button type="button" onClick={resetToDefault} disabled={saving || reasonPayload(reason) === null}
+                    className="inline-flex min-h-11 w-fit items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold disabled:opacity-40 lg:min-h-8"
+                    style={{ color: "var(--text-secondary)", borderColor: "var(--border-hairline)" }}>
+                    {`Reset to default (${daysLabel(data.default)})`}
+                  </button>
+                )}
+              </span>
             </>
           )}
           {!inBounds && value.trim() !== "" && (
