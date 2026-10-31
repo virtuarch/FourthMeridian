@@ -36,6 +36,7 @@ import type { Prisma } from "@prisma/client";
 import type { PlatformArea, PlatformAccessLevel } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import { buildAuditData } from "@/lib/audit";
+import { hashedAnomalyKey } from "@/lib/security/identifier-hash";
 
 export const ACCESS_DENIED_ANOMALY_TYPE = "platform_access_denied";
 export const ACCESS_DENIED_WINDOW_MINUTES = 60;
@@ -113,6 +114,8 @@ export function buildAccessDeniedAudit(f: AccessDeniedFacts, count: number): Pri
     target: { type: "platform-area", id: f.area },
     metadata: {
       key: accessDeniedKey(f.userId, f.area),
+      // Comms Center A-2b: the salted hash the Security Ops projection derives its keyRef from.
+      keyHash: hashedAnomalyKey(accessDeniedKey(f.userId, f.area)),
       type: ACCESS_DENIED_ANOMALY_TYPE,
       count,
       threshold: 1,

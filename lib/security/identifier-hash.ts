@@ -25,11 +25,14 @@
  *
  * UNSET SALT: never a plaintext value and never an unsalted hash (an unsalted
  * SHA-256 of an IPv4 address is a 2^32 lookup away from the address). The
- * module falls back to a random salt generated once per process: dedupe still
- * holds within an instance, and the AuditLog trip row (which keeps the raw key
- * and is the detector's primary lock — lib/security/anomaly-alerts.ts) still
- * collapses a burst across instances. lib/env.ts warns on a deployment where
- * the salt is unset.
+ * fallback is STABLE and DOMAIN-SEPARATED: HMAC-SHA256(NEXTAUTH_SECRET,
+ * "fm:sec-id-hash:v1") — every instance of a deployment derives the same salt,
+ * so dedupe holds across instances, and the derived value reveals nothing about
+ * the session secret. Only with NEXTAUTH_SECRET unset too (a broken
+ * deployment: auth itself cannot run) does it fall back to a random
+ * per-process salt — still never plaintext. The env report is a "fail" in
+ * Production while SECURITY_IDENTIFIER_HASH_SALT is unset (lib/env.ts); nothing
+ * on the login path throws over it.
  *
  * OPERATOR CORRELATION: the raw key stays on the SECURITY_ANOMALY_DETECTED
  * AuditLog row (`metadata.key`), unchanged, and that row now also carries
@@ -48,20 +51,28 @@ export const SECURITY_IDENTIFIER_HASH_SALT_ENV = "SECURITY_IDENTIFIER_HASH_SALT"
 /** A structural subset of process.env (the index signature lets process.env itself be passed). */
 export interface IdentifierHashEnv {
   SECURITY_IDENTIFIER_HASH_SALT?: string;
+  /** Only the stable fallback reads it (domain-separated derivation, never used directly). */
+  NEXTAUTH_SECRET?: string;
   [key: string]: string | undefined;
 }
+
+/** The domain-separation label of the fallback derivation. Bump the version to rotate. */
+export const FALLBACK_SALT_LABEL = "fm:sec-id-hash:v1";
 
 /** Hex characters kept from the HMAC (128 bits). */
 const HASH_HEX_LENGTH = 32;
 
 /** The detector key kinds whose value identifies a person or an address. */
-const HASHED_KINDS = ["identifier", "recovery", "ip"] as const;
+const HASHED_KINDS = ["identifier", "recovery", "ip", "platform-denied"] as const;
 
 let processFallbackSalt: string | null = null;
 
 function saltFrom(env: IdentifierHashEnv): string {
   const configured = env.SECURITY_IDENTIFIER_HASH_SALT;
   if (configured) return configured;
+  // Stable across instances: derived from the deployment's session secret, domain-separated.
+  if (env.NEXTAUTH_SECRET) return createHmac("sha256", env.NEXTAUTH_SECRET).update(FALLBACK_SALT_LABEL).digest("hex");
+  // Last resort (no server secret at all): random per process — never plaintext, never unsalted.
   if (processFallbackSalt === null) processFallbackSalt = randomBytes(32).toString("hex");
   return processFallbackSalt;
 }

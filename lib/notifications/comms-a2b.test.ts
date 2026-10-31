@@ -23,7 +23,10 @@
 import { readFileSync } from "node:fs";
 import { createEmailSender, type EmailSendEnv } from "@/lib/email/send";
 import type { EmailMessage, EmailProvider, EmailResult } from "@/lib/email/types";
+import { createHmac } from "node:crypto";
 import { createNotification, fillDedupeTemplate, type NotificationWriteClient } from "@/lib/notifications/create";
+import { EMAIL_ANCHOR_MARKER, isEmailAnchorMetadata } from "@/lib/notifications/email-anchor";
+import { MAX_DELIVERY_ATTEMPTS, retryNotifications, type NotificationRetryClient } from "@/jobs/retry-notifications";
 import { retireOpenNotification, type NotificationResolveClient } from "@/lib/notifications/resolve";
 import {
   PREFERENCE_CATEGORIES,
@@ -44,9 +47,9 @@ import {
   KNOWN_SUPPRESSIBILITY_GAPS,
   isStormLimitedKey,
 } from "@/lib/notifications/catalog/definitions";
-import { decideStorm, type StormCounter } from "@/lib/notifications/delivery/storm";
+import { decideStorm, PendingSends, type StormCounter } from "@/lib/notifications/delivery/storm";
 import { SUPPRESSION_REASONS, type CommsDeliveryRow, type LedgerWriter } from "@/lib/notifications/delivery/types";
-import { hashSecurityIdentifier, hashedAnomalyKey, isHashedAnomalyKey } from "@/lib/security/identifier-hash";
+import { FALLBACK_SALT_LABEL, hashSecurityIdentifier, hashedAnomalyKey, isHashedAnomalyKey } from "@/lib/security/identifier-hash";
 import { anomalyAuditMetadata, anomalyNotificationData } from "@/lib/security/anomaly-alerts";
 import { detectIdentifierAnomalies, detectIpAnomaly, detectSystemAdminAnomaly } from "@/lib/security/anomalies";
 
@@ -64,27 +67,29 @@ const ADDRESS = "Person.Private@example.invalid";
 
 // ── An in-memory Notification store (create + dedupe + retire) ────────────────
 
-interface Row { id: string; userId: string; dedupeKey: string | null; archivedAt: Date | null; metadata: unknown; category: string }
+interface Row { id: string; userId: string; dedupeKey: string | null; archivedAt: Date | null; metadata: unknown; category: string; type: string; priority: string; title: string; body: string | null; href: string | null }
+interface DeliveryRow { id: string; notificationId: string; channel: string; status: string; attempts: number; provider: string | null; error: string | null }
 
 function store() {
   const rows: Row[] = [];
-  const deliveries: unknown[] = [];
+  const deliveries: DeliveryRow[] = [];
   let n = 0;
   const client: NotificationWriteClient = {
     user: { async findUnique() { return { email: ADDRESS }; } },
-    notificationDelivery: { async create({ data }) { deliveries.push(data); return { id: `d${deliveries.length}` }; } },
+    notificationDelivery: { async create({ data }) { const d = { ...data, id: `d${deliveries.length + 1}` }; deliveries.push(d); return { id: d.id }; } },
     notification: {
       async create({ data }) {
         if (data.dedupeKey !== null && rows.some((r) => r.userId === data.userId && r.dedupeKey === data.dedupeKey)) {
           throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
         }
-        const row: Row = { id: `n${++n}`, userId: data.userId, dedupeKey: data.dedupeKey, archivedAt: data.archivedAt ?? null, metadata: data.metadata, category: data.category };
+        const row: Row = { id: `n${++n}`, userId: data.userId, dedupeKey: data.dedupeKey, archivedAt: data.archivedAt ?? null, metadata: data.metadata, category: data.category,
+          type: data.type, priority: data.priority, title: data.title, body: data.body, href: data.href };
         rows.push(row);
         return { id: row.id };
       },
       async findUnique({ where }) {
         const r = rows.find((x) => x.userId === where.userId_dedupeKey.userId && x.dedupeKey === where.userId_dedupeKey.dedupeKey);
-        return r ? { id: r.id, archivedAt: r.archivedAt } : null;
+        return r ? { id: r.id, archivedAt: r.archivedAt, metadata: r.metadata } : null;
       },
       async update({ where, data }) {
         const r = rows.find((x) => x.id === where.id);
@@ -103,9 +108,36 @@ function store() {
       },
     },
   };
+  /** The retry job's client over the same rows (jobs/retry-notifications.ts). */
+  const retryClient: NotificationRetryClient = {
+    notificationDelivery: {
+      async findMany({ where }) {
+        return deliveries.filter((d) => d.channel === where.channel && d.status === where.status && d.attempts < where.attempts.lt).map((d) => {
+          const r = rows.find((x) => x.id === d.notificationId) ?? null;
+          return {
+            id: d.id, attempts: d.attempts, notificationId: d.notificationId,
+            notification: r && { userId: r.userId, type: r.type, category: r.category, priority: r.priority, title: r.title, body: r.body, href: r.href,
+              metadata: r.metadata, readAt: null, archivedAt: r.archivedAt, expiresAt: null, dedupeKey: r.dedupeKey, user: { email: ADDRESS } },
+          };
+        });
+      },
+      async updateMany({ where }) {
+        const d = deliveries.find((x) => x.id === where.id && x.status === where.status && x.attempts === where.attempts);
+        if (!d) return { count: 0 };
+        d.attempts++;
+        return { count: 1 };
+      },
+      async count({ where }) { return deliveries.filter((x) => x.id === where.id).length; },
+      async update({ where, data }) {
+        const d = deliveries.find((x) => x.id === where.id);
+        if (d) Object.assign(d, data);
+        return {};
+      },
+    },
+  };
   /** The inbox predicate of lib/notifications/read.ts (activeWhere): not archived, not expired. */
   const visible = (userId: string) => rows.filter((r) => r.userId === userId && r.archivedAt === null);
-  return { rows, deliveries, client, resolveClient, visible };
+  return { rows, deliveries, client, resolveClient, retryClient, visible };
 }
 
 function prefs(rows: PreferenceOverride[]): PreferenceClient {
@@ -208,8 +240,20 @@ async function hashedIdentifiers(): Promise<void> {
   check("hashing is idempotent", hashedAnomalyKey(hashedAnomalyKey(ipAnomaly.key, SALTED), SALTED) === hashedAnomalyKey(ipAnomaly.key, SALTED));
   check("an unknown key shape is hashed whole (fail safe)", !hashedAnomalyKey("weird:secret-value", SALTED).includes("secret-value"));
   const unsalted = anomalyNotificationData(ipAnomaly, {});
-  check("salt UNSET ⇒ still no plaintext, and stable within the process (per-process fallback salt)",
+  check("salt AND NEXTAUTH_SECRET unset (no server secret at all) ⇒ still no plaintext, stable within the process (last-resort salt)",
     !JSON.stringify(unsalted).includes(ip) && anomalyNotificationData(ipAnomaly, {}).anomalyKey === unsalted.anomalyKey && unsalted.anomalyKey !== anomalyNotificationData(ipAnomaly, SALTED).anomalyKey);
+
+  // Review item 2: the unset-salt fallback is STABLE across instances (derived, not random).
+  const instanceA = { NEXTAUTH_SECRET: "deployment-session-secret" };
+  const instanceB = { NEXTAUTH_SECRET: "deployment-session-secret" };
+  const derived = createHmac("sha256", "deployment-session-secret").update(FALLBACK_SALT_LABEL).digest("hex");
+  check("salt unset + NEXTAUTH_SECRET set ⇒ every instance derives the SAME salt (stable hash, dedupe holds across instances)",
+    hashSecurityIdentifier(ip, instanceA) === hashSecurityIdentifier(ip, instanceB) &&
+    hashSecurityIdentifier(ip, instanceA) === hashSecurityIdentifier(ip, { SECURITY_IDENTIFIER_HASH_SALT: derived }));
+  check("…domain-separated: the salt is HMAC(NEXTAUTH_SECRET, label), never the secret itself",
+    hashSecurityIdentifier(ip, instanceA) !== hashSecurityIdentifier(ip, { SECURITY_IDENTIFIER_HASH_SALT: "deployment-session-secret" }));
+  check("…a different deployment secret ⇒ a different hash", hashSecurityIdentifier(ip, instanceA) !== hashSecurityIdentifier(ip, { NEXTAUTH_SECRET: "other-deployment" }));
+  check("…a configured salt wins over the fallback", hashSecurityIdentifier(ip, { ...instanceA, ...SALTED }) === hashSecurityIdentifier(ip, SALTED));
 
   // Operators correlate: the audit trip row keeps the raw key and carries the bell's exact hash.
   const audit = anomalyAuditMetadata(idAnomaly, SALTED);
@@ -280,6 +324,82 @@ async function connectionEmailIndependent(): Promise<void> {
       r.status === "skipped" && e.sent.length === 0 && s.rows.length === 0 && l.rows.some((x) => x.channel === "EMAIL" && x.reason === "PREFERENCE_OFF"), l.rows);
   }
   {
+    // Review item 4: turning in-app back ON mid-outage must not re-email the same outage.
+    const s = store(); const e = emailAdapter();
+    const off = { client: s.client, prefClient: prefs([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]), emailAdapter: e.adapter, ledger: ledgerSink().writer };
+    const on = { client: s.client, prefClient: prefs([]), emailAdapter: e.adapter, ledger: ledgerSink().writer };
+    await createNotification(SYNC, off);
+    check("the anchor carries the chokepoint-owned marker", isEmailAnchorMetadata(s.rows[0].metadata));
+    const reEnabled = await createNotification(SYNC, on);
+    check("in-app re-enabled mid-outage ⇒ the anchor still holds the outage: suppressed, NO second email",
+      reEnabled.status === "suppressed" && e.sent.length === 1 && s.rows.length === 1);
+    await retireOpenNotification("user_7", "SYNC_FAILED", { plaidItemId: "item_1" }, { client: s.resolveClient, now: NOW });
+    const next = await createNotification(SYNC, on);
+    check("after recovery, the next outage notifies normally (visible bell + email)", next.status === "created" && s.visible("user_7").length === 1 && e.sent.length === 2);
+  }
+  {
+    // A bell the user dismissed and THEN turned in-app off: its email already went out — no second one.
+    const s = store(); const e = emailAdapter();
+    await createNotification(SYNC, { client: s.client, prefClient: prefs([]), emailAdapter: e.adapter, ledger: ledgerSink().writer });
+    s.rows[0].archivedAt = NOW; // dismissed
+    const off = await createNotification(SYNC, { client: s.client, prefClient: prefs([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]), emailAdapter: e.adapter, ledger: ledgerSink().writer });
+    check("dismissed bell + in-app turned off ⇒ the same outage is not re-emailed", off.status === "suppressed" && e.sent.length === 1 && s.rows.length === 1);
+  }
+  {
+    // The marker is chokepoint-owned: a producer cannot forge an anchor.
+    const s = store();
+    await createNotification({ ...SYNC, data: { ...SYNC.data, [EMAIL_ANCHOR_MARKER]: true } as unknown as typeof SYNC.data },
+      { client: s.client, prefClient: prefs([]), emailAdapter: emailAdapter().adapter, ledger: ledgerSink().writer });
+    check("a producer-supplied anchor marker is stripped from a normal (visible) row", !isEmailAnchorMetadata(s.rows[0].metadata) && s.rows[0].archivedAt === null);
+  }
+  {
+    // Review item 3: a failed anchor email is RETRIED by the retry job (normal policy), exactly once on success.
+    const s = store();
+    const failing: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver() { return { status: "error", provider: "fake", error: "transient" }; } };
+    await createNotification(SYNC, { client: s.client, prefClient: prefs([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]), emailAdapter: failing, ledger: ledgerSink().writer });
+    check("precondition: the anchor's first email attempt failed (error, attempt 1)", s.deliveries.length === 1 && s.deliveries[0].status === "error" && s.deliveries[0].attempts === 1);
+    const retrySent: number[] = [];
+    const ok: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver(m) { retrySent.push(m.attempt ?? 0); return { status: "sent", provider: "fake", id: "r1" }; } };
+    const r1 = await retryNotifications(s.retryClient, ok, NOW, null);
+    check("the retry job retries the archived anchor (not OBSOLETE) and sends exactly one email",
+      r1.retried === 1 && r1.delivered === 1 && r1.skippedObsolete === 0 && retrySent.length === 1 && retrySent[0] === 2 && s.deliveries[0].status === "sent", r1);
+    const r2 = await retryNotifications(s.retryClient, ok, NOW, null);
+    check("…and a second pass sends nothing more", r2.examined === 0 && retrySent.length === 1);
+  }
+  {
+    // Normal policy and DEAD semantics: a permanently failing anchor email stops at the cap, last attempt final.
+    const s = store();
+    const failing: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver() { return { status: "error", provider: "fake", error: "x" }; } };
+    await createNotification(SYNC, { client: s.client, prefClient: prefs([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]), emailAdapter: failing, ledger: ledgerSink().writer });
+    const finals: boolean[] = [];
+    const stillFailing: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver(m) { finals.push(m.finalAttempt === true); return { status: "error", provider: "fake", error: "x" }; } };
+    for (let i = 0; i < 5; i++) await retryNotifications(s.retryClient, stillFailing, NOW, null);
+    check(`retries stop at the attempt cap (${MAX_DELIVERY_ATTEMPTS}); the last one is final (DEAD on the ledger)`,
+      s.deliveries[0].attempts === MAX_DELIVERY_ATTEMPTS && finals.length === MAX_DELIVERY_ATTEMPTS - 1 && finals.at(-1) === true && finals.slice(0, -1).every((f) => !f), { attempts: s.deliveries[0].attempts, finals });
+  }
+  {
+    // Contract v1.0.3 (owner storm policy): a RATE_LIMITED SYNC_FAILED email is not re-sent during the same outage.
+    const s = store();
+    const limited: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver() { return { status: "skipped", provider: "none" }; } };
+    await createNotification(SYNC, { client: s.client, prefClient: prefs([]), emailAdapter: limited, ledger: ledgerSink().writer });
+    const sent: string[] = [];
+    const okAdapter: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver(m) { sent.push(m.notificationId ?? ""); return { status: "sent", provider: "fake" }; } };
+    const retry = await retryNotifications(s.retryClient, okAdapter, NOW, null);
+    const again = await createNotification(SYNC, { client: s.client, prefClient: prefs([]), emailAdapter: okAdapter, ledger: ledgerSink().writer });
+    check("a storm-held (skipped) SYNC_FAILED email is never retried, and the next sync of the same outage is suppressed",
+      s.deliveries[0].status === "skipped" && retry.examined === 0 && again.status === "suppressed" && sent.length === 0);
+  }
+  {
+    // After retirement the anchor's failed email is obsolete again (the outage is over).
+    const s = store();
+    const failing: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver() { return { status: "error", provider: "fake", error: "x" }; } };
+    await createNotification(SYNC, { client: s.client, prefClient: prefs([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]), emailAdapter: failing, ledger: ledgerSink().writer });
+    await retireOpenNotification("user_7", "SYNC_FAILED", { plaidItemId: "item_1" }, { client: s.resolveClient, now: NOW });
+    const sent: string[] = [];
+    const r = await retryNotifications(s.retryClient, { channel: "EMAIL", name: "fake", async deliver(m) { sent.push(m.notificationId ?? ""); return { status: "sent", provider: "fake" }; } }, NOW, null);
+    check("a retired anchor's failed email is closed OBSOLETE, not sent", r.skippedObsolete === 1 && sent.length === 0);
+  }
+  {
     // A visible bell the user dismissed (in-app ON) is still released and re-created, as before.
     const s = store(); const e = emailAdapter();
     const ctx = { client: s.client, prefClient: prefs([]), emailAdapter: e.adapter, ledger: ledgerSink().writer };
@@ -296,7 +416,7 @@ const PROD: EmailSendEnv = { VERCEL: "1", VERCEL_ENV: "production", NODE_ENV: "p
 const capture: EmailProvider = { name: "capture", async send() { return { status: "captured", provider: "capture" }; } };
 
 /** A sender over an in-memory ledger whose counter reads that same ledger (the production shape). */
-function stormWorld(opts: { counter?: StormCounter; clock?: () => Date } = {}) {
+function stormWorld(opts: { counter?: StormCounter; clock?: () => Date; defer?: (task: () => Promise<void>) => Promise<void>; failWrites?: boolean; pending?: PendingSends } = {}) {
   const ledger: Array<CommsDeliveryRow & { at: Date }> = [];
   const sent: EmailMessage[] = [];
   const logs: string[] = [];
@@ -307,7 +427,9 @@ function stormWorld(opts: { counter?: StormCounter; clock?: () => Date } = {}) {
     (q.recipientUserId ? r.recipientUserId === q.recipientUserId : r.recipientHash === q.recipientHash)).length);
   const send = createEmailSender({
     env: PROD, provider, capture, now: clock, log: (l) => logs.push(l), storm: counter,
-    ledger: async (row) => { ledger.push({ ...row, at: clock() }); },
+    ...(opts.defer ? { defer: opts.defer } : {}),
+    ...(opts.pending ? { pending: opts.pending } : {}),
+    ledger: async (row) => { if (opts.failWrites) throw new Error("ledger down"); ledger.push({ ...row, at: clock() }); },
   });
   return { send, ledger, sent, logs };
 }
@@ -362,6 +484,57 @@ async function stormLimit(): Promise<void> {
     check("no userId: counted by the ledger's salted recipient hash — the 6th to that address is held",
       rs.slice(0, 5).every((r) => r.status === "sent") && rs[5].reason === "RATE_LIMITED" && w.ledger[0].recipientHash !== null && otherAddr.status === "sent", rs[5]);
   }
+  console.log("4a. in-request bursts — the ledger write is deferred, the in-process reservations still hold the limit");
+  {
+    // One invocation: every ledger write is deferred until after the "response" (like next/server after()).
+    const queued: Array<() => Promise<void>> = [];
+    const pending = new PendingSends();
+    const w = stormWorld({ defer: async (task) => { queued.push(task); }, pending });
+    const rs: EmailResult[] = [];
+    for (let i = 0; i < 10; i++) rs.push(await w.send("notification", ADDRESS, ND, notif("user_1")));
+    check("10 sends in ONE invocation (ledger not yet written) ⇒ 5 sent, 5 RATE_LIMITED",
+      rs.filter((r) => r.status === "sent").length === 5 && rs.filter((r) => r.reason === "RATE_LIMITED").length === 5 && w.sent.length === 5 && w.ledger.length === 0,
+      rs.map((r) => r.status));
+    for (const task of queued.splice(0)) await task();
+    check("after the deferred writes land, the reservations are released (the DB count now holds them)", pending.size === 0 && w.ledger.filter((r) => r.status === "ACCEPTED").length === 5);
+    const after = await w.send("notification", ADDRESS, ND, notif("user_1"));
+    check("…and the limit still holds from the ledger, with no double count", after.reason === "RATE_LIMITED" && w.sent.length === 5);
+  }
+  {
+    const queued: Array<() => Promise<void>> = [];
+    const w = stormWorld({ defer: async (task) => { queued.push(task); } });
+    const rs = await Promise.all(Array.from({ length: 10 }, () => w.send("notification", ADDRESS, ND, notif("user_1"))));
+    check("10 CONCURRENT sends in one invocation ⇒ exactly 5 sent (check-and-reserve is atomic)", rs.filter((r) => r.status === "sent").length === 5 && w.sent.length === 5, rs.map((r) => r.status));
+  }
+  {
+    // A send whose ledger write fails keeps its reservation until it ages out (an unrecorded send still counts).
+    let t = NOW.getTime();
+    const w = stormWorld({ failWrites: true, clock: () => new Date(t) });
+    for (let i = 0; i < 5; i++) await w.send("notification", ADDRESS, ND, notif("user_1"));
+    const sixth = await w.send("notification", ADDRESS, ND, notif("user_1"));
+    check("ledger writes failing ⇒ the reservations stand: the 6th is still RATE_LIMITED", sixth.reason === "RATE_LIMITED" && w.sent.length === 5);
+    t += 61 * 60_000;
+    const later = await w.send("notification", ADDRESS, ND, notif("user_1"));
+    check("…and they age out with the window", later.status === "sent");
+  }
+  {
+    const queued: Array<() => Promise<void>> = [];
+    const w = stormWorld({ defer: async (task) => { queued.push(task); } });
+    for (let i = 0; i < 5; i++) await w.send("notification", ADDRESS, ND, notif("user_1"));
+    const sec = await w.send("security-alert", ADDRESS, { title: "t", message: "m" }, { key: "PASSWORD_CHANGED", recipientUserId: "user_1" });
+    check("exempt mail is never held by in-process reservations", sec.status === "sent");
+  }
+  {
+    // Bounded memory: pruned by window, capped per recipient and in recipients.
+    const p = new PendingSends(60 * 60_000, 3);
+    const t0 = NOW.getTime();
+    for (let i = 0; i < 10; i++) p.reserve(`u:${i}`, t0);
+    check("the reservation map never holds more than its recipient cap (oldest evicted)", p.size === 3 && p.count("u:9", t0) === 1 && p.count("u:0", t0) === 0);
+    for (let i = 0; i < 20; i++) p.reserve("u:9", t0);
+    check("a recipient never holds more reservations than the limit", p.count("u:9", t0) === EMAIL_STORM_LIMIT.maxPerRecipient);
+    check("entries older than the window are pruned on access", p.count("u:9", t0 + 61 * 60_000) === 0 && p.size === 2);
+  }
+
   console.log("4b. an unreadable count — limited mail fails CLOSED, exempt mail fails OPEN");
   {
     const w = stormWorld({ counter: async () => { throw new Error("db down"); } });

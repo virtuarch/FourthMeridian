@@ -79,6 +79,7 @@ import type {
 import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/delivery/record";
 import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
 import { runAfterResponse } from "@/lib/notifications/delivery/defer";
+import { EMAIL_ANCHOR_MARKER, isEmailAnchorMetadata } from "@/lib/notifications/email-anchor";
 import type { CommsDeliveryRow, LedgerWriter } from "@/lib/notifications/delivery/types";
 
 // ── Delivery ledger (Comms Center A-2a) ──────────────────────────────────────
@@ -118,7 +119,12 @@ function emailOffByPreference(def: NotificationTypeDefinition, emailEnabled: boo
 export interface ExistingNotificationRow {
   id: string;
   archivedAt: Date | null;
+  /** Read to recognise an email anchor (EMAIL_ANCHOR_MARKER). Absent in narrow test fakes ⇒ not an anchor. */
+  metadata?: unknown;
 }
+
+// A-2b email-anchor marker: lib/notifications/email-anchor.ts (pure; shared with the retry job).
+export { EMAIL_ANCHOR_MARKER, isEmailAnchorMetadata };
 
 /** Exactly the operations the chokepoint performs — nothing more. */
 export interface NotificationWriteClient {
@@ -167,7 +173,7 @@ export interface NotificationWriteClient {
     }): Promise<{ id: string }>;
     findUnique(args: {
       where: { userId_dedupeKey: { userId: string; dedupeKey: string } };
-      select: { id: true; archivedAt: true };
+      select: { id: true; archivedAt: true; metadata: true };
     }): Promise<ExistingNotificationRow | null>;
     update(args: {
       where: { id: string };
@@ -200,6 +206,12 @@ function isUniqueViolation(err: unknown): boolean {
     err !== null &&
     (err as { code?: unknown }).code === "P2002"
   );
+}
+
+/** The producer's data with the chokepoint-owned anchor marker removed. */
+function withoutAnchorMarker(data: NotificationRenderData): NotificationRenderData {
+  if (!(EMAIL_ANCHOR_MARKER in data)) return data;
+  return Object.fromEntries(Object.entries(data).filter(([k]) => k !== EMAIL_ANCHOR_MARKER));
 }
 
 /**
@@ -444,7 +456,11 @@ export async function createNotification(
     body: rendered.body ?? null,
     href: rendered.href ?? null,
     // Persist metadata exactly as supplied; omit entirely when absent (NULL).
-    ...(input.data !== undefined ? { metadata: input.data } : {}),
+    // A-2b: the anchor marker is chokepoint-owned — set on an email anchor,
+    // stripped from anything a producer supplied.
+    ...(emailAnchorOnly
+      ? { metadata: { ...withoutAnchorMarker(data), [EMAIL_ANCHOR_MARKER]: true } }
+      : input.data !== undefined ? { metadata: withoutAnchorMarker(input.data) } : {}),
     auditLogId: input.auditLogId ?? null,
     dedupeKey,
     expiresAt: input.expiresAt ?? null,
@@ -516,16 +532,18 @@ export async function createNotification(
   try {
     const existing = await client.notification.findUnique({
       where: { userId_dedupeKey: { userId: input.userId, dedupeKey } },
-      select: { id: true, archivedAt: true },
+      select: { id: true, archivedAt: true, metadata: true },
     });
 
-    // Open holder → the condition is already surfaced. Suppress. While the
-    // in-app channel is off (A-2b email anchor), an ARCHIVED holder still
-    // holding the key is open too: it is the anchor of the email already sent
-    // for this condition (or a bell the user dismissed before turning in-app
-    // off) — releasing it would re-email the same outage on every sync. Its key
-    // is released by retirement (resolve.ts), when the condition really ends.
-    if (existing && (existing.archivedAt === null || emailAnchorOnly)) {
+    // Open holder → the condition is already surfaced. Suppress. A-2b: an
+    // ARCHIVED holder still holding the key is open too when
+    //   - it is an email anchor (the email for this outage already went out —
+    //     including after the user turned in-app back ON mid-outage), or
+    //   - the in-app channel is off now (a bell dismissed before in-app was
+    //     turned off: its email went out with it).
+    // Releasing either would re-email the same outage. Their key is released by
+    // retirement (resolve.ts), when the condition really ends.
+    if (existing && (existing.archivedAt === null || emailAnchorOnly || isEmailAnchorMetadata(existing.metadata))) {
       await noteDedupe();
       return { status: "suppressed" };
     }

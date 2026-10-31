@@ -48,23 +48,25 @@
 - **O-8 / AUDIT R-2 — the Security Ops bell cannot be muted.** `SECURITY_ANOMALY_DETECTED` is **locked per type** (`PER_TYPE_LOCKED_TYPES`, `lib/notifications/registry.ts`). It stays in PLATFORM; the PLATFORM row still governs the customer bells, but `resolveChannelEnabled` ignores it for this type. A category counts as locked only when every type in it is locked. The catalog reports `protected: true, userSuppressible: false`, and `KNOWN_SUPPRESSIBILITY_GAPS` is empty. Every other security-class type was audited: all ACCOUNT_SECURITY types are locked, and every direct security or operator send reads no preference.
 - **O-8 / AUDIT R-3 — hashed anomaly identifiers.**
   - The bell's `metadata.anomalyKey`, and the `dedupeKey` built from it, hold `<kind>:h<first 128 bits of HMAC-SHA256(SECURITY_IDENTIFIER_HASH_SALT, trimmed lower-cased value)>` (`lib/security/identifier-hash.ts`). The salt is a **new** env var: `COMMS_RECIPIENT_HASH_SALT` keys recipient addresses for the ledger and purge, which is a different purpose, so it is not reused.
-  - Unset ⇒ a random per-process salt: never plaintext, and dedupe then holds within one instance only. `lib/env.ts` warns on a deployment.
+  - Unset ⇒ a **stable, domain-separated** fallback salt, `HMAC-SHA256(NEXTAUTH_SECRET, "fm:sec-id-hash:v1")`: never plaintext, and the same on every instance, so dedupe holds across instances. The env report is a **fail** in Production while the dedicated salt is unset (a warn elsewhere). Nothing on the login path throws over it.
   - The AuditLog trip row keeps the raw `metadata.key` (unchanged) and gains `metadata.keyHash`, which equals the bell's `anomalyKey`.
-  - **Where operators look:** the Security Ops posture surface (kind plus an opaque reference). For the raw identifier or IP, they find the `SECURITY_ANOMALY_DETECTED` audit row whose `metadata.keyHash` matches the bell. `KNOWN_PII_DEDUPE_KEYS` is empty.
+  - **Where operators look:** the Security Ops posture surface. It shows the kind plus `keyRef` = `h` + the first 8 hex of the row's salted `keyHash`, a literal prefix of both the audit row's `keyHash` and the bell's `anomalyKey`. For the raw identifier or IP, they find the `SECURITY_ANOMALY_DETECTED` audit row by `metadata.keyHash`. `KNOWN_PII_DEDUPE_KEYS` is empty.
+  - The old unsalted 24-bit FNV `keyRef` of the raw key is removed. A legacy trip row with no `keyHash` projects `keyRef: ""` and `legacy: true`; nothing is derived from its raw key. Platform access-denied trip rows carry `keyHash` too.
 - **O-7 (owner ruling) — connection-failure email is independent of in-app.**
   - Applies to types flagged `emailIndependentOfInApp` (only `SYNC_FAILED`). Their EMAIL leg follows only the category's EMAIL preference.
   - IN_APP off + EMAIL on: the Notification row is written **archived at birth** (an email anchor, invisible in-app) and the email ships from it. Ledger: `IN_APP SUPPRESSED PREFERENCE_OFF` plus the email's own row.
-  - The anchor holds the suppress-while-open key while in-app is off, so there is one email per outage. Retirement now also releases archived holders.
+  - The anchor carries a chokepoint-owned metadata marker (`_commsEmailAnchor`; a producer-supplied value is stripped). While it holds the suppress-while-open key the outage is open, **whatever the user's in-app setting is now**. Turning in-app back on mid-outage does not re-email it. So there is one email per outage, and retirement (which now also releases archived holders) re-arms it.
   - EMAIL off: `EMAIL SUPPRESSED PREFERENCE_OFF`.
   - Every other type keeps the F11/S3 coupling.
-  - Known limit: the retry job closes deliveries of archived notifications as OBSOLETE, so a failed anchor email is recorded FAILED but not retried.
+  - The retry job retries a failed anchor email under the normal policy (attempt cap, DEAD on the last attempt) while the anchor still holds its key. After retirement it is closed OBSOLETE as before.
 - **O-10 — per-recipient storm limit.**
   - At most **5 ACCEPTED emails per recipient per rolling 60 min** (`EMAIL_STORM_LIMIT`), across every SERVICE / AWARENESS / MARKETING catalog key.
-  - Counted from `CommsDelivery` by `recipientUserId`, or by `recipientHash` when there is no user.
+  - Counted from `CommsDelivery` by `recipientUserId`, or by `recipientHash` when there is no user, **plus** an in-process reservation for every admitted send whose ledger row is not written yet. The ledger write is deferred until after the response, so this is what holds a burst inside one cron run or route invocation. The reservation check-and-take is atomic, released on a non-accepted send or once the row is written, kept until it ages out if the write failed, and bounded (window-pruned, ≤ limit per recipient, ≤ 5,000 recipients).
   - Enforced in `sendEmail` after the recipient guard and before the provider.
   - Over the limit ⇒ `skipped` / ledger `SUPPRESSED` with reason **`RATE_LIMITED`**. A count that cannot be read (error, 1.5 s timeout, or no recipient identity) ⇒ **`RATE_LIMIT_UNVERIFIED`** (fail closed).
   - SECURITY_CRITICAL, CEREMONY and OPERATOR mail is exempt, never counted, and always sends.
   - Both reasons are added to `SuppressionReason` (§3.3).
+  - A **RATE_LIMITED `SYNC_FAILED` email is not re-sent during the same outage** (owner storm policy). Its delivery is closed as `skipped` (never retried), and the Notification row (bell or email anchor) holds the outage's dedupe key, so later syncs of the same broken item are suppressed. The next outage, after retirement, emails again.
   - The global platform cap (`GLOBAL_EMAIL_CAP_PER_HOUR`) is a documented TODO, `null` (OFF), until the Resend plan quota is known.
 
 ---

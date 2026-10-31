@@ -451,12 +451,16 @@ export function getEnvReport(): EnvReport {
   );
 
   // SECURITY_IDENTIFIER_HASH_SALT (Comms Center A-2b, O-8) — presence only.
-  // Unset ⇒ the anomaly key hash uses a per-process random salt: still never
-  // plaintext, but the staff-bell dedupe holds only within one instance.
+  // Unset ⇒ the anomaly key hash uses a salt derived from NEXTAUTH_SECRET
+  // (stable, domain-separated; never plaintext). A "fail" in Production — the
+  // dedicated secret is required there — and a "warn" elsewhere. Report only:
+  // validateEnv never throws over it, so the login path is never affected.
   keys.push(
     _e.SECURITY_IDENTIFIER_HASH_SALT
-      ? { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "pass", scope: "optional" }
-      : { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "warn", scope: "optional", note: "unset — anomaly keys are hashed with a per-instance salt" },
+      ? { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "pass", scope: "production" }
+      : isProd
+        ? { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "fail", scope: "production", note: "required in production — not set (anomaly keys use the derived fallback salt)" }
+        : { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "warn", scope: "production", note: "unset — anomaly keys use the derived fallback salt" },
   );
 
   // OPENAI ENVIRONMENT SEPARATION — the key (presence only), the project pin and
@@ -600,8 +604,8 @@ export function validateEnv(): EnvReport {
   if (_e.VERCEL === "1" && !_e.SECURITY_IDENTIFIER_HASH_SALT) {
     console.warn(
       "[env] SECURITY_IDENTIFIER_HASH_SALT is unset on this deployment — Security Ops anomaly keys " +
-      "are hashed with a random per-instance salt (never stored in plaintext), so the staff-bell " +
-      "dedupe only holds within one instance. Set a long random secret per environment.",
+      "are hashed with a salt derived from NEXTAUTH_SECRET (never stored in plaintext). Set a " +
+      "dedicated long random secret per environment; the env report fails in Production until then.",
     );
   }
 

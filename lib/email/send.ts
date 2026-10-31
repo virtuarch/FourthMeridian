@@ -74,7 +74,7 @@ import { captureAdapter } from "@/lib/email/providers/capture";
 import { decideRecipient, describeGuardedRecipient, type RecipientGuardEnv } from "@/lib/email/recipient-guard";
 import { emailLedgerRow, recipientHash, recordDelivery, resolveEmailKey, type LedgerEnv } from "@/lib/notifications/delivery/record";
 import { countRecentAcceptedEmails, writeDeliveryRow } from "@/lib/notifications/delivery/store";
-import { decideStorm, type StormCounter } from "@/lib/notifications/delivery/storm";
+import { decideStorm, PendingSends, pendingSends, type Reservation, type StormCounter } from "@/lib/notifications/delivery/storm";
 import { runAfterResponse } from "@/lib/notifications/delivery/defer";
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 
@@ -102,6 +102,12 @@ export interface EmailSenderDeps {
    * a test seam that never models one leaves it out.
    */
   storm?: StormCounter;
+  /**
+   * In-process reservations of admitted-but-not-yet-recorded limited sends
+   * (A-2b). Production: the module-level instance. Absent ⇒ a fresh instance
+   * per sender (tests stay isolated).
+   */
+  pending?: PendingSends;
   /** Clock for the ledger row (tests). */
   now?: () => Date;
   /**
@@ -122,8 +128,16 @@ export type SendEmailFn = (
 /** Build a sendEmail over injected env + transports. */
 export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
   const log = deps.log ?? ((line: string, level: "info" | "warn") => console[level](line));
+  const pending = deps.pending ?? new PendingSends();
   return async (name, to, data = {}, ctx) => {
-    const result = await send(deps, log, name, to, data, ctx);
+    const slot: { reservation: Reservation | null } = { reservation: null };
+    const result = await send(deps, pending, log, name, to, data, ctx, slot);
+    const reservation = slot.reservation;
+    // A storm reservation (A-2b) is held only by an ACCEPTED send, and only until
+    // its ledger row is written — from then on the DB count holds it. A send the
+    // ledger never records keeps its reservation until it ages out of the window.
+    if (reservation && result.status !== "sent") pending.release(reservation);
+    const held = reservation && result.status === "sent" ? reservation : null;
     if (deps.ledger) {
       // Built inside the guard too: a row that cannot even be built must not reach the caller.
       let row: ReturnType<typeof emailLedgerRow>;
@@ -134,7 +148,10 @@ export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
         return result;
       }
       const writer = deps.ledger;
-      const write = async () => { await recordDelivery(writer, row, { log: (line) => log(line, "warn") }); };
+      const write = async () => {
+        const recorded = await recordDelivery(writer, row, { log: (line) => log(line, "warn") });
+        if (recorded && held) pending.release(held);
+      };
       if (deps.defer) {
         try { await deps.defer(write); } catch { /* recordDelivery never throws; a defer seam must not either */ }
       } else {
@@ -161,15 +178,19 @@ export const sendEmail: SendEmailFn = createEmailSender({
   ledger: writeDeliveryRow,
   defer: runAfterResponse,
   storm: countRecentAcceptedEmails,
+  pending: pendingSends,
 });
 
 async function send(
   deps: EmailSenderDeps,
+  pending: PendingSends,
   log: (line: string, level: "info" | "warn") => void,
   name: EmailTemplateName,
   to: string,
   data: Record<string, unknown>,
   ctx: EmailSendContext | undefined,
+  /** Out-parameter: the storm reservation an admitted limited send took (A-2b). */
+  slot: { reservation: Reservation | null },
 ): Promise<EmailResult> {
   const env = deps.env;
   const template = getTemplate(name);
@@ -228,11 +249,13 @@ async function send(
       recipientHash: userId === null && ctx?.hashRecipient !== false ? recipientHash(to, env) : null,
       counter: deps.storm,
       now: (deps.now ?? (() => new Date()))(),
+      pending,
     });
     if (!storm.send) {
       log(`[email] held by the storm limit: template=${name} key=${key} reason=${storm.reason}`, "warn");
       return { status: "skipped", provider: "none", reason: storm.reason };
     }
+    if (!storm.exempt) slot.reservation = storm.reservation;
   }
   // Production: the caller's address. Elsewhere: the MATCHED allowlist entry,
   // never the raw string (no Unicode case-folding smuggling — recipient-guard.ts).
