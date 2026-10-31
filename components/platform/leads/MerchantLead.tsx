@@ -27,7 +27,7 @@ import { useSharedWidgetFetch } from "../workspace-session";
 import type { MerchantOverviewResponse } from "@/lib/platform/merchant/overview-types";
 import type { PlatformViewLeadProps } from "./lead-contract";
 import { LazyDisclosure } from "./lead-kit";
-import { Caption, ChartMessage, Segmented } from "./visual-kit";
+import { Caption, ChartMessage, Segmented, goToSection } from "./visual-kit";
 import { HealthHero } from "../ops-visual/HealthHero";
 import { DayBars, DayBarsLegend } from "../ops-visual/DayBars";
 import type { Fetched } from "../ops-visual/ops-visual-model";
@@ -63,7 +63,12 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
             <Segmented label="Period" value={p.period} onChange={p.onPeriod} options={[{ id: "30", label: "30 d" }, { id: "90", label: "90 d" }]} />
           </span>
         </div>
-        <HealthHero model={merchantHero(p.f)} />
+        <HealthHero model={{ ...merchantHero(p.f), actions: {
+          merchants: { label: "Show merchant aliases", onSelect: () => goToSection("mo-aliases") },
+          unresolved: { label: "Show where categories come from", onSelect: () => goToSection("mo-provenance") },
+          merged: { label: "Show the merge review", onSelect: () => goToSection("mo-decisions") },
+          dismissed: { label: "Show the merge review", onSelect: () => goToSection("mo-decisions") },
+        } }} />
       </div>
 
       {/* Review first at every width — it is the Space's one action. With no
@@ -127,7 +132,7 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
             )) : <Loading f={p.f} what="category provenance" />}
           </Surface>
         </Block>
-        <Block id="mo-aliases" label="Merchant aliases by source" className="min-w-0 max-lg:hidden lg:col-span-5">
+        <Block id="mo-aliases" label="Merchant aliases by source" className="min-w-0 lg:col-span-5">
           <Surface className="flex-1 p-4 sm:p-5">
             {m ? (
               <>

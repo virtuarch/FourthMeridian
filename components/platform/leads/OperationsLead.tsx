@@ -57,6 +57,7 @@ import type { PlatformViewLeadProps } from "./lead-contract";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { recentExecutions, type Fetched } from "./operations-model";
 import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
+import { goToSection } from "./visual-kit";
 import { DayBars, DayBarsLegend, DAY_BAR_COLORS } from "../ops-visual/DayBars";
 import { StatusWord, UnifiedJobs, JOBS_URL, SCHEDULER_URL, HISTORY_URL, OPERATIONS_URL, ENV_STATUS_URL } from "../ops-visual/UnifiedJobs";
 import {
@@ -187,7 +188,12 @@ export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
   return (
     <div className="min-w-0 space-y-8 sm:space-y-10 max-lg:space-y-6!" data-ops-dashboard>
       {/* A — Health hero. */}
-      <HealthHero model={hero} />
+      <HealthHero model={{ ...hero, actions: {
+        healthy: { label: "Open the Jobs list", onSelect: () => p.onOpenWorkspace(JOBS_VIEW) },
+        attention: { label: "Show what needs attention", onSelect: () => goToSection("ops-attention") },
+        runs: { label: "Show the execution trend", onSelect: () => goToSection("ops-trend") },
+        success: { label: "Show job outcomes", onSelect: () => goToSection("ops-composition") },
+      } }} />
 
       {/* B — Execution trend (7) · Outcome composition (5). */}
       <div className="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">

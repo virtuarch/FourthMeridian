@@ -30,7 +30,7 @@ import { useSharedWidgetFetch } from "../workspace-session";
 import type { SecurityAnalyticsResponse } from "@/lib/platform/security/analytics-types";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
 import { LazyDisclosure } from "./lead-kit";
-import { Caption, ChartMessage, Doorway, Meter, Segmented } from "./visual-kit";
+import { Caption, ChartMessage, Doorway, Meter, Segmented, goToSection } from "./visual-kit";
 import { HealthHero } from "../ops-visual/HealthHero";
 import { DayBars, DayBarsLegend } from "../ops-visual/DayBars";
 import type { Fetched } from "../ops-visual/ops-visual-model";
@@ -114,7 +114,12 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
           <span className="text-[11px] text-[var(--text-muted)]">Period</span>
           <Segmented label="Period" value={p.period} onChange={p.onPeriod} options={[{ id: "30", label: "30 d" }, { id: "90", label: "90 d" }]} />
         </div>
-        <HealthHero model={securityHero(p.f)} />
+        <HealthHero model={{ ...securityHero(p.f), actions: {
+          signIns: { label: "Show sign-in activity", onSelect: () => goToSection("sec-activity") },
+          failed: { label: "Show why sign-ins fail", onSelect: () => { p.onGroup?.("signins"); goToSection("sec-failure-reasons"); } },
+          operators2fa: { label: "Show two-factor coverage", onSelect: () => goToSection("sec-2fa") },
+          customers2fa: { label: "Show two-factor coverage", onSelect: () => goToSection("sec-2fa") },
+        } }} />
       </div>
 
       {/* 2 — sign-in activity (8) · two-factor coverage (4). */}

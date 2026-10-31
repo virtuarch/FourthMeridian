@@ -365,7 +365,10 @@ const dash = (over: Record<string, unknown> = {}) => renderToStaticMarkup(create
   const t = text(html);
   check("hero: verdict word + checked time + the four KPIs", /Failed/.test(t) && /Checked 05:31 UTC/.test(t) && ["Jobs healthy", "Needs attention", "Executions · 24 h", "Success rate"].every((w) => t.includes(w)));
   check("hero (Preview): 0/14 healthy, the scheduler cause in the caption", /0\/14/.test(t) && /scheduler not active on this deployment/i.test(t));
-  check("hero: the compact card (CompactHeroCard rhythm) + CompactKpiStrip (2×2)", /data-compact-hero/.test(html) && (html.match(/data-compact-kpi-strip/g) ?? []).length === 2);
+  // Platform Spaces 2.0 — the Operations KPIs are ACTIONABLE (Jobs list, attention,
+  // trend, outcomes), so the compact 2×2 is one grid of buttons in the strip's treatment.
+  check("hero: the compact card (CompactHeroCard rhythm) + a 2×2 KPI grid whose four tiles open their detail",
+    /data-compact-hero/.test(html) && (html.match(/data-compact-kpi-strip/g) ?? []).length === 1 && (html.match(/data-kpi-action/g) ?? []).length === 8);
   // it2 (F) — no empty rows: title/checked · verdict · one caption, nothing else.
   const card = /<section data-compact-hero[^>]*>([\s\S]*?)<\/section>/.exec(html)?.[1] ?? "";
   check("it2: the compact hero card is three rows (no empty change / range / talk rows)",

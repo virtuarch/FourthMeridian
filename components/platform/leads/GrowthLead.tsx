@@ -34,7 +34,7 @@ import type { AcquisitionResponse } from "@/lib/platform/growth/acquisition-type
 import type { ProductAnalyticsResponse } from "@/lib/platform/growth/product-analytics-types";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
 import { LazyDisclosure } from "./lead-kit";
-import { Caption, ChartMessage, Doorway, Segmented } from "./visual-kit";
+import { Caption, ChartMessage, Doorway, Segmented, goToSection } from "./visual-kit";
 import { HealthHero } from "../ops-visual/HealthHero";
 import { DayBars } from "../ops-visual/DayBars";
 import type { Fetched } from "../ops-visual/ops-visual-model";
@@ -172,7 +172,12 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
           <span className="text-[11px] text-[var(--text-muted)]">Period</span>
           <Segmented label="Period" value={p.period} onChange={p.onPeriod} options={[{ id: "30", label: "30 d" }, { id: "90", label: "90 d" }]} />
         </div>
-        <HealthHero model={growthHero(p.acq, p.pa)} />
+        <HealthHero model={{ ...growthHero(p.acq, p.pa), actions: {
+          requests: { label: "Show the request calendar", onSelect: () => { p.onGroup?.("acquisition"); goToSection("growth-calendar"); } },
+          registrations: { label: "Show registrations per day", onSelect: () => goToSection("growth-acquisition") },
+          waitlist: { label: "Open the beta signup list", onSelect: () => goToSection("growth-beta") },
+          engaged: { label: "Show active accounts", onSelect: () => { p.onGroup?.("engagement"); goToSection("growth-active"); } },
+        } }} />
       </div>
 
       {/* 2 — acquisition overview (8) · waitlist (4). */}
