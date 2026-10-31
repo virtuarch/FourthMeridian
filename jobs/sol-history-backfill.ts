@@ -164,7 +164,7 @@ export interface SolBackfillJobSummary {
   priceGapSweep?: { holders: number; skippedForTime: boolean };
   /** Crypto holders (every chain) revalued (state-derived, once per evidence state; existing rows included). */
   holderRevaluation?: { holders: number; owed: number; revalued: number; chunksRebuilt: number; deferred: number; alreadyRevalued: number;
-    abandonedBlocks: number; rowsStampedUnavailable: number; failures: number; skippedForTime: boolean };
+    abandonedBlocks: number; rowsStampedUnavailable: number; rowsStampedPending?: number; failures: number; skippedForTime: boolean };
   /** A revaluation was owed at the start of the run, so its slice of the budget was reserved after the leader. */
   revaluationReserved?: boolean;
   /** This run's chain rotation and pass order — persisted, read back by the next run. Absent on a NO_WORK run. */
@@ -614,7 +614,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     if (!r) return;
     if (r.priceGaps) addPriceGaps(summary, r.priceGaps);
     summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred,
-      alreadyRevalued: r.alreadyRevalued, abandonedBlocks: r.abandonedBlocks, rowsStampedUnavailable: r.rowsStampedUnavailable,
+      alreadyRevalued: r.alreadyRevalued, abandonedBlocks: r.abandonedBlocks, rowsStampedUnavailable: r.rowsStampedUnavailable, rowsStampedPending: r.rowsStampedPending,
       failures: r.failures, skippedForTime: r.skippedForTime };
     summary.deferred += r.deferred; // still owed on disk: the next (self-continued) run takes them
   };

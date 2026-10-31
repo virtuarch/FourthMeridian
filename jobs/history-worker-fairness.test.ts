@@ -277,7 +277,7 @@ async function main() {
         w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
           leftAtStart = deadlineMs - w.now();
           const skipped = leftAtStart < REVALUATION_RESERVE_MS;
-          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, failures: 0, skippedForTime: skipped };
+          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, failures: 0, skippedForTime: skipped };
         };
         const s = await w.run();
         return { s, leftAtStart, stepped: stepped(s, chain) };
@@ -300,7 +300,7 @@ async function main() {
       w.deps.revaluationPending = async () => true;
       w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
         leftAtStart = deadlineMs - w.now();
-        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, failures: 0, skippedForTime: false };
+        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, failures: 0, skippedForTime: false };
       };
       const s = await w.run();
       check("SOL + BTC backlogs, a revaluation owed: it runs BEFORE the follower chain (≥ REVALUATION_RESERVE_MS left), both chains still step",
@@ -313,7 +313,7 @@ async function main() {
     check("worker: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
       okOut.outcome === "COMPLETE" && abOut.outcome === "PARTIAL" && abOut.partialReasons.some((x) => x.startsWith("REVALUATION_ABANDONED: 2 block(s)")), JSON.stringify(abOut));
     const { syncCryptoOutcome } = await import("@/jobs/sync-crypto");
-    const runOf = (abandonedBlocks: number) => ({ priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: 3, failures: 0, skippedForTime: false });
+    const runOf = (abandonedBlocks: number) => ({ priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: 3, rowsStampedPending: 0, failures: 0, skippedForTime: false });
     check("sync-crypto: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
       syncCryptoOutcome(runOf(0)).outcome === "COMPLETE" && syncCryptoOutcome(null).outcome === "COMPLETE"
         && syncCryptoOutcome(runOf(1)).outcome === "PARTIAL" && syncCryptoOutcome(runOf(1)).partialReasons[0].startsWith("REVALUATION_ABANDONED: 1 block(s)"));

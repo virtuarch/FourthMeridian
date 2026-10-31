@@ -13,6 +13,7 @@ import {
   valuedFromISO, planPriceGaps, acquireHistoricalPriceGaps, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
   priceGapAttemptKey, revaluationOwedFromISO, cryptoHolderLicences, revalueHoldersAfterPriceGaps, REVALUATION_RESERVE_MS,
   holderRevaluationFor, holderRevaluations, revaluationBlocks, planRevaluationBatch, revaluationPending, REVALUATION_MAX_ATTEMPTS,
+  estimateRebuildCost, batchDaysFor, REVALUATION_SUSPECT_HALVINGS, prismaRevaluationDeps,
   type HolderLicence, type HolderRevaluation, type InstrumentPriceFacts, type PriceGapDeps, type RevaluationDeps,
 } from "./price-gap";
 
@@ -194,7 +195,7 @@ async function main() {
     const mk = (o: { owed: HolderRevaluation[]; done?: string[]; regenMs?: number; perDayMs?: number;
       fail?: (n: number, from: string, to: string) => boolean; killAt?: (n: number) => boolean }) => {
       const regens: string[] = []; const marks: string[] = []; const tries = new Map<string, { single: number; batch: number }>(); let t = 0; let calls = 0;
-      const stamped: string[] = [];
+      const stamped: string[] = []; const pending: string[] = [];
       const deps: RevaluationDeps = {
         acquireGaps: async () => ({ decisions: [], acquired: 1, inserted: 300, failures: 0, instruments: [], newlyPricedFromISO: "2025-10-28" }),
         owed: async (ids) => o.owed.filter((x) => ids.includes(x.accountId)),
@@ -202,7 +203,7 @@ async function main() {
         markRevalued: async (k) => { marks.push(k); },
         attemptsOf: async (ks) => new Map(ks.filter((k) => tries.has(k)).map((k) => [k, { ...tries.get(k)! }])),
         markAttempt: async (k, kind) => { const c = tries.get(k) ?? { single: 0, batch: 0 }; c[kind]++; tries.set(k, c); },
-        markUnavailable: async (id, from, to) => { stamped.push(`${id}:${from}..${to}`); return dayCount(from, to); },
+        markUnavailable: async (id, from, to, scope) => { (scope === "all" ? stamped : pending).push(`${id}:${from}..${to}`); return dayCount(from, to); },
         regenerate: async (id, from, to) => {
           calls++;
           regens.push(`${id}:${from}..${to}`);
@@ -213,7 +214,7 @@ async function main() {
         },
         now: () => t,
       };
-      return { deps, regens, marks, tries, stamped, at: () => t, reset: () => { t = 0; } };
+      return { deps, regens, marks, tries, stamped, pending, at: () => t, reset: () => { t = 0; } };
     };
     const owe = (id: string, from = "2026-09-27"): HolderRevaluation => ({ accountId: id, windowFromISO: from, valuedFromISO: from, evidenceKey: `revaluation:v2:${id}:k` });
     const blocksOf = (h: HolderRevaluation) => revaluationBlocks(h.evidenceKey, h.windowFromISO, TODAY);
@@ -228,7 +229,8 @@ async function main() {
       rm.revalued === 10 && rm.deferred === 4 && !many.marks.some((k) => /:h1[0-3]:/.test(k)) && many.marks.length === 10 * blocksOf(owe("h00")).length);
     const slow = mk({ owed: [owe("a"), owe("b"), owe("c")], regenMs: 50_000 });
     const rs = await revalueHoldersAfterPriceGaps({ accountIds: ["a", "b", "c"], deps: slow.deps, deadlineMs: 120_000, todayISO: TODAY });
-    check("wake time: stops starting rebuilds with < 60 s left and defers the rest", rs.revalued === 2 && rs.deferred === 1, JSON.stringify(rs));
+    check("wake time: stops starting rebuilds with < 60 s left and defers the rest (unfinished holders stay owed)",
+      slow.regens.length === 2 && rs.deferred === 3 && rs.revalued === 0 && slow.at() <= 120_000 + 50_000 && new Set(slow.regens.map((x) => x.split(":")[0])).size === 2, JSON.stringify({ rs, r: slow.regens }));
     const late = mk({ owed: [owe("a")] });
     const rl = await revalueHoldersAfterPriceGaps({ accountIds: ["a"], deps: late.deps, deadlineMs: REVALUATION_RESERVE_MS - 1, todayISO: TODAY });
     check("too little wake left ⇒ the whole pass is skipped (no gap request, no rebuild)", rl.skippedForTime && rl.priceGaps === null && late.regens.length === 0);
@@ -246,11 +248,10 @@ async function main() {
     killed.reset();
     const k2 = await revalueHoldersAfterPriceGaps({ accountIds: ["k"], deps: killed.deps, deadlineMs: 1e9, todayISO: TODAY });
     const redone = killed.regens.slice(1);
-    check("…the next run REDOES the same range — block by block (each charged to itself) — and marks it done",
-      k2.revalued === 1 && redone.length === nBlocks && redone[0].endsWith(`..${TODAY}`) && redone[redone.length - 1].startsWith("k:2026-09-27..")
-        && killed.marks.length === nBlocks, JSON.stringify(killed.regens));
+    check("…the next run REDOES the same range (a once-killed batch is narrowed to ≤ 8 blocks, not split per block) and marks it done",
+      k2.revalued === 1 && redone.length === 1 && redone[0] === killed.regens[0] && killed.marks.length === nBlocks, JSON.stringify(killed.regens));
     const k3 = await revalueHoldersAfterPriceGaps({ accountIds: ["k"], deps: killed.deps, deadlineMs: 1e9, todayISO: TODAY });
-    check("…then a no-op", k3.alreadyRevalued === 1 && killed.regens.length === nBlocks + 1);
+    check("…then a no-op", k3.alreadyRevalued === 1 && killed.regens.length === 2);
 
     // REVIEW: attempts are charged PER BLOCK — one bad day never burns its neighbours'.
     const BAD = "2026-10-15";
@@ -270,6 +271,61 @@ async function main() {
     const r4b = await revalueHoldersAfterPriceGaps({ accountIds: ["b"], deps: bad.deps, deadlineMs: 1e9, todayISO: TODAY });
     check("…a later run never rebuilds it again (no poison loop), reports it abandoned, re-stamps idempotently, owes nothing",
       bad.regens.length === regensBefore && r4b.abandonedBlocks === 1 && r4b.rowsStampedUnavailable > 0 && !(await revaluationPending(bad.deps, ["b"], TODAY)), JSON.stringify(r4b));
+
+    // OWNER RULING (live 2026-10-31): an OWED window is off `supported` before any rebuild.
+    {
+      const events: string[] = [];
+      const pend = mk({ owed: [owe("o1", "2026-08-01"), owe("o2", "2026-08-01")], done: blocksOf(owe("o1", "2026-08-01")).slice(0, 2).map((x) => x.key) });
+      const d = { ...pend.deps,
+        markUnavailable: async (id: string, f: string, t: string, scope: "all" | "supported") => { events.push(`stamp:${scope}:${id}:${f}..${t}`); return 1; },
+        regenerate: async (id: string, f: string, t: string) => { events.push(`regen:${id}:${f}..${t}`); } };
+      const rp = await revalueHoldersAfterPriceGaps({ accountIds: ["o1", "o2"], deps: d, deadlineMs: 1e9, maxAccounts: 1, todayISO: TODAY });
+      const firstRegen = events.findIndex((e) => e.startsWith("regen:"));
+      const stamps = events.filter((e) => e.startsWith("stamp:"));
+      check("owed holders' `supported` rows are stamped BEFORE any rebuild in the pass — even a holder deferred by the cap",
+        firstRegen > 0 && events.slice(0, firstRegen).every((e) => e.startsWith("stamp:supported:")) && stamps.some((e) => e.includes(":o1:")) && stamps.some((e) => e.includes(":o2:"))
+          && rp.rowsStampedPending === stamps.length && rp.deferred === 1, events.join(" | "));
+      const o1Blocks = blocksOf(owe("o1", "2026-08-01"));
+      check("…only the OWED blocks are stamped (a done block is not), one write per contiguous range",
+        stamps.filter((e) => e.includes(":o1:")).join() === `stamp:supported:o1:${o1Blocks[o1Blocks.length - 1].fromISO}..${o1Blocks[2].toISO}`, stamps.join(" | "));
+      const quiet = mk({ owed: [owe("q1")], done: blocksOf(owe("q1")).map((x) => x.key) });
+      await revalueHoldersAfterPriceGaps({ accountIds: ["q1"], deps: quiet.deps, deadlineMs: 1e9, todayISO: TODAY });
+      check("…a holder with nothing owed is never stamped (no churn)", quiet.pending.length === 0 && quiet.stamped.length === 0);
+    }
+
+    // FAIRNESS between holders (live: 12 passes rebuilt only the first holder).
+    {
+      const ids = ["h-a", "h-b", "h-c"];
+      const rr = mk({ owed: ids.map((id) => owe(id, "2025-10-28")), perDayMs: 1_000 });
+      const r1 = await revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rr.deps, deadlineMs: 400_000, todayISO: TODAY });
+      const by = (id: string) => rr.regens.filter((x) => x.startsWith(`${id}:`)).length;
+      check("round-robin: EVERY owed holder gets a batch in the same pass (not only the first by id)", ids.every((id) => by(id) >= 1) && rr.at() <= 400_000, JSON.stringify({ r: rr.regens, r1 }));
+      for (let i = 0; i < 12; i++) { rr.reset(); await revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rr.deps, deadlineMs: 400_000, todayISO: TODAY }); }
+      const doneBy = (id: string) => rr.marks.filter((k) => k.includes(`:${id}:`)).length;
+      const n = blocksOf(owe("h-a", "2025-10-28")).length;
+      check("…and over passes all three finish (none starved)", ids.every((id) => doneBy(id) === n), JSON.stringify(ids.map(doneBy)));
+    }
+
+    // THROUGHPUT (live: 12–13 weeks per pass, then exactly 1 week per pass).
+    {
+      check("estimator: one slow SMALL batch does not dominate (7 d in 121 s ⇒ ≪ 17 s/day)", estimateRebuildCost([{ days: 7, ms: 121_000 }], 1_500).msPerDay < 6_000);
+      const fit = estimateRebuildCost([{ days: 7, ms: 121_000 }, { days: 91, ms: 373_000 }], 1_500);
+      check("estimator: two batch sizes separate the per-call overhead from the per-day cost (≈ 100 s + 3 s/day)",
+        Math.abs(fit.overheadMs - 100_000) < 1_000 && Math.abs(fit.msPerDay - 3_000) < 50, JSON.stringify(fit));
+      check("batchDaysFor subtracts the overhead", batchDaysFor(130_000, { overheadMs: 100_000, msPerDay: 3_000 }) === 10 && batchDaysFor(50_000, { overheadMs: 100_000, msPerDay: 3_000 }) === 0);
+      // A cost of 100 s per call + 3 s per day (the live laptop shape); the newest block is a suspect (rebuilt alone first).
+      const h = owe("t", "2025-10-28");
+      const tb = blocksOf(h);
+      const slowDb = mk({ owed: [h] });
+      let t = 0;
+      const deps = { ...slowDb.deps, now: () => t,
+        attemptsOf: async (ks: readonly string[]) => new Map(ks.filter((k) => k === tb[0].key).map((k) => [k, { single: 0, batch: REVALUATION_SUSPECT_HALVINGS }])),
+        regenerate: async (id: string, f: string, to: string) => { slowDb.regens.push(`${id}:${f}..${to}`); t += 100_000 + 3_000 * dayCount(f, to); } };
+      await revalueHoldersAfterPriceGaps({ accountIds: ["t"], deps, deadlineMs: 1_200_000, todayISO: TODAY });
+      const sizes = slowDb.regens.map((x) => { const [f, to] = x.split(":")[1].split(".."); return dayCount(f, to); });
+      check("no collapse: after a slow single-block rebuild the next batch is still large (≥ 4 weeks), and the run stays within its deadline",
+        sizes[0] <= 7 && sizes.length >= 2 && sizes[1] >= 28 && t <= 1_200_000 + 100_000, JSON.stringify({ sizes, t }));
+    }
 
     // LARGE WINDOW: batches sized to the time left, newest first, progress across runs, nothing rebuilt twice.
     const big = mk({ owed: [owe("x", "2025-10-28")], perDayMs: 1_000 });
@@ -294,9 +350,9 @@ async function main() {
       kA.slice(0, -1).every((x) => kB.some((y) => y.key === x.key && y.fromISO === x.fromISO && y.toISO === x.toISO))
         && kA.every((x) => new Date(`${x.key.split(":").pop()}T00:00:00Z`).getUTCDay() === 1) && kA[kA.length - 1].fromISO === "2025-10-28");
     const batch = planRevaluationBatch(kA, 20);
-    const iso = planRevaluationBatch(kA, 10_000, (x) => x === kA[2]);
+    const iso = planRevaluationBatch(kA, 10_000, (x) => (x === kA[2] ? 1 : Infinity));
     check("planRevaluationBatch: an isolated block is never joined — the batch stops before it, and an isolated head goes alone",
-      iso!.blocks.length === 2 && iso!.blocks[1] === kA[1] && planRevaluationBatch(kA.slice(2), 10_000, (x) => x === kA[2])!.blocks.length === 1);
+      iso!.blocks.length === 2 && iso!.blocks[1] === kA[1] && planRevaluationBatch(kA.slice(2), 10_000, (x) => (x === kA[2] ? 1 : Infinity))!.blocks.length === 1);
     check("planRevaluationBatch: contiguous newest blocks within maxDays, at least one block", batch !== null && batch.toISO === TODAY && dayCount(batch.fromISO, batch.toISO) <= 20 && planRevaluationBatch(kA, 0)!.blocks.length === 1);
   }
 
@@ -388,6 +444,23 @@ async function main() {
     check("native only: window from valued-from (2025-10-28), keyed", nativeOnly.length === 1 && nativeOnly[0].windowFromISO === "2025-10-28" && nativeOnly[0].valuedFromISO === "2025-10-28", JSON.stringify(nativeOnly));
     check("a new (unpriced) token licence: NEW key — the rows are re-decided — but valued-from is unchanged",
       withToken.length === 1 && withToken[0].evidenceKey !== nativeOnly[0].evidenceKey && withToken[0].valuedFromISO === "2025-10-28", JSON.stringify(withToken));
+  }
+
+  console.log("production stamp scopes (fake client)");
+  {
+    const wheres: unknown[] = [];
+    const fake = {
+      spaceAccountLink: { findMany: async () => [{ spaceId: "qa" }] },
+      spaceSnapshot: { updateMany: async (q: { where: unknown; data: unknown }) => { wheres.push(q); return { count: 3 }; } },
+    } as unknown as Parameters<typeof prismaRevaluationDeps>[0];
+    const pd = prismaRevaluationDeps(fake);
+    await pd.markUnavailable!("a", "2026-01-05", "2026-01-11", "supported");
+    await pd.markUnavailable!("a", "2026-01-05", "2026-01-11", "all");
+    const [sup, all] = wheres as Array<{ where: Record<string, unknown>; data: Record<string, unknown> }>;
+    check("pending (owed) stamp: ONLY estimate rows reading `supported` — null-status rows are never touched (a null verdict could not restore them)",
+      sup.where.isEstimated === true && sup.where.cryptoValuationStatus === "supported" && !("OR" in sup.where) && JSON.stringify(sup.data) === '{"cryptoValuationStatus":"unavailable"}', JSON.stringify(sup));
+    check("abandoned stamp: estimate rows not yet unavailable (null included); the status column only",
+      all.where.isEstimated === true && JSON.stringify(all.where.OR) === '[{"cryptoValuationStatus":null},{"cryptoValuationStatus":{"not":"unavailable"}}]' && JSON.stringify(all.data) === '{"cryptoValuationStatus":"unavailable"}', JSON.stringify(all));
   }
 
   if (failures > 0) { console.error(`\nprice-gap: ${failures} failed.`); process.exit(1); }

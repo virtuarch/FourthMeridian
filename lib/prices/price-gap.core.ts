@@ -336,22 +336,75 @@ export function revaluationBlocks(evidenceKey: string, fromISO: string, toISO: s
  * blocks (newest first) whose day count fits `maxDays` — always at least one
  * block, so progress is guaranteed. Null when nothing is owed.
  *
- * `isolate(b)` — a block that must be rebuilt ALONE (it was in a batch that did
- * not complete): it is never joined to a batch, so a failure is charged to it
- * and only it — one bad day never burns its neighbours' attempts.
+ * `maxBlocksWith(b)` — the most blocks a batch containing `b` may hold (1 =
+ * rebuilt ALONE). A block seen in batches that did not complete is narrowed by
+ * halving (suspectBatchCap), so a block that kills or fails its batch is
+ * bisected out over attempts and only then charged — one bad day never burns
+ * its neighbours' attempts, and its neighbours are not each paid a full
+ * per-call overhead on the first retry.
  */
 export function planRevaluationBatch(
-  owedNewestFirst: readonly RevaluationBlock[], maxDays: number, isolate: (b: RevaluationBlock) => boolean = () => false,
+  owedNewestFirst: readonly RevaluationBlock[], maxDays: number, maxBlocksWith: (b: RevaluationBlock) => number = () => Infinity,
 ): { fromISO: string; toISO: string; blocks: RevaluationBlock[] } | null {
   if (owedNewestFirst.length === 0) return null;
   const blocks = [owedNewestFirst[0]];
   let days = dayIndex(blocks[0].toISO) - dayIndex(blocks[0].fromISO) + 1;
-  for (let i = 1; i < owedNewestFirst.length && !isolate(blocks[0]); i++) {
+  let cap = Math.max(1, maxBlocksWith(blocks[0]));
+  for (let i = 1; i < owedNewestFirst.length && blocks.length < cap; i++) {
     const b = owedNewestFirst[i];
-    if (isolate(b)) break;
+    const nextCap = Math.min(cap, Math.max(1, maxBlocksWith(b)));
+    if (blocks.length + 1 > nextCap) break;
     const n = dayIndex(b.toISO) - dayIndex(b.fromISO) + 1;
     if (dayIndex(b.toISO) !== dayIndex(blocks[blocks.length - 1].fromISO) - 1 || days + n > maxDays) break;
-    blocks.push(b); days += n;
+    blocks.push(b); days += n; cap = nextCap;
   }
   return { fromISO: blocks[blocks.length - 1].fromISO, toISO: blocks[0].toISO, blocks };
+}
+
+/** Halvings before a suspect block is rebuilt alone: 8 → 4 → 2 → 1 blocks. */
+export const REVALUATION_SUSPECT_HALVINGS = 4;
+/** The batch cap for a block seen in `batchTries` unfinished batches (0 ⇒ uncapped). */
+export function suspectBatchCap(batchTries: number): number {
+  return batchTries <= 0 ? Infinity : Math.max(1, 2 ** Math.max(0, REVALUATION_SUSPECT_HALVINGS - batchTries));
+}
+
+// ── Rebuild cost estimator (2026-10-31 throughput collapse) ─────────────────
+//
+// LIVE: passes rebuilt 12–13 weeks, then exactly 1 week each. A rebuild costs a
+// FIXED per-call overhead (the Space's history read: ≈ 115 s from a laptop over
+// a remote DB) plus a per-day cost (≈ 3.6 s/day there). The old estimator was
+// ms ÷ days of the LAST batch, so one single-block batch (7 days, ~140 s) read
+// as 20 s/day and every later batch was sized to one block — a collapse that
+// never recovered within the run. The model is now t = O + p·d:
+//   · p shrinks toward the prior with REVALUATION_PRIOR_WEIGHT_DAYS of weight,
+//     so one slow small batch cannot dominate;
+//   · O and p are FITTED (least squares) once two batches of different sizes
+//     have been measured, which separates the overhead from the per-day cost.
+export const REVALUATION_DEFAULT_CALL_OVERHEAD_MS = 10_000;
+export const REVALUATION_PRIOR_WEIGHT_DAYS = 28;
+
+export interface RebuildCostModel { overheadMs: number; msPerDay: number }
+
+export function estimateRebuildCost(observations: ReadonlyArray<{ days: number; ms: number }>, priorMsPerDay: number): RebuildCostModel {
+  const prior = Math.max(1, priorMsPerDay);
+  const obs = observations.filter((o) => o.days > 0 && Number.isFinite(o.ms) && o.ms >= 0);
+  const distinct = new Set(obs.map((o) => o.days)).size;
+  if (distinct >= 2) {
+    const n = obs.length;
+    const mx = obs.reduce((a, o) => a + o.days, 0) / n, my = obs.reduce((a, o) => a + o.ms, 0) / n;
+    const sxx = obs.reduce((a, o) => a + (o.days - mx) ** 2, 0), sxy = obs.reduce((a, o) => a + (o.days - mx) * (o.ms - my), 0);
+    const slope = sxx > 0 ? sxy / sxx : prior;
+    const msPerDay = Math.max(1, slope);
+    const overheadMs = Math.max(0, Math.min(Math.max(...obs.map((o) => o.ms)), my - msPerDay * mx));
+    return { overheadMs, msPerDay };
+  }
+  const overheadMs = obs.length > 0 ? Math.min(REVALUATION_DEFAULT_CALL_OVERHEAD_MS, Math.min(...obs.map((o) => o.ms)) / 2) : REVALUATION_DEFAULT_CALL_OVERHEAD_MS;
+  const perDayTotal = obs.reduce((a, o) => a + Math.max(0, o.ms - overheadMs), 0);
+  const days = obs.reduce((a, o) => a + o.days, 0);
+  return { overheadMs, msPerDay: Math.max(1, (prior * REVALUATION_PRIOR_WEIGHT_DAYS + perDayTotal) / (REVALUATION_PRIOR_WEIGHT_DAYS + days)) };
+}
+
+/** Days a batch may cover within `budgetMs` under `model` (never below 0; the planner still takes one block). */
+export function batchDaysFor(budgetMs: number, model: RebuildCostModel): number {
+  return Math.max(0, Math.floor((budgetMs - model.overheadMs) / model.msPerDay));
 }

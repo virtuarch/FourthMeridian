@@ -162,6 +162,44 @@ async function main() {
       r3.revalued === 1 && regens.length > n && (store.get("2026-09-01")?.crypto ?? 0) > 26000 && Math.abs(store.get("2026-10-27")!.crypto - 26793.013084) < 0.005, JSON.stringify(r3));
   }
 
+  console.log("owner ruling: an OWED window is never `supported` while it waits for its rebuild");
+  {
+    store.clear();
+    rebuild("2026-09-27", "2026-10-27", false); // SOL-only rows, `supported` — the holder is now owed
+    store.set(FROZEN_DAY, { date: FROZEN_DAY, stocks: 0, crypto: 26744.23, total: 26744.23, cash: 0, savings: 0, debt: 0, netWorth: 26744.23, totalAssets: 26744.23, netLiquid: 0, cashOnHand: 0, isEstimated: false, cryptoValuationStatus: null });
+    const wmarks = new Set<string>();
+    let clock = 0;
+    const applyStamp = async (_id: string, from: string, to: string, scope: "all" | "supported") => {
+      let n = 0;
+      for (const d of days(from, to)) {
+        const r = store.get(d);
+        if (r && r.isEstimated && (scope === "all" ? r.cryptoValuationStatus !== "unavailable" : r.cryptoValuationStatus === "supported")) { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; }
+      }
+      return n;
+    };
+    const wdeps: RevaluationDeps = {
+      ...deps,
+      owed: async () => { const h = holderRevaluationFor({ ...holderArgs, accountId: "btc-w", floors: new Map([["BTC", "2026-09-27"]]), snapshotMinBySpace: new Map([["qa", minOf()]]) }); return h ? [h] : []; },
+      revaluedAlready: async (keys) => new Set(keys.filter((k) => wmarks.has(k))),
+      markRevalued: async (k) => { wmarks.add(k); },
+      markUnavailable: applyStamp,
+      regenerate: async (_id, from, to) => { rebuild(from, to, true); clock += 20_000; },
+      now: () => clock,
+    };
+    // A pass with time for only ONE batch (the newest): the rest of the window waits.
+    await revalueHoldersAfterPriceGaps({ accountIds: ["btc-w"], deps: wdeps, deadlineMs: 95_000, todayISO: TODAY, msPerDay: 10_000 });
+    const est = [...store.values()].filter((r) => r.isEstimated);
+    const pendingRows = est.filter((r) => r.crypto < 26000);
+    check("after a partial pass: rows not yet rebuilt are `unavailable` (never `supported` while missing the holder); rebuilt rows `supported`",
+      pendingRows.length > 0 && pendingRows.every((r) => r.cryptoValuationStatus === "unavailable") && est.some((r) => r.crypto > 26000 && r.cryptoValuationStatus === "supported"),
+      JSON.stringify(pendingRows.slice(0, 2)));
+    check("…the frozen row is untouched", store.get(FROZEN_DAY)!.cryptoValuationStatus === null && store.get(FROZEN_DAY)!.isEstimated === false);
+    clock = 0;
+    await revalueHoldersAfterPriceGaps({ accountIds: ["btc-w"], deps: wdeps, deadlineMs: 1e12, todayISO: TODAY });
+    check("…the rebuild restores `supported` per block: once done, every estimate row (bar the unpriced day) is `supported` with the holder",
+      days("2026-09-27", "2026-10-27").filter((d) => d !== BTC_UNPRICED_DAY).every((d) => store.get(d)!.cryptoValuationStatus === "supported" && store.get(d)!.crypto > 26000));
+  }
+
   console.log("owner ruling: an ABANDONED block never stays `supported`");
   {
     // Fresh stale state: the SOL-only rows again, plus the frozen observation.
@@ -178,10 +216,13 @@ async function main() {
       markRevalued: async (k) => { pmarks.add(k); },
       attemptsOf: async (keys) => new Map(keys.filter((k) => ptries.has(k)).map((k) => [k, { ...ptries.get(k)! }])),
       markAttempt: async (k, kind) => { const c = ptries.get(k) ?? { single: 0, batch: 0 }; c[kind]++; ptries.set(k, c); },
-      // The production stamp's contract: the status column only, ESTIMATE rows only.
-      markUnavailable: async (_id, from, to) => {
+      // The production stamp's contract: the status column only, ESTIMATE rows only ("supported" scope: only rows claiming completeness).
+      markUnavailable: async (_id, from, to, scope) => {
         let n = 0;
-        for (const d of days(from, to)) { const r = store.get(d); if (r && r.isEstimated && r.cryptoValuationStatus !== "unavailable") { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; } }
+        for (const d of days(from, to)) {
+          const r = store.get(d);
+          if (r && r.isEstimated && (scope === "all" ? r.cryptoValuationStatus !== "unavailable" : r.cryptoValuationStatus === "supported")) { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; }
+        }
         return n;
       },
       regenerate: async (_id, from, to) => { if (from <= POISON && POISON <= to) throw new Error("poison"); rebuild(from, to, true); },
