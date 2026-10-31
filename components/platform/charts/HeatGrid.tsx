@@ -22,7 +22,8 @@
  * hatch/dash/ramp never carry meaning by colour alone.
  */
 
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { X } from "lucide-react";
 import { HEAT_BINS, NO_DATA_FILL, ZERO_FILL, binFill, cellStyle, maxValue, type HeatCell, type HeatLayout } from "./heatmap-model";
 
 export interface HeatGridProps {
@@ -47,12 +48,24 @@ export interface HeatGridProps {
 }
 
 export function HeatGrid({
-  layout, ariaLabel, describe, domainMax, rowHeight = 16, labelWidth = 36, cellText, hint = "Hover or tap a cell for its exact value.",
+  layout, ariaLabel, describe, domainMax, rowHeight = 16, labelWidth = 36, cellText, hint = "Tap or click a cell to pin its exact value · Escape or ✕ clears.",
   onSelect, legend = { low: "Less", high: "More" },
 }: HeatGridProps) {
   const { rows, cols, cells } = layout;
   const max = domainMax ?? maxValue(cells);
-  const [active, setActive] = useState<{ r: number; c: number } | null>(null);
+  // Spaces 2.0 interaction (owner): a mouse HOVER previews a cell; a tap /
+  // click / keyboard focus PINS it — the readout stays after the finger lifts,
+  // and is dismissed by its ✕, Escape, tapping the same cell, or a tap outside.
+  const [hover, setHover] = useState<{ r: number; c: number } | null>(null);
+  const [pinned, setPinned] = useState<{ r: number; c: number } | null>(null);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!pinned) return;
+    const onDown = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setPinned(null); };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
+  }, [pinned]);
+  const active = pinned ?? hover;
   const [focusState, setFocus] = useState<{ r: number; c: number } | null>(null);
 
   if (rows.length === 0 || cols.length === 0) return null;
@@ -66,7 +79,9 @@ export function HeatGrid({
     return { r: 0, c: 0 };
   })();
   const focus = focusState && focusState.r < rows.length && focusState.c < cols.length ? focusState : firstUsable;
-  const readout = active && usable(active.r, active.c) ? describe(active.r, active.c, cells[active.r][active.c]) : hint;
+  const live = pinned && usable(pinned.r, pinned.c) ? pinned : null;
+  const shown = live ?? (hover && usable(hover.r, hover.c) ? hover : null);
+  const readout = shown ? describe(shown.r, shown.c, cells[shown.r][shown.c]) : hint;
 
   function move(e: KeyboardEvent<HTMLDivElement>) {
     const { r, c } = focus;
@@ -76,19 +91,22 @@ export function HeatGrid({
       e.preventDefault();
       const n = { r: Math.max(0, Math.min(rows.length - 1, next.r)), c: Math.max(0, Math.min(cols.length - 1, next.c)) };
       setFocus(n);
-      setActive(n);
+      setPinned(n);
       (e.currentTarget.querySelector(`[data-cell="${n.r}-${n.c}"]`) as HTMLElement | null)?.focus();
-    } else if ((e.key === "Enter" || e.key === " ") && onSelect && usable(r, c)) {
+    } else if (e.key === "Escape" && pinned) {
       e.preventDefault();
-      onSelect(r, c);
+      setPinned(null);
+    } else if ((e.key === "Enter" || e.key === " ") && usable(r, c)) {
+      e.preventDefault();
+      if (onSelect) onSelect(r, c); else setPinned({ r, c });
     }
   }
 
   const template = `${labelWidth}px repeat(${cols.length}, minmax(0, 1fr))`;
   return (
-    <div className="min-w-0 overflow-hidden p-0.5" data-heat-grid>
+    <div ref={root} className="min-w-0 overflow-hidden p-0.5" data-heat-grid>
       <div role="grid" aria-label={ariaLabel} aria-rowcount={rows.length} aria-colcount={cols.length} onKeyDown={move}
-        onPointerLeave={() => setActive(null)} className="flex min-w-0 flex-col gap-[2px]">
+        onPointerLeave={(e) => { if (e.pointerType === "mouse") setHover(null); }} className="flex min-w-0 flex-col gap-[2px]">
         {rows.map((row, r) => (
           // Each row is its own grid on the shared column template (no display:contents,
           // which some engines drop from the accessibility tree).
@@ -110,16 +128,19 @@ export function HeatGrid({
                   data-kind={cell.kind}
                   tabIndex={focus.r === r && focus.c === c ? 0 : -1}
                   aria-label={cell.kind === "blank" ? undefined : describe(r, c, cell)}
-                  onPointerEnter={() => setActive({ r, c })}
-                  onPointerDown={() => { setActive({ r, c }); setFocus({ r, c }); }}
-                  onFocus={() => setActive({ r, c })}
-                  onClick={() => { if (onSelect && cell.kind !== "blank") onSelect(r, c); }}
+                  onPointerEnter={(e) => { if (e.pointerType === "mouse") setHover({ r, c }); }}
+                  onClick={() => {
+                    if (cell.kind === "blank") return;
+                    setFocus({ r, c });
+                    setPinned((p) => (p && p.r === r && p.c === c ? null : { r, c }));
+                    if (onSelect) onSelect(r, c);
+                  }}
                   className={`flex min-w-0 items-center justify-center rounded-[3px] text-[10px] font-medium tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] ${onSelect && cell.kind !== "blank" ? "cursor-pointer" : ""}`}
                   style={{
                     height: rowHeight,
                     background: s.background,
                     border: s.border,
-                    boxShadow: isActive && cell.kind !== "blank" ? "inset 0 0 0 1.5px var(--text-primary)" : undefined,
+                    boxShadow: isActive && cell.kind !== "blank" ? (live && live.r === r && live.c === c ? "inset 0 0 0 2px var(--text-primary)" : "inset 0 0 0 1px var(--text-secondary)") : undefined,
                     color: cell.kind === "value" && cell.v / Math.max(max, 1e-9) > 0.6 ? "var(--text-on-accent, #fff)" : "var(--text-secondary)",
                   }}
                 >
@@ -140,9 +161,17 @@ export function HeatGrid({
           </span>
         ))}
       </div>
-      <p className="mt-2 min-h-[1.25rem] text-[11px] leading-snug text-[var(--text-secondary)] tabular-nums" aria-live="polite" data-heat-readout>
-        {readout}
-      </p>
+      <div className="mt-2 flex min-h-[1.75rem] items-start gap-2" data-heat-readout={live ? "pinned" : shown ? "hover" : "hint"}>
+        <p className={`min-w-0 flex-1 text-[11px] leading-snug tabular-nums ${shown ? "text-[var(--text-primary)]" : "text-[var(--text-secondary)]"}`} aria-live="polite">
+          {readout}
+        </p>
+        {live && (
+          <button type="button" aria-label="Clear selection" onClick={() => setPinned(null)}
+            className="grid size-7 shrink-0 place-items-center rounded-[var(--radius-xs)] border border-[var(--border-hairline)] text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">
+            <X size={12} aria-hidden />
+          </button>
+        )}
+      </div>
       <HeatLegend low={legend.low} high={legend.high} cells={cells} />
     </div>
   );

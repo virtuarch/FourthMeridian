@@ -121,7 +121,7 @@ function TokensCard({ trend, inv30, nowMs }: { trend: Fetched<AiUsageTrend>; inv
       <Surface className="flex-1 p-4 sm:p-5">
         {src.data ? (
           <>
-            <DayBars days={days} height={160} palette={TOKEN_PALETTE}
+            <DayBars days={days} height={160} palette={TOKEN_PALETTE} segmentLabels={{ succeeded: "prompt", other: "completion", failed: "failed" }}
               ariaLabel={series === "tokens" ? "Prompt and completion tokens per UTC day" : "Returned AI invocations per UTC day"}
               noun={series === "tokens" ? "token" : "invocation"} />
             <Caption>

@@ -17,7 +17,8 @@
  * with no executions is a visible empty slot over the baseline.
  */
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { X } from "lucide-react";
 import { niceTicks } from "@/components/space/widgets/charts/TrendChart";
 import type { DayBar } from "./ops-visual-model";
 
@@ -32,6 +33,10 @@ const PAD_B = 22;
 const Y_LABEL_CHAR_PX = 6.4;
 const Y_LABEL_GAP = 8;
 
+function longDate(day: string): string {
+  return new Date(`${day}T00:00:00.000Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
 function shortDate(day: string): string {
   return new Date(`${day}T00:00:00.000Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
@@ -43,6 +48,7 @@ export function DayBars({
   noun = "execution",
   palette = DAY_BAR_COLORS,
   failedWord = "failed",
+  segmentLabels,
 }: {
   days: readonly DayBar[];
   ariaLabel: string;
@@ -57,10 +63,21 @@ export function DayBars({
   palette?: { readonly succeeded: string; readonly other: string; readonly failed: string };
   /** The word for the third stack in the summary and tooltip (default "failed"; e.g. "opened"). */
   failedWord?: string;
+  /**
+   * Words for the three stacks in the pinned readout (default: succeeded /
+   * other / `failedWord`). Pass the legend's own words so the readout names
+   * each segment exactly as the legend does.
+   */
+  segmentLabels?: { succeeded: string; other: string; failed: string };
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
+  // Spaces 2.0 interaction (owner): a mouse HOVER previews; a tap / click /
+  // keyboard selection PINS the day — it persists after the finger lifts and is
+  // dismissed by the ✕, Escape, a second tap on the same day, or a tap outside.
   const [hover, setHover] = useState<number | null>(null);
+  const [pinned, setPinned] = useState<number | null>(null);
+  const root = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     const el = wrap.current;
@@ -88,21 +105,44 @@ export function DayBars({
   const failedAll = observed.reduce((a, d) => a + d.failed, 0);
   const summary = `${ariaLabel}: ${days.length} days, ${observed.length} observed${days.length - observed.length ? `, ${days.length - observed.length} without data` : ""}; ${sumAll} ${noun}s, ${failedAll} ${failedWord}`;
 
-  const h = hover !== null ? days[hover] : null;
+  useEffect(() => {
+    if (pinned === null) return;
+    const onDown = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setPinned(null); };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
+  }, [pinned]);
+
+  const active = pinned ?? hover;
+  const h = active !== null && active < days.length ? days[active] : null;
+  const words = segmentLabels ?? { succeeded: "succeeded", other: "other", failed: failedWord };
+  const indexAt = (clientX: number) => {
+    const rect = wrap.current?.getBoundingClientRect();
+    if (!rect || days.length === 0) return null;
+    const i = Math.floor((clientX - rect.left - padL) / slot);
+    return i >= 0 && i < days.length ? i : null;
+  };
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (days.length === 0) return;
+    const cur = pinned ?? days.length - 1;
+    const next = { ArrowLeft: cur - 1, ArrowRight: cur + 1, Home: 0, End: days.length - 1 }[e.key];
+    if (next !== undefined) { e.preventDefault(); setPinned(Math.max(0, Math.min(days.length - 1, pinned === null && e.key !== "Home" ? days.length - 1 : next))); }
+    else if (e.key === "Escape" && pinned !== null) { e.preventDefault(); setPinned(null); }
+    else if ((e.key === "Enter" || e.key === " ") && pinned === null) { e.preventDefault(); setPinned(days.length - 1); }
+  };
   const plural = (k: number) => `${k.toLocaleString("en-US")} ${noun}${k === 1 ? "" : "s"}`;
 
   return (
-    <div className="min-w-0" data-day-bars>
+    <div ref={root} className="min-w-0" data-day-bars>
       <div
         ref={wrap}
-        className="relative touch-pan-y"
-        onPointerMove={(e) => {
-          const rect = wrap.current?.getBoundingClientRect();
-          if (!rect || days.length === 0) return;
-          const i = Math.floor((e.clientX - rect.left - padL) / slot);
-          setHover(i >= 0 && i < days.length ? i : null);
-        }}
-        onPointerLeave={() => setHover(null)}
+        className="relative cursor-pointer touch-pan-y rounded-[var(--radius-xs)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+        tabIndex={0}
+        role="group"
+        aria-label={`${summary}. Use arrow keys to step through days; Escape clears.`}
+        onKeyDown={onKey}
+        onPointerMove={(e) => { if (e.pointerType === "mouse") setHover(indexAt(e.clientX)); }}
+        onPointerLeave={(e) => { if (e.pointerType === "mouse") setHover(null); }}
+        onClick={(e) => { const i = indexAt(e.clientX); if (i !== null) setPinned((p) => (p === i ? null : i)); }}
       >
         <svg width="100%" height={height} className="block overflow-visible" role="img" aria-label={summary}>
           <defs>
@@ -130,7 +170,7 @@ export function DayBars({
             ];
             let base = 0;
             return (
-              <g key={d.day} data-day={d.day} opacity={hover === null || hover === i ? 1 : 0.55}>
+              <g key={d.day} data-day={d.day} opacity={active === null || active === i ? 1 : 0.55}>
                 {segs.filter((s) => s.v > 0).map((s) => {
                   const y0 = y(base);
                   base += s.v;
@@ -144,16 +184,34 @@ export function DayBars({
             <text x={padL + plotW / 2} y={(height - PAD_B) / 2} textAnchor="middle" className="fill-[var(--text-muted)] text-[9px] uppercase" style={{ letterSpacing: "0.08em" }}>no data</text>
           )}
         </svg>
-        {h && hover !== null && (
-          <div className="pointer-events-none absolute top-0 z-10 -translate-x-1/2" style={{ left: Math.min(Math.max(x(hover) + barW / 2, 70), w - 70) }}>
-            <div className="rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-2.5 py-1.5 shadow-[var(--shadow-e3)]" style={{ background: "var(--glass-thick)" }}>
-              <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">{h.observed ? plural(total(h)) : "No data"}</p>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                {shortDate(h.day)}{h.observed && h.failed > 0 ? ` · ${h.failed.toLocaleString("en-US")} ${failedWord}` : ""}
-              </p>
+        {h && active !== null && (
+          <div className={`${pinned !== null ? "" : "pointer-events-none "}absolute top-0 z-10 -translate-x-1/2`} style={{ left: Math.min(Math.max(x(active) + barW / 2, 86), w - 86) }} data-day-readout={pinned !== null ? "pinned" : "hover"}>
+            <div className="min-w-[150px] rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-2.5 py-1.5 shadow-[var(--shadow-e3)]" style={{ background: "var(--glass-thick)" }}>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">{h.observed ? plural(total(h)) : "No data"}</p>
+                {pinned !== null && (
+                  <button type="button" aria-label="Clear selection" onClick={(e) => { e.stopPropagation(); setPinned(null); wrap.current?.focus(); }}
+                    className="-mr-1 -mt-0.5 grid size-6 place-items-center rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">
+                    <X size={12} aria-hidden />
+                  </button>
+                )}
+              </div>
+              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{longDate(h.day)} · UTC</p>
+              {/* The segments, by name, when the day has more than one kind. */}
+              {h.observed && [h.succeeded, h.other, h.failed].filter((v) => v > 0).length >= 2 && (
+                <ul className="mt-1 flex flex-col gap-0.5 text-[11px] tabular-nums text-[var(--text-secondary)]">
+                  {([["succeeded", h.succeeded], ["other", h.other], ["failed", h.failed]] as const).filter(([, v]) => v > 0).map(([k, v]) => (
+                    <li key={k} className="flex items-center gap-1.5">
+                      <span aria-hidden className="h-2 w-2 rounded-[2px]" style={{ background: palette[k] }} />
+                      {`${v.toLocaleString("en-US")} ${words[k]}`}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         )}
+        <span className="sr-only" aria-live="polite">{pinned !== null && h ? `${longDate(h.day)}: ${h.observed ? plural(total(h)) : "no data"}` : ""}</span>
       </div>
       {days.length > 0 && (
         <div className="mt-1 flex justify-between text-[11px] text-[var(--text-muted)]" style={{ paddingLeft: padL }}>
