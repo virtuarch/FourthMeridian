@@ -35,6 +35,7 @@ import { ledgerEnvironment, type LedgerEnv } from "@/lib/notifications/delivery/
 import { EMAIL_TEMPLATE_VERSIONS, IN_APP_TEMPLATE_VERSION } from "@/lib/notifications/catalog/definitions";
 import { activationBlockers, blockerCode, countsOf, isCustomerFacing, type AutomationFields } from "./rules";
 import type { DryRunEvaluation } from "./dry-run";
+import { ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED } from "./types";
 import type {
   ActivationBlocker, AutomationChannel, AutomationDetail, AutomationRunDTO, AutomationRunStatus, AutomationState, AutomationSummary,
   AutoPauseReason, Condition, RetryPolicy,
@@ -46,7 +47,7 @@ const DB = (): AutomationDb & Tx => systemDb as unknown as AutomationDb & Tx;
 
 export interface AutomationActor { userId: string; via: "PLATFORM_GRANT" | "SYSTEM_ADMIN"; ipAddress?: string | null; userAgent?: string | null }
 
-export type AutomationRefusalCode = "CONFLICT" | "NOT_FOUND" | "INVALID_STATE" | "PROTECTED" | "OWNER_APPROVAL_REQUIRED" | "DRY_RUN_REQUIRED";
+export type AutomationRefusalCode = "CONFLICT" | "NOT_FOUND" | "INVALID_STATE" | "PROTECTED" | "OWNER_APPROVAL_REQUIRED" | "DRY_RUN_REQUIRED" | typeof ACTIVATION_DISABLED_REASON;
 export type AutomationWriteResult<T> =
   | { ok: true; value: T; auditLogId: string }
   | { ok: false; code: AutomationRefusalCode; error: string; current?: number; blockers?: ActivationBlocker[] };
@@ -157,11 +158,17 @@ export async function updateAutomation(input: { id: string; expectedVersion: num
 }
 class ValidationRollback extends Error { constructor(m: string) { super(m); this.name = "ValidationRollback"; } }
 
-export async function recordDryRun(input: { id: string; expectedVersion?: number; evaluation: DryRunEvaluation; actor: AutomationActor; reason: OperatorReason; now: Date }, client: AutomationDb = DB()): Promise<AutomationWriteResult<{ row: AutomationRow; run: RunRow }>> {
+/**
+ * Review M1 — `evaluatedVersion` is REQUIRED: the version the evaluation actually
+ * read. It is checked INSIDE this transaction, and the pointer write is guarded on
+ * it, so a PATCH that lands mid-dry-run makes this a CONFLICT — a run is never
+ * stamped with a version it did not evaluate.
+ */
+export async function recordDryRun(input: { id: string; evaluatedVersion: number; evaluation: DryRunEvaluation; actor: AutomationActor; reason: OperatorReason; now: Date }, client: AutomationDb = DB()): Promise<AutomationWriteResult<{ row: AutomationRow; run: RunRow }>> {
   return run(client, async (tx) => {
     const row = await tx.automationDefinition.findUnique({ where: { id: input.id } });
     if (!row) return refuse("NOT_FOUND", "No automation with that id.");
-    if (input.expectedVersion !== undefined && row.version !== input.expectedVersion) refuse("CONFLICT", "Someone else changed this automation — reload and review again.", { current: row.version });
+    if (row.version !== input.evaluatedVersion) refuse("CONFLICT", "The automation changed while it was being dry-run — run it again.", { current: row.version });
     if (row.state === "DISABLED") refuse("INVALID_STATE", "A disabled automation cannot be dry-run; clone it.");
     const e = input.evaluation;
     const status: AutomationRunStatus = e.haltReason ? "HALTED" : "SUCCEEDED";
@@ -169,14 +176,18 @@ export async function recordDryRun(input: { id: string; expectedVersion?: number
       data: {
         automationId: row.id, automationVersion: row.version, mode: "DRY_RUN", triggerKey: row.triggerKey, triggerRef: null, status,
         counts: e.counts as unknown as Prisma.InputJsonValue, haltReason: e.haltReason, dedupedCount: e.deduped,
+        // the EVALUATED version (= row.version, checked above)
         windowFrom: e.window?.from ?? null, windowTo: e.window?.to ?? null, error: e.wouldExceedMaxRecipients ? "WOULD_EXCEED_MAX_RECIPIENTS" : null,
         startedAt: input.now, completedAt: input.now,
       },
     });
     const auditLogId = await audit(tx, input.actor, AuditAction.COMMS_AUTOMATION_DRY_RUN, row.id, { before: null, after: { runId: dry.id, version: row.version } },
       { runId: dry.id, status, eligible: e.counts.eligible, matched: e.counts.matched, wouldExceedMaxRecipients: e.wouldExceedMaxRecipients }, input.reason);
-    // lastDryRunId is a pointer, not a write ABOUT the rule: the version is not bumped.
-    const updated = await tx.automationDefinition.update({ where: { id: row.id }, data: { lastDryRunId: dry.id } });
+    // lastDryRunId is a pointer, not a write ABOUT the rule: the version is not bumped,
+    // but the write is guarded on the evaluated version (a concurrent PATCH ⇒ CONFLICT, rolled back).
+    const ptr = await tx.automationDefinition.updateMany({ where: { id: row.id, version: input.evaluatedVersion }, data: { lastDryRunId: dry.id } });
+    if (ptr.count !== 1) refuse("CONFLICT", "The automation changed while it was being dry-run — run it again.", { current: row.version });
+    const updated = (await tx.automationDefinition.findUnique({ where: { id: row.id } }))!;
     return { value: { row: updated, run: dry }, auditLogId };
   });
 }
@@ -187,7 +198,10 @@ export async function ownerApprove(input: { id: string; expectedVersion: number;
     if (row.state !== "DRAFT" && row.state !== "PAUSED") refuse("INVALID_STATE", "Owner approval is recorded on a DRAFT or PAUSED automation.");
     const def = getCatalogDefinition(row.definitionKey);
     if (!def) return refuse("INVALID_STATE", "The automation's definition no longer exists.");
-    if (!row.customerFacing) refuse("INVALID_STATE", "This automation is not customer-facing: no owner approval is needed.");
+    // Review M2 — never approve against a definition the row was not validated against.
+    if (row.definitionVersion !== def.definitionVersion) refuse("INVALID_STATE", "The message definition changed since this automation was validated — edit (PATCH) it to re-validate, then approve.", { blockers: ["DEFINITION_CHANGED"] });
+    // …and customer-facing is the LIVE definition's fact, not the stored copy.
+    if (!isCustomerFacing(def)) refuse("INVALID_STATE", "This automation is not customer-facing: no owner approval is needed.");
     const auditLogId = await audit(tx, input.actor, AuditAction.COMMS_AUTOMATION_OWNER_APPROVED, row.id,
       { before: { ownerApprovedVersion: row.ownerApprovedVersion, ownerApprovedDefinitionVersion: row.ownerApprovedDefinitionVersion }, after: { ownerApprovedVersion: row.version, ownerApprovedDefinitionVersion: def.definitionVersion } },
       { version: row.version, definitionKey: row.definitionKey, definitionVersion: def.definitionVersion }, input.reason);
@@ -207,7 +221,11 @@ async function lastDryRunOf(tx: Tx, row: AutomationRow): Promise<RunRow | null> 
   return r && r.automationId === row.id && r.mode === "DRY_RUN" ? r : null;
 }
 
-export async function activate(input: { id: string; expectedVersion: number; actor: AutomationActor; reason: OperatorReason; now: Date }, client: AutomationDb = DB()): Promise<AutomationWriteResult<AutomationRow>> {
+export async function activate(input: { id: string; expectedVersion: number; actor: AutomationActor; reason: OperatorReason; now: Date; activationEnabled?: boolean }, client: AutomationDb = DB()): Promise<AutomationWriteResult<AutomationRow>> {
+  // The ACTIVATION HARD GATE (types.ts) — before any read or write.
+  if (!(input.activationEnabled ?? AUTOMATION_ACTIVATION_ENABLED)) {
+    return { ok: false, code: ACTIVATION_DISABLED_REASON, error: "Automation activation is disabled until the hardening review items are fixed. Owner approval and dry runs still work." };
+  }
   return run(client, async (tx) => {
     const row = await tx.automationDefinition.findUnique({ where: { id: input.id } });
     if (!row) return refuse("NOT_FOUND", "No automation with that id.");
@@ -273,6 +291,7 @@ const BLOCKER_TEXT: Record<ActivationBlocker, string> = {
   STATE: "Only a DRAFT or PAUSED automation can be activated.",
   PROTECTED: "This message is protected: it cannot be automated.",
   DEFINITION_NOT_ACTIVATABLE: "This message's definition cannot be activated.",
+  DEFINITION_CHANGED: "The message definition changed since this automation was validated — edit (PATCH) it to re-validate.",
   TRIGGER_NOT_AVAILABLE: "This trigger is not available to the automation engine yet.",
   MARKETING_NOT_IN_V1: "Marketing messages cannot be automated in v1.",
   OWNER_APPROVAL_REQUIRED: "A customer-facing automation needs the owner's approval of this exact version first.",

@@ -65,10 +65,26 @@ export interface AutomationRunCounts {
   suppressed: Record<SuppressionReason, number>;
 }
 
+/**
+ * ACTIVATION HARD GATE (review of PR #187, 2026-10-31). A CODE constant — never an
+ * env var, never a PlatformSetting — so no deploy-time or operator action can open
+ * it. While false:
+ *   · POST /automations/[id]/activate refuses with 409 ACTIVATION_DISABLED_PENDING_HARDENING
+ *     before any state write (owner approval and dry run still work);
+ *   · viewer.canActivate is false with `activationDisabledReason`;
+ *   · the ENGINE sends nothing: if an ACTIVE row exists anyway, the executor writes
+ *     nothing and reports { outcome: "SKIPPED", skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING" }.
+ * It may be flipped ONLY after review items A1–A9 are fixed (the tracked follow-up PR).
+ */
+export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;
+export const ACTIVATION_DISABLED_REASON = "ACTIVATION_DISABLED_PENDING_HARDENING" as const;
+
 /** v1.1 §6.2 — why activate would refuse now (empty ⇒ the §6.3 checks pass). */
 export type ActivationBlocker =
   | "TRIGGER_NOT_AVAILABLE" | "DEFINITION_NOT_ACTIVATABLE" | "PROTECTED" | "MARKETING_NOT_IN_V1"
-  | "OWNER_APPROVAL_REQUIRED" | "DRY_RUN_REQUIRED" | "STATE";
+  | "OWNER_APPROVAL_REQUIRED" | "DRY_RUN_REQUIRED" | "STATE"
+  /** Review M2 — the stored definitionVersion is behind the code: a re-validating PATCH is required first. */
+  | "DEFINITION_CHANGED";
 
 /** The numeric guards (v1 §5.4, §5.7; v1.1 §6.6, §6.7). */
 export const AUTOMATION_LIMITS = {

@@ -62,6 +62,10 @@ async function main(): Promise<void> {
   const { getCatalogDefinition } = await import("@/lib/notifications/catalog/definitions");
   const { AuditAction } = await import("@/lib/audit-actions");
   const { REASON_REQUIRED_ACTIONS } = await import("@/lib/audit");
+  const T = await import("./types");
+  const S = await import("./store");
+  /** The routes use the production services: the hard gate is the code constant (false) until a test opens it. */
+  const gate = (open: boolean) => { (automationServices as { activationEnabled: boolean }).activationEnabled = open; };
 
   // ── 1. route wiring ────────────────────────────────────────────────────────
   console.log("1. route wiring — gate + bucket per route (contract v1.1 §6.1)");
@@ -119,10 +123,27 @@ async function main(): Promise<void> {
     && !created.body.result.viewer.canActivate && !created.body.result.viewer.canApproveAsOwner);
   const writeActivate = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.write, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
   check("WRITE cannot ACTIVATE (403 — activation is CONTROL, O-1); still DRAFT", writeActivate.status === 403 && fake.one("AutomationDefinition", { id })!.state === "DRAFT", writeActivate.body);
+  // ── the ACTIVATION HARD GATE (code constant, false) ──
+  check("production services carry the code constant (false)", automationServices.activationEnabled === false && T.AUTOMATION_ACTIVATION_ENABLED === false);
+  const auditsBefore = fake.rows("AuditLog").length;
+  const gated = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
+  check("HARD GATE: CONTROL activate ⇒ 409 ACTIVATION_DISABLED_PENDING_HARDENING (typed), nothing written, nothing audited",
+    gated.status === 409 && gated.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING" && fake.one("AutomationDefinition", { id })!.state === "DRAFT"
+    && fake.one("AutomationDefinition", { id })!.version === 1 && fake.rows("AuditLog").length === auditsBefore, gated.body);
+  const gatedUnknown = await call(ACTIVATE.POST, `/automations/nope/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id: "nope" });
+  check("…the gate answers BEFORE any read (an unknown id is the gate refusal, not 404)", gatedUnknown.status === 409 && gatedUnknown.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING");
+  const gatedAdmin = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.admin, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
+  check("…for SYSTEM_ADMIN too (no break-glass around the gate)", gatedAdmin.status === 409 && gatedAdmin.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING");
+  const gatedView = await call(ONE.GET, `/automations/${id}`, C.control, "GET", undefined, { id });
+  check("…viewer.canActivate is false for CONTROL, with activationDisabledReason", gatedView.body.viewer.canActivate === false && gatedView.body.viewer.activationDisabledReason === "ACTIVATION_DISABLED_PENDING_HARDENING");
+  const direct = await S.activate({ id, expectedVersion: 1, actor: { userId: "op_control", via: "PLATFORM_GRANT" }, reason: REASON as any, now: new Date() });
+  check("…and the STORE refuses too (defense in depth), before any write", !direct.ok && (direct as any).code === "ACTIVATION_DISABLED_PENDING_HARDENING" && fake.one("AutomationDefinition", { id })!.state === "DRAFT");
+  gate(true);
   const ctlActivate = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
-  check("CONTROL activate WITHOUT owner approval ⇒ 409 OWNER_APPROVAL_REQUIRED (typed), every blocker listed, nothing written",
+  check("(gate opened) CONTROL activate WITHOUT owner approval ⇒ 409 OWNER_APPROVAL_REQUIRED (typed), every blocker listed, nothing written",
     ctlActivate.status === 409 && ctlActivate.body.code === "OWNER_APPROVAL_REQUIRED" && ctlActivate.body.activationBlockers.includes("DRY_RUN_REQUIRED")
     && fake.one("AutomationDefinition", { id })!.state === "DRAFT" && audits("COMMS_AUTOMATION_ACTIVATED").length === 0, ctlActivate.body);
+  gate(false); // owner approval and the dry run below run with the gate CLOSED: both still work
   for (const [who, cookie] of [["READ", C.read], ["WRITE", C.write], ["CONTROL", C.control]] as const) {
     const r = await call(APPROVE.POST, `/automations/${id}/owner-approval`, cookie, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
     check(`${who} cannot record the owner approval (403 — SYSTEM_ADMIN only, O-18)`, r.status === 403 && fake.one("AutomationDefinition", { id })!.ownerApprovedVersion === null, r.body);
@@ -137,8 +158,10 @@ async function main(): Promise<void> {
     approved.status === 200 && row1.ownerApprovedVersion === 1 && row1.ownerApprovedDefinitionVersion === getCatalogDefinition("MEMBER_ROLE_CHANGED")!.definitionVersion
     && row1.state === "DRAFT" && row1.version === 1 && approved.body.result.ownerApproval.current === true && audits("COMMS_AUTOMATION_OWNER_APPROVED").length === 1
     && (audits("COMMS_AUTOMATION_OWNER_APPROVED")[0].metadata as any).reason.code === "DOGFOOD" && approved.body.result.viewer.canApproveAsOwner === true, approved.body);
+  gate(true);
   const noDry = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
   check("approved but never dry-run ⇒ 409 DRY_RUN_REQUIRED", noDry.status === 409 && noDry.body.code === "DRY_RUN_REQUIRED", noDry.body);
+  gate(false);
 
   // ── 4. dry run ─────────────────────────────────────────────────────────────
   console.log("4. dry run (v1.1 §6.8): sends nothing, claims nothing, writes no ledger row; echoes the window");
@@ -159,6 +182,86 @@ async function main(): Promise<void> {
   check("…and the examples are SYNTHETIC (no real name or Space)", JSON.stringify(dry.body.result.examples).indexOf("cust1") === -1 && dry.body.result.examples.length >= 1);
   const one = await call(DRY.POST, `/automations/${id}/dry-run`, C.write, "POST", { reason: REASON, body: { sample: { triggerRef: "nope_ref" } } }, { id });
   check("a single unknown triggerRef ⇒ 404 (nothing recorded)", one.status === 404 && fake.rows("AutomationRun", { mode: "DRY_RUN" }).length === 1);
+
+  {
+    const stillGated = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
+    check("HARD GATE: owner approval + a fresh dry run both worked while closed, yet activation is still refused",
+      stillGated.status === 409 && stillGated.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING" && fake.one("AutomationDefinition", { id })!.ownerApprovedVersion === 1
+      && fake.rows("AutomationRun", { mode: "DRY_RUN", automationId: id }).length === 1 && fake.one("AutomationDefinition", { id })!.state === "DRAFT");
+  }
+
+  // ── M1: a dry run is stamped ONLY with the version it evaluated ───────────
+  console.log("4b. review M1 — a PATCH landing mid-dry-run ⇒ CONFLICT (checked inside the dry-run transaction)");
+  {
+    const c2 = await call(LIST.POST, "/automations", C.write, "POST", createBody({ name: "race subject" }));
+    const rid = c2.body.result.id as string;
+    const WRITE_AUTH = { user: { id: "op_write", role: "USER" }, grant: { area: "CUSTOMER_SUCCESS", level: "WRITE" } };
+    const actor = { userId: "op_write", via: "PLATFORM_GRANT" as const };
+    let patched = false;
+    const racing = {
+      ...automationServices,
+      dryRun: {
+        ...automationServices.dryRun,
+        // The evaluation reads v1, then — mid-evaluation — a real PATCH moves the row to v2.
+        freeze: async () => {
+          const cur = fake.one("AutomationDefinition", { id: rid }) as any;
+          const r = await S.updateAutomation({ id: rid, expectedVersion: cur.version, actor, reason: REASON as any, fields: (row) => ({ ...S.fieldsOf(row), name: "edited mid-dry-run" }) });
+          patched = r.ok;
+          return { frozen: false, state: "MISSING" as const, reason: null };
+        },
+      },
+    };
+    const runsBefore = fake.rows("AutomationRun", { automationId: rid }).length;
+    const auditBefore = audits("COMMS_AUTOMATION_DRY_RUN").length;
+    const r = await quiet(() => H.dryRunHandler(rid, { reason: REASON, body: { window: "7d" } }, WRITE_AUTH, {}, new Date(), racing as any));
+    const b = (await r.json()) as any;
+    const row = fake.one("AutomationDefinition", { id: rid }) as any;
+    check("the PATCH landed (v1 → v2) and the dry run of v1 is 409 CONFLICT {current: 2}: no run row, no audit row, no lastDryRunId",
+      patched && r.status === 409 && b.code === "CONFLICT" && b.current === 2 && fake.rows("AutomationRun", { automationId: rid }).length === runsBefore
+      && audits("COMMS_AUTOMATION_DRY_RUN").length === auditBefore && row.lastDryRunId === null && row.version === 2, b);
+    const stale = await S.recordDryRun({ id: rid, evaluatedVersion: 1, evaluation: { counts: R.emptyCounts(), deduped: 0, lifecycle: {} as any, content: [], examples: [], wouldExceedMaxRecipients: false, floor: false, window: null, haltReason: null }, actor, reason: REASON as any, now: new Date() });
+    check("recordDryRun REQUIRES the evaluated version and refuses a stale one inside its transaction", !stale.ok && (stale as any).code === "CONFLICT" && (stale as any).current === 2);
+    const ok = await call(DRY.POST, `/automations/${rid}/dry-run`, C.write, "POST", { reason: REASON, expectedVersion: 2, body: {} }, { id: rid });
+    check("without a race the dry run of v2 is recorded as v2", ok.status === 200 && fake.one("AutomationRun", { id: ok.body.result.runId })!.automationVersion === 2);
+    const mism = await call(DRY.POST, `/automations/${rid}/dry-run`, C.write, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id: rid });
+    check("a client expectedVersion that is not the current version ⇒ CONFLICT before evaluating", mism.status === 409 && mism.body.code === "CONFLICT");
+  }
+
+  // ── M2: definition drift; customer-facing from the LIVE definition ────────
+  console.log("4c. review M2 — stored definitionVersion behind the code ⇒ approval AND activation refused; customerFacing is live");
+  {
+    const codeV = getCatalogDefinition("MEMBER_ROLE_CHANGED")!.definitionVersion;
+    const now = Date.now();
+    const drift = fake.seed("AutomationDefinition", {
+      name: "drifted", triggerKey: "space.member.role_changed", definitionKey: "MEMBER_ROLE_CHANGED", definitionVersion: codeV - 1,
+      customerFacing: false, channels: ["IN_APP"], conditions: [], recipient: { kind: "EVENT_SUBJECT_USER" }, dedupeKeyTemplate: "K:{recipientId}",
+      frequencyCapMax: 1, frequencyCapHours: 24, state: "DRAFT", version: 3, ownerApprovedVersion: 3, ownerApprovedDefinitionVersion: codeV - 1,
+      ownerApprovedAt: new Date(now), createdById: "op_write", updatedById: "op_write",
+    });
+    const did = drift.id as string;
+    const dr = fake.seed("AutomationRun", { automationId: did, automationVersion: 3, mode: "DRY_RUN", triggerKey: "space.member.role_changed", status: "SUCCEEDED", counts: {}, startedAt: new Date(now) });
+    fake.one("AutomationDefinition", { id: did })!.lastDryRunId = dr.id;
+    const appr = await call(APPROVE.POST, `/automations/${did}/owner-approval`, C.admin, "POST", { reason: REASON, expectedVersion: 3, body: {} }, { id: did });
+    check("owner approval of a row validated against an OLDER definition ⇒ 409 INVALID_STATE / DEFINITION_CHANGED, nothing written",
+      appr.status === 409 && appr.body.code === "INVALID_STATE" && appr.body.activationBlockers?.includes("DEFINITION_CHANGED")
+      && fake.one("AutomationDefinition", { id: did })!.ownerApprovedDefinitionVersion === codeV - 1, appr.body);
+    gate(true);
+    const act = await call(ACTIVATE.POST, `/automations/${did}/activate`, C.control, "POST", { reason: REASON, expectedVersion: 3, body: {} }, { id: did });
+    gate(false);
+    check("activation of the drifted row ⇒ 409 with DEFINITION_CHANGED among the blockers, still DRAFT",
+      act.status === 409 && act.body.activationBlockers.includes("DEFINITION_CHANGED") && fake.one("AutomationDefinition", { id: did })!.state === "DRAFT", act.body);
+    const view = await call(ONE.GET, `/automations/${did}`, C.control, "GET", undefined, { id: did });
+    check("customerFacing is read from the LIVE definition (true), not the stored false — so OWNER_APPROVAL_REQUIRED applies",
+      view.body.customerFacing === true && view.body.activationBlockers.includes("OWNER_APPROVAL_REQUIRED") && view.body.activationBlockers.includes("DEFINITION_CHANGED"), view.body.activationBlockers);
+    const pure = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: codeV, triggerKey: "space.member.role_changed", customerFacing: false, ownerApprovedVersion: null, ownerApprovedDefinitionVersion: null, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false } },
+      getCatalogDefinition("MEMBER_ROLE_CHANGED")!, new Date());
+    check("a stored customerFacing=false never skips the owner-approval gate when the code definition is customer-facing", pure.includes("OWNER_APPROVAL_REQUIRED"), pure);
+    const fix = await call(ONE.PATCH, `/automations/${did}`, C.write, "PATCH", { reason: REASON, expectedVersion: 3, body: {} }, { id: did });
+    check("a re-validating PATCH moves the row to the code definitionVersion and re-derives customerFacing (DEFINITION_CHANGED clears)",
+      fix.status === 200 && fake.one("AutomationDefinition", { id: did })!.definitionVersion === codeV && fake.one("AutomationDefinition", { id: did })!.customerFacing === true
+      && !fix.body.result.activationBlockers.includes("DEFINITION_CHANGED"), fix.body.result?.activationBlockers);
+  }
+  gate(true); // the rest of this suite exercises the post-hardening activation path
 
   // ── same-transaction audit ─────────────────────────────────────────────────
   console.log("2b. reason + audit in the SAME transaction");

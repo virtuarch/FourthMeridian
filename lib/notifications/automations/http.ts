@@ -46,10 +46,10 @@ import { testSendFacts, viewerFor, type ContentAuth, type ContentServices } from
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 import type { LedgerEnv } from "@/lib/notifications/delivery/record";
 import type { NotificationRenderData } from "@/lib/notifications/types";
-import { activationBlockers, ownerApprovalCurrent, resolveTarget, validateAutomationInput } from "./rules";
+import { activationBlockers, isCustomerFacing, ownerApprovalCurrent, resolveTarget, validateAutomationInput } from "./rules";
 import { evaluateDryRun, type DryRunDeps } from "./dry-run";
 import type * as Store from "./store";
-import { AUTOMATION_STATES, type AutomationChannel, type AutomationDetail, type AutomationState, type DryRunResult } from "./types";
+import { ACTIVATION_DISABLED_REASON, AUTOMATION_STATES, type AutomationChannel, type AutomationDetail, type AutomationState, type DryRunResult } from "./types";
 
 // ── Buckets (v1 §4.1, v1.1 §6.1) ─────────────────────────────────────────────
 
@@ -75,6 +75,8 @@ export interface AutomationServices {
     input: { type: NotificationTypeId; userId: string; data?: NotificationRenderData; expiresAt?: Date | null },
     ctx: { inAppOnly: true; ledgerTag: LedgerTag; ledger?: LedgerWriter; content?: LiveContentResolver | null },
   ): Promise<CreateNotificationResult>;
+  /** The ACTIVATION HARD GATE (types.ts AUTOMATION_ACTIVATION_ENABLED); production wires the constant. */
+  activationEnabled: boolean;
   /** Writes ONE audit row in its own transaction (test send: the audit precedes the send). */
   auditTestSend(row: Parameters<typeof recordOperatorAction>[1]): Promise<string>;
 }
@@ -145,14 +147,15 @@ export async function automationDetail(row: Store.AutomationRow, auth: ContentAu
     maxRecipientsPerRun: f.maxRecipientsPerRun,
     history,
     variant: row.variant,
-    customerFacing: row.customerFacing,
+    // Review M2 — the LIVE code definition decides, not the stored copy.
+    customerFacing: def ? isCustomerFacing(def) : row.customerFacing,
     ownerApproval: row.ownerApprovedVersion !== null && row.ownerApprovedDefinitionVersion !== null && row.ownerApprovedAt
       ? { approvedVersion: row.ownerApprovedVersion, approvedDefinitionVersion: row.ownerApprovedDefinitionVersion, approvedAt: row.ownerApprovedAt.toISOString(), current: def ? ownerApprovalCurrent(row, def) : false }
       : null,
     lastDryRun: dryOk ? { runId: dryOk.id, at: dryOk.startedAt.toISOString(), automationVersion: dryOk.automationVersion, wouldExceedMaxRecipients: dryOk.error === "WOULD_EXCEED_MAX_RECIPIENTS" } : null,
     activationBlockers: def ? activationBlockers(svc.store.factsOf(row, dryOk), def, now) : ["DEFINITION_NOT_ACTIVATABLE" as const],
     liveContent: def ? await liveContentOf(svc, def, row.variant, f.channels) : [],
-    viewer: def ? viewerFor(auth, def, { contentEditable: editableChannels(def).length > 0, hasRollbackTarget: heads.some((h) => h.publishedCount > 0) }, send) : null,
+    viewer: def ? viewerFor(auth, def, { contentEditable: editableChannels(def).length > 0, hasRollbackTarget: heads.some((h) => h.publishedCount > 0) }, send, svc.activationEnabled) : null,
   } satisfies AutomationDetail & { viewer: unknown };
 }
 
@@ -271,10 +274,12 @@ export async function dryRunHandler(id: string, raw: unknown, auth: ContentAuth,
     return validation("body.sample must be { triggerRef? }.");
   }
   if (!def) return refusal({ code: "INVALID_STATE", error: "The automation's definition no longer exists." });
+  if (env.expectedVersion !== undefined && env.expectedVersion !== row.version) return refusal({ code: "CONFLICT", error: "Someone else changed this automation — reload and review again.", current: row.version });
   const ref = isObj(sample) && typeof sample.triggerRef === "string" ? sample.triggerRef : null;
   const evaluation = await evaluateDryRun(svc.dryRun, row, def, ref ? { triggerRef: ref } : { window: w }, now);
   if ("notFound" in evaluation) return notFound("No recorded trigger fact with that ref for this automation's trigger.");
-  const r = await svc.store.recordDryRun({ id: row.id, ...(env.expectedVersion !== undefined ? { expectedVersion: env.expectedVersion } : {}), evaluation, actor: actorOf(auth, meta), reason: env.reason, now });
+  // Review M1 — stamp the version this evaluation READ; recordDryRun re-checks it inside its transaction.
+  const r = await svc.store.recordDryRun({ id: row.id, evaluatedVersion: row.version, evaluation, actor: actorOf(auth, meta), reason: env.reason, now });
   if (!r.ok) return refusal(r);
   const blockers = activationBlockers(svc.store.factsOf(r.value.row, r.value.run), def, now);
   const result: DryRunResult = {
@@ -299,6 +304,10 @@ export async function dryRunHandler(id: string, raw: unknown, auth: ContentAuth,
 type Transition = "ACTIVATE" | "PAUSE" | "DISABLE" | "OWNER_APPROVAL";
 
 export async function transitionHandler(kind: Transition, id: string, raw: unknown, auth: ContentAuth, meta: Meta, now: Date, svc: AutomationServices): Promise<Response> {
+  // The ACTIVATION HARD GATE — a typed refusal before anything is read or written.
+  if (kind === "ACTIVATE" && !svc.activationEnabled) {
+    return json({ error: "Automation activation is disabled until the hardening review items are fixed. Owner approval and dry runs still work.", code: ACTIVATION_DISABLED_REASON }, 409);
+  }
   const row = await svc.store.readAutomation(id);
   if (!row) return notFound();
   const def = getCatalogDefinition(row.definitionKey);
@@ -309,7 +318,7 @@ export async function transitionHandler(kind: Transition, id: string, raw: unkno
   if (Object.keys(env.body).length > 0) return validation("body must be {}.");
   const input = { id: row.id, expectedVersion: env.expectedVersion!, actor: actorOf(auth, meta), reason: env.reason, now };
   if (kind === "ACTIVATE") {
-    const r = await svc.store.activate(input);
+    const r = await svc.store.activate({ ...input, activationEnabled: svc.activationEnabled });
     if (!r.ok) return refusal(r);
     return json({ ok: true, result: await automationDetail(r.value, auth, now, svc), auditLogId: r.auditLogId });
   }

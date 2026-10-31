@@ -436,9 +436,12 @@ export function activationBlockers(f: ActivationFacts, def: CommsDefinition, now
   if (f.state !== "DRAFT" && f.state !== "PAUSED") out.push("STATE");
   if (def.protected || definitionAutomatable(def) === "PROTECTED") out.push("PROTECTED");
   if (def.status !== "ENABLED" && def.status !== "BUILD") out.push("DEFINITION_NOT_ACTIVATABLE");
+  // Review M2 — the row was validated against an older code definition: re-validate (PATCH) first.
+  if (f.definitionVersion !== def.definitionVersion) out.push("DEFINITION_CHANGED");
   if (!engineTriggerAvailable(f.triggerKey)) out.push("TRIGGER_NOT_AVAILABLE");
   if (def.consentClass === "MARKETING") out.push("MARKETING_NOT_IN_V1");
-  if (f.customerFacing && !ownerApprovalCurrent(f, def)) out.push("OWNER_APPROVAL_REQUIRED");
+  // Review M2 — customer-facing comes from the LIVE code definition, never the stored row.
+  if (isCustomerFacing(def) && !ownerApprovalCurrent(f, def)) out.push("OWNER_APPROVAL_REQUIRED");
   const d = f.lastDryRun;
   const fresh = d !== null && d.automationVersion === f.version && d.status === "SUCCEEDED" && !d.wouldExceedMaxRecipients
     && now.getTime() - d.startedAt.getTime() <= L.dryRunFreshDays * 86_400_000;

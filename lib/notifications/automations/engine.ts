@@ -62,7 +62,7 @@ import {
   lifecycleAllows, liveKey, retryDelayMs, type RecipientFacts,
 } from "./rules";
 import {
-  AUTOMATION_LIMITS, ERROR_RATE_BREAKER, GLOBAL_BREAKER, SEND_LEASE_MS,
+  ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED, AUTOMATION_LIMITS, ERROR_RATE_BREAKER, GLOBAL_BREAKER, SEND_LEASE_MS,
   type AutomationChannel, type AutomationRunCounts, type Condition, type RetryPolicy, type RunItemStatus,
 } from "./types";
 
@@ -94,6 +94,8 @@ export interface EngineDeps {
   env: LedgerEnv;
   appBaseUrl: string | undefined;
   now(): Date;
+  /** The ACTIVATION HARD GATE (types.ts); absent ⇒ the code constant. While false the engine sends nothing. */
+  activationEnabled?: boolean;
   /** JobRun id to stamp on LIVE runs (lib/jobs/run.ts currentJobRun). */
   jobRunId?: string | null;
   log?(line: string): void;
@@ -315,6 +317,20 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
   const started = deps.now().getTime();
   const outOfTime = () => deps.now().getTime() - started > budget.timeBudgetMs;
   const db = deps.db;
+
+  // The ACTIVATION HARD GATE: while activation is disabled the engine WRITES NOTHING and
+  // SENDS NOTHING — even if an ACTIVE row or a pending item exists (it never should).
+  if (!(deps.activationEnabled ?? AUTOMATION_ACTIVATION_ENABLED)) {
+    const [active, pending] = await Promise.all([
+      db.automationDefinition.count({ where: { state: "ACTIVE" } }),
+      db.automationRunItem.count({ where: { status: { in: ["SCHEDULED", "SENDING", "FAILED"] } } }),
+    ]);
+    if (active > 0 || pending > 0) {
+      (deps.log ?? ((l: string) => console.warn(l)))(`[comms-automations] activation is disabled (${ACTIVATION_DISABLED_REASON}): ${active} ACTIVE automation(s), ${pending} pending item(s) held; nothing sent`);
+      return { ...s, outcome: "SKIPPED", skipReason: ACTIVATION_DISABLED_REASON };
+    }
+    return s;
+  }
 
   // 0. Resume: expired leases go back to SCHEDULED (a crash mid-send never strands an item).
   await db.automationRunItem.updateMany({ where: { status: "SENDING", leaseUntil: { lt: deps.now() } }, data: { status: "SCHEDULED", leaseUntil: null } });

@@ -13,7 +13,8 @@
  *   7. loop prevention: the engine's own sends are never trigger facts;
  *   8. no broadcast: over maxRecipientsPerRun ⇒ HALTED + auto-pause, nothing sent;
  *   9. bounded + resumable: budgets defer, a crashed lease resumes, retry → DEAD;
- *  10. the executor job: SKIPPED semantics under freeze; the wake step is quiet when idle.
+ *  10. the executor job: registered (A7), SKIPPED ⇒ job health skipped ⇒ overview DEGRADED, wake budget;
+ *  11. the ACTIVATION HARD GATE blocks the engine (no writes, no sends, a clear skip reason).
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/notifications/automations/engine.test.ts
  */
@@ -21,6 +22,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- assertions read loosely-typed fake rows */
 
 import "@/lib/test-support/route-env";
+import { readFileSync } from "node:fs";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import type { UserLifecycleState } from "@/lib/entitlements/beta-lifecycle";
 import type { GlobalCostFreezeVerdict } from "@/lib/platform/cost-freeze.core";
@@ -52,7 +54,13 @@ async function main(): Promise<void> {
   const { judgeGlobalCostFreeze } = await import("@/lib/platform/cost-freeze.core");
   const { skippedOutcomeOf } = await import("@/lib/jobs/health");
   const { commsAutomations } = await import("@/jobs/comms-automations");
-  const { runCommsAutomationsWake, COMMS_AUTOMATIONS_JOB } = await import("./wake");
+  const { SCHEDULED_JOBS } = await import("@/lib/jobs/registry");
+  const { SCHEDULED_JOB_FACTS } = await import("@/lib/jobs/registry.core");
+  const { classifyJobHealth } = await import("@/lib/jobs/health");
+  const { deriveJobs } = await import("@/lib/platform/ops/overview-core");
+  const { skipLabel } = await import("@/lib/jobs/skip-label");
+  const { decideJobDue, CONTINUATION_DELAY_MS } = await import("@/lib/jobs/cadence-policy.core");
+  const T = await import("./types");
   const db = systemDb as any;
 
   // ── The world ─────────────────────────────────────────────────────────────
@@ -81,6 +89,8 @@ async function main(): Promise<void> {
     env: { VERCEL: "1", VERCEL_ENV: "production" },
     appBaseUrl: "https://app.test.invalid",
     now: () => clock,
+    // These scenarios exercise the post-hardening engine; section 11 pins the hard gate itself.
+    activationEnabled: true,
   });
   const BUDGET = { maxAutomations: 50, maxFactsPerAutomation: 100, maxItems: 200, timeBudgetMs: 60_000 };
 
@@ -445,18 +455,55 @@ async function main(): Promise<void> {
     check("unfrozen: COMPLETE and sent", ok.outcome === "COMPLETE" && bells().length === 1);
   }
   {
+    const facts = SCHEDULED_JOB_FACTS.find((j) => j.name === "comms-automations");
+    check("A7 — comms-automations is a REGISTERED job (SCHEDULED_JOBS, hourly anchor, self-continuing) with a body",
+      !!facts && facts.selfContinues === true && SCHEDULED_JOBS.some((j) => j.name === "comms-automations" && typeof j.run === "function"));
+    const skipped = classifyJobHealth(facts as any, [{ startedAt: T0, status: "succeeded", completedAt: T0, summary: { outcome: "SKIPPED", skipReason: "BILLABLE_COST_FREEZE" } }], T0);
+    check("job health classifies a SKIPPED comms-automations run as `skipped`…", skipped.status === "skipped", skipped.status);
+    check("…and the ops overview shows the jobs domain DEGRADED", deriveJobs({ healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0, skipped: 1 }, null, T0).state === "DEGRADED");
+    check("the activation-hold skip has its own label (not \"plan restriction\")", skipLabel(T.ACTIVATION_DISABLED_REASON) === "Skipped (activation disabled)");
+    const due = decideJobDue(facts as any, { hours: 1 }, { lastStartedAt: T0, lastStatus: "succeeded", lastSummary: { outcome: "COMPLETE", deferred: 1 } } as any, new Date(T0.getTime() + CONTINUATION_DELAY_MS));
+    check("a pass that reports deferred > 0 is due again ~15 min later (self-continuation)", due.due === true, due);
+  }
+  {
+    reset(); user("u1"); automation(); roleChanged("u1", new Date(T0.getTime() - MIN));
+    const r = await quiet(() => commsAutomations(deps(), { budgetStartedAtMs: T0.getTime() }));
+    check("the job's budget is min(120 s, 270 s − elapsed): a fresh wake grants 120 s", r.budgetMs === 120_000, r.budgetMs);
+    check("with an ACTIVE automation the job reports deferred > 0 (keeps the 15-min cadence)", r.deferred > 0 && bells().length === 1, r);
+    const late = await quiet(() => commsAutomations(deps(), { budgetStartedAtMs: T0.getTime() - 200_000 }));
+    check("after 200 s of other jobs the budget is 70 s", late.budgetMs === 70_000, late.budgetMs);
+    const before = fake.rows("AutomationRun").length;
+    const none = await quiet(() => commsAutomations(deps(), { budgetStartedAtMs: T0.getTime() - 265_000 }));
+    check("under 10 s left ⇒ nothing done, deferred (no run, no item)", none.deferred === 1 && none.sent === 0 && fake.rows("AutomationRun").length === before, none);
     reset();
-    let ran = 0;
-    const idle = await runCommsAutomationsWake(T0, { db, run: async () => { ran++; }, runner: (async (_n: string, f: () => Promise<unknown>) => f()) as any, now: () => T0 });
-    check("no ACTIVE automation and no pending item ⇒ IDLE: no job run, no JobRun row", idle === "IDLE" && ran === 0 && fake.rows("JobRun").length === 0);
-    automation();
-    let name = "";
-    const busy = await runCommsAutomationsWake(T0, { db, run: async () => { ran++; }, runner: (async (n: string, f: () => Promise<unknown>) => { name = n; return f(); }) as any, now: () => T0 });
-    check("with work ⇒ RAN, through runJob as `comms-automations`", busy === "RAN" && ran === 1 && name === COMMS_AUTOMATIONS_JOB);
-    const late = await runCommsAutomationsWake(T0, { db, run: async () => { ran++; }, runner: (async (_n: string, f: () => Promise<unknown>) => f()) as any, now: () => new Date(T0.getTime() + 265_000) });
-    check("with under 10 s of the wake's function time left ⇒ NO_TIME, nothing run", late === "NO_TIME" && ran === 1);
-    const failed = await quiet(() => runCommsAutomationsWake(T0, { db, run: async () => { throw new Error("boom"); }, runner: (async (_n: string, f: () => Promise<unknown>) => f()) as any, now: () => T0 }));
-    check("an engine failure never throws into the dispatcher (FAILED)", failed === "FAILED");
+    const idle = await quiet(() => commsAutomations(deps(), { budgetStartedAtMs: T0.getTime() }));
+    check("idle (nothing ACTIVE, nothing pending) ⇒ COMPLETE, deferred 0 (hourly), nothing written", idle.outcome === "COMPLETE" && idle.deferred === 0 && fake.rows("AutomationRun").length === 0, idle);
+  }
+
+  // ── 11. The ACTIVATION HARD GATE blocks the engine ────────────────────────
+  console.log("11. the activation hard gate (AUTOMATION_ACTIVATION_ENABLED = false) blocks the ENGINE");
+  {
+    check("AUTOMATION_ACTIVATION_ENABLED is a code constant and is false", T.AUTOMATION_ACTIVATION_ENABLED === false
+      && /export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;/.test(readFileSync("lib/notifications/automations/types.ts", "utf8"))
+      && !/process\.env|PlatformSetting|platformSetting/.test(readFileSync("lib/notifications/automations/types.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "")));
+    reset(); user("u1"); user("u2");
+    automation({ delayMinutes: 10 });
+    roleChanged("u1", new Date(T0.getTime() - 5 * MIN));
+    await run(); // ingested while the gate was open in this test world: one SCHEDULED item
+    roleChanged("u2", new Date(T0.getTime() - 4 * MIN));
+    clock = new Date(T0.getTime() + 30 * MIN);
+    const snapshot = () => JSON.stringify(["AutomationDefinition", "AutomationRun", "AutomationRunItem", "CommsDelivery", "Notification"].map((m) => fake.rows(m)));
+    const before = snapshot();
+    const { activationEnabled: _open, ...closed } = deps();
+    void _open;
+    const s = await quiet(() => E.runAutomationEngine(closed, BUDGET));
+    check("an ACTIVE row exists anyway ⇒ SKIPPED / ACTIVATION_DISABLED_PENDING_HARDENING, ZERO writes (no run, item, ledger or bell change) and ZERO sends",
+      s.outcome === "SKIPPED" && s.skipReason === T.ACTIVATION_DISABLED_REASON && snapshot() === before && sent.length === 0 && bells().length === 0, s);
+    const job = await quiet(() => commsAutomations(closed, { budgetStartedAtMs: clock.getTime() }));
+    check("…the job reports the same skip (job health: skipped), with no self-continuation", job.outcome === "SKIPPED" && job.skipReason === T.ACTIVATION_DISABLED_REASON && job.deferred === 0 && snapshot() === before);
+    reset();
+    const idle = await quiet(() => E.runAutomationEngine(closed, BUDGET));
+    check("gate closed and nothing ACTIVE ⇒ a quiet COMPLETE (no skip noise)", idle.outcome === "COMPLETE" && idle.skipReason === undefined);
   }
 
   console.log(failures === 0 ? "\n✅ comms automations engine: all checks passed" : `\n❌ ${failures} check(s) failed`);
