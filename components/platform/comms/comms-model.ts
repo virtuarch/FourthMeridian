@@ -263,6 +263,18 @@ export function byKeyLine(counts: Partial<StatusCounts>, measuredDelivered: bool
 /** Shown once delivery is measured: what "accepted" and "delivered" each mean. */
 export const DELIVERY_MEASURED_CAPTION =
   "Delivered, bounced and complained are confirmed by the email provider’s signed events. “Accepted by provider” means the provider took the message; once it confirms delivery, the message counts as Delivered instead. Opens and clicks are never tracked.";
+
+/**
+ * Phase C (#196) — accepted with no provider message id: a subset of "accepted by
+ * provider" that can never be confirmed. Informational, never an error. Shown only
+ * when delivery is measured AND the count is a number > 0; null (not observed),
+ * 0 and an absent key (an older server) show nothing.
+ */
+export function acceptedUncertainLine(d: Pick<DeliveryAnalytics, "measured" | "acceptedUncertain">): string | null {
+  const v = d.acceptedUncertain;
+  if (!d.measured.delivered || typeof v !== "number" || !(v > 0)) return null;
+  return `${n(v)} accepted by provider can’t be confirmed — no provider message id was returned.`;
+}
 /**
  * Operator words for every server SuppressionReason. Exhaustive by type: a
  * reason the server adds without a label here is a compile error, not a
