@@ -124,6 +124,14 @@ export const PlatformSettingKey = {
   // (approve, direct invite, resend) takes its expiry from it. Changing it
   // never alters an invitation already issued — that is the audited Extend.
   BETA_INVITATION_VALIDITY_DAYS: "beta_invitation_validity_days",
+  // BETA LIFECYCLE L2 (owner ruling 2026-10-31) — the GLOBAL cost freeze. While
+  // "true", no operation that can incur a provider charge may start: every
+  // policy group reads as cost-frozen (folded in by the policy-group catalogue
+  // loader) and platform-wide vendor jobs refuse before the vendor call. Absence
+  // is off; an unreadable value FREEZES. Read only through lib/platform/cost-freeze*.ts
+  // and the catalogue loader; written through the validated setter behind
+  // CONTROL (scripts/set-platform-setting.ts until an operator surface exists).
+  PLATFORM_COST_FROZEN: "platform_cost_frozen",
 } as const;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
@@ -195,6 +203,8 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   ai_paid_requests_paused:      String(AI_COST_CONTROL_DEFAULTS["killSwitch.paused"]),
   // Owner ruling 2026-10-31: 7 calendar days (the bounds live beside the issuance rules).
   beta_invitation_validity_days: String(INVITATION_VALIDITY_DEFAULT_DAYS),
+  // Ships OFF, and absence IS off (ABSENT_MEANS_OFF) — lib/platform/cost-freeze.core.ts.
+  platform_cost_frozen: "false",
 };
 
 /** The catalogue ceiling of the per-customer daily allowance — the platform value's upper bound, derived. */
@@ -393,6 +403,14 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
     class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: INVITATION_VALIDITY_MIN_DAYS, max: INVITATION_VALIDITY_MAX_DAYS,
     default: DEFAULTS.beta_invitation_validity_days, missingRow: "FALLBACK_TO_DEFAULT",
     writeSurfaces: ["GROWTH_REVENUE"], writeCapability: "WRITE",
+    operatorConfigurable: true, resettable: true,
+  },
+  platform_cost_frozen: {
+    key: "platform_cost_frozen", label: "Global cost freeze",
+    description: "While on, no operation that can incur a provider charge may start — for any customer (every policy group reads as cost-frozen, whatever its own state) and platform-wide (market data, historical prices, FX refreshes, crypto price steps). Stored data, exports and existing Briefs stay readable; refused work is recorded as skipped, never completed. Absence is off; an unreadable value also freezes.",
+    class: "OPERATOR_CONFIGURABLE", valueType: "boolean", default: DEFAULTS.platform_cost_frozen,
+    missingRow: "ABSENT_MEANS_OFF",
+    writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
     operatorConfigurable: true, resettable: true,
   },
 };

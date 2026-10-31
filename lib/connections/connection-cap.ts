@@ -42,7 +42,8 @@
 import { NextResponse } from "next/server";
 import { ConnectionStatus, PlaidItemStatus, ProviderType } from "@prisma/client";
 import { withTenantDb } from "@/lib/db/tenant-context";
-import { countLimit, entitlementsForUser, PLAN_NEEDS_ATTENTION_CODE, type EntitlementLoader } from "@/lib/entitlements/consume";
+import { countLimit, entitlementsForUser, planRestrictedResponse, PLAN_NEEDS_ATTENTION_CODE, type EntitlementLoader } from "@/lib/entitlements/consume";
+import type { LifecycleRestriction } from "@/lib/entitlements/lifecycle";
 import { planNeedsAttentionSentence } from "@/lib/ai/conversation/refusal-sentences";
 
 export interface ConnectionCapInputs {
@@ -59,6 +60,12 @@ export interface ConnectionCapVerdict {
   reason: "UNDER_LIMIT" | "AT_LIMIT" | "OVER_LIMIT";
   /** FAIL CLOSED (owner ruling, 2026-10-30) — the limit is 0 because the customer's policy assignment is missing/invalid. */
   failClosed?: boolean;
+  /**
+   * L2 — the limit is 0 because the customer's group is paused / ended /
+   * cost-frozen (or its lifecycle is unreadable): the refusal says so in the
+   * owner's lifecycle wording, never "Connection limit reached (n of 0)".
+   */
+  restriction?: LifecycleRestriction;
 }
 
 /** PURE. `allowed` means ONE more connection may be created. A limit below 1 refuses everything (fail closed). */
@@ -125,7 +132,11 @@ export async function connectionCapForUser(userId: string, deps: ConnectionCapDe
   // assignment, so the verdict refuses every NEW connection. Existing
   // connections are never touched: this verdict only gates creation.
   const verdict = connectionCapVerdict({ ...counts, limit: countLimit(entitlements, "maxConnections") });
-  return entitlements.failClosed === true ? { ...verdict, failClosed: true } : verdict;
+  if (entitlements.failClosed === true) return { ...verdict, failClosed: true };
+  if (!verdict.allowed && entitlements.lifecycleRestriction != null && entitlements.dimensions.maxConnections.source === "LIFECYCLE") {
+    return { ...verdict, restriction: entitlements.lifecycleRestriction };
+  }
+  return verdict;
 }
 
 export const CONNECTION_LIMIT_CODE = "CONNECTION_LIMIT" as const;
@@ -137,6 +148,7 @@ export function connectionLimitMessage(v: Pick<ConnectionCapVerdict, "current" |
 
 /** The ONE refusal shape, shared by the Plaid link-token and wallet routes. Same 403 when fail-closed, with the plan sentence. */
 export function connectionLimitResponse(v: ConnectionCapVerdict): NextResponse {
+  if (v.restriction) return planRestrictedResponse(v.restriction, "maxConnections");
   if (v.failClosed === true) {
     return NextResponse.json(
       { error: planNeedsAttentionSentence("Adding a connection"), code: PLAN_NEEDS_ATTENTION_CODE, current: v.current, limit: v.limit },

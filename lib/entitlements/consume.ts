@@ -25,6 +25,7 @@
 import "server-only";
 import { planNeedsAttentionSentence, planUnavailableSentence } from '@/lib/ai/conversation/refusal-sentences';
 import type { LifecycleRestriction } from "./lifecycle";
+import type { BillableDenialReason } from "./billable-gate-core";
 import { RESTRICTION_CODES, restrictionMessage, restrictionStatus } from "./restriction-messages";
 import { NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
@@ -119,6 +120,18 @@ export function refuseIfFailClosed(e: EffectiveEntitlements, surfaceLabel: strin
   // allowance check that may be switched off.
   if (e.lifecycleRestriction != null) return planRestrictedResponse(e.lifecycleRestriction);
   return null;
+}
+
+/**
+ * L2 ENFORCEMENT — the HTTP refusal for a billable-gate denial
+ * (lib/entitlements/billable-gate.ts). A lifecycle reason (frozen, paused,
+ * ended, unreadable policy) gets the owner's lifecycle wording; a missing /
+ * invalid assignment (NOT_ENTITLED) or no billing owner (NO_OWNER) gets the
+ * "plan needs attention" sentence. Never "Connection limit reached".
+ */
+export function billableRefusalResponse(reason: BillableDenialReason, surfaceLabel: string): NextResponse {
+  if (reason === "NOT_ENTITLED" || reason === "NO_OWNER") return planNeedsAttentionResponse(surfaceLabel, null);
+  return planRestrictedResponse(reason);
 }
 
 /** BETA LIFECYCLE — the same refusal under its precise name (new code should call this). */
