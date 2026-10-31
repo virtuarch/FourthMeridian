@@ -146,6 +146,29 @@ export function resultsLine(s: BulkSummary): string {
   return `${s.succeeded} approved${email} · ${s.skipped} skipped · ${s.failed} failed`;
 }
 
+/** The ids a time-limited run did not reach — what "Finish remaining" re-submits. */
+export function notAttemptedIds(r: Pick<BulkExecuteResponse, "skipped">): string[] {
+  return r.skipped.filter((s) => s.code === "NOT_ATTEMPTED").map((s) => s.id);
+}
+
+/**
+ * Fold a "Finish remaining" answer (same batchKey, only the not-attempted ids)
+ * into the results already shown: the earlier NOT_ATTEMPTED rows are replaced
+ * by what the finishing run did with them; everything else is kept.
+ */
+export function mergeFinish(prev: BulkExecuteResponse, next: BulkExecuteResponse): BulkExecuteResponse {
+  const redone = new Set(notAttemptedIds(prev));
+  const skipped = [...prev.skipped.filter((s) => !(s.code === "NOT_ATTEMPTED" && redone.has(s.id))), ...next.skipped];
+  const succeeded = [...prev.succeeded, ...next.succeeded];
+  const emailFailed = [...prev.emailFailed, ...next.emailFailed];
+  const failed = [...prev.failed, ...next.failed];
+  return {
+    ...prev,
+    succeeded, emailFailed, skipped, failed,
+    summary: { ...prev.summary, succeeded: succeeded.length, emailFailed: emailFailed.length, skipped: skipped.length, failed: failed.length },
+  };
+}
+
 /**
  * The server answered `repeat`: this batchKey was submitted before. Rows the
  * earlier run approved now read "already approved" (skipped) — say so, rather

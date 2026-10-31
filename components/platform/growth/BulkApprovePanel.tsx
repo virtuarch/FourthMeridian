@@ -29,7 +29,7 @@ import { useRef, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import {
   BULK_APPROVE_URL, BatchSession, confirmEnabled, flaggedLine, flaggedRows, newBatchKey, parseDaysDraft,
-  previewHeadline, resultsLine, utcExpiryLabel, daysWord, REPEAT_LINE,
+  previewHeadline, resultsLine, utcExpiryLabel, daysWord, REPEAT_LINE, mergeFinish, notAttemptedIds,
   type BulkDryRunResponse, type BulkExecuteResponse, type RiskLike,
 } from "./bulk-approve-model";
 
@@ -73,10 +73,10 @@ export function BulkApprovePanel({ canWrite, selectedRows, validityDefault, min,
   const emailOf = (id: string) => reviewRows.find((r) => r.id === id)?.email ?? id;
   const flagged = flaggedRows(reviewRows);
 
-  async function post<T>(dryRun: boolean): Promise<T | null> {
+  async function post<T>(dryRun: boolean, onlyIds?: readonly string[]): Promise<T | null> {
     const batchKey = dryRun ? session.current.begin() : session.current.current();
     if (!batchKey) return null;
-    const ids = (dryRun ? selectedRows : reviewRows).map((r) => r.id);
+    const ids = onlyIds ? [...onlyIds] : (dryRun ? selectedRows : reviewRows).map((r) => r.id);
     const res = await fetch(BULK_APPROVE_URL, {
       method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -122,6 +122,28 @@ export function BulkApprovePanel({ canWrite, selectedRows, validityDefault, min,
     } catch (e) {
       // Stay in review: Confirm again retries the SAME batch (same batchKey).
       setError(e instanceof Error ? `${e.message} — Confirm again to retry; nothing is sent twice.` : "Approval failed");
+    } finally {
+      inFlightRef.current = false;
+      setInFlight(false);
+    }
+  }
+
+  /** Re-submit ONLY the rows the time limit did not reach, under the SAME batchKey. */
+  async function finishRemaining() {
+    if (!results || inFlightRef.current) return;
+    const remaining = notAttemptedIds(results);
+    if (remaining.length === 0) return;
+    inFlightRef.current = true;
+    setInFlight(true);
+    setError(null);
+    try {
+      const r = await post<BulkExecuteResponse>(false, remaining);
+      if (r) {
+        setResults((prev) => (prev ? mergeFinish(prev, r) : r));
+        await onFinished();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? `${e.message} — Finish remaining again to retry; nothing is sent twice.` : "Approval failed");
     } finally {
       inFlightRef.current = false;
       setInFlight(false);
@@ -233,8 +255,15 @@ export function BulkApprovePanel({ canWrite, selectedRows, validityDefault, min,
                   ))}
                 </ul>
               )}
-              <div className="flex items-center gap-2">
-                <button type="button" onClick={closeSession} className={btn} style={neutral}>Done</button>
+              {error && <p role="alert" className="text-[11px] text-[var(--accent-negative)]" data-action-error>{error}</p>}
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" onClick={closeSession} disabled={inFlight} className={btn} style={neutral}>Done</button>
+                {notAttemptedIds(results).length > 0 && (
+                  <button type="button" onClick={finishRemaining} disabled={inFlight} className={btn} style={positive} data-bulk-finish>
+                    {inFlight ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Check size={13} aria-hidden />}
+                    {`Finish remaining (${notAttemptedIds(results).length})`}
+                  </button>
+                )}
               </div>
             </div>
           )}

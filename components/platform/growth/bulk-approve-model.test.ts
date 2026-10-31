@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   BatchSession, confirmEnabled, disabledReason, flaggedLine, flaggedRows, headerState, parseDaysDraft, previewHeadline,
-  pruneSelection, REPEAT_LINE, resultsLine, toggleAllEligible, toggleSelected, utcExpiryLabel, type RiskLike,
+  mergeFinish, notAttemptedIds, pruneSelection, REPEAT_LINE, type BulkExecuteResponse, resultsLine, toggleAllEligible, toggleSelected, utcExpiryLabel, type RiskLike,
 } from "./bulk-approve-model";
 import { BulkApprovePanel } from "./BulkApprovePanel";
 
@@ -116,6 +116,31 @@ console.log("4b. results honesty (review fixes 2, 4, 6)");
   check("approved-but-email-failed rows are listed with their email", /results\.emailFailed\.map\(\(f\) => \([\s\S]{0,160}emailOf\(f\.id\)/.test(panel));
   check("an edited validity can return to the setting (no override sent)", /onClick=\{\(\) => setDaysDraft\(null\)\}/.test(panel) && /Use default \(\$\{daysWord\(validityDefault\)\}\)/.test(panel)
     && /days\.ok && days\.override !== null \? \{ validityDays: days\.override \} : \{\}/.test(panel));
+}
+
+console.log("4c. Finish remaining — only the not-attempted ids, same batchKey");
+{
+  const exec = (over: Partial<BulkExecuteResponse>): BulkExecuteResponse => ({
+    ok: true, dryRun: false, batchKey: "k", repeat: false, batchAudited: true, duplicates: [],
+    validityDays: 7, validitySource: "setting", expiresAtIfIssuedNow: "2026-11-07T00:00:00.000Z",
+    succeeded: [], emailFailed: [], skipped: [], failed: [],
+    summary: { requested: 0, unique: 0, duplicates: 0, succeeded: 0, emailFailed: 0, skipped: 0, failed: 0 }, ...over,
+  });
+  const first = exec({
+    succeeded: [{ id: "a", emailStatus: "sent", expiresAt: "x" }],
+    skipped: [{ id: "z", code: "ALREADY_APPROVED", reason: "r" }, { id: "b", code: "NOT_ATTEMPTED", reason: "r" }, { id: "c", code: "NOT_ATTEMPTED", reason: "r" }],
+    summary: { requested: 4, unique: 4, duplicates: 0, succeeded: 1, emailFailed: 0, skipped: 3, failed: 0 },
+  });
+  check("not-attempted ids are exactly the time-limited rows", notAttemptedIds(first).join() === "b,c");
+  const second = exec({ succeeded: [{ id: "b", emailStatus: "sent", expiresAt: "x" }], skipped: [{ id: "c", code: "STATUS_CHANGED", reason: "r" }] });
+  const m = mergeFinish(first, second);
+  check("merge replaces the NOT_ATTEMPTED rows with what the finishing run did", notAttemptedIds(m).length === 0
+    && m.succeeded.map((x) => x.id).join() === "a,b" && m.skipped.map((x) => x.id).sort().join() === "c,z" && m.summary.succeeded === 2 && m.summary.skipped === 2, m);
+  const panel = code("components/platform/growth/BulkApprovePanel.tsx");
+  check("Finish remaining posts ONLY the not-attempted ids", /const remaining = notAttemptedIds\(results\);[\s\S]{0,300}post<BulkExecuteResponse>\(false, remaining\)/.test(panel));
+  check("…under the SAME batchKey (execute never mints)", /const batchKey = dryRun \? session\.current\.begin\(\) : session\.current\.current\(\);/.test(panel));
+  check("…guarded against double-clicks", /async function finishRemaining\(\) \{\s*if \(!results \|\| inFlightRef\.current\) return;/.test(panel));
+  check("the not-attempted reason names the action that exists", /Use Finish remaining/.test(code("lib/platform/growth/bulk-approve.core.ts")));
 }
 
 console.log("5. the panel renders only for WRITE and only with a selection");

@@ -48,7 +48,7 @@ export const BULK_REASON: Record<BulkIneligibleCode | BulkFailureCode, string> =
   ALREADY_APPROVED: "Already approved — no new invitation was sent.",
   DUPLICATE:        "Listed more than once in this batch — counted once.",
   STATUS_CHANGED:   "Status changed since it was selected (denied, revoked or re-queued) — not approved, nothing sent.",
-  NOT_ATTEMPTED:    "Not attempted — the batch ran out of time. Confirm again to finish; nothing is sent twice.",
+  NOT_ATTEMPTED:    "Not attempted — the batch hit its time limit. Use Finish remaining; nothing is sent twice.",
   REFUSED:          "Refused by the issuance rules.",
   ERROR:            "May or may not have been approved (unexpected error) — check the Invited tab.",
 };
