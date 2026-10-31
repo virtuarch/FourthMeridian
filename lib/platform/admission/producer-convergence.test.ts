@@ -166,7 +166,8 @@ function main() {
     // resume-stale-imports threads its verdict down rather than letting the
     // wrapper re-resolve per item.
     check("resume-stale-imports threads its verdict into the shared wrapper",
-      /syncPlaidItemFromWebhook\([^)]*,\s*admission\)/.test(body("jobs/resume-stale-imports.ts")));
+      // (BETA LIFECYCLE L2 — the batch billable decision rides beside it as a fifth argument.)
+      /syncPlaidItemFromWebhook\([^)]*,\s*admission(\s*,\s*\{\s*billable\s*\})?\)/.test(body("jobs/resume-stale-imports.ts")));
     check("the shared wrapper accepts a pre-taken verdict",
       /admission\?:\s*StampedAdmissionVerdict/.test(code("lib/plaid/webhook-sync.ts")));
   }
@@ -206,9 +207,16 @@ function main() {
       check(`${f}: ledgers the denial as a RefreshExecution`, /recordAdmissionDenial\(/.test(code(f)));
     }
     // Fan-out jobs deliberately do NOT — one dispatch finding, not N rows.
-    for (const f of ["jobs/sync-banks.ts", "jobs/resume-stale-imports.ts"]) {
-      check(`${f}: does NOT write a denied execution per candidate`,
-        !/recordAdmissionDenial\(/.test(code(f)));
+    check("jobs/resume-stale-imports.ts: does NOT write a denied execution per candidate",
+      !/recordAdmissionDenial\(/.test(code("jobs/resume-stale-imports.ts")));
+    // BETA LIFECYCLE L2 — sync-banks writes ONE SKIPPED execution per Item the
+    // CUSTOMER'S PLAN refused (a per-customer fact, daily, never re-run by the
+    // continuation) — but never one per candidate for a PLATFORM admission denial.
+    {
+      const s = code("jobs/sync-banks.ts");
+      const reasons = [...s.matchAll(/admissionReason:\s*([^,}\n]+)/g)].map((m) => m[1].trim());
+      check("jobs/sync-banks.ts: per-Item denied executions carry ONLY the billable skip code, never an admission reason",
+        reasons.length >= 1 && reasons.every((r) => /^billableSkipCode\(/.test(r)), reasons.join(" | "));
     }
     // The operator-visible path also audits.
     check("the operator path audits the denial",

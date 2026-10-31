@@ -48,10 +48,14 @@ import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
 import type { WebhookSyncOutcome } from "@/lib/plaid/webhook-sync";
+import {
+  createBillableBatchGate, tallyBillableDenial,
+  type BillableBatchLoader, type BillableDecision, type BillableDenialTally,
+} from "@/lib/entitlements/billable-gate";
 
-/** The canonical per-candidate driver. Only tests replace it. */
-const driveCandidate = (itemId: string, admission: StampedAdmissionVerdict) =>
-  syncPlaidItemFromWebhook(itemId, "RESUME", "IMPORT_RECOVERY", admission);
+/** The canonical per-candidate driver. Only tests replace it. The batch decision is threaded (no second read). */
+const driveCandidate = (itemId: string, admission: StampedAdmissionVerdict, billable: BillableDecision) =>
+  syncPlaidItemFromWebhook(itemId, "RESUME", "IMPORT_RECOVERY", admission, { billable });
 
 /**
  * Minimum age of the syncIncompleteAt marker before this job will touch an item.
@@ -69,6 +73,8 @@ const MAX_ITEMS_PER_RUN = 5;
 export interface StaleImportCandidate {
   id: string;
   institutionName: string;
+  /** BETA LIFECYCLE L2 — the connector (the billed customer). */
+  userId?: string | null;
 }
 
 /**
@@ -103,7 +109,12 @@ export interface ResumeStaleImportsDeps {
   /** Returns the candidate population. Defaults to the platform-wide query. */
   loadCandidates?: (cutoff: Date, take: number) => Promise<{ candidates: number; items: StaleImportCandidate[] }>;
   /** Drives one candidate. Defaults to the shared webhook/recovery wrapper. */
-  drive?: (itemId: string, admission: StampedAdmissionVerdict) => Promise<WebhookSyncOutcome>;
+  drive?: (itemId: string, admission: StampedAdmissionVerdict, billable: BillableDecision) => Promise<WebhookSyncOutcome>;
+  /**
+   * BETA LIFECYCLE L2 — the batch billable decision for the candidates'
+   * connectors (ONE policy read per pass). Default: billableAllowedForUsers.
+   */
+  billable?: BillableBatchLoader;
   /**
    * Resolves the dispatch-level admission verdict. Defaults to the canonical
    * evaluator. Injected only so a scoped test can be hermetic — without it a
@@ -126,6 +137,14 @@ export interface ResumeStaleImportsResult {
   /** Another sync held the lock — that run resolves the item, not this one. */
   skipped:    number;
   deferred:   number;
+  /**
+   * BETA LIFECYCLE L2 — candidates refused by the billable gate (frozen /
+   * paused / ended / unverifiable / no billing owner). NOT attempts: no
+   * backoff recorded, no marker touched; they stay candidates and resume after
+   * the restriction lifts. Reasons tallied in `planRestrictedReasons`.
+   */
+  planRestricted?: number;
+  planRestrictedReasons?: BillableDenialTally;
   /**
    * OPS-2D-4 — the typed admission reason when the platform declined this pass.
    * Null on every admitted run. This is the DISPATCH-level finding: the job ran,
@@ -159,7 +178,7 @@ async function loadStaleCandidates(
     // staring at.
     orderBy: { syncIncompleteAt: "asc" },
     take,
-    select:  { id: true, institutionName: true },
+    select:  { id: true, institutionName: true, userId: true },
   });
   return { candidates, items };
 }
@@ -217,15 +236,28 @@ export async function resumeStaleImports(
   // A failed pipeline stamps item health itself and leaves syncIncompleteAt set,
   // so a genuinely broken import simply reappears as a candidate next run. That
   // is the retry, and it needs no bookkeeping here.
-  let ran = 0, skipped = 0;
+  // BETA LIFECYCLE L2 — one batch policy read for this pass's connectors; the
+  // gate re-reads if the pass outlives BILLABLE_BATCH_MAX_AGE_MS.
+  const gate = createBillableBatchGate(items.map((i) => i.userId), "plaid_resume_sync", deps.billable ? { load: deps.billable } : {});
+  let ran = 0, skipped = 0, planRestricted = 0;
+  const planRestrictedReasons: BillableDenialTally = {};
   for (const item of items) {
+    const billable = await gate.decide(item.userId);
+    if (!billable.allowed) {
+      // Not an attempt: no drive, no backoff, no marker — the same as a denied admission.
+      planRestricted++;
+      tallyBillableDenial(planRestrictedReasons, billable.reason);
+      console.log(`[resume-stale-imports] ${item.institutionName} (${item.id}) → plan-restricted (${billable.reason})`);
+      continue;
+    }
     // OPS-2D-1 — this backstop is neither a webhook nor a reconnect: nothing was
     // pushed to us and no token changed hands. It continues an incomplete
     // first-run import, so it records RESUME / IMPORT_RECOVERY. The BODY is the
     // shared deferred pipeline, unchanged.
     // The verdict is THREADED, not re-resolved: one decision governs the whole
     // dispatch (see the admission block above).
-    const outcome = await (deps.drive ?? driveCandidate)(item.id, admission); // never throws, by contract
+    const outcome = await (deps.drive ?? driveCandidate)(item.id, admission, billable); // never throws, by contract
+    if (outcome === "plan-restricted") { planRestricted++; continue; }
     if (outcome === "skipped-locked") skipped++; else ran++;
     if (outcome === "ran") {
       await (deps.recordAttempt ?? recordResumeAttempt)(item.id, now).catch((e) =>
@@ -234,7 +266,8 @@ export async function resumeStaleImports(
     console.log(`[resume-stale-imports] ${item.institutionName} (${item.id}) → ${outcome}`);
   }
 
-  return { candidates, attempted: items.length, ran, skipped, deferred };
+  return { candidates, attempted: items.length - planRestricted, ran, skipped, deferred,
+    ...(planRestricted > 0 ? { planRestricted, planRestrictedReasons } : {}) };
 }
 
 // ── IDEMP-007 backoff bookkeeping (declared after the job body so the source
