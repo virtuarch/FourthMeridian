@@ -92,12 +92,17 @@ async function claimReAddSyncWindow(userId: string, connectionId: string | null)
     const e = await entitlementsForUser(userId);
     const cooldownMs = cooldownMsFromMinutes(Number(e.dimensions.manualBankRefreshCooldownMinutes.value));
     const now = new Date();
-    const r = await withTenantDb(userId, (tx) => tx.connection.updateMany({
+    // A KEYED update with the window as an extra condition (RLS-PREP-C: never a
+    // count-returning bulk write on the tenant role): a hidden row or a window
+    // still open RAISES (P2025), which is the "no sync" answer below.
+    await withTenantDb(userId, (tx) => tx.connection.update({
       where: { id: connectionId, userId, OR: [{ lastManualRefreshAt: null }, { lastManualRefreshAt: { lte: new Date(now.getTime() - cooldownMs) } }] },
       data:  { lastManualRefreshAt: now },
+      select: { id: true },
     }));
-    return r.count === 1;
+    return true;
   } catch (e) {
+    if ((e as { code?: string } | null)?.code === "P2025") return false; // the window is still open (or the row is not ours)
     console.warn("[POST /api/accounts/wallet] re-add sync window unreadable; no sync (fail closed):", e instanceof Error ? e.message : e);
     return false;
   }
