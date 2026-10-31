@@ -394,6 +394,10 @@ export const NOTIFICATION_REGISTRY = {
     priority: "HIGH" as const,
     // Actionable (reconnect) → email on by default.
     defaultChannels: ["IN_APP", "EMAIL"] as const satisfies readonly NotificationChannel[],
+    // OWNER RULING 2026-10-31 (Comms Center A-2b, O-7): a connection-failure
+    // email follows ONLY the FINANCIAL email preference. FINANCIAL in-app off
+    // hides the bell but still sends the email (lib/notifications/create.ts).
+    emailIndependentOfInApp: true as const,
     // suppress-while-open (F3): one live notification per broken item, however
     // many daily cron runs observe it; the ":open" suffix retires on a
     // successful sync so a NEW outage notifies again.
@@ -616,7 +620,12 @@ export const NOTIFICATION_REGISTRY = {
   // fanned out to every ACTIVE SECURITY_OPS grant holder + SYSTEM_ADMIN from
   // lib/security/anomaly-alerts.ts. Reuses the existing PLATFORM category (this
   // is platform-staff visibility, same audience as the other platform bells —
-  // no new category needed). IN_APP ONLY: the two direct security-alert EMAILS
+  // no new category needed) but is LOCKED PER TYPE (Comms Center A-2b, owner
+  // decision O-8, AUDIT R-2): no preference — PLATFORM in-app off included —
+  // can mute it. The PLATFORM row stays switchable for the customer bells.
+  // anomalyKey is a SALTED HASH of the raw identifier / IP
+  // (lib/security/identifier-hash.ts, AUDIT R-3); the raw key stays on the
+  // AuditLog trip row only. IN_APP ONLY: the two direct security-alert EMAILS
   // (SECURITY_ALERTS_EMAIL + the affected owner, when resolvable) are sent by
   // the orchestrator, NOT this channel — the registry's no-double-email
   // doctrine. suppress-while-open on the anomaly key means one bell per open
@@ -624,6 +633,7 @@ export const NOTIFICATION_REGISTRY = {
   SECURITY_ANOMALY_DETECTED: {
     ...PLATFORM,
     status: "WIRED" as const,
+    locked: true,
     id: "SECURITY_ANOMALY_DETECTED",
     priority: "HIGH" as const,
     defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
@@ -662,6 +672,15 @@ export const NOTIFICATION_REGISTRY = {
 } satisfies Record<string, NotificationTypeDefinition>;
 
 // ── Derived vocabulary (F1: everything derives from the registry) ────────────
+
+/**
+ * Comms Center A-2b (owner decision O-8): the types that are locked although
+ * their category is not. Their category's preference rows still exist for the
+ * category's other types; resolveChannelEnabled ignores them for these.
+ * registry.test.ts pins that every locked type outside ACCOUNT_SECURITY is
+ * named here, so a per-type lock is always a deliberate, reviewed decision.
+ */
+export const PER_TYPE_LOCKED_TYPES = ["SECURITY_ANOMALY_DETECTED"] as const;
 
 /** The registry-derived id union — compile-time exhaustiveness everywhere. */
 export type NotificationTypeId = keyof typeof NOTIFICATION_REGISTRY;

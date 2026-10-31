@@ -32,6 +32,9 @@ export const SUPPRESSION_REASONS = [
   "BETA_LIFECYCLE", "ENTITLEMENT", "PROVIDER_FREEZE",
   "ENVIRONMENT_GUARD",
   "AUTOMATION_PAUSED", "STORM_BREAKER",
+  // Comms Center A-2b (O-10): the per-recipient email storm limit
+  // (lib/notifications/delivery/storm.ts) — over the limit, or the count unreadable.
+  "RATE_LIMITED", "RATE_LIMIT_UNVERIFIED",
 ] as const;
 export type SuppressionReason = (typeof SUPPRESSION_REASONS)[number];
 

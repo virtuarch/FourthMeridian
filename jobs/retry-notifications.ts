@@ -58,6 +58,7 @@ import { IndeterminateWriteError, resolveConditionalWrite } from "@/lib/db/condi
 import { emailNotificationAdapter } from "@/lib/notifications/channels/email";
 import { recomputeActionLabel } from "@/lib/notifications/action-label";
 import { getNotificationDefinition } from "@/lib/notifications/registry";
+import { isEmailAnchorMetadata } from "@/lib/notifications/email-anchor";
 import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/delivery/record";
 import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
@@ -93,6 +94,8 @@ export interface RetryableDeliveryRow {
     readAt: Date | null;
     archivedAt: Date | null;
     expiresAt: Date | null;
+    /** A-2b: an email anchor still holding its key is an OPEN condition (see the obsolete rule). */
+    dedupeKey?: string | null;
     user: { email: string } | null;
   } | null;
 }
@@ -118,6 +121,7 @@ export interface NotificationRetryClient {
             readAt: true;
             archivedAt: true;
             expiresAt: true;
+            dedupeKey: true;
             user: { select: { email: true } };
           };
         };
@@ -204,6 +208,7 @@ export async function retryNotifications(
           readAt: true,
           archivedAt: true,
           expiresAt: true,
+          dedupeKey: true,
           user: { select: { email: true } },
         },
       },
@@ -231,9 +236,17 @@ export async function retryNotifications(
     // Also obsolete: a type whose registry entry now EXCLUDES the EMAIL channel
     // (SPACE_INVITE_RECEIVED since 2026-10-31 — its email is the dedicated
     // space-invite email). A legacy failed row must not resurrect the duplicate.
+    // Comms Center A-2b: an EMAIL ANCHOR (written archived because the user's
+    // in-app channel was off; lib/notifications/create.ts) is archived by
+    // design, not resolved — while it still holds its dedupe key the condition
+    // is open and its email is retried under the normal policy (attempt cap,
+    // DEAD). Retirement releases the key, after which it is obsolete as before.
+    const openAnchor =
+      n !== null && n.archivedAt !== null && typeof n.dedupeKey === "string" &&
+      isEmailAnchorMetadata(n.metadata) && getNotificationDefinition(n.type)?.emailIndependentOfInApp === true;
     const obsolete =
       n === null ||
-      n.archivedAt !== null ||
+      (n.archivedAt !== null && !openAnchor) ||
       n.readAt !== null ||
       (n.expiresAt !== null && n.expiresAt <= now) ||
       !n.user?.email ||

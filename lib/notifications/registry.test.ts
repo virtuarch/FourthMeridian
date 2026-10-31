@@ -25,6 +25,7 @@ import {
   NOTIFICATION_PRIORITIES,
   NOTIFICATION_REGISTRY,
   NOTIFICATION_TYPE_IDS,
+  PER_TYPE_LOCKED_TYPES,
   getNotificationDefinition,
   isNotificationType,
 } from "@/lib/notifications/registry";
@@ -115,19 +116,26 @@ for (const [key, e] of entries) {
       e.defaultChannels.includes("IN_APP") && !e.defaultChannels.includes("EMAIL"),
     );
     check(`${key}: ACCOUNT_SECURITY is CRITICAL`, e.priority === "CRITICAL");
+  } else if ((PER_TYPE_LOCKED_TYPES as readonly string[]).includes(key)) {
+    // Comms Center A-2b (owner decision O-8): a deliberate per-type lock.
+    check(`${key}: per-type locked (O-8)`, e.locked === true);
   } else {
-    check(`${key}: only ACCOUNT_SECURITY is locked`, e.locked === false);
+    check(`${key}: only ACCOUNT_SECURITY (and the named per-type locks) are locked`, e.locked === false);
   }
 }
-// Lock uniformity per category (the preference matrix is per category).
+check("the per-type lock list is exactly the Security Ops bell (O-8)",
+  PER_TYPE_LOCKED_TYPES.join() === "SECURITY_ANOMALY_DETECTED");
+// Lock uniformity per category (the preference matrix is per category), except
+// for the named per-type locks, which never change their category's row.
 const lockByCategory = new Map<string, Set<boolean>>();
-for (const [, e] of entries) {
+for (const [key, e] of entries) {
+  if ((PER_TYPE_LOCKED_TYPES as readonly string[]).includes(key)) continue;
   const s = lockByCategory.get(e.category) ?? new Set<boolean>();
   s.add(e.locked);
   lockByCategory.set(e.category, s);
 }
 for (const [cat, locks] of lockByCategory) {
-  check(`category ${cat}: locked is uniform`, locks.size === 1);
+  check(`category ${cat}: locked is uniform (per-type locks aside)`, locks.size === 1);
 }
 
 // ── 4. Dedupe consistency (F3) ───────────────────────────────────────────────

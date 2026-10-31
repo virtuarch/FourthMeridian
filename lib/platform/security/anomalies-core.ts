@@ -4,20 +4,23 @@
  * PURE projection of a SECURITY_ANOMALY_DETECTED audit row into what the
  * Security Ops posture surface shows for a detector trip.
  *
- * ── THE KEY (the first of V2's two honesty fixes) ────────────────────────────
+ * ── THE KEY (the first of V2's two honesty fixes; reworked by Comms Center A-2b) ──
  * The detector (lib/security/anomaly-alerts.ts) records `metadata.key` as its
  * dedupe identity: `identifier:<login identifier>`, `ip:<address>`,
- * `recovery:<login identifier>` or the literal `system_admin_disabled`. The
- * login identifier is the RAW email or username the attempt was made against
- * and the IP is a full address — neither may cross the Security Ops boundary,
- * whose doctrine is "no email, no IP, no user-agent, no userId". The old widget
- * solved that by not rendering the key at all, which left two trips on two
- * different accounts indistinguishable. What the operator actually needs from
- * the key is (a) its KIND and (b) whether two trips share it. So the projection
- * renders the kind in words and an OPAQUE correlation handle — a short FNV-1a
- * digest of the recorded key, prefixed "…" like every other opaque reference on
- * the platform surfaces. Stable for the same key, never resolvable here, never
- * the raw value. The route calls this so the raw key never leaves the server.
+ * `recovery:<login identifier>`, `platform-denied:<area>:<userId>` or the
+ * literal `system_admin_disabled`. The raw identifier, IP or user id may not
+ * cross the Security Ops boundary ("no email, no IP, no user-agent, no userId").
+ * What the operator needs is (a) the key's KIND and (b) whether two trips share
+ * it — and (c), since A-2b, a way to match a trip to the Security Ops bell.
+ *
+ * `keyRef` is therefore derived ONLY from `metadata.keyHash` — the SALTED hash
+ * the writers store beside the raw key (lib/security/identifier-hash.ts; the
+ * bell's anomalyKey carries the same value): "h" + the first 8 hex of the hash
+ * part, i.e. a literal prefix of the stored keyHash, so an operator can find
+ * the bell and the audit row by it. The old unsalted 24-bit FNV digest of the
+ * raw key (brute-forceable for IPv4) is gone. A legacy row with no keyHash gets
+ * `keyRef: ""` and `legacy: true` — NOTHING is ever derived from the raw key.
+ * The kind still comes from the raw key's prefix (a word, not a value).
  *
  * PURE: no DB, no clock, no I/O.
  */
@@ -35,8 +38,14 @@ export interface AnomalyTripProjection {
   /** The detector's type word ("failed_login_identifier", …); "unknown" when unrecorded. */
   type: string;
   keyKind: AnomalyKeyKind;
-  /** "…a1b2c3" — an opaque digest of the detector's key; "" when the row recorded no key. */
+  /** "h1a2b3c4d" — the first 8 hex of the row's salted keyHash; "" when it has none (legacy or value-free key). */
   keyRef: string;
+  /**
+   * True when the row predates keyHash (A-2b): no correlation handle exists and
+   * none is invented. Always set by projectAnomalyTrip; optional only so view
+   * fixtures need not spell it.
+   */
+  legacy?: boolean;
   count: number;
   /** The threshold that tripped, when the row recorded one; null for rows that predate it. */
   threshold: number | null;
@@ -55,19 +64,18 @@ export function anomalyKeyKind(key: string): AnomalyKeyKind {
   return "unknown";
 }
 
+/** A stored keyHash in the writers' hashed form: `<kind>:h<32 hex>`. */
+const KEY_HASH = /^[a-z][a-z_-]*:h([0-9a-f]{32})$/;
+
 /**
- * FNV-1a (32-bit) over the key's UTF-16 code units, last six hex digits, with
- * the platform's opaque-reference prefix. A correlation handle (same key ⇒ same
- * handle), not a secret and not a lookup key: nothing on the surface resolves it.
+ * The correlation handle: "h" + the first 8 hex of the salted hash — a literal
+ * prefix of the hash part of the stored keyHash. "" for anything else (absent,
+ * malformed, or the value-free admin key). Never derived from the raw key.
  */
-export function opaqueKeyRef(key: string): string {
-  if (!key) return "";
-  let h = 0x811c9dc5;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return `…${h.toString(16).padStart(8, "0").slice(-6)}`;
+export function keyRefFromKeyHash(keyHash: unknown): string {
+  if (typeof keyHash !== "string") return "";
+  const m = KEY_HASH.exec(keyHash);
+  return m ? `h${m[1].slice(0, 8)}` : "";
 }
 
 export function projectAnomalyTrip(row: AnomalyTripRowLike, defaultWindowMinutes: number): AnomalyTripProjection {
@@ -77,7 +85,8 @@ export function projectAnomalyTrip(row: AnomalyTripRowLike, defaultWindowMinutes
     id: row.id,
     type: typeof m.type === "string" ? m.type : "unknown",
     keyKind: key ? anomalyKeyKind(key) : "unknown",
-    keyRef: opaqueKeyRef(key),
+    keyRef: keyRefFromKeyHash(m.keyHash),
+    legacy: typeof m.keyHash !== "string",
     count: typeof m.count === "number" ? m.count : 0,
     threshold: typeof m.threshold === "number" ? m.threshold : null,
     windowMinutes: typeof m.windowMinutes === "number" ? m.windowMinutes : defaultWindowMinutes,

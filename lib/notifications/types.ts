@@ -179,8 +179,23 @@ export interface NotificationTypeDefinition {
    * by jobs/retry-notifications.ts (legacy rows are closed, never re-sent).
    */
   excludedChannels?: readonly NotificationChannel[];
-  /** True = the user cannot mute this type's category (ACCOUNT_SECURITY). Uniform per category. */
+  /**
+   * True = no preference row can change this TYPE's channels: the registry
+   * defaults are authoritative (resolveChannelEnabled). Every ACCOUNT_SECURITY
+   * type is locked, which makes that whole category locked. A locked type in an
+   * otherwise unlocked category is a PER-TYPE lock, named in
+   * PER_TYPE_LOCKED_TYPES (registry.ts): its category stays switchable for the
+   * other types, but the switch never reaches this one (Comms Center A-2b,
+   * owner decision O-8: SECURITY_ANOMALY_DETECTED).
+   */
   locked: boolean;
+  /**
+   * Comms Center A-2b (owner ruling 2026-10-31, O-7): the EMAIL leg of this
+   * type follows ONLY the EMAIL preference of its category. Turning the
+   * category's IN_APP off hides the in-app notice but no longer drops the
+   * email. Absent = the original F11/S3 coupling (no in-app row ⇒ no email).
+   */
+  emailIndependentOfInApp?: true;
   retention: RetentionPolicy;
   /** May fold into the S6 digest email (declared at birth — F13). */
   digestable: boolean;

@@ -49,7 +49,8 @@ export interface EmailMessage {
  *               "ENVIRONMENT_GUARD" — lib/email/recipient-guard.ts). A
  *               non-failure: never retried, never logged as an error.
  *   skipped   — no send performed by design (e.g. email disabled / no creds in
- *               a context that must not fall back to capture).
+ *               a context that must not fall back to capture, or the storm
+ *               limit — then `reason` says which). Never retried.
  *   error     — the transport attempted a send and failed (error present).
  */
 export interface EmailResult {
@@ -60,8 +61,15 @@ export interface EmailResult {
   provider: string;
   /** Human-readable failure reason when status === "error". */
   error?: string;
-  /** Why a send was captured instead of sent (Comms Center contract §O-4). */
-  reason?: "ENVIRONMENT_GUARD";
+  /**
+   * Why a send was not handed to the provider:
+   *   ENVIRONMENT_GUARD      — captured by the non-production guard (contract §O-4);
+   *   RATE_LIMITED           — skipped: the recipient's email storm limit (Comms
+   *                            Center A-2b, O-10) is reached;
+   *   RATE_LIMIT_UNVERIFIED  — skipped: a storm-limited send whose count could
+   *                            not be read (fail closed).
+   */
+  reason?: "ENVIRONMENT_GUARD" | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";
 }
 
 /**

@@ -126,9 +126,10 @@ export function emailLedgerRow(args: {
   switch (result.status) {
     case "sent": status = "ACCEPTED"; break;
     case "captured": status = "CAPTURED"; reason = result.reason ?? null; break;
-    // The transports never answer "skipped"; the one producer is the notification
-    // adapter's no-address path, so the explicit reason is NO_RECIPIENT.
-    case "skipped": status = "SUPPRESSED"; reason = "NO_RECIPIENT"; break;
+    // The transports never answer "skipped". Its producers: the storm limit in
+    // sendEmail (A-2b — its reason rides the result), and the notification
+    // adapter's no-address path, whose explicit reason is NO_RECIPIENT.
+    case "skipped": status = "SUPPRESSED"; reason = result.reason ?? "NO_RECIPIENT"; break;
     default:
       status = ctx?.terminalOnError ? "DEAD" : "FAILED";
       errorCode = classifyEmailError(result.error);

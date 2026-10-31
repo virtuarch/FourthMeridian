@@ -25,9 +25,25 @@
 
 import "server-only";
 import type { CommsDeliveryRow, LedgerWriter } from "@/lib/notifications/delivery/types";
+import type { StormCounter } from "@/lib/notifications/delivery/storm";
 
 interface LedgerInsertClient {
   commsDelivery: { createMany(args: { data: CommsDeliveryRow[] }): Promise<{ count: number }> };
+}
+
+interface LedgerCountClient {
+  commsDelivery: {
+    count(args: {
+      where: {
+        channel: "EMAIL";
+        status: "ACCEPTED";
+        definitionKey: { in: string[] };
+        createdAt: { gte: Date };
+        recipientUserId?: string;
+        recipientHash?: string;
+      };
+    }): Promise<number>;
+  };
 }
 
 /** True when this row must not be written by the production writer (see header). */
@@ -40,4 +56,25 @@ export const writeDeliveryRow: LedgerWriter = async (row) => {
   if (skipProductionWrite(row, process.env.NODE_ENV)) return;
   const { systemDb } = await import("@/lib/db");
   await (systemDb as unknown as LedgerInsertClient).commsDelivery.createMany({ data: [row] });
+};
+
+/**
+ * Comms Center A-2b (O-10) — the production STORM COUNTER: ACCEPTED customer
+ * emails to one recipient in the window, from the ledger. One indexed COUNT
+ * (@@index([recipientUserId, createdAt]) / @@index([recipientHash])), through
+ * fm_system like the writer. Throws on a DB failure — decideStorm() turns that
+ * into RATE_LIMIT_UNVERIFIED (fail closed) for limited mail. Never reached
+ * under NODE_ENV=test: sendEmail captures before the guard there.
+ */
+export const countRecentAcceptedEmails: StormCounter = async (q) => {
+  const { systemDb } = await import("@/lib/db");
+  return (systemDb as unknown as LedgerCountClient).commsDelivery.count({
+    where: {
+      channel: "EMAIL",
+      status: "ACCEPTED",
+      definitionKey: { in: [...q.keys] },
+      createdAt: { gte: q.since },
+      ...(q.recipientUserId ? { recipientUserId: q.recipientUserId } : { recipientHash: q.recipientHash ?? "" }),
+    },
+  });
 };

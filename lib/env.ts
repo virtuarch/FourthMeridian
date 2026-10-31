@@ -83,6 +83,9 @@ const _e = {
   // Comms Center A-2a — the delivery-ledger recipient-hash salt. Read for its
   // PRESENCE only here (never logged); lib/notifications/delivery/record.ts uses it.
   COMMS_RECIPIENT_HASH_SALT: process.env.COMMS_RECIPIENT_HASH_SALT,
+  // Comms Center A-2b (O-8) — the salt for the Security Ops anomaly key hash
+  // (lib/security/identifier-hash.ts). Presence only here; never logged.
+  SECURITY_IDENTIFIER_HASH_SALT: process.env.SECURITY_IDENTIFIER_HASH_SALT,
   EMAIL_FROM_DEFAULT:   process.env.EMAIL_FROM_DEFAULT,
 
   // Security Ops alerts inbox (Wave 3 ⑧). Optional — the anomaly detector sends
@@ -447,6 +450,19 @@ export function getEnvReport(): EnvReport {
       : { key: "COMMS_RECIPIENT_HASH_SALT", status: "warn", scope: "optional", note: "unset — the delivery ledger stores no recipient hash" },
   );
 
+  // SECURITY_IDENTIFIER_HASH_SALT (Comms Center A-2b, O-8) — presence only.
+  // Unset ⇒ the anomaly key hash uses a salt derived from NEXTAUTH_SECRET
+  // (stable, domain-separated; never plaintext). A "fail" in Production — the
+  // dedicated secret is required there — and a "warn" elsewhere. Report only:
+  // validateEnv never throws over it, so the login path is never affected.
+  keys.push(
+    _e.SECURITY_IDENTIFIER_HASH_SALT
+      ? { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "pass", scope: "production" }
+      : isProd
+        ? { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "fail", scope: "production", note: "required in production — not set (anomaly keys use the derived fallback salt)" }
+        : { key: "SECURITY_IDENTIFIER_HASH_SALT", status: "warn", scope: "production", note: "unset — anomaly keys use the derived fallback salt" },
+  );
+
   // OPENAI ENVIRONMENT SEPARATION — the key (presence only), the project pin and
   // the expected-environment guard. A state the credential seam REFUSES on is a
   // "fail" here, because the next AI call will fail; it is never a boot throw
@@ -580,6 +596,16 @@ export function validateEnv(): EnvReport {
       "[env] COMMS_RECIPIENT_HASH_SALT is unset on this deployment — delivery-ledger rows with no " +
       "recipient userId (operator inboxes, beta applicants) are stored WITHOUT a recipient hash. " +
       "Sending is unaffected. Set a long random secret per environment.",
+    );
+  }
+
+  // SECURITY_IDENTIFIER_HASH_SALT (Comms Center A-2b, O-8) — warn, never throw,
+  // on a DEPLOYED environment where it is unset.
+  if (_e.VERCEL === "1" && !_e.SECURITY_IDENTIFIER_HASH_SALT) {
+    console.warn(
+      "[env] SECURITY_IDENTIFIER_HASH_SALT is unset on this deployment — Security Ops anomaly keys " +
+      "are hashed with a salt derived from NEXTAUTH_SECRET (never stored in plaintext). Set a " +
+      "dedicated long random secret per environment; the env report fails in Production until then.",
     );
   }
 

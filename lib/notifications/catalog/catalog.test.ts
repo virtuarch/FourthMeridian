@@ -13,8 +13,9 @@
  *      a dedupe key (known gap pinned).
  *   3. suppressibility, BEHAVIOURALLY — the real resolveChannelEnabled and the
  *      real setNotificationPreference decide what a user can mute; the catalog's
- *      `userSuppressible` must equal that, and the only protected entry a user
- *      can mute today is the pinned finding (SECURITY_ANOMALY_DETECTED, AUDIT R-2).
+ *      `userSuppressible` must equal that, and NO protected entry can be muted
+ *      (Comms Center A-2b closed the one pinned finding, SECURITY_ANOMALY_DETECTED,
+ *      AUDIT R-2 / O-8, with a per-type lock).
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/notifications/catalog/catalog.test.ts
  */
@@ -290,14 +291,20 @@ function main(): void {
       }
       if (mutable && def.protected) canMuteInApp.push(id);
     }
-    check("the ONLY protected entries a user can mute today are the pinned gaps (AUDIT R-2)",
-      canMuteInApp.sort().join() === Object.keys(KNOWN_SUPPRESSIBILITY_GAPS).sort().join(), canMuteInApp);
-    check("FINDING pinned: SECURITY_ANOMALY_DETECTED is muted by PLATFORM IN_APP off",
-      resolveChannelEnabled(NOTIFICATION_REGISTRY.SECURITY_ANOMALY_DETECTED, "IN_APP", [{ category: "PLATFORM", channel: "IN_APP", enabled: false }]) === false);
-    check("FINDING pinned: SYNC_FAILED email is lost when FINANCIAL IN_APP is off (create.ts returns skipped before the email leg)",
-      resolveChannelEnabled(NOTIFICATION_REGISTRY.SYNC_FAILED, "IN_APP", [{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]) === false &&
-      // A-2a: the branch now RECORDS the loss on the delivery ledger (EMAIL SUPPRESSED PREFERENCE_OFF) — and still sends nothing.
-      /if \(!resolveChannelEnabled\(def, "IN_APP", overrides\)\) \{(?:(?!deliverEmailAndRecord|\.deliver\(|sendEmail)[\s\S])*?return \{ status: "skipped" \};/.test(read("lib/notifications/create.ts")));
+    check("the ONLY protected entries a user can mute are the pinned gaps — none since A-2b (AUDIT R-2 closed)",
+      canMuteInApp.sort().join() === Object.keys(KNOWN_SUPPRESSIBILITY_GAPS).sort().join() && canMuteInApp.length === 0, canMuteInApp);
+    check("FIXED (O-8): SECURITY_ANOMALY_DETECTED is NOT muted by PLATFORM IN_APP off",
+      resolveChannelEnabled(NOTIFICATION_REGISTRY.SECURITY_ANOMALY_DETECTED, "IN_APP", [{ category: "PLATFORM", channel: "IN_APP", enabled: false }]) === true);
+    check("FIXED (O-8): the Security Ops bell is protected and not user-suppressible in the catalog",
+      COMMS_CATALOG.SECURITY_ANOMALY_DETECTED.protected && !COMMS_CATALOG.SECURITY_ANOMALY_DETECTED.preference.userSuppressible &&
+      COMMS_CATALOG.SECURITY_ANOMALY_DETECTED.preference.category === null && COMMS_CATALOG.SECURITY_ANOMALY_DETECTED.preference.suppressibleChannels.length === 0);
+    // OWNER RULING 2026-10-31 (O-7) — replaces the A-1 "SYNC_FAILED email is lost when FINANCIAL IN_APP is off" finding:
+    // the email follows only its own preference. Behaviour is proven in lib/notifications/comms-a2b.test.ts.
+    const independent = NOTIFICATION_TYPE_IDS.filter((id) => (NOTIFICATION_REGISTRY[id] as NotificationTypeDefinition).emailIndependentOfInApp);
+    check("RULED (O-7): only SYNC_FAILED's email is independent of in-app, and it is the SERVICE (connection-failure) class",
+      independent.join() === "SYNC_FAILED" && independent.every((id) => COMMS_CATALOG[id].consentClass === "SERVICE"), independent);
+    check("RULED (O-7): the catalog says so in SYNC_FAILED's description",
+      /does not stop the email/.test(COMMS_CATALOG.SYNC_FAILED.description));
 
     // Every direct leg is unconditional: no direct-send source reads a preference.
     const directSources = new Set(defs.flatMap((d) => (d.channels.some((c) => c.path === "DIRECT") ? d.trigger.sources : [])));
@@ -319,12 +326,23 @@ async function preferenceWrites(): Promise<void> {
   const sec = await setNotificationPreference("u-preview", "ACCOUNT_SECURITY", "IN_APP", false, { client });
   check("ACCOUNT_SECURITY cannot be turned off (refused, nothing written)", sec.ok === false && writes.length === 0);
   const plat = await setNotificationPreference("u-preview", "PLATFORM", "IN_APP", false, { client });
-  check("FINDING: PLATFORM IN_APP (the Security Ops bell's category) CAN be turned off", plat.ok === true && writes.includes("PLATFORM:IN_APP"));
+  // A-2b: the PLATFORM row stays switchable (it governs the customer platform bells)…
+  check("PLATFORM IN_APP can still be turned off (for the category's customer bells)", plat.ok === true && writes.includes("PLATFORM:IN_APP"));
+  // …but the per-type-locked Security Ops bell ignores it (O-8).
+  check("…and that written row does not reach the Security Ops bell (per-type lock, O-8)",
+    resolveChannelEnabled(NOTIFICATION_REGISTRY.SECURITY_ANOMALY_DETECTED, "IN_APP", [{ category: "PLATFORM", channel: "IN_APP", enabled: false }]));
   for (const d of defs.filter((x) => x.notificationTypeId && x.protected && !(x.key in KNOWN_SUPPRESSIBILITY_GAPS))) {
-    const r = NOTIFICATION_REGISTRY[d.notificationTypeId!];
+    const r: NotificationTypeDefinition = NOTIFICATION_REGISTRY[d.notificationTypeId!];
     const before = writes.length;
     const res = await setNotificationPreference("u-preview", r.category, "IN_APP", false, { client });
-    check(`${d.key}: its category's IN_APP preference write is refused`, res.ok === false && writes.length === before);
+    if (res.ok) {
+      // A per-type lock in a switchable category: the write lands but is inert for this type.
+      check(`${d.key}: its category's IN_APP write is accepted only because the type is locked per type, and it changes nothing`,
+        r.locked && (["IN_APP", "EMAIL"] as const).every((ch) =>
+          resolveChannelEnabled(r, ch, [{ category: r.category, channel: "IN_APP", enabled: false }, { category: r.category, channel: "EMAIL", enabled: true }]) === r.defaultChannels.includes(ch)));
+    } else {
+      check(`${d.key}: its category's IN_APP preference write is refused`, writes.length === before);
+    }
   }
 }
 

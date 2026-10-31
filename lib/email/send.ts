@@ -40,6 +40,17 @@
  * injected seam, and scripts/email-preview.ts (whose own
  * EMAIL_PREVIEW_ALLOWED_TO gate runs first — both must admit the address).
  *
+ * STORM LIMIT (Comms Center A-2b, owner decision O-10, lib/notifications/
+ * delivery/storm.ts): right AFTER the recipient guard admits the address and
+ * before the provider, a customer email of a limited class (SERVICE /
+ * AWARENESS / MARKETING) is held when its recipient already has 5 ACCEPTED
+ * such emails in the rolling hour (counted from the ledger) —
+ * `{ status: "skipped", provider: "none", reason: "RATE_LIMITED" }` — or when
+ * that count cannot be read (`RATE_LIMIT_UNVERIFIED`: fail closed). Security
+ * (SECURITY_CRITICAL), ceremony (CEREMONY) and operator mail is exempt and
+ * always sends. A held send is recorded SUPPRESSED with its reason and is
+ * never retried ("skipped"). One redacted log line: template, key, reason.
+ *
  * DELIVERY LEDGER (Comms Center A-2a, lib/notifications/delivery): every send
  * through here writes ONE CommsDelivery row with its outcome — ACCEPTED (the
  * provider accepted it; never "delivered"), CAPTURED (the guard), FAILED / DEAD
@@ -61,8 +72,9 @@ import { resolveSender } from "@/lib/email/senders";
 import { resendAdapter } from "@/lib/email/providers/resend";
 import { captureAdapter } from "@/lib/email/providers/capture";
 import { decideRecipient, describeGuardedRecipient, type RecipientGuardEnv } from "@/lib/email/recipient-guard";
-import { emailLedgerRow, recordDelivery, type LedgerEnv } from "@/lib/notifications/delivery/record";
-import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import { emailLedgerRow, recipientHash, recordDelivery, resolveEmailKey, type LedgerEnv } from "@/lib/notifications/delivery/record";
+import { countRecentAcceptedEmails, writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import { decideStorm, PendingSends, pendingSends, type Reservation, type StormCounter } from "@/lib/notifications/delivery/storm";
 import { runAfterResponse } from "@/lib/notifications/delivery/defer";
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 
@@ -84,6 +96,18 @@ export interface EmailSenderDeps {
   log?: (line: string, level: "info" | "warn") => void;
   /** The delivery-ledger writer (lib/notifications/delivery/store.ts in production). Absent ⇒ nothing recorded. */
   ledger?: LedgerWriter;
+  /**
+   * The storm-limit counter (A-2b; lib/notifications/delivery/store.ts
+   * countRecentAcceptedEmails in production). Absent ⇒ no storm limit — only
+   * a test seam that never models one leaves it out.
+   */
+  storm?: StormCounter;
+  /**
+   * In-process reservations of admitted-but-not-yet-recorded limited sends
+   * (A-2b). Production: the module-level instance. Absent ⇒ a fresh instance
+   * per sender (tests stay isolated).
+   */
+  pending?: PendingSends;
   /** Clock for the ledger row (tests). */
   now?: () => Date;
   /**
@@ -104,8 +128,16 @@ export type SendEmailFn = (
 /** Build a sendEmail over injected env + transports. */
 export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
   const log = deps.log ?? ((line: string, level: "info" | "warn") => console[level](line));
+  const pending = deps.pending ?? new PendingSends();
   return async (name, to, data = {}, ctx) => {
-    const result = await send(deps, log, name, to, data);
+    const slot: { reservation: Reservation | null } = { reservation: null };
+    const result = await send(deps, pending, log, name, to, data, ctx, slot);
+    const reservation = slot.reservation;
+    // A storm reservation (A-2b) is held only by an ACCEPTED send, and only until
+    // its ledger row is written — from then on the DB count holds it. A send the
+    // ledger never records keeps its reservation until it ages out of the window.
+    if (reservation && result.status !== "sent") pending.release(reservation);
+    const held = reservation && result.status === "sent" ? reservation : null;
     if (deps.ledger) {
       // Built inside the guard too: a row that cannot even be built must not reach the caller.
       let row: ReturnType<typeof emailLedgerRow>;
@@ -116,7 +148,10 @@ export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
         return result;
       }
       const writer = deps.ledger;
-      const write = async () => { await recordDelivery(writer, row, { log: (line) => log(line, "warn") }); };
+      const write = async () => {
+        const recorded = await recordDelivery(writer, row, { log: (line) => log(line, "warn") });
+        if (recorded && held) pending.release(held);
+      };
       if (deps.defer) {
         try { await deps.defer(write); } catch { /* recordDelivery never throws; a defer seam must not either */ }
       } else {
@@ -142,14 +177,20 @@ export const sendEmail: SendEmailFn = createEmailSender({
   capture: captureAdapter,
   ledger: writeDeliveryRow,
   defer: runAfterResponse,
+  storm: countRecentAcceptedEmails,
+  pending: pendingSends,
 });
 
 async function send(
   deps: EmailSenderDeps,
+  pending: PendingSends,
   log: (line: string, level: "info" | "warn") => void,
   name: EmailTemplateName,
   to: string,
   data: Record<string, unknown>,
+  ctx: EmailSendContext | undefined,
+  /** Out-parameter: the storm reservation an admitted limited send took (A-2b). */
+  slot: { reservation: Reservation | null },
 ): Promise<EmailResult> {
   const env = deps.env;
   const template = getTemplate(name);
@@ -194,6 +235,27 @@ async function send(
       log(`[email] captured by the non-production recipient guard: ${detail}`, "info");
     }
     return { status: "captured", provider: "none", reason: decision.reason };
+  }
+  // The storm limit (A-2b, O-10) — after the guard, before the provider. Exempt
+  // classes return at once (fail open); a limited send is held when over the
+  // limit or when its count cannot be read (fail closed).
+  if (deps.storm) {
+    const key = resolveEmailKey(name, ctx);
+    const userId = ctx?.recipientUserId ?? null;
+    const storm = await decideStorm({
+      key,
+      recipientUserId: userId,
+      // The ledger's own recipient identity when there is no account (never the address).
+      recipientHash: userId === null && ctx?.hashRecipient !== false ? recipientHash(to, env) : null,
+      counter: deps.storm,
+      now: (deps.now ?? (() => new Date()))(),
+      pending,
+    });
+    if (!storm.send) {
+      log(`[email] held by the storm limit: template=${name} key=${key} reason=${storm.reason}`, "warn");
+      return { status: "skipped", provider: "none", reason: storm.reason };
+    }
+    if (!storm.exempt) slot.reservation = storm.reservation;
   }
   // Production: the caller's address. Elsewhere: the MATCHED allowlist entry,
   // never the raw string (no Unicode case-folding smuggling — recipient-guard.ts).
