@@ -126,7 +126,7 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
               <PolicyNote>
                 {d.coverage.ledgerSince ? `Totals count the observed part of the window (ledger since ${d.coverage.ledgerSince}).` : "Nothing observed yet — the ledger has no rows in this window."}
                 {d.coverage.directSendsCovered ? "" : " Direct sends are not yet covered."}
-                {d.coverage.environment !== "production" ? ` ${d.coverage.environment === "preview" ? "Preview" : "Development"} captures sends instead of delivering them — volume shows under Captured.` : ""}
+                {d.coverage.environment !== "production" ? ` ${d.coverage.environment === "preview" ? "Preview" : "Development"} only delivers to approved test addresses — every other send is captured and shows under Captured.` : ""}
               </PolicyNote>
               <ListMeta checkedAt={d.checkedAt} floor={d.floor} capped={d.capped} extra={`${d.from} → ${d.to} UTC`} />
             </div>

@@ -360,7 +360,7 @@ export const ACTIVATION_BLOCKER_LABEL = {
 
 /** Why activation is off for EVERY automation, regardless of permission (the B2 hard gate). */
 export const ACTIVATION_DISABLED_LABEL = {
-  ACTIVATION_DISABLED_PENDING_HARDENING: "Activation is switched off until the safety hardening ships. Dry runs and owner approval still work.",
+  ACTIVATION_DISABLED_PENDING_HARDENING: "Activation is off in this environment. It can only be switched on in Preview, never in Production. Dry runs and owner approval still work.",
 } as const satisfies Record<NonNullable<Viewer["activationDisabledReason"]>, string>;
 
 /** The activation lines for a detail: the hard gate first, then each blocker. Unknown codes are dropped, never shown raw. */
