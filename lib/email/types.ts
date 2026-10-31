@@ -99,6 +99,8 @@ export interface EmailSendContext {
   notificationId?: string;
   attempt?: number;
   terminalOnError?: boolean;
+  /** Comms Center B1 — the published content version this email rendered; absent = the code default. */
+  contentVersionId?: string | null;
 }
 
 /**

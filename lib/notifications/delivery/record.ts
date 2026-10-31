@@ -152,6 +152,7 @@ export function emailLedgerRow(args: {
     notificationId: boundedId(ctx?.notificationId),
     environment: ledgerEnvironment(env),
     acceptedAt: status === "ACCEPTED" ? now : null,
+    ...(boundedId(ctx?.contentVersionId) ? { contentVersionId: boundedId(ctx?.contentVersionId) } : {}),
   };
 }
 
@@ -166,6 +167,8 @@ export function notificationLedgerRow(args: {
   notificationId?: string | null;
   /** 1-based; the retry job's OBSOLETE closure is the attempt after the last one. */
   attempt?: number;
+  /** Comms Center B1 — the published content version the in-app row rendered; absent = the code default. */
+  contentVersionId?: string | null;
   env: LedgerEnv;
   now: Date;
 }): CommsDeliveryRow {
@@ -189,6 +192,7 @@ export function notificationLedgerRow(args: {
     notificationId: args.notificationId ?? null,
     environment: ledgerEnvironment(args.env),
     acceptedAt: args.status === "ACCEPTED" ? args.now : null,
+    ...(boundedId(args.contentVersionId) ? { contentVersionId: boundedId(args.contentVersionId) } : {}),
   };
 }
 

@@ -318,7 +318,10 @@ check(
 
 // SP-2A-3 is schema-free: no SpaceTemplate model, no template provenance column.
 check("prisma schema has no SpaceTemplate model", !/model\s+SpaceTemplate\b/.test(schemaSrc));
-check("prisma schema has no templateId column on Space", !/\btemplateId\b/.test(schemaSrc));
+// Scoped to the Space model: other models (e.g. Comms Center B1's CommsTemplateVersion) may have their own templateId.
+const spaceModelSrc = /model\s+Space\s*\{[^}]*\}/.exec(schemaSrc)?.[0] ?? "";
+check("prisma schema has a Space model to inspect", spaceModelSrc.length > 0);
+check("prisma schema has no templateId column on Space", !/\btemplateId\b/.test(spaceModelSrc));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);

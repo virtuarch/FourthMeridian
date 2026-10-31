@@ -80,6 +80,8 @@ import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/deliv
 import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
 import { runAfterResponse } from "@/lib/notifications/delivery/defer";
 import { EMAIL_ANCHOR_MARKER, isEmailAnchorMetadata } from "@/lib/notifications/email-anchor";
+import { liveRenderFor, type LiveContentResolver } from "@/lib/notifications/content/send";
+import { defaultLiveContentResolver, liveContentResolver } from "@/lib/notifications/content/store";
 import type { CommsDeliveryRow, LedgerWriter } from "@/lib/notifications/delivery/types";
 
 // ── Delivery ledger (Comms Center A-2a) ──────────────────────────────────────
@@ -103,6 +105,21 @@ function ledgerWriterFor(ctx: { client?: NotificationWriteClient; ledger?: Ledge
     return delegate ? (row) => delegate.createMany({ data: [row] }) : null;
   }
   return writeDeliveryRow;
+}
+
+/**
+ * Comms Center B1 — the live-content resolver: injected (tests), the injected
+ * client's own content delegates when it models them, or the production
+ * resolver. A test-injected client that does not model the content tables
+ * renders the code default and never falls through to a real database.
+ */
+function contentResolverFor(ctx: { client?: NotificationWriteClient; content?: LiveContentResolver | null } | undefined): LiveContentResolver | null {
+  if (ctx?.content !== undefined) return ctx.content;
+  if (ctx?.client) {
+    const c = ctx.client as unknown as { commsTemplate?: unknown; commsTemplateVersion?: unknown };
+    return c.commsTemplate && c.commsTemplateVersion ? liveContentResolver(c as never) : null;
+  }
+  return defaultLiveContentResolver;
 }
 
 /** One outcome createNotification records (the key, recipient, env and clock are filled in by `note`). */
@@ -260,6 +277,8 @@ async function deliverEmailAndRecord(args: {
   body?: string;
   href?: string;
   actionLabel?: string;
+  /** Comms Center B1 — the published EMAIL content, when the stream has one. */
+  emailContent?: import("@/lib/notifications/types").ChannelMessage["emailContent"];
   client: NotificationWriteClient;
   adapter: ChannelAdapter;
   /** A-2a: the ledger writer, for the leg that never reaches sendEmail (no recipient). */
@@ -295,6 +314,7 @@ async function deliverEmailAndRecord(args: {
       ...(args.body ? { body: args.body } : {}),
       ...(args.href ? { href: args.href } : {}),
       ...(args.actionLabel ? { actionLabel: args.actionLabel } : {}),
+      ...(args.emailContent ? { emailContent: args.emailContent } : {}),
     });
 
     if (!recipient?.email && result.status === "skipped" && args.writer) {
@@ -344,6 +364,8 @@ export async function createNotification(
     emailAdapter?: ChannelAdapter;
     /** Injected delivery-ledger writer for tests (A-2a). */
     ledger?: LedgerWriter;
+    /** Comms Center B1 — injected live-content resolver (tests); null = always the code default. */
+    content?: LiveContentResolver | null;
   },
 ): Promise<CreateNotificationResult> {
   // 1. Registry gate — unknown types throw at the producer (programmer error).
@@ -441,7 +463,16 @@ export async function createNotification(
       : fillDedupeTemplate(def.dedupeKeyTemplate, input.userId, data);
 
   // 3. Pure render — title/body/href from the single definition site.
-  const rendered = def.render(data);
+  // Comms Center B1: when an operator PUBLISHED content for this type's in-app
+  // or email stream (the variant the data selects), that content is rendered
+  // instead, inside the locked frame; otherwise this render, exactly as before.
+  // The email leg uses its OWN stream — never the in-app copy.
+  const codeRendered = def.render(data);
+  const live = await liveRenderFor({
+    type: def.id, data, codeRendered, resolver: contentResolverFor(ctx), appBaseUrl: process.env.NEXT_PUBLIC_APP_URL,
+  });
+  const rendered = live.inApp.rendered;
+  const inAppContentVersionId = live.inApp.contentVersionId;
 
   const client: NotificationWriteClient =
     ctx?.client ?? (db as unknown as NotificationWriteClient);
@@ -475,7 +506,7 @@ export async function createNotification(
       emailAnchorOnly
         // The row is an email anchor only: the in-app leg was not delivered.
         ? { channel: "IN_APP", status: "SUPPRESSED", reason: "PREFERENCE_OFF", notificationId: id }
-        : { channel: "IN_APP", status: "ACCEPTED", notificationId: id },
+        : { channel: "IN_APP", status: "ACCEPTED", notificationId: id, ...(inAppContentVersionId ? { contentVersionId: inAppContentVersionId } : {}) },
       ...(emailOffByPreference(def, emailEnabled)
         ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "PREFERENCE_OFF" as const, notificationId: id }]
         : []),
@@ -489,10 +520,12 @@ export async function createNotification(
           type: def.id,
           category: def.category,
           priority: def.priority,
-          title: rendered.title,
-          ...(rendered.body ? { body: rendered.body } : {}),
-          ...(rendered.href ? { href: rendered.href } : {}),
-          ...(rendered.actionLabel ? { actionLabel: rendered.actionLabel } : {}),
+          // The email's code rendering is the REGISTRY render, never the in-app version.
+          title: codeRendered.title,
+          ...(codeRendered.body ? { body: codeRendered.body } : {}),
+          ...(codeRendered.href ? { href: codeRendered.href } : {}),
+          ...(codeRendered.actionLabel ? { actionLabel: codeRendered.actionLabel } : {}),
+          ...(live.email ? { emailContent: live.email } : {}),
           client,
           adapter,
           writer,

@@ -133,7 +133,7 @@ export const KNOWN_PII_DEDUPE_KEYS: Readonly<Record<string, string>> = {};
  * A send whose key is not a catalog entry (tooling: the smoke template) is not
  * customer email either. Production call sites are pinned to name a key.
  */
-export const EMAIL_STORM_LIMIT = { maxPerRecipient: 5, windowMinutes: 60 } as const;
+export { EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/types";
 export const EMAIL_STORM_LIMITED_CLASSES: readonly ConsentClass[] = ["SERVICE", "AWARENESS", "MARKETING"];
 
 /**
