@@ -65,14 +65,14 @@ function ActivityCard({ f }: { f: Fetched<SecurityAnalyticsResponse> }) {
         {s && t ? (
           series === "signins" ? (
             <>
-              <DayBars days={signInBars(s)} height={236} noun="sign-in attempt" palette={SIGN_IN_PALETTE}
+              <DayBars days={signInBars(s)} height={236} noun="sign-in attempt" palette={SIGN_IN_PALETTE} segmentLabels={{ succeeded: "successful", other: "account gate", failed: "credential failure" }}
                 ariaLabel="Sign-in attempts per UTC day: successful, refused by an account gate, and credential failures" />
               <div className="mt-2"><DayBarsLegend items={[{ label: "Successful", color: SIGN_IN_PALETTE.succeeded }, { label: "Account gate (not a wrong password)", color: SIGN_IN_PALETTE.other }, { label: "Credential failure", color: SIGN_IN_PALETTE.failed }]} /></div>
               <Caption>{`${n(t.signIns)} successful · ${n(t.blocked)} account gate · ${n(t.credential)} credential failures · ${s.windowDays} UTC days`}</Caption>
             </>
           ) : (
             <>
-              <DayBars days={controlBars(s)} height={236} noun="event" palette={ACCESS_PALETTE}
+              <DayBars days={controlBars(s)} height={236} noun="event" palette={ACCESS_PALETTE} segmentLabels={{ succeeded: "refused change", other: "access denied", failed: "detector window" }}
                 ariaLabel="Access-control events per UTC day: refused policy changes, platform access denials and detector windows" />
               <div className="mt-2"><DayBarsLegend items={[{ label: "Refused change", color: ACCESS_PALETTE.succeeded }, { label: "Access denied (floor)", color: ACCESS_PALETTE.other }, { label: "Detector window", color: ACCESS_PALETTE.failed }]} /></div>
               <Caption>{`${n(t.refusals)} refused · ${n(t.denials)} denied (≤ 1 per operator per Space per hour) · ${n(t.detector)} detector windows`}</Caption>
@@ -230,7 +230,7 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
           <Surface className="flex-1 p-4 sm:p-5">
             {s ? (
               <>
-                <DayBars days={operatorBars(s)} height={200} noun="operator action" palette={OPERATOR_PALETTE}
+                <DayBars days={operatorBars(s)} height={200} noun="operator action" palette={OPERATOR_PALETTE} segmentLabels={{ succeeded: "done", other: "result not recorded", failed: "refused or failed" }}
                   ariaLabel="Audited operator actions per UTC day: done, result not recorded, refused or failed" />
                 <div className="mt-2"><DayBarsLegend items={[{ label: "Done", color: OPERATOR_PALETTE.succeeded }, { label: "Result not recorded", color: OPERATOR_PALETTE.other }, { label: "Refused or failed", color: OPERATOR_PALETTE.failed }]} /></div>
                 <Caption>{(() => {

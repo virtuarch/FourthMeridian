@@ -195,7 +195,16 @@ export function SpaceShell({
         ) : titleChip ? (
           /* Platform Ops it2 — the ONE-LINE compact header: name · Space switcher ·
              access chip. No meta line (the chip carries the access level). */
-          <div className="lg:hidden mb-3 flex items-center justify-between gap-3">
+          /* Platform Spaces 2.0 (owner) — the compact header is STICKY, the
+             Personal Space pattern (PerspectiveShell's controls row): it pins
+             under the GlobalHeader (sticky top-0, h-12 + 1px border ⇒ 3rem+1px)
+             so the Space switcher is reachable at any scroll depth. z-20: above
+             content (≤ z-10), below the GlobalHeader (z-40); the switcher's menu
+             portals to <body> (z-50) and dialogs/drawers layer above both.
+             Solid page background + hairline, bled to the page gutters so
+             content never shows at its sides. Desktop markup is unchanged
+             (lg:hidden). */
+          <div className="lg:hidden mb-3 flex items-center justify-between gap-3 sticky top-[calc(3rem+1px)] z-20 -mx-5 px-5 max-sm:-mx-4 max-sm:px-4 py-1.5 bg-[var(--bg-base)] border-b border-[var(--border-hairline)]" data-sticky-space-header>
             <div className="flex min-w-0 items-center gap-1" data-compact-header>
               <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
               {titleAccessory}

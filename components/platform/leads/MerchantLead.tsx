@@ -93,7 +93,7 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
                 {m.decisions.merged + m.decisions.dismissed === 0 ? (
                   <ChartMessage>{`No merge decisions in the last ${m.windowDays} days`}</ChartMessage>
                 ) : (
-                  <DayBars days={decisionBars(m)} height={200} noun="decision" palette={MERGE_PALETTE} ariaLabel="Merge-review decisions per UTC day: merged and dismissed" />
+                  <DayBars days={decisionBars(m)} height={200} noun="decision" palette={MERGE_PALETTE} segmentLabels={{ succeeded: "merged", other: "dismissed", failed: "other" }} ariaLabel="Merge-review decisions per UTC day: merged and dismissed" />
                 )}
                 <div className="mt-2"><DayBarsLegend items={[{ label: "Merged", color: MERGE_PALETTE.succeeded }, { label: "Dismissed (kept apart)", color: MERGE_PALETTE.other }]} /></div>
                 <Caption>{`${n(m.decisions.merged)} merged · ${n(m.decisions.dismissed)} dismissed · ${m.windowDays} UTC days`}</Caption>
@@ -149,7 +149,7 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
         <Surface className="p-4 sm:p-5">
           {m ? (
             <>
-              <DayBars days={growthBars(m)} height={160} noun="new identity fact" palette={GROWTH_PALETTE} ariaLabel="New merchant aliases and customer merchant rules per UTC day" />
+              <DayBars days={growthBars(m)} height={160} noun="new identity fact" palette={GROWTH_PALETTE} segmentLabels={{ succeeded: "new aliases", other: "new customer rules", failed: "other" }} ariaLabel="New merchant aliases and customer merchant rules per UTC day" />
               <div className="mt-2"><DayBarsLegend items={[{ label: "New aliases", color: GROWTH_PALETTE.succeeded }, { label: "New customer rules", color: GROWTH_PALETTE.other }]} /></div>
             </>
           ) : <Loading f={p.f} what="identity growth" />}
