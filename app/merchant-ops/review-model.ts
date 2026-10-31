@@ -46,7 +46,7 @@ export const TIER_ORDER: readonly MergeEvidenceTier[] = ["T1", "T2", "T3"];
 /** Why the pre-selected survivor is the one kept — as the detector chose it. */
 export function survivorRationale(tier: MergeEvidenceTier): string | null {
   if (tier === "T1") return "Kept because it owns the bank's entity id.";
-  if (tier === "T2") return "Kept because it has the longer, untruncated name.";
+  if (tier === "T2") return "Kept because it has the longer, less-truncated name.";
   return null;
 }
 
@@ -85,7 +85,7 @@ export function dialogCopy(verdict: Verdict, c: Pick<PendingMergeCandidate, "sur
   return verdict === "MERGED"
     ? {
         title: `Merge "${absorb}" into "${keep}"?`,
-        outcome: `"${absorb}" will be deleted. Its ${c.absorbed.aliasCount} ${plural(c.absorbed.aliasCount, "alias", "aliases")}, ${c.absorbed.transactionCount} ${plural(c.absorbed.transactionCount, "transaction", "transactions")} and ${c.absorbed.ruleCount} ${plural(c.absorbed.ruleCount, "rule", "rules")} move to "${keep}" for every tenant. Recorded in the audit log with a recovery snapshot; there is no undo button.`,
+        outcome: `"${absorb}" will be deleted. Its ${c.absorbed.aliasCount} ${plural(c.absorbed.aliasCount, "alias", "aliases")}, ${c.absorbed.transactionCount} ${plural(c.absorbed.transactionCount, "transaction", "transactions")} and ${c.absorbed.ruleCount} ${plural(c.absorbed.ruleCount, "rule", "rules")} move to (or, where the kept merchant already has the same rule, fold into) "${keep}" for every tenant. Recorded in the audit log with a recovery snapshot; there is no undo button.`,
         confirmLabel: "Merge",
       }
     : {

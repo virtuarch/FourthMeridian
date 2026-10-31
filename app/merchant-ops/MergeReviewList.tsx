@@ -13,7 +13,7 @@
  * FRESH MERCHANT_OPS WRITE grant and the reason; a refusal is shown in the dialog.
  */
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { GitMerge, X, CheckCircle2 } from "lucide-react";
 import type { PendingMergeCandidate } from "@/lib/transactions/merchant-merge-review";
@@ -34,6 +34,10 @@ export function MergeReviewList({ candidates, canDecide, empty = null }: { candi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
+  // A decided pair leaves the list at once (the server refresh confirms it), so
+  // a fast second click can never open a dialog on a pair that is gone.
+  const [decided, setDecided] = useState<ReadonlySet<string>>(() => new Set());
+  const outcomeRef = useRef<HTMLParagraphElement>(null);
   // SEC-PLAT-2 — every verdict carries a required, operator-chosen reason
   // (lib/audit.ts REASON_REQUIRED_ACTIONS); never pre-selected, reset per dialog.
   const [reason, setReason] = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
@@ -72,11 +76,16 @@ export function MergeReviewList({ candidates, canDecide, empty = null }: { candi
       });
       if (!res.ok) {
         const j = (await res.json().catch(() => ({}))) as { error?: string };
+        // 409 (changed meanwhile) / 422 (no longer a candidate): the list is stale — refresh it under the dialog.
+        if (res.status === 409 || res.status === 422) router.refresh();
         throw new Error(j.error ?? `Request failed (${res.status})`);
       }
       setOutcome(outcomeLine(verdict, c));
+      setDecided((d) => new Set(d).add(keyOf(c)));
       setPending(null);
       router.refresh();
+      // Focus lands on the outcome (the card that opened the dialog is gone).
+      requestAnimationFrame(() => outcomeRef.current?.focus());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Decision failed");
     } finally {
@@ -89,14 +98,14 @@ export function MergeReviewList({ candidates, canDecide, empty = null }: { candi
   return (
     <div className="flex flex-col gap-3">
       {outcome && (
-        <p role="status" data-outcome
+        <p role="status" data-outcome ref={outcomeRef} tabIndex={-1}
           className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 py-2 text-xs text-[var(--text-primary)]">
           <CheckCircle2 size={14} className="shrink-0 text-[var(--accent-positive)]" aria-hidden /> {outcome}
         </p>
       )}
-      {candidates.length === 0 ? empty : (
+      {candidates.filter((c) => !decided.has(keyOf(c))).length === 0 ? empty : (
         <ul className="flex flex-col gap-3">
-          {candidates.map((c) => (
+          {candidates.filter((c) => !decided.has(keyOf(c))).map((c) => (
             <CandidateCard key={keyOf(c)} candidate={c} actions={canDecide ? (
               <div className="flex flex-wrap gap-2" data-decision-actions>
                 <GlassButton tone="meridian" size="sm" onClick={() => open(c, "MERGED")} aria-haspopup="dialog" className={ACTION}>
