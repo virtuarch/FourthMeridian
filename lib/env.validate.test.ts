@@ -145,6 +145,12 @@ if (process.argv[2] === "child") {
   check("deployed + set → no warning, and the value is never printed", salted.includes("VALIDATE_OK") && !salted.includes("COMMS_RECIPIENT_HASH_SALT is unset") && !salted.includes("s3cret-salt-value"));
   check("off Vercel (local / CI) → no warning", !localUnsalted.includes("COMMS_RECIPIENT_HASH_SALT is unset"));
 
+  console.log("9c. SECURITY_IDENTIFIER_HASH_SALT (Comms Center A-2b) — warn-only on a deployment, never fatal, value never printed");
+  const idSalted = run({ ...CORE, ...PROD_EXTRA, NODE_ENV: "production", VERCEL: "1", VERCEL_ENV: "preview", SECURITY_IDENTIFIER_HASH_SALT: "id-s3cret-salt" });
+  check("deployed + unset → passes WITH the warning", unsalted.includes("VALIDATE_OK") && unsalted.includes("SECURITY_IDENTIFIER_HASH_SALT is unset"), unsalted.slice(0, 300));
+  check("deployed + set → no warning, and the value is never printed", idSalted.includes("VALIDATE_OK") && !idSalted.includes("SECURITY_IDENTIFIER_HASH_SALT is unset") && !idSalted.includes("id-s3cret-salt"));
+  check("off Vercel (local / CI) → no warning", !localUnsalted.includes("SECURITY_IDENTIFIER_HASH_SALT is unset"));
+
   console.log("10. Production + one Plaid cred only (not fully enabled) → not gated on PLAID_ENV");
   // Only CLIENT_ID present ⇒ isPlaidEnabled is false ⇒ ingestion not expected ⇒ the
   // sandbox gate must not fire (it keys on BOTH creds, matching env.isPlaidEnabled).

@@ -145,8 +145,9 @@ export interface SecurityOpsAnomaly {
  * The signal KIND of an anomaly key ("identifier:<raw>" → "identifier",
  * "ip:<addr>" → "ip", "system_admin_disabled" → itself). The raw login
  * identifier / IP is deliberately NOT emailed: it stays on the
- * SECURITY_ANOMALY_DETECTED audit row (metadata.key) and the Security Ops
- * in-app notification (anomalyKey), where operators already read it.
+ * SECURITY_ANOMALY_DETECTED audit row (metadata.key) only. The Security Ops
+ * in-app notification carries a salted hash of it (anomalyKey, equal to the
+ * audit row's metadata.keyHash — Comms Center A-2b, O-8).
  */
 export function anomalySignalKind(key: string): string {
   const i = key.indexOf(":");

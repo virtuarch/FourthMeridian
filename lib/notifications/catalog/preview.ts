@@ -78,7 +78,8 @@ export const IN_APP_FIXTURES: { readonly [K in NotificationTypeId]: Readonly<Rec
   POLICY_UPDATED: { [D]: { policyName: "Example policy" } },
   SECURITY_ANOMALY_DETECTED: {
     [D]: {
-      anomalyKey: "identifier:preview",
+      // The stored form is a salted hash (Comms Center A-2b, O-8); synthetic here.
+      anomalyKey: "identifier:h00000000000000000000000000000000",
       title: "Repeated failed sign-in attempts",
       summary: "8 failed sign-in attempts in the last 15 minutes (threshold 5).",
     },

@@ -160,6 +160,8 @@ export interface NotificationWriteClient {
         auditLogId: string | null;
         dedupeKey: string | null;
         expiresAt: Date | null;
+        /** Set at birth ONLY for an email anchor (in-app off, email on — A-2b). */
+        archivedAt?: Date;
       };
       select: { id: true };
     }): Promise<{ id: string }>;
@@ -349,12 +351,23 @@ export async function createNotification(
     );
   }
 
-  // 1b. Preference gate (OPS-3 S3, frozen F11) — S4: BOTH channels resolved
-  // from one override read (locked categories short-circuit, no read). The
-  // Notification row IS the in-app delivery, so an IN_APP-disabled category
-  // creates no row — and since the row anchors NotificationDelivery (FK),
-  // no email ships either; the row is the delivery anchor by design (S3
-  // semantics stand). A preference-read failure → non-throwing error result.
+  // 1b. Preference gate (OPS-3 S3, F11) — S4: BOTH channels resolved from one
+  // override read (locked types short-circuit, no read). The Notification row
+  // IS the in-app delivery, so an IN_APP-disabled category creates no visible
+  // row — and since the row anchors NotificationDelivery (FK) and the dedupe
+  // key, by default no email ships either (S3 semantics).
+  //
+  // OWNER RULING 2026-10-31 (Comms Center A-2b, O-7) amends F11 for types
+  // flagged `emailIndependentOfInApp` (SYNC_FAILED): their EMAIL leg follows
+  // ONLY the category's EMAIL preference. With IN_APP off and EMAIL on, the row
+  // is still written as an EMAIL ANCHOR — born ARCHIVED, so no inbox, unread
+  // count or bell ever shows it (lib/notifications/read.ts activeWhere) — and
+  // the email ships from it exactly as before: same NotificationDelivery row,
+  // same suppress-while-open dedupe on the same key (an anchor counts as open
+  // while the in-app channel is off), same retirement (resolve.ts releases
+  // archived holders too). The ledger records IN_APP SUPPRESSED PREFERENCE_OFF
+  // plus the email's own outcome. Every other type keeps the S3 coupling.
+  // A preference-read failure → non-throwing error result.
   const writer = ledgerWriterFor(ctx);
   const ledgerNow = new Date();
   /** Record ledger rows post-response (inline outside a request); never throws, never blocks the result. */
@@ -393,8 +406,13 @@ export async function createNotification(
     }
   }
   const emailEnabled = resolveChannelEnabled(def, "EMAIL", overrides);
-  if (!resolveChannelEnabled(def, "IN_APP", overrides)) {
-    // The row anchors the email leg, so an enabled email is lost with it: record both.
+  const inAppEnabled = resolveChannelEnabled(def, "IN_APP", overrides);
+  /** A-2b: in-app is off but this type's email follows its own preference, which is on. */
+  const emailAnchorOnly = !inAppEnabled && def.emailIndependentOfInApp === true && emailEnabled;
+  if (!inAppEnabled && !emailAnchorOnly) {
+    // Coupled types: the row anchors the email leg, so an enabled email is lost
+    // with it. Independent types reach here only when their EMAIL is off too.
+    // Either way nothing is sent: record both legs.
     await note(
       { channel: "IN_APP", status: "SUPPRESSED", reason: "PREFERENCE_OFF" },
       ...(emailEnabled || emailOffByPreference(def, emailEnabled)
@@ -430,13 +448,18 @@ export async function createNotification(
     auditLogId: input.auditLogId ?? null,
     dedupeKey,
     expiresAt: input.expiresAt ?? null,
+    // A-2b email anchor: archived at birth, so it is never visible in-app.
+    ...(emailAnchorOnly ? { archivedAt: ledgerNow } : {}),
   };
 
   // S4: on a successful insert, ship the EMAIL leg (preference-gated above)
   // and record its NotificationDelivery row. Post-response in request scope.
   const finishCreated = async (id: string): Promise<CreateNotificationResult> => {
     await note(
-      { channel: "IN_APP", status: "ACCEPTED", notificationId: id },
+      emailAnchorOnly
+        // The row is an email anchor only: the in-app leg was not delivered.
+        ? { channel: "IN_APP", status: "SUPPRESSED", reason: "PREFERENCE_OFF", notificationId: id }
+        : { channel: "IN_APP", status: "ACCEPTED", notificationId: id },
       ...(emailOffByPreference(def, emailEnabled)
         ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "PREFERENCE_OFF" as const, notificationId: id }]
         : []),
@@ -480,9 +503,12 @@ export async function createNotification(
     }
   }
 
-  // Dedupe suppression drops the email leg with the in-app one.
+  // Dedupe suppression drops the email leg with the in-app one. For an email
+  // anchor the in-app leg was off by preference, whatever the dedupe said.
   const noteDedupe = () => note(
-    { channel: "IN_APP", status: "SUPPRESSED", reason: "DEDUPE_OPEN" },
+    emailAnchorOnly
+      ? { channel: "IN_APP", status: "SUPPRESSED", reason: "PREFERENCE_OFF" }
+      : { channel: "IN_APP", status: "SUPPRESSED", reason: "DEDUPE_OPEN" },
     ...(emailEnabled ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "DEDUPE_OPEN" as const }] : []),
   );
 
@@ -493,8 +519,13 @@ export async function createNotification(
       select: { id: true, archivedAt: true },
     });
 
-    // Open holder → the condition is already surfaced. Suppress.
-    if (existing && existing.archivedAt === null) {
+    // Open holder → the condition is already surfaced. Suppress. While the
+    // in-app channel is off (A-2b email anchor), an ARCHIVED holder still
+    // holding the key is open too: it is the anchor of the email already sent
+    // for this condition (or a bell the user dismissed before turning in-app
+    // off) — releasing it would re-email the same outage on every sync. Its key
+    // is released by retirement (resolve.ts), when the condition really ends.
+    if (existing && (existing.archivedAt === null || emailAnchorOnly)) {
       await noteDedupe();
       return { status: "suppressed" };
     }

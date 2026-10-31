@@ -44,6 +44,29 @@
 - **Error codes** (no provider text is stored): `RENDER | TIMEOUT | NO_TRANSPORT | PROVIDER | STORE | PREFERENCE_READ | RECIPIENT_LOOKUP`. Resend does not expose an HTTP class, so 4xx and 5xx are one `PROVIDER` code.
 - **Recipient:** `recipientUserId`, or (only when there is no user) `HMAC-SHA256(COMMS_RECIPIENT_HASH_SALT, address)`. With no salt, no hash is stored. There is no `audience`, `mode`, `dedupeKey`, `idempotencyKey` or automation column yet; those arrive with Phase B.
 
+**v1.0.3 — Phase A-2b owner decisions (2026-10-31):**
+- **O-8 / AUDIT R-2 — the Security Ops bell cannot be muted.** `SECURITY_ANOMALY_DETECTED` is **locked per type** (`PER_TYPE_LOCKED_TYPES`, `lib/notifications/registry.ts`). It stays in PLATFORM; the PLATFORM row still governs the customer bells, but `resolveChannelEnabled` ignores it for this type. A category counts as locked only when every type in it is locked. The catalog reports `protected: true, userSuppressible: false`, and `KNOWN_SUPPRESSIBILITY_GAPS` is empty. Every other security-class type was audited: all ACCOUNT_SECURITY types are locked, and every direct security or operator send reads no preference.
+- **O-8 / AUDIT R-3 — hashed anomaly identifiers.**
+  - The bell's `metadata.anomalyKey`, and the `dedupeKey` built from it, hold `<kind>:h<first 128 bits of HMAC-SHA256(SECURITY_IDENTIFIER_HASH_SALT, trimmed lower-cased value)>` (`lib/security/identifier-hash.ts`). The salt is a **new** env var: `COMMS_RECIPIENT_HASH_SALT` keys recipient addresses for the ledger and purge, which is a different purpose, so it is not reused.
+  - Unset ⇒ a random per-process salt: never plaintext, and dedupe then holds within one instance only. `lib/env.ts` warns on a deployment.
+  - The AuditLog trip row keeps the raw `metadata.key` (unchanged) and gains `metadata.keyHash`, which equals the bell's `anomalyKey`.
+  - **Where operators look:** the Security Ops posture surface (kind plus an opaque reference). For the raw identifier or IP, they find the `SECURITY_ANOMALY_DETECTED` audit row whose `metadata.keyHash` matches the bell. `KNOWN_PII_DEDUPE_KEYS` is empty.
+- **O-7 (owner ruling) — connection-failure email is independent of in-app.**
+  - Applies to types flagged `emailIndependentOfInApp` (only `SYNC_FAILED`). Their EMAIL leg follows only the category's EMAIL preference.
+  - IN_APP off + EMAIL on: the Notification row is written **archived at birth** (an email anchor, invisible in-app) and the email ships from it. Ledger: `IN_APP SUPPRESSED PREFERENCE_OFF` plus the email's own row.
+  - The anchor holds the suppress-while-open key while in-app is off, so there is one email per outage. Retirement now also releases archived holders.
+  - EMAIL off: `EMAIL SUPPRESSED PREFERENCE_OFF`.
+  - Every other type keeps the F11/S3 coupling.
+  - Known limit: the retry job closes deliveries of archived notifications as OBSOLETE, so a failed anchor email is recorded FAILED but not retried.
+- **O-10 — per-recipient storm limit.**
+  - At most **5 ACCEPTED emails per recipient per rolling 60 min** (`EMAIL_STORM_LIMIT`), across every SERVICE / AWARENESS / MARKETING catalog key.
+  - Counted from `CommsDelivery` by `recipientUserId`, or by `recipientHash` when there is no user.
+  - Enforced in `sendEmail` after the recipient guard and before the provider.
+  - Over the limit ⇒ `skipped` / ledger `SUPPRESSED` with reason **`RATE_LIMITED`**. A count that cannot be read (error, 1.5 s timeout, or no recipient identity) ⇒ **`RATE_LIMIT_UNVERIFIED`** (fail closed).
+  - SECURITY_CRITICAL, CEREMONY and OPERATOR mail is exempt, never counted, and always sends.
+  - Both reasons are added to `SuppressionReason` (§3.3).
+  - The global platform cap (`GLOBAL_EMAIL_CAP_PER_HOUR`) is a documented TODO, `null` (OFF), until the Resend plan quota is known.
+
 ---
 
 ## 0. Agreed constraints (from Session 2) and how this contract meets them
@@ -322,7 +345,8 @@ type SuppressionReason =
   | "ACCOUNT_RESTRICTED"                                       // deactivated / deletion pending (schema.prisma:396-401)
   | "BETA_LIFECYCLE" | "ENTITLEMENT" | "PROVIDER_FREEZE"
   | "ENVIRONMENT_GUARD"                                        // Preview/allowlist guard (O-4)
-  | "AUTOMATION_PAUSED" | "STORM_BREAKER";
+  | "AUTOMATION_PAUSED" | "STORM_BREAKER"
+  | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";                // v1.0.3: per-recipient email storm limit (O-10)
 ```
 
 **Mapping of today's values** (`NotificationDelivery.status`, `prisma/schema.prisma:3816`):

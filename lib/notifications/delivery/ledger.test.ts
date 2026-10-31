@@ -245,7 +245,7 @@ function notificationWorld(opts: { overrides?: PreferenceOverride[]; email?: str
         if (data.dedupeKey !== null && notifications.some((r) => r.userId === data.userId && r.dedupeKey === data.dedupeKey)) {
           throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
         }
-        const row = { id: `n${++n}`, userId: data.userId, dedupeKey: data.dedupeKey, archivedAt: null };
+        const row = { id: `n${++n}`, userId: data.userId, dedupeKey: data.dedupeKey, archivedAt: data.archivedAt ?? null };
         notifications.push(row);
         return { id: row.id };
       },
@@ -278,9 +278,25 @@ async function inApp(): Promise<void> {
       again.status === "suppressed" && w.rows.slice(1).map((x) => `${x.channel}:${x.status}:${x.reason}`).join() === "IN_APP:SUPPRESSED:DEDUPE_OPEN,EMAIL:SUPPRESSED:DEDUPE_OPEN" && w.delivered.length === 1, w.rows);
   }
   {
+    // OWNER RULING 2026-10-31 (Comms Center A-2b, O-7): SYNC_FAILED's email
+    // follows only the FINANCIAL email preference. IN_APP off no longer drops it.
     const w = notificationWorld({ overrides: [{ category: "FINANCIAL", channel: "IN_APP", enabled: false }] });
     const r = await createNotification(SYNC, { client: w.client, prefClient: w.prefClient, emailAdapter: w.emailAdapter, ledger: w.writer });
-    check("IN_APP off → skipped; IN_APP SUPPRESSED PREFERENCE_OFF and the coupled EMAIL SUPPRESSED PREFERENCE_OFF (the email is lost too)",
+    check("SYNC_FAILED IN_APP off → IN_APP SUPPRESSED PREFERENCE_OFF (on the anchor), and the email is SENT (its own row comes from sendEmail)",
+      r.status === "created" && w.rows.map((x) => `${x.channel}:${x.status}:${x.reason}`).join() === "IN_APP:SUPPRESSED:PREFERENCE_OFF" && w.rows[0].notificationId === r.id && w.delivered.length === 1, w.rows);
+  }
+  {
+    const w = notificationWorld({ overrides: [{ category: "FINANCIAL", channel: "IN_APP", enabled: false }, { category: "FINANCIAL", channel: "EMAIL", enabled: false }] });
+    const r = await createNotification(SYNC, { client: w.client, prefClient: w.prefClient, emailAdapter: w.emailAdapter, ledger: w.writer });
+    check("SYNC_FAILED IN_APP off + EMAIL off → skipped; both legs SUPPRESSED PREFERENCE_OFF; nothing sent",
+      r.status === "skipped" && w.rows.map((x) => `${x.channel}:${x.status}:${x.reason}`).join() === "IN_APP:SUPPRESSED:PREFERENCE_OFF,EMAIL:SUPPRESSED:PREFERENCE_OFF" && w.delivered.length === 0, w.rows);
+  }
+  {
+    // Every other type keeps the S3 coupling: a SPACES email switched ON is still lost with IN_APP off.
+    const w = notificationWorld({ overrides: [{ category: "SPACES", channel: "IN_APP", enabled: false }, { category: "SPACES", channel: "EMAIL", enabled: true }] });
+    const r = await createNotification({ type: "MEMBER_ROLE_CHANGED", userId: "user_7", spaceId: "s1", data: { spaceName: "S", oldRole: "VIEWER", newRole: "EDITOR" } },
+      { client: w.client, prefClient: w.prefClient, emailAdapter: w.emailAdapter, ledger: w.writer });
+    check("a coupled type (MEMBER_ROLE_CHANGED) with IN_APP off → skipped; the enabled email is lost too (unchanged S3)",
       r.status === "skipped" && w.rows.map((x) => `${x.channel}:${x.status}:${x.reason}`).join() === "IN_APP:SUPPRESSED:PREFERENCE_OFF,EMAIL:SUPPRESSED:PREFERENCE_OFF" && w.delivered.length === 0, w.rows);
   }
   {
