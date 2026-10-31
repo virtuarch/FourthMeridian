@@ -224,17 +224,30 @@ export interface DayPersistencePlan {
   write: boolean;
   patch: NonNullable<DayRegenResult["fieldPatch"]> | null;
   stamp: NonNullable<DayRegenResult["cryptoValuationStatus"]> | null;
+  /**
+   * 2026-10-31 (review of #183) — CLEAR the stored status back to null. A REAL
+   * recompute (never a frozen or membership skip — those carry no authority)
+   * found no material crypto on an owned row that still carries a status — e.g.
+   * a pending `unavailable` the holder revaluation stamped before rebuilding it.
+   * Without this a null verdict could never undo a stamp, and the row would
+   * read `unavailable` forever.
+   */
+  clearStamp: boolean;
 }
 export function planDayPersistence(res: DayRegenResult, prior: StoredRowForPersistence | null): DayPersistencePlan {
   const owned = prior !== null && prior.isEstimated === true;
   const verdictDiffers = res.cryptoValuationStatus !== null && prior !== null && prior.cryptoValuationStatus !== res.cryptoValuationStatus;
+  const realVerdict = res.action !== "skip-frozen" && res.action !== "skip-membership-changed";
+  const clearable = owned && realVerdict && res.cryptoValuationStatus === null && prior!.cryptoValuationStatus !== null;
   if (res.action === "write-partial") {
     const p = res.fieldPatch ?? {};
     const patch = Object.keys(p).length > 0 && prior ? p : null;
     // A non-empty patch carries the verdict itself; an empty one must still record it.
-    return { disposition: patch ? "UPDATED" : null, write: false, patch, stamp: !patch && owned && verdictDiffers ? res.cryptoValuationStatus : null };
+    return { disposition: patch ? "UPDATED" : null, write: false, patch,
+      stamp: !patch && owned && verdictDiffers ? res.cryptoValuationStatus : null, clearStamp: !patch && clearable };
   }
   const candidate = classifyRegeneration(res, prior);
   const write = candidate.disposition === "UPDATED" && res.fields !== null;
-  return { disposition: candidate.disposition, write, patch: null, stamp: !write && owned && verdictDiffers ? res.cryptoValuationStatus : null };
+  return { disposition: candidate.disposition, write, patch: null,
+    stamp: !write && owned && verdictDiffers ? res.cryptoValuationStatus : null, clearStamp: !write && clearable };
 }

@@ -233,6 +233,12 @@ export async function syncCrypto(options: {
       // CoinGecko history): re-asked per triggering account's billed owner, so
       // a freeze that landed during the sweep is honoured before the price step.
       const historyCandidates = chains.filter((a) => chainSupportsHistory(a.walletChain)).map((a) => a.id);
+      // Owed holders' rows off `supported`/`none` first — refused/frozen owners
+      // included (a DB status write; values preserved; the rebuild below is gated).
+      if (historyCandidates.length > 0) {
+        const { stampOwedHolders, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
+        await stampOwedHolders(prismaRevaluationDeps(db), historyCandidates).catch(() => 0);
+      }
       const { billableAccountIds } = await import("@/lib/platform/policies/billable-subjects");
       const historyAccountIds = historyCandidates.length > 0 ? (await billableAccountIds(historyCandidates, "price_history")).allowed : [];
       if (historyAccountIds.length > 0) {

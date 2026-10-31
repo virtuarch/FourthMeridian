@@ -19,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import { minusDaysISO } from "@/lib/prices/config";
 import {
-  holderRevaluationFor, revalueHoldersAfterPriceGaps, revaluationOwedFromISO,
+  holderRevaluationFor, revalueHoldersAfterPriceGaps, revaluationOwedFromISO, stampOwedHolders, holderContributionSpans,
   type RevaluationDeps,
 } from "@/lib/prices/price-gap";
 import { valueCryptoDay, cryptoHoldersNotValued, type CryptoAccountBalance } from "@/lib/crypto/historical-crypto-valuation.core";
@@ -49,24 +49,25 @@ const ops = { writes: 0, patches: 0, stamps: 0 };
 const days = (from: string, to: string) => { const o: string[] = []; for (let d = from; d <= to; d = minusDaysISO(d, -1)) o.push(d); return o; };
 
 /** The binding's day, for a Space whose crypto holders are `withBtc ? SOL+BTC : SOL`. */
-function rebuild(from: string, to: string, withBtc: boolean): void {
+function rebuild(from: string, to: string, withBtc: boolean, o: { withSol?: boolean; btcZero?: (d: string) => boolean; cash?: number } = {}): void {
+  const withSol = o.withSol !== false;
   for (const d of days(from, to)) {
     if (d >= TODAY) continue; // the writable ceiling
     const accounts: CryptoAccountBalance[] = [
-      { financialAccountId: "sol", name: "SOL", nativeBalance: SOL_QTY, assetKey: "sol", symbol: "SOL", applicable: true },
-      ...(withBtc ? [{ financialAccountId: "btc", name: "BTC", nativeBalance: BTC_QTY, assetKey: "btc", symbol: "BTC", applicable: true }] : []),
+      ...(withSol ? [{ financialAccountId: "sol", name: "SOL", nativeBalance: SOL_QTY, assetKey: "sol", symbol: "SOL", applicable: true }] : []),
+      ...(withBtc ? [{ financialAccountId: "btc", name: "BTC", nativeBalance: o.btcZero?.(d) ? 0 : BTC_QTY, assetKey: "btc", symbol: "BTC", applicable: true }] : []),
     ];
-    const unitPriceByAssetKey: Record<string, number | null> = { sol: solPx(d), ...(withBtc ? { btc: btcPx(d) } : {}) };
+    const unitPriceByAssetKey: Record<string, number | null> = { ...(withSol ? { sol: solPx(d) } : {}), ...(withBtc ? { btc: btcPx(d) } : {}) };
     const v = valueCryptoDay({ accounts, unitPriceByAssetKey, quantityLicensed: true });
     const tokenDay = cryptoTokenDayDecision({ licensed: v.licensed, positionCount: v.positionCount }, null, d);
     const missing = cryptoHoldersNotValued({ accounts }, v);
     const evidence = tokenDay.tokensJoin; // as the binding: the guard is the day decision's (cryptoHoldersNotValued)
-    const flat = SOL_QTY * 101 + (withBtc ? BTC_QTY * 81000 : 0); // today's carried balance
+    const flat = (withSol ? SOL_QTY * 101 : 0) + (withBtc ? BTC_QTY * 81000 : 0); // today's carried balance
     const prior = store.get(d) ?? null;
     const res = regenerateDay({
       date: d, existingIsEstimated: prior ? prior.isEstimated : null,
       existing: prior,
-      base: { totalInvestments: 0, totalDigitalAssets: flat, totalChecking: 0, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+      base: { totalInvestments: 0, totalDigitalAssets: flat, totalChecking: o.cash ?? 0, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
       investmentValue: 0, investmentTier: "derived", hasInvestmentEvidence: false,
       digitalAssetValue: evidence ? v.nativeTotal : 0, digitalAssetTier: "estimated", hasDigitalAssetEvidence: evidence,
       digitalAssetHeldUnvalued: tokenDay.heldUnvalued, cryptoHoldersNotValued: missing,
@@ -84,6 +85,9 @@ function rebuild(from: string, to: string, withBtc: boolean): void {
     if (plan.stamp !== null && prior && prior.isEstimated) {
       ops.stamps++;
       store.set(d, { ...store.get(d)!, cryptoValuationStatus: plan.stamp });
+    } else if (plan.clearStamp && prior && prior.isEstimated) {
+      ops.stamps++;
+      store.set(d, { ...store.get(d)!, cryptoValuationStatus: null }); // a real recompute found no material crypto
     }
   }
 }
@@ -162,6 +166,44 @@ async function main() {
       r3.revalued === 1 && regens.length > n && (store.get("2026-09-01")?.crypto ?? 0) > 26000 && Math.abs(store.get("2026-10-27")!.crypto - 26793.013084) < 0.005, JSON.stringify(r3));
   }
 
+  console.log("owner ruling: an OWED window is never `supported` while it waits for its rebuild");
+  {
+    store.clear();
+    rebuild("2026-09-27", "2026-10-27", false); // SOL-only rows, `supported` — the holder is now owed
+    store.set(FROZEN_DAY, { date: FROZEN_DAY, stocks: 0, crypto: 26744.23, total: 26744.23, cash: 0, savings: 0, debt: 0, netWorth: 26744.23, totalAssets: 26744.23, netLiquid: 0, cashOnHand: 0, isEstimated: false, cryptoValuationStatus: null });
+    const wmarks = new Set<string>();
+    let clock = 0;
+    const applyStamp = async (_id: string, from: string, to: string) => {
+      let n = 0;
+      for (const d of days(from, to)) {
+        const r = store.get(d);
+        if (r && r.isEstimated && r.cryptoValuationStatus !== "unavailable") { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; }
+      }
+      return n;
+    };
+    const wdeps: RevaluationDeps = {
+      ...deps,
+      owed: async () => { const h = holderRevaluationFor({ ...holderArgs, accountId: "btc-w", floors: new Map([["BTC", "2026-09-27"]]), snapshotMinBySpace: new Map([["qa", minOf()]]) }); return h ? [h] : []; },
+      revaluedAlready: async (keys) => new Set(keys.filter((k) => wmarks.has(k))),
+      markRevalued: async (k) => { wmarks.add(k); },
+      markUnavailable: applyStamp,
+      regenerate: async (_id, from, to) => { rebuild(from, to, true); clock += 20_000; },
+      now: () => clock,
+    };
+    // A pass with time for only ONE batch (the newest): the rest of the window waits.
+    await revalueHoldersAfterPriceGaps({ accountIds: ["btc-w"], deps: wdeps, deadlineMs: 95_000, todayISO: TODAY, msPerDay: 10_000 });
+    const est = [...store.values()].filter((r) => r.isEstimated);
+    const pendingRows = est.filter((r) => r.crypto < 26000);
+    check("after a partial pass: rows not yet rebuilt are `unavailable` (never `supported` while missing the holder); rebuilt rows `supported`",
+      pendingRows.length > 0 && pendingRows.every((r) => r.cryptoValuationStatus === "unavailable") && est.some((r) => r.crypto > 26000 && r.cryptoValuationStatus === "supported"),
+      JSON.stringify(pendingRows.slice(0, 2)));
+    check("…the frozen row is untouched", store.get(FROZEN_DAY)!.cryptoValuationStatus === null && store.get(FROZEN_DAY)!.isEstimated === false);
+    clock = 0;
+    await revalueHoldersAfterPriceGaps({ accountIds: ["btc-w"], deps: wdeps, deadlineMs: 1e12, todayISO: TODAY });
+    check("…the rebuild restores `supported` per block: once done, every estimate row (bar the unpriced day) is `supported` with the holder",
+      days("2026-09-27", "2026-10-27").filter((d) => d !== BTC_UNPRICED_DAY).every((d) => store.get(d)!.cryptoValuationStatus === "supported" && store.get(d)!.crypto > 26000));
+  }
+
   console.log("owner ruling: an ABANDONED block never stays `supported`");
   {
     // Fresh stale state: the SOL-only rows again, plus the frozen observation.
@@ -177,11 +219,14 @@ async function main() {
       revaluedAlready: async (keys) => new Set(keys.filter((k) => pmarks.has(k))),
       markRevalued: async (k) => { pmarks.add(k); },
       attemptsOf: async (keys) => new Map(keys.filter((k) => ptries.has(k)).map((k) => [k, { ...ptries.get(k)! }])),
-      markAttempt: async (k, kind) => { const c = ptries.get(k) ?? { single: 0, batch: 0 }; c[kind]++; ptries.set(k, c); },
-      // The production stamp's contract: the status column only, ESTIMATE rows only.
+      markAttempt: async (k, kind) => { const c = ptries.get(k) ?? { single: 0, batch: 0 }; if (kind === "dry_single") c.single--; else if (kind === "dry_batch") c.batch--; else c[kind]++; ptries.set(k, c); },
+      // The production stamp's contract: the status column only, ESTIMATE rows only (supported AND null qualify).
       markUnavailable: async (_id, from, to) => {
         let n = 0;
-        for (const d of days(from, to)) { const r = store.get(d); if (r && r.isEstimated && r.cryptoValuationStatus !== "unavailable") { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; } }
+        for (const d of days(from, to)) {
+          const r = store.get(d);
+          if (r && r.isEstimated && r.cryptoValuationStatus !== "unavailable") { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; }
+        }
         return n;
       },
       regenerate: async (_id, from, to) => { if (from <= POISON && POISON <= to) throw new Error("poison"); rebuild(from, to, true); },
@@ -196,6 +241,73 @@ async function main() {
     check("…every other block was rebuilt with BTC and is `supported` (the bad day burned no neighbour)",
       days("2026-09-27", "2026-10-25").filter((d) => d !== BTC_UNPRICED_DAY).every((d) => store.get(d)!.crypto > 26000 && store.get(d)!.cryptoValuationStatus === "supported"));
     check("…no estimate row anywhere reads `supported` while understated", [...store.values()].every((r) => !(r.isEstimated && r.cryptoValuationStatus === "supported" && r.crypto < 26000)));
+  }
+
+  console.log("review #183 P1/P2: NULL rows, exact scope, frozen holder (stamp, don't rebuild), reversibility");
+  {
+    // A CASH-ONLY Space (rows NULL status, crypto 0 — read as `none`), then a BTC wallet with history is linked.
+    // BTC held nothing 10-10..10-12 (drained, refilled): those days are outside its contribution spans.
+    store.clear();
+    const drained = (d: string) => d >= "2026-10-10" && d <= "2026-10-12";
+    rebuild("2026-09-27", "2026-10-27", false, { withSol: false, cash: 1_000 });
+    check("setup: cash-only rows carry NULL status (read as `none`, i.e. asserted complete)",
+      days("2026-09-27", "2026-10-27").every((d) => store.get(d)!.cryptoValuationStatus === null && store.get(d)!.crypto === 0));
+    const valuesBefore = JSON.stringify([...store.values()].map((r) => ({ d: r.date, c: r.crypto, n: r.netWorth, cash: r.cash })));
+    const holder = holderRevaluationFor({ accountId: "btc-n", nativeLicences: new Map([["BTC", "2026-09-01"]]), allLicences: new Map([["BTC", "2026-09-01"]]),
+      floors: new Map([["BTC", "2026-09-01"]]), snapshotMinBySpace: new Map([["qa", "2026-09-27"]]), spaceIds: ["qa"], evidenceFloorISO: "2026-09-27", ceilingISO: "2026-10-30" })!;
+    const contributes = holderContributionSpans([
+      { instrumentId: "btc", dateISO: "2026-09-27", quantity: BTC_QTY }, { instrumentId: "btc", dateISO: "2026-10-10", quantity: 0 }, { instrumentId: "btc", dateISO: "2026-10-13", quantity: BTC_QTY },
+    ], holder.windowFromISO, "2026-10-30");
+    const nmarks = new Set<string>();
+    const calls = { gaps: 0, regen: 0, attempts: 0, done: 0 };
+    const ndeps: RevaluationDeps = {
+      acquireGaps: async () => { calls.gaps++; return { decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }; },
+      owed: async () => [{ ...holder, contributes }],
+      revaluedAlready: async (keys) => new Set(keys.filter((k) => nmarks.has(k))),
+      markRevalued: async (k) => { calls.done++; nmarks.add(k); },
+      attemptsOf: async () => new Map(),
+      markAttempt: async () => { calls.attempts++; },
+      markUnavailable: async (_id, from, to) => {
+        let n = 0;
+        for (const d of days(from, to)) { const r = store.get(d); if (r && r.isEstimated && r.cryptoValuationStatus !== "unavailable") { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; } }
+        return n;
+      },
+      regenerate: async (_id, from, to) => { calls.regen++; rebuild(from, to, true, { withSol: false, cash: 1_000, btcZero: drained }); },
+      now: () => 0,
+    };
+    // FROZEN: stamp, don't rebuild.
+    const stamped = await stampOwedHolders(ndeps, ["btc-n"], TODAY);
+    check("frozen holder: its NULL (`none`) rows are stamped `unavailable` — no rebuild, no gap fetch, no attempt, no done marker",
+      stamped > 0 && calls.regen === 0 && calls.gaps === 0 && calls.attempts === 0 && calls.done === 0
+        && days("2026-09-27", "2026-10-27").filter((d) => !drained(d)).every((d) => store.get(d)!.cryptoValuationStatus === "unavailable"));
+    check("…VALUES preserved exactly (status only — never nulled, zeroed or omitted)",
+      JSON.stringify([...store.values()].map((r) => ({ d: r.date, c: r.crypto, n: r.netWorth, cash: r.cash }))) === valuesBefore);
+    check("…EXACT scope: days the holder held nothing (drained 10-10..10-12) are NOT stamped",
+      ["2026-10-10", "2026-10-11", "2026-10-12"].every((d) => store.get(d)!.cryptoValuationStatus === null));
+    // UNFREEZE: the next allowed pass rebuilds and clears the stamp automatically.
+    await revalueHoldersAfterPriceGaps({ accountIds: ["btc-n"], deps: ndeps, deadlineMs: 1e12, todayISO: TODAY });
+    check("after unfreeze: rebuilt — held days now include BTC and read `supported` (the stamp is reversed, not final)",
+      days("2026-09-27", "2026-10-27").filter((d) => !drained(d) && d !== BTC_UNPRICED_DAY).every((d) => store.get(d)!.cryptoValuationStatus === "supported" && store.get(d)!.crypto > 26000));
+    check("…drained days are decided by the rebuild's own verdict (never `supported` at $0); the unpriced day is honestly `unavailable`",
+      ["2026-10-10", "2026-10-11", "2026-10-12"].every((d) => store.get(d)!.cryptoValuationStatus !== "supported") && store.get(BTC_UNPRICED_DAY)!.cryptoValuationStatus === "unavailable");
+
+    // clearStamp: a stamped row whose REAL recompute finds no material crypto is restored to NULL.
+    store.clear();
+    rebuild("2026-10-01", "2026-10-03", false, { withSol: false, cash: 1_000 });
+    for (const d of days("2026-10-01", "2026-10-03")) store.set(d, { ...store.get(d)!, cryptoValuationStatus: "unavailable" });
+    rebuild("2026-10-01", "2026-10-03", false, { withSol: false, cash: 1_000 }); // a REAL recompute: no crypto at all
+    check("planDayPersistence clearStamp: a pending stamp on a day whose real recompute finds no crypto is CLEARED to NULL (never stranded)",
+      days("2026-10-01", "2026-10-03").every((d) => store.get(d)!.cryptoValuationStatus === null));
+    // …but a membership skip carries no authority: it neither stamps nor clears.
+    const skip = regenerateDay({ date: "2026-10-01", existingIsEstimated: true,
+      existing: { stocks: 0, crypto: 0, total: 0, cash: 1000, savings: 0, debt: 0, netWorth: 1000, totalAssets: 1000, netLiquid: 1000, cashOnHand: 1000 },
+      base: { totalInvestments: 0, totalDigitalAssets: 0, totalChecking: 1000, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+      investmentValue: 0, investmentTier: "derived", hasInvestmentEvidence: false, digitalAssetValue: 0, digitalAssetTier: "estimated",
+      hasDigitalAssetEvidence: false, cashCardTier: "derived", membershipChangedSince: true });
+    const skipPrior: Row = { date: "2026-10-01", stocks: 0, crypto: 0, total: 0, cash: 1000, savings: 0, debt: 0, netWorth: 1000, totalAssets: 1000, netLiquid: 1000, cashOnHand: 1000, isEstimated: true, cryptoValuationStatus: "unavailable" };
+    const skipPlan = planDayPersistence(skip, skipPrior);
+    check("a membership-changed skip neither stamps nor clears (so the stamp never covers such days — see unblockedRanges)",
+      skip.action === "skip-membership-changed" && skipPlan.stamp === null && skipPlan.clearStamp === false && !skipPlan.write, JSON.stringify(skipPlan));
   }
 
   console.log("the day decision's holder-completeness guard");
@@ -246,6 +358,9 @@ async function main() {
   console.log("wiring (complements the behavioural checks)");
   {
     const src = readFileSync("lib/snapshots/regenerate-history.ts", "utf8");
+    check("the binding executes planDayPersistence's clearStamp as a metadata-only NULL stamp (so a pending stamp is never stranded)",
+      /else if \(applyWrites && plan\.clearStamp\) metadataOnlyStamps\.push\(\{ date: d, status: null \}\);/.test(src)
+        && /where: \{ spaceId, date: m\.date, isEstimated: true \},\s*data:  \{ cryptoValuationStatus: m\.status \}/.test(src));
     check("the binding computes the missing holders from the SAME accounts it values, and hands them to the day decision",
       /cryptoHoldersMissing = cryptoHoldersNotValued\(\{ accounts: cryptoDayAccounts \}, cryptoDayValuation\);/.test(src)
         && /valueCryptoDay\(\{\s*accounts: cryptoDayAccounts,/.test(src) && /cryptoHoldersNotValued: cryptoHoldersMissing,/.test(src));
