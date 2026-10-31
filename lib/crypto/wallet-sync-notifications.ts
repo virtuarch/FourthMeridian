@@ -23,10 +23,17 @@
  *   failure long. (Review fix 2026-10-31: the Connection's DEGRADED-since time
  *   was the wrong clock — a DEGRADED period can be made of SUCCESSFUL syncs.)
  *   SKIPPED attempts and attempts still RUNNING are neither failure nor
- *   success. Measured from the first FAILURE, never from the last success, so
- *   a pause in attempts (Cost Freeze, a deactivated owner) cannot turn the
- *   first failure after it into a notice. At least two failed attempts, 24 h
- *   apart (≥ 4 sync windows at the default 6-hourly cadence). No ledger row ⇒
+ *   success. THE RULE, exactly: notify when this attempt failed AND the
+ *   oldest FAILED attempt since the latest successful one started ≥ 24 h ago.
+ *   It is measured from the first FAILURE, never from the last success, so a
+ *   gap in attempts (a Cost Freeze, a deactivated owner) with NO failure before
+ *   it cannot make the first failure after it qualify — that failure starts a
+ *   new run. But a gap does NOT break a run: a failure before the gap and
+ *   another after it, ≥ 24 h apart with no success between, DO qualify (the
+ *   wallet really has not synced since the first one). It never notifies WHILE
+ *   frozen: the freeze skips the sync itself, and the flag is re-read here
+ *   before notifying (unreadable = frozen). So: at least two failed attempts,
+ *   ≥ 24 h apart (≥ 4 sync windows at the default 6-hourly cadence). No ledger row ⇒
  *   no evidence ⇒ no notice (conservative). Rows live 60 days
  *   (jobs/data-retention.ts), far beyond the 24 h this needs.
  *

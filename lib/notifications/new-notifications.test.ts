@@ -178,44 +178,88 @@ async function main() {
     t.check("…a later observation keeps it disconnected (no downgrade, still one row)",
       syncFailed(reauth.id).length === 1 && (syncFailed(reauth.id)[0].metadata as Record<string, unknown>).connectionState === "disconnected");
 
+    // E1 — escalation is ONLY to "disconnected": a NEEDS_REAUTH re-trigger or a plain ERROR while a
+    // notice is open never rewrites it.
+    const steady = mkItem("ext-steady"); link(steady.id, false);
+    await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-steady", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
+    const steadyRow = () => syncFailed(steady.id)[0];
+    const steadyTitle = String(steadyRow().title);
+    await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-steady", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
+    fake.table("PlaidItem").forEach((r) => { if (r.id === steady.id) r.status = "ERROR"; });
+    await notifyItemSyncFailed(steady.id as string); // an ERROR observed by a sync during the open reauth notice
+    t.check("NEEDS_REAUTH re-trigger + an ERROR during the open notice → NOT rewritten (still reauth-required, same copy)",
+      syncFailed(steady.id).length === 1 && (steadyRow().metadata as Record<string, unknown>).connectionState === "reauth-required"
+        && steadyRow().title === steadyTitle, steadyRow().title);
+
+    // E3 — escalation is scoped to the item's OWNER: another user's open notice — even one carrying the
+    // same key string — is untouched.
+    const other = fake.seed("User", { email: "other@example.test", username: "other", passwordHash: "x", emailVerifiedAt: new Date() });
+    const shared = mkItem("ext-shared"); link(shared.id, false);
+    await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-shared", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
+    const foreign = fake.seed("Notification", {
+      userId: other.id, category: "FINANCIAL", type: "SYNC_FAILED", priority: "HIGH", title: "Other user's notice", body: "untouched",
+      dedupeKey: `SYNC_FAILED:item:${shared.id}:open`, metadata: { plaidItemId: shared.id, institutionName: "Other", connectionState: "reauth-required" },
+    });
+    await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-shared" });
+    const foreignAfter = fake.one("Notification", { id: foreign.id })!;
+    const ownerAfter = syncFailed(shared.id).find((r) => r.userId === u.id)!;
+    t.check("the owner's notice escalated, another user's notice (same key string) untouched",
+      (ownerAfter.metadata as Record<string, unknown>).connectionState === "disconnected"
+        && foreignAfter.title === "Other user's notice" && (foreignAfter.metadata as Record<string, unknown>).connectionState === "reauth-required");
+
     // The removal rule still applies to escalation: reauth notice open, the user removes, then the revoke lands.
     const gone = mkItem("ext-gone"); link(gone.id, false);
+    const mailBeforeGone = capturedEmails().length;
     await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-gone", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
     fake.table("AccountConnection").forEach((r) => { if (r.plaidItemDbId === gone.id) r.deletedAt = new Date(); });
     await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-gone" });
     t.check("removed by the user mid-outage: the open notice is NOT escalated to 'disconnected', no e-mail",
       syncFailed(gone.id).length === 1 && (syncFailed(gone.id)[0].metadata as Record<string, unknown>).connectionState === "reauth-required"
-        && capturedEmails().length === 2, subjects());
+        && capturedEmails().length === mailBeforeGone + 1, subjects());
 
     // An email ANCHOR (FINANCIAL in-app off, email on — A-2b) is archived and never re-rendered by an
     // escalation: rewriting its metadata would drop the anchor marker, and the outage would e-mail again
     // once in-app is turned back on.
     const anchored = mkItem("ext-anchor"); link(anchored.id, false);
+    const mailBeforeAnchor = capturedEmails().length;
     const pref = fake.seed("NotificationPreference", { userId: u.id, category: "FINANCIAL", channel: "IN_APP", enabled: false });
     await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-anchor", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
     const before = capturedEmails().length;
     await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-anchor" });
     fake.table("NotificationPreference").splice(fake.table("NotificationPreference").indexOf(pref), 1);
     await notifyItemSyncFailed(anchored.id as string);
+    // E2 — the escalation IS reached with the archived anchor present (the create is suppressed by it),
+    // and the anchor stays untouched.
+    const { refreshOpenNotification } = await import("@/lib/notifications/resolve");
+    const anchorBefore = JSON.stringify(syncFailed(anchored.id)[0]);
+    let reached = 0, updated = -1;
+    fake.seed("NotificationPreference", { userId: u.id, category: "FINANCIAL", channel: "IN_APP", enabled: false });
+    await notifyItemSyncFailed(anchored.id as string, {
+      itemClient: (await import("@/lib/db")).systemDb as never,
+      refreshFn: async (...a) => { reached++; updated = await refreshOpenNotification(...a); return updated; },
+    });
+    fake.table("NotificationPreference").splice(0);
+    t.check("escalation REACHED with the anchor holding the key (REVOKED item, suppressed create) — and it updates nothing",
+      reached === 1 && updated === 0 && JSON.stringify(syncFailed(anchored.id)[0]) === anchorBefore, { reached, updated });
     t.check("an archived email anchor is left alone by the escalation: in-app back on, still no second e-mail",
       syncFailed(anchored.id).length === 1 && capturedEmails().length === before
         && (syncFailed(anchored.id)[0].metadata as Record<string, unknown>).connectionState === "reauth-required", subjects());
 
     await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-removed" });
     t.check("the user REMOVED the connection: webhook REVOKED writes the status but notifies NOBODY",
-      fake.one("PlaidItem", { id: removed.id })!.status === "REVOKED" && syncFailed(removed.id).length === 0 && capturedEmails().length === 3);
+      fake.one("PlaidItem", { id: removed.id })!.status === "REVOKED" && syncFailed(removed.id).length === 0 && capturedEmails().length === mailBeforeAnchor + 1);
 
     await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-revoked" });
     const n3 = syncFailed(revoked.id);
     t.check("a PROVIDER-side revocation (connections live) → one notice, state disconnected",
-      n3.length === 1 && (n3[0].metadata as Record<string, unknown>).connectionState === "disconnected" && capturedEmails().length === 4);
+      n3.length === 1 && (n3[0].metadata as Record<string, unknown>).connectionState === "disconnected" && capturedEmails().length === mailBeforeAnchor + 2);
 
     await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-dead", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
     t.check("an item already REVOKED is never re-notified", syncFailed(dead.id).length === 0 && fake.one("PlaidItem", { id: dead.id })!.status === "REVOKED");
     await deliver({ webhook_type: "ITEM", webhook_code: "PENDING_EXPIRATION", item_id: "ext-expiring" });
     await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-expiring", error: { error_code: "INSTITUTION_DOWN" } });
     t.check("PENDING_EXPIRATION and a transient ITEM/ERROR move no state and notify nobody",
-      syncFailed(expiring.id).length === 0 && fake.one("PlaidItem", { id: expiring.id })!.status === "ACTIVE" && capturedEmails().length === 4);
+      syncFailed(expiring.id).length === 0 && fake.one("PlaidItem", { id: expiring.id })!.status === "ACTIVE" && capturedEmails().length === mailBeforeAnchor + 2);
   }
 
   // ── 3. Wallet sync failure ──────────────────────────────────────────────────
@@ -279,6 +323,14 @@ async function main() {
     w = wallet({ runStartHoursAgo: null });
     attempt(w.fa, "FAILED", 30); attempt(w.fa, "SKIPPED", 10); attempt(w.fa, "FAILED", 0);
     t.check("a SKIPPED attempt is neither: the 30 h run of failures still notifies",
+      (await fail(w.fa)) === "NOTIFIED" && notices().length === 1);
+    w = wallet({ runStartHoursAgo: null });
+    attempt(w.fa, "SKIPPED", 30); attempt(w.fa, "FAILED", 0);
+    t.check("SKIPPED 30 h ago, then ONE failure now → NOT_SUSTAINED (a skip is not a failure)",
+      (await fail(w.fa)) === "NOT_SUSTAINED" && notices().length === 0);
+    w = wallet({ runStartHoursAgo: null });
+    attempt(w.fa, "FAILED", 30); attempt(w.fa, "FAILED", 0); // a gap (no attempts) between them
+    t.check("a failure BEFORE a gap and one after, ≥ 24 h apart, no success → qualifies (the gap does not break the run)",
       (await fail(w.fa)) === "NOTIFIED" && notices().length === 1);
 
     w = wallet({ runStartHoursAgo: 25 });
