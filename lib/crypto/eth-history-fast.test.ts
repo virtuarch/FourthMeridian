@@ -37,6 +37,7 @@
 import {
   acquireEthHistory, ethFastPathEnabled, fastProbePoints, parseAssetTransfersPage, EARLIEST_PROVABLE_BLOCK,
   WEI_PER_GWEI, ASSET_TRANSFERS_METHOD, DEFAULT_CHUNK_BLOCKS, INDEX_PAGE_UNITS, INDEX_PAGE_BUDGET_SHARE, FAST_UNITS_PER_PROBE,
+  KEY_PROOF_MAX_BLOCKS, FAST_MIN_START_UNITS,
   type EthAccountState, type EthHistoryAcquisition, type EthHistoryCursor, type EthHistoryDeps, type EthRpcTransport,
 } from "./eth-history";
 import { reconcileMovementsAgainstBalance, type ChainCoverage, type ChainMovement } from "./chain-movement";
@@ -554,6 +555,43 @@ async function main() {
     check("…not found within KEY_PROOF_MAX_BLOCKS ⇒ laid out as receive-only (chunk-bounded), identical to the walk",
       result(full.acq) === result(walk.acq) && maxProbeGap(full.sim.stats.probesAt, EARLIEST_PROVABLE_BLOCK, HEAD) <= DEFAULT_CHUNK_BLOCKS
         && (full.meter["eth_getBlockReceipts"] ?? 0) <= 8 + 1, JSON.stringify(full.meter));
+  }
+
+  {
+    // The 8-block bound itself: 30 phantom "from" listings (no signed receipt
+    // among them), no deadline, a large budget — the key proof still reads at
+    // most KEY_PROOF_MAX_BLOCKS blocks' receipts before giving up.
+    const events: IndexedSimEvent[] = [{ block: 21_000_000, delta: ETH(2) }];
+    const phantom = Array.from({ length: 30 }, (_, i) => ({ block: 25_900_000 + i * 100, dir: "from" as const }));
+    const r = await acquire({ events, index: { phantom } }, { fastPath: true });
+    const receipts = r.meter["eth_getBlockReceipts"] ?? 0;
+    // The COST BOUND is pinned as a literal, not the constant: raising the limit
+    // must be a deliberate test change (each block is a 500-CU receipts read).
+    const PINNED_KEY_PROOF_BLOCKS = 8;
+    check(`the key proof reads at most ${PINNED_KEY_PROOF_BLOCKS} blocks' receipts (+ evidence), however many candidates (constant ${KEY_PROOF_MAX_BLOCKS})`,
+      r.acq.coverage.kind === "COMPLETE" && receipts <= PINNED_KEY_PROOF_BLOCKS + r.acq.changeBlocks.length,
+      `receipts ${receipts}, changes ${r.acq.changeBlocks.length}`);
+  }
+
+  // ══ 16. A SMALL STEP BUDGET USES THE WALK ══════════════════════════════════
+  console.log(`\n16. A budget below one page batch + one candidate (${FAST_MIN_START_UNITS} units) progresses like the walk`);
+  for (const budget of [12, 17]) {
+    const steps = async (fastPath: boolean) => {
+      let cursor: EthHistoryCursor | undefined;
+      const bounds: Array<number | null> = [];
+      const sim = simulate({ events: TYPICAL });
+      for (let i = 0; i < 3; i++) {
+        const acq = await acquireEthHistory({ ownerAddress: OWNER, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock: HEAD, cursor },
+          { transport: sim.transport, fastPath, probeBudget: budget });
+        if (acq.coverage.kind === "COMPLETE") cursor = acq.cursor;
+        bounds.push(cursor?.provenFromBlock ?? null);
+        if (acq.fastPath) check(`budget ${budget}: the fast path stood aside for the walk`, acq.fastPath.disabledBecause === "BUDGET_BELOW_FAST_MINIMUM");
+      }
+      return bounds;
+    };
+    const fast = await steps(true), walk = await steps(false);
+    check(`budget ${budget}: 3 steps advance exactly as the walk's`, JSON.stringify(fast) === JSON.stringify(walk) && walk[2] !== null && walk[2] < HEAD,
+      `fast ${fast.join(",")} walk ${walk.join(",")}`);
   }
 
   console.log(`\neth-history-fast: ${passes} passed, ${failures} failed`);

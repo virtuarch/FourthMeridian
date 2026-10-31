@@ -678,6 +678,13 @@ export const FAST_UNITS_PER_PROBE = 2;
 export const INDEX_PAGE_UNITS = 8;
 /** At most this share of a run's budget may go to index pages (always ≥ one batch of both streams). */
 export const INDEX_PAGE_BUDGET_SHARE = 0.25;
+/**
+ * The least budget a fast segment can make progress with: one page batch (both
+ * streams) plus one candidate's two probe points. Below it — an allowance near
+ * the shared cap — the run uses the WALK, which can close a quiet chunk with
+ * a single probe, so a small step still advances.
+ */
+export const FAST_MIN_START_UNITS = 2 * INDEX_PAGE_UNITS + 2 * FAST_UNITS_PER_PROBE;
 /** Receipt reads per request while looking for the key proof. */
 export const KEY_PROOF_BATCH_BLOCKS = 2;
 /** Blocks examined for the key proof per run, at most. */
@@ -1245,6 +1252,12 @@ export async function acquireEthHistory(
     }
 
     while (!proofHole && !budgetExhausted && provenFrom > lo) {
+      if (fastOn && streams === null && budget - probesUsed < FAST_MIN_START_UNITS) {
+        // Too small a budget to page the index and probe a candidate: the walk.
+        fastOn = false;
+        fastStats.disabledBecause = "BUDGET_BELOW_FAST_MINIMUM";
+        continue;
+      }
       if (fastOn) {
         unitsPerProbe = FAST_UNITS_PER_PROBE;
         const r = await fastSegment();
