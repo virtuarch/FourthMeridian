@@ -13,6 +13,10 @@
 
 import "@/lib/test-support/route-env";
 import { createBillableBatchGate, BILLABLE_BATCH_MAX_AGE_MS, type BillableDecision } from "@/lib/entitlements/billable-gate";
+import { CATALOGUE_TTL_MS } from "@/lib/platform/policies/policy-group-catalogue";
+import { classifyJobHealth } from "@/lib/jobs/health";
+import { billedPriceAccountIds } from "@/lib/snapshots/regenerate-history";
+import { readFileSync } from "node:fs";
 import { billableSkipCode } from "@/lib/entitlements/billable-gate-core";
 import { syncBanks, type SyncBanksCandidate } from "@/jobs/sync-banks";
 import { resumeStaleImports } from "@/jobs/resume-stale-imports";
@@ -69,7 +73,8 @@ async function main() {
     check(`a decision is reused at most ${BILLABLE_BATCH_MAX_AGE_MS} ms (still the old answer at exactly the bound)`, (await gate.decide("u1")).allowed && reads === 1);
     t += 1;
     check("…then re-read: a freeze that landed mid-run stops the NEXT item", !(await gate.decide("u1")).allowed && reads === 2);
-    check("the bound: catalogue TTL 25 s + batch reuse 5 s = 30 s (the owner's propagation limit)", 25_000 + BILLABLE_BATCH_MAX_AGE_MS === 30_000);
+    check("the bound: catalogue TTL (20 s, from read start) + batch reuse (5 s) + a read under 5 s ≤ 30 s",
+      CATALOGUE_TTL_MS + BILLABLE_BATCH_MAX_AGE_MS + 5_000 <= 30_000, { CATALOGUE_TTL_MS });
     const broken = createBillableBatchGate(["u1"], "plaid_sync", { load: async () => { throw new Error("db down"); } });
     const d = await quiet(() => broken.decide("u1"));
     check("a policy read that THROWS ⇒ POLICY_UNAVAILABLE (fail closed)", !d.allowed && (d as { reason: string }).reason === "POLICY_UNAVAILABLE");
@@ -89,6 +94,7 @@ async function main() {
     let reads = 0;
     const processed: string[] = []; const denials: string[] = [];
     const run = (m: Record<string, BillableDecision>) => quiet(() => syncBanks({
+      costFreeze: async () => openFlag,
       loadItems: async () => items.map((i) => ({ ...i })),
       admit: async () => ({ decision: ADMIT_WORD, reason: null }),
       billable: async (ids) => { reads++; return decisions(m)(ids); },
@@ -107,9 +113,29 @@ async function main() {
     await run({});
     check("after unfreezing, the same Item runs on the next sweep (its cursor was never moved)", processed.includes("i-frozen") && denials.length === 1 /* the orphan */);
     processed.length = 0;
-    const failed = await quiet(() => syncBanks({ loadItems: async () => items.slice(0, 2), admit: async () => ({ decision: ADMIT_WORD, reason: null }),
+    const failed = await quiet(() => syncBanks({ costFreeze: async () => openFlag, loadItems: async () => items.slice(0, 2), admit: async () => ({ decision: ADMIT_WORD, reason: null }),
       billable: async () => { throw new Error("policy store down"); }, recordDenial: async () => {}, processItem: async (it) => { processed.push(it.id); return "succeeded"; } }));
     check("fail closed: policy read throws ⇒ every Item refused POLICY_UNAVAILABLE, zero pipeline calls", processed.length === 0 && failed.planRestrictedReasons?.POLICY_UNAVAILABLE === 2, failed);
+
+    // Review P3-2 — the GLOBAL freeze is ONE job-level finding, not a row per Item.
+    processed.length = 0; denials.length = 0;
+    const g = await quiet(() => syncBanks({ costFreeze: async () => frozenFlag, loadItems: async () => items.map((i) => ({ ...i })),
+      admit: async () => ({ decision: ADMIT_WORD, reason: null }), billable: decisions({}),
+      recordDenial: async (it, reason) => { denials.push(`${it.id}:${reason}`); }, processItem: async (it) => { processed.push(it.id); return "succeeded"; } }));
+    check("GLOBAL freeze: ONE job-level finding (outcome SKIPPED, BILLABLE_COST_FREEZE), zero per-Item rows, zero pipeline calls",
+      g.outcome === "SKIPPED" && g.skipReason === "BILLABLE_COST_FREEZE" && denials.length === 0 && processed.length === 0 && g.deferred === 0, g);
+  }
+
+  console.log("1b. job health: a refused run is SKIPPED, never a success (review P2-2)");
+  {
+    const job = { name: "fetch-fx-rates", hourUTC: 6 } as never;
+    const now = new Date("2026-10-31T12:00:00Z");
+    const run = (summary: unknown) => ({ startedAt: new Date(now.getTime() - 3_600_000), status: "succeeded", completedAt: now, durationMs: 10, trigger: "cron", errorSummary: null, summary });
+    const skipped = classifyJobHealth(job, [run({ outcome: "SKIPPED", skipReason: "BILLABLE_COST_FREEZE" })], now);
+    check("a run whose summary says SKIPPED ⇒ status `skipped`, with its reason; not counted as a success",
+      skipped.status === "skipped" && skipped.lastSkipReason === "BILLABLE_COST_FREEZE" && skipped.succeededRuns === 0 && skipped.skippedRuns === 1, skipped);
+    const ok = classifyJobHealth(job, [run({ outcome: "COMPLETE" })], now);
+    check("an ordinary run stays `healthy`", ok.status === "healthy" && ok.succeededRuns === 1 && ok.lastSkipReason === null);
   }
 
   console.log("2. resume-stale-imports cron");
@@ -129,6 +155,29 @@ async function main() {
     driven.length = 0;
     await run({});
     check("after unfreezing, the import resumes (driven with an allowed decision)", driven.includes("p1"));
+
+    // Review P1-1 — STARVATION: six frozen customers' stale Items are OLDER than an allowed one. The
+    // page (5 slots) must not be held by refusals forever: restricted connectors are excluded from it.
+    const population = [...Array.from({ length: 6 }, (_, i) => ({ id: `f${i}`, institutionName: "F", userId: `u-f${i}` })), { id: "ok1", institutionName: "OK", userId: "u-ok" }];
+    const frozenUsers = Object.fromEntries(population.filter((p) => p.userId !== "u-ok").map((p) => [p.userId, FROZEN] as const));
+    let starvedReads = 0;
+    for (let pass = 1; pass <= 3; pass++) {
+      const drove: string[] = [];
+      const r = await quiet(() => resumeStaleImports({
+        loadCandidateUsers: async () => [...new Set(population.map((p) => p.userId))],
+        loadCandidates: async (_c, take, opts) => {
+          const pool = population.filter((p) => !(opts?.excludeUserIds ?? []).includes(p.userId));
+          return { candidates: pool.length, items: pool.slice(0, take) };
+        },
+        admit: async () => admitted,
+        billable: async (ids) => { starvedReads++; return decisions(frozenUsers)(ids); },
+        drive: async (id) => { drove.push(id); return "ran"; },
+        recordAttempt: async () => {}, resetCompleted: async () => {},
+      }));
+      check(`pass ${pass}: 6 refused Items ahead of an allowed one ⇒ the allowed import IS driven (no starvation)`,
+        drove.join() === "ok1" && r.attempted === 1 && r.planRestrictedUsers === 6, { drove, r });
+    }
+    check("…one policy read per pass", starvedReads === 3);
   }
 
   console.log("3. the shared deferred-sync choke point (Plaid webhook, connect follow-on, resume-sync, resume-stale-imports)");
@@ -195,7 +244,7 @@ async function main() {
       listWallets: async () => [], sync: async () => { throw new Error("no"); }, policy: async () => resolveRefreshPolicy({ sourceKind: "WALLET" }, null),
       admit: async () => ({ decision: ADMIT_WORD }), clock: () => Date.now(), billable: decisions({}) } }));
     check("capability probe + close-archive maintenance SKIPPED, recorded BILLABLE_COST_FREEZE, zero vendor calls",
-      r.platformSkipped?.reason === "BILLABLE_COST_FREEZE" && r.closeCoverage.length === 0 && fetchCalls === before, r.platformSkipped);
+      r.platformSkipped?.reason === "BILLABLE_COST_FREEZE" && r.outcome === "SKIPPED" && r.closeCoverage.length === 0 && fetchCalls === before, r.platformSkipped);
     const u = await quiet(() => syncCrypto({ costFreeze: async () => judgeGlobalCostFreeze(null, true), refresh: {
       listWallets: async () => [], sync: async () => { throw new Error("no"); }, policy: async () => resolveRefreshPolicy({ sourceKind: "WALLET" }, null),
       admit: async () => ({ decision: ADMIT_WORD }), clock: () => Date.now(), billable: decisions({}) } }));
@@ -207,9 +256,12 @@ async function main() {
     const before = fetchCalls;
     const fx = await quiet(() => fetchFxRates({ costFreeze: async () => frozenFlag }));
     check("fetch-fx-rates: SKIPPED before any read or vendor call (Open Exchange Rates is key-metered; free fallback blocked by default)",
-      fx.source === "skipped" && fx.inserted === 0 && fx.billableRestricted === "BILLABLE_COST_FREEZE" && fetchCalls === before, fx);
+      fx.source === "skipped" && fx.inserted === 0 && fx.billableRestricted === "BILLABLE_COST_FREEZE" && fx.outcome === "SKIPPED" && fx.skipReason === "BILLABLE_COST_FREEZE" && fetchCalls === before, fx);
+    check("fetch-fx-rates: an unfrozen run re-checks the previous days (bounded catch-up, FX_CATCH_UP_DAYS)",
+      /FX_CATCH_UP_DAYS = 7/.test(readFileSync("jobs/fetch-fx-rates.ts", "utf8")) && /for \(let back = FX_CATCH_UP_DAYS; back >= 1; back--\)/.test(readFileSync("jobs/fetch-fx-rates.ts", "utf8")));
     const px = await quiet(() => fetchSecurityPrices(new Date("2026-10-31T12:00:00Z"), { costFreeze: async () => frozenFlag }));
-    check("fetch-security-prices: SKIPPED (Tiingo), nothing fetched or written", px.billableRestricted === "BILLABLE_COST_FREEZE" && px.fetched === 0 && px.inserted === 0 && fetchCalls === before, px);
+    check("fetch-security-prices: SKIPPED (Tiingo), nothing fetched or written; status `skipped`, never `ok`",
+      px.billableRestricted === "BILLABLE_COST_FREEZE" && px.status === "skipped" && px.outcome === "SKIPPED" && px.fetched === 0 && px.inserted === 0 && fetchCalls === before, px);
     check("the on-read FX refresh calls the SAME job body, so it serves the cache while frozen",
       /fetchFxRates\(\)/.test((await import("node:fs")).readFileSync("lib/money/server-context.ts", "utf8")));
     const read = (raw: string | null, throws = false) => readGlobalCostFreeze({ platformSetting: { findUnique: async () => { if (throws) throw new Error("down"); return raw === null ? null : { value: raw }; } } });
@@ -306,10 +358,22 @@ async function main() {
     const g = world({ accounts: decisions({}), freeze: frozenFlag });
     const gs = await quiet(() => solHistoryBackfill({ ...cfg, deps: g.deps }));
     check("GLOBAL cost freeze ⇒ the whole run is SKIPPED (BILLABLE_COST_FREEZE), before any read that leads to a vendor",
-      gs.stoppedBecause === "COST_FREEZE" && gs.platformSkipped === "BILLABLE_COST_FREEZE" && g.log.length === 0, gs);
+      gs.stoppedBecause === "COST_FREEZE" && gs.platformSkipped === "BILLABLE_COST_FREEZE" && gs.outcome === "SKIPPED" && g.log.length === 0, gs);
     const gu = world({ accounts: decisions({}), freeze: judgeGlobalCostFreeze(null, true) });
     const gus = await quiet(() => solHistoryBackfill({ ...cfg, deps: gu.deps }));
     check("an unreadable global flag ⇒ SKIPPED (BILLABLE_POLICY_UNAVAILABLE)", gus.platformSkipped === "BILLABLE_POLICY_UNAVAILABLE" && gu.log.length === 0);
+  }
+
+  console.log("7b. shared-Space history rebuilds fetch prices only for allowed billed owners (review P2-1)");
+  {
+    const allowed = await billedPriceAccountIds(["a-mine", "a-frozen-comember", "a-orphan"], async (ids) => new Set(ids.filter((i) => i === "a-mine")));
+    check("only the accounts whose billed owner is allowed feed the price fetch", [...allowed].join() === "a-mine");
+    const failed = await quiet(() => billedPriceAccountIds(["a-mine"], async () => { throw new Error("policy down"); }));
+    check("a failed decision ⇒ NO account priced (fail closed; stored prices still read)", failed.size === 0);
+    const src = readFileSync("lib/snapshots/regenerate-history.ts", "utf8");
+    check("both price fetches in the rebuild use the FILTERED accounts (crypto: pricedCryptoAccounts; equities: fetchInstrumentIds)",
+      /assetsOf\(pricedCryptoAccounts\)/.test(src) && /backfillHeldInstrumentPrices\(fetchInstrumentIds,/.test(src) && (src.match(/await backfillHeldInstrumentPrices\(/g) ?? []).length === 2);
+    check("…and the default decision is the billable gate's price_history operation, by billed OWNER", /billableAccountIds\(accountIds, "price_history"\)/.test(src));
   }
 
   console.log("8. wallet billing owners");

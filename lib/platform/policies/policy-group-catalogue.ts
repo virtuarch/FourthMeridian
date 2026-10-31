@@ -52,14 +52,16 @@ import { PlatformSettingKey } from "@/lib/platform-settings";
 import { judgeGlobalCostFreeze, type GlobalCostFreezeVerdict } from "@/lib/platform/cost-freeze.core";
 
 /**
- * L2 ENFORCEMENT — 25 s, stamped from the READ START (not its end). A lifecycle
- * write lands in the read (whose lifecycle query runs last) or after it; either
- * way the next read starts at most 25 s after this one STARTED, so another
- * instance sees a freeze within 25 s + one read — inside the owner's 30 s bound
- * (previously 30 s + the read's latency, an overrun). Batch jobs reuse a
- * decision for at most BILLABLE_BATCH_MAX_AGE_MS (5 s) on top: ≤ 30 s.
+ * L2 ENFORCEMENT — 20 s, stamped from the READ START (not its end). The bound,
+ * measured honestly (review P3-4): a write landing just after a read's
+ * lifecycle query is seen by the next read, which starts ≤ 20 s after that
+ * read STARTED and sees it once its own lifecycle query runs (one read's
+ * latency, L). A batch job may then reuse that decision for
+ * BILLABLE_BATCH_MAX_AGE_MS (5 s). Worst case: 20 s + 5 s + L ≤ 30 s for any
+ * read under 5 s (the three small catalogue queries take milliseconds).
+ * Previously 30 s + L — an overrun by construction.
  */
-export const CATALOGUE_TTL_MS = 25_000;
+export const CATALOGUE_TTL_MS = 20_000;
 
 /** TEST-ONLY clock seam (the propagation bound is pinned with a pinned clock). Production: Date.now. */
 let clock: () => number = Date.now;

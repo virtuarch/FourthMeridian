@@ -267,8 +267,11 @@ function main() {
     // Fails CLOSED: if the classifier is renamed, the guard reports it rather
     // than passing vacuously against an empty string.
     const healthTail = code("lib/jobs/health.ts").split("export function classify")[1];
-    check("job health classifies from status/timing, not from the summary",
-      healthTail !== undefined && !/summary/.test(healthTail),
+    // BETA LIFECYCLE L2 (review P2-2) — ONE sanctioned summary read: the
+    // `outcome: "SKIPPED"` convention (skippedOutcomeOf), so a run a cost freeze
+    // refused is never shown as a success. Nothing else in the summary classifies.
+    check("job health classifies from status/timing, not from the summary (except the L2 SKIPPED convention)",
+      healthTail !== undefined && !/summary/.test(healthTail.replace(/skippedOutcomeOf\((r|last)\.summary\)/g, "").replace(/summary: true,/g, "")),
       healthTail === undefined ? "export function classify* not found in lib/jobs/health.ts — re-point this guard" : undefined);
   }
 
@@ -279,7 +282,8 @@ function main() {
     // the return sits before the loop, and the loop owns every marker write.
     const rs = body("jobs/resume-stale-imports.ts");
     const denyReturn = at(rs, /notAdmitted:\s*admission\.reason!/);
-    const loop = at(rs, /for \(const item of items\)/);
+    // (BETA LIFECYCLE L2 — the loop walks `page`: the candidates minus restricted connectors.)
+    const loop = at(rs, /for \(const item of (items|page)\)/);
     // Returning before the loop IS the fabrication guard: a pass that never
     // touches a candidate cannot count one. The old zero-count object pins
     // (attempted: 0, ran: 0, …) asserted the same thing via key order and

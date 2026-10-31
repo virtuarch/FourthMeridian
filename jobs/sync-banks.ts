@@ -65,6 +65,7 @@ import { refreshBalancesForItem } from "@/lib/plaid/refresh";
 // injects its OWN stage pipeline (below) so its provider work is unchanged —
 // only the execution ledger is added.
 import { runFullRefresh, recordAdmissionDenial } from "@/lib/plaid/refresh-execution";
+import { readGlobalCostFreeze, type GlobalCostFreezeReader } from "@/lib/platform/cost-freeze";
 import {
   billableSkipCode, createBillableBatchGate, tallyBillableDenial,
   type BillableBatchLoader, type BillableDenialReason, type BillableDenialTally,
@@ -104,6 +105,14 @@ export interface SyncBanksResult {
    */
   planRestricted?: number;
   planRestrictedReasons?: BillableDenialTally;
+  /**
+   * BETA LIFECYCLE L2 (review P3-2) — under the GLOBAL cost freeze (or an
+   * unreadable flag) the sweep writes ONE job-level finding — this summary
+   * outcome — instead of one SKIPPED execution per Item. Job health shows the
+   * run as `skipped`.
+   */
+  outcome?: "SKIPPED";
+  skipReason?: string;
 }
 
 /** DF-2B — the cron runner's outcome, consumed by syncBanks for counting/logging. */
@@ -217,6 +226,8 @@ export interface SyncBanksDeps {
   billable?: BillableBatchLoader;
   /** BETA LIFECYCLE L2 — records a refused Item's deferred fact (default: a SKIPPED RefreshExecution). */
   recordDenial?: (item: SyncBanksCandidate, reason: BillableDenialReason) => Promise<void>;
+  /** BETA LIFECYCLE L2 — the global cost-freeze read (default: the uncached PlatformSetting read). */
+  costFreeze?: GlobalCostFreezeReader;
 }
 
 /**
@@ -256,6 +267,15 @@ export async function syncBanks(deps: SyncBanksDeps = {}): Promise<SyncBanksResu
         "no provider call, no lock claimed, no item marked.",
     );
     return { succeeded: 0, failed: 0, skipped: 0, total: all.length, eventItems: 0, deferred: items.length, fresh, slowItems: 0, notAdmitted: admission.reason! };
+  }
+
+  // BETA LIFECYCLE L2 — the GLOBAL cost freeze is ONE platform fact: one
+  // job-level finding, not a SKIPPED row per Item (which would bury the ledger).
+  const freeze = await (deps.costFreeze ?? readGlobalCostFreeze)();
+  if (freeze.frozen) {
+    const code = billableSkipCode(freeze.reason!);
+    console.log(`[sync-banks] ${items.length} item(s) eligible but the global cost freeze is in force (${freeze.state}) — SKIPPED (${code}); nothing marked.`);
+    return { succeeded: 0, failed: 0, skipped: 0, total: all.length, eventItems: 0, deferred: 0, fresh, slowItems: 0, outcome: "SKIPPED", skipReason: code };
   }
 
   const counters = { succeeded: 0, failed: 0, skipped: 0, eventItems: 0 };

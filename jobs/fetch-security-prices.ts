@@ -36,7 +36,7 @@ import { billableSkipCode, type BillableSkipCode } from "@/lib/entitlements/bill
 
 export interface FetchSecurityPricesResult {
   dateISO: string;
-  status: "ok" | "no-provider";
+  status: "ok" | "no-provider" | "skipped";
   instrumentsConsidered: number;
   instrumentsMissing: number;
   /** Instruments a provider returned data for. */
@@ -45,6 +45,9 @@ export interface FetchSecurityPricesResult {
   failed: number;
   /** BETA LIFECYCLE L2 — set when the GLOBAL cost freeze (or an unreadable flag) refused the run; nothing fetched or written. */
   billableRestricted?: BillableSkipCode;
+  /** BETA LIFECYCLE L2 — the JobRun summary convention: "SKIPPED" when refused (job health: `skipped`, not a success). */
+  outcome?: "SKIPPED";
+  skipReason?: BillableSkipCode;
 }
 
 export async function fetchSecurityPrices(now: Date = new Date(), deps: { costFreeze?: GlobalCostFreezeReader } = {}): Promise<FetchSecurityPricesResult> {
@@ -57,12 +60,14 @@ export async function fetchSecurityPrices(now: Date = new Date(), deps: { costFr
 
   // BETA LIFECYCLE L2 — Tiingo is key-metered paid market data: under the
   // GLOBAL cost freeze (or an unreadable flag) the run stops before any read
-  // or vendor call; the missing day stays missing for the next unfrozen run.
+  // or vendor call. This job fetches YESTERDAY only, so a frozen day is NOT
+  // filled by a later run of this job; it is filled by the wealth-history price
+  // backfill (missing-only windows over held instruments) on the next rebuild.
   const freeze = await (deps.costFreeze ?? readGlobalCostFreeze)();
   if (freeze.frozen) {
     const code = billableSkipCode(freeze.reason!);
     console.log(`[prices-cron] ${dateISO}: global cost freeze (${freeze.state}) — SKIPPED (${code}); no vendor call`);
-    return { ...empty, status: "ok", billableRestricted: code };
+    return { ...empty, status: "skipped", billableRestricted: code, outcome: "SKIPPED", skipReason: code };
   }
 
   // Vendor gate: no adapter ⇒ no-op before any DB work (deferred, not fabricated).

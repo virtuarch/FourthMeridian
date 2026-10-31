@@ -207,7 +207,9 @@ export interface SolBackfillJobSummary {
    *                       (e.g. "SPL_PRICES_BUDGET_STOPPED: CoinGecko token budget
    *                       reached; …"); empty when COMPLETE. Set on every return.
    */
-  outcome?: "COMPLETE" | "PARTIAL";
+  outcome?: "COMPLETE" | "PARTIAL" | "SKIPPED";
+  /** BETA LIFECYCLE L2 — the skip code when outcome is SKIPPED (job health reads it). */
+  skipReason?: string;
   partialReasons?: string[];
 }
 
@@ -410,6 +412,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   if (freeze.frozen) {
     summary.stoppedBecause = "COST_FREEZE";
     summary.platformSkipped = billableSkipCode(freeze.reason!);
+    summary.outcome = "SKIPPED"; summary.skipReason = summary.platformSkipped;
     console.log(`[${SOL_BACKFILL_JOB}] global cost freeze (${freeze.state}) — SKIPPED (${summary.platformSkipped}); no vendor call, no checkpoint moved.`);
     return summary;
   }

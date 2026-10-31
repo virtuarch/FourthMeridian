@@ -194,8 +194,8 @@ export async function readPolicyFactsForUsers(
 
 /**
  * How long a batch decision may be reused inside one run. The catalogue the
- * batch read used is itself at most CATALOGUE_TTL_MS (25 s) old, so a decision
- * acted on is at most 25 s + 5 s = 30 s behind a lifecycle write — the owner's
+ * batch read used is itself at most CATALOGUE_TTL_MS (20 s) + one read old, so a decision
+ * acted on is at most 20 s + 5 s + one read (< 30 s) behind a lifecycle write — the owner's
  * propagation bound — however long the job runs.
  */
 export const BILLABLE_BATCH_MAX_AGE_MS = 5_000;

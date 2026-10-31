@@ -27,6 +27,7 @@ import { env } from "@/lib/env";
 import { lifecycleRestrictionOf, type LifecycleRestriction, type PolicyGroupEndedTransitionKind, type PolicyGroupLifecycleState, type PolicyGroupTransitionKindName } from "@/lib/entitlements/lifecycle";
 import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import { loadFreshPolicyGroupCatalogue } from "./policy-group-catalogue";
+import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
 
 export const TRANSITION_HISTORY_CAP = 50;
 
@@ -50,7 +51,18 @@ export interface PolicyGroupLifecycleResponse {
   costFrozen: boolean;
   endedTransition: PolicyGroupEndedTransitionKind | null;
   lifecycleVersion: number;
+  /** The GROUP's own restriction (its stored lifecycle + its own costFrozen). */
   restriction: LifecycleRestriction | null;
+  /**
+   * BETA LIFECYCLE L2 (review P3-6) — the PLATFORM-wide cost freeze
+   * (`platform_cost_frozen`, Operational Controls), reported SEPARATELY: it is
+   * never written into this group's `costFrozen`, so a view must not read the
+   * group as frozen when only the platform flag is on. True also when the flag
+   * is unreadable (it then freezes, fail closed).
+   */
+  globalCostFrozen: boolean;
+  /** What members actually get: the global freeze when on, else the group's own restriction. */
+  effectiveRestriction: LifecycleRestriction | null;
   isDefault: boolean;
   builtIn: boolean;
   archived: boolean;
@@ -68,7 +80,7 @@ export async function readPolicyGroupLifecycle(key: string, now: Date = new Date
   });
   if (!row) return null;
   const enforced = env.isPolicyAssignmentFailClosed;
-  const [customers, withOverlay, unassigned, rows, fresh] = await Promise.all([
+  const [customers, withOverlay, unassigned, rows, fresh, globalFreeze] = await Promise.all([
     systemDb.customerPolicyAssignment.count({ where: { policyGroup: key } }),
     systemDb.customerPolicyAssignment.count({ where: { policyGroup: key, overlay: { not: null } } }),
     row.isDefault && !enforced
@@ -79,7 +91,9 @@ export async function readPolicyGroupLifecycle(key: string, now: Date = new Date
       select: { id: true, kind: true, fromLifecycle: true, toLifecycle: true, costFrozenBefore: true, costFrozenAfter: true, reasonCode: true, reasonNote: true, operatorId: true, createdAt: true },
     }),
     loadFreshPolicyGroupCatalogue(),
+    readGlobalCostFreeze(),
   ]);
+  const restriction = lifecycleRestrictionOf({ lifecycle: row.lifecycle, costFrozen: row.costFrozen });
   const shown = rows.slice(0, TRANSITION_HISTORY_CAP);
   const ids = [...new Set(shown.map((t) => t.operatorId).filter((id): id is string => typeof id === "string"))];
   const ops = ids.length ? await systemDb.user.findMany({ where: { id: { in: ids } }, select: { id: true, username: true, name: true } }) : [];
@@ -92,7 +106,9 @@ export async function readPolicyGroupLifecycle(key: string, now: Date = new Date
     costFrozen: row.costFrozen,
     endedTransition: row.endedTransition,
     lifecycleVersion: row.lifecycleVersion,
-    restriction: lifecycleRestrictionOf({ lifecycle: row.lifecycle, costFrozen: row.costFrozen }),
+    restriction,
+    globalCostFrozen: globalFreeze.frozen,
+    effectiveRestriction: globalFreeze.frozen ? (globalFreeze.reason === "COST_FREEZE" ? "COST_FREEZE" : "POLICY_UNAVAILABLE") : restriction,
     isDefault: row.isDefault,
     builtIn: row.builtIn,
     archived: row.archivedAt !== null,

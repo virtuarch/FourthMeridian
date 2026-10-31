@@ -17,6 +17,7 @@
  */
 
 import { providerName, type SyncConnection } from "@/lib/sync/status";
+import { isPlanRestrictedDeferral } from "@/lib/sync/deferred-ingestion";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import type { DataSourceState } from "@/lib/connections/space-data-health.core";
 
@@ -61,7 +62,7 @@ export function summarizeConnection(
   switch (connection.state) {
     case "importing":     return word("Importing", "progress");
     case "import_paused": return word("Import paused", "neutral");
-    case "sync_deferred": return word("Sync pending", "neutral");
+    case "sync_deferred": return isPlanRestrictedDeferral(connection.deferredReason) ? word("Sync paused", "attention") : word("Sync pending", "neutral");
     case "needs_reauth":  return word("Reconnect needed", "attention");
     case "error":         return word("Sync issue", "attention");
     case "ready": {

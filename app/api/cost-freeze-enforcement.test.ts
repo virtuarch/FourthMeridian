@@ -124,9 +124,12 @@ async function main() {
     const execBefore = fake.rows("RefreshExecution").length;
 
     const ex = await call(EXCHANGE, "/api/plaid/exchange-token", { public_token: "public-sandbox-new", institution_id: "ins_9", institution_name: "New Bank" });
-    t.check(`exchange-token, NEW Item → ${kind} wording`, isRefusal(ex, kind), { s: ex.status, b: ex.body });
+    const isExchangeRefusal = (r: { status: number; body: Record<string, any> }) =>
+      r.status === (kind === "POLICY_UNAVAILABLE" ? 503 : 403) && String(r.body.error).startsWith(restrictionMessage(kind))
+        && String(r.body.error).includes("nothing has been disconnected") && r.body.code === RESTRICTION_CODES[kind];
+    t.check(`exchange-token, NEW Item → ${kind} wording + "nothing has been disconnected"`, isExchangeRefusal(ex), { s: ex.status, b: ex.body });
     const repair = await call(EXCHANGE, "/api/plaid/exchange-token", { public_token: "public-sandbox-repair", institution_id: "ins_1", institution_name: "Bank A" });
-    t.check("exchange-token, update-mode REPAIR of the existing Item → refused the same way", isRefusal(repair, kind), { s: repair.status, b: repair.body });
+    t.check("exchange-token, update-mode REPAIR of the existing Item → refused the same way; the copy says nothing is disconnected", isExchangeRefusal(repair), { s: repair.status, b: repair.body });
     t.check("…no Item created or changed (the duplicate check never had to remove one at Plaid)", snapshotItem() === itemsBefore);
 
     const link = await invoke<Record<string, any>>(LINK, request("/api/plaid/link-token", { method: "GET", cookie: session.cookie }));
@@ -243,28 +246,141 @@ async function main() {
     t.check("…every id answered; an unassigned user under the fail-closed switch ⇒ UNKNOWN", m.size === 4 && m.get(userId) === "ACTIVE" && m.get("no-such-user") === "UNKNOWN", [...m]);
   }
 
-  t.section("propagation ≤ 30 s (clock-pinned)");
+  t.section("propagation ≤ 30 s, measured WITH read latency (clock-pinned)");
   {
     fake.clearHooks(); setFlag(null); setState({});
+    const { BILLABLE_BATCH_MAX_AGE_MS } = await import("@/lib/entitlements/billable-gate");
     let now = Date.parse("2026-10-31T12:00:00Z");
     C.setPolicyGroupCatalogueClockForTests(() => now);
     C.invalidatePolicyGroupCatalogue();
-    // The read takes 2 s, and the freeze is written right AFTER its lifecycle query (the worst case).
+    // EVERY catalogue read is slow: each policy query advances the clock 1 s (≈ 3 s per read), and the
+    // freeze is written right AFTER the first read's lifecycle query — the worst case.
     fake.on("PolicyGroup", "findMany", () => { now += 1_000; return undefined; });
-    const readStart = now;
     await C.loadPolicyGroupCatalogue();
     const writtenAt = now;
-    fake.clearHooks();
     Object.assign(group(), { costFrozen: true }); // another instance froze the group — no local invalidation here
-    const at = async (ms: number) => { now = writtenAt + ms; return assertBillableAllowed({ userId, operation: "plaid_sync" }, { now: () => now }); };
-    const early = await at(1_000);
-    t.check("just after the write, the cached read may still allow (bounded staleness)", early.allowed);
-    const bound = readStart + C.CATALOGUE_TTL_MS - writtenAt;
-    const seen = await at(bound + 1);
-    t.check(`the freeze is enforced ${bound + 1} ms after the write — within 30 s (TTL 25 s stamped from the read START)`,
-      !seen.allowed && (seen as any).reason === "COST_FREEZE" && bound + 1 <= 30_000, { bound, seen });
+    let seenAt: number | null = null;
+    for (let step = 0; step <= 40 && seenAt === null; step++) {
+      now = writtenAt + step * 1_000;
+      const d = await assertBillableAllowed({ userId, operation: "plaid_sync" }, { now: () => now });
+      if (!d.allowed) seenAt = now; // `now` includes the re-read's own latency
+    }
+    fake.clearHooks();
+    const staleness = seenAt === null ? Infinity : seenAt - writtenAt;
+    t.check(`a freeze is enforced ${staleness} ms after the write, including the slow re-read; + the ${BILLABLE_BATCH_MAX_AGE_MS} ms batch reuse = ${staleness + BILLABLE_BATCH_MAX_AGE_MS} ms ≤ 30 s`,
+      staleness + BILLABLE_BATCH_MAX_AGE_MS <= 30_000, { staleness, ttl: C.CATALOGUE_TTL_MS });
     C.setPolicyGroupCatalogueClockForTests(null);
     C.invalidatePolicyGroupCatalogue();
+  }
+
+  t.section("the GLOBAL cost freeze has a supported, audited write path (operational controls)");
+  {
+    fake.clearHooks(); setFlag(null); setState({});
+    const { GET: OC_GET, PATCH: OC_PATCH } = await import("./platform/platform-ops/operational-controls/route") as unknown as { GET: H; PATCH: H };
+    const ctl = fake.seed("User", { email: "ctl@example.test", username: "ctl", passwordHash: "x", emailVerifiedAt: new Date(), role: "USER" });
+    fake.seed("PlatformGrant", { userId: ctl.id, area: "PLATFORM_OPS", level: "CONTROL", status: "ACTIVE" });
+    const ctlSession = await signIn(fake, ctl.id as string);
+    const patch = (body: unknown, cookie = ctlSession.cookie) => invoke<Record<string, any>>(OC_PATCH, request("/api/platform/platform-ops/operational-controls", { method: "PATCH", cookie, body }));
+    const g0 = await invoke<Record<string, any>>(OC_GET, request("/api/platform/platform-ops/operational-controls", { method: "GET", cookie: ctlSession.cookie }));
+    t.check("GET shows the global cost freeze state (separate from maintenance)", g0.status === 200 && g0.body.costFreeze?.key === "platform_cost_frozen" && g0.body.costFreeze?.state !== "ON", g0.body.costFreeze);
+    const writer = await patch({ control: "COST_FREEZE", action: "ENABLE", expectedUpdatedAt: g0.body.costFreeze?.updatedAt ?? null, reason: { code: "SUPPORT_REQUEST", note: "freeze" } }, opSession.cookie);
+    t.check("a PLATFORM_OPS WRITE holder cannot set it (CONTROL required, fresh)", writer.status === 403);
+    const noReason = await patch({ control: "COST_FREEZE", action: "ENABLE", expectedUpdatedAt: g0.body.costFreeze?.updatedAt ?? null });
+    t.check("a reason is required", noReason.status === 400);
+    const auditsBefore = fake.rows("AuditLog", { action: "PLATFORM_POLICY_CHANGED" }).length;
+    const on = await patch({ control: "COST_FREEZE", action: "ENABLE", expectedUpdatedAt: g0.body.costFreeze?.updatedAt ?? null, reason: { code: "SUPPORT_REQUEST", note: "vendor bill spike — freeze all paid work" } });
+    t.check("CONTROL + reason ⇒ 200, read back ON in the returned model", on.status === 200 && on.body.costFreeze?.state === "ON", { s: on.status, b: on.body });
+    const audit = fake.rows("AuditLog", { action: "PLATFORM_POLICY_CHANGED" }).slice(auditsBefore);
+    t.check("…audited in the same transaction (one row: the setting key, before/after, reason)",
+      audit.length === 1 && JSON.stringify(audit[0]).includes("platform_cost_frozen"), audit);
+    C.invalidatePolicyGroupCatalogue();
+    const d = await assertBillableAllowed({ userId, operation: "plaid_sync" });
+    t.check("…and every billable decision now refuses COST_FREEZE (an ACTIVE group, a Founder)", !d.allowed && (d as any).reason === "COST_FREEZE");
+    const { readPolicyGroupLifecycle } = await import("@/lib/platform/policies/policy-group-lifecycle-read");
+    const lr = await readPolicyGroupLifecycle(DEFAULT_POLICY_GROUP);
+    t.check("operator group view: the GROUP is not frozen; the PLATFORM flag is reported separately",
+      lr !== null && lr.costFrozen === false && lr.restriction === null && lr.globalCostFrozen === true && lr.effectiveRestriction === "COST_FREEZE", lr && { c: lr.costFrozen, r: lr.restriction, g: lr.globalCostFrozen, e: lr.effectiveRestriction });
+    const g1 = await invoke<Record<string, any>>(OC_GET, request("/api/platform/platform-ops/operational-controls", { method: "GET", cookie: ctlSession.cookie }));
+    const off = await patch({ control: "COST_FREEZE", action: "DISABLE", expectedUpdatedAt: g1.body.costFreeze.updatedAt, reason: { code: "SUPPORT_REQUEST", note: "unfreeze" } });
+    C.invalidatePolicyGroupCatalogue();
+    t.check("DISABLE reads back OFF and paid work is allowed again", off.status === 200 && off.body.costFreeze?.state === "OFF" && (await assertBillableAllowed({ userId, operation: "plaid_sync" })).allowed);
+    const stale = await patch({ control: "COST_FREEZE", action: "ENABLE", expectedUpdatedAt: g1.body.costFreeze.updatedAt, reason: { code: "SUPPORT_REQUEST", note: "x" } });
+    t.check("a stale version ⇒ 409 CONFLICT, nothing written", stale.status === 409 && stale.body.model?.costFreeze?.state === "OFF");
+  }
+
+  t.section("FX under a DECLARED freeze: the allowlisted FREE provider only, once per day; never the paid OXR path");
+  {
+    fake.clearHooks(); setState({}); setFlag("true");
+    const { fetchFxRates, FREE_FX_EXEMPTION, freezeExemptFxRegistry } = await import("@/jobs/fetch-fx-rates");
+    const oldKey = process.env.OXR_APP_ID;
+    process.env.OXR_APP_ID = "paid-key-present-in-env"; // the paid primary is configured — it must still never be called
+    const urls: string[] = [];
+    const trap = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input); urls.push(url);
+      if (!url.includes("api.frankfurter.dev")) throw new Error(`paid / unexpected FX call: ${url}`);
+      const date = url.match(/\/v1\/(\d{4}-\d{2}-\d{2})/)?.[1];
+      const { FRANKFURTER_QUOTES } = await import("@/lib/fx/providers/frankfurter");
+      return new Response(JSON.stringify({ base: "USD", date, rates: Object.fromEntries(FRANKFURTER_QUOTES.map((q) => [q, 1.5])) }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      t.check("the frozen registry holds ONLY the allowlisted free provider, even with OXR_APP_ID set",
+        freezeExemptFxRegistry().adapters.map((a) => a.source).join() === FREE_FX_EXEMPTION.source && FREE_FX_EXEMPTION.maxFetchesPerDayWhileFrozen === 1);
+      const first = await fetchFxRates();
+      t.check("frozen run #1: one free-provider fetch (Frankfurter), ZERO Open Exchange Rates calls; recorded SKIPPED for the paid path",
+        urls.length >= 1 && urls.every((u) => u.includes("api.frankfurter.dev") && !/app_id|openexchangerates/i.test(u))
+          && first.freeExemption?.source === "frankfurter" && first.outcome === "SKIPPED" && first.skipReason === "BILLABLE_COST_FREEZE" && first.caughtUp.length === 0,
+        { urls, first });
+      const n = urls.length;
+      const second = await fetchFxRates();
+      t.check("frozen run #2 the same day: NO fetch at all (≤ 1 per day while frozen) — the cache is served",
+        urls.length === n && second.freeExemption === undefined && second.outcome === "SKIPPED", { urls, second });
+      setFlag("maybe");
+      const unreadable = await fetchFxRates();
+      t.check("an UNREADABLE freeze flag: no exemption, no fetch (fail closed)", urls.length === n && unreadable.billableRestricted === "BILLABLE_POLICY_UNAVAILABLE");
+    } finally {
+      globalThis.fetch = trap;
+      if (oldKey === undefined) delete process.env.OXR_APP_ID; else process.env.OXR_APP_ID = oldKey;
+      setFlag(null);
+    }
+  }
+
+  t.section("wallet re-add: one sync per wallet per entitled window, fail closed, new wallets not counted (review P3-1)");
+  {
+    fake.clearHooks(); setFlag(null); setState({});
+    const body = { name: "BTC", walletChain: "BTC", walletAddress: wallet.walletAddress };
+    const first = await call(WALLET, "/api/accounts/wallet", body);
+    t.check("the first re-add in the window may re-read the chain (allowed plan; the trapped network makes it non-fatal)",
+      first.status === 200 && first.body.initialSync?.errorCode !== "COOLDOWN", { s: first.status, b: first.body });
+    const before = fetchCalls;
+    const second = await call(WALLET, "/api/accounts/wallet", body);
+    t.check("an immediate second re-add: share OK, NO chain sync (COOLDOWN), no network call",
+      second.status === 200 && second.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === before, { s: second.status, b: second.body });
+    const third = await call(WALLET, "/api/accounts/wallet", body);
+    t.check("…and a third: still COOLDOWN (one sync per wallet per window, however often it is re-posted)", third.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === before);
+    const src = (await import("node:fs")).readFileSync("app/api/accounts/wallet/route.ts", "utf8");
+    t.check("the window is a conditional write on the wallet's own Connection (fail closed on any error); no per-user limiter counts new wallets",
+      /lastManualRefreshAt: \{ lte:/.test(src) && /return false;\n  \}\n\}/.test(src) && !/limitByUser\(userId, "wallet-add"/.test(src));
+  }
+
+  t.section("plan-restricted deferrals say so — never \"syncing resumes automatically\" (review P3-3)");
+  {
+    const { planRestrictedDeferralMessage, isPlanRestrictedDeferral } = await import("@/lib/sync/deferred-ingestion");
+    t.check("BILLABLE_COST_FREEZE ⇒ the lifecycle wording", planRestrictedDeferralMessage("BILLABLE_COST_FREEZE") === restrictionMessage("COST_FREEZE"));
+    t.check("an admission pause is NOT a plan deferral (its own copy stays)", !isPlanRestrictedDeferral("INGESTION_PAUSED") && planRestrictedDeferralMessage("INGESTION_PAUSED") === null);
+    const fs = await import("node:fs");
+    t.check("the detail line, the card and the summary all branch on it",
+      /planRestrictedDeferralMessage\(connection\.deferredReason\)/.test(fs.readFileSync("lib/connections/connection-detail.core.ts", "utf8"))
+      && /planRestrictedDeferralMessage\(connection\.deferredReason\)/.test(fs.readFileSync("components/connections/ConnectionCard.tsx", "utf8"))
+      && /isPlanRestrictedDeferral\(connection\.deferredReason\)/.test(fs.readFileSync("lib/connections/connection-summary.ts", "utf8")));
+  }
+
+  t.section("the dormant amendment price path is gated before applyAmendment (review P3-7)");
+  {
+    const src = (await import("node:fs")).readFileSync("app/api/spaces/[id]/wealth/amend/route.ts", "utf8");
+    const gate = src.indexOf('assertBillableAllowed({ userId: user.id, operation: "price_history" })');
+    t.check("an APPLIED amendment asks the billable gate (price_history) before applyAmendment; preview stays a dry run",
+      gate > 0 && gate < src.indexOf("await applyAmendment(request)") && src.indexOf("await previewAmendment(request)") > 0);
   }
 
   t.section("readers stay available while frozen");
@@ -272,8 +388,14 @@ async function main() {
     fake.clearHooks(); setFlag(null); setState({ costFrozen: true });
     const e = await entitlementsForUser(userId);
     t.check("existing Briefs: the read gate (dailyBrief) stays open", e.dimensions.dailyBrief.value === true && refuseIfDisabled(e, "dailyBrief", "The Daily Brief") === null);
+    // A stored Brief for today, generated before the freeze. The Brief's own raw reads (the source
+    // watermark) answer empty here; the stored row is what must come back.
+    const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+    fake.seed("DailyBrief", { spaceId: space.id, ownerUserId: userId, briefDay: today, content: { headline: "Quiet day." }, generatedAt: new Date(), model: "stored-model" });
+    fake.queryRaw = () => [];
     const read = await invoke<Record<string, any>>(BRIEF_GET, request(`/api/brief?spaceId=${space.id}`, { method: "GET", cookie: session.cookie }));
-    t.check("GET /api/brief is not a restriction refusal", read.body?.code !== RESTRICTION_CODES.COST_FREEZE, { s: read.status, b: read.body });
+    t.check("GET /api/brief → 200 and the STORED Brief is returned while frozen (no model call)",
+      read.status === 200 && JSON.stringify(read.body).includes("Quiet day."), { s: read.status, b: read.body });
     const catalogue = await C.loadFreshPolicyGroupCatalogue();
     const exp = decideBillable({ operation: "export", billedUserId: userId, assignment: { policyGroup: DEFAULT_POLICY_GROUP, overlay: null, assignedAt: new Date(), assignedById: null }, catalogue, failClosed: false, nowMs: Date.now() });
     t.check("exports (a read of the customer's own data, no paid call) stay allowed", exp.allowed && Number(e.dimensions.exportsPerDay.value) >= 1, { exp, v: e.dimensions.exportsPerDay.value });

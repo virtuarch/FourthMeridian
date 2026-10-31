@@ -107,7 +107,14 @@ export function resumeBackoffMs(failedAttempts: number): number {
 
 export interface ResumeStaleImportsDeps {
   /** Returns the candidate population. Defaults to the platform-wide query. */
-  loadCandidates?: (cutoff: Date, take: number) => Promise<{ candidates: number; items: StaleImportCandidate[] }>;
+  loadCandidates?: (cutoff: Date, take: number, opts?: { excludeUserIds?: readonly string[] }) => Promise<{ candidates: number; items: StaleImportCandidate[] }>;
+  /**
+   * BETA LIFECYCLE L2 — the DISTINCT connectors of every stale candidate (not
+   * just the first page), so restricted customers can be EXCLUDED from the
+   * page instead of occupying its slots forever. Default: one distinct query;
+   * when only `loadCandidates` is injected (scoped tests), the loaded page's users.
+   */
+  loadCandidateUsers?: (cutoff: Date) => Promise<string[]>;
   /** Drives one candidate. Defaults to the shared webhook/recovery wrapper. */
   drive?: (itemId: string, admission: StampedAdmissionVerdict, billable: BillableDecision) => Promise<WebhookSyncOutcome>;
   /**
@@ -145,6 +152,8 @@ export interface ResumeStaleImportsResult {
    */
   planRestricted?: number;
   planRestrictedReasons?: BillableDenialTally;
+  /** BETA LIFECYCLE L2 — distinct restricted connectors whose stale Items were excluded from this pass's page. */
+  planRestrictedUsers?: number;
   /**
    * OPS-2D-4 — the typed admission reason when the platform declined this pass.
    * Null on every admitted run. This is the DISPATCH-level finding: the job ran,
@@ -157,10 +166,34 @@ export interface ResumeStaleImportsResult {
  * THE canonical, platform-wide candidate query. The scheduled path always uses
  * this; only tests replace it.
  */
+function staleWhere(cutoff: Date, excludeUserIds: readonly string[] = []) {
+  return {
+    status:           PlaidItemStatus.ACTIVE,
+    syncIncompleteAt: { lt: cutoff },
+    user: { deactivatedAt: null },
+    OR: [{ syncResumeNextAt: null }, { syncResumeNextAt: { lte: new Date() } }],
+    ...(excludeUserIds.length > 0 ? { userId: { notIn: [...excludeUserIds] } } : {}),
+  };
+}
+
+/** BETA LIFECYCLE L2 — every stale candidate's connector, distinct (bounded by the user count). */
+async function loadStaleCandidateUsers(cutoff: Date): Promise<string[]> {
+  const rows = await db.plaidItem.findMany({ where: staleWhere(cutoff), distinct: ["userId"], select: { userId: true } });
+  return rows.map((r) => r.userId);
+}
+
 async function loadStaleCandidates(
   cutoff: Date,
   take: number,
+  opts: { excludeUserIds?: readonly string[] } = {},
 ): Promise<{ candidates: number; items: StaleImportCandidate[] }> {
+  if (opts.excludeUserIds && opts.excludeUserIds.length > 0) {
+    // BETA LIFECYCLE L2 — the same population minus restricted connectors.
+    const where = staleWhere(cutoff, opts.excludeUserIds);
+    const candidates = await db.plaidItem.count({ where });
+    const items = await db.plaidItem.findMany({ where, orderBy: { syncIncompleteAt: "asc" }, take, select: { id: true, institutionName: true, userId: true } });
+    return { candidates, items };
+  }
   const where = {
     status:           PlaidItemStatus.ACTIVE,
     syncIncompleteAt: { lt: cutoff },
@@ -236,12 +269,24 @@ export async function resumeStaleImports(
   // A failed pipeline stamps item health itself and leaves syncIncompleteAt set,
   // so a genuinely broken import simply reappears as a candidate next run. That
   // is the retry, and it needs no bookkeeping here.
-  // BETA LIFECYCLE L2 — one batch policy read for this pass's connectors; the
-  // gate re-reads if the pass outlives BILLABLE_BATCH_MAX_AGE_MS.
-  const gate = createBillableBatchGate(items.map((i) => i.userId), "plaid_resume_sync", deps.billable ? { load: deps.billable } : {});
+  // BETA LIFECYCLE L2 — ONE batch policy read for EVERY stale candidate's
+  // connector, then the page is re-taken WITHOUT the restricted ones. Refusing
+  // inside the first page instead would let five frozen customers hold all
+  // MAX_ITEMS_PER_RUN slots forever (a refusal records no backoff), starving
+  // every allowed customer's import (review P1-1).
+  const allUsers = deps.loadCandidateUsers
+    ? await deps.loadCandidateUsers(cutoff)
+    : deps.loadCandidates ? items.map((i) => i.userId).filter((u): u is string => !!u) : await loadStaleCandidateUsers(cutoff);
+  const gate = createBillableBatchGate([...allUsers, ...items.map((i) => i.userId)], "plaid_resume_sync", deps.billable ? { load: deps.billable } : {});
+  const restrictedUsers: string[] = [];
+  for (const u of new Set(allUsers)) if (!(await gate.decide(u)).allowed) restrictedUsers.push(u);
+  let page = items;
+  if (restrictedUsers.length > 0) {
+    page = (await (deps.loadCandidates ?? loadStaleCandidates)(cutoff, MAX_ITEMS_PER_RUN, { excludeUserIds: restrictedUsers })).items;
+  }
   let ran = 0, skipped = 0, planRestricted = 0;
   const planRestrictedReasons: BillableDenialTally = {};
-  for (const item of items) {
+  for (const item of page) {
     const billable = await gate.decide(item.userId);
     if (!billable.allowed) {
       // Not an attempt: no drive, no backoff, no marker — the same as a denied admission.
@@ -266,8 +311,9 @@ export async function resumeStaleImports(
     console.log(`[resume-stale-imports] ${item.institutionName} (${item.id}) → ${outcome}`);
   }
 
-  return { candidates, attempted: items.length - planRestricted, ran, skipped, deferred,
-    ...(planRestricted > 0 ? { planRestricted, planRestrictedReasons } : {}) };
+  return { candidates, attempted: page.length - planRestricted, ran, skipped, deferred,
+    ...(planRestricted > 0 ? { planRestricted, planRestrictedReasons } : {}),
+    ...(restrictedUsers.length > 0 ? { planRestrictedUsers: restrictedUsers.length } : {}) };
 }
 
 // ── IDEMP-007 backoff bookkeeping (declared after the job body so the source

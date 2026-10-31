@@ -23,6 +23,8 @@ import { requireSpaceRole } from "@/lib/session";
 import { SpaceMemberRole, SnapshotAmendmentKind } from "@prisma/client";
 import { withApiHandler } from "@/lib/api";
 import { previewAmendment, applyAmendment, SharedSpaceAmendmentError } from "@/lib/snapshots/snapshot-amendment";
+import { assertBillableAllowed } from "@/lib/entitlements/billable-gate";
+import { billableRefusalResponse } from "@/lib/entitlements/consume";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import {
   HISTORICAL_AMENDMENT_DISABLED_CODE, HISTORICAL_AMENDMENT_DISABLED_MESSAGE, HISTORICAL_AMENDMENT_ENABLED,
@@ -94,6 +96,14 @@ export const POST = withApiHandler(async (
   try {
     // Apply only on explicit consent; every other call is a read-only preview.
     if (body.consent === true) {
+      // BETA LIFECYCLE L2 (review P3-7) — an APPLIED amendment rebuilds history
+      // and may fetch historical prices (Tiingo / CoinGecko). Gated now, while
+      // the action is still dormant, so enabling it can never bypass a freeze.
+      // The rebuild itself also only fetches for accounts whose billed owner is
+      // allowed (regenerateWealthHistory's price filter). Preview is a dry run:
+      // it acquires nothing and stays available.
+      const billable = await assertBillableAllowed({ userId: user.id, operation: "price_history" });
+      if (!billable.allowed) return billableRefusalResponse(billable.reason, "Amending history");
       const result = await applyAmendment(request);
       return NextResponse.json(result);
     }

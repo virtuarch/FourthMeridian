@@ -88,6 +88,9 @@ export interface SyncCryptoResult extends WalletRefreshResult {
    * (Per-wallet work is refused by the billable gate inside the sweep.)
    */
   platformSkipped?: { reason: BillableSkipCode; steps: string[] };
+  /** BETA LIFECYCLE L2 — "SKIPPED" under the global cost freeze (job health: `skipped`, not a success). */
+  outcome?: "SKIPPED";
+  skipReason?: BillableSkipCode;
 }
 
 function revaluationSummary(r: RevaluationRun | null): SyncCryptoResult["revaluation"] {
@@ -261,5 +264,5 @@ export async function syncCrypto(options: {
   }
 
   return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage, revaluation: revaluationSummary(revaluation),
-    ...(platformSkipped ? { platformSkipped } : {}) };
+    ...(platformSkipped ? { platformSkipped, outcome: "SKIPPED" as const, skipReason: platformSkipped.reason } : {}) };
 }

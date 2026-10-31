@@ -21,7 +21,7 @@
  *   · the policy-group catalogue loader folds it in (every group reads as
  *     cost-frozen; an unreadable flag marks the lifecycle facts UNAVAILABLE),
  *     so every resolver-driven route and the billable gate see it with the
- *     catalogue's ≤ 25 s propagation;
+ *     catalogue's ≤ 20 s + one-read propagation;
  *   · platform-wide jobs with no single customer (lib/platform/cost-freeze.ts
  *     `readGlobalCostFreeze`) read it UNCACHED before any vendor call.
  */
