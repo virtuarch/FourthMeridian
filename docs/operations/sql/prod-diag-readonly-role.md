@@ -8,7 +8,7 @@ Purpose: run `docs/operations/sql/beta-request-prod-investigation.sql` (through 
 
 | Property | Value | Why |
 |---|---|---|
-| Login | yes, own password, `VALID UNTIL` = 7 days | dedicated, expiring, individually revocable |
+| Login | yes, own password, `VALID UNTIL` = approval + 24 h | dedicated, expiring, individually revocable |
 | Superuser, BYPASSRLS, CREATEDB, CREATEROLE, REPLICATION | **no** | row-level security and grants apply |
 | `default_transaction_read_only` | `on`, at the role level | read-only is enforced by the database, not only by the helper |
 | `statement_timeout` / `idle_in_transaction_session_timeout` | 60 s / 60 s | cannot hold locks or run away |
@@ -84,7 +84,7 @@ Then, connected **as `fm_diag_ro`**:
    - If it is unreachable, use Supavisor in **session mode** (port 5432) with username `fm_diag_ro.<project-ref>`:
      `postgresql://fm_diag_ro.<project-ref>:<password>@aws-<n>-<region>.pooler.supabase.com:5432/postgres?sslmode=require`.
    - Through the pooler, `CONNECTION LIMIT 2` counts server connections, not clients.
-3. **Run** the steps in the investigation instructions (`read -rs DIAG_DATABASE_URL` → `/tmp/ro-psql.sh -f /tmp/beta-q.sql`). The first output row must be `read_only_guard = on`.
+3. **Run** the owner command sequence (hidden prompt → helper with `DIAG_REQUIRE_ROLE=fm_diag_ro`). The first output rows must be `read_only_guard = on` and `read_only_role_guard = verified`.
 
 ## 5. Security review
 
@@ -95,7 +95,7 @@ Read-only defaults are defence in depth only: the role-level `default_transactio
 - Only the listed columns of 4 tables.
 - Audit rows only for 6 beta actions.
 - Limiter rows only for the intake key.
-- Raw email, IP and user agent ARE readable by this role, because the investigation computes on them. That exposure is bounded by: the owner holding the only password, a 7-day expiry, 2 connections, the helper's masked output, and the rollback below.
+- Raw email, IP and user agent ARE readable by this role, because the investigation computes on them. That exposure is bounded by: the owner holding the only password, a 24-hour expiry, 2 connections, the helper's masked output, and the rollback below.
 
 **Residual risks:**
 1. Anyone holding the password could run their own `SELECT email …`. Mitigations: expiry, immediate drop after use, no sharing.
@@ -122,7 +122,7 @@ DROP ROLE IF EXISTS fm_diag_ro;
 COMMIT;
 ```
 
-**Recommended:** run the rollback as soon as the investigation output is captured. Expiry happens anyway on 2026-11-08. If `DROP ROLE` reports dependencies, run `DROP OWNED BY fm_diag_ro;` and retry. The role owns nothing, so this is not expected.
+**Recommended:** run the rollback as soon as the investigation output is captured. Expiry happens anyway 24 h after approval. If `DROP ROLE` reports dependencies, run `DROP OWNED BY fm_diag_ro;` and retry. The role owns nothing, so this is not expected.
 
 **Validated on Preview (rolled back, nothing kept):**
 - the §2 SQL, the full investigation with only these grants, and the §6 rollback all work;
