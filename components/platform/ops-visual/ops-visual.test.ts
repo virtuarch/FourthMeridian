@@ -75,10 +75,10 @@ function job(name: string, over: Partial<PlatformJobRow> = {}): PlatformJobRow {
     succeededRuns: 0, failedRuns: 0, manualRuns: 0, lastFailureAt: null, lastFailureSummary: null, ...over,
   };
 }
-/** The Preview shape (spec §2): 12 never-ran, evaluate-alerts dead since 10-07, sol-history-backfill dead (manual 10-28). */
+/** The Preview shape (spec §2): 13 never-ran, evaluate-alerts dead since 10-07, sol-history-backfill dead (manual 10-28). */
 const previewJobs = {
   healthy: false, checkedAt: AGO_H(0),
-  counts: { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 2, neverRan: 12 },
+  counts: { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 2, neverRan: 13 },
   jobs: SCHEDULED_JOB_NAMES.map((name) =>
     name === "evaluate-alerts" ? job(name, { status: "dead", expectedEveryHours: 6, lastStartedAt: "2026-10-07T07:30:00.000Z", lastRunStatus: "succeeded", totalRuns: 3, succeededRuns: 3, manualRuns: 3 })
     : name === "sol-history-backfill" ? job(name, { status: "dead", expectedEveryHours: 1, lastStartedAt: "2026-10-28T09:00:00.000Z", lastRunStatus: "succeeded", totalRuns: 1, succeededRuns: 1, manualRuns: 1 })
@@ -86,7 +86,7 @@ const previewJobs = {
 };
 const scheduler = (external: { job: string; recordedExecutions: number }[], recorded: number) => ({
   observed: { lastRecordedExecutionAt: AGO_H(2), recordedExecutions: recorded, overdue: [], externalCrons: external.map((e) => ({ ...e, lastRecordedExecutionAt: AGO_H(0.1), registered: false as const })) },
-  expected: { nextSlotAt: null, jobsInNextSlot: [], registeredJobs: 14 }, notes: [], window: { from: AGO_H(24), to: AGO_H(0) }, checkedAt: AGO_H(0),
+  expected: { nextSlotAt: null, jobsInNextSlot: [], registeredJobs: 15 }, notes: [], window: { from: AGO_H(24), to: AGO_H(0) }, checkedAt: AGO_H(0),
 });
 // Preview shape: no backstop rows and no SCHEDULED execution in the window
 // (#136 review fix: an execution in the window counts as wake evidence unless known manual).
@@ -95,7 +95,7 @@ const prodScheduler = scheduler([{ job: BACKSTOP_CRON_JOB, recordedExecutions: 2
 
 /** A production-like job-health response: all healthy, one failing, one overdue, one never-ran continuation. */
 const prodJobs = {
-  healthy: false, checkedAt: AGO_H(0), counts: { healthy: 11, running: 0, overdue: 1, failing: 1, dead: 0, neverRan: 1 },
+  healthy: false, checkedAt: AGO_H(0), counts: { healthy: 12, running: 0, overdue: 1, failing: 1, dead: 0, neverRan: 1 },
   jobs: SCHEDULED_JOB_NAMES.map((name) =>
     name === "sync-banks" ? job(name, { status: "failing", lastRunStatus: "failed", consecutiveFailures: 3, lastStartedAt: AGO_H(3), totalRuns: 50, succeededRuns: 40, failedRuns: 10, lastFailureAt: AGO_H(3), lastFailureSummary: "Plaid 500" })
     : name === "purge-trash" ? job(name, { status: "overdue", lastRunStatus: "succeeded", lastStartedAt: AGO_H(27), totalRuns: 20, succeededRuns: 20 })
@@ -111,7 +111,7 @@ const evActive = schedulerEvidence(ok(prodJobs), ok(prodScheduler));
 console.log("1. Job catalog matches the registries");
 {
   const registered = SCHEDULED_JOBS.map((j) => j.name).sort();
-  check("a human label for every scheduled job (14), and no extra", Object.keys(JOB_LABELS).sort().join() === registered.join() && registered.length === 14);
+  check("a human label for every scheduled job (15), and no extra", Object.keys(JOB_LABELS).sort().join() === registered.join() && registered.length === 15);
   check("labels are human words, never the raw ledger id", Object.entries(JOB_LABELS).every(([id, label]) => label !== id && !/^[a-z0-9-]+$/.test(label)));
   const targets = new Set(OPERATION_TARGETS.map((t) => t.targetJob));
   check("JOB_MANUAL 'manual' ⇔ OPERATION_TARGETS", Object.entries(JOB_MANUAL).every(([j, a]) => (a.kind === "manual") === targets.has(j)));
@@ -179,8 +179,8 @@ const previewAttention = {
 } as never;
 {
   const g = groupAttention(previewAttention, evInactive, previewJobs);
-  check("the two dead jobs fold into ONE scheduler group naming the cause", g.filter((x) => x.key === "scheduler-inactive").length === 1 && g[0].title === "14 jobs" && /scheduler not active/.test(g[0].line), `${g[0].title} · ${g[0].line}`);
-  check("…counting every job the scheduler has not woken (14), not one row per job", g[0].count === 14 && !/dead/i.test(`${g[0].title} ${g[0].line}`), `${g[0].count} ${g[0].line}`);
+  check("the two dead jobs fold into ONE scheduler group naming the cause", g.filter((x) => x.key === "scheduler-inactive").length === 1 && g[0].title === "15 jobs" && /scheduler not active/.test(g[0].line), `${g[0].title} · ${g[0].line}`);
+  check("…counting every job the scheduler has not woken (15), not one row per job", g[0].count === 15 && !/dead/i.test(`${g[0].title} ${g[0].line}`), `${g[0].count} ${g[0].line}`);
   check("three stale connections are ONE group ('3 connections · Stale')", g.some((x) => x.title === "3 connections" && x.line === "Stale" && x.count === 3));
   check("a lone reauth connection stays its own row", g.some((x) => x.title === "Schwab" && x.count === 1));
   check("groups keep the server's (severity-ranked) order — no second ordering authority", g.map((x) => x.severity).join() === "critical,error,warning");
@@ -197,8 +197,8 @@ const previewAttention = {
     gActive.map((x) => `${x.title} · ${x.line}`).join(" | "));
   const evPreview = schedulerEvidence(ok(previewJobs), ok(previewScheduler), [], "preview");
   const gPreview = groupAttention(previewAttention, evPreview, previewJobs);
-  check("it2: Preview ⇒ the job group reads '14 jobs · Not running on Preview'",
-    gPreview[0].key === "scheduler-inactive" && gPreview[0].title === "14 jobs" && gPreview[0].line === NOT_RUNNING_ON_PREVIEW, `${gPreview[0].title} · ${gPreview[0].line}`);
+  check("it2: Preview ⇒ the job group reads '15 jobs · Not running on Preview'",
+    gPreview[0].key === "scheduler-inactive" && gPreview[0].title === "15 jobs" && gPreview[0].line === NOT_RUNNING_ON_PREVIEW, `${gPreview[0].title} · ${gPreview[0].line}`);
   const lone = groupAttention({ ...(previewAttention as object), items: [(previewAttention as { items: unknown[] }).items[0]] } as never, evActive, null);
   check("it2: a lone job item without a job-health row never says 'Dead'", lone.length === 1 && !/\bdead\b/i.test(lone[0].line) && /^Overdue/.test(lone[0].line), lone[0]?.line);
   // Incidents: the count of occurrences is kept, joined and pluralised.
@@ -241,8 +241,8 @@ console.log("4. Day series, composition and KPIs");
 
   const comp = outcomeComposition(prodJobs);
   check("outcome composition sums to the jobs reported", comp.reduce((a, c) => a + c.value, 0) === prodJobs.jobs.length);
-  check("…succeeded / failed / no execution recorded, zero slices dropped", comp.map((c) => `${c.id}=${c.value}`).join() === "succeeded=12,failed=1,none=1");
-  check("Preview composition: 12 with no execution recorded", outcomeComposition(previewJobs).find((c) => c.id === "none")?.value === 12);
+  check("…succeeded / failed / no execution recorded, zero slices dropped", comp.map((c) => `${c.id}=${c.value}`).join() === "succeeded=13,failed=1,none=1");
+  check("Preview composition: 13 with no execution recorded", outcomeComposition(previewJobs).find((c) => c.id === "none")?.value === 13);
 
   const daily = {
     envelope: { window: { from: "2026-10-20", to: "2026-10-30" } }, windowDays: 11, maxWindowDays: 90, executions: 30, floor: false, notes: [], tier: "observed",
@@ -253,7 +253,7 @@ console.log("4. Day series, composition and KPIs");
   check("refresh days: failed and other (partial) kept apart", (() => { const x = r.find((y) => y.day === "2026-10-29")!; return x.succeeded === 7 && x.failed === 2 && x.other === 1; })());
 
   const k = healthKpis({ jobs: ok(prodJobs), scheduler: ok(prodScheduler), attention: ok(previewAttention), groups: groupAttention(previewAttention, evActive, prodJobs), days7: executionDays(null, NOW, 7) });
-  check("KPI: jobs healthy x/total from job health", k[0].value === "11/14");
+  check("KPI: jobs healthy x/total from job health", k[0].value === "12/15");
   check("KPI: executions 24 h exclude the backstop / external crons", k[2].value === "96");
   check("KPI: without manual-run info the runs are never called scheduled", k[2].sub === "registered jobs" && !/scheduled/.test(k[2].sub));
   // it2 — the manual / scheduled split, from operations `recent`.
@@ -280,7 +280,7 @@ const surface = (over: Record<string, unknown> = {}) => renderToStaticMarkup(cre
 } as never));
 {
   const html = surface();
-  check("one row per scheduled job (14), no second list", (html.match(/data-job-row="/g) ?? []).length === 14 && (html.match(/aria-label="Scheduled jobs"/g) ?? []).length === 1);
+  check("one row per scheduled job (15), no second list", (html.match(/data-job-row="/g) ?? []).length === 15 && (html.match(/aria-label="Scheduled jobs"/g) ?? []).length === 1);
   for (const c of commands) {
     const control = c.mutates ? `aria-label="Run ${c.targetLabel} now"` : `aria-label="Dry run ${c.targetLabel}"`;
     check(`${c.id} → a reachable control on its job's row`, html.includes(control) && new RegExp(`data-job-row="${c.targetJob}"[\\s\\S]*?${control.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(html));
@@ -364,7 +364,7 @@ const dash = (over: Record<string, unknown> = {}) => renderToStaticMarkup(create
   const html = dash();
   const t = text(html);
   check("hero: verdict word + checked time + the four KPIs", /Failed/.test(t) && /Checked 05:31 UTC/.test(t) && ["Jobs healthy", "Needs attention", "Executions · 24 h", "Success rate"].every((w) => t.includes(w)));
-  check("hero (Preview): 0/14 healthy, the scheduler cause in the caption", /0\/14/.test(t) && /scheduler not active on this deployment/i.test(t));
+  check("hero (Preview): 0/15 healthy, the scheduler cause in the caption", /0\/15/.test(t) && /scheduler not active on this deployment/i.test(t));
   // Platform Spaces 2.0 — the Operations KPIs are ACTIONABLE (Jobs list, attention,
   // trend, outcomes), so the compact 2×2 is one grid of buttons in the strip's treatment.
   check("hero: the compact card (CompactHeroCard rhythm) + a 2×2 KPI grid whose four tiles open their detail",
@@ -373,17 +373,17 @@ const dash = (over: Record<string, unknown> = {}) => renderToStaticMarkup(create
   const card = /<section data-compact-hero[^>]*>([\s\S]*?)<\/section>/.exec(html)?.[1] ?? "";
   check("it2: the compact hero card is three rows (no empty change / range / talk rows)",
     (card.match(/<div class="flex h-/g) ?? []).length === 3 && /Checked 05:31 UTC/.test(card) && /Failed/.test(card) && !/data-compact-hero-row="5"/.test(card), String((card.match(/<div class="flex h-/g) ?? []).length));
-  check("it2: donut centre counts JOBS — '14' over 'jobs', never 'N jobs' of slices",
-    /data-center-total="true">14<\/p><p[^>]*>jobs<\/p>/.test(html) && !/\d jobs<\/p>/.test(html.slice(html.indexOf("data-center-total"))), (/data-center-total[\s\S]{0,120}/.exec(html) ?? [""])[0]);
+  check("it2: donut centre counts JOBS — '15' over 'jobs', never 'N jobs' of slices",
+    /data-center-total="true">15<\/p><p[^>]*>jobs<\/p>/.test(html) && !/\d jobs<\/p>/.test(html.slice(html.indexOf("data-center-total"))), (/data-center-total[\s\S]{0,120}/.exec(html) ?? [""])[0]);
   check("charts: execution trend (DayBars) + outcome donut (BreakdownWidget) + refresh bars", (html.match(/data-day-bars/g) ?? []).length === 2 && /<svg width="180" height="180"/.test(html));
   check("composition donut + refresh activity are desktop-only (one chart card on mobile)",
     /id="ops-composition" class="[^"]*max-lg:hidden/.test(html) && /id="ops-refresh" class="[^"]*max-lg:hidden/.test(html) && !/id="ops-trend" class="[^"]*max-lg:hidden/.test(html));
   const attn = /<ul aria-label="Needs attention"[^>]*>([\s\S]*?)<\/ul>/.exec(html)?.[1] ?? "";
-  check(`needs attention: ≤ ${ATTENTION_ROWS} grouped rows, scheduler cause first`, (attn.match(/<li/g) ?? []).length === ATTENTION_ROWS && /14 jobs[\s\S]*?scheduler not active on this deployment/.test(attn));
+  check(`needs attention: ≤ ${ATTENTION_ROWS} grouped rows, scheduler cause first`, (attn.match(/<li/g) ?? []).length === ATTENTION_ROWS && /15 jobs[\s\S]*?scheduler not active on this deployment/.test(attn));
   check("'View all (6)' opens the full attention list", /View all \(6\)/.test(t));
   const recent = /<ul aria-label="Recent activity"[^>]*>([\s\S]*?)<\/ul>/.exec(html)?.[1] ?? "";
   check(`recent activity: ${RECENT_ROWS} rows of 5 returned`, (recent.match(/<li/g) ?? []).length === RECENT_ROWS);
-  check("the unified jobs card renders in the Jobs block with 'See all 14'", /data-jobs-slot/.test(html) && /See all 14/.test(t));
+  check("the unified jobs card renders in the Jobs block with 'See all 15'", /data-jobs-slot/.test(html) && /See all 15/.test(t));
   check("no paragraph on the default screen: every text line ≤ 90 characters", (html.match(/<p(?:\s[^>]*)?>([\s\S]*?)<\/p>/g) ?? []).every((p) => text(p).length <= 90),
     (html.match(/<p(?:\s[^>]*)?>([\s\S]*?)<\/p>/g) ?? []).map(text).filter((x) => x.length > 90).join(" | "));
   check("at most one caption per chart card", (html.match(/class="mt-3 truncate text-\[11px\]/g) ?? []).length <= 2);
@@ -440,7 +440,7 @@ console.log("8. #136 review fixes — scheduler evidence");
     check("it2 (Preview dashboard): hero caption names Preview", /scheduled jobs don't run on Preview/.test(t));
     check("it2 (Preview dashboard): executions KPI reads '3 manual'", /Executions · 24 h[\s\S]*?3 manual/.test(t) && !/scheduled jobs\b(?! don)/.test(t), t.slice(t.indexOf("Executions"), t.indexOf("Executions") + 80));
     check("it2 (Preview dashboard): trend caption 'Manual runs only — scheduled jobs don't run on Preview'", /Manual runs only — scheduled jobs don't run on Preview/.test(t));
-    check("it2 (Preview dashboard): attention reads '14 jobs · Not running on Preview', never Dead", /14 jobs Not running on Preview/.test(t) && !/\bDead\b/.test(t.replace(/Dead — no run recorded[^.]*\./g, "")));
+    check("it2 (Preview dashboard): attention reads '15 jobs · Not running on Preview', never Dead", /15 jobs Not running on Preview/.test(t) && !/\bDead\b/.test(t.replace(/Dead — no run recorded[^.]*\./g, "")));
   }
   // Job health unreadable ⇒ manual operations still reachable.
   const fallback = commandOnlyRows([

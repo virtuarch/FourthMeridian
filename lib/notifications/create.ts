@@ -122,6 +122,27 @@ function contentResolverFor(ctx: { client?: NotificationWriteClient; content?: L
   return defaultLiveContentResolver;
 }
 
+/** Comms Center B2 — what a caller stamps on the ledger rows of one createNotification call. */
+export interface LedgerTag {
+  /** The message the row belongs to (an automation item id), instead of the Notification id. */
+  messageKey?: string;
+  automationRunItemId?: string;
+  mode?: "LIVE" | "TEST";
+  attempt?: number;
+}
+
+/** Apply a ledger tag to one built row. Pure. */
+export function tagLedgerRow(row: CommsDeliveryRow, tag: LedgerTag | undefined): CommsDeliveryRow {
+  if (!tag) return row;
+  return {
+    ...row,
+    ...(tag.messageKey ? { messageKey: tag.messageKey } : {}),
+    ...(tag.automationRunItemId ? { automationRunItemId: tag.automationRunItemId } : {}),
+    ...(tag.mode ? { mode: tag.mode } : {}),
+    ...(tag.attempt && tag.attempt > 0 ? { attempt: Math.floor(tag.attempt) } : {}),
+  };
+}
+
 /** One outcome createNotification records (the key, recipient, env and clock are filled in by `note`). */
 type LedgerNote = Omit<Parameters<typeof notificationLedgerRow>[0], "key" | "recipientUserId" | "env" | "now">;
 
@@ -366,6 +387,15 @@ export async function createNotification(
     ledger?: LedgerWriter;
     /** Comms Center B1 — injected live-content resolver (tests); null = always the code default. */
     content?: LiveContentResolver | null;
+    /**
+     * Comms Center B2 — the IN-APP leg only: the type's EMAIL leg is neither
+     * sent nor recorded here. An automation's in-app item and an operator's
+     * in-app test send are ONE channel each; their email (if any) is its own
+     * item with its own guards (lib/notifications/automations/engine.ts).
+     */
+    inAppOnly?: true;
+    /** Comms Center B2 — stamped on every ledger row this call writes (automation item / TEST mode). */
+    ledgerTag?: LedgerTag;
   },
 ): Promise<CreateNotificationResult> {
   // 1. Registry gate — unknown types throw at the producer (programmer error).
@@ -407,7 +437,8 @@ export async function createNotification(
   /** Record ledger rows post-response (inline outside a request); never throws, never blocks the result. */
   const note = async (...rows: LedgerNote[]) => {
     if (!writer || rows.length === 0) return;
-    const built = rows.map((r) => notificationLedgerRow({ ...r, key: def.id, recipientUserId: input.userId, env: process.env, now: ledgerNow }));
+    const kept = ctx?.inAppOnly ? rows.filter((r) => r.channel === "IN_APP") : rows;
+    const built = kept.map((r) => tagLedgerRow(notificationLedgerRow({ ...r, key: def.id, recipientUserId: input.userId, env: process.env, now: ledgerNow }), ctx?.ledgerTag));
     await runAfterResponse(async () => {
       for (const row of built) await recordDelivery(writer, row);
     });
@@ -439,7 +470,7 @@ export async function createNotification(
       };
     }
   }
-  const emailEnabled = resolveChannelEnabled(def, "EMAIL", overrides);
+  const emailEnabled = ctx?.inAppOnly ? false : resolveChannelEnabled(def, "EMAIL", overrides);
   const inAppEnabled = resolveChannelEnabled(def, "IN_APP", overrides);
   /** A-2b: in-app is off but this type's email follows its own preference, which is on. */
   const emailAnchorOnly = !inAppEnabled && def.emailIndependentOfInApp === true && emailEnabled;

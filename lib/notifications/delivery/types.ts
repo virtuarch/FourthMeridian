@@ -84,6 +84,10 @@ export interface CommsDeliveryRow {
    * of a leg that actually rendered published content.
    */
   contentVersionId?: string | null;
+  /** Comms Center B2 — "TEST" for an operator test send (excluded from analytics by default); absent = LIVE. */
+  mode?: "LIVE" | "TEST";
+  /** Comms Center B2 — the AutomationRunItem this send belongs to (soft ref; = messageKey). */
+  automationRunItemId?: string | null;
 }
 
 /** The single write the ledger performs. Injected so tests never need a database. */

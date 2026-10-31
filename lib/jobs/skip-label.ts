@@ -8,10 +8,12 @@
  * is not one. Pure and client-safe.
  */
 
-export type SkipKind = "COST_FREEZE" | "POLICY_UNAVAILABLE" | "PLAN_RESTRICTION" | "UNSPECIFIED";
+export type SkipKind = "COST_FREEZE" | "POLICY_UNAVAILABLE" | "PLAN_RESTRICTION" | "ACTIVATION_DISABLED" | "UNSPECIFIED";
 
 export function skipKindOf(skipReason: string | null | undefined): SkipKind {
   if (!skipReason) return "UNSPECIFIED";
+  // Comms Center B2 — the automation executor held by the activation hard gate (not a plan restriction).
+  if (skipReason === "ACTIVATION_DISABLED_PENDING_HARDENING") return "ACTIVATION_DISABLED";
   const r = skipReason.startsWith("BILLABLE_") ? skipReason.slice("BILLABLE_".length) : skipReason;
   if (r === "COST_FREEZE") return "COST_FREEZE";
   if (r === "POLICY_UNAVAILABLE") return "POLICY_UNAVAILABLE";
@@ -22,6 +24,7 @@ const LABEL: Record<SkipKind, string> = {
   COST_FREEZE: "Skipped (cost freeze)",
   POLICY_UNAVAILABLE: "Skipped (policy unavailable)",
   PLAN_RESTRICTION: "Skipped (plan restriction)",
+  ACTIVATION_DISABLED: "Skipped (activation disabled)",
   UNSPECIFIED: "Skipped",
 };
 
@@ -29,6 +32,7 @@ const REASON: Record<SkipKind, string> = {
   COST_FREEZE: "A cost freeze is in force — the work was refused before any vendor call",
   POLICY_UNAVAILABLE: "The cost policy could not be verified — the work was refused before any vendor call (fail closed)",
   PLAN_RESTRICTION: "Every customer this run would bill is paused, ended or not entitled — nothing was started",
+  ACTIVATION_DISABLED: "Automation activation is disabled pending hardening — an ACTIVE automation was found and nothing was sent",
   UNSPECIFIED: "The work was refused before any vendor call",
 };
 

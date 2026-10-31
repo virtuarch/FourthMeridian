@@ -243,6 +243,7 @@ Removed from this list on 2026-10-31 (now built): the welcome (`welcome`, §1), 
 
 - Suppress-while-open dedupe can keep the generic copy when a later reauth occurs (§2).
 - `scripts/email-preview.ts` passes a variable template name to `sendEmail`. It sends only the preview cases, only to the exact `EMAIL_PREVIEW_ALLOWED_TO` address, and only with `--send`. `lib/email/catalog.test.ts` declares it in `VARIABLE_NAME_SENDERS`.
+- **Comms Center B2 (2026-10-31).** `lib/notifications/automations/engine.ts` sends an ACTIVE automation's EMAIL item through `sendEmail("notification", …)` — the same generic template and registry render as the registry EMAIL path, keyed by the definition's catalog key, `messageKey` = the AutomationRunItem id; the environment guard and the 5/hour storm limit apply. No automation is active at ship. `lib/notifications/automations/http.ts` (POST `/test-send`) passes a variable template name: a preview case's template or `notification`, synthetic data only, ONLY to the operator's own verified address (outside Production only when allowlisted), subject `[TEST]`, ledger mode `TEST`. It is declared in `VARIABLE_NAME_SENDERS`.
 
 - **No provider idempotency key.** "Sent" means accepted by the provider. Retries exist only for notification EMAIL deliveries (`jobs/retry-notifications.ts`).
 - **Closed 2026-10-31: two emails per Space invite.** See "One email per Space invite" under `space-invite` in §1.

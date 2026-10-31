@@ -75,9 +75,13 @@ function walk(dir: string, out: string[] = []): string[] {
 type Site = { file: string; template: string; builder: string | null; via: string; ledgerKey: string | null };
 const NOT_SENDERS = new Set(["lib/email/send.ts", "lib/email/preview.ts", "lib/email/send-security-alert.ts"]);
 /** The preview tool sends only preview cases to the allowlisted local address — not a production message. */
-const TOOLING = new Set(["scripts/email-preview.ts"]);
+// Comms Center B2 — the operator TEST send (lib/notifications/automations/http.ts) sends only
+// synthetic preview fixtures / the notification template, only to the operator's OWN address,
+// with mode TEST: tooling, not a catalog send site (contract v1.1 §6.9).
+const TOOLING = new Set(["scripts/email-preview.ts", "lib/notifications/automations/http.ts"]);
 /** The registry's generic EMAIL path: one site serves every registry type's EMAIL leg. */
-const REGISTRY_EMAIL_PATH = new Set(["lib/notifications/channels/email.ts", "lib/notifications/create.ts", "jobs/retry-notifications.ts"]);
+// Comms Center B2 — the automation engine sends a registry type's EMAIL leg through the same template.
+const REGISTRY_EMAIL_PATH = new Set(["lib/notifications/channels/email.ts", "lib/notifications/create.ts", "jobs/retry-notifications.ts", "lib/notifications/automations/engine.ts"]);
 
 const LITERAL_RE = /(\bsendEmail|(?<![.\w])email)\(\s*"([^"]*)"\s*,/g;
 const GUARDED_RE = /(?<![.\w])sendSecurityAlert\(/g;
@@ -133,7 +137,7 @@ function main(): void {
       Object.keys(REGISTRY_CATALOG).sort().join() === [...NOTIFICATION_TYPE_IDS].sort().join());
 
     check("the grep found the known send sites (sanity: ≥ 20)", sites.length >= 20, sites.length);
-    check("the only variable-name sender is the preview tool", [...variableSites].every((f) => TOOLING.has(f)), [...variableSites]);
+    check("the only variable-name senders are the preview tool and the operator test send", [...variableSites].every((f) => TOOLING.has(f)), [...variableSites]);
     for (const s of sites) {
       if (TOOLING.has(s.file)) continue;
       const label = `${s.file} → ${s.template}${s.builder ? `·${s.builder}` : ""}`;

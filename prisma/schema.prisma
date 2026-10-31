@@ -3907,14 +3907,20 @@ model CommsDelivery {
   acceptedAt        DateTime?
   // Comms Center B1 — the operator content version this send rendered
   // (CommsTemplateVersion.id, soft ref); null = the code default.
-  contentVersionId  String?
-  createdAt         DateTime  @default(now())
+  contentVersionId    String?
+  // Comms Center B2 — LIVE | TEST (a test send to the operator's own address,
+  // excluded from analytics by default), and the automation claim row a send
+  // belongs to (AutomationRunItem.id, soft ref; = messageKey for automation sends).
+  mode                String    @default("LIVE")
+  automationRunItemId String?
+  createdAt           DateTime  @default(now())
 
   @@index([createdAt])
   @@index([definitionKey, createdAt])
   @@index([recipientUserId, createdAt])
   @@index([recipientHash])
   @@index([messageKey])
+  @@index([automationRunItemId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3994,6 +4000,114 @@ model CommsAiSuggestion {
   @@index([templateId, createdAt])
   @@index([status, expiresAt])
   @@index([requestedById, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMS CENTER B2 — controlled automations (contract v1 §5, §6.3; v1.1 §6, §8.4).
+// AutomationDefinition: an operator-built rule over the CODE trigger catalog —
+// typed trigger, closed predicate set, a resolver, channels and a catalog
+// definition. It carries NO copy (it sends the stream's live content). Kept for
+// good (no DELETE grant: "delete" is the terminal DISABLED state).
+// AutomationRun: one LIVE trigger evaluation or one DRY_RUN replay, counts only.
+// AutomationRunItem: the per-(recipient, channel) CLAIM and SCHEDULE row; its
+// unique idempotencyKey is the claim. fm_system only; fm_app / fm_auth: nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AutomationDefinition {
+  id                             String    @id @default(cuid())
+  name                           String
+  description                    String    @default("")
+  triggerKey                     String // TriggerKey (lib/notifications/catalog/types.ts)
+  definitionKey                  String // catalog key
+  definitionVersion              Int // the definition version it was validated against
+  variant                        String    @default("default")
+  customerFacing                 Boolean // audience ∉ {OPERATOR_INBOX, PLATFORM_STAFF}; re-derived on every write
+  channels                       String[]
+  conditions                     Json // Condition[] — the closed predicate set, validated on every write
+  recipient                      Json // RecipientResolver
+  delayMinutes                   Int?
+  dedupeKeyTemplate              String
+  frequencyCapMax                Int
+  frequencyCapHours              Int
+  retryPolicy                    String    @default("STANDARD") // NONE | STANDARD
+  maxRecipientsPerRun            Int       @default(50)
+  state                          String    @default("DRAFT") // DRAFT | ACTIVE | PAUSED | DISABLED
+  version                        Int       @default(1) // optimistic token: +1 on every write
+  activatedVersion               Int?
+  autoPausedReason               String? // DEFINITION_CHANGED | STORM_BREAKER | ERROR_RATE | TRIGGER_RETIRED
+  ownerApprovedVersion           Int?
+  ownerApprovedDefinitionVersion Int?
+  ownerApprovedAt                DateTime?
+  ownerApprovedById              String? // soft ref, SYSTEM_ADMIN
+  lastDryRunId                   String? // soft ref → AutomationRun
+  // The engine's resumable keyset cursor over the trigger's recorded facts
+  // (AuditLog createdAt, id). Set at activation: nothing before it fires.
+  triggerCursorAt                DateTime?
+  triggerCursorId                String?
+  createdById                    String // soft ref, operator
+  updatedById                    String // soft ref, operator
+  activatedAt                    DateTime?
+  pausedAt                       DateTime?
+  disabledAt                     DateTime?
+  createdAt                      DateTime  @default(now())
+  updatedAt                      DateTime  @updatedAt
+
+  @@index([state, triggerKey])
+  @@index([definitionKey])
+}
+
+model AutomationRun {
+  id                String              @id @default(cuid())
+  automationId      String // soft ref → AutomationDefinition
+  automationVersion Int
+  mode              String // LIVE | DRY_RUN
+  triggerKey        String
+  triggerRef        String? // opaque AuditLog id (LIVE); null for a window replay
+  // LIVE only: sha256(automationId ‖ activatedVersion ‖ triggerRef) — one run per
+  // trigger fact per activation, however many wakes see it. NULL for DRY_RUN.
+  liveKey           String?             @unique
+  status            String // RUNNING | SUCCEEDED | PARTIAL | FAILED | HALTED
+  counts            Json // AutomationRunCounts — counts only
+  haltReason        String? // SuppressionReason (PROVIDER_FREEZE | STORM_BREAKER | AUTOMATION_PAUSED)
+  dedupedCount      Int                 @default(0)
+  windowFrom        DateTime? // DRY_RUN
+  windowTo          DateTime?
+  jobRunId          String? // soft ref (lib/jobs/run.ts currentJobRun)
+  error             String? // a closed code, never a message
+  startedAt         DateTime            @default(now())
+  completedAt       DateTime?
+  items             AutomationRunItem[]
+
+  @@index([automationId, startedAt])
+  @@index([status, startedAt])
+}
+
+model AutomationRunItem {
+  id                 String        @id @default(cuid()) // = CommsDelivery.messageKey of its sends
+  runId              String
+  run                AutomationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  automationId       String
+  automationVersion  Int
+  channel            String // EMAIL | IN_APP
+  recipientUserId    String? // soft ref; the account purge cancels + nulls
+  idempotencyKey     String        @unique // sha256(automationId ‖ activatedVersion ‖ triggerRef ‖ recipientId ‖ channel)
+  dedupeKey          String? // non-PII by construction
+  triggerRef         String? // the AuditLog fact (re-read at send time; never copied)
+  status             String // SCHEDULED | SENDING | SENT | SUPPRESSED | CANCELLED | FAILED | DEAD
+  reason             String? // SuppressionReason
+  notBefore          DateTime
+  attempt            Int           @default(0)
+  nextAttemptAt      DateTime?
+  leaseUntil         DateTime?
+  lastDeliveryStatus String? // the latest DeliveryStatus written to the ledger
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([status, notBefore])
+  @@index([status, nextAttemptAt])
+  @@index([runId])
+  @@index([automationId, dedupeKey])
+  @@index([recipientUserId, createdAt])
 }
 
 // CommsDeliveryDaily (Comms Center A-2a) — counts only, per UTC day × key ×

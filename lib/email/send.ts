@@ -203,7 +203,9 @@ async function send(
   } catch {
     return { status: "error", provider: "none", error: `template "${name}" failed to render` };
   }
-  const { subject, text, html } = rendered;
+  const { text, html } = rendered;
+  // Comms Center B2 (contract v1.1 §6.9) — an operator TEST send is marked in its subject.
+  const subject = ctx?.mode === "TEST" ? `[TEST] ${rendered.subject.replace(/^\[PREVIEW\] /, "")}` : rendered.subject;
   const sender = resolveSender(template.sender);
 
   const message: EmailMessage = {
@@ -239,7 +241,8 @@ async function send(
   // The storm limit (A-2b, O-10) — after the guard, before the provider. Exempt
   // classes return at once (fail open); a limited send is held when over the
   // limit or when its count cannot be read (fail closed).
-  if (deps.storm) {
+  // A TEST send is OPERATOR-class (v1.1 §6.9): never counted, never held — its own bucket bounds it.
+  if (deps.storm && ctx?.mode !== "TEST") {
     const key = resolveEmailKey(name, ctx);
     const userId = ctx?.recipientUserId ?? null;
     const storm = await decideStorm({

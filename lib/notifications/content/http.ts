@@ -38,6 +38,7 @@ import { decideRecipient, emailEnvironment, type RecipientGuardEnv } from "@/lib
 import type { PaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import type { GlobalCostFreezeVerdict } from "@/lib/platform/cost-freeze.core";
 import { NOTIFICATION_REGISTRY } from "@/lib/notifications/registry";
+import { ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED } from "@/lib/notifications/automations/types";
 import {
   AI_SUGGEST_MODES, AI_TONES, EDITABLE_CHANNELS,
   type AiAvailability, type AiSuggestMode, type AiSuggestResult, type AiTone, type AiUnavailableReason, type CatalogContentLeg,
@@ -180,7 +181,7 @@ export async function testSendFacts(auth: ContentAuth, svc: Pick<ContentServices
 
 /** PURE — the flags, from the operator's level and the resource facts (§1.1 derivations). */
 export function viewerFor(auth: ContentAuth, def: CommsDefinition, facts: { contentEditable: boolean; hasRollbackTarget: boolean },
-  send: Pick<Viewer, "testSendEligible" | "testSendIneligibleReason">): Viewer {
+  send: Pick<Viewer, "testSendEligible" | "testSendIneligibleReason">, activationEnabled: boolean = AUTOMATION_ACTIVATION_ENABLED): Viewer {
   const write = hasLevel(auth, "WRITE");
   const control = hasLevel(auth, "CONTROL");
   const customerFacing = def.audience !== "OPERATOR_INBOX" && def.audience !== "PLATFORM_STAFF";
@@ -193,7 +194,9 @@ export function viewerFor(auth: ContentAuth, def: CommsDefinition, facts: { cont
     canTestSend: write && deliverLeg,
     canEditAutomation: write && def.editable && !def.protected,
     canDryRun: write && def.editable,
-    canActivate: control && def.editable,
+    // Comms Center B2 — the activation hard gate (automations/types.ts): false while activation is disabled.
+    canActivate: control && def.editable && activationEnabled,
+    activationDisabledReason: activationEnabled ? null : ACTIVATION_DISABLED_REASON,
     canApproveAsOwner: auth.user.role === UserRole.SYSTEM_ADMIN && customerFacing && def.editable,
     canPauseDisable: write,
     ...send,

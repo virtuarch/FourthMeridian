@@ -13,6 +13,9 @@
  * COST: two queries per request (ledgerSince + one DISTINCT ON / GROUP BY), bounded by the window (≤ 90 UTC days)
  * and served by the createdAt / (definitionKey, createdAt) indexes and the
  * rollup's (day, …) primary key. Never selects a recipient column.
+ *
+ * Comms Center B2 (contract v1.1 §6.9): operator TEST sends (mode "TEST") are
+ * excluded — analytics count LIVE messages only.
  */
 
 import "server-only";
@@ -61,7 +64,8 @@ export const deliveryReadSource: DeliveryReadSource = {
                "definitionKey", "channel", "status", COALESCE("reason", '') AS "reason"
           FROM "CommsDelivery"
          WHERE "createdAt" >= (${q.from}::date)::timestamp
-           AND "createdAt" <  (${q.to}::date + 1)::timestamp ${ledgerFilters}
+           AND "createdAt" <  (${q.to}::date + 1)::timestamp
+           AND "mode" = 'LIVE' ${ledgerFilters}
          ORDER BY "channel", "messageKey", "attempt" DESC, "createdAt" DESC, "id" DESC
       )
       SELECT u."day", u."definitionKey", u."channel", u."status", u."reason", SUM(u."n")::int AS "count"
