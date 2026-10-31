@@ -123,8 +123,9 @@ export function previewCases(): PreviewCase[] {
     spaceName: "Example Household", inviterName: "Alex Example", role: "MEMBER", inviteUrl: buildInviteUrl(PREVIEW_APP_BASE),
   }));
 
-  // Generic notification email: one case per real connection state, plus the
-  // other default-EMAIL type (SPACE_INVITE_RECEIVED) and a pre-state legacy row.
+  // Generic notification email: one case per real connection state plus a
+  // pre-state legacy row. (SPACE_INVITE_RECEIVED has no email since 2026-10-31
+  // — the invite's one email is the dedicated space-invite case above.)
   for (const state of CONNECTION_STATES) {
     cases.push(notificationCase(`notification--connection-${state}`, "SYNC_FAILED", {
       plaidItemId: "preview-item", institutionName: "Example Bank", connectionState: state,
@@ -132,9 +133,6 @@ export function previewCases(): PreviewCase[] {
   }
   cases.push(notificationCase("notification--connection-legacy-no-state", "SYNC_FAILED", {
     plaidItemId: "preview-item", institutionName: "Example Bank",
-  }));
-  cases.push(notificationCase("notification--space-invite-received", "SPACE_INVITE_RECEIVED", {
-    inviteId: "preview-invite", spaceName: "Example Household", inviterName: "Alex Example",
   }));
 
   // Operator / internal.

@@ -419,16 +419,36 @@ async function run(): Promise<void> {
   }
 
   // ── 9. Email delivery + NotificationDelivery bookkeeping (OPS-3 S4) ─────────
-  const inviteInput = {
-    type: "SPACE_INVITE_RECEIVED" as NotificationTypeId, // default: IN_APP + EMAIL
+  // SYNC_FAILED is the default-EMAIL type (IN_APP + EMAIL). SPACE_INVITE_RECEIVED
+  // used to be this fixture; it is IN_APP only since 2026-10-31 (one email per
+  // Space invite — the dedicated space-invite email), covered just below.
+  const emailInput = {
+    type: "SYNC_FAILED" as NotificationTypeId, // default: IN_APP + EMAIL
     userId: "u1",
-    data: { inviteId: "i1", spaceName: "Hogan Family", inviterName: "@chris" },
+    data: { plaidItemId: "p-hogan", institutionName: "Hogan Bank" },
   };
+  {
+    // One email per Space invite: the notification is in-app only — no email
+    // attempt, no delivery row — even with a hostile SPACES/EMAIL opt-in row.
+    for (const [label, prefs] of [
+      ["defaults", defaultPrefs],
+      ["SPACES/EMAIL opted in", makePrefClient([{ category: "SPACES", channel: "EMAIL", enabled: true }])],
+    ] as const) {
+      const fake = makeFakeClient();
+      const { adapter, messages } = makeFakeAdapter({ status: "sent", id: "m", provider: "resend" });
+      const res = await createNotification(
+        { type: "SPACE_INVITE_RECEIVED", userId: "u1", data: { inviteId: "i1", spaceName: "Hogan Family", inviterName: "@chris" } },
+        { client: fake.client, prefClient: prefs, emailAdapter: adapter },
+      );
+      check(`SPACE_INVITE_RECEIVED (${label}): in-app row created, NO email, no delivery row`,
+        res.status === "created" && fake.rows.length === 1 && fake.deliveries.length === 0 && messages.length === 0);
+    }
+  }
   {
     // Successful send → one row, EmailResult mapped field-for-field.
     const fake = makeFakeClient();
     const { adapter, messages } = makeFakeAdapter({ status: "sent", id: "msg_123", provider: "resend" });
-    const res = await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
+    const res = await createNotification(emailInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
     check("created with email default-on", res.status === "created");
     check("exactly one delivery row per attempt", fake.deliveries.length === 1);
     const d = fake.deliveries[0];
@@ -438,13 +458,13 @@ async function run(): Promise<void> {
     check("attempts starts at 1 (retries are OPS-4)", d.attempts === 1);
     check("delivery row anchored to the created notification", d.notificationId === res.id);
     check("adapter got the recipient email + rendered copy",
-      messages[0]?.email === "u1@example.com" && messages[0]?.title === "You're invited to Hogan Family");
+      messages[0]?.email === "u1@example.com" && messages[0]?.title === "We couldn't sync Hogan Bank");
   }
   {
     // Failed send → row records the failure; deliveredAt stays null.
     const fake = makeFakeClient();
     const { adapter } = makeFakeAdapter({ status: "error", provider: "resend", error: "550 mailbox unavailable" });
-    const res = await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
+    const res = await createNotification(emailInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
     const d = fake.deliveries[0];
     check("failed send still creates the notification", res.status === "created");
     check("failure recorded verbatim", d?.status === "error" && d.error === "550 mailbox unavailable" && d.deliveredAt === null);
@@ -453,8 +473,8 @@ async function run(): Promise<void> {
     // EMAIL preference off → created, NO delivery row, adapter never called.
     const fake = makeFakeClient();
     const { adapter, messages } = makeFakeAdapter({ status: "sent", provider: "resend" });
-    const emailOff = makePrefClient([{ category: "SPACES", channel: "EMAIL", enabled: false }]);
-    const res = await createNotification(inviteInput, { client: fake.client, prefClient: emailOff, emailAdapter: adapter });
+    const emailOff = makePrefClient([{ category: "FINANCIAL", channel: "EMAIL", enabled: false }]);
+    const res = await createNotification(emailInput, { client: fake.client, prefClient: emailOff, emailAdapter: adapter });
     check("EMAIL-disabled: notification created, no delivery row, adapter untouched",
       res.status === "created" && fake.deliveries.length === 0 && messages.length === 0);
   }
@@ -495,7 +515,7 @@ async function run(): Promise<void> {
     // Recipient row missing → adapter reports skipped; the skip is recorded.
     const fake = makeFakeClient([], {} /* no emails */);
     const { adapter } = makeFakeAdapter({ status: "skipped", provider: "fake-email" });
-    await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
+    await createNotification(emailInput, { client: fake.client, prefClient: defaultPrefs, emailAdapter: adapter });
     check("skipped attempt still leaves a delivery row (bookkeeping invariant)",
       fake.deliveries[0]?.status === "skipped" && fake.deliveries[0].deliveredAt === null);
   }
@@ -505,7 +525,7 @@ async function run(): Promise<void> {
     // send.ts contract), and the captured outcome lands in the delivery row.
     (process.env as Record<string, string>).NODE_ENV = "test";
     const fake = makeFakeClient();
-    const res = await createNotification(inviteInput, { client: fake.client, prefClient: defaultPrefs });
+    const res = await createNotification(emailInput, { client: fake.client, prefClient: defaultPrefs });
     const d = fake.deliveries[0];
     check("default adapter delivers through OPS-1 sendEmail (capture transport)",
       res.status === "created" && d?.channel === "EMAIL" && d.status === "captured" && d.provider === "capture");
