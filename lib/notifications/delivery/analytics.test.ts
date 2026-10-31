@@ -303,8 +303,9 @@ async function messages(): Promise<void> {
   const all = await call(deliveryAnalytics(u("?window=7d"), NOW, src, ENV));
   check("the in-app twin (same messageKey, IN_APP) is its own message: 2 ACCEPTED in total", (all.json.totals as Record<string, number>).ACCEPTED === 2);
   const sql = readFileSync("lib/notifications/delivery/read-store.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  check("the SQL counts messages: DISTINCT ON (channel, messageKey) ordered attempt DESC, createdAt DESC, id DESC (the rollup's order)",
-    /SELECT DISTINCT ON \("channel", "messageKey"\)/.test(sql) && /ORDER BY "channel", "messageKey", "attempt" DESC, "createdAt" DESC, "id" DESC/.test(sql));
+  check("the SQL counts messages: DISTINCT ON (channel, messageKey) ordered attempt DESC, event rank DESC, createdAt DESC, id DESC (the rollup's order; review F1)",
+    /SELECT DISTINCT ON \("channel", "messageKey"\)/.test(sql)
+      && /ORDER BY "channel", "messageKey", "attempt" DESC,[\s\S]{0,200}CASE "status" WHEN 'COMPLAINED' THEN 3 WHEN 'BOUNCED' THEN 2 WHEN 'DELIVERED' THEN 1 ELSE 0 END DESC,\s*"createdAt" DESC, "id" DESC/.test(sql));
   check("…and the status filter applies to the FINAL row (outside the DISTINCT ON), not to attempts",
     /FROM finals \$\{statusFilter\}/.test(sql) && /const ledgerFilters = filters\(q, false\)/.test(sql));
   check("UTC independent of the session TimeZone: bounds bound as ISO date strings (no JS Date parameter)",
