@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
     // Deliver via the email seam. Non-throwing: a provider failure yields an
     // error status we record for ops, but never fails the request or reveals
     // account existence to the caller.
-    const emailResult = await sendEmail("password-reset", user.email, { resetUrl });
+    const emailResult = await sendEmail("password-reset", user.email, { resetUrl }, { key: "PASSWORD_RESET_LINK_SENT", recipientUserId: user.id });
     if (emailResult.status === "error") {
       console.error("[forgot-password] reset email failed to send:", emailResult.error);
     }

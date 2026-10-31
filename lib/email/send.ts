@@ -40,19 +40,34 @@
  * injected seam, and scripts/email-preview.ts (whose own
  * EMAIL_PREVIEW_ALLOWED_TO gate runs first — both must admit the address).
  *
+ * DELIVERY LEDGER (Comms Center A-2a, lib/notifications/delivery): every send
+ * through here writes ONE CommsDelivery row with its outcome — ACCEPTED (the
+ * provider accepted it; never "delivered"), CAPTURED (the guard), FAILED / DEAD
+ * (error; DEAD on the caller-declared last attempt) — keyed by the catalog key
+ * the caller names in the 4th argument. Metadata only: never the address,
+ * subject, body or data. The write runs AFTER the transport answered — in a
+ * request, after the RESPONSE (next/server after()); in a job or script,
+ * inline and bounded by LEDGER_WRITE_TIMEOUT_MS — and can never throw into
+ * the caller: a ledger failure is one redacted log line and the EmailResult
+ * is returned unchanged.
+ *
  * NON-THROWING: returns an EmailResult; callers branch on `status`.
  */
 
 import "server-only";
-import type { EmailMessage, EmailProvider, EmailResult, EmailTemplateName } from "@/lib/email/types";
+import type { EmailMessage, EmailProvider, EmailResult, EmailSendContext, EmailTemplateName } from "@/lib/email/types";
 import { getTemplate } from "@/lib/email/templates";
 import { resolveSender } from "@/lib/email/senders";
 import { resendAdapter } from "@/lib/email/providers/resend";
 import { captureAdapter } from "@/lib/email/providers/capture";
 import { decideRecipient, describeGuardedRecipient, type RecipientGuardEnv } from "@/lib/email/recipient-guard";
+import { emailLedgerRow, recordDelivery, type LedgerEnv } from "@/lib/notifications/delivery/record";
+import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import { runAfterResponse } from "@/lib/notifications/delivery/defer";
+import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 
 /** The env keys the chokepoint reads (a structural subset of process.env). */
-export interface EmailSendEnv extends RecipientGuardEnv {
+export interface EmailSendEnv extends RecipientGuardEnv, LedgerEnv {
   RESEND_API_KEY?: string;
   EMAIL_FROM_DEFAULT?: string;
 }
@@ -67,18 +82,49 @@ export interface EmailSenderDeps {
   capture: EmailProvider;
   /** Sink for the redacted guard line ("warn" = unknown Vercel environment). */
   log?: (line: string, level: "info" | "warn") => void;
+  /** The delivery-ledger writer (lib/notifications/delivery/store.ts in production). Absent ⇒ nothing recorded. */
+  ledger?: LedgerWriter;
+  /** Clock for the ledger row (tests). */
+  now?: () => Date;
+  /**
+   * Where the ledger write runs. Production: after the response when a request
+   * scope exists (next/server after()), inline otherwise — jobs and scripts.
+   * Absent ⇒ inline, bounded by LEDGER_WRITE_TIMEOUT_MS.
+   */
+  defer?: (task: () => Promise<void>) => Promise<void>;
 }
 
 export type SendEmailFn = (
   name: EmailTemplateName,
   to: string,
   data?: Record<string, unknown>,
+  ctx?: EmailSendContext,
 ) => Promise<EmailResult>;
 
 /** Build a sendEmail over injected env + transports. */
 export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
   const log = deps.log ?? ((line: string, level: "info" | "warn") => console[level](line));
-  return (name, to, data = {}) => send(deps, log, name, to, data);
+  return async (name, to, data = {}, ctx) => {
+    const result = await send(deps, log, name, to, data);
+    if (deps.ledger) {
+      // Built inside the guard too: a row that cannot even be built must not reach the caller.
+      let row: ReturnType<typeof emailLedgerRow>;
+      try {
+        row = emailLedgerRow({ template: name, to, result, ctx, env: deps.env, now: (deps.now ?? (() => new Date()))() });
+      } catch {
+        log(`[comms-ledger] delivery row could not be built (non-fatal; the send is unaffected): template=${name}`, "warn");
+        return result;
+      }
+      const writer = deps.ledger;
+      const write = async () => { await recordDelivery(writer, row, { log: (line) => log(line, "warn") }); };
+      if (deps.defer) {
+        try { await deps.defer(write); } catch { /* recordDelivery never throws; a defer seam must not either */ }
+      } else {
+        await write();
+      }
+    }
+    return result;
+  };
 }
 
 /**
@@ -87,12 +133,15 @@ export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
  * @param name  Registry key of the template to render.
  * @param to    Recipient address.
  * @param data  Template data (shape defined by the named template).
+ * @param ctx   Delivery-ledger context: the catalog key + the recipient userId (never the address).
  * @returns     A non-throwing EmailResult.
  */
 export const sendEmail: SendEmailFn = createEmailSender({
   env: process.env as EmailSendEnv,
   provider: resendAdapter,
   capture: captureAdapter,
+  ledger: writeDeliveryRow,
+  defer: runAfterResponse,
 });
 
 async function send(

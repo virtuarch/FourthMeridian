@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
 
     // ── Notify (both NON-THROWING) ────────────────────────────────────────────
     const confirmUrl = buildEmailChangeUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
-    const newResult = await sendEmail("email-change", normalizedNew, { confirmUrl });
+    const newResult = await sendEmail("email-change", normalizedNew, { confirmUrl }, { key: "EMAIL_CHANGE_CONFIRMATION_SENT", recipientUserId: user.id });
     if (newResult.status === "error") {
       console.error("[email/request] confirmation email failed to send:", newResult.error);
     }
@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
     // Warn the OLD address BEFORE any swap — the strongest takeover defense.
     const oldResult = await sendEmail("security-alert", dbUser.email, {
       ...emailChangeRequestedAlert(normalizedNew, new Date()),
-    });
+    }, { key: "EMAIL_CHANGE_REQUESTED", recipientUserId: user.id });
     if (oldResult.status === "error") {
       console.error("[email/request] old-address alert failed to send:", oldResult.error);
     }

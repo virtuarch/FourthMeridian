@@ -201,6 +201,35 @@ export interface CatalogItem {
 /** C1 — null = NOT OBSERVED (no ledger coverage), never 0. */
 export type Count = number | null;
 
+/**
+ * C1 — a scalar aggregate: `withheld: true` = observed but suppressed as a small
+ * cell (1–4; people counts only, §4.12/§4.14) with `value` null; `withheld:
+ * false` + `value: null` = not observed. Delivery counts are never withheld.
+ */
+export type Aggregate = { value: number | null; withheld: boolean };
+
+/** One DaySeries cell: `count` null + `withheld` absent = not observed; `withheld: true` = small cell. */
+export type DayCell = DaySeries["days"][number];
+
+// ── The delivery read API (A-2a) — THE stable export path for the UI ─────────
+// Type-only re-exports (erased at runtime): importing this module pulls no
+// database, no next/server, nothing but types.
+export type {
+  CustomerDeliveryItem,
+  DeliveryAnalytics,
+  DeliveryErrorCode,
+  DeliveryResponse,
+  DeliveryStatus,
+  DeliveryWindow,
+  LedgerChannel,
+  LedgerEnvironment,
+  ReasonCounts,
+  SeriesKey,
+  StatusCounts,
+  SuppressionReason,
+} from "@/lib/notifications/delivery/types";
+export { DELIVERY_STATUSES, SUPPRESSION_REASONS, DELIVERY_ERROR_CODES } from "@/lib/notifications/delivery/types";
+
 export interface DaySeries {
   window: "7d" | "30d" | "90d";
   from: string;
