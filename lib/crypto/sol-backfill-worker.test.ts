@@ -101,7 +101,8 @@ async function main() {
       top: { signature: "t", slot: 9, blockTime: 1, dateISO: DAY, preLamports: "0", postLamports: "1" },
       bottom: { signature: "b", slot: 1, blockTime: 1, dateISO: "2026-01-01", preLamports: "0", postLamports: "1" },
       licensedFromISO: "2026-01-01", licensedToISO: DAY, ...over });
-    function world(cursors: Record<string, string | null>, o: { wake?: number | null; lockBusy?: string[]; regen?: boolean; workMs?: number; splPrices?: { status: "COMPLETE" | "BUDGET_STOPPED"; reason: string | null; mintsSkipped: number } } = {}) {
+    type SplP = { status: "COMPLETE" | "ALLOWANCE_EXHAUSTED" | "BUDGET_STOPPED"; reason: string | null; mintsSkipped: number };
+    function world(cursors: Record<string, string | null>, o: { wake?: number | null; lockBusy?: string[]; regen?: boolean; workMs?: number; splPrices?: SplP | ((accountId: string) => SplP) } = {}) {
       let t = Date.parse(`${DAY}T10:00:00Z`);
       const locks = new Map<string, number>();
       const log: string[] = [];
@@ -120,7 +121,7 @@ async function main() {
         reconstruct: async ({ accountId }) => {
           t += o.workMs ?? 5_000; log.push(`run:${accountId}`);
           return { accountId, ok: true, derivedRowsWritten: 10, mode: "INCREMENTAL", impactedFromISO: "2025-12-01",
-            ...(o.splPrices ? { tokens: { prices: o.splPrices } as never } : {}),
+            ...(o.splPrices ? { tokens: { prices: typeof o.splPrices === "function" ? o.splPrices(accountId) : o.splPrices } as never } : {}),
             backfill: { status: { state: "IMPORTING" } as never, progressed: true, rowsWritten: 10, impactedFromISO: "2025-12-01", signaturesProcessed: 100, pagesFetched: 1, stoppedBecause: "BUDGET", failure: null } };
         },
         store: async (id) => store(id),
@@ -166,6 +167,18 @@ async function main() {
     const sp = await solHistoryBackfill({ config: cfg, deps: wp.deps });
     check("re-review F4 (SPL): a budget-stopped SPL price run ⇒ job outcome PARTIAL, named, with the skipped count",
       sp.outcome === "PARTIAL" && sp.splPrices?.status === "BUDGET_STOPPED" && sp.splPrices.mintsSkipped === 2 && /^SPL_PRICES_BUDGET_STOPPED: CoinGecko token budget reached/.test(sp.partialReasons?.[0] ?? ""), JSON.stringify({ o: sp.outcome, r: sp.partialReasons, p: sp.splPrices }));
+    // SPL first-time quote probe — a refused probe on one wallet and a budget stop on another: worst wins, counts add.
+    const wmix = world({ a: null, b: null }, { splPrices: (id) => id === "a"
+      ? { status: "BUDGET_STOPPED", reason: "CoinGecko token budget reached; remaining SPL mints not priced this run", mintsSkipped: 2 }
+      : { status: "ALLOWANCE_EXHAUSTED", reason: "quote-probe allowance exhausted; never-priced SPL mint(s) left NOT_VALUED_YET for a later run", mintsSkipped: 1 } });
+    const smix = await solHistoryBackfill({ config: cfg, deps: wmix.deps });
+    check("SPL probe: across wallets the worst SPL price status wins (a later ALLOWANCE_EXHAUSTED never downgrades BUDGET_STOPPED); skipped counts add",
+      smix.outcome === "PARTIAL" && smix.splPrices?.status === "BUDGET_STOPPED" && /budget/.test(smix.splPrices.reason ?? "") && smix.splPrices.mintsSkipped === 3 && smix.splPrices.wallets === 2,
+      JSON.stringify(smix.splPrices));
+    const wonly = world({ a: null }, { splPrices: { status: "ALLOWANCE_EXHAUSTED", reason: "quote-probe allowance exhausted; never-priced SPL mint(s) left NOT_VALUED_YET for a later run", mintsSkipped: 1 } });
+    const sonly = await solHistoryBackfill({ config: cfg, deps: wonly.deps });
+    check("SPL probe: an exhausted probe allowance alone ⇒ job outcome PARTIAL (SPL_PRICES_ALLOWANCE_EXHAUSTED)",
+      sonly.outcome === "PARTIAL" && /^SPL_PRICES_ALLOWANCE_EXHAUSTED: quote-probe allowance/.test(sonly.partialReasons?.[0] ?? ""), JSON.stringify(sonly.partialReasons));
     const erc = (status: "COMPLETE" | "BUDGET_STOPPED" | "ALLOWANCE_EXHAUSTED" | "TOKEN_LIMIT") => solBackfillJobOutcome({ ethTokens: { prices: { tokensFetched: 0, inserted: 0, calls: 0, status, reason: status === "COMPLETE" ? null : "why", tokensSkipped: 1 } } as never });
     check("re-review F4 (ERC-20): every non-COMPLETE price status ⇒ job outcome PARTIAL; COMPLETE ⇒ COMPLETE",
       (["BUDGET_STOPPED", "ALLOWANCE_EXHAUSTED", "TOKEN_LIMIT"] as const).every((st) => erc(st).outcome === "PARTIAL" && erc(st).partialReasons[0] === `ERC20_PRICES_${st}: why`) && erc("COMPLETE").outcome === "COMPLETE");

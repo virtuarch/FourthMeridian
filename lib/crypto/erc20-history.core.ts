@@ -780,9 +780,11 @@ export function erc20HistoryConfig(env: Record<string, string | undefined> = pro
  *   BUDGET_STOPPED       the CoinGecko TOKEN share ran out — the remaining tokens were not asked;
  *   ALLOWANCE_EXHAUSTED  a never-priced token needed a quote probe and the durable
  *                        probe allowance was 0 — it stays NOT_VALUED_YET until a later run;
- *   TOKEN_LIMIT          `maxTokens` reached with tokens still to ask.
+ *   TOKEN_LIMIT          `maxTokens` reached with tokens still to ask;
+ *   STEP_FAILED          the price step itself threw (a database read, …) — swallowed so
+ *                        the run continues, but REPORTED: its tokens were not priced.
  * Anything but COMPLETE is a non-success the pass reports (never "done").
  */
-export type Erc20PriceRunStatus = "COMPLETE" | "BUDGET_STOPPED" | "ALLOWANCE_EXHAUSTED" | "TOKEN_LIMIT";
+export type Erc20PriceRunStatus = "COMPLETE" | "BUDGET_STOPPED" | "ALLOWANCE_EXHAUSTED" | "TOKEN_LIMIT" | "STEP_FAILED";
 /** Severity order for combining runs: the worst outcome wins. */
-export const ERC20_PRICE_RUN_SEVERITY: Record<Erc20PriceRunStatus, number> = { COMPLETE: 0, TOKEN_LIMIT: 1, ALLOWANCE_EXHAUSTED: 2, BUDGET_STOPPED: 3 };
+export const ERC20_PRICE_RUN_SEVERITY: Record<Erc20PriceRunStatus, number> = { COMPLETE: 0, TOKEN_LIMIT: 1, ALLOWANCE_EXHAUSTED: 2, BUDGET_STOPPED: 3, STEP_FAILED: 4 };

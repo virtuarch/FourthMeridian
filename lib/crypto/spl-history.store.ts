@@ -19,7 +19,6 @@ import { CheckpointConflictError } from "./sol-history-backfill";
 import { SPL_HISTORY_SOURCE, SPL_CHAIN_STATED_BASIS, SPL_RECONSTRUCTION_VERSION } from "./spl-history.core";
 import type { SplHistoryStore } from "./spl-history";
 import { readTokenQuoteMarker } from "@/lib/prices/current-quotes";
-import { acquireTokenHistoricalCloses } from "@/lib/prices/token-history-prices";
 
 const day = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
 
@@ -97,11 +96,9 @@ export function prismaSplHistoryStore(accountId: string, connectionId: string, d
     },
 
     async acquirePrices(m) {
-      const assetKey = splTokenAssetKey(m.mint);
-      const meta = (await loadTokenAliasMetadata(db, [assetKey])).get(assetKey);
-      if (!meta) return { inserted: 0, earliestISO: null };
-      const r = await acquireTokenHistoricalCloses({ client: db, instrumentId: meta.instrumentId, assetKey, fromISO: m.fromISO, toISO: m.toISO });
-      return { inserted: r.inserted, earliestISO: r.earliestISO, status: r.status };
+      // The first-time quote probe (sold mints) + THE shared token price path — spl-history-prices.ts.
+      const { acquireSplHistoricalPrices } = await import("./spl-history-prices");
+      return acquireSplHistoricalPrices({ client: db, accountId, mint: m.mint, fromISO: m.fromISO, toISO: m.toISO, enabled: splHistoryEnabled() });
     },
   };
 }
