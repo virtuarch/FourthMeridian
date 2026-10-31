@@ -22,6 +22,8 @@ import { fxArchive } from "@/lib/fx/archive";
 import { fetchDay } from "@/lib/fx/fetch";
 import { defaultFxRegistry } from "@/lib/fx/registry";
 import { SUPPORTED_QUOTES, toISODateUTC, yesterdayUTCISO } from "@/lib/fx/config";
+import { readGlobalCostFreeze, type GlobalCostFreezeReader } from "@/lib/platform/cost-freeze";
+import { billableSkipCode, type BillableSkipCode } from "@/lib/entitlements/billable-gate-core";
 
 export interface FetchFxRatesResult {
   dateISO:        string;
@@ -31,10 +33,27 @@ export interface FetchFxRatesResult {
   inserted:       number;
   /** Per-adapter notes from the failover walk (empty when skipped). */
   notes:          string[];
+  /**
+   * BETA LIFECYCLE L2 — the billable skip code when the GLOBAL cost freeze (or
+   * an unreadable flag) refused the run. `source` is "skipped"; nothing is
+   * written, so the missing day stays missing and the next unfrozen run (or the
+   * backfill script) fills it. Cached rates stay readable.
+   */
+  billableRestricted?: BillableSkipCode;
 }
 
-export async function fetchFxRates(): Promise<FetchFxRatesResult> {
+export async function fetchFxRates(deps: { costFreeze?: GlobalCostFreezeReader } = {}): Promise<FetchFxRatesResult> {
   const dateISO = yesterdayUTCISO();
+
+  // BETA LIFECYCLE L2 — before the archive read and any vendor call (Open
+  // Exchange Rates is key-metered; the free fallback is blocked too: default
+  // to blocking, owner ruling 2026-10-31).
+  const freeze = await (deps.costFreeze ?? readGlobalCostFreeze)();
+  if (freeze.frozen) {
+    const code = billableSkipCode(freeze.reason!);
+    console.log(`[fx-cron] ${dateISO}: global cost freeze (${freeze.state}) — SKIPPED (${code}); no vendor call, nothing written`);
+    return { dateISO, source: "skipped", missingBefore: 0, inserted: 0, notes: [], billableRestricted: code };
+  }
 
   const existing = await db.fxRate.findMany({
     where:  { base: "USD", date: new Date(`${dateISO}T00:00:00Z`) },

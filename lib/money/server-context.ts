@@ -52,6 +52,10 @@ let fxRefreshInFlight = false;
  * never throws into the caller. The job body is dynamic-imported so its
  * provider-env validation stays off this module's load path (mirrors the
  * dynamic imports in lib/jobs/registry.ts).
+ *
+ * BETA LIFECYCLE L2 — the job body checks the GLOBAL cost freeze first: while
+ * frozen (or the flag is unreadable) this refresh serves the cached archive and
+ * never calls a vendor.
  */
 function triggerBackgroundFxRefresh(): void {
   if (fxRefreshInFlight) return;
