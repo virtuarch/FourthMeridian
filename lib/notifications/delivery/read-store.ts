@@ -88,26 +88,12 @@ export const deliveryReadSource: DeliveryReadSource = {
   },
 
   /**
-   * Phase C — accepted-uncertain: final-ACCEPTED provider emails with no provider id (the R4
-   * UNCERTAIN_ACCEPTANCE sends), LIVE only, by the same message order as `counts`. Ledger only:
-   * a ≤ 90-day window is entirely inside the ledger (the rollup boundary is today − 90 days).
+   * Phase C — accepted-uncertain (R4 UNCERTAIN_ACCEPTANCE sends). The query lives with the other
+   * provider-id reads (provider-event-store.ts), so this module never names a provider id column.
    */
   async acceptedUncertainCount(q) {
-    const ledgerFilters = filters(q, false);
-    const rows = await systemDb.$queryRaw<Array<{ n: number }>>`
-      WITH finals AS (
-        SELECT DISTINCT ON ("channel", "messageKey") "status", "provider", "providerMessageId"
-          FROM "CommsDelivery"
-         WHERE "createdAt" >= (${q.from}::date)::timestamp
-           AND "createdAt" <  (${q.to}::date + 1)::timestamp
-           AND "mode" = 'LIVE' AND "channel" IN ('EMAIL', 'OPERATOR_EMAIL') ${ledgerFilters}
-         ORDER BY "channel", "messageKey", "attempt" DESC,
-                  CASE "status" WHEN 'COMPLAINED' THEN 3 WHEN 'BOUNCED' THEN 2 WHEN 'DELIVERED' THEN 1 ELSE 0 END DESC,
-                  "createdAt" DESC, "id" DESC
-      )
-      SELECT COUNT(*)::int AS n FROM finals
-       WHERE "status" = 'ACCEPTED' AND "provider" = 'resend' AND "providerMessageId" IS NULL`;
-    return Number(rows[0]?.n ?? 0);
+    const { countAcceptedUncertain } = await import("@/lib/notifications/delivery/provider-event-store");
+    return countAcceptedUncertain(q);
   },
 
   /** Phase C — one indexed probe: does this environment hold a verified provider event? */

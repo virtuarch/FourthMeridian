@@ -505,8 +505,10 @@ async function main() {
     const absent = await run(src("2026-10-28", false));
     check("a source that cannot count it ⇒ the key is ABSENT (existing shape unchanged)", !("acceptedUncertain" in absent));
     const rs = readFileSync(join(process.cwd(), "lib/notifications/delivery/read-store.ts"), "utf8");
-    check("the store counts final-ACCEPTED, LIVE, resend, NULL provider id messages only",
-      /async acceptedUncertainCount\(q\)[\s\S]{0,1400}"mode" = 'LIVE'[\s\S]{0,900}WHERE "status" = 'ACCEPTED' AND "provider" = 'resend' AND "providerMessageId" IS NULL/.test(rs));
+    const ps = readFileSync(join(process.cwd(), "lib/notifications/delivery/provider-event-store.ts"), "utf8");
+    check("the read source delegates; the store counts final-ACCEPTED, LIVE, resend, NULL provider id messages only",
+      /async acceptedUncertainCount\(q\)[\s\S]{0,300}countAcceptedUncertain\(q\)/.test(rs)
+      && /export async function countAcceptedUncertain[\s\S]{0,1400}"mode" = 'LIVE'[\s\S]{0,900}WHERE "status" = 'ACCEPTED' AND "provider" = 'resend' AND "providerMessageId" IS NULL/.test(ps));
   }
 
   // Type-level: the appended row is a CommsDeliveryRow the production writer accepts.

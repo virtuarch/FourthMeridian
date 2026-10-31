@@ -135,3 +135,30 @@ export async function readWebhookHealthRows(since: Date, staleBefore: Date | nul
     acceptedUncertain: stale ? Number(stale[0]?.u ?? 0) : null,
   };
 }
+
+/**
+ * Phase C (Session 2 request) — accepted-uncertain for the §4.11 analytics: final-ACCEPTED
+ * provider emails with NO provider id (the R4 UNCERTAIN_ACCEPTANCE sends), LIVE only, by the
+ * same rank-aware message order as the analytics read, over the query's UTC days and its
+ * channel / template filters. Ledger only: a ≤ 90-day window lies inside the ledger (the rollup
+ * boundary is today − 90 days). Returns a count; selects no recipient.
+ */
+export async function countAcceptedUncertain(q: { from: string; to: string; channel: string | null; key: string | null }): Promise<number> {
+  const db = await sys();
+  const channelFilter = q.channel ? Prisma.sql`AND "channel" = ${q.channel}` : Prisma.empty;
+  const keyFilter = q.key ? Prisma.sql`AND "definitionKey" = ${q.key}` : Prisma.empty;
+  const rows = await db.$queryRaw<Array<{ n: number }>>`
+    WITH finals AS (
+      SELECT DISTINCT ON ("channel", "messageKey") "status", "provider", "providerMessageId"
+        FROM "CommsDelivery"
+       WHERE "createdAt" >= (${q.from}::date)::timestamp
+         AND "createdAt" <  (${q.to}::date + 1)::timestamp
+         AND "mode" = 'LIVE' AND "channel" IN ('EMAIL', 'OPERATOR_EMAIL') ${channelFilter} ${keyFilter}
+       ORDER BY "channel", "messageKey", "attempt" DESC,
+                CASE "status" WHEN 'COMPLAINED' THEN 3 WHEN 'BOUNCED' THEN 2 WHEN 'DELIVERED' THEN 1 ELSE 0 END DESC,
+                "createdAt" DESC, "id" DESC
+    )
+    SELECT COUNT(*)::int AS n FROM finals
+     WHERE "status" = 'ACCEPTED' AND "provider" = 'resend' AND "providerMessageId" IS NULL`;
+  return Number(rows[0]?.n ?? 0);
+}
