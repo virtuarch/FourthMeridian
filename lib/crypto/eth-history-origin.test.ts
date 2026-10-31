@@ -43,6 +43,12 @@ import { replayEthHistory } from "./eth-history-rows";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+// This suite pins the WALK's early origin — which boundary closes, and what it
+// costs against the full walk. Since 2026-10-31 the walk is the fast path's
+// fallback and verifier (eth-history-fast.test.ts compares the two); here the
+// fast path is off so the walk's own mechanics stay pinned exactly.
+process.env.ETH_HISTORY_FAST_PATH = "off";
+
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
   if (ok) passes++;

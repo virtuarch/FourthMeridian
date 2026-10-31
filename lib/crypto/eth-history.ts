@@ -46,9 +46,14 @@
  * erc1155, specialnft, external, internal}` — and there is no withdrawal or
  * reward category in it. This is not a gap a paid tier closes; a transfer index
  * cannot list a state change that is not a transfer. Doctrine already forbids a
- * provider's interpreted DTO from being the truth shape (invariant 7); this
- * adapter does not use the endpoint AT ALL, not even as an accelerator, because
- * the accelerator turned out to be unnecessary — see the cost note below.
+ * provider's interpreted DTO from being the truth shape (invariant 7). Since
+ * 2026-10-31 the endpoint IS used — as an ACCELERATOR ONLY (the FAST PATH,
+ * `ETH_HISTORY_FAST_PATH`, below `acquireEthHistory`'s chunk loop): it nominates
+ * the blocks at which the proof should place its probes, and nothing it says
+ * becomes a movement, an amount or a licence. Every interval between those
+ * probes is still closed by `provablyUnchanged` (via the walk's own
+ * `enumerate`), so a withdrawal or anything else the index cannot list fails
+ * that interval's predicate and the walk bisects THAT interval only.
  *
  * ── WHAT THIS ADAPTER READS INSTEAD: CONSENSUS STATE ─────────────────────────
  * `eth_getBalance(address, block)` is not an index and not an interpretation. It
@@ -145,7 +150,7 @@ import {
 } from "./eth-rpc";
 import { ETH_NATIVE } from "./native-asset";
 import { redactProviderSecrets } from "./alchemy";
-import type { ChainMovement, ChainCoverage, ChainCoverageCaveat } from "./chain-movement";
+import { reconcileMovementsAgainstOpening, type ChainMovement, type ChainCoverage, type ChainCoverageCaveat } from "./chain-movement";
 
 /** Provenance stamped on every movement this adapter emits. */
 export const ETH_HISTORY_SOURCE = "ethereum-rpc";
@@ -374,6 +379,14 @@ export interface EthHistoryDeps {
    * the tests compare it for, and why it is safe as an operational lever.
    */
   earlyOrigin?: boolean;
+  /**
+   * FAST PATH override (tests and operational levers). Absent ⇒ the
+   * `ETH_HISTORY_FAST_PATH` env flag (default ON). `false` ⇒ the walk exactly
+   * as before the fast path existed.
+   */
+  fastPath?: boolean;
+  /** Hard cap on `alchemy_getAssetTransfers` pages per run. Default DEFAULT_FAST_PATH_MAX_PAGES. */
+  fastPathMaxPages?: number;
 }
 
 /**
@@ -559,6 +572,152 @@ export interface EthHistoryAcquisition {
    * walk would have said.
    */
   originProvenAtBlock?: number;
+  /** FAST PATH diagnostics (absent when the flag is off). Never branched on. */
+  fastPath?: EthFastPathStats;
+}
+
+// ── FAST PATH (2026-10-31): indexed candidates, proven by the same predicate ─
+//
+// THE PROBLEM. The walk finds each balance-changing block by bisection: ~log2
+// (chunk) ≈ 16 levels × 2 probes ≈ 32 probes (≈ 96 calls) per change, plus one
+// probe per quiet 50,000-block chunk. An active wallet costs thousands of calls
+// and, inline, several minutes.
+//
+// THE IDEA. Ask an index WHERE to look, then prove it with the same state reads.
+// `alchemy_getAssetTransfers` (fromAddress = X and toAddress = X, categories
+// external + internal, newest first) names candidate blocks C. The probe points
+// are every c and c−1 for c ∈ C, plus the segment's two ends. Each consecutive
+// pair of points (a, b] is then handed to the walk's OWN `enumerate(a, b)`:
+//
+//   (c−1, c]          width 1 — a change block iff the predicate fails there,
+//                     its exact delta state(c) − state(c−1), exactly as the walk
+//                     finds one at the bottom of a bisection;
+//   (c_i, c_{i+1}−1]  the GAP between candidates — closed in ONE step when
+//                     `provablyUnchanged` holds, which is the walk's pruning
+//                     rule, unchanged. When it does NOT hold (a credit the index
+//                     cannot list: a validator WITHDRAWAL, a coinbase fee, a
+//                     SELFDESTRUCT payout it missed; or an own transaction it
+//                     omitted, e.g. a reverted one whose gas is still paid),
+//                     `enumerate` bisects THAT interval only — the interval
+//                     fallback — and finds the block like the walk would.
+//
+// So the index decides only where the probes go. Every movement is still
+// built from state deltas + the block's header and receipts (movementsForBlock),
+// every interval is still closed by the deductive predicate, and the result is
+// the walk's result: a wrong or incomplete index costs probes, never truth.
+//
+// INTERVAL LENGTH. The walk never prunes an interval longer than one chunk.
+// The fast path closes long gaps in one step only under K (the address is
+// proven KEY-DERIVED by a receipt it signed — the early origin's own premise,
+// see below): then no CREATE can target it and every EIP-7702 delegation bumps
+// its nonce, so equal nonce ⇒ no debit of any kind over ANY length. Without K
+// (a receive-only wallet) the gaps are subdivided to ≤ chunkBlocks, so the fast
+// path is never a weaker proof than the walk — only a cheaper one.
+//
+// RESUMABILITY. No vendor cursor is persisted: the PROVEN boundary (the walk's
+// cursor) is the resume point, and a resumed run re-pages the index from it.
+// Intervals are proven top-down and `provenFrom` advances only past an interval
+// `enumerate` closed, so a run stopped by its deadline or budget mid-segment
+// keeps exactly what it proved.
+//
+// BUDGET. In fast mode each probed block is charged 2 budget units (its 3
+// state calls + up to one 2-call evidence read: every change block and every
+// receipt read is a probed block) and each index page 1 unit, so the calls a
+// run sends stay ≤ 4 per unit — the arithmetic the shared-cap planner
+// (probeBudgetFor, CALLS_PER_PROBE + EVIDENCE_CALLS_PER_PROBE) already assumes.
+//
+// COST. For a fresh wallet with K change blocks, S of them own transactions,
+// and an index that fits in one page per stream (≤ 1,000 transfers each way):
+//
+//   calls ≈ 2 (index pages) + 3·(2K + 2) (state at every c, c−1 and both ends)
+//         + 2K (header + receipts per change block) + 2 (coverage headers)
+//         = 8K + 10                                   [K = 5 ⇒ 50; the walk: 561]
+//   HTTP requests ≈ 4 + ⌈(2K+1)/6⌉ + ⌈K/10⌉           [K = 5 ⇒ 7; the walk: 189]
+//
+// Each index page holds up to 1,000 transfers, so a very active wallet adds
+// one call per 1,000 transfers per direction. Every missed credit (e.g. a
+// withdrawal) adds a bisection of its gap, ≈ 2·log2(gap) probes, as the walk
+// would pay. A receive-only wallet (no K) pays one probe per ≤ chunk of gap,
+// i.e. the walk's quiet-chunk floor, but no per-change bisection.
+// Compute units, at Alchemy's published per-method CU weights at the time of
+// writing (verify against the dashboard; the shared cap counts CALLS, which is
+// what the ledger meters): getAssetTransfers ≈ 150, getBalance ≈ 19,
+// getTransactionCount ≈ 26, getCode ≈ 19, getBlockByNumber ≈ 16,
+// getBlockReceipts ≈ 500 ⇒ ≈ 644·K + 460 CU per fresh wallet (K = 5 ⇒ ≈ 3.7k CU),
+// dominated by the receipts the walk reads too; the walk's bisection alone
+// costs ≈ 32 × 64 ≈ 2k CU per change on top.
+//
+// FAILURE. Any non-throttle error from the index (a non-Alchemy endpoint, a
+// tier refusal, a malformed page) disables the fast path for the rest of the
+// run and the walk continues from the proven boundary. A throttle stops the run
+// exactly as the walk's throttle does.
+
+export const ASSET_TRANSFERS_METHOD = "alchemy_getAssetTransfers";
+/** `maxCount` per index page (the vendor maximum, 0x3e8). */
+export const ASSET_TRANSFERS_PAGE_SIZE = 1_000;
+/** Pages per run before the fast path yields to the walk (a safety bound; the probe budget binds first). */
+export const DEFAULT_FAST_PATH_MAX_PAGES = 100;
+/** Budget units per probed block in fast mode (see BUDGET above). */
+export const FAST_UNITS_PER_PROBE = 2;
+
+/** `ETH_HISTORY_FAST_PATH`: default ON; "0" / "false" / "off" / "no" turns it off. */
+export function ethFastPathEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const v = env.ETH_HISTORY_FAST_PATH?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+export interface EthFastPathStats {
+  /** True once the fast path laid out probe points for a segment this run (it then owns the evidence batching and the reconciliation guard). */
+  used: boolean;
+  pages: number;
+  /** Distinct candidate blocks the index named. */
+  candidates: number;
+  /** Intervals closed between probe points. */
+  intervals: number;
+  /** Intervals whose predicate failed, so the walk bisected them. */
+  fallbackIntervals: number;
+  /** Distinct blocks whose state was read this run (all modes). */
+  statesProbed: number;
+  /** Why the fast path stopped being used this run, if it did. */
+  disabledBecause: string | null;
+}
+
+/** One index page, reduced to what the fast path may use: block numbers. */
+export interface AssetTransfersPage { blocks: number[]; pageKey: string | null }
+
+/** Strict reader: a page with no `transfers` array or a non-hex `blockNum` is refused (⇒ the walk). */
+export function parseAssetTransfersPage(result: unknown): AssetTransfersPage {
+  const r = (result ?? null) as { transfers?: unknown; pageKey?: unknown } | null;
+  if (!r || !Array.isArray(r.transfers)) {
+    throw new EthRpcError("balance", `${ASSET_TRANSFERS_METHOD} returned no transfers array`);
+  }
+  const blocks = (r.transfers as Array<{ blockNum?: unknown }>).map((t) => Number(parseHexQuantity(t?.blockNum)));
+  return { blocks, pageKey: typeof r.pageKey === "string" && r.pageKey.length > 0 ? r.pageKey : null };
+}
+
+/**
+ * The probe points for one fast segment (segLo, top], DESCENDING: both ends,
+ * every candidate c and c−1 inside it, and — when `maxGap` is set (no key
+ * proof) — extra points so no two consecutive points are more than `maxGap`
+ * apart.
+ */
+export function fastProbePoints(a: { top: number; segLo: number; candidates: readonly number[]; maxGap: number | null }): number[] {
+  const set = new Set<number>([a.top, a.segLo]);
+  for (const c of a.candidates) {
+    if (c <= a.segLo || c > a.top) continue;
+    set.add(c);
+    set.add(c - 1);
+  }
+  const pts = [...set].sort((x, y) => y - x);
+  if (a.maxGap === null || a.maxGap <= 0) return pts;
+  const out: number[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    out.push(pts[i]);
+    const next = pts[i + 1];
+    if (next === undefined) break;
+    for (let p = pts[i] - a.maxGap; p > next; p -= a.maxGap) out.push(p);
+  }
+  return out;
 }
 
 /**
@@ -669,11 +828,17 @@ export async function acquireEthHistory(
   let probesUsed = 0;
   let rpcReads = 0;
   let budgetExhausted = false;
+  // Budget units per probed block: 1 for the walk (unchanged), FAST_UNITS_PER_PROBE
+  // while the fast path is active (see BUDGET in the fast-path note).
+  let unitsPerProbe = 1;
+  const fastStats: EthFastPathStats = {
+    used: false, pages: 0, candidates: 0, intervals: 0, fallbackIntervals: 0, statesProbed: 0, disabledBecause: null,
+  };
 
   async function probe(blocks: readonly number[]): Promise<boolean> {
     const need = [...new Set(blocks)].filter((b) => !states.has(b));
     if (need.length === 0) return true;
-    if (probesUsed + need.length > budget) { budgetExhausted = true; return false; }
+    if (probesUsed + need.length * unitsPerProbe > budget) { budgetExhausted = true; return false; }
     // Time is a budget too: a slow provider must not stretch a bounded step.
     if (clock() >= deadlineMs) { budgetExhausted = true; return false; }
 
@@ -711,7 +876,8 @@ export async function acquireEthHistory(
         code,
       });
     });
-    probesUsed += need.length;
+    probesUsed += need.length * unitsPerProbe;
+    fastStats.statesProbed += need.length;
     return true;
   }
 
@@ -875,6 +1041,159 @@ export async function acquireEthHistory(
     return provablyUnchanged(at(lo), s);
   }
 
+  // ── FAST PATH (see the note above `ethFastPathEnabled`) ────────────────────
+  let fastOn = deps.fastPath ?? ethFastPathEnabled();
+  const maxPages = deps.fastPathMaxPages ?? DEFAULT_FAST_PATH_MAX_PAGES;
+  interface IndexStream { field: "fromAddress" | "toAddress"; pageKey: string | null; exhausted: boolean; floor: number }
+  let streams: IndexStream[] | null = null;
+  let queryTop = hi;
+  /** Candidate block → named by a fromAddress transfer (a possible own transaction). */
+  const candidates = new Map<number, boolean>();
+
+  /** Header + receipts for several blocks, batched (fast path only — the walk's reads are unchanged). */
+  async function prefetchRaw(blocks: readonly number[]): Promise<void> {
+    const need = [...new Set(blocks)].filter((b) => !rawEvidence.has(b));
+    const per = Math.max(1, Math.floor(batchSize / 2));
+    for (let i = 0; i < need.length; i += per) {
+      const slice = need.slice(i, i + per);
+      const calls: EthRpcCall[] = slice.flatMap((b) => {
+        const tag = "0x" + b.toString(16);
+        return [
+          { method: "eth_getBlockByNumber", params: [tag, false] },
+          { method: "eth_getBlockReceipts", params: [tag] },
+        ];
+      });
+      const res = await callBatchWithBackoff(calls, transport, { retries: throttleRetries, sleepImpl });
+      rpcReads += calls.length;
+      slice.forEach((b, k) => rawEvidence.set(b, { header: res[2 * k], receipts: res[2 * k + 1] }));
+      if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
+    }
+  }
+
+  const ownerSent = (receipts: unknown): boolean => Array.isArray(receipts)
+    && (receipts as ReceiptView[]).some((r) => typeof r.from === "string" && r.from.toLowerCase() === address);
+
+  /**
+   * One fast segment below `provenFrom`. "progressed": `provenFrom` moved to
+   * the segment's floor. "stopped": the budget, the deadline or a proof hole
+   * ended the run (whatever was proven above stays proven). "fallback": the
+   * index cannot be used; the walk takes over from `provenFrom`.
+   */
+  async function fastSegment(): Promise<"progressed" | "stopped" | "fallback"> {
+    const top = provenFrom;
+
+    // QUIET WINDOW: before asking the index anything, the walk's own first step —
+    // when the whole remainder is one interval the walk would prune (≤ a chunk,
+    // or any length under K), one probe at `lo` may close it.
+    if (streams === null && (top - lo <= chunkBlocks || ownerSigned)) {
+      if (!(await probe([lo, top]))) return "stopped";
+      if (provablyUnchanged(at(lo), at(top))) {
+        fastStats.used = true; fastStats.intervals++;
+        provenFrom = lo;
+        return "progressed";
+      }
+    }
+
+    if (streams === null) {
+      queryTop = top;
+      streams = (["fromAddress", "toAddress"] as const).map((field) => ({ field, pageKey: null, exhausted: false, floor: top + 1 }));
+    }
+    const ss = streams;
+
+    // Page until the index has spoken for a non-empty region below `top`.
+    // floor = every block ≥ floor is fully listed by that stream (an exhausted
+    // stream lists everything down to `lo`). A page's lowest block is itself a
+    // candidate, so the region proven runs down to (F − 1).
+    const knownFloor = () => Math.max(...ss.map((x) => (x.exhausted ? lo : x.floor)));
+    let segLo = Math.max(lo, knownFloor() - 1);
+    while (segLo >= top) {
+      if (fastStats.pages >= maxPages) { fastStats.disabledBecause = "PAGE_CAP"; return "fallback"; }
+      if (clock() >= deadlineMs) { budgetExhausted = true; return "stopped"; }
+      const F = knownFloor();
+      const binding = ss.filter((x) => !x.exhausted && x.floor === F);
+      if (probesUsed + binding.length > budget) { budgetExhausted = true; return "stopped"; }
+      const calls: EthRpcCall[] = binding.map((x) => ({
+        method: ASSET_TRANSFERS_METHOD,
+        params: [{
+          fromBlock: "0x" + lo.toString(16), toBlock: "0x" + queryTop.toString(16),
+          [x.field]: address,
+          category: ["external", "internal"],
+          order: "desc", maxCount: "0x" + ASSET_TRANSFERS_PAGE_SIZE.toString(16),
+          excludeZeroValue: false, withMetadata: false,
+          ...(x.pageKey ? { pageKey: x.pageKey } : {}),
+        }],
+      }));
+      let pages: AssetTransfersPage[];
+      try {
+        const res = await callBatchWithBackoff(calls, transport, { retries: throttleRetries, sleepImpl });
+        pages = res.map(parseAssetTransfersPage);
+      } catch (e) {
+        if (e instanceof EthThrottleError) throw e;
+        if (!(e instanceof EthRpcError)) throw e;
+        fastStats.disabledBecause = `INDEX_UNAVAILABLE: ${e.message}`;
+        return "fallback";
+      } finally {
+        rpcReads += calls.length;
+        probesUsed += calls.length; // one budget unit per page (see BUDGET)
+        fastStats.pages += calls.length;
+      }
+      binding.forEach((x, k) => {
+        const pg = pages[k];
+        for (const b of pg.blocks) {
+          if (b <= lo || b > queryTop) continue;
+          candidates.set(b, (candidates.get(b) ?? false) || x.field === "fromAddress");
+          if (b < x.floor) x.floor = b;
+        }
+        x.pageKey = pg.pageKey;
+        x.exhausted = pg.pageKey === null;
+      });
+      fastStats.candidates = candidates.size;
+      segLo = Math.max(lo, knownFloor() - 1);
+    }
+
+    // K — the key proof — from a receipt this address signed, read from the
+    // blocks the index says it sent from (the evidence phase needs them anyway).
+    if (!ownerSigned) {
+      const sent = [...candidates.entries()].filter(([b, f]) => f && b > segLo && b <= top).map(([b]) => b).sort((x, y) => y - x);
+      const room = Math.max(0, Math.floor((budget - probesUsed) / unitsPerProbe));
+      if (sent.length > 0 && room > 0) {
+        await prefetchRaw(sent.slice(0, room));
+        if (sent.slice(0, room).some((b) => ownerSent(rawEvidence.get(b)?.receipts))) ownerSigned = true;
+      }
+    }
+
+    const points = fastProbePoints({
+      top, segLo, candidates: [...candidates.keys()],
+      maxGap: ownerSigned ? null : chunkBlocks,
+    });
+    // Points are read newest first, one HTTP request's worth at a time, and the
+    // intervals they close are proven as each group lands — so a deadline or a
+    // budget that ends the run part-way still leaves a PROVEN boundary behind.
+    fastStats.used = true;
+    const group = Math.max(1, Math.floor(batchSize / 3));
+    let i = 0;
+    while (i + 1 < points.length) {
+      const room = Math.max(0, Math.floor((budget - probesUsed) / unitsPerProbe));
+      const unread: number[] = [];
+      for (let j = i; j < points.length && unread.length < Math.min(group, Math.max(1, room)); j++) {
+        if (!states.has(points[j])) unread.push(points[j]);
+      }
+      if (unread.length > 0 && !(await probe(unread))) return "stopped";
+      while (i + 1 < points.length && states.has(points[i]) && states.has(points[i + 1])) {
+        const a = points[i + 1], b = points[i];
+        const found = await enumerate(a, b);
+        // An interval `enumerate` did not finish proves nothing: discard it.
+        if (proofHole || budgetExhausted) return "stopped";
+        fastStats.intervals++;
+        if (b - a > 1 && found.length > 0) fastStats.fallbackIntervals++;
+        changeBlocks.push(...found);
+        provenFrom = a;
+        i++;
+      }
+    }
+    return "progressed";
+  }
+
   try {
     if (!(await probe([hi]))) {
       return empty({ kind: "PARTIAL", coveredFromISO: null, coveredToISO: null,
@@ -889,6 +1208,15 @@ export async function acquireEthHistory(
     }
 
     while (!proofHole && !budgetExhausted && provenFrom > lo) {
+      if (fastOn) {
+        unitsPerProbe = FAST_UNITS_PER_PROBE;
+        const r = await fastSegment();
+        unitsPerProbe = 1;
+        if (r === "fallback") { fastOn = false; continue; }
+        if (r === "stopped") break;
+        if (provenFrom > lo && await closesToWindowStart(provenFrom)) { originProvenAt = provenFrom; provenFrom = lo; }
+        continue;
+      }
       const chunkLo = Math.max(lo, provenFrom - chunkBlocks);
       const found = await enumerate(chunkLo, provenFrom);
       if (proofHole || budgetExhausted) break;
@@ -944,6 +1272,8 @@ export async function acquireEthHistory(
   let latestISO:   string | null = null;
 
   try {
+  // Fast path: the evidence reads batched (same calls, fewer round trips).
+  if (fastStats.used) await prefetchRaw(changeBlocks);
   for (const b of changeBlocks) {
     const { header, receipts } = await blockRaw(b);
     const ev = blockEvidence(b, address, at(b).balance - at(b - 1).balance, header, receipts);
@@ -959,6 +1289,19 @@ export async function acquireEthHistory(
     // be licensed from it.
     if (!(e instanceof EthThrottleError)) throw e;
     return empty({ kind: "UNKNOWN", caveats: ["PROVIDER_THROTTLED"], source: ETH_HISTORY_SOURCE });
+  }
+
+  // ── END-TO-END RECONCILIATION (fast path) ──────────────────────────────────
+  // The movements of every change block found this run must carry the balance
+  // from the proven floor to the run's top EXACTLY, in wei. The proof already
+  // implies it (each change block's movements sum to its state delta, every
+  // other interval was proven constant); this is the arithmetic check that a
+  // defect in assembling the fast path's intervals can never be licensed.
+  if (fastStats.used) {
+    const recon = reconcileMovementsAgainstOpening(movements, at(provenFrom)?.balance ?? null, at(resumeFrom)?.balance ?? null);
+    if (!recon.reconciles) {
+      return empty({ kind: "UNKNOWN", caveats: ["INVALID_DATA"], source: ETH_HISTORY_SOURCE });
+    }
   }
 
   // ── Coverage ──────────────────────────────────────────────────────────────
@@ -1031,6 +1374,7 @@ export async function acquireEthHistory(
     openingBalanceWei: at(provenFrom)?.balance ?? null,
     probesUsed, rpcReads,
     ...(originProvenAt !== null ? { originProvenAtBlock: originProvenAt } : {}),
+    ...((deps.fastPath ?? ethFastPathEnabled()) ? { fastPath: fastStats } : {}),
   };
 }
 
