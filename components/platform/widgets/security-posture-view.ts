@@ -128,7 +128,7 @@ export const LEGACY_KEY_LABEL = "legacy (digest unavailable)";
 export function anomalyKeyLabel(t: Pick<AnomalyTrip, "keyKind" | "keyRef" | "legacy">): string {
   if (t.keyKind === "admin") return KEY_KIND_WORD.admin;
   if (t.keyRef) return `${KEY_KIND_WORD[t.keyKind]} ${t.keyRef}`;
-  if (t.legacy) return LEGACY_KEY_LABEL;
+  if (t.legacy) return t.keyKind === "unknown" ? LEGACY_KEY_LABEL : `${KEY_KIND_WORD[t.keyKind]} · ${LEGACY_KEY_LABEL}`;
   return "no key recorded";
 }
 

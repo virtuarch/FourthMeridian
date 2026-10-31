@@ -251,7 +251,7 @@ export function Chip({ children, tone = "muted", title }: { children: ReactNode;
   );
 }
 
-export function ProtectedBadge({ item }: { item: Pick<CatalogItem, "consentClass" | "protected" | "userSuppressible"> }) {
+export function ProtectedBadge({ item }: { item: Pick<CatalogItem, "consentClass" | "userSuppressible" | "channels"> }) {
   return (
     <Chip tone="warn" title={protectedNote(item)}>
       <Lock size={10} aria-hidden /> Protected

@@ -27,16 +27,30 @@ const n = (v: number) => v.toLocaleString("en-US");
 
 // ── Owner-approved decisions, as UI copy (one place) ────────────────────────────
 
+/**
+ * Mirrors EMAIL_STORM_LIMIT.maxPerRecipient (lib/notifications/catalog/definitions.ts).
+ * A literal on purpose: importing definitions.ts would pull the whole catalog
+ * and registry into the client bundle. comms-center.test.ts pins it equal.
+ */
+export const STORM_MAX_PER_HOUR = 5;
+
+/** The consent classes the server's storm limit never applies to (storm.ts: SECURITY_CRITICAL, CEREMONY, OPERATOR). */
+const STORM_EXEMPT: ReadonlySet<ConsentClass> = new Set(["SECURITY_CRITICAL", "CEREMONY", "OPERATOR"]);
+
 export const COMMS_POLICY = {
   elevated: "Activating a customer-facing automation requires elevated operator permission.",
   protectedAlerts: "Security alerts can’t be muted, paused or re-routed.",
-  /** Protected and not user-suppressible, but not security-critical (e.g. the staff security-anomaly bell). */
+  /** A protected CEREMONY / OPERATOR email or in-app message (e.g. the staff security-anomaly bell). */
   protectedUnmutable: "This message can’t be muted, paused or re-routed.",
-  /** Generic: a protected message that is not security-critical (ceremony, banner, none-by-design). */
+  /** A protected definition whose only legs are read-only banners (dismissal is the banner's own, never a preference). */
+  protectedBanner: "Banner — not editable here; customers may dismiss it where the banner allows.",
+  /** A protected definition with no channels at all. */
+  protectedNoChannels: "No message is sent (by design).",
+  /** Protected but user-suppressible (no such definition today): operators can't touch it, customers can. */
   protectedGeneric: "Operators can’t disable, pause or re-route this message.",
   noTracking: "No open or click tracking, ever — no tracking pixels and no link rewriting.",
-  /** Stated as owner POLICY: no server field reports the limit yet. */
-  storm: "Owner policy: at most 5 emails per person per hour from automations; security messages are exempt.",
+  /** The server's policy (lib/notifications/delivery/storm.ts): limited = SERVICE / AWARENESS / MARKETING. */
+  storm: `At most ${STORM_MAX_PER_HOUR} emails per person per hour (service, awareness and marketing); over the limit an email is not sent. Security, ceremony and operator messages are exempt.`,
   noPii: "No recipient addresses or message bodies are shown here. Previews use synthetic data only.",
   previewBanner: "[PREVIEW] synthetic — fictional data, never sent",
 } as const;
@@ -57,16 +71,18 @@ export function retentionText(serverDays: number | null): string {
 }
 
 /**
- * The protected note for a definition. "Can't be muted" is said whenever the
- * definition is protected AND no customer preference can suppress it — keyed
- * off those two server facts, NOT the consent class (SECURITY_ANOMALY_DETECTED
- * is OPERATOR-class yet locked). Security-critical wording names security
- * alerts; any other unmutable message gets the neutral form. A protected
- * message a customer CAN switch off gets the operator-only note.
+ * The protected note for a definition, by what it actually sends:
+ *   no channels               ⇒ nothing is sent (by design);
+ *   only read-only banners    ⇒ not editable here (a banner's dismissal is its own, not a mute);
+ *   user-suppressible         ⇒ operator-only note (no such protected definition today);
+ *   SECURITY_CRITICAL         ⇒ security alerts can't be muted;
+ *   otherwise (CEREMONY / OPERATOR email or in-app, e.g. SECURITY_ANOMALY_DETECTED) ⇒ can't be muted.
  */
-export function protectedNote(d: Pick<CatalogItem, "consentClass" | "protected" | "userSuppressible">): string {
-  if (d.protected && !d.userSuppressible) return d.consentClass === "SECURITY_CRITICAL" ? COMMS_POLICY.protectedAlerts : COMMS_POLICY.protectedUnmutable;
-  return COMMS_POLICY.protectedGeneric;
+export function protectedNote(d: Pick<CatalogItem, "consentClass" | "userSuppressible" | "channels">): string {
+  if (d.channels.length === 0) return COMMS_POLICY.protectedNoChannels;
+  if (d.channels.every((c) => c.channel === "BANNER" || c.path === "READ_ONLY_SURFACE")) return COMMS_POLICY.protectedBanner;
+  if (d.userSuppressible) return COMMS_POLICY.protectedGeneric;
+  return d.consentClass === "SECURITY_CRITICAL" ? COMMS_POLICY.protectedAlerts : COMMS_POLICY.protectedUnmutable;
 }
 
 /** A server-supplied href is followed only when it is an internal app path ("/x", never "//host" or a scheme). */
@@ -135,8 +151,8 @@ export function previewChannelsFor(channels: ReadonlyArray<{ channel: CommsChann
 /** Whether the owner's storm limit applies to this definition, and how. */
 export function stormNote(d: Pick<CatalogItem, "consentClass" | "channels">): string | null {
   if (!d.channels.some((c) => c.channel === "EMAIL")) return null;
-  return d.consentClass === "SECURITY_CRITICAL"
-    ? "Owner policy: security messages are exempt from the 5-emails-per-hour storm limit."
+  return STORM_EXEMPT.has(d.consentClass)
+    ? `Exempt from the ${STORM_MAX_PER_HOUR}-emails-per-hour limit (security, ceremony and operator messages always send).`
     : COMMS_POLICY.storm;
 }
 
@@ -239,8 +255,9 @@ export const SUPPRESSION_LABEL = {
   ENVIRONMENT_GUARD: "Environment guard (not production)",
   AUTOMATION_PAUSED: "Automation paused",
   STORM_BREAKER: "Storm breaker",
-  RATE_LIMITED: "Held: 5 emails/hour limit",
-  RATE_LIMIT_UNVERIFIED: "Held: limit couldn’t be verified",
+  // The server SUPPRESSES these (storm.ts): never sent later, so never "held".
+  RATE_LIMITED: `Not sent: ${STORM_MAX_PER_HOUR} emails/hour limit`,
+  RATE_LIMIT_UNVERIFIED: "Not sent: limit couldn’t be verified",
 } as const satisfies Record<SuppressionReason, string>;
 
 /** The in-app leg suppressed by the customer's own preference is named as such. */

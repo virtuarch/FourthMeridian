@@ -23,11 +23,11 @@ import type { CatalogDetail, CatalogResponse, DaySeries, PreviewResponse, Trigge
 import type { AutomationDetail, AutomationsResponse, DeliveryAnalytics, PreferenceAggregate, RunsResponse, StatusCounts, SuppressionReason } from "@/lib/platform/comms-center/contract-v1-section-4";
 import { DELIVERY_STATUSES, SUPPRESSION_REASONS } from "@/lib/platform/comms-center/contract-v1-section-4";
 import { SUPPRESSION_REASONS as SERVER_SUPPRESSION_REASONS } from "@/lib/notifications/delivery/types";
-import { COMMS_CATALOG } from "@/lib/notifications/catalog/definitions";
+import { COMMS_CATALOG, EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/definitions";
 import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  COMMS_POLICY, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
+  COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
   statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
@@ -79,12 +79,13 @@ async function main() {
         && totalOf(catalog.totals) === catalog.items.length);
     check("preview channels from catalog channels", previewChannelsFor([{ channel: "EMAIL" }, { channel: "IN_APP" }]).join() === "email-html,email-text,in-app"
       && previewChannelsFor([{ channel: "OPERATOR_EMAIL" }]).join() === "operator" && previewChannelsFor([{ channel: "BANNER" }]).join() === "banner" && previewChannelsFor([]).length === 0);
-    check("storm limit: shown for email, exempt for security, absent without email",
-      stormNote({ consentClass: "AWARENESS", channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) === COMMS_POLICY.storm
-        && /exempt/.test(stormNote({ consentClass: "SECURITY_CRITICAL", channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) ?? "")
+    check("storm limit: applies to SERVICE / AWARENESS / MARKETING email; SECURITY_CRITICAL, CEREMONY and OPERATOR are exempt (storm.ts); absent without email",
+      (["SERVICE", "AWARENESS", "MARKETING"] as const).every((c) => stormNote({ consentClass: c, channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) === COMMS_POLICY.storm)
+        && (["SECURITY_CRITICAL", "CEREMONY", "OPERATOR"] as const).every((c) => /^Exempt/.test(stormNote({ consentClass: c, channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) ?? ""))
         && stormNote({ consentClass: "AWARENESS", channels: [{ channel: "IN_APP", defaultOn: true, templateVersion: null, path: "REGISTRY" }] }) === null);
-    check("storm limit is stated as OWNER POLICY, never as backend fact", /^Owner policy:/.test(COMMS_POLICY.storm)
-      && /^Owner policy:/.test(stormNote({ consentClass: "SECURITY_CRITICAL", channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) ?? ""));
+    check("the UI's storm number mirrors the server's EMAIL_STORM_LIMIT (5 per 60 minutes)",
+      STORM_MAX_PER_HOUR === EMAIL_STORM_LIMIT.maxPerRecipient && EMAIL_STORM_LIMIT.windowMinutes === 60 && COMMS_POLICY.storm.includes(`${EMAIL_STORM_LIMIT.maxPerRecipient} emails per person per hour`)
+        && /not sent/.test(COMMS_POLICY.storm));
     check("small cells: value / withheld '<5' / not observed '—'",
       countCell(12, false).text === "12" && countCell(0, false).text === "0" && countCell(null, true).state === "withheld" && countCell(null, true).text === "<5" && countCell(null, false).state === "not-observed");
     check("envelope notes: floor, capped, more", envelopeNotes({ floor: true, capped: true, nextCursor: "c" }).length === 3 && envelopeNotes({ floor: false, capped: false }).length === 0);
@@ -104,7 +105,7 @@ async function main() {
     check("SUPPRESSION_LABEL covers exactly the server's reasons, each with real words (no humanized enum)",
       Object.keys(SUPPRESSION_LABEL).sort().join() === [...SUPPRESSION_REASONS].sort().join()
         && SUPPRESSION_REASONS.every((r: SuppressionReason) => SUPPRESSION_LABEL[r].length > 0 && (SUPPRESSION_LABEL[r] as string) !== r));
-    check("storm-limit reasons read as holds", SUPPRESSION_LABEL.RATE_LIMITED === "Held: 5 emails/hour limit" && SUPPRESSION_LABEL.RATE_LIMIT_UNVERIFIED === "Held: limit couldn’t be verified");
+    check("storm-limit reasons read as NOT SENT (suppressed, never sent later)", SUPPRESSION_LABEL.RATE_LIMITED === "Not sent: 5 emails/hour limit" && SUPPRESSION_LABEL.RATE_LIMIT_UNVERIFIED === "Not sent: limit couldn’t be verified");
     check("in-app PREFERENCE_OFF = 'Customer turned off in-app'; email / mixed keep the generic words",
       suppressionLabel("PREFERENCE_OFF", "IN_APP") === "Customer turned off in-app" && suppressionLabel("PREFERENCE_OFF", "EMAIL") !== "Customer turned off in-app"
         && suppressionLabel("PREFERENCE_OFF", null) === SUPPRESSION_LABEL.PREFERENCE_OFF && suppressionLabel("RATE_LIMITED", "IN_APP") === SUPPRESSION_LABEL.RATE_LIMITED
@@ -172,7 +173,7 @@ async function main() {
     const details = await Promise.all(catalog.items.map(async (i) => (await (await catalogDetail(i.key, NOW)).json()) as CatalogDetail));
     const html = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(detail), preview: createElement("div", null, "PREVIEW SLOT") }));
     check("SECURITY_CRITICAL protected detail says it can't be muted", html.includes("can’t be muted"));
-    check("security email: storm limit exempt, phrased as owner policy", /Owner policy: security messages are exempt/.test(html));
+    check("security email: exempt from the storm limit", /Exempt from the 5-emails-per-hour limit/.test(html));
     check("delivery retention uses the ONE wording (owner policy + server caveat while they differ)", html.includes(retentionText(detail.retention.deliveryDays)));
     // v1.0.3: the merged ledger (#170) reports 90 days, so the real handler's detail carries no "pending alignment" caveat.
     check("real handler: retention.deliveryDays is 90 and the Library shows no 'pending alignment' note",
@@ -183,19 +184,28 @@ async function main() {
     // A protected message a customer CAN switch off gets the operator-only note, never "muted".
     const mutable = details.find((x) => x.protected && x.userSuppressible);
     const h = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(mutable ?? { ...detail, consentClass: "CEREMONY" as const, userSuppressible: true }), preview: null }));
-    check(`a protected but user-suppressible definition gets the generic note, never 'muted' (${mutable ? mutable.key : "synthetic"})`,
+    // No protected definition is user-suppressible today, so this case is SYNTHETIC unless the catalog grows one.
+    check(`SYNTHETIC unless the catalog has one: a protected but user-suppressible definition gets the generic note, never 'muted' (${mutable ? mutable.key : "synthetic fixture"})`,
       h.includes("Operators can’t disable, pause or re-route this message.") && !h.includes("can’t be muted"));
-    const unmutableNonSec = details.find((x) => x.protected && !x.userSuppressible && x.consentClass !== "SECURITY_CRITICAL");
-    if (unmutableNonSec) {
-      const hu = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(unmutableNonSec), preview: null }));
-      check(`a protected, unmutable NON-security definition says it can’t be muted without claiming 'Security alerts' (${unmutableNonSec.key})`,
-        hu.includes(COMMS_POLICY.protectedUnmutable) && !hu.includes(COMMS_POLICY.protectedAlerts));
-    } else check("a protected, unmutable non-security definition exists in the catalog", false);
-    check("protectedNote keys off protected && !userSuppressible, not the consent class",
-      /can’t be muted/.test(protectedNote({ consentClass: "SECURITY_CRITICAL", protected: true, userSuppressible: false }))
-        && /can’t be muted/.test(protectedNote({ consentClass: "OPERATOR", protected: true, userSuppressible: false }))
-        && !/muted/.test(protectedNote({ consentClass: "CEREMONY", protected: true, userSuppressible: true }))
-        && protectedNote({ consentClass: "SECURITY_CRITICAL", protected: true, userSuppressible: false }) === COMMS_POLICY.protectedAlerts);
+    const byKey = (k: string) => details.find((x) => x.key === k)!;
+    const noteHtml = (k: string) => renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(byKey(k)), preview: null }));
+    const ceremony = noteHtml("PASSWORD_RESET_LINK_SENT");
+    check("a protected CEREMONY email (PASSWORD_RESET_LINK_SENT) says it can’t be muted, without claiming 'Security alerts'",
+      byKey("PASSWORD_RESET_LINK_SENT").consentClass === "CEREMONY" && ceremony.includes(COMMS_POLICY.protectedUnmutable) && !ceremony.includes(COMMS_POLICY.protectedAlerts));
+    for (const k of ["MAINTENANCE_NOTICE", "TWO_FACTOR_REMINDER", "CONNECT_INVITATION"]) {
+      const b = noteHtml(k);
+      check(`banner-only ${k}: 'not editable here', never 'can’t be muted'`, byKey(k).channels.every((c) => c.channel === "BANNER") && b.includes(COMMS_POLICY.protectedBanner) && !b.includes("can’t be muted"));
+    }
+    const none = noteHtml("BETA_REQUEST_DENIED");
+    check("no channels (BETA_REQUEST_DENIED): 'No message is sent (by design).', never 'can’t be muted'",
+      byKey("BETA_REQUEST_DENIED").channels.length === 0 && none.includes(COMMS_POLICY.protectedNoChannels) && !none.includes("can’t be muted"));
+    const EM = [{ channel: "EMAIL" as const, defaultOn: true, templateVersion: 1, path: "DIRECT" as const }];
+    check("protectedNote: by what is sent, not the consent class alone",
+      protectedNote({ consentClass: "SECURITY_CRITICAL", userSuppressible: false, channels: EM }) === COMMS_POLICY.protectedAlerts
+        && protectedNote({ consentClass: "OPERATOR", userSuppressible: false, channels: EM }) === COMMS_POLICY.protectedUnmutable
+        && protectedNote({ consentClass: "CEREMONY", userSuppressible: true, channels: EM }) === COMMS_POLICY.protectedGeneric
+        && protectedNote({ consentClass: "SERVICE", userSuppressible: false, channels: [{ channel: "BANNER", defaultOn: true, templateVersion: null, path: "READ_ONLY_SURFACE" }] }) === COMMS_POLICY.protectedBanner
+        && protectedNote({ consentClass: "SECURITY_CRITICAL", userSuppressible: false, channels: [] }) === COMMS_POLICY.protectedNoChannels);
 
     // v1.0.3: the staff security-anomaly bell — OPERATOR class, yet protected and locked (no preference can mute it).
     const anomalyDef = COMMS_CATALOG.SECURITY_ANOMALY_DETECTED;
@@ -279,8 +289,8 @@ async function main() {
     check("by-key rows show keys and counts only (no address)", dOk.includes("PASSWORD_RESET_LINK_SENT") && !/@/.test(dOk.replace(/@v\d/g, "")));
     const inApp = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, filters: { channel: "IN_APP" as const, status: null, template: null }, suppressedByReason: { ...r0, PREFERENCE_OFF: 3, RATE_LIMITED: 2 } }),
       filters: { ...DEFAULT_DELIVERY_FILTERS, channel: "IN_APP" }, onFilters: () => {} }));
-    check("Delivery under IN_APP: a PREFERENCE_OFF suppressed row reads 'Customer turned off in-app'; storm holds read as holds",
-      inApp.includes("Customer turned off in-app") && inApp.includes("Held: 5 emails/hour limit"));
+    check("Delivery under IN_APP: a PREFERENCE_OFF suppressed row reads 'Customer turned off in-app'; storm-limited rows read 'Not sent'",
+      inApp.includes("Customer turned off in-app") && inApp.includes("Not sent: 5 emails/hour limit"));
     check("Delivery with no channel filter keeps the generic preference words", dOk.includes("Environment guard") && !dOk.includes("Customer turned off in-app"));
     const dDown = renderToStaticMarkup(createElement(DeliverySurface, { read: down, filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
     check("delivery 503 ⇒ unavailable, no tiles", dDown.includes('data-comms-state="unavailable"') && !dDown.includes("data-status-tile"));
