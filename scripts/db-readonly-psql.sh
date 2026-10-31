@@ -30,7 +30,8 @@
 #     --file=…) is REFUSED, so nothing can override the URL, ON_ERROR_STOP or -1;
 #   - every -c text and every -f file is copied once into a private directory;
 #     the copy is what is checked and what psql runs. Refused before connecting:
-#     NUL or any control byte except TAB/CR/LF, invalid UTF-8, non-ASCII outside
+#     CR (it ends a -- comment in PostgreSQL and psql; convert CRLF files to
+#     LF), NUL or any other control byte except TAB/LF, invalid UTF-8, non-ASCII outside
 #     quotes and comments, any backslash meta-command except \echo \qecho \pset
 #     (never with `pager`), backticks, `:` followed by anything that can start a
 #     psql variable (so also `::type` casts — write CAST(x AS type)), dollar
@@ -49,7 +50,9 @@
 #     the password), and is refused when it points at a local/loopback host
 #     (localhost, *.localhost, 127/8, 0/8, numeric shorthands, IPv6 literals,
 #     socket paths, or a NAME that resolves to loopback, e.g. localtest.me or
-#     *.nip.io — the host is resolved first; unresolvable ⇒ refused) or carries host= / hostaddr= / service= / options= or any
+#     *.nip.io — the host is resolved once, by absolute-path system resolver,
+#     bounded to 5 s; unresolvable ⇒ refused; the checked address is then
+#     PINNED with hostaddr= so libpq cannot re-resolve) or carries host= / hostaddr= / service= / options= or any
 #     unknown parameter. sslmode=require is added (disable/allow/prefer are
 #     refused; sslrootcert=<file>|system only with sslmode=verify-full), require_auth=
 #     scram-sha-256 is ALWAYS added, channel_binding=require is optional, and
@@ -59,7 +62,11 @@
 #     a trace, an error or psql's environment: it is written to a 0600 pgpass
 #     file inside a private 0700 directory that is removed on exit (after a
 #     SIGKILL, remove it by hand: rm -rf "${TMPDIR:-/tmp}"/db-readonly-psql.*),
-#     and DIAG_DATABASE_URL is unexported right after it is read. psql runs
+#     and DIAG_DATABASE_URL is unexported right after it is read. (While the
+#     helper runs, its OWN initial environment — /proc/<pid>/environ on Linux,
+#     readable by the same user and root — still holds the URL as the caller
+#     passed it; use the prompt-based zsh flow so it exists only for that one
+#     command.) The checker's own tools run from a fixed system PATH. psql runs
 #     under `env -i` with only PATH, HOME, LANG, TERM, PGCONNECT_TIMEOUT and
 #     PGPASSFILE. The resolved psql path is printed before connecting;
 #   - DIAG_REQUIRE_ROLE=<role> (MANDATORY for a non-local host) makes the DATABASE verify, before anything else
@@ -87,6 +94,13 @@
 unset SHELLOPTS 2>/dev/null || true   # readonly in bash; harmless if it cannot be unset
 unset BASH_ENV ENV PS4 2>/dev/null || true
 set -euo pipefail
+
+# psql is located with the CALLER's PATH (its path is printed before connecting);
+# everything else — tr, grep, awk, sed, iconv, the resolvers — runs from a FIXED
+# system PATH, so a planted getent/grep/awk earlier in PATH cannot vouch for input.
+psql_bin="$(type -P psql || true)"
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
 
 refuse() { printf 'db-readonly-psql: REFUSED — %s\n' "$1" >&2; exit 2; }
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -197,24 +211,43 @@ fi
 extra+="&require_auth=scram-sha-256"   # never send the password in clear / to a non-SCRAM server
 
 # A NAME can still resolve to loopback (localtest.me, 127.0.0.1.nip.io, *.sslip.io, a
-# hosts-file entry). Resolve it the way libpq will (system resolver) and refuse
-# loopback / unspecified addresses. Unresolvable ⇒ refused (fail closed).
+# hosts-file entry). Resolve it once with the system resolver (absolute paths, 5 s
+# bound), refuse loopback / unspecified addresses (unresolvable ⇒ refused), and PIN
+# the checked address: psql gets hostaddr=<that address> next to host=<name>, so
+# libpq connects to exactly what was checked and never re-resolves (DNS rebinding);
+# host= is still used for TLS verification.
+bounded() {   # run "$@" for at most 5 s; stdout passes through
+  "$@" 2> /dev/null &
+  local p=$!
+  ( sleep 5; kill -9 "$p" 2> /dev/null ) > /dev/null 2>&1 &
+  local w=$!
+  wait "$p" 2> /dev/null || true
+  kill "$w" 2> /dev/null || true
+}
 resolve_addrs() {
-  if command -v getent > /dev/null 2>&1; then
-    getent ahosts "$1" 2> /dev/null | awk '{ print $1 }' || true
-  elif command -v dscacheutil > /dev/null 2>&1; then
-    dscacheutil -q host -a name "$1" 2> /dev/null | awk '/^ipv?6?_?address:/ { print $2 }' || true
-  elif command -v python3 > /dev/null 2>&1; then
-    python3 -I -c 'import socket,sys
-for a in socket.getaddrinfo(sys.argv[1], None): print(a[4][0])' "$1" 2> /dev/null || true
+  if [[ -x /usr/bin/getent ]]; then
+    bounded /usr/bin/getent ahosts "$1" | awk '{ print $1 }'
+  elif [[ -x /usr/bin/dscacheutil ]]; then
+    bounded /usr/bin/dscacheutil -q host -a name "$1" | awk '/^ipv?6?_?address:/ { print $2 }'
+  elif [[ -x /usr/bin/python3 ]]; then
+    bounded /usr/bin/python3 -I -c 'import socket,sys
+for a in socket.getaddrinfo(sys.argv[1], None): print(a[4][0])' "$1"
   fi
 }
-if (( ! is_local )) && [[ ! "$h" =~ ^$octet\.$octet\.$octet\.$octet$ ]]; then
-  addrs="$(resolve_addrs "$h")"
-  [[ -n "$addrs" ]] || refuse "the host name could not be resolved (needed to prove it is not loopback; host not shown)."
+pin_addr=""
+if (( ! is_local )); then
+  if [[ "$h" =~ ^$octet\.$octet\.$octet\.$octet$ ]]; then
+    addrs="$h"
+  else
+    addrs="$(resolve_addrs "$h" || true)"
+  fi
+  [[ -n "$addrs" ]] || refuse "the host name could not be resolved within 5 s (needed to prove it is not loopback; host not shown)."
   if grep -Eqi '^(127\.|0\.|::1$|::$|::ffff:(127|0)\.|0:0:0:0:0:0:0:[01]$)' <<< "$addrs"; then
     (( allow_local )) || refuse "the host name resolves to a loopback/unspecified address; this helper is for remote databases."
     is_local=1
+  else
+    pin_addr="$(head -n 1 <<< "$addrs")"
+    [[ "$pin_addr" =~ ^[0-9A-Fa-f:.]{2,45}$ ]] || refuse "the resolved address is not a plain IP address."
   fi
 fi
 
@@ -245,7 +278,7 @@ decode_password() {
 }
 PGPASS_LINE=""
 decode_password "$pw_enc"
-unset pw_enc userinfo rest raw
+unset pw_enc userinfo rest raw authority after
 
 timeout="${PGCONNECT_TIMEOUT:-10}"
 [[ "$timeout" =~ ^[0-9]{1,3}$ ]] || timeout=10
@@ -301,7 +334,10 @@ END {
   n = length(t); i = 1; cases = 0; ends = 0; bad = ""; first = 1; after = ""
   while (i <= n) {
     c = substr(t, i, 1); d = substr(t, i + 1, 1)
-    if (c == "-" && d == "-") { j = index(substr(t, i), "\n"); i = (j ? i + j : n + 1); continue }
+    if (c == "-" && d == "-") {   # a -- comment ends at LF OR CR (PostgreSQL and psql both end it at CR)
+      while (i <= n && substr(t, i, 1) != "\n" && substr(t, i, 1) != "\r") i++
+      continue
+    }
     if (c == "\\")            { j = index(substr(t, i), "\n"); i = (j ? i + j : n + 1); continue }
     if (c == "/" && d == "*") {
       depth = 1; i += 2
@@ -337,11 +373,32 @@ END {
 }
 AWK
 
+IFS= read -r -d '' NORM_AWK <<'AWK' || true
+{ t = t $0 "\n" }
+END {
+  n = length(t); i = 1; o = ""
+  while (i <= n) {
+    c = substr(t, i, 1); d = substr(t, i + 1, 1)
+    if (c == "-" && d == "-") { while (i <= n && substr(t, i, 1) != "\n" && substr(t, i, 1) != "\r") i++; o = o " "; continue }
+    if (c == "/" && d == "*") {
+      depth = 1; i += 2
+      while (i <= n && depth > 0) {
+        c = substr(t, i, 1); d = substr(t, i + 1, 1)
+        if (c == "/" && d == "*") { depth++; i += 2 } else if (c == "*" && d == "/") { depth--; i += 2 } else i++
+      }
+      o = o " "; continue
+    }
+    if (c == "'" || c == "\"") { j = index(substr(t, i + 1), c); k = (j ? j + 1 : n - i + 1); o = o substr(t, i, k); i += k; continue }
+    o = o ((c == "\n" || c == "\t") ? " " : c); i++   # one line: two-word patterns cannot hide behind a newline
+  }
+  printf "%s", o
+}
+AWK
 KW='COMMIT|ROLLBACK|BEGIN|ABORT|SAVEPOINT|RELEASE|START[[:space:]]+TRANSACTION|READ[[:space:]]+WRITE|SESSION[[:space:]]+CHARACTERISTICS|PREPARE|COPY|DO|CALL|LISTEN|UNLISTEN|NOTIFY|PG_NOTIFY|DISCARD|LOAD|INSERT|UPDATE|DELETE|MERGE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|LOCK|VACUUM|ANALYZE|ANALYSE|CLUSTER|REINDEX|REFRESH|COMMENT|SECURITY[[:space:]]+LABEL|IMPORT|REASSIGN|CHECKPOINT|INTO|DECLARE|DBLINK[A-Z_]*|LO_[A-Z_]+|PG_(TERMINATE|CANCEL)_BACKEND|PG_RELOAD_CONF|PG_ROTATE_LOGFILE|PG_(TRY_)?ADVISORY[A-Z_]*|PG_LOGICAL_EMIT_MESSAGE|TXID_CURRENT[A-Z_]*|PG_CURRENT_XACT_ID[A-Z_]*|PG_SLEEP[A-Z_]*|[A-Z_]*TIMEOUT|QUERY_TO_XML[A-Z_]*|TABLE_TO_XML[A-Z_]*|CURSOR_TO_XML[A-Z_]*|DATABASE_TO_XML[A-Z_]*|SCHEMA_TO_XML[A-Z_]*|TS_STAT|TS_REWRITE|XPATH[A-Z_]*|XMLTABLE|CROSSTAB[0-9A-Z_]*|CONNECTBY|PG_READ_FILE|PG_READ_BINARY_FILE|PG_LS_[A-Z_]+|PG_STAT_FILE|EXECUTE'
 for copy in ${copies[@]+"${copies[@]}"}; do
   # Bytes first: bash $(…) silently drops NUL, so check the FILE, byte-wise.
-  ctl="$(LC_ALL=C tr -d '\t\r\n\040-\176\200-\377' < "$copy" | LC_ALL=C wc -c | tr -d '[:space:]')"
-  [[ "$ctl" == "0" ]] || refuse "input contains a NUL or control byte (only TAB, CR and LF are allowed)."
+  ctl="$(LC_ALL=C tr -d '\t\n\040-\176\200-\377' < "$copy" | LC_ALL=C wc -c | tr -d '[:space:]')"
+  [[ "$ctl" == "0" ]] || refuse "input contains a CR, NUL or other control byte (only TAB and LF are allowed; convert CRLF files to LF)."
   iconv -f UTF-8 -t UTF-8 < "$copy" > /dev/null 2>&1 || refuse "input is not valid UTF-8."
   text="$(cat -- "$copy")"
   u="$(upper "$text")"
@@ -359,7 +416,10 @@ for copy in ${copies[@]+"${copies[@]}"}; do
   grep -Eq "U&[[:space:]]*['\"]|(^|[^A-Z0-9_])UESCAPE([^A-Z0-9_]|\$)" <<< "$u" && refuse "U&'…' / U&\"…\" / UESCAPE are not allowed."
   grep -Eq '(^|[^A-Z0-9_])SET_CONFIG([^A-Z0-9_]|$)' <<< "$u" \
     && refuse "set_config is not allowed (use SET LOCAL inside the helper's transaction)."
-  if grep -Eq "(^|[^A-Z0-9_])($KW)([^A-Z0-9_]|\$)" <<< "$u"; then
+  # Keywords are matched on the raw text AND on a copy whose comments are replaced
+  # by one space and newlines flattened (READ/**/WRITE, START--x<LF>TRANSACTION …).
+  un="$(upper "$(LC_ALL=C awk "$NORM_AWK" < "$copy")")"
+  if grep -Eq "(^|[^A-Z0-9_])($KW)([^A-Z0-9_]|\$)" <<< "$u" || grep -Eq "(^|[^A-Z0-9_])($KW)([^A-Z0-9_]|\$)" <<< "$un"; then
     refuse "transaction control / write / side-effect command or function in input."
   fi
   read -r n_case n_end n_bad < <(LC_ALL=C awk "$COUNT_AWK" < "$copy")
@@ -505,15 +565,14 @@ SQL
 fi
 
 # ── psql: resolved path printed; clean environment (env -i + allowlist). ─────
-psql_bin="$(type -P psql || true)"
 [[ "$psql_bin" == /* ]] || refuse "psql was not found on PATH."
 printf 'db-readonly-psql: using psql at %s\n' "$psql_bin" >&2
-psql_env=(PATH="$PATH" PGCONNECT_TIMEOUT="$timeout" PGPASSFILE="$passfile")
+psql_env=(PATH="$PATH:${psql_bin%/*}" PGCONNECT_TIMEOUT="$timeout" PGPASSFILE="$passfile")
 [[ -n "${HOME:-}" ]] && psql_env+=(HOME="$HOME")
 [[ -n "${LANG:-}" ]] && psql_env+=(LANG="$LANG")
 [[ -n "${TERM:-}" ]] && psql_env+=(TERM="$TERM")
 
-url="postgresql://${db_user}@${host}${db_port:+:$db_port}/${db_name}?sslmode=${sslmode}${extra}"
+url="postgresql://${db_user}@${host}${db_port:+:$db_port}/${db_name}?sslmode=${sslmode}${extra}${pin_addr:+&hostaddr=$pin_addr}"
 
 set +e
 # No `-1` (its COMMIT is exactly what must never happen): the first command opens

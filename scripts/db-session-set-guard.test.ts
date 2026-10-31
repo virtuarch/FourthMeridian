@@ -90,19 +90,6 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
   const rec = path.join(tmp, "rec");
   writeFileSync(path.join(fakeBin, "psql"), `#!/bin/sh\nmkdir -p '${rec}'\nprintf '%s\\n' "$@" > '${rec}/argv'\nenv > '${rec}/env'\ncat "$PGPASSFILE" > '${rec}/pass'\nls -l "$PGPASSFILE" | cut -c1-10 > '${rec}/mode'\nexit 0\n`);
   chmodSync(path.join(fakeBin, "psql"), 0o755);
-  // A fake resolver (getent is tried first): every name resolves to TEST-NET-1 except the
-  // loopback fixtures — deterministic, no DNS in the unit test.
-  writeFileSync(path.join(fakeBin, "getent"), `#!/bin/sh
-case "$2" in
-  loop.test|localtest.me|127.0.0.1.nip.io) echo "127.0.0.1       STREAM $2" ;;
-  loop6.test) echo "::1             STREAM $2" ;;
-  mapped.test) echo "::ffff:127.0.0.1 STREAM $2" ;;
-  zero.test) echo "0.0.0.0         STREAM $2" ;;
-  nx.test) exit 2 ;;
-  *) echo "192.0.2.10      STREAM $2" ;;
-esac
-`);
-  chmodSync(path.join(fakeBin, "getent"), 0o755);
   const reached = () => existsSync(path.join(rec, "argv"));
   const run = (args: string[], url: string | undefined, opts: { bashArgs?: string[]; env?: Record<string, string> } = {}) => {
     rmSync(rec, { recursive: true, force: true });
@@ -113,7 +100,7 @@ esac
   };
   const refused = (r: ReturnType<typeof run>) => r.status === 2 && /REFUSED/.test(r.stderr) && !reached();
   // Remote-shaped, unresolvable (RFC 2606 .invalid): passes URL validation, can never connect.
-  const URL = "postgresql://nobody:nothing@guard-test.invalid:1/none";
+  const URL = "postgresql://nobody:nothing@192.0.2.10:1/none";   // TEST-NET-1 literal: no DNS, never routable
 
   console.log("  — URL validation (refused before psql runs)");
   for (const junk of ["", "   ", "not-a-url", "DIAG_DATABASE_URL="]) {
@@ -149,18 +136,17 @@ esac
     ["sslmode=prefer on a remote host", "postgresql://u:p@remote.invalid:1/db?sslmode=prefer"],
     ["no password", "postgresql://u@remote.invalid:1/db"],
     ["empty password", "postgresql://u:@remote.invalid:1/db"],
-    ["a name resolving to 127.0.0.1 (loop.test)", "postgresql://u:p@loop.test:5432/db"],
+    // Real DNS (the resolver is called by absolute path and cannot be faked through PATH):
+    // refused either as loopback or, offline, as unresolvable — both fail closed.
     ["localtest.me (resolves to loopback)", "postgresql://u:p@localtest.me:5432/db"],
     ["127.0.0.1.nip.io (resolves to loopback)", "postgresql://u:p@127.0.0.1.nip.io:5432/db"],
-    ["a name resolving to ::1", "postgresql://u:p@loop6.test:5432/db"],
-    ["a name resolving to ::ffff:127.0.0.1", "postgresql://u:p@mapped.test:5432/db"],
-    ["a name resolving to 0.0.0.0", "postgresql://u:p@zero.test:5432/db"],
-    ["an unresolvable name (fail closed)", "postgresql://u:p@nx.test:5432/db"],
-    ["'@' in the query", "postgresql://u:p@db.example.com:5432/db?application_name=a@evil.test"],
-    ["'@' in the path", "postgresql://u:p@db.example.com:5432/db@evil.test"],
-    ["raw '@' in the password", "postgresql://u:p@ss@db.example.com:5432/db"],
-    ["raw '/' in the password (authority ends at '/')", "postgresql://u:p/w@db.example.com:5432/db"],
-    ["'#' anywhere", "postgresql://u:p#x@db.example.com:5432/db"],
+    ["127-0-0-1.sslip.io (resolves to loopback)", "postgresql://u:p@127-0-0-1.sslip.io:5432/db"],
+    ["an unresolvable name (fail closed)", "postgresql://u:p@nx.invalid:5432/db"],
+    ["'@' in the query", "postgresql://u:p@192.0.2.10:5432/db?application_name=a@evil.test"],
+    ["'@' in the path", "postgresql://u:p@192.0.2.10:5432/db@evil.test"],
+    ["raw '@' in the password", "postgresql://u:p@ss@192.0.2.10:5432/db"],
+    ["raw '/' in the password (authority ends at '/')", "postgresql://u:p/w@192.0.2.10:5432/db"],
+    ["'#' anywhere", "postgresql://u:p#x@192.0.2.10:5432/db"],
   ];
   for (const [name, u] of badUrls) {
     const r = run(["-c", "select 1"], u);
@@ -170,7 +156,7 @@ esac
     const r = run(["-c", "select 1"], "postgresql://u:p@remote.invalid:1/db?host=127.0.0.1", { env: { DIAG_ALLOW_LOCAL: "1" } });
     check("DIAG_ALLOW_LOCAL=1 never re-enables ?host= / redirection parameters", refused(r), r.stderr);
     const l = run(["-c", "select 1"], "postgresql://u:p@127.0.0.1:1/db?sslmode=disable", { env: { DIAG_ALLOW_LOCAL: "1" } });
-    const noRole = run(["-c", "select 1"], "postgresql://u:p@db.example.com:5432/db", { env: { DIAG_REQUIRE_ROLE: "" } });
+    const noRole = run(["-c", "select 1"], "postgresql://u:p@192.0.2.10:5432/db", { env: { DIAG_REQUIRE_ROLE: "" } });
     check("a remote host without DIAG_REQUIRE_ROLE ⇒ refused (the role guard is mandatory)", refused(noRole) && /DIAG_REQUIRE_ROLE is required/.test(noRole.stderr), noRole.stderr);
     const localNoRole = run(["-c", "select 1"], "postgresql://u:p@127.0.0.1:1/db?sslmode=disable", { env: { DIAG_ALLOW_LOCAL: "1", DIAG_REQUIRE_ROLE: "" } });
     check("…but a local test container (DIAG_ALLOW_LOCAL=1) may run without it", localNoRole.status === 0 && reached(), localNoRole.stderr);
@@ -181,7 +167,7 @@ esac
 
   console.log("  — what psql receives: password-free argv, env -i allowlist, password only in a private 0600 pgpass file");
   {
-    const r = run(["-c", "select 1"], " 'DATABASE_URL=postgresql://fm_diag_ro.ref:p%40ss%2Fw%3Ard@Pooler.Example.com:6543/postgres?pgbouncer=true&connection_limit=1' ", {
+    const r = run(["-c", "select 1"], " 'DATABASE_URL=postgresql://fm_diag_ro.ref:p%40ss%2Fw%3Ard@192.0.2.20:6543/postgres?pgbouncer=true&connection_limit=1' ", {
       env: { PGPASSWORD: "inherited-wrong", PGHOST: "127.0.0.1", PGPORT: "1", PGUSER: "postgres", PGDATABASE: "x", PGSERVICE: "s", PGSERVICEFILE: "/x",
              PGPASSFILE: "/x", PGOPTIONS: "-c default_transaction_read_only=off", PGSSLMODE: "disable", PGHOSTADDR: "127.0.0.1", PSQLRC: "/x", PAGER: "sh", PSQL_PAGER: "sh",
              LD_PRELOAD: "/x", DYLD_INSERT_LIBRARIES: "/x", HOME: "/home/x", LANG: "en_US.UTF-8", TERM: "xterm" },
@@ -192,8 +178,8 @@ esac
     const mode = reached() ? readFileSync(path.join(rec, "mode"), "utf8").trim() : "";
     check("normalised URL (trim, NAME=, quotes) reaches psql", r.status === 0 && reached(), `${r.status} ${r.stderr}`);
     check("the resolved psql path is printed before connecting", new RegExp(`using psql at ${fakeBin}/psql`).test(r.stderr), r.stderr);
-    check("argv URL: password-free, host lower-cased, sslmode=require + require_auth=scram-sha-256 added, Prisma params dropped",
-      argv[0] === "postgresql://fm_diag_ro.ref@pooler.example.com:6543/postgres?sslmode=require&require_auth=scram-sha-256", argv[0]);
+    check("argv URL: password-free, sslmode=require + require_auth=scram-sha-256 added, checked address pinned (hostaddr), Prisma params dropped",
+      argv[0] === "postgresql://fm_diag_ro.ref@192.0.2.20:6543/postgres?sslmode=require&require_auth=scram-sha-256&hostaddr=192.0.2.20", argv[0]);
     check("argv never contains the password (ps-safe)", !argv.some((a) => /p@ss|p%40ss/.test(a)));
     check("psql runs with -X -w and ON_ERROR_STOP=1, and never -1", ["-X", "-w", "ON_ERROR_STOP=1"].every((f) => argv.includes(f)) && !argv.includes("-1"));
     const cs = argv.flatMap((a, i) => (argv[i - 1] === "-c" ? [a] : []));
@@ -202,32 +188,33 @@ esac
     const names = env.map((l) => l.split("=")[0]).filter((n) => !["PWD", "SHLVL", "_", "OLDPWD"].includes(n)).sort();   // PWD/SHLVL/_ are added by the fake psql's own /bin/sh
     check("psql's environment is exactly the env -i allowlist (HOME LANG PATH PGCONNECT_TIMEOUT PGPASSFILE TERM)",
       JSON.stringify(names) === JSON.stringify(["HOME", "LANG", "PATH", "PGCONNECT_TIMEOUT", "PGPASSFILE", "TERM"]), names.join(","));
+    check("psql's PATH is the fixed system PATH plus psql's own directory", env.includes(`PATH=/usr/bin:/bin:/usr/sbin:/sbin:${fakeBin}`), env.find((l) => l.startsWith("PATH=")));
     check("no password in the environment; PGCONNECT_TIMEOUT=10", !env.some((l) => /p@ss|inherited-wrong/.test(l)) && env.includes("PGCONNECT_TIMEOUT=10"));
     check("pgpass file = the DECODED password, ':' escaped, mode 0600", pass === "*:*:*:*:p@ss/w\\:rd\n" && mode === "-rw-------", `${JSON.stringify(pass)} ${mode}`);
     const passPath = env.find((l) => l.startsWith("PGPASSFILE="))?.slice("PGPASSFILE=".length) ?? "";
     check("the pgpass file and its private directory are removed on exit", passPath !== "" && !existsSync(passPath) && !existsSync(path.dirname(passPath)), passPath);
-    const raw = run(["-c", "select 1"], "postgresql://u:p:w!x\\y%40z%2F%3F%23@remote.example.com:5432/postgres");
+    const raw = run(["-c", "select 1"], "postgresql://u:p:w!x\\y%40z%2F%3F%23@192.0.2.10:5432/postgres");
     const rawPass = reached() ? readFileSync(path.join(rec, "pass"), "utf8") : "";
     check("raw : ! \\ and encoded %40 %2F %3F %23 in the password are decoded and pgpass-escaped", raw.status === 0 && rawPass === "*:*:*:*:p\\:w!x\\\\y@z/?#\n", `${raw.stderr} ${JSON.stringify(rawPass)}`);
-    const sys = run(["-c", "select 1"], "postgresql://u:p@remote.example.com/db?sslmode=verify-full&sslrootcert=system");
+    const sys = run(["-c", "select 1"], "postgresql://u:p@192.0.2.10/db?sslmode=verify-full&sslrootcert=system");
     const sysArgv = reached() ? readFileSync(path.join(rec, "argv"), "utf8").split("\n") : [];
-    check("sslrootcert=system with verify-full is accepted", sys.status === 0 && /sslmode=verify-full&sslrootcert=system&require_auth=scram-sha-256$/.test(sysArgv[0] ?? ""), `${sys.stderr} ${sysArgv[0]}`);
-    const sysNo = run(["-c", "select 1"], "postgresql://u:p@remote.example.com/db?sslmode=require&sslrootcert=system");
+    check("sslrootcert=system with verify-full is accepted", sys.status === 0 && /sslmode=verify-full&sslrootcert=system&require_auth=scram-sha-256&hostaddr=192\.0\.2\.10$/.test(sysArgv[0] ?? ""), `${sys.stderr} ${sysArgv[0]}`);
+    const sysNo = run(["-c", "select 1"], "postgresql://u:p@192.0.2.10/db?sslmode=require&sslrootcert=system");
     check("sslrootcert=system without verify-full ⇒ refused", refused(sysNo), sysNo.stderr);
     // DIAG_DATABASE_URL is unexported at once: the fake psql (and every other child) never sees it.
 
-    const ctl = run(["-c", "select 1"], "postgresql://u:a%0Ab@remote.example.com:5432/postgres");
+    const ctl = run(["-c", "select 1"], "postgresql://u:a%0Ab@192.0.2.10:5432/postgres");
     check("a password decoding to a control character (newline) ⇒ refused", refused(ctl), ctl.stderr);
     const cert = path.join(tmp, "root.crt"); writeFileSync(cert, "x");
-    const vf = run(["-c", "select 1"], `postgresql://u:p@remote.example.com/db?sslmode=verify-full&sslrootcert=${cert}&channel_binding=require`);
+    const vf = run(["-c", "select 1"], `postgresql://u:p@192.0.2.10/db?sslmode=verify-full&sslrootcert=${cert}&channel_binding=require`);
     const vfArgv = reached() ? readFileSync(path.join(rec, "argv"), "utf8").split("\n") : [];
     check("sslrootcert with sslmode=verify-full and channel_binding=require are accepted (require_auth still added)",
-      vf.status === 0 && vfArgv[0] === `postgresql://u@remote.example.com/db?sslmode=verify-full&channel_binding=require&sslrootcert=${cert}&require_auth=scram-sha-256`, `${vf.stderr} ${vfArgv[0]}`);
+      vf.status === 0 && vfArgv[0] === `postgresql://u@192.0.2.10/db?sslmode=verify-full&channel_binding=require&sslrootcert=${cert}&require_auth=scram-sha-256&hostaddr=192.0.2.10`, `${vf.stderr} ${vfArgv[0]}`);
     for (const [name, u] of [
-      ["sslrootcert without verify-full", `postgresql://u:p@remote.example.com/db?sslmode=require&sslrootcert=${cert}`],
-      ["sslrootcert to a missing file", "postgresql://u:p@remote.example.com/db?sslmode=verify-full&sslrootcert=/nonexistent/x.crt"],
-      ["channel_binding=disable", "postgresql://u:p@remote.example.com/db?channel_binding=disable"],
-      ["caller-supplied require_auth", "postgresql://u:p@remote.example.com/db?require_auth=password"],
+      ["sslrootcert without verify-full", `postgresql://u:p@192.0.2.10/db?sslmode=require&sslrootcert=${cert}`],
+      ["sslrootcert to a missing file", "postgresql://u:p@192.0.2.10/db?sslmode=verify-full&sslrootcert=/nonexistent/x.crt"],
+      ["channel_binding=disable", "postgresql://u:p@192.0.2.10/db?channel_binding=disable"],
+      ["caller-supplied require_auth", "postgresql://u:p@192.0.2.10/db?require_auth=password"],
     ] as const) {
       const x = run(["-c", "select 1"], u);
       check(`refused: ${name}`, refused(x), x.stderr);
@@ -240,7 +227,7 @@ esac
     const benv = path.join(tmp, "benv.sh"); writeFileSync(benv, `touch '${marker}'\nset -x\n`);
     rmSync(rec, { recursive: true, force: true });
     const d = spawnSync(script, ["-c", "select 1"], { encoding: "utf8", timeout: 20_000, env: {
-      PATH: `${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", DIAG_DATABASE_URL: "postgresql://u:SecretPw1@db.example.com:5432/db",
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", DIAG_DATABASE_URL: "postgresql://u:SecretPw1@192.0.2.10:5432/db",
       BASH_ENV: benv, ENV: benv, "BASH_FUNC_grep%%": "() { echo hijacked; return 1; }", "BASH_FUNC_refuse%%": "() { :; }",
     } as unknown as NodeJS.ProcessEnv });
     check("executed directly: BASH_ENV/ENV not sourced, exported functions not imported, still reaches psql",
@@ -248,10 +235,38 @@ esac
     const env = reached() ? readFileSync(path.join(rec, "env"), "utf8") : "";
     check("DIAG_DATABASE_URL never reaches a child process", reached() && !/DIAG_DATABASE_URL|SecretPw1/.test(env));
     const bad = spawnSync(script, ["-c", "select 1; end"], { encoding: "utf8", timeout: 20_000, env: {
-      PATH: `${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", DIAG_DATABASE_URL: "postgresql://u:p@db.example.com:5432/db",
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", DIAG_DATABASE_URL: "postgresql://u:p@192.0.2.10:5432/db",
       "BASH_FUNC_refuse%%": "() { :; }", "BASH_FUNC_grep%%": "() { return 1; }",
     } as unknown as NodeJS.ProcessEnv });
     check("an imported function named refuse/grep cannot disable a refusal", bad.status === 2 && /REFUSED/.test(bad.stderr), `${bad.status} ${bad.stderr}`);
+  }
+
+  console.log("  — the lexer on its own (second layer behind the CR refusal) ends a -- comment at CR");
+  {
+    const awkSrc = /^IFS= read -r -d '' COUNT_AWK <<'AWK' \|\| true\n([\s\S]*?)\nAWK$/m.exec(src)?.[1] ?? "";
+    const lex = (input: string) => spawnSync("awk", [awkSrc], { input, encoding: "utf8", env: { LC_ALL: "C", PATH: "/usr/bin:/bin" } as unknown as NodeJS.ProcessEnv }).stdout.trim();
+    check("lexer extracted from the script", awkSrc.length > 500);
+    for (const t of ["SELECT 1 AS case --x\r; END; SELECT 1", "SELECT 1 --x\r; DEALLOCATE ALL", "-- x\r; END"]) {
+      check(`lexer flags the statement after a CR-ended comment: ${JSON.stringify(t)}`, / stmt$/.test(lex(t)), lex(t));
+    }
+    check("lexer: a plain SELECT is fine", lex("select 1; -- note\nselect case when true then 1 end") === "1 1 none", lex("select 1"));
+  }
+
+  console.log("  — PATH cannot vouch for input: the checker's tools run from a fixed system PATH");
+  {
+    const spoof = path.join(tmp, "spoof"); mkdirSync(spoof);
+    for (const [tool, body] of [["grep", "exit 1"], ["awk", "echo '0 0 none'"], ["iconv", "exit 0"], ["tr", "cat"], ["getent", "echo '192.0.2.10 STREAM x'"], ["dscacheutil", "echo 'ip_address: 192.0.2.10'"]]) {
+      writeFileSync(path.join(spoof, tool), `#!/bin/sh\n${body}\n`); chmodSync(path.join(spoof, tool), 0o755);
+    }
+    for (const [name, url, args] of [
+      ["planted grep/awk/tr/iconv cannot pass 'select 1; end'", URL, ["-c", "select 1; end"]],
+      ["planted getent/dscacheutil cannot make localtest.me pass", "postgresql://u:p@localtest.me:5432/db", ["-c", "select 1"]],
+    ] as Array<[string, string, string[]]>) {
+      rmSync(rec, { recursive: true, force: true });
+      const r = spawnSync("bash", [script, ...args], { encoding: "utf8", timeout: 30_000, env: {
+        PATH: `${spoof}:${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", DIAG_DATABASE_URL: url } as unknown as NodeJS.ProcessEnv });
+      check(name, r.status === 2 && /REFUSED/.test(r.stderr) && !reached(), `${r.status} ${r.stderr}`);
+    }
   }
 
   console.log("  — the password never reaches stdout/stderr (bash -x, SHELLOPTS=xtrace, bad percent-escape)");
@@ -259,7 +274,7 @@ esac
     const secret = `Leak${Math.random().toString(36).slice(2, 10)}Secret`;
     for (const [name, pw] of [["bad escape %zz", `${secret}%zz`], ["truncated escape %4", `${secret}%4`], ["%00", `${secret}%00`], ["good escape", `${secret}%21`]] as const) {
       for (const [mode, bashArgs, env] of [["plain", [], {}], ["bash -x", ["-x"], {}], ["SHELLOPTS=xtrace", [], { SHELLOPTS: "xtrace" }], ["bash -xv", ["-xv"], {}]] as const) {
-        const r = run(["-c", "select 1"], `postgresql://u:${pw}@remote.example.com:5432/db`, { bashArgs: [...bashArgs], env: { ...env } });
+        const r = run(["-c", "select 1"], `postgresql://u:${pw}@192.0.2.10:5432/db`, { bashArgs: [...bashArgs], env: { ...env } });
         const out = `${r.stdout}${r.stderr}`;
         check(`${name} under ${mode}: password absent from output${name === "good escape" ? "" : ", refused"}`,
           !out.includes(secret) && (name === "good escape" ? r.status === 0 : refused(r)), `${r.status} ${out.slice(0, 300)}`);
@@ -289,15 +304,19 @@ esac
   const badUtf8 = path.join(tmp, "bad.sql"); writeFileSync(badUtf8, Buffer.from([0x73, 0x65, 0x6c, 0x65, 0x63, 0x74, 0x20, 0x31, 0xff, 0x3b, 0x0a]));
   const ctlFile = path.join(tmp, "ctl.sql"); writeFileSync(ctlFile, "select 1;\u001b[2J\n");
   const crlfOk = path.join(tmp, "crlf-ok.sql"); writeFileSync(crlfOk, "\\echo == A\r\nselect case when true then 1 end;\r\n");
+  const crComment = path.join(tmp, "cr-comment.sql"); writeFileSync(crComment, "SELECT 1 AS case -- trailing note\r\nEND;\r\nSELECT setval('canary_seq', 4242);\r\n");
+  const lfOk = path.join(tmp, "lf-ok.sql"); writeFileSync(lfOk, "\\echo == A\nselect case when true then 1 end;\n");
   for (const [name, args] of [
     ["a NUL byte in a -f file (bash $(cat) would drop it: COM\\0\\nMIT)", ["-f", nul]], ["CRLF file with a bare END", ["-f", crlf]],
+    ["CRLF file, even a harmless one (CR is refused; convert to LF)", ["-f", crlfOk]],
+    ["CRLF file: a trailing -- comment ended by CR hides nothing (… AS case --x\\r END; setval)", ["-f", crComment]],
     ["invalid UTF-8 in a -f file", ["-f", badUtf8]], ["an ESC control byte in a -f file", ["-f", ctlFile]],
   ] as Array<[string, string[]]>) {
     const r = run(args, URL);
     check(`refused before connecting: ${name}`, refused(r), `${r.status} ${r.stderr}`);
   }
   for (const [name, args] of [
-    ["CRLF file with CASE … END", ["-f", crlfOk]],
+    ["the same file with LF line ends", ["-f", lfOk]],
     ["-f FILE", ["-f", file]], ["-c TEXT", ["-c", "select 1"]], ["-A -t -q -x", ["-A", "-t", "-q", "-x", "-c", "select 1"]],
     ["-F , -P format=csv", ["-F", ",", "-P", "format=csv", "-c", "select 1"]],
     ["the real investigation file", ["-f", path.join(ROOT, "docs", "operations", "sql", "beta-request-prod-investigation.sql")]],
@@ -324,6 +343,10 @@ esac
     ":x", "select :'x'", "select :\"x\"", "select :{?x}", "select 1 from t where a = :x",
     // 2026-10-31 re-review
     "select 1; end", "select 1; END AND NO CHAIN", "end work", "select 1;\nend\n;", "select 1;\r\nend\r;", "END\r\n;",
+    // fourth review: CR ends a -- comment in PostgreSQL/psql
+    "SELECT 1 AS case --x\r; END; SELECT setval('cseq', 4242)", "SELECT 1 --x\r; DEALLOCATE ALL", "-- x\r; END", "select 1 -- x\r",
+    "SET TRANSACTION READ/**/WRITE", "SET TRANSACTION READ--x\nWRITE", "select 1; set transaction read /* a /* nested */ b */ write",
+    "select 1; START/**/TRANSACTION", "SET SESSION/**/CHARACTERISTICS AS TRANSACTION READ WRITE", "select 1; SECURITY/**/LABEL ON TABLE t IS 'x'",
     "select 'case'; end", "select 1 -- case\n; end", "select 1 /* case */; end", "select \"case\"; end", "select écase; end",
     "select case when true then 1 end; end", "select u&'\\0041'", "select U&\"x\"", "select 'x' uescape '!'",
     "select $$x$$", "select $q$x$q$", "select pg_notify('c', 'x')", "select pg_logical_emit_message(true, 'p', 'x')", "analyze canary",

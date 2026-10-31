@@ -93,6 +93,8 @@ try {
     if (!ready) spawnSync("sleep", ["1"]);
   }
   if (!ready) throw new Error("container never became ready");
+  const ver = Number(su("show server_version_num").stdout.trim());
+  check(`container runs PostgreSQL 17 like Production (server_version_num ${ver} >= 170000)`, ver >= 170000);
 
   // ── Schema matching the columns the investigation reads (+ things it must NOT read). ──
   const setup = su(`
@@ -274,6 +276,8 @@ try {
     const asSuper = { user: "postgres", pw: SUPER_PW };
     const nulFile = path.join(tmp, "nul.sql");
     writeFileSync(nulFile, Buffer.from("select 1;\nCOM\u0000\nMIT;\ninsert into canary values (1);\n", "binary"));
+    const crCommentFile = path.join(tmp, "cr-comment.sql");
+    writeFileSync(crCommentFile, "SELECT 1 AS case -- trailing note\r\nEND;\r\nSELECT setval('canary_seq', 4242);\r\n");
     const caseLabelFile = path.join(tmp, "caselabel.sql");
     writeFileSync(caseLabelFile, "SELECT 1 AS case;\nEND;\ninsert into canary values (1);\n");
     const crlfFile = path.join(tmp, "crlf.sql");
@@ -306,6 +310,11 @@ try {
       ["'case' in a string to balance an END", ["-c", "select 'case'; end"]],
       ["CASE as a column label to balance an END", ["-c", "SELECT 1 AS case; END; insert into canary values (1)"]],
       ["CASE label + END in a file", ["-f", caseLabelFile]],
+      ["CR ends a -- comment: `SELECT 1 AS case --x\\r; END; SELECT setval(…, 4242)` (-c)", ["-c", "SELECT 1 AS case --x\r; END; SELECT setval('canary_seq', 4242)"]],
+      ["CR ends a -- comment: `SELECT 1 --x\\r; DEALLOCATE ALL` (-c)", ["-c", "SELECT 1 --x\r; DEALLOCATE ALL"]],
+      ["CR ends a -- comment: `-- x\\r; END` (-c)", ["-c", "-- x\r; END", "-c", "SELECT setval('canary_seq', 4242)"]],
+      ["CRLF file with a trailing-comment END, then setval (-f)", ["-f", crCommentFile]],
+      ["READ/**/WRITE split by a comment", ["-c", "SET TRANSACTION READ/**/WRITE", "-c", "SELECT setval('canary_seq', 4242)"]],
       ["dollar-quote tag with digits ($q1$)", ["-c", "select $q1$x$q1$"]],
       ["query_to_xml running an INSERT from a string", ["-c", "select query_to_xml('insert into canary values (1) returning 1', true, true, '')"]],
       ["ts_stat running SQL from a string", ["-c", "select * from ts_stat('select to_tsvector(''x'')')"]],
@@ -339,6 +348,10 @@ try {
       rev.status === 0 && rev.stdout.includes("leaked_setting") && (rev.stdout.trim().split("\n").pop() ?? "") !== "leaked_setting", rev.stdout);
     const after = { rows: count("select count(*) from canary"), seq: count("select last_value || ':' || is_called from canary_seq") };
     check(`ZERO rows committed: canary ${before.rows}→${after.rows}, sequence ${before.seq}→${after.seq}`, before.rows === "0" && after.rows === "0" && before.seq === after.seq);
+    const crRo = helper(["-c", "SELECT 1 AS case --x\r; END; SHOW transaction_read_only"], { user: "fm_diag_ro", pw: RO_PW, require: "fm_diag_ro" });
+    const roAfter = helper(["-c", "SHOW transaction_read_only"], { user: "fm_diag_ro", pw: RO_PW, require: "fm_diag_ro" });
+    check("as the guarded fm_diag_ro: the CR attack is refused and the transaction stays read-only (transaction_read_only = on)",
+      crRo.status === 2 && /REFUSED/.test(crRo.stderr) && !crRo.stdout && roAfter.status === 0 && /transaction_read_only\s*\n-+\n\s*on\b/.test(roAfter.stdout), `${crRo.stderr} ${roAfter.stdout}`);
     check("no file was written by \\o or a backtick", !existsSync(path.join(tmp, "out.txt")) && !existsSync(path.join(tmp, "pwned")));
   }
 

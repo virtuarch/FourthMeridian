@@ -2,8 +2,10 @@
 
 **Status.** The owner approved this on 2026-10-31. The role was created per §2, with the helper pinned at `8320dc3`, and it was used for one masked, read-only investigation. Every run printed `read_only_guard = on` and `read_only_role_guard = verified`. The role was then dropped per §6: afterwards there were 0 roles, 0 policies and 0 sessions. Findings: [docs/plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md](../../plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md).
 
-The helper has been hardened since that run, after a third independent review:
+The helper has been hardened since that run, after the third and fourth independent reviews:
 - the run ends in ROLLBACK, never COMMIT;
+- CR is refused in input, because it ends a `--` comment;
+- the checked address is pinned, and the checker's own tools run from a fixed PATH;
 - `DIAG_REQUIRE_ROLE` is mandatory for remote hosts;
 - every statement's first word must be on an allowlist;
 - the role guard is stricter (§5).
@@ -106,7 +108,11 @@ Then, connected **as `fm_diag_ro`**:
    - Password characters: generate the password from letters and digits only. Raw `:` `!` `~` and the like work. `@ / ? #` must be percent-encoded (`%40 %2F %3F %23`), and a literal `%` as `%25`. Otherwise the helper refuses the URL without echoing it: an `@` after the host could point the connection somewhere else. The helper splits the password out of the URL and hands it to psql only through a 0600 pgpass file in a private directory, which is removed on exit. psql runs under `env -i` with an allowlisted environment, so the password never appears in `ps`, in an environment, in a trace or in an error. The helper prints the psql binary it resolved (`db-readonly-psql: using psql at …`) before connecting: check that it is the one you expect. It always adds `require_auth=scram-sha-256`. `sslrootcert=` is accepted with `sslmode=verify-full`, and `channel_binding=require` is optional. A literal `%` must be typed as `%25`; a malformed escape is refused without echoing the value.
    - The pgpass file lives in `${TMPDIR:-/tmp}/db-readonly-psql.XXXXXX/` and is removed on normal exit, error, Ctrl-C, HUP and TERM. A `kill -9` cannot be trapped. After one, remove it by hand: `rm -rf "${TMPDIR:-/tmp}"/db-readonly-psql.*`.
    - Run the helper as `scripts/db-readonly-psql.sh`, not `bash scripts/…`. Its `#!/bin/bash -p` shebang ignores `BASH_ENV`/`ENV`, `SHELLOPTS` and functions exported by the calling shell.
-   - The host name is resolved first. A name that resolves to loopback or to an unspecified address (`localtest.me`, `*.nip.io`, `*.sslip.io`, a hosts-file entry) is refused, and so is a name that cannot be resolved.
+   - The host name is resolved first, by the system resolver called by absolute path and given at most 5 s.
+     - A name that resolves to loopback or to an unspecified address (`localtest.me`, `*.nip.io`, `*.sslip.io`, a hosts-file entry) is refused, and so is a name that cannot be resolved.
+     - The checked address is then pinned: psql gets `hostaddr=<that address>` next to `host=<name>`, so libpq connects to exactly what was checked and cannot be re-pointed by DNS between the check and the connection. `host=` is still used for TLS verification.
+   - Input files must use LF line ends. A CR is refused anywhere, because PostgreSQL and psql end a `--` comment at CR. Convert a CRLF file first, for example with `tr -d '\r' < in.sql > out.sql`.
+   - **The connection URL is visible in the helper's own process environment.** The helper unexports `DIAG_DATABASE_URL` at once, and psql never sees it or the password. But while the helper runs, its initial environment still holds the value the caller passed, and that environment is readable by the same OS user and by root (`/proc/<pid>/environ` on Linux, `ps eww` on macOS). Use the zsh flow above. There the password exists only inside the `( … )` subshell, for that one command, and is unset on exit. Don't export the URL in a long-lived shell.
    - Do **not** set `DIAG_ALLOW_LOCAL`. It is a test-only override for the throwaway-container tests and prints a warning.
    - The output must begin with exactly these two results:
      ```
@@ -134,7 +140,8 @@ Then, connected **as `fm_diag_ro`**:
 
 **The real barriers are database-side:**
 1. **One explicit transaction, ended by ROLLBACK.** The helper's first command is `BEGIN; SET TRANSACTION READ ONLY; SET LOCAL statement_timeout …`, and its last command is `ROLLBACK`; there is no `psql -1` and no COMMIT. On any error psql stops and the server aborts the transaction. A rolled-back transaction also reverts session-level `set_config`, and the container test proves this.
-2. **The role guard,** which is mandatory for every remote run.
+   - Honest limit: this holds only while nothing in the INPUT ends the transaction early. An `END`/`COMMIT` that slipped past the scan would commit the read-only work so far, and the remaining statements would run outside it, in autocommit. Until the fourth review, one such bypass existed: a CR-terminated `--` comment, now refused. That is why the role guard, not the transaction, is the barrier that must hold on its own.
+2. **The role guard,** which is mandatory for every remote run. A role that passes it has no write, ownership, server-file or program, foreign-server or unexpected SECURITY DEFINER rights. Even outside the transaction it cannot change anything.
 
 The helper's input scan is **best-effort** defence in depth on top of those: a keyword scan cannot see SQL assembled at run time. It allowlists the first word of each statement and refuses known SQL-in-a-string executors, transaction control, `$`, interpolation and meta-commands. The role-level `default_transaction_read_only` is a default the role could override.
 
