@@ -18,6 +18,12 @@
  * NON-THROWING: every path resolves to an EmailResult. A missing key or an SDK
  * failure returns { status: "error" } rather than throwing into a caller.
  *
+ * BOUNDED: a send that has not answered within RESEND_SEND_TIMEOUT_MS (10 s)
+ * resolves as { status: "error" } ("timed out — delivery unknown"), so one hung
+ * provider call cannot consume a caller's whole budget (e.g. a bulk approval).
+ * The underlying request is not cancelled (the SDK takes no signal); its late
+ * answer is ignored. A timed-out invite stands and can be resent.
+ *
  * LOGGING HYGIENE: this adapter logs nothing itself, and the error string it
  * returns (which callers log) is passed through redactProviderError(), so no
  * recipient address, link or token can ride a provider error into the logs.
@@ -90,8 +96,28 @@ export function redactProviderError(raw: string): string {
 
 // ── Adapter ───────────────────────────────────────────────────────────────────
 
+/** The longest one provider hand-off may take before it is reported as an error. */
+export const RESEND_SEND_TIMEOUT_MS = 10_000;
+
+const TIMED_OUT = Symbol("timed-out");
+
+/** Resolve `p`, or TIMED_OUT after `ms` — the timer is always cleared. */
+async function within<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof TIMED_OUT>((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms); });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Build an adapter over a client getter (the real one below; a fake in tests). */
-export function createResendAdapter(clientFor: () => ResendLikeClient | null): EmailProvider {
+export function createResendAdapter(
+  clientFor: () => ResendLikeClient | null,
+  opts: { timeoutMs?: number } = {},
+): EmailProvider {
+  const timeoutMs = opts.timeoutMs ?? RESEND_SEND_TIMEOUT_MS;
   return {
     name: PROVIDER_NAME,
 
@@ -106,7 +132,11 @@ export function createResendAdapter(clientFor: () => ResendLikeClient | null): E
       }
 
       try {
-        const { data, error } = await client.emails.send(buildResendPayload(message));
+        const answer = await within(client.emails.send(buildResendPayload(message)), timeoutMs);
+        if (answer === TIMED_OUT) {
+          return { status: "error", provider: PROVIDER_NAME, error: `Resend send timed out after ${timeoutMs} ms — delivery unknown.` };
+        }
+        const { data, error } = answer;
 
         if (error) {
           return { status: "error", provider: PROVIDER_NAME, error: redactProviderError(error.message) };

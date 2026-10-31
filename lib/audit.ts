@@ -200,7 +200,9 @@ export type OperatorTargetKind =
   | "USER" | "BETA_REQUEST" | "PLAID_ITEM" | "CONNECTION" | "SPACE" | "PLATFORM_SETTING" | "JOB" | "POLICY_GROUP"
   // SEC-PLAT-2 — a merchant merge candidate, identified by its global pairKey
   // (merchant keys are deployment-wide, not a customer's).
-  | "MERCHANT_PAIR";
+  | "MERCHANT_PAIR"
+  // PR C — one Growth bulk beta approval, identified by its client batchKey (a UUID).
+  | "BETA_BATCH";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",

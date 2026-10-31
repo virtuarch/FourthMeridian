@@ -259,6 +259,12 @@ export const AuditAction = {
   BETA_INVITATION_VALIDITY_CHANGED: "BETA_INVITATION_VALIDITY_CHANGED",
   BETA_INVITATION_EXTENDED:         "BETA_INVITATION_EXTENDED",
   BETA_INVITATION_EMAIL_OUTCOME:    "BETA_INVITATION_EMAIL_OUTCOME",
+  // PR C (2026-10-31) — one operator bulk approval (Growth). ONE row per batch,
+  // written AFTER its per-request approvals (each keeps its own
+  // BETA_ACCESS_APPROVED row): { batchKey, counts, validityDays, requestCount }
+  // and opaque request ids — never an email, a hash of one, or a token.
+  // Reason-optional, as single approve (lib/platform/growth/bulk-approve.ts).
+  BETA_ACCESS_BULK_APPROVED:        "BETA_ACCESS_BULK_APPROVED",
   // PO-3C — the LAUNCH axis (development/beta/live), separate from the signup gate.
   PRODUCT_STATUS_CHANGED:   "PRODUCT_STATUS_CHANGED",
   // PO-4A — Platform Operations per-connection controls. An operator triggered a
@@ -554,6 +560,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.BETA_INVITATION_REVOKED,
   AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
   AuditAction.BETA_INVITATION_EXTENDED,
+  AuditAction.BETA_ACCESS_BULK_APPROVED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
