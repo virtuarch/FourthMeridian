@@ -22,8 +22,12 @@
  *      "unavailable" (Cloudflare error/timeout/non-2xx/malformed) → 503
  *      "temporarily unavailable"; when it is not configured verification is
  *      skipped (logged once) — see captchaMode().
- *   4. GLOBAL limit, 60 / hour across all callers (limitGlobal) → 429 with the
- *      generic "too many requests" body. Placed AFTER the CAPTCHA so that, once
+ *   4. GLOBAL limit per UTC hour across all callers (limitGlobal) → 429 with
+ *      the generic "too many requests" body. The number is the PlatformSetting
+ *      beta_intake_global_limit_per_hour (10–1000, default 60; an unreadable
+ *      value ⇒ the default). Each refused hour is recorded ONCE as an
+ *      AuditLog BETA_INTAKE_THROTTLED row { hourWindow, limit } (the per-hour
+ *      count is the RateLimit counter). Placed AFTER the CAPTCHA so that, once
  *      Turnstile is enforced, only challenge-passing traffic spends the shared
  *      budget. FAIL-OPEN on a store error (availability: a limiter outage must
  *      not close the waitlist; per-IP + CAPTCHA still apply).
@@ -32,9 +36,10 @@
  *      in RateLimit.key). NOT the canonical form: folding +tag / Gmail-dot
  *      variants here would let `victim+1/+2/+3@` fill the bucket and silently
  *      block the real `victim@`. Over the limit the submission is DROPPED —
- *      no waitlist row, no BetaAccessRequestEvent row, no audit row, no e-mail —
- *      SILENTLY, with
- *      the identical 200: a 429 here would tell a prober that the address was
+ *      no waitlist row, no BetaAccessRequestEvent row, no per-submission audit
+ *      row, no e-mail — SILENTLY, with the identical 200 (each hour with drops
+ *      is recorded ONCE as BETA_INTAKE_DUPLICATE_DROPPED { hourWindow, limit },
+ *      counts only — no address, no hash): a 429 here would tell a prober that the address was
  *      recently submitted, i.e. an existence oracle.
  *   6. operator-notification throttle (consumeThrottle): at most 1 e-mail per
  *      CANONICAL address (canonicalEmailLimitKey — variants folded, which can
@@ -72,7 +77,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { limitByIp, limitGlobal, limitByKey, consumeThrottle, emailLimitKey, canonicalEmailLimitKey, type RateLimitConfig } from "@/lib/rate-limit";
+import { getBetaIntakeGlobalLimitPerHour } from "@/lib/platform-settings";
+import { limitByIp, limitGlobal, limitByKey, consumeThrottle, countInWindow, emailLimitKey, canonicalEmailLimitKey, type RateLimitConfig } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken, CAPTCHA_UNAVAILABLE_MESSAGE } from "@/lib/captcha";
 import { sendEmail } from "@/lib/email/send";
@@ -91,7 +97,7 @@ const NOTE_MAX = 1000;
 // 24 h windows are the longest any caller uses (jobs/sweep-rate-limits.ts keeps
 // rows for 24 h past their window START, which is exactly enough).
 const ACCESS_REQUEST_IP_LIMIT:         RateLimitConfig = { limit: 5,  windowSec: 15 * 60 };
-const ACCESS_REQUEST_GLOBAL_LIMIT:     RateLimitConfig = { limit: 60, windowSec: 60 * 60 };
+const ACCESS_REQUEST_GLOBAL_WINDOW_SEC = 60 * 60; // the limit itself is a PlatformSetting
 const ACCESS_REQUEST_EMAIL_LIMIT:      RateLimitConfig = { limit: 3,  windowSec: 24 * 60 * 60 };
 const OPERATOR_NOTIFY_EMAIL_THROTTLE:  RateLimitConfig = { limit: 1,  windowSec: 24 * 60 * 60 };
 const OPERATOR_NOTIFY_GLOBAL_THROTTLE: RateLimitConfig = { limit: 20, windowSec: 60 * 60 };
@@ -101,6 +107,29 @@ const IDENTICAL_OK = {
   success: true,
   message: "Thanks — your request has been received. We'll email you if you're approved.",
 } as const;
+
+/**
+ * R2 — monitoring: count the event in a per-UTC-hour counter (RateLimit store)
+ * and write AT MOST ONE AuditLog row per hour per action — the caller whose
+ * atomic increment returned 1 writes it; every later event that hour only
+ * counts. No userId, no address, no hash. Never throws (monitoring must not
+ * change the response); a counter-store error skips the row rather than risk
+ * one row per request.
+ */
+async function recordHourlyIntakeSignal(
+  action: typeof AuditAction.BETA_INTAKE_THROTTLED | typeof AuditAction.BETA_INTAKE_DUPLICATE_DROPPED,
+  limit: number,
+): Promise<void> {
+  try {
+    const tick = await countInWindow(`beta-intake:${action}`, 60 * 60);
+    if (tick?.count !== 1) return;
+    await db.auditLog.create({
+      data: { action, metadata: { hourWindow: new Date(tick.windowStartMs).toISOString(), limit } },
+    });
+  } catch (err) {
+    console.error(`[access-request] could not record ${action}:`, err instanceof Error ? err.message : err);
+  }
+}
 
 /**
  * R2 — may the operator be e-mailed about this submission? Per-address first, so
@@ -150,8 +179,12 @@ export async function POST(req: NextRequest) {
     }
 
     // GLOBAL ceiling — 429 with the generic body. Fail-open on a store error.
-    const globalLimited = await limitGlobal("access-request", ACCESS_REQUEST_GLOBAL_LIMIT);
-    if (globalLimited) return globalLimited;
+    const globalLimit = await getBetaIntakeGlobalLimitPerHour();
+    const globalLimited = await limitGlobal("access-request", { limit: globalLimit, windowSec: ACCESS_REQUEST_GLOBAL_WINDOW_SEC });
+    if (globalLimited) {
+      await recordHourlyIntakeSignal(AuditAction.BETA_INTAKE_THROTTLED, globalLimit);
+      return globalLimited;
+    }
 
     const normalizedEmail = email.toLowerCase().trim();
     const trimmedNote = typeof note === "string" ? note.trim() : "";
@@ -162,6 +195,7 @@ export async function POST(req: NextRequest) {
     // stored (no waitlist or event row), audited or e-mailed for a dropped submission.
     if (await limitByKey(emailKey, "access-request-email", ACCESS_REQUEST_EMAIL_LIMIT)) {
       console.warn("[access-request] per-email limit reached — submission dropped (identical 200)");
+      await recordHourlyIntakeSignal(AuditAction.BETA_INTAKE_DUPLICATE_DROPPED, ACCESS_REQUEST_EMAIL_LIMIT.limit);
       return NextResponse.json(IDENTICAL_OK);
     }
 

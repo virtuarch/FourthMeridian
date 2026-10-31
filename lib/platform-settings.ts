@@ -124,7 +124,18 @@ export const PlatformSettingKey = {
   // (approve, direct invite, resend) takes its expiry from it. Changing it
   // never alters an invitation already issued — that is the audited Extend.
   BETA_INVITATION_VALIDITY_DAYS: "beta_invitation_validity_days",
+  // R2 (2026-10-31) — the GLOBAL ceiling on public beta-access submissions per
+  // fixed UTC hour, across all callers (app/api/access-request). Integer
+  // 10–1000, default 60. Read per request by getBetaIntakeGlobalLimitPerHour()
+  // (an unreadable or invalid value ⇒ the default, so a settings outage can
+  // neither close nor unbound the intake). GROWTH_REVENUE WRITE, resettable.
+  BETA_INTAKE_GLOBAL_LIMIT_PER_HOUR: "beta_intake_global_limit_per_hour",
 } as const;
+
+/** Bounds + default of beta_intake_global_limit_per_hour (owner ruling, R2). */
+export const BETA_INTAKE_GLOBAL_LIMIT_DEFAULT = 60;
+export const BETA_INTAKE_GLOBAL_LIMIT_MIN = 10;
+export const BETA_INTAKE_GLOBAL_LIMIT_MAX = 1000;
 
 export type PlatformSettingKeyType = typeof PlatformSettingKey[keyof typeof PlatformSettingKey];
 
@@ -195,6 +206,7 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   ai_paid_requests_paused:      String(AI_COST_CONTROL_DEFAULTS["killSwitch.paused"]),
   // Owner ruling 2026-10-31: 7 calendar days (the bounds live beside the issuance rules).
   beta_invitation_validity_days: String(INVITATION_VALIDITY_DEFAULT_DAYS),
+  beta_intake_global_limit_per_hour: String(BETA_INTAKE_GLOBAL_LIMIT_DEFAULT),
 };
 
 /** The catalogue ceiling of the per-customer daily allowance — the platform value's upper bound, derived. */
@@ -395,6 +407,14 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
     writeSurfaces: ["GROWTH_REVENUE"], writeCapability: "WRITE",
     operatorConfigurable: true, resettable: true,
   },
+  beta_intake_global_limit_per_hour: {
+    key: "beta_intake_global_limit_per_hour", label: "Beta intake global limit (requests / hour)",
+    description: `The most beta-access requests accepted per UTC hour across ALL visitors (after the CAPTCHA). Further requests that hour get a "too many requests" response, and the hour is recorded once as BETA_INTAKE_THROTTLED. Whole numbers, ${BETA_INTAKE_GLOBAL_LIMIT_MIN}–${BETA_INTAKE_GLOBAL_LIMIT_MAX}. Per-IP and per-address limits are separate and unchanged.`,
+    class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: BETA_INTAKE_GLOBAL_LIMIT_MIN, max: BETA_INTAKE_GLOBAL_LIMIT_MAX,
+    default: DEFAULTS.beta_intake_global_limit_per_hour, missingRow: "FALLBACK_TO_DEFAULT",
+    writeSurfaces: ["GROWTH_REVENUE"], writeCapability: "WRITE",
+    operatorConfigurable: true, resettable: true,
+  },
 };
 
 export function listSettingDescriptors(): Descriptor[] {
@@ -466,6 +486,24 @@ export async function getRegistrationMode(): Promise<RegistrationMode> {
   return (REGISTRATION_MODES as readonly string[]).includes(raw)
     ? (raw as RegistrationMode)
     : DEFAULT_REGISTRATION_MODE;
+}
+
+/**
+ * R2 — the global access-request ceiling per UTC hour. Validated through the
+ * descriptor (10–1000 integers); a missing, invalid or UNREADABLE value
+ * (store error) yields the default — the intake neither closes nor becomes
+ * unbounded because the settings read failed. Uncached: one primary-key read
+ * per request, the same posture as getRegistrationMode().
+ */
+export async function getBetaIntakeGlobalLimitPerHour(): Promise<number> {
+  try {
+    const raw = await getSetting(PlatformSettingKey.BETA_INTAKE_GLOBAL_LIMIT_PER_HOUR);
+    const v = validateSettingValue(SETTING_DESCRIPTORS.beta_intake_global_limit_per_hour, raw);
+    return v.ok ? Number.parseInt(v.value, 10) : BETA_INTAKE_GLOBAL_LIMIT_DEFAULT;
+  } catch (err) {
+    console.error("[platform-settings] beta_intake_global_limit_per_hour unreadable — using the default:", err instanceof Error ? err.message : err);
+    return BETA_INTAKE_GLOBAL_LIMIT_DEFAULT;
+  }
 }
 
 /** The current product maturity (PO-3C). Falls back to `beta` for an unset or

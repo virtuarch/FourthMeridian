@@ -235,6 +235,14 @@ export const AuditAction = {
   BETA_ACCESS_APPROVED:     "BETA_ACCESS_APPROVED",
   BETA_ACCESS_DENIED:       "BETA_ACCESS_DENIED",
   BETA_ACCESS_REDEEMED:     "BETA_ACCESS_REDEEMED",
+  // R2 (2026-10-31) — intake MONITORING rows, written by POST /api/access-request
+  // with no userId and no address/hash: at most ONE row per fixed UTC hour each
+  // (the first event of the hour writes it; the per-hour count lives in the
+  // RateLimit counter store). Metadata: { hourWindow, limit }.
+  //   THROTTLED          the global per-hour ceiling refused a submission (429).
+  //   DUPLICATE_DROPPED  the per-address ceiling silently dropped a submission.
+  BETA_INTAKE_THROTTLED:         "BETA_INTAKE_THROTTLED",
+  BETA_INTAKE_DUPLICATE_DROPPED: "BETA_INTAKE_DUPLICATE_DROPPED",
   // PO-3B — beta operations write controls. Distinct operator mutations on the
   // same BetaAccessRequest lifecycle: the platform registration-mode switch, and
   // resend/revoke on an already-issued invitation (revoke nulls the token and

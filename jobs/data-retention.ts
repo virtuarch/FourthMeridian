@@ -35,11 +35,17 @@
  * raw IP and user agent of an unauthenticated applicant. Those are retained
  * for 90 days (abuse forensics), then MINIMISED in place — never deleted:
  * ipAddress/userAgent are nulled and replaced in metadata by
- *   - networkDigest: HMAC-SHA256(ip) under a key derived from NEXTAUTH_SECRET
- *     (domain-separated, see networkDigestKey) — lets an operator see that two
- *     old submissions came from the same address without keeping the address.
- *     With no secret available NOTHING is stored (an unkeyed hash of an IPv4
- *     address is trivially reversible, so it would not be minimisation).
+ *   - networkDigest + networkDigestKeyVersion: HMAC-SHA256(canonical ip) under
+ *     the DEDICATED, VERSIONED secret BETA_INTAKE_HASH_KEY_<VERSION> selected
+ *     by BETA_INTAKE_HASH_KEY_VERSION (default "v1") — lets an operator see
+ *     that two old submissions came from the same address without keeping the
+ *     address. Never NEXTAUTH_SECRET or any other secret. With no usable key
+ *     NO digest is stored (an unkeyed hash of an IPv4 address is trivially
+ *     reversible, so it would not be minimisation) — the raw fields are nulled
+ *     regardless — and the absence is logged once per process.
+ *     ROTATION: add BETA_INTAKE_HASH_KEY_V2, set BETA_INTAKE_HASH_KEY_VERSION=v2.
+ *     Rows minimised from then on carry v2 digests; rows already minimised keep
+ *     their v1 digest, labelled "v1" — digests correlate only within a version.
  *   - uaFamily: browser | script | headless | empty | other.
  * See runBetaIntakeNetworkMinimisation.
  */
@@ -124,8 +130,10 @@ export const MINIMISE_BATCH = 200;
 export const MINIMISE_MAX_BATCHES = 10;
 /** The audit action minimised (literal: lib/audit-actions AuditAction.BETA_ACCESS_REQUESTED). */
 export const BETA_INTAKE_AUDIT_ACTION = "BETA_ACCESS_REQUESTED";
-/** Identifies the digest key derivation, so a future rotation is detectable in the data. */
-export const NETWORK_DIGEST_KEY_ID = "nextauth-hmac-v1";
+/** Default BETA_INTAKE_HASH_KEY_VERSION. */
+export const NETWORK_DIGEST_DEFAULT_VERSION = "v1";
+/** Shortest accepted hash key (characters). Generate with `openssl rand -hex 32`. */
+export const NETWORK_DIGEST_MIN_KEY_LENGTH = 32;
 
 export type UaFamily = "browser" | "script" | "headless" | "empty" | "other";
 
@@ -143,16 +151,33 @@ export function uaFamily(ua: string | null | undefined): UaFamily {
   return "other";
 }
 
+/** A usable digest key and the version label stored beside every digest it makes. */
+export interface NetworkDigestKey { key: Buffer; version: string }
+
+let warnedKey: string | null = null;
+function warnKeyOnce(msg: string): void {
+  if (warnedKey === msg) return;
+  warnedKey = msg;
+  console.warn(`[data-retention] ${msg} — beta-intake network fields will be nulled WITHOUT a digest`);
+}
+
 /**
- * The digest key: HMAC(NEXTAUTH_SECRET, purpose label). Domain-separated so the
- * digest can never be confused with (or help forge) anything else keyed on the
- * same secret. Null when no secret is configured — the caller then stores no
- * digest at all. Rotating NEXTAUTH_SECRET changes the key, so digests only
- * correlate within one key epoch (recorded via NETWORK_DIGEST_KEY_ID).
+ * The digest key, from the DEDICATED versioned env vars (read from process.env
+ * at call time, the house pattern for secrets used at one site; lib/env.ts
+ * mirrors them for startup validation and the env report):
+ *   BETA_INTAKE_HASH_KEY_VERSION  "v1" (default), "v2", …
+ *   BETA_INTAKE_HASH_KEY_<V>      the secret for that version, ≥ 32 characters.
+ * Null — and logged once — when the version label is malformed or its key is
+ * unset/too short. NEVER falls back to NEXTAUTH_SECRET or any other secret.
  */
-export function networkDigestKey(secret: string | undefined | null = process.env.NEXTAUTH_SECRET): Buffer | null {
-  if (!secret) return null;
-  return createHmac("sha256", secret).update("fm:beta-intake:network-digest:v1").digest();
+export function resolveNetworkDigestKey(source: Record<string, string | undefined> = process.env): NetworkDigestKey | null {
+  const version = (source.BETA_INTAKE_HASH_KEY_VERSION || NETWORK_DIGEST_DEFAULT_VERSION).trim().toLowerCase();
+  if (!/^v[1-9]\d{0,2}$/.test(version)) { warnKeyOnce(`BETA_INTAKE_HASH_KEY_VERSION "${version}" is not v1, v2, …`); return null; }
+  const name = `BETA_INTAKE_HASH_KEY_${version.toUpperCase()}`;
+  const secret = source[name];
+  if (!secret) { warnKeyOnce(`${name} is not set`); return null; }
+  if (secret.length < NETWORK_DIGEST_MIN_KEY_LENGTH) { warnKeyOnce(`${name} is shorter than ${NETWORK_DIGEST_MIN_KEY_LENGTH} characters`); return null; }
+  return { key: Buffer.from(secret, "utf8"), version };
 }
 
 /**
@@ -199,7 +224,7 @@ export interface AuditNetworkRow {
  * (only when both an IP and a key exist) and networkMinimisedAt. Idempotent: a
  * row already minimised keeps its earlier digest/family.
  */
-export function minimiseAuditNetwork(row: AuditNetworkRow, key: Buffer | null, now: Date): {
+export function minimiseAuditNetwork(row: AuditNetworkRow, key: NetworkDigestKey | null, now: Date): {
   ipAddress: null; userAgent: null; metadata: Record<string, unknown>;
 } {
   const m = row.metadata;
@@ -208,8 +233,8 @@ export function minimiseAuditNetwork(row: AuditNetworkRow, key: Buffer | null, n
     : m == null ? {} : { originalMetadata: m };
   if (row.userAgent != null || base.uaFamily === undefined) base.uaFamily = uaFamily(row.userAgent);
   if (row.ipAddress && key) {
-    base.networkDigest = networkDigest(row.ipAddress, key);
-    base.networkDigestKeyId = NETWORK_DIGEST_KEY_ID;
+    base.networkDigest = networkDigest(row.ipAddress, key.key);
+    base.networkDigestKeyVersion = key.version;
   }
   base.networkMinimisedAt ??= now.toISOString();
   return { ipAddress: null, userAgent: null, metadata: base };
@@ -235,7 +260,7 @@ export interface AuditMinimiseDelegate {
 
 export interface MinimisationResult {
   minimised: number; batches: number; exhausted: boolean; cutoff: string;
-  dryRun: boolean; digestKeyAvailable: boolean; error?: string;
+  dryRun: boolean; digestKeyAvailable: boolean; digestKeyVersion: string | null; error?: string;
 }
 
 /**
@@ -248,14 +273,14 @@ export interface MinimisationResult {
 export async function runBetaIntakeNetworkMinimisation(
   client: { auditLog: AuditMinimiseDelegate },
   now: Date = new Date(),
-  opts: { dryRun?: boolean; key?: Buffer | null } = {},
+  opts: { dryRun?: boolean; key?: NetworkDigestKey | null } = {},
 ): Promise<MinimisationResult> {
   const cutoff = retentionCutoffFor({ days: BETA_INTAKE_NETWORK_DAYS }, now);
   const where = betaIntakeMinimiseWhere(cutoff);
-  const key = opts.key === undefined ? networkDigestKey() : opts.key;
+  const key = opts.key === undefined ? resolveNetworkDigestKey() : opts.key;
   const res: MinimisationResult = {
     minimised: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString(),
-    dryRun: !!opts.dryRun, digestKeyAvailable: !!key,
+    dryRun: !!opts.dryRun, digestKeyAvailable: !!key, digestKeyVersion: key?.version ?? null,
   };
   try {
     if (opts.dryRun) {

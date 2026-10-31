@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import {
   runDataRetention, retentionCutoffFor, RETENTION_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES,
-  uaFamily, networkDigest, networkDigestKey, canonicalIp, minimiseAuditNetwork, runBetaIntakeNetworkMinimisation,
+  uaFamily, networkDigest, resolveNetworkDigestKey, canonicalIp, minimiseAuditNetwork, runBetaIntakeNetworkMinimisation,
   BETA_INTAKE_AUDIT_ACTION, MINIMISE_BATCH, MINIMISE_MAX_BATCHES,
   type RetentionClient, type RetentionTable,
 } from "@/jobs/data-retention";
@@ -173,7 +173,8 @@ async function main() {
 
   console.log("\nR2 — minimiseAuditNetwork (pure)");
   {
-    const key = networkDigestKey("test-secret")!;
+    const K1 = "k".repeat(32), K2 = "z".repeat(40);
+    const key = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_V1: K1 })!;
     const row = { id: "a1", ipAddress: "203.0.113.9", userAgent: "curl/8.4.0", metadata: { emailHash: "h", consentNoticeVersion: "v1" } };
     const m = minimiseAuditNetwork(row, key, NOW);
     check("raw ipAddress + userAgent nulled", m.ipAddress === null && m.userAgent === null);
@@ -182,13 +183,29 @@ async function main() {
     check("networkDigest = HMAC-SHA256 hex, never the IP", typeof m.metadata.networkDigest === "string"
       && /^[0-9a-f]{64}$/.test(m.metadata.networkDigest as string) && !JSON.stringify(m).includes("203.0.113.9"));
     check("digest is keyed: same IP, same key → same digest; other key → different",
-      networkDigest("203.0.113.9", key) === m.metadata.networkDigest
-      && networkDigest("203.0.113.9", networkDigestKey("other-secret")!) !== m.metadata.networkDigest);
-    check("digest key id + minimisation instant recorded", m.metadata.networkDigestKeyId === "nextauth-hmac-v1" && m.metadata.networkMinimisedAt === NOW.toISOString());
+      networkDigest("203.0.113.9", key.key) === m.metadata.networkDigest
+      && networkDigest("203.0.113.9", Buffer.from(K2)) !== m.metadata.networkDigest);
+    check("networkDigestKeyVersion stored beside the digest (default v1) + minimisation instant",
+      m.metadata.networkDigestKeyVersion === "v1" && m.metadata.networkMinimisedAt === NOW.toISOString() && !("networkDigestKeyId" in m.metadata));
     const noKey = minimiseAuditNetwork(row, null, NOW);
     check("no secret → NO digest at all (no unkeyed fingerprint), fields still nulled",
       !("networkDigest" in noKey.metadata) && noKey.ipAddress === null && noKey.metadata.uaFamily === "script");
-    check("networkDigestKey(undefined/empty) → null", networkDigestKey("") === null && networkDigestKey(null) === null);
+    const origWarn = console.warn; let warns = 0; console.warn = () => { warns++; };
+    const unset = resolveNetworkDigestKey({ NEXTAUTH_SECRET: "x".repeat(64) });
+    const unset2 = resolveNetworkDigestKey({ NEXTAUTH_SECRET: "x".repeat(64) });
+    const short = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_V1: "short" });
+    const badVer = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_VERSION: "latest", BETA_INTAKE_HASH_KEY_V1: K1 });
+    const v2Missing = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_VERSION: "v2", BETA_INTAKE_HASH_KEY_V1: K1 });
+    console.warn = origWarn;
+    check("key unset → null, and NEVER falls back to NEXTAUTH_SECRET", unset === null && unset2 === null);
+    check("unset is logged once (repeat calls do not re-log the same reason)", warns === 4, `warns=${warns}`);
+    check("short key, malformed version, or the selected version's key missing → null", short === null && badVer === null && v2Missing === null);
+    const rot = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_VERSION: "v2", BETA_INTAKE_HASH_KEY_V1: K1, BETA_INTAKE_HASH_KEY_V2: K2 })!;
+    check("rotation: VERSION=v2 selects BETA_INTAKE_HASH_KEY_V2", rot.version === "v2" && rot.key.equals(Buffer.from(K2)));
+    const old = minimiseAuditNetwork({ id: "a1", ipAddress: null, userAgent: null, metadata: m.metadata }, rot, NOW);
+    check("rotation: a row minimised under v1 keeps its v1 digest and label", old.metadata.networkDigest === m.metadata.networkDigest && old.metadata.networkDigestKeyVersion === "v1");
+    const fresh = minimiseAuditNetwork(row, rot, NOW);
+    check("rotation: new minimisations carry v2 digests labelled v2", fresh.metadata.networkDigestKeyVersion === "v2" && fresh.metadata.networkDigest !== m.metadata.networkDigest);
     const again = minimiseAuditNetwork({ id: "a1", ipAddress: null, userAgent: null, metadata: m.metadata }, key, new Date(NOW.getTime() + 86_400_000));
     check("idempotent: re-minimising keeps digest, family and first instant", again.metadata.networkDigest === m.metadata.networkDigest
       && again.metadata.uaFamily === "script" && again.metadata.networkMinimisedAt === NOW.toISOString());
@@ -199,8 +216,8 @@ async function main() {
     check("canonicalIp: IPv6 lowercased + compressed", canonicalIp(" 2001:DB8:0:0:0:0:0:1 ") === "2001:db8::1" && canonicalIp("[2001:db8::1]") === "2001:db8::1");
     check("canonicalIp: IPv4 and junk pass through trimmed", canonicalIp(" 198.51.100.7 ") === "198.51.100.7" && canonicalIp("Unknown") === "unknown");
     check("digest: one address, one digest across spellings",
-      networkDigest("::ffff:203.0.113.9", key) === networkDigest("203.0.113.9", key)
-      && networkDigest("2001:DB8::0001", key) === networkDigest("2001:db8::1", key));
+      networkDigest("::ffff:203.0.113.9", key.key) === networkDigest("203.0.113.9", key.key)
+      && networkDigest("2001:DB8::0001", key.key) === networkDigest("2001:db8::1", key.key));
     check("null metadata → object", minimiseAuditNetwork({ ...row, metadata: null }, key, NOW).metadata.uaFamily === "script");
   }
 
@@ -231,7 +248,7 @@ async function main() {
       async count({ where }: { where: Record<string, unknown> }) { calls.push("count"); return rows.filter((r) => matches(r, where)).length; },
       async deleteMany() { calls.push("DELETE"); return { count: 0 }; },
     };
-    const key = networkDigestKey("test-secret");
+    const key = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_V1: "k".repeat(32) });
 
     const dry = await quiet(() => runBetaIntakeNetworkMinimisation({ auditLog }, NOW, { dryRun: true, key }));
     check("dry run counts the 2 due rows and writes nothing", dry.dryRun && dry.minimised === 2 && !calls.includes("update")

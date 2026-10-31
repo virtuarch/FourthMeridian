@@ -22,7 +22,9 @@ process.env.RATE_LIMIT_ENABLED = "true";
 // hour and of a UTC day, so the fixed 1 h / 24 h windows can never roll over
 // mid-run and flake the ceiling assertions.
 const FIXED_NOW = Date.parse("2026-10-31T12:30:00.000Z");
-Date.now = () => FIXED_NOW;
+const HOUR_START = "2026-10-31T12:00:00.000Z";
+let now = FIXED_NOW;
+Date.now = () => now;
 
 async function main() {
   const { FakePrisma, installFakePrisma } = await import("@/lib/test-support/fake-prisma");
@@ -89,12 +91,17 @@ async function main() {
     const logs: string[] = [];
     const third = await quietWarn(() => submit({ email: "Alice+Beta@Example.TEST" }), logs); counted.n++;
     t.check("control: the 3rd submission of the same stored address is admitted", third.status === 200 && fake.rows("BetaAccessRequestEvent").length === 4);
-    const before = { req: fake.rows("BetaAccessRequest").length, ev: fake.rows("BetaAccessRequestEvent").length, au: fake.rows("AuditLog").length };
+    const before = { req: fake.rows("BetaAccessRequest").length, ev: fake.rows("BetaAccessRequestEvent").length, au: fake.rows("AuditLog", { action: "BETA_ACCESS_REQUESTED" }).length };
     const r4 = await quietWarn(() => submit({ email: "alice+beta@EXAMPLE.test" }), logs); counted.n++;
     t.check("4th → 200, byte-identical to a first submission (no existence oracle)", r4.status === 200 && JSON.stringify(r4.body) === JSON.stringify(firstBody), r4);
     t.check("nothing stored for the dropped submission: no waitlist row, no event row, no audit row, no e-mail",
       fake.rows("BetaAccessRequest").length === before.req && fake.rows("BetaAccessRequestEvent").length === before.ev
-      && fake.rows("AuditLog").length === before.au && operatorEmails() === 1);
+      && fake.rows("AuditLog", { action: "BETA_ACCESS_REQUESTED" }).length === before.au && operatorEmails() === 1);
+    const drops = fake.rows("AuditLog", { action: "BETA_INTAKE_DUPLICATE_DROPPED" });
+    t.check("the drop is recorded as ONE hourly BETA_INTAKE_DUPLICATE_DROPPED row — counts only (no address, no hash)",
+      drops.length === 1 && (drops[0].metadata as { hourWindow?: string }).hourWindow === HOUR_START
+      && (drops[0].metadata as { limit?: number }).limit === 3 && !JSON.stringify(drops[0]).toLowerCase().includes("alice")
+      && Object.keys(drops[0].metadata as object).sort().join(",") === "hourWindow,limit", drops);
     t.check("no log line carries the raw address", logs.length > 0 && logs.every((l) => !l.toLowerCase().includes("alice")), logs);
   }
   {
@@ -157,6 +164,39 @@ async function main() {
     t.check("the 61st → 429 with Retry-After", over.status === 429 && !!over.headers.get("retry-after"), over);
     t.check("generic message (no address-specific wording)", typeof over.body.error === "string" && !String(over.body.error).includes("one-more"));
     t.check("nothing stored for the refused submission", fake.rows("BetaAccessRequestEvent").length === before);
+    const thr = fake.rows("AuditLog", { action: "BETA_INTAKE_THROTTLED" });
+    t.check("the refusal is recorded as ONE BETA_INTAKE_THROTTLED row { hourWindow, limit }",
+      thr.length === 1 && (thr[0].metadata as { hourWindow?: string }).hourWindow === HOUR_START && (thr[0].metadata as { limit?: number }).limit === 60, thr);
+    for (let k = 0; k < 3; k++) await quietWarn(() => submit({ email: `more${k}@example.test` }));
+    t.check("…and further refusals in the SAME hour add no row (still 1)", fake.rows("AuditLog", { action: "BETA_INTAKE_THROTTLED" }).length === 1);
+    t.check("duplicate drops later in the same hour add no row either (victim+x was dropped too, still 1)",
+      fake.rows("AuditLog", { action: "BETA_INTAKE_DUPLICATE_DROPPED" }).length === 1);
+  }
+
+  t.section("8. next UTC hour — the limit is the PlatformSetting; the first refusal of the new hour writes the next row");
+  {
+    now = FIXED_NOW + 60 * 60 * 1000;
+    fake.seed("PlatformSetting", { key: "beta_intake_global_limit_per_hour", value: "10" });
+    const rs = [];
+    for (let k = 0; k < 11; k++) rs.push(await quietWarn(() => submit({ email: `h2-${k}@example.test` })));
+    t.check("setting 10 → ten admitted, the 11th is 429", rs.slice(0, 10).every((r) => r.status === 200) && rs[10].status === 429, rs.map((r) => r.status));
+    await quietWarn(() => submit({ email: "h2-extra@example.test" }));
+    const thr = fake.rows("AuditLog", { action: "BETA_INTAKE_THROTTLED" });
+    const next = thr.find((r) => (r.metadata as { hourWindow?: string }).hourWindow === "2026-10-31T13:00:00.000Z");
+    t.check("exactly one new row for the new hour, carrying limit 10", thr.length === 2 && (next?.metadata as { limit?: number } | undefined)?.limit === 10, thr);
+  }
+
+  t.section("9. getBetaIntakeGlobalLimitPerHour — invalid or unreadable ⇒ the default (60)");
+  {
+    const { getBetaIntakeGlobalLimitPerHour } = await import("@/lib/platform-settings");
+    const set = (v: string) => { fake.reset(); fake.seed("PlatformSetting", { key: "beta_intake_global_limit_per_hour", value: v }); };
+    set("250"); t.check("a valid value is used", (await getBetaIntakeGlobalLimitPerHour()) === 250);
+    set("5"); t.check("below the minimum (10) ⇒ default", (await getBetaIntakeGlobalLimitPerHour()) === 60);
+    set("5000"); t.check("above the maximum (1000) ⇒ default", (await getBetaIntakeGlobalLimitPerHour()) === 60);
+    set("lots"); t.check("non-integer ⇒ default", (await getBetaIntakeGlobalLimitPerHour()) === 60);
+    fake.reset(); t.check("no row ⇒ default", (await getBetaIntakeGlobalLimitPerHour()) === 60);
+    fake.on("PlatformSetting", "findUnique", () => { throw new Error("P1001"); }, { once: true });
+    t.check("store error ⇒ default (never closes or unbounds the intake)", (await quietWarn(() => getBetaIntakeGlobalLimitPerHour())) === 60);
   }
 
   t.done();

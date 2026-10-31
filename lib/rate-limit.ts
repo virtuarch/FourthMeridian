@@ -64,6 +64,10 @@ interface RateLimitOutcome {
   limited: boolean;
   /** Seconds until the current window resets. */
   retryAfterSec: number;
+  /** The bucket count AFTER this increment (absent from injected test outcomes). */
+  count?: number;
+  /** Start of the fixed window this increment landed in (epoch ms). */
+  windowStartMs?: number;
 }
 
 /**
@@ -122,7 +126,7 @@ async function check(key: string, cfg: RateLimitConfig): Promise<RateLimitOutcom
     ? await incrementDb(key, new Date(windowStartMs))
     : incrementMemory(key, windowStartMs);
 
-  return { limited: count > cfg.limit, retryAfterSec };
+  return { limited: count > cfg.limit, retryAfterSec, count, windowStartMs };
 }
 
 /** Build the standard 429 response with a Retry-After header. */
@@ -365,6 +369,30 @@ export async function consumeThrottle(
   } catch (err) {
     console.error("[rate-limit] throttle store error — failing open:", err);
     return true;
+  }
+}
+
+/**
+ * Increment a fixed-window EVENT COUNTER and return the post-increment count
+ * and the window start (R2 — beta-intake monitoring). Same store as the
+ * limiters (`counter:` prefix; DB-backed in production, so it is shared across
+ * instances and survives cold starts; swept after 24 h by sweep-rate-limits).
+ * Not gated by RATE_LIMIT_ENABLED: it measures, it never blocks. Because the
+ * increment is atomic, exactly ONE caller per window sees `count === 1` — the
+ * idiom for "do X at most once per window". Returns null on a store error.
+ */
+export async function countInWindow(
+  name: string,
+  windowSec: number,
+  runCheck: (k: string, c: RateLimitConfig) => Promise<RateLimitOutcome> = check,
+): Promise<{ count: number; windowStartMs: number } | null> {
+  try {
+    const o = await runCheck(`counter:${name}`, { limit: Number.MAX_SAFE_INTEGER, windowSec });
+    if (o.count === undefined || o.windowStartMs === undefined) return null;
+    return { count: o.count, windowStartMs: o.windowStartMs };
+  } catch (err) {
+    console.error("[rate-limit] counter store error:", err);
+    return null;
   }
 }
 

@@ -125,6 +125,18 @@ if (process.argv[2] === "child") {
     check("both or neither → no pairing warning", !/Set both or neither/.test(both) && !/Set both or neither/.test(neither));
   }
 
+  console.log("4c. R2 — beta-intake hash key (loud when unusable, never fatal)");
+  {
+    const unset = run({ ...CORE, NODE_ENV: "test" });
+    check("unset (supported mode) → boots, no hash-key error", unset.includes("VALIDATE_OK") && !unset.includes("BETA_INTAKE_HASH_KEY"), unset.slice(0, 300));
+    const short = run({ ...CORE, NODE_ENV: "test", BETA_INTAKE_HASH_KEY_V1: "short" });
+    check("short key → boots, loud DISABLED", short.includes("VALIDATE_OK") && /BETA_INTAKE_HASH_KEY_V1 is shorter than 32/.test(short), short.slice(0, 300));
+    const v2missing = run({ ...CORE, NODE_ENV: "test", BETA_INTAKE_HASH_KEY_VERSION: "v2", BETA_INTAKE_HASH_KEY_V1: "k".repeat(32) });
+    check("VERSION=v2 without the V2 key → boots, loud DISABLED", v2missing.includes("VALIDATE_OK") && /BETA_INTAKE_HASH_KEY_V2 is not set/.test(v2missing), v2missing.slice(0, 300));
+    const ok = run({ ...CORE, NODE_ENV: "test", BETA_INTAKE_HASH_KEY_V1: "k".repeat(32) });
+    check("a usable key → no error, and the value never printed", ok.includes("VALIDATE_OK") && !ok.includes("BETA_INTAKE_HASH_KEY") && !ok.includes("k".repeat(32)));
+  }
+
   // ── V25-FINAL-2 — production Plaid configuration gate ──────────────────────
   const PLAID = { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec" };
 

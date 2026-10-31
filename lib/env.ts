@@ -121,6 +121,15 @@ const _e = {
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY,
   TURNSTILE_SECRET_KEY:           process.env.TURNSTILE_SECRET_KEY,
 
+  // R2 — the DEDICATED, VERSIONED secret for the 90-day beta-intake network
+  // digest (jobs/data-retention.ts resolveNetworkDigestKey reads process.env
+  // directly — the single use site — so a rotation to V2 needs no code here).
+  // Optional: unset ⇒ the raw IP/UA are still nulled at 90 days, just with no
+  // digest. Never substituted by NEXTAUTH_SECRET. Mirrored for validation +
+  // the value-free env report only.
+  BETA_INTAKE_HASH_KEY_VERSION: process.env.BETA_INTAKE_HASH_KEY_VERSION,
+  BETA_INTAKE_HASH_KEY_V1:      process.env.BETA_INTAKE_HASH_KEY_V1,
+
   CRON_SECRET:          process.env.CRON_SECRET,
   RATE_LIMIT_ENABLED:   process.env.RATE_LIMIT_ENABLED,
   RATE_LIMIT_SHADOW:    process.env.RATE_LIMIT_SHADOW,
@@ -427,6 +436,20 @@ export function getEnvReport(): EnvReport {
     keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "warn", scope: "optional", note: "unrecognised value — treated as off" });
   }
 
+  // R2 — beta-intake hash key (presence of the SELECTED version only; never the value).
+  {
+    const v = (_e.BETA_INTAKE_HASH_KEY_VERSION || "v1").trim().toLowerCase();
+    const name = `BETA_INTAKE_HASH_KEY_${v.toUpperCase()}`;
+    const val = /^v[1-9]\d{0,2}$/.test(v) ? process.env[name] : undefined;
+    keys.push(
+      !/^v[1-9]\d{0,2}$/.test(v)
+        ? { key: "BETA_INTAKE_HASH_KEY_VERSION", status: "warn", scope: "optional", note: "malformed version — no digest is stored" }
+        : val && val.length >= 32
+          ? { key: name, status: "pass", scope: "optional" }
+          : { key: name, status: "warn", scope: "optional", note: val ? "shorter than 32 characters — no digest is stored" : "unset — beta-intake IPs are nulled at 90 days without a digest" },
+    );
+  }
+
   // Optional price/FX vendor keys — never fatal. Represented in the report so the
   // ops surface shows whether each external integration is configured. Absent is a
   // warn ("integration disabled / graceful degrade"), never a fail. Names only.
@@ -564,6 +587,23 @@ export function validateEnv(): EnvReport {
     );
   }
 
+  // R2 — beta-intake hash key: never fatal (unset is a supported mode: no
+  // digest), but a configured-yet-unusable value is loud.
+  {
+    const v = (_e.BETA_INTAKE_HASH_KEY_VERSION || "v1").trim().toLowerCase();
+    if (!/^v[1-9]\d{0,2}$/.test(v)) {
+      console.error(`[env] BETA_INTAKE_HASH_KEY_VERSION=${JSON.stringify(_e.BETA_INTAKE_HASH_KEY_VERSION)} is not v1, v2, … — beta-intake network digests are DISABLED.`);
+    } else {
+      const name = `BETA_INTAKE_HASH_KEY_${v.toUpperCase()}`;
+      const val = process.env[name];
+      if (val !== undefined && val !== "" && val.length < 32) {
+        console.error(`[env] ${name} is shorter than 32 characters — beta-intake network digests are DISABLED (generate with: openssl rand -hex 32).`);
+      } else if (_e.BETA_INTAKE_HASH_KEY_VERSION && !val) {
+        console.error(`[env] BETA_INTAKE_HASH_KEY_VERSION=${v} but ${name} is not set — beta-intake network digests are DISABLED.`);
+      }
+    }
+  }
+
   // QUANTITY_AUTHORITY_MODE (REVIEW-3) — a MONEY switch: "adopt" repoints
   // historical quantity replay inside valuation (lib/investments/
   // quantity-authority.ts). Never fatal (the reader treats any unrecognised
@@ -668,6 +708,9 @@ export const env = {
    *  notification is sent (honest skip); the operator sets this to be alerted of
    *  new beta requests. Never a hardcoded personal address. */
   get BETA_REQUESTS_EMAIL(): string | null { return _e.BETA_REQUESTS_EMAIL ?? null; },
+  /** R2 — the selected beta-intake hash-key version ("v1" default). The key itself is
+   *  read at its single use site (jobs/data-retention.ts resolveNetworkDigestKey). */
+  get BETA_INTAKE_HASH_KEY_VERSION(): string { return (_e.BETA_INTAKE_HASH_KEY_VERSION || "v1").trim().toLowerCase(); },
 
   // ── CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥) ────────────────────────────────
   // NOTE: lib/captcha.ts (the single server-side verify site) reads
