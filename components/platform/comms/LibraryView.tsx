@@ -11,7 +11,7 @@
  *
  * A row opens the detail drawer: description, trigger + producer files, payload
  * field NAMES with PII flags (never values), eligibility, dedupe, frequency cap,
- * retention, the recent day series (null = not observed, withheld = small cell),
+ * retention, the recent day series (null = not observed; delivery counts are never withheld),
  * supported actions, the owner-surface link and the synthetic preview.
  *
  * Read-only. Nothing here sends: previews render server-side from synthetic
@@ -159,7 +159,7 @@ function CatalogRow({ item, onOpen }: { item: CatalogItem; onOpen: (key: string)
         <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <span className="min-w-0 truncate text-sm font-medium text-[var(--text-primary)]">{item.displayName}</span>
           <ToneBadge word={STATUS_LABEL[item.status]} tone={STATUS_TONE[item.status]} />
-          {item.protected && <ProtectedBadge consentClass={item.consentClass} />}
+          {item.protected && <ProtectedBadge item={item} />}
         </span>
         <code className="min-w-0 truncate font-mono text-[11px] text-[var(--text-muted)]">{item.key}</code>
         <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -227,9 +227,9 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         <p className="text-xs leading-relaxed text-[var(--text-secondary)]">{d.description}</p>
         <div className="flex flex-wrap items-center gap-1.5">
           <ToneBadge word={STATUS_LABEL[d.status]} tone={STATUS_TONE[d.status]} />
-          {d.protected && <ProtectedBadge consentClass={d.consentClass} />}
+          {d.protected && <ProtectedBadge item={d} />}
         </div>
-        {d.protected && <PolicyNote>{protectedNote(d.consentClass)}</PolicyNote>}
+        {d.protected && <PolicyNote>{protectedNote(d)}</PolicyNote>}
         <FactList rows={[
           ["Key", <code key="k" className="break-all font-mono text-[11px]">{d.key}</code>],
           ["Definition version", `v${d.definitionVersion}`],

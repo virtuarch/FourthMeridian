@@ -80,7 +80,8 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
   const stale = current === null && d !== null;
   const busy = { "aria-busy": stale || undefined, "data-stale": stale || undefined, className: `flex min-w-0 flex-col gap-4 transition-opacity ${stale ? "opacity-50" : ""}` };
   const tiles = d ? deliveryTiles(d.totals, d.measured.delivered) : [];
-  const reasons = d ? suppressionRows(d.suppressedByReason) : null;
+  // The server echoes the channel filter: under IN_APP, PREFERENCE_OFF reads "Customer turned off in-app".
+  const reasons = d ? suppressionRows(d.suppressedByReason, d.filters.channel) : null;
   return (
     <div className="flex min-w-0 flex-col gap-8 md:gap-10" data-comms-view="delivery">
       <Block id="comms-delivery" label="Delivery & history" className="min-w-0"
