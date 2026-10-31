@@ -19,7 +19,7 @@ export const SOURCE_LABELS: Readonly<Record<string, string>> = {
   USER_RULE: "Customer's merchant rule",
   USER_OVERRIDE: "Customer's own correction",
   LEGACY: "Legacy derivation (backfilled)",
-  none: "Not recorded (pre-provenance)",
+  none: "Not recorded",
 };
 export const ALIAS_LABELS: Readonly<Record<string, string>> = { PLAID: "Provider", IMPORT: "Import", USER: "Customer" };
 
@@ -80,7 +80,8 @@ export function buildMerchantOverview(f: MerchantOverviewFacts, now: Date, windo
     notes: [
       "Merchant Operations is merchant IDENTITY for customers' transactions. Fourth Meridian does not process payments or settle funds — there is no payment, settlement or processing data to chart.",
       "Counts are deployment-wide (every tenant), with no merchant names or tenant detail on this surface.",
-      "Category provenance is recorded from the Merchant Intelligence release; older transactions read \"not recorded\".",
+      "\"Not recorded\" provenance = transactions from before provenance was recorded, wallet rows, and imports with no catalogue or rule hit.",
+      "\"Linked to a merchant\" counts live transactions only (soft-deleted rows excluded). Transfers, income and wallet rows have no merchant by nature, so the unlinked share is not a backlog.",
       "The global merchant catalogue lives in code, so its change history is not charted here.",
       "Pending merge candidates are computed on the review page (a fleet-wide read), not on this dashboard.",
     ],

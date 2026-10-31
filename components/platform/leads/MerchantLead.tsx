@@ -10,13 +10,12 @@
  * onboards no merchants — so there are no payment, settlement or processing
  * charts, and the page says so plainly.
  *
- *   ≥ lg
- *     1  period + hero (share of transactions resolved) · 4 KPIs
- *     2  category provenance (7) · aliases by source (5)
- *     3  merge review: decisions per day (8) · by evidence tier + Open review (4)
- *     4  identity growth: aliases and customer rules per day (12)
+ *   every width (review first — it is the Space's one action)
+ *     1  scope line + period + hero (share of live transactions linked) · 4 KPIs
+ *     2  merge review: decisions per day (8) · by evidence tier + Open review (4)
+ *     3  category provenance (7) · aliases by source (5, ≥ lg only)
+ *     4  identity growth: aliases and customer rules per day (≥ lg only)
  *     5  how measured
- *   < lg  hero → KPIs → review → provenance → (growth hidden) → notes.
  */
 
 import { useState } from "react";
@@ -48,6 +47,8 @@ export interface MerchantLeadSurfaceProps {
   f: Fetched<MerchantOverviewResponse>;
   period: MerchantWindow;
   onPeriod: (w: MerchantWindow) => void;
+  /** The review doorway follows its section row (enabled ⇒ shown), as the hosted link card did. */
+  reviewAvailable?: boolean;
 }
 
 export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
@@ -67,7 +68,7 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
 
       {/* Review first on a phone: it is the Space's one action. */}
       <div className={GRID}>
-        <Block id="mo-decisions" label="Merge review" className="min-w-0 lg:col-span-8 max-lg:order-1">
+        <Block id="mo-decisions" label="Merge review" className="min-w-0 lg:col-span-8">
           <Surface className="flex-1 p-4 sm:p-5">
             {m ? (
               <>
@@ -78,7 +79,7 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
             ) : <Loading f={p.f} what="merge decisions" />}
           </Surface>
         </Block>
-        <Block id="mo-tiers" label="Decisions by evidence tier" className="min-w-0 lg:col-span-4 max-lg:order-2" hint={<span className="text-[11px] text-[var(--text-faint)]">All time</span>}>
+        <Block id="mo-tiers" label="Decisions by evidence tier" className="min-w-0 lg:col-span-4" hint={<span className="text-[11px] text-[var(--text-faint)]">All time</span>}>
           <Surface className="flex flex-1 flex-col gap-3 p-4 sm:p-5">
             {!m ? <Loading f={p.f} what="tiers" /> : m.decisions.byTier.length === 0 ? (
               <p className="text-xs text-[var(--text-secondary)]">No merge decisions yet.</p>
@@ -92,9 +93,9 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
                 </tbody>
               </table>
             )}
-            <Link href={REVIEW_HREF} className="mt-auto inline-flex min-h-11 items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-9" data-review-link>
+            {p.reviewAvailable !== false && <Link href={REVIEW_HREF} className="mt-auto inline-flex min-h-11 items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-9" data-review-link>
               Open merge review <ChevronRight size={12} aria-hidden />
-            </Link>
+            </Link>}
             <p className="text-[10px] text-[var(--text-muted)]">Candidates are detected on the review page; a merge rewrites identity for every tenant and is audited.</p>
           </Surface>
         </Block>
@@ -141,8 +142,8 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
   );
 }
 
-export function MerchantLead(_props: PlatformViewLeadProps) {
+export function MerchantLead({ hasHosted }: PlatformViewLeadProps) {
   const [period, setPeriod] = useState<MerchantWindow>("30");
   const f = useSharedWidgetFetch<MerchantOverviewResponse>(`/api/platform/merchant-ops/overview?window=${period}`);
-  return <MerchantLeadSurface f={f} period={period} onPeriod={setPeriod} />;
+  return <MerchantLeadSurface f={f} period={period} onPeriod={setPeriod} reviewAvailable={hasHosted("merchant_review")} />;
 }

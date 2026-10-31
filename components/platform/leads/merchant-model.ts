@@ -30,11 +30,11 @@ export function merchantKpis(f: Fetched<MerchantOverviewResponse>): Kpi[] {
   const m = f.data;
   if (!m) {
     const sub = reason(f, "merchant figures");
-    return [["merchants", "Merchants"], ["unresolved", "Unresolved"], ["merged", "Merged"], ["dismissed", "Dismissed"]].map(([key, label]) => ({ key, label, value: "—", sub }));
+    return [["merchants", "Merchants"], ["unresolved", "Without a merchant"], ["merged", "Merged"], ["dismissed", "Dismissed"]].map(([key, label]) => ({ key, label, value: "—", sub }));
   }
   return [
     { key: "merchants", label: "Merchants", value: n(m.merchants.total), sub: `${n(m.merchants.aliases.reduce((a, x) => a + x.count, 0))} aliases` },
-    { key: "unresolved", label: "Unresolved", value: n(m.transactions.total - m.transactions.resolved), sub: "transactions without a merchant" },
+    { key: "unresolved", label: "Without a merchant", value: n(m.transactions.total - m.transactions.resolved), sub: "incl. transfers & wallet rows" },
     { key: "merged", label: "Merged", value: n(m.decisions.merged), sub: `${m.windowDays} d · review decisions` },
     { key: "dismissed", label: "Dismissed", value: n(m.decisions.dismissed), sub: `${m.windowDays} d · kept apart` },
   ];
@@ -47,9 +47,9 @@ export function merchantHero(f: Fetched<MerchantOverviewResponse>): HeroModel {
     title: "Merchant identity",
     dot: false,
     provenance: "MEASURED",
-    verdict: { word: !m ? "—" : pct === null ? "No transactions" : `${pct < 1 && pct > 0 ? "<1" : Math.round(pct)}% resolved`, tone: "muted" },
+    verdict: { word: !m ? "—" : pct === null ? "No transactions" : `${pct < 1 && pct > 0 ? "<1" : Math.round(pct)}% linked`, tone: "muted" },
     checked: m ? hhmm(m.checkedAt) : null,
-    caption: m ? `${n(m.transactions.resolved)} of ${n(m.transactions.total)} transactions resolve to a canonical merchant · all tenants` : reason(f, "merchant figures"),
+    caption: m ? `${n(m.transactions.resolved)} of ${n(m.transactions.total)} live transactions linked to a canonical merchant · all tenants · transfers and wallet rows have none` : reason(f, "merchant figures"),
     kpis: merchantKpis(f),
     kpiLabels: { first: "Merchant identity figures", second: "Merge review figures", all: "Merchant figures" },
   };

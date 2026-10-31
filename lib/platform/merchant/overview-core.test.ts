@@ -27,7 +27,7 @@ const m = buildMerchantOverview({
 console.log("1. core");
 check("decisions in the window only", m.decisions.merged === 2 && m.decisions.dismissed === 1);
 check("tiers merged/dismissed, all time", JSON.stringify(m.decisions.byTier) === JSON.stringify([{ tier: "T1", merged: 3, dismissed: 1 }, { tier: "T2", merged: 0, dismissed: 2 }]));
-check("null provenance reads 'not recorded', ranked", m.transactions.bySource[1].key === "none" && /Not recorded/.test(m.transactions.bySource[1].label));
+check("null provenance reads Not recorded, ranked", m.transactions.bySource[1].key === "none" && m.transactions.bySource[1].label === "Not recorded");
 check("growth per day", m.growth.days[29].aliases === 4 && m.growth.days[29].rules === 1);
 check("states plainly that no payments are processed", m.notes.some((x) => /does not process payments/.test(x)));
 console.log("2. model + surface");
@@ -35,7 +35,7 @@ check("coverage 75%", coveragePct(m) === 75);
 check("provenance shares of ALL transactions", sourceBars(m)[0].share === 0.6 && sourceBars(m)[1].muted === true);
 check("failed read → '—' KPIs", merchantKpis({ data: null, loading: false, error: "x" }).every((k) => k.value === "—"));
 const html = renderToStaticMarkup(createElement(MerchantLeadSurface, { f: { data: m, loading: false, error: null }, period: "30", onPeriod: () => {} }));
-check("hero, review link to /merchant-ops, provenance bars, decision bars", html.includes("75% resolved") && html.includes('href="/merchant-ops"') && html.includes("data-share-bars") && html.includes("data-day-bars"));
+check("hero, review link to /merchant-ops, provenance bars, decision bars", html.includes("75% linked") && html.includes('href="/merchant-ops"') && html.includes("data-share-bars") && html.includes("data-day-bars"));
 check("no payment / settlement / processing figures implied", !/settle|payment volume|processing (failure|success)|chargeback/i.test(html.replace(/processes no payments/g, "")));
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall checks passed");
