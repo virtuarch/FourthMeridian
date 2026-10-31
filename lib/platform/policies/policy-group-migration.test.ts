@@ -27,10 +27,13 @@ const raw = readFileSync(`prisma/migrations/${DIR}/migration.sql`, "utf8");
 const sql = raw.replace(/^--.*$/gm, "");
 const schema = readFileSync("prisma/schema.prisma", "utf8");
 
-// Ordering, not "newest": later migrations (e.g. 20261031120000_policy_group_lifecycle) build on this one.
+// Ordering, not recency: later migrations (risk review, lifecycle, …) legitimately sort after
+// this one, so "is the newest" broke on every new migration. What matters is that it applies
+// directly after 20261028120000 (nothing slipped in between) on every environment.
 {
-  const dirs = readdirSync("prisma/migrations").filter((d) => /^\d{14}_/.test(d)).sort();
-  check("the migration exists and sorts after 20261028120000", dirs.includes(DIR) && DIR > "20261028120000");
+  const all = readdirSync("prisma/migrations").filter((d) => /^\d{14}_/.test(d)).sort();
+  const at = all.indexOf(DIR);
+  check("the migration applies directly after 20261028120000", at > 0 && all[at - 1].startsWith("20261028120000_"));
 }
 check("creates exactly PolicyGroup and PolicyGroupVersion", [...sql.matchAll(/CREATE TABLE "(\w+)"/g)].map((m) => m[1]).join() === "PolicyGroup,PolicyGroupVersion");
 const altered = [...sql.matchAll(/ALTER TABLE (?:public\.)?"?([\w%]+)"?/g)].map((m) => m[1]);

@@ -220,6 +220,7 @@ async function deliverEmailAndRecord(args: {
   title: string;
   body?: string;
   href?: string;
+  actionLabel?: string;
   client: NotificationWriteClient;
   adapter: ChannelAdapter;
 }): Promise<void> {
@@ -238,6 +239,7 @@ async function deliverEmailAndRecord(args: {
       title: args.title,
       ...(args.body ? { body: args.body } : {}),
       ...(args.href ? { href: args.href } : {}),
+      ...(args.actionLabel ? { actionLabel: args.actionLabel } : {}),
     });
 
     await args.client.notificationDelivery.create({
@@ -368,6 +370,7 @@ export async function createNotification(
           title: rendered.title,
           ...(rendered.body ? { body: rendered.body } : {}),
           ...(rendered.href ? { href: rendered.href } : {}),
+          ...(rendered.actionLabel ? { actionLabel: rendered.actionLabel } : {}),
           client,
           adapter,
         }),

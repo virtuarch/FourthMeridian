@@ -151,6 +151,15 @@ console.log("4. escaping + URL validation");
   const quoted = renderBetaInvite({ origin: "request", inviteUrl: `https://app.example.test/register?invite="><img src=x onerror=alert(1)>`, issuedAt, expiresAt }, { brand: BRAND });
   check("quote-breaking URL is percent-encoded in href", !quoted.html.includes("<img src=x") && quoted.html.includes("invite=%22%3E%3Cimg%20src=x"));
   check("expiresAt before issuedAt is refused", throws(() => renderBetaInvite({ origin: "request", inviteUrl: URL_OK, issuedAt: expiresAt, expiresAt: issuedAt }, { brand: BRAND })));
+  // The hero heading and greeting are escaped by the design system itself (the
+  // beta invite's heading is a constant, so this renders a hero block directly).
+  const hero = renderEmail({
+    subject: "s", preheader: "p", footer: { reason: "r" }, brand: BRAND,
+    blocks: [{ kind: "hero", heading: `<script>alert("h")</script> & 'Co'`, greeting: `<b onmouseover="x">Hi</b>` }],
+  });
+  check("hero heading is escaped", !hero.html.includes("<script>") &&
+    hero.html.includes("&lt;script&gt;alert(&quot;h&quot;)&lt;/script&gt; &amp; &#39;Co&#39;</h1>"));
+  check("hero greeting is escaped", !hero.html.includes("<b onmouseover") && hero.html.includes("&lt;b onmouseover=&quot;x&quot;&gt;Hi&lt;/b&gt;"));
 }
 
 // ── 5. beta invite ───────────────────────────────────────────────────────────

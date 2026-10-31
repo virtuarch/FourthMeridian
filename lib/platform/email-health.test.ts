@@ -31,6 +31,16 @@ console.log("direct-send coverage");
   check("test mode ⇒ capture even with a key (mirrors send.ts)", test.transport === "capture");
   check("the platform-alert and security-alert families are declared", DIRECT_SEND_TEMPLATES.includes("platform-alert") && DIRECT_SEND_TEMPLATES.includes("security-alert"));
   check("no note claims delivery", !/delivered/i.test(noKey.note) && !/delivered/i.test(key.note));
+
+  // Non-production recipient guard — reported as configuration, count only.
+  const prod = describeDirectSendCoverage({ VERCEL: "1", VERCEL_ENV: "production", NODE_ENV: "production", RESEND_API_KEY: "re_x" });
+  check("Production ⇒ guard inactive, note says nothing about capture", !prod.recipientGuard.active && prod.recipientGuard.environment === "production" && !/captured/.test(prod.note));
+  const previewEmpty = describeDirectSendCoverage({ VERCEL: "1", VERCEL_ENV: "preview", NODE_ENV: "production", RESEND_API_KEY: "re_x" });
+  check("Preview, no allowlist ⇒ guard active, 0 addresses, every recipient captured", previewEmpty.recipientGuard.active && previewEmpty.recipientGuard.allowlistCount === 0 && /every recipient is captured/.test(previewEmpty.note));
+  const previewList = describeDirectSendCoverage({ VERCEL: "1", VERCEL_ENV: "preview", NODE_ENV: "production", RESEND_API_KEY: "re_x", EMAIL_NONPROD_ALLOWLIST: "a@example.test, B@example.test ,," });
+  check("Preview with allowlist ⇒ count only, never the addresses", previewList.recipientGuard.allowlistCount === 2 && !JSON.stringify(previewList).includes("example.test"));
+  check("'key ⇒ resend' off Vercel is NOT Production for email (guard active)", key.recipientGuard.active && key.recipientGuard.environment === "unknown");
+  check("captured is its own stage, not a failure", EMAIL_STAGE_WORD.captured !== EMAIL_STAGE_WORD.failed && /not sent to any provider/.test(EMAIL_STAGE_WORD.captured));
 }
 
 console.log("vocabulary");

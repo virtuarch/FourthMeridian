@@ -247,6 +247,11 @@ export const AuditAction = {
   BETA_INVITATION_CREATED:  "BETA_INVITATION_CREATED",
   BETA_INVITATION_RESENT:   "BETA_INVITATION_RESENT",
   BETA_INVITATION_REVOKED:  "BETA_INVITATION_REVOKED",
+  // BETA-REQUEST RISK (2026-10-31) — an operator recorded a review verdict
+  // (UNREVIEWED / LEGITIMATE / SUSPICIOUS) on a request's advisory risk signals.
+  // Appends one BetaAccessRequestReview row in the same transaction; never
+  // changes the request's status or the heuristic evidence. Reason-required.
+  BETA_REQUEST_RISK_REVIEWED: "BETA_REQUEST_RISK_REVIEWED",
   // PR B (2026-10-31) — the one issuance mechanism (lib/platform/growth/invitation-issue.ts).
   //   VALIDITY_CHANGED  the beta_invitation_validity_days setting changed (reason
   //                     required; before/after in the same transaction).
@@ -558,6 +563,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.BETA_INVITATION_CREATED,
   AuditAction.BETA_INVITATION_RESENT,
   AuditAction.BETA_INVITATION_REVOKED,
+  AuditAction.BETA_REQUEST_RISK_REVIEWED,
   AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
   AuditAction.BETA_INVITATION_EXTENDED,
   AuditAction.BETA_ACCESS_BULK_APPROVED,

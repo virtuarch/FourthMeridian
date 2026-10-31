@@ -57,3 +57,21 @@ export function formatUtcDateTimeLabelled(date: Date): string {
   for (const { type, value } of parts) p[type] = value;
   return `${p.weekday}, ${p.month} ${p.day}, ${p.year} at ${p.hour}:${p.minute} ${p.dayPeriod} UTC`;
 }
+
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+/**
+ * A link lifetime in words, from a TTL in milliseconds: "1 hour", "2 hours",
+ * "90 minutes", "1 day", "3 days". Whole days win, then whole hours, else
+ * minutes (floored, so the email never promises time the link does not have).
+ * Throws on a non-positive or non-finite TTL: a template must never print
+ * "expires in 0 minutes".
+ */
+export function durationPhrase(ms: number): string {
+  if (!Number.isFinite(ms) || ms < MINUTE_MS) throw new Error("email: TTL must be at least one minute");
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  if (ms % DAY_MS === 0) return unit(ms / DAY_MS, "day");
+  if (ms % HOUR_MS === 0) return unit(ms / HOUR_MS, "hour");
+  return unit(Math.floor(ms / MINUTE_MS), "minute");
+}
