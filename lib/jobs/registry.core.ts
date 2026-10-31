@@ -157,8 +157,11 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
   // Hourly anchor (default cadence 1 h, FIXED), SELF-CONTINUING (~15 min) while
   // an automation is ACTIVE or an item is pending, so a delay's jitter is about
   // one wake. Its budget is min(120 s, 270 s − the wake's elapsed time). Under
-  // the global Cost Freeze, or while AUTOMATION_ACTIVATION_ENABLED is false and
-  // an ACTIVE row exists, it sends nothing and reports SKIPPED.
+  // the global Cost Freeze, or while the activation gate is closed
+  // (automationActivationEnabled: Preview + COMMS_AUTOMATIONS_PREVIEW_ENABLED="true"
+  // only — never Production) and an ACTIVE row exists, it sends nothing and
+  // reports SKIPPED. Crons do not run on Preview: there the wake is a manual,
+  // CRON_SECRET-authorised GET /api/jobs/dispatch.
   { name: "comms-automations", hourUTC: Array.from({ length: 24 }, (_, h) => h), minuteUTC: 0, selfContinues: true },
   // Owner decision 2 (2026-10-28) — the background Solana history backfill.
   // Self-continues every ~15 min while wallets remain (summary.deferred), off

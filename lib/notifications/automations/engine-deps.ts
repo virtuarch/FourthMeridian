@@ -18,7 +18,7 @@ import { defaultLiveContentResolver } from "@/lib/notifications/content/store";
 import { currentJobRun } from "@/lib/jobs/run";
 import { admitAutomationSend } from "./admission";
 import type { EngineDb, EngineDeps } from "./engine";
-import { AUTOMATION_ACTIVATION_ENABLED } from "./types";
+import { automationActivationEnabled } from "./types";
 
 /** The engine's production ports (jobs/comms-automations.ts). */
 export function productionEngineDeps(): EngineDeps {
@@ -40,6 +40,7 @@ export function productionEngineDeps(): EngineDeps {
     appBaseUrl: process.env.NEXT_PUBLIC_APP_URL,
     now: () => new Date(),
     jobRunId: currentJobRun()?.id ?? null,
-    activationEnabled: AUTOMATION_ACTIVATION_ENABLED,
+    // The activation gate, re-read from the env at the start of the pass and before every send (kill switch).
+    activationEnabled: () => automationActivationEnabled(process.env),
   };
 }

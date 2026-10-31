@@ -36,7 +36,7 @@ const REASON: Record<SkipKind, string> = {
   COST_FREEZE: "A cost freeze is in force — the work was refused before any vendor call",
   POLICY_UNAVAILABLE: "The cost policy could not be verified — the work was refused before any vendor call (fail closed)",
   PLAN_RESTRICTION: "Every customer this run would bill is paused, ended or not entitled — nothing was started",
-  ACTIVATION_DISABLED: "Automation activation is disabled pending hardening — an ACTIVE automation was found and nothing was sent",
+  ACTIVATION_DISABLED: "Automation activation is not enabled in this environment (Preview only, behind its switch) — an ACTIVE automation or pending item was held and nothing was sent",
   ADMISSION_DENIED: "Platform admission refused the work (maintenance, or a control-plane setting that cannot be read) — nothing was sent",
   UNSPECIFIED: "The work was refused before any vendor call",
 };

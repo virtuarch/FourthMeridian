@@ -94,7 +94,7 @@ import {
   lifecycleAllows, liveKey, retryDelayMs, type RecipientFacts,
 } from "./rules";
 import {
-  ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED, AUTOMATION_LIMITS, AUTOMATION_RETENTION_DAYS, ERROR_RATE_BREAKER, FACT_SETTLE_MS, GLOBAL_BREAKER,
+  ACTIVATION_DISABLED_REASON, AUTOMATION_LIMITS, automationActivationEnabled, AUTOMATION_RETENTION_DAYS, ERROR_RATE_BREAKER, FACT_SETTLE_MS, GLOBAL_BREAKER,
   HANDLER_BELL_WINDOW, MAX_FACT_AGE_MS, MAX_SEND_LATENESS_MS, SEND_LEASE_MS,
   type AutomationChannel, type AutomationRunCounts, type Condition, type RetryPolicy, type RunItemStatus,
 } from "./types";
@@ -135,8 +135,12 @@ export interface EngineDeps {
    * plane deny). Asked at trigger (before ingest) and before every send. A throw counts as a denial.
    */
   admission(): Promise<EngineAdmission>;
-  /** The ACTIVATION HARD GATE (types.ts); absent ⇒ the code constant. While false the engine sends nothing. */
-  activationEnabled?: boolean;
+  /**
+   * The ACTIVATION GATE (types.ts automationActivationEnabled). A function is re-read at the start of
+   * the pass AND before every send (the kill switch stops a pass before its next send); a boolean is a
+   * fixed test value. Absent ⇒ the resolver over process.env, per call. A throw counts as closed.
+   */
+  activationEnabled?: boolean | (() => boolean);
   /** JobRun id to stamp on LIVE runs (lib/jobs/run.ts currentJobRun). */
   jobRunId?: string | null;
   log?(line: string): void;
@@ -473,6 +477,16 @@ async function haltAll(deps: EngineDeps, reason: "PROVIDER_FREEZE" | "STORM_BREA
   await cancelScheduled(deps, {}, reason, s, ["SCHEDULED", "FAILED"]);
 }
 
+/** The activation gate, read NOW (never cached); fail closed. */
+function gateOpen(deps: EngineDeps): boolean {
+  try {
+    const g = deps.activationEnabled;
+    if (typeof g === "function") return g() === true;
+    if (typeof g === "boolean") return g;
+    return automationActivationEnabled(process.env);
+  } catch { return false; }
+}
+
 /** A5 — the admission port, fail closed (a throw is a denial). */
 async function admitted(deps: EngineDeps): Promise<EngineAdmission> {
   try { return await deps.admission(); } catch { return { admitted: false, reason: "UNAVAILABLE" }; }
@@ -553,7 +567,7 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
 
   // The ACTIVATION HARD GATE: while activation is disabled the engine WRITES NOTHING and
   // SENDS NOTHING — even if an ACTIVE row or a pending item exists (it never should).
-  if (!(deps.activationEnabled ?? AUTOMATION_ACTIVATION_ENABLED)) {
+  if (!gateOpen(deps)) {
     const [active, pending] = await Promise.all([
       db.automationDefinition.count({ where: { state: "ACTIVE" } }),
       db.automationRunItem.count({ where: { status: { in: ["SCHEDULED", "SENDING", "FAILED"] } } }),
@@ -600,6 +614,8 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
   if (active.length > budget.maxAutomations) s.deferred++;
   for (const a of active.slice(0, budget.maxAutomations)) {
     if (outOfTime()) { s.deferred++; break; }
+    // The kill switch, mid-pass: closing the gate stops ingest too (nothing is claimed after it).
+    if (!gateOpen(deps)) { s.deferred++; return { ...s, outcome: "SKIPPED", skipReason: ACTIVATION_DISABLED_REASON }; }
     s.automations++;
     try {
       await ingestAutomation(deps, a, budget, s, outOfTime);
@@ -622,6 +638,8 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
   const lifecycle = await deps.lifecycle([...new Set(batch.map((i) => i.recipientUserId).filter((x): x is string => !!x))]);
   for (const item of batch) {
     if (outOfTime()) { s.deferred++; break; }
+    // The KILL SWITCH before EVERY send: unsetting COMMS_AUTOMATIONS_PREVIEW_ENABLED stops the pass here.
+    if (!gateOpen(deps)) { s.deferred++; return { ...s, outcome: "SKIPPED", skipReason: ACTIVATION_DISABLED_REASON }; }
     // A5 — admission again before EVERY send (a maintenance declared mid-pass stops the rest).
     const at = await admitted(deps);
     if (!at.admitted) { s.deferred++; return { ...s, outcome: "SKIPPED", skipReason: `ADMISSION_${at.reason ?? "UNAVAILABLE"}` }; }
@@ -629,7 +647,10 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
     const n = await breakerCount(db, deps.now());
     if (n > GLOBAL_BREAKER.maxAccepted) { await tripBreaker(deps, n, s); return { ...s, outcome: "PARTIAL" }; }
     try {
-      await deliverItem(deps, item, lifecycle, s);
+      if ((await deliverItem(deps, item, lifecycle, s)) === "GATE_CLOSED") {
+        s.deferred++;
+        return { ...s, outcome: "SKIPPED", skipReason: ACTIVATION_DISABLED_REASON };
+      }
     } catch (e) {
       // N3 — one item's failure never aborts the batch; an item left SENDING is recovered by its lease (A1).
       s.errors++;
@@ -784,8 +805,11 @@ async function handlerBellExists(db: EngineDb, type: string, userId: string, fac
   return bell !== null;
 }
 
-/** Deliver (or cancel) ONE due item. Never throws for a send outcome. */
-async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<string, UserLifecycleState>, s: EngineSummary): Promise<void> {
+/**
+ * Deliver (or cancel) ONE due item. Never throws for a send outcome. "GATE_CLOSED" ⇒ the activation gate
+ * closed between the lease and the transport: the lease is returned untouched (status + attempt restored).
+ */
+async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<string, UserLifecycleState>, s: EngineSummary): Promise<void | "GATE_CLOSED"> {
   const db = deps.db;
   const now = deps.now();
   // Lease: exactly one pass may take it.
@@ -868,6 +892,12 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
   const data = await renderDataFor(db, fact, users);
   const policy = (a.retryPolicy === "NONE" ? "NONE" : "STANDARD") as RetryPolicy;
   const nextDelay = retryDelayMs(policy, attempt);
+  /** The kill switch at the last moment before a transport: give the lease back exactly as it was. */
+  const heldByGate = async (): Promise<boolean> => {
+    if (gateOpen(deps)) return false;
+    await db.automationRunItem.updateMany({ where: { id: item.id, status: "SENDING" }, data: { status: item.status, attempt: item.attempt, leaseUntil: null } });
+    return true;
+  };
   const failed = async () => {
     if (nextDelay === null) {
       await finish("DEAD", { lastDeliveryStatus: "DEAD" });
@@ -882,6 +912,7 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
   if (channel === "IN_APP") {
     // A6 — the EV-1 handler delivers this definition too: never a second bell for the same fact.
     if (await handlerBellExists(db, type, item.recipientUserId, fact)) return suppress("DEDUPE_OPEN", false);
+    if (await heldByGate()) return "GATE_CLOSED";
     const res = await deps.createNotification(
       { type, userId: item.recipientUserId, spaceId: fact.spaceId, data, auditLogId: fact.ref },
       { inAppOnly: true, ledgerTag: { messageKey: item.id, automationRunItemId: item.id, attempt }, ledger: deps.ledger, content: deps.content },
@@ -914,6 +945,10 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
     title: code.title, ...(code.body ? { body: code.body } : {}), ...(code.href ? { href: code.href } : {}),
     ...(code.actionLabel ? { actionLabel: code.actionLabel } : {}), ...(live.email ? { emailContent: live.email } : {}),
   }, deps.appBaseUrl);
+  if (await heldByGate()) return "GATE_CLOSED";
+  // DEFENCE IN DEPTH — the ONLY email path: the sendEmail chokepoint, whose non-production recipient
+  // guard (lib/email/recipient-guard.ts) CAPTURES every address outside EMAIL_NONPROD_ALLOWLIST before the
+  // provider. Nothing on the automation (or the item) can name, widen or skip that allowlist.
   const result = await deps.sendEmail("notification", email, { ...emailData }, {
     key: def.key, recipientUserId: item.recipientUserId, messageKey: item.id, attempt,
     ...(nextDelay === null ? { terminalOnError: true } : {}),

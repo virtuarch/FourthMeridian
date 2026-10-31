@@ -576,9 +576,11 @@ async function main(): Promise<void> {
   }
 
   // ── The gate ──────────────────────────────────────────────────────────────
-  console.log("the activation gate stays closed");
-  check("AUTOMATION_ACTIVATION_ENABLED is still the code constant false (flipping it is a separate owner-approved PR)",
-    T.AUTOMATION_ACTIVATION_ENABLED === false && /export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;/.test(readFileSync("lib/notifications/automations/types.ts", "utf8")));
+  console.log("the activation gate: Preview only");
+  check("the gate is automationActivationEnabled(env): open ONLY on Preview with the exact flag; Production closed even with the flag (activation-gate.test.ts pins the full table)",
+    T.automationActivationEnabled({ VERCEL_ENV: "production", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === false
+    && T.automationActivationEnabled({ VERCEL_ENV: "preview", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === true
+    && !/AUTOMATION_ACTIVATION_ENABLED/.test(readFileSync("lib/notifications/automations/types.ts", "utf8")));
 
   console.log(failures === 0 ? "\n✅ comms automations hardening: all checks passed" : `\n❌ ${failures} check(s) failed`);
   if (failures > 0) process.exit(1);

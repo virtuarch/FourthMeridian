@@ -21,8 +21,10 @@
  * SKIPPED (job health's skipped semantics → the ops overview shows DEGRADED):
  *   · the GLOBAL Cost Freeze (ON / INVALID / UNAVAILABLE): live runs HALT,
  *     scheduled items CANCELLED / PROVIDER_FREEZE, `skipReason: "BILLABLE_<reason>"`;
- *   · AUTOMATION_ACTIVATION_ENABLED = false with an ACTIVE row or pending item:
- *     nothing written, nothing sent, `skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING"`;
+ *   · the activation gate closed (automationActivationEnabled(process.env): Preview + the
+ *     COMMS_AUTOMATIONS_PREVIEW_ENABLED="true" switch only — never Production) with an ACTIVE row
+ *     or pending item: nothing written, nothing sent, `skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING"`.
+ *     The gate is re-read before every send, so unsetting the switch stops a pass mid-run;
  *   · platform admission (COMMS_AUTOMATION_SEND) denied — maintenance or an unreadable
  *     control plane: nothing sent, `skipReason: "ADMISSION_<reason>"` (HARDENING A5).
  * With the gate closed and nothing held the run is COMPLETE with `note: "ACTIVATION_DISABLED"`

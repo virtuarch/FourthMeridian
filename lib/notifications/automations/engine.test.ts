@@ -493,11 +493,13 @@ async function main(): Promise<void> {
   }
 
   // ── 11. The ACTIVATION HARD GATE blocks the engine ────────────────────────
-  console.log("11. the activation hard gate (AUTOMATION_ACTIVATION_ENABLED = false) blocks the ENGINE");
+  console.log("11. the activation gate (closed: not Preview, or the switch off) blocks the ENGINE");
   {
-    check("AUTOMATION_ACTIVATION_ENABLED is a code constant and is false", T.AUTOMATION_ACTIVATION_ENABLED === false
-      && /export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;/.test(readFileSync("lib/notifications/automations/types.ts", "utf8"))
-      && !/process\.env|PlatformSetting|platformSetting/.test(readFileSync("lib/notifications/automations/types.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "")));
+    check("the gate is the env resolver (Preview + exact \"true\"); Production is closed even with the flag; no PlatformSetting reaches it",
+      T.automationActivationEnabled({ VERCEL_ENV: "production", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === false
+    && T.automationActivationEnabled({ VERCEL_ENV: "preview", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === true
+    && !/AUTOMATION_ACTIVATION_ENABLED/.test(readFileSync("lib/notifications/automations/types.ts", "utf8"))
+      && !/PlatformSetting|platformSetting/.test(readFileSync("lib/notifications/automations/types.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "")));
     reset(); user("u1"); user("u2");
     automation({ delayMinutes: 10 });
     roleChanged("u1", new Date(T0.getTime() - 5 * MIN));
@@ -506,6 +508,7 @@ async function main(): Promise<void> {
     clock = new Date(T0.getTime() + 30 * MIN);
     const snapshot = () => JSON.stringify(["AutomationDefinition", "AutomationRun", "AutomationRunItem", "CommsDelivery", "Notification"].map((m) => fake.rows(m)));
     const before = snapshot();
+    // No activationEnabled port ⇒ the resolver over process.env (VERCEL_ENV / the flag unset in tests) ⇒ closed.
     const { activationEnabled: _open, ...closed } = deps();
     void _open;
     const s = await quiet(() => E.runAutomationEngine(closed, BUDGET));

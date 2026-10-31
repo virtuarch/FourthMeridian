@@ -23,7 +23,7 @@ import { contentServices } from "@/lib/notifications/content/deps";
 import * as store from "./store";
 import { CS_COMMS_DRYRUN_BUCKET, CS_COMMS_DRYRUN_LIMIT, CS_COMMS_TEST_BUCKET, CS_COMMS_TEST_LIMIT, type AutomationServices } from "./http";
 import type { EngineDb } from "./engine";
-import { AUTOMATION_ACTIVATION_ENABLED } from "./types";
+import { automationActivationEnabled } from "./types";
 
 export const csCommsDryRunLimit = (userId: string) => limitByUser(userId, CS_COMMS_DRYRUN_BUCKET, CS_COMMS_DRYRUN_LIMIT);
 export const csCommsTestLimit = (userId: string) => limitByUser(userId, CS_COMMS_TEST_BUCKET, CS_COMMS_TEST_LIMIT);
@@ -40,7 +40,8 @@ export const automationServices: AutomationServices = {
   ledgerEnv: process.env,
   sendEmail,
   createNotification: (input, ctx) => createNotification(input, ctx),
-  activationEnabled: AUTOMATION_ACTIVATION_ENABLED,
+  // The activation gate, read from the env on EVERY request (never cached).
+  activationEnabled: () => automationActivationEnabled(process.env),
   auditTestSend: async (row) => {
     const tx = systemDb as unknown as { $transaction<T>(fn: (tx: Parameters<typeof recordOperatorAction>[0]) => Promise<T>): Promise<T> };
     const { id } = await tx.$transaction((t) => recordOperatorAction(t, row));

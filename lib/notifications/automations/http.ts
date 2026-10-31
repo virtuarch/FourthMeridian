@@ -49,7 +49,7 @@ import type { NotificationRenderData } from "@/lib/notifications/types";
 import { activationBlockers, isCustomerFacing, overlapsExistingDelivery, ownerApprovalCurrentForDisplay, resolveTarget, validateAutomationInput } from "./rules";
 import { evaluateDryRun, type DryRunDeps } from "./dry-run";
 import type * as Store from "./store";
-import { ACTIVATION_DISABLED_REASON, AUTOMATION_STATES, type AutomationChannel, type AutomationDetail, type AutomationState, type DryRunResult } from "./types";
+import { ACTIVATION_DISABLED_REASON, ACTIVATION_DISABLED_TEXT, AUTOMATION_STATES, type AutomationChannel, type AutomationDetail, type AutomationState, type DryRunResult } from "./types";
 
 // ── Buckets (v1 §4.1, v1.1 §6.1) ─────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ export const AUTOMATION_BODY_MAX_BYTES = 32 * 1024;
 // ── Services ──────────────────────────────────────────────────────────────────
 
 export interface AutomationServices {
-  store: Pick<typeof Store, "createAutomation" | "updateAutomation" | "recordDryRun" | "ownerApprove" | "activate" | "pause" | "disable"
+  store: Pick<typeof Store, "createAutomation" | "updateAutomation" | "recordDryRun" | "ownerApprove" | "activate" | "recordActivationRefused" | "pause" | "disable"
     | "recordCancellations" | "readAutomation" | "readRun" | "latestRun" | "listAutomationRows" | "listRunRows" | "readHistory" | "factsOf" | "fieldsOf" | "toSummary" | "toRunDTO">;
   dryRun: DryRunDeps;
   /** B1 content services: heads (viewer facts), version reads (test send), self facts. */
@@ -75,8 +75,8 @@ export interface AutomationServices {
     input: { type: NotificationTypeId; userId: string; data?: NotificationRenderData; expiresAt?: Date | null },
     ctx: { inAppOnly: true; ledgerTag: LedgerTag; ledger?: LedgerWriter; content?: LiveContentResolver | null },
   ): Promise<CreateNotificationResult>;
-  /** The ACTIVATION HARD GATE (types.ts AUTOMATION_ACTIVATION_ENABLED); production wires the constant. */
-  activationEnabled: boolean;
+  /** The ACTIVATION GATE (types.ts automationActivationEnabled), called per request; production reads process.env. */
+  activationEnabled(): boolean;
   /** Writes ONE audit row in its own transaction (test send: the audit precedes the send). */
   auditTestSend(row: Parameters<typeof recordOperatorAction>[1]): Promise<string>;
 }
@@ -157,7 +157,7 @@ export async function automationDetail(row: Store.AutomationRow, auth: ContentAu
     activationBlockers: def ? activationBlockers(svc.store.factsOf(row, dryOk), def, now) : ["DEFINITION_NOT_ACTIVATABLE" as const],
     overlapsExistingDelivery: def ? overlapsExistingDelivery(def) : false,
     liveContent: def ? await liveContentOf(svc, def, row.variant, f.channels) : [],
-    viewer: def ? viewerFor(auth, def, { contentEditable: editableChannels(def).length > 0, hasRollbackTarget: heads.some((h) => h.publishedCount > 0) }, send, svc.activationEnabled) : null,
+    viewer: def ? viewerFor(auth, def, { contentEditable: editableChannels(def).length > 0, hasRollbackTarget: heads.some((h) => h.publishedCount > 0) }, send, svc.activationEnabled()) : null,
   } satisfies AutomationDetail & { viewer: unknown };
 }
 
@@ -307,9 +307,18 @@ export async function dryRunHandler(id: string, raw: unknown, auth: ContentAuth,
 type Transition = "ACTIVATE" | "PAUSE" | "DISABLE" | "OWNER_APPROVAL";
 
 export async function transitionHandler(kind: Transition, id: string, raw: unknown, auth: ContentAuth, meta: Meta, now: Date, svc: AutomationServices): Promise<Response> {
-  // The ACTIVATION HARD GATE — a typed refusal before anything is read or written.
-  if (kind === "ACTIVATE" && !svc.activationEnabled) {
-    return json({ error: "Automation activation is disabled until the hardening review items are fixed. Owner approval and dry runs still work.", code: ACTIVATION_DISABLED_REASON }, 409);
+  // The ACTIVATION GATE — decided before any automation state is read or written. The refusal itself is
+  // audited (actor, reason, requested + current version, definitionVersion) when the request carried a
+  // valid envelope; the audit never changes the answer (best-effort, its own transaction).
+  const gate = kind === "ACTIVATE" ? svc.activationEnabled() : true;
+  if (!gate) {
+    const env = envelope(raw, { version: "required" });
+    if (env.ok && ID_RE.test(id)) {
+      try {
+        await svc.store.recordActivationRefused({ id, expectedVersion: env.expectedVersion!, actor: actorOf(auth, meta), reason: env.reason, now });
+      } catch { /* the refusal stands; the audit is best-effort */ }
+    }
+    return json({ error: ACTIVATION_DISABLED_TEXT, code: ACTIVATION_DISABLED_REASON }, 409);
   }
   const row = await svc.store.readAutomation(id);
   if (!row) return notFound();
@@ -321,7 +330,7 @@ export async function transitionHandler(kind: Transition, id: string, raw: unkno
   if (Object.keys(env.body).length > 0) return validation("body must be {}.");
   const input = { id: row.id, expectedVersion: env.expectedVersion!, actor: actorOf(auth, meta), reason: env.reason, now };
   if (kind === "ACTIVATE") {
-    const r = await svc.store.activate({ ...input, activationEnabled: svc.activationEnabled });
+    const r = await svc.store.activate({ ...input, activationEnabled: gate });
     if (!r.ok) return refusal(r);
     return json({ ok: true, result: await automationDetail(r.value, auth, now, svc), auditLogId: r.auditLogId });
   }

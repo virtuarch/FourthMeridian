@@ -64,8 +64,15 @@ async function main(): Promise<void> {
   const { REASON_REQUIRED_ACTIONS } = await import("@/lib/audit");
   const T = await import("./types");
   const S = await import("./store");
-  /** The routes use the production services: the hard gate is the code constant (false) until a test opens it. */
-  const gate = (open: boolean) => { (automationServices as { activationEnabled: boolean }).activationEnabled = open; };
+  /**
+   * The routes use the PRODUCTION services, whose gate is automationActivationEnabled(process.env) read per
+   * request: a test opens it the only way it can be opened — Preview + the exact flag — and closes it by unsetting.
+   */
+  const gate = (open: boolean) => {
+    if (open) { process.env.VERCEL_ENV = "preview"; process.env.COMMS_AUTOMATIONS_PREVIEW_ENABLED = "true"; }
+    else { delete process.env.VERCEL_ENV; delete process.env.COMMS_AUTOMATIONS_PREVIEW_ENABLED; }
+  };
+  gate(false);
 
   // ── 1. route wiring ────────────────────────────────────────────────────────
   console.log("1. route wiring — gate + bucket per route (contract v1.1 §6.1)");
@@ -123,15 +130,31 @@ async function main(): Promise<void> {
     && !created.body.result.viewer.canActivate && !created.body.result.viewer.canApproveAsOwner);
   const writeActivate = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.write, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
   check("WRITE cannot ACTIVATE (403 — activation is CONTROL, O-1); still DRAFT", writeActivate.status === 403 && fake.one("AutomationDefinition", { id })!.state === "DRAFT", writeActivate.body);
-  // ── the ACTIVATION HARD GATE (code constant, false) ──
-  check("production services carry the code constant (false)", automationServices.activationEnabled === false && T.AUTOMATION_ACTIVATION_ENABLED === false);
+  // ── the ACTIVATION GATE (Preview + flag, read per request) ──
+  check("production services read the resolver per call: closed with the env unset",
+    automationServices.activationEnabled() === false && T.automationActivationEnabled(process.env) === false);
+  gate(true); const openNow = automationServices.activationEnabled(); gate(false);
+  check("…and open the moment the env says Preview + \"true\", closed again when unset (no caching)", openNow === true && automationServices.activationEnabled() === false);
+  check("production wiring (deps.ts, engine-deps.ts) reads the resolver over process.env — no constant, no hard true",
+    /activationEnabled: \(\) => automationActivationEnabled\(process\.env\)/.test(code("lib/notifications/automations/deps.ts"))
+    && /activationEnabled: \(\) => automationActivationEnabled\(process\.env\)/.test(code("lib/notifications/automations/engine-deps.ts")));
   const auditsBefore = fake.rows("AuditLog").length;
   const gated = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
-  check("HARD GATE: CONTROL activate ⇒ 409 ACTIVATION_DISABLED_PENDING_HARDENING (typed), nothing written, nothing audited",
+  const refusedRows = audits("COMMS_AUTOMATION_ACTIVATION_REFUSED");
+  const rm = refusedRows[0]?.metadata as any;
+  check("GATE CLOSED: CONTROL activate ⇒ 409 ACTIVATION_DISABLED_PENDING_HARDENING (typed), nothing written to the automation",
     gated.status === 409 && gated.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING" && fake.one("AutomationDefinition", { id })!.state === "DRAFT"
-    && fake.one("AutomationDefinition", { id })!.version === 1 && fake.rows("AuditLog").length === auditsBefore, gated.body);
+    && fake.one("AutomationDefinition", { id })!.version === 1, gated.body);
+  check("…the refusal is AUDITED: ONE COMMS_AUTOMATION_ACTIVATION_REFUSED row (result REFUSED) with the actor, the reason, the requested + current version and the definitionVersion",
+    fake.rows("AuditLog").length === auditsBefore + 1 && refusedRows.length === 1 && refusedRows[0].performedByAdminId === "op_control" && rm?.result === "REFUSED"
+    && rm?.reason?.code === "DOGFOOD" && rm?.requestedVersion === 1 && rm?.change?.before?.version === 1
+    && rm?.definitionVersion === getCatalogDefinition("MEMBER_ROLE_CHANGED")!.definitionVersion && rm?.target?.id === id, { n: refusedRows.length, rm });
+  check("the refusal audit action is reason-required", REASON_REQUIRED_ACTIONS.has(AuditAction.COMMS_AUTOMATION_ACTIVATION_REFUSED));
   const gatedUnknown = await call(ACTIVATE.POST, `/automations/nope/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id: "nope" });
   check("…the gate answers BEFORE any read (an unknown id is the gate refusal, not 404)", gatedUnknown.status === 409 && gatedUnknown.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING");
+  const gatedNoReason = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { expectedVersion: 1, body: {} }, { id });
+  check("…a request with no reason is still the gate's 409 (the gate comes first), and is not audited (nothing to record a reason for)",
+    gatedNoReason.status === 409 && gatedNoReason.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING" && audits("COMMS_AUTOMATION_ACTIVATION_REFUSED").length === 2);
   const gatedAdmin = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.admin, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
   check("…for SYSTEM_ADMIN too (no break-glass around the gate)", gatedAdmin.status === 409 && gatedAdmin.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING");
   const gatedView = await call(ONE.GET, `/automations/${id}`, C.control, "GET", undefined, { id });
@@ -289,6 +312,14 @@ async function main(): Promise<void> {
     paused.status === 200 && fake.one("AutomationDefinition", { id })!.state === "PAUSED" && fake.one("AutomationRunItem", { idempotencyKey: "k1" })!.status === "CANCELLED"
     && fake.one("AutomationRunItem", { idempotencyKey: "k1" })!.reason === "AUTOMATION_PAUSED" && audits("COMMS_AUTOMATION_PAUSED").length === 1
     && (audits("COMMS_AUTOMATION_PAUSED")[0].metadata as any).cancelledItems === 1, paused.body);
+  {
+    const m = audits("COMMS_AUTOMATION_PAUSED")[0].metadata as any;
+    const am = audits("COMMS_AUTOMATION_ACTIVATED")[0].metadata as any;
+    const dv = getCatalogDefinition("MEMBER_ROLE_CHANGED")!.definitionVersion;
+    check("the pause audit carries actor, reason, version and definitionVersion; so does the activation audit",
+      audits("COMMS_AUTOMATION_PAUSED")[0].performedByAdminId === "op_write" && m.reason?.code === "DOGFOOD" && m.change?.before?.version === 2 && m.definitionVersion === dv && m.definitionKey === "MEMBER_ROLE_CHANGED"
+      && audits("COMMS_AUTOMATION_ACTIVATED")[0].performedByAdminId === "op_control" && am.reason?.code === "DOGFOOD" && am.change?.before?.version === 1 && am.definitionVersion === dv, { m, am });
+  }
   {
     const rows: any[] = [];
     const S = await import("./store");

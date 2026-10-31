@@ -35,7 +35,7 @@ import { ledgerEnvironment, type LedgerEnv } from "@/lib/notifications/delivery/
 import { EMAIL_TEMPLATE_VERSIONS, IN_APP_TEMPLATE_VERSION } from "@/lib/notifications/catalog/definitions";
 import { activationBlockers, blockerCode, countsOf, isCustomerFacing, overlapsExistingDelivery, type AutomationFields } from "./rules";
 import type { DryRunEvaluation } from "./dry-run";
-import { ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED } from "./types";
+import { ACTIVATION_DISABLED_REASON, ACTIVATION_DISABLED_TEXT, automationActivationEnabled } from "./types";
 import type {
   ActivationBlocker, AutomationChannel, AutomationDetail, AutomationRunDTO, AutomationRunStatus, AutomationState, AutomationSummary,
   AutoPauseReason, Condition, RetryPolicy,
@@ -64,14 +64,15 @@ export type AutomationRow = Awaited<ReturnType<Tx["automationDefinition"]["findF
 export type RunRow = Awaited<ReturnType<Tx["automationRun"]["findFirstOrThrow"]>>;
 
 async function audit(tx: Tx, actor: AutomationActor, action: (typeof AuditAction)[keyof typeof AuditAction], id: string,
-  change: { before: Record<string, unknown> | null; after: Record<string, unknown> | null }, detail: Record<string, unknown>, reason: OperatorReason): Promise<string> {
+  change: { before: Record<string, unknown> | null; after: Record<string, unknown> | null }, detail: Record<string, unknown>, reason: OperatorReason,
+  result: "SUCCESS" | "REFUSED" = "SUCCESS"): Promise<string> {
   const { id: auditId } = await recordOperatorAction(tx as unknown as Parameters<typeof recordOperatorAction>[0], {
     actor: { userId: actor.userId, via: actor.via, area: "CUSTOMER_SUCCESS" },
     action,
     target: { kind: "COMMS_AUTOMATION", id },
     reason,
     change,
-    result: "SUCCESS",
+    result,
     detail,
     ipAddress: actor.ipAddress ?? null,
     userAgent: actor.userAgent ?? null,
@@ -223,9 +224,10 @@ async function lastDryRunOf(tx: Tx, row: AutomationRow): Promise<RunRow | null> 
 }
 
 export async function activate(input: { id: string; expectedVersion: number; actor: AutomationActor; reason: OperatorReason; now: Date; activationEnabled?: boolean }, client: AutomationDb = DB()): Promise<AutomationWriteResult<AutomationRow>> {
-  // The ACTIVATION HARD GATE (types.ts) — before any read or write.
-  if (!(input.activationEnabled ?? AUTOMATION_ACTIVATION_ENABLED)) {
-    return { ok: false, code: ACTIVATION_DISABLED_REASON, error: "Automation activation is disabled until the hardening review items are fixed. Owner approval and dry runs still work." };
+  // The ACTIVATION GATE (types.ts) — before any read or write. The caller's decision AND the resolver,
+  // read now: the store never opens what the environment has closed (defence in depth).
+  if (input.activationEnabled === false || !automationActivationEnabled(process.env)) {
+    return { ok: false, code: ACTIVATION_DISABLED_REASON, error: ACTIVATION_DISABLED_TEXT };
   }
   return run(client, async (tx) => {
     const row = await tx.automationDefinition.findUnique({ where: { id: input.id } });
@@ -250,6 +252,23 @@ export async function activate(input: { id: string; expectedVersion: number; act
   });
 }
 
+/**
+ * An activation REFUSED by the closed gate (the env kill switch / not Preview): ONE audit row
+ * (COMMS_AUTOMATION_ACTIVATION_REFUSED, result REFUSED) with the actor, the reason, the requested and
+ * current version and the definitionVersion. Writes nothing else. The decision was made before this
+ * read; an unknown id is recorded with nulls (the response is the same 409 either way).
+ */
+export async function recordActivationRefused(input: { id: string; expectedVersion: number; actor: AutomationActor; reason: OperatorReason; now: Date }, client: AutomationDb = DB()): Promise<string> {
+  return client.$transaction(async (tx) => {
+    const row = await tx.automationDefinition.findUnique({ where: { id: input.id } });
+    const def = row ? getCatalogDefinition(row.definitionKey) : undefined;
+    return audit(tx, input.actor, AuditAction.COMMS_AUTOMATION_ACTIVATION_REFUSED, input.id,
+      { before: row ? { state: row.state, version: row.version } : null, after: null },
+      { code: ACTIVATION_DISABLED_REASON, requestedVersion: input.expectedVersion, definitionKey: row?.definitionKey ?? null,
+        definitionVersion: def?.definitionVersion ?? row?.definitionVersion ?? null }, input.reason, "REFUSED");
+  });
+}
+
 export interface StopResult { row: AutomationRow; cancelled: Array<{ id: string; recipientUserId: string | null; channel: string; attempt: number; runId: string }> }
 
 async function stop(kind: "PAUSE" | "DISABLE", input: { id: string; expectedVersion: number; actor: AutomationActor; reason: OperatorReason; now: Date }, client: AutomationDb): Promise<AutomationWriteResult<StopResult>> {
@@ -264,7 +283,8 @@ async function stop(kind: "PAUSE" | "DISABLE", input: { id: string; expectedVers
       await tx.automationRunItem.updateMany({ where: { id: { in: scheduled.map((s) => s.id) }, status: "SCHEDULED" }, data: { status: "CANCELLED", reason: "AUTOMATION_PAUSED", lastDeliveryStatus: "CANCELLED" } });
     }
     const auditLogId = await audit(tx, input.actor, kind === "PAUSE" ? AuditAction.COMMS_AUTOMATION_PAUSED : AuditAction.COMMS_AUTOMATION_DISABLED, row.id,
-      { before: { state: row.state, version: row.version }, after: { state: to } }, { cancelledItems: scheduled.length }, input.reason);
+      { before: { state: row.state, version: row.version }, after: { state: to } },
+      { cancelledItems: scheduled.length, definitionKey: row.definitionKey, definitionVersion: getCatalogDefinition(row.definitionKey)?.definitionVersion ?? row.definitionVersion }, input.reason);
     const next = await bump(tx, row, { state: to, updatedById: input.actor.userId, ...(kind === "PAUSE" ? { pausedAt: input.now } : { disabledAt: input.now }) });
     return { value: { row: next, cancelled: scheduled }, auditLogId };
   });
