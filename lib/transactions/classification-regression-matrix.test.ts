@@ -274,15 +274,16 @@ const SANDBOX: Raw[] = [
   { id: "sbIntrst", acct: "sav", date: "2026-10-08", amount: 4.22, name: "INTRST PYMNT", pfc: ["TRANSFER_IN", "TRANSFER_IN_OTHER_TRANSFER_IN"] },
 ];
 
-test("F-1 · the Sandbox window reproduces the Preview figures exactly through the real pipeline", () => {
+test("F-1 · the Sandbox window through the real pipeline (classifier v6: the AUTOMATIC PAYMENT row leaves spending)", () => {
   const { dtos } = pipeline(SANDBOX);
   const t = totals(dtos);
+  // Before v6 (the Preview figures): card 4,157.00 · spending 3,774.46 · unresolved 6,879.22.
   assert.equal(t.cashIn, 500);
   assert.equal(t.cashOut, 117.46);
   assert.equal(t.netCash, 382.54);
-  assert.equal(t.chargedOnCredit, 4157);
-  assert.equal(t.spending, 3774.46);
-  assert.equal(t.unresolved, 6879.22);
+  assert.equal(t.chargedOnCredit, 2078.5);
+  assert.equal(t.spending, 1695.96);
+  assert.equal(t.unresolved, 8957.72);
   assert.equal(t.debtPaid, 0, "the window has no attested card payment — 'No debt payments in this period'");
   assert.equal(t.income, 0);
 });
@@ -295,24 +296,23 @@ test("F-1 · the AUTOMATIC PAYMENT row: raw facts, current verdict on every cons
   assert.equal(s.amount, -2078.5);             // money OUT of a liability = the balance owed went UP
   assert.equal(typeOf(s.acct), "debt");
   assert.equal(s.category, "Payment");         // mapPlaidCategory CC-1: CREDIT_CARD_PAYMENT ⇒ Payment
-  // The classifier's CCPAY-2B veto: a liability outflow is never DEBT_PAYMENT ⇒ a purchase.
-  assert.equal(s.flowType, "SPENDING");
+  // v6 (GAP-1): a payment-shaped liability OUTFLOW is the honest UNKNOWN valve —
+  // neither a purchase (the CCPAY-2B veto's old answer) nor a debt payment.
+  assert.equal(s.flowType, "UNKNOWN");
+  assert.equal(s.flowDirection, "OUTFLOW");
   assert.equal(s.classificationReason, "ACCOUNT_TYPE_CONTEXT");
-  assert.equal(s.classificationConfidence, 0.7);
-  // Matching evidence: a SPENDING row is not a transfer candidate, and no equal
-  // depository outflow (−2,078.50 / +2,078.50) exists in the window anyway.
-  assert.equal(isTransferPrefilterCandidate(s.flowType), false);
+  assert.equal(s.classificationConfidence, 0.3);
+  // Matching evidence: an UNKNOWN row enters the prefilter, but admission refuses a
+  // liability charge, and no equal depository leg (±2,078.50) exists in the window anyway.
   assert.equal(SANDBOX.filter((r) => r.acct !== "card" && Math.abs(r.amount) === 2078.5).length, 0);
   const v = viewOf(dtos, "sbAutoPay");
-  assert.equal(v.liquidity, "NEUTRAL/REAL_COST");    // never Cash out (card tier)
+  assert.equal(v.liquidity, "UNRESOLVED/UNRESOLVED");  // never Cash out; disclosed as unresolved
   assert.equal(v.reducesDebt, false);
-  // Category donut: "Payment" is structural, so the spending row folds to Other.
+  assert.deepEqual([v.nature, v.label], ["UNCLASSIFIED", "Unclassified"]);
+  // Category donut: the row is no longer spending; "Other" is Madison 500 + Touchstone 78.50.
   const other = categorySpendLedger(dtos).find((l) => l.category === "Other")!;
-  assert.equal(r2(other.net), 2657);
-  assert.ok(other.transactionIds.includes("sbAutoPay"));
-  gap({ id: "GAP-1", case: 7, row: "sbAutoPay", field: "nature", current: "SPENDING", expected: "UNCLASSIFIED (payment-shaped liability outflow: needs review, not a purchase)",
-    note: "A liability outflow the provider tags LOAN_PAYMENTS_CREDIT_CARD_PAYMENT is counted as card spending (Sandbox F-1; real-world: a RETURNED card payment)." }, v.nature);
-  gap({ id: "GAP-1", case: 7, row: "sbAutoPay", field: "label", current: "Spending", expected: "Unclassified", note: "same row, label" }, v.label);
+  assert.equal(r2(other.net), 578.5);
+  assert.ok(!other.transactionIds.includes("sbAutoPay"));
 });
 
 test("F-1 · the $25 Saving 'CREDIT CARD 3333 PAYMENT': unattested ⇒ unresolved money, not a debt payment", () => {
@@ -480,21 +480,20 @@ test("case 7 · refunds reverse their category without income; returned payments
   const travel = categorySpendLedger(dtos).find((l) => l.category === "Travel")!;
   assert.equal(travel.net, 0, "the refund nets its own category");
   const ret = viewOf(dtos, "c7ReturnCard");
-  gap({ id: "GAP-1", case: 7, row: "c7ReturnCard", field: "flowType", current: "SPENDING",
-    expected: "UNKNOWN (payment reversal — not a purchase)", note: "a returned card payment is counted as a purchase" }, ret.flowType);
+  assert.deepEqual([ret.flowType, ret.nature, ret.liquidity], ["UNKNOWN", "UNCLASSIFIED", "UNRESOLVED/UNRESOLVED"],
+    "v6: a returned card payment is not a purchase");
   const back = viewOf(dtos, "c7ReturnCash");
   assert.deepEqual([back.nature, back.liquidity], ["UNCLASSIFIED_MOVEMENT", "UNRESOLVED/UNRESOLVED"], "returned money is never income");
   const t = totals(dtos);
   assert.equal(t.income, 0);
-  gap({ id: "GAP-1", case: 7, row: "(window)", field: "spending", current: 201, expected: 0,
-    note: "gross 220 + returned payment 300 − credits 319 (refund 220, chargeback 60, fee reversal 39); without the returned payment the window nets to 0" }, t.spending);
+  assert.equal(t.spending, 0, "v6: gross 220 − credits 319, floored (was 201 with the returned payment counted)");
   gap({ id: "GAP-4", case: 7, row: "(window)", field: "debtPaid", current: 300, expected: 0,
     note: "the returned payment is not netted against the payment it reverses (no reversal pairing exists)" }, t.debtPaid);
   // The fee reversal itself: the money layers agree it is a CREDIT (economic fold, liquidity REFUND).
   const rev = viewOf(dtos, "c7FeeReversal");
   assert.equal(rev.liquidity, "NEUTRAL/REFUND");
   assert.deepEqual([rev.nature, rev.label], ["REFUND", "Refund"], "a cost-flow credit reads as the reversal every total treats it as");
-  assert.equal(t.chargedOnCredit, 520, "DayFacts: Delta 220 + returned payment 300 — the reversal is not a charge");
+  assert.equal(t.chargedOnCredit, 220, "DayFacts: Delta 220 only — neither the fee reversal nor (v6) the returned payment is a charge");
 });
 
 // Debt service — a cost-flow CREDIT on a liability (independent of every other gap)
@@ -504,15 +503,16 @@ const C7B: Raw[] = [
   { id: "c7bPayCash", acct: "chk", date: "2026-10-05", amount: -100, name: "CARD AUTOPAY", pfc: CC_PAY },
   { id: "c7bPayCard", acct: "card", date: "2026-10-05", amount: 100, name: "Payment Thank You-Mobile", pfc: CC_PAY },
 ];
-test("debt service · a fee reversal on a card is a credit in every money layer except the debt-service decomposition", () => {
+test("debt service · a fee reversal on a card is a credit in every money layer, debt service included", () => {
   const { dtos } = pipeline(C7B);
   const t = totals(dtos);
   assert.equal(t.spending, 61, "economic fold: 100 − 39");
   assert.equal(t.chargedOnCredit, 100, "DayFacts: the reversal is not a charge");
   assert.equal(t.debtPaid, 100);
-  gap({ id: "GAP-5", case: 7, row: "c7bFeeRev", field: "netPaydown", current: 0, expected: 39,
-    note: "computeDebtService adds a positive cost-flow row on a liability to new CHARGES (139) instead of refunds (charges 100 − 39 = 61; payment 100 ⇒ paydown 39)" }, t.netPaydown);
-  gap({ id: "GAP-5", case: 7, row: "c7bFeeRev", field: "netNewBorrowing", current: 39, expected: 0, note: "same rows" }, t.netNewBorrowing);
+  // v2.7-B GAP-5 (APPROVAL-GATED): debt service now nets it as a credit too —
+  // charges 100 − 39 = 61; payment 100 ⇒ paydown 39 (was: paydown 0, new borrowing 39).
+  assert.equal(t.netPaydown, 39);
+  assert.equal(t.netNewBorrowing, 0);
 });
 
 // Case 8 — external payments / withdrawals / unknown counterparties
@@ -550,8 +550,12 @@ const C9: Raw[] = [
 ];
 test("case 9 · account context outranks the provider category — pinned where it works, gaps where it does not", () => {
   const { dtos } = pipeline(C9);
-  // The CCPAY-2B veto protects a REAL purchase here — this is why GAP-1 cannot be fixed by inverting the veto.
-  assert.deepEqual([viewOf(dtos, "c9TravelBooking").flowType, viewOf(dtos, "c9TravelBooking").nature], ["SPENDING", "SPENDING"]);
+  // THE v6 TRADE-OFF (owner-approved or not at all): a REAL purchase the provider
+  // tagged CREDIT_CARD_PAYMENT is no longer counted as spending — it is UNKNOWN,
+  // surfaced for review, and a user correction restores it. Before v6: SPENDING.
+  assert.deepEqual([viewOf(dtos, "c9TravelBooking").flowType, viewOf(dtos, "c9TravelBooking").nature], ["UNKNOWN", "UNCLASSIFIED"]);
+  const fixed = pipeline([{ ...C9[0], userCategory: "Travel" }]);
+  assert.equal(viewOf(fixed.dtos, "c9TravelBooking").flowType, "SPENDING", "a USER_OVERRIDE restores the purchase");
   assert.equal(viewOf(dtos, "c9PosAsTransfer").flowType, "SPENDING");
   const credit = viewOf(dtos, "c9IncomeOnCard");
   assert.notEqual(credit.flowType, "INCOME", "never income on a card");
@@ -641,7 +645,7 @@ test("matrix totals (printed for the audit doc) and the gap register", () => {
   console.log("MATRIX_TOTALS", JSON.stringify(matrix));
   const ids = [...new Set(KNOWN_GAPS.map((g) => g.id))].sort();
   console.log("KNOWN_GAPS", JSON.stringify(KNOWN_GAPS.map(({ id, row, field, current, expected }) => ({ id, row, field, current, expected }))));
-  assert.deepEqual(ids, ["GAP-1", "GAP-3", "GAP-4", "GAP-5"]);
+  assert.deepEqual(ids, ["GAP-3", "GAP-4"]);
 });
 
 test("labels · an unattested provider payment reads as a transfer; a human's 'Payment' is honoured", () => {

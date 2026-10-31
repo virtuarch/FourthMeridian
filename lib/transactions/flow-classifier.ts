@@ -94,6 +94,14 @@ import { isLiabilityAccount, isLiabilityInflow, isLiabilityOutflow } from './lia
  *       anything else ⇒ the honest UNKNOWN valve. Never INCOME, and never a
  *       fabricated refund. Existing rows: scripts/repair-liability-income-credits.ts.
  *
+ *   6 = v2.7-B GAP-1 — a liability OUTFLOW whose provider detail is
+ *       LOAN_PAYMENTS_CREDIT_CARD_PAYMENT is UNKNOWN/OUTFLOW (0.3,
+ *       ACCOUNT_TYPE_CONTEXT), no longer a CCPAY-2B purchase. Returned card
+ *       payments and provider artefacts stop counting as spending; the
+ *       mislabelled-purchase minority becomes "needs review". Existing rows change
+ *       only when re-synced or backfilled (scripts/backfill-flowtype.ts, owner-run).
+ *       See docs/plans/V2.7-TRANSFER-PAYMENT-CLASSIFICATION-AUDIT-2026-10-27.md.
+ *
  * ── OWNERSHIP, not merely staleness (CCPAY-2F) ──────────────────────────────
  * This number records WHICH AUTHORITY produced a row's persisted flow facts, and
  * only secondarily how stale they are. A convergence backfill must therefore
@@ -110,7 +118,7 @@ import { isLiabilityAccount, isLiabilityInflow, isLiabilityOutflow } from './lia
  * unknown-inflow honesty signal and raised confidence on a circular derivation.
  * See docs/doctrine/financial-semantics.md (§ Liability payment classification).
  */
-export const FLOW_CLASSIFIER_VERSION = 5;
+export const FLOW_CLASSIFIER_VERSION = 6;
 
 export type FlowType =
   | 'SPENDING'      // discretionary/non-discretionary consumption (a real cost)
@@ -413,6 +421,21 @@ function classifyFromPfc(input: FlowClassificationInput): FlowClassification | n
       // LOAN_PAYMENTS_CAR_PAYMENT; an Amex Travel booking tagged
       // LOAN_PAYMENTS_CREDIT_CARD_PAYMENT because the brand string matched).
       // The veto is what makes account context outrank the provider tag.
+      //
+      // v6 (v2.7-B, GAP-1) — EXCEPT the one detail that is the provider's most
+      // specific claim that this IS a card payment. A liability OUTFLOW tagged
+      // LOAN_PAYMENTS_CREDIT_CARD_PAYMENT is structurally ambiguous: a payment that
+      // was RETURNED / reversed (the balance goes back up), a provider artefact (the
+      // Plaid Sandbox "AUTOMATIC PAYMENT - THANK", −2,078.50/month), or a purchase
+      // the provider mislabelled by brand (two of the CCPAY-1 rows). Sign and
+      // account alone cannot tell them apart, and counting all three as spending
+      // inflates spending whenever it is not a purchase. Per the owner contract
+      // ("unknown ⇒ explicitly unresolved, never spending solely because matching is
+      // incomplete") it is the honest UNKNOWN valve: not spending, not a debt
+      // payment, surfaced for review; a user correction settles it either way.
+      if (isLiabilityOutflow(input) && detailed === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT') {
+        return { flowType: 'UNKNOWN', flowDirection: 'OUTFLOW', confidence: 0.3, reason: 'ACCOUNT_TYPE_CONTEXT' };
+      }
       return debtPaymentUnlessLiabilityOutflow(input, 0.8, 'PLAID_PFC_PRIMARY');
     case 'BANK_FEES':
       return { flowType: 'FEE', flowDirection: 'OUTFLOW', confidence: 0.8, reason: 'PLAID_PFC_PRIMARY' };

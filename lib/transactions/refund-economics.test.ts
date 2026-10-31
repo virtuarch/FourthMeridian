@@ -354,7 +354,8 @@ console.log("19. conservation + invariants");
   const acc = { income: 0, spendGross: 0, refunds: 0 };
   foldEconomicRow(acc, { flowType: "REFUND", amount: 500 });
   check("the fold puts a refund in `refunds` and nowhere else", acc.refunds === 500 && acc.income === 0 && acc.spendGross === 0);
-  check("classifier version is bumped for the rule change", FLOW_CLASSIFIER_VERSION === 5);
+  // v2.7-B bumped to 6 (GAP-1); REFUND-1 shipped at 5 — the pin is "at least the REFUND-1 version".
+  check("classifier version is bumped for the rule change", FLOW_CLASSIFIER_VERSION >= 5);
 }
 
 console.log("20. Transaction Analysis output (Cash Flow ▸ Spending by category) + row label");

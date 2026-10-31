@@ -291,10 +291,15 @@ expectFlow('CCPAY-2B: Qlub (restaurant app) tagged LOAN_PAYMENTS_CAR_PAYMENT',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_CAR_PAYMENT' },
   'SPENDING', 'OUTFLOW');
 
+// v6 (v2.7-B GAP-1, APPROVAL-GATED) — the CREDIT_CARD_PAYMENT detail on a liability
+// OUTFLOW is ambiguous (returned payment / provider artefact / mislabelled
+// purchase), so it is the UNKNOWN valve, not SPENDING. The CCPAY-2B invariant this
+// block exists for — NEVER DEBT_PAYMENT on a liability outflow — still holds. This
+// real purchase is the documented cost of the rule: it now surfaces for review.
 expectFlow('CCPAY-2B: Amex Travel booking tagged LOAN_PAYMENTS_CREDIT_CARD_PAYMENT',
   { category: 'Payment', amount: -506.98, accountType: 'debt',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' },
-  'SPENDING', 'OUTFLOW');
+  'UNKNOWN', 'OUTFLOW');
 
 expectFlow('CCPAY-2B: DYNEFF fuel tagged LOAN_PAYMENTS_OTHER_PAYMENT',
   { category: 'Payment', amount: -107.41, accountType: 'debt',
@@ -309,9 +314,15 @@ expectFlow('CCPAY-2B: liability outflow with no PFC is still vetoed',
 expectFlow('CCPAY-2B: veto honors the debtSubtype liability signal',
   { category: 'Payment', amount: -50, accountType: 'other', debtSubtype: 'credit_card' },
   'SPENDING', 'OUTFLOW');
+// v6 — still never DEBT_PAYMENT; the CREDIT_CARD_PAYMENT detail lands on UNKNOWN.
 expectFlow('CCPAY-2B: veto fires even when a descriptor claims payment',
   { category: 'Payment', amount: -50, accountType: 'debt',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' },
+  'UNKNOWN', 'OUTFLOW');
+// …while the Payment CATEGORY path (no PFC) and every other LOAN_PAYMENTS detail keep the purchase answer.
+expectFlow('v6: CREDIT_CARD_PAYMENT detail only — OTHER_PAYMENT on a card outflow is still a purchase',
+  { category: 'Payment', amount: -50, accountType: 'debt',
+    pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_OTHER_PAYMENT' },
   'SPENDING', 'OUTFLOW');
 
 // ── What the veto must NOT touch ─────────────────────────────────────────────

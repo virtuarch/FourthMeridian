@@ -86,8 +86,7 @@
 
 import { classifyLiquidity, type LiquidityContext, type LiquidityTx } from "@/lib/transactions/liquidity";
 import { selectDebtPaymentCashLegs } from "@/lib/transactions/debt-payment-authority";
-import { isCostFlow, isRefund } from "@/lib/transactions/flow-predicates";
-import { clampEconomicSpend } from "@/lib/transactions/cash-flow";
+import { clampEconomicSpend, economicSideOf } from "@/lib/transactions/cash-flow";
 import { round2 } from "@/lib/money/round";
 
 /** What the cash sent toward liabilities in a window actually did. All ≥ 0. */
@@ -145,10 +144,15 @@ export function computeDebtService<T extends LiquidityTx>(
     const ft = r.flowType ?? null;
 
     if (ownTier === "liability") {
-      // Same membership as DayFacts.creditCardSpending (cash-flow-projection.ts):
-      // a cost flow whose own account is a liability.
-      if (isCostFlow(ft)) charges += mag;
-      else if (isRefund(ft)) refunds += mag;
+      // Same membership AND direction as DayFacts.creditCardSpending /
+      // creditCardRefunds (cash-flow-projection.ts): the economic fold's own side
+      // decision. v2.7-B (GAP-5) — this read `isCostFlow ⇒ charge` whatever the
+      // sign, so a fee or interest REVERSAL on a card (a cost flow with money IN,
+      // FM-AUDIT-006) was added to new charges here while every other money layer
+      // nets it as a credit.
+      const side = economicSideOf(ft, r.amount);
+      if (side === "SPEND") charges += mag;
+      else if (side === "CREDIT") refunds += mag;
       continue;
     }
 
