@@ -252,6 +252,11 @@ async function main() {
     const pg = readFileSync("lib/prices/price-gap.ts", "utf8");
     check("production revaluation reads the evidence-keyed holders and clamps to the CHUNK, not to the earliest snapshot",
       /owed: \(ids\) => holderRevaluations\(client, ids\)/.test(pg) && !/earliestSnapshotISO, 1\)/.test(pg.slice(pg.indexOf("export async function revalueHoldersAfterPriceGaps"))));
+    // The abandoned-block stamp's DB binding: estimate rows only (a frozen
+    // observation is never downgraded), status column only (no value written).
+    const stamp = pg.slice(pg.indexOf("async markUnavailable("), pg.indexOf("async regenerate(", pg.indexOf("async markUnavailable(")));
+    check("the abandoned-block stamp touches ESTIMATE rows only and writes only the status column",
+      stamp.length > 0 && /isEstimated: true,/.test(stamp) && /data: \{ cryptoValuationStatus: "unavailable" \}/.test(stamp));
   }
 
   console.log(`\nstale-holder-revaluation: ${passes} passed, ${failures} failed.`);
