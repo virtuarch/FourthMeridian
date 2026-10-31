@@ -146,10 +146,11 @@ export async function refreshWalletHistory(
     // wholesale reconstructSolHistory stopped at 5,000 signatures per run and
     // never resumed; it remains only as the fixture-driven acceptance path.
     : key === SOL_NATIVE.chain ? (a: HistoryWindow) => metered(ALCHEMY_USAGE_NETWORK.SOLANA, (meter) => reconstructSolHistoryResumable({ ...a, client: db, deps: { headOnly: syncHeadOnly(), meter } }))
-    // ETH: the incremental path, and on its fallback the inline FULL rebuild —
-    // unless the history worker carries Ethereum (ETH_BACKFILL_ENABLED), when a
-    // fallback is queued for the worker and nothing is written here
-    // (eth-history-backfill.store.ts). Flag off: exactly reconstructEthHistory.
+    // ETH: the incremental path; on its fallback the rebuild is QUEUED on the
+    // resumable checkpoint — carried by the history worker when it carries
+    // Ethereum (ETH_BACKFILL_ENABLED), otherwise advanced here by ONE bounded
+    // worker step per sync (never an unbounded inline rebuild). Every path is
+    // deadline-bounded (eth-history-backfill.store.ts reconstructEthHistoryForSync).
     : key === ETH_NATIVE.chain ? (a: HistoryWindow) => metered(ALCHEMY_USAGE_NETWORK.ETHEREUM, (meter) => reconstructEthHistoryForSync({ ...a, client: db, deferFull: ethWorkerEnabled(), deps: { meter } }))
     : null;
   if (run === null) return { accountId, chain: key, refreshed: false, reason: "chain has no reconstruction" };

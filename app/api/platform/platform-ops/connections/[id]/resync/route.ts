@@ -38,6 +38,11 @@ import { billableForPlaidItem } from "@/lib/platform/policies/billable-subjects"
 import { billableSkipCode } from "@/lib/entitlements/billable-gate-core";
 import { billableRefusalResponse } from "@/lib/entitlements/consume";
 
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export const runtime = "nodejs";
 
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {

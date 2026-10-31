@@ -160,6 +160,11 @@ import { cooldownMsFromMinutes } from "@/lib/plaid/refreshCooldown";
 // accepted by the API after being removed from the menu. Hiding an option is
 // not a restriction if the endpoint behind it still accepts the value.
 
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export async function POST(req: NextRequest) {
   const [, err] = await requireUser();
   if (err) return err;
