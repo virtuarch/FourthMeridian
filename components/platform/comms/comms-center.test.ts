@@ -27,7 +27,7 @@ import { COMMS_CATALOG, EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/de
 import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  ACTIVATION_BLOCKER_LABEL, BYKEY_STATUSES, BYKEY_STATUSES_MEASURED, DELIVERY_STATUS_LABEL, SERIES_LABEL, byKeyLine, activationLines, COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
+  ACTIVATION_BLOCKER_LABEL, acceptedUncertainLine, BYKEY_STATUSES, BYKEY_STATUSES_MEASURED, DELIVERY_STATUS_LABEL, SERIES_LABEL, byKeyLine, activationLines, COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
   STATUS_LABEL, statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
@@ -330,6 +330,20 @@ async function main() {
     const unmeasuredWithKeys = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, series: { ...delivery.series, delivered: sz } }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
     check("not measured ⇒ provider series never render, even if a key is present", !unmeasuredWithKeys.includes('data-series="delivered"'));
     const visibleText = (h: string) => h.replace(/<[^>]*>/g, " ");
+    // #196 — accepted with no provider message id (a subset of accepted; never confirmable).
+    const withU = (over: Partial<DeliveryAnalytics>) => renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...measured, ...over }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    const u3 = withU({ acceptedUncertain: 3 });
+    check("measured + 3 ⇒ the plain line, plural", u3.includes("data-accepted-uncertain") && u3.includes("3 accepted by provider can’t be confirmed — no provider message id was returned."));
+    check("singular wording reads naturally (1 … can’t be confirmed)", acceptedUncertainLine({ measured: measured.measured, acceptedUncertain: 1 }) === "1 accepted by provider can’t be confirmed — no provider message id was returned."
+      && acceptedUncertainLine({ measured: measured.measured, acceptedUncertain: 1200 })?.startsWith("1,200 accepted by provider") === true);
+    const { acceptedUncertain: _drop, ...noKey } = { ...measured, acceptedUncertain: 3 };
+    check("hidden for measured + 0, measured + null, a missing key (older server), and unmeasured + 3",
+      !withU({ acceptedUncertain: 0 }).includes("data-accepted-uncertain") && !withU({ acceptedUncertain: null }).includes("data-accepted-uncertain")
+        && !renderToStaticMarkup(createElement(DeliverySurface, { read: ok(noKey as DeliveryAnalytics), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} })).includes("data-accepted-uncertain")
+        && !renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, acceptedUncertain: 3 }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} })).includes("data-accepted-uncertain"));
+    const uLine = u3.slice(u3.indexOf("data-accepted-uncertain"), u3.indexOf("</span>", u3.indexOf("data-accepted-uncertain")));
+    check("informational, not an error: a policy note (no alert role, no error colour) and no raw code", !/role="alert"|coral|UNCERTAIN|ACCEPTED/.test(uLine)
+      && !/role="alert"[^>]*>[^<]*can’t be confirmed/.test(u3) && !/\bUNCERTAIN_ACCEPTANCE\b/.test(visibleText(u3)), uLine);
     check("no raw status code ever appears in the rendered text (measured or not)",
       ![...DELIVERY_STATUSES].some((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk) + visibleText(dOk))), DELIVERY_STATUSES.filter((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk))));
     check("Preview environment explains Captured", /Preview captures sends/.test(dOk));

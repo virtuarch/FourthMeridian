@@ -31,7 +31,7 @@ import {
 } from "@/lib/platform/comms-center/contract-v1-section-4";
 import { Segmented } from "../leads/visual-kit";
 import {
-  CHANNEL_LABEL, COMMS_POLICY, DELIVERY_MEASURED_CAPTION, DELIVERY_STATUS_LABEL, SERIES_LABEL, byKeyLine, deliverySeriesKeys, deliveryTiles, retentionText, suppressionRows, utcStamp,
+  CHANNEL_LABEL, COMMS_POLICY, DELIVERY_MEASURED_CAPTION, acceptedUncertainLine, DELIVERY_STATUS_LABEL, SERIES_LABEL, byKeyLine, deliverySeriesKeys, deliveryTiles, retentionText, suppressionRows, utcStamp,
 } from "./comms-model";
 import { DaySeriesBars, DaySeriesLegend, FilterSelect, ListMeta, PolicyNote, ReadState, WideTargets, okData, staleData, useCommsRead, type CommsRead } from "./comms-kit";
 
@@ -112,6 +112,7 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
                 </p>
               )}
               {d.measured.delivered && <PolicyNote><span data-delivery-measured>{DELIVERY_MEASURED_CAPTION}</span></PolicyNote>}
+              {acceptedUncertainLine(d) && <PolicyNote><span data-accepted-uncertain>{acceptedUncertainLine(d)}</span></PolicyNote>}
               <ul aria-label="Totals by status" className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" data-delivery-totals>
                 {tiles.map((t) => (
                   <li key={t.status} className="flex min-w-0 flex-col gap-0.5 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-2.5" style={{ background: "var(--surface-inset)" }} data-status-tile={t.status}>
