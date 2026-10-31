@@ -11,8 +11,9 @@
  *   save(send)         snapshot → send → stateAfterSave(prev, sent, result)
  *   liveChanged(c)     publish / restore landed: a dirty draft is kept as typed
  *   conflict           set by a 409 CONFLICT; resolved ONLY by a SUCCESSFUL
- *                      reload (`loadCount` rising past the conflict) — a failed
- *                      reload leaves the draft and the conflict untouched
+ *                      reload (`loadCount` rising past the conflict) whose
+ *                      revision has reached the server's `current` — a failed
+ *                      or older reload leaves the draft and the conflict untouched
  *   beforeunload       guarded while the draft is dirty
  *
  * DOM-less: tested by content-editor-state.test.ts with the repo's stub-root harness.
@@ -21,7 +22,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { ContentBody, TemplateVersionDTO } from "@/lib/notifications/content/types";
 import type { CommsReadResult } from "@/lib/platform/comms-center/client";
-import { editDraft, rebaseDraft, saveOutcome, stateAfterLiveChange, stateAfterSave, type Draft, type EditorState, type SaveOutcome } from "./content-model";
+import { editDraft, rebaseDraft, sameBody, saveOutcome, stateAfterLiveChange, stateAfterSave, type Draft, type EditorState, type SaveOutcome } from "./content-model";
+
+/** A save's outcome plus whether the operator typed while it was in flight. */
+export type SaveResult = SaveOutcome & { typedSince: boolean };
 
 export interface ContentDraftApi {
   state: EditorState | null;
@@ -34,7 +38,7 @@ export interface ContentDraftApi {
   edit: (fn: (b: ContentBody) => ContentBody) => void;
   /** Any other synchronous user action (open a version, accept / discard a suggestion, discard). */
   replace: (fn: (s: EditorState) => EditorState) => void;
-  save: (send: (sent: Draft) => Promise<CommsReadResult<{ result: TemplateVersionDTO }>>) => Promise<SaveOutcome | null>;
+  save: (send: (sent: Draft) => Promise<CommsReadResult<{ result: TemplateVersionDTO }>>) => Promise<SaveResult | null>;
   liveChanged: (c: { revision: number; published: TemplateVersionDTO | null; body: ContentBody }) => void;
   setConflict: (current: number | null) => void;
 }
@@ -54,6 +58,7 @@ export function useContentDraft(initial: () => EditorState | null, reload: { loa
   // A conflict is resolved by the first SUCCESSFUL reload after it.
   useEffect(() => {
     if (!conflict || reload.loadCount <= conflict.atLoad) return;
+    if (conflict.current !== null && reload.revision < conflict.current) return; // an older read than the server's token: not resolved yet
     setState((prev) => (prev ? { ...prev, draft: rebaseDraft(prev.draft, { revision: reload.revision }) } : prev));
     setConflictState(null);
   }, [conflict, reload.loadCount, reload.revision]);
@@ -81,10 +86,17 @@ export function useContentDraft(initial: () => EditorState | null, reload: { loa
       if (!snap) return null;
       const sent = snap.draft;
       const r = await send(sent);
+      // `typedSince` is decided HERE, at resolution, from the last RENDERED state
+      // (every keystroke is a discrete event React renders synchronously, so the
+      // ref already holds it) — never from a later read of state the save's own
+      // update hasn't rendered yet. The updater below applies the same rule to
+      // the state React actually commits.
+      const atResolution = ref.current;
+      const typedSince = atResolution !== null && !sameBody(atResolution.draft.body, sent.body);
       setState((prev) => (prev ? stateAfterSave(prev, sent.body, r) : prev));
       const o = saveOutcome(r);
       if (o.kind === "conflict") setConflict(o.current);
-      return o;
+      return { ...o, typedSince };
     },
     liveChanged: (c) => setState((prev) => (prev ? stateAfterLiveChange(prev, c) : prev)),
     setConflict,

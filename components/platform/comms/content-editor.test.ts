@@ -383,6 +383,28 @@ async function main() {
     check("the drawer renders a Content section when given one", withPanel.includes('aria-label="Content"') && withPanel.includes("CONTENT-SLOT"));
   }
 
+  console.log("8. source rules (regressions of the review fixes)");
+  {
+    const { readFileSync } = await import("node:fs");
+    const strip = (rel: string) => readFileSync(rel, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const ed = strip("components/platform/comms/ContentEditor.tsx");
+    const panel = ed.slice(ed.indexOf("export function ContentPanel("), ed.indexOf("function LockedNote("));
+    check("ContentPanel reads through useLastGoodRead (never okData ?? staleData)", /useLastGoodRead<VersionsResponse>/.test(panel) && !/staleData/.test(panel) && !/okData\(/.test(panel));
+    check("ContentEditor owns no draft state: no setDraft / useState<Draft>; every write goes through ed.*",
+      !/\bsetDraft\b|useState<Draft|useState<\s*\{\s*draft/.test(ed) && /ed\.save\(/.test(ed) && (ed.match(/ed\.liveChanged\(/g) ?? []).length === 1
+        && /afterLiveChange\(`Published/.test(ed) && /onRestored=\{\(text, revision, published\) => afterLiveChange\(/.test(ed));
+    check("postSaveDraft is called only inside ed.save", (ed.match(/postSaveDraft\(/g) ?? []).length === 1 && /ed\.save\(\(sent\) => postSaveDraft\(/.test(ed));
+    check("the save notice uses the save's own typedSince (not a post-await state read)", /o\.typedSince/.test(ed) && !/ed\.latest\(\)\?\.draft\.dirty/.test(ed.slice(ed.indexOf("const save = async"), ed.indexOf("const openVersion"))));
+    check("HistoryBox is not keyed by revision (open View / restore form survive a write)", !/<HistoryBox key=/.test(ed));
+    const dash = strip("components/platform/PlatformSpaceDashboard.tsx");
+    check("the dashboard's workspace and view switches ask the unsaved-content guard",
+      /const setActiveTab = useCallback\(\(id: string\) => \{ if \(confirmLeaveCommsContent\(\)\) setActiveTabRaw\(id\); \}/.test(dash)
+        && /const setActiveView = useCallback\(\(id: string\) => \{ if \(confirmLeaveCommsContent\(\)\) setActiveViewRaw\(id\); \}/.test(dash)
+        && !/onSelect=\{setActiveViewRaw\}|onSelectTab=\{setActiveTabRaw\}/.test(dash));
+    const lib = strip("components/platform/comms/LibraryView.tsx");
+    check("the Library drawer close / row change asks the same guard and reports dirtiness to it", /confirmLeaveCommsContent\(\)/.test(lib) && /onDirty=\{setUnsavedCommsContent\}/.test(lib));
+  }
+
   if (failures > 0) { console.error(`\ncontent-editor.test: ${failures} failure(s).`); process.exit(1); }
   console.log("\ncontent-editor.test: all passed.");
 }

@@ -40,7 +40,7 @@
  * simply skipped), so the placeholder branch was dead (OPS-5 integration gate §12).
  */
 
-import { useEffect, useMemo, type ComponentType } from "react";
+import { useCallback, useEffect, useMemo, type ComponentType } from "react";
 import {
   useSpaceChromePublisher,
   useSpaceSectionsPublisher,
@@ -77,6 +77,7 @@ import { SecurityLead } from "./leads/SecurityLead";
 import { CustomerSuccessLead } from "./leads/CustomerSuccessLead";
 import { MerchantLead } from "./leads/MerchantLead";
 import { CommsLibraryLead } from "./comms/LibraryView";
+import { confirmLeaveCommsContent } from "./comms/unsaved-content";
 import { CommsAutomationsLead } from "./comms/AutomationsView";
 import { CommsDeliveryLead } from "./comms/DeliveryView";
 import { CommsPreferencesLead } from "./comms/PreferencesView";
@@ -544,7 +545,10 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   // view control calls `setActiveView`, every doorway still calls setActiveTab
   // (a destination id may carry a view: Operations › Jobs).
   const viewIds = useMemo(() => platformAreaViewIds(area), [area]);
-  const { activeTab, activeView, setActiveTab, setActiveView } = usePlatformWorkspaceNavigation({ available, selectedKey, viewIds, selectedView });
+  const { activeTab, activeView, setActiveTab: setActiveTabRaw, setActiveView: setActiveViewRaw } = usePlatformWorkspaceNavigation({ available, selectedKey, viewIds, selectedView });
+  // Comms content editor: a workspace or view switch unmounts the Library drawer, so unsaved content asks first.
+  const setActiveTab = useCallback((id: string) => { if (confirmLeaveCommsContent()) setActiveTabRaw(id); }, [setActiveTabRaw]);
+  const setActiveView = useCallback((id: string) => { if (confirmLeaveCommsContent()) setActiveViewRaw(id); }, [setActiveViewRaw]);
 
   // Operational COMPOSITION (which section keys + doorways each workspace renders)
   // stays Platform-owned — it is data-needs metadata, NOT mount context, and is

@@ -129,7 +129,14 @@ function Sub({ title, children, hint }: { title: string; children: ReactNode; hi
  * (no `content` on the detail). A definition with no email / in-app leg, or a
  * content-locked one, shows the lock and no control.
  */
-export function ContentPanel({ detail, onDirty, onLiveChanged }: { detail: DetailV11; onDirty?: (dirty: boolean) => void; onLiveChanged?: () => void }) {
+export function ContentPanel({ detail, onDirty, onLiveChanged, detailRefreshFailed, onRetryDetail }: {
+  detail: DetailV11;
+  onDirty?: (dirty: boolean) => void;
+  onLiveChanged?: () => void;
+  /** The detail re-read after a publish / restore failed: "Live now" may be out of date. */
+  detailRefreshFailed?: string | null;
+  onRetryDetail?: () => void;
+}) {
   const legs = legOptions(detail);
   const first = legs.find((l) => l.editable) ?? legs[0] ?? null;
   const [leg, setLeg] = useState<{ channel: EditableChannel; variant: string } | null>(first ? { channel: first.channel, variant: first.variants[0] } : null);
@@ -152,6 +159,12 @@ export function ContentPanel({ detail, onDirty, onLiveChanged }: { detail: Detai
   return (
     <div className="flex min-w-0 flex-col gap-3" data-content-panel={detail.key}>
       <LegPicker legs={legs} leg={leg} current={current} onChoose={choose} />
+      {detailRefreshFailed && (
+        <p role="alert" className="flex min-w-0 flex-wrap items-center gap-2 text-[11px]" style={{ color: TONE_COLOR.warn }} data-detail-refresh-failed>
+          <span className="min-w-0 flex-1">Couldn’t refresh this message’s details ({detailRefreshFailed}) — “Live now” may be out of date.</span>
+          {onRetryDetail && <button type="button" onClick={onRetryDetail} className={BTN} style={BTN_NEUTRAL}><RefreshCw size={11} aria-hidden /> Retry</button>}
+        </p>
+      )}
       {detail.divergesFrom === "connection-attention" && (
         <PolicyNote>Editing this changes the notification bell and email copy only — the Connections page keeps its own wording.</PolicyNote>
       )}
@@ -347,9 +360,8 @@ export function ContentEditor(p: ContentEditorProps) {
     setBusy(null);
     if (!o) return;
     if (o.kind === "saved") {
-      const typedSince = ed.latest()?.draft.dirty ?? false;
       setSavedIssues(o.version.issues); setSuggestionExpired(false);
-      setNotice({ tone: "ok", text: typedSince ? `${o.notice} Your newer typing is kept as unsaved changes on top of it.` : o.notice });
+      setNotice({ tone: "ok", text: o.typedSince ? `${o.notice} Your newer typing is kept as unsaved changes on top of it.` : o.notice });
       p.onReload();
     } else if (o.kind === "conflict") setNotice({ tone: "warn", text: o.notice });
     else if (o.kind === "invalid") { setSavedIssues(o.issues); setNotice({ tone: "bad", text: o.notice }); }
@@ -407,7 +419,7 @@ export function ContentEditor(p: ContentEditorProps) {
 
       <Sub title="Save and publish">
         {draft.source.kind === "AI_SUGGESTION" && (
-          <SuggestionBanner expiresAt={draft.source.expiresAt} onDiscard={() => { ed.replace((s) => ({ ...s, draft: discardSuggestion(s.draft) })); setSuggestionExpired(false); setNotice(null); }} />
+          <SuggestionBanner expiresAt={draft.source.expiresAt} disabled={busy !== null} onDiscard={() => { ed.replace((s) => ({ ...s, draft: discardSuggestion(s.draft) })); setSuggestionExpired(false); setNotice(null); }} />
         )}
         <div className="flex flex-wrap items-center gap-2">
           {controls.save.shown && controls.edit.enabled && (
@@ -441,8 +453,8 @@ export function ContentEditor(p: ContentEditorProps) {
       <AiBox itemKey={itemKey} data={data} base={base} control={controls.ai} busy={busy === "ai"} onBusy={(b) => setBusy(b ? "ai" : null)} acceptBlock={aiAcceptBlock}
         onAccept={(s) => { ed.replace((st) => ({ ...st, draft: acceptSuggestion(st.draft, s) })); setSuggestionExpired(false); setNotice({ tone: "ok", text: "Suggestion loaded into the editor as an unsaved draft. Review it, then save." }); }} />
 
-      <HistoryBox key={data.revision} itemKey={itemKey} channel={channel} variant={variant} data={data} liveBody={liveBody} control={controls.rollback} canEdit={controls.edit.enabled}
-        revision={freshRevision} busy={busy === "rollback"} onBusy={(b) => setBusy(b ? "rollback" : null)} onOpen={openVersion}
+      <HistoryBox itemKey={itemKey} channel={channel} variant={variant} data={data} liveBody={liveBody} control={controls.rollback} canEdit={controls.edit.enabled}
+        revision={freshRevision} writing={busy !== null} busy={busy === "rollback"} onBusy={(b) => setBusy(b ? "rollback" : null)} onOpen={openVersion}
         onRestored={(text, revision, published) => afterLiveChange(text, revision, published, published ? bodyOfVersion(published) : codeDefault)}
         onRefused={(r) => { conflictNotice(r); setNotice({ tone: "bad", text: `Not restored: ${writeRefusalText(r)}` }); }} />
     </div>
@@ -458,13 +470,13 @@ function CheckLine({ status, stale, gate }: { status: CheckStatus; stale: boolea
   return <span role="status" className="text-[11px] tabular-nums" style={{ color: tone }} data-check-status={status}>{text}</span>;
 }
 
-function SuggestionBanner({ expiresAt, onDiscard }: { expiresAt: string; onDiscard: () => void }) {
+function SuggestionBanner({ expiresAt, onDiscard, disabled }: { expiresAt: string; onDiscard: () => void; disabled: boolean }) {
   const e = expiryText(expiresAt, Date.now());
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px]" data-ai-draft>
       <Chip tone="info"><Sparkles size={10} aria-hidden /> AI suggestion, unsaved</Chip>
       <span style={{ color: e.expired ? TONE_COLOR.bad : "var(--text-muted)" }}>{e.text}</span>
-      <button type="button" onClick={onDiscard} className="min-h-11 text-[11px] text-[var(--text-secondary)] underline-offset-2 hover:underline lg:min-h-7">Discard suggestion</button>
+      <button type="button" onClick={onDiscard} disabled={disabled} className="min-h-11 text-[11px] text-[var(--text-secondary)] underline-offset-2 hover:underline disabled:opacity-40 lg:min-h-7">Discard suggestion</button>
     </div>
   );
 }
@@ -829,8 +841,10 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept, acceptBlo
 
 // ── History ─────────────────────────────────────────────────────────────────────
 
-function HistoryBox({ itemKey, channel, variant, data, liveBody, control, canEdit, revision, busy, onBusy, onOpen, onRestored, onRefused }: {
+function HistoryBox({ itemKey, channel, variant, data, liveBody, control, canEdit, revision, writing, busy, onBusy, onOpen, onRestored, onRefused }: {
   itemKey: string;
+  /** Any write in flight (save / publish / restore / AI): editing from a version waits. */
+  writing: boolean;
   /** The freshest known stream revision (the same token save / publish send). */
   revision: number;
   channel: EditableChannel;
@@ -845,15 +859,22 @@ function HistoryBox({ itemKey, channel, variant, data, liveBody, control, canEdi
   onRestored: (text: string, revision: number, published: TemplateVersionDTO | null) => void;
   onRefused: (r: CommsReadResult<unknown>) => void;
 }) {
-  const [more, setMore] = useState<{ items: TemplateVersionDTO[]; nextCursor: string | null; loading: boolean } | null>(null);
+  // Older pages belong to the revision they were read at: a write (new revision)
+  // drops them, while an open View or restore form stays as it is.
+  const [moreRaw, setMore] = useState<{ rev: number; items: TemplateVersionDTO[]; nextCursor: string | null; loading: boolean } | null>(null);
+  const more = moreRaw && moreRaw.rev === data.revision ? moreRaw : null;
   const [viewing, setViewing] = useState<TemplateVersionDTO | null>(null);
   const [restoring, setRestoring] = useState<{ id: string; label: string } | null>(null);
   const [reason, setReason] = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
   const items = [...data.items, ...(more?.items ?? [])];
   const nextCursor = more ? more.nextCursor : data.nextCursor;
   const loadMore = (cursor: string) => {
-    setMore((m) => ({ items: m?.items ?? [], nextCursor: cursor, loading: true }));
-    void readVersions(itemKey, channel, variant, cursor).then((r) => setMore((m) => (r.kind === "ok" ? { items: [...(m?.items ?? []), ...r.data.items], nextCursor: r.data.nextCursor, loading: false } : { items: m?.items ?? [], nextCursor: cursor, loading: false })));
+    const rev = data.revision;
+    const prior = (m: typeof moreRaw) => (m && m.rev === rev ? m.items : []);
+    setMore((m) => ({ rev, items: prior(m), nextCursor: cursor, loading: true }));
+    void readVersions(itemKey, channel, variant, cursor).then((r) => setMore((m) => (r.kind === "ok"
+      ? { rev, items: [...prior(m), ...r.data.items], nextCursor: r.data.nextCursor, loading: false }
+      : { rev, items: prior(m), nextCursor: cursor, loading: false })));
   };
   const r = reasonPayload(reason);
   const restore = async () => {
@@ -891,7 +912,7 @@ function HistoryBox({ itemKey, channel, variant, data, liveBody, control, canEdi
               </span>
               <div className="flex flex-wrap gap-1.5">
                 <SmallBtn onClick={() => setViewing(viewing?.id === v.id ? null : v)}><Eye size={11} aria-hidden /> {viewing?.id === v.id ? "Close" : "View"}</SmallBtn>
-                {canEdit && <SmallBtn onClick={() => onOpen(v)}>Edit from this</SmallBtn>}
+                {canEdit && <SmallBtn onClick={() => onOpen(v)} disabled={writing}>Edit from this</SmallBtn>}
                 {control.enabled && isRestorable(v) && <SmallBtn onClick={() => setRestoring({ id: v.id, label: `v${v.version}` })}><RotateCcw size={11} aria-hidden /> Restore…</SmallBtn>}
               </div>
               {viewing?.id === v.id && <VersionView itemKey={itemKey} channel={channel} v={v} liveBody={liveBody} isLive={v.state === "PUBLISHED"} />}

@@ -21,7 +21,7 @@
  * typed client.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ChevronRight, ExternalLink, Search } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
@@ -33,7 +33,8 @@ import {
 import { DetailDrawer } from "../ui";
 import type { CatalogDetailV11Additions } from "@/lib/notifications/content/types";
 import { ContentPanel } from "./ContentEditor";
-import { guardDiscard } from "./content-model";
+import { writeRefusalText } from "./content-model";
+import { confirmLeaveCommsContent, setUnsavedCommsContent } from "./unsaved-content";
 import { ToneBadge } from "../platform-surface";
 import { Segmented } from "../leads/visual-kit";
 import {
@@ -377,13 +378,14 @@ function PreviewPanel({ item }: { item: CatalogDetail }) {
 function DetailDrawerBody({ itemKey, onDirty }: { itemKey: string; onDirty: (dirty: boolean) => void }) {
   // The last good detail stays on screen through a refresh (a publish / restore
   // re-reads it), so the content editor below is never unmounted with its draft.
-  const { read, data: d } = useLastGoodRead<CatalogDetail>(catalogDetailUrl(itemKey));
+  const { read, data: d, failure } = useLastGoodRead<CatalogDetail>(catalogDetailUrl(itemKey));
   const [liveNonce, setLiveNonce] = useState(0);
   const shown: CommsRead<CatalogDetail> = d ? { loading: false, result: { kind: "ok", data: d } } : read;
   const onLiveChanged = () => { read.retry?.(); setLiveNonce((x) => x + 1); };
   // v1.1 servers add `content` / `viewer` to the detail; an older payload has no Content section.
   return <CatalogDetailBody read={shown} preview={d ? <PreviewPanel key={`${d.key}|${liveNonce}`} item={d} /> : null}
-    content={d && "content" in d ? <ContentPanel key={d.key} detail={d as CatalogDetail & Partial<CatalogDetailV11Additions>} onDirty={onDirty} onLiveChanged={onLiveChanged} /> : null} />;
+    content={d && "content" in d ? <ContentPanel key={d.key} detail={d as CatalogDetail & Partial<CatalogDetailV11Additions>} onDirty={onDirty} onLiveChanged={onLiveChanged}
+      detailRefreshFailed={failure && !failure.loading ? writeRefusalText(failure.result) : null} onRetryDetail={() => read.retry?.()} /> : null} />;
 }
 
 // ── The lead ────────────────────────────────────────────────────────────────────
@@ -392,13 +394,13 @@ export function CommsLibraryLead() {
   const [filters, setFilters] = useState<CatalogFilters>(EMPTY_CATALOG_FILTERS);
   const [draftQ, setDraftQ] = useState("");
   const [open, setOpenRaw] = useState<string | null>(null);
-  const contentDirty = useRef(false);
   const setOpen = (next: string | null) => {
     if (next === open) return;
-    if (!guardDiscard(contentDirty.current, (t) => window.confirm(t))) return;
-    contentDirty.current = false;
+    if (!confirmLeaveCommsContent()) return;
     setOpenRaw(next);
   };
+  // Leaving the Library (another Comms view / workspace) has been confirmed by the switcher: drop the flag.
+  useEffect(() => () => setUnsavedCommsContent(false), []);
   const url = catalogUrl(filters);
   const read = useCommsRead<CatalogResponse>(url);
   // The server's `totals` count the result AFTER the status filter; with a
@@ -435,7 +437,7 @@ export function CommsLibraryLead() {
       <LibrarySurface read={read} more={activeMore} filters={filters} draftQ={draftQ} onDraftQ={setDraftQ}
         onFilters={(f) => { setFilters(f); if (f.q !== draftQ) setDraftQ(f.q); }} onOpen={setOpen} onMore={loadMore} triggers={triggers} chipTotals={chipTotals} />
       <DetailDrawer open={open !== null} onClose={() => setOpen(null)} eyebrow="Notification library" title={openItem?.displayName ?? open ?? ""} size="xl">
-        {open && <DetailDrawerBody key={open} itemKey={open} onDirty={(d) => { contentDirty.current = d; }} />}
+        {open && <DetailDrawerBody key={open} itemKey={open} onDirty={setUnsavedCommsContent} />}
       </DetailDrawer>
     </>
   );

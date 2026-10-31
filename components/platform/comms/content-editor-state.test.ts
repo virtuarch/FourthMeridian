@@ -12,7 +12,8 @@
  *   c. start a save, type, the save succeeds ⇒ the typed text survives, dirty,
  *      now based on the saved version;
  *   d. a publish landing while the operator has unsaved text never clobbers it;
- *   e. beforeunload is guarded exactly while the draft is dirty.
+ *   e. beforeunload is guarded exactly while the draft is dirty;
+ *   f. the page-wide unsaved-content guard (drawer / Comms view / workspace switch).
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/comms/content-editor-state.test.ts
  */
@@ -116,7 +117,9 @@ async function main() {
     let sent!: ContentBody;
     await act(async () => { saving = api.save(async (d) => { sent = d.body; return pending.promise; }); });
     await act(async () => typeSubject(api, "Newer text {{institutionName}}"));
-    await act(async () => { pending.resolve({ kind: "ok", data: { result: version("v5", 5, 4, sent) } }); await saving; });
+    let flag: boolean | undefined;
+    await act(async () => { pending.resolve({ kind: "ok", data: { result: version("v5", 5, 4, sent) } }); flag = ((await saving) as { typedSince: boolean }).typedSince; });
+    check("the save's own result says the operator typed since (decided at resolution, no flush needed)", flag === true);
     check("the newer typing survives the success", api.state?.draft.body.subject === "Newer text {{institutionName}}", api.state?.draft.body.subject);
     check("dirty, based on the saved v5 at its revision, base = v5", api.state?.draft.dirty === true && api.state.draft.parentVersionId === "v5" && api.state.draft.revision === 4 && api.state.base?.id === "v5");
     // Control: a save with NO typing in flight lands clean.
@@ -124,8 +127,16 @@ async function main() {
     let s2!: Promise<unknown>;
     let sent2!: ContentBody;
     await act(async () => { s2 = api.save(async (d) => { sent2 = d.body; return p2.promise; }); });
-    await act(async () => { p2.resolve({ kind: "ok", data: { result: version("v6", 6, 5, sent2) } }); await s2; });
+    let flag2: boolean | undefined;
+    await act(async () => { p2.resolve({ kind: "ok", data: { result: version("v6", 6, 5, sent2) } }); flag2 = ((await s2) as { typedSince: boolean }).typedSince; });
+    check("REGRESSION (wrong notice): nothing typed in flight ⇒ typedSince false, though the pre-save state was dirty", flag2 === false);
     check("control: nothing typed in flight ⇒ clean on v6", api.state?.draft.dirty === false && api.state.draft.parentVersionId === "v6" && api.state.draft.body.subject === "Newer text {{institutionName}}");
+
+    // No act() at all between resolve and reading the flag: the flag cannot depend on a render.
+    await act(async () => typeSubject(api, "Dirty before a bare save {{institutionName}}"));
+    const bare = await api.save(async (d) => ({ kind: "ok", data: { result: version("v7", 7, 6, d.body) } }));
+    check("bare save (no flush): a dirty-before-save draft with no typing in flight ⇒ typedSince false", bare?.kind === "saved" && bare.typedSince === false);
+    await act(async () => { await Promise.resolve(); });
 
     console.log("d. a publish landing over unsaved text never clobbers it");
     await act(async () => typeSubject(api, "Unsaved again {{institutionName}}"));
@@ -166,12 +177,28 @@ async function main() {
     check("the last good stream is KEPT ⇒ ContentPanel keeps the editor mounted", read.data !== null && read.data.revision === 1);
     check("draft text untouched, revision NOT rebased, conflict still open", api.state?.draft.body.subject === "My work {{institutionName}}" && api.state.draft.revision === 1 && api.conflict !== null);
 
+    responses.push({ status: 200, body: stream(1) });
+    await act(async () => { read.read.retry?.(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    check("a successful reload OLDER than the conflict's token (rev 1 < 2) does not resolve it", api.conflict !== null && api.state?.draft.revision === 1, { loads: read.loads });
+
     responses.push({ status: 200, body: stream(2) });
     await act(async () => { read.read.retry?.(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     check("a SUCCESSFUL reload rebases: same text, revision 2, conflict cleared", api.state?.draft.body.subject === "My work {{institutionName}}" && api.state.draft.revision === 2 && api.conflict === null && api.state.draft.dirty,
       { rev: api.state?.draft.revision, conflict: api.conflict, loads: read.loads });
     await act(async () => root.unmount());
+  }
+
+  console.log("f. the unsaved-content guard (workspace / view switch)");
+  {
+    const { setUnsavedCommsContent, confirmLeaveCommsContent, hasUnsavedCommsContent } = await import("./unsaved-content");
+    let asked = 0;
+    setUnsavedCommsContent(false);
+    check("clean ⇒ leave without asking", confirmLeaveCommsContent(() => { asked++; return false; }) && asked === 0);
+    setUnsavedCommsContent(true);
+    check("dirty + cancel ⇒ stay, still dirty", !confirmLeaveCommsContent(() => { asked++; return false; }) && asked === 1 && hasUnsavedCommsContent());
+    check("dirty + discard ⇒ leave, flag cleared", confirmLeaveCommsContent(() => true) && !hasUnsavedCommsContent());
   }
 
   if (failures > 0) { console.error(`\ncontent-editor-state.test: ${failures} failure(s).`); process.exit(1); }
