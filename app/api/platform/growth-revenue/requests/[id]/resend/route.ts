@@ -31,6 +31,25 @@ export const runtime = "nodejs";
 
 const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
+/**
+ * Which copy the re-sent email uses. "direct" ONLY on positive evidence that the
+ * row came from an operator's direct invite with no request behind it:
+ *   - a BETA_INVITATION_CREATED audit row targets this request, AND
+ *   - no BETA_ACCESS_APPROVED audit row does (it was never approved from the queue), AND
+ *   - no BetaAccessRequestEvent exists for the email (no form submission recorded).
+ * Anything else — including rows whose audit history is gone, and requests that
+ * predate submission events (2026-10-07) — is "request", the historical copy.
+ */
+async function inviteOrigin(id: string, email: string): Promise<"request" | "direct"> {
+  const byRequest = (action: string) => ({ action, metadata: { path: ["betaRequestId"], equals: id } });
+  const [created, approved, submissions] = await Promise.all([
+    db.auditLog.findFirst({ where: byRequest(AuditAction.BETA_INVITATION_CREATED), select: { id: true } }),
+    db.auditLog.findFirst({ where: byRequest(AuditAction.BETA_ACCESS_APPROVED), select: { id: true } }),
+    db.betaAccessRequestEvent.count({ where: { email } }),
+  ]);
+  return created && !approved && submissions === 0 ? "direct" : "request";
+}
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
@@ -54,17 +73,20 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   const rawToken = crypto.randomBytes(32).toString("hex");
   const now = new Date();
+  const expiry = new Date(now.getTime() + INVITE_TTL_MS);
   await db.betaAccessRequest.update({
     where: { id },
     data: {
       inviteTokenHash: hashResetToken(rawToken),
-      inviteExpiresAt: new Date(now.getTime() + INVITE_TTL_MS),
+      inviteExpiresAt: expiry,
       invitedAt:       now,
     },
   });
 
   const inviteUrl = buildBetaInviteUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
-  const emailResult = await sendEmail("beta-invite", request.email, { inviteUrl });
+  const origin = await inviteOrigin(id, request.email);
+  // The email states the REAL expiry just written to the row (issuedAt/expiresAt).
+  const emailResult = await sendEmail("beta-invite", request.email, { inviteUrl, issuedAt: now, expiresAt: expiry, origin });
   if (emailResult.status === "error") {
     console.error("[beta-resend] invite email failed to send:", emailResult.error);
   }

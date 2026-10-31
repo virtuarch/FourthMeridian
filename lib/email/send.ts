@@ -8,7 +8,8 @@
  *
  * PIPELINE
  *   1. Look up the template by name (typed registry).
- *   2. Render subject + text from the caller's data (pure).
+ *   2. Render subject + text (+ html, for design-system templates) from the
+ *      caller's data (pure). A render failure is an error RESULT, not a throw.
  *   3. Resolve the sender identity for the template's purpose.
  *   4. Select a transport and send.
  *
@@ -52,7 +53,16 @@ export async function sendEmail(
   data: Record<string, unknown> = {},
 ): Promise<EmailResult> {
   const template = getTemplate(name);
-  const { subject, text } = template.render(data as never);
+  // NON-THROWING contract: a template that refuses its data (e.g. a non-http(s)
+  // URL, an invalid date) becomes an error result, never an exception into the
+  // caller. The message is fixed — it never echoes the data (links, tokens).
+  let rendered: { subject: string; text: string; html?: string };
+  try {
+    rendered = template.render(data as never);
+  } catch {
+    return { status: "error", provider: "none", error: `template "${name}" failed to render` };
+  }
+  const { subject, text, html } = rendered;
   const sender = resolveSender(template.sender);
 
   const message: EmailMessage = {
@@ -62,6 +72,8 @@ export async function sendEmail(
     ...(sender.replyTo ? { replyTo: sender.replyTo } : {}),
     subject,
     text,
+    // HTML is optional (design-system templates); text stays the alternative.
+    ...(html ? { html } : {}),
   };
 
   return selectTransport().send(message);

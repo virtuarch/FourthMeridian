@@ -47,7 +47,7 @@ const VERIFY_URL = "https://app.fourthmeridian.com/verify-email?token=deadbeef";
 const RESET_URL = "https://app.fourthmeridian.com/reset-password?token=deadbeef";
 const SPACE_INVITE_URL = "https://app.fourthmeridian.com/dashboard/spaces";
 
-type Rendered = { subject: string; text: string };
+type Rendered = { subject: string; text: string; html?: string };
 
 // ── Table for the six simple templates ───────────────────────────────────────
 // Universal per-row checks: plain-text (no HTML), subject predicate, sender
@@ -64,12 +64,18 @@ const SIMPLE_TEMPLATES: {
     name: "beta-invite",
     senderKey: betaInviteTemplate.sender,
     expectFrom: "Fourth Meridian Beta <beta@fourthmeridian.com>",
-    rendered: betaInviteTemplate.render({ inviteUrl: BETA_INVITE_URL }),
-    subject: (s) => /invited to fourth meridian/i.test(s),
+    rendered: betaInviteTemplate.render({
+      origin: "request",
+      inviteUrl: BETA_INVITE_URL,
+      issuedAt: new Date("2026-10-31T15:04:00Z"),
+      expiresAt: new Date("2026-11-03T15:04:00Z"),
+    }),
+    subject: (s) => s === "Your Fourth Meridian beta access is approved",
     content: [
       { name: "contains the exact invite URL passed in", ok: (t) => t.includes(BETA_INVITE_URL) },
-      { name: "communicates the 14-day expiry", ok: (t) => /14 days/i.test(t) },
-      { name: "is honest that the invite is email-bound", ok: (t) => /tied to this email/i.test(t) },
+      { name: "communicates the COMPUTED expiry (3 days, not a constant)", ok: (t) => /You have 3 days/.test(t) && !/14 days/.test(t) },
+      { name: "states the absolute expiry with a zone label", ok: (t) => t.includes("Tuesday, November 3, 2026 at 3:04 PM UTC") },
+      { name: "is honest that the invite is email-bound", ok: (t) => /using this email address/i.test(t) },
       { name: "includes a did-not-request safety line", ok: (t) => /didn't request|did not request/i.test(t) },
     ],
   },

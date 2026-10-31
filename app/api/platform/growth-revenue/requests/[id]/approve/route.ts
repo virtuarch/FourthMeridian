@@ -95,7 +95,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   // Non-throwing: a delivery failure is recorded (emailStatus) but never fails
   // the approval — the invite exists and can be resent.
-  const emailResult = await sendEmail("beta-invite", request.email, { inviteUrl });
+  // The email states the REAL expiry just written to the row (issuedAt/expiresAt).
+  const emailResult = await sendEmail("beta-invite", request.email, { inviteUrl, issuedAt: now, expiresAt: expiry, origin: "request" });
   if (emailResult.status === "error") {
     console.error("[beta-approve] invite email failed to send:", emailResult.error);
   }

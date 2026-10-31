@@ -87,7 +87,8 @@ export async function POST(req: NextRequest) {
   });
 
   const inviteUrl = buildBetaInviteUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
-  const emailResult = await sendEmail("beta-invite", email, { inviteUrl });
+  // The email states the REAL expiry just written to the row (issuedAt/expiresAt).
+  const emailResult = await sendEmail("beta-invite", email, { inviteUrl, issuedAt: now, expiresAt: expiry, origin: "direct" });
   if (emailResult.status === "error") {
     console.error("[beta-invite-direct] invite email failed to send:", emailResult.error);
   }
