@@ -6,6 +6,8 @@
 --
 --   DIAG_DATABASE_URL='<production read-only or pooled URL — never paste it into chat>' \
 --     scripts/db-readonly-psql.sh -f docs/operations/sql/beta-request-prod-investigation.sql
+-- (pass a REAL file — the helper scans its contents before connecting — and check the
+-- first output row reads read_only_guard = on).
 --
 -- PRIVACY: every signal is computed INSIDE the database. Nothing here outputs a full
 -- email address, a raw IP, a user agent or note text. The output contains:
@@ -31,7 +33,7 @@ SELECT d::date AS day,
     OR EXISTS (SELECT 1 FROM "BetaAccessRequest" r WHERE r."createdAt"::date = d::date)
  ORDER BY 1;
 
-\echo '== C. Evidence coverage (do audit rows exist with network/agent data?)'
+\echo '== C. Evidence coverage: audit rows with network and agent data'
 SELECT count(*) AS audit_rows, count("ipAddress") AS with_ip, count("userAgent") AS with_ua,
        count(*) FILTER (WHERE metadata ? 'emailHash') AS with_email_hash
   FROM "AuditLog" WHERE action = 'BETA_ACCESS_REQUESTED';
@@ -55,9 +57,9 @@ aud AS (
   SELECT metadata->>'emailHash' AS ehash,
          md5(coalesce("ipAddress", '')) AS net, ("ipAddress" IS NOT NULL) AS has_ip,
          CASE WHEN "userAgent" IS NULL OR "userAgent" = '' THEN 'empty'
-              WHEN "userAgent" ~* '(curl|python|go-http|wget|axios|node-fetch|undici|httpclient|okhttp|java/|libwww|scrapy|postman|insomnia)' THEN 'script'
+              WHEN "userAgent" ~* '(curl|python|aiohttp|httpie|go-http|wget|axios|node-fetch|undici|httpclient|okhttp|java/|libwww|scrapy|postman|insomnia)' THEN 'script'
               WHEN "userAgent" ~* '(headless|phantom|puppeteer|playwright|selenium)' THEN 'headless'
-              WHEN "userAgent" ~* '(chrome|safari|firefox|edg/|opr/)' THEN 'browser'
+              WHEN "userAgent" ~* '(chrome|safari|firefox|edg/|opr/|applewebkit|gecko/)' THEN 'browser'
               ELSE 'other' END AS ua_family,
          "createdAt" AS at
     FROM "AuditLog" WHERE action = 'BETA_ACCESS_REQUESTED'
@@ -73,19 +75,19 @@ ev AS (
 )
 SELECT right(q.id, 6) AS req,
        q.status,
-       to_char(q."createdAt", 'YYYY-MM-DD HH24:MI') AS created_utc,
+       to_char(date_trunc('hour', q."createdAt"), 'YYYY-MM-DD HH24":00"') AS created_hour_utc,
        left(q.loc, 2) || '…@' ||
          CASE WHEN q.dom IN ('gmail.com','googlemail.com','outlook.com','hotmail.com','live.com','yahoo.com','icloud.com','me.com','proton.me','protonmail.com','aol.com','gmx.com','mail.com','yandex.com')
               THEN q.dom ELSE '(custom domain)' END AS masked_email,
        CASE WHEN q.dom IN ('mailinator.com','guerrillamail.com','guerrillamail.net','sharklasers.com','10minutemail.com','temp-mail.org','tempmail.com','yopmail.com','trashmail.com','getnada.com','dispostable.com','maildrop.cc','throwawaymail.com','mintemail.com','fakeinbox.com','spamgourmet.com','mailnesia.com','emailondeck.com','tempr.email','moakt.com','mohmal.com','burnermail.io','33mail.com','grr.la','spam4.me','trbvm.com','dropmail.me','tempmailo.com','emailfake.com','fakemail.net')
             THEN 'yes' ELSE 'no' END AS disposable,
-       length(q.loc) AS local_len,
+       CASE WHEN length(q.loc) <= 5 THEN '<=5' WHEN length(q.loc) <= 12 THEN '6-12' ELSE '13+' END AS local_len_bucket,
        (q.loc ~ '\d{4,}') AS local_has_4digits,
        (q.loc LIKE '%+%') AS plus_alias,
        (SELECT count(*) FROM canon c2 WHERE c2.ckey = c.ckey) AS alias_group,
        coalesce(e.submissions, 0) AS submissions,
        (q.note IS NOT NULL AND trim(q.note) <> '') AS has_note,
-       coalesce(length(trim(q.note)), 0) AS note_len,
+       CASE WHEN q.note IS NULL OR trim(q.note) = '' THEN '0' WHEN length(trim(q.note)) <= 5 THEN '<=5' WHEN length(trim(q.note)) <= 12 THEN '6-12' ELSE '13+' END AS note_len_bucket,
        (SELECT count(*) FROM req q2 WHERE q2.note IS NOT NULL AND trim(q2.note) <> '' AND lower(trim(q2.note)) = lower(trim(q.note))) AS same_note_group,
        a.ua_family,
        CASE WHEN a.ehash IS NULL THEN NULL
@@ -106,7 +108,7 @@ SELECT right(q.id, 6) AS req,
 SELECT CASE WHEN n = 1 THEN '1 requester' WHEN n <= 3 THEN '2-3 requesters' ELSE '4+ requesters' END AS bucket,
        count(*) AS networks, sum(n) AS requesters
   FROM (SELECT md5("ipAddress") AS net, count(DISTINCT metadata->>'emailHash') AS n
-          FROM "AuditLog" WHERE action = 'BETA_ACCESS_REQUESTED' AND "ipAddress" IS NOT NULL GROUP BY 1) g
+          FROM "AuditLog" WHERE action = 'BETA_ACCESS_REQUESTED' AND "ipAddress" IS NOT NULL AND metadata ? 'emailHash' GROUP BY 1) g
  GROUP BY 1 ORDER BY 1;
 
 \echo '== F. Current rate-limit rows for the intake (last ~24-48h only; counts, no keys)'

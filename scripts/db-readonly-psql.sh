@@ -26,7 +26,32 @@ if [[ -z "${DIAG_DATABASE_URL:-}" ]]; then
   exit 2
 fi
 
+# Every text psql will run: each -c argument AND the CONTENTS of each -f file
+# (a file is read here and again by psql — pass a real file, not <(…)).
+scan=(); prev=""
 for arg in "$@"; do
+  if [[ "$prev" == "-f" ]]; then
+    [[ -f "$arg" && -r "$arg" ]] || { echo "db-readonly-psql: REFUSED — -f needs a readable regular file (not a pipe or <(…))." >&2; exit 2; }
+    scan+=("$(cat -- "$arg")")
+  else
+    scan+=("$arg")
+  fi
+  prev="$arg"
+done
+
+# Transaction control or side-effect commands would let a statement escape the
+# read-only transaction (proved on Preview: COMMIT in a file, SET TRANSACTION
+# READ WRITE before the first query). Refused before connecting.
+for text in "${scan[@]}"; do
+  u=$(printf '%s' "$text" | sed 's/--.*$//' | tr '[:lower:]' '[:upper:]')
+  if printf '%s' "$u" | grep -Eq '(^|[^A-Z_])(COMMIT|ROLLBACK|BEGIN|ABORT|SAVEPOINT|START[[:space:]]+TRANSACTION|READ[[:space:]]+WRITE|SESSION[[:space:]]+CHARACTERISTICS|COPY|DO|CALL|PREPARE|LISTEN|NOTIFY)([^A-Z_]|$)|^[[:space:]]*END[[:space:]]*;' \
+     || printf '%s' "$text" | grep -Eq '\\(!|o|w|g[^a-z]|gexec|copy|i|ir|include|connect|c )'; then
+    echo "db-readonly-psql: REFUSED — transaction control / side-effect command in input." >&2
+    exit 2
+  fi
+done
+
+for arg in "${scan[@]}"; do
   upper=$(printf '%s' "$arg" | tr '[:lower:]' '[:upper:]')
   # A SET that is not SET LOCAL / SET TRANSACTION / SET CONSTRAINTS is session-scoped.
   if printf '%s' "$upper" | grep -Eq '(^|[^A-Z_])SET[[:space:]]+(SESSION[[:space:]]+)?([A-Z_."]+)' \
@@ -45,4 +70,4 @@ url="${url//\?pgbouncer=true/}"
 url="${url//&pgbouncer=true/}"
 
 exec psql "$url" -X -q -1 -v ON_ERROR_STOP=1 -P pager=off \
-  -c "SET TRANSACTION READ ONLY; SET LOCAL statement_timeout = '60s'" "$@"
+  -c "SET TRANSACTION READ ONLY; SET LOCAL statement_timeout = '60s'; SET LOCAL idle_in_transaction_session_timeout = '60s'; SELECT current_setting('transaction_read_only') AS read_only_guard" "$@"
