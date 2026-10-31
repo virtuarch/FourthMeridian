@@ -30,6 +30,13 @@
  *   3. lifecycle PAUSED  → restriction BETA_PAUSED; billable dimensions READ_ONLY_VALUES.
  *   4. otherwise the existing resolution (group → overlay → override → ceiling).
  *
+ *   Before 1–3: when the catalogue's lifecycle facts are UNREADABLE (the code
+ *   fallback, the served last-good copy, or a failed lifecycle read) the
+ *   restriction is POLICY_UNAVAILABLE and the billable dimensions take
+ *   READ_ONLY_VALUES — a group's freeze / pause / end can then not be seen, so
+ *   new billable work is denied; read dimensions (Brief reading, exports) keep
+ *   their plan values.
+ *
  * In 1–3 the overlay, the per-customer AI override and the platform allowance
  * setting are NOT candidates: nothing user-level can bypass a freeze, a pause or
  * an end. The platform ceiling still clamps last (the restricted values are all
@@ -39,14 +46,20 @@
  */
 
 import { DIMENSION_KEYS, type EntitlementDimensionKey, type EntitlementValues } from "./catalogue";
+import type { RestrictionKind } from "./restriction-messages";
 
 export const POLICY_GROUP_LIFECYCLES = ["ACTIVE", "PAUSED", "ENDED"] as const;
 export type PolicyGroupLifecycleState = (typeof POLICY_GROUP_LIFECYCLES)[number];
 export type PolicyGroupEndedTransitionKind = "READ_ONLY" | "FREE";
 export type PolicyGroupTransitionKindName = "PAUSE" | "RESUME" | "END" | "FREEZE" | "UNFREEZE";
 
-/** Why a group in force restricts its members (the resolver's and the gate's vocabulary). */
-export type LifecycleRestriction = "COST_FREEZE" | "BETA_ENDED" | "BETA_PAUSED";
+/**
+ * Why a customer's billable entitlements are restricted (the resolver's and the gate's vocabulary).
+ * POLICY_UNAVAILABLE is not a group state: the resolver reports it when the lifecycle facts
+ * could not be read (see resolve.ts) — the owner's "deny new billable work when policy
+ * evaluation is unavailable", applied to every resolver-driven route.
+ */
+export type LifecycleRestriction = RestrictionKind;
 
 /** The authoritative Beta entitlement group (owner decision 2026-10-31). */
 export const BETA_POLICY_GROUP_KEY = "BETA_FULL_ACCESS_V1";

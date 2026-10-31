@@ -86,6 +86,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // FAIL CLOSED (owner ruling, 2026-10-30) — a manual refresh is a paid provider
   // call; a missing/invalid policy assignment refuses it (403) before any Plaid
   // call. Scheduled platform refresh is not an entitlement and continues.
+  // BETA LIFECYCLE — also refused under a paused / ended / cost-frozen group or
+  // an unreadable lifecycle, whatever the cooldown says (review fix 1).
   const failClosed = refuseIfFailClosed(entitlements, "Manual refresh");
   if (failClosed) return failClosed;
   const cooldownMs = cooldownMsFromMinutes(Number(entitlements.dimensions.manualBankRefreshCooldownMinutes.value));

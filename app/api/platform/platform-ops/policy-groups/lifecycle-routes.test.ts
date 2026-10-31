@@ -279,6 +279,12 @@ async function main() {
       ((await G.assertBillableAllowed({ userId: pro, operation: "plaid_exchange" })) as any).reason === "POLICY_UNAVAILABLE"
         && (await entitlementsForUser(pro)).dimensions.exportsPerDay.value === BETA.exportsPerDay);
     t.check("getBetaLifecycleState → UNKNOWN while unreadable", (await getBetaLifecycleState()) === "UNKNOWN");
+    {
+      const e = await entitlementsForUser(pro);
+      t.check("review fix 3 — under the LAST-GOOD copy the resolver itself reports POLICY_UNAVAILABLE: billable dimensions READ_ONLY, reads kept",
+        e.lifecycleRestriction === "POLICY_UNAVAILABLE" && e.dimensions.aiDailyUsdAllowance.value === 0 && e.dimensions.maxConnections.value === 0
+          && e.dimensions.dailyBrief.value === true && e.dimensions.exportsPerDay.value === BETA.exportsPerDay, e.lifecycleRestriction);
+    }
     fake.clearHooks();
 
     // Lifecycle columns unreadable (e.g. code deployed before the migration): values resolve, billable fails closed.
@@ -291,7 +297,11 @@ async function main() {
     t.check("a lifecycle read failure still yields a DB catalogue for values (lifecycleSource UNAVAILABLE)", noLife.source === "DB" && noLife.lifecycleSource === "UNAVAILABLE" && noLife.groups.PRO_V1?.valid === true);
     t.check("…billable fails closed", (await C.loadFreshPolicyGroupCatalogue()) === null
       && ((await G.assertBillableAllowed({ userId: pro, operation: "plaid_sync" })) as any).reason === "POLICY_UNAVAILABLE");
-    t.check("…and a DB-only group's member still resolves their plan (not fail closed)", !(await entitlementsForUser(pro)).failClosed);
+    {
+      const e = await entitlementsForUser(pro);
+      t.check("…and a DB-only group's member still resolves their plan (not fail closed), billable dimensions POLICY_UNAVAILABLE (review fix 3)",
+        !e.failClosed && e.lifecycleRestriction === "POLICY_UNAVAILABLE" && e.dimensions.conversations.value === false && e.dimensions.exportsPerDay.value === BETA.exportsPerDay);
+    }
     fake.clearHooks();
     C.invalidatePolicyGroupCatalogue();
   }

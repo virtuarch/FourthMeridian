@@ -125,6 +125,7 @@ export function decideBillable(f: BillableFacts): BillableDecision {
     case "COST_FREEZE": return deny("COST_FREEZE");
     case "BETA_ENDED":  return deny("BETA_ENDED");
     case "BETA_PAUSED": return deny("BETA_PAUSED");
+    case "POLICY_UNAVAILABLE": return deny("POLICY_UNAVAILABLE");
     default: break;
   }
   return (OPERATION_REQUIREMENTS[f.operation] ?? []).every((k) => satisfies(e, k)) ? ALLOWED : deny("NOT_ENTITLED");
@@ -135,7 +136,12 @@ export function decideBillable(f: BillableFacts): BillableDecision {
  * ACTIVE OWNER. Spaces have no billing column; ownership is SpaceMember rows
  * with role OWNER, and a SHARED Space may have several (or, for a platform
  * Space, none). Exactly one ⇒ that user; zero or more than one ⇒ null
- * (ambiguous ⇒ NO_OWNER for metered work — never a guess).
+ * (ambiguous ⇒ NO_OWNER for metered work — never a guess). Owner decision
+ * 2026-10-31: correct as is — never silently charge the earliest owner.
+ *
+ * TODO(billing-owner): a future "designated billing owner" field on Space will
+ * name the payer of a multi-owner Space explicitly; until it exists, several
+ * ACTIVE OWNERs stay NO_OWNER. Not built here.
  */
 export function billedOwnerOf(activeOwnerIds: readonly string[]): string | null {
   const unique = [...new Set(activeOwnerIds)];

@@ -32,8 +32,12 @@ import {
   BILLABLE_OPERATIONS, OPERATION_CLASS, billedOwnerOf, decideBillable, isCatalogueFreshForBillable,
   type BillableOperation,
 } from "./billable-gate-core";
-import { countLimit } from "./consume";
 import { betaLifecycleStateOf } from "./beta-lifecycle";
+import { countLimit, refuseIfBillableRestricted, refuseIfDisabled, refuseIfFailClosed } from "./consume";
+import { RESTRICTION_CODES, restrictionMessage, restrictionStatus } from "./restriction-messages";
+import { isManualRefreshEntitled } from "@/lib/refresh/refresh-all";
+import { describeRefreshOutcomes } from "@/lib/refresh/outcomes";
+import { isKnownRefusalSentence, planUnavailableSentence } from "@/lib/ai/conversation/refusal-sentences";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -66,6 +70,7 @@ const decide = (operation: BillableOperation, c: PolicyGroupCatalogue | null, f:
   decideBillable({ operation, billedUserId: opts.user === undefined ? "u1" : opts.user, assignment: f, catalogue: c, failClosed: opts.failClosed ?? false, nowMs: opts.now ?? NOW_MS });
 const reason = (d: ReturnType<typeof decideBillable>) => (d.allowed ? "ALLOWED" : d.reason);
 
+async function main(): Promise<void> {
 console.log("1. READ_ONLY_VALUES");
 {
   check("frozen", Object.isFrozen(READ_ONLY_VALUES));
@@ -248,5 +253,60 @@ console.log("6. getBetaLifecycleState (pure core)");
   check("UNKNOWN: no Beta ROW (only the code group)", betaLifecycleStateOf(buildPolicyGroupCatalogue([], [], NOW, []), NOW_MS) === "UNKNOWN");
 }
 
+console.log("7. POLICY_UNAVAILABLE — an unreadable lifecycle denies new billable work on every resolver-driven route");
+{
+  const B = assigned(DEFAULT_POLICY_GROUP, FOUNDER_INTERNAL_V1.key, 20);
+  const cases: [string, PolicyGroupCatalogue][] = [
+    ["the lifecycle read THREW (lifecycleSource UNAVAILABLE)", buildPolicyGroupCatalogue(
+      [{ key: DEFAULT_POLICY_GROUP, label: "B", description: "", isDefault: true, builtIn: true, archivedAt: null, currentVersion: 1 }],
+      [{ groupKey: DEFAULT_POLICY_GROUP, version: 1, values: BETA, createdAt: NOW }], NOW, null)],
+    ["the served LAST-GOOD copy", { ...catalogue({}), servedFromLastGood: true }],
+    ["the code FALLBACK", codeFallbackCatalogue()],
+  ];
+  for (const [label, c] of cases) {
+    const e = resolve(c, B);
+    check(`${label}: restriction POLICY_UNAVAILABLE; billable dimensions READ_ONLY even for a Founder with a $20 override`,
+      e.lifecycleRestriction === "POLICY_UNAVAILABLE" && [...BILLABLE_DIMENSIONS].every((k) => e.dimensions[k].value === READ_ONLY_VALUES[k] && e.dimensions[k].source === "LIFECYCLE"), e.lifecycleRestriction);
+    check(`${label}: READ dimensions keep their values (Brief reading on, exports per the plan + overlay)`,
+      e.dimensions.dailyBrief.value === true && e.dimensions.exportsPerDay.value === FOUNDER_INTERNAL_V1.values.exportsPerDay);
+    const refusal = refuseIfFailClosed(e, "Manual refresh");
+    check(`${label}: the route seam refuses new paid work — 503 with the owner's wording`,
+      refusal !== null && refusal.status === 503);
+    check(`${label}: manual refresh (refresh-all, operator refresh) is not entitled`, !isManualRefreshEntitled(e));
+  }
+  const live = resolve(catalogue({}), B);
+  check("a fresh DB read with lifecycle facts: no restriction, the seam lets paid work through", live.lifecycleRestriction === null && refuseIfFailClosed(live, "x") === null && isManualRefreshEntitled(live));
+  const code0 = resolveEffectiveEntitlements(B, undefined, {});
+  check("the code catalogue BY CONSTRUCTION (pure callers, previews) is not 'unavailable'", code0.lifecycleRestriction === null);
+}
+
+console.log("8. the one wording, through every seam");
+{
+  for (const kind of ["BETA_PAUSED", "BETA_ENDED", "COST_FREEZE", "POLICY_UNAVAILABLE"] as const) {
+    const c = kind === "POLICY_UNAVAILABLE" ? { ...catalogue({}), servedFromLastGood: true }
+      : catalogue(kind === "COST_FREEZE" ? { costFrozen: true } : { lifecycle: kind === "BETA_PAUSED" ? "PAUSED" : "ENDED" });
+    const e = resolve(c, assigned(DEFAULT_POLICY_GROUP));
+    const r1 = refuseIfFailClosed(e, "Manual refresh")!;
+    const b1 = await r1.json() as { error: string; code: string; restriction: string };
+    check(`${kind}: refuseIfFailClosed → "${restrictionMessage(kind)}" (${RESTRICTION_CODES[kind]}, ${restrictionStatus(kind)})`,
+      b1.error === restrictionMessage(kind) && b1.code === RESTRICTION_CODES[kind] && b1.restriction === kind && r1.status === restrictionStatus(kind));
+    const r2 = refuseIfDisabled(e, "conversations", "Conversations")!;
+    const b2 = await r2.json() as { error: string };
+    check(`${kind}: refuseIfDisabled(conversations) says the same, never "not on your plan"`, b2.error === restrictionMessage(kind) && !b2.error.includes("plan."));
+    check(`${kind}: Conversations' recogniser knows the sentence (never fed back to the model)`, isKnownRefusalSentence(restrictionMessage(kind)));
+    check(`${kind}: refuseIfBillableRestricted is the same seam`, refuseIfBillableRestricted === refuseIfFailClosed);
+    const banner = describeRefreshOutcomes([{ decision: "REFUSED", reason: "PLAN_RESTRICTED", restriction: kind }]);
+    check(`${kind}: the refresh banner uses the same words`, banner.includes(restrictionMessage(kind).replace(/\.$/, "")), banner);
+  }
+  const off = resolveEffectiveEntitlements(assigned(DEFAULT_POLICY_GROUP), undefined, { catalogue: buildPolicyGroupCatalogue(
+    [{ key: DEFAULT_POLICY_GROUP, label: "B", description: "", isDefault: true, builtIn: true, archivedAt: null, currentVersion: 1 }],
+    [{ groupKey: DEFAULT_POLICY_GROUP, version: 1, values: { ...BETA, conversations: false }, createdAt: NOW }], NOW,
+    [{ key: DEFAULT_POLICY_GROUP, lifecycle: "ACTIVE", costFrozen: false, endedTransition: null, lifecycleVersion: 0 }]) });
+  const r3 = await refuseIfDisabled(off, "conversations", "Conversations")!.json() as { error: string };
+  check("a plan that simply excludes a feature still says \"not on your plan\" (no lifecycle involved)", r3.error === planUnavailableSentence("Conversations"));
+}
+
 if (failures > 0) { console.error(`\nlifecycle: ${failures} check(s) failed.`); process.exit(1); }
 console.log("\nlifecycle: all checks passed.");
+}
+main().catch((e) => { console.error(e); process.exit(1); });

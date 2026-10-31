@@ -71,7 +71,21 @@ import {
 } from "./catalogue";
 import { parseAllowanceSettingValue, resolveAiDailyAllowance } from "./ai-allowance";
 import { CODE_CATALOGUE, type PolicyGroupCatalogue } from "./policy-groups";
-import { lifecycleRestrictionOf, restrictedValue, type GroupLifecycleFacts, type LifecycleRestriction, type PolicyGroupLifecycleState } from "./lifecycle";
+import {
+  BILLABLE_DIMENSIONS, READ_ONLY_VALUES, lifecycleRestrictionOf, restrictedValue,
+  type GroupLifecycleFacts, type LifecycleRestriction, type PolicyGroupLifecycleState,
+} from "./lifecycle";
+
+/**
+ * BETA LIFECYCLE (review fix 3) — true when the catalogue in hand cannot say
+ * whether a group is frozen, paused or ended: the code FALLBACK (the read
+ * failed), the served LAST-GOOD copy, or a failed lifecycle read. The code
+ * catalogue BY CONSTRUCTION (no catalogue handed in: pure callers, previews,
+ * tests) is not "unavailable" — production loaders always hand one in.
+ */
+export function isLifecycleUnavailable(c: PolicyGroupCatalogue): boolean {
+  return c.source === "CODE_FALLBACK" || c.servedFromLastGood === true || c.lifecycleSource === "UNAVAILABLE";
+}
 
 export type EntitlementSource = "POLICY" | "POLICY_DEFAULT" | "OVERLAY" | "CEILING" | "USER_OVERRIDE" | "PLATFORM_SETTING" | "FAIL_CLOSED" | "LIFECYCLE";
 
@@ -264,11 +278,14 @@ export function resolveEffectiveEntitlements(
   }
   // BETA LIFECYCLE — the group in force's lifecycle and freeze (absent ⇒ ACTIVE, not frozen).
   const life: GroupLifecycleFacts = { lifecycle: group?.lifecycle ?? "ACTIVE", costFrozen: group?.costFrozen === true };
-  const restriction = lifecycleRestrictionOf(life);
+  const unavailable = isLifecycleUnavailable(catalogue);
+  const restriction: LifecycleRestriction | null = unavailable ? "POLICY_UNAVAILABLE" : lifecycleRestrictionOf(life);
   for (const key of DIMENSION_KEYS) {
     const policyValue = planValues[key];
     const overlayValue = overlay && key in overlay.values ? (overlay.values[key] as EntitlementValue) : null;
-    const restricted = restriction ? restrictedValue(life, key) : null;
+    const restricted = unavailable
+      ? (BILLABLE_DIMENSIONS.has(key) ? READ_ONLY_VALUES[key] : null)
+      : restriction ? restrictedValue(life, key) : null;
     if (restricted !== null) {
       // No user-level value is a candidate here: overlay, override and platform setting are reported, never applied.
       const { value, clamped } = clamp(key, restricted);
@@ -333,7 +350,7 @@ export function explainEntitlement(d: EffectiveDimension): string {
     case "PLATFORM_SETTING": return `${label}: ${v} — platform setting (policy ${String(d.policyValue)}).`;
     case "POLICY":           return `${label}: ${v} — policy group.`;
     case "POLICY_DEFAULT":   return `${label}: ${v} — default policy group (no assignment recorded).`;
-    case "LIFECYCLE":        return `${label}: ${v} — restricted: the customer's policy group is paused, ended or cost-frozen (policy ${String(d.policyValue)}).`;
+    case "LIFECYCLE":        return `${label}: ${v} — restricted: the customer's policy group is paused, ended or cost-frozen, or its state could not be read (policy ${String(d.policyValue)}).`;
     case "FAIL_CLOSED":      return `${label}: ${v} — restricted (fail closed): the customer's policy-group assignment is missing or invalid, or the group's stored definition is invalid; correct it in Customer Success (or the group in Policies) to restore the plan.`;
   }
 }

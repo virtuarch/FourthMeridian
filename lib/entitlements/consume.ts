@@ -24,6 +24,8 @@
 
 import "server-only";
 import { planNeedsAttentionSentence, planUnavailableSentence } from '@/lib/ai/conversation/refusal-sentences';
+import type { LifecycleRestriction } from "./lifecycle";
+import { RESTRICTION_CODES, restrictionMessage, restrictionStatus } from "./restriction-messages";
 import { NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { env } from "@/lib/env";
@@ -65,6 +67,18 @@ function planNeedsAttentionResponse(surfaceLabel: string, dimension: Entitlement
 }
 
 /**
+ * BETA LIFECYCLE — the ONE refusal for paid work under a lifecycle restriction:
+ * the owner's wording (lib/entitlements/restriction-messages.ts), its code, 403
+ * for a group state and 503 for an unreadable policy. Never "not on your plan".
+ */
+export function planRestrictedResponse(restriction: LifecycleRestriction, dimension: EntitlementDimensionKey | null = null): NextResponse {
+  return NextResponse.json(
+    { error: restrictionMessage(restriction), code: RESTRICTION_CODES[restriction], restriction, ...(dimension ? { entitlement: dimension } : {}) },
+    { status: restrictionStatus(restriction), headers: NO_STORE },
+  );
+}
+
+/**
  * A 403 when a boolean dimension is off for this customer, else null. The body
  * names the surface in plain words and the dimension (so an operator can map
  * the refusal to the Policy Group), never the policy internals. When the
@@ -79,6 +93,8 @@ export function refuseIfDisabled(
   const d = e.dimensions[dimension];
   if (ENTITLEMENT_DIMENSIONS[dimension].kind !== "boolean" || d.value === true) return null;
   if (e.failClosed === true) return planNeedsAttentionResponse(surfaceLabel, dimension);
+  // BETA LIFECYCLE — off because the group is paused / ended / frozen (or unreadable): say so.
+  if (e.lifecycleRestriction != null && d.source === "LIFECYCLE") return planRestrictedResponse(e.lifecycleRestriction, dimension);
   return NextResponse.json(
     { error: planUnavailableSentence(surfaceLabel), entitlement: dimension },
     { status: 403, headers: NO_STORE },
@@ -95,8 +111,18 @@ export function refuseIfDisabled(
  * be what stands between a broken assignment and a paid call.
  */
 export function refuseIfFailClosed(e: EffectiveEntitlements, surfaceLabel: string): NextResponse | null {
-  return e.failClosed === true ? planNeedsAttentionResponse(surfaceLabel, null) : null;
+  if (e.failClosed === true) return planNeedsAttentionResponse(surfaceLabel, null);
+  // BETA LIFECYCLE (review fix 1/2) — every caller of this seam is a NEW costly
+  // operation (manual refresh, Brief generation, Investments enable): a paused,
+  // ended or cost-frozen group, or an unreadable lifecycle, refuses it
+  // explicitly — never left to a cooldown that eventually passes or an
+  // allowance check that may be switched off.
+  if (e.lifecycleRestriction != null) return planRestrictedResponse(e.lifecycleRestriction);
+  return null;
 }
+
+/** BETA LIFECYCLE — the same refusal under its precise name (new code should call this). */
+export const refuseIfBillableRestricted = refuseIfFailClosed;
 
 /**
  * A count dimension as the integer a rate limiter takes. Never below 1 (a zero

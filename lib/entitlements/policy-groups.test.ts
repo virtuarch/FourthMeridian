@@ -20,6 +20,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/entitlements/policy-groups.test.ts
  */
 
+import { BILLABLE_DIMENSIONS, READ_ONLY_VALUES } from "./lifecycle";
 import {
   BETA_FULL_ACCESS_V1, DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_CATEGORIES, ENTITLEMENT_DIMENSIONS, FAIL_CLOSED_VALUES,
   FOUNDER_INTERNAL_V1, type EntitlementValues,
@@ -140,7 +141,18 @@ console.log("3. Resolution");
       const c = JSON.stringify(resolveEffectiveEntitlements(f, undefined, { failClosed, catalogue: codeFallbackCatalogue() }));
       // Review fix 2: the FALLBACK is strict for an assigned key it does not hold (it may be a DB-only group).
       if (name === "unknown") check(`back-compat ${name} (switch ${failClosed ? "on" : "off"}): code catalogue ≡ no option; the fallback fails closed instead`, a === b && JSON.parse(c).failClosedReason === "CATALOGUE_UNAVAILABLE");
-      else check(`back-compat ${name} (switch ${failClosed ? "on" : "off"}): code catalogue ≡ no option ≡ fallback (byte-identical)`, a === b && b === c);
+      else {
+        // BETA LIFECYCLE (review fix 3): the FALLBACK cannot see a freeze / pause / end, so a customer
+        // with a plan in force resolves the BILLABLE dimensions READ_ONLY (POLICY_UNAVAILABLE); read
+        // dimensions keep the plan. A fail-closed resolution is unchanged (no plan in force).
+        const A = JSON.parse(a), C = JSON.parse(c);
+        const ok = A.failClosed
+          ? b === c
+          : C.lifecycleRestriction === "POLICY_UNAVAILABLE" && C.policyGroup === A.policyGroup
+            && [...BILLABLE_DIMENSIONS].every((k) => C.dimensions[k].value === READ_ONLY_VALUES[k] && C.dimensions[k].source === "LIFECYCLE")
+            && C.dimensions.exportsPerDay.value === A.dimensions.exportsPerDay.value && C.dimensions.dailyBrief.value === true;
+        check(`back-compat ${name} (switch ${failClosed ? "on" : "off"}): code catalogue ≡ no option; the fallback denies billable (POLICY_UNAVAILABLE), keeps reads`, a === b && ok);
+      }
     }
   }
   const seededDay1 = buildPolicyGroupCatalogue([row({ key: DEFAULT_POLICY_GROUP, isDefault: true, builtIn: true })], [ver(DEFAULT_POLICY_GROUP, 1, BETA)], NOW);
