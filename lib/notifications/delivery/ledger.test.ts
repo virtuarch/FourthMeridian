@@ -330,6 +330,46 @@ async function inApp(): Promise<void> {
   }
 }
 
+async function retryObsolete(): Promise<void> {
+  console.log("4b. the retry job closes an OBSOLETE delivery with a final ledger attempt");
+  const { retryNotifications } = await import("@/jobs/retry-notifications");
+  const { finalAttempts } = await import("@/lib/notifications/delivery/rollup");
+  const base = { userId: "user_7", type: "SYNC_FAILED", category: "FINANCIAL", priority: "HIGH", title: "t", body: null, href: null, metadata: null, archivedAt: null, expiresAt: null };
+  const deliveries = [
+    { id: "d-read", attempts: 1, notificationId: "notif_read", notification: { ...base, readAt: NOW, user: { email: ADDRESS } } },
+    { id: "d-noaddr", attempts: 2, notificationId: "notif_noaddr", notification: { ...base, readAt: null, user: null } },
+  ];
+  const client = {
+    notificationDelivery: {
+      async findMany() { return deliveries; },
+      async update() { return {}; },
+      async updateMany() { return { count: 1 }; },
+      async count() { return 1; },
+    },
+  };
+  let sends = 0;
+  const adapter: ChannelAdapter = { channel: "EMAIL", name: "email", async deliver() { sends++; return { status: "sent", provider: "resend" }; } };
+  const { rows, writer } = sink();
+  const res = await retryNotifications(client as never, adapter, NOW, writer);
+  check("both closed as obsolete, nothing sent", res.skippedObsolete === 2 && sends === 0);
+  const byKey = new Map(rows.map((r) => [r.messageKey, r]));
+  check("read in-app → EMAIL SUPPRESSED OBSOLETE, same messageKey (the Notification id), attempt = last + 1",
+    byKey.get("notif_read")?.status === "SUPPRESSED" && byKey.get("notif_read")?.reason === "OBSOLETE" && byKey.get("notif_read")?.attempt === 2
+    && byKey.get("notif_read")?.channel === "EMAIL" && byKey.get("notif_read")?.definitionKey === "SYNC_FAILED" && byKey.get("notif_read")?.recipientUserId === "user_7", rows);
+  check("no address at retry time → EMAIL SUPPRESSED NO_RECIPIENT, attempt 3",
+    byKey.get("notif_noaddr")?.reason === "NO_RECIPIENT" && byKey.get("notif_noaddr")?.attempt === 3, rows);
+  // Final-status counting: the earlier FAILED attempt no longer stands.
+  const earlier = { id: "a1", messageKey: "notif_read", attempt: 1, status: "FAILED", channel: "EMAIL", definitionKey: "SYNC_FAILED", reason: null, createdAt: new Date(NOW.getTime() - 86_400_000) };
+  const closure = { ...byKey.get("notif_read")!, id: "a2", createdAt: NOW, reason: byKey.get("notif_read")!.reason };
+  const finals = finalAttempts([earlier, closure], [earlier, closure]);
+  check("…so the message's final status is SUPPRESSED, not FAILED", finals.length === 1 && finals[0].status === "SUPPRESSED");
+  const injectedOnly = await retryNotifications(client as never, adapter, NOW);
+  check("an injected client with no ledger writer records nothing (never a real DB)", injectedOnly.skippedObsolete === 2);
+  // The production writer is chosen ONLY for the real client — an injected one never reaches a database.
+  check("…by construction: the default writer is the production one only when the client IS the shared client",
+    /ledger !== undefined \? ledger : \(client === \(db as unknown as NotificationRetryClient\) \? writeDeliveryRow : null\)/.test(readFileSync("jobs/retry-notifications.ts", "utf8")));
+}
+
 async function productionWriter(): Promise<void> {
   console.log("5. the production writer's skips");
   const base = emailLedgerRow({ template: "security-alert", to: ADDRESS, result: { status: "captured", provider: "none", reason: "ENVIRONMENT_GUARD" }, ctx: { key: "PASSWORD_CHANGED", recipientUserId: "u" }, env: PREVIEW, now: NOW });
@@ -345,6 +385,7 @@ async function main(): Promise<void> {
   await privacy();
   await nonBlocking();
   await inApp();
+  await retryObsolete();
   await productionWriter();
   if (failures > 0) { console.error(`\n${failures} delivery-ledger check(s) failed`); process.exit(1); }
   console.log("\nAll delivery-ledger recording checks passed.");

@@ -163,6 +163,8 @@ export function notificationLedgerRow(args: {
   errorCode?: DeliveryErrorCode | null;
   recipientUserId: string;
   notificationId?: string | null;
+  /** 1-based; the retry job's OBSOLETE closure is the attempt after the last one. */
+  attempt?: number;
   env: LedgerEnv;
   now: Date;
 }): CommsDeliveryRow {
@@ -179,7 +181,7 @@ export function notificationLedgerRow(args: {
     reason: args.reason ?? null,
     provider: args.channel === "IN_APP" ? "in-app" : null,
     providerMessageId: null,
-    attempt: 1,
+    attempt: args.attempt && args.attempt > 0 ? Math.floor(args.attempt) : 1,
     errorCode: args.errorCode ?? null,
     recipientUserId: args.recipientUserId,
     recipientHash: null,

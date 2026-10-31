@@ -58,6 +58,9 @@ import { IndeterminateWriteError, resolveConditionalWrite } from "@/lib/db/condi
 import { emailNotificationAdapter } from "@/lib/notifications/channels/email";
 import { recomputeActionLabel } from "@/lib/notifications/action-label";
 import { getNotificationDefinition } from "@/lib/notifications/registry";
+import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/delivery/record";
+import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 import type {
   ChannelAdapter,
   NotificationCategory,
@@ -174,7 +177,14 @@ export async function retryNotifications(
   client: NotificationRetryClient = db as unknown as NotificationRetryClient,
   adapter: ChannelAdapter = emailNotificationAdapter,
   now: Date = new Date(),
+  /**
+   * A-2a delivery ledger. Default: the production writer when this runs on the
+   * real client, and NOTHING for an injected test client (never a real DB).
+   */
+  ledger?: LedgerWriter | null,
 ): Promise<RetryNotificationsResult> {
+  const writer: LedgerWriter | null =
+    ledger !== undefined ? ledger : (client === (db as unknown as NotificationRetryClient) ? writeDeliveryRow : null);
   const rows = await client.notificationDelivery.findMany({
     where: { channel: "EMAIL", status: "error", attempts: { lt: MAX_DELIVERY_ATTEMPTS } },
     select: {
@@ -234,6 +244,17 @@ export async function retryNotifications(
         data: { status: "skipped" },
       });
       result.skippedObsolete++;
+      // A-2a (contract v1.0.2): the message's FINAL attempt on the ledger, so final-status
+      // counting closes it as SUPPRESSED instead of leaving its last FAILED standing.
+      // Same messageKey (the Notification id), the next attempt number; no send happened.
+      if (writer && n !== null && row.notificationId) {
+        await recordDelivery(writer, notificationLedgerRow({
+          key: n.type, channel: "EMAIL", status: "SUPPRESSED",
+          reason: !n.user?.email ? "NO_RECIPIENT" : "OBSOLETE",
+          recipientUserId: n.userId, notificationId: row.notificationId,
+          attempt: row.attempts + 1, env: process.env, now,
+        }));
+      }
       continue;
     }
 
