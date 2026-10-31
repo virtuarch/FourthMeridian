@@ -266,6 +266,8 @@ export interface ChannelMessage {
    */
   attempt?: number;
   finalAttempt?: boolean;
+  /** The Notification row this email leg belongs to — the ledger's messageKey across retries. */
+  notificationId?: string;
 }
 
 /**

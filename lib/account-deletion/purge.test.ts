@@ -84,7 +84,12 @@ function baseWorld(): World {
     audits: [],
     links: [{ id: "L1", addedByUserId: USER, status: "ACTIVE" }],
     aiInvocations: [{ id: "ai1", userId: USER }, { id: "ai2", userId: OTHER }],
-    ledger: [{ id: "cd1", recipientUserId: USER, recipientHash: null }, { id: "cd2", recipientUserId: OTHER, recipientHash: null }],
+    ledger: [
+      { id: "cd1", recipientUserId: USER, recipientHash: null },
+      { id: "cd2", recipientUserId: OTHER, recipientHash: null },
+      // A pre-account send to the subject's address (salted HMAC, no userId) — scrubbed only when the salt is set.
+      { id: "cd3", recipientUserId: null, recipientHash: "SUBJECT_HASH" },
+    ],
     betaRequests: [{ id: "b1", email: "jane@example.com" }, { id: "b2", email: "someone@else.com" }],
     betaEvents: [{ id: "e1", email: "JANE@example.com" }],
     mergeDecisions: [{ id: "m1", decidedByUserId: USER }],
@@ -174,8 +179,8 @@ function makeFake(world: World, hooks: Hooks = {}) {
       let n = 0; W.settings.forEach((r) => { if (r.updatedById === where.updatedById) { r.updatedById = null; n++; } }); return { count: n };
     } },
     investmentEvent: { updateMany: async () => ({ count: 0 }) },
-    commsDelivery: { updateMany: async ({ where, data }: { where: { recipientUserId?: string; OR?: Array<{ recipientUserId?: string; recipientHash?: string }> }; data: { recipientUserId?: null; recipientHash?: null } }) => {
-      const conds = where.OR ?? [{ recipientUserId: where.recipientUserId }];
+    commsDelivery: { updateMany: async ({ where, data }: { where: { recipientUserId?: string; recipientHash?: string; OR?: Array<{ recipientUserId?: string; recipientHash?: string }> }; data: { recipientUserId?: null; recipientHash?: null } }) => {
+      const conds = where.OR ?? [{ recipientUserId: where.recipientUserId, recipientHash: where.recipientHash }];
       let n = 0;
       W.ledger.forEach((r) => {
         if (conds.some((c) => (c.recipientUserId !== undefined && r.recipientUserId === c.recipientUserId) || (c.recipientHash !== undefined && r.recipientHash === c.recipientHash))) {
@@ -300,6 +305,25 @@ async function main() {
     check("still exactly one ACCOUNT_DELETED row and one e-mail", (await countAudit(fake, AuditAction.ACCOUNT_DELETED)) === 1 && calls.emails === 1);
   }
 
+  console.log("\n3b. Comms Center A-2a — with the salt set, pre-account ledger rows (by recipient hash) are scrubbed too");
+  {
+    const { recipientHash } = await import("@/lib/notifications/delivery/record");
+    process.env.COMMS_RECIPIENT_HASH_SALT = "purge-test-salt";
+    try {
+      const world = baseWorld();
+      world.ledger.find((r) => r.id === "cd3")!.recipientHash = recipientHash("Jane@Example.com", process.env)!;
+      world.ledger.push({ id: "cd4", recipientUserId: null, recipientHash: recipientHash("someone@else.com", process.env)! });
+      const fake = makeFake(world);
+      const { deps } = depsFor(fake);
+      await quiet(() => purgeUser(USER, deps));
+      check("userId row and the subject's hash row nulled; another address's hash row untouched",
+        world.ledger.find((r) => r.id === "cd1")!.recipientUserId === null && world.ledger.find((r) => r.id === "cd3")!.recipientHash === null
+        && world.ledger.find((r) => r.id === "cd4")!.recipientHash !== null && world.ledger.length === 4);
+    } finally {
+      delete process.env.COMMS_RECIPIENT_HASH_SALT;
+    }
+  }
+
   console.log("\n4. PRIV-001 / DB-011 — sole-member SHARED Spaces die with their accounts");
   {
     const world = baseWorld();
@@ -326,7 +350,9 @@ async function main() {
     const { deps } = depsFor(fake);
     await quiet(() => purgeUser(USER, deps));
     check("CommsDelivery recipient nulled for the subject only (the row and its count stay)",
-      world.ledger.length === 2 && world.ledger.find((r) => r.id === "cd1")!.recipientUserId === null && world.ledger.find((r) => r.id === "cd2")!.recipientUserId === OTHER);
+      world.ledger.length === 3 && world.ledger.find((r) => r.id === "cd1")!.recipientUserId === null && world.ledger.find((r) => r.id === "cd2")!.recipientUserId === OTHER);
+    check("…by userId even with NO salt configured (the hash row is then untouched: no salt, no derivable hash)",
+      process.env.COMMS_RECIPIENT_HASH_SALT === undefined && world.ledger.find((r) => r.id === "cd3")!.recipientHash === "SUBJECT_HASH");
     check("AiInvocation.userId nulled for the subject only", world.aiInvocations.find((r) => r.id === "ai1")!.userId === null && world.aiInvocations.find((r) => r.id === "ai2")!.userId === OTHER);
     check("BetaAccessRequest + events for the e-mail deleted (case-insensitive), others kept",
       world.betaRequests.map((r) => r.id).join() === "b2" && world.betaEvents.length === 0);

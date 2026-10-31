@@ -24,6 +24,7 @@
  */
 
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createEmailSender, type EmailSendEnv } from "@/lib/email/send";
 import type { EmailMessage, EmailProvider, EmailResult } from "@/lib/email/types";
 import { createNotification, type NotificationWriteClient } from "@/lib/notifications/create";
@@ -139,6 +140,48 @@ async function outcomes(): Promise<void> {
   }
 }
 
+async function messageKeys(): Promise<void> {
+  console.log("1b. messageKey: one message across retries (contract v1.0.2)");
+  const { rows, writer } = sink();
+  const s = sender(PROD, provider({ status: "error", provider: "resend", error: "x" }), writer);
+  await s("security-alert", ADDRESS, { title: "t", message: "m" }, { key: "PASSWORD_CHANGED", recipientUserId: "u" });
+  await s("security-alert", ADDRESS, { title: "t", message: "m" }, { key: "PASSWORD_CHANGED", recipientUserId: "u" });
+  check("two direct sends → two messages (a generated send id each)", rows[0].messageKey !== rows[1].messageKey && /^[0-9a-f-]{36}$/.test(rows[0].messageKey));
+  await s("notification", ADDRESS, {}, { key: "SYNC_FAILED", recipientUserId: "u", messageKey: "notif_1", notificationId: "notif_1", attempt: 1 });
+  await s("notification", ADDRESS, {}, { key: "SYNC_FAILED", recipientUserId: "u", messageKey: "notif_1", notificationId: "notif_1", attempt: 2 });
+  check("retries of a notification email share its messageKey (= the Notification id) with increasing attempt",
+    rows[2].messageKey === "notif_1" && rows[3].messageKey === "notif_1" && rows[2].attempt === 1 && rows[3].attempt === 2 && rows[3].notificationId === "notif_1");
+  const bogus = emailLedgerRow({ template: "smoke", to: "a@b.c", result: { status: "captured", provider: "capture" }, ctx: { key: "X", recipientUserId: null, messageKey: "has space; drop" }, env: PROD, now: NOW });
+  check("a caller messageKey that is not an opaque id is replaced by a generated one", /^[0-9a-f-]{36}$/.test(bogus.messageKey));
+  const skipped = emailLedgerRow({ template: "notification", to: "", result: { status: "skipped", provider: "email" }, ctx: { key: "SYNC_FAILED", recipientUserId: "u" }, env: PROD, now: NOW });
+  check("a skipped result is SUPPRESSED with the explicit reason NO_RECIPIENT (never a null reason)", skipped.status === "SUPPRESSED" && skipped.reason === "NO_RECIPIENT");
+
+  // The retry job hands the notification id to the adapter, which passes it as the messageKey.
+  const retry = readFileSync("jobs/retry-notifications.ts", "utf8");
+  const adapter = readFileSync("lib/notifications/channels/email.ts", "utf8");
+  check("retry job → adapter → sendEmail carries the Notification id as the messageKey",
+    /notificationId: true,/.test(retry) && /\{ notificationId: row\.notificationId \}/.test(retry) && /messageKey: message\.notificationId/.test(adapter));
+}
+
+async function deferred(): Promise<void> {
+  console.log("1c. after the response: the ledger write is deferred when a request scope exists");
+  const { rows, writer } = sink();
+  const tasks: Array<() => Promise<void>> = [];
+  const s = createEmailSender({ env: PROD, provider: provider({ status: "sent", provider: "resend", id: "m" }), capture, ledger: writer, now: () => NOW, defer: async (t) => { tasks.push(t); } });
+  const r = await s("security-alert", ADDRESS, { title: "t", message: "m" }, { key: "PASSWORD_CHANGED", recipientUserId: "u" });
+  check("with a defer seam the send returns BEFORE the ledger write", r.status === "sent" && rows.length === 0 && tasks.length === 1);
+  await tasks[0]();
+  check("…and the deferred task writes the row", rows.length === 1 && rows[0].status === "ACCEPTED");
+  const throwingDefer = createEmailSender({ env: PROD, provider: provider({ status: "sent", provider: "resend", id: "m" }), capture, ledger: writer, defer: async () => { throw new Error("no"); } });
+  check("a throwing defer seam never reaches the caller", (await throwingDefer("security-alert", ADDRESS, { title: "t", message: "m" })).status === "sent");
+  const { runAfterResponse } = await import("@/lib/notifications/delivery/defer");
+  let ran = false;
+  await runAfterResponse(async () => { ran = true; });
+  check("outside a request scope (jobs, scripts, tests) runAfterResponse runs the task INLINE", ran);
+  const send = readFileSync("lib/email/send.ts", "utf8");
+  check("production sendEmail defers through runAfterResponse", /ledger: writeDeliveryRow,\s*defer: runAfterResponse,/.test(send));
+}
+
 async function privacy(): Promise<void> {
   console.log("2. no address, subject, body, link or token on the ledger");
   const { rows, writer } = sink();
@@ -152,7 +195,7 @@ async function privacy(): Promise<void> {
   }
   const columns = new Set(rows.flatMap((r) => Object.keys(r)));
   check("the row has exactly the ledger columns — no address/subject/body/open/click field",
-    [...columns].sort().join() === "acceptedAt,attempt,channel,definitionKey,definitionVersion,environment,errorCode,notificationId,provider,providerMessageId,reason,recipientHash,recipientUserId,status,templateVersion", [...columns]);
+    [...columns].sort().join() === "acceptedAt,attempt,channel,definitionKey,definitionVersion,environment,errorCode,messageKey,notificationId,provider,providerMessageId,reason,recipientHash,recipientUserId,status,templateVersion", [...columns]);
   const inbox = rows[1];
   const expected = createHmac("sha256", SALT).update("inbox@example.invalid").digest("hex");
   check("no userId (an operator inbox) → recipientHash = HMAC-SHA256(salt, normalised address), 64 hex", inbox.recipientUserId === null && inbox.recipientHash === expected && /^[0-9a-f]{64}$/.test(inbox.recipientHash!));
@@ -190,11 +233,11 @@ async function nonBlocking(): Promise<void> {
 
 // ── createNotification: in-app outcomes ───────────────────────────────────────
 
-function notificationWorld(opts: { overrides?: PreferenceOverride[]; email?: string | null; failInsert?: boolean } = {}) {
+function notificationWorld(opts: { overrides?: PreferenceOverride[]; email?: string | null; failInsert?: boolean; failPrefs?: boolean; failLookup?: boolean } = {}) {
   const notifications: Array<{ id: string; userId: string; dedupeKey: string | null; archivedAt: Date | null }> = [];
   let n = 0;
   const client: NotificationWriteClient = {
-    user: { async findUnique() { return opts.email === null ? null : { email: opts.email ?? ADDRESS }; } },
+    user: { async findUnique() { if (opts.failLookup) throw new Error("lookup failed"); return opts.email === null ? null : { email: opts.email ?? ADDRESS }; } },
     notificationDelivery: { async create() { return { id: "d1" }; } },
     notification: {
       async create({ data }) {
@@ -212,7 +255,7 @@ function notificationWorld(opts: { overrides?: PreferenceOverride[]; email?: str
       async update() { return { id: "x" }; },
     },
   };
-  const prefClient = { notificationPreference: { async findMany() { return opts.overrides ?? []; } } } as unknown as PreferenceClient;
+  const prefClient = { notificationPreference: { async findMany() { if (opts.failPrefs) throw new Error("prefs down"); return opts.overrides ?? []; } } } as unknown as PreferenceClient;
   const delivered: ChannelMessage[] = [];
   const emailAdapter: ChannelAdapter = { channel: "EMAIL", name: "email", async deliver(m) { delivered.push(m); return m.email ? { status: "sent", provider: "resend", id: "m" } : { status: "skipped", provider: "email" }; } };
   const { rows, writer } = sink();
@@ -253,6 +296,24 @@ async function inApp(): Promise<void> {
       w.rows.some((x) => x.channel === "EMAIL" && x.status === "SUPPRESSED" && x.reason === "NO_RECIPIENT"), w.rows);
   }
   {
+    const w = notificationWorld({ failPrefs: true });
+    const r = await createNotification(SYNC, { client: w.client, prefClient: w.prefClient, emailAdapter: w.emailAdapter, ledger: w.writer });
+    check("preference read fails → error; IN_APP FAILED PREFERENCE_READ and the lost EMAIL leg FAILED PREFERENCE_READ",
+      r.status === "error" && w.rows.map((x) => `${x.channel}:${x.status}:${x.errorCode}`).join() === "IN_APP:FAILED:PREFERENCE_READ,EMAIL:FAILED:PREFERENCE_READ" && w.delivered.length === 0, w.rows);
+  }
+  {
+    const w = notificationWorld({ failLookup: true });
+    const r = await createNotification(SYNC, { client: w.client, prefClient: w.prefClient, emailAdapter: w.emailAdapter, ledger: w.writer });
+    check("recipient lookup fails → created; EMAIL FAILED RECIPIENT_LOOKUP (with the notification as its message); no send",
+      r.status === "created" && w.rows.some((x) => x.channel === "EMAIL" && x.status === "FAILED" && x.errorCode === "RECIPIENT_LOOKUP" && x.messageKey === r.id) && w.delivered.length === 0, w.rows);
+  }
+  {
+    const w = notificationWorld();
+    const r = await createNotification(SYNC, { client: w.client, prefClient: w.prefClient, emailAdapter: w.emailAdapter, ledger: w.writer });
+    check("the email leg reaches the adapter with the Notification id (its messageKey); the in-app row's messageKey is that id too",
+      w.delivered[0]?.notificationId === r.id && w.rows[0].messageKey === r.id);
+  }
+  {
     const w = notificationWorld({ failInsert: true });
     const r = await createNotification(SYNC, { client: w.client, prefClient: w.prefClient, emailAdapter: w.emailAdapter, ledger: w.writer });
     check("insert failure → error result, IN_APP FAILED STORE", r.status === "error" && w.rows.length === 1 && w.rows[0].status === "FAILED" && w.rows[0].errorCode === "STORE", w.rows);
@@ -279,6 +340,8 @@ async function productionWriter(): Promise<void> {
 
 async function main(): Promise<void> {
   await outcomes();
+  await messageKeys();
+  await deferred();
   await privacy();
   await nonBlocking();
   await inApp();

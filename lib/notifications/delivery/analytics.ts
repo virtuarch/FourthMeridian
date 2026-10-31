@@ -33,16 +33,18 @@ import { NextResponse } from "next/server";
 import { isCatalogKey } from "@/lib/notifications/catalog/definitions";
 import { NO_STORE } from "@/lib/notifications/catalog/http";
 import { COMMS_CHANNELS, type CommsChannel, type DaySeries } from "@/lib/notifications/catalog/types";
+// The response types live in the pure types module (re-exported for the UI by
+// lib/notifications/catalog/types.ts); re-exported here for existing importers.
+import type { DeliveryAnalytics, DeliveryWindow, ReasonCounts, SeriesKey, StatusCounts } from "@/lib/notifications/delivery/types";
+export type { DeliveryAnalytics, DeliveryWindow, ReasonCounts, SeriesKey, StatusCounts };
 import { ledgerEnvironment, type LedgerEnv } from "@/lib/notifications/delivery/record";
 import {
   DELIVERY_STATUSES,
   SUPPRESSION_REASONS,
   type DeliveryStatus,
-  type LedgerEnvironment,
   type SuppressionReason,
 } from "@/lib/notifications/delivery/types";
 
-export type DeliveryWindow = "7d" | "30d" | "90d";
 export const DELIVERY_WINDOWS = ["7d", "30d", "90d"] as const satisfies readonly DeliveryWindow[];
 const WINDOW_DAYS: Record<DeliveryWindow, number> = { "7d": 7, "30d": 30, "90d": 90 };
 
@@ -54,29 +56,8 @@ export const SERIES_STATUS = {
   suppressed: "SUPPRESSED",
   captured: "CAPTURED",
   cancelled: "CANCELLED",
-} as const satisfies Record<string, DeliveryStatus>;
-export type SeriesKey = keyof typeof SERIES_STATUS;
+} as const satisfies Record<SeriesKey, DeliveryStatus>;
 export const SERIES_KEYS = Object.keys(SERIES_STATUS) as SeriesKey[];
-
-export type StatusCounts = Record<DeliveryStatus, number>;
-export type ReasonCounts = Record<SuppressionReason, number>;
-
-export interface DeliveryAnalytics {
-  window: DeliveryWindow;
-  from: string;
-  to: string;
-  filters: { channel: CommsChannel | null; status: DeliveryStatus | null; template: string | null };
-  totals: StatusCounts | null;
-  suppressedByReason: ReasonCounts | null;
-  byKey: Array<{ key: string; counts: StatusCounts }> | null;
-  series: Record<SeriesKey, DaySeries>;
-  measured: { delivered: false; opens: false; clicks: false };
-  coverage: { ledgerSince: string | null; directSendsCovered: boolean; environment: LedgerEnvironment };
-  providerHealth: { href: "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"; source: "GET /api/platform/platform-ops/email-health" };
-  floor: boolean;
-  capped: boolean;
-  checkedAt: string;
-}
 
 /** One aggregated cell from the source: UTC day × key × channel × status × reason. */
 export interface DeliveryCountRow {

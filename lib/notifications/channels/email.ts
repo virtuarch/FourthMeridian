@@ -42,6 +42,8 @@ export const emailNotificationAdapter: ChannelAdapter = {
         {
           key: message.type,
           recipientUserId: message.userId,
+          // One message across retries: the Notification row it belongs to.
+          ...(message.notificationId ? { messageKey: message.notificationId, notificationId: message.notificationId } : {}),
           ...(message.attempt ? { attempt: message.attempt } : {}),
           ...(message.finalAttempt ? { terminalOnError: true } : {}),
         },

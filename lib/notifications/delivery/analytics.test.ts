@@ -34,6 +34,23 @@ import {
   type DeliveryReadSource,
 } from "@/lib/notifications/delivery/analytics";
 import { DELIVERY_STATUSES, SUPPRESSION_REASONS } from "@/lib/notifications/delivery/types";
+import { finalAttempts, rollupCutoff, DELIVERY_RETENTION_DAYS as ROLLUP_RETENTION_DAYS, type RollupSourceRow } from "@/lib/notifications/delivery/rollup";
+import { DELIVERY_RETENTION_DAYS as REPORTED_RETENTION_DAYS, toCatalogDetail } from "@/lib/notifications/catalog/http";
+import { COMMS_CATALOG } from "@/lib/notifications/catalog/definitions";
+// (9) the stable UI export path: these must all resolve from catalog/types.
+import {
+  DELIVERY_STATUSES as UI_STATUSES,
+  SUPPRESSION_REASONS as UI_REASONS,
+  type Aggregate,
+  type Count,
+  type CustomerDeliveryItem,
+  type DayCell,
+  type DaySeries as UiDaySeries,
+  type DeliveryResponse,
+  type DeliveryStatus as UiDeliveryStatus,
+  type StatusCounts as UiStatusCounts,
+  type SuppressionReason as UiSuppressionReason,
+} from "@/lib/notifications/catalog/types";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -240,6 +257,91 @@ async function recent(): Promise<void> {
   check("the detail route passes the ledger reader", /recentSeriesForKey\(deliveryReadSource, key, at\)/.test(routeSrc));
 }
 
+/**
+ * An ATTEMPT-level in-memory source with the read store's semantics (contract
+ * v1.0.2): each (channel, messageKey) counts once, by its final attempt (the
+ * rollup's finalAttempts — the same order the SQL's DISTINCT ON uses), on that
+ * attempt's UTC day; the status filter applies to the FINAL status.
+ */
+function attemptSource(attempts: RollupSourceRow[]): DeliveryReadSource {
+  return {
+    async ledgerSince() { return attempts.length ? attempts.map((a) => a.createdAt.toISOString().slice(0, 10)).sort()[0] : null; },
+    async counts(q) {
+      const inWindow = attempts.filter((a) => { const d = a.createdAt.toISOString().slice(0, 10); return d >= q.from && d <= q.to && (!q.channel || a.channel === q.channel) && (!q.key || a.definitionKey === q.key); });
+      const cells = new Map<string, DeliveryCountRow>();
+      for (const f of finalAttempts(inWindow, inWindow)) {
+        if (q.status && f.status !== q.status) continue;
+        const c = { day: f.createdAt.toISOString().slice(0, 10), definitionKey: f.definitionKey, channel: f.channel, status: f.status, reason: f.reason ?? "", count: 0 };
+        const k = [c.day, c.definitionKey, c.channel, c.status, c.reason].join("|");
+        (cells.get(k) ?? cells.set(k, c).get(k)!).count++;
+      }
+      return [...cells.values()];
+    },
+  };
+}
+
+async function messages(): Promise<void> {
+  console.log("9. attempts vs messages (contract v1.0.2)");
+  const at = (iso: string) => new Date(iso);
+  const a = (id: string, messageKey: string, attempt: number, status: string, iso: string, channel = "EMAIL"): RollupSourceRow =>
+    ({ id, messageKey, attempt, status, createdAt: at(iso), channel, definitionKey: "SYNC_FAILED", reason: null });
+  const src = attemptSource([
+    a("1", "nA", 1, "FAILED", "2026-10-28T07:30:00Z"), a("2", "nA", 2, "ACCEPTED", "2026-10-29T07:30:00Z"),
+    a("3", "nB", 1, "FAILED", "2026-10-28T07:30:00Z"), a("4", "nB", 2, "FAILED", "2026-10-29T07:30:00Z"), a("5", "nB", 3, "DEAD", "2026-10-30T07:30:00Z"),
+    a("6", "nA", 1, "ACCEPTED", "2026-10-28T07:00:00Z", "IN_APP"),
+  ]);
+  const r = await call(deliveryAnalytics(u("?window=7d&channel=EMAIL"), NOW, src, ENV));
+  const t = r.json.totals as Record<string, number>;
+  check("retry-then-accepted counts 1 ACCEPTED (not a FAILED); died-after-retries counts 1 DEAD (not FAILED×2)",
+    t.ACCEPTED === 1 && t.DEAD === 1 && t.FAILED === 0, t);
+  const series = r.json.series as Record<string, Series>;
+  check("…on the final attempt's day; the failed series stays 0 on the retry days",
+    series.accepted.days.find((d) => d.day === "2026-10-29")?.count === 1 && series.dead.days.find((d) => d.day === "2026-10-30")?.count === 1
+    && series.failed.days.every((d) => d.count === 0 || d.count === null));
+  const failedOnly = await call(deliveryAnalytics(u("?window=7d&status=FAILED"), NOW, src, ENV));
+  check("status=FAILED filters FINAL statuses: neither message is a FAILED", (failedOnly.json.totals as Record<string, number>).FAILED === 0);
+  const all = await call(deliveryAnalytics(u("?window=7d"), NOW, src, ENV));
+  check("the in-app twin (same messageKey, IN_APP) is its own message: 2 ACCEPTED in total", (all.json.totals as Record<string, number>).ACCEPTED === 2);
+  const sql = readFileSync("lib/notifications/delivery/read-store.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  check("the SQL counts messages: DISTINCT ON (channel, messageKey) ordered attempt DESC, createdAt DESC, id DESC (the rollup's order)",
+    /SELECT DISTINCT ON \("channel", "messageKey"\)/.test(sql) && /ORDER BY "channel", "messageKey", "attempt" DESC, "createdAt" DESC, "id" DESC/.test(sql));
+  check("…and the status filter applies to the FINAL row (outside the DISTINCT ON), not to attempts",
+    /FROM finals \$\{statusFilter\}/.test(sql) && /const ledgerFilters = filters\(q, false\)/.test(sql));
+  check("UTC independent of the session TimeZone: bounds bound as ISO date strings (no JS Date parameter)",
+    !/new Date\(/.test(sql) && /\$\{q\.from\}::date/.test(sql) && /\$\{q\.to\}::date/.test(sql) && /date_trunc\('day', "createdAt"\)/.test(sql));
+}
+
+async function contractSurface(): Promise<void> {
+  console.log("10. one retention constant; the UI export path");
+  const day = 86_400_000;
+  check("ONE retention constant: the value catalog detail reports IS the rollup's (90)",
+    REPORTED_RETENTION_DAYS === ROLLUP_RETENTION_DAYS && ROLLUP_RETENTION_DAYS === 90
+    && toCatalogDetail(COMMS_CATALOG.SYNC_FAILED, NOW).retention.deliveryDays === ROLLUP_RETENTION_DAYS);
+  check("…and the retention job's cutoff is that many UTC days back",
+    (Date.UTC(2026, 9, 31) - rollupCutoff(NOW).getTime()) / day === ROLLUP_RETENTION_DAYS);
+  const httpSrc = readFileSync("lib/notifications/catalog/http.ts", "utf8");
+  check("http.ts defines no retention number of its own (it re-exports the rollup's)",
+    !/DELIVERY_RETENTION_DAYS\s*=\s*\d/.test(httpSrc) && /export \{ DELIVERY_RETENTION_DAYS \} from "@\/lib\/notifications\/delivery\/rollup"/.test(httpSrc));
+  // Compile-time: a built response is assignable to the exported contract types.
+  const { s } = source("2026-10-01", [cell("2026-10-30", "PASSWORD_CHANGED", "ACCEPTED", 2)]);
+  const r = await call(deliveryAnalytics(u("?window=7d"), NOW, s, ENV));
+  const typed: DeliveryResponse = r.json as unknown as DeliveryResponse;
+  const totalsTyped: UiStatusCounts | null = typed.totals;
+  const cellTyped: DayCell = typed.series.accepted.days[0];
+  const seriesTyped: UiDaySeries = typed.series.accepted;
+  const countTyped: Count = cellTyped.count;
+  const agg: Aggregate = { value: null, withheld: false };
+  const status: UiDeliveryStatus = "ACCEPTED";
+  const reason: UiSuppressionReason = "PREFERENCE_OFF";
+  const row: CustomerDeliveryItem = { deliveryId: "d", key: "SYNC_FAILED", channel: "EMAIL", status, reason, attempts: 3, createdAt: NOW.toISOString(), acceptedAt: null, lastAttemptAt: null };
+  check("catalog/types exports the delivery API types and value lists (DeliveryResponse, DaySeries, Count, Aggregate, DayCell, StatusCounts, DeliveryStatus, SuppressionReason, CustomerDeliveryItem)",
+    totalsTyped?.ACCEPTED === 2 && seriesTyped.days.length === 7 && countTyped === 0 && agg.withheld === false && row.attempts === 3
+    && UI_STATUSES.length === DELIVERY_STATUSES.length && UI_REASONS.length === SUPPRESSION_REASONS.length);
+  const typesSrc = readFileSync("lib/notifications/delivery/types.ts", "utf8");
+  check("the types module is pure: type-only imports, no database, no next/server",
+    !/@\/lib\/db|next\/server/.test(typesSrc) && /^import type /m.test(typesSrc) && !/^import (?!type)/m.test(typesSrc));
+}
+
 async function pii(): Promise<void> {
   console.log("7. no PII in any response");
   const all = seen.join("\n");
@@ -255,6 +357,8 @@ async function main(): Promise<void> {
   await failure();
   await gating();
   await recent();
+  await messages();
+  await contractSurface();
   await pii();
   if (failures > 0) { console.error(`\n${failures} delivery API check(s) failed`); process.exit(1); }
   console.log("\nAll delivery API checks passed.");

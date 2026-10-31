@@ -45,10 +45,11 @@
  * provider accepted it; never "delivered"), CAPTURED (the guard), FAILED / DEAD
  * (error; DEAD on the caller-declared last attempt) — keyed by the catalog key
  * the caller names in the 4th argument. Metadata only: never the address,
- * subject, body or data. The write runs AFTER the transport answered and can
- * neither throw into the caller nor hold it past LEDGER_WRITE_TIMEOUT_MS: a
- * ledger failure is one redacted log line and the EmailResult is returned
- * unchanged.
+ * subject, body or data. The write runs AFTER the transport answered — in a
+ * request, after the RESPONSE (next/server after()); in a job or script,
+ * inline and bounded by LEDGER_WRITE_TIMEOUT_MS — and can never throw into
+ * the caller: a ledger failure is one redacted log line and the EmailResult
+ * is returned unchanged.
  *
  * NON-THROWING: returns an EmailResult; callers branch on `status`.
  */
@@ -62,6 +63,7 @@ import { captureAdapter } from "@/lib/email/providers/capture";
 import { decideRecipient, describeGuardedRecipient, type RecipientGuardEnv } from "@/lib/email/recipient-guard";
 import { emailLedgerRow, recordDelivery, type LedgerEnv } from "@/lib/notifications/delivery/record";
 import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import { runAfterResponse } from "@/lib/notifications/delivery/defer";
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 
 /** The env keys the chokepoint reads (a structural subset of process.env). */
@@ -84,6 +86,12 @@ export interface EmailSenderDeps {
   ledger?: LedgerWriter;
   /** Clock for the ledger row (tests). */
   now?: () => Date;
+  /**
+   * Where the ledger write runs. Production: after the response when a request
+   * scope exists (next/server after()), inline otherwise — jobs and scripts.
+   * Absent ⇒ inline, bounded by LEDGER_WRITE_TIMEOUT_MS.
+   */
+  defer?: (task: () => Promise<void>) => Promise<void>;
 }
 
 export type SendEmailFn = (
@@ -107,7 +115,13 @@ export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
         log(`[comms-ledger] delivery row could not be built (non-fatal; the send is unaffected): template=${name}`, "warn");
         return result;
       }
-      await recordDelivery(deps.ledger, row, { log: (line) => log(line, "warn") });
+      const writer = deps.ledger;
+      const write = async () => { await recordDelivery(writer, row, { log: (line) => log(line, "warn") }); };
+      if (deps.defer) {
+        try { await deps.defer(write); } catch { /* recordDelivery never throws; a defer seam must not either */ }
+      } else {
+        await write();
+      }
     }
     return result;
   };
@@ -127,6 +141,7 @@ export const sendEmail: SendEmailFn = createEmailSender({
   provider: resendAdapter,
   capture: captureAdapter,
   ledger: writeDeliveryRow,
+  defer: runAfterResponse,
 });
 
 async function send(

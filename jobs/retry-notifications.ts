@@ -75,6 +75,8 @@ const RETRY_BATCH_LIMIT = 100;
 export interface RetryableDeliveryRow {
   id: string;
   attempts: number;
+  /** A-2a: the delivery ledger's messageKey — every retry of this email is the same message. */
+  notificationId?: string;
   notification: {
     userId: string;
     type: string;
@@ -99,6 +101,7 @@ export interface NotificationRetryClient {
       select: {
         id: true;
         attempts: true;
+        notificationId: true;
         notification: {
           select: {
             userId: true;
@@ -177,6 +180,7 @@ export async function retryNotifications(
     select: {
       id: true,
       attempts: true,
+      notificationId: true,
       notification: {
         select: {
           userId: true,
@@ -282,6 +286,7 @@ export async function retryNotifications(
       ...(n.href && actionLabel ? { actionLabel } : {}),
       // Delivery ledger (A-2a): this is attempt attempts+1; at the cap an error is DEAD.
       attempt: row.attempts + 1,
+      ...(row.notificationId ? { notificationId: row.notificationId } : {}),
       finalAttempt: row.attempts + 1 >= MAX_DELIVERY_ATTEMPTS,
     });
 

@@ -491,11 +491,21 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
     // Comms Center A-2a — the delivery ledger keeps its COUNTS but forgets who:
     // the soft recipientUserId, and the salted recipient hash of the address
     // (rows sent before an account existed, e.g. a beta invite), are nulled.
-    const ledgerHash = recipientHash(user.email, process.env);
+    // ALWAYS by userId (whether or not a salt is configured), then — when the
+    // salt is set — by the hash of the CURRENT address (rows sent to this
+    // person before they had an account). An address the user changed away
+    // from cannot be re-derived; those rows carry no userId and only an HMAC.
     await tx.commsDelivery.updateMany({
-      where: ledgerHash ? { OR: [{ recipientUserId: userId }, { recipientHash: ledgerHash }] } : { recipientUserId: userId },
+      where: { recipientUserId: userId },
       data:  { recipientUserId: null, recipientHash: null },
     });
+    const ledgerHash = recipientHash(user.email, process.env);
+    if (ledgerHash) {
+      await tx.commsDelivery.updateMany({
+        where: { recipientHash: ledgerHash },
+        data:  { recipientUserId: null, recipientHash: null },
+      });
+    }
 
     // 7. ACCOUNT_DELETED audit (written BEFORE the delete). userId is set now;
     //    the user delete below SetNulls it, so the row survives anonymized

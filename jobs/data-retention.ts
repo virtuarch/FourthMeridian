@@ -37,7 +37,7 @@
  * RateLimit (sweep-rate-limits), financial data of any kind.
  */
 
-import { runCommsDeliveryRollup, type CommsRollupResult, type RollupClient } from "@/lib/notifications/delivery/rollup";
+import { rollupClientFrom, runCommsDeliveryRollup, type CommsRollupResult, type PrismaRollupLike, type RollupClient } from "@/lib/notifications/delivery/rollup";
 
 const DAY_MS = 86_400_000;
 export const RETENTION_BATCH = 1000;
@@ -109,7 +109,7 @@ export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date)
 export async function runDataRetention(client?: RetentionClient, now: Date = new Date(), comms?: RollupClient): Promise<DataRetentionResult> {
   const c = client ?? ((await import("@/lib/db")).systemDb as unknown as RetentionClient);
   // An injected rules client never implies the real database for the rollup.
-  const commsClient = comms ?? (client ? null : ((await import("@/lib/db")).systemDb as unknown as RollupClient));
+  const commsClient = comms ?? (client ? null : rollupClientFrom((await import("@/lib/db")).systemDb as unknown as PrismaRollupLike));
   const out = { totalDeleted: 0, commsDelivery: null } as DataRetentionResult;
   for (const rule of RETENTION_RULES) {
     const cutoff = retentionCutoffFor(rule, now);

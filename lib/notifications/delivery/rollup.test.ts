@@ -27,6 +27,7 @@ import {
   ROLLUP_BATCH,
   ROLLUP_MAX_BATCHES,
   groupDaily,
+  rollupClientFrom,
   rollupCutoff,
   runCommsDeliveryRollup,
   type DailyKey,
@@ -66,7 +67,11 @@ function world(seed: LedgerRow[], opts: { stealOnDelete?: number } = {}) {
             return [...ledger].filter((r) => r.createdAt < where.createdAt.lt)
               .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : 1))
               .slice(0, take)
-              .map(({ id, definitionKey, channel, status, reason, createdAt }) => ({ id, definitionKey, channel, status, reason, createdAt }));
+              .map(({ id, messageKey, attempt, definitionKey, channel, status, reason, createdAt }) => ({ id, messageKey, attempt, definitionKey, channel, status, reason, createdAt }));
+          },
+          async findAttempts({ where }) {
+            return ledger.filter((r) => where.messageKey.in.includes(r.messageKey))
+              .map(({ id, messageKey, channel, attempt, createdAt }) => ({ id, messageKey, channel, attempt, createdAt }));
           },
           async deleteMany({ where }) {
             if (steal > 0) {
@@ -106,7 +111,7 @@ function world(seed: LedgerRow[], opts: { stealOnDelete?: number } = {}) {
 const NOW = new Date("2026-10-31T23:59:30.000Z"); // late in the UTC day on purpose
 const CUTOFF = rollupCutoff(NOW);
 const row = (id: string, createdAt: Date, over: Partial<LedgerRow> = {}): LedgerRow => ({
-  id, definitionKey: "PASSWORD_CHANGED", channel: "EMAIL", status: "ACCEPTED", reason: null, createdAt,
+  id, messageKey: id, attempt: 1, definitionKey: "PASSWORD_CHANGED", channel: "EMAIL", status: "ACCEPTED", reason: null, createdAt,
   recipientUserId: "user_1", recipientHash: null, ...over,
 });
 const quiet = async <T,>(fn: () => Promise<T>): Promise<T> => {
@@ -192,12 +197,51 @@ async function bounded(): Promise<void> {
     next.rolled === 7 && next.exhausted && w.ledger.length === 0 && w.daily.reduce((n, c) => n + c.count, 0) === total);
 }
 
+async function messages(): Promise<void> {
+  console.log("4b. attempts vs messages (contract v1.0.2): each message counted ONCE, by its final attempt");
+  const d = (iso: string) => new Date(iso);
+  const w = world([
+    // retried, then accepted on attempt 2 — all expired
+    row("m1a1", d("2026-05-01T08:00:00Z"), { messageKey: "m1", attempt: 1, status: "FAILED" }),
+    row("m1a2", d("2026-05-02T08:00:00Z"), { messageKey: "m1", attempt: 2, status: "ACCEPTED" }),
+    // died after retries: FAILED, FAILED, DEAD
+    row("m2a1", d("2026-05-01T09:00:00Z"), { messageKey: "m2", attempt: 1, status: "FAILED" }),
+    row("m2a2", d("2026-05-02T09:00:00Z"), { messageKey: "m2", attempt: 2, status: "FAILED" }),
+    row("m2a3", d("2026-05-03T09:00:00Z"), { messageKey: "m2", attempt: 3, status: "DEAD" }),
+    // same messageKey on another channel is ANOTHER message (the in-app twin)
+    row("m1in", d("2026-05-01T08:00:00Z"), { messageKey: "m1", attempt: 1, status: "ACCEPTED", channel: "IN_APP" }),
+    // attempt 1 expired, attempt 2 still recent: the message stays with the ledger
+    row("m3a1", new Date(CUTOFF.getTime() - 3_600_000), { messageKey: "m3", attempt: 1, status: "FAILED" }),
+    row("m3a2", new Date(CUTOFF.getTime() + 3_600_000), { messageKey: "m3", attempt: 2, status: "ACCEPTED" }),
+  ]);
+  const r = await quiet(() => runCommsDeliveryRollup(w.client, NOW));
+  const n = (status: string, channel = "EMAIL") => w.daily.filter((c) => c.status === status && c.channel === channel).reduce((x, c) => x + c.count, 0);
+  check("retry-then-accepted → 1 ACCEPTED (not a FAILED); died after retries → 1 DEAD (not FAILED×2)",
+    n("ACCEPTED") === 1 && n("FAILED") === 0 && n("DEAD") === 1, w.daily.map((c) => `${c.channel}:${c.status}:${c.count}`));
+  check("…each counted on its FINAL attempt's UTC day",
+    w.daily.some((c) => c.status === "ACCEPTED" && c.channel === "EMAIL" && c.day.toISOString().startsWith("2026-05-02"))
+    && w.daily.some((c) => c.status === "DEAD" && c.day.toISOString().startsWith("2026-05-03")));
+  check("the in-app twin with the same messageKey is its own message (IN_APP ACCEPTED 1)", n("ACCEPTED", "IN_APP") === 1);
+  check("an expired attempt superseded by a RECENT one is deleted uncounted; the recent attempt stays to carry it",
+    w.ledger.map((x) => x.id).join() === "m3a2" && r.rolled === 7 && r.counted === 3 && r.superseded === 4, r);
+  const again = await quiet(() => runCommsDeliveryRollup(w.client, NOW));
+  check("re-run: nothing more counted", again.rolled === 0 && n("ACCEPTED") === 1 && n("DEAD") === 1);
+}
+
 async function wiring(): Promise<void> {
   console.log("5. wiring into the retention job");
   const strip = (p: string) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const job = strip("jobs/data-retention.ts");
   check("data-retention runs the rollup, defaulting to the system principal (never `db`)",
-    /runCommsDeliveryRollup\(commsClient, now\)/.test(job) && /\(await import\("@\/lib\/db"\)\)\.systemDb as unknown as RollupClient/.test(job));
+    /runCommsDeliveryRollup\(commsClient, now\)/.test(job) && /rollupClientFrom\(\(await import\("@\/lib\/db"\)\)\.systemDb as unknown as PrismaRollupLike\)/.test(job));
+  {
+    const calls: string[] = [];
+    const prisma = { async $transaction<T>(fn: (tx: never) => Promise<T>) {
+      return fn({ commsDelivery: { findMany: async (a: { where: object }) => { calls.push(`findMany:${Object.keys(a.where).join()}`); return []; }, deleteMany: async () => ({ count: 0 }) }, commsDeliveryDaily: { upsert: async () => ({}) } } as never);
+    } };
+    const res = await quiet(() => runCommsDeliveryRollup(rollupClientFrom(prisma as never), NOW));
+    check("the Prisma binding: one findMany on createdAt, then (with rows) findAttempts as findMany on messageKey", res.exhausted && calls.join() === "findMany:createdAt");
+  }
   check("CommsDelivery is NOT a plain delete rule (it must be rolled first)", !RETENTION_RULES.some((r) => /comms/i.test(r.table)));
   const empty = Object.fromEntries(RETENTION_RULES.map((r) => [r.table, { findMany: async () => [], deleteMany: async () => ({ count: 0 }) }])) as unknown as RetentionClient;
   const injectedOnly = await quiet(() => runDataRetention(empty, NOW));
@@ -212,6 +256,7 @@ async function main(): Promise<void> {
   await idempotent();
   await concurrent();
   await bounded();
+  await messages();
   await wiring();
   if (failures > 0) { console.error(`\n${failures} rollup check(s) failed`); process.exit(1); }
   console.log("\nAll delivery-ledger retention checks passed.");

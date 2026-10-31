@@ -76,6 +76,10 @@ export interface EmailResult {
  *                    operator inbox / an applicant with no account.
  *   hashRecipient    false = store no recipient hash even when there is no
  *                    userId (the post-purge goodbye: nothing may link back).
+ *   messageKey       the MESSAGE this attempt belongs to, stable across retries
+ *                    (the Notification id for registry email). Absent ⇒ a new
+ *                    send id is generated (a direct send is one message).
+ *   notificationId   the in-app twin, when there is one.
  *   attempt          1-based attempt number (the retry job passes its own).
  *   terminalOnError  this is the last attempt: an error is recorded as DEAD.
  */
@@ -83,6 +87,8 @@ export interface EmailSendContext {
   key: string;
   recipientUserId: string | null;
   hashRecipient?: boolean;
+  messageKey?: string;
+  notificationId?: string;
   attempt?: number;
   terminalOnError?: boolean;
 }

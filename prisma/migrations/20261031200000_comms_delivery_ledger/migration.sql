@@ -4,6 +4,11 @@
 -- ADDITIVE ONLY: two NEW tables, their indexes, grants and RLS. No existing
 -- table, row, column or policy is touched.
 --
+-- ONE ROW PER ATTEMPT, COUNTED PER MESSAGE (contract v1.0.2): a retry appends
+-- a row with the same "messageKey" (the Notification id for registry legs, a
+-- generated send id for direct sends) and a higher "attempt". Reads and the
+-- rollup count each (channel, messageKey) ONCE, by its highest attempt.
+--
 -- WHAT IS STORED: delivery METADATA only — catalog key, versions, channel,
 -- status, reason, provider + provider message id, attempt, a closed error code,
 -- environment, timestamps. The recipient is a soft userId (no FK), or — only
@@ -29,6 +34,7 @@
 -- ── 1. Tables + indexes (prisma migrate diff of the schema change, verbatim) ─
 CREATE TABLE "CommsDelivery" (
     "id" TEXT NOT NULL,
+    "messageKey" TEXT NOT NULL,
     "definitionKey" TEXT NOT NULL,
     "definitionVersion" INTEGER NOT NULL,
     "templateVersion" INTEGER,
@@ -64,6 +70,7 @@ CREATE INDEX "CommsDelivery_createdAt_idx" ON "CommsDelivery"("createdAt");
 CREATE INDEX "CommsDelivery_definitionKey_createdAt_idx" ON "CommsDelivery"("definitionKey", "createdAt");
 CREATE INDEX "CommsDelivery_recipientUserId_createdAt_idx" ON "CommsDelivery"("recipientUserId", "createdAt");
 CREATE INDEX "CommsDelivery_recipientHash_idx" ON "CommsDelivery"("recipientHash");
+CREATE INDEX "CommsDelivery_messageKey_idx" ON "CommsDelivery"("messageKey");
 
 -- ── 2. Grants + RLS — the system principal only ──────────────────────────────
 REVOKE ALL ON TABLE public."CommsDelivery" FROM fm_app;

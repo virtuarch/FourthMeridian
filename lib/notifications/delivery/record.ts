@@ -20,7 +20,7 @@
  * LEDGER_WRITE_TIMEOUT_MS so a slow database cannot hold a caller.
  */
 
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type { EmailResult, EmailSendContext, EmailTemplateName } from "@/lib/email/types";
 import {
   COMMS_CATALOG,
@@ -103,7 +103,12 @@ export function classifyEmailError(error: string | undefined): DeliveryErrorCode
   return "PROVIDER";
 }
 
-/** One ledger row for one sendEmail outcome. Pure. */
+/** An opaque id from a caller, bounded; anything else is absent. */
+function boundedId(v: string | null | undefined): string | null {
+  return typeof v === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : null;
+}
+
+/** One ledger row for one sendEmail outcome. Pure (apart from a generated send id). */
 export function emailLedgerRow(args: {
   template: EmailTemplateName;
   to: string;
@@ -121,13 +126,16 @@ export function emailLedgerRow(args: {
   switch (result.status) {
     case "sent": status = "ACCEPTED"; break;
     case "captured": status = "CAPTURED"; reason = result.reason ?? null; break;
-    case "skipped": status = "SUPPRESSED"; break;
+    // The transports never answer "skipped"; the one producer is the notification
+    // adapter's no-address path, so the explicit reason is NO_RECIPIENT.
+    case "skipped": status = "SUPPRESSED"; reason = "NO_RECIPIENT"; break;
     default:
       status = ctx?.terminalOnError ? "DEAD" : "FAILED";
       errorCode = classifyEmailError(result.error);
   }
   const userId = ctx?.recipientUserId ?? null;
   return {
+    messageKey: boundedId(ctx?.messageKey) ?? randomUUID(),
     definitionKey: key,
     definitionVersion: def?.definitionVersion ?? 0,
     templateVersion: EMAIL_TEMPLATE_VERSIONS[template] ?? null,
@@ -140,7 +148,7 @@ export function emailLedgerRow(args: {
     errorCode,
     recipientUserId: userId,
     recipientHash: userId === null && ctx?.hashRecipient !== false ? recipientHash(to, env) : null,
-    notificationId: null,
+    notificationId: boundedId(ctx?.notificationId),
     environment: ledgerEnvironment(env),
     acceptedAt: status === "ACCEPTED" ? now : null,
   };
@@ -160,6 +168,9 @@ export function notificationLedgerRow(args: {
 }): CommsDeliveryRow {
   const def = getCatalogDefinition(args.key);
   return {
+    // The Notification id when a row exists (shared with its email leg's rows,
+    // told apart by channel); otherwise this outcome is a message of its own.
+    messageKey: boundedId(args.notificationId) ?? randomUUID(),
     definitionKey: def ? args.key : UNCATALOGUED_KEY,
     definitionVersion: def?.definitionVersion ?? 0,
     templateVersion: args.channel === "IN_APP" ? IN_APP_TEMPLATE_VERSION : EMAIL_TEMPLATE_VERSIONS.notification,

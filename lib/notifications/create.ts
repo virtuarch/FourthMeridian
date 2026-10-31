@@ -78,6 +78,7 @@ import type {
 } from "@/lib/notifications/types";
 import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/delivery/record";
 import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import { runAfterResponse } from "@/lib/notifications/delivery/defer";
 import type { CommsDeliveryRow, LedgerWriter } from "@/lib/notifications/delivery/types";
 
 // ── Delivery ledger (Comms Center A-2a) ──────────────────────────────────────
@@ -222,20 +223,9 @@ export function fillDedupeTemplate(
 }
 
 // ── Deferred execution (S4) ───────────────────────────────────────────────────
-
-/**
- * Run delivery work post-response when a request scope exists (next/server
- * after() — the D2.x deferred-history precedent), inline otherwise (unit
- * tests, scripts, any non-request context, where after() throws).
- */
-async function runAfterResponse(task: () => Promise<void>): Promise<void> {
-  try {
-    const { after } = await import("next/server");
-    after(task);
-  } catch {
-    await task();
-  }
-}
+// runAfterResponse (post-response via next/server after() in a request scope,
+// inline otherwise) lives in lib/notifications/delivery/defer.ts, shared with
+// the sendEmail ledger write.
 
 /**
  * S4: deliver ONE email attempt through the channel adapter and record ONE
@@ -262,13 +252,27 @@ async function deliverEmailAndRecord(args: {
   writer?: LedgerWriter | null;
 }): Promise<void> {
   try {
-    const recipient = await args.client.user.findUnique({
-      where: { id: args.userId },
-      select: { email: true },
-    });
+    let recipient: { email: string } | null;
+    try {
+      recipient = await args.client.user.findUnique({
+        where: { id: args.userId },
+        select: { email: true },
+      });
+    } catch (lookupErr) {
+      // The address could not be read: the email leg is never attempted. Recorded, then
+      // re-thrown into the existing best-effort catch below (unchanged behaviour).
+      if (args.writer) {
+        await recordDelivery(args.writer, notificationLedgerRow({
+          key: args.type, channel: "EMAIL", status: "FAILED", errorCode: "RECIPIENT_LOOKUP",
+          recipientUserId: args.userId, notificationId: args.notificationId, env: process.env, now: new Date(),
+        }));
+      }
+      throw lookupErr;
+    }
 
     const result = await args.adapter.deliver({
       userId: args.userId,
+      notificationId: args.notificationId,
       ...(recipient?.email ? { email: recipient.email } : {}),
       type: args.type,
       category: args.category,
@@ -374,7 +378,14 @@ export async function createNotification(
         select: { category: true, channel: true, enabled: true },
       });
     } catch (prefErr) {
-      await note({ channel: "IN_APP", status: "FAILED", errorCode: "STORE" });
+      // Nothing is sent: the in-app row is not written, and its email leg (when the
+      // type has one by default) is lost with it. Both are FAILED PREFERENCE_READ.
+      await note(
+        { channel: "IN_APP", status: "FAILED", errorCode: "PREFERENCE_READ" },
+        ...(!def.excludedChannels?.includes("EMAIL") && resolveChannelEnabled(def, "EMAIL", [])
+          ? [{ channel: "EMAIL" as const, status: "FAILED" as const, errorCode: "PREFERENCE_READ" as const }]
+          : []),
+      );
       return {
         status: "error",
         error: prefErr instanceof Error ? prefErr.message : String(prefErr),

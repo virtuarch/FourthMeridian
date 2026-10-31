@@ -10,10 +10,19 @@
  * WHOLE, never split between the two tables mid-day, and the ledger holds every
  * day of the longest read window (90d = today + the 89 days before it).
  *
+ * MESSAGES, NOT ATTEMPTS (contract v1.0.2): the ledger has one row per attempt;
+ * a message is (channel, messageKey) and counts ONCE, by its FINAL attempt
+ * (highest attempt; ties: latest createdAt, then id — the read's order), on
+ * that attempt's UTC day. An expired attempt that a later attempt supersedes
+ * is deleted WITHOUT being counted — the later one (still in the ledger, and
+ * counted by the read until it too expires) carries the message.
+ *
  * IDEMPOTENT BY CONSTRUCTION: each batch is ONE transaction that
  *   1. selects ≤ ROLLUP_BATCH expired rows, oldest first;
- *   2. upserts their per-group counts into CommsDeliveryDaily (increment);
- *   3. deletes exactly those ids (age predicate repeated);
+ *   2. looks up every attempt (any age) of those messages, and keeps only the
+ *      batch rows that are their message's FINAL attempt;
+ *   3. upserts those per-group counts into CommsDeliveryDaily (increment);
+ *   4. deletes every batch id (age predicate repeated);
  * and REFUSES (rolls back) when the delete removed fewer rows than it counted —
  * a concurrent run got there first. So a row is counted in exactly one of the
  * two tables, a re-run counts nothing twice, and a crash mid-batch leaves the
@@ -33,6 +42,8 @@ const DAY_MS = 86_400_000;
 
 export interface RollupSourceRow {
   id: string;
+  messageKey: string;
+  attempt: number;
   definitionKey: string;
   channel: string;
   status: string;
@@ -48,8 +59,13 @@ export interface RollupTx {
       where: { createdAt: { lt: Date } };
       orderBy: Array<{ createdAt: "asc" } | { id: "asc" }>;
       take: number;
-      select: { id: true; definitionKey: true; channel: true; status: true; reason: true; createdAt: true };
+      select: { id: true; messageKey: true; attempt: true; definitionKey: true; channel: true; status: true; reason: true; createdAt: true };
     }): Promise<RollupSourceRow[]>;
+    /** Every attempt (any age) of the batch's messages — to find each message's final attempt. */
+    findAttempts(args: {
+      where: { messageKey: { in: string[] } };
+      select: { id: true; messageKey: true; channel: true; attempt: true; createdAt: true };
+    }): Promise<Array<Pick<RollupSourceRow, "id" | "messageKey" | "channel" | "attempt" | "createdAt">>>;
     deleteMany(args: { where: { id: { in: string[] }; createdAt: { lt: Date } } }): Promise<{ count: number }>;
   };
   commsDeliveryDaily: {
@@ -66,8 +82,12 @@ export interface RollupClient {
 }
 
 export interface CommsRollupResult {
-  /** Ledger rows counted into the daily table (== deleted). */
+  /** Expired ledger rows (attempts) removed. */
   rolled: number;
+  /** Of those, the messages counted into the daily table (final attempts). */
+  counted: number;
+  /** Of those, attempts deleted uncounted because a later attempt carries the message. */
+  superseded: number;
   /** Daily cells written (inserted or incremented). */
   cells: number;
   batches: number;
@@ -101,12 +121,33 @@ export function groupDaily(rows: readonly RollupSourceRow[]): Array<DailyKey & {
   return [...cells.values()];
 }
 
+/** True when `a` is a LATER attempt than `b` (attempt, then createdAt, then id). */
+function later(a: { attempt: number; createdAt: Date; id: string }, b: { attempt: number; createdAt: Date; id: string }): boolean {
+  return a.attempt !== b.attempt ? a.attempt > b.attempt
+    : a.createdAt.getTime() !== b.createdAt.getTime() ? a.createdAt > b.createdAt
+    : a.id > b.id;
+}
+
+/** The batch rows that are their message's final attempt, given every attempt of those messages. Pure. */
+export function finalAttempts<R extends RollupSourceRow>(
+  batch: readonly R[],
+  attempts: ReadonlyArray<Pick<RollupSourceRow, "id" | "messageKey" | "channel" | "attempt" | "createdAt">>,
+): R[] {
+  const best = new Map<string, { id: string; attempt: number; createdAt: Date }>();
+  for (const a of [...attempts, ...batch]) {
+    const k = `${a.channel}\u0000${a.messageKey}`;
+    const cur = best.get(k);
+    if (!cur || later(a, cur)) best.set(k, a);
+  }
+  return batch.filter((r) => best.get(`${r.channel}\u0000${r.messageKey}`)?.id === r.id);
+}
+
 /** Thrown inside a batch transaction to roll it back when a concurrent run deleted some of its rows. */
 class ConcurrentRollup extends Error {}
 
 export async function runCommsDeliveryRollup(client: RollupClient, now: Date = new Date()): Promise<CommsRollupResult> {
   const cutoff = rollupCutoff(now);
-  const res: CommsRollupResult = { rolled: 0, cells: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString() };
+  const res: CommsRollupResult = { rolled: 0, counted: 0, superseded: 0, cells: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString() };
   try {
     while (res.batches < ROLLUP_MAX_BATCHES) {
       res.batches++;
@@ -115,10 +156,15 @@ export async function runCommsDeliveryRollup(client: RollupClient, now: Date = n
           where: { createdAt: { lt: cutoff } },
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           take: ROLLUP_BATCH,
-          select: { id: true, definitionKey: true, channel: true, status: true, reason: true, createdAt: true },
+          select: { id: true, messageKey: true, attempt: true, definitionKey: true, channel: true, status: true, reason: true, createdAt: true },
         });
-        if (rows.length === 0) return { rows: 0, cells: 0 };
-        const cells = groupDaily(rows);
+        if (rows.length === 0) return { rows: 0, counted: 0, cells: 0 };
+        const attempts = await tx.commsDelivery.findAttempts({
+          where: { messageKey: { in: [...new Set(rows.map((r) => r.messageKey))] } },
+          select: { id: true, messageKey: true, channel: true, attempt: true, createdAt: true },
+        });
+        const finals = finalAttempts(rows, attempts);
+        const cells = groupDaily(finals);
         for (const { count, ...key } of cells) {
           await tx.commsDeliveryDaily.upsert({
             where: { day_definitionKey_channel_status_reason: key },
@@ -128,9 +174,11 @@ export async function runCommsDeliveryRollup(client: RollupClient, now: Date = n
         }
         const del = await tx.commsDelivery.deleteMany({ where: { id: { in: rows.map((r) => r.id) }, createdAt: { lt: cutoff } } });
         if (del.count !== rows.length) throw new ConcurrentRollup(`deleted ${del.count} of ${rows.length}`);
-        return { rows: rows.length, cells: cells.length };
+        return { rows: rows.length, counted: finals.length, cells: cells.length };
       }, { timeout: 60_000, maxWait: 10_000 });
       res.rolled += batch.rows;
+      res.counted += batch.counted;
+      res.superseded += batch.rows - batch.counted;
       res.cells += batch.cells;
       if (batch.rows < ROLLUP_BATCH) { res.exhausted = true; break; }
     }
@@ -141,4 +189,28 @@ export async function runCommsDeliveryRollup(client: RollupClient, now: Date = n
   }
   if (res.rolled > 0) console.log(`[comms-ledger] rolled ${res.rolled} delivery row(s) older than ${DELIVERY_RETENTION_DAYS} days into ${res.cells} daily cell(s)${res.exhausted ? "" : " (more remain)"}`);
   return res;
+}
+
+// ── The Prisma binding ───────────────────────────────────────────────────────
+
+/** The slice of a Prisma client the rollup uses (structurally satisfied by systemDb). */
+export interface PrismaRollupLike {
+  $transaction<T>(fn: (tx: {
+    commsDelivery: { findMany(args: unknown): Promise<unknown>; deleteMany(args: unknown): Promise<{ count: number }> };
+    commsDeliveryDaily: { upsert(args: unknown): Promise<unknown> };
+  }) => Promise<T>, options?: { timeout?: number; maxWait?: number }): Promise<T>;
+}
+
+/** Bind RollupClient to a Prisma client: `findAttempts` is the same delegate's findMany with another shape. */
+export function rollupClientFrom(p: PrismaRollupLike): RollupClient {
+  return {
+    $transaction: (fn, options) => p.$transaction((tx) => fn({
+      commsDelivery: {
+        findMany: (args) => tx.commsDelivery.findMany(args) as Promise<RollupSourceRow[]>,
+        findAttempts: (args) => tx.commsDelivery.findMany(args) as Promise<Array<Pick<RollupSourceRow, "id" | "messageKey" | "channel" | "attempt" | "createdAt">>>,
+        deleteMany: (args) => tx.commsDelivery.deleteMany(args),
+      },
+      commsDeliveryDaily: { upsert: (args) => tx.commsDeliveryDaily.upsert(args) },
+    }), options),
+  };
 }
