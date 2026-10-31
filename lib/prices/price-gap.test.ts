@@ -382,6 +382,23 @@ async function main() {
         sizes[0] <= 7 && sizes.length >= 2 && sizes[1] >= 28 && t <= 1_200_000 + 100_000, JSON.stringify({ sizes, t }));
     }
 
+    // CROSS-HOLDER CREDIT (live: SOL's rebuilds recomputed BTC/ETH days yet left their blocks owed).
+    {
+      const sp = (id: string, spaces: string[]): HolderRevaluation => ({ ...owe(id, "2025-10-28"), spaceIds: spaces });
+      const cr = mk({ owed: [sp("s-sol", ["qa"]), sp("s-btc", ["qa"]), sp("s-eth", ["qa", "other"])], perDayMs: 1_000 });
+      const rc = await revalueHoldersAfterPriceGaps({ accountIds: ["s-sol", "s-btc", "s-eth"], deps: cr.deps, deadlineMs: 1e12, todayISO: TODAY });
+      const n = blocksOf(owe("x", "2025-10-28")).length;
+      const done = (id: string) => cr.marks.filter((k) => k.includes(`:${id}:`)).length;
+      const rebuiltBy = (id: string) => cr.regens.filter((x) => x.startsWith(`${id}:`)).length;
+      check("a holder whose Spaces are all rebuilt by another's rebuild is CREDITED (its blocks done without its own rebuild)",
+        done("s-btc") === n && done("s-sol") === n && rc.blocksCredited >= n && Math.min(rebuiltBy("s-sol"), rebuiltBy("s-btc")) === 0, JSON.stringify({ rc, regens: cr.regens.length }));
+      check("…a holder in an EXTRA Space the rebuild did not cover is never credited (it rebuilds itself)", done("s-eth") === n && rebuiltBy("s-eth") > 0);
+      check("…credit needs known Spaces: holders without spaceIds are never credited", (() => {
+        const a: HolderRevaluation = owe("n1"), b: HolderRevaluation = owe("n2");
+        return a.spaceIds === undefined && b.spaceIds === undefined;
+      })());
+    }
+
     // LARGE WINDOW: batches sized to the time left, newest first, progress across runs, nothing rebuilt twice.
     const big = mk({ owed: [owe("x", "2025-10-28")], perDayMs: 1_000 });
     const DEADLINE = 150_000;
@@ -492,11 +509,11 @@ async function main() {
       spaceAccountLink: { findMany: async () => [{ financialAccountId: "w", spaceId: "qa" }] },
       spaceSnapshot: { groupBy: async () => [{ spaceId: "qa", _min: { date: new Date("2026-09-27T00:00:00Z") } }] },
       // resolveEvidenceFloor's reads (no evidence ⇒ no floor) and the contribution read (no rows ⇒ unknown ⇒ could contribute).
-      transaction: { aggregate: async () => ({ _min: { date: null } }) },
-      investmentEvent: { aggregate: async () => ({ _min: { date: null } }) },
-      investmentEventCoverage: { aggregate: async () => ({ _min: { earliestReturnedDate: null } }) },
-      positionObservation: { aggregate: async () => ({ _min: { date: null } }), findMany: async () => [] },
-      positionCoverage: { aggregate: async () => ({ _min: { coveredFromDate: null } }),
+      transaction: { groupBy: async () => [] },
+      investmentEvent: { groupBy: async () => [] },
+      investmentEventCoverage: { groupBy: async () => [] },
+      positionObservation: { groupBy: async () => [], findMany: async () => [] },
+      positionCoverage: { groupBy: async () => [],
         findMany: async (q: { where: { financialAccountId: { in: string[] }; instrument?: { NOT?: { aliases?: unknown } } } }) =>
           rows.filter((r) => q.where.financialAccountId.in.includes(r.financialAccountId) && !(q.where.instrument?.NOT?.aliases && r.token)) },
     }) as unknown as Parameters<typeof holderRevaluations>[0];
@@ -572,6 +589,63 @@ async function main() {
     } });
     check(`the ${REVALUATION_MAX_BATCHES_PER_PASS}-call bound trips BEFORE charging: attempts === rebuilds === the bound (${many.length} blocks owed)`,
       many.length > REVALUATION_MAX_BATCHES_PER_PASS && attempts === REVALUATION_MAX_BATCHES_PER_PASS && rebuilt === REVALUATION_MAX_BATCHES_PER_PASS, `${attempts} ${rebuilt}`);
+  }
+
+  console.log("PERF 2026-10-31: planning reads are batched (constant in the number of holders) and match the canonical floor reader");
+  {
+    // An in-memory store for the five evidence sources, keyed by account.
+    const ev: Record<string, Array<{ financialAccountId: string; d: string }>> = {
+      transaction: [{ financialAccountId: "a1", d: "2025-03-01" }, { financialAccountId: "a2", d: "2026-06-10" }],
+      investmentEvent: [{ financialAccountId: "a1", d: "2024-11-05" }],
+      investmentEventCoverage: [],
+      positionObservation: [{ financialAccountId: "a2", d: "2026-05-01" }, { financialAccountId: "a3", d: "2022-01-01" }],
+      positionCoverage: [{ financialAccountId: "a3", d: "2021-06-01" }],
+    };
+    const field: Record<string, string> = { transaction: "date", investmentEvent: "date", investmentEventCoverage: "earliestReturnedDate", positionObservation: "date", positionCoverage: "coveredFromDate" };
+    let queries = 0;
+    const mkEv = () => Object.fromEntries(Object.keys(ev).map((t) => [t, {
+      aggregate: async (q: { where: { financialAccountId: { in: string[] } } }) => {
+        queries++;
+        const rows = ev[t].filter((r) => q.where.financialAccountId.in.includes(r.financialAccountId)).map((r) => r.d).sort();
+        return { _min: { [field[t]]: rows[0] ? new Date(`${rows[0]}T00:00:00Z`) : null } };
+      },
+      groupBy: async (q: { where: { financialAccountId: { in: string[] } } }) => {
+        queries++;
+        const ids = [...new Set(ev[t].filter((r) => q.where.financialAccountId.in.includes(r.financialAccountId)).map((r) => r.financialAccountId))];
+        return ids.map((id) => ({ financialAccountId: id, _min: { [field[t]]: new Date(`${ev[t].filter((r) => r.financialAccountId === id).map((r) => r.d).sort()[0]}T00:00:00Z`) } }));
+      },
+    }]));
+    const { resolveEvidenceFloor, resolveEvidenceFloorsByAccount } = await import("@/lib/snapshots/historical-work-window");
+    const c = mkEv() as unknown as Parameters<typeof resolveEvidenceFloor>[0];
+    const batched = await resolveEvidenceFloorsByAccount(c, ["a1", "a2", "a3", "a4"]);
+    const batchQueries = queries;
+    let same = true;
+    for (const id of ["a1", "a2", "a3", "a4"]) if ((await resolveEvidenceFloor(c, [id])) !== batched.get(id)) same = false;
+    check("resolveEvidenceFloorsByAccount: per account EQUAL to resolveEvidenceFloor (a1 2024-11-05, a2 2026-05-01, a3 2021-06-01, a4 none)",
+      same && batched.get("a1") === "2024-11-05" && batched.get("a2") === "2026-05-01" && batched.get("a3") === "2021-06-01" && batched.get("a4") === null, JSON.stringify([...batched]));
+    check("…in FIVE queries for four accounts (one per source), not five per account", batchQueries === 5, String(batchQueries));
+
+    // holderRevaluations: query count does not grow with the number of holders.
+    const countFor = async (n: number) => {
+      let q = 0;
+      const ids = Array.from({ length: n }, (_, i) => `w${i}`);
+      const tick = <T,>(v: T) => { q++; return v; };
+      const fake = {
+        positionCoverage: {
+          findMany: async () => tick(ids.map((id) => ({ financialAccountId: id, instrumentId: "eth", kind: "COMPLETE", coveredFromDate: new Date("2025-01-01T00:00:00Z"), coveredToDate: new Date("2026-10-30T00:00:00Z"), caveats: [], source: "rpc" }))),
+          groupBy: async () => tick([]),
+        },
+        priceObservation: { groupBy: async () => tick([{ instrumentId: "eth", _min: { date: new Date("2025-10-28T00:00:00Z") } }]) },
+        spaceAccountLink: { findMany: async () => tick(ids.map((id) => ({ financialAccountId: id, spaceId: "qa" }))) },
+        spaceSnapshot: { groupBy: async () => tick([{ spaceId: "qa", _min: { date: new Date("2025-10-28T00:00:00Z") } }]) },
+        transaction: { groupBy: async () => tick([]) }, investmentEvent: { groupBy: async () => tick([]) }, investmentEventCoverage: { groupBy: async () => tick([]) },
+        positionObservation: { groupBy: async () => tick([]), findMany: async () => tick([]) },
+      } as unknown as Parameters<typeof holderRevaluations>[0];
+      const hs = await holderRevaluations(fake, ids);
+      return { q, n: hs.length };
+    };
+    const c3 = await countFor(3), c30 = await countFor(30);
+    check("holderRevaluations: the SAME number of queries for 3 holders and for 30 (no N+1)", c3.n === 3 && c30.n === 30 && c3.q === c30.q, JSON.stringify({ c3, c30 }));
   }
 
   if (failures > 0) { console.error(`\nprice-gap: ${failures} failed.`); process.exit(1); }

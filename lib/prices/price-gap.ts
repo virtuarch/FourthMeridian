@@ -260,25 +260,33 @@ export async function holderRevaluations(client: Client, accountIds: readonly st
     // from the holder's evidence floor (the planner's own floor reader) to the
     // writable ceiling; and the days it could contribute value are read from its
     // dated positions (never a day it confirmedly held nothing).
-    const { resolveEvidenceFloor } = await import("@/lib/snapshots/historical-work-window");
+    //
+    // PERF (live 2026-10-31: 53 s for 3 holders from a laptop): BATCHED — one
+    // evidence-floor read per source table for ALL holders (groupBy, the same
+    // filters as resolveEvidenceFloor) and ONE position read for all of them,
+    // instead of 6 sequential queries per holder.
+    const { resolveEvidenceFloorsByAccount } = await import("@/lib/snapshots/historical-work-window");
     const { recentWealthWindow } = await import("@/lib/snapshots/regenerate-history");
     const ceilingISO = recentWealthWindow(new Date()).toDate;
-    const out: HolderRevaluation[] = [];
+    const evidenceFloors = await resolveEvidenceFloorsByAccount(client as Parameters<typeof resolveEvidenceFloorsByAccount>[0], accounts);
+    const candidates: HolderRevaluation[] = [];
     for (const accountId of accounts) {
-      const evidenceFloorISO = await resolveEvidenceFloor(client as Parameters<typeof resolveEvidenceFloor>[0], [accountId]);
+      const spaceIdsOf = [...new Set(links.filter((l) => l.financialAccountId === accountId).map((l) => l.spaceId))].sort();
       const h = holderRevaluationFor({
         accountId, nativeLicences: byAccount(native, accountId), allLicences: byAccount(all, accountId), floors, snapshotMinBySpace,
-        spaceIds: links.filter((l) => l.financialAccountId === accountId).map((l) => l.spaceId), evidenceFloorISO, ceilingISO,
+        spaceIds: spaceIdsOf, evidenceFloorISO: evidenceFloors.get(accountId) ?? null, ceilingISO,
       });
-      if (!h) continue;
-      const obs = await client.positionObservation.findMany({
-        where: { financialAccountId: accountId, deletedAt: null, supersededById: null, instrument: { assetClass: AssetClass.CRYPTO },
-          date: { lte: new Date(`${ceilingISO}T00:00:00.000Z`) } },
-        select: { instrumentId: true, date: true, quantity: true }, orderBy: { date: "asc" },
-      });
-      out.push({ ...h, contributes: holderContributionSpans(obs.map((o) => ({ instrumentId: o.instrumentId, dateISO: isoOf(o.date), quantity: o.quantity })), h.windowFromISO, ceilingISO) });
+      if (h) candidates.push({ ...h, spaceIds: spaceIdsOf });
     }
-    return out;
+    if (candidates.length === 0) return [];
+    const obs = await client.positionObservation.findMany({
+      where: { financialAccountId: { in: candidates.map((c) => c.accountId) }, deletedAt: null, supersededById: null,
+        instrument: { assetClass: AssetClass.CRYPTO }, date: { lte: new Date(`${ceilingISO}T00:00:00.000Z`) } },
+      select: { financialAccountId: true, instrumentId: true, date: true, quantity: true }, orderBy: { date: "asc" },
+    });
+    return candidates.map((h) => ({ ...h, contributes: holderContributionSpans(
+      obs.filter((o) => o.financialAccountId === h.accountId).map((o) => ({ instrumentId: o.instrumentId, dateISO: isoOf(o.date), quantity: o.quantity })),
+      h.windowFromISO, ceilingISO) }));
   } catch (e) {
     console.warn("[price-gap] holderRevaluations failed (non-fatal):", e instanceof Error ? e.message : String(e));
     return [];
@@ -345,13 +353,42 @@ export interface RevaluationRun {
   abandonedBlocks: number;
   /** Estimate rows stamped `unavailable` this run because their block was abandoned. */
   rowsStampedUnavailable: number;
-  /** `supported` estimate rows stamped `unavailable` this run because their holder's block is still OWED (restored by its rebuild). */
+  /** Rows stamped `unavailable` BY THIS CALL because their holder's block is still OWED (0 when the caller stamped the plan first: see its counter). */
   rowsStampedPending: number;
+  /** Other holders' blocks marked done because a rebuild of a holder covering all their Spaces recomputed them. */
+  blocksCredited: number;
   failures: number;
   /** The gap pass itself was skipped: too little wake time left. */
   skippedForTime: boolean;
   /** Snapshot writes are disabled (kill switch): nothing stamped, rebuilt or marked. */
   writesDisabled?: boolean;
+}
+
+/** One holder's owed blocks under its current evidence. */
+export interface OwedHolderPlan {
+  h: HolderRevaluation;
+  live: RevaluationBlock[];
+  abandoned: RevaluationBlock[];
+  tries: Map<string, { single: number; batch: number }>;
+}
+/**
+ * THE PASS'S REVALUATION PLAN — computed ONCE per pass (planRevaluation) and
+ * handed to the stamp, the reservation check and the rebuild (live 2026-10-31:
+ * #183 recomputed it ~3× per pass, ≈ 150 s of a 240 s budget from a laptop).
+ */
+export interface RevaluationPlan { todayISO: string; plans: OwedHolderPlan[] }
+
+/** Read the plan: the holders (one batched read) and their owed blocks (two marker reads). Throws on read failure. */
+export async function planRevaluation(
+  deps: Pick<RevaluationDeps, "owed" | "revaluedAlready" | "attemptsOf">, accountIds: readonly string[], todayISO = minusDaysISO(yesterdayUTCISO(), -1),
+): Promise<RevaluationPlan> {
+  const holders = accountIds.length === 0 ? [] : (await deps.owed(accountIds)).sort((a, b) => a.accountId.localeCompare(b.accountId));
+  return { todayISO, plans: await owedBlocks(deps, holders, todayISO) };
+}
+/** The plan restricted to these accounts (a refused holder is planned and stamped, never rebuilt). */
+export function planFor(plan: RevaluationPlan, accountIds: readonly string[]): RevaluationPlan {
+  const ids = new Set(accountIds);
+  return { todayISO: plan.todayISO, plans: plan.plans.filter((p) => ids.has(p.h.accountId)) };
 }
 
 /** Each holder's blocks still owed: not done, and not abandoned at the attempt cap. */
@@ -361,7 +398,7 @@ async function owedBlocks(deps: Pick<RevaluationDeps, "revaluedAlready" | "attem
   const done = keys.length > 0 ? await deps.revaluedAlready(keys) : new Set<string>();
   const notDone = keys.filter((k) => !done.has(k));
   const tries = deps.attemptsOf && notDone.length > 0 ? await deps.attemptsOf(notDone) : new Map<string, { single: number; batch: number }>();
-  return plans.map((p) => {
+  return plans.map((p): OwedHolderPlan => {
     const open = p.blocks.filter((b) => !done.has(b.key));
     const live = open.filter((b) => (tries.get(b.key)?.single ?? 0) < REVALUATION_MAX_ATTEMPTS);
     const abandoned = open.filter((b) => (tries.get(b.key)?.single ?? 0) >= REVALUATION_MAX_ATTEMPTS);
@@ -374,10 +411,11 @@ async function owedBlocks(deps: Pick<RevaluationDeps, "revaluedAlready" | "attem
  * Cheap reads only (no acquisition): the worker asks before its passes so it
  * can reserve the revaluation's slice of the job budget. Never throws.
  */
-export async function revaluationPending(deps: Pick<RevaluationDeps, "owed" | "revaluedAlready" | "attemptsOf">, accountIds: readonly string[], todayISO = minusDaysISO(yesterdayUTCISO(), -1)): Promise<boolean> {
+export async function revaluationPending(deps: Pick<RevaluationDeps, "owed" | "revaluedAlready" | "attemptsOf">, accountIds: readonly string[], todayISO = minusDaysISO(yesterdayUTCISO(), -1), plan?: RevaluationPlan): Promise<boolean> {
   if (accountIds.length === 0) return false;
   try {
-    const plans = await owedBlocks(deps, await deps.owed(accountIds), todayISO);
+    // With the pass's plan: pure (no read). Without: one plan read.
+    const plans = plan ? planFor(plan, accountIds).plans : (await planRevaluation(deps, accountIds, todayISO)).plans;
     return plans.some((p) => p.live.length > 0);
   } catch {
     return false;
@@ -411,10 +449,14 @@ export async function revalueHoldersAfterPriceGaps(args: {
   todayISO?: string;
   /** Prior per-day cost (default REVALUATION_DEFAULT_MS_PER_DAY); this run's measurements refine it (estimateRebuildCost). */
   msPerDay?: number;
+  /** The pass's plan (planRevaluation), when the caller already read it — never re-read here (except after a gap fill moved a floor). */
+  plan?: RevaluationPlan;
+  /** The caller already stamped this plan this pass (stampOwedHolders): do not stamp it again. */
+  alreadyStamped?: boolean;
   log?: (line: string) => void;
 }): Promise<RevaluationRun> {
   const run: RevaluationRun = { priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0,
-    rowsStampedUnavailable: 0, rowsStampedPending: 0, failures: 0, skippedForTime: false };
+    rowsStampedUnavailable: 0, rowsStampedPending: 0, blocksCredited: 0, failures: 0, skippedForTime: false };
   const log = args.log ?? (() => {});
   const cap = Math.max(0, Math.floor(args.maxAccounts ?? DEFAULT_REVALUATION_MAX_ACCOUNTS));
   const left = () => args.deadlineMs - args.deps.now();
@@ -432,7 +474,7 @@ export async function revalueHoldersAfterPriceGaps(args: {
       run.rowsStampedUnavailable += n;
       log(`revaluation ${h.accountId} ${blk.fromISO}..${blk.toISO} ABANDONED after ${REVALUATION_MAX_ATTEMPTS} attempts — estimate rows stamped unavailable (${n})`);
     };
-    const readPlans = async () => owedBlocks(args.deps, (await args.deps.owed(args.accountIds)).sort((a, b) => a.accountId.localeCompare(b.accountId)), todayISO);
+    const readPlans = async () => (await planRevaluation(args.deps, args.accountIds, todayISO)).plans;
 
     // ── 1. STAMP FIRST — DB-only, before the time check and before the paid fetch ──
     // OWNER RULING (live 2026-10-31: 55 ETH-less rows read `supported` while their
@@ -442,10 +484,15 @@ export async function revalueHoldersAfterPriceGaps(args: {
     // are stamped `unavailable` now: metadata-only, values preserved, only the
     // (Space, day) rows the holder could contribute to and the rebuild will
     // recompute, idempotent. The rebuild restores them per block.
-    let plans = await readPlans();
-    for (const p of plans) {
-      for (const blk of p.abandoned) await abandon(p.h, blk);
-      run.rowsStampedPending += await stamp(p.h, p.live);
+    let plans = args.plan ? planFor(args.plan, args.accountIds).plans : await readPlans();
+    if (!args.alreadyStamped) {
+      for (const p of plans) {
+        for (const blk of p.abandoned) await abandon(p.h, blk);
+        run.rowsStampedPending += await stamp(p.h, p.live);
+      }
+    } else {
+      // Counted, not re-stamped (the caller's stamp covered them — see its own counter).
+      run.abandonedBlocks += plans.reduce((a, p) => a + p.abandoned.length, 0);
     }
     if (left() < REVALUATION_RESERVE_MS) {
       run.skippedForTime = true;
@@ -478,6 +525,11 @@ export async function revalueHoldersAfterPriceGaps(args: {
     run.owed = owedPlans.length;
     owedPlans.sort((a, b) => b.live.length - a.live.length || a.h.accountId.localeCompare(b.h.accountId));
     const active = owedPlans.slice(0, cap).map((p) => ({ ...p, queue: [...p.live], failed: false }));
+    /** Blocks retired THIS pass (own rebuild or credit) — never marked twice. */
+    const doneKeys = new Set<string>();
+    /** Did a rebuild of `a` regenerate every Space `b` is in? (Unknown Spaces ⇒ no credit.) */
+    const covers = (a: HolderRevaluation, b: HolderRevaluation) =>
+      !!a.spaceIds && !!b.spaceIds && b.spaceIds.length > 0 && b.spaceIds.every((sp) => a.spaceIds!.includes(sp));
     run.deferred += owedPlans.length - active.length;
     const batchTries = (k: string, tries: Map<string, { single: number; batch: number }>) => tries.get(k)?.batch ?? 0;
     let progressed = true;
@@ -492,6 +544,7 @@ export async function revalueHoldersAfterPriceGaps(args: {
         // Writes switched off mid-run ⇒ stop the whole pass BEFORE charging anything.
         if (args.deps.writesEnabled && !args.deps.writesEnabled()) { run.writesDisabled = true; stopPass = true; break; }
         const x = round[i];
+        if (x.queue.length === 0) continue; // fully credited by another holder's rebuild this round
         const share = (left() - REVALUATION_BATCH_MARGIN_MS) / (round.length - i);
         const model = estimateRebuildCost(observations, priorMsPerDay);
         const batch = planRevaluationBatch(x.queue, batchDaysFor(share, model), (b) => suspectBatchCap(batchTries(b.key, x.tries)))!;
@@ -514,8 +567,21 @@ export async function revalueHoldersAfterPriceGaps(args: {
             break;
           }
           // DONE only now: a rebuild that never returned (killed) leaves its blocks owed.
-          for (const b of batch.blocks) await args.deps.markRevalued(b.key).catch(() => {});
+          for (const b of batch.blocks) { doneKeys.add(b.key); await args.deps.markRevalued(b.key).catch(() => {}); }
           run.chunksRebuilt += batch.blocks.length;
+          // CROSS-HOLDER CREDIT (live 2026-10-31: SOL's rebuilds recomputed BTC's and
+          // ETH's days too, yet left their blocks owed — and stamped). The rebuild
+          // regenerated EVERY ACTIVE Space of this holder, recomputing each day of
+          // the batch with every member's CURRENT evidence. So another holder's
+          // owed block is satisfied when (a) all of its Spaces were rebuilt
+          // (its spaceIds ⊆ this holder's) and (b) the block lies inside the batch.
+          for (const other of plans) {
+            if (other.h.accountId === x.h.accountId || !covers(x.h, other.h)) continue;
+            const credited = other.live.filter((b) => b.fromISO >= batch.fromISO && b.toISO <= batch.toISO && !doneKeys.has(b.key));
+            for (const b of credited) { doneKeys.add(b.key); await args.deps.markRevalued(b.key).catch(() => {}); run.blocksCredited++; }
+            const act = active.find((a) => a.h.accountId === other.h.accountId);
+            if (act) act.queue = act.queue.filter((b) => !doneKeys.has(b.key));
+          }
           observations.push({ days: Math.round((Date.parse(batch.toISO) - Date.parse(batch.fromISO)) / 86_400_000) + 1, ms: args.deps.now() - t0 });
         } catch (e) {
           log(`revaluation ${x.h.accountId} ${batch.fromISO}..${batch.toISO} failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
@@ -572,12 +638,15 @@ async function stampHolderBlocks(deps: Pick<RevaluationDeps, "markUnavailable">,
 export async function stampOwedHolders(
   deps: Pick<RevaluationDeps, "owed" | "revaluedAlready" | "attemptsOf" | "markUnavailable" | "writesEnabled">, accountIds: readonly string[],
   todayISO = minusDaysISO(yesterdayUTCISO(), -1),
+  /** The pass's plan (planRevaluation): stamps it with no planning read of its own. */
+  plan?: RevaluationPlan,
 ): Promise<number> {
   if (accountIds.length === 0 || !deps.markUnavailable) return 0;
   if (deps.writesEnabled && !deps.writesEnabled()) return 0; // no rebuild could restore it
   try {
     let n = 0;
-    for (const p of await owedBlocks(deps, await deps.owed(accountIds), todayISO)) n += await stampHolderBlocks(deps, p.h, [...p.live, ...p.abandoned]);
+    const plans = plan ? planFor(plan, accountIds).plans : (await planRevaluation(deps, accountIds, todayISO)).plans;
+    for (const p of plans) n += await stampHolderBlocks(deps, p.h, [...p.live, ...p.abandoned]);
     return n;
   } catch {
     return 0;
@@ -618,6 +687,8 @@ export const REVALUATION_TRY_UNITS = {
 
 /** Production deps for revalueHoldersAfterPriceGaps over `client` (markers through the one usage writer). */
 export function prismaRevaluationDeps(client: Client, opts: { log?: (line: string) => void } = {}): RevaluationDeps {
+  const linksMemo = new Map<string, Array<{ spaceId: string }>>();
+  const windowsMemo = new Map<string, Awaited<ReturnType<typeof import("@/lib/snapshots/regenerate-history")["loadRevokedLinkWindows"]>>>();
   return {
     acquireGaps: (ids) => acquireHistoricalPriceGaps({ accountIds: ids, deps: prismaPriceGapDeps(client, { log: opts.log }), log: opts.log }),
     owed: (ids) => holderRevaluations(client, ids),
@@ -658,6 +729,7 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
       await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, REVALUATION_TRY_UNITS[kind], 1);
     },
     async markUnavailable(accountId, fromISO, toISO) {
+      // PERF: links and revoked-link windows are read once per deps instance (≈ once per pass), not once per range.
       // The binding's METADATA-ONLY stamp (regenerate-history.ts metadataOnlyStamps):
       // ONE column, estimate rows only (a frozen/observed row is never touched),
       // no financial field — the stored estimate VALUES are preserved. Rows that
@@ -673,10 +745,12 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
       // only an explicit amendment (Phase 2) may revise and clear them.
       const { loadRevokedLinkWindows } = await import("@/lib/snapshots/regenerate-history");
       const { membershipChangedOn } = await import("@/lib/snapshots/regenerate-history.core");
-      const links = await client.spaceAccountLink.findMany({ where: { financialAccountId: accountId, status: "ACTIVE" }, select: { spaceId: true } });
+      const links = linksMemo.get(accountId) ?? await client.spaceAccountLink.findMany({ where: { financialAccountId: accountId, status: "ACTIVE" }, select: { spaceId: true } });
+      linksMemo.set(accountId, links);
       let count = 0;
       for (const spaceId of [...new Set(links.map((l) => l.spaceId))]) {
-        const windows = await loadRevokedLinkWindows(client as Parameters<typeof loadRevokedLinkWindows>[0], spaceId, new Date());
+        const windows = windowsMemo.get(spaceId) ?? await loadRevokedLinkWindows(client as Parameters<typeof loadRevokedLinkWindows>[0], spaceId, new Date());
+        windowsMemo.set(spaceId, windows);
         for (const r of unblockedRanges(fromISO, toISO, (d) => membershipChangedOn(windows, d))) {
           const u = await client.spaceSnapshot.updateMany({
             where: {
