@@ -85,7 +85,7 @@ Producer: `lib/plaid/sync-notifications.ts` `notifyItemSyncFailed`. Registry: `l
 | `app/api/plaid/investments/enable/route.ts:153` | same | same | `reauth-required`, `sync-failed` |
 | `app/api/platform/platform-ops/connections/[id]/resync/route.ts:175` | same | same | `reauth-required`, `sync-failed` |
 | `app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts:71` | operator request; REVOKED items are refused (409) | NEEDS_REAUTH | `reauth-required` |
-| Any call site above, when the user removed the connection while that sync was in flight | late failure for an already-REVOKED item; its ERROR write is dropped (`lib/connections/health-transitions.ts`) | stays REVOKED, every AccountConnection soft-deleted | **none: suppressed** (owner decision 2026-10-31, below) |
+| Any call site above, when the user removed the connection while that sync was in flight | late failure for an already-REVOKED item; its ERROR write is dropped (`lib/connections/health-transitions.ts`) | REVOKED, or ERROR / NEEDS_REAUTH if the sync failed between the soft-delete and the REVOKED write; every AccountConnection soft-deleted | **none: suppressed in every state** (owner decision 2026-10-31, below) |
 | Any call site above, after a provider-side revocation | late failure for an item the webhook marked REVOKED (USER_PERMISSION_REVOKED / USER_ACCOUNT_REVOKED); connections stay live | REVOKED | `disconnected` |
 | Plaid webhook (`lib/plaid/webhook-receiver.ts`, `lib/plaid/webhook-health.ts`, `lib/plaid/webhook-sync.ts`) | NEEDS_REAUTH / REVOKED transitions | — | **none: the webhook itself does not notify** (gap, unchanged) |
 
@@ -103,9 +103,11 @@ Producer: `lib/plaid/sync-notifications.ts` `notifyItemSyncFailed`. Registry: `l
 - **"Stale"** (no successful sync for N). No producer observes it.
 - **`disconnected` is produced only after a provider-side revocation.** The user-initiated removal race is suppressed (next section).
 
-### Owner decision 2026-10-31: no "disconnected" notification for a removal the user made
+### Owner decision 2026-10-31: a connection the user removed sends no sync-failure notification of any kind
 
-If a user removes a connection themselves, the late failure of a sync already in flight sends **no** email and **no** in-app notification.
+If a user removes a connection themselves, a failing sync for it sends **no** email and **no** in-app notification, **in any state**. That covers both "{Institution} is disconnected" and "We couldn't sync {Institution}".
+
+`disconnectPlaidItemIfOrphaned` soft-deletes the connections, then calls `itemRemove`, then writes REVOKED. A sync failing inside that window writes ERROR or NEEDS_REAUTH, so the check runs for every status.
 
 REVOKED has two live writers:
 - **`lib/plaid/disconnect.ts` `disconnectPlaidItemIfOrphaned`: removal on our side.** It runs only once every AccountConnection on the item has `deletedAt` set. That covers the user's account removal (`lib/accounts/disconnect.ts`) and the cleanup, self-heal and supersede paths that act on an already-orphaned item.
@@ -114,15 +116,13 @@ REVOKED has two live writers:
 `lib/account-deletion/purge.ts` also writes REVOKED, but the user row is deleted at the end of the purge.
 
 **Rule** (`removedByUser` in `lib/plaid/sync-notifications.ts`, before `createNotification`):
-- **Suppressed:** status REVOKED with **zero live and at least one soft-deleted** AccountConnection. This marker already exists, so no migration is needed.
-- **Recording:** the suppression is a log line with the item id and the reason, and no PII. Nothing is created, so dedupe and retire are unaffected.
+- **Suppressed:** any status with **zero live and at least one soft-deleted** AccountConnection. This marker already exists, so no migration is needed.
+- **Recording:** the suppression is a log line with the item id, the status and the reason, and no PII. Nothing is created, so dedupe and retire are unaffected.
+- **Fails open:** if the connection count throws, the notification **still goes out**. The warning logs only the item id and the error class.
 
-**Still notifies, with the `disconnected` copy:**
-- a provider revocation;
-- REVOKED with any live connection left;
-- REVOKED with no connection rows at all (no evidence of a removal).
-
-ERROR and NEEDS_REAUTH are unchanged: they never read connections.
+**Still notifies, with its normal state copy:**
+- any status with at least one live connection, including a provider revocation, which gets the `disconnected` copy;
+- any status with no connection rows at all (no evidence of a removal).
 
 **Residual (conservative by design):** a removal path might orphan an item without soft-deleting its connection rows, for example by re-pointing them to a replacement item. I have not verified whether any path does. Such an item has no connection rows, so a late failure on it would still notify `disconnected`.
 

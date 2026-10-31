@@ -49,8 +49,8 @@ export interface PlaidItemReadClient {
     }): Promise<ItemOwnerRow | null>;
   };
   /**
-   * Read only for a REVOKED item, to tell a removal ON OUR SIDE from a provider
-   * revocation (removedByUser below). Optional so narrow test fakes stay valid;
+   * Read on every failure notification, to tell a removal ON OUR SIDE from a
+   * provider revocation / ordinary failure (removedByUser below). Optional so narrow test fakes stay valid;
    * a client without it never suppresses (the conservative path: notify).
    */
   accountConnection?: {
@@ -59,9 +59,12 @@ export interface PlaidItemReadClient {
 }
 
 /**
- * OWNER DECISION 2026-10-31 — a user who removes a connection themselves must
- * not be told "{Institution} is disconnected — Reconnect" (email or in-app) by
- * the late failure of a sync that was already in flight.
+ * OWNER DECISION 2026-10-31 — a connection the user removed sends no
+ * sync-failure notification of ANY kind (email or in-app, any state): not
+ * "{Institution} is disconnected", and not "We couldn't sync {Institution}"
+ * either. disconnectPlaidItemIfOrphaned soft-deletes the connections, then calls
+ * itemRemove, then writes REVOKED — a sync failing inside that window writes
+ * ERROR / NEEDS_REAUTH, so the check runs for every status.
  *
  * REVOKED has two live writers:
  *   - lib/plaid/disconnect.ts disconnectPlaidItemIfOrphaned — the removal on OUR
@@ -79,11 +82,19 @@ export interface PlaidItemReadClient {
  */
 export async function removedByUser(client: PlaidItemReadClient, plaidItemId: string): Promise<boolean> {
   if (!client.accountConnection) return false;
-  const [live, removed] = await Promise.all([
-    client.accountConnection.count({ where: { plaidItemDbId: plaidItemId, deletedAt: null } }),
-    client.accountConnection.count({ where: { plaidItemDbId: plaidItemId, deletedAt: { not: null } } }),
-  ]);
-  return live === 0 && removed > 0;
+  try {
+    const [live, removed] = await Promise.all([
+      client.accountConnection.count({ where: { plaidItemDbId: plaidItemId, deletedAt: null } }),
+      client.accountConnection.count({ where: { plaidItemDbId: plaidItemId, deletedAt: { not: null } } }),
+    ]);
+    return live === 0 && removed > 0;
+  } catch (err) {
+    // FAIL OPEN: an unreadable marker is no evidence of a removal, so the
+    // notification still goes out (the conservative path).
+    // Only the error CLASS is logged: a DB error message can echo query values.
+    console.warn(`[notifyItemSyncFailed] removal check failed for item ${plaidItemId}; notifying (${err instanceof Error ? err.name : typeof err})`);
+    return false;
+  }
 }
 
 function itemClient(ctx?: { itemClient?: PlaidItemReadClient }): PlaidItemReadClient {
@@ -138,10 +149,13 @@ export async function notifyItemSyncFailed(
     if (!item) return;
 
     const connectionState = connectionStateFromItemStatus(item.status);
-    if (connectionState === "disconnected" && (await removedByUser(itemClient(ctx), plaidItemId))) {
-      // Suppression record — the item id only (no PII). Dedupe/retire unaffected:
-      // nothing is created, so there is no :open key to hold or release.
-      console.log(`[notifyItemSyncFailed] suppressed for item ${plaidItemId}: removed by the user (REVOKED, every connection removed)`);
+    // Any state: lib/plaid/disconnect.ts soft-deletes the connections BEFORE
+    // itemRemove and the REVOKED write, so a sync failing in that window reads
+    // back ERROR / NEEDS_REAUTH — still a bank the user removed.
+    if (await removedByUser(itemClient(ctx), plaidItemId)) {
+      // Suppression record — the item id and state only (no PII). Dedupe/retire
+      // unaffected: nothing is created, so there is no :open key to hold or release.
+      console.log(`[notifyItemSyncFailed] suppressed for item ${plaidItemId} (${item.status ?? "unknown"}): removed by the user (every connection removed)`);
       return;
     }
 

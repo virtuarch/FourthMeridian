@@ -241,7 +241,7 @@ async function main(): Promise<void> {
   // ── 5b. owner decision 2026-10-31: no notify for a removal on our side ────
   console.log("5b. user removal mid-sync → no notification; provider revocation still notifies");
   {
-    async function produce(status: string, conns: { live: number; removed: number } | null) {
+    async function produce(status: string, conns: { live: number; removed: number } | "throws" | null) {
       const counted: unknown[] = [];
       const client: PlaidItemReadClient = {
         plaidItem: { async findUnique() { return { userId: "u1", institutionName: "Chase", status }; } },
@@ -250,6 +250,7 @@ async function main(): Promise<void> {
               accountConnection: {
                 async count(args) {
                   counted.push(args.where);
+                  if (conns === "throws") throw new Error("connection pool exhausted for owner@example.invalid");
                   return args.where.deletedAt === null ? conns.live : conns.removed;
                 },
               },
@@ -259,19 +260,22 @@ async function main(): Promise<void> {
       const calls: { data?: Record<string, unknown> }[] = [];
       const logs: string[] = [];
       const orig = console.log;
+      const origWarn = console.warn;
+      const warns: string[] = [];
       console.log = (...a: unknown[]) => { logs.push(a.map(String).join(" ")); };
+      console.warn = (...a: unknown[]) => { warns.push(a.map(String).join(" ")); };
       try {
         await notifyItemSyncFailed("item_9", {
           itemClient: client,
           createFn: (async (input: { data?: Record<string, unknown> }) => { calls.push(input); return { status: "created", id: "n" }; }) as never,
         });
-      } finally { console.log = orig; }
-      return { calls, logs, counted };
+      } finally { console.log = orig; console.warn = origWarn; }
+      return { calls, logs, counted, warns };
     }
     const userRemoved = await produce("REVOKED", { live: 0, removed: 2 });
     check("user removal mid-sync (REVOKED, every connection soft-deleted) → no notification", userRemoved.calls.length === 0, userRemoved.calls);
     check("…recorded as a suppression with a reason and no PII",
-      userRemoved.logs.length === 1 && /suppressed for item item_9: removed by the user/.test(userRemoved.logs[0]) && !/Chase|u1/.test(userRemoved.logs[0]), userRemoved.logs);
+      userRemoved.logs.length === 1 && /suppressed for item item_9 \(REVOKED\): removed by the user/.test(userRemoved.logs[0]) && !/Chase|u1/.test(userRemoved.logs[0]), userRemoved.logs);
     check("…the marker reads live AND soft-deleted connections of THIS item",
       JSON.stringify(userRemoved.counted) === JSON.stringify([{ plaidItemDbId: "item_9", deletedAt: null }, { plaidItemDbId: "item_9", deletedAt: { not: null } }]), userRemoved.counted);
     const provider = await produce("REVOKED", { live: 2, removed: 0 });
@@ -284,10 +288,25 @@ async function main(): Promise<void> {
     check("REVOKED with no connection rows at all → still notifies (no evidence of a removal)", noRows.calls.length === 1);
     const noReader = await produce("REVOKED", null);
     check("a client that cannot read connections never suppresses (conservative)", noReader.calls.length === 1);
+    // Any state: disconnect.ts soft-deletes the connections before itemRemove
+    // and the REVOKED write, so a failure in that window reads ERROR / NEEDS_REAUTH.
     for (const [status, state] of [["ERROR", "sync-failed"], ["NEEDS_REAUTH", "reauth-required"]] as const) {
-      const r = await produce(status, { live: 0, removed: 2 });
-      check(`${status} unchanged: notifies (${state}) even if connections are removed, and never reads them`,
-        r.calls.length === 1 && r.calls[0].data?.connectionState === state && r.counted.length === 0, r);
+      const removedAll = await produce(status, { live: 0, removed: 2 });
+      check(`${status} with every connection soft-deleted → suppressed (a bank the user removed)`,
+        removedAll.calls.length === 0 && removedAll.logs.some((l) => l.includes(`suppressed for item item_9 (${status})`)), removedAll);
+      const live = await produce(status, { live: 1, removed: 0 });
+      check(`${status} with a live connection → notifies (${state})`,
+        live.calls.length === 1 && live.calls[0].data?.connectionState === state, live);
+      const mixed = await produce(status, { live: 1, removed: 2 });
+      check(`${status} with one live + removed connections → notifies`, mixed.calls.length === 1);
+      const empty = await produce(status, { live: 0, removed: 0 });
+      check(`${status} with no connection rows at all → notifies`, empty.calls.length === 1);
+    }
+    for (const status of ["ERROR", "NEEDS_REAUTH", "REVOKED"]) {
+      const t = await produce(status, "throws");
+      check(`${status}: a failing removal check FAILS OPEN → notifies`, t.calls.length === 1, t);
+      check(`${status}: …with a redacted warning (item id, no address)`,
+        t.warns.length === 1 && t.warns[0].includes("removal check failed for item item_9; notifying") && !t.warns[0].includes("owner@example.invalid") && !t.warns[0].includes("pool exhausted"), t.warns);
     }
   }
 

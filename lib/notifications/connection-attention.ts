@@ -21,8 +21,9 @@
  *                                           (lib/connections/health-transitions.ts),
  *                                           the call site still notifies, and the
  *                                           status read back is REVOKED. OWNER
- *                                           DECISION 2026-10-31: that user-initiated
- *                                           case is SUPPRESSED in the producer
+ *                                           DECISION 2026-10-31: a connection the
+ *                                           user removed sends no sync-failure
+ *                                           notification of any kind, in ANY state
  *                                           (sync-notifications.ts removedByUser);
  *                                           a provider revocation (webhook
  *                                           USER_PERMISSION_REVOKED) still notifies.
