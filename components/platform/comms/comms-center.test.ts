@@ -3,8 +3,8 @@
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/comms/comms-center.test.ts
  *
- * 1. data shaping — day series (null = not observed, withheld = small cell,
- *    never drawn or summed as 0), status chips, preview channels, small-cell
+ * 1. data shaping — day series (null = not observed, never drawn or summed
+ *    as 0; delivery counts are never withheld), status chips, preview channels, small-cell
  *    counts, delivery tiles, list-envelope notes;
  * 2. render — the Library rendered from the REAL merged catalog handlers
  *    (lib/notifications/catalog/http.ts, PR #168), so the UI is pinned to the
@@ -20,13 +20,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { catalogDetail, catalogList, catalogPreview, triggersList } from "@/lib/notifications/catalog/http";
 import type { CatalogDetail, CatalogResponse, DaySeries, PreviewResponse, TriggersResponse } from "@/lib/notifications/catalog/types";
-import type { AutomationDetail, AutomationsResponse, DeliveryAnalytics, PreferenceAggregate, RunsResponse, StatusCounts } from "@/lib/platform/comms-center/contract-v1-section-4";
+import type { AutomationDetail, AutomationsResponse, DeliveryAnalytics, PreferenceAggregate, RunsResponse, StatusCounts, SuppressionReason } from "@/lib/platform/comms-center/contract-v1-section-4";
 import { DELIVERY_STATUSES, SUPPRESSION_REASONS } from "@/lib/platform/comms-center/contract-v1-section-4";
+import { SUPPRESSION_REASONS as SERVER_SUPPRESSION_REASONS } from "@/lib/notifications/delivery/types";
+import { COMMS_CATALOG } from "@/lib/notifications/catalog/definitions";
 import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  COMMS_POLICY, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
-  statusChips, stormNote, suppressionRows, totalOf,
+  COMMS_POLICY, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
+  statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
 import { AutomationDetailBody, AutomationsSurface } from "./AutomationsView";
@@ -45,11 +47,8 @@ const soon: CommsRead<never> = { loading: false, result: { kind: "coming-soon", 
 const down: CommsRead<never> = { loading: false, result: { kind: "unavailable", error: "The notification catalog is unavailable." } };
 const NOW = new Date("2026-10-31T12:00:00.000Z");
 
-function series(counts: Array<number | null | "w">, window: DaySeries["window"] = "7d"): DaySeries {
-  const days = counts.map((c, i) => {
-    const day = new Date(Date.UTC(2026, 9, 25 + i)).toISOString().slice(0, 10);
-    return c === "w" ? { day, count: null, withheld: true as const } : { day, count: c };
-  });
+function series(counts: Array<number | null>, window: DaySeries["window"] = "7d"): DaySeries {
+  const days = counts.map((c, i) => ({ day: new Date(Date.UTC(2026, 9, 25 + i)).toISOString().slice(0, 10), count: c }));
   return { window, from: days[0].day, to: days[days.length - 1].day, days, floor: false };
 }
 
@@ -60,18 +59,20 @@ async function main() {
 
   console.log("1. data shaping");
   {
-    const s = series([3, 0, null, "w", 5, null, 2]);
+    const s = series([3, 0, null, null, 5, null, 2]);
     const cells = dayCells(s);
-    check("dense cells, one per day, states preserved", cells.map((c) => c.state).join() === "observed,observed,not-observed,withheld,observed,not-observed,observed");
+    check("dense cells, one per day, states preserved", cells.map((c) => c.state).join() === "observed,observed,not-observed,not-observed,observed,not-observed,observed");
     check("a null day is never coerced to 0", cells[2].count === null && cells[3].count === null);
     const sum = daySummary(s);
-    check("summary sums OBSERVED days only (3+0+5+2), counts each state", sum.total === 10 && sum.observed === 4 && sum.notObserved === 2 && sum.withheld === 1 && sum.max === 5);
+    check("summary sums OBSERVED days only (3+0+5+2), counts each state", sum.total === 10 && sum.observed === 4 && sum.notObserved === 3 && sum.max === 5);
     const none = daySummary(series([null, null, null, null, null, null, null]));
     check("all-null series ⇒ total null (unknown), not 0", none.total === null && none.observed === 0);
     check("all-null wording says not observed, never '0 sends'", /Not observed yet/.test(daySummaryText(none)) && !/\b0 sends\b/.test(daySummaryText(none)));
-    check("withheld wording is distinct", /withheld \(fewer than 5\)/.test(daySummaryText(sum)));
-    const onlyWithheld = daySummary(series(["w", null, null, null, null, null, null]));
-    check("only-withheld ⇒ total null but not 'not observed yet'", onlyWithheld.total === null && !/Not observed yet/.test(daySummaryText(onlyWithheld)));
+    check("delivery day series carry no withheld wording (delivery counts are never withheld)", !/withheld/.test(daySummaryText(sum)));
+    // §4.11: delivery counts are never withheld. A stray flag is not a state: null stays "not observed", a number stays itself.
+    const stray: DaySeries = { ...series([null, 4]), days: [{ day: "2026-10-25", count: null, withheld: true }, { day: "2026-10-26", count: 4, withheld: true }] };
+    check("a stray withheld flag on a delivery day is ignored (null ⇒ not observed, number ⇒ observed)",
+      dayCells(stray).map((c) => c.state).join() === "not-observed,observed" && daySummary(stray).total === 4);
 
     check("status chips: every status in contract order, totals as-is",
       statusChips(catalog.totals).map((c) => c.status).join() === "ENABLED,BUILD,BUILD_OFF,PROPOSED,VOCABULARY,NONE_BY_DESIGN,RETIRED"
@@ -97,6 +98,20 @@ async function main() {
     const reasons = Object.fromEntries(SUPPRESSION_REASONS.map((r) => [r, 0])) as Record<(typeof SUPPRESSION_REASONS)[number], number>;
     reasons.PREFERENCE_OFF = 2; reasons.ENVIRONMENT_GUARD = 9;
     check("suppression rows: non-zero, largest first; null stays null", suppressionRows(reasons)!.map((r) => r.reason).join() === "ENVIRONMENT_GUARD,PREFERENCE_OFF" && suppressionRows(null) === null);
+    // v1.0.3: the reason vocabulary is the SERVER's, and every reason has operator words.
+    check("SuppressionReason is the server's list (same array, incl. RATE_LIMITED / RATE_LIMIT_UNVERIFIED)",
+      SUPPRESSION_REASONS === SERVER_SUPPRESSION_REASONS && SUPPRESSION_REASONS.includes("RATE_LIMITED") && SUPPRESSION_REASONS.includes("RATE_LIMIT_UNVERIFIED"));
+    check("SUPPRESSION_LABEL covers exactly the server's reasons, each with real words (no humanized enum)",
+      Object.keys(SUPPRESSION_LABEL).sort().join() === [...SUPPRESSION_REASONS].sort().join()
+        && SUPPRESSION_REASONS.every((r: SuppressionReason) => SUPPRESSION_LABEL[r].length > 0 && (SUPPRESSION_LABEL[r] as string) !== r));
+    check("storm-limit reasons read as holds", SUPPRESSION_LABEL.RATE_LIMITED === "Held: 5 emails/hour limit" && SUPPRESSION_LABEL.RATE_LIMIT_UNVERIFIED === "Held: limit couldn’t be verified");
+    check("in-app PREFERENCE_OFF = 'Customer turned off in-app'; email / mixed keep the generic words",
+      suppressionLabel("PREFERENCE_OFF", "IN_APP") === "Customer turned off in-app" && suppressionLabel("PREFERENCE_OFF", "EMAIL") !== "Customer turned off in-app"
+        && suppressionLabel("PREFERENCE_OFF", null) === SUPPRESSION_LABEL.PREFERENCE_OFF && suppressionLabel("RATE_LIMITED", "IN_APP") === SUPPRESSION_LABEL.RATE_LIMITED
+        && suppressionRows(reasons, "IN_APP")!.find((r) => r.reason === "PREFERENCE_OFF")?.label === "Customer turned off in-app");
+    // Exhaustiveness is a compile-time fact: `satisfies Record<SuppressionReason, string>` (pinned in source).
+    check("SUPPRESSION_LABEL is exhaustive BY TYPE (satisfies Record<SuppressionReason, string>)",
+      /SUPPRESSION_LABEL = \{[\s\S]*?\} as const satisfies Record<SuppressionReason, string>;/.test(readFileSync(path.join(process.cwd(), "components/platform/comms/comms-model.ts"), "utf8")));
   }
 
   console.log("2. Library render (real catalog DTOs)");
@@ -159,15 +174,39 @@ async function main() {
     check("SECURITY_CRITICAL protected detail says it can't be muted", html.includes("can’t be muted"));
     check("security email: storm limit exempt, phrased as owner policy", /Owner policy: security messages are exempt/.test(html));
     check("delivery retention uses the ONE wording (owner policy + server caveat while they differ)", html.includes(retentionText(detail.retention.deliveryDays)));
+    // v1.0.3: the merged ledger (#170) reports 90 days, so the real handler's detail carries no "pending alignment" caveat.
+    check("real handler: retention.deliveryDays is 90 and the Library shows no 'pending alignment' note",
+      details.every((x) => x.retention.deliveryDays === 90) && html.includes("Owner policy: 90 days, then counts only.") && !html.includes("pending alignment"), detail.retention);
     check("retentionText: caveat while the server differs, none once it reports 90, none without a server figure",
       retentionText(180) === "Owner policy: 90 days, then counts only. Server currently reports 180 days (pending alignment)."
         && retentionText(90) === "Owner policy: 90 days, then counts only." && retentionText(null) === retentionText(90));
-    const nonSec = details.find((x) => x.protected && x.consentClass !== "SECURITY_CRITICAL");
-    if (nonSec) {
-      const h = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(nonSec), preview: null }));
-      check("a protected NON-security definition gets the generic note, never 'muted'", h.includes("Operators can’t disable, pause or re-route this message.") && !h.includes("can’t be muted"));
-    } else check("a protected non-security definition exists in the catalog", false);
-    check("protectedNote: muted wording only for SECURITY_CRITICAL", /muted/.test(protectedNote("SECURITY_CRITICAL")) && !/muted/.test(protectedNote("CEREMONY")));
+    // A protected message a customer CAN switch off gets the operator-only note, never "muted".
+    const mutable = details.find((x) => x.protected && x.userSuppressible);
+    const h = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(mutable ?? { ...detail, consentClass: "CEREMONY" as const, userSuppressible: true }), preview: null }));
+    check(`a protected but user-suppressible definition gets the generic note, never 'muted' (${mutable ? mutable.key : "synthetic"})`,
+      h.includes("Operators can’t disable, pause or re-route this message.") && !h.includes("can’t be muted"));
+    const unmutableNonSec = details.find((x) => x.protected && !x.userSuppressible && x.consentClass !== "SECURITY_CRITICAL");
+    if (unmutableNonSec) {
+      const hu = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(unmutableNonSec), preview: null }));
+      check(`a protected, unmutable NON-security definition says it can’t be muted without claiming 'Security alerts' (${unmutableNonSec.key})`,
+        hu.includes(COMMS_POLICY.protectedUnmutable) && !hu.includes(COMMS_POLICY.protectedAlerts));
+    } else check("a protected, unmutable non-security definition exists in the catalog", false);
+    check("protectedNote keys off protected && !userSuppressible, not the consent class",
+      /can’t be muted/.test(protectedNote({ consentClass: "SECURITY_CRITICAL", protected: true, userSuppressible: false }))
+        && /can’t be muted/.test(protectedNote({ consentClass: "OPERATOR", protected: true, userSuppressible: false }))
+        && !/muted/.test(protectedNote({ consentClass: "CEREMONY", protected: true, userSuppressible: true }))
+        && protectedNote({ consentClass: "SECURITY_CRITICAL", protected: true, userSuppressible: false }) === COMMS_POLICY.protectedAlerts);
+
+    // v1.0.3: the staff security-anomaly bell — OPERATOR class, yet protected and locked (no preference can mute it).
+    const anomalyDef = COMMS_CATALOG.SECURITY_ANOMALY_DETECTED;
+    const anomalyItem = catalog.items.find((i) => i.key === "SECURITY_ANOMALY_DETECTED");
+    check("catalog: SECURITY_ANOMALY_DETECTED is protected and NOT userSuppressible (definition + list DTO)",
+      anomalyDef.protected === true && anomalyDef.preference.userSuppressible === false
+        && anomalyItem?.protected === true && anomalyItem.userSuppressible === false, { consentClass: anomalyDef.consentClass });
+    const anomalyDetail = (await (await catalogDetail("SECURITY_ANOMALY_DETECTED", NOW)).json()) as CatalogDetail;
+    const anomalyHtml = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(anomalyDetail), preview: null }));
+    check(`Library detail: SECURITY_ANOMALY_DETECTED (consentClass ${anomalyDetail.consentClass}) says it can’t be muted`,
+      anomalyHtml.includes("can’t be muted") && !anomalyHtml.includes("Operators can’t disable, pause or re-route this message."));
     check("isInternalPath: '/x' yes; '//host', 'https://', 'javascript:', '' no",
       isInternalPath("/dashboard/platform/GROWTH_REVENUE") && !isInternalPath("//evil.example") && !isInternalPath("https://x") && !isInternalPath("javascript:alert(1)") && !isInternalPath("") && !isInternalPath(null));
     const offsite = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok({ ...detail, ownerSurface: { area: "GROWTH_REVENUE", href: "//evil.example/x" } }), preview: null }));
@@ -182,8 +221,9 @@ async function main() {
       check("payload: names + PII flag, never values", h.includes("data-payload-fields") && h.includes(">PII<") && h.includes("values are never shown"));
     } else check("a catalog definition with a PII payload field exists", false);
 
-    const withheld = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok({ ...detail, recent: series([1, "w", null, 0, 4, "w", 2]) }), preview: null }));
-    check("withheld days render distinctly from not-observed and observed", count(withheld, 'data-day-state="withheld"') === 2 && count(withheld, 'data-day-state="not-observed"') === 1 && count(withheld, 'data-day-state="observed"') === 4);
+    const mixed = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok({ ...detail, recent: series([1, null, null, 0, 4, null, 2]) }), preview: null }));
+    check("recent sends: observed vs not-observed only — no withheld state or legend (delivery counts are never withheld)",
+      count(mixed, 'data-day-state="not-observed"') === 3 && count(mixed, 'data-day-state="observed"') === 4 && !mixed.includes('data-day-state="withheld"') && !/Withheld/.test(mixed));
 
     const emailHtml = (await catalogPreview(prot.key, new URL("http://x/p?channel=email-html"), NOW).json()) as PreviewResponse;
     const ph = renderToStaticMarkup(createElement(PreviewRendition, { p: emailHtml }));
@@ -237,6 +277,11 @@ async function main() {
     check("measured.delivered false ⇒ explicit 'Delivery not yet measured'", dOk.includes("data-delivery-not-measured") && dOk.includes("Delivery not yet measured."));
     check("Preview environment explains Captured", /Preview captures sends/.test(dOk));
     check("by-key rows show keys and counts only (no address)", dOk.includes("PASSWORD_RESET_LINK_SENT") && !/@/.test(dOk.replace(/@v\d/g, "")));
+    const inApp = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, filters: { channel: "IN_APP" as const, status: null, template: null }, suppressedByReason: { ...r0, PREFERENCE_OFF: 3, RATE_LIMITED: 2 } }),
+      filters: { ...DEFAULT_DELIVERY_FILTERS, channel: "IN_APP" }, onFilters: () => {} }));
+    check("Delivery under IN_APP: a PREFERENCE_OFF suppressed row reads 'Customer turned off in-app'; storm holds read as holds",
+      inApp.includes("Customer turned off in-app") && inApp.includes("Held: 5 emails/hour limit"));
+    check("Delivery with no channel filter keeps the generic preference words", dOk.includes("Environment guard") && !dOk.includes("Customer turned off in-app"));
     const dDown = renderToStaticMarkup(createElement(DeliverySurface, { read: down, filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
     check("delivery 503 ⇒ unavailable, no tiles", dDown.includes('data-comms-state="unavailable"') && !dDown.includes("data-status-tile"));
 

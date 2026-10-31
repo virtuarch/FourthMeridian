@@ -203,7 +203,17 @@ function main() {
       [RAW_ACCOUNT_KEY, RAW_IP_KEY, RAW_RECOVERY_KEY].every((k) => !outputs.includes(fnv(k).slice(-6)) && !outputs.includes(fnv(k))));
     check("core: the projection carries no raw key and no hash of it other than the salted keyHash prefix",
       !/alice|203\.0\.113|identifier:|recovery:/.test(outputs));
-    check("view: no key recorded is said", anomalyKeyLabel({ keyKind: "unknown", keyRef: "" }) === "no key recorded" && tripMagnitude({ count: 2, threshold: null, windowMinutes: 15 }).includes("threshold not recorded"));
+    check("view: a LEGACY row (no keyHash) reads 'legacy (digest unavailable)' — kind known or not",
+      anomalyKeyLabel(rawOnly) === "legacy (digest unavailable)" && anomalyKeyLabel(legacy) === "legacy (digest unavailable)");
+    check("view: 'no key recorded' only for a row that is neither legacy nor carries a keyRef",
+      anomalyKeyLabel({ keyKind: "unknown", keyRef: "", legacy: false }) === "no key recorded" && anomalyKeyLabel({ keyKind: "unknown", keyRef: "" }) === "no key recorded"
+        && anomalyKeyLabel({ keyKind: "ip", keyRef: refOf(RAW_IP_KEY), legacy: false }) === `IP ${refOf(RAW_IP_KEY)}`
+        && tripMagnitude({ count: 2, threshold: null, windowMinutes: 15 }).includes("threshold not recorded"));
+    check("view: the value-free admin key stays 'disabled admin account', legacy or not",
+      anomalyKeyLabel({ keyKind: "admin", keyRef: "", legacy: true }) === "disabled admin account" && anomalyKeyLabel({ keyKind: "admin", keyRef: "", legacy: false }) === "disabled admin account");
+    const legacyHtml = render(sources({ anomalies: ok({ trips: [rawOnly], summary: { failedLoginsWindow: 0, windowMinutes: 15, tripsLast24h: 1 } }) }));
+    check("render: a legacy trip shows 'legacy (digest unavailable)', never 'no key recorded' and never the raw IP",
+      legacyHtml.text.includes("legacy (digest unavailable)") && !legacyHtml.text.includes("no key recorded") && !/203\.0\.113/.test(legacyHtml.html));
   }
 
   console.log("5. coverage — the house ratio over route counts; no users ⇒ Unavailable");

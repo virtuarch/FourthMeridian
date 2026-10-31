@@ -6,8 +6,10 @@
  *
  * Honesty rules this module owns (contract §3.1 C1–C3):
  *   • a `null` count is NOT OBSERVED — it is never drawn, summed or shown as 0;
- *   • a `withheld` count is OBSERVED but a small cell (1–4 people) — drawn and
- *     worded distinctly from "not observed", never as a number;
+ *   • a `withheld` PEOPLE count (§4.12 preferences) is OBSERVED but a small
+ *     cell (1–4 people) — worded distinctly from "not observed", never as a
+ *     number. DELIVERY counts (§4.11, the catalog's `recent`) are never
+ *     withheld, so the day series carry no withheld state at all;
  *   • a list says when it was checked, and when its totals are a floor or capped.
  */
 
@@ -28,6 +30,8 @@ const n = (v: number) => v.toLocaleString("en-US");
 export const COMMS_POLICY = {
   elevated: "Activating a customer-facing automation requires elevated operator permission.",
   protectedAlerts: "Security alerts can’t be muted, paused or re-routed.",
+  /** Protected and not user-suppressible, but not security-critical (e.g. the staff security-anomaly bell). */
+  protectedUnmutable: "This message can’t be muted, paused or re-routed.",
   /** Generic: a protected message that is not security-critical (ceremony, banner, none-by-design). */
   protectedGeneric: "Operators can’t disable, pause or re-route this message.",
   noTracking: "No open or click tracking, ever — no tracking pixels and no link rewriting.",
@@ -52,9 +56,17 @@ export function retentionText(serverDays: number | null): string {
     : base;
 }
 
-/** The protected note for a definition: "muted" wording only for security-critical messages. */
-export function protectedNote(consentClass: ConsentClass): string {
-  return consentClass === "SECURITY_CRITICAL" ? COMMS_POLICY.protectedAlerts : COMMS_POLICY.protectedGeneric;
+/**
+ * The protected note for a definition. "Can't be muted" is said whenever the
+ * definition is protected AND no customer preference can suppress it — keyed
+ * off those two server facts, NOT the consent class (SECURITY_ANOMALY_DETECTED
+ * is OPERATOR-class yet locked). Security-critical wording names security
+ * alerts; any other unmutable message gets the neutral form. A protected
+ * message a customer CAN switch off gets the operator-only note.
+ */
+export function protectedNote(d: Pick<CatalogItem, "consentClass" | "protected" | "userSuppressible">): string {
+  if (d.protected && !d.userSuppressible) return d.consentClass === "SECURITY_CRITICAL" ? COMMS_POLICY.protectedAlerts : COMMS_POLICY.protectedUnmutable;
+  return COMMS_POLICY.protectedGeneric;
 }
 
 /** A server-supplied href is followed only when it is an internal app path ("/x", never "//host" or a scheme). */
@@ -130,22 +142,18 @@ export function stormNote(d: Pick<CatalogItem, "consentClass" | "channels">): st
 
 // ── Day series (C1 + C2) ────────────────────────────────────────────────────────
 
-export type DayState = "observed" | "not-observed" | "withheld";
+/** Delivery counts are never withheld (§4.11): a day is observed (a number, 0 allowed) or not observed (null). */
+export type DayState = "observed" | "not-observed";
 export interface DayCell { day: string; state: DayState; count: number | null }
 
 export function dayCells(series: DaySeries): DayCell[] {
-  return series.days.map((d) => {
-    if (d.withheld) return { day: d.day, state: "withheld", count: null };
-    if (d.count === null) return { day: d.day, state: "not-observed", count: null };
-    return { day: d.day, state: "observed", count: d.count };
-  });
+  return series.days.map((d): DayCell => (d.count === null ? { day: d.day, state: "not-observed", count: null } : { day: d.day, state: "observed", count: d.count }));
 }
 
 export interface DaySummary {
   days: number;
   observed: number;
   notObserved: number;
-  withheld: number;
   /** Sum over OBSERVED days only; null when no day was observed (never 0 for "unknown"). */
   total: number | null;
   max: number;
@@ -158,17 +166,15 @@ export function daySummary(series: DaySeries): DaySummary {
     days: cells.length,
     observed: obs.length,
     notObserved: cells.filter((c) => c.state === "not-observed").length,
-    withheld: cells.filter((c) => c.state === "withheld").length,
     total: obs.length ? obs.reduce((a, c) => a + (c.count ?? 0), 0) : null,
     max: obs.reduce((m, c) => Math.max(m, c.count ?? 0), 0),
   };
 }
 
 export function daySummaryText(s: DaySummary, noun = "send"): string {
-  if (s.observed === 0 && s.withheld === 0) return `Not observed yet · ${s.days} UTC days without ledger coverage`;
+  if (s.observed === 0) return `Not observed yet · ${s.days} UTC days without ledger coverage`;
   const parts = [s.total === null ? "no observed total" : `${n(s.total)} ${noun}${s.total === 1 ? "" : "s"} on observed days`];
   if (s.notObserved) parts.push(`${s.notObserved} day${s.notObserved === 1 ? "" : "s"} not observed`);
-  if (s.withheld) parts.push(`${s.withheld} day${s.withheld === 1 ? "" : "s"} withheld (fewer than 5)`);
   return parts.join(" · ");
 }
 
@@ -213,7 +219,37 @@ export const DELIVERY_STATUS_LABEL: Record<DeliveryStatus, string> = {
   ACCEPTED: "Accepted by provider", FAILED: "Failed", DEAD: "Dead", DELIVERED: "Delivered", BOUNCED: "Bounced", COMPLAINED: "Complained",
 };
 export const SERIES_LABEL = { accepted: "Accepted", failed: "Failed", dead: "Dead", suppressed: "Suppressed", captured: "Captured", cancelled: "Cancelled" } as const;
-export const SUPPRESSION_LABEL: Record<SuppressionReason, string> = Object.fromEntries(SUPPRESSION_REASONS.map((r) => [r, title(r)])) as Record<SuppressionReason, string>;
+/**
+ * Operator words for every server SuppressionReason. Exhaustive by type: a
+ * reason the server adds without a label here is a compile error, not a
+ * silently humanized enum.
+ */
+export const SUPPRESSION_LABEL = {
+  PREFERENCE_OFF: "Customer turned it off",
+  NO_RECIPIENT: "No recipient",
+  OBSOLETE: "No longer relevant",
+  DEDUPE_OPEN: "Duplicate of an open message",
+  FREQUENCY_CAP: "Frequency cap reached",
+  ELIGIBILITY_FAILED: "Not eligible",
+  ADMISSION_REFUSED: "Admission refused",
+  ACCOUNT_RESTRICTED: "Account restricted",
+  BETA_LIFECYCLE: "Beta lifecycle",
+  ENTITLEMENT: "Not entitled",
+  PROVIDER_FREEZE: "Provider frozen",
+  ENVIRONMENT_GUARD: "Environment guard (not production)",
+  AUTOMATION_PAUSED: "Automation paused",
+  STORM_BREAKER: "Storm breaker",
+  RATE_LIMITED: "Held: 5 emails/hour limit",
+  RATE_LIMIT_UNVERIFIED: "Held: limit couldn’t be verified",
+} as const satisfies Record<SuppressionReason, string>;
+
+/** The in-app leg suppressed by the customer's own preference is named as such. */
+export const IN_APP_PREFERENCE_OFF_LABEL = "Customer turned off in-app";
+
+/** One suppressed row's words: `channel` is the row's (or the filter's) channel, null when mixed. */
+export function suppressionLabel(reason: SuppressionReason, channel: CommsChannel | null): string {
+  return reason === "PREFERENCE_OFF" && channel === "IN_APP" ? IN_APP_PREFERENCE_OFF_LABEL : SUPPRESSION_LABEL[reason];
+}
 
 /** Statuses only a Phase C provider webhook can produce — shown as "not measured" while measured.delivered is false. */
 export const WEBHOOK_ONLY: ReadonlySet<DeliveryStatus> = new Set(["DELIVERED", "BOUNCED", "COMPLAINED"]);
@@ -228,10 +264,13 @@ export function deliveryTiles(totals: StatusCounts | null, measuredDelivered: bo
   });
 }
 
-/** Non-zero suppression reasons, largest first. Null in ⇒ null out (not observed). */
-export function suppressionRows(r: Record<SuppressionReason, number> | null): Array<{ reason: SuppressionReason; label: string; count: number }> | null {
+/**
+ * Non-zero suppression reasons, largest first. Null in ⇒ null out (not observed).
+ * `channel` = the view's channel filter: the rows are in-app rows only when it is IN_APP.
+ */
+export function suppressionRows(r: Record<SuppressionReason, number> | null, channel: CommsChannel | null = null): Array<{ reason: SuppressionReason; label: string; count: number }> | null {
   if (!r) return null;
-  return SUPPRESSION_REASONS.map((k) => ({ reason: k, label: SUPPRESSION_LABEL[k], count: r[k] ?? 0 })).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
+  return SUPPRESSION_REASONS.map((k) => ({ reason: k, label: suppressionLabel(k, channel), count: r[k] ?? 0 })).filter((x) => x.count > 0).sort((a, b) => b.count - a.count);
 }
 
 // ── Automations (§4.6) ──────────────────────────────────────────────────────────

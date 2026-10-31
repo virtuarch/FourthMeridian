@@ -100,6 +100,12 @@ async function main() {
       [...src.matchAll(/^import\s+(type\s+)?[^;]*from\s+"([^"]+)"/gm)].every((m) => m[1] === "type " || m[2] === "./contract-v1-section-4"));
     check("Session 1's backend is imported for TYPES only", !/^import\s+\{[^}]*\}\s+from\s+"@\/lib\/notifications/m.test(src)
       && !/^import\s+\{[^}]*\}\s+from\s+"@\/lib\/notifications\/catalog\/(http|definitions|preview|read-deps)"/m.test(strip("lib/platform/comms-center/contract-v1-section-4.ts")));
+    const contract = strip("lib/platform/comms-center/contract-v1-section-4.ts");
+    check("§3.3 / §4.11 types are the SERVER's (re-exported from catalog/types), never a local copy",
+      /export\s+type\s+\{[^}]*\bDeliveryAnalytics\b[^}]*\bDeliveryStatus\b[^}]*\bSuppressionReason\b[^}]*\}\s+from\s+"@\/lib\/notifications\/catalog\/types"/.test(contract)
+        && /export\s+\{\s*DELIVERY_STATUSES,\s*SUPPRESSION_REASONS\s*\}\s+from\s+"@\/lib\/notifications\/catalog\/types"/.test(contract)
+        && !/export\s+(type|interface)\s+(DeliveryStatus|SuppressionReason|DeliveryAnalytics|StatusCounts|ReasonCounts|DeliveryWindow|Aggregate)\b/.test(contract)
+        && !/export\s+const\s+(DELIVERY_STATUSES|SUPPRESSION_REASONS)\b/.test(contract));
   }
 
   if (failures > 0) { console.error(`\ncomms-center client.test: ${failures} failure(s).`); process.exit(1); }

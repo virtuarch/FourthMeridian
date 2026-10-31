@@ -12,7 +12,7 @@
  *                  deployed) · unavailable (503, never an empty list) · denied · error
  *   ListMeta       checkedAt + the floor / capped notes every list carries
  *   DaySeriesBars  a dense day series where null = not observed (hatched, never 0)
- *                  and withheld = observed small cell (a distinct outlined marker)
+ *                  (delivery counts are never withheld, §4.11)
  *   CountText      one small-cell-aware count
  *   FilterSelect / Chip / FactList — ≥ 44 px controls below lg, tokens only
  */
@@ -20,7 +20,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AlertTriangle, Clock, Loader2, Lock } from "lucide-react";
 import { commsRead, type CommsReadResult } from "@/lib/platform/comms-center/client";
-import type { ConsentClass, DaySeries } from "@/lib/notifications/catalog/types";
+import type { CatalogItem, DaySeries } from "@/lib/notifications/catalog/types";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
 import { countCell, dayCells, daySummary, daySummaryText, envelopeNotes, protectedNote, utcStamp, type CountCell } from "./comms-model";
 
@@ -155,8 +155,8 @@ const shortDay = (d: string) => new Date(`${d}T00:00:00.000Z`).toLocaleDateStrin
 
 /**
  * A dense day series as bars. Not observed = a hatched slot (no bar, never 0);
- * withheld = an outlined marker at the baseline (observed, fewer than 5);
- * observed 0 = an empty slot over the hairline baseline.
+ * observed 0 = an empty slot over the hairline baseline. Delivery counts are
+ * never withheld (§4.11), so there is no withheld state here.
  */
 export function DaySeriesBars({ series, label, color = "color-mix(in srgb, var(--meridian-400) 75%, transparent)", noun = "send", height = 72 }: {
   series: DaySeries;
@@ -176,13 +176,6 @@ export function DaySeriesBars({ series, label, color = "color-mix(in srgb, var(-
             return (
               <span key={c.day} title={`${shortDay(c.day)}: not observed`} data-day-state="not-observed" className="h-full min-w-0 flex-1"
                 style={{ backgroundImage: "repeating-linear-gradient(45deg, color-mix(in srgb, var(--text-muted) 22%, transparent) 0 1px, transparent 1px 5px)" }} />
-            );
-          }
-          if (c.state === "withheld") {
-            return (
-              <span key={c.day} title={`${shortDay(c.day)}: withheld — fewer than 5`} data-day-state="withheld" className="flex h-full min-w-0 flex-1 items-end">
-                <span className="block w-full rounded-[1px] border border-dashed" style={{ height: 8, borderColor: "var(--accent-warning)" }} />
-              </span>
             );
           }
           const h = s.max > 0 ? Math.max(c.count! > 0 ? 2 : 0, Math.round((c.count! / s.max) * (height - 4))) : 0;
@@ -208,7 +201,6 @@ export function DaySeriesLegend() {
   return (
     <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--text-muted)]" aria-label="Day series legend">
       <li className="flex items-center gap-1.5"><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-[2px]" style={{ background: "color-mix(in srgb, var(--meridian-400) 75%, transparent)" }} />Observed</li>
-      <li className="flex items-center gap-1.5"><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-[2px] border border-dashed" style={{ borderColor: "var(--accent-warning)" }} />Withheld (fewer than 5)</li>
       <li className="flex items-center gap-1.5"><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-[2px]" style={{ backgroundImage: "repeating-linear-gradient(45deg, color-mix(in srgb, var(--text-muted) 40%, transparent) 0 1px, transparent 1px 3px)" }} />Not observed</li>
     </ul>
   );
@@ -259,9 +251,9 @@ export function Chip({ children, tone = "muted", title }: { children: ReactNode;
   );
 }
 
-export function ProtectedBadge({ consentClass }: { consentClass: ConsentClass }) {
+export function ProtectedBadge({ item }: { item: Pick<CatalogItem, "consentClass" | "protected" | "userSuppressible"> }) {
   return (
-    <Chip tone="warn" title={protectedNote(consentClass)}>
+    <Chip tone="warn" title={protectedNote(item)}>
       <Lock size={10} aria-hidden /> Protected
     </Chip>
   );

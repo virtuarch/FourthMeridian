@@ -117,11 +117,19 @@ export const KEY_KIND_WORD: Record<AnomalyKeyKind, string> = {
   unknown: "key kind unknown",
 };
 
-/** "account …a1b2c3" — the kind in words plus the route's opaque digest; never the raw key. */
-export function anomalyKeyLabel(t: Pick<AnomalyTrip, "keyKind" | "keyRef">): string {
+export const LEGACY_KEY_LABEL = "legacy (digest unavailable)";
+
+/**
+ * "account h1a2b3c4d" — the kind in words plus the salted keyHash prefix (the
+ * same handle the Security Ops bell carries); never the raw key. A row that
+ * predates keyHash (`legacy: true`) has no handle and none is invented; "no key
+ * recorded" is only for a row that is neither legacy nor carries a keyRef.
+ */
+export function anomalyKeyLabel(t: Pick<AnomalyTrip, "keyKind" | "keyRef" | "legacy">): string {
   if (t.keyKind === "admin") return KEY_KIND_WORD.admin;
-  if (!t.keyRef) return "no key recorded";
-  return `${KEY_KIND_WORD[t.keyKind]} ${t.keyRef}`;
+  if (t.keyRef) return `${KEY_KIND_WORD[t.keyKind]} ${t.keyRef}`;
+  if (t.legacy) return LEGACY_KEY_LABEL;
+  return "no key recorded";
 }
 
 /** "7 of ≥5 in 15 m" — count against the threshold that tripped; threshold absent is said, not assumed. */
