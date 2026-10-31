@@ -28,7 +28,7 @@ import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/
 import type { CommsRead } from "./comms-kit";
 import {
   COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
-  statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
+  STATUS_LABEL, statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
 import { AutomationDetailBody, AutomationsSurface } from "./AutomationsView";
@@ -136,16 +136,21 @@ async function main() {
     // P2-1 — with a status selected, the server's list totals count only that
     // status; the chips must use the status-free totals (or show no counts).
     const enabledOnly = (await catalogList(new URL("http://x/api?limit=100&status=ENABLED"), NOW).json()) as CatalogResponse;
-    check("(server fact) a status-filtered list zeroes every other status in `totals`", enabledOnly.totals.ENABLED > 0 && enabledOnly.totals.BUILD === 0 && catalog.totals.BUILD > 0);
+    // The comparison status is whichever OTHER status has rows today — never a
+    // pinned one (BUILD empties as the backlog ships; #181 left one BUILD entry).
+    const other = (Object.keys(catalog.totals) as Array<keyof typeof catalog.totals>).find((st) => st !== "ENABLED" && catalog.totals[st] > 0);
+    check("(fixture) the catalog has rows outside ENABLED to compare against", other !== undefined, catalog.totals);
+    const o = other ?? "BUILD";
+    check("(server fact) a status-filtered list zeroes every other status in `totals`", enabledOnly.totals.ENABLED > 0 && enabledOnly.totals[o] === 0 && catalog.totals[o] > 0);
     const chip = (h: string, s: string) => h.match(new RegExp(`data-status-chip="${s}"[^>]*>([\\s\\S]*?)</button>`))?.[1] ?? "";
     const withStatus = renderToStaticMarkup(createElement(LibrarySurface, { ...props, filters: { ...EMPTY_CATALOG_FILTERS, status: "ENABLED" }, read: ok(enabledOnly), chipTotals: catalog.totals }));
-    check("status selected: unselected chips show the status-free counts (BUILD is not 0)",
-      chip(withStatus, "BUILD").includes(`>${catalog.totals.BUILD}<`) && chip(withStatus, "ENABLED").includes(`>${catalog.totals.ENABLED}<`), chip(withStatus, "BUILD"));
+    check(`status selected: unselected chips show the status-free counts (${o} is not 0)`,
+      chip(withStatus, o).includes(`>${catalog.totals[o]}<`) && chip(withStatus, "ENABLED").includes(`>${catalog.totals.ENABLED}<`), chip(withStatus, o));
     check("status selected: the selected chip is pressed, the list holds only that status",
       /aria-pressed="true"[^>]*data-status-chip="ENABLED"/.test(withStatus) && count(withStatus, "data-catalog-row=") === enabledOnly.items.length);
     const unknown = renderToStaticMarkup(createElement(LibrarySurface, { ...props, filters: { ...EMPTY_CATALOG_FILTERS, status: "ENABLED" }, read: ok(enabledOnly), chipTotals: null }));
     check("status selected, chip totals not yet known ⇒ chips WITHOUT counts (never the misleading zeros)",
-      chip(unknown, "BUILD").trim() === "Approved, not built" && !/>0</.test(chip(unknown, "BUILD")));
+      chip(unknown, o).trim() === STATUS_LABEL[o] && !/>0</.test(chip(unknown, o)));
 
     // (5) a page with more rows is never called complete.
     // Scoped to the catalog block (the Triggers block below has its own, complete, footer).
