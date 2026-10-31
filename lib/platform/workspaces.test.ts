@@ -497,8 +497,12 @@ console.log("Phase 1 UX · views");
 
   // PLATFORM SPACES 2.0 — every area's default workspace is now a dashboard view;
   // the secondary workspaces (Security audit / operator actions, CS incidents) keep no views.
-  check("secondary workspaces outside PLATFORM_OPS keep no views",
-    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).slice(1).every((w) => w.views === undefined && w.label === undefined)));
+  // COMMUNICATIONS CENTER — the one exception: Customer Success › Communications
+  // is a lead-only, four-view workspace (pinned in its own block below).
+  check("secondary workspaces outside PLATFORM_OPS keep no views (except CS › Communications)",
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).slice(1)
+      .filter((w) => !(a === "CUSTOMER_SUCCESS" && w.workspaceId === "platform-communications"))
+      .every((w) => w.views === undefined && w.label === undefined)));
   check("every non-Ops area's Overview is ONE dashboard view with a lead",
     ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => { const w = getPlatformAreaWorkspaces(a)[0]; return w.views?.length === 1 && !!w.views[0].lead && w.views[0].sections.length === 0; }));
   {
@@ -570,8 +574,8 @@ console.log("Phase 1 UX · views");
 console.log("Customer Success · Customers + Incidents");
 {
   const cs = getPlatformAreaWorkspaces("CUSTOMER_SUCCESS");
-  check("two workspaces: Overview (customers) then Incidents",
-    cs.map((w) => w.workspaceId).join(",") === "platform-overview,platform-incidents", cs.map((w) => w.workspaceId).join(","));
+  check("three workspaces: Overview (customers), Incidents, then Communications",
+    cs.map((w) => w.workspaceId).join(",") === "platform-overview,platform-incidents,platform-communications", cs.map((w) => w.workspaceId).join(","));
   check("customers on the first, sync incidents on the second; nothing else moved",
     cs[0].sections.join() === "cs_customers" && cs[1]?.sections.join() === "cs_sync_issues");
   check("PLATFORM SPACES 2.0 — Customers is one dashboard view (lead 'customer-success') hosting the audited list",
@@ -579,6 +583,26 @@ console.log("Customer Success · Customers + Incidents");
   check("Incidents is a registered Platform identity with a nav-resolvable icon",
     getPlatformWorkspace("platform-incidents")?.label === "Incidents"
       && /WORKSPACE_ICONS_BY_NAME[^{]*\{[^}]*\bTriangleAlert,/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));
+
+  // COMMUNICATIONS CENTER (owner-approved 2026-10-31) — four lead-only views,
+  // no section keys (so no DB rows and no seeding), Library first (default).
+  const comms = getPlatformWorkspaceComposition("CUSTOMER_SUCCESS", "platform-communications");
+  check("Communications: four views Library · Automations · Delivery & History · Preferences, in order",
+    JSON.stringify(comms?.views?.map((v) => [v.id, v.label, v.lead])) === JSON.stringify([
+      ["library", "Library", "comms-library"], ["automations", "Automations", "comms-automations"],
+      ["delivery", "Delivery & History", "comms-delivery"], ["preferences", "Preferences", "comms-preferences"],
+    ]));
+  check("Communications composes NO section key (lead-only; nothing to seed) and hosts nothing",
+    comms?.sections.length === 0 && (comms?.views ?? []).every((v) => v.sections.length === 0 && (v.hosted ?? []).length === 0));
+  check("Communications uses the segmented view control (four peers, not a drill-down)", comms?.viewControl === undefined);
+  check("Communications is a registered identity with a nav-resolvable icon",
+    getPlatformWorkspace("platform-communications")?.label === "Communications" && getPlatformWorkspace("platform-communications")?.icon === "Mail"
+      && /WORKSPACE_ICONS_BY_NAME[^{]*\{[^}]*\bMail,/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));
+  check("platformAreaViewIds(CUSTOMER_SUCCESS) lists the Communications views (Library = default)",
+    JSON.stringify(platformAreaViewIds("CUSTOMER_SUCCESS")["platform-communications"]) === JSON.stringify(["library", "automations", "delivery", "preferences"]));
+  check("each Communications lead is registered on the dashboard",
+    ["comms-library", "comms-automations", "comms-delivery", "comms-preferences"].every((id) =>
+      new RegExp(`"${id}":\\s+Comms\\w+Lead,`).test(readFileSync(path.join(process.cwd(), "components/platform/PlatformSpaceDashboard.tsx"), "utf8"))));
 }
 
 // ── Redesign §4.9 — Security: Posture · Audit · Operator actions ──
@@ -597,7 +621,7 @@ console.log("Security · Posture + Audit + Operator actions");
   const nav = readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8");
   check("both identities are registered with nav-resolvable icons",
     getPlatformWorkspace("platform-audit")?.icon === "ScrollText" && getPlatformWorkspace("platform-operator-actions")?.icon === "UserCog"
-      && /ScrollText, UserCog,\n\};/.test(nav));
+      && /ScrollText, UserCog,\n/.test(nav));
 }
 
 if (failures > 0) {

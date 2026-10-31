@@ -96,6 +96,7 @@ import {
   Gauge,
   RefreshCw,
   SlidersHorizontal,
+  Mail,
   Check,
   type LucideIcon,
 } from "lucide-react";
@@ -156,6 +157,8 @@ const WORKSPACE_ICONS_BY_NAME: Record<string, LucideIcon> = {
   TriangleAlert,
   // Platform redesign — Security › Audit, Security › Operator actions.
   ScrollText, UserCog,
+  // Customer Success › Communications.
+  Mail,
 };
 
 /** The row icon: the published icon NAME first, else the id-keyed lens map. */
