@@ -20,7 +20,8 @@ export const JOB_STATUS_META: Record<JobHealthStatus, { label: string; rank: num
   failing:     { label: "Failing",   rank: 1, tone: "bad" },
   overdue:     { label: "Overdue",   rank: 2, tone: "warn" },
   // BETA LIFECYCLE L2 — refused by a cost freeze: not a success, not a failure.
-  skipped:     { label: "Skipped (cost freeze)", rank: 3, tone: "warn" },
+  // The per-job surfaces refine this from the run's skipReason (lib/jobs/skip-label.ts).
+  skipped:     { label: "Skipped (cost freeze / plan)", rank: 3, tone: "warn" },
   "never-ran": { label: "Never ran", rank: 3, tone: "muted" },
   running:     { label: "Running",   rank: 4, tone: "info" },
   healthy:     { label: "Healthy",   rank: 5, tone: "ok" },

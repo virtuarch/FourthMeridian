@@ -84,7 +84,7 @@ import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 import { loadTokenDayRows } from "@/lib/crypto/token-valuation";
 import { cryptoTokenDayDecision } from "@/lib/crypto/token-valuation.core";
 import { reconcileWalletLedger } from "@/lib/crypto/ledger-completeness.core";
-import { valueCryptoDay, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
+import { valueCryptoDay, cryptoHoldersNotValued, type CryptoDayValuation } from "@/lib/crypto/historical-crypto-valuation.core";
 import { toStoredCryptoValuationStatus } from "@/lib/snapshots/crypto-valuation-status.core";
 import { backfillHeldInstrumentPrices } from "@/lib/investments/holding-price-backfill";
 // RWA-2B — a manual real-world asset's past comes from ITS valuation ledger,
@@ -1092,6 +1092,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     let hasDigitalAssetEvidence = false;
     let cryptoDayValuation: CryptoDayValuation | null = null;
     let digitalAssetHeldUnvalued = false;
+    let cryptoHoldersMissing: string[] = [];
     if (cryptoAccounts.length > 0) {
       // HIST-2C / W-M0 — from the one-shot window read above, one entry per asset
       // actually held. An asset with no close on this day maps to null, which the
@@ -1108,19 +1109,20 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // V26-S3-DETAIL — through the SHARED crypto day valuation, so the total
       // this snapshot stores and the per-position breakdown a drill-down shows
       // come from one call and cannot describe different portfolios.
+      // W-M2c — the quantity is resolved PER DAY per account: the legacy
+      // column for the chain that writes one, dated positions for every other.
+      const cryptoDayAccounts = cryptoAccounts.map((a) => ({
+        financialAccountId: a.id, name: a.name,
+        nativeBalance: cryptoQuantityOn(a.id, dISO),
+        assetKey: cryptoAssetByAccount.get(a.id)?.assetKey ?? null,
+        symbol:   cryptoSymbolByAccount.get(a.id) ?? null,
+        // W6 — outside its existence interval a wallet is NOT_APPLICABLE: it
+        // contributes nothing and refuses nothing. Inside it, an unresolved
+        // quantity is a genuine hole and the day refuses.
+        applicable: cryptoApplicableOn(a.id, dISO),
+      }));
       cryptoDayValuation = valueCryptoDay({
-        // W-M2c — the quantity is resolved PER DAY per account: the legacy
-        // column for the chain that writes one, dated positions for every other.
-        accounts: cryptoAccounts.map((a) => ({
-          financialAccountId: a.id, name: a.name,
-          nativeBalance: cryptoQuantityOn(a.id, dISO),
-          assetKey: cryptoAssetByAccount.get(a.id)?.assetKey ?? null,
-          symbol:   cryptoSymbolByAccount.get(a.id) ?? null,
-          // W6 — outside its existence interval a wallet is NOT_APPLICABLE: it
-          // contributes nothing and refuses nothing. Inside it, an unresolved
-          // quantity is a genuine hole and the day refuses.
-          applicable: cryptoApplicableOn(a.id, dISO),
-        })),
+        accounts: cryptoDayAccounts,
         unitPriceByAssetKey,
         quantityLicensed: cryptoQuantityLicensed(dISO),
       });
@@ -1133,6 +1135,10 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       const tokenDay = cryptoTokenDayDecision(
         { licensed: cryptoDayValuation.licensed, positionCount: cryptoDayValuation.positionCount }, tokenRows, dISO);
       digitalAssetHeldUnvalued = tokenDay.heldUnvalued;
+      // P1 2026-10-31 — the holder-completeness guard: a holder that existed on
+      // the day and is not in the valuation keeps the day off `supported`
+      // (regenerateDay reads it as held-but-unvalued, before any evidence).
+      cryptoHoldersMissing = cryptoHoldersNotValued({ accounts: cryptoDayAccounts }, cryptoDayValuation);
       if (tokenDay.tokensJoin) {
         // classifyAccounts still does the FX to the reporting currency — the SAME
         // conversion path every other total uses (no second FX interpretation).
@@ -1203,6 +1209,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       digitalAssetTier: "estimated", // constant-quantity assumption × real price
       hasDigitalAssetEvidence,
       digitalAssetHeldUnvalued,
+      cryptoHoldersNotValued: cryptoHoldersMissing,
       // REG-2 — a held-flat balance account (current balance carried backward, no
       // transaction reconstruction) makes the day's cash/card component an
       // "estimated" (not "derived") value, so the row is honestly labeled a weaker

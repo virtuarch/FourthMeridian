@@ -49,8 +49,8 @@ import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
 import type { WebhookSyncOutcome } from "@/lib/plaid/webhook-sync";
 import {
-  createBillableBatchGate, tallyBillableDenial,
-  type BillableBatchLoader, type BillableDecision, type BillableDenialTally,
+  billableSkipCode, createBillableBatchGate, tallyBillableDenial,
+  type BillableBatchLoader, type BillableDecision, type BillableDenialReason, type BillableDenialTally,
 } from "@/lib/entitlements/billable-gate";
 
 /** The canonical per-candidate driver. Only tests replace it. The batch decision is threaded (no second read). */
@@ -154,6 +154,13 @@ export interface ResumeStaleImportsResult {
   planRestrictedReasons?: BillableDenialTally;
   /** BETA LIFECYCLE L2 — distinct restricted connectors whose stale Items were excluded from this pass's page. */
   planRestrictedUsers?: number;
+  /**
+   * BETA LIFECYCLE L2 (follow-up N2) — "SKIPPED" when EVERY stale candidate's
+   * connector is restricted (e.g. the GLOBAL cost freeze): the pass did nothing
+   * because policy refused it all. Job health shows it as `skipped`, never healthy.
+   */
+  outcome?: "SKIPPED";
+  skipReason?: string;
   /**
    * OPS-2D-4 — the typed admission reason when the platform declined this pass.
    * Null on every admitted run. This is the DISPATCH-level finding: the job ran,
@@ -279,7 +286,20 @@ export async function resumeStaleImports(
     : deps.loadCandidates ? items.map((i) => i.userId).filter((u): u is string => !!u) : await loadStaleCandidateUsers(cutoff);
   const gate = createBillableBatchGate([...allUsers, ...items.map((i) => i.userId)], "plaid_resume_sync", deps.billable ? { load: deps.billable } : {});
   const restrictedUsers: string[] = [];
-  for (const u of new Set(allUsers)) if (!(await gate.decide(u)).allowed) restrictedUsers.push(u);
+  const restrictedReasons: BillableDenialTally = {};
+  for (const u of new Set(allUsers)) {
+    const d = await gate.decide(u);
+    if (!d.allowed) { restrictedUsers.push(u); tallyBillableDenial(restrictedReasons, d.reason); }
+  }
+  const distinctUsers = new Set(allUsers).size;
+  if (distinctUsers > 0 && restrictedUsers.length === distinctUsers) {
+    // Every connector refused (the global freeze, typically): ONE job-level
+    // finding — nothing driven, no marker, no backoff touched.
+    const top = (Object.entries(restrictedReasons) as [BillableDenialReason, number][]).sort((a, b) => b[1] - a[1])[0][0];
+    const skipReason = billableSkipCode(top);
+    console.log(`[resume-stale-imports] ${candidates} stale import(s); every connector is plan-restricted — SKIPPED (${skipReason}); nothing touched.`);
+    return { candidates, attempted: 0, ran: 0, skipped: 0, deferred: 0, planRestrictedUsers: restrictedUsers.length, outcome: "SKIPPED", skipReason };
+  }
   let page = items;
   if (restrictedUsers.length > 0) {
     page = (await (deps.loadCandidates ?? loadStaleCandidates)(cutoff, MAX_ITEMS_PER_RUN, { excludeUserIds: restrictedUsers })).items;
