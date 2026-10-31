@@ -85,7 +85,11 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
           <Surface className="flex-1 p-4 sm:p-5">
             {m ? (
               <>
-                <DayBars days={decisionBars(m)} height={200} noun="decision" palette={MERGE_PALETTE} ariaLabel="Merge-review decisions per UTC day: merged and dismissed" />
+                {m.decisions.merged + m.decisions.dismissed === 0 ? (
+                  <ChartMessage>{`No merge decisions in the last ${m.windowDays} days`}</ChartMessage>
+                ) : (
+                  <DayBars days={decisionBars(m)} height={200} noun="decision" palette={MERGE_PALETTE} ariaLabel="Merge-review decisions per UTC day: merged and dismissed" />
+                )}
                 <div className="mt-2"><DayBarsLegend items={[{ label: "Merged", color: MERGE_PALETTE.succeeded }, { label: "Dismissed (kept apart)", color: MERGE_PALETTE.other }]} /></div>
                 <Caption>{`${n(m.decisions.merged)} merged · ${n(m.decisions.dismissed)} dismissed · ${m.windowDays} UTC days`}</Caption>
               </>

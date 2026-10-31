@@ -540,7 +540,8 @@ export function listPopulation(list: CustomerListResponse): string {
   const deactivated = rows.filter((c) => c.deactivatedAt).length;
   const activeCustomers = rows.filter((c) => !c.deactivatedAt && c.role === "USER").length;
   const other = rows.length - deactivated - activeCustomers;
-  const shown = rows.length < list.total ? `${rows.length} of ${list.total} accounts` : `${list.total} account${list.total === 1 ? "" : "s"}`;
   const parts = [`${activeCustomers} active customer${activeCustomers === 1 ? "" : "s"}`, deactivated ? `${deactivated} deactivated` : null, other ? `${other} admin` : null].filter(Boolean);
-  return `${shown} · ${parts.join(" · ")}`;
+  // Truncated: the breakdown describes the rows SHOWN, never the whole total beside it.
+  if (rows.length < list.total) return `showing ${rows.length} of ${list.total} accounts · of these ${parts.join(" · ")}`;
+  return `${list.total} account${list.total === 1 ? "" : "s"} · ${parts.join(" · ")}`;
 }
