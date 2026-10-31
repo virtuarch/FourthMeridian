@@ -134,7 +134,7 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success";
+export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -368,7 +368,16 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
   ],
   MERCHANT_OPS: [
-    { workspaceId: "platform-overview", sections: ["merchant_review"] },
+    // PLATFORM SPACES 2.0 — ONE merchant-identity dashboard (components/
+    // platform/leads/MerchantLead.tsx) built on what the Space really does:
+    // resolution coverage, category provenance, aliases, customer rules and
+    // the merge review (the review page itself stays at /merchant-ops; the
+    // dashboard links to it). No payment / settlement figures — none exist.
+    // merchant_review stays composed (hosted) so the section keeps its home.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [{ id: "overview", label: "Merchant identity", lead: "merchant", sections: [], hosted: ["merchant_review"] }],
+    }),
   ],
 };
 
