@@ -187,12 +187,23 @@ async function main(): Promise<void> {
   {
     reset(); user("u1"); user("u2"); automation();
     roleChanged("u1", new Date(T0.getTime() - 5 * MIN)); roleChanged("u2", new Date(T0.getTime() - 4 * MIN));
-    // The switch is unset right after the FIRST bell is created (mid-pass).
-    const s = await run(deps({ createNotification: async (input: any, ctx: any) => { const r = await createNotification(input, ctx); open = false; return r; } }));
+    // The switch is unset right after the FIRST bell is created (mid-pass). Leases are counted: the loop's
+    // own check must stop the second item BEFORE it is leased (not only the last check before the transport).
+    let leases = 0;
+    const counting = new Proxy(db, { get(t: any, p: string | symbol) {
+      const v = t[p];
+      if (p !== "automationRunItem") return v;
+      return new Proxy(v, { get(d: any, q: string | symbol) {
+        const f = d[q];
+        if (q === "updateMany") return async (args: any) => { if (args?.data?.status === "SENDING") leases++; return f.call(d, args); };
+        return typeof f === "function" ? f.bind(d) : f;
+      } });
+    } });
+    const s = await run(deps({ db: counting, createNotification: async (input: any, ctx: any) => { const r = await createNotification(input, ctx); open = false; return r; } }));
     const held = items().find((i) => i.status !== "SENT");
     check("two items due, the switch is unset after the first send ⇒ ONE bell; the second is NOT leased (SCHEDULED, attempt 0); the pass is SKIPPED / ACTIVATION_DISABLED_PENDING_HARDENING",
-      bells().length === 1 && items({ status: "SENT" }).length === 1 && held?.status === "SCHEDULED" && held?.attempt === 0
-      && s.outcome === "SKIPPED" && s.skipReason === T.ACTIVATION_DISABLED_REASON, { s, items: items().map((i) => [i.status, i.attempt]) });
+      bells().length === 1 && items({ status: "SENT" }).length === 1 && held?.status === "SCHEDULED" && held?.attempt === 0 && leases === 1
+      && s.outcome === "SKIPPED" && s.skipReason === T.ACTIVATION_DISABLED_REASON, { s, leases, items: items().map((i) => [i.status, i.attempt]) });
     open = true; clock = new Date(T0.getTime() + 2 * MIN);
     await run();
     check("…switched back on, the held item is delivered on the next pass (nothing was lost or cancelled)", bells().length === 2 && items({ status: "SENT" }).length === 2);
