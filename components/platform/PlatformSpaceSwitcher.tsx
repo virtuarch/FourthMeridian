@@ -133,7 +133,13 @@ export function PlatformSpaceSwitcher({ spaces, currentArea }: { spaces: readonl
             background: "var(--glass-thick, var(--glass-regular))", backdropFilter: "blur(30px) saturate(160%)", WebkitBackdropFilter: "blur(30px) saturate(160%)", boxShadow: "var(--shadow-e3, var(--shadow-e2))",
           }}
           data-space-switcher-menu
-          onBlur={(e) => { if (!menu.current?.contains(e.relatedTarget as Node) && e.relatedTarget !== trigger.current) close(false); }}
+          onBlur={(e) => {
+            // Only a blur that LANDS somewhere else closes (Tab out). Safari never
+            // focuses a clicked button, so a tap gives a null target — the
+            // pointer-down handler owns taps, and the trigger toggles itself.
+            const to = e.relatedTarget as Node | null;
+            if (to && !menu.current?.contains(to) && to !== trigger.current) close(false);
+          }}
         >
           {spaces.map((s) => {
             const on = s.area === currentArea;

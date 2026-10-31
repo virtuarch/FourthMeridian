@@ -188,32 +188,12 @@ export function DayBars({
             <text x={padL + plotW / 2} y={(height - PAD_B) / 2} textAnchor="middle" className="fill-[var(--text-muted)] text-[9px] uppercase" style={{ letterSpacing: "0.08em" }}>no data</text>
           )}
         </svg>
-        {h && active !== null && (
-          <div className={`${pinned !== null ? "" : "pointer-events-none "}absolute bottom-full z-10 mb-1 w-max max-w-[calc(100%-8px)] -translate-x-1/2`}
-            style={{ left: Math.min(Math.max(x(active) + barW / 2, 90), Math.max(90, w - 90)) }}
-            onClick={(e) => e.stopPropagation()} data-day-readout={pinned !== null ? "pinned" : "hover"}>
-            <div className="min-w-[150px] rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-2.5 py-1.5 shadow-[var(--shadow-e3)]" style={{ background: "var(--glass-thick)" }}>
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">{h.observed ? plural(total(h)) : "No data"}</p>
-                {pinned !== null && (
-                  <button type="button" aria-label="Clear selection" onClick={(e) => { e.stopPropagation(); setPinned(null); wrap.current?.focus(); }}
-                    className="-mr-1 -mt-0.5 grid size-6 place-items-center rounded-[var(--radius-xs)] text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">
-                    <X size={12} aria-hidden />
-                  </button>
-                )}
-              </div>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{longDate(h.day)} · UTC</p>
-              {/* The segments, by name, when the day has more than one kind. */}
-              {h.observed && [h.succeeded, h.other, h.failed].filter((v) => v > 0).length >= 2 && (
-                <ul className="mt-1 flex flex-col gap-0.5 text-[11px] tabular-nums text-[var(--text-secondary)]">
-                  {([["succeeded", h.succeeded], ["other", h.other], ["failed", h.failed]] as const).filter(([, v]) => v > 0).map(([k, v]) => (
-                    <li key={k} className="flex items-center gap-1.5">
-                      <span aria-hidden className="h-2 w-2 rounded-[2px]" style={{ background: palette[k] }} />
-                      {`${v.toLocaleString("en-US")} ${words[k]}`}
-                    </li>
-                  ))}
-                </ul>
-              )}
+        {/* Mouse hover: a floating preview above the plot (never interactive). */}
+        {h && pinned === null && hover !== null && (
+          <div className="pointer-events-none absolute bottom-full z-10 mb-1 w-max -translate-x-1/2" style={{ left: Math.min(Math.max(x(hover) + barW / 2, 70), Math.max(70, w - 70)) }} data-day-readout="hover">
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-2.5 py-1.5 shadow-[var(--shadow-e3)]" style={{ background: "var(--glass-thick)" }}>
+              <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">{h.observed ? plural(total(h)) : "No data"}</p>
+              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{shortDate(h.day)}{h.observed && h.failed > 0 ? ` · ${h.failed.toLocaleString("en-US")} ${failedWord}` : ""}</p>
             </div>
           </div>
         )}
@@ -224,6 +204,30 @@ export function DayBars({
           <span>{shortDate(days[0].day)}</span>
           <span>{shortDate(days[Math.floor(days.length / 2)].day)}</span>
           <span>{shortDate(days[days.length - 1].day)}</span>
+        </div>
+      )}
+      {/* A tap / click / key PINS the day: an in-flow panel under the axis —
+          it covers nothing (no toggle, no bars) and stays until dismissed. */}
+      {h && pinned !== null && (
+        <div className="mt-2 flex items-start justify-between gap-3 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 py-2" data-day-readout="pinned">
+          <div className="min-w-0">
+            <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">{h.observed ? plural(total(h)) : "No data for this day"}</p>
+            <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{longDate(h.day)} · UTC</p>
+            {h.observed && [h.succeeded, h.other, h.failed].filter((v) => v > 0).length >= 2 && (
+              <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-[var(--text-secondary)]">
+                {([["succeeded", h.succeeded], ["other", h.other], ["failed", h.failed]] as const).filter(([, v]) => v > 0).map(([k, v]) => (
+                  <li key={k} className="flex items-center gap-1.5">
+                    <span aria-hidden className="h-2 w-2 rounded-[2px]" style={{ background: palette[k] }} />
+                    {`${v.toLocaleString("en-US")} ${words[k]}`}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <button type="button" aria-label="Clear selection" onClick={() => { setPinned(null); wrap.current?.focus(); }}
+            className="grid size-8 shrink-0 place-items-center rounded-[var(--radius-xs)] border border-[var(--border-hairline)] text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">
+            <X size={12} aria-hidden />
+          </button>
         </div>
       )}
     </div>
