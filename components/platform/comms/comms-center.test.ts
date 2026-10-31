@@ -278,7 +278,7 @@ async function main() {
     const blockers = ["DEFINITION_CHANGED", "OWNER_APPROVAL_REQUIRED", "DRY_RUN_REQUIRED", "TRIGGER_NOT_AVAILABLE", "DEFINITION_NOT_ACTIVATABLE", "PROTECTED", "MARKETING_NOT_IN_V1", "STATE"];
     const v11 = { ...detail, activationBlockers: blockers, viewer: { activationDisabledReason: "ACTIVATION_DISABLED_PENDING_HARDENING" } };
     const dv = renderToStaticMarkup(createElement(AutomationDetailBody, { read: ok(v11 as AutomationDetail), runs: ok(runs) }));
-    check("v1.1 detail: the hard gate and every blocker in plain English", dv.includes("data-activation-blockers") && dv.includes("Activation is switched off until the safety hardening ships")
+    check("v1.1 detail: the hard gate and every blocker in plain English", dv.includes("data-activation-blockers") && dv.includes("Activation is off in this environment. It can only be switched on in Preview, never in Production")
       && dv.includes("The message definition changed since this automation was checked — edit it to re-check.") && blockers.every((b) => dv.includes(ACTIVATION_BLOCKER_LABEL[b as keyof typeof ACTIVATION_BLOCKER_LABEL])));
     const activationHtml = dv.slice(dv.indexOf('aria-label="Activation"'), dv.indexOf('aria-label="Conditions"'));
     check("no raw blocker / gate code ever renders", !/[A-Z]{3,}_[A-Z_]{3,}/.test(activationHtml), activationHtml.slice(0, 200));
@@ -346,7 +346,7 @@ async function main() {
       && !/role="alert"[^>]*>[^<]*can’t be confirmed/.test(u3) && !/\bUNCERTAIN_ACCEPTANCE\b/.test(visibleText(u3)), uLine);
     check("no raw status code ever appears in the rendered text (measured or not)",
       ![...DELIVERY_STATUSES].some((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk) + visibleText(dOk))), DELIVERY_STATUSES.filter((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk))));
-    check("Preview environment explains Captured", /Preview captures sends/.test(dOk));
+    check("Preview environment explains Captured", /Preview only delivers to approved test addresses — every other send is captured/.test(dOk));
     check("by-key rows show keys and counts only (no address)", dOk.includes("PASSWORD_RESET_LINK_SENT") && !/@/.test(dOk.replace(/@v\d/g, "")));
     const inApp = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, filters: { channel: "IN_APP" as const, status: null, template: null }, suppressedByReason: { ...r0, PREFERENCE_OFF: 3, RATE_LIMITED: 2 } }),
       filters: { ...DEFAULT_DELIVERY_FILTERS, channel: "IN_APP" }, onFilters: () => {} }));
