@@ -204,7 +204,7 @@ export function SpaceShell({
              Solid page background + hairline, bled to the page gutters so
              content never shows at its sides. Desktop markup is unchanged
              (lg:hidden). */
-          <div className="lg:hidden mb-3 flex items-center justify-between gap-3 sticky top-[calc(3rem+1px)] z-20 -mx-5 px-6 max-sm:-mx-4 max-sm:px-5 py-1.5 bg-[var(--bg-base)] border-b border-[var(--border-hairline)]" data-sticky-space-header>
+          <div className="lg:hidden mb-3 flex items-center justify-between gap-3 sticky top-[calc(3rem+1px)] z-20 -mx-5 px-5 max-sm:-mx-4 max-sm:px-4 py-1.5 bg-[var(--bg-base)] border-b border-[var(--border-hairline)]" data-sticky-space-header>
             <div className="flex min-w-0 items-center gap-1" data-compact-header>
               <h1 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h1>
               {titleAccessory}

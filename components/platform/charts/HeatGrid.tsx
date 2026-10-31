@@ -59,6 +59,10 @@ export function HeatGrid({
   const [hover, setHover] = useState<{ r: number; c: number } | null>(null);
   const [pinned, setPinned] = useState<{ r: number; c: number } | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  // A different layout (period / series toggle) is a different grid: drop the pin, never move it.
+  const layoutKey = `${layout.rows.map((r) => r.key).join(",")}|${layout.cols.map((c) => c.key).join(",")}|${ariaLabel}`;
+  const [pinKey, setPinKey] = useState(layoutKey);
+  if (pinKey !== layoutKey) { setPinKey(layoutKey); setPinned(null); setHover(null); }
   useEffect(() => {
     if (!pinned) return;
     const onDown = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) setPinned(null); };

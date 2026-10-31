@@ -78,6 +78,10 @@ export function DayBars({
   const [hover, setHover] = useState<number | null>(null);
   const [pinned, setPinned] = useState<number | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  // A new series (window / toggle) is a new chart: a pin never silently moves to another day.
+  const seriesKey = `${days.length}:${days[0]?.day ?? ""}:${days[days.length - 1]?.day ?? ""}:${noun}`;
+  const [pinKey, setPinKey] = useState(seriesKey);
+  if (pinKey !== seriesKey) { setPinKey(seriesKey); setPinned(null); setHover(null); }
 
   useLayoutEffect(() => {
     const el = wrap.current;
@@ -185,7 +189,9 @@ export function DayBars({
           )}
         </svg>
         {h && active !== null && (
-          <div className={`${pinned !== null ? "" : "pointer-events-none "}absolute top-0 z-10 -translate-x-1/2`} style={{ left: Math.min(Math.max(x(active) + barW / 2, 86), w - 86) }} data-day-readout={pinned !== null ? "pinned" : "hover"}>
+          <div className={`${pinned !== null ? "" : "pointer-events-none "}absolute bottom-full z-10 mb-1 w-max max-w-[calc(100%-8px)] -translate-x-1/2`}
+            style={{ left: Math.min(Math.max(x(active) + barW / 2, 90), Math.max(90, w - 90)) }}
+            onClick={(e) => e.stopPropagation()} data-day-readout={pinned !== null ? "pinned" : "hover"}>
             <div className="min-w-[150px] rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-2.5 py-1.5 shadow-[var(--shadow-e3)]" style={{ background: "var(--glass-thick)" }}>
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">{h.observed ? plural(total(h)) : "No data"}</p>

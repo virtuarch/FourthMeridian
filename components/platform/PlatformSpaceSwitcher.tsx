@@ -68,10 +68,20 @@ export function PlatformSpaceSwitcher({ spaces, currentArea }: { spaces: readonl
 
   const close = useCallback((refocus: boolean) => {
     setOpen(false);
+    setPos(null);
     if (refocus) trigger.current?.focus();
   }, []);
 
   useLayoutEffect(() => { if (open) place(); }, [open, place]);
+
+  // Focus moves INTO the menu once it is placed and visible (a hidden element
+  // cannot take focus): the current Space's link, else the first.
+  const placed = open && pos !== null;
+  useEffect(() => {
+    if (!placed) return;
+    const first = menu.current?.querySelector<HTMLElement>('[aria-current="page"]') ?? menu.current?.querySelector<HTMLElement>("a");
+    first?.focus({ preventScroll: true });
+  }, [placed]);
 
   useEffect(() => {
     if (!open) return;
@@ -80,14 +90,13 @@ export function PlatformSpaceSwitcher({ spaces, currentArea }: { spaces: readonl
       const t = e.target as Node;
       if (!menu.current?.contains(t) && !trigger.current?.contains(t)) close(false);
     };
-    const onResize = () => close(false);
+    // iOS fires resize when its toolbar collapses mid-scroll: only a WIDTH change closes.
+    let width = window.innerWidth;
+    const onResize = () => { if (window.innerWidth !== width) { width = window.innerWidth; close(false); } else place(); };
     window.addEventListener("keydown", onKey);
     window.addEventListener("pointerdown", onDown, true);
     window.addEventListener("resize", onResize);
     window.addEventListener("scroll", place, true);
-    // Focus the current Space's link (else the first) so the keyboard lands in the list.
-    const first = menu.current?.querySelector<HTMLElement>('[aria-current="page"]') ?? menu.current?.querySelector<HTMLElement>("a");
-    first?.focus({ preventScroll: true });
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("pointerdown", onDown, true);
@@ -106,7 +115,7 @@ export function PlatformSpaceSwitcher({ spaces, currentArea }: { spaces: readonl
         aria-label="Switch Platform Space"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? close(false) : setOpen(true))}
         className="grid size-11 shrink-0 cursor-pointer place-items-center rounded-[var(--radius-sm)] text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
         data-space-switcher
       >
@@ -124,6 +133,7 @@ export function PlatformSpaceSwitcher({ spaces, currentArea }: { spaces: readonl
             background: "var(--glass-thick, var(--glass-regular))", backdropFilter: "blur(30px) saturate(160%)", WebkitBackdropFilter: "blur(30px) saturate(160%)", boxShadow: "var(--shadow-e3, var(--shadow-e2))",
           }}
           data-space-switcher-menu
+          onBlur={(e) => { if (!menu.current?.contains(e.relatedTarget as Node) && e.relatedTarget !== trigger.current) close(false); }}
         >
           {spaces.map((s) => {
             const on = s.area === currentArea;
