@@ -154,6 +154,7 @@ console.log("1c. Bulk approval (PR C) — checkboxes, select-all and the bulk pa
     ["Clear", /onClick=\{onClear\}/g],
     ["validity input", /id="growth-bulk-days"/g],
     ["flag acknowledgement", /data-bulk-flag-ack/g],
+    ["use-default validity reset", /data-bulk-days-reset/g],
   ] as const) {
     const r = allGated(panel, re, pr);
     check(`panel ${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);

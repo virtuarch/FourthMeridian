@@ -15,7 +15,7 @@ import path from "node:path";
 import bcrypt from "bcryptjs";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import { invoke, request, makeChecker, signIn, freshCache } from "@/lib/test-support/route-harness";
-import { capturedEmails, clearCapturedEmails } from "@/lib/email/providers/capture";
+import { captureAdapter, capturedEmails, clearCapturedEmails } from "@/lib/email/providers/capture";
 import { DAY_MS } from "./invitation-issue.core";
 import { approvalEligibility, BULK_APPROVE_MAX_IDS, parseBulkApproveBody } from "./bulk-approve.core";
 
@@ -190,7 +190,7 @@ async function main() {
     t.check("ONE batch row: target BETA_BATCH = batchKey, counts, validity, requestCount",
       b.length === 1 && (bm.target as { kind?: string; id?: string })?.kind === "BETA_BATCH" && (bm.target as { id?: string }).id === key
       && bm.batchKey === key && bm.requestCount === 8 && bm.uniqueCount === 7 && bm.duplicateCount === 1 && bm.validityDays === 7
-      && JSON.stringify(bm.counts) === JSON.stringify({ succeeded: 2, skipped: 5, failed: 0 }) && bm.result === "SUCCESS" && bm.repeat === false, bm);
+      && JSON.stringify(bm.counts) === JSON.stringify({ succeeded: 2, emailFailed: 0, skipped: 5, failed: 0 }) && bm.result === "SUCCESS" && bm.repeat === false, bm);
     const json = JSON.stringify(b[0]);
     const tokenHashes = [p1, p2].map((id) => row({ id }).inviteTokenHash as string);
     t.check("batch row carries no email, no email hash, no token or token hash, no link",
@@ -313,6 +313,85 @@ async function main() {
       byId[taken]?.approvable === false && /already has a Fourth Meridian account/.test(byId[taken]?.reason ?? ""), byId);
     const e = approvalEligibility({ id: "x", email: "x@example.test", status: "DENIED", inviteTokenHash: null, inviteExpiresAt: null }, false);
     t.check("pure rule: DENIED is not bulk-approvable (single approve may reverse a denial; a batch must not)", !e.approvable && e.code === "DENIED");
+  }
+
+  // ── 9. The status race (review fix 1) ─────────────────────────────────────
+  t.section("9. a row read PENDING, then denied before issuance re-reads it → SKIPPED, nothing sent");
+  {
+    await world();
+    const raced = pending("raced@example.test");
+    const calm = pending("calm@example.test");
+    // The 2nd read of `raced` is issuance's own: a deny lands just before it.
+    let reads = 0;
+    fake.on("BetaAccessRequest", "findUnique", (args) => {
+      const where = (args as { where?: { id?: string } } | undefined)?.where;
+      if (where?.id === raced && ++reads === 2) { const r = row({ id: raced }); r.status = "DENIED"; r.decidedAt = new Date(); }
+      return undefined;
+    });
+    const r = await bulk({ requestIds: [raced, calm], batchKey: randomUUID() });
+    fake.clearHooks();
+    const sk = (r.body.skipped as Array<{ id: string; code: string; reason: string }>).find((x) => x.id === raced);
+    t.check("the denied-in-between row is SKIPPED STATUS_CHANGED with a 'status changed' reason", r.status === 200 && sk?.code === "STATUS_CHANGED" && /Status changed/.test(sk.reason), r.body);
+    t.check("…and stays DENIED with no token, no email, no approval audit", row({ id: raced }).status === "DENIED" && row({ id: raced }).inviteTokenHash == null
+      && sentTo("raced@example.test").length === 0 && !audits("BETA_ACCESS_APPROVED").some((a) => (a.metadata as { target?: { id?: string } }).target?.id === raced));
+    t.check("the other row in the batch is approved as normal", row({ id: calm }).status === "APPROVED" && sentTo("calm@example.test").length === 1);
+
+    // A deny between issuance's read and its conditional write: the write loses.
+    const late = pending("late@example.test");
+    fake.on("BetaAccessRequest", "updateMany", () => { const x = row({ id: late }); x.status = "DENIED"; return undefined; }, { once: true });
+    const r2 = await bulk({ requestIds: [late], batchKey: randomUUID() });
+    fake.clearHooks();
+    t.check("a deny after issuance's read → the conditional write loses → SKIPPED STATUS_CHANGED, nothing sent",
+      (r2.body.skipped as Array<{ code: string }>)[0]?.code === "STATUS_CHANGED" && row({ id: late }).status === "DENIED" && row({ id: late }).inviteTokenHash == null
+      && sentTo("late@example.test").length === 0, r2.body);
+  }
+
+  // ── 10. Email failures are not successes (review fix 2) ───────────────────
+  t.section("10. approved but the email failed → counted and listed separately (Resend)");
+  {
+    await world();
+    const ok = pending("mail-ok@example.test");
+    const bad = pending("mail-bad@example.test");
+    const orig = captureAdapter.send;
+    captureAdapter.send = async (m) => ((Array.isArray(m.to) ? m.to : [m.to]).includes("mail-bad@example.test")
+      ? { status: "error", provider: "capture", error: "provider down" }
+      : orig(m));
+    const r = await bulk({ requestIds: [ok, bad], batchKey: randomUUID() });
+    captureAdapter.send = orig;
+    const s = r.body.summary as Record<string, number>;
+    const ef = r.body.emailFailed as Array<{ id: string; reason: string }>;
+    t.check("summary: 2 approved, emailFailed 1", r.status === 200 && s.succeeded === 2 && s.emailFailed === 1, s);
+    t.check("the email-failed row is listed with 'email not sent — use Resend'", ef.length === 1 && ef[0].id === bad && /email not sent — use Resend/.test(ef[0].reason), ef);
+    t.check("its invitation stands (APPROVED, token set) — resendable", row({ id: bad }).status === "APPROVED" && typeof row({ id: bad }).inviteTokenHash === "string");
+    const bm = (audits(BULK).at(-1)?.metadata ?? {}) as { counts?: Record<string, number>; emailFailedIds?: string[] };
+    t.check("the batch audit counts it and names the id (no address)", bm.counts?.emailFailed === 1 && bm.emailFailedIds?.join() === bad && !JSON.stringify(bm).includes("@"), bm);
+  }
+
+  // ── 11. The time budget (review fix 3) ────────────────────────────────────
+  t.section("11. time budget: rows not reached are NOT_ATTEMPTED; a retry finishes them; batch row always written");
+  {
+    await world();
+    const { db } = await import("@/lib/db");
+    const { bulkApproveBetaRequests } = await import("./bulk-approve");
+    const ids = ["tb1", "tb2", "tb3", "tb4"].map((n) => pending(`${n}@example.test`));
+    const key = randomUUID();
+    let now = 0;
+    const clockMs = () => { const v = now; now += 1000; return v; }; // each clock read = 1 s later
+    const body = (parseBulkApproveBody({ requestIds: ids, batchKey: key }) as { ok: true; body: Parameters<typeof bulkApproveBetaRequests>[0]["body"] }).body;
+    const actor = { userId: admin.id, via: "SYSTEM_ADMIN" as const, area: "GROWTH_REVENUE" };
+    const r = await bulkApproveBetaRequests({ client: db, actor, body, clockMs, budgetMs: 2500 });
+    const s = r.ok && !r.dryRun ? r.summary : null;
+    const na = r.ok && !r.dryRun ? r.skipped.filter((x) => x.code === "NOT_ATTEMPTED").map((x) => x.id) : [];
+    t.check("budget exhausted mid-batch → the rows reached are approved, the rest NOT_ATTEMPTED (never failed)",
+      s !== null && s.succeeded === 2 && na.length === 2 && s.failed === 0 && na.every((id) => row({ id }).status === "PENDING"), r);
+    t.check("the batch row is still written, with the real counts", audits(BULK).length === 1 && (audits(BULK)[0].metadata as { counts?: { succeeded?: number } }).counts?.succeeded === 2);
+    const again = await bulkApproveBetaRequests({ client: db, actor, body });
+    t.check("retry with the same batchKey finishes the rest; nothing sent twice",
+      again.ok && !again.dryRun && again.summary.succeeded === 2 && ids.every((id) => row({ id }).status === "APPROVED")
+      && ["tb1", "tb2", "tb3", "tb4"].every((n) => sentTo(`${n}@example.test`).length === 1), again);
+    const route = readFileSync(path.join(process.cwd(), "app/api/platform/growth-revenue/requests/bulk-approve/route.ts"), "utf8");
+    t.check("route declares maxDuration = 300 (the repo's long-route budget) above the 240 s loop budget",
+      /export const maxDuration = 300;/.test(route) && /BULK_TIME_BUDGET_MS = 240_000/.test(readFileSync(path.join(process.cwd(), "lib/platform/growth/bulk-approve.ts"), "utf8")));
   }
 
   t.done();

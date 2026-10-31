@@ -32,9 +32,13 @@ export const BULK_APPROVE_MAX_IDS = 100;
 export type BulkIneligibleCode =
   | Extract<IssueRefusalCode, "NOT_FOUND" | "REDEEMED" | "ACCOUNT_EXISTS" | "DENIED">
   | "ALREADY_APPROVED"
-  | "DUPLICATE";
+  | "DUPLICATE"
+  /** Issuance read a different status than the batch did (denied / revoked / re-queued in between). */
+  | "STATUS_CHANGED"
+  /** The batch's time budget ran out before this row was reached; a retry with the same batchKey finishes it. */
+  | "NOT_ATTEMPTED";
 
-export type BulkFailureCode = "CONFLICT" | "ERROR";
+export type BulkFailureCode = "REFUSED" | "ERROR";
 
 export const BULK_REASON: Record<BulkIneligibleCode | BulkFailureCode, string> = {
   NOT_FOUND:        "Request not found.",
@@ -43,30 +47,37 @@ export const BULK_REASON: Record<BulkIneligibleCode | BulkFailureCode, string> =
   DENIED:           "Denied or revoked since it was selected.",
   ALREADY_APPROVED: "Already approved — no new invitation was sent.",
   DUPLICATE:        "Listed more than once in this batch — counted once.",
-  CONFLICT:         "Changed while the batch ran (denied, revoked or re-queued). Reload and decide again.",
-  ERROR:            "Could not be approved (unexpected error). Nothing was sent for this request.",
+  STATUS_CHANGED:   "Status changed since it was selected (denied, revoked or re-queued) — not approved, nothing sent.",
+  NOT_ATTEMPTED:    "Not attempted — the batch ran out of time. Confirm again to finish; nothing is sent twice.",
+  REFUSED:          "Refused by the issuance rules.",
+  ERROR:            "May or may not have been approved (unexpected error) — check the Invited tab.",
 };
 
 export type Eligibility =
   | { approvable: true }
-  | { approvable: false; code: Exclude<BulkIneligibleCode, "DUPLICATE">; reason: string };
+  | { approvable: false; code: Exclude<BulkIneligibleCode, "DUPLICATE" | "STATUS_CHANGED" | "NOT_ATTEMPTED">; reason: string };
 
 /** The ONE decision: may this row be approved by a batch right now? */
 export function approvalEligibility(row: InviteRowFacts | null, accountExists: boolean): Eligibility {
-  const plan = planApprove(row, accountExists);
+  // The bulk-only narrowing (header) is planApprove's own `expectedStatus`, the
+  // same one the execution hands to issueBetaInvitation.
+  const plan = planApprove(row, accountExists, BULK_EXPECTED_STATUS);
   if (plan.action === "alreadyApproved") return no("ALREADY_APPROVED");
   if (plan.action === "refuse") {
     const code = plan.refusal.code;
     if (code === "NOT_FOUND" || code === "REDEEMED" || code === "ACCOUNT_EXISTS") return no(code);
+    if (code === "STATUS_CHANGED") return no("DENIED"); // only PENDING passes; the one other un-approved status is DENIED
     // planApprove refuses nothing else today; anything new is surfaced, never approved.
     return { approvable: false, code: "NOT_FOUND", reason: plan.refusal.message };
   }
   if (plan.action !== "approve") return no("NOT_FOUND");
-  if (plan.row.status !== "PENDING") return no("DENIED"); // the bulk-only narrowing (header)
   return { approvable: true };
 }
 
-function no(code: Exclude<BulkIneligibleCode, "DUPLICATE">): Eligibility {
+/** A batch approves PENDING requests only — passed to planApprove and to issueBetaInvitation. */
+export const BULK_EXPECTED_STATUS = "PENDING" as const;
+
+function no(code: Exclude<BulkIneligibleCode, "DUPLICATE" | "STATUS_CHANGED" | "NOT_ATTEMPTED">): Eligibility {
   return { approvable: false, code, reason: BULK_REASON[code] };
 }
 
@@ -136,6 +147,9 @@ export type BulkDryRunRow = { id: string; eligible: true } | { id: string; eligi
 
 export interface BulkSucceeded { id: string; emailStatus: "sent" | "captured" | "skipped" | "error"; expiresAt: string }
 export interface BulkSkipped { id: string; code: Exclude<BulkIneligibleCode, "DUPLICATE">; reason: string }
+/** Approved (the invitation stands) but the email hand-off failed — Resend it from Invited. */
+export interface BulkEmailFailed { id: string; reason: string }
+export const EMAIL_FAILED_REASON = "Approved, email not sent — use Resend from the Invited tab.";
 export interface BulkFailed { id: string; code: BulkFailureCode; reason: string }
 
 export interface BulkSummary {
@@ -145,17 +159,20 @@ export interface BulkSummary {
   unique: number;
   /** Extra occurrences of an id already listed (each counted once, in `unique`). */
   duplicates: number;
+  /** Approved, invitation stands (emailFailed included). */
   succeeded: number;
+  /** Of `succeeded`: the invite email failed to hand off. */
+  emailFailed: number;
   skipped: number;
   failed: number;
 }
 
 export function summarise(
   body: Pick<BulkApproveBody, "requested" | "ids" | "duplicates">,
-  r: { succeeded: unknown[]; skipped: unknown[]; failed: unknown[] },
+  r: { succeeded: unknown[]; emailFailed: unknown[]; skipped: unknown[]; failed: unknown[] },
 ): BulkSummary {
   return {
     requested: body.requested, unique: body.ids.length, duplicates: body.duplicates.length,
-    succeeded: r.succeeded.length, skipped: r.skipped.length, failed: r.failed.length,
+    succeeded: r.succeeded.length, emailFailed: r.emailFailed.length, skipped: r.skipped.length, failed: r.failed.length,
   };
 }

@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   BatchSession, confirmEnabled, disabledReason, flaggedLine, flaggedRows, headerState, parseDaysDraft, previewHeadline,
-  pruneSelection, toggleAllEligible, toggleSelected, utcExpiryLabel, type RiskLike,
+  pruneSelection, REPEAT_LINE, resultsLine, toggleAllEligible, toggleSelected, utcExpiryLabel, type RiskLike,
 } from "./bulk-approve-model";
 import { BulkApprovePanel } from "./BulkApprovePanel";
 
@@ -104,6 +104,18 @@ console.log("4. copy, validity and expiry");
   check("days draft: 1 and 30 accepted, 0 / 31 / 2.5 / '' refused", (parseDaysDraft("1", 1, 30) as { override: number }).override === 1
     && (parseDaysDraft("30", 1, 30) as { override: number }).override === 30
     && ["0", "31", "2.5", "", "x"].every((d) => !parseDaysDraft(d, 1, 30).ok));
+}
+
+console.log("4b. results honesty (review fixes 2, 4, 6)");
+{
+  const base = { requested: 3, unique: 3, duplicates: 0, skipped: 0, failed: 0 };
+  check("email failures are named in the counts line", resultsLine({ ...base, succeeded: 3, emailFailed: 1 }) === "3 approved (1 email not sent) · 0 skipped · 0 failed");
+  check("no email failure ⇒ plain counts", resultsLine({ ...base, succeeded: 3, emailFailed: 0 }) === "3 approved · 0 skipped · 0 failed");
+  const panel = code("components/platform/growth/BulkApprovePanel.tsx");
+  check("a repeat submit shows the 'already submitted' line", /\{results\.repeat && <p[^>]*data-bulk-repeat>\{REPEAT_LINE\}/.test(panel) && /already submitted — results reflect the earlier run/.test(REPEAT_LINE));
+  check("approved-but-email-failed rows are listed with their email", /results\.emailFailed\.map\(\(f\) => \([\s\S]{0,160}emailOf\(f\.id\)/.test(panel));
+  check("an edited validity can return to the setting (no override sent)", /onClick=\{\(\) => setDaysDraft\(null\)\}/.test(panel) && /Use default \(\$\{daysWord\(validityDefault\)\}\)/.test(panel)
+    && /days\.ok && days\.override !== null \? \{ validityDays: days\.override \} : \{\}/.test(panel));
 }
 
 console.log("5. the panel renders only for WRITE and only with a selection");

@@ -23,6 +23,24 @@
  * no email) or loses the row's race inside issuance (`alreadyApproved`, also
  * skipped). No row is ever issued twice.
  *
+ * STATUS RACE (review fix): the batch reads a row PENDING, then issuance reads
+ * it again. A deny / revoke landing between the two would leave it DENIED,
+ * which the single-row Approve may approve. Bulk passes `expectedStatus:
+ * "PENDING"`, so issuance refuses STATUS_CHANGED (nothing minted, nothing sent)
+ * and the row is SKIPPED "status changed". A change after issuance's own read
+ * loses the conditional write (status = the PENDING read) and is skipped too.
+ *
+ * ── TIME BUDGET ───────────────────────────────────────────────────────────────
+ * Per row: ~4 indexed reads, one short transaction (conditional update + audit
+ * insert), one provider hand-off (the email; typically well under a second) and
+ * one outcome insert — about 0.5–2 s, so a full page of 100 is ~50–200 s. The
+ * route's maxDuration is 300 s (the repo's standard long-route budget). The
+ * loop stops STARTING rows after BULK_TIME_BUDGET_MS (240 s); every row not
+ * reached is SKIPPED NOT_ATTEMPTED, and Confirm again (same batchKey) finishes
+ * them — nothing is sent twice. The budget leaves ≥ 60 s for the row in flight
+ * and the batch audit, so a slow provider cannot run the function past its
+ * limit with approvals committed and no batch row.
+ *
  * ── AUDIT ─────────────────────────────────────────────────────────────────────
  * Each approval keeps its own BETA_ACCESS_APPROVED row, written by issuance in
  * the transaction that approves it. The batch adds ONE BETA_ACCESS_BULK_APPROVED
@@ -30,10 +48,14 @@
  *   { batchKey, requestCount, uniqueCount, duplicateCount, counts, validityDays,
  *     validitySource, repeat, requestIds by outcome } — ids only; never an
  *   email, an email hash, a token or a link.
- * Why after: an intent row written first would have to be corrected (the audit
- * log is append-only) or would lie about the outcome. If the process dies
- * mid-batch, the per-row rows already committed are the record, and a retry
- * with the same batchKey completes the batch and writes its row.
+ * Why after, and no "started" row: an intent row written first would have to be
+ * corrected (the audit log is append-only) or would lie about the outcome. The
+ * time budget above keeps the after-row reachable within maxDuration. If the
+ * process still dies mid-batch (a crash, not a timeout), every approval that
+ * committed already has its OWN BETA_ACCESS_APPROVED row — actor, request,
+ * validity, expiry — written in the same transaction as the approval, so no
+ * approved request is ever unaudited; only the batch grouping is missing, and a
+ * retry with the same batchKey writes it.
  * A repeat with a batchKey that already has a batch row writes a second row
  * ONLY when it approved something (e.g. it retried a row that failed); a repeat
  * that issued nothing writes nothing more. The batch row is unique per key on
@@ -54,8 +76,8 @@ import { issueBetaInvitation, type IssueClient } from "./invitation-issue";
 import { readInvitationPolicy } from "./invitation-policy";
 import { expiryFor, parseValidityDays, type InviteRowFacts } from "./invitation-issue.core";
 import {
-  approvalEligibility, BULK_REASON, summarise,
-  type BulkApproveBody, type BulkDryRunRow, type BulkFailed, type BulkSkipped, type BulkSucceeded, type BulkSummary,
+  approvalEligibility, BULK_EXPECTED_STATUS, BULK_REASON, EMAIL_FAILED_REASON, summarise,
+  type BulkApproveBody, type BulkDryRunRow, type BulkEmailFailed, type BulkFailed, type BulkSkipped, type BulkSucceeded, type BulkSummary,
   type BulkValidity, type Eligibility,
 } from "./bulk-approve.core";
 
@@ -68,14 +90,21 @@ export interface BulkApproveInput {
   userAgent?: string | null;
   /** Test seam. Each row's issuance still reads its own clock unless this is set. */
   now?: Date;
+  /** Test seam — the monotonic-ish clock the time budget reads (ms). */
+  clockMs?: () => number;
+  /** Test seam — the time budget (default BULK_TIME_BUDGET_MS). */
+  budgetMs?: number;
 }
+
+/** Stop STARTING rows after this long (route maxDuration is 300 s; see TIME BUDGET). */
+export const BULK_TIME_BUDGET_MS = 240_000;
 
 export type BulkApproveResult =
   | { ok: false; status: 400; error: string; code?: string }
   | ({ ok: true; dryRun: true; batchKey: string; rows: BulkDryRunRow[]; duplicates: string[];
        summary: { requested: number; unique: number; duplicates: number; eligible: number; ineligible: number } } & BulkValidity)
   | ({ ok: true; dryRun: false; batchKey: string; summary: BulkSummary; repeat: boolean; batchAudited: boolean;
-       succeeded: BulkSucceeded[]; skipped: BulkSkipped[]; failed: BulkFailed[]; duplicates: string[] } & BulkValidity);
+       succeeded: BulkSucceeded[]; emailFailed: BulkEmailFailed[]; skipped: BulkSkipped[]; failed: BulkFailed[]; duplicates: string[] } & BulkValidity);
 
 const ROW_SELECT = { id: true, email: true, status: true, inviteTokenHash: true, inviteExpiresAt: true, invitedAt: true } as const;
 
@@ -115,31 +144,48 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
   }
 
   const succeeded: BulkSucceeded[] = [];
+  const emailFailed: BulkEmailFailed[] = [];
   const skipped: BulkSkipped[] = [];
   const failed: BulkFailed[] = [];
   // Only an override is passed through: absent ⇒ each issuance reads the setting
   // itself and audits validitySource "setting" truthfully.
   const validityDays = validity.validitySource === "override" ? validity.validityDays : undefined;
 
+  const clock = input.clockMs ?? Date.now;
+  const started = clock();
+  const budget = input.budgetMs ?? BULK_TIME_BUDGET_MS;
+
   for (const id of body.ids) {
+    if (clock() - started > budget) {
+      skipped.push({ id, code: "NOT_ATTEMPTED", reason: BULK_REASON.NOT_ATTEMPTED });
+      continue;
+    }
     try {
       const e = await eligibilityOf(client, id);
       if (!e.approvable) { skipped.push({ id, code: e.code, reason: e.reason }); continue; }
       const r = await issueBetaInvitation({
         client, actor: input.actor, kind: "approve", requestId: id, validityDays,
+        // The status this batch just read: anything else at issuance ⇒ STATUS_CHANGED, never approved.
+        expectedStatus: BULK_EXPECTED_STATUS,
         ...(input.reason ? { reason: input.reason } : {}),
         ipAddress: input.ipAddress ?? null, userAgent: input.userAgent ?? null,
         ...(input.now ? { now: input.now } : {}),
       });
       if (r.ok && r.outcome === "issued") {
         succeeded.push({ id, emailStatus: r.emailStatus, expiresAt: r.expiresAt.toISOString() });
+        // The invitation stands; the email did not leave. Listed separately so it is resent, not assumed delivered.
+        if (r.emailStatus === "error") emailFailed.push({ id, reason: EMAIL_FAILED_REASON });
       } else if (r.ok) {
         // alreadyApproved — a concurrent submit (or the first click) won this row.
         skipped.push({ id, code: "ALREADY_APPROVED", reason: BULK_REASON.ALREADY_APPROVED });
       } else if (r.code === "REDEEMED" || r.code === "ACCOUNT_EXISTS" || r.code === "NOT_FOUND") {
         skipped.push({ id, code: r.code, reason: BULK_REASON[r.code] });
+      } else if (r.code === "STATUS_CHANGED" || r.code === "CONFLICT") {
+        // Issuance read (STATUS_CHANGED) or lost the conditional write to (CONFLICT) a
+        // status other than the PENDING this batch read. Nothing was minted or sent.
+        skipped.push({ id, code: "STATUS_CHANGED", reason: BULK_REASON.STATUS_CHANGED });
       } else {
-        failed.push({ id, code: "CONFLICT", reason: r.code === "CONFLICT" ? BULK_REASON.CONFLICT : r.message });
+        failed.push({ id, code: "REFUSED", reason: r.message });
       }
     } catch (err) {
       // Never the message (it may carry driver detail); the row stays as it was
@@ -149,7 +195,7 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
     }
   }
 
-  const summary = summarise(body, { succeeded, skipped, failed });
+  const summary = summarise(body, { succeeded, emailFailed, skipped, failed });
   let repeat = false;
   let batchAudited = false;
   try {
@@ -170,12 +216,13 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
           requestCount: body.requested,
           uniqueCount: summary.unique,
           duplicateCount: summary.duplicates,
-          counts: { succeeded: summary.succeeded, skipped: summary.skipped, failed: summary.failed },
+          counts: { succeeded: summary.succeeded, emailFailed: summary.emailFailed, skipped: summary.skipped, failed: summary.failed },
           validityDays: validity.validityDays,
           validitySource: validity.validitySource,
           repeat,
           // Opaque request ids only — the per-row BETA_ACCESS_APPROVED rows carry the rest.
           succeededIds: succeeded.map((s) => s.id),
+          emailFailedIds: emailFailed.map((s) => s.id),
           skippedIds: skipped.map((s) => ({ id: s.id, code: s.code })),
           failedIds: failed.map((f) => ({ id: f.id, code: f.code })),
         },
@@ -192,6 +239,6 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
 
   return {
     ok: true, dryRun: false, batchKey: body.batchKey, summary, repeat, batchAudited,
-    succeeded, skipped, failed, duplicates: body.duplicates, ...validity,
+    succeeded, emailFailed, skipped, failed, duplicates: body.duplicates, ...validity,
   };
 }

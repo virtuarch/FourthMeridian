@@ -12,7 +12,7 @@
  */
 
 import type {
-  BulkDryRunRow, BulkFailed, BulkSkipped, BulkSucceeded, BulkSummary, BulkValidity,
+  BulkDryRunRow, BulkEmailFailed, BulkFailed, BulkSkipped, BulkSucceeded, BulkSummary, BulkValidity,
 } from "@/lib/platform/growth/bulk-approve.core";
 
 export const BULK_APPROVE_URL = "/api/platform/growth-revenue/requests/bulk-approve";
@@ -26,7 +26,7 @@ export type BulkDryRunResponse = {
 
 export type BulkExecuteResponse = {
   ok: true; dryRun: false; batchKey: string; summary: BulkSummary; repeat: boolean; batchAudited: boolean;
-  succeeded: BulkSucceeded[]; skipped: BulkSkipped[]; failed: BulkFailed[]; duplicates: string[];
+  succeeded: BulkSucceeded[]; emailFailed: BulkEmailFailed[]; skipped: BulkSkipped[]; failed: BulkFailed[]; duplicates: string[];
 } & BulkValidity;
 
 // ── Selection ────────────────────────────────────────────────────────────────
@@ -142,8 +142,17 @@ export function utcExpiryLabel(iso: string): string {
 }
 
 export function resultsLine(s: BulkSummary): string {
-  return `${s.succeeded} approved · ${s.skipped} skipped · ${s.failed} failed`;
+  const email = s.emailFailed > 0 ? ` (${s.emailFailed} email not sent)` : "";
+  return `${s.succeeded} approved${email} · ${s.skipped} skipped · ${s.failed} failed`;
 }
+
+/**
+ * The server answered `repeat`: this batchKey was submitted before. Rows the
+ * earlier run approved now read "already approved" (skipped) — say so, rather
+ * than leave a bare "0 approved".
+ */
+export const REPEAT_LINE =
+  "This batch was already submitted — results reflect the earlier run: rows it approved show as skipped (already approved), and nothing was sent twice.";
 
 /** The validity the operator typed: null = the configured setting; otherwise must be a whole number in bounds. */
 export function parseDaysDraft(draft: string | null, min: number, max: number): { ok: true; override: number | null } | { ok: false } {

@@ -32,6 +32,10 @@ import { parseBulkApproveBody } from "@/lib/platform/growth/bulk-approve.core";
 import { parseOptionalReason } from "@/lib/platform/growth/invitation-http";
 
 export const runtime = "nodejs";
+// The repo's standard long-route budget (refresh-all, CS refresh, import, jobs).
+// A full page is ~50–200 s of sequential issuance; the loop stops starting rows
+// at 240 s (BULK_TIME_BUDGET_MS) so the batch audit always lands in time.
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");

@@ -29,7 +29,7 @@ import { useRef, useState } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import {
   BULK_APPROVE_URL, BatchSession, confirmEnabled, flaggedLine, flaggedRows, newBatchKey, parseDaysDraft,
-  previewHeadline, resultsLine, utcExpiryLabel, daysWord,
+  previewHeadline, resultsLine, utcExpiryLabel, daysWord, REPEAT_LINE,
   type BulkDryRunResponse, type BulkExecuteResponse, type RiskLike,
 } from "./bulk-approve-model";
 
@@ -162,6 +162,12 @@ export function BulkApprovePanel({ canWrite, selectedRows, validityDefault, min,
                   className="min-h-11 w-16 rounded-[var(--radius-sm)] border bg-transparent px-2 text-base tabular-nums text-[var(--text-primary)] sm:text-xs lg:min-h-8"
                   style={{ borderColor: days.ok ? "var(--border-hairline)" : "var(--accent-negative)" }} />
                 <span id="growth-bulk-days-bounds" className="text-[11px] tabular-nums text-[var(--text-muted)]">{`days (${min}–${max})`}</span>
+                {daysDraft !== null && validityDefault !== null && (
+                  <button type="button" onClick={() => setDaysDraft(null)} disabled={inFlight} data-bulk-days-reset
+                    className="min-h-11 px-1 text-[11px] text-[var(--text-secondary)] underline-offset-2 hover:underline disabled:opacity-40 lg:min-h-8">
+                    {`Use default (${daysWord(validityDefault)})`}
+                  </button>
+                )}
               </span>
               <button type="button" onClick={review} disabled={inFlight || !days.ok} className={`${btn} sm:ml-auto`} style={positive} data-bulk-review>
                 {inFlight ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Check size={13} aria-hidden />} Review &amp; approve
@@ -208,7 +214,15 @@ export function BulkApprovePanel({ canWrite, selectedRows, validityDefault, min,
 
           {stage === "results" && results && (
             <div className="flex min-w-0 flex-col gap-2" data-bulk-results>
+              {results.repeat && <p className="text-[11px] text-[var(--text-secondary)]" data-bulk-repeat>{REPEAT_LINE}</p>}
               <p className="text-[11px] text-[var(--text-secondary)]">{`Invitations valid ${daysWord(results.validityDays)}.`}</p>
+              {results.emailFailed.length > 0 && (
+                <ul className="flex flex-col gap-1 text-[11px] text-[var(--accent-warning)]" aria-label="Approved, email not sent" data-bulk-email-failed>
+                  {results.emailFailed.map((f) => (
+                    <li key={`e-${f.id}`} className="min-w-0 break-words">{`${emailOf(f.id)} — ${f.reason}`}</li>
+                  ))}
+                </ul>
+              )}
               {results.skipped.length + results.failed.length > 0 && (
                 <ul className="flex flex-col gap-1 text-[11px] text-[var(--text-muted)]" aria-label="Not approved">
                   {results.skipped.map((s) => (
@@ -218,9 +232,6 @@ export function BulkApprovePanel({ canWrite, selectedRows, validityDefault, min,
                     <li key={`f-${f.id}`} className="min-w-0 break-words text-[var(--accent-negative)]">{`Failed · ${emailOf(f.id)} — ${f.reason}`}</li>
                   ))}
                 </ul>
-              )}
-              {results.succeeded.some((s) => s.emailStatus === "error") && (
-                <p className="text-[11px] text-[var(--accent-warning)]">Some invitation emails failed to hand off — those invitations stand; use Resend on each from Invited.</p>
               )}
               <div className="flex items-center gap-2">
                 <button type="button" onClick={closeSession} className={btn} style={neutral}>Done</button>
