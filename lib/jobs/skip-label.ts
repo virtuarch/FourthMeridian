@@ -5,7 +5,8 @@
  * (summary `outcome: "SKIPPED"`, `skipReason: "BILLABLE_<reason>"`, see
  * lib/jobs/health.ts). Operator surfaces show a HUMAN label derived from the
  * reason — never the raw code, and never "cost freeze" for a restriction that
- * is not one. Pure and client-safe.
+ * is not one. An ADMISSION_ skip is "Skipped (admission)": it covers maintenance
+ * AND an unreadable control plane. Pure and client-safe.
  */
 
 export type SkipKind = "COST_FREEZE" | "POLICY_UNAVAILABLE" | "PLAN_RESTRICTION" | "ACTIVATION_DISABLED" | "ADMISSION_DENIED" | "UNSPECIFIED";
@@ -27,7 +28,7 @@ const LABEL: Record<SkipKind, string> = {
   POLICY_UNAVAILABLE: "Skipped (policy unavailable)",
   PLAN_RESTRICTION: "Skipped (plan restriction)",
   ACTIVATION_DISABLED: "Skipped (activation disabled)",
-  ADMISSION_DENIED: "Skipped (maintenance)",
+  ADMISSION_DENIED: "Skipped (admission)",
   UNSPECIFIED: "Skipped",
 };
 
