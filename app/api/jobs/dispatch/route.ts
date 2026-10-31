@@ -33,13 +33,15 @@
  *
  * NOT HERE (S0 rulings): retries · dead-job detection · digests ·
  * notification retry · metrics. Dispatch, sequencing, isolation, logging —
- * nothing else.
+ * nothing else. The one addition (Comms Center B2): after the registered jobs,
+ * the automation executor's wake step runs as its own ledgered job.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
 import { isAuthorizedCronRequest } from "@/lib/jobs/cron-auth";
 import { dispatchDueJobs } from "@/lib/jobs/dispatch";
+import { runCommsAutomationsWake } from "@/lib/notifications/automations/wake";
 
 // One slot's job(s) per invocation. 60 s was the Hobby-tier maximum; the project
 // is on the paid tier (CH-3), and the 06:00 slot now hosts sync-banks AND the
@@ -54,10 +56,15 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await dispatchDueJobs(new Date());
+  const wakeAt = new Date();
+  const result = await dispatchDueJobs(wakeAt);
+  // Comms Center B2 — the automation executor rides every wake as its own
+  // ledgered job (lib/notifications/automations/wake.ts). It never throws and
+  // never changes this response's status: its failure is its own JobRun row.
+  const commsAutomations = await runCommsAutomationsWake(wakeAt);
 
   return NextResponse.json(
-    { ok: result.failures === 0, ...result },
+    { ok: result.failures === 0, ...result, commsAutomations },
     { status: result.failures === 0 ? 200 : 500 },
   );
 }, "GET /api/jobs/dispatch");

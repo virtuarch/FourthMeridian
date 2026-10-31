@@ -204,7 +204,10 @@ export type OperatorTargetKind =
   // PR C — one Growth bulk beta approval, identified by its client batchKey (a UUID).
   | "BETA_BATCH"
   // Comms Center B1 — one notification content stream, "<key>:<channel>:<variant>" (code facts, no customer).
-  | "COMMS_TEMPLATE";
+  | "COMMS_TEMPLATE"
+  // Comms Center B2 — one automation (its id), and one test send ("<key>:<channel>").
+  | "COMMS_AUTOMATION"
+  | "COMMS_TEST_SEND";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
@@ -247,6 +250,16 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   // customers receive is consequential; drafts and AI suggestions stay optional.
   AuditAction.COMMS_TEMPLATE_PUBLISHED,
   AuditAction.COMMS_TEMPLATE_ROLLED_BACK,
+  // Comms Center B2 (contract v1 §3.5, v1.1 §6.1) — every automation write, the
+  // owner approval and a test send carry a reason.
+  AuditAction.COMMS_AUTOMATION_CREATED,
+  AuditAction.COMMS_AUTOMATION_UPDATED,
+  AuditAction.COMMS_AUTOMATION_DRY_RUN,
+  AuditAction.COMMS_AUTOMATION_OWNER_APPROVED,
+  AuditAction.COMMS_AUTOMATION_ACTIVATED,
+  AuditAction.COMMS_AUTOMATION_PAUSED,
+  AuditAction.COMMS_AUTOMATION_DISABLED,
+  AuditAction.COMMS_TEST_SEND,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class

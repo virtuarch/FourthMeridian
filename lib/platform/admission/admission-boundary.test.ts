@@ -346,7 +346,10 @@ function main() {
   // never the keys, and nothing else may write a fact.
   console.log("6. exactly one control surface exists");
   {
-    const controlRoutes = [...walk("app/api")].filter((f) => /\/(control|admission|maintenance|pause)\//.test(f));
+    // Comms Center B2: pausing ONE notification automation is a state transition of that
+    // rule (contract v1 §4.9), not a control-plane endpoint — named exactly, never a pattern.
+    const COMMS_AUTOMATION_PAUSE = "app/api/platform/customer-success/notifications/automations/[id]/pause/route.ts";
+    const controlRoutes = [...walk("app/api")].filter((f) => /\/(control|admission|maintenance|pause)\//.test(f) && f !== COMMS_AUTOMATION_PAUSE);
     check("no generic control or admission endpoint exists", controlRoutes.length === 0, controlRoutes.join(", "));
     const operatorRoutes = [...walk("app/api")].filter((f) => /operational-controls/.test(f));
     check("the operational-controls route is the one operator control endpoint", operatorRoutes.join() === OPERATOR_ROUTE, operatorRoutes.join(", "));

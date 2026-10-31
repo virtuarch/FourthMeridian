@@ -153,6 +153,8 @@ export function emailLedgerRow(args: {
     environment: ledgerEnvironment(env),
     acceptedAt: status === "ACCEPTED" ? now : null,
     ...(boundedId(ctx?.contentVersionId) ? { contentVersionId: boundedId(ctx?.contentVersionId) } : {}),
+    ...(ctx?.mode === "TEST" ? { mode: "TEST" as const } : {}),
+    ...(boundedId(ctx?.automationRunItemId) ? { automationRunItemId: boundedId(ctx?.automationRunItemId) } : {}),
   };
 }
 

@@ -39,6 +39,9 @@ const EXEMPT: Record<string, string> = {};
 const VARIABLE_NAME_SENDERS: Record<string, readonly string[]> = {
   // The preview tool sends exactly the preview cases (allowlisted recipient only).
   "scripts/email-preview.ts": [...new Set(previewCases().map((c) => c.template))],
+  // Comms Center B2 — the operator TEST send: a preview case's template, or the notification
+  // template, to the operator's OWN verified address only (contract v1.1 §6.9).
+  "lib/notifications/automations/http.ts": [...new Set([...previewCases().map((c) => c.template), "notification" as const])],
 };
 
 const CATALOG = "docs/plans/EMAIL-CATALOG-2026-10-31.md";

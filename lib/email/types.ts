@@ -101,6 +101,14 @@ export interface EmailSendContext {
   terminalOnError?: boolean;
   /** Comms Center B1 — the published content version this email rendered; absent = the code default. */
   contentVersionId?: string | null;
+  /**
+   * Comms Center B2 — "TEST": an operator's test send to their OWN address
+   * (contract v1.1 §6.9). The subject is prefixed "[TEST] ", the per-recipient
+   * storm limit does not apply (OPERATOR-class), and the ledger row is mode TEST.
+   */
+  mode?: "LIVE" | "TEST";
+  /** Comms Center B2 — the automation claim row this send belongs to (AutomationRunItem.id). */
+  automationRunItemId?: string;
 }
 
 /**
