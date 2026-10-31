@@ -27,6 +27,7 @@ import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { BetaAccessRequestStatus } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import type { AcquisitionSource } from "@/lib/marketing/acquisition";
+import { approvalEligibility } from "@/lib/platform/growth/bulk-approve.core";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,12 @@ export interface BetaRequestRow {
   lastRequestedAt: string | null;
   /** The FIRST submission's bounded acquisition context, or null. */
   acquisition: AcquisitionSource | null;
+  /**
+   * PR C — may this row be bulk-approved right now? The server's issuance rule
+   * (approvalEligibility), never a client guess; the bulk route re-decides at
+   * execution. Optional: absent means "not computed", not "approvable".
+   */
+  eligibility?: { approvable: boolean; reason?: string };
 }
 
 /** The last invite EMAIL attempt for an invitation — the OPS-1 EmailResult
@@ -94,7 +101,7 @@ export async function GET() {
 
   // ── Derived: submission counts + first source (pending), last invite email (invitations)
   const pendingEmails = pending.map((r) => r.email);
-  const [eventStats, firstEvents, inviteAudits] = await Promise.all([
+  const [eventStats, firstEvents, inviteAudits, accountRows] = await Promise.all([
     pendingEmails.length === 0 ? Promise.resolve([]) : db.betaAccessRequestEvent.groupBy({
       by:     ["email"],
       where:  { email: { in: pendingEmails } },
@@ -113,7 +120,13 @@ export async function GET() {
       take:    500, // newest first; the first row per betaRequestId wins below
       select:  { createdAt: true, metadata: true, action: true },
     }),
+    // PR C — which pending addresses already have an account (the one fact eligibility needs beyond the row).
+    pendingEmails.length === 0 ? Promise.resolve([]) : db.user.findMany({
+      where:  { email: { in: pendingEmails } },
+      select: { email: true },
+    }),
   ]);
+  const hasAccount = new Set(accountRows.map((u) => u.email));
   // PR B — an issuance row and its EMAIL_OUTCOME row can share a millisecond;
   // the outcome (written after the send) must win that tie.
   inviteAudits.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()
@@ -143,6 +156,7 @@ export async function GET() {
       requestCount:    statsByEmail.get(r.email)?.count ?? 0,
       lastRequestedAt: statsByEmail.get(r.email)?.last?.toISOString() ?? null,
       acquisition:     firstSourceByEmail.get(r.email) ?? null,
+      eligibility:     eligibilityView(r, hasAccount.has(r.email)),
     })),
     invitations: invitations.map((r) => ({
       id:              r.id,
@@ -159,4 +173,13 @@ export async function GET() {
       redeemed: redeemedCount,
     },
   } satisfies BetaRequestsResponse);
+}
+
+/** PR C — the bulk-approval eligibility of one listed row (the same pure rule the bulk route applies). */
+function eligibilityView(
+  r: { id: string; email: string; status: BetaAccessRequestStatus },
+  accountExists: boolean,
+): NonNullable<BetaRequestRow["eligibility"]> {
+  const e = approvalEligibility({ id: r.id, email: r.email, status: r.status, inviteTokenHash: null, inviteExpiresAt: null }, accountExists);
+  return e.approvable ? { approvable: true } : { approvable: false, reason: e.reason };
 }

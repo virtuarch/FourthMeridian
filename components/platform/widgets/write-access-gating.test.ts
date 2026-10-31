@@ -126,6 +126,41 @@ console.log("1b. Invitation validity (PR B) — READ sees text, the editor only 
   check("direct-invite days default to the configured validity, not a literal 7", !/useState\("7"\)/.test(widget) && !/\|\| 7\b/.test(widget));
 }
 
+console.log("1c. Bulk approval (PR C) — checkboxes, select-all and the bulk panel only for WRITE");
+{
+  const widget = code("components/platform/widgets/GrowthBetaRequestsWidget.tsx");
+  const wr = writeRanges(widget);
+  for (const [label, re] of [
+    ["row checkbox (table + phone list)", /data-bulk-select(?!-)/g],
+    ["row toggle", /toggleSelected\(s, r\)/g],
+    ["select all eligible on this page", /data-bulk-select-all/g],
+    ["select-all toggle", /toggleAllEligible\(s, pendingPage\)/g],
+    ["bulk panel mount", /<BulkApprovePanel /g],
+    ["ineligible reason line", /data-bulk-ineligible/g],
+  ] as const) {
+    const r = allGated(widget, re, wr);
+    check(`${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);
+  }
+  check("two row checkboxes (desktop table + phone list), both labelled", (widget.match(/data-bulk-select(?!-)/g) ?? []).length === 2
+    && (widget.match(/aria-label=\{`Select \$\{r\.email\} for bulk approval`\}/g) ?? []).length === 2);
+  check("ineligible rows are disabled with the server's reason", (widget.match(/disabled=\{disabledReason\(r\) !== null\}/g) ?? []).length === 2);
+  check("the panel gets the configured validity (the Access panel's data source)", /validityDefault=\{validityDays\}/.test(widget) && widget.includes("useInvitationPolicy().data"));
+  check("the risk slot is marked, not imported", /RISK SLOT/.test(readFileSync(path.join(ROOT, "components/platform/widgets/GrowthBetaRequestsWidget.tsx"), "utf8")) && !/BetaRiskBadge/.test(widget));
+  const panel = code("components/platform/growth/BulkApprovePanel.tsx");
+  const pr = writeRanges(panel);
+  for (const [label, re] of [
+    ["Review & approve", /onClick=\{review\}/g],
+    ["Confirm", /onClick=\{confirm\}/g],
+    ["Clear", /onClick=\{onClear\}/g],
+    ["validity input", /id="growth-bulk-days"/g],
+    ["flag acknowledgement", /data-bulk-flag-ack/g],
+  ] as const) {
+    const r = allGated(panel, re, pr);
+    check(`panel ${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);
+  }
+  check("the panel's only POST goes to the bulk route", (panel.match(/fetch\(/g) ?? []).length === 1 && panel.includes("fetch(BULK_APPROVE_URL"));
+}
+
 console.log("2. Customer Success spine — editors only for WRITE; no fabricated reason");
 {
   const src = code("components/platform/widgets/CsCustomersWidget.tsx");
