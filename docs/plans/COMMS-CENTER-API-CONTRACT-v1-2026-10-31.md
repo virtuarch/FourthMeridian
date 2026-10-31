@@ -17,6 +17,22 @@
 - **C7:** readRate, population and catalog sort (§4.14, §4.12, §4.2).
 - **C8:** row types, run counts, dry-run window, 503 rule and subscriptions (§4.6, §4.7, §4.11–§4.14, §7).
 
+**v1.0.1 clarifications (2026-10-31, from the review of the Phase A-1 PR):**
+- **`trigger.sources` holds repo-relative file paths, not `file:line`** (§2). Line numbers go stale on every edit; the catalog test checks that each path exists and really produces or sends the message.
+- **A non-ENABLED definition advertises nothing it cannot do today** (§2, §2.1). For `BUILD`, `BUILD_OFF`, `PROPOSED`, `VOCABULARY`, `NONE_BY_DESIGN` and `RETIRED`:
+  - every channel has `defaultOn: false` (nothing sends it; the type stays `boolean`);
+  - `editable` is `false`;
+  - `supportedActions` contains only `PREVIEW`, `VIEW_DELIVERY` and `LINK_OUT`.
+
+  Only ENABLED definitions carry `TEST_SEND` or the automation actions, and they gain them once an engine exists.
+- **Gate and limiter refusals use the §3.4 shape with a code, and `Cache-Control: no-store`** (§3.4). The codes are:
+  - 401 `UNAUTHENTICATED`;
+  - 403 `FORBIDDEN`, or `OPERATOR_TOTP_REQUIRED` as before;
+  - 429 `RATE_LIMITED`;
+  - 503 `UNAVAILABLE`, when the session layer cannot tell whether the session is valid.
+
+  The comms routes wrap the shared gate and limiter rather than changing them. `Retry-After` and the operator-TOTP denial header are kept.
+
 ---
 
 ## 0. Agreed constraints (from Session 2) and how this contract meets them
@@ -106,7 +122,7 @@ interface CommsDefinition {
 
   channels: ReadonlyArray<{
     channel: CommsChannel;
-    defaultOn: boolean;
+    defaultOn: boolean;                // false whenever status ≠ ENABLED (v1.0.1)
     /** Email template + its own version; for IN_APP the registry render is the template. */
     template: { id: string; version: number } | null;
     /** How this leg is delivered today. "DIRECT" = sendEmail() outside createNotification (the F12 bypasses). */
@@ -117,7 +133,7 @@ interface CommsDefinition {
     /** A key from the controlled trigger catalog (§5.1), or a code-site trigger for legacy producers. */
     kind: "TRIGGER" | "CALL_SITE";
     triggerKey: TriggerKey | null;
-    /** Repo-relative file:line of the producer(s), for the catalog's "where does this come from". */
+    /** Repo-relative file path(s) of the producer(s), for the catalog's "where does this come from". Paths, not file:line (v1.0.1). */
     sources: readonly string[];
   };
 
@@ -148,7 +164,7 @@ interface CommsDefinition {
   /** Operator side. */
   protected: boolean;                   // true ⇒ no operator action may disable, pause or re-route it
   editable: boolean;                    // true ⇒ an AutomationDefinition may target it (§5)
-  supportedActions: readonly SupportedAction[];
+  supportedActions: readonly SupportedAction[];   // status ≠ ENABLED ⇒ only PREVIEW | VIEW_DELIVERY | LINK_OUT (v1.0.1)
   /** Where the writer lives when the Comms Center is read-only for it. */
   ownerSurface: { area: "PLATFORM_OPS" | "GROWTH_REVENUE" | "SECURITY_OPS" | "CUSTOMER_SUCCESS"; href: string } | null;
 }
@@ -313,14 +329,14 @@ The house shape is `{ error: string, code?: string }` (`app/api/platform/platfor
 | HTTP | `code` | When |
 |---|---|---|
 | 400 | `VALIDATION` | malformed body, unknown key or predicate, unsafe reason note (`assertOperatorNoteSafe`, `lib/audit.ts:293-300`) |
-| 401 | — | no session (`requireUser`) |
-| 403 | — or `OPERATOR_TOTP_REQUIRED` | insufficient grant / operator 2FA (`authorize.ts:60-65`) |
+| 401 | `UNAUTHENTICATED` (v1.0.1) | no session (`requireUser`) |
+| 403 | `FORBIDDEN` (v1.0.1) or `OPERATOR_TOTP_REQUIRED` | insufficient grant / operator 2FA (`authorize.ts:60-65`) |
 | 404 | `NOT_FOUND` | unknown key, automation or run |
 | 409 | `CONFLICT` | `expectedVersion` (optimistic token) is stale; nothing written |
 | 409 | `PROTECTED` | the action targets a `protected` definition |
 | 409 | `INVALID_STATE` | e.g. activate from DISABLED, edit an ACTIVE automation |
 | 422 | `GUARD_REFUSED` | test send refused by recipient restriction or environment guard |
-| 429 | `RATE_LIMITED` | `limitByUser` bucket (`lib/rate-limit.ts:39`) |
+| 429 | `RATE_LIMITED` | `limitByUser` bucket (`lib/rate-limit.ts:39`); wrapped into this shape with `Retry-After` kept (v1.0.1) |
 | 503 | `UNAVAILABLE` | the ledger (or source table) could not be read. Payloads never fabricate zeros, empty lists or all-null series; every read endpoint in §4.11–§4.14 states this explicitly (C8) |
 
 ### 3.5 Mutation envelope (all POST/PATCH)

@@ -68,15 +68,56 @@ const validation = (error: string) => json({ error, code: "VALIDATION" }, 400);
 const notFound = () => json({ error: "No catalog definition has that key.", code: "NOT_FOUND" }, 404);
 const unavailable = () => json({ error: "The notification catalog is unavailable.", code: "UNAVAILABLE" }, 503);
 
+/** v1.0.1 — the codes a refusal from the shared gate or limiter is mapped to (§3.4). */
+export const GATE_CODES = { 401: "UNAUTHENTICATED", 403: "FORBIDDEN", 429: "RATE_LIMITED", 503: "UNAVAILABLE" } as const;
+/** Headers a wrapped refusal keeps from the upstream response (the TOTP-denial marker, Retry-After). */
+const KEPT_HEADERS = ["x-fm-platform-denial", "retry-after"] as const;
+const DEFAULT_MESSAGES: Record<number, string> = {
+  401: "Authentication required.",
+  403: "Forbidden.",
+  429: "Too many requests. Please slow down and try again shortly.",
+  503: "Service temporarily unavailable. Please try again.",
+};
+
 /**
- * Gate, rate-limit, then run `work`. Any throw from `work` is 503 UNAVAILABLE
- * with a fixed message (the error is never echoed: it could carry data).
+ * Re-shape a refusal from the SHARED gate (lib/platform/authorize.ts) or
+ * limiter (lib/rate-limit.ts) into the contract error shape `{ error, code }`
+ * with `Cache-Control: no-store`, without changing either shared module.
+ * (The session layer can also answer 503 + Retry-After when it cannot tell
+ * whether a session is valid; that becomes UNAVAILABLE.)
+ * Status is kept. A code the upstream already set (OPERATOR_TOTP_REQUIRED) is
+ * kept; otherwise the status names it. The upstream `error` text is kept only
+ * when it is a short string (these are fixed messages, never data).
+ */
+export async function contractRefusal(upstream: Response): Promise<Response> {
+  const status = upstream.status;
+  type RefusalBody = { error?: unknown; code?: unknown } | null;
+  let upstreamBody: RefusalBody;
+  try { upstreamBody = (await upstream.clone().json()) as RefusalBody; } catch { upstreamBody = null; }
+  const error = typeof upstreamBody?.error === "string" && upstreamBody.error.length <= 200
+    ? upstreamBody.error
+    : DEFAULT_MESSAGES[status] ?? "Request refused.";
+  const code = typeof upstreamBody?.code === "string" && /^[A-Z_]{1,40}$/.test(upstreamBody.code)
+    ? upstreamBody.code
+    : (GATE_CODES as Record<number, string>)[status] ?? (status >= 500 ? "UNAVAILABLE" : "FORBIDDEN");
+  const headers = new Headers(NO_STORE);
+  for (const h of KEPT_HEADERS) {
+    const v = upstream.headers.get(h);
+    if (v !== null) headers.set(h, v);
+  }
+  return NextResponse.json({ error, code }, { status, headers });
+}
+
+/**
+ * Gate, rate-limit, then run `work`. Every refusal leaves in the contract
+ * shape with no-store (contractRefusal). Any throw from `work` is 503
+ * UNAVAILABLE with a fixed message (the error is never echoed: it could carry data).
  */
 export async function runRead(deps: ReadDeps, work: (now: Date) => Response | Promise<Response>): Promise<Response> {
   const [auth, err] = await deps.guard();
-  if (err) return err;
+  if (err) return contractRefusal(err);
   const limited = await deps.rateLimit(auth.user.id);
-  if (limited) return limited;
+  if (limited) return contractRefusal(limited);
   try {
     return await work((deps.now ?? (() => new Date()))());
   } catch {

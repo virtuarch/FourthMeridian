@@ -227,6 +227,17 @@ function main(): void {
         if (leg.email?.builder) check(`${d.key}: a builder leg uses the security-alert template`, leg.email.template === "security-alert");
       }
     }
+    // v1.0.1 — only ENABLED definitions advertise what they do today.
+    for (const d of defs.filter((x) => x.status !== "ENABLED")) {
+      check(`${d.key} (${d.status}): no leg is default-on`, d.channels.every((c) => c.defaultOn === false));
+      check(`${d.key} (${d.status}): only read-only actions (PREVIEW / VIEW_DELIVERY / LINK_OUT), not editable`,
+        !d.editable && d.supportedActions.every((a) => a === "PREVIEW" || a === "VIEW_DELIVERY" || a === "LINK_OUT"), d.supportedActions);
+    }
+    check("editable ⇔ AUTOMATE advertised", defs.every((d) => d.editable === d.supportedActions.includes("AUTOMATE")));
+    check("ENABLED registry legs keep the registry defaults (no behaviour drift)",
+      NOTIFICATION_TYPE_IDS.filter((id) => COMMS_CATALOG[id].status === "ENABLED").every((id) =>
+        COMMS_CATALOG[id].channels.filter((c) => c.path === "REGISTRY").every((c) =>
+          c.defaultOn === (NOTIFICATION_REGISTRY[id].defaultChannels as readonly string[]).includes(c.channel))));
     check("no MARKETING definition exists in v1 (O-12)", defs.every((d) => d.consentClass !== "MARKETING"));
     const protectedEntries = defs.filter((d) => d.protected).map((d) => d.key);
     check("every ACCOUNT_SECURITY / ceremony / operator entry is protected",

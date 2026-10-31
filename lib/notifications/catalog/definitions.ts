@@ -676,7 +676,19 @@ export const STANDALONE_CATALOG: Record<StandaloneKey, StandaloneSpec> = {
 // ── Derivation ────────────────────────────────────────────────────────────────
 
 const ALWAYS_PROTECTED: ReadonlySet<ConsentClass> = new Set(["SECURITY_CRITICAL", "CEREMONY", "OPERATOR"]);
-const EDITABLE_STATUSES: ReadonlySet<DefinitionStatus> = new Set(["ENABLED", "BUILD"]);
+/**
+ * v1.0.1 — only an ENABLED definition advertises what it does today: a
+ * BUILD / PROPOSED / VOCABULARY / BUILD_OFF / NONE_BY_DESIGN entry sends
+ * nothing, so it is never "default on", never editable, and its
+ * supportedActions are limited to READ_ONLY_ACTIONS (things that work now).
+ */
+const EDITABLE_STATUSES: ReadonlySet<DefinitionStatus> = new Set(["ENABLED"]);
+export const READ_ONLY_ACTIONS: ReadonlySet<SupportedAction> = new Set(["PREVIEW", "VIEW_DELIVERY", "LINK_OUT"]);
+
+/** A leg is default-on only when the definition is ENABLED (something actually sends it). */
+function inertUnlessEnabled(status: DefinitionStatus, legs: readonly ChannelLeg[]): ChannelLeg[] {
+  return status === "ENABLED" ? [...legs] : legs.map((l) => ({ ...l, defaultOn: false }));
+}
 
 /** True when the preview endpoint can render this leg with synthetic data. */
 export function isPreviewableLeg(leg: ChannelLeg, hasRegistryEntry: boolean): boolean {
@@ -697,7 +709,8 @@ function deriveOperatorSide(d: Omit<CommsDefinition, "protected" | "editable" | 
   if (d.status === "ENABLED" && d.channels.some((c) => c.channel !== "BANNER")) actions.push("VIEW_DELIVERY");
   if (editable) actions.push("AUTOMATE", "PAUSE_AUTOMATION", "ACTIVATE_AUTOMATION");
   if (d.ownerSurface) actions.push("LINK_OUT");
-  return { protected: isProtected, editable, supportedActions: actions };
+  const supportedActions = d.status === "ENABLED" ? actions : actions.filter((a) => READ_ONLY_ACTIONS.has(a));
+  return { protected: isProtected, editable, supportedActions };
 }
 
 function registryStatus(def: NotificationTypeDefinition): DefinitionStatus {
@@ -734,18 +747,19 @@ function fromRegistry(id: NotificationTypeId): CommsDefinition {
   const meta = REGISTRY_CATALOG[id];
   const legs = [...registryLegs(def, meta.registryEmailPreviewSlugs), ...(meta.directLegs ?? [])];
   const userSuppressible = !def.locked && MATRIX_CATEGORIES.includes(def.category);
+  const status = meta.status ?? registryStatus(def);
   const base = {
     key: id,
     definitionVersion: 1,
     displayName: meta.displayName,
     description: meta.description,
-    status: meta.status ?? registryStatus(def),
+    status,
     category: def.category,
     audience: meta.audience,
     consentClass: meta.consentClass,
     severity: PRIORITY_SEVERITY[def.priority],
     notificationTypeId: id,
-    channels: legs,
+    channels: inertUnlessEnabled(status, legs),
     trigger: meta.trigger,
     payload: fields(meta.payload),
     eligibility: meta.eligibility ?? [],
@@ -780,7 +794,7 @@ function fromStandalone(key: StandaloneKey): CommsDefinition {
     consentClass: s.consentClass,
     severity: s.severity,
     notificationTypeId: null,
-    channels: s.channels,
+    channels: inertUnlessEnabled(s.status, s.channels),
     trigger: s.trigger,
     payload: fields(s.payload),
     eligibility: s.eligibility ?? [],

@@ -25,7 +25,9 @@
 
 import { readFileSync } from "node:fs";
 import { UserRole } from "@prisma/client";
-import { decidePlatformAccess } from "@/lib/platform/authorize";
+import { decidePlatformAccess, PLATFORM_DENIAL_HEADER } from "@/lib/platform/authorize";
+import { forbidden, serviceUnavailable, unauthorized } from "@/lib/session";
+import { limitByUser } from "@/lib/rate-limit";
 import { captureAdapter, capturedEmails } from "@/lib/email/providers/capture";
 import { resendAdapter } from "@/lib/email/providers/resend";
 import { PREVIEW_TOKEN } from "@/lib/email/preview";
@@ -81,6 +83,33 @@ async function gating(): Promise<void> {
   check("rate-limited → 429 after the gate, keyed by the operator id, no work", r429.status === 429 && limitedFor === "operator-preview" && ran === 0);
   const ok = await runRead({ guard: allow, rateLimit: noLimit }, work);
   check("allowed → the work runs once", ok.status === 200 && ran === 1);
+
+  // v1.0.1 — refusals leave in the contract shape (§3.4) with no-store,
+  // wrapping the SHARED responses (lib/session.ts, lib/rate-limit.ts) unchanged.
+  const shape = async (r: Response, status: number, code: string) => {
+    const j = await body(r);
+    return r.status === status && j.code === code && typeof j.error === "string" && (j.error as string).length > 0 &&
+      Object.keys(j).sort().join() === "code,error" && r.headers.get("Cache-Control") === "no-store";
+  };
+  check("real unauthorized() → 401 { error, code: UNAUTHENTICATED }, no-store",
+    await shape(await runRead({ guard: async () => [null, unauthorized()], rateLimit: noLimit }, work), 401, "UNAUTHENTICATED"));
+  check("real forbidden() → 403 { error, code: FORBIDDEN }, no-store",
+    await shape(await runRead({ guard: async () => [null, forbidden()], rateLimit: noLimit }, work), 403, "FORBIDDEN"));
+  const totp = await runRead({ guard: async () => [null, new Response(JSON.stringify({ error: "Two-factor authentication is required for Platform access.", code: "OPERATOR_TOTP_REQUIRED" }), { status: 403, headers: { [PLATFORM_DENIAL_HEADER]: "operator-totp-required" } })], rateLimit: noLimit }, work);
+  check("operator-TOTP 403 keeps code OPERATOR_TOTP_REQUIRED and the denial header, adds no-store",
+    totp.headers.get(PLATFORM_DENIAL_HEADER) === "operator-totp-required" && await shape(totp, 403, "OPERATOR_TOTP_REQUIRED"));
+  const sess503 = await runRead({ guard: async () => [null, serviceUnavailable()], rateLimit: noLimit }, work);
+  check("session-indeterminate 503 → { code: UNAVAILABLE }, keeps Retry-After, no-store",
+    sess503.headers.get("Retry-After") === "5" && await shape(sess503, 503, "UNAVAILABLE"));
+  const prevEnabled = process.env.RATE_LIMIT_ENABLED;
+  process.env.RATE_LIMIT_ENABLED = "true"; // in-memory backend outside production
+  const realLimiter: ReadDeps["rateLimit"] = (id) => limitByUser(id, "cs-comms-read-test", { limit: 1, windowSec: 60 });
+  const first = await runRead({ guard: allow, rateLimit: realLimiter }, work);
+  const second = await runRead({ guard: allow, rateLimit: realLimiter }, work);
+  if (prevEnabled === undefined) delete process.env.RATE_LIMIT_ENABLED; else process.env.RATE_LIMIT_ENABLED = prevEnabled;
+  check("real limitByUser 429 → { error, code: RATE_LIMITED }, keeps Retry-After, no-store",
+    first.status === 200 && second.headers.get("Retry-After") !== null && await shape(second, 429, "RATE_LIMITED"));
+  check("the wrapped refusals ran no work", ran === 2);
 
   // The real decision the gate applies (lib/platform/authorize.ts → policy).
   const grant = (area: string, level: string) => [{ area, level, status: "ACTIVE" }] as never;
