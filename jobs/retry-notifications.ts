@@ -62,6 +62,8 @@ import { isEmailAnchorMetadata } from "@/lib/notifications/email-anchor";
 import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/delivery/record";
 import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
+import { retryEmailParts, type LiveContentResolver } from "@/lib/notifications/content/send";
+import { defaultLiveContentResolver } from "@/lib/notifications/content/store";
 import type {
   ChannelAdapter,
   NotificationCategory,
@@ -186,9 +188,17 @@ export async function retryNotifications(
    * real client, and NOTHING for an injected test client (never a real DB).
    */
   ledger?: LedgerWriter | null,
+  /**
+   * Comms Center B1 — the live-content resolver for the EMAIL leg (the retried
+   * email re-renders the EMAIL stream's published version, never the stored
+   * in-app copy). Default: production on the real client, none for a test client.
+   */
+  content?: LiveContentResolver | null,
 ): Promise<RetryNotificationsResult> {
   const writer: LedgerWriter | null =
     ledger !== undefined ? ledger : (client === (db as unknown as NotificationRetryClient) ? writeDeliveryRow : null);
+  const resolver: LiveContentResolver | null =
+    content !== undefined ? content : (client === (db as unknown as NotificationRetryClient) ? defaultLiveContentResolver : null);
   const rows = await client.notificationDelivery.findMany({
     where: { channel: "EMAIL", status: "error", attempts: { lt: MAX_DELIVERY_ATTEMPTS } },
     select: {
@@ -305,15 +315,24 @@ export async function retryNotifications(
     // path. The adapter never throws by contract.
     result.retried++;
     const actionLabel = recomputeActionLabel(n.type, n.metadata);
+    // Comms Center B1 (review P2): the stored row is the IN-APP render. For a
+    // content-editable type the email re-renders its OWN leg — the registry
+    // render plus the EMAIL stream's published version (contentVersionId on the
+    // ledger) — never the operator's in-app wording. Other types: unchanged.
+    const parts = await retryEmailParts({
+      type: n.type, metadata: n.metadata, stored: { title: n.title, body: n.body, href: n.href },
+      resolver, appBaseUrl: process.env.NEXT_PUBLIC_APP_URL,
+    });
     const outcome = await adapter.deliver({
       userId: n.userId,
       email: n.user!.email,
       type: n.type,
       category: n.category as NotificationCategory,
       priority: n.priority as NotificationPriorityValue,
-      title: n.title,
-      ...(n.body ? { body: n.body } : {}),
-      ...(n.href ? { href: n.href } : {}),
+      title: parts.title,
+      ...(parts.body ? { body: parts.body } : {}),
+      ...(parts.href ? { href: parts.href } : {}),
+      ...(parts.emailContent ? { emailContent: parts.emailContent } : {}),
       // The CTA label is email-only and never persisted: recompute it from the
       // persisted type + metadata through the same registry render (SYNC_FAILED
       // without a derivable state → the conservative "Review connection").

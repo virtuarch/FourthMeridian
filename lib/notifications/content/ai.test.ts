@@ -261,10 +261,11 @@ async function main(): Promise<void> {
   // ── 7. caps ────────────────────────────────────────────────────────────────
   console.log("7. caps: $2 and 40 calls per operator per day, $10 fleet");
   check("contract defaults", AA.COMMS_AUTHORING_DAILY_USD === 2 && AA.COMMS_AUTHORING_DAILY_CALLS === 40 && AA.COMMS_AUTHORING_FLEET_DAILY_USD === 10);
-  const u = (o: Partial<{ calls: number; spentUsd: number; unpriced: number; fleetUsd: number; fleetUnpriced: number; inFlight: number }>) =>
+  const u = (o: Partial<{ calls: number; spentUsd: number; unpriced: number; fleetUsd: number; fleetUnpriced: number; inFlight: number; fleetInFlight: number }>) =>
     AA.judgeAuthoring({ calls: 0, spentUsd: 0, unpriced: 0, fleetUsd: 0, fleetUnpriced: 0, inFlight: 0, ...o });
   check("39 calls admitted; 39 + 1 in flight refused (CALLS)", u({ calls: 39 }).allowed && !u({ calls: 39, inFlight: 1 }).allowed);
   check("$1.95 + one $0.05 reservation in flight refused (USD)", u({ spentUsd: 1.9 }).allowed && (u({ spentUsd: 1.95, inFlight: 1 }) as any).detail === "USD");
+  check("the fleet cap reserves OTHER operators' in-flight calls too", (u({ fleetUsd: 9.96, inFlight: 0, fleetInFlight: 1 }) as any).detail === "FLEET_USD" && u({ fleetUsd: 9.96, inFlight: 0, fleetInFlight: 0 }).allowed);
   check("fleet $9.99 + in flight refused (FLEET_USD)", (u({ fleetUsd: 9.99, inFlight: 1 }) as any).detail === "FLEET_USD");
   check("unpriced spend ⇒ remainingUsd null; the call cap still applies", u({ unpriced: 1 }).remainingUsd === null && !u({ unpriced: 1, calls: 40 }).allowed);
   check("Retry-After = seconds to the next UTC midnight", AA.secondsToUtcMidnight(new Date("2026-10-31T23:59:00Z")) === 60);

@@ -20,7 +20,11 @@
  * pg_advisory_xact_lock(hashtext('ai-allowance:comms_authoring:' || operatorId))
  * reads the ledger AND the in-flight count (a RateLimit hour bucket, self-healing),
  * decides, and reserves; the handler releases in `finally`. A read that fails is
- * a REFUSAL (fail closed). `readAuthoringAllowance` is the same judgement with no
+ * a REFUSAL (fail closed). The FLEET cap counts every operator's in-flight
+ * reservations too; the lock is per operator, so two operators admitted at the
+ * same instant can each see the other's call unreserved — the fleet overshoot is
+ * bounded by one reserve-sized call per concurrently admitted operator (and by
+ * the cs-comms-ai bucket, 10 calls per 10 min each). `readAuthoringAllowance` is the same judgement with no
  * lock and no reservation — the advisory `ai` block on GET /versions (D4).
  */
 
@@ -39,7 +43,8 @@ export const COMMS_AUTHORING_FLEET_DAILY_USD = 10.0;
 export const COMMS_AUTHORING_RESERVE_USD = 0.05;
 
 export const authoringLockKey = (operatorId: string) => `ai-allowance:${COMMS_AUTHORING_SURFACE}:${operatorId}`;
-export const authoringInflightKey = (operatorId: string) => `user:comms-ai-inflight:${operatorId}`;
+const INFLIGHT_PREFIX = "user:comms-ai-inflight:";
+export const authoringInflightKey = (operatorId: string) => `${INFLIGHT_PREFIX}${operatorId}`;
 
 export interface AuthoringUsage {
   calls: number;
@@ -48,6 +53,8 @@ export interface AuthoringUsage {
   fleetUsd: number;
   fleetUnpriced: number;
   inFlight: number;
+  /** In-flight authoring calls of EVERY operator (the fleet cap reserves across operators). */
+  fleetInFlight?: number;
 }
 
 export type AuthoringVerdict =
@@ -57,13 +64,14 @@ export type AuthoringVerdict =
 /** PURE — the decision over one usage read. */
 export function judgeAuthoring(u: AuthoringUsage): AuthoringVerdict {
   const reserved = u.inFlight * COMMS_AUTHORING_RESERVE_USD;
+  const fleetReserved = Math.max(u.inFlight, u.fleetInFlight ?? 0) * COMMS_AUTHORING_RESERVE_USD;
   const remainingCalls = Math.max(0, COMMS_AUTHORING_DAILY_CALLS - u.calls - u.inFlight);
   const remainingUsd = u.unpriced > 0 || u.fleetUnpriced > 0 ? null
-    : Math.max(0, Math.min(COMMS_AUTHORING_DAILY_USD - u.spentUsd - reserved, COMMS_AUTHORING_FLEET_DAILY_USD - u.fleetUsd - reserved));
+    : Math.max(0, Math.min(COMMS_AUTHORING_DAILY_USD - u.spentUsd - reserved, COMMS_AUTHORING_FLEET_DAILY_USD - u.fleetUsd - fleetReserved));
   const round = (n: number | null) => (n === null ? null : Math.round(n * 10_000) / 10_000);
   if (u.calls + u.inFlight >= COMMS_AUTHORING_DAILY_CALLS) return { allowed: false, detail: "CALLS", remainingCalls, remainingUsd: round(remainingUsd) };
   if (u.spentUsd + reserved >= COMMS_AUTHORING_DAILY_USD) return { allowed: false, detail: "USD", remainingCalls, remainingUsd: round(remainingUsd) };
-  if (u.fleetUsd + reserved >= COMMS_AUTHORING_FLEET_DAILY_USD) return { allowed: false, detail: "FLEET_USD", remainingCalls, remainingUsd: round(remainingUsd) };
+  if (u.fleetUsd + fleetReserved >= COMMS_AUTHORING_FLEET_DAILY_USD) return { allowed: false, detail: "FLEET_USD", remainingCalls, remainingUsd: round(remainingUsd) };
   return { allowed: true, remainingCalls, remainingUsd: round(remainingUsd) };
 }
 
@@ -77,7 +85,7 @@ interface InvocationRow { userId: string | null; provider: string; model: string
 
 export interface AllowanceReadClient {
   aiInvocation: { findMany(args: unknown): Promise<InvocationRow[]> };
-  rateLimit: { findMany(args: unknown): Promise<Array<{ count: number }>> };
+  rateLimit: { findMany(args: unknown): Promise<Array<{ key: string; count: number }>> };
 }
 export interface AllowanceTxClient extends AllowanceReadClient {
   $executeRaw(query: TemplateStringsArray, ...values: unknown[]): Promise<number>;
@@ -109,7 +117,7 @@ async function readUsage(client: AllowanceReadClient, operatorId: string, now: D
       where: { surface: COMMS_AUTHORING_SURFACE, occurredAt: { gte: utcDayStart(now) } },
       select: { userId: true, provider: true, model: true, outcome: true, promptTokens: true, cachedPromptTokens: true, completionTokens: true },
     }),
-    client.rateLimit.findMany({ where: { key: authoringInflightKey(operatorId), windowStart: { in: [bucket, previous] } }, select: { count: true } }),
+    client.rateLimit.findMany({ where: { key: { startsWith: INFLIGHT_PREFIX }, windowStart: { in: [bucket, previous] } }, select: { key: true, count: true } }),
   ]);
   const today = todayUTCISO(now);
   const mine = rows.filter((r) => r.userId === operatorId);
@@ -119,7 +127,8 @@ async function readUsage(client: AllowanceReadClient, operatorId: string, now: D
     calls: mine.length,
     spentUsd: own.spentUsd, unpriced: own.unpricedInvocations,
     fleetUsd: fleet.spentUsd, fleetUnpriced: fleet.unpricedInvocations,
-    inFlight: buckets.reduce((n, b) => n + Math.max(0, b.count), 0),
+    inFlight: buckets.filter((b) => b.key === authoringInflightKey(operatorId)).reduce((n, b) => n + Math.max(0, b.count), 0),
+    fleetInFlight: buckets.reduce((n, b) => n + Math.max(0, b.count), 0),
   };
 }
 

@@ -378,6 +378,72 @@ async function main(): Promise<void> {
     detP.body.contentLocked === true && detP.body.content.length === 0 && !detP.body.supportedActions.includes("EDIT_CONTENT") && detP.body.viewer.canEditContent === false);
   check("no AI call was made anywhere in this suite", aiCalls.length === 0);
 
+  // ── 9. review fixes ────────────────────────────────────────────────────────
+  console.log("9. review fixes: send-time revalidation, render fallback, tx audit, leg lock, P2002, retry");
+  const logs2: string[] = [];
+  const bad = await liveRenderFor({
+    type: "SYNC_FAILED", data, codeRendered: NOTIFICATION_REGISTRY.SYNC_FAILED.render(data), appBaseUrl: "https://app.example.invalid", log: (l) => logs2.push(l),
+    resolver: async (st) => ({ versionId: `v_${st.channel}`, body: (st.channel === "EMAIL"
+      ? { ...emailContent(), subject: "Hi {{evil}} {{institutionName}}" }
+      : { ...inAppContent("Hello"), subject: "Hello {{nope}} {{institutionName}}" }) as never }),
+  });
+  check("a published body that fails the CURRENT validator is RENDER_FALLBACK (code template) on both legs, logged INVALID",
+    bad.email === null && bad.inApp.contentVersionId === null && bad.inApp.rendered.title === NOTIFICATION_REGISTRY.SYNC_FAILED.render(data).title
+    && logs2.filter((l) => l.includes("RENDER_FALLBACK") && l.includes("reason=INVALID") && l.includes("UNKNOWN_PLACEHOLDER")).length === 2, logs2);
+  const braces = await liveRenderFor({
+    type: "SYNC_FAILED", data: { ...data, institutionName: "{{institutionName}} Bank" }, codeRendered: NOTIFICATION_REGISTRY.SYNC_FAILED.render(data), appBaseUrl: "https://app.example.invalid",
+    resolver: async (st) => ({ versionId: `v_${st.channel}`, body: (st.channel === "EMAIL" ? emailContent() : inAppContent("Hi")) as never }),
+  });
+  check("a value carrying braces never puts a literal {{…}} in a send", !JSON.stringify(braces).includes("{{") && braces.email !== null && braces.inApp.contentVersionId === "v_IN_APP");
+  const logs3: string[] = [];
+  const fbMsg = { userId: "u1", type: "SYNC_FAILED", category: "FINANCIAL" as const, priority: "HIGH" as const, title: "Code title", href: "/dashboard/connections",
+    emailContent: { versionId: "v_bad", content: { subject: "S", preheader: "P", blocks: [{ kind: "cta" as const, label: "x", url: "javascript:alert(1)" }] } } };
+  const fbData = emailDataFor(fbMsg as never, "https://app.example.invalid", (l) => logs3.push(l));
+  check("emailDataFor: published content that does not render ⇒ the code rendering, no contentVersionId, RENDER_FALLBACK logged",
+    fbData.contentVersionId === null && fbData.data.content === undefined && fbData.data.title === "Code title" && logs3.some((l) => l.includes("RENDER_FALLBACK") && l.includes("v_bad")));
+
+  // The audit row goes through the TRANSACTION client: the top-level auditLog is made to throw.
+  const sysDb = (await import("@/lib/db")).systemDb as unknown as Record<string, unknown>;
+  const realAudit = sysDb.auditLog;
+  Object.defineProperty(sysDb, "auditLog", { value: { create: () => { throw new Error("audit written outside the transaction"); } }, configurable: true, writable: true });
+  const hT = fake.one("CommsTemplate", { definitionKey: "SYNC_COMPLETED" }) as any;
+  const txDraft = await j(await H.saveDraftHandler("SYNC_COMPLETED", { expectedRevision: hT?.revision ?? 0, body: { channel: "IN_APP", parentVersionId: null, content: { subject: "{{institutionName}} is ready", preheader: null, blocks: [] }, source: { kind: "MANUAL" } } }, WRITE, META, NOW, svc).catch(() => new Response("{}", { status: 599 })));
+  const txPub = txDraft.status === 201 ? await j(await H.publishHandler("SYNC_COMPLETED", txDraft.body.result.id, { reason: REASON, expectedRevision: txDraft.body.result.revision, body: { acknowledgeWarnings: true } }, CONTROL, META, NOW, svc).catch(() => new Response("{}", { status: 599 }))) : { status: 0, body: null };
+  Object.defineProperty(sysDb, "auditLog", { value: realAudit, configurable: true, writable: true });
+  check("save + publish succeed with the top-level auditLog broken ⇒ the audit rows are written through the transaction client", txDraft.status === 201 && txPub.status === 200, [txDraft.status, txPub.status]);
+
+  const rbLeg = await j(await H.rollbackHandler("SPACE_INVITE_RECEIVED", "code-default", { reason: REASON, expectedRevision: 0, body: { channel: "EMAIL" } }, CONTROL, META, NOW, svc));
+  check("code-default rollback of a locked LEG ⇒ 409 PROTECTED (not INVALID_STATE)", rbLeg.status === 409 && rbLeg.body.code === "PROTECTED", rbLeg.body);
+
+  const hC = fake.one("CommsTemplate", { definitionKey: "SYNC_COMPLETED" }) as any;
+  const { knownError } = await import("@/lib/test-support/fake-prisma");
+  fake.on("CommsTemplateVersion", "create", () => { throw knownError("P2002", "Unique constraint failed"); }, { once: true });
+  const race = await j(await H.saveDraftHandler("SYNC_COMPLETED", { expectedRevision: hC.revision, body: { channel: "IN_APP", parentVersionId: null, content: { subject: "{{institutionName}} done", preheader: null, blocks: [] }, source: { kind: "MANUAL" } } }, WRITE, META, NOW, svc));
+  check("a unique-violation race ⇒ CONFLICT with the stream's REAL current revision", race.status === 409 && race.body.code === "CONFLICT" && race.body.current === hC.revision, race.body);
+
+  // Retry: the email re-renders the EMAIL leg, never the stored in-app copy.
+  const { retryNotifications } = await import("@/jobs/retry-notifications");
+  invalidateLiveContent();
+  const retryRow = (type: string, title: string, metadata: unknown) => ({
+    id: `del_${type}`, attempts: 1, notificationId: `n_${type}`,
+    notification: { userId: "u1", type, category: "FINANCIAL", priority: "HIGH", title, body: "stored in-app body", href: "/dashboard/connections", metadata,
+      readAt: null, archivedAt: null, expiresAt: null, dedupeKey: null, user: { email: "customer@example.invalid" } },
+  });
+  const rows2 = [retryRow("SYNC_FAILED", "Live Real Bank", data), retryRow("PASSWORD_CHANGED", "Stored security title", {})];
+  const rclient = {
+    notificationDelivery: {
+      findMany: async () => rows2, update: async () => ({ id: "x" }), updateMany: async () => ({ count: 1 }), count: async () => 1,
+    },
+  };
+  const delivered: any[] = [];
+  await retryNotifications(rclient as never, { channel: "EMAIL", name: "fake", deliver: async (m: any) => { delivered.push(m); return { status: "sent", provider: "fake", id: "p" }; } } as never, NOW, null, resolver);
+  const rSync = delivered.find((m) => m.type === "SYNC_FAILED");
+  const rData = rSync ? emailDataFor(rSync, "https://app.example.invalid") : null;
+  check("retry of an editable type: title/body are the REGISTRY render, not the stored in-app copy, and the EMAIL leg's published version rides along",
+    rSync?.title === NOTIFICATION_REGISTRY.SYNC_FAILED.render(data).title && rSync?.body === NOTIFICATION_REGISTRY.SYNC_FAILED.render(data).body && rSync?.emailContent?.versionId === eid, rSync);
+  check("…so the retried email records contentVersionId", rData?.contentVersionId === eid);
+  check("retry of a type with no editable leg keeps the stored copy exactly", delivered.find((m) => m.type === "PASSWORD_CHANGED")?.title === "Stored security title");
+
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall store checks passed");
 }

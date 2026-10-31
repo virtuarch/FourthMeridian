@@ -18,9 +18,12 @@
 
 import type { NotificationRenderData, RenderedNotification } from "@/lib/notifications/types";
 import type { NotificationEmailContent } from "@/lib/email/templates/notification";
-import { legSpec, variantFor } from "./legs";
+import { legSpec, variantFor, type LegSpec } from "./legs";
+import { hasErrors, validateContent } from "./validate";
 import { emailContent, inAppRender, textValues } from "./render";
 import type { ContentBody, ContentStreamRef } from "./types";
+import { getNotificationDefinition } from "@/lib/notifications/registry";
+import { EMAIL_ANCHOR_MARKER } from "@/lib/notifications/email-anchor";
 
 /** The published version of one stream, as the send path needs it. */
 export interface LiveVersion { versionId: string; body: ContentBody }
@@ -53,12 +56,29 @@ export async function liveRenderFor(args: {
     catch { log(`[comms-content] live content unreadable; the code default is used: type=${args.type} channel=${channel}`); return null; }
   };
 
+  /**
+   * Review P3 — SEND-TIME REVALIDATION: the published body is re-validated under
+   * the CURRENT validator before it is rendered; any error (a rule that tightened,
+   * a stored row that no longer fits its allowlist) is RENDER_FALLBACK to the code
+   * template. And the rendered output is never allowed to carry a literal "{{" /
+   * "}}": that is RENDER_FALLBACK too. Log lines carry ids only.
+   */
+  const usable = (spec: LegSpec, live: LiveVersion, channel: "IN_APP" | "EMAIL"): boolean => {
+    const issues = validateContent(spec, live.body, { mode: "manual", baseline: spec.codeDefault(variant), variant });
+    if (!hasErrors(issues)) return true;
+    log(`[comms-content] RENDER_FALLBACK type=${args.type} channel=${channel} version=${live.versionId} reason=INVALID codes=${[...new Set(issues.filter((i) => i.severity === "error").map((i) => i.code))].join(",")}`);
+    return false;
+  };
+  const braceFree = (v: unknown) => !/\{\{|\}\}/.test(JSON.stringify(v));
+
   const inAppSpec = legSpec(args.type, "IN_APP");
   if (inAppSpec && inAppSpec.variants.includes(variant)) {
     const live = await resolve("IN_APP");
-    if (live) {
+    if (live && usable(inAppSpec, live, "IN_APP")) {
       try {
-        out.inApp = { rendered: inAppRender(inAppSpec, live.body, textValues(inAppSpec, args.data), variant), contentVersionId: live.versionId };
+        const rendered = inAppRender(inAppSpec, live.body, textValues(inAppSpec, args.data), variant);
+        if (!braceFree(rendered)) throw new Error("unresolved placeholder");
+        out.inApp = { rendered, contentVersionId: live.versionId };
       } catch {
         log(`[comms-content] RENDER_FALLBACK type=${args.type} channel=IN_APP version=${live.versionId}`);
       }
@@ -68,13 +88,42 @@ export async function liveRenderFor(args: {
   const emailSpec = legSpec(args.type, "EMAIL");
   if (emailSpec && emailSpec.variants.includes(variant)) {
     const live = await resolve("EMAIL");
-    if (live) {
+    if (live && usable(emailSpec, live, "EMAIL")) {
       try {
-        out.email = { versionId: live.versionId, content: emailContent(emailSpec, live.body, textValues(emailSpec, args.data), variant, args.appBaseUrl) };
+        const content = emailContent(emailSpec, live.body, textValues(emailSpec, args.data), variant, args.appBaseUrl);
+        if (!braceFree(content)) throw new Error("unresolved placeholder");
+        out.email = { versionId: live.versionId, content };
       } catch {
         log(`[comms-content] RENDER_FALLBACK type=${args.type} channel=EMAIL version=${live.versionId}`);
       }
     }
   }
   return out;
+}
+
+/**
+ * Review P2 — the EMAIL leg of a RETRY. The Notification row stores the IN-APP
+ * render (possibly a published in-app version), so a retry must not build the
+ * email from it: for a type with a content-editable leg it re-renders from the
+ * stored render data — the registry render for the code fields, plus the
+ * EMAIL stream's PUBLISHED version (re-validated, as at create time) — so the
+ * retried email carries the email copy and its contentVersionId. Types with no
+ * editable leg, and rows with no render data, keep the stored copy exactly.
+ */
+export async function retryEmailParts(args: {
+  type: string;
+  metadata: unknown;
+  stored: { title: string; body: string | null; href: string | null };
+  resolver: LiveContentResolver | null;
+  appBaseUrl: string | undefined;
+  log?: (line: string) => void;
+}): Promise<{ title: string; body: string | null; href: string | null; emailContent?: LiveRender["email"] & object }> {
+  const editable = legSpec(args.type, "EMAIL") !== undefined || legSpec(args.type, "IN_APP") !== undefined;
+  const reg = getNotificationDefinition(args.type);
+  const md = args.metadata;
+  if (!editable || !reg || typeof md !== "object" || md === null || Array.isArray(md)) return { ...args.stored };
+  const data = Object.fromEntries(Object.entries(md as Record<string, unknown>).filter(([k]) => k !== EMAIL_ANCHOR_MARKER));
+  const code = reg.render(data);
+  const live = await liveRenderFor({ type: args.type, data, codeRendered: code, resolver: args.resolver, appBaseUrl: args.appBaseUrl, ...(args.log ? { log: args.log } : {}) });
+  return { title: code.title, body: code.body ?? null, href: code.href ?? null, ...(live.email ? { emailContent: live.email } : {}) };
 }

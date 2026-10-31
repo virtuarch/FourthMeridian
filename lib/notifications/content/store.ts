@@ -166,14 +166,31 @@ async function bumpHead(tx: Tx, head: TemplateRow, expectedRevision: number, dat
   return expectedRevision + 1;
 }
 
-async function run<T>(client: ContentDb, fn: (tx: Tx) => Promise<ContentWriteResult<T>>): Promise<ContentWriteResult<T>> {
+/** Where a P2002 race happened, so the CONFLICT can carry the stream's REAL current revision. */
+type ConflictScope = { stream: ContentStreamRef } | { key: string; versionId: string } | null;
+
+async function currentRevision(client: ContentDb, scope: ConflictScope): Promise<number> {
+  const c = client as unknown as Tx;
+  try {
+    if (!scope) return 0;
+    if ("stream" in scope) return (await readHead(c, scope.stream))?.revision ?? 0;
+    return (await readVersion(scope.key, scope.versionId, c))?.head.revision ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function run<T>(client: ContentDb, scope: ConflictScope, fn: (tx: Tx) => Promise<ContentWriteResult<T>>): Promise<ContentWriteResult<T>> {
   try {
     const r = await client.$transaction(fn);
     if (r.ok) invalidateLiveContent();
     return r;
   } catch (e) {
     if (e instanceof RefusalRollback) return e.refusal;
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return refuse("CONFLICT", "Someone else changed this template at the same time — reload and review again.", { current: -1 });
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      // A concurrent write took the same head / version number: re-read the token after the rollback.
+      return refuse("CONFLICT", "Someone else changed this template at the same time — reload and review again.", { current: await currentRevision(client, scope) });
+    }
     throw e;
   }
 }
@@ -236,7 +253,7 @@ export async function saveDraft(input: SaveDraftInput, client: ContentDb = DB())
   const spec = legSpec(input.stream.definitionKey, input.stream.channel);
   if (!spec || !spec.variants.includes(input.stream.variant)) return refuse("VALIDATION", "Unknown content stream.");
   const now = input.now ?? new Date();
-  return run(client, async (tx) => {
+  return run(client, { stream: input.stream }, async (tx) => {
     await lock(tx, input.stream);
     let head = await readHead(tx, input.stream);
     const current = head?.revision ?? 0;
@@ -307,7 +324,7 @@ export interface PublishInput {
 
 export async function publishVersion(input: PublishInput, client: ContentDb = DB()): Promise<ContentWriteResult<{ version: VersionRow; head: TemplateRow; superseded: { versionId: string; version: number } | null }>> {
   const now = input.now ?? new Date();
-  return run(client, async (tx) => {
+  return run(client, { key: input.key, versionId: input.versionId }, async (tx) => {
     const found = await readVersion(input.key, input.versionId, tx);
     if (!found) return refuse("NOT_FOUND", "No version with that id for this definition.");
     const stream: ContentStreamRef = { definitionKey: found.head.definitionKey, channel: found.head.channel as EditableChannel, variant: found.head.variant };
@@ -363,7 +380,7 @@ export interface RollbackValue { published: { version: VersionRow } | null; head
 
 export async function rollbackVersion(input: RollbackInput, client: ContentDb = DB()): Promise<ContentWriteResult<RollbackValue>> {
   const now = input.now ?? new Date();
-  return run<RollbackValue>(client, async (tx) => {
+  return run<RollbackValue>(client, input.stream ? { stream: input.stream } : { key: input.key, versionId: input.versionId }, async (tx) => {
     let stream: ContentStreamRef;
     let target: VersionRow | null = null;
     if (input.versionId === CODE_DEFAULT_ID) {

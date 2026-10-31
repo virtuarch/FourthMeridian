@@ -48,7 +48,8 @@ export function textValues(spec: LegSpec, data: Readonly<Record<string, unknown>
     if (data === "SAMPLE") { out[p.name] = cleanText(p.sample, p.maxLength) || p.fallback; continue; }
     const raw = p.source.from === "PAYLOAD" ? data[p.source.field] : undefined;
     const s = typeof raw === "string" ? raw : typeof raw === "number" && Number.isFinite(raw) ? String(raw) : "";
-    out[p.name] = cleanText(s, p.maxLength) || p.fallback;
+    // Braces are removed from VALUES so no send can ever carry a literal "{{…}}" (review P3).
+    out[p.name] = cleanText(s.replace(/[{}]/g, ""), p.maxLength) || p.fallback;
   }
   return out;
 }

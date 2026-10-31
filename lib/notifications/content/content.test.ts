@@ -27,7 +27,7 @@ import { renderNotificationEmail } from "@/lib/email/templates/notification";
 import { contentVariants, definitionLock, editableLegs, legEditability, legSpec, variantFor, type LegSpec } from "./legs";
 import { parseContentBody, placeholdersUsed, validateContent } from "./validate";
 import { inAppRender, renderContentEmail, substitute, textValues } from "./render";
-import { ADVICE_LEXICON, CLAIM_LEXICON } from "./lint";
+import { ADVICE_LEXICON, CLAIM_LEXICON, adviceHits, claimHits, figureTokens, linkHits } from "./lint";
 import { AI_SYSTEM_PROMPT, buildAiRequest, checkSuggestion, normaliseSuggestion } from "./ai";
 import type { ContentBody, ContentIssue } from "./types";
 
@@ -164,9 +164,36 @@ function validator(): void {
     fin.some((i) => i.code === "FINANCIAL_CLAIM" && i.severity === "warning") && fin.some((i) => i.code === "ADVICE_LANGUAGE" && i.severity === "warning")
     && fin.every((i) => i.severity === "warning"), fin);
   check("placeholdersUsed: distinct, first-use order, includes the cta link", JSON.stringify(placeholdersUsed(ok, "EMAIL")) === JSON.stringify(["institutionName", "actionUrl"]), placeholdersUsed(ok, "EMAIL"));
-  check("lexicons are closed and pinned", CLAIM_LEXICON.length === 25 && ADVICE_LEXICON.length === 22
+  check("lexicons are closed and pinned", CLAIM_LEXICON.length === 25 && ADVICE_LEXICON.length === 27
     && ["guarantee", "risk-free", "returns", "apr", "interest rate", "earn", "grow your money"].every((t) => CLAIM_LEXICON.includes(t))
     && ["you should invest", "we recommend", "buy", "sell", "tax advice", "legal advice", "financial advice", "consult a", "deduct", "write off"].every((t) => ADVICE_LEXICON.includes(t)));
+}
+
+function lexicons(): void {
+  console.log("3b. link / claim / advice lexicons after normalisation (review P1, P3)");
+  const sf = spec("SYNC_FAILED", "EMAIL");
+  const base = sf.codeDefault("reauth-required");
+  const withText = (t: string): ContentBody => ({ ...base, blocks: base.blocks.map((b) => (b.kind === "paragraph" ? { ...b, text: `${b.text} ${t}` } : b)) });
+  const wire = (b: ContentBody) => ({ subject: b.subject, preheader: b.preheader, notes: [],
+    blocks: b.blocks.map((x) => ({ kind: x.kind, heading: x.kind === "hero" ? x.heading : null, greeting: null, text: x.kind === "paragraph" ? x.text : null, label: x.kind === "cta" ? x.label : null, link: x.kind === "cta" ? x.link : null, title: null, items: null })) });
+  const aiCodes = (b: ContentBody) => { const n = normaliseSuggestion(wire(b), base); return n.ok ? codes(checkSuggestion(sf, "reauth-required", base, n.body)) : codes(n.issues); };
+  const LINKS = ["see evil.ru", "evil.to", "evil.shop", "bit.do/abc", "//evil.ru/x", "[click](//evil.ru)", "ｅｖｉｌ．ｃｏｍ", "hxxp://evil", "evil dot com", "evil (dot) com", "evil[.]com", "www.evil", "WWW.EVIL.NET", "mail me@x.co", "call 555 123 4567"];
+  for (const t of LINKS) {
+    check(`link "${t}" is flagged by the draft validator`, codes(manual(sf, withText(t), "reauth-required")).includes("LINK_NOT_ALLOWED"));
+    check(`link "${t}" is flagged by checkSuggestion`, aiCodes(withText(t)).includes("LINK_NOT_ALLOWED"));
+  }
+  const PROSE = ["3.5% APR", "Q3.", "U.S. accounts", "e.g. your bank", "at 9 a.m. today", "Fourth Meridian.", "version 2.0 is out", "i.e. soon", "Ph.D. holders", "and/or later"];
+  for (const t of PROSE) check(`ordinary prose "${t}" is not a link`, linkHits(t).length === 0, linkHits(t));
+  check("claims match across NBSP and non-breaking hyphens", claimHits("risk\u2011free").length > 0 && claimHits("risk\u00A0free").length > 0 && claimHits("high\u2013yield").length > 0 && claimHits("ＥＡＲＮ more").length > 0);
+  check("investment imperatives are advice", ["Invest now", "start investing today", "Act now", "don\u2019t miss out"].every((t) => adviceHits(t).length > 0));
+  check("spelled-out figures are figures", figureTokens("ten percent").length > 0 && figureTokens("fifty dollars").length > 0 && figureTokens("twenty-five per cent").length > 0 && figureTokens("a few percent").length > 0);
+  check("no false positives in plain service copy", ["ten minutes", "one of your accounts", "your tenant", "learn more in Settings", "we couldn't sync your bank"].every((t) => figureTokens(t).length === 0 && claimHits(t).length === 0 && adviceHits(t).length === 0 && linkHits(t).length === 0));
+  check("an added spelled-out percentage is FINANCIAL_CLAIM in an AI suggestion", aiCodes(withText("Earn ten percent.")).includes("FINANCIAL_CLAIM") && aiCodes(withText("Get ten percent back.")).includes("FINANCIAL_CLAIM"));
+  check("an added imperative is ADVICE_LANGUAGE in an AI suggestion", aiCodes(withText("Invest now.")).includes("ADVICE_LANGUAGE"));
+  for (const { key, channel } of editableLegs()) {
+    const s2 = spec(key, channel);
+    check(`${key}/${channel}: every code default stays clean under the stricter lexicons`, s2.variants.every((v) => manual(s2, s2.codeDefault(v), v).length === 0));
+  }
 }
 
 function escaping(): void {
@@ -186,6 +213,7 @@ function escaping(): void {
   check("the CTA URL is the trusted app base + the registry href", r.html.includes(`${PREVIEW_APP_BASE}/dashboard/connections`) && r.text.includes(`${PREVIEW_APP_BASE}/dashboard/connections`));
   check("the locked frame stays code: footer reason, preference link and legal links present", /notification settings/i.test(r.text) && /Privacy|Terms/i.test(r.text));
   check("preview subjects are marked [PREVIEW]", r.subject.startsWith("[PREVIEW] "));
+  check("braces are stripped from values, so no send can carry a literal {{…}}", !/[{}]/.test(textValues(s, { institutionName: "{{x}} Bank }}" }).institutionName));
   check("missing values take the fallback, never empty / \"undefined\"", textValues(s, {}).institutionName === "your institution");
 }
 
@@ -245,6 +273,7 @@ function aiChecks(): void {
 legs();
 parity();
 validator();
+lexicons();
 escaping();
 aiRequest();
 aiChecks();
