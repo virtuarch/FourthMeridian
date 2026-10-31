@@ -59,6 +59,7 @@ import { createHash } from "node:crypto";
 import { db } from "@/lib/db";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
+import { accountDeletedAlert } from "@/lib/email/security-alerts";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
@@ -516,13 +517,7 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
   // ── 9. Final notice — AFTER commit, exactly once ───────────────────────────
   // Reuses the security-alert template. NON-THROWING: delivery failure never
   // blocks. Only the worker whose transaction committed reaches this line.
-  const emailResult = await email("security-alert", user.email, {
-    title:   "Your account has been deleted",
-    message:
-      `Your Fourth Meridian account and all associated data have been ` +
-      `permanently deleted. This action cannot be undone. If you did not ` +
-      `expect this, contact support.`,
-  });
+  const emailResult = await email("security-alert", user.email, { ...accountDeletedAlert() });
   if (emailResult.status === "error") {
     console.error("[purge] deletion-complete security-alert email failed to send:", redactedErrorForLog(emailResult.error));
   }

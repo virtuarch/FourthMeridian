@@ -16,7 +16,7 @@
  *   3. Test-mode refusal — even with RESEND_API_KEY set, sendEmail never sends
  *      for real in test mode; the result is "captured", not "sent".
  *   4. html + text: a design-system template's message carries both parts and
- *      both reach the Resend payload; a text-only template sends no html key.
+ *      both reach the Resend payload; a text-only message sends no html key.
  *   5. Non-throwing render: a template that refuses its data is an error result.
  *   6. Log hygiene: no token, link or recipient address in any console call or
  *      in the provider error string callers log.
@@ -119,7 +119,10 @@ async function main(): Promise<void> {
   check("beta-invite is captured", res3.status === "captured", res3.status);
   check("captured message carries html", typeof inv?.html === "string" && inv.html.startsWith("<!DOCTYPE html>"));
   check("captured message still carries text", typeof inv?.text === "string" && inv.text.includes(INVITE_URL));
-  check("captured smoke message (text-only) has no html key", capturedEmails().length === 1 && !("html" in (msg ?? {})));
+  // Every registered template is on the design system now (PR D), so the smoke
+  // message carries html too; the text-only provider path is still covered by
+  // the hand-built message below.
+  check("captured smoke message also carries html (all templates migrated)", capturedEmails().length === 1 && typeof msg?.html === "string" && msg.html.startsWith("<!DOCTYPE html>"));
 
   const payloads: ResendPayload[] = [];
   const okClient: ResendLikeClient = {

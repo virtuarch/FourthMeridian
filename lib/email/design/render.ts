@@ -43,8 +43,9 @@ export interface RenderEmailInput {
   footer: FooterInput;
   /**
    * "security": an account-security notice. It must carry a `security` block and
-   * may carry only hero / paragraph / security / cta / divider blocks — no info
-   * panels or anything promotional.
+   * may carry only hero / paragraph / security / cta / expiry / divider blocks —
+   * no info panels or anything promotional. (`expiry` is admitted so a token
+   * ceremony — password reset, email verification — can state its link lifetime.)
    */
   variant?: "standard" | "security";
   /** Defaults to defaultEmailBrandConfig() (env-derived site origin + support). */
@@ -57,7 +58,7 @@ export interface RenderedEmail {
   text: string;
 }
 
-const SECURITY_ALLOWED = new Set<EmailBlock["kind"]>(["hero", "paragraph", "security", "cta", "divider"]);
+const SECURITY_ALLOWED = new Set<EmailBlock["kind"]>(["hero", "paragraph", "security", "cta", "expiry", "divider"]);
 
 function darkModeCss(): string {
   // Each rule overrides an inline light colour, hence !important.

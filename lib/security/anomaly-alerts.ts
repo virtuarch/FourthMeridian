@@ -43,6 +43,7 @@ import { env } from "@/lib/env";
 import { AuditAction } from "@/lib/audit-actions";
 import { createNotification } from "@/lib/notifications/create";
 import { sendEmail } from "@/lib/email/send";
+import { ownerSignInAnomalyAlert, securityOpsAnomalyAlert } from "@/lib/email/security-alerts";
 import {
   detectIdentifierAnomalies,
   detectIpAnomaly,
@@ -184,10 +185,9 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
 
   // (b) Direct security-alert email to the Security Ops inbox.
   try {
-    await sendEmail("security-alert", env.SECURITY_ALERTS_EMAIL, {
-      title:   anomaly.title,
-      message: `${anomaly.message}\n\nSignal: ${anomaly.key} — ${anomaly.count} in the last ${anomaly.windowMinutes} minutes (threshold ${anomaly.threshold}).`,
-    });
+    // The raw identifier / IP is withheld from email (it stays on the audit
+    // row's metadata.key and the in-app notification's anomalyKey).
+    await sendEmail("security-alert", env.SECURITY_ALERTS_EMAIL, { ...securityOpsAnomalyAlert(anomaly) });
   } catch (err) {
     console.warn("[security/anomaly-alerts] security@ email failed (non-fatal):", err);
   }
@@ -195,14 +195,7 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
   // (c) The lockout hybrid — owner-facing email, ONLY for a resolvable account.
   if (anomaly.ownerEmailEligible && ctx.userEmail) {
     try {
-      const resetUrl = `${env.NEXT_PUBLIC_APP_URL}/forgot-password`;
-      await sendEmail("security-alert", ctx.userEmail, {
-        title:   "Unusual sign-in activity on your account",
-        message:
-          `We noticed several failed sign-in attempts on your Fourth Meridian ` +
-          `account. If this was you, no action is needed.\n\n` +
-          `If it wasn't you, reset your password to secure your account:\n${resetUrl}`,
-      });
+      await sendEmail("security-alert", ctx.userEmail, { ...ownerSignInAnomalyAlert(env.NEXT_PUBLIC_APP_URL) });
     } catch (err) {
       console.warn("[security/anomaly-alerts] owner email failed (non-fatal):", err);
     }

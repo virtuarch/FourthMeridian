@@ -7,7 +7,9 @@
  *   notifyItemSyncFailed(itemId)   — after a health-CLASSIFIED failure (the
  *     classifyPlaidErrorForHealth → PlaidItem status update idiom). Transient
  *     errors (classify → null) never notify, exactly as they never change
- *     item status. Five call sites: the sync-banks cron, the interactive
+ *     item status. The payload's typed `connectionState` is read back from the
+ *     PlaidItem.status the call site just wrote
+ *     (lib/notifications/connection-attention.ts) — no call site passes it. Five call sites: the sync-banks cron, the interactive
  *     refresh/sync routes, refreshAllActiveItemsForUser, and the deferred
  *     background history sync. Dedupe (suppress-while-open, key
  *     "SYNC_FAILED:item:{id}:open") makes multi-site production idempotent —
@@ -29,10 +31,13 @@ import { db } from "@/lib/db";
 import { createNotification } from "@/lib/notifications/create";
 import { retireOpenNotification } from "@/lib/notifications/resolve";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
+import { connectionStateFromItemStatus } from "@/lib/notifications/connection-attention";
 
 interface ItemOwnerRow {
   userId: string;
   institutionName: string | null;
+  /** Read back by notifyItemSyncFailed only (the status the call site just wrote). */
+  status?: string | null;
 }
 
 /** Minimal read this module needs (injection seam for tests). */
@@ -40,7 +45,7 @@ export interface PlaidItemReadClient {
   plaidItem: {
     findUnique(args: {
       where: { id: string };
-      select: { userId: true; institutionName: true };
+      select: { userId: true; institutionName: true; status?: true };
     }): Promise<ItemOwnerRow | null>;
   };
 }
@@ -92,7 +97,7 @@ export async function notifyItemSyncFailed(
   try {
     const item = await itemClient(ctx).plaidItem.findUnique({
       where: { id: plaidItemId },
-      select: { userId: true, institutionName: true },
+      select: { userId: true, institutionName: true, status: true },
     });
     if (!item) return;
 
@@ -102,6 +107,10 @@ export async function notifyItemSyncFailed(
       data: {
         plaidItemId,
         institutionName: item.institutionName ?? "",
+        // Derived from the status every call site writes BEFORE calling this
+        // (setPlaidItemHealth). Only changes the copy — not when this fires,
+        // the dedupe key, channels or preferences.
+        connectionState: connectionStateFromItemStatus(item.status),
       },
     });
   } catch (err) {

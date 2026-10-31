@@ -28,10 +28,11 @@ import { env } from "@/lib/env";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
+import { EMAIL_VERIFICATION_TTL_MS } from "@/lib/email/token-ttl";
 import { AuditAction } from "@/lib/audit-actions";
 
 /** Token TTL for a resent verification link — mirrors registration (1 hour). */
-const VERIFICATION_TTL_MS = 60 * 60 * 1000;
+const VERIFICATION_TTL_MS = EMAIL_VERIFICATION_TTL_MS; // shared with the email copy (lib/email/token-ttl.ts)
 
 /** Minimal user shape the core needs. */
 export interface ResendTargetUser {

@@ -179,15 +179,19 @@ check(
 
 // Full render: title + body + action link + the why-am-I-getting-this line.
 {
-  const { subject, text } = notificationTemplate.render({
-    title: "Chase needs attention",
-    body: "We couldn't sync this institution. Reconnect to resume updates.",
+  const { subject, text, html } = notificationTemplate.render({
+    title: "We couldn't sync Chase",
+    body: "Your existing data is still available.",
     actionUrl: "https://app.fourthmeridian.com/dashboard/connections",
+    category: "FINANCIAL",
+    preferencesUrl: "https://app.fourthmeridian.com/dashboard/settings/notifications",
   });
-  check("subject is the notification title", subject === "Chase needs attention");
-  check("text carries the body", text.includes("We couldn't sync this institution."));
-  check("text carries the action link", text.includes("View in Fourth Meridian: https://app.fourthmeridian.com/dashboard/connections"));
-  check("text explains the preference provenance", text.includes("Settings → Notifications"));
+  check("subject is the notification title", subject === "We couldn't sync Chase");
+  check("text carries the body", text.includes("Your existing data is still available."));
+  check("text carries the action link (default label)", text.includes("View in Fourth Meridian:\nhttps://app.fourthmeridian.com/dashboard/connections"));
+  check("text explains the preference provenance", /connection notification because email is turned on for Financial notifications/.test(text));
+  check("footer links the real notification-settings page", text.includes("Manage notification settings: https://app.fourthmeridian.com/dashboard/settings/notifications"));
+  check("has an HTML part from the same blocks", typeof html === "string" && html.includes("We couldn&#39;t sync Chase"));
 }
 
 // Minimal render: title only — no dangling link line, no empty paragraphs.

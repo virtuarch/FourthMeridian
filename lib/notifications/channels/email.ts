@@ -19,12 +19,10 @@
 
 import { sendEmail } from "@/lib/email/send";
 import type { ChannelAdapter, ChannelMessage, ChannelResult } from "@/lib/notifications/types";
+import { buildActionUrl, buildNotificationEmailData } from "@/lib/notifications/channels/email-data";
 
-/** Build the absolute action URL from the trusted app base + in-app href. */
-export function buildActionUrl(appBaseUrl: string | undefined, href: string | null | undefined): string | undefined {
-  if (!href || !appBaseUrl) return undefined;
-  return `${appBaseUrl.replace(/\/+$/, "")}${href}`;
-}
+// Re-exported: callers and tests import buildActionUrl from here.
+export { buildActionUrl };
 
 export const emailNotificationAdapter: ChannelAdapter = {
   channel: "EMAIL",
@@ -36,13 +34,11 @@ export const emailNotificationAdapter: ChannelAdapter = {
       return { status: "skipped", provider: "email" };
     }
     try {
-      const result = await sendEmail("notification", message.email, {
-        title: message.title,
-        ...(message.body ? { body: message.body } : {}),
-        ...(message.href
-          ? { actionUrl: buildActionUrl(process.env.NEXT_PUBLIC_APP_URL, message.href) }
-          : {}),
-      });
+      const result = await sendEmail(
+        "notification",
+        message.email,
+        { ...buildNotificationEmailData(message, process.env.NEXT_PUBLIC_APP_URL) },
+      );
       // EmailResult → ChannelResult, field-for-field (frozen: verbatim).
       return {
         status: result.status,

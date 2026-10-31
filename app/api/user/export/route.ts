@@ -24,7 +24,8 @@ import { requireFreshUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
 import { entitlementsForUser, countLimit } from "@/lib/entitlements/consume";
 import { sendEmail } from "@/lib/email/send";
-import { formatDateTime } from "@/lib/format";
+import { env } from "@/lib/env";
+import { dataExportedAlert } from "@/lib/email/security-alerts";
 import { AuditAction } from "@/lib/audit-actions";
 import { assembleUserExport } from "@/lib/export/assemble";
 import { buildExportZip } from "@/lib/export/zip";
@@ -58,11 +59,7 @@ export async function POST() {
     let emailStatus: string = "skipped";
     if (dbUser?.email) {
       const emailResult = await sendEmail("security-alert", dbUser.email, {
-        title: "Your data was exported",
-        message:
-          `A copy of your Fourth Meridian data was exported on ` +
-          `${formatDateTime(new Date().toISOString())}. If this wasn't you, ` +
-          `change your password and review your active sessions.`,
+        ...dataExportedAlert(new Date(), env.NEXT_PUBLIC_APP_URL),
       });
       emailStatus = emailResult.status;
       if (emailResult.status === "error") {
