@@ -509,7 +509,11 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
       where: { recipientUserId: userId, status: { in: ["SCHEDULED", "SENDING", "FAILED"] } },
       data:  { status: "CANCELLED", reason: "ACCOUNT_RESTRICTED", leaseUntil: null, nextAttemptAt: null },
     });
-    await tx.automationRunItem.updateMany({ where: { recipientUserId: userId }, data: { recipientUserId: null } });
+    // HARDENING A9 — the dedupeKey is filled from a template that MUST name {recipientId} (and may name
+    // other user-id payload fields, e.g. {invitedUserId}), so it is an identifier too: nulled on the
+    // subject's own items, and on ANY item whose key embeds the subject's id (someone else's item about them).
+    await tx.automationRunItem.updateMany({ where: { recipientUserId: userId }, data: { recipientUserId: null, dedupeKey: null } });
+    await tx.automationRunItem.updateMany({ where: { dedupeKey: { contains: userId } }, data: { dedupeKey: null } });
     const ledgerHash = recipientHash(user.email, process.env);
     if (ledgerHash) {
       await tx.commsDelivery.updateMany({

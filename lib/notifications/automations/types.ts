@@ -75,6 +75,9 @@ export interface AutomationRunCounts {
  *   · the ENGINE sends nothing: if an ACTIVE row exists anyway, the executor writes
  *     nothing and reports { outcome: "SKIPPED", skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING" }.
  * It may be flipped ONLY after review items A1–A9 are fixed (the tracked follow-up PR).
+ * HARDENING (the A1–A9 / N1–N11 PR) fixed them but deliberately leaves this false: flipping it is a
+ * SEPARATE owner-approved PR, after that one merges. N10 (separation of duties between the owner
+ * approval and the CONTROL activation) is an OWNER decision and is not changed by the hardening PR.
  */
 export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;
 export const ACTIVATION_DISABLED_REASON = "ACTIVATION_DISABLED_PENDING_HARDENING" as const;
@@ -108,8 +111,27 @@ export const AUTOMATION_LIMITS = {
 export const STANDARD_RETRY_DELAYS_MS = [15 * 60_000, 4 * 60 * 60_000] as const;
 /** The send lease (v1.1 §6.6 step 1): an expired lease returns the item to SCHEDULED. */
 export const SEND_LEASE_MS = 5 * 60_000;
-/** v1.1 §6.7 — the global automation breaker: > 200 accepted automation sends per 10 min auto-pauses every automation. */
-export const GLOBAL_BREAKER = { maxAccepted: 200, windowMinutes: 10 } as const;
+/**
+ * v1.1 §6.7 — the global automation breaker: > 200 accepted automation sends in the window auto-pauses every automation.
+ * HARDENING N1 (review of #187): the contract's 10-minute window could never trip — one pass delivers at most
+ * DEFAULT_BUDGET.maxItems (200) and passes are ~15 min apart — so the window is 60 minutes, and the count is the
+ * engine's OWN SENT item rows (written inline) plus the sends of the current pass, checked before EVERY send
+ * (the CommsDelivery rows are written after the response and are blind within a pass, A2).
+ */
+export const GLOBAL_BREAKER = { maxAccepted: 200, windowMinutes: 60 } as const;
+/** v1.1 §8.7 — AutomationRun / AutomationRunItem live 90 days (parity with the ledger, O-9); DEDUPE_OPEN never looks further back (N6). */
+export const AUTOMATION_RETENTION_DAYS = 90;
+/** N2 — facts younger than this are left for the next wake (an AuditLog row that commits late is never skipped by the keyset cursor). */
+export const FACT_SETTLE_MS = 60_000;
+/** N4 — a fact older than this when first read (a backlog after a freeze, maintenance or a long pause) is skipped, never sent. */
+export const MAX_FACT_AGE_MS = 24 * 3_600_000;
+/** N4 — an item more than this past its notBefore when the scanner reaches it is CANCELLED / OBSOLETE. */
+export const MAX_SEND_LATENESS_MS = 24 * 3_600_000;
+/**
+ * A6 — the EV-1 handler's bell for the SAME fact: a Notification of the same type, recipient and Space, with no
+ * auditLogId (EV-1 producers omit it; the engine's own bells carry the fact ref), created in this window around the fact.
+ */
+export const HANDLER_BELL_WINDOW = { beforeMs: 5 * 60_000, afterMs: 30 * 60_000 } as const;
 /** v1.1 §6.7 — ≥ 20 attempts and > 50 % failed in an hour auto-pauses one automation (ERROR_RATE). */
 export const ERROR_RATE_BREAKER = { minAttempts: 20, maxFailedFraction: 0.5, windowMinutes: 60 } as const;
 
@@ -144,6 +166,12 @@ export interface AutomationDetail extends AutomationSummary {
   ownerApproval: { approvedVersion: number; approvedDefinitionVersion: number; approvedAt: string; current: boolean } | null;
   lastDryRun: { runId: string; at: string; automationVersion: number; wouldExceedMaxRecipients: boolean } | null;
   activationBlockers: ActivationBlocker[];
+  /**
+   * HARDENING A6 — the definition already has a CODE producer (an EV-1 handler / registry call site) that delivers it
+   * for this trigger: an automation is an ADDITIONAL send. Its in-app leg dedupes against the handler's bell for the
+   * same fact; its email leg is a second message. Shown to the owner before approval (optional: older fixtures omit it).
+   */
+  overlapsExistingDelivery?: boolean;
   liveContent: Array<{ channel: AutomationChannel; source: "CODE_DEFAULT" | "PUBLISHED"; versionId: string | null }>;
 }
 
@@ -172,6 +200,8 @@ export interface DryRunResult {
   examples: Array<{ variant: string; subject: string | null; inAppTitle: string | null }>;
   wouldExceedMaxRecipients: boolean;
   activationBlockers: ActivationBlocker[];
+  /** HARDENING A6 — see AutomationDetail.overlapsExistingDelivery. */
+  overlapsExistingDelivery?: boolean;
   floor: boolean;
   checkedAt: string;
 }

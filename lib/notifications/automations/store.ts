@@ -33,7 +33,7 @@ import { recordDelivery } from "@/lib/notifications/delivery/record";
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 import { ledgerEnvironment, type LedgerEnv } from "@/lib/notifications/delivery/record";
 import { EMAIL_TEMPLATE_VERSIONS, IN_APP_TEMPLATE_VERSION } from "@/lib/notifications/catalog/definitions";
-import { activationBlockers, blockerCode, countsOf, isCustomerFacing, type AutomationFields } from "./rules";
+import { activationBlockers, blockerCode, countsOf, isCustomerFacing, overlapsExistingDelivery, type AutomationFields } from "./rules";
 import type { DryRunEvaluation } from "./dry-run";
 import { ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED } from "./types";
 import type {
@@ -204,7 +204,8 @@ export async function ownerApprove(input: { id: string; expectedVersion: number;
     if (!isCustomerFacing(def)) refuse("INVALID_STATE", "This automation is not customer-facing: no owner approval is needed.");
     const auditLogId = await audit(tx, input.actor, AuditAction.COMMS_AUTOMATION_OWNER_APPROVED, row.id,
       { before: { ownerApprovedVersion: row.ownerApprovedVersion, ownerApprovedDefinitionVersion: row.ownerApprovedDefinitionVersion }, after: { ownerApprovedVersion: row.version, ownerApprovedDefinitionVersion: def.definitionVersion } },
-      { version: row.version, definitionKey: row.definitionKey, definitionVersion: def.definitionVersion }, input.reason);
+      // HARDENING A6 — the owner approves KNOWING whether a code producer already delivers this definition.
+      { version: row.version, definitionKey: row.definitionKey, definitionVersion: def.definitionVersion, overlapsExistingDelivery: overlapsExistingDelivery(def) }, input.reason);
     // Guarded on the token; NOT bumped (an approval is ABOUT this version).
     const r = await tx.automationDefinition.updateMany({
       where: { id: row.id, version: row.version },
@@ -295,7 +296,7 @@ const BLOCKER_TEXT: Record<ActivationBlocker, string> = {
   TRIGGER_NOT_AVAILABLE: "This trigger is not available to the automation engine yet.",
   MARKETING_NOT_IN_V1: "Marketing messages cannot be automated in v1.",
   OWNER_APPROVAL_REQUIRED: "A customer-facing automation needs the owner's approval of this exact version first.",
-  DRY_RUN_REQUIRED: "Dry-run this version successfully (within 7 days, within its recipient cap) before activating.",
+  DRY_RUN_REQUIRED: "Dry-run this version over a 7- or 30-day window successfully (within 7 days, within its recipient cap) before activating.",
 };
 
 // ── Reads ─────────────────────────────────────────────────────────────────────
@@ -304,7 +305,7 @@ export function factsOf(row: AutomationRow, dry: RunRow | null): Parameters<type
   return {
     state: row.state as AutomationState, version: row.version, definitionVersion: row.definitionVersion, triggerKey: row.triggerKey as TriggerKey,
     customerFacing: row.customerFacing, ownerApprovedVersion: row.ownerApprovedVersion, ownerApprovedDefinitionVersion: row.ownerApprovedDefinitionVersion,
-    lastDryRun: dry ? { automationVersion: dry.automationVersion, status: dry.status, startedAt: dry.startedAt, wouldExceedMaxRecipients: dry.error === "WOULD_EXCEED_MAX_RECIPIENTS" } : null,
+    lastDryRun: dry ? { automationVersion: dry.automationVersion, status: dry.status, startedAt: dry.startedAt, wouldExceedMaxRecipients: dry.error === "WOULD_EXCEED_MAX_RECIPIENTS", window: dry.windowFrom !== null } : null,
   };
 }
 
@@ -347,15 +348,16 @@ const HISTORY_ACTIONS = [
 
 /** The audited history of one automation: action, time, actor KIND and audit id only (full identity lives in the audit row). */
 export async function readHistory(automationId: string, client: Tx = DB()): Promise<AutomationDetail["history"]> {
+  // HARDENING N9 — the target is filtered IN THE QUERY (a JSON path on metadata.target.id), so an
+  // automation's history is never truncated by 500 newer rows that belong to other automations.
   const rows = await client.auditLog.findMany({
-    where: { action: { in: HISTORY_ACTIONS } },
+    where: { action: { in: HISTORY_ACTIONS }, metadata: { path: ["target", "id"], equals: automationId } },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: 500,
+    take: 50,
     select: { id: true, action: true, createdAt: true, metadata: true },
   });
   return rows
     .filter((r) => { const t = (r.metadata as { target?: { kind?: unknown; id?: unknown } } | null)?.target; return t?.kind === "COMMS_AUTOMATION" && t.id === automationId; })
-    .slice(0, 50)
     .map((r) => ({
       at: r.createdAt.toISOString(),
       action: r.action,

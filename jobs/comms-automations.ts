@@ -22,7 +22,11 @@
  *   · the GLOBAL Cost Freeze (ON / INVALID / UNAVAILABLE): live runs HALT,
  *     scheduled items CANCELLED / PROVIDER_FREEZE, `skipReason: "BILLABLE_<reason>"`;
  *   · AUTOMATION_ACTIVATION_ENABLED = false with an ACTIVE row or pending item:
- *     nothing written, nothing sent, `skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING"`.
+ *     nothing written, nothing sent, `skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING"`;
+ *   · platform admission (COMMS_AUTOMATION_SEND) denied — maintenance or an unreadable
+ *     control plane: nothing sent, `skipReason: "ADMISSION_<reason>"` (HARDENING A5).
+ * With the gate closed and nothing held the run is COMPLETE with `note: "ACTIVATION_DISABLED"`
+ * (not a skip: that would pin the jobs domain DEGRADED for as long as the gate is closed by design).
  */
 
 import { runAutomationEngine, DEFAULT_BUDGET, type EngineDeps, type EngineSummary } from "@/lib/notifications/automations/engine";
@@ -57,10 +61,12 @@ export async function commsAutomations(deps?: EngineDeps, opts: { budgetStartedA
   }
   const summary = await runAutomationEngine(d, { ...DEFAULT_BUDGET, timeBudgetMs: budgetMs });
   if (summary.outcome === "SKIPPED") return { ...summary, pendingScheduled: 0, budgetMs };
+  // The activation gate is closed and nothing is held: nothing can run — no self-continuation, the note says why.
+  if (summary.note === "ACTIVATION_DISABLED") return { ...summary, pendingScheduled: 0, budgetMs };
   const pendingScheduled = await d.db.automationRunItem.count({ where: { status: "SCHEDULED" } });
   return { ...summary, pendingScheduled, budgetMs, deferred: summary.deferred + ((await work()) ? 1 : 0) };
 }
 
 function emptySummary(): EngineSummary {
-  return { outcome: "COMPLETE", automations: 0, facts: 0, runs: 0, claimed: 0, deduped: 0, scheduled: 0, sent: 0, suppressed: 0, cancelled: 0, failed: 0, dead: 0, halted: 0, autoPaused: 0, deferred: 0 };
+  return { outcome: "COMPLETE", automations: 0, facts: 0, runs: 0, claimed: 0, deduped: 0, scheduled: 0, sent: 0, suppressed: 0, cancelled: 0, failed: 0, dead: 0, halted: 0, autoPaused: 0, deferred: 0, recovered: 0, staleFacts: 0, errors: 0 };
 }

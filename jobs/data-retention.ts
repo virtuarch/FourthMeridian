@@ -32,11 +32,19 @@
  * after the rules, through the same system principal, and its failure never
  * affects them (reported as `commsDelivery`).
  *
+ * COMMS CENTER B2 (contract v1.1 §8.7) — AutomationRun is kept 90 days (parity with the
+ * ledger, O-9); its AutomationRunItems go with it by cascade (onDelete: Cascade). A run
+ * is deleted only once it is no longer RUNNING and holds no item that could still send
+ * (SCHEDULED / SENDING / FAILED-awaiting-retry). The item's dedupeKey names a recipient,
+ * so this window also bounds how long any DEDUPE_OPEN can hold (the engine never looks
+ * further back than AUTOMATION_RETENTION_DAYS either — N6). AutomationDefinition is kept.
+ *
  * NOT here, by decision: AuditLog (security evidence; product events already
  * have their own 13-month job), Notification (lib/notifications/cleanup.ts),
  * RateLimit (sweep-rate-limits), financial data of any kind.
  */
 
+import { AUTOMATION_RETENTION_DAYS } from "@/lib/notifications/automations/types";
 import { rollupClientFrom, runCommsDeliveryRollup, type CommsRollupResult, type PrismaRollupLike, type RollupClient } from "@/lib/notifications/delivery/rollup";
 
 const DAY_MS = 86_400_000;
@@ -46,7 +54,7 @@ export const RETENTION_MAX_BATCHES = 20;
 export type RetentionTable =
   | "userSession" | "aiInvocation" | "jobRun" | "refreshExecution" | "providerCall"
   | "plaidWebhookEvent" | "syncIssue" | "apiUsageCounter" | "betaAccessRequest"
-  | "betaAccessRequestEvent" | "dailyBrief";
+  | "betaAccessRequestEvent" | "dailyBrief" | "automationRun";
 
 export interface RetentionRule {
   table: RetentionTable;
@@ -87,6 +95,8 @@ export const RETENTION_RULES: readonly RetentionRule[] = [
     where: (c) => ({ receivedAt: { lt: c } }), orderBy: "receivedAt" },
   { table: "dailyBrief", what: "DailyBrief for days more than 90 days ago", days: 90,
     where: (c) => ({ briefDay: { lt: c } }), orderBy: "briefDay" },
+  { table: "automationRun", what: "AutomationRun (+ its AutomationRunItems by cascade) started more than 90 days ago, finished, with no item still able to send", days: AUTOMATION_RETENTION_DAYS,
+    where: (c) => ({ startedAt: { lt: c }, status: { not: "RUNNING" }, items: { none: { status: { in: ["SCHEDULED", "SENDING", "FAILED"] } } } }), orderBy: "startedAt" },
 ];
 
 export interface RetentionDelegate {

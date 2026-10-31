@@ -39,6 +39,29 @@
  *
  * LOOP PREVENTION: facts are domain AuditLog actions only (facts.ts refuses a
  * comms action); this module writes no AuditLog row and emits no domain event.
+ *
+ * HARDENING (review of #187 — A1–A9, N1–N11):
+ *   A1  the provider Idempotency-Key is the item id (no attempt suffix); every
+ *       post-send write is wrapped, so a bookkeeping failure never re-sends; an
+ *       expired SENDING lease whose ACCEPTED/CAPTURED ledger row exists is SENT,
+ *       never re-sent (step 0);
+ *   A2  the frequency cap counts this automation's own SENT items (written inline)
+ *       and, at ingest, its pending claims — the ledger is written after the
+ *       response and is blind within a pass;
+ *   A3  a per-trigger at-send predicate (factStillHolds): the membership / invite /
+ *       Space the fact describes still holds, else CANCELLED / OBSOLETE;
+ *   A4  ingest AND send require definitionSendable() (not protected, automatable,
+ *       same definitionVersion), else auto-pause DEFINITION_CHANGED;
+ *   A5  platform admission (COMMS_AUTOMATION_SEND) at trigger and before every
+ *       send: a denial SKIPS (nothing sent, nothing cancelled);
+ *   A6  the IN_APP leg dedupes against the EV-1 handler's bell for the same fact;
+ *   N1  the breaker counts SENT items + this pass's sends, before every send;
+ *   N2  facts younger than FACT_SETTLE_MS wait for the next wake;
+ *   N3  per-automation and per-item try/catch (`errors`);
+ *   N4  facts older than MAX_FACT_AGE_MS are skipped; items later than
+ *       MAX_SEND_LATENESS_MS are OBSOLETE; haltAll also cancels FAILED items;
+ *   N5  automations are taken least-recently-scanned first (cursor order);
+ *   N6  DEDUPE_OPEN never looks back further than the 90-day retention.
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -58,11 +81,12 @@ import { liveRenderFor, type LiveContentResolver } from "@/lib/notifications/con
 import { emailDataFor } from "@/lib/notifications/channels/email";
 import { FACT_SOURCES, readFact, readFactsAfter, type FactReadClient, type TriggerFact } from "./facts";
 import {
-  countsOf, emptyCounts, engineTriggerAvailable, evaluateConditions, fillDedupeKey, idempotencyKey, isServiceOwnData,
+  automatableChannels, countsOf, definitionSendable, emptyCounts, engineTriggerAvailable, evaluateConditions, fillDedupeKey, idempotencyKey, isServiceOwnData,
   lifecycleAllows, liveKey, retryDelayMs, type RecipientFacts,
 } from "./rules";
 import {
-  ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED, AUTOMATION_LIMITS, ERROR_RATE_BREAKER, GLOBAL_BREAKER, SEND_LEASE_MS,
+  ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED, AUTOMATION_LIMITS, AUTOMATION_RETENTION_DAYS, ERROR_RATE_BREAKER, FACT_SETTLE_MS, GLOBAL_BREAKER,
+  HANDLER_BELL_WINDOW, MAX_FACT_AGE_MS, MAX_SEND_LATENESS_MS, SEND_LEASE_MS,
   type AutomationChannel, type AutomationRunCounts, type Condition, type RetryPolicy, type RunItemStatus,
 } from "./types";
 
@@ -70,7 +94,10 @@ import {
 
 export type EngineDb = Pick<PrismaClient,
   "automationDefinition" | "automationRun" | "automationRunItem" | "auditLog" | "user" | "spaceMember"
-  | "platformGrant" | "notificationPreference" | "commsDelivery" | "space">;
+  | "platformGrant" | "notificationPreference" | "commsDelivery" | "space" | "spaceInvite" | "notification">;
+
+/** HARDENING A5 — the admission port's verdict (lib/notifications/automations/admission.ts in production). */
+export interface EngineAdmission { admitted: boolean; reason: string | null }
 
 export interface EngineDeps {
   db: EngineDb;
@@ -94,6 +121,11 @@ export interface EngineDeps {
   env: LedgerEnv;
   appBaseUrl: string | undefined;
   now(): Date;
+  /**
+   * HARDENING A5 — platform admission for COMMS_AUTOMATION_SEND (maintenance / an unreadable control
+   * plane deny). Asked at trigger (before ingest) and before every send. A throw counts as a denial.
+   */
+  admission(): Promise<EngineAdmission>;
   /** The ACTIVATION HARD GATE (types.ts); absent ⇒ the code constant. While false the engine sends nothing. */
   activationEnabled?: boolean;
   /** JobRun id to stamp on LIVE runs (lib/jobs/run.ts currentJobRun). */
@@ -129,6 +161,18 @@ export interface EngineSummary {
   autoPaused: number;
   /** > 0 ⇒ work was left for the next wake (the job self-continues). */
   deferred: number;
+  /** HARDENING A1 — expired SENDING leases whose provider acceptance was already recorded: marked SENT, not re-sent. */
+  recovered: number;
+  /** HARDENING N4 — facts skipped because they were older than MAX_FACT_AGE_MS when first read. */
+  staleFacts: number;
+  /** HARDENING N3 — units of work (an automation's scan, one item) that threw; the rest of the batch continued. */
+  errors: number;
+  /**
+   * Session 2's request — the pass did nothing because the ACTIVATION HARD GATE is closed and nothing is
+   * ACTIVE or pending. Reported as a NOTE (outcome COMPLETE), not a SKIPPED run: a skip would pin the ops
+   * overview's jobs domain at DEGRADED for as long as the gate stays closed by design.
+   */
+  note?: "ACTIVATION_DISABLED";
 }
 
 type AutomationRow = Awaited<ReturnType<EngineDb["automationDefinition"]["findFirstOrThrow"]>>;
@@ -151,7 +195,14 @@ export interface EvalInput {
   selfItemId?: string;
 }
 
-/** The §6.6 step-4 checks in order; null = eligible. Reads only (dedupe, frequency cap). */
+/**
+ * The §6.6 step-4 checks in order; null = eligible. Reads only (fact still holds, dedupe, frequency cap).
+ *
+ * Two phases: INGEST (no `selfItemId`) and SEND (the item's own id). The frequency cap counts,
+ * besides the ledger's LIVE ACCEPTED rows for the definition (registry / direct sends and other
+ * automations), this automation's OWN SENT items in the window (A2 — written inline, so a pass
+ * sees its own earlier sends), and at INGEST also its pending claims (they are about to send).
+ */
 export async function evaluateEligibility(db: EngineDb, e: EvalInput, now: Date): Promise<SuppressionReason | null> {
   if (!e.user) return "NO_RECIPIENT";
   if (e.user.deactivatedAt || e.user.deletionScheduledAt) return "ACCOUNT_RESTRICTED";
@@ -162,21 +213,77 @@ export async function evaluateEligibility(db: EngineDb, e: EvalInput, now: Date)
     e.lifecycle,
   );
   if (!allowed) return "BETA_LIFECYCLE";
+  // A3 — the state the fact describes still holds (membership, invite, Space).
+  if (!(await factStillHolds(db, e.fact, e.recipientId, now))) return "OBSOLETE";
   const dedupeKey = dedupeKeyFor(e);
   const open = await db.automationRunItem.count({
     where: {
       automationId: e.automation.id, dedupeKey, channel: e.channel,
       status: { in: ["SCHEDULED", "SENDING", "SENT", "FAILED"] },
+      // N6 — never older than the retention window (the run and its items are deleted then anyway).
+      createdAt: { gte: new Date(now.getTime() - AUTOMATION_RETENTION_DAYS * 86_400_000) },
       ...(e.selfItemId ? { id: { not: e.selfItemId } } : {}),
     },
   });
   if (open > 0) return "DEDUPE_OPEN";
-  const since = new Date(now.getTime() - e.automation.frequencyCapHours * 3_600_000);
-  const recent = await db.commsDelivery.count({
-    where: { recipientUserId: e.recipientId, definitionKey: e.def.key, channel: e.channel, status: "ACCEPTED", mode: "LIVE", createdAt: { gte: since } },
-  });
-  if (recent >= e.automation.frequencyCapMax) return "FREQUENCY_CAP";
+  if ((await frequencyCount(db, e, now)) >= e.automation.frequencyCapMax) return "FREQUENCY_CAP";
   return null;
+}
+
+/** A2 — sends of this definition to this recipient on this channel in the cap window (see evaluateEligibility). */
+async function frequencyCount(db: EngineDb, e: EvalInput, now: Date): Promise<number> {
+  const since = new Date(now.getTime() - e.automation.frequencyCapHours * 3_600_000);
+  const mine = { automationId: e.automation.id, recipientUserId: e.recipientId, channel: e.channel };
+  const ownSent = await db.automationRunItem.findMany({
+    where: { ...mine, status: "SENT", updatedAt: { gte: since } },
+    select: { id: true }, take: AUTOMATION_LIMITS.frequencyMaxCeiling + 1,
+  });
+  const pending = e.selfItemId ? 0 : await db.automationRunItem.count({ where: { ...mine, status: { in: ["SCHEDULED", "SENDING", "FAILED"] } } });
+  // The ledger rows of this automation's own sends are already counted above (never twice).
+  const ownIds = ownSent.map((r) => r.id);
+  const ledger = await db.commsDelivery.count({
+    where: {
+      recipientUserId: e.recipientId, definitionKey: e.def.key, channel: e.channel, status: "ACCEPTED", mode: "LIVE", createdAt: { gte: since },
+      ...(ownIds.length > 0 ? { OR: [{ automationRunItemId: null }, { automationRunItemId: { notIn: ownIds } }] } : {}),
+    },
+  });
+  return ownSent.length + pending + ledger;
+}
+
+/**
+ * A3 — PER-TRIGGER at-send predicate: is the state this fact describes still true? false ⇒ OBSOLETE.
+ * A delayed "your role changed" after the member was removed, an invitation reminder after the
+ * invite was accepted / declined / expired, anything about a trashed or deleted Space — never sent.
+ */
+export async function factStillHolds(db: EngineDb, fact: TriggerFact, recipientId: string, now: Date): Promise<boolean> {
+  if (!fact.spaceId || !fact.subjectUserId) return false;
+  const space = await db.space.findUnique({ where: { id: fact.spaceId }, select: { id: true, deletedAt: true } });
+  if (!space || space.deletedAt) return false;
+  const member = async (userId: string) =>
+    db.spaceMember.findFirst({ where: { spaceId: fact.spaceId!, userId, status: "ACTIVE" }, select: { role: true } });
+  switch (fact.triggerKey) {
+    case "space.member.invited": {
+      const inv = await db.spaceInvite.findFirst({ where: { spaceId: fact.spaceId, invitedUserId: fact.subjectUserId }, select: { status: true, expiresAt: true } });
+      return !!inv && inv.status === "PENDING" && (inv.expiresAt === null || inv.expiresAt > now);
+    }
+    case "space.member.joined": {
+      if (!(await member(fact.subjectUserId))) return false;
+      return recipientId === fact.subjectUserId || !!(await member(recipientId));
+    }
+    case "space.member.role_changed": {
+      const m = await member(fact.subjectUserId);
+      if (!m) return false;
+      const newRole = fact.payload.newRole;
+      if (typeof newRole === "string" && String(m.role) !== newRole) return false;
+      return recipientId === fact.subjectUserId || !!(await member(recipientId));
+    }
+    case "space.member.removed":
+      // Re-added since ⇒ "you were removed" is no longer true.
+      return !(await member(fact.subjectUserId));
+    default:
+      // A trigger without a predicate here is never sent (fail closed): add its predicate with its fact source.
+      return false;
+  }
 }
 
 export const dedupeKeyFor = (e: Pick<EvalInput, "automation" | "fact" | "recipientId">) =>
@@ -260,12 +367,15 @@ function engineLedgerRow(deps: EngineDeps, item: { id: string; recipientUserId: 
 // ── The pass ─────────────────────────────────────────────────────────────────
 
 function newSummary(): EngineSummary {
-  return { outcome: "COMPLETE", automations: 0, facts: 0, runs: 0, claimed: 0, deduped: 0, scheduled: 0, sent: 0, suppressed: 0, cancelled: 0, failed: 0, dead: 0, halted: 0, autoPaused: 0, deferred: 0 };
+  return { outcome: "COMPLETE", automations: 0, facts: 0, runs: 0, claimed: 0, deduped: 0, scheduled: 0, sent: 0, suppressed: 0, cancelled: 0, failed: 0, dead: 0, halted: 0, autoPaused: 0, deferred: 0, recovered: 0, staleFacts: 0, errors: 0 };
 }
 
 const isP2002 = (e: unknown) => typeof e === "object" && e !== null && (e as { code?: unknown }).code === "P2002";
 const asConditions = (v: unknown): Condition[] => (Array.isArray(v) ? (v as Condition[]) : []);
 const asResolver = (v: unknown): RecipientResolver => (typeof v === "object" && v !== null ? (v as RecipientResolver) : { kind: "EVENT_SUBJECT_USER" });
+/** One fixed, redacted line per swallowed error: the error CLASS only (a driver message can quote values). */
+const errName = (e: unknown) => (e instanceof Error ? e.name : "Error");
+const logOf = (deps: EngineDeps) => deps.log ?? ((l: string) => console.error(l));
 
 async function bumpRun(db: EngineDb, runId: string, f: (c: AutomationRunCounts) => void): Promise<void> {
   const run = await db.automationRun.findUnique({ where: { id: runId }, select: { counts: true } });
@@ -273,6 +383,11 @@ async function bumpRun(db: EngineDb, runId: string, f: (c: AutomationRunCounts) 
   const c = countsOf(run.counts);
   f(c);
   await db.automationRun.update({ where: { id: runId }, data: { counts: c as never } });
+}
+
+/** A1 — run counts are bookkeeping: a failure to bump them never fails (or repeats) a send. */
+async function safeBump(deps: EngineDeps, runId: string, f: (c: AutomationRunCounts) => void, s: EngineSummary): Promise<void> {
+  try { await bumpRun(deps.db, runId, f); } catch (e) { s.errors++; logOf(deps)(`[comms-automations] run counts not updated (non-fatal): ${errName(e)}`); }
 }
 
 /** Auto-pause ONE automation (system action: no operator, no audit row — v1 §5.8). Cancels its SCHEDULED items. */
@@ -288,12 +403,15 @@ async function autoPause(deps: EngineDeps, a: Pick<AutomationRow, "id" | "defini
   }
 }
 
-/** Cancel SCHEDULED items (one ledger row each). Bounded per call; the rest is cancelled at send time anyway. */
-export async function cancelScheduled(deps: EngineDeps, where: { automationId?: string }, reason: SuppressionReason, s?: EngineSummary): Promise<number> {
-  const items = await deps.db.automationRunItem.findMany({ where: { status: "SCHEDULED", ...where }, take: 500 });
+/**
+ * Cancel SCHEDULED items — and, for a run-level halt (N4), FAILED items awaiting a retry — one
+ * ledger row each. Bounded per call; anything left is cancelled at send time anyway.
+ */
+export async function cancelScheduled(deps: EngineDeps, where: { automationId?: string }, reason: SuppressionReason, s?: EngineSummary, statuses: readonly ("SCHEDULED" | "FAILED")[] = ["SCHEDULED"]): Promise<number> {
+  const items = await deps.db.automationRunItem.findMany({ where: { status: { in: [...statuses] }, ...where }, take: 500 });
   let n = 0;
   for (const it of items) {
-    const r = await deps.db.automationRunItem.updateMany({ where: { id: it.id, status: "SCHEDULED" }, data: { status: "CANCELLED", reason, leaseUntil: null, lastDeliveryStatus: "CANCELLED" } });
+    const r = await deps.db.automationRunItem.updateMany({ where: { id: it.id, status: it.status }, data: { status: "CANCELLED", reason, leaseUntil: null, nextAttemptAt: null, lastDeliveryStatus: "CANCELLED", updatedAt: deps.now() } });
     if (r.count !== 1) continue;
     n++;
     const def = getCatalogDefinition((await deps.db.automationDefinition.findUnique({ where: { id: it.automationId }, select: { definitionKey: true } }))?.definitionKey ?? "");
@@ -304,12 +422,66 @@ export async function cancelScheduled(deps: EngineDeps, where: { automationId?: 
   return n;
 }
 
-/** Halt every RUNNING LIVE run and cancel every SCHEDULED item (freeze / global breaker). */
+/** Halt every RUNNING LIVE run and cancel every SCHEDULED item and every FAILED item awaiting retry (freeze / global breaker). */
 async function haltAll(deps: EngineDeps, reason: "PROVIDER_FREEZE" | "STORM_BREAKER", s: EngineSummary): Promise<void> {
   const now = deps.now();
   const runs = await deps.db.automationRun.updateMany({ where: { mode: "LIVE", status: "RUNNING" }, data: { status: "HALTED", haltReason: reason, completedAt: now } });
   s.halted += runs.count;
-  await cancelScheduled(deps, {}, reason, s);
+  await cancelScheduled(deps, {}, reason, s, ["SCHEDULED", "FAILED"]);
+}
+
+/** A5 — the admission port, fail closed (a throw is a denial). */
+async function admitted(deps: EngineDeps): Promise<EngineAdmission> {
+  try { return await deps.admission(); } catch { return { admitted: false, reason: "UNAVAILABLE" }; }
+}
+
+/** N1 — accepted automation sends in the breaker window: the engine's own SENT items (written inline, so never blind). */
+async function breakerCount(db: EngineDb, now: Date): Promise<number> {
+  const since = new Date(now.getTime() - GLOBAL_BREAKER.windowMinutes * 60_000);
+  return db.automationRunItem.count({ where: { status: "SENT", lastDeliveryStatus: "ACCEPTED", updatedAt: { gte: since } } });
+}
+
+async function tripBreaker(deps: EngineDeps, accepted: number, s: EngineSummary): Promise<void> {
+  const active = await deps.db.automationDefinition.findMany({ where: { state: "ACTIVE" }, select: { id: true, definitionKey: true } });
+  for (const a of active) await autoPause(deps, a, "STORM_BREAKER", s);
+  await haltAll(deps, "STORM_BREAKER", s);
+  try { await deps.alert?.("COMMS_AUTOMATION_STORM_BREAKER", { accepted, paused: s.autoPaused }); } catch { /* an alert failure never fails the pass */ }
+}
+
+/**
+ * Step 0 (A1) — an expired SENDING lease: if the provider's acceptance was already RECORDED for
+ * this item (an ACCEPTED / CAPTURED ledger row tagged with it), the send happened and only the
+ * bookkeeping was lost (finish threw, or the function was killed at its limit) ⇒ SENT, never
+ * re-sent. Otherwise it returns to SCHEDULED; the re-send carries the SAME provider
+ * Idempotency-Key (the item id), so a provider acceptance the ledger never saw is not repeated.
+ */
+async function recoverLeases(deps: EngineDeps, s: EngineSummary): Promise<void> {
+  const db = deps.db;
+  const now = deps.now();
+  const expired = await db.automationRunItem.findMany({ where: { status: "SENDING", leaseUntil: { lt: now } }, take: 500 });
+  for (const it of expired) {
+    try {
+      const done = await db.commsDelivery.findFirst({
+        where: { automationRunItemId: it.id, status: { in: ["ACCEPTED", "CAPTURED"] } },
+        select: { status: true },
+      });
+      if (done) {
+        const r = await db.automationRunItem.updateMany({
+          where: { id: it.id, status: "SENDING" },
+          data: { status: "SENT", reason: null, leaseUntil: null, lastDeliveryStatus: done.status, nextAttemptAt: null, updatedAt: now },
+        });
+        if (r.count === 1) {
+          s.recovered++;
+          await safeBump(deps, it.runId, (c) => { if (done.status === "ACCEPTED") c.accepted++; else c.captured++; }, s);
+        }
+      } else {
+        await db.automationRunItem.updateMany({ where: { id: it.id, status: "SENDING" }, data: { status: "SCHEDULED", leaseUntil: null } });
+      }
+    } catch (e) {
+      s.errors++;
+      logOf(deps)(`[comms-automations] lease recovery failed for one item (retried next wake): ${errName(e)}`);
+    }
+  }
 }
 
 export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget = DEFAULT_BUDGET): Promise<EngineSummary> {
@@ -317,6 +489,7 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
   const started = deps.now().getTime();
   const outOfTime = () => deps.now().getTime() - started > budget.timeBudgetMs;
   const db = deps.db;
+  const done = (): EngineSummary => ({ ...s, outcome: s.deferred > 0 || s.errors > 0 ? "PARTIAL" : "COMPLETE" });
 
   // The ACTIVATION HARD GATE: while activation is disabled the engine WRITES NOTHING and
   // SENDS NOTHING — even if an ACTIVE row or a pending item exists (it never should).
@@ -329,11 +502,12 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
       (deps.log ?? ((l: string) => console.warn(l)))(`[comms-automations] activation is disabled (${ACTIVATION_DISABLED_REASON}): ${active} ACTIVE automation(s), ${pending} pending item(s) held; nothing sent`);
       return { ...s, outcome: "SKIPPED", skipReason: ACTIVATION_DISABLED_REASON };
     }
-    return s;
+    // Nothing to hold: a COMPLETE run that SAYS the engine is off (never read as "working").
+    return { ...s, note: "ACTIVATION_DISABLED" };
   }
 
-  // 0. Resume: expired leases go back to SCHEDULED (a crash mid-send never strands an item).
-  await db.automationRunItem.updateMany({ where: { status: "SENDING", leaseUntil: { lt: deps.now() } }, data: { status: "SCHEDULED", leaseUntil: null } });
+  // 0. Resume: expired leases — SENT when the acceptance was recorded (A1), otherwise back to SCHEDULED.
+  await recoverLeases(deps, s);
 
   // 1. The GLOBAL cost freeze halts live runs (D1) — before anything is resolved or sent.
   let fr: GlobalCostFreezeVerdict;
@@ -343,41 +517,36 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
     return { ...s, outcome: "SKIPPED", skipReason: `BILLABLE_${fr.reason ?? "POLICY_UNAVAILABLE"}` };
   }
 
-  // 2. The global breaker (v1.1 §6.7).
-  const windowStart = new Date(deps.now().getTime() - GLOBAL_BREAKER.windowMinutes * 60_000);
-  const accepted = await db.commsDelivery.count({ where: { automationRunItemId: { not: null }, status: "ACCEPTED", mode: "LIVE", createdAt: { gte: windowStart } } });
+  // 1b. Platform ADMISSION at trigger (A5, §6.6 at-trigger step 4): maintenance / an unreadable
+  // control plane ⇒ the pass is SKIPPED — nothing ingested, nothing sent, nothing cancelled (a
+  // maintenance window is transient; items keep their schedule and are re-judged at send).
+  const adm = await admitted(deps);
+  if (!adm.admitted) return { ...s, outcome: "SKIPPED", skipReason: `ADMISSION_${adm.reason ?? "UNAVAILABLE"}` };
+
+  // 2. The global breaker (v1.1 §6.7; N1 — counted from the engine's own SENT items).
+  const accepted = await breakerCount(db, deps.now());
   if (accepted > GLOBAL_BREAKER.maxAccepted) {
-    const active = await db.automationDefinition.findMany({ where: { state: "ACTIVE" }, select: { id: true, definitionKey: true } });
-    for (const a of active) await autoPause(deps, a, "STORM_BREAKER", s);
-    await haltAll(deps, "STORM_BREAKER", s);
-    try { await deps.alert?.("COMMS_AUTOMATION_STORM_BREAKER", { accepted, paused: s.autoPaused }); } catch { /* an alert failure never fails the pass */ }
+    await tripBreaker(deps, accepted, s);
     return { ...s, outcome: "PARTIAL" };
   }
 
-  // 3. Ingest.
-  const active = await db.automationDefinition.findMany({ where: { state: "ACTIVE" }, orderBy: [{ activatedAt: "asc" }, { id: "asc" }], take: budget.maxAutomations + 1 });
+  // 3. Ingest — least-recently-scanned first (N5): a completed scan moves an automation's cursor
+  // to the scan bound, so the next pass starts with the ones that were not reached.
+  const active = await db.automationDefinition.findMany({
+    where: { state: "ACTIVE" },
+    orderBy: [{ triggerCursorAt: "asc" }, { id: "asc" }],
+    take: budget.maxAutomations + 1,
+  });
   if (active.length > budget.maxAutomations) s.deferred++;
   for (const a of active.slice(0, budget.maxAutomations)) {
     if (outOfTime()) { s.deferred++; break; }
     s.automations++;
-    const def = getCatalogDefinition(a.definitionKey);
-    if (!def || def.definitionVersion !== a.definitionVersion) { await autoPause(deps, a, "DEFINITION_CHANGED", s); continue; }
-    const trigger = a.triggerKey as TriggerFact["triggerKey"];
-    if (!engineTriggerAvailable(trigger) || !FACT_SOURCES[trigger]) { await autoPause(deps, a, "TRIGGER_RETIRED", s); continue; }
-    if (await errorRateTripped(db, a.id, deps.now())) { await autoPause(deps, a, "ERROR_RATE", s); continue; }
-    const cursor = { at: a.triggerCursorAt ?? a.activatedAt ?? deps.now(), id: a.triggerCursorId };
-    const facts = await readFactsAfter(db as unknown as FactReadClient, trigger, cursor, budget.maxFactsPerAutomation);
-    if (facts.length === budget.maxFactsPerAutomation) s.deferred++;
-    for (const fact of facts) {
-      if (outOfTime()) { s.deferred++; break; }
-      s.facts++;
-      const stop = await ingestFact(deps, a, def, fact, s);
-      // Advance the cursor ONLY while this activation is still the live one (a pause / re-activation resets it).
-      await db.automationDefinition.updateMany({
-        where: { id: a.id, state: "ACTIVE", activatedVersion: a.activatedVersion },
-        data: { triggerCursorAt: fact.occurredAt, triggerCursorId: fact.ref },
-      });
-      if (stop) break;
+    try {
+      await ingestAutomation(deps, a, budget, s, outOfTime);
+    } catch (e) {
+      // N3 — one automation's failure never aborts the others.
+      s.errors++;
+      logOf(deps)(`[comms-automations] ingest failed for one automation (the others continue): ${errName(e)}`);
     }
   }
 
@@ -393,10 +562,63 @@ export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget
   const lifecycle = await deps.lifecycle([...new Set(batch.map((i) => i.recipientUserId).filter((x): x is string => !!x))]);
   for (const item of batch) {
     if (outOfTime()) { s.deferred++; break; }
-    await deliverItem(deps, item, lifecycle, s);
+    // A5 — admission again before EVERY send (a maintenance declared mid-pass stops the rest).
+    const at = await admitted(deps);
+    if (!at.admitted) { s.deferred++; return { ...s, outcome: "SKIPPED", skipReason: `ADMISSION_${at.reason ?? "UNAVAILABLE"}` }; }
+    // N1 — the breaker before every send: the window's SENT items (this pass's included, written inline).
+    const n = await breakerCount(db, deps.now());
+    if (n > GLOBAL_BREAKER.maxAccepted) { await tripBreaker(deps, n, s); return { ...s, outcome: "PARTIAL" }; }
+    try {
+      await deliverItem(deps, item, lifecycle, s);
+    } catch (e) {
+      // N3 — one item's failure never aborts the batch; an item left SENDING is recovered by its lease (A1).
+      s.errors++;
+      logOf(deps)(`[comms-automations] delivery failed for one item (its lease recovers it): ${errName(e)}`);
+    }
   }
+  return done();
+}
 
-  return { ...s, outcome: s.deferred > 0 ? "PARTIAL" : "COMPLETE" };
+/** Ingest ONE automation's new facts (bounded). Throws only on an unexpected store error (the caller isolates it). */
+async function ingestAutomation(deps: EngineDeps, a: AutomationRow, budget: EngineBudget, s: EngineSummary, outOfTime: () => boolean): Promise<void> {
+  const db = deps.db;
+  const def = getCatalogDefinition(a.definitionKey);
+  // A4 — protected / no longer automatable / a moved definitionVersion ⇒ DEFINITION_CHANGED.
+  if (definitionSendable(def, a.definitionVersion) !== null || !def) { await autoPause(deps, a, "DEFINITION_CHANGED", s); return; }
+  const trigger = a.triggerKey as TriggerFact["triggerKey"];
+  if (!engineTriggerAvailable(trigger) || !FACT_SOURCES[trigger]) { await autoPause(deps, a, "TRIGGER_RETIRED", s); return; }
+  if (await errorRateTripped(db, a.id, deps.now())) { await autoPause(deps, a, "ERROR_RATE", s); return; }
+  const cursor = { at: a.triggerCursorAt ?? a.activatedAt ?? deps.now(), id: a.triggerCursorId };
+  // N2 — only facts that have had FACT_SETTLE_MS to commit: a late-committing row is never jumped by the cursor.
+  const until = new Date(deps.now().getTime() - FACT_SETTLE_MS);
+  if (until.getTime() < cursor.at.getTime()) return;
+  const facts = await readFactsAfter(db as unknown as FactReadClient, trigger, cursor, budget.maxFactsPerAutomation, until);
+  const full = facts.length === budget.maxFactsPerAutomation;
+  if (full) s.deferred++;
+  const advance = (at: Date, id: string | null) => db.automationDefinition.updateMany({
+    // Advance the cursor ONLY while this activation is still the live one (a pause / re-activation resets it).
+    where: { id: a.id, state: "ACTIVE", activatedVersion: a.activatedVersion },
+    data: { triggerCursorAt: at, triggerCursorId: id },
+  });
+  let stopped = false;
+  let interrupted = false;
+  for (const fact of facts) {
+    if (outOfTime()) { s.deferred++; interrupted = true; break; }
+    s.facts++;
+    // N4 — a fact first read long after it happened (a backlog after a freeze / maintenance) is skipped.
+    if (deps.now().getTime() - fact.occurredAt.getTime() > MAX_FACT_AGE_MS) {
+      s.staleFacts++;
+      await advance(fact.occurredAt, fact.ref);
+      continue;
+    }
+    const stop = await ingestFact(deps, a, def, fact, s);
+    await advance(fact.occurredAt, fact.ref);
+    if (stop) { stopped = true; break; }
+  }
+  // N5 — the scan read everything up to `until`: the cursor moves to the bound, so this automation
+  // goes to the back of the next pass's order. (A fact exactly AT the bound may be re-read; its
+  // liveKey run makes that a no-op.)
+  if (!full && !stopped && !interrupted) await advance(until, null);
 }
 
 async function errorRateTripped(db: EngineDb, automationId: string, now: Date): Promise<boolean> {
@@ -488,6 +710,20 @@ async function ingestFact(deps: EngineDeps, a: AutomationRow, def: CommsDefiniti
   return false;
 }
 
+/** A6 — the EV-1 handler already rang this bell for this fact (same type, recipient, Space; no auditLogId; around the fact). */
+async function handlerBellExists(db: EngineDb, type: string, userId: string, fact: TriggerFact): Promise<boolean> {
+  const at = fact.occurredAt.getTime();
+  const bell = await db.notification.findFirst({
+    where: {
+      userId, type, auditLogId: null,
+      ...(fact.spaceId ? { spaceId: fact.spaceId } : {}),
+      createdAt: { gte: new Date(at - HANDLER_BELL_WINDOW.beforeMs), lte: new Date(at + HANDLER_BELL_WINDOW.afterMs) },
+    },
+    select: { id: true },
+  });
+  return bell !== null;
+}
+
 /** Deliver (or cancel) ONE due item. Never throws for a send outcome. */
 async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<string, UserLifecycleState>, s: EngineSummary): Promise<void> {
   const db = deps.db;
@@ -501,10 +737,11 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
   const attempt = item.attempt + 1;
   const cur = { ...item, attempt };
 
+  // `updatedAt` is written with the ENGINE clock: the frequency cap and the breaker window read it (A2, N1).
   const finish = async (status: RunItemStatus, data: { reason?: SuppressionReason | null; lastDeliveryStatus: string; nextAttemptAt?: Date | null }) => {
     await db.automationRunItem.update({
       where: { id: item.id },
-      data: { status, reason: data.reason ?? null, leaseUntil: null, lastDeliveryStatus: data.lastDeliveryStatus, nextAttemptAt: data.nextAttemptAt ?? null },
+      data: { status, reason: data.reason ?? null, leaseUntil: null, lastDeliveryStatus: data.lastDeliveryStatus, nextAttemptAt: data.nextAttemptAt ?? null, updatedAt: now },
     });
   };
 
@@ -513,21 +750,43 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
   const cancel = async (reason: SuppressionReason) => {
     await finish("CANCELLED", { reason, lastDeliveryStatus: "CANCELLED" });
     if (def) await recordDelivery(deps.ledger, engineLedgerRow(deps, cur, def, "CANCELLED", reason));
-    await bumpRun(db, item.runId, (c) => { c.cancelled++; });
+    await safeBump(deps, item.runId, (c) => { c.cancelled++; }, s);
     s.cancelled++;
   };
   const suppress = async (reason: SuppressionReason, ledgerWritten: boolean) => {
     await finish("SUPPRESSED", { reason, lastDeliveryStatus: "SUPPRESSED" });
     if (def && !ledgerWritten) await recordDelivery(deps.ledger, engineLedgerRow(deps, cur, def, "SUPPRESSED", reason));
-    await bumpRun(db, item.runId, (c) => { c.suppressed[reason]++; });
+    await safeBump(deps, item.runId, (c) => { c.suppressed[reason]++; }, s);
     s.suppressed++;
+  };
+  /**
+   * A1 — AFTER the provider (or createNotification) accepted: the bookkeeping may fail, but it must
+   * never make the item sendable again. A failed finish leaves it SENDING under its lease; step 0 of a
+   * later pass finds the ACCEPTED ledger row and marks it SENT (and a re-send would carry the same
+   * provider Idempotency-Key anyway).
+   */
+  const delivered = async (lastDeliveryStatus: "ACCEPTED" | "CAPTURED") => {
+    s.sent++;
+    try { await finish("SENT", { lastDeliveryStatus }); } catch (e) {
+      s.errors++;
+      logOf(deps)(`[comms-automations] a delivered item could not be marked SENT (its lease recovers it; never re-sent): ${errName(e)}`);
+      return;
+    }
+    await safeBump(deps, item.runId, (c) => { if (lastDeliveryStatus === "ACCEPTED") c.accepted++; else c.captured++; }, s);
   };
 
   // ── Re-evaluate everything, freshly (§6.6 at-send step 2) ──
-  if (!a || !def || a.state !== "ACTIVE" || a.activatedVersion !== item.automationVersion) return cancel("AUTOMATION_PAUSED");
+  if (!a || a.state !== "ACTIVE" || a.activatedVersion !== item.automationVersion) return cancel("AUTOMATION_PAUSED");
+  // A4 — the definition must still be sendable at the version the automation was validated against.
+  if (definitionSendable(def, a.definitionVersion) !== null || !def || !automatableChannels(def).includes(item.channel as AutomationChannel)) {
+    await autoPause(deps, a, "DEFINITION_CHANGED", s);
+    return cancel("AUTOMATION_PAUSED");
+  }
   let fr: GlobalCostFreezeVerdict;
   try { fr = await deps.freeze(); } catch { fr = { frozen: true, state: "UNAVAILABLE", reason: "POLICY_UNAVAILABLE" }; }
   if (fr.frozen) return cancel("PROVIDER_FREEZE");
+  // N4 — far past its time (a backlog after a freeze / maintenance): what it says is no longer timely.
+  if (now.getTime() - item.notBefore.getTime() > MAX_SEND_LATENESS_MS) return cancel("OBSOLETE");
   if (!item.recipientUserId || !item.triggerRef) return cancel("NO_RECIPIENT");
   const fact = await readFact(db as unknown as FactReadClient, a.triggerKey as TriggerFact["triggerKey"], item.triggerRef);
   if (!fact) return cancel("OBSOLETE");
@@ -552,7 +811,7 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
   const failed = async () => {
     if (nextDelay === null) {
       await finish("DEAD", { lastDeliveryStatus: "DEAD" });
-      await bumpRun(db, item.runId, (c) => { c.failed++; });
+      await safeBump(deps, item.runId, (c) => { c.failed++; }, s);
       s.dead++;
     } else {
       await finish("FAILED", { lastDeliveryStatus: "FAILED", nextAttemptAt: new Date(now.getTime() + nextDelay) });
@@ -561,16 +820,13 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
   };
 
   if (channel === "IN_APP") {
+    // A6 — the EV-1 handler delivers this definition too: never a second bell for the same fact.
+    if (await handlerBellExists(db, type, item.recipientUserId, fact)) return suppress("DEDUPE_OPEN", false);
     const res = await deps.createNotification(
       { type, userId: item.recipientUserId, spaceId: fact.spaceId, data, auditLogId: fact.ref },
       { inAppOnly: true, ledgerTag: { messageKey: item.id, automationRunItemId: item.id, attempt }, ledger: deps.ledger, content: deps.content },
     );
-    if (res.status === "created") {
-      await finish("SENT", { lastDeliveryStatus: "ACCEPTED" });
-      await bumpRun(db, item.runId, (c) => { c.accepted++; });
-      s.sent++;
-      return;
-    }
+    if (res.status === "created") return delivered("ACCEPTED");
     // createNotification recorded these outcomes itself (tagged with this item).
     if (res.status === "suppressed") return suppress("DEDUPE_OPEN", true);
     if (res.status === "skipped") return suppress("PREFERENCE_OFF", true);
@@ -603,13 +859,10 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
     ...(nextDelay === null ? { terminalOnError: true } : {}),
     ...(contentVersionId ? { contentVersionId } : {}),
     automationRunItemId: item.id,
+    // A1 — the provider Idempotency-Key is the ITEM (no attempt suffix): every attempt of one item is one message.
+    idempotencyKey: item.id,
   });
-  if (result.status === "sent" || result.status === "captured") {
-    await finish("SENT", { lastDeliveryStatus: result.status === "sent" ? "ACCEPTED" : "CAPTURED" });
-    await bumpRun(db, item.runId, (c) => { if (result.status === "sent") c.accepted++; else c.captured++; });
-    s.sent++;
-    return;
-  }
+  if (result.status === "sent" || result.status === "captured") return delivered(result.status === "sent" ? "ACCEPTED" : "CAPTURED");
   // The storm limit (RATE_LIMITED / RATE_LIMIT_UNVERIFIED): SUPPRESSED, never retried. sendEmail recorded the row.
   if (result.status === "skipped") return suppress(result.reason ?? "NO_RECIPIENT", true);
   return failed();

@@ -36,6 +36,13 @@ export interface EmailMessage {
   text: string;
   /** Optional HTML body, rendered from the same blocks as `text`. */
   html?: string;
+  /**
+   * Comms Center B2 HARDENING A1 — the provider idempotency key (Resend: the `Idempotency-Key`
+   * header). The same key within the provider's window is accepted ONCE: a re-send after a crash
+   * that followed the provider's acceptance returns the original answer and sends nothing.
+   * Never derived from the address, subject or body.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -109,6 +116,8 @@ export interface EmailSendContext {
   mode?: "LIVE" | "TEST";
   /** Comms Center B2 — the automation claim row this send belongs to (AutomationRunItem.id). */
   automationRunItemId?: string;
+  /** Comms Center B2 HARDENING A1 — forwarded to the provider as its idempotency key (EmailMessage.idempotencyKey). */
+  idempotencyKey?: string;
 }
 
 /**

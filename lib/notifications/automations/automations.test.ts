@@ -180,6 +180,10 @@ async function main(): Promise<void> {
     && Object.values(lc).filter((v: any) => v.withheld === true).length === 1 && Object.values(lc).every((v: any) => v.value === 0 || v.value === null)
     && audits("COMMS_AUTOMATION_DRY_RUN").length === 1, dry.body.result);
   check("…and the examples are SYNTHETIC (no real name or Space)", JSON.stringify(dry.body.result.examples).indexOf("cust1") === -1 && dry.body.result.examples.length >= 1);
+  // HARDENING A6 — MEMBER_ROLE_CHANGED already has an EV-1 producer: the dry run, the detail and the owner-approval audit say so.
+  check("HARDENING A6: the dry-run result, the detail and the owner-approval audit carry overlapsExistingDelivery: true (an EV-1 handler already delivers it)",
+    dry.body.result.overlapsExistingDelivery === true && approved.body.result.overlapsExistingDelivery === true
+    && (audits("COMMS_AUTOMATION_OWNER_APPROVED")[0].metadata as any).overlapsExistingDelivery === true, { dry: dry.body.result.overlapsExistingDelivery, det: approved.body.result.overlapsExistingDelivery });
   const one = await call(DRY.POST, `/automations/${id}/dry-run`, C.write, "POST", { reason: REASON, body: { sample: { triggerRef: "nope_ref" } } }, { id });
   check("a single unknown triggerRef ⇒ 404 (nothing recorded)", one.status === 404 && fake.rows("AutomationRun", { mode: "DRY_RUN" }).length === 1);
 
@@ -253,7 +257,7 @@ async function main(): Promise<void> {
     const view = await call(ONE.GET, `/automations/${did}`, C.control, "GET", undefined, { id: did });
     check("customerFacing is read from the LIVE definition (true), not the stored false — so OWNER_APPROVAL_REQUIRED applies",
       view.body.customerFacing === true && view.body.activationBlockers.includes("OWNER_APPROVAL_REQUIRED") && view.body.activationBlockers.includes("DEFINITION_CHANGED"), view.body.activationBlockers);
-    const pure = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: codeV, triggerKey: "space.member.role_changed", customerFacing: false, ownerApprovedVersion: null, ownerApprovedDefinitionVersion: null, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false } },
+    const pure = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: codeV, triggerKey: "space.member.role_changed", customerFacing: false, ownerApprovedVersion: null, ownerApprovedDefinitionVersion: null, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false, window: true } },
       getCatalogDefinition("MEMBER_ROLE_CHANGED")!, new Date());
     check("a stored customerFacing=false never skips the owner-approval gate when the code definition is customer-facing", pure.includes("OWNER_APPROVAL_REQUIRED"), pure);
     const fix = await call(ONE.PATCH, `/automations/${did}`, C.write, "PATCH", { reason: REASON, expectedVersion: 3, body: {} }, { id: did });
@@ -337,12 +341,12 @@ async function main(): Promise<void> {
   console.log("5. activation preconditions (v1.1 §6.3)");
   const sf = await call(LIST.POST, "/automations", C.write, "POST", { reason: REASON, body: { triggerKey: "plaid.item.sync_failed", definitionKey: "SYNC_FAILED", name: "x", recipient: { kind: "EVENT_SUBJECT_USER" } } });
   check("a trigger with no engine fact source ⇒ TRIGGER_NOT_AVAILABLE among the blockers (draft allowed, activation never)", sf.status === 201 && sf.body.result.activationBlockers.includes("TRIGGER_NOT_AVAILABLE"), sf.body);
-  const mkt = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false } },
+  const mkt = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false, window: true } },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, consentClass: "MARKETING", definitionVersion: 1 }, new Date());
   check("MARKETING ⇒ MARKETING_NOT_IN_V1 (no marketing in v1)", mkt.includes("MARKETING_NOT_IN_V1"), mkt);
-  const stale = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(Date.now() - 8 * 86_400_000), wouldExceedMaxRecipients: false } },
+  const stale = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(Date.now() - 8 * 86_400_000), wouldExceedMaxRecipients: false, window: true } },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, definitionVersion: 1 }, new Date());
-  const over = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: true } },
+  const over = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: true, window: true } },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, definitionVersion: 1 }, new Date());
   const codeMoved = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: null },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, definitionVersion: 2 }, new Date());
@@ -378,7 +382,11 @@ async function main(): Promise<void> {
   // ── 6. test send ──────────────────────────────────────────────────────────
   console.log("6. test send (v1.1 §6.9): SELF only; outside Production only when allowlisted; typed 422 guards");
   const outbox: EmailMessage[] = [];
-  const provider = { name: "resend", send: async (m: EmailMessage) => { outbox.push(m); return { status: "sent" as const, id: `re_${outbox.length}`, provider: "resend" }; } };
+  let providerFail = false;
+  const provider = { name: "resend", send: async (m: EmailMessage) => {
+    outbox.push(m);
+    return providerFail ? { status: "error" as const, provider: "resend", error: "provider 500" } : { status: "sent" as const, id: `re_${outbox.length}`, provider: "resend" };
+  } };
   const capture = { name: "capture", send: async (m: EmailMessage) => { outbox.push(m); return { status: "captured" as const, provider: "capture" }; } };
   const ledger = async (row: any) => { await (fake.delegate("CommsDelivery") as any).createMany({ data: [row] }); };
   let env: Record<string, string> = { VERCEL: "1", VERCEL_ENV: "production" };
@@ -426,6 +434,21 @@ async function main(): Promise<void> {
     prodSend.status === 200 && prodSend.body.result.status === "ACCEPTED" && last.to === "op_write@example.invalid" && last.subject.startsWith("[TEST] ")
     && fake.rows("CommsDelivery", { messageKey: prodSend.body.result.deliveryId, mode: "TEST" }).length === 1 && stormReads === 0
     && (audits("COMMS_TEST_SEND").at(-1)!.metadata as any).reason.code === "DOGFOOD" && (audits("COMMS_TEST_SEND").at(-1)!.metadata as any).recipient === "SELF", { b: prodSend.body, subject: last.subject });
+  {
+    // HARDENING N11 — the attempt row precedes the send; a second row records the REAL outcome.
+    const rows = audits("COMMS_TEST_SEND").filter((r) => (r.metadata as any).deliveryId === prodSend.body.result.deliveryId);
+    const [attemptRow, outcomeRow] = rows.map((r) => r.metadata as any);
+    check("HARDENING N11: a test send writes the ATTEMPT row first, then an OUTCOME row with the real outcome (ACCEPTED ⇒ SUCCESS), the reason on both",
+      rows.length === 2 && attemptRow.phase === "ATTEMPT" && outcomeRow.phase === "OUTCOME" && outcomeRow.outcome === "ACCEPTED" && outcomeRow.result === "SUCCESS"
+      && outcomeRow.attemptAuditLogId === prodSend.body.auditLogId && outcomeRow.reason.code === "DOGFOOD", rows.map((r) => r.metadata));
+    const failAt = outbox.length;
+    providerFail = true;
+    const failed = await ts(tsBody({}));
+    providerFail = false;
+    const fr = audits("COMMS_TEST_SEND").filter((r) => (r.metadata as any).deliveryId === failed.body.result?.deliveryId).map((r) => r.metadata as any);
+    check("…a provider failure is recorded as result FAILURE / outcome FAILED (never a SUCCESS for a send that did not happen)",
+      failed.status === 200 && failed.body.result.status === "FAILED" && fr.length === 2 && fr[1].result === "FAILURE" && fr[1].outcome === "FAILED" && outbox.length >= failAt, { b: failed.body, fr });
+  }
   const prot2 = await ts({ reason: REASON, body: { key: "PASSWORD_RESET_LINK_SENT", channel: "EMAIL", versionId: "v1" } });
   check("versionId on a PROTECTED key ⇒ 409 PROTECTED", prot2.status === 409 && prot2.body.code === "PROTECTED");
   const protCode = await ts({ reason: REASON, body: { key: "PASSWORD_RESET_LINK_SENT", channel: "EMAIL" } });

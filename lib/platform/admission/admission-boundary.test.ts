@@ -108,6 +108,10 @@ const PRODUCERS = [
   // called Alchemy / Esplora / CoinGecko every 15 minutes with NO admission at
   // all: a maintenance or ingestion pause did not stop it.
   { file: "jobs/sol-history-backfill.ts",                 migrated: true, note: "the history backfill worker (all chains, all passes)" },
+  // COMMS B2 HARDENING A5 (2026-10-31) — NOT refresh work: the COMMS_AUTOMATION_SEND work class.
+  // The one reader the automation engine consults at trigger (before ingest) and at send (before
+  // every lease): maintenance stops operator-configured sends, nothing is sent, the job SKIPS.
+  { file: "lib/notifications/automations/admission.ts",  migrated: true, note: "comms automation gate (COMMS_AUTOMATION_SEND) — maintenance stops automation sends" },
 ] as const;
 
 /**
@@ -260,7 +264,8 @@ function main() {
     // ARCH-007 (2026-10-22): 12 → 11 — POST /api/plaid/sync was deleted (no consumer).
     // P1 (2026-10-23): 11 → 12 — the paid AI gate (PAID_AI_REQUEST).
     // BETA LIFECYCLE L2 (2026-10-31): 13 → 14 — the history backfill worker.
-    check("the census holds all fourteen known consumers", (PRODUCERS.length as number) === 14);
+    // COMMS B2 HARDENING A5 (2026-10-31): 14 → 15 — the comms automation gate.
+    check("the census holds all fifteen known consumers", (PRODUCERS.length as number) === 15);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]

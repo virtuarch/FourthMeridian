@@ -147,6 +147,18 @@ check("every RETAINED entry still names a real column (no stale documentation)",
   Object.keys(RETAINED).filter((k) => !columns.some((c) => `${c.model}.${c.column}` === k)).join());
 check("every user-keyed column is classified", unclassified.length === 0, unclassified.join(", "));
 
+// COMMS CENTER B2 HARDENING A9 — DERIVED identifier columns. Not user-keyed by NAME (the
+// parser above cannot see them), but filled from a template that must name the recipient's
+// id, so each must be scrubbed EXPLICITLY by the purge (delegate + column named there).
+const DERIVED_USER_COLUMNS: ReadonlyArray<{ model: string; column: string; why: string }> = [
+  { model: "AutomationRunItem", column: "dedupeKey", why: "filled from a dedupe template that must include {recipientId}" },
+];
+for (const d of DERIVED_USER_COLUMNS) {
+  const body = models.find(([, m]) => m === d.model)?.[2] ?? "";
+  check(`${d.model}.${d.column} exists in the schema (derived-identifier census target is real)`, new RegExp(`^\\s*${d.column}\\s+String`, "m").test(body));
+  check(`${d.model}.${d.column} (${d.why}) is scrubbed explicitly by the purge`, explicit({ model: d.model, column: d.column, kind: "SOFT", onDelete: null }));
+}
+
 // PRIV-001 — the purge must name the sole-member SHARED Space predicate and
 // delete Space-owned accounts of dying Spaces (DB-011).
 check("purge deletes SHARED Spaces whose only active member is the user (PRIV-001)", /soleMemberSharedSpaceWhere\(/.test(purge) && /type:\s*\{\s*not:\s*SpaceType\.PERSONAL\s*\}/.test(purge));

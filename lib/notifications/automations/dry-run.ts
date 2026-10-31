@@ -19,7 +19,7 @@
 import type { CommsDefinition } from "@/lib/notifications/catalog/types";
 import { renderCatalogPreview } from "@/lib/notifications/catalog/preview";
 import { EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/types";
-import { isStormLimitedKey } from "@/lib/notifications/catalog/definitions";
+import { isStormLimitedKey, stormLimitedKeys } from "@/lib/notifications/catalog/definitions";
 import type { UserLifecycleState } from "@/lib/entitlements/beta-lifecycle";
 import type { GlobalCostFreezeVerdict } from "@/lib/platform/cost-freeze.core";
 import { legSpec } from "@/lib/notifications/content/legs";
@@ -144,7 +144,8 @@ export async function evaluateDryRun(
         // The storm limit, as a COUNT (sendEmail would hold the send): ≥ 5 accepted limited emails this hour.
         if (!reason && channel === "EMAIL" && isStormLimitedKey(def.key)) {
           const since = new Date(now.getTime() - EMAIL_STORM_LIMIT.windowMinutes * 60_000);
-          const n = await db.commsDelivery.count({ where: { recipientUserId: r, channel: "EMAIL", status: "ACCEPTED", createdAt: { gte: since } } });
+          // HARDENING A8 — LIVE rows only (a TEST send never counts), and the same limited keys sendEmail counts.
+          const n = await db.commsDelivery.count({ where: { recipientUserId: r, channel: "EMAIL", status: "ACCEPTED", mode: "LIVE", definitionKey: { in: [...stormLimitedKeys()] }, createdAt: { gte: since } } });
           if (n >= EMAIL_STORM_LIMIT.maxPerRecipient) reason = "RATE_LIMITED";
         }
         if (reason) { counts.suppressed[reason]++; continue; }

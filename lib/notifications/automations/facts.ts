@@ -55,10 +55,19 @@ export const FACT_SOURCES: Partial<Record<TriggerKey, FactSource>> = {
 
 const COMMS_ACTION = /^(COMMS_|NOTIFICATION|EMAIL_|CUSTOMER_DELIVERY)/;
 
-/** Throws when a source would let a comms-originated action become a trigger. */
+/**
+ * HARDENING N7 — the ALLOWLIST of domain audit actions a fact source may name. A prefix
+ * denylist alone lets any action that merely does not LOOK like comms through; a new
+ * source must be added here ON PURPOSE (and is still refused if it looks like comms).
+ */
+export const DOMAIN_FACT_ACTIONS: readonly string[] = ["MEMBER_INVITED", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_ROLE_CHANGED"];
+
+/** Throws when a source would let a comms-originated (or any non-allowlisted) action become a trigger. */
 export function assertNotCommsAction(sources: Partial<Record<TriggerKey, FactSource>>): void {
   for (const [k, s] of Object.entries(sources)) {
-    if (s && COMMS_ACTION.test(s.action)) throw new Error(`automation facts: trigger ${k} would fire on a comms action (${s.action})`);
+    if (!s) continue;
+    if (COMMS_ACTION.test(s.action)) throw new Error(`automation facts: trigger ${k} would fire on a comms action (${s.action})`);
+    if (!DOMAIN_FACT_ACTIONS.includes(s.action)) throw new Error(`automation facts: trigger ${k} names an action outside the domain allowlist (${s.action})`);
   }
 }
 assertNotCommsAction(FACT_SOURCES);

@@ -67,7 +67,7 @@ function world(seed: LedgerRow[], opts: { stealOnDelete?: number } = {}) {
             return [...ledger].filter((r) => r.createdAt < where.createdAt.lt)
               .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : 1))
               .slice(0, take)
-              .map(({ id, messageKey, attempt, definitionKey, channel, status, reason, createdAt }) => ({ id, messageKey, attempt, definitionKey, channel, status, reason, createdAt }));
+              .map(({ id, messageKey, attempt, definitionKey, channel, status, reason, createdAt, mode }) => ({ id, messageKey, attempt, definitionKey, channel, status, reason, createdAt, mode }));
           },
           async findAttempts({ where }) {
             return ledger.filter((r) => where.messageKey.in.includes(r.messageKey))
@@ -229,6 +229,21 @@ async function messages(): Promise<void> {
 }
 
 async function wiring(): Promise<void> {
+  console.log("4c. Comms B2 HARDENING A8 — an operator TEST row is DELETED, never folded into the LIVE counts");
+  {
+    const old = new Date(CUTOFF.getTime() - 3_600_000);
+    const w = world([
+      row("live1", old), row("live2", old),
+      row("test1", old, { mode: "TEST" }), row("test2", old, { mode: "TEST", definitionKey: "SYNC_FAILED" }),
+      row("legacy", old, { mode: undefined }),
+    ]);
+    const r = await quiet(() => runCommsDeliveryRollup(w.client, NOW));
+    const total = w.daily.reduce((n, c) => n + c.count, 0);
+    check("every expired row is deleted (TEST included); only the 3 LIVE (incl. a pre-B2 row with no mode) are counted; `test` reports the 2",
+      w.ledger.length === 0 && total === 3 && r.counted === 3 && r.test === 2 && r.superseded === 0 && r.rolled === 5
+      && !w.daily.some((c) => c.definitionKey === "SYNC_FAILED"), { r, daily: w.daily });
+  }
+
   console.log("5. wiring into the retention job");
   const strip = (p: string) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const job = strip("jobs/data-retention.ts");

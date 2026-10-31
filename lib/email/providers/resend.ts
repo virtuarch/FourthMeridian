@@ -52,7 +52,17 @@ function getClient(): Resend | null {
 
 /** The subset of the Resend client this adapter calls (a seam for tests). */
 export interface ResendLikeClient {
-  emails: { send: (payload: ResendPayload) => Promise<{ data: { id: string } | null; error: { message: string } | null }> };
+  emails: { send: (payload: ResendPayload, options?: ResendRequestOptions) => Promise<{ data: { id: string } | null; error: { message: string } | null }> };
+}
+
+/** The SDK's per-request options this adapter sets (resend@6 CreateEmailRequestOptions: `idempotencyKey` → the `Idempotency-Key` header). */
+export interface ResendRequestOptions {
+  idempotencyKey?: string;
+}
+
+/** B2 HARDENING A1 — the request options for a message: its idempotency key when the caller gave one, else none. */
+export function buildResendOptions(message: EmailMessage): ResendRequestOptions | undefined {
+  return message.idempotencyKey ? { idempotencyKey: message.idempotencyKey.slice(0, 256) } : undefined;
 }
 
 export interface ResendPayload {
@@ -132,7 +142,8 @@ export function createResendAdapter(
       }
 
       try {
-        const answer = await within(client.emails.send(buildResendPayload(message)), timeoutMs);
+        const options = buildResendOptions(message);
+        const answer = await within(options ? client.emails.send(buildResendPayload(message), options) : client.emails.send(buildResendPayload(message)), timeoutMs);
         if (answer === TIMED_OUT) {
           return { status: "error", provider: PROVIDER_NAME, error: `Resend send timed out after ${timeoutMs} ms — delivery unknown.` };
         }

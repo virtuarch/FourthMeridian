@@ -29,6 +29,12 @@
  * batch untouched for the next run. Bounded: at most ROLLUP_MAX_BATCHES per run;
  * the rest waits for tomorrow (`exhausted: false`).
  *
+ * TEST ROWS ARE DELETED, NEVER COUNTED (Comms Center B2 HARDENING A8): an operator's
+ * test send (mode TEST, v1.1 §6.9) is excluded from analytics by default, so folding
+ * it into CommsDeliveryDaily — which has no mode column — would leak it into every
+ * LIVE count forever. An expired TEST row is deleted with its batch, uncounted
+ * (reported as `test`).
+ *
  * Authority: fm_system (SELECT + DELETE on CommsDelivery, SELECT + INSERT +
  * UPDATE on CommsDeliveryDaily — migration 20261031200000). Counts only: no
  * recipient of any kind reaches the rollup.
@@ -49,6 +55,8 @@ export interface RollupSourceRow {
   status: string;
   reason: string | null;
   createdAt: Date;
+  /** "LIVE" | "TEST" (B2). Absent on a pre-B2 row ⇒ LIVE. */
+  mode?: string | null;
 }
 
 export interface DailyKey { day: Date; definitionKey: string; channel: string; status: string; reason: string }
@@ -59,7 +67,7 @@ export interface RollupTx {
       where: { createdAt: { lt: Date } };
       orderBy: Array<{ createdAt: "asc" } | { id: "asc" }>;
       take: number;
-      select: { id: true; messageKey: true; attempt: true; definitionKey: true; channel: true; status: true; reason: true; createdAt: true };
+      select: { id: true; messageKey: true; attempt: true; definitionKey: true; channel: true; status: true; reason: true; createdAt: true; mode: true };
     }): Promise<RollupSourceRow[]>;
     /** Every attempt (any age) of the batch's messages — to find each message's final attempt. */
     findAttempts(args: {
@@ -88,6 +96,8 @@ export interface CommsRollupResult {
   counted: number;
   /** Of those, attempts deleted uncounted because a later attempt carries the message. */
   superseded: number;
+  /** Of those, operator TEST rows deleted uncounted (B2 HARDENING A8). */
+  test: number;
   /** Daily cells written (inserted or incremented). */
   cells: number;
   batches: number;
@@ -147,7 +157,7 @@ class ConcurrentRollup extends Error {}
 
 export async function runCommsDeliveryRollup(client: RollupClient, now: Date = new Date()): Promise<CommsRollupResult> {
   const cutoff = rollupCutoff(now);
-  const res: CommsRollupResult = { rolled: 0, counted: 0, superseded: 0, cells: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString() };
+  const res: CommsRollupResult = { rolled: 0, counted: 0, superseded: 0, test: 0, cells: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString() };
   try {
     while (res.batches < ROLLUP_MAX_BATCHES) {
       res.batches++;
@@ -156,14 +166,17 @@ export async function runCommsDeliveryRollup(client: RollupClient, now: Date = n
           where: { createdAt: { lt: cutoff } },
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           take: ROLLUP_BATCH,
-          select: { id: true, messageKey: true, attempt: true, definitionKey: true, channel: true, status: true, reason: true, createdAt: true },
+          select: { id: true, messageKey: true, attempt: true, definitionKey: true, channel: true, status: true, reason: true, createdAt: true, mode: true },
         });
-        if (rows.length === 0) return { rows: 0, counted: 0, cells: 0 };
+        if (rows.length === 0) return { rows: 0, counted: 0, test: 0, cells: 0 };
         const attempts = await tx.commsDelivery.findAttempts({
           where: { messageKey: { in: [...new Set(rows.map((r) => r.messageKey))] } },
           select: { id: true, messageKey: true, channel: true, attempt: true, createdAt: true },
         });
-        const finals = finalAttempts(rows, attempts);
+        // A8 — a TEST row is deleted with the batch and never counted (its message is a test message).
+        const allFinals = finalAttempts(rows, attempts);
+        const finals = allFinals.filter((r) => r.mode !== "TEST");
+        const test = rows.filter((r) => r.mode === "TEST").length;
         const cells = groupDaily(finals);
         for (const { count, ...key } of cells) {
           await tx.commsDeliveryDaily.upsert({
@@ -174,11 +187,12 @@ export async function runCommsDeliveryRollup(client: RollupClient, now: Date = n
         }
         const del = await tx.commsDelivery.deleteMany({ where: { id: { in: rows.map((r) => r.id) }, createdAt: { lt: cutoff } } });
         if (del.count !== rows.length) throw new ConcurrentRollup(`deleted ${del.count} of ${rows.length}`);
-        return { rows: rows.length, counted: finals.length, cells: cells.length };
+        return { rows: rows.length, counted: finals.length, test, cells: cells.length };
       }, { timeout: 60_000, maxWait: 10_000 });
       res.rolled += batch.rows;
       res.counted += batch.counted;
-      res.superseded += batch.rows - batch.counted;
+      res.test += batch.test;
+      res.superseded += batch.rows - batch.counted - batch.test;
       res.cells += batch.cells;
       if (batch.rows < ROLLUP_BATCH) { res.exhausted = true; break; }
     }
