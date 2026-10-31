@@ -204,13 +204,32 @@ export function revaluationOwedFromISO(args: {
 // Days that recompute identically are UNCHANGED and not rewritten
 // (planDayPersistence), so a re-run churns nothing; days the holder existed on
 // but cannot be valued become `unavailable`, never `supported`, never $0.
-// Bounded: the window is taken in fixed chunks, NEWEST first (the visible
-// cliff first), each marked durably, so a large window progresses across runs.
+// Bounded and kill-safe: the window is cut into epoch-anchored blocks, rebuilt
+// NEWEST first (the visible cliff first) in batches sized to the time left; a
+// block is marked done only AFTER its rebuild returns (a killed run leaves it
+// owed), with an attempt cap so a poison block cannot loop. A large window
+// progresses across runs.
+//
+// What this does NOT do: change the evidence key only when it matters. Any
+// evidence change (e.g. a lowered floor) re-owes the WHOLE window once; the
+// unchanged days recompute UNCHANGED (no writes), so the cost is compute, not
+// churn. Narrowing the re-owed range per kind of change is a follow-up.
 
-/** Do not start a price-gap pass or a revaluation chunk with less than this left of the wake. */
+/** Do not start a price-gap pass or a revaluation batch with less than this left of the wake. */
 export const REVALUATION_RESERVE_MS = 60_000;
-/** Days per revaluation chunk — about one REVALUATION_RESERVE_MS of rebuild on Vercel. */
-export const REVALUATION_CHUNK_DAYS = 60;
+/**
+ * Days per revaluation BLOCK — the unit of the durable "done" marker. Blocks are
+ * anchored to a fixed epoch (Mondays from 1970-01-05), so a block's key does not
+ * depend on where a holder's window starts or ends. A rebuild covers a BATCH of
+ * contiguous blocks sized to the time left (planRevaluationBatch).
+ */
+export const REVALUATION_BLOCK_DAYS = 7;
+/** A block that has failed this many rebuilds is abandoned until the evidence changes (no poison loop). */
+export const REVALUATION_MAX_ATTEMPTS = 3;
+/** First-batch cost estimate before this run has measured one (conservative: live R1c ≈ 2.8 s/day locally, 3–5× Vercel). */
+export const REVALUATION_DEFAULT_MS_PER_DAY = 1_500;
+/** Time kept back from a batch's budget: the batch is sized to end this long BEFORE the deadline. */
+export const REVALUATION_BATCH_MARGIN_MS = 20_000;
 /** Version of the evidence fingerprint; bumping it re-owes every holder once. */
 export const REVALUATION_EVIDENCE_VERSION = "v2";
 
@@ -221,7 +240,7 @@ export interface HolderRevaluation {
   windowFromISO: string;
   /** max(licence start, price floor) across its native instruments; null when one is unpriced. */
   valuedFromISO: string | null;
-  /** The durable key of this evidence state (chunk keys extend it). */
+  /** The durable key of this evidence state (block keys extend it). */
   evidenceKey: string;
 }
 
@@ -287,20 +306,45 @@ export function holderRevaluationFor(args: {
   };
 }
 
-/** One bounded slice of a holder's revaluation window. */
-export interface RevaluationChunk { fromISO: string; toISO: string; key: string }
+/** One epoch-anchored block of a holder's revaluation window (clipped to the window). */
+export interface RevaluationBlock { fromISO: string; toISO: string; key: string }
+
+const EPOCH_MONDAY_MS = Date.UTC(1970, 0, 5);
+const DAY_MS = 86_400_000;
+const dayIndex = (iso: string) => Math.round((Date.parse(`${iso}T00:00:00Z`) - EPOCH_MONDAY_MS) / DAY_MS);
+const isoOfIndex = (i: number) => new Date(EPOCH_MONDAY_MS + i * DAY_MS).toISOString().slice(0, 10);
 
 /**
- * The window [fromISO, toISO] in REVALUATION_CHUNK_DAYS slices anchored at
- * fromISO (so a slice's key is stable as `toISO` advances day by day), returned
- * NEWEST first: the most recent rows are the ones a reader sees first.
+ * [fromISO, toISO] as REVALUATION_BLOCK_DAYS blocks on the fixed epoch grid,
+ * NEWEST first (the rows a reader sees first). The key names the block's GRID
+ * start, so it is stable however the window's own start or end moves.
  */
-export function revaluationChunks(evidenceKey: string, fromISO: string, toISO: string, chunkDays = REVALUATION_CHUNK_DAYS): RevaluationChunk[] {
-  const out: RevaluationChunk[] = [];
-  const size = Math.max(1, Math.floor(chunkDays));
-  for (let from = fromISO; from <= toISO; from = minusDaysISO(from, -size)) {
-    const end = minusDaysISO(from, -(size - 1));
-    out.push({ fromISO: from, toISO: end < toISO ? end : toISO, key: `${evidenceKey}:${from}` });
+export function revaluationBlocks(evidenceKey: string, fromISO: string, toISO: string, blockDays = REVALUATION_BLOCK_DAYS): RevaluationBlock[] {
+  if (fromISO > toISO) return [];
+  const size = Math.max(1, Math.floor(blockDays));
+  const first = dayIndex(fromISO), last = dayIndex(toISO);
+  const out: RevaluationBlock[] = [];
+  for (let start = Math.floor(first / size) * size; start <= last; start += size) {
+    const lo = Math.max(start, first), hi = Math.min(start + size - 1, last);
+    out.push({ fromISO: isoOfIndex(lo), toISO: isoOfIndex(hi), key: `${evidenceKey}:${isoOfIndex(start)}` });
   }
   return out.reverse();
+}
+
+/**
+ * The next rebuild: from the NEWEST owed block, the contiguous run of owed
+ * blocks (newest first) whose day count fits `maxDays` — always at least one
+ * block, so progress is guaranteed. Null when nothing is owed.
+ */
+export function planRevaluationBatch(owedNewestFirst: readonly RevaluationBlock[], maxDays: number): { fromISO: string; toISO: string; blocks: RevaluationBlock[] } | null {
+  if (owedNewestFirst.length === 0) return null;
+  const blocks = [owedNewestFirst[0]];
+  let days = dayIndex(blocks[0].toISO) - dayIndex(blocks[0].fromISO) + 1;
+  for (let i = 1; i < owedNewestFirst.length; i++) {
+    const b = owedNewestFirst[i];
+    const n = dayIndex(b.toISO) - dayIndex(b.fromISO) + 1;
+    if (dayIndex(b.toISO) !== dayIndex(blocks[blocks.length - 1].fromISO) - 1 || days + n > maxDays) break;
+    blocks.push(b); days += n;
+  }
+  return { fromISO: blocks[blocks.length - 1].fromISO, toISO: blocks[0].toISO, blocks };
 }

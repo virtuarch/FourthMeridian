@@ -27,7 +27,7 @@ import type { SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
 import { chainOrder, nextRotation, phaseDeadlineFor, HISTORY_CHAINS, type HistoryChain } from "@/lib/crypto/history-worker-schedule.core";
 import { incrementalMeter, meterTotal, METER_FLUSH_EVERY_CALLS, type RequestMeter } from "@/lib/usage/provider-budget.core";
 import {
-  acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, valuedFromISO, holderRevaluationFor, revaluationPending,
+  acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, valuedFromISO, holderRevaluationFor, revaluationPending, revaluationBlocks,
   REVALUATION_RESERVE_MS,
   type PriceGapDeps, type RevaluationDeps, type HolderLicence, type InstrumentPriceFacts, type RevaluationOwed, type HolderRevaluation,
 } from "@/lib/prices/price-gap";
@@ -275,7 +275,7 @@ async function main() {
         w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
           leftAtStart = deadlineMs - w.now();
           const skipped = leftAtStart < REVALUATION_RESERVE_MS;
-          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, failures: 0, skippedForTime: skipped };
+          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, failures: 0, skippedForTime: skipped };
         };
         const s = await w.run();
         return { s, leftAtStart, stepped: stepped(s, chain) };
@@ -298,7 +298,7 @@ async function main() {
       w.deps.revaluationPending = async () => true;
       w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
         leftAtStart = deadlineMs - w.now();
-        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, failures: 0, skippedForTime: false };
+        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, failures: 0, skippedForTime: false };
       };
       const s = await w.run();
       check("SOL + BTC backlogs, a revaluation owed: it runs BEFORE the follower chain (≥ REVALUATION_RESERVE_MS left), both chains still step",
@@ -309,7 +309,7 @@ async function main() {
     const h: HolderRevaluation = { accountId: "b0", windowFromISO: "2026-10-01", valuedFromISO: "2026-10-01", evidenceKey: "revaluation:v2:b0:k" };
     const rd = { owed: async () => [h], revaluedAlready: async (ks: readonly string[]) => new Set(ks.filter((k) => marks.has(k))) };
     const before = await revaluationPending(rd, ["b0"], DAY);
-    marks.add(`${h.evidenceKey}:2026-10-01`);
+    for (const b of revaluationBlocks(h.evidenceKey, h.windowFromISO, DAY)) marks.add(b.key);
     check("revaluationPending: owed until its chunks are marked, then not (no reservation on a quiet run)", before === true && (await revaluationPending(rd, ["b0"], DAY)) === false);
   }
 
@@ -465,8 +465,10 @@ async function main() {
     const cp = parseSol(w.cursors.s0, "s0", ADDR);
     check("…the SOL holder is flagged from its new valued-from and rebuilt under its lock this run",
       s1.revaluationsRederived === 1 && w.log.includes("regen:s0:2025-10-28") && cp?.valuationCheckedFloorISO === "2025-10-28" && !cp?.snapshotPendingFromISO, w.log.join(","));
-    check("…the non-SOL holder is revalued from its new valued-from THROUGH TODAY (existing rows included), newest chunk first",
-      w.log.filter((x) => x.startsWith("revalue:e0:"))[0] === "revalue:e0:2026-10-23..2026-10-28" && w.log.some((x) => x.startsWith("revalue:e0:2025-10-28..")) && s1.holderRevaluation?.revalued === 1, w.log.join(","));
+    check("…the non-SOL holder is revalued from its new valued-from THROUGH TODAY (existing rows included), newest batch first",
+      w.log.filter((x) => x.startsWith("revalue:e0:"))[0].endsWith(`..${DAY}`) && w.log.some((x) => x.startsWith("revalue:e0:2025-10-28..")), w.log.join(","));
+    check("…SOL parity: the SOL holder is in the worker's revaluation too (not only sync-crypto's)",
+      w.log.some((x) => x.startsWith("revalue:s0:")) && s1.holderRevaluation?.holders === 2 && s1.holderRevaluation?.revalued === 2, JSON.stringify(s1.holderRevaluation));
     check("…observations are shared per instrument: the durable once-a-day markers are set",
       w.attempts.has(priceGapAttemptKey("COINGECKO", "SOL", "2026-09-27")) && [...w.revalued].some((k) => k.startsWith("revaluation:v2:e0:")));
 
@@ -477,8 +479,8 @@ async function main() {
 
     const covered = mk({ earliest: "2021-01-01", snapshotStart: "2021-01-01" });
     const s3 = await covered.run();
-    check("covered archive: no request, SOL not flagged (its own path); the ETH holder's existing rows are revalued ONCE",
-      covered.requests.length === 0 && s3.priceGaps.acquired === 0 && !covered.log.some((x) => x.startsWith("regen:")) && (s3.holderRevaluation?.owed ?? 0) === 1, covered.log.join(","));
+    check("covered archive: no request, SOL not flagged by the self-heal; both holders' existing rows are revalued ONCE",
+      covered.requests.length === 0 && s3.priceGaps.acquired === 0 && !covered.log.some((x) => x.startsWith("regen:")) && (s3.holderRevaluation?.owed ?? 0) === 2, covered.log.join(","));
 
     const late = mk({ earliest: "2026-09-27", wakeAgoMs: WAKE_SAFE_MS - PRICE_GAP_RESERVE_MS + 1_000 });
     const s4 = await late.run();

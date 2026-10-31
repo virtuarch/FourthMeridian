@@ -29,7 +29,8 @@ import { resolveProviderForInstrument } from "./registry";
 import type { PriceRegistry } from "./types";
 import {
   planPriceGaps, priceGapAttemptKey, revaluationOwedFromISO, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
-  holderRevaluationFor, revaluationChunks, REVALUATION_RESERVE_MS,
+  holderRevaluationFor, revaluationBlocks, planRevaluationBatch, REVALUATION_RESERVE_MS,
+  REVALUATION_MAX_ATTEMPTS, REVALUATION_DEFAULT_MS_PER_DAY, REVALUATION_BATCH_MARGIN_MS,
   type HolderLicence, type HolderRevaluation, type InstrumentPriceFacts, type PriceGapDecision,
 } from "./price-gap.core";
 
@@ -272,9 +273,14 @@ export interface RevaluationDeps {
   acquireGaps(accountIds: readonly string[]): Promise<PriceGapRun>;
   /** Holders (of these) whose Spaces hold rows, with their evidence key and window (holderRevaluations). */
   owed(accountIds: readonly string[]): Promise<HolderRevaluation[]>;
-  /** Of these keys, those already recorded (any day within retention). */
+  /** Of these block keys, those already rebuilt SUCCESSFULLY (the "done" marker). */
   revaluedAlready(keys: readonly string[]): Promise<Set<string>>;
+  /** Record a block as done — only AFTER its rebuild returned. */
   markRevalued(key: string): Promise<void>;
+  /** Rebuild attempts recorded per block key (any day). Optional: absent ⇒ no attempt cap. */
+  attemptsOf?(keys: readonly string[]): Promise<Map<string, number>>;
+  /** Count one rebuild attempt of a block — BEFORE the rebuild, so a killed run still counts. */
+  markAttempt?(key: string): Promise<void>;
   /** Regenerate one account's wealth history over [fromISO, toISO] — existing rows included. */
   regenerate(accountId: string, fromISO: string, toISO: string): Promise<void>;
   now(): number;
@@ -282,27 +288,35 @@ export interface RevaluationDeps {
 
 export interface RevaluationRun {
   priceGaps: PriceGapRun | null;
-  /** Holders with at least one unmarked chunk of their current evidence state (after this run's gap fill). */
+  /** Holders with at least one owed block of their current evidence state (after this run's gap fill). */
   owed: number;
-  /** Holders whose every remaining chunk was rebuilt this run. */
+  /** Holders whose every owed block was rebuilt this run. */
   revalued: number;
-  /** Chunks rebuilt this run (each a bounded slice of a holder's window). */
+  /** Blocks rebuilt (and marked done) this run. */
   chunksRebuilt: number;
-  /** Owed, not finished this time (cap or wake time) — unmarked chunks stay owed, picked up next run. */
+  /** Owed, not finished this time (cap or wake time) — unmarked blocks stay owed, picked up next run. */
   deferred: number;
   /** Holders whose current evidence state is already fully revalued — not repeated (no churn, no loop). */
   alreadyRevalued: number;
+  /** Blocks abandoned after REVALUATION_MAX_ATTEMPTS failed rebuilds (until the evidence changes). */
+  abandonedBlocks: number;
   failures: number;
   /** The gap pass itself was skipped: too little wake time left. */
   skippedForTime: boolean;
 }
 
-/** The chunk plan of each holder, and which chunks are still owed. */
-async function owedChunks(deps: Pick<RevaluationDeps, "revaluedAlready">, holders: HolderRevaluation[], todayISO: string) {
-  const plans = holders.map((h) => ({ h, chunks: revaluationChunks(h.evidenceKey, h.windowFromISO, todayISO) }));
-  const keys = plans.flatMap((p) => p.chunks.map((c) => c.key));
+/** Each holder's blocks still owed: not done, and not abandoned at the attempt cap. */
+async function owedBlocks(deps: Pick<RevaluationDeps, "revaluedAlready" | "attemptsOf">, holders: HolderRevaluation[], todayISO: string) {
+  const plans = holders.map((h) => ({ h, blocks: revaluationBlocks(h.evidenceKey, h.windowFromISO, todayISO) }));
+  const keys = plans.flatMap((p) => p.blocks.map((b) => b.key));
   const done = keys.length > 0 ? await deps.revaluedAlready(keys) : new Set<string>();
-  return plans.map((p) => ({ h: p.h, todo: p.chunks.filter((c) => !done.has(c.key)) }));
+  const notDone = keys.filter((k) => !done.has(k));
+  const tries = deps.attemptsOf && notDone.length > 0 ? await deps.attemptsOf(notDone) : new Map<string, number>();
+  return plans.map((p) => {
+    const open = p.blocks.filter((b) => !done.has(b.key));
+    const live = open.filter((b) => (tries.get(b.key) ?? 0) < REVALUATION_MAX_ATTEMPTS);
+    return { h: p.h, live, abandoned: open.length - live.length, tries };
+  });
 }
 
 /**
@@ -310,12 +324,11 @@ async function owedChunks(deps: Pick<RevaluationDeps, "revaluedAlready">, holder
  * Cheap reads only (no acquisition): the worker asks before its passes so it
  * can reserve the revaluation's slice of the job budget. Never throws.
  */
-export async function revaluationPending(deps: Pick<RevaluationDeps, "owed" | "revaluedAlready">, accountIds: readonly string[], todayISO = minusDaysISO(yesterdayUTCISO(), -1)): Promise<boolean> {
+export async function revaluationPending(deps: Pick<RevaluationDeps, "owed" | "revaluedAlready" | "attemptsOf">, accountIds: readonly string[], todayISO = minusDaysISO(yesterdayUTCISO(), -1)): Promise<boolean> {
   if (accountIds.length === 0) return false;
   try {
-    const holders = await deps.owed(accountIds);
-    const plans = await owedChunks(deps, holders, todayISO);
-    return plans.some((p) => p.todo.length > 0);
+    const plans = await owedBlocks(deps, await deps.owed(accountIds), todayISO);
+    return plans.some((p) => p.live.length > 0);
   } catch {
     return false;
   }
@@ -327,12 +340,17 @@ export async function revaluationPending(deps: Pick<RevaluationDeps, "owed" | "r
  * token, price floors, Space links) has not yet been revalued — over EVERY
  * existing row of its Spaces from min(valued-from, earliest row) through today,
  * not only the days before the earliest row (the 2026-10-31 stale-interior
- * defect). Newest chunk first, one durable marker per chunk (set before the
- * rebuild, so a failing one is not retried every run), bounded by `maxAccounts`
- * and by the wake deadline; unfinished chunks stay owed and run next time.
- * Rebuilding goes through the canonical regeneration, whose per-day persistence
- * (planDayPersistence) leaves identical days unwritten and frozen rows
- * untouched — so a re-run churns nothing. Never throws.
+ * defect).
+ *
+ * Bounded and kill-safe: newest block first, in batches of contiguous blocks
+ * sized to the time left (measured ms/day, a margin before the deadline). A
+ * block is marked DONE only after its rebuild returns; an attempt is counted
+ * BEFORE, so a run killed mid-batch leaves the block owed and the next run
+ * redoes it, while a block that fails REVALUATION_MAX_ATTEMPTS times is
+ * abandoned until the evidence changes (no poison loop). Capped by
+ * `maxAccounts`. Rebuilding goes through the canonical regeneration, whose
+ * per-day persistence (planDayPersistence) leaves identical days unwritten and
+ * frozen rows untouched — so a re-run churns nothing. Never throws.
  */
 export async function revalueHoldersAfterPriceGaps(args: {
   accountIds: readonly string[];
@@ -341,13 +359,16 @@ export async function revalueHoldersAfterPriceGaps(args: {
   maxAccounts?: number;
   /** The window's last day (default: today UTC). */
   todayISO?: string;
+  /** First batch's cost estimate (default REVALUATION_DEFAULT_MS_PER_DAY); later batches use what this run measured. */
+  msPerDay?: number;
   log?: (line: string) => void;
 }): Promise<RevaluationRun> {
-  const run: RevaluationRun = { priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, failures: 0, skippedForTime: false };
+  const run: RevaluationRun = { priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, failures: 0, skippedForTime: false };
   const log = args.log ?? (() => {});
   const cap = Math.max(0, Math.floor(args.maxAccounts ?? DEFAULT_REVALUATION_MAX_ACCOUNTS));
   const left = () => args.deadlineMs - args.deps.now();
   const todayISO = args.todayISO ?? minusDaysISO(yesterdayUTCISO(), -1);
+  let msPerDay = Math.max(1, args.msPerDay ?? REVALUATION_DEFAULT_MS_PER_DAY);
   if (args.accountIds.length === 0) return run;
   if (left() < REVALUATION_RESERVE_MS) { run.skippedForTime = true; return run; }
   try {
@@ -355,26 +376,35 @@ export async function revalueHoldersAfterPriceGaps(args: {
     const holders = (await args.deps.owed(args.accountIds)).sort((a, b) => a.accountId.localeCompare(b.accountId));
     if (holders.length === 0) return run;
     let started = 0;
-    for (const { h, todo } of await owedChunks(args.deps, holders, todayISO)) {
-      if (todo.length === 0) { run.alreadyRevalued++; continue; }
+    for (const { h, live, abandoned } of await owedBlocks(args.deps, holders, todayISO)) {
+      run.abandonedBlocks += abandoned;
+      if (live.length === 0) { run.alreadyRevalued++; continue; }
       run.owed++;
       if (started >= cap || left() < REVALUATION_RESERVE_MS) { run.deferred++; continue; }
       started++;
       let failed = false;
-      let stopped = false;
-      for (const c of todo) {
-        if (left() < REVALUATION_RESERVE_MS) { stopped = true; break; }
-        await args.deps.markRevalued(c.key).catch(() => {}); // before: a failing rebuild is not retried every run
+      let queue = live;
+      while (queue.length > 0) {
+        if (left() < REVALUATION_RESERVE_MS) break;
+        const maxDays = Math.floor((left() - REVALUATION_BATCH_MARGIN_MS) / msPerDay);
+        const batch = planRevaluationBatch(queue, maxDays)!;
+        queue = queue.filter((b) => !batch.blocks.includes(b));
+        for (const b of batch.blocks) await args.deps.markAttempt?.(b.key).catch(() => {});
+        const t0 = args.deps.now();
         try {
-          await args.deps.regenerate(h.accountId, c.fromISO, c.toISO);
-          run.chunksRebuilt++;
+          await args.deps.regenerate(h.accountId, batch.fromISO, batch.toISO);
+          // DONE only now: a rebuild that never returned (killed) leaves its blocks owed.
+          for (const b of batch.blocks) await args.deps.markRevalued(b.key).catch(() => {});
+          run.chunksRebuilt += batch.blocks.length;
+          const days = Math.round((Date.parse(batch.toISO) - Date.parse(batch.fromISO)) / 86_400_000) + 1;
+          msPerDay = Math.max(1, (args.deps.now() - t0) / days);
         } catch (e) {
           failed = true;
-          log(`revaluation ${h.accountId} ${c.fromISO}..${c.toISO} failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+          log(`revaluation ${h.accountId} ${batch.fromISO}..${batch.toISO} failed (non-fatal; retried next run, at most ${REVALUATION_MAX_ATTEMPTS} attempts): ${e instanceof Error ? e.message : String(e)}`);
         }
       }
       if (failed) run.failures++;
-      else if (stopped) run.deferred++;
+      else if (queue.length > 0) run.deferred++;
       else run.revalued++;
     }
   } catch (e) {
@@ -383,6 +413,9 @@ export async function revalueHoldersAfterPriceGaps(args: {
   }
   return run;
 }
+
+/** Rebuild-attempt counter unit (beside the "done" marker unit) on the same usage table. */
+export const REVALUATION_TRY_UNIT = "revaluation_tries";
 
 /** Production deps for revalueHoldersAfterPriceGaps over `client` (markers through the one usage writer). */
 export function prismaRevaluationDeps(client: Client, opts: { log?: (line: string) => void } = {}): RevaluationDeps {
@@ -401,12 +434,23 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
       const { recordApiUsage } = await import("@/lib/usage/record");
       await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, PRICE_GAP_ATTEMPT_UNIT, 1);
     },
+    async attemptsOf(keys) {
+      if (keys.length === 0) return new Map();
+      const rows = await client.apiUsageCounter.groupBy({
+        by: ["metric"], where: { provider: REVALUATION_ATTEMPT_PROVIDER, unit: REVALUATION_TRY_UNIT, metric: { in: [...keys] } }, _sum: { count: true },
+      });
+      return new Map(rows.map((r) => [r.metric, Number(r._sum.count ?? 0)]));
+    },
+    async markAttempt(key) {
+      const { recordApiUsage } = await import("@/lib/usage/record");
+      await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, REVALUATION_TRY_UNIT, 1);
+    },
     async regenerate(accountId, fromISO, toISO) {
       const { resolveHistoricalWorkWindow } = await import("@/lib/snapshots/historical-work-window");
       const { regenerateWealthHistoryForAccounts } = await import("@/lib/snapshots/regenerate-history");
-      // The canonical planner, told the chunk start as floor and impacted-from
+      // The canonical planner, told the batch start as floor and impacted-from
       // (the V26-CAP-1 override) — still intersected with the evidence floor and
-      // the writable ceiling — then clamped to the chunk. A floor below the
+      // the writable ceiling — then clamped to the batch. A floor below the
       // archive's is safe: an unpriced day is refused by the day rule (stored
       // value preserved, verdict `unavailable`), never written as $0.
       const plan = await resolveHistoricalWorkWindow({

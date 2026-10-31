@@ -176,6 +176,23 @@ async function main() {
       cryptoHoldersNotValued({ accounts: [...accounts, { financialAccountId: "eth", name: "ETH", nativeBalance: null, assetKey: "eth", symbol: "ETH" }] }, v).join() === "eth");
     check("a holder outside its existence interval does not",
       cryptoHoldersNotValued({ accounts: [...accounts, { financialAccountId: "eth", name: "ETH", nativeBalance: 1, assetKey: "eth", symbol: "ETH", applicable: false }] }, v).length === 0);
+    // REVIEW: a DRAINED wallet (confirmed zero that day) is not a missing holder — the row stays `supported`.
+    const drainedAccounts: CryptoAccountBalance[] = [accounts[0], { ...accounts[1], nativeBalance: 0 }];
+    const vd = valueCryptoDay({ accounts: drainedAccounts, unitPriceByAssetKey: { sol: 100, btc: 80000 }, quantityLicensed: true });
+    check("a drained holder (balance 0 that day) is NOT reported missing", cryptoHoldersNotValued({ accounts: drainedAccounts }, vd).length === 0);
+    store.clear();
+    store.set("2026-06-01", { date: "2026-06-01", stocks: 0, crypto: SOL_QTY * 100, total: SOL_QTY * 100, cash: 0, savings: 0, debt: 0, netWorth: SOL_QTY * 100, totalAssets: SOL_QTY * 100, netLiquid: 0, cashOnHand: 0, isEstimated: true, cryptoValuationStatus: "supported" });
+    const drainedDay = regenerateDay({
+      date: "2026-06-01", existingIsEstimated: true, existing: store.get("2026-06-01")!,
+      base: { totalInvestments: 0, totalDigitalAssets: 26800, totalChecking: 0, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+      investmentValue: 0, investmentTier: "derived", hasInvestmentEvidence: false,
+      digitalAssetValue: vd.nativeTotal, digitalAssetTier: "estimated", hasDigitalAssetEvidence: true,
+      cryptoHoldersNotValued: cryptoHoldersNotValued({ accounts: drainedAccounts }, vd),
+      cashCardTier: "derived", membershipChangedSince: false,
+    });
+    check("…so the day stays `supported` at the SOL-only value (no false `unavailable`)",
+      drainedDay.cryptoValuationStatus === "supported" && Math.abs((drainedDay.fields?.crypto ?? drainedDay.fieldPatch?.crypto ?? store.get("2026-06-01")!.crypto) - SOL_QTY * 100) < 0.005,
+      JSON.stringify({ s: drainedDay.cryptoValuationStatus, a: drainedDay.action }));
     const day = (missing: string[]) => regenerateDay({
       date: "2026-10-27", existingIsEstimated: true,
       existing: { stocks: 0, crypto: 76.04, total: 76.04, cash: 0, savings: 0, debt: 0, netWorth: 76.04, totalAssets: 76.04, netLiquid: 0, cashOnHand: 0 },

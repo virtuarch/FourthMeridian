@@ -303,12 +303,19 @@ export function valueCryptoDay(input: CryptoDayInput): CryptoDayValuation {
  * EXISTED on this day (in scope, with a held or unknown quantity) are NOT in the
  * valuation's positions? Sorted account ids; empty when the day is complete.
  *
- * valueCryptoDay is all-or-nothing, so a licensed valuation names every held
- * account by construction — this is the invariant restated as a check the day
- * decision consumes (regenerateDay `cryptoHoldersNotValued`), so no future path
- * can mark a day `supported` while a holder that existed is missing from its
- * value. A refused valuation returns [] here: its refusal already decides the
- * day (held-but-unvalued ⇒ `unavailable`).
+ * A BACKSTOP, not the fix. valueCryptoDay is all-or-nothing, so a licensed
+ * valuation names every held account by construction; this restates that
+ * invariant as a check the day decision consumes (regenerateDay
+ * `cryptoHoldersNotValued`), so no future valuation path can mark a RECOMPUTED
+ * day `supported` while a holder it was given is missing from the value.
+ *
+ * It cannot see a holder that was not linked to the Space when a STORED row was
+ * written (the 2026-10-31 stale rows): that row is never recomputed by this
+ * guard. The real fix for those rows is the evidence-keyed holder revaluation
+ * (lib/prices/price-gap.ts revalueHoldersAfterPriceGaps), which recomputes them
+ * with the holder present. A refused valuation returns [] here: its refusal
+ * already decides the day (held-but-unvalued ⇒ `unavailable`). A holder with a
+ * CONFIRMED zero balance is not a holder that day (a drained wallet).
  */
 export function cryptoHoldersNotValued(input: Pick<CryptoDayInput, "accounts" | "materialityEpsilon">, valuation: CryptoDayValuation): string[] {
   if (!valuation.licensed) return [];

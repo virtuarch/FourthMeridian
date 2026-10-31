@@ -155,7 +155,7 @@ export interface SolBackfillJobSummary {
   revaluationsRederived: number;
   /** The all-holder price-gap pass (every licensed crypto holder, every chain), when wired. */
   priceGapSweep?: { holders: number; skippedForTime: boolean };
-  /** Non-Solana holders revalued (state-derived, once per evidence state; existing rows included). */
+  /** Crypto holders (every chain) revalued (state-derived, once per evidence state; existing rows included). */
   holderRevaluation?: { holders: number; owed: number; revalued: number; chunksRebuilt: number; deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean };
   /** A revaluation was owed at the start of the run, so its slice of the budget was reserved after the leader. */
   revaluationReserved?: boolean;
@@ -495,19 +495,20 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     ];
   };
   const solHasWork = solWork().length > 0;
-  const solIds = new Set(parsed.map((w) => w.accountId));
   let revalued = false;
   /**
-   * Revalue the non-Solana holders whose evidence state is not yet revalued —
-   * existing rows included (state-derived, once per evidence state, chunked,
-   * wake-bounded). Solana holders are rebuilt by their own pass under their
-   * lock; the sync-crypto sweep revalues every chain's holders the same way.
+   * Revalue EVERY holder (all chains, Solana included — parity with the
+   * sync-crypto sweep) whose evidence state is not yet revalued, existing rows
+   * included (state-derived, once per evidence state, kill-safe batches,
+   * wake-bounded). A Solana wallet newly linked to a Space with rows is thus
+   * repaired by the worker too, not only when sync-crypto runs. Its own pass may
+   * also rebuild it (a pending flag); the second rebuild recomputes UNCHANGED
+   * days and writes nothing.
    */
   const revalueOtherHolders = async () => {
     if (revalued) return; // once per run (it may run early, when reserved)
     if (!deps.revalueHolders || holderIds.length === 0) return;
-    const ids = holderIds.filter((id) => !solIds.has(id));
-    if (ids.length === 0) return;
+    const ids = holderIds;
     revalued = true;
     const r = await deps.revalueHolders(ids, { deadlineMs: jobDeadline, attempted: priceGapAttempted,
       maxInstruments: Math.max(0, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS - summary.priceGaps.acquired) }).catch(() => null);
@@ -541,8 +542,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   let reserveRevaluation = false;
   if (deps.revalueHolders && deps.revaluationPending && deps.cryptoHolders) {
     const early = await deps.cryptoHolders().catch(() => [] as string[]);
-    const ids = early.filter((id) => !solIds.has(id));
-    reserveRevaluation = ids.length > 0 && await deps.revaluationPending(ids).catch(() => false);
+    reserveRevaluation = early.length > 0 && await deps.revaluationPending(early).catch(() => false);
     if (reserveRevaluation) { summary.revaluationReserved = true; if (holderIds.length === 0) holderIds = early; }
   }
 
