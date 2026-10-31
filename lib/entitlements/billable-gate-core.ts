@@ -147,3 +147,25 @@ export function billedOwnerOf(activeOwnerIds: readonly string[]): string | null 
   const unique = [...new Set(activeOwnerIds)];
   return unique.length === 1 ? unique[0] : null;
 }
+
+/**
+ * L2 ENFORCEMENT — the code a refused background operation is RECORDED with
+ * (RefreshExecution.admissionReason on a SKIPPED execution, or a job summary
+ * tally), so Platform Ops can tell "the customer's plan stopped this" from
+ * "the platform paused ingestion" (ADMISSION_REASONS) and from a failure. A
+ * refusal is never recorded as completed work.
+ */
+export const BILLABLE_SKIP_PREFIX = "BILLABLE_" as const;
+export type BillableSkipCode = `${typeof BILLABLE_SKIP_PREFIX}${BillableDenialReason}`;
+export function billableSkipCode(reason: BillableDenialReason): BillableSkipCode {
+  return `${BILLABLE_SKIP_PREFIX}${reason}`;
+}
+export function isBillableSkipCode(v: unknown): v is BillableSkipCode {
+  return typeof v === "string" && v.startsWith(BILLABLE_SKIP_PREFIX);
+}
+
+/** A batch job's refused-operation tally (reason → count), reported in its JobRun summary. */
+export type BillableDenialTally = Partial<Record<BillableDenialReason, number>>;
+export function tallyBillableDenial(tally: BillableDenialTally, reason: BillableDenialReason): void {
+  tally[reason] = (tally[reason] ?? 0) + 1;
+}

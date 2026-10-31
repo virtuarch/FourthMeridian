@@ -233,6 +233,8 @@ export interface PolicyGroupCatalogue {
    * decisions never do (lib/entitlements/billable-gate-core.ts).
    */
   servedFromLastGood?: boolean;
+  /** L2 — true when the GLOBAL cost freeze (platform_cost_frozen) was folded in (or its read failed). */
+  globalCostFrozen?: boolean;
 }
 
 function codeGroup(key: string, isDefault: boolean): CatalogueGroup {

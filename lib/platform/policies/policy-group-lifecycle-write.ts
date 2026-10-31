@@ -20,7 +20,7 @@
  *     code path updates or deletes one — pinned by lifecycle-write.test.ts).
  *   · The in-process catalogue cache is invalidated after commit, so this
  *     instance enforces the change on the next request; other instances within
- *     CATALOGUE_TTL_MS (30 s).
+ *     CATALOGUE_TTL_MS (20 s from the read start; + one read, within the 30 s bound).
  */
 
 import "server-only";

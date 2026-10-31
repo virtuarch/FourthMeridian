@@ -16,6 +16,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs jobs/history-worker-fairness.test.ts
  */
 
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
 import { solHistoryBackfill, WAKE_SAFE_MS, PRICE_GAP_RESERVE_MS, type SolBackfillJobDeps, type SolBackfillJobSummary } from "@/jobs/sol-history-backfill";
 import { workerConfig } from "@/lib/crypto/sol-backfill-worker.core";
 import { btcWorkerConfig } from "@/lib/crypto/btc-backfill-worker.core";
@@ -65,7 +66,7 @@ function world(o: { sol?: number; btc?: number; eth?: number; persist?: boolean;
     for (const [k, v] of Object.entries(meter)) { const d = v - (flushed[k] ?? 0); if (d > 0) { ledger[`${prefix}:${k}`] = (ledger[`${prefix}:${k}`] ?? 0) + d; flushed[k] = v; } }
   };
   const ids = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
-  const deps: SolBackfillJobDeps = {
+  const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
     now: () => t, sleep: async (ms) => { t += ms; },
     wakeStartedAt: async () => (o.wakeAgoMs === undefined ? null : t - (typeof o.wakeAgoMs === "function" ? o.wakeAgoMs(runNo) : o.wakeAgoMs)),
     wallets: async () => ids("s", o.sol ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: importingSol(id) })),
@@ -375,7 +376,7 @@ async function main() {
         const from = valuedFromISO(l.licensedFromISO, facts[l.instrumentId as "SOL"]);
         return from && from < snapshotStart ? [{ accountId: l.financialAccountId, fromISO: from, floorISO: facts[l.instrumentId as "SOL"]!, earliestSnapshotISO: snapshotStart }] : [];
       });
-      const deps: SolBackfillJobDeps = {
+      const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
         now: () => t, sleep: async (ms) => { t += ms; },
         wakeStartedAt: async () => (o.wakeAgoMs !== undefined ? t - o.wakeAgoMs : null),
         wallets: async () => [{ accountId: "s0", connectionId: "c-s0", address: ADDR, cursor: cursors.s0 }],

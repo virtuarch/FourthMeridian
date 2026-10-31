@@ -45,6 +45,8 @@
  * testable without a database.
  */
 
+import { restrictionMessage } from "@/lib/entitlements/restriction-messages";
+
 /** Everything the pure derivation needs about one connection. */
 export interface IngestionDeferralInput {
   /** Non-null while a sync holds the per-item lock. */
@@ -148,4 +150,27 @@ export function deriveIngestionActivity(input: IngestionActivityInput, now: Date
     latestExecution: latest && latest.overallStatus !== "RUNNING" ? latest : null,
   }) !== null) return "DEFERRED";
   return latest === null ? "UNKNOWN" : "IDLE";
+}
+
+// ── BETA LIFECYCLE L2 — a deferral the CUSTOMER'S PLAN caused ─────────────────
+//
+// A billable refusal is ledgered exactly like an admission denial (a SKIPPED
+// execution whose admissionReason is `BILLABLE_<reason>`), so it derives the
+// same "sync_deferred" state — but its copy must NOT say "syncing resumes
+// automatically": it resumes only when the plan's restriction lifts. These
+// map the code to the owner's lifecycle wording (pure; client-safe).
+
+const BILLABLE_PREFIX = "BILLABLE_";
+
+/** True when a deferral's reason is a billable (plan) refusal, not a platform admission denial. */
+export function isPlanRestrictedDeferral(reason: string | null | undefined): boolean {
+  return typeof reason === "string" && reason.startsWith(BILLABLE_PREFIX);
+}
+
+/** The customer-facing sentence for a plan-restricted deferral, or null for any other deferral. */
+export function planRestrictedDeferralMessage(reason: string | null | undefined): string | null {
+  if (!isPlanRestrictedDeferral(reason)) return null;
+  const kind = reason!.slice(BILLABLE_PREFIX.length);
+  if (kind === "BETA_PAUSED" || kind === "BETA_ENDED" || kind === "COST_FREEZE" || kind === "POLICY_UNAVAILABLE") return restrictionMessage(kind);
+  return "Syncing is paused until your plan is sorted out — your connection and stored data are unchanged.";
 }

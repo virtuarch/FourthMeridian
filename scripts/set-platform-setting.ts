@@ -22,6 +22,12 @@
  * (REGISTRATION_MODES / PRODUCT_STATUSES), not a copy — a new mode added to the
  * enum is accepted here automatically, and a typo can never be written.
  *
+ * BETA LIFECYCLE L2 — `platform_cost_frozen` (the GLOBAL cost freeze) is
+ * settable here too ("true" | "false"), for when no operator session is
+ * available. The AUDITED path is PATCH /api/platform/platform-ops/operational-controls
+ * (`control: "COST_FREEZE"`, fresh PLATFORM_OPS CONTROL, reason required) —
+ * prefer it. The read-back below shows the freeze as every gate judges it.
+ *
  * Dry run by default. After --apply it READS THE VALUE BACK and resolves it
  * through the same getters the app uses, so the output shows what the running
  * application will actually see rather than what we hoped we wrote.
@@ -36,11 +42,13 @@ import {
   getProductStatus,
   type PlatformSettingKeyType,
 } from "@/lib/platform-settings";
+import { judgeGlobalCostFreeze } from "@/lib/platform/cost-freeze.core";
 
 /** Only keys with a closed value set are settable here — no free-text writes. */
 const ALLOWED: Record<string, readonly string[]> = {
   [PlatformSettingKey.REGISTRATION_MODE]: REGISTRATION_MODES,
   [PlatformSettingKey.PRODUCT_STATUS]:    PRODUCT_STATUSES,
+  [PlatformSettingKey.PLATFORM_COST_FROZEN]: ["true", "false"],
 };
 
 function arg(name: string): string | undefined {
@@ -79,13 +87,15 @@ async function showCurrent(): Promise<void> {
   console.log("\n  Effective (what the app reads):");
   console.log(`    registration_mode  ${mode}`);
   console.log(`    product_status     ${status}`);
+  const freeze = judgeGlobalCostFreeze(stored.get(PlatformSettingKey.PLATFORM_COST_FROZEN)?.value ?? null);
+  console.log(`    platform_cost_frozen  ${freeze.frozen ? "FROZEN" : "not frozen"} (${freeze.state})`);
   console.log("\n  Stored rows:");
   for (const key of Object.keys(ALLOWED)) {
     const row = stored.get(key);
     console.log(
       row
-        ? `    ${key.padEnd(18)} "${row.value}"  (updated ${row.updatedAt.toISOString()})`
-        : `    ${key.padEnd(18)} — no row; the app is using its DEFAULT`,
+        ? `    ${key.padEnd(20)} "${row.value}"  (updated ${row.updatedAt.toISOString()})`
+        : `    ${key.padEnd(20)} — no row; the app is using its DEFAULT`,
     );
   }
   console.log("");

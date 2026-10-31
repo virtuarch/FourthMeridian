@@ -48,8 +48,24 @@ import {
   type PolicyGroupCatalogue, type PolicyGroupLifecycleFacts, type PolicyGroupRowFacts, type PolicyGroupVersionFacts,
 } from "@/lib/entitlements/policy-groups";
 import { isCatalogueFreshForBillable } from "@/lib/entitlements/billable-gate-core";
+import { PlatformSettingKey } from "@/lib/platform-settings";
+import { judgeGlobalCostFreeze, type GlobalCostFreezeVerdict } from "@/lib/platform/cost-freeze.core";
 
-export const CATALOGUE_TTL_MS = 30_000;
+/**
+ * L2 ENFORCEMENT — 20 s, stamped from the READ START (not its end). The bound,
+ * measured honestly (review P3-4): a write landing just after a read's
+ * lifecycle query is seen by the next read, which starts ≤ 20 s after that
+ * read STARTED and sees it once its own lifecycle query runs (one read's
+ * latency, L). A batch job may then reuse that decision for
+ * BILLABLE_BATCH_MAX_AGE_MS (5 s). Worst case: 20 s + 5 s + L ≤ 30 s for any
+ * read under 5 s (the three small catalogue queries take milliseconds).
+ * Previously 30 s + L — an overrun by construction.
+ */
+export const CATALOGUE_TTL_MS = 20_000;
+
+/** TEST-ONLY clock seam (the propagation bound is pinned with a pinned clock). Production: Date.now. */
+let clock: () => number = Date.now;
+export function setPolicyGroupCatalogueClockForTests(c: (() => number) | null): void { clock = c ?? Date.now; }
 export const CATALOGUE_FAILURE_RETRY_MS = 5_000;
 /** The oldest last-good catalogue a failed read may serve; past it, the code fallback (strict). */
 export const LAST_GOOD_MAX_AGE_MS = 5 * 60_000;
@@ -70,6 +86,13 @@ export interface PolicyGroupCatalogueReadClient {
       where: { OR: { groupKey: string; version: number }[] };
       select: { groupKey: true; version: true; values: true; createdAt: true };
     }): Promise<PolicyGroupVersionFacts[]>;
+  };
+  /**
+   * L2 — the GLOBAL cost freeze row (lib/platform/cost-freeze.core.ts). systemDb
+   * always has it; a narrow test fake without the delegate reads as "not frozen".
+   */
+  platformSetting?: {
+    findUnique(args: { where: { key: string }; select: { value: true } }): Promise<{ value: string } | null>;
   };
 }
 
@@ -94,7 +117,35 @@ export async function readPolicyGroupCatalogue(client: PolicyGroupCatalogueReadC
       error instanceof Error ? error.message.split("\n")[0].slice(0, 200) : "unknown error");
     lifecycle = null;
   }
-  return buildPolicyGroupCatalogue(rows, versions, now, lifecycle);
+  const built = buildPolicyGroupCatalogue(rows, versions, now, lifecycle);
+  return applyGlobalCostFreeze(built, await readGlobalFreeze(client));
+}
+
+/** L2 — the global flag's verdict for this read (never throws: a failure is UNAVAILABLE, i.e. frozen). */
+async function readGlobalFreeze(client: PolicyGroupCatalogueReadClient): Promise<GlobalCostFreezeVerdict> {
+  if (!client.platformSetting) return judgeGlobalCostFreeze(null);
+  try {
+    const row = await client.platformSetting.findUnique({ where: { key: PlatformSettingKey.PLATFORM_COST_FROZEN }, select: { value: true } });
+    return judgeGlobalCostFreeze(row?.value ?? null);
+  } catch (error) {
+    console.error("[policy-group-catalogue] global cost-freeze read failed; billable operations fail closed —",
+      error instanceof Error ? error.message.slice(0, 200) : "unknown error");
+    return judgeGlobalCostFreeze(null, true);
+  }
+}
+
+/**
+ * PURE (L2) — fold the GLOBAL cost freeze into a catalogue. Declared ON: every
+ * group reads `costFrozen: true` (Cost Freeze then beats the group's own state,
+ * the Founder overlay and every allowance, by the resolver's precedence).
+ * Unreadable / invalid: the lifecycle facts are UNAVAILABLE (billable work
+ * fails closed as POLICY_UNAVAILABLE). Off / absent: unchanged.
+ */
+export function applyGlobalCostFreeze(c: PolicyGroupCatalogue, v: GlobalCostFreezeVerdict): PolicyGroupCatalogue {
+  if (!v.frozen) return c;
+  if (v.reason !== "COST_FREEZE") return { ...c, lifecycleSource: "UNAVAILABLE", globalCostFrozen: true };
+  const groups = Object.fromEntries(Object.entries(c.groups).map(([k, g]) => [k, { ...g, costFrozen: true }]));
+  return { ...c, groups, globalCostFrozen: true };
 }
 
 /** `fresh` = the entry came from a successful read (a failure entry is never fresh for billable). */
@@ -124,22 +175,24 @@ export function invalidatePolicyGroupCatalogue(): void {
 
 /** CACHED, NEVER THROWS — the definitions in force for this process. */
 export function loadPolicyGroupCatalogue(): Promise<PolicyGroupCatalogue> {
-  const now = Date.now();
+  const now = clock();
   if (cached && cached.expiresAt > now) return Promise.resolve(cached.catalogue);
   if (inFlight) return inFlight;
   const gen = generation;
   const p = (async () => {
+    // L2 — the TTL and `loadedAt` both run from the READ START (see CATALOGUE_TTL_MS).
+    const startedAt = clock();
     try {
-      const catalogue = await readPolicyGroupCatalogue(systemDb as unknown as PolicyGroupCatalogueReadClient);
-      if (gen === generation) { cached = { catalogue, expiresAt: Date.now() + CATALOGUE_TTL_MS, fresh: true }; lastGood = { catalogue, at: Date.now() }; }
+      const catalogue = await readPolicyGroupCatalogue(systemDb as unknown as PolicyGroupCatalogueReadClient, new Date(startedAt));
+      if (gen === generation) { cached = { catalogue, expiresAt: startedAt + CATALOGUE_TTL_MS, fresh: true }; lastGood = { catalogue, at: startedAt }; }
       return catalogue;
     } catch (error) {
-      const recent = lastGood !== null && Date.now() - lastGood.at <= LAST_GOOD_MAX_AGE_MS ? lastGood.catalogue : null;
+      const recent = lastGood !== null && clock() - lastGood.at <= LAST_GOOD_MAX_AGE_MS ? lastGood.catalogue : null;
       console.error("[policy-group-catalogue] read failed; serving", recent ? "the last good catalogue" : "the code catalogue (strict fallback)", "—",
         error instanceof Error ? error.message.split("\n")[0].slice(0, 200) : "unknown error");
       // BETA LIFECYCLE — the last good copy is MARKED, so a billable decision can never use it.
       const fallback = recent ? { ...recent, servedFromLastGood: true } : codeFallbackCatalogue();
-      if (gen === generation) cached = { catalogue: fallback, expiresAt: Date.now() + CATALOGUE_FAILURE_RETRY_MS, fresh: false };
+      if (gen === generation) cached = { catalogue: fallback, expiresAt: clock() + CATALOGUE_FAILURE_RETRY_MS, fresh: false };
       return fallback;
     } finally {
       if (gen === generation) inFlight = null;
@@ -160,9 +213,9 @@ export function loadPolicyGroupCatalogue(): Promise<PolicyGroupCatalogue> {
  */
 export async function loadFreshPolicyGroupCatalogue(): Promise<PolicyGroupCatalogue | null> {
   const first = await loadPolicyGroupCatalogue();
-  if (isCatalogueFreshForBillable(first, Date.now())) return first;
-  if (cached && !cached.fresh && cached.expiresAt > Date.now()) return null;
+  if (isCatalogueFreshForBillable(first, clock())) return first;
+  if (cached && !cached.fresh && cached.expiresAt > clock()) return null;
   if (cached?.fresh) cached = null;
   const second = await loadPolicyGroupCatalogue();
-  return isCatalogueFreshForBillable(second, Date.now()) ? second : null;
+  return isCatalogueFreshForBillable(second, clock()) ? second : null;
 }

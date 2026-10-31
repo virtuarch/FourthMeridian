@@ -25,6 +25,7 @@
 import "server-only";
 import { planNeedsAttentionSentence, planUnavailableSentence } from '@/lib/ai/conversation/refusal-sentences';
 import type { LifecycleRestriction } from "./lifecycle";
+import type { BillableDenialReason } from "./billable-gate-core";
 import { RESTRICTION_CODES, restrictionMessage, restrictionStatus } from "./restriction-messages";
 import { NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
@@ -120,6 +121,35 @@ export function refuseIfFailClosed(e: EffectiveEntitlements, surfaceLabel: strin
   if (e.lifecycleRestriction != null) return planRestrictedResponse(e.lifecycleRestriction);
   return null;
 }
+
+/**
+ * L2 ENFORCEMENT — the HTTP refusal for a billable-gate denial
+ * (lib/entitlements/billable-gate.ts). A lifecycle reason (frozen, paused,
+ * ended, unreadable policy) gets the owner's lifecycle wording; a missing /
+ * invalid assignment (NOT_ENTITLED) or no billing owner (NO_OWNER) gets the
+ * "plan needs attention" sentence. Never "Connection limit reached".
+ */
+export function billableRefusalResponse(reason: BillableDenialReason, surfaceLabel: string, opts: { reassurance?: string } = {}): NextResponse {
+  const res = reason === "NOT_ENTITLED" || reason === "NO_OWNER" ? planNeedsAttentionResponse(surfaceLabel, null) : planRestrictedResponse(reason);
+  if (!opts.reassurance) return res;
+  // A follow-up sentence after the owner's wording (the body keeps code / restriction unchanged).
+  return NextResponse.json(
+    { ...refusalBodyOf(reason, surfaceLabel), error: `${refusalBodyOf(reason, surfaceLabel).error} ${opts.reassurance}`, reassurance: opts.reassurance },
+    { status: res.status, headers: NO_STORE },
+  );
+}
+
+/** The plain body billableRefusalResponse sends (shared so a reassurance can extend it). */
+function refusalBodyOf(reason: BillableDenialReason, surfaceLabel: string): { error: string; code: string; restriction?: LifecycleRestriction } {
+  if (reason === "NOT_ENTITLED" || reason === "NO_OWNER") return { error: planNeedsAttentionSentence(surfaceLabel), code: PLAN_NEEDS_ATTENTION_CODE };
+  return { error: restrictionMessage(reason), code: RESTRICTION_CODES[reason], restriction: reason };
+}
+
+/**
+ * BETA LIFECYCLE L2 (owner ruling 2026-10-31) — a refused connect or REPAIR
+ * never disconnects anyone: the copy says so.
+ */
+export const NOTHING_DISCONNECTED_SENTENCE = "Your existing connections stay connected — nothing has been disconnected.";
 
 /** BETA LIFECYCLE — the same refusal under its precise name (new code should call this). */
 export const refuseIfBillableRestricted = refuseIfFailClosed;
