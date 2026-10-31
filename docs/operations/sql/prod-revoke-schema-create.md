@@ -1,6 +1,6 @@
-# Production: revoke CREATE on schema `public` (A + B) — PROPOSED, NOT EXECUTED
+# Production: revoke CREATE on schema `public` (A + B) — EXECUTED 2026-10-31 ~05:50 UTC
 
-Owner approved A+B in principle (2026-10-31), subject to final dependency verification. Execution needs the owner's separate go.
+Owner approved A+B in principle (2026-10-31), subject to final dependency verification, then gave the explicit go ("execute … A+B exactly as documented"). This covered only the two REVOKE statements: no role was created and no other Production change was made.
 
 ## Verified read-only on Production, 2026-10-31
 
@@ -48,3 +48,17 @@ COMMIT;
 ```
 
 Running these as `postgres` re-creates the same `…=UC/postgres` entries.
+
+## Execution record (2026-10-31)
+
+The change was run exactly as written above, as `postgres`, in the Supabase SQL editor (owner's session). The editor reported "Success. No rows returned".
+
+Verification, run immediately afterwards (read-only):
+- ACL: `{postgres=UC/postgres,=U/postgres,anon=U/postgres,authenticated=U/postgres,service_role=U/postgres,fm_app=U/postgres,fm_auth=U/postgres,fm_system=U/postgres,fm_backup=U/postgres}`. This is exactly as expected.
+- Roles with CREATE on `public`: `postgres, supabase_admin`. This is exactly as expected.
+- PUBLIC privileges on `public`: `USAGE`, which is what precheck row 7 now reads.
+- `fm_app` and `fm_system` still have USAGE, and `fm_app` still has SELECT on `"User"`.
+- `GET https://app.fourthmeridian.com/api/health` returned 200 with `{"status":"ok","db":"ok", … "overdueJobs":0}`. The apex site returned 200.
+- A signed-in page (`/dashboard/settings/account`) loaded the owner's profile from the database.
+
+Rollback was not needed.
