@@ -104,7 +104,15 @@ export type EventOutcome = "APPLIED" | "NO_CHANGE" | "NOTE" | "UNMATCHED";
 // ── Parsing (pure) ───────────────────────────────────────────────────────────
 
 export type ParsedEvent =
-  | { kind: "handled"; type: ProviderEventType; providerMessageId: string; occurredAt: Date }
+  | {
+      kind: "handled"; type: ProviderEventType; providerMessageId: string; occurredAt: Date;
+      /**
+       * NIT N1 — true only when the payload carried its own valid `created_at`. Without it,
+       * occurredAt is the svix-timestamp fallback, which svix RE-STAMPS on every attempt: an age
+       * computed from it never grows, so the F2 grace window is not applied to such an event.
+       */
+      providerTimed: boolean;
+    }
   | { kind: "ignored"; why: "NEVER_TRACKED" | "UNHANDLED_TYPE" | "NO_MESSAGE_ID" };
 
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,200}$/;
@@ -113,7 +121,7 @@ const MESSAGE_ID = /^[A-Za-z0-9_-]{1,200}$/;
  * Read ONLY `type`, `created_at` and `data.email_id` from a verified body.
  * Every other field (to, from, subject, bounce text, tags …) is never touched.
  */
-export function parseResendEvent(json: unknown, fallbackAt: Date): ParsedEvent {
+export function parseResendEvent(json: unknown, fallbackAt: Date, now?: Date): ParsedEvent {
   const body = typeof json === "object" && json !== null ? (json as { type?: unknown; created_at?: unknown; data?: unknown }) : {};
   const type = typeof body.type === "string" ? body.type : "";
   if (NEVER_TRACKED_EVENT_TYPES.includes(type)) return { kind: "ignored", why: "NEVER_TRACKED" };
@@ -121,12 +129,17 @@ export function parseResendEvent(json: unknown, fallbackAt: Date): ParsedEvent {
   const data = typeof body.data === "object" && body.data !== null ? (body.data as { email_id?: unknown }) : {};
   const id = typeof data.email_id === "string" ? data.email_id : "";
   if (!MESSAGE_ID.test(id)) return { kind: "ignored", why: "NO_MESSAGE_ID" };
-  const at = typeof body.created_at === "string" ? new Date(body.created_at) : null;
+  const raw = typeof body.created_at === "string" ? new Date(body.created_at) : null;
+  const at = raw && Number.isFinite(raw.getTime()) ? raw : null;
+  // NIT N2 — a provider instant in the future (clock skew) is clamped to now: it would
+  // otherwise give a negative age (an endless F2 retry) and a future deliveredAt.
+  const clamp = (d: Date) => (now && d.getTime() > now.getTime() ? new Date(now.getTime()) : d);
   return {
     kind: "handled",
     type: HANDLED_EVENT_TYPES[type as keyof typeof HANDLED_EVENT_TYPES],
     providerMessageId: id,
-    occurredAt: at && Number.isFinite(at.getTime()) ? at : fallbackAt,
+    occurredAt: clamp(at ?? fallbackAt),
+    providerTimed: at !== null,
   };
 }
 
@@ -287,7 +300,8 @@ export type ReconcileOutcome =
  */
 export async function reconcileEvent(
   store: ProviderEventStore,
-  parsed: { type: ProviderEventType; providerMessageId: string; occurredAt: Date },
+  /** `providerTimed` absent/false ⇒ no grace window (N1): the event is stored at once. */
+  parsed: { type: ProviderEventType; providerMessageId: string; occurredAt: Date; providerTimed?: boolean },
   svixId: string,
   now: Date,
 ): Promise<ReconcileOutcome> {
@@ -296,7 +310,9 @@ export async function reconcileEvent(
       let rows = await tx.findMessageRows(parsed.providerMessageId);
       const own = finalRow(rows.filter((r) => r.providerMessageId === parsed.providerMessageId));
       if (!own) {
-        if (now.getTime() - parsed.occurredAt.getTime() < UNMATCHED_GRACE_MS) return { kind: "retry" };
+        // N1: only a payload-stamped instant can age; N2: never a negative age (clamped to now).
+        const age = now.getTime() - Math.min(parsed.occurredAt.getTime(), now.getTime());
+        if (parsed.providerTimed === true && age < UNMATCHED_GRACE_MS) return { kind: "retry" };
       } else {
         await tx.lockMessage(messageLockKey(own.channel, own.messageKey));
         rows = await tx.findMessageRows(parsed.providerMessageId);
@@ -382,7 +398,7 @@ export async function handleResendWebhook(req: ResendWebhookRequest, deps: Resen
     return { status: 400, body: { error: "invalid JSON body", code: "VALIDATION" }, ...none };
   }
   const tsAt = new Date(Number(req.headers.timestamp!.trim()) * 1000);
-  const parsed = parseResendEvent(json, tsAt);
+  const parsed = parseResendEvent(json, tsAt, now);
   if (parsed.kind === "ignored") return { status: 200, body: { received: true, handled: false }, ...none };
 
   // 5–6. Match, decide, commit — all inside one locked transaction (REVIEW F1).
