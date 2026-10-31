@@ -3894,7 +3894,7 @@ model CommsDelivery {
   definitionVersion Int
   templateVersion   Int?
   channel           String // CommsChannel: IN_APP | EMAIL | OPERATOR_EMAIL
-  status            String // QUEUED | ACCEPTED | CAPTURED | FAILED | DEAD | SUPPRESSED | CANCELLED
+  status            String // QUEUED | ACCEPTED | CAPTURED | FAILED | DEAD | SUPPRESSED | CANCELLED | DELIVERED | BOUNCED | COMPLAINED (Phase C: verified provider events only)
   reason            String? // SuppressionReason (SUPPRESSED), ENVIRONMENT_GUARD (CAPTURED)
   provider          String? // "resend" | "none" (guard) | "in-app"
   providerMessageId String?
@@ -3913,6 +3913,11 @@ model CommsDelivery {
   // belongs to (AutomationRunItem.id, soft ref; = messageKey for automation sends).
   mode                String    @default("LIVE")
   automationRunItemId String?
+  // Comms Center C — set ONLY on a row appended from a signature-verified
+  // provider `email.delivered` event (the provider's own delivery instant);
+  // carried forward on a later COMPLAINED / BOUNCED row of the same message.
+  // Never set by a send: ACCEPTED is not delivered.
+  deliveredAt         DateTime?
   createdAt           DateTime  @default(now())
 
   @@index([createdAt])
@@ -3921,6 +3926,39 @@ model CommsDelivery {
   @@index([recipientHash])
   @@index([messageKey])
   @@index([automationRunItemId])
+  @@index([providerMessageId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMS CENTER C — one VERIFIED provider (Resend / svix) delivery event, as
+// received (contract v1 §6.4, v1.1 §8.5 / §10.1, v1.2 note). Written only AFTER
+// the svix signature verified, in the SAME transaction as any ledger row it
+// appends, so a replayed svix-id (providerEventId @unique) is a no-op.
+// Stores NO PII: no address, subject, body, link, bounce message or payload —
+// the svix id, the event type, the provider message id, the instant, and what
+// the receiver matched and decided. Opens and clicks are never stored (O-13).
+// fm_system only (SELECT, INSERT, DELETE); fm_app / fm_auth: nothing.
+// Retention: 90 days from receivedAt (owner decision, jobs/data-retention.ts).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CommsProviderEvent {
+  id                String   @id @default(cuid())
+  provider          String // "resend"
+  providerEventId   String   @unique // svix-id — replay protection
+  type              String // delivered | bounced | complained | delivery_delayed
+  providerMessageId String // Resend data.email_id (= CommsDelivery.providerMessageId)
+  // The ledger row (CommsDelivery.id) the event matched — the message's final
+  // row at receipt — and its messageKey. Soft refs, no FK; null = UNMATCHED.
+  deliveryId        String?
+  messageKey        String?
+  // APPLIED (a ledger row was appended) | NO_CHANGE (matched; status would not
+  // move forward) | NOTE (delivery_delayed: recorded only) | UNMATCHED.
+  outcome           String
+  occurredAt        DateTime // the provider's event instant
+  receivedAt        DateTime @default(now())
+
+  @@index([receivedAt])
+  @@index([providerMessageId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

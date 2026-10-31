@@ -116,7 +116,7 @@ function main(): void {
   const models = [...readFileSync(join(process.cwd(), "prisma", "schema.prisma"), "utf8").matchAll(/^model (\w+) \{/gm)].map((m) => m[1]);
   const unreplayed = models.filter((m) => !state.tables.has(m));
   check("every schema model is a table the replay knows (the parser misses nothing)", unreplayed.length === 0, unreplayed.join(", "));
-  for (const t of ["CommsDelivery", "CommsDeliveryDaily", "BetaAccessRequestReview", "RateLimit", "AutomationDefinition", "AutomationRun", "AutomationRunItem"]) {
+  for (const t of ["CommsDelivery", "CommsDeliveryDaily", "BetaAccessRequestReview", "RateLimit", "AutomationDefinition", "AutomationRun", "AutomationRunItem", "CommsProviderEvent"]) {
     check(`${t}: enabled + forced`, state.enabled.has(t) && state.forced.has(t));
   }
 
@@ -137,6 +137,18 @@ function main(): void {
   const autoMig = files[names.indexOf("20261031220000_comms_automations")] ?? "";
   const withoutForce = files.map((f) => (f === autoMig ? f.replace(/ALTER TABLE public\."AutomationRunItem" FORCE ROW LEVEL SECURITY;/, "") : f));
   check("dropping AutomationRunItem's FORCE from its migration is caught", autoMig !== "" && !census(withoutForce).forced.has("AutomationRunItem"));
+  // Comms Center C — the webhook event table: dropping either clause is caught.
+  const cpeMig = files[names.indexOf("20261031230000_comms_provider_events")] ?? "";
+  const cpeNoEnable = files.map((f) => (f === cpeMig ? f.replace(/ALTER TABLE public\."CommsProviderEvent" ENABLE ROW LEVEL SECURITY;/, "") : f));
+  const cpeNoForce = files.map((f) => (f === cpeMig ? f.replace(/ALTER TABLE public\."CommsProviderEvent" FORCE ROW LEVEL SECURITY;/, "") : f));
+  check("dropping CommsProviderEvent's ENABLE / FORCE from its migration is each caught",
+    cpeMig !== "" && !census(cpeNoEnable).enabled.has("CommsProviderEvent") && !census(cpeNoForce).forced.has("CommsProviderEvent"));
+  check("CommsProviderEvent: fm_system SELECT, INSERT, DELETE only (no UPDATE); revoked from fm_app and fm_auth",
+    /GRANT SELECT, INSERT, DELETE ON TABLE public\."CommsProviderEvent" TO fm_system;/.test(cpeMig)
+    && !/GRANT[^;]*UPDATE[^;]*"CommsProviderEvent"/.test(cpeMig)
+    && /REVOKE ALL ON TABLE public\."CommsProviderEvent" FROM fm_app;/.test(cpeMig)
+    && /REVOKE ALL ON TABLE public\."CommsProviderEvent" FROM fm_auth;/.test(cpeMig)
+    && !/GRANT[^;]*"CommsProviderEvent"[^;]*TO fm_(app|auth)/.test(cpeMig));
   check("a renamed table keeps its RLS; a dropped one leaves the census",
     (() => { const s = census([`CREATE TABLE "Old" (x int); ALTER TABLE "Old" ENABLE ROW LEVEL SECURITY; ALTER TABLE "Old" RENAME TO "New"; CREATE TABLE "Gone" (x int); DROP TABLE "Gone";`]); return s.enabled.has("New") && !s.tables.has("Gone") && s.tables.has("New"); })());
   check("comments are ignored (a commented-out ENABLE does not count)",

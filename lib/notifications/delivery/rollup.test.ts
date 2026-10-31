@@ -257,7 +257,7 @@ async function wiring(): Promise<void> {
     const res = await quiet(() => runCommsDeliveryRollup(rollupClientFrom(prisma as never), NOW));
     check("the Prisma binding: one findMany on createdAt, then (with rows) findAttempts as findMany on messageKey", res.exhausted && calls.join() === "findMany:createdAt");
   }
-  check("CommsDelivery is NOT a plain delete rule (it must be rolled first)", !RETENTION_RULES.some((r) => /comms/i.test(r.table)));
+  check("CommsDelivery is NOT a plain delete rule (it must be rolled first)", !RETENTION_RULES.some((r) => /commsDelivery/i.test(r.table)));
   const empty = Object.fromEntries(RETENTION_RULES.map((r) => [r.table, { findMany: async () => [], deleteMany: async () => ({ count: 0 }) }])) as unknown as RetentionClient;
   const injectedOnly = await quiet(() => runDataRetention(empty, NOW));
   check("an injected rules client without a comms client never reaches a real database (commsDelivery: null)", injectedOnly.commsDelivery === null);

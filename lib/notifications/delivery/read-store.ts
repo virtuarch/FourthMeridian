@@ -82,4 +82,9 @@ export const deliveryReadSource: DeliveryReadSource = {
        GROUP BY 1, 2, 3, 4, 5`;
     return rows.map((r): DeliveryCountRow => ({ ...r, count: Number(r.count) }));
   },
+
+  /** Phase C — one indexed probe: does this environment hold a verified provider event? */
+  async verifiedEventExists() {
+    return (await systemDb.commsProviderEvent.findFirst({ select: { id: true } })) !== null;
+  },
 };

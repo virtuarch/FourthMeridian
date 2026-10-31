@@ -39,6 +39,10 @@
  * so this window also bounds how long any DEDUPE_OPEN can hold (the engine never looks
  * further back than AUTOMATION_RETENTION_DAYS either — N6). AutomationDefinition is kept.
  *
+ * COMMS CENTER C — CommsProviderEvent (verified webhook events; no PII) is a
+ * plain 90-day rule on receivedAt (owner decision 2026-10-31; fm_system holds
+ * DELETE — migration 20261031230000).
+ *
  * NOT here, by decision: AuditLog (security evidence; product events already
  * have their own 13-month job), Notification (lib/notifications/cleanup.ts),
  * RateLimit (sweep-rate-limits), financial data of any kind.
@@ -54,7 +58,7 @@ export const RETENTION_MAX_BATCHES = 20;
 export type RetentionTable =
   | "userSession" | "aiInvocation" | "jobRun" | "refreshExecution" | "providerCall"
   | "plaidWebhookEvent" | "syncIssue" | "apiUsageCounter" | "betaAccessRequest"
-  | "betaAccessRequestEvent" | "dailyBrief" | "automationRun";
+  | "betaAccessRequestEvent" | "dailyBrief" | "automationRun" | "commsProviderEvent";
 
 export interface RetentionRule {
   table: RetentionTable;
@@ -97,6 +101,10 @@ export const RETENTION_RULES: readonly RetentionRule[] = [
     where: (c) => ({ briefDay: { lt: c } }), orderBy: "briefDay" },
   { table: "automationRun", what: "AutomationRun (+ its AutomationRunItems by cascade) started more than 90 days ago, finished, with no item still able to send", days: AUTOMATION_RETENTION_DAYS,
     where: (c) => ({ startedAt: { lt: c }, status: { not: "RUNNING" }, items: { none: { status: { in: ["SCHEDULED", "SENDING", "FAILED"] } } } }), orderBy: "startedAt" },
+  // Comms Center C — owner decision 2026-10-31: verified provider (Resend) delivery events, 90 days.
+  // The ledger rows they appended follow CommsDelivery's own 90-day rollup.
+  { table: "commsProviderEvent", what: "CommsProviderEvent (verified Resend delivery events) received more than 90 days ago", days: 90,
+    where: (c) => ({ receivedAt: { lt: c } }), orderBy: "receivedAt" },
 ];
 
 export interface RetentionDelegate {

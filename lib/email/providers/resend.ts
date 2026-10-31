@@ -30,7 +30,7 @@
  */
 
 import "server-only";
-import { Resend } from "resend";
+import { Resend, type ErrorResponse } from "resend";
 import type { EmailMessage, EmailProvider, EmailResult } from "@/lib/email/types";
 
 const PROVIDER_NAME = "resend";
@@ -112,8 +112,18 @@ export function redactProviderError(raw: string): string {
  * retry it into DEAD. Only when THIS request carried a key; `concurrent_idempotent_requests` (still
  * in flight) stays an error and is retried under the same key.
  */
+/**
+ * Comms Center C (N-a) — the SDK error names the mapping depends on, pinned to the SDK's own
+ * `ErrorResponse["name"]` union: if the SDK renames either, `tsc` fails here instead of the
+ * mapping silently never matching (lib/email/providers/resend-idempotency.test.ts runs it).
+ */
+export const RESEND_IDEMPOTENCY_ERROR_NAMES = {
+  conflict: "invalid_idempotent_request",
+  inFlight: "concurrent_idempotent_requests",
+} as const satisfies Record<string, ErrorResponse["name"]>;
+
 export function isIdempotencyConflict(error: { name?: unknown; statusCode?: unknown }, options: ResendRequestOptions | undefined): boolean {
-  return !!options?.idempotencyKey && error.name === "invalid_idempotent_request" && (error.statusCode === undefined || error.statusCode === null || error.statusCode === 409);
+  return !!options?.idempotencyKey && error.name === RESEND_IDEMPOTENCY_ERROR_NAMES.conflict && (error.statusCode === undefined || error.statusCode === null || error.statusCode === 409);
 }
 
 // ── Adapter ───────────────────────────────────────────────────────────────────
