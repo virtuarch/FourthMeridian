@@ -29,7 +29,7 @@
  *
  * BETA LIFECYCLE (L1) — the per-group lifecycle / cost-freeze columns are read
  * by a SEPARATE query in the same load, so a database without migration
- * 20261031120000_policy_group_lifecycle (or a failed lifecycle read) still
+ * 20261031130000_policy_group_lifecycle (or a failed lifecycle read) still
  * resolves entitlement VALUES exactly as before; the catalogue is then marked
  * `lifecycleSource: "UNAVAILABLE"` and every BILLABLE decision fails closed.
  *

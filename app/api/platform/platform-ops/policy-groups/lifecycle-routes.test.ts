@@ -348,7 +348,7 @@ async function main() {
       !/customerPolicyAssignment\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(/.test(w) && /customerPolicyAssignment\.count\(/.test(w));
     t.check("raw SQL = exactly one tagged-template FOR UPDATE lock", (w.match(/\$queryRaw/g) ?? []).length === 1 && /\$queryRaw`SELECT "key" FROM "PolicyGroup" WHERE "key" = \$\{input\.key\} FOR UPDATE`/.test(w) && !/Unsafe|\$executeRaw/.test(w));
     t.check("the cache is invalidated after a successful commit", /if \(result\.ok\) invalidatePolicyGroupCatalogue\(\);/.test(w));
-    const mig = readFileSync(path.join(process.cwd(), "prisma/migrations/20261031120000_policy_group_lifecycle/migration.sql"), "utf8");
+    const mig = readFileSync(path.join(process.cwd(), "prisma/migrations/20261031130000_policy_group_lifecycle/migration.sql"), "utf8");
     t.check("migration: fm_system SELECT+INSERT only on transitions, fm_backup SELECT, nothing to fm_app/fm_auth, RLS forced",
       /GRANT SELECT, INSERT ON TABLE public\."PolicyGroupTransition" TO fm_system;/.test(mig) && /GRANT SELECT ON TABLE public\."PolicyGroupTransition" TO fm_backup;/.test(mig)
         && !/GRANT[^;]*PolicyGroupTransition[^;]*TO fm_(app|auth)/.test(mig) && /FORCE ROW LEVEL SECURITY/.test(mig)
