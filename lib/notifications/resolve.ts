@@ -58,6 +58,10 @@ export async function retireOpenNotification(
 ): Promise<number> {
   const def = getNotificationDefinition(type);
   if (!def || def.dedupe === "none" || def.dedupeKeyTemplate === null) return 0;
+  // A one-time condition (ACCOUNT_WELCOME) is never retired: its key is never
+  // released. Retention (lib/notifications/cleanup.ts) still deletes the row once
+  // archived for deleteDays — see the safety note in lib/notifications/welcome.ts.
+  if (def.dedupeNeverReleases === true) return 0;
 
   let dedupeKey: string;
   try {
@@ -85,6 +89,57 @@ export async function retireOpenNotification(
     return res.count + archived.count;
   } catch (err) {
     console.warn("[retireOpenNotification] retirement failed (non-fatal):", err);
+    return 0;
+  }
+}
+
+/** The one operation an escalation performs (injection seam for tests). */
+export interface NotificationRefreshClient {
+  notification: {
+    updateMany(args: {
+      where: { userId: string; dedupeKey: string; archivedAt: null };
+      data: { title: string; body: string | null; href: string | null; metadata: NotificationRenderData };
+    }): Promise<{ count: number }>;
+  };
+}
+
+/**
+ * ESCALATE the open notice of a dedupe-keyed condition in place (review fix
+ * 2026-10-31): re-render it from `data` and overwrite the OPEN (un-archived)
+ * holder's title / body / href / metadata. The condition is the same (same
+ * key), but what is true about it got worse — SYNC_FAILED "sign in again" →
+ * "disconnected" when the Plaid webhook revokes an item whose reauth notice is
+ * still open. Nothing is sent: the email leg ships only when a row is CREATED
+ * (create.ts), so an escalation updates the bell and never emails twice. The
+ * unread state is left as it is. An archived holder (an email anchor, or a
+ * notice the user dismissed) is not touched — nothing visible would change.
+ *
+ * Best-effort: returns the rows updated (0 = nothing open) and never throws.
+ */
+export async function refreshOpenNotification(
+  userId: string,
+  type: NotificationTypeId,
+  data: NotificationRenderData,
+  ctx?: { client?: NotificationRefreshClient },
+): Promise<number> {
+  const def = getNotificationDefinition(type);
+  if (!def || def.dedupe === "none" || def.dedupeKeyTemplate === null) return 0;
+  let dedupeKey: string;
+  try {
+    dedupeKey = fillDedupeTemplate(def.dedupeKeyTemplate, userId, data);
+  } catch {
+    return 0;
+  }
+  try {
+    const client = ctx?.client ?? (db as unknown as NotificationRefreshClient);
+    const r = def.render(data);
+    const res = await client.notification.updateMany({
+      where: { userId, dedupeKey, archivedAt: null },
+      data: { title: r.title, body: r.body ?? null, href: r.href ?? null, metadata: data },
+    });
+    return res.count;
+  } catch (err) {
+    console.warn("[refreshOpenNotification] escalation failed (non-fatal):", err);
     return 0;
   }
 }

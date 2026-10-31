@@ -21,6 +21,7 @@ import { getTemplate } from "@/lib/email/templates";
 import { PREVIEW_APP_BASE, previewCases, type PreviewCase } from "@/lib/email/preview";
 import { buildNotificationEmailData } from "@/lib/notifications/channels/email-data";
 import { CONNECTION_STATES } from "@/lib/notifications/connection-attention";
+import { WALLET_ATTENTION_STATES } from "@/lib/notifications/wallet-attention";
 import { NOTIFICATION_REGISTRY, type NotificationTypeId } from "@/lib/notifications/registry";
 import type { NotificationTypeDefinition } from "@/lib/notifications/types";
 import {
@@ -59,6 +60,11 @@ export const IN_APP_FIXTURES: { readonly [K in NotificationTypeId]: Readonly<Rec
   ACCOUNT_DELETION_REQUESTED: { [D]: { scheduledFor: "2026-11-07" } },
   ACCOUNT_DELETION_CANCELLED: { [D]: {} },
   DATA_EXPORTED: { [D]: {} },
+  PLATFORM_ACCESS_GRANTED: {
+    granted: { area: "SECURITY_OPS", areaLabel: "Security Operations", level: "READ", levelLabel: "read-only", change: "granted" },
+    "level-changed": { area: "SECURITY_OPS", areaLabel: "Security Operations", level: "WRITE", levelLabel: "read and write", change: "level_changed" },
+  },
+  PLATFORM_ACCESS_REVOKED: { [D]: { area: "SECURITY_OPS", areaLabel: "Security Operations", level: "READ", levelLabel: "read-only" } },
   SPACE_INVITE_RECEIVED: { [D]: { inviteId: "preview-invite", spaceName: "Example Household", inviterName: "Alex Example" } },
   SPACE_INVITE_ACCEPTED: { [D]: { inviteId: "preview-invite", spaceName: "Example Household", memberName: "Sam Example" } },
   MEMBER_REMOVED: { [D]: { spaceName: "Example Household" } },
@@ -66,6 +72,8 @@ export const IN_APP_FIXTURES: { readonly [K in NotificationTypeId]: Readonly<Rec
   SPACE_OWNERSHIP_TRANSFERRED: { [D]: { spaceName: "Example Household", previousOwnerName: "Alex Example" } },
   SYNC_FAILED: syncFailedVariants,
   SYNC_COMPLETED: { [D]: { plaidItemId: "preview-item", institutionName: "Example Bank" } },
+  WALLET_SYNC_FAILED: Object.fromEntries(WALLET_ATTENTION_STATES.map((walletState) =>
+    [walletState, { financialAccountId: "preview-account", walletName: "Example BTC Wallet", network: "Bitcoin", walletState }])),
   DUPLICATE_DETECTED: { [D]: { candidateIds: ["preview-candidate"], count: 1 } },
   IMPORT_COMPLETED: { [D]: { batchId: "preview-batch", rowCount: 42 } },
   IMPORT_COMPLETED_WITH_ERRORS: { [D]: { batchId: "preview-batch", errorCount: 3 } },
@@ -76,6 +84,7 @@ export const IN_APP_FIXTURES: { readonly [K in NotificationTypeId]: Readonly<Rec
   MAINTENANCE_SCHEDULED: { [D]: { window: "Sunday 02:00–03:00 UTC" } },
   FEATURE_RELEASED: { [D]: { featureName: "Example feature" } },
   POLICY_UPDATED: { [D]: { policyName: "Example policy" } },
+  ACCOUNT_WELCOME: { [D]: {} },
   SECURITY_ANOMALY_DETECTED: {
     [D]: {
       // The stored form is a salted hash (Comms Center A-2b, O-8); synthetic here.

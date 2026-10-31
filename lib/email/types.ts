@@ -130,7 +130,9 @@ export type EmailTemplateName =
   | "notification"
   | "beta-invite"
   | "beta-request"
-  | "platform-alert";
+  | "platform-alert"
+  | "welcome"
+  | "digest";
 
 /**
  * A template turns typed `data` into the subject + text of a message. The
