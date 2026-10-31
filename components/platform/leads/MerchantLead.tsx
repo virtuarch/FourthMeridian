@@ -66,13 +66,30 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
         <HealthHero model={merchantHero(p.f)} />
       </div>
 
-      {/* Review first on a phone: it is the Space's one action. */}
+      {/* Review first at every width — it is the Space's one action. With no
+          decisions in the window there is nothing to chart: one compact row, never an empty chart. */}
+      {m && m.decisions.merged + m.decisions.dismissed === 0 && m.decisions.byTier.length === 0 ? (
+        <Block id="mo-decisions" label="Merge review" className="min-w-0">
+          <Surface className="p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3" data-review-empty>
+            <p className="min-w-0 text-xs text-[var(--text-secondary)]">{`No merge decisions yet · candidates are detected on the review page; a merge rewrites identity for every tenant and is audited.`}</p>
+            {p.reviewAvailable !== false && <Link href={REVIEW_HREF} className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-9" data-review-link>
+              Open merge review <ChevronRight size={12} aria-hidden />
+            </Link>}
+          </div>
+          </Surface>
+        </Block>
+      ) : (
       <div className={GRID}>
         <Block id="mo-decisions" label="Merge review" className="min-w-0 lg:col-span-8">
           <Surface className="flex-1 p-4 sm:p-5">
             {m ? (
               <>
-                <DayBars days={decisionBars(m)} height={200} noun="decision" palette={MERGE_PALETTE} ariaLabel="Merge-review decisions per UTC day: merged and dismissed" />
+                {m.decisions.merged + m.decisions.dismissed === 0 ? (
+                  <ChartMessage>{`No merge decisions in the last ${m.windowDays} days`}</ChartMessage>
+                ) : (
+                  <DayBars days={decisionBars(m)} height={200} noun="decision" palette={MERGE_PALETTE} ariaLabel="Merge-review decisions per UTC day: merged and dismissed" />
+                )}
                 <div className="mt-2"><DayBarsLegend items={[{ label: "Merged", color: MERGE_PALETTE.succeeded }, { label: "Dismissed (kept apart)", color: MERGE_PALETTE.other }]} /></div>
                 <Caption>{`${n(m.decisions.merged)} merged · ${n(m.decisions.dismissed)} dismissed · ${m.windowDays} UTC days`}</Caption>
               </>
@@ -100,8 +117,9 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
           </Surface>
         </Block>
       </div>
+      )}
 
-      <div className={GRID}>
+      <div className={`${GRID} lg:items-start`}>
         <Block id="mo-provenance" label="Where categories come from" className="min-w-0 lg:col-span-7">
           <Surface className="flex-1 p-4 sm:p-5">
             {m ? (m.transactions.total === 0 ? <ChartMessage>No transactions</ChartMessage> : (
