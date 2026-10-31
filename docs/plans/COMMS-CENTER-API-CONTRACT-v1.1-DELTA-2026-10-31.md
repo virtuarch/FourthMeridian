@@ -1173,6 +1173,17 @@ The required ones join `REASON_REQUIRED_ACTIONS` (`lib/audit.ts:221`).
 - **§4.11 analytics:** the type is now `measured: { delivered: boolean; opens: false; clicks: false }`. `delivered` is **per environment**: it is true only when the secret is configured **and** at least one verified event exists. Only then are the optional `series.delivered`, `series.bounced` and `series.complained` present. The six C4 keys are unchanged. A delivered message counts once, as `DELIVERED`, not also as `ACCEPTED`.
 - **Platform Ops email health** (`GET /api/platform/platform-ops/email-health`) gains a read-only `webhook` block: `configured`, `lastVerifiedEventAt`, `countsByType`, `unmatched`, `signatureFailures {total, byReason}`, and `acceptedWithoutEvent72h` (ACCEPTED with no outcome after 72 h; a flag, never a resend; null until configured).
 - **N-b:** an `UNCERTAIN_ACCEPTANCE` send has no provider message id, so it can never match an event. Its ACCEPTED row is **expected-unmatchable** (`isExpectedUnmatchable`). It is excluded from `acceptedWithoutEvent72h` and reported separately as `acceptedUncertain72h`.
+- **Review fixes (F1–F6, 2026-10-31):**
+  - **F1:** match, decide and write run in one transaction, serialised per message by `pg_advisory_xact_lock(hashtext('comms-msg:<channel>:<messageKey>'))`, with a re-read after the lock. Within an attempt the current status is rank-aware (COMPLAINED > BOUNCED > DELIVERED > other) in the decision, the analytics read and the rollup.
+  - **F2:** an event with no ledger row yet, whose own `created_at` is under 5 min old, gets **409 `RETRY`** and is not stored. Its svix id is not consumed, so svix redelivers it. Older unknown ids are stored UNMATCHED.
+  - **F3:** `measured.delivered` ignores UNMATCHED events.
+  - **F4:** the 64 KB cap is enforced while streaming, with a running byte count, so a chunked body is capped too.
+  - **F5:** unchanged. The per-IP limit is a coarse bound, because svix egress IPs are shared.
+  - **F6:** the route-guard census credits `handleResendWebhook`.
+  - No migration.
+- **§4.11 `acceptedUncertain?: number | null`** (additive, optional; Session 2 request): the final-ACCEPTED provider emails with no provider id (R4 `UNCERTAIN_ACCEPTANCE`, "accepted, can't be confirmed").
+  - It is a subset of `totals.ACCEPTED`, scoped to the same environment, observed window and channel/template filters.
+  - It is 0 under any status filter other than ACCEPTED, and null when nothing is observed.
 - **Follow-ups, not built:** a recipient **suppression list** fed by `BOUNCED`/`COMPLAINED` final statuses (the contract does not specify one); the `notification-retry` move and the remaining B3 folds.
 
 ---

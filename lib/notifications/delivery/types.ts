@@ -141,6 +141,15 @@ export interface DeliveryAnalytics {
    * then can a DELIVERED count mean anything. Opens and clicks: never (O-13).
    */
   measured: { delivered: boolean; opens: false; clicks: false };
+  /**
+   * Phase C (Session 2 request; additive, OPTIONAL) — messages whose final status is ACCEPTED but
+   * that carry NO provider message id: the B2 R4 UNCERTAIN_ACCEPTANCE sends (an idempotency
+   * conflict — accepted earlier, no id returned). No webhook event can ever confirm them, so they
+   * are "accepted, can't be confirmed" — never "awaiting delivery". They are INCLUDED in
+   * totals.ACCEPTED; this is a subset count. Same environment, window (observed range) and
+   * filters as `totals`; null when nothing is observed; absent when the source cannot count it.
+   */
+  acceptedUncertain?: number | null;
   coverage: { ledgerSince: string | null; directSendsCovered: boolean; environment: LedgerEnvironment };
   providerHealth: { href: "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"; source: "GET /api/platform/platform-ops/email-health" };
   floor: boolean;

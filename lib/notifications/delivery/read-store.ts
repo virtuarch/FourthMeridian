@@ -21,6 +21,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
+import { MEASURING_EVENT_WHERE } from "@/lib/notifications/delivery/provider-events";
 import type { DeliveryCountQuery, DeliveryCountRow, DeliveryReadSource } from "@/lib/notifications/delivery/analytics";
 
 function filters(q: DeliveryCountQuery, withStatus: boolean): Prisma.Sql {
@@ -66,7 +67,10 @@ export const deliveryReadSource: DeliveryReadSource = {
          WHERE "createdAt" >= (${q.from}::date)::timestamp
            AND "createdAt" <  (${q.to}::date + 1)::timestamp
            AND "mode" = 'LIVE' ${ledgerFilters}
-         ORDER BY "channel", "messageKey", "attempt" DESC, "createdAt" DESC, "id" DESC
+         ORDER BY "channel", "messageKey", "attempt" DESC,
+                  -- REVIEW F1: rank-aware within an attempt (provider-events.ts STATUS_RANK / currentRow)
+                  CASE "status" WHEN 'COMPLAINED' THEN 3 WHEN 'BOUNCED' THEN 2 WHEN 'DELIVERED' THEN 1 ELSE 0 END DESC,
+                  "createdAt" DESC, "id" DESC
       )
       SELECT u."day", u."definitionKey", u."channel", u."status", u."reason", SUM(u."n")::int AS "count"
         FROM (
@@ -83,8 +87,18 @@ export const deliveryReadSource: DeliveryReadSource = {
     return rows.map((r): DeliveryCountRow => ({ ...r, count: Number(r.count) }));
   },
 
+  /**
+   * Phase C — accepted-uncertain (R4 UNCERTAIN_ACCEPTANCE sends). The query lives with the other
+   * provider-id reads (provider-event-store.ts), so this module never names a provider id column.
+   */
+  async acceptedUncertainCount(q) {
+    const { countAcceptedUncertain } = await import("@/lib/notifications/delivery/provider-event-store");
+    return countAcceptedUncertain(q);
+  },
+
   /** Phase C — one indexed probe: does this environment hold a verified provider event? */
   async verifiedEventExists() {
-    return (await systemDb.commsProviderEvent.findFirst({ select: { id: true } })) !== null;
+    // REVIEW F3 — UNMATCHED events (e.g. another environment on a shared Resend account) do not count.
+    return (await systemDb.commsProviderEvent.findFirst({ where: MEASURING_EVENT_WHERE, select: { id: true } })) !== null;
   },
 };

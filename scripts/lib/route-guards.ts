@@ -15,6 +15,8 @@
  *     `Authorization: Bearer` header) on the job routes;
  *   · the Plaid webhook signature verifier (verifyPlaidWebhook / the receiver
  *     that calls it) on the webhook route;
+ *   · the Resend (svix) webhook receiver (handleResendWebhook, which verifies
+ *     the svix signature first) on app/api/webhooks/resend;
  *   · the NextAuth handler itself (the `[...nextauth]` catch-all);
  *   · an explicit `// PUBLIC: <reason>` annotation in the route file, for a
  *     route that is unauthenticated BY DESIGN (registration, password reset,
@@ -68,6 +70,9 @@ export const GUARD_RECOGNISERS: ReadonlyArray<{ name: string; test: (strippedSou
   // helper (lib/jobs/cron-auth.ts → lib/security/cron-secret.ts).
   { name: "cron-bearer-helper", test: (s) => /\bisAuthorizedCronRequest\s*\(/.test(s) && /process\.env\.CRON_SECRET\b/.test(s) },
   { name: "plaid-webhook-verifier", test: (s) => /\b(verifyPlaidWebhook|handlePlaidWebhook)\s*\(/.test(s) },
+  // Comms Center C (review F6): the Resend delivery webhook — the receiver verifies the svix
+  // signature before anything else (lib/notifications/delivery/provider-events.ts).
+  { name: "resend-webhook-verifier", test: (s) => /\bhandleResendWebhook\s*\(/.test(s) },
   { name: "nextauth-handler", test: (s) => /\bNextAuth\s*\(/.test(s) },
 ];
 

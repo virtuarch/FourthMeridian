@@ -25,11 +25,13 @@
  *   3. VERIFY the svix signature (lib/notifications/delivery/svix.ts). A
  *      rejection is 401, leaves NO row, and is counted by reason only.
  *   4. Parse; classify. Not one of the four handled types ⇒ 200, nothing stored.
- *   5. Match by Resend message id → the ledger rows of that message; DECIDE
- *      (pure, forward-only — `decideReconciliation`).
- *   6. COMMIT in ONE transaction: insert the event (svix-id UNIQUE) and, when
- *      the status moves forward, APPEND the ledger row. A duplicate svix-id
- *      rolls the whole thing back and is acknowledged as a no-op (200).
+ *   5–6. In ONE transaction (`reconcileEvent`, review F1): match by Resend
+ *      message id; no row yet and the event is young ⇒ 409 RETRY, nothing
+ *      stored (review F2); else take the per-message advisory lock, RE-READ,
+ *      DECIDE (pure, forward-only, rank-aware — `decideReconciliation`), insert
+ *      the event (svix-id UNIQUE) and, when the status moves forward, APPEND the
+ *      ledger row. A duplicate svix-id rolls the whole thing back and is
+ *      acknowledged as a no-op (200).
  *   A store failure is a 500 so the provider retries; the transaction left
  *   nothing behind, so the retry is safe.
  *
@@ -145,6 +147,26 @@ export function finalRow<R extends { id: string; attempt: number; createdAt: Dat
   return best;
 }
 
+/**
+ * REVIEW F1 (defence in depth) — the message's CURRENT status, RANK-AWARE: highest attempt,
+ * then the highest STATUS_RANK (unranked statuses = 0), then newest createdAt, then id. Two
+ * appended rows of one attempt therefore resolve to the more advanced status whatever order
+ * they were written in (createdAt is the transaction's start, not its commit). The same
+ * order is used by the analytics read (read-store.ts) and the retention rollup (rollup.ts).
+ */
+export function currentRow<R extends { id: string; attempt: number; createdAt: Date; status: string }>(rows: readonly R[]): R | null {
+  let best: R | null = null;
+  const rank = (r: R) => STATUS_RANK[r.status as DeliveryStatus] ?? 0;
+  for (const r of rows) {
+    if (!best) { best = r; continue; }
+    if (r.attempt !== best.attempt) { if (r.attempt > best.attempt) best = r; continue; }
+    if (rank(r) !== rank(best)) { if (rank(r) > rank(best)) best = r; continue; }
+    if (r.createdAt.getTime() !== best.createdAt.getTime()) { if (r.createdAt.getTime() > best.createdAt.getTime()) best = r; continue; }
+    if (r.id > best.id) best = r;
+  }
+  return best;
+}
+
 export interface Reconciliation {
   outcome: EventOutcome;
   /** The ledger row the event matched (the message's final row at receipt); null when unmatched. */
@@ -163,7 +185,7 @@ export function decideReconciliation(event: { type: ProviderEventType; providerM
   const matched = finalRow(own);
   if (!matched) return { outcome: "UNMATCHED", deliveryId: null, messageKey: null, append: null };
   const message = rows.filter((r) => r.channel === matched.channel && r.messageKey === matched.messageKey);
-  const current = finalRow(message) ?? matched;
+  const current = currentRow(message) ?? matched;
   const base = { deliveryId: current.id, messageKey: current.messageKey };
   const next = EVENT_STATUS[event.type];
   if (next === null) return { ...base, outcome: "NOTE", append: null };
@@ -214,11 +236,90 @@ export interface ProviderEventInsert {
   occurredAt: Date;
 }
 
-export interface ProviderEventStore {
+/** What one reconciliation transaction may do. Production: Prisma interactive transaction (provider-event-store.ts). */
+export interface ReconcileTx {
   /** Every ledger row of the message whose provider id this is (bounded); [] when unknown. */
   findMessageRows(providerMessageId: string): Promise<LedgerRowRead[]>;
-  /** ONE transaction: insert the event (svix-id unique) and append the ledger row. "duplicate" ⇒ nothing written. */
-  commit(event: ProviderEventInsert, append: CommsDeliveryRow | null): Promise<"stored" | "duplicate">;
+  /** REVIEW F1 — serialise every event of one message: pg_advisory_xact_lock(hashtext(key)), held to commit. */
+  lockMessage(key: string): Promise<void>;
+  /** Insert the event row. A repeated svix id must make the transaction throw DuplicateProviderEvent. */
+  insertEvent(event: ProviderEventInsert): Promise<void>;
+  appendLedgerRow(row: CommsDeliveryRow): Promise<void>;
+}
+
+/** Thrown (by the store) when the svix id is already stored; the transaction rolled back. */
+export class DuplicateProviderEvent extends Error {
+  constructor() { super("duplicate provider event"); this.name = "DuplicateProviderEvent"; }
+}
+
+export interface ProviderEventStore {
+  /** Run `fn` in ONE transaction; everything it wrote is rolled back if it throws. */
+  transaction<T>(fn: (tx: ReconcileTx) => Promise<T>): Promise<T>;
+}
+
+/**
+ * REVIEW F2 — an event whose message id matches no ledger row YET, and whose provider instant
+ * is younger than this, is answered 409 WITHOUT being stored, so svix redelivers it (its svix
+ * id is not consumed). The ACCEPTED row is written after the send's response
+ * (runAfterResponse), so a fast `delivered` can beat it by a few seconds; svix retries after
+ * ~5 s. Keyed on the event's own `created_at` (stable across retries), not on svix-timestamp
+ * (fresh per attempt), so an id that is genuinely unknown here — another environment on the
+ * same Resend account — is stored UNMATCHED once this window has passed.
+ */
+export const UNMATCHED_GRACE_MS = 5 * 60 * 1000;
+
+/** The lock key of one message. */
+export const messageLockKey = (channel: string, messageKey: string) => `comms-msg:${channel}:${messageKey}`;
+
+export type ReconcileOutcome =
+  | { kind: "stored"; event: ProviderEventInsert; append: CommsDeliveryRow | null }
+  | { kind: "duplicate" }
+  | { kind: "retry" };
+
+/**
+ * REVIEW F1 + F2 — the whole read → decide → write, INSIDE one transaction:
+ *   1. find the message; none and the event is young ⇒ "retry" (nothing written);
+ *   2. take the message lock, then RE-READ the rows — a concurrent event of the same message
+ *      that committed while we waited is now visible (READ COMMITTED: a fresh snapshot per
+ *      statement), so the decision is made against the true current status;
+ *   3. decide (forward-only, rank-aware); insert the event; append the ledger row.
+ * A duplicate svix id rolls everything back.
+ */
+export async function reconcileEvent(
+  store: ProviderEventStore,
+  parsed: { type: ProviderEventType; providerMessageId: string; occurredAt: Date },
+  svixId: string,
+  now: Date,
+): Promise<ReconcileOutcome> {
+  try {
+    return await store.transaction(async (tx): Promise<ReconcileOutcome> => {
+      let rows = await tx.findMessageRows(parsed.providerMessageId);
+      const own = finalRow(rows.filter((r) => r.providerMessageId === parsed.providerMessageId));
+      if (!own) {
+        if (now.getTime() - parsed.occurredAt.getTime() < UNMATCHED_GRACE_MS) return { kind: "retry" };
+      } else {
+        await tx.lockMessage(messageLockKey(own.channel, own.messageKey));
+        rows = await tx.findMessageRows(parsed.providerMessageId);
+      }
+      const r = decideReconciliation(parsed, rows);
+      const event: ProviderEventInsert = {
+        provider: "resend",
+        providerEventId: svixId,
+        type: parsed.type,
+        providerMessageId: parsed.providerMessageId,
+        deliveryId: r.deliveryId,
+        messageKey: r.messageKey,
+        outcome: r.outcome,
+        occurredAt: parsed.occurredAt,
+      };
+      await tx.insertEvent(event);
+      if (r.append) await tx.appendLedgerRow(r.append);
+      return { kind: "stored", event, append: r.append };
+    });
+  } catch (err) {
+    if (err instanceof DuplicateProviderEvent) return { kind: "duplicate" };
+    throw err;
+  }
 }
 
 export interface ResendWebhookDeps {
@@ -237,7 +338,7 @@ export interface ResendWebhookRequest {
 }
 
 export interface ResendWebhookResult {
-  status: 200 | 400 | 401 | 413 | 500 | 503;
+  status: 200 | 400 | 401 | 409 | 413 | 500 | 503;
   body: Record<string, unknown>;
   /** The event row that was committed (null when none was). */
   stored: ProviderEventInsert | null;
@@ -284,24 +385,14 @@ export async function handleResendWebhook(req: ResendWebhookRequest, deps: Resen
   const parsed = parseResendEvent(json, tsAt);
   if (parsed.kind === "ignored") return { status: 200, body: { received: true, handled: false }, ...none };
 
-  // 5–6. Match, decide, commit atomically.
+  // 5–6. Match, decide, commit — all inside one locked transaction (REVIEW F1).
   try {
-    const rows = await deps.store.findMessageRows(parsed.providerMessageId);
-    const r = decideReconciliation(parsed, rows);
-    const event: ProviderEventInsert = {
-      provider: "resend",
-      providerEventId: svixId,
-      type: parsed.type,
-      providerMessageId: parsed.providerMessageId,
-      deliveryId: r.deliveryId,
-      messageKey: r.messageKey,
-      outcome: r.outcome,
-      occurredAt: parsed.occurredAt,
-    };
-    const committed = await deps.store.commit(event, r.append);
-    if (committed === "duplicate") return { status: 200, body: { received: true, handled: false, duplicate: true }, ...none };
-    log.log(`[resend webhook] ${parsed.type} → ${r.outcome}`);
-    return { status: 200, body: { received: true, handled: true, outcome: r.outcome }, stored: event, appended: r.append };
+    const out = await reconcileEvent(deps.store, parsed, svixId, now);
+    if (out.kind === "duplicate") return { status: 200, body: { received: true, handled: false, duplicate: true }, ...none };
+    // REVIEW F2 — not yet matchable and young: retryable, nothing stored, svix id not consumed.
+    if (out.kind === "retry") return { status: 409, body: { error: "message not yet recorded; retry", code: "RETRY" }, ...none };
+    log.log(`[resend webhook] ${parsed.type} → ${out.event.outcome}`);
+    return { status: 200, body: { received: true, handled: true, outcome: out.event.outcome }, stored: out.event, appended: out.append };
   } catch (err) {
     // The class only: a driver message can quote values.
     log.warn(`[resend webhook] store failed (the provider will retry): ${err instanceof Error ? err.name : "Error"}`);
@@ -310,6 +401,13 @@ export async function handleResendWebhook(req: ResendWebhookRequest, deps: Resen
 }
 
 // ── Health (pure builder; Platform Ops → email health, read-only) ───────────
+
+/**
+ * REVIEW F3 — the events that count as "a verified event exists" for measured.delivered: an
+ * UNMATCHED event proves only that the account's webhook works (Preview and Production may share
+ * one Resend account), not that THIS environment's sends are being confirmed.
+ */
+export const MEASURING_EVENT_WHERE = { outcome: { not: "UNMATCHED" } } as const;
 
 /** ACCEPTED with no verified outcome after this long is flagged (contract v1.1 §10 B3). Never resent. */
 export const ACCEPTED_STALE_HOURS = 72;

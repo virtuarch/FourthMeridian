@@ -52,6 +52,7 @@ try {
       ["requirePlatformAccess", `export async function DELETE() { const g = await requirePlatformAccess("GROWTH"); }`],
       ["cron bearer", `export const GET = withApiHandler(async (req) => { const s = process.env.CRON_SECRET; if (req.headers.get("authorization") !== \`Bearer \${s}\`) return deny(); });`],
       ["plaid webhook verifier", `export async function POST(req) { const v = await verifyPlaidWebhook(req, body); return handle(v); }`],
+      ["resend webhook receiver (svix)", `export async function POST(req) { const r = await handleResendWebhook({ rawBody, headers }, deps); return json(r); }`],
       ["nextauth handler", `const handler = NextAuth(authOptions);\nexport { handler as GET, handler as POST };`],
     ];
     for (const [name, body] of cases) {
