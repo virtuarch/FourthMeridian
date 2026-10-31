@@ -269,7 +269,7 @@ async function main() {
   {
     for (const chain of ["BTC", "ETH", "SOL"] as const) {
       const run = async (pending: boolean) => {
-        const w = world({ sol: chain === "SOL" ? 20 : 0, btc: chain === "BTC" ? 20 : 0, eth: chain === "ETH" ? 1 : 0 });
+        const w = world({ sol: chain === "SOL" ? 20 : 0, btc: chain === "BTC" ? 20 : 0, eth: chain === "ETH" ? 1 : 0, regen: true });
         let leftAtStart = -1;
         w.deps.cryptoHolders = async () => ["h1"];
         w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
@@ -277,7 +277,7 @@ async function main() {
         w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
           leftAtStart = deadlineMs - w.now();
           const skipped = leftAtStart < REVALUATION_RESERVE_MS;
-          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, failures: 0, skippedForTime: skipped };
+          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, failures: 0, skippedForTime: skipped };
         };
         const s = await w.run();
         return { s, leftAtStart, stepped: stepped(s, chain) };
@@ -293,14 +293,14 @@ async function main() {
     }
     // Two backlogs: the reserved slice is taken right after the leader, so the FOLLOWER cannot eat it either.
     {
-      const w = world({ sol: 20, btc: 20 });
+      const w = world({ sol: 20, btc: 20, regen: true });
       let leftAtStart = -1;
       w.deps.cryptoHolders = async () => ["h1"];
       w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
       w.deps.revaluationPending = async () => true;
       w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
         leftAtStart = deadlineMs - w.now();
-        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, failures: 0, skippedForTime: false };
+        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, failures: 0, skippedForTime: false };
       };
       const s = await w.run();
       check("SOL + BTC backlogs, a revaluation owed: it runs BEFORE the follower chain (≥ REVALUATION_RESERVE_MS left), both chains still step",
@@ -313,13 +313,13 @@ async function main() {
     check("worker: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
       okOut.outcome === "COMPLETE" && abOut.outcome === "PARTIAL" && abOut.partialReasons.some((x) => x.startsWith("REVALUATION_ABANDONED: 2 block(s)")), JSON.stringify(abOut));
     const { syncCryptoOutcome } = await import("@/jobs/sync-crypto");
-    const runOf = (abandonedBlocks: number) => ({ priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: 3, failures: 0, skippedForTime: false });
+    const runOf = (abandonedBlocks: number) => ({ priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: 3, rowsStampedPending: 0, failures: 0, skippedForTime: false });
     check("sync-crypto: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
       syncCryptoOutcome(runOf(0)).outcome === "COMPLETE" && syncCryptoOutcome(null).outcome === "COMPLETE"
         && syncCryptoOutcome(runOf(1)).outcome === "PARTIAL" && syncCryptoOutcome(runOf(1)).partialReasons[0].startsWith("REVALUATION_ABANDONED: 1 block(s)"));
     {
       // …and end to end through the worker: the summary carries it.
-      const w = world({});
+      const w = world({ regen: true });
       w.deps.cryptoHolders = async () => ["h1"];
       w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
       w.deps.revalueHolders = async () => runOf(1);
@@ -329,7 +329,7 @@ async function main() {
     }
     {
       // L2 × reservation: the early (reserved) holder set passes the SAME billable gate — a refused owner gets no revaluation.
-      const w = world({ btc: 20 });
+      const w = world({ btc: 20, regen: true });
       const seen: string[][] = [];
       w.deps.cryptoHolders = async () => ["ok1", "frozen1"];
       w.deps.billableAccounts = async (ids) => new Map(ids.map((id) => [id, id === "frozen1" ? { allowed: false, reason: "COST_FREEZE" } as never : { allowed: true }] as const));
@@ -342,6 +342,54 @@ async function main() {
       const sc = readFileSync("jobs/sync-crypto.ts", "utf8");
       check("sync-crypto: under the GLOBAL freeze the revaluation's price-gap fetch is replaced by an empty run (DB recompute only)",
         /if \(platformFrozen\) revalDeps\.acquireGaps = async \(\) => \(\{ decisions: \[\], acquired: 0/.test(sc) && /deps: revalDeps,/.test(sc));
+    }
+    {
+      // Session 2 ruling: STAMP, DON'T REBUILD for frozen / refused holders — then unfreeze clears it.
+      const mkW = (o: { global?: boolean; refuse?: boolean }) => {
+        const w = world({ btc: 1, regen: true });
+        const log: string[] = [];
+        w.deps.costFreeze = async () => (o.global ? { frozen: true, state: "FROZEN", reason: "COST_FREEZE" } as never : { frozen: false, state: "MISSING", reason: null });
+        w.deps.billableAccounts = async (ids) => new Map(ids.map((id) => [id, o.refuse && id === "frozen1" ? { allowed: false, reason: "COST_FREEZE" } as never : { allowed: true }] as const));
+        w.deps.cryptoHolders = async () => ["ok1", "frozen1"];
+        w.deps.stampOwedHolders = async (ids) => { log.push(`stamp:${[...ids].sort().join("+")}`); return 5; };
+        w.deps.acquirePriceGaps = async (ids) => { log.push(`prices:${ids.join("+")}`); return { decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }; };
+        w.deps.revalueHolders = async (ids) => { log.push(`revalue:${[...ids].sort().join("+")}`); return runOf(0); };
+        return { w, log };
+      };
+      const g = mkW({ global: true });
+      const gs = await g.w.run();
+      check("GLOBAL freeze: owed holders are STAMPED (status only), the job reports SKIPPED, and nothing paid runs (no step, no price fetch, no revaluation, no usage)",
+        gs.outcome === "SKIPPED" && gs.revaluationStamped === 5 && g.log.join() === "stamp:frozen1+ok1" && g.w.ran.length === 0 && Object.keys(g.w.ledger).length === 0,
+        JSON.stringify({ o: gs.outcome, l: g.log, ran: g.w.ran, led: g.w.ledger }));
+      const r = mkW({ refuse: true });
+      await r.w.run();
+      check("per-account refusal: the refused holder is stamped with the rest, but never revalued or price-fetched",
+        r.log[0] === "stamp:frozen1+ok1" && r.log.filter((x) => !x.startsWith("stamp:")).every((x) => !x.includes("frozen1")) && r.log.some((x) => x.startsWith("revalue:ok1")), r.log.join(" | "));
+      const u = mkW({});
+      await u.w.run();
+      check("after unfreeze: the holder is revalued (its rebuild clears the stamp — proved in stale-holder-revaluation.test.ts)",
+        u.log.some((x) => x.startsWith("revalue:") && x.includes("frozen1")), u.log.join(" | "));
+    }
+    {
+      // REVIEW #183 (P2): the regeneration KILL SWITCH off ⇒ no stamp, no revaluation, nothing marked; on ⇒ normal.
+      const mkK = (on: boolean) => {
+        const w = world({ btc: 1, regen: on });
+        const log: string[] = [];
+        w.deps.cryptoHolders = async () => ["h1"];
+        w.deps.stampOwedHolders = async (ids) => { log.push(`stamp:${ids.join("+")}`); return 3; };
+        w.deps.revaluationPending = async () => true;
+        w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+        w.deps.revalueHolders = async (ids) => { log.push(`revalue:${ids.join("+")}`); return runOf(0); };
+        return { w, log };
+      };
+      const off = mkK(false); const so = await off.w.run();
+      check("kill switch OFF: nothing stamped, nothing revalued, no reservation", off.log.length === 0 && !so.revaluationStamped && !so.revaluationReserved, off.log.join());
+      const offFrozen = mkK(false);
+      offFrozen.w.deps.costFreeze = async () => ({ frozen: true, state: "FROZEN", reason: "COST_FREEZE" } as never);
+      const sf = await offFrozen.w.run();
+      check("kill switch OFF under the GLOBAL freeze: still SKIPPED, and nothing stamped", sf.outcome === "SKIPPED" && offFrozen.log.length === 0 && !sf.revaluationStamped, offFrozen.log.join());
+      const on = mkK(true); await on.w.run();
+      check("kill switch ON: the normal stamp and revaluation run", on.log[0] === "stamp:h1" && on.log.some((x) => x === "revalue:h1"), on.log.join());
     }
     // revaluationPending is the cheap state read the reservation is decided by.
     const marks = new Set<string>();

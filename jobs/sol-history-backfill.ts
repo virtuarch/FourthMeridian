@@ -164,9 +164,15 @@ export interface SolBackfillJobSummary {
   priceGapSweep?: { holders: number; skippedForTime: boolean };
   /** Crypto holders (every chain) revalued (state-derived, once per evidence state; existing rows included). */
   holderRevaluation?: { holders: number; owed: number; revalued: number; chunksRebuilt: number; deferred: number; alreadyRevalued: number;
-    abandonedBlocks: number; rowsStampedUnavailable: number; failures: number; skippedForTime: boolean };
+    abandonedBlocks: number; rowsStampedUnavailable: number; rowsStampedPending?: number; failures: number; skippedForTime: boolean };
   /** A revaluation was owed at the start of the run, so its slice of the budget was reserved after the leader. */
   revaluationReserved?: boolean;
+  /**
+   * Rows stamped `unavailable` (status only, values preserved) for holders OWED a
+   * revaluation — including holders whose rebuild the cost freeze or the
+   * billable gate refused (Session 2 ruling 2026-10-31: stamp, don't rebuild).
+   */
+  revaluationStamped?: number;
   /** This run's chain rotation and pass order — persisted, read back by the next run. Absent on a NO_WORK run. */
   schedule?: HistoryWorkerSchedule;
   dailyRequestCap: number;
@@ -336,6 +342,12 @@ export interface SolBackfillJobDeps {
    */
   revaluationPending?(accountIds: string[]): Promise<boolean>;
   /**
+   * STAMP ONLY (lib/prices/price-gap.ts stampOwedHolders): DB status write for
+   * owed holders — no vendor call, no checkpoint, no usage marker. Runs for every
+   * holder, refused or frozen included; reversed by the rebuild after unfreeze.
+   */
+  stampOwedHolders?(accountIds: string[]): Promise<number>;
+  /**
    * BETA LIFECYCLE L2 — REQUIRED gates (production wires all three):
    *   admit           platform admission (maintenance / ingestion pause) — the worker had none;
    *   costFreeze      the GLOBAL cost freeze, before any vendor call;
@@ -430,6 +442,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     summary.stoppedBecause = "COST_FREEZE";
     summary.platformSkipped = billableSkipCode(freeze.reason!);
     summary.outcome = "SKIPPED"; summary.skipReason = summary.platformSkipped;
+    // The owner valuation ruling outranks the freeze for the STATUS only: owed
+    // holders' rows are stamped `unavailable` (DB-only, values preserved, no
+    // vendor, no checkpoint, no usage marker); the rebuild waits for unfreeze.
+    if (deps.stampOwedHolders && deps.cryptoHolders && deps.regenerationEnabled()) {
+      summary.revaluationStamped = await deps.stampOwedHolders(await deps.cryptoHolders().catch(() => [] as string[])).catch(() => 0);
+    }
     console.log(`[${SOL_BACKFILL_JOB}] global cost freeze (${freeze.state}) — SKIPPED (${summary.platformSkipped}); no vendor call, no checkpoint moved.`);
     return summary;
   }
@@ -507,6 +525,13 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   if (ethPlan) ethPlan.work = await allowedOnly(ethPlan.work.map((x) => ({ ...x, accountId: x.w.accountId })));
   if (tokenPlan) tokenPlan.work = await allowedOnly(tokenPlan.work.map((x) => ({ ...x, accountId: x.w.accountId })));
   ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
+  // Owed holders' rows off `supported`/`none` FIRST — every holder, a billable-refused
+  // one included (stamp, don't rebuild); the rebuild of allowed holders follows.
+  // Gated on the regeneration kill switch (as sync-crypto is): with writes off no
+  // rebuild could ever restore a stamp, so nothing is stamped (review of #183).
+  if (deps.stampOwedHolders && deps.cryptoHolders && deps.regenerationEnabled()) {
+    summary.revaluationStamped = await deps.stampOwedHolders(await deps.cryptoHolders().catch(() => [] as string[])).catch(() => 0);
+  }
   const ledger = deps.providerUsageToday ? await deps.providerUsageToday(day).catch(() => null) : null;
   summary.providerRequestsUsedBefore = ledger ? ledger.solana + ledger.other : null;
   summary.dailyRequestsUsedBefore = effectiveDailyUsage({ ledger, checkpointCalls });
@@ -606,7 +631,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
    */
   const revalueOtherHolders = async () => {
     if (revalued) return; // once per run (it may run early, when reserved)
-    if (!deps.revalueHolders || holderIds.length === 0) return;
+    if (!deps.revalueHolders || holderIds.length === 0 || !deps.regenerationEnabled()) return; // kill switch off ⇒ no stamp, no dry-run "rebuild", no marker
     const ids = holderIds;
     revalued = true;
     const r = await deps.revalueHolders(ids, { deadlineMs: jobDeadline, attempted: priceGapAttempted,
@@ -614,7 +639,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     if (!r) return;
     if (r.priceGaps) addPriceGaps(summary, r.priceGaps);
     summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred,
-      alreadyRevalued: r.alreadyRevalued, abandonedBlocks: r.abandonedBlocks, rowsStampedUnavailable: r.rowsStampedUnavailable,
+      alreadyRevalued: r.alreadyRevalued, abandonedBlocks: r.abandonedBlocks, rowsStampedUnavailable: r.rowsStampedUnavailable, rowsStampedPending: r.rowsStampedPending,
       failures: r.failures, skippedForTime: r.skippedForTime };
     summary.deferred += r.deferred; // still owed on disk: the next (self-continued) run takes them
   };
@@ -640,7 +665,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   // BEFORE the other chains. Asked by state (reads only), so a run with nothing
   // owed keeps the whole budget for history work, as before.
   let reserveRevaluation = false;
-  if (deps.revalueHolders && deps.revaluationPending && deps.cryptoHolders) {
+  if (deps.revalueHolders && deps.revaluationPending && deps.cryptoHolders && deps.regenerationEnabled()) {
     const holders = await deps.cryptoHolders().catch(() => [] as string[]);
     // L2 — the revaluation's first step is a paid price-gap fetch: only holders
     // whose billed owner may cause one (the same batch gate as the sweep).
@@ -1103,7 +1128,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
   const { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
   const { WALLET_LOCK_TTL_MS } = await import("@/lib/refresh/wallet-lock");
   const { providerCallsOn, recordProviderMeter, ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK } = await import("@/lib/usage/provider-budget");
-  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed, revalueHoldersAfterPriceGaps, prismaRevaluationDeps, revaluationPending } = await import("@/lib/prices/price-gap");
+  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed, revalueHoldersAfterPriceGaps, prismaRevaluationDeps, revaluationPending, stampOwedHolders } = await import("@/lib/prices/price-gap");
   const { admitOperationalWork } = await import("@/lib/platform/admission/facts");
   const { readGlobalCostFreeze } = await import("@/lib/platform/cost-freeze");
   const { billableForAccounts } = await import("@/lib/platform/policies/billable-subjects");
@@ -1169,6 +1194,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
         acquireGaps: (ids) => acquireHistoricalPriceGaps({ accountIds: ids, attempted, maxInstruments, deps: prismaPriceGapDeps(systemDb, { log }), log }) } });
     },
     revaluationPending: (accountIds) => revaluationPending(prismaRevaluationDeps(systemDb), accountIds),
+    stampOwedHolders: (accountIds) => stampOwedHolders(prismaRevaluationDeps(systemDb), accountIds),
     providerUsageToday: (dayISO) => providerCallsOn(systemDb, ALCHEMY_USAGE_PROVIDER, dayISO),
     revaluationOwed: (accountIds) => revaluationOwed(systemDb, accountIds),
     recordUsage: async (meter, flushed) => { await recordProviderMeter(ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK.SOLANA, meter, { flushed }); },
