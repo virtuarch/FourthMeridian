@@ -149,7 +149,9 @@ async function main() {
         && refusals.map((r) => (r.metadata as any).verb).join() === "create,change,archive,change,change,create", refusals.map((r) => (r.metadata as any).verb));
     t.check("…targeting the group key (closed vocabulary) and never the note, the values or the digits",
       (refusals[1].metadata as any).target.id === `policy-group:${DEFAULT_POLICY_GROUP}`
-        && !JSON.stringify(refusals).includes("4111111111111111") && !JSON.stringify(refusals).includes("zebra") && !JSON.stringify(refusals).includes("999"));
+        // Inspect the METADATA only, and 999 as a whole value: whole rows carry random ids and
+        // millisecond timestamps (e.g. "…:41.999Z") that contain "999" by chance — that made this flaky.
+        && ((meta) => !meta.includes("4111111111111111") && !meta.includes("zebra") && !/(^|[^\w.])999(?![\w.])/.test(meta) && !/maxConnections/.test(meta))(JSON.stringify(refusals.map((r) => r.metadata))));
     t.check("…the reason CODE is kept when it parsed", (refusals[3].metadata as any).reason?.code === "POLICY_ROLLOUT" && (refusals[3].metadata as any).reason?.note === undefined);
   }
 
