@@ -38,7 +38,7 @@ import { cleanText } from "@/lib/email/design/escape";
 import type { ContentBlock, ContentBody, ContentIssue, ContentLocation, AiSuggestMode, AiTone, AiSuggestResult } from "./types";
 import type { LegSpec } from "./legs";
 import { fieldsOf, tokensOf, validateContent } from "./validate";
-import { added, adviceHits, claimHits, figureTokens, linkHits } from "./lint";
+import { added, adviceHits, claimHits, figureTokens, linkHits, softLinkHits } from "./lint";
 
 export const SUGGESTION_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_NOTES = 10;
@@ -208,7 +208,7 @@ export function checkSuggestion(spec: LegSpec, variant: string, base: ContentBod
     const an = tokensOf(after).names;
     for (const n of new Set(multisetMinus(bn, an))) issues.push(err("PLACEHOLDERS_DROPPED", loc, `The suggestion lost {{${n}}}.`, n));
     for (const n of new Set(multisetMinus(an, bn))) issues.push(err("PLACEHOLDERS_ADDED", loc, `The suggestion added {{${n}}}.`, n));
-    if (added(linkHits(after), linkHits(before)).length > 0) issues.push(err("LINK_NOT_ALLOWED", loc, "The suggestion added a link, domain, email address or phone number."));
+    if (added([...linkHits(after), ...softLinkHits(after)], [...linkHits(before), ...softLinkHits(before)]).length > 0) issues.push(err("LINK_NOT_ALLOWED", loc, "The suggestion added a link, domain, email address or phone number."));
     if (added(figureTokens(after), figureTokens(before)).length > 0 || added(claimHits(after), claimHits(before)).length > 0) {
       issues.push(err("FINANCIAL_CLAIM", loc, "The suggestion added a figure or a financial claim."));
     }

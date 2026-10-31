@@ -24,23 +24,33 @@
 const PLACEHOLDER_TOKEN = /\{\{[a-z][A-Za-z0-9]{0,31}\}\}/g;
 export const stripPlaceholders = (s: string): string => s.replace(PLACEHOLDER_TOKEN, " ");
 
-const SPACES = /[   -   　]/g;
-const HYPHENS = /[‐-―−﹘﹣－]/g;
-const ZERO_WIDTH = /[​-‍⁠﻿­]/g;
+const SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
+const HYPHENS = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
+const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF\u00AD]/g;
+/** IDNA dot-equivalents NFKC leaves alone: ideographic full stop, halfwidth ideographic full stop, one-dot leader, small full stop. */
+const DOTS = /[\u3002\uFF61\uFF0E\u2024\uFE52]/g;
+
+/** The canonical form, case preserved (the domain rule reads the case shape). */
+function normaliseKeepCase(s: string): string {
+  return stripPlaceholders(s).normalize("NFKC").replace(ZERO_WIDTH, "").replace(DOTS, ".").replace(SPACES, " ").replace(HYPHENS, "-").replace(/[ \t]+/g, " ");
+}
 
 /** The canonical form every lexicon reads. */
 export function normalise(s: string): string {
-  return stripPlaceholders(s).normalize("NFKC").replace(ZERO_WIDTH, "").replace(SPACES, " ").replace(HYPHENS, "-").toLowerCase().replace(/[ \t]+/g, " ");
+  return normaliseKeepCase(s).toLowerCase();
 }
 
 // ── Links ────────────────────────────────────────────────────────────────────
 const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
 const LINK_PATTERNS: readonly RegExp[] = [
-  /\b(?:https?|hxxps?|h\*\*ps?|ftp|sftp|mailto|javascript|data|file|tel|sms|vbscript):/g,
+  /\b(?:https?|hxxps?|h\*\*ps?|ftp|sftp):/g,
+  // Word-like schemes only when the colon is followed directly by a non-space ("Your data: up to date" is prose).
+  /\b(?:mailto|javascript|data|file|tel|sms|vbscript|callto|skype|whatsapp|intent):(?=\S)/g,
   /(?:^|[^a-z0-9:/])\/\/[a-z0-9]/g,
   /\]\s*\(/g,
   /\bwww\s*\.\s*[a-z0-9]/g,
-  new RegExp(`\\b${LABEL}(?:\\.${LABEL})*\\.[a-z]{2,63}\\b`, "g"),
+  // A dotted quad with a path is a link ("1.2.3.4/x"); a bare one is only a soft hit below.
+  /\b\d{1,3}(?:\.\d{1,3}){3}\s*\//g,
   /[^\s@]+@[^\s@]+\.[^\s@]+/g,
   /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]\d{3}[\s.-]\d{4}\b/g,
   // Obfuscation: "evil dot com", "evil (dot) com", "evil[.]com".
@@ -48,7 +58,20 @@ const LINK_PATTERNS: readonly RegExp[] = [
   /[[({]\s*\.\s*[\])}]/g,
 ];
 
-/** Link-like fragments (URL, domain, email, phone, obfuscated domain) in the text. */
+/** Any `label.tld` (no fixed TLD list), read on case-preserved text. */
+const DOMAIN = new RegExp(`\\b${LABEL}(?:\\.${LABEL})*\\.[a-z]{2,63}\\b`, "gi");
+/** "Done.Open", "Mr.Smith": one dot between two Capitalised words — a missing space far more often than a host. */
+const CAPITALISED_PAIR = /^[A-Z][a-z]+\.[A-Z][a-z]+$/;
+const BARE_QUAD = /\b\d{1,3}(?:\.\d{1,3}){3}\b(?!\s*\/)/g;
+
+function domainHits(s: string): { hard: string[]; soft: string[] } {
+  const hard: string[] = [];
+  const soft: string[] = [];
+  for (const m of normaliseKeepCase(s).matchAll(DOMAIN)) (CAPITALISED_PAIR.test(m[0]) ? soft : hard).push(m[0].toLowerCase());
+  return { hard, soft };
+}
+
+/** Link-like fragments (URL, domain, email, phone, obfuscated domain) — an ERROR wherever they appear. */
 export function linkHits(s: string): string[] {
   const t = normalise(s);
   const out: string[] = [];
@@ -56,7 +79,18 @@ export function linkHits(s: string): string[] {
     const m = t.match(re);
     if (m) out.push(...m.map((x) => x.trim()));
   }
+  out.push(...domainHits(s).hard);
   return out;
+}
+
+/**
+ * SOFT link-like fragments: a Capitalised.Capitalised pair ("Done.Open") and a
+ * bare dotted quad ("1.2.3.4"). A WARNING in a manual draft (saving is not
+ * blocked; the operator is accountable); an ERROR in an AI suggestion whose base
+ * did not have it.
+ */
+export function softLinkHits(s: string): string[] {
+  return [...domainHits(s).soft, ...(normalise(s).match(BARE_QUAD) ?? [])];
 }
 
 // ── PII-like content: assertOperatorNoteSafe's classes (lib/audit.ts) + addresses ─

@@ -15,7 +15,7 @@
 
 import type { ContentBlock, ContentBody, ContentIssue, ContentIssueCode, ContentLocation, EditableChannel } from "./types";
 import { LIMITS, type LegSpec, type PlaceholderSpec } from "./legs";
-import { added, adviceHits, claimHits, figureTokens, hasPiiLike, linkHits } from "./lint";
+import { added, adviceHits, claimHits, figureTokens, hasPiiLike, linkHits, softLinkHits } from "./lint";
 
 /** Bump when a rule tightens: stored versions are re-validated on read and before publish. */
 export const VALIDATOR_VERSION = 1;
@@ -203,6 +203,7 @@ export function validateContent(spec: LegSpec, body: ContentBody, opts: Validate
       else if (!p.allowedIn.includes(f.where)) issues.push(issue("PLACEHOLDER_NOT_ALLOWED_HERE", "error", f.location, `{{${n}}} cannot be used here.`, n));
     }
     if (linkHits(f.value).length > 0) issues.push(issue("LINK_NOT_ALLOWED", "error", f.location, "Links, domains, email addresses and phone numbers cannot be typed into the text."));
+    else if (added(softLinkHits(f.value), softLinkHits(baselineText)).length > 0) issues.push(issue("LINK_NOT_ALLOWED", soft, f.location, "This looks like a web or IP address (perhaps a missing space after a full stop)."));
     if (hasPiiLike(f.value)) issues.push(issue("PII_LIKE_CONTENT", "error", f.location, "Long digit runs, addresses and credential words are not allowed."));
     const newFigures = added(figureTokens(f.value), figureTokens(baselineText));
     const newClaims = added(claimHits(f.value), claimHits(baselineText));

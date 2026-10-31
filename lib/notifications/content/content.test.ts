@@ -177,13 +177,23 @@ function lexicons(): void {
   const wire = (b: ContentBody) => ({ subject: b.subject, preheader: b.preheader, notes: [],
     blocks: b.blocks.map((x) => ({ kind: x.kind, heading: x.kind === "hero" ? x.heading : null, greeting: null, text: x.kind === "paragraph" ? x.text : null, label: x.kind === "cta" ? x.label : null, link: x.kind === "cta" ? x.link : null, title: null, items: null })) });
   const aiCodes = (b: ContentBody) => { const n = normaliseSuggestion(wire(b), base); return n.ok ? codes(checkSuggestion(sf, "reauth-required", base, n.body)) : codes(n.issues); };
-  const LINKS = ["see evil.ru", "evil.to", "evil.shop", "bit.do/abc", "//evil.ru/x", "[click](//evil.ru)", "ｅｖｉｌ．ｃｏｍ", "hxxp://evil", "evil dot com", "evil (dot) com", "evil[.]com", "www.evil", "WWW.EVIL.NET", "mail me@x.co", "call 555 123 4567"];
+  const LINKS = ["see evil.ru", "evil.to", "evil.shop", "bit.do/abc", "//evil.ru/x", "[click](//evil.ru)", "ｅｖｉｌ．ｃｏｍ", "hxxp://evil", "evil dot com", "evil (dot) com", "evil[.]com", "www.evil", "WWW.EVIL.NET", "mail me@x.co", "call 555 123 4567",
+    "evil\u3002com", "evil\u3002ru", "evil\uFF61com", "evil.c\u200Bom", "1.2.3.4/x", "go to 10.0.0.1 /admin", "Evil.COM", "javascript:alert(1)", "data:text/html,x", "tel:+15551234567"];
   for (const t of LINKS) {
     check(`link "${t}" is flagged by the draft validator`, codes(manual(sf, withText(t), "reauth-required")).includes("LINK_NOT_ALLOWED"));
     check(`link "${t}" is flagged by checkSuggestion`, aiCodes(withText(t)).includes("LINK_NOT_ALLOWED"));
   }
-  const PROSE = ["3.5% APR", "Q3.", "U.S. accounts", "e.g. your bank", "at 9 a.m. today", "Fourth Meridian.", "version 2.0 is out", "i.e. soon", "Ph.D. holders", "and/or later"];
-  for (const t of PROSE) check(`ordinary prose "${t}" is not a link`, linkHits(t).length === 0, linkHits(t));
+  const PROSE = ["3.5% APR", "Q3.", "U.S. accounts", "e.g. your bank", "at 9 a.m. today", "Fourth Meridian.", "version 2.0 is out", "i.e. soon", "Ph.D. holders", "and/or later",
+    "Your data: up to date", "Import file: done", "Mobile tel: see Settings", "Done.Open the app", "Thanks, Mr.Smith"];
+  for (const t of PROSE) check(`ordinary prose "${t}" is not a hard link`, linkHits(t).length === 0, linkHits(t));
+  for (const t of ["Your data: up to date", "Import file: done", "Done.Open the app", "Thanks, Mr.Smith"]) {
+    const iss = manual(sf, withText(t), "reauth-required");
+    check(`"${t}" does not block saving (no LINK error)`, !iss.some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "error"), iss);
+  }
+  check("a Capitalised.Capitalised pair is a manual WARNING, and an AI error when added", manual(sf, withText("Done.Open"), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "warning") && aiCodes(withText("Done.Open")).includes("LINK_NOT_ALLOWED"));
+  check("a bare dotted quad is a manual WARNING; with a path it is an ERROR",
+    manual(sf, withText("1.2.3.4"), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "warning") && !manual(sf, withText("1.2.3.4"), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "error")
+    && manual(sf, withText("1.2.3.4/x"), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "error"));
   check("claims match across NBSP and non-breaking hyphens", claimHits("risk\u2011free").length > 0 && claimHits("risk\u00A0free").length > 0 && claimHits("high\u2013yield").length > 0 && claimHits("ＥＡＲＮ more").length > 0);
   check("investment imperatives are advice", ["Invest now", "start investing today", "Act now", "don\u2019t miss out"].every((t) => adviceHits(t).length > 0));
   check("spelled-out figures are figures", figureTokens("ten percent").length > 0 && figureTokens("fifty dollars").length > 0 && figureTokens("twenty-five per cent").length > 0 && figureTokens("a few percent").length > 0);
