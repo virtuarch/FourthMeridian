@@ -129,11 +129,15 @@ export async function redeemBetaInvite(
   client: Prisma.TransactionClient,
   input: { requestId: string; redeemedUserId: string; now?: Date },
 ): Promise<void> {
+  const now = input.now ?? new Date();
   const { count } = await client.betaAccessRequest.updateMany({
-    where: { id: input.requestId, status: BetaAccessRequestStatus.APPROVED },
+    // PR B — the write re-checks EXPIRY as well as status: validateInvite ran
+    // before this transaction, so an invite expiring in between (or extended
+    // backwards, or reissued) must not be consumed. Zero rows ⇒ the raise below.
+    where: { id: input.requestId, status: BetaAccessRequestStatus.APPROVED, inviteExpiresAt: { gt: now } },
     data: {
       status:          BetaAccessRequestStatus.REDEEMED,
-      redeemedAt:      input.now ?? new Date(),
+      redeemedAt:      now,
       redeemedUserId:  input.redeemedUserId,
       inviteTokenHash: null, // single-use — the token can never resolve again
     },

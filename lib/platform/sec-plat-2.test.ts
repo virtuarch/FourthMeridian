@@ -90,16 +90,27 @@ console.log("D · required reasons + the operator-action envelope");
   const GROWTH = [
     "app/api/platform/growth-revenue/registration-mode/route.ts",
     "app/api/platform/growth-revenue/product-status/route.ts",
-    "app/api/platform/growth-revenue/invitations/route.ts",
-    "app/api/platform/growth-revenue/requests/[id]/approve/route.ts",
     "app/api/platform/growth-revenue/requests/[id]/deny/route.ts",
-    "app/api/platform/growth-revenue/requests/[id]/resend/route.ts",
     "app/api/platform/growth-revenue/requests/[id]/revoke/route.ts",
   ];
   for (const f of GROWTH) {
     const s = code(f);
     check(`${f}: recordOperatorAction with the grant-derived actor, no raw auditLog.create`,
       s.includes("recordOperatorAction(") && s.includes('operatorActorFrom(auth, "GROWTH_REVENUE")') && !s.includes("auditLog.create"));
+  }
+  // PR B — thin wrappers: the grant-derived actor is passed to the one module,
+  // which records through the envelope inside the write's transaction.
+  for (const [f, mod] of [
+    ["app/api/platform/growth-revenue/invitations/route.ts", "lib/platform/growth/invitation-issue.ts"],
+    ["app/api/platform/growth-revenue/requests/[id]/approve/route.ts", "lib/platform/growth/invitation-issue.ts"],
+    ["app/api/platform/growth-revenue/requests/[id]/resend/route.ts", "lib/platform/growth/invitation-issue.ts"],
+    ["app/api/platform/growth-revenue/requests/[id]/extend/route.ts", "lib/platform/growth/invitation-issue.ts"],
+    ["app/api/platform/growth-revenue/invitation-policy/route.ts", "lib/platform/growth/invitation-policy.ts"],
+  ] as const) {
+    const s = code(f);
+    const m = code(mod);
+    check(`${f}: grant-derived actor handed to ${mod}, which records via recordOperatorAction(tx, …)`,
+      s.includes('operatorActorFrom(auth, "GROWTH_REVENUE")') && !s.includes("auditLog") && m.includes("recordOperatorAction(tx, {") && !m.includes("auditLog.create"));
   }
   for (const [f, write] of [
     ["app/api/platform/growth-revenue/registration-mode/route.ts", "setSetting("],
@@ -124,7 +135,9 @@ console.log("D · required reasons + the operator-action envelope");
 
   const beta = code("components/platform/widgets/GrowthBetaRequestsWidget.tsx");
   check("the beta widget sends a reason with mode / status / revoke, and blocks confirm until one is chosen",
-    (beta.match(/reason: reasonPayload\(reason\)/g) ?? []).length === 3 && (beta.match(/confirmDisabled=\{reasonPayload\(reason\) === null\}/g) ?? []).length === 3);
+    (beta.match(/reason: reasonPayload\(reason\)/g) ?? []).length === 4 && (beta.match(/confirmDisabled=\{reasonPayload\(reason\) === null\}/g) ?? []).length === 3
+    // PR B — Extend sends the reason too, and its confirm also waits for a day count.
+    && /confirmDisabled=\{reasonPayload\(reason\) === null \|\| !\(extendDays \?\? validityDays\)\}/.test(beta));
   const list = code("app/merchant-ops/MergeReviewList.tsx");
   // Owner review 2026-10-31: both verdicts confirm through ONE dialog that
   // collects the reason, so the gate is the dialog's confirm (and decide() itself).

@@ -85,11 +85,14 @@ console.log("1. Growth & Revenue beta block — write controls only for WRITE");
     ["Invite user", /setInviteOpen\(true\)/g],
     ["Send invite", /onClick=\{sendInvite\}/g],
     ["Approve / Deny", /decide\(selectedRequest\.id/g],
-    ["Resend", /resend\(selectedInvitation\.id\)/g],
+    ["Resend", /resend\(selectedInvitation\.id, selectedInvitation\.invitedAt\)/g],
     ["Revoke", /setRevokeId\(selectedInvitation\.id\)/g],
     ["mode confirm", /changeMode\(pendingMode\)/g],
     ["status confirm", /changeStatus\(pendingStatus\)/g],
     ["revoke confirm", /revoke\(revokeId\)/g],
+    // PR B — Extend (keeps the token) opens a reason-required confirm.
+    ["Extend", /setExtendId\(selectedInvitation\.id\)/g],
+    ["extend confirm", /extend\(extendId\)/g],
   ] as const) {
     const r = allGated(src, re, ranges);
     check(`${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);
@@ -97,6 +100,28 @@ console.log("1. Growth & Revenue beta block — write controls only for WRITE");
   check("READ branch renders the explanatory line", /\{!canWrite && \([\s\S]{0,200}\{GROWTH_READ_ONLY_LINE\}/.test(src));
   check("READ holder still sees the current product status as text", /\{!canWrite \? \([\s\S]{0,300}PRODUCT_STATUSES\.find/.test(src));
   check("line names the area and the level", /WRITE access to Growth\b/.test(GROWTH_READ_ONLY_LINE) && !/Revenue/.test(GROWTH_READ_ONLY_LINE));
+}
+
+console.log("1b. Invitation validity (PR B) — READ sees text, the editor only for WRITE");
+{
+  const widget = code("components/platform/widgets/GrowthBetaRequestsWidget.tsx");
+  const src = code("components/platform/growth/InvitationValidityControl.tsx");
+  const ranges = writeRanges(src);
+  check("mounted in the Access settings panel as a full-width row",
+    /data-access-settings[\s\S]{0,8000}<div className="sm:col-span-2">\s*<InvitationValidityControl canWrite=\{canWrite\} \/>/.test(widget));
+  for (const [label, re] of [
+    ["validity input", /id="growth-invitation-validity"/g],
+    ["reason field", /<OperatorReasonField/g],
+    ["Save", /onClick=\{save\}/g],
+  ] as const) {
+    const r = allGated(src, re, ranges);
+    check(`${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);
+  }
+  check("the PUT is only reachable from the gated Save", (src.match(/method: "PUT"/g) ?? []).length === 1 && /async function save\(\)/.test(src));
+  check("READ holders see the value as plain text", /Invitations valid \$\{daysLabel\(data\.validityDays\)\}/.test(src));
+  check("reads through the shared workspace session", src.includes("useSharedWidgetFetch<InvitationPolicyReadModel>(INVITATION_POLICY_URL)"));
+  check("the stale 14-day copy is gone", !/14-day/.test(widget));
+  check("direct-invite days default to the configured validity, not a literal 7", !/useState\("7"\)/.test(widget) && !/\|\| 7\b/.test(widget));
 }
 
 console.log("2. Customer Success spine — editors only for WRITE; no fabricated reason");

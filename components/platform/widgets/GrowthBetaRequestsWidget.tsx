@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, X, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2 } from "lucide-react";
+import { Check, X, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2, CalendarClock } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
 import {
   UtcStamp,
@@ -44,6 +44,8 @@ import type {
 } from "@/app/api/platform/growth-revenue/requests/route";
 import type { BetaStatusResponse } from "@/app/api/platform/growth-revenue/beta-status/route";
 import { describeAcquisitionSource } from "@/lib/marketing/acquisition";
+import { InvitationValidityControl, useInvitationPolicy, daysLabel } from "../growth/InvitationValidityControl";
+import { INVITATION_VALIDITY_MAX_DAYS, INVITATION_VALIDITY_MIN_DAYS } from "@/lib/platform/growth/invitation-issue.core";
 
 type Mode = BetaStatusResponse["registrationMode"];
 type ProductStatus = BetaStatusResponse["productStatus"];
@@ -116,7 +118,14 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const [revokeId, setRevokeId]                         = useState<string | null>(null); // revoke confirm
   const [inviteOpen, setInviteOpen]                     = useState(false); // direct-invite form
   const [inviteEmail, setInviteEmail]                   = useState("");
-  const [inviteDays, setInviteDays]                     = useState("7");
+  // null ⇒ the configured invitation validity (PR B); a typed value is the per-invite override.
+  const [inviteDays, setInviteDays]                     = useState<string | null>(null);
+  const [extendId, setExtendId]                         = useState<string | null>(null); // extend confirm
+  const [extendDays, setExtendDays]                     = useState<string | null>(null);
+  const policy = useInvitationPolicy().data;
+  const validityDays = policy?.validityDays ?? null;
+  const validityMin = policy?.min ?? INVITATION_VALIDITY_MIN_DAYS;
+  const validityMax = policy?.max ?? INVITATION_VALIDITY_MAX_DAYS;
   // PLATFORM SPACES 2.0 — the list's own view state (client-side over the rows the route returns).
   const [tab, setTab]                                   = useState<"pending" | "invited">("pending");
   const [query, setQuery]                               = useState("");
@@ -193,15 +202,25 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const sendInvite = () =>
     run("invite", "/api/platform/growth-revenue/invitations",
       { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: inviteEmail.trim(), expiresDays: Number(inviteDays) || 7 }) },
-      () => { setInviteOpen(false); setInviteEmail(""); setInviteDays("7"); });
+        // No override ⇒ the server applies the configured validity.
+        body: JSON.stringify({ email: inviteEmail.trim(), ...(inviteDays !== null && inviteDays.trim() !== "" ? { expiresDays: Number(inviteDays) } : {}) }) },
+      () => { setInviteOpen(false); setInviteEmail(""); setInviteDays(null); });
 
   const decide = (id: string, action: "approve" | "deny") =>
     run(id, `/api/platform/growth-revenue/requests/${id}/${action}`, { method: "POST" },
       () => setSelectedRequestId(null));
 
-  const resend = (id: string) =>
-    run(id, `/api/platform/growth-revenue/requests/${id}/resend`, { method: "POST" });
+  // PR B — the invitedAt this screen showed makes a double-click send one email.
+  const resend = (id: string, invitedAt: string | null) =>
+    run(id, `/api/platform/growth-revenue/requests/${id}/resend`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedInvitedAt: invitedAt }) });
+
+  // PR B — extend keeps the token (no email); the reason is required.
+  const extend = (id: string) =>
+    run(id, `/api/platform/growth-revenue/requests/${id}/extend`,
+      { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ validityDays: Number(extendDays ?? validityDays ?? ""), reason: reasonPayload(reason) }) },
+      closeConfirm(() => { setExtendId(null); setExtendDays(null); }));
 
   const revoke = (id: string) =>
     run(id, `/api/platform/growth-revenue/requests/${id}/revoke`,
@@ -270,7 +289,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
         ) : (
           <>
             {/* While a panel or confirm is open the error is announced THERE (once). */}
-            {error && !(selectedRequest || selectedInvitation || pendingMode || pendingStatus || revokeId) && (
+            {error && !(selectedRequest || selectedInvitation || pendingMode || pendingStatus || revokeId || extendId) && (
               <p role="alert" className="text-[11px] text-[var(--accent-negative)]">{error}</p>
             )}
 
@@ -330,6 +349,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                     )}
                   </div>
                 )}
+                <div className="sm:col-span-2">
+                  <InvitationValidityControl canWrite={canWrite} />
+                </div>
                 {status && (
                   <p className="text-[11px] text-[var(--text-muted)] tabular-nums sm:col-span-2">
                     {`Invitations: ${status.invitations.sent} emailed · ${status.invitations.accepted} accepted · ${status.invitations.expired} expired · ${status.invitations.revoked} revoked`}
@@ -352,14 +374,14 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                   <label htmlFor="growth-invite-days" className="text-[11px] text-[var(--text-secondary)]">Expires in</label>
                   <input
                     id="growth-invite-days"
-                    type="number" min={1} max={30} value={inviteDays} onChange={(e) => setInviteDays(e.target.value)}
+                    type="number" min={validityMin} max={validityMax} value={inviteDays ?? (validityDays !== null ? String(validityDays) : "")} onChange={(e) => setInviteDays(e.target.value)}
                     className="min-h-11 w-16 rounded-[var(--radius-sm)] border bg-transparent px-2 text-xs tabular-nums text-[var(--text-primary)] lg:min-h-8"
                     style={{ borderColor: "var(--border-hairline)" }}
                   />
-                  <span className="text-[11px] text-[var(--text-muted)]">days</span>
+                  <span className="text-[11px] text-[var(--text-muted)] tabular-nums">{`days (${validityMin}–${validityMax})`}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button type="button" onClick={() => { setInviteOpen(false); setInviteEmail(""); }} disabled={acting !== null}
+                  <button type="button" onClick={() => { setInviteOpen(false); setInviteEmail(""); setInviteDays(null); }} disabled={acting !== null}
                     className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold disabled:opacity-40 lg:min-h-8"
                     style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>
                     Cancel
@@ -534,8 +556,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                       </div>
                     )}
                     <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
-                      Approve mints a single-use, email-bound invite (14-day expiry) and emails it. Redemption requires
-                      registration mode = invite-only.
+                      {`Approve mints a single-use, email-bound invite (${validityDays !== null ? `expires after ${daysLabel(validityDays)}` : "configured validity"}) and emails it. Redemption requires registration mode = invite-only.`}
                     </p>
                     {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>}
                   </div>
@@ -577,8 +598,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                       receipt, so &ldquo;handed to provider&rdquo; is not &ldquo;delivered&rdquo;.
                     </p>
                     <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
-                      Resend rotates the single-use token and re-emails it (email-binding + expiry preserved). Revoke kills
-                      the invitation only — it never removes users or existing access.
+                      Resend rotates the single-use token and re-emails it with a fresh expiry (the configured validity).
+                      Extend keeps the link and changes only its expiry. Revoke kills the invitation only — it never
+                      removes users or existing access.
                     </p>
                     {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>}
                   </div>
@@ -590,7 +612,12 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                     style={{ background: "rgba(248,113,113,.1)", color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)" }}>
                     <Ban size={13} aria-hidden /> Revoke
                   </button>
-                  <button onClick={() => resend(selectedInvitation.id)} disabled={acting !== null}
+                  <button onClick={() => { setError(null); setExtendDays(null); setExtendId(selectedInvitation.id); }} disabled={acting !== null}
+                    className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
+                    style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
+                    <CalendarClock size={13} aria-hidden /> Extend
+                  </button>
+                  <button onClick={() => resend(selectedInvitation.id, selectedInvitation.invitedAt)} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
                     {acting === selectedInvitation.id ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Send size={13} aria-hidden />} Resend
@@ -626,6 +653,27 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
               confirmDisabled={reasonPayload(reason) === null}
               onConfirm={() => changeStatus(pendingStatus)}
               onClose={closeConfirm(() => setPendingStatus(null))}
+            />
+          )}
+          {canWrite && extendId && (
+            <ConfirmDialog
+              icon={CalendarClock}
+              title="Extend this invitation?"
+              message={<>The link already sent keeps working and no email is sent. It will expire this many days from now.
+                <span className="mt-3 flex items-center gap-2">
+                  <input type="number" min={validityMin} max={validityMax} step={1} aria-label="Extend by days"
+                    value={extendDays ?? (validityDays !== null ? String(validityDays) : "")} onChange={(e) => setExtendDays(e.target.value)} disabled={acting === extendId}
+                    className="min-h-11 w-16 rounded-[var(--radius-sm)] border bg-transparent px-2 text-base tabular-nums text-[var(--text-primary)] sm:text-xs lg:min-h-8"
+                    style={{ borderColor: "var(--border-hairline)" }} />
+                  <span className="text-[11px] text-[var(--text-muted)] tabular-nums">{`days (${validityMin}–${validityMax})`}</span>
+                </span>
+                {error && <ActionError message={error} />}<OperatorReasonField value={reason} onChange={setReason} disabled={acting === extendId} /></>}
+              confirmLabel="Extend invitation"
+              confirmTone="meridian"
+              busy={acting === extendId}
+              confirmDisabled={reasonPayload(reason) === null || !(extendDays ?? validityDays)}
+              onConfirm={() => extend(extendId)}
+              onClose={closeConfirm(() => { setExtendId(null); setExtendDays(null); })}
             />
           )}
           {canWrite && revokeId && (
