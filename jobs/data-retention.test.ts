@@ -30,7 +30,9 @@ function matches(row: Row, where: Record<string, unknown>): boolean {
     const v = row[k];
     if (cond === null) return v === null || v === undefined;
     if (typeof cond !== "object" || cond instanceof Date) return v === cond;
-    const c = cond as { lt?: Date; not?: unknown; in?: unknown[] };
+    const c = cond as { lt?: Date; not?: unknown; in?: unknown[]; none?: Record<string, unknown> };
+    // A to-many relation filter (`items: { none: … }`): the row carries its children as an array.
+    if (c.none) return !(Array.isArray(v) && (v as Row[]).some((child) => matches(child, c.none!)));
     if (c.in && !c.in.includes(v)) return false;
     if ("not" in c && (c.not === null ? (v === null || v === undefined) : v === c.not)) return false;
     if (c.lt && !(v instanceof Date && v.getTime() < c.lt.getTime())) return false;
@@ -67,10 +69,10 @@ async function main() {
   console.log("the schedule");
   {
     const days = Object.fromEntries(RETENTION_RULES.map((r) => [r.table, r.days]));
-    check("windows: sessions 30, AI 90, jobs 90, refresh 60, provider calls 60, webhooks 30, sync issues 90, usage 90, waitlist 180, briefs 90",
+    check("windows: sessions 30, AI 90, jobs 90, refresh 60, provider calls 60, webhooks 30, sync issues 90, usage 90, waitlist 180, briefs 90, automation runs 90",
       days.userSession === 30 && days.aiInvocation === 90 && days.jobRun === 90 && days.refreshExecution === 60 && days.providerCall === 60
       && days.plaidWebhookEvent === 30 && days.syncIssue === 90 && days.apiUsageCounter === 90 && days.betaAccessRequest === 180
-      && days.betaAccessRequestEvent === 180 && days.dailyBrief === 90, JSON.stringify(days));
+      && days.betaAccessRequestEvent === 180 && days.dailyBrief === 90 && days.automationRun === 90, JSON.stringify(days));
     check("cutoff is exactly N days before now", retentionCutoffFor({ days: 30 }, NOW).getTime() === daysAgo(30).getTime());
   }
 
@@ -119,6 +121,29 @@ async function main() {
     check("DailyBrief > 90 d deleted", left("dailyBrief") === "d-new");
     check("totals add up (1+1+1+1+1+1+2+1+3+1+1)", r.totalDeleted === 14, `${r.totalDeleted}`);
     check("every table reports exhausted", RETENTION_RULES.every((rule) => r[rule.table].exhausted));
+  }
+
+  console.log("\nautomation runs: never one that is RUNNING or holds an item that can still send (PRE-FLIP R5)");
+  {
+    const run = (id: string, age: number, status: string, itemStatuses: string[]) => ({ id, startedAt: daysAgo(age), status, items: itemStatuses.map((st, i) => ({ id: `${id}-i${i}`, status: st })) });
+    const { client, data } = makeClient({ automationRun: [
+      run("ar-done", 91, "SUCCEEDED", ["SENT", "SUPPRESSED", "CANCELLED", "DEAD"]),
+      run("ar-halted", 91, "HALTED", ["CANCELLED"]),
+      run("ar-empty", 91, "SUCCEEDED", []),
+      run("ar-running", 91, "RUNNING", ["SENT"]),
+      run("ar-scheduled", 91, "SUCCEEDED", ["SENT", "SCHEDULED"]),
+      run("ar-sending", 91, "SUCCEEDED", ["SENDING"]),
+      run("ar-failed", 91, "SUCCEEDED", ["FAILED"]),
+      run("ar-new", 89, "SUCCEEDED", ["SENT"]),
+    ] });
+    const r = await quiet(() => runDataRetention(client, NOW));
+    const left = data.automationRun.map((x) => x.id).sort().join();
+    check("finished runs > 90 d whose items are all terminal are deleted; RUNNING, SCHEDULED / SENDING / FAILED holders and a recent run are kept",
+      left === "ar-failed,ar-new,ar-running,ar-scheduled,ar-sending" && r.automationRun.deleted === 3, `${left} deleted=${r.automationRun.deleted}`);
+    const rule = RETENTION_RULES.find((x) => x.table === "automationRun")!;
+    const w = rule.where(daysAgo(90)) as { status?: { not?: string }; items?: { none?: { status?: { in?: string[] } } } };
+    check("the where(cutoff) itself excludes RUNNING runs and runs with SCHEDULED, SENDING or FAILED items",
+      w.status?.not === "RUNNING" && [...(w.items?.none?.status?.in ?? [])].sort().join() === "FAILED,SCHEDULED,SENDING", JSON.stringify(w));
   }
 
   console.log("\nbatching and isolation");

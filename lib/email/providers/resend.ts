@@ -52,7 +52,7 @@ function getClient(): Resend | null {
 
 /** The subset of the Resend client this adapter calls (a seam for tests). */
 export interface ResendLikeClient {
-  emails: { send: (payload: ResendPayload, options?: ResendRequestOptions) => Promise<{ data: { id: string } | null; error: { message: string } | null }> };
+  emails: { send: (payload: ResendPayload, options?: ResendRequestOptions) => Promise<{ data: { id: string } | null; error: { message: string; name?: string; statusCode?: number | null } | null }> };
 }
 
 /** The SDK's per-request options this adapter sets (resend@6 CreateEmailRequestOptions: `idempotencyKey` → the `Idempotency-Key` header). */
@@ -104,6 +104,18 @@ export function redactProviderError(raw: string): string {
     .slice(0, 300);
 }
 
+/**
+ * B2 PRE-FLIP R4 — Resend's 409 `invalid_idempotent_request`: this Idempotency-Key was already used
+ * with a DIFFERENT payload (an automation retry whose rendered content changed after an attempt that
+ * the provider accepted but that timed out on our side). The key is the automation item id, so the
+ * earlier use was this same message: it is reported as sent (uncertain), never as an error that would
+ * retry it into DEAD. Only when THIS request carried a key; `concurrent_idempotent_requests` (still
+ * in flight) stays an error and is retried under the same key.
+ */
+export function isIdempotencyConflict(error: { name?: unknown; statusCode?: unknown }, options: ResendRequestOptions | undefined): boolean {
+  return !!options?.idempotencyKey && error.name === "invalid_idempotent_request" && (error.statusCode === undefined || error.statusCode === null || error.statusCode === 409);
+}
+
 // ── Adapter ───────────────────────────────────────────────────────────────────
 
 /** The longest one provider hand-off may take before it is reported as an error. */
@@ -150,6 +162,7 @@ export function createResendAdapter(
         const { data, error } = answer;
 
         if (error) {
+          if (isIdempotencyConflict(error, options)) return { status: "sent", provider: PROVIDER_NAME, uncertain: "IDEMPOTENCY_CONFLICT" };
           return { status: "error", provider: PROVIDER_NAME, error: redactProviderError(error.message) };
         }
         return { status: "sent", provider: PROVIDER_NAME, id: data?.id };

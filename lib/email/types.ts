@@ -77,6 +77,14 @@ export interface EmailResult {
    *                            not be read (fail closed).
    */
   reason?: "ENVIRONMENT_GUARD" | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";
+  /**
+   * Comms Center B2 PRE-FLIP R4 — on a "sent" result with no `id`: the provider refused this request
+   * because its Idempotency-Key was already used for a DIFFERENT payload (Resend 409
+   * `invalid_idempotent_request`). Only an idempotent caller (an automation item, whose key is the
+   * item id) can see it, and an earlier attempt under that key was accepted — so it is reported as
+   * sent, flagged uncertain, and must never be re-sent.
+   */
+  uncertain?: "IDEMPOTENCY_CONFLICT";
 }
 
 /**

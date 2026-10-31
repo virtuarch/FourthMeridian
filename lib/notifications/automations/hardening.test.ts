@@ -356,7 +356,7 @@ async function main(): Promise<void> {
     const s = await run();
     check("maintenance at trigger ⇒ SKIPPED / ADMISSION_MAINTENANCE_MODE: no run, no item, no bell",
       s.outcome === "SKIPPED" && s.skipReason === "ADMISSION_MAINTENANCE_MODE" && fake.rows("AutomationRun").length === 0 && items().length === 0 && bells().length === 0, s);
-    check("…job health words it as maintenance, not a plan restriction", skipLabel(s.skipReason) === "Skipped (maintenance)");
+    check("…job health words it as an admission skip (maintenance OR an unreadable control plane), not a plan restriction", skipLabel(s.skipReason) === "Skipped (admission)");
     admission = () => ({ admitted: true, reason: null });
     await run();
     check("…and the fact is NOT lost: after maintenance it is ingested and sent", bells().length === 1);

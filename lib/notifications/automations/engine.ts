@@ -62,6 +62,15 @@
  *       MAX_SEND_LATENESS_MS are OBSOLETE; haltAll also cancels FAILED items;
  *   N5  automations are taken least-recently-scanned first (cursor order);
  *   N6  DEDUPE_OPEN never looks back further than the 90-day retention.
+ *
+ * PRE-FLIP (Session 2's re-review of #190 — R1–R4; preflip.test.ts):
+ *   R1  at send the recipient must still be one the resolver picks (recipientStillResolves): a
+ *       SPACE_ROLE recipient still holds one of its roles, an EVENT_ACTOR_USER still a member;
+ *   R2  the frequency cap counts EVERY automation of the same definition, not only this one;
+ *   R3  lease recovery also accepts the IN_APP bell itself (auditLogId = the fact) — the in-app
+ *       ledger row is deferred, so a kill after createNotification leaves none;
+ *   R4  a provider idempotency conflict on a retry (Resend 409 invalid_idempotent_request) is SENT
+ *       with reason UNCERTAIN_ACCEPTANCE — never DEAD, never re-sent.
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -215,6 +224,8 @@ export async function evaluateEligibility(db: EngineDb, e: EvalInput, now: Date)
   if (!allowed) return "BETA_LIFECYCLE";
   // A3 — the state the fact describes still holds (membership, invite, Space).
   if (!(await factStillHolds(db, e.fact, e.recipientId, now))) return "OBSOLETE";
+  // PRE-FLIP R1 — the recipient is still one the resolver would pick (a demoted admin, a removed inviter: OBSOLETE).
+  if (!(await recipientStillResolves(db, e.automation.recipient, e.fact, e.recipientId))) return "OBSOLETE";
   const dedupeKey = dedupeKeyFor(e);
   const open = await db.automationRunItem.count({
     where: {
@@ -230,16 +241,26 @@ export async function evaluateEligibility(db: EngineDb, e: EvalInput, now: Date)
   return null;
 }
 
-/** A2 — sends of this definition to this recipient on this channel in the cap window (see evaluateEligibility). */
+/**
+ * A2 — sends of this definition to this recipient on this channel in the cap window (see evaluateEligibility).
+ *
+ * PRE-FLIP R2 — the cap is per DEFINITION, not per automation: the SENT items (and, at ingest, the pending
+ * claims) of EVERY automation on the same definitionKey count — any state, so a sibling paused after it sent
+ * still holds the cap. Chosen over "one ACTIVE automation per definition × channel at activation" because
+ * that refusal alone would not see a sibling's sends that are still inside the window after it was paused
+ * (or a second activation racing the first); the count is the cap's actual meaning and covers both.
+ */
 async function frequencyCount(db: EngineDb, e: EvalInput, now: Date): Promise<number> {
   const since = new Date(now.getTime() - e.automation.frequencyCapHours * 3_600_000);
-  const mine = { automationId: e.automation.id, recipientUserId: e.recipientId, channel: e.channel };
+  const siblings = await db.automationDefinition.findMany({ where: { definitionKey: e.def.key }, select: { id: true } });
+  const automationIds = [...new Set([e.automation.id, ...siblings.map((r) => r.id)])];
+  const mine = { automationId: { in: automationIds }, recipientUserId: e.recipientId, channel: e.channel };
   const ownSent = await db.automationRunItem.findMany({
     where: { ...mine, status: "SENT", updatedAt: { gte: since } },
     select: { id: true }, take: AUTOMATION_LIMITS.frequencyMaxCeiling + 1,
   });
   const pending = e.selfItemId ? 0 : await db.automationRunItem.count({ where: { ...mine, status: { in: ["SCHEDULED", "SENDING", "FAILED"] } } });
-  // The ledger rows of this automation's own sends are already counted above (never twice).
+  // The ledger rows of these automations' own sends are already counted above (never twice).
   const ownIds = ownSent.map((r) => r.id);
   const ledger = await db.commsDelivery.count({
     where: {
@@ -283,6 +304,28 @@ export async function factStillHolds(db: EngineDb, fact: TriggerFact, recipientI
     default:
       // A trigger without a predicate here is never sent (fail closed): add its predicate with its fact source.
       return false;
+  }
+}
+
+/**
+ * PRE-FLIP R1 — the recipient must STILL be one the resolver would pick, at send as at ingest:
+ *   SPACE_ROLE          an ACTIVE member of the fact's Space whose CURRENT role is in resolver.roles
+ *                       (an admin demoted during the delay no longer gets "X joined");
+ *   EVENT_ACTOR_USER    the fact's actor, still an ACTIVE member of the Space (a removed inviter gets nothing);
+ *   EVENT_SUBJECT_USER  the fact's subject (the per-trigger predicate above judges their membership).
+ * Any other kind resolves to nobody (fail closed), as resolveRecipients does.
+ */
+export async function recipientStillResolves(db: EngineDb, resolver: RecipientResolver, fact: TriggerFact, recipientId: string): Promise<boolean> {
+  if (!fact.spaceId) return false;
+  const active = () => db.spaceMember.findFirst({ where: { spaceId: fact.spaceId!, userId: recipientId, status: "ACTIVE" }, select: { role: true } });
+  switch (resolver.kind) {
+    case "EVENT_SUBJECT_USER": return recipientId === fact.subjectUserId;
+    case "EVENT_ACTOR_USER": return recipientId === fact.actorUserId && !!(await active());
+    case "SPACE_ROLE": {
+      const m = await active();
+      return !!m && (resolver.roles as readonly string[]).includes(String(m.role));
+    }
+    default: return false;
   }
 }
 
@@ -465,14 +508,17 @@ async function recoverLeases(deps: EngineDeps, s: EngineSummary): Promise<void> 
         where: { automationRunItemId: it.id, status: { in: ["ACCEPTED", "CAPTURED"] } },
         select: { status: true },
       });
-      if (done) {
+      // PRE-FLIP R3 — the in-app ledger row is DEFERRED (after the response): a kill right after
+      // createNotification leaves no row, but the bell itself exists — linked by auditLogId = the fact.
+      const accepted: "ACCEPTED" | "CAPTURED" | null = done ? (done.status as "ACCEPTED" | "CAPTURED") : (await inAppBellExists(db, it)) ? "ACCEPTED" : null;
+      if (accepted) {
         const r = await db.automationRunItem.updateMany({
           where: { id: it.id, status: "SENDING" },
-          data: { status: "SENT", reason: null, leaseUntil: null, lastDeliveryStatus: done.status, nextAttemptAt: null, updatedAt: now },
+          data: { status: "SENT", reason: null, leaseUntil: null, lastDeliveryStatus: accepted, nextAttemptAt: null, updatedAt: now },
         });
         if (r.count === 1) {
           s.recovered++;
-          await safeBump(deps, it.runId, (c) => { if (done.status === "ACCEPTED") c.accepted++; else c.captured++; }, s);
+          await safeBump(deps, it.runId, (c) => { if (accepted === "ACCEPTED") c.accepted++; else c.captured++; }, s);
         }
       } else {
         await db.automationRunItem.updateMany({ where: { id: it.id, status: "SENDING" }, data: { status: "SCHEDULED", leaseUntil: null } });
@@ -482,6 +528,20 @@ async function recoverLeases(deps: EngineDeps, s: EngineSummary): Promise<void> 
       logOf(deps)(`[comms-automations] lease recovery failed for one item (retried next wake): ${errName(e)}`);
     }
   }
+}
+
+/**
+ * PRE-FLIP R3 — an IN_APP item's bell already exists: the Notification createNotification wrote for it
+ * (same recipient, the definition's type, auditLogId = the item's triggerRef — deliverItem passes the
+ * fact as auditLogId, and EV-1 handler bells carry none, so a handler bell never matches here).
+ */
+async function inAppBellExists(db: EngineDb, it: ItemRow): Promise<boolean> {
+  if (it.channel !== "IN_APP" || !it.recipientUserId || !it.triggerRef) return false;
+  const a = await db.automationDefinition.findUnique({ where: { id: it.automationId }, select: { definitionKey: true } });
+  const def = a ? getCatalogDefinition(a.definitionKey) : undefined;
+  if (!def?.notificationTypeId) return false;
+  const bell = await db.notification.findFirst({ where: { userId: it.recipientUserId, type: def.notificationTypeId, auditLogId: it.triggerRef }, select: { id: true } });
+  return bell !== null;
 }
 
 export async function runAutomationEngine(deps: EngineDeps, budget: EngineBudget = DEFAULT_BUDGET): Promise<EngineSummary> {
@@ -738,7 +798,7 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
   const cur = { ...item, attempt };
 
   // `updatedAt` is written with the ENGINE clock: the frequency cap and the breaker window read it (A2, N1).
-  const finish = async (status: RunItemStatus, data: { reason?: SuppressionReason | null; lastDeliveryStatus: string; nextAttemptAt?: Date | null }) => {
+  const finish = async (status: RunItemStatus, data: { reason?: SuppressionReason | typeof UNCERTAIN_ACCEPTANCE | null; lastDeliveryStatus: string; nextAttemptAt?: Date | null }) => {
     await db.automationRunItem.update({
       where: { id: item.id },
       data: { status, reason: data.reason ?? null, leaseUntil: null, lastDeliveryStatus: data.lastDeliveryStatus, nextAttemptAt: data.nextAttemptAt ?? null, updatedAt: now },
@@ -765,9 +825,9 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
    * later pass finds the ACCEPTED ledger row and marks it SENT (and a re-send would carry the same
    * provider Idempotency-Key anyway).
    */
-  const delivered = async (lastDeliveryStatus: "ACCEPTED" | "CAPTURED") => {
+  const delivered = async (lastDeliveryStatus: "ACCEPTED" | "CAPTURED", uncertain = false) => {
     s.sent++;
-    try { await finish("SENT", { lastDeliveryStatus }); } catch (e) {
+    try { await finish("SENT", { lastDeliveryStatus, ...(uncertain ? { reason: UNCERTAIN_ACCEPTANCE } : {}) }); } catch (e) {
       s.errors++;
       logOf(deps)(`[comms-automations] a delivered item could not be marked SENT (its lease recovers it; never re-sent): ${errName(e)}`);
       return;
@@ -862,11 +922,21 @@ async function deliverItem(deps: EngineDeps, item: ItemRow, lifecycle: Map<strin
     // A1 — the provider Idempotency-Key is the ITEM (no attempt suffix): every attempt of one item is one message.
     idempotencyKey: item.id,
   });
+  // PRE-FLIP R4 — the provider refused a retry whose content changed under the SAME Idempotency-Key (the item
+  // id): an earlier attempt was accepted under it (and timed out on our side). SENT, flagged uncertain — never DEAD,
+  // never re-sent.
+  if (result.status === "sent" && result.uncertain === "IDEMPOTENCY_CONFLICT") {
+    logOf(deps)("[comms-automations] provider reported an idempotency conflict: an earlier attempt was accepted under this key; marked SENT (uncertain), not re-sent");
+    return delivered("ACCEPTED", true);
+  }
   if (result.status === "sent" || result.status === "captured") return delivered(result.status === "sent" ? "ACCEPTED" : "CAPTURED");
   // The storm limit (RATE_LIMITED / RATE_LIMIT_UNVERIFIED): SUPPRESSED, never retried. sendEmail recorded the row.
   if (result.status === "skipped") return suppress(result.reason ?? "NO_RECIPIENT", true);
   return failed();
 }
+
+/** PRE-FLIP R4 — the reason on a SENT item whose acceptance is known only from a provider idempotency conflict. */
+export const UNCERTAIN_ACCEPTANCE = "ACCEPTED_UNCERTAIN_IDEMPOTENCY_CONFLICT" as const;
 
 /** Bounds used by the job, exported for the job health / tests. */
 export const ENGINE_LIMITS = { ...DEFAULT_BUDGET, maxRecipientsCeiling: AUTOMATION_LIMITS.maxRecipientsCeiling };
