@@ -24,7 +24,7 @@ import { PREVIEW_APP_BASE } from "@/lib/email/preview";
 import { NOTIFICATION_REGISTRY, type NotificationTypeId } from "@/lib/notifications/registry";
 import { buildNotificationEmailData } from "@/lib/notifications/channels/email-data";
 import { renderNotificationEmail } from "@/lib/email/templates/notification";
-import { contentVariants, definitionLock, editableLegs, legEditability, legSpec, variantFor, type LegSpec } from "./legs";
+import { LIMITS, contentVariants, definitionLock, editableLegs, legEditability, legSpec, variantFor, type LegSpec } from "./legs";
 import { parseContentBody, placeholdersUsed, validateContent } from "./validate";
 import { inAppRender, renderContentEmail, substitute, textValues } from "./render";
 import { ADVICE_LEXICON, CLAIM_LEXICON, adviceHits, claimHits, figureTokens, linkHits } from "./lint";
@@ -169,6 +169,35 @@ function validator(): void {
     && ["you should invest", "we recommend", "buy", "sell", "tax advice", "legal advice", "financial advice", "consult a", "deduct", "write off"].every((t) => ADVICE_LEXICON.includes(t)));
 }
 
+function perBlockLimits(): void {
+  console.log("3a. per-block limits (v1.1.1) — enforced with typed, located codes; at the limit passes");
+  const sf = spec("SYNC_FAILED", "EMAIL");
+  const ok = sf.codeDefault("reauth-required");
+  const rest = ok.blocks.filter((b) => b.kind !== "hero");
+  const L = LIMITS.EMAIL;
+  check("greeting has its own limit (120), heading 120, info title 120 / 8 items / item 200",
+    L.heading === 120 && L.greeting === 120 && L.infoTitle === 120 && L.infoItems === 8 && L.infoItem === 200);
+  const body = (n: number): ContentBody => ({ ...ok, blocks: [
+    { kind: "hero", heading: "h".repeat(L.heading + n), greeting: "g".repeat(L.greeting + n) },
+    ...rest,
+    { kind: "info", title: "t".repeat(L.infoTitle + n), items: [...Array.from({ length: L.infoItems - 1 }, () => "item"), "i".repeat(L.infoItem + n)] },
+  ] });
+  const at = manual(sf, body(0), "reauth-required");
+  check("every per-block field exactly AT its limit ⇒ no length issue", !at.some((i) => i.code === "FIELD_TOO_LONG" || i.code === "TOO_MANY_ITEMS"), at);
+  const over = manual(sf, body(1), "reauth-required");
+  const infoIndex = rest.length + 1;
+  const tooLong = (prop: string, blockIndex: number, itemIndex?: number) => over.some((i) => i.code === "FIELD_TOO_LONG" && i.severity === "error"
+    && i.location?.field === "block" && i.location.blockIndex === blockIndex && i.location.prop === prop && i.location.itemIndex === itemIndex);
+  check("heading over ⇒ FIELD_TOO_LONG at block 0 / heading", tooLong("heading", 0), over);
+  check("greeting over ⇒ FIELD_TOO_LONG at block 0 / greeting", tooLong("greeting", 0), over);
+  check("info title over ⇒ FIELD_TOO_LONG at the info block / title", tooLong("title", infoIndex), over);
+  check("one info item over ⇒ FIELD_TOO_LONG at items[itemIndex]", tooLong("items", infoIndex, L.infoItems - 1), over);
+  const many = manual(sf, { ...ok, blocks: [...ok.blocks, { kind: "info", items: Array.from({ length: L.infoItems + 1 }, () => "item") }] }, "reauth-required");
+  check("info items over the count ⇒ TOO_MANY_ITEMS at the info block / items",
+    many.some((i) => i.code === "TOO_MANY_ITEMS" && i.location?.field === "block" && i.location.blockIndex === ok.blocks.length && i.location.prop === "items"), many);
+  check("messages state the limit, never the content", over.filter((i) => i.code === "FIELD_TOO_LONG").every((i) => /At most \d+ characters\./.test(i.message) && !i.message.includes("hhh")));
+}
+
 function lexicons(): void {
   console.log("3b. link / claim / advice lexicons after normalisation (review P1, P3)");
   const sf = spec("SYNC_FAILED", "EMAIL");
@@ -290,6 +319,7 @@ function aiChecks(): void {
 legs();
 parity();
 validator();
+perBlockLimits();
 lexicons();
 escaping();
 aiRequest();
