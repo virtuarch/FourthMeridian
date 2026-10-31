@@ -36,16 +36,20 @@ export function ReviewHeader() {
         <h1 className="text-xl font-semibold text-[var(--text-primary)]">Merchant merge review</h1>
         <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{PURPOSE.candidate}</p>
       </div>
-      <dl className="grid gap-3 text-sm sm:grid-cols-2">
-        <div className="rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3">
-          <dt className={EYEBROW}>Merge</dt>
-          <dd className="mt-1 leading-relaxed text-[var(--text-secondary)]">{PURPOSE.merge}</dd>
-        </div>
-        <div className="rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3">
-          <dt className={EYEBROW}>Not the same</dt>
-          <dd className="mt-1 leading-relaxed text-[var(--text-secondary)]">{PURPOSE.dismiss}</dd>
-        </div>
-      </dl>
+      {/* Consistency sweep — the two outcomes in ONE line; the full wording on demand (no wall of text). */}
+      <p className="text-xs text-[var(--text-muted)]">
+        <span className="text-[var(--text-secondary)]">Merge</span> combines them for every tenant (audited, no undo button) ·{" "}
+        <span className="text-[var(--text-secondary)]">Not the same</span> records your decision so the pair is not suggested again.
+      </p>
+      <details className="group rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 text-sm">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-xs text-[var(--text-secondary)] [&::-webkit-details-marker]:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">
+          <span aria-hidden className="transition-transform group-open:rotate-90">›</span> Exactly what each decision does
+        </summary>
+        <dl className="flex flex-col gap-3 pb-3">
+          <div><dt className={EYEBROW}>Merge</dt><dd className="mt-1 leading-relaxed text-[var(--text-secondary)]">{PURPOSE.merge}</dd></div>
+          <div><dt className={EYEBROW}>Not the same</dt><dd className="mt-1 leading-relaxed text-[var(--text-secondary)]">{PURPOSE.dismiss}</dd></div>
+        </dl>
+      </details>
     </header>
   );
 }

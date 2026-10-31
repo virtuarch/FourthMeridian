@@ -64,7 +64,7 @@ type AcqSeries = "requests" | "registrations";
 function AcquisitionCard({ acq, series, setSeries }: { acq: Fetched<AcquisitionResponse>; series: AcqSeries; setSeries: (s: AcqSeries) => void }) {
   const a = acq.data;
   const days = a ? (series === "requests" ? a.requests.perDay : a.registrations.perDay) : [];
-  const noun = series === "requests" ? "request" : "registration";
+  const noun = series === "requests" ? "requester" : "registration";
   return (
     <Block id="growth-acquisition" label="Acquisition" className="min-w-0 lg:col-span-8"
       hint={<ProvenanceChip kind="MEASURED" />}
@@ -227,7 +227,7 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
         </Block>
         <Block id="growth-sources" label="Where requests come from" className="min-w-0 lg:col-span-5"
           hint={<span className="text-[11px] text-[var(--text-faint)]">{a ? `${a.windowDays} d` : ""}</span>}>
-          <Surface className="flex-1 p-4 sm:p-5">
+          <Surface className="flex flex-1 flex-col justify-center p-4 sm:p-5">
             {a ? (
               sourceWhole(a) > 0 ? (
                 <>

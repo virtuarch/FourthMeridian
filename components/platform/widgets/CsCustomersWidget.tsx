@@ -98,6 +98,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
   /** ONE instant for the list's relative times, captured at mount (a clock read during render is impure). */
   const [nowMs] = useState(() => Date.now());
+  /** < lg — the list opens on its first rows so the analytics below stay within reach. */
+  const [showAll, setShowAll] = useState(false);
 
   // Assignment forms
   const [policyGroup, setPolicyGroup] = useState<string>("");
@@ -197,14 +199,15 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     <Block id="cs-customer-list" label={section.label} className="min-w-0" hint={<LoadedStamp checkedAt={loadedAt} />}>
       <Surface className="flex min-w-0 flex-1 flex-col gap-3 p-4 sm:p-5">
       {/* PLATFORM SPACES 2.0 — compact search; the figures above the list live in the dashboard hero (no duplicate tiles). */}
-      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void loadList(search); }}>
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setShowAll(false); void loadList(search); }}>
         <label className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:max-w-sm lg:min-h-8">
           <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
           <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
             className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
         </label>
         <button type="submit" className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold lg:min-h-8" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
-        {list && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]" data-list-population>{listPopulation(list)}</span>}
+        {/* Its own line below sm (it never squeezes the search field or widens the page). */}
+        {list && <span className="min-w-0 text-[11px] tabular-nums text-[var(--text-muted)] max-sm:basis-full sm:ml-auto sm:text-right" data-list-population>{listPopulation(list)}</span>}
       </form>
 
       {loading && <WidgetMessage loading />}
@@ -231,7 +234,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     </td>
                     <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
                     <td className="px-2 py-2.5 align-middle text-[var(--text-secondary)]">
-                      <span className="block truncate">{c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"}</span>
+                      <span className="block truncate" title={c.policyGroup}>{policyGroupName(c.policyGroup)}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"}</span>
                       <span className="block truncate text-[11px] text-[var(--text-muted)]">{c.cohorts.length ? c.cohorts.join(", ") : "no cohort"}</span>
                     </td>
                     <td className="px-2 py-2.5 align-middle tabular-nums text-[var(--text-secondary)]">{c.connectionCount}</td>
@@ -241,20 +244,17 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                 ))}
               </tbody>
             </table>
+            {/* < lg — a clean two-line row: who, where they are, when last active.
+                Policy, cohorts and usage live in the customer's profile (tap). */}
             <ul className="-mx-1 divide-y divide-[var(--border-hairline)] lg:hidden" aria-label="Customers">
-              {list.customers.map((c) => (
+              {list.customers.slice(0, showAll ? undefined : MOBILE_ROWS).map((c) => (
                 <li key={c.id}>
                   <button type="button" onClick={() => select(c.id)} aria-haspopup="dialog"
                     className="flex min-h-11 w-full items-center justify-between gap-2 px-1 py-2 text-left text-xs transition-colors hover:bg-[var(--surface-hover)]">
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate font-medium text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
                       <span className="truncate text-[11px] text-[var(--text-muted)]">
-                        {c.funnelStage ?? "—"} · {c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"} · {c.cohorts.length ? c.cohorts.join(", ") : "no cohort"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
-                      </span>
-                      <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
-                        {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => (
-                          <span key={cell.key}>{i > 0 ? "· " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>
-                        ))}
+                        {c.funnelStage ?? "—"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
                       </span>
                     </span>
                     <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</span>
@@ -262,7 +262,12 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                 </li>
               ))}
             </ul>
-            <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{ROLLUP_NOTE}</p>
+            {list.customers.length > MOBILE_ROWS && (
+              <button type="button" onClick={() => setShowAll((v) => !v)} className="inline-flex min-h-11 items-center self-start text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:hidden">
+                {showAll ? "Show fewer" : `Show all ${list.customers.length}`}
+              </button>
+            )}
+            <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{ROLLUP_NOTE}</p>
             </>
           )}
         </>
@@ -289,6 +294,15 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     {/* UI-009 — the instant every relative age in this panel is measured from. */}
                     <Row label="Detail checked" value={fmtUtc(detail.checkedAt)} />
                     <Row label="Sessions" value={String(detail.activity.activeSessions)} />
+                  </Section>
+
+                  {/* The list's per-customer roll-up (desktop column) — here for every width,
+                      so a phone keeps a path to it. Same cells, same estimate note. */}
+                  <Section title="Usage · 30 d">
+                    {rollupCells({ ...detail.rollup } as CustomerRollupFields, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell) => (
+                      <Row key={cell.key} label={cell.word} value={cell.value} />
+                    ))}
+                    <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{ROLLUP_NOTE}</p>
                   </Section>
 
                   <Section title="Cohort & policy">
@@ -544,4 +558,12 @@ export function listPopulation(list: CustomerListResponse): string {
   // Truncated: the breakdown describes the rows SHOWN, never the whole total beside it.
   if (rows.length < list.total) return `showing ${rows.length} of ${list.total} accounts · of these ${parts.join(" · ")}`;
   return `${list.total} account${list.total === 1 ? "" : "s"} · ${parts.join(" · ")}`;
+}
+
+/** Rows shown below lg before "Show all". */
+const MOBILE_ROWS = 5;
+
+/** A group's name from the code catalogue when it has one (a DB-only group shows its key). */
+function policyGroupName(key: string): string {
+  return (POLICY_GROUPS as Record<string, { label?: string } | undefined>)[key]?.label ?? key;
 }
