@@ -86,7 +86,7 @@ import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 import { chartReadyRange } from "@/lib/connections/connection-detail.core";
 import { getSnapshotDates } from "@/lib/data/snapshots";
 import { transactionAccountPopulation, type AccountPopulationEntry } from "@/lib/data/transaction-population";
-import { walletHistoryCheckpointStatus, historyWorkerEnabledFor } from "@/lib/crypto/history-checkpoint-status";
+import { walletHistoryCheckpointStatus, historyWorkerEnabledFor, visibleHistoryImport } from "@/lib/crypto/history-checkpoint-status";
 import { readHistoryCheckpoints } from "@/lib/crypto/btc-history-checkpoint";
 import { connectionDestinations } from "@/lib/connections/connection-facts";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
@@ -524,11 +524,13 @@ async function loadConnectionIntelligence(
     if (walletHistory && c.provider === "WALLET") {
       // SOL's checkpoint on `cursor`, BTC's / ETH's on `historyCheckpoint` — each
       // in its own words (history-checkpoint-status.ts); none ⇒ null (no claim).
-      // An ETH checkpoint is the WORKER's alone (SOL and BTC checkpoints are
-      // also advanced by syncs): with the ETH worker off it describes nothing
-      // that is running, so it is not shown.
+      // Every chain's checkpoint is advanced by syncs too (2026-10-31: an ETH
+      // sync with the worker off runs one bounded step of it), so an incomplete
+      // one is shown whatever the worker flag — never hidden into "nothing
+      // happening". `facts.historyWorkerEnabled` decides only whether the words
+      // promise automatic progress (connection-detail.core.ts).
       const found = walletHistoryCheckpointStatus(facets?.historyCursor ?? null, facets?.historyCheckpoint ?? null, now.toISOString().slice(0, 10));
-      const st = found && (found.chain !== "ETH" || historyWorkerEnabledFor("ETH")) ? found : null;
+      const st = visibleHistoryImport(found, walletHistory.licensed);
       walletHistory.historyImport = st ? { state: st.state, provenFromISO: st.historyFromISO, lastProgressAtISO: st.lastProgressAtISO,
         signaturesProcessed: st.signaturesProcessed, lastFailureCode: st.lastFailureCode } : null;
     }

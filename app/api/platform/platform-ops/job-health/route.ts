@@ -30,6 +30,8 @@ export interface PlatformJobRow {
   lastRunStatus:       string | null;
   lastCompletedAt:     string | null; // ISO
   consecutiveFailures: number;
+  /** BETA LIFECYCLE L2 — the newest run's skip code (status "skipped": a cost freeze refused the work); null otherwise. */
+  lastSkipReason?:     string | null;
   nextExpectedAt:      string | null; // ISO — from the registry schedule
   lastRuntimeMs:       number | null;
   avgRuntimeMs:        number | null;
@@ -49,6 +51,8 @@ export interface PlatformJobHealthCounts {
   failing:  number;
   dead:     number;
   neverRan: number;
+  /** BETA LIFECYCLE L2 — jobs whose newest run a cost freeze refused (never counted healthy). */
+  skipped?: number;
 }
 
 export interface PlatformJobHealthResponse {
@@ -64,7 +68,7 @@ export async function GET() {
 
   const health = await checkScheduledJobHealth();
 
-  const counts: PlatformJobHealthCounts = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0 };
+  const counts: PlatformJobHealthCounts = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0, skipped: 0 };
   for (const j of health.jobs) {
     if (j.status === "healthy") counts.healthy++;
     else if (j.status === "running") counts.running++;
@@ -72,6 +76,7 @@ export async function GET() {
     else if (j.status === "failing") counts.failing++;
     else if (j.status === "dead") counts.dead++;
     else if (j.status === "never-ran") counts.neverRan++;
+    else if (j.status === "skipped") counts.skipped = (counts.skipped ?? 0) + 1;
   }
 
   const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
@@ -89,6 +94,7 @@ export async function GET() {
       lastRunStatus:       j.lastRunStatus,
       lastCompletedAt:     iso(j.lastCompletedAt),
       consecutiveFailures: j.consecutiveFailures,
+      lastSkipReason:      j.lastSkipReason,
       nextExpectedAt:      iso(j.nextExpectedAt),
       lastRuntimeMs:       j.lastRuntimeMs,
       avgRuntimeMs:        j.avgRuntimeMs,
