@@ -138,6 +138,17 @@ async function main() {
     check("an ordinary run stays `healthy`", ok.status === "healthy" && ok.succeededRuns === 1 && ok.lastSkipReason === null);
   }
 
+  console.log("1c. operator views read a skipped job as SKIPPED, never Overdue (follow-up N1)");
+  {
+    const { honestJobStatus } = await import("@/components/platform/ops-visual/ops-visual-model");
+    const row = { job: "fetch-fx-rates", status: "skipped", lastRunStatus: "succeeded", consecutiveFailures: 0, totalRuns: 3, lastSkipReason: "BILLABLE_COST_FREEZE" } as never;
+    const h = honestJobStatus(row, { state: "active" } as never);
+    check("honestJobStatus: \"Skipped (cost freeze)\" with the recorded reason", h.kind === "skipped" && h.word === "Skipped (cost freeze)" && h.reason.includes("BILLABLE_COST_FREEZE"), h);
+    const src = readFileSync("app/api/platform/platform-ops/job-health/route.ts", "utf8");
+    check("the job-health route counts skipped jobs (the counts add up) and returns lastSkipReason",
+      /else if \(j\.status === "skipped"\) counts\.skipped = \(counts\.skipped \?\? 0\) \+ 1;/.test(src) && /lastSkipReason:\s+j\.lastSkipReason,/.test(src));
+  }
+
   console.log("2. resume-stale-imports cron");
   {
     const driven: string[] = []; let attempts = 0; let reads = 0;
@@ -178,6 +189,17 @@ async function main() {
         drove.join() === "ok1" && r.attempted === 1 && r.planRestrictedUsers === 6, { drove, r });
     }
     check("…one policy read per pass", starvedReads === 3);
+
+    // Follow-up N2 — EVERY connector restricted (the global freeze): one SKIPPED finding, nothing driven.
+    const drove: string[] = []; let attempts2 = 0;
+    const all = await quiet(() => resumeStaleImports({
+      loadCandidateUsers: async () => ["u1", "u2"],
+      loadCandidates: async () => ({ candidates: 2, items: [{ id: "a", institutionName: "A", userId: "u1" }, { id: "b", institutionName: "B", userId: "u2" }] }),
+      admit: async () => admitted, billable: decisions({}, FROZEN),
+      drive: async (id) => { drove.push(id); return "ran"; }, recordAttempt: async () => { attempts2++; }, resetCompleted: async () => {},
+    }));
+    check("every connector restricted ⇒ outcome SKIPPED (BILLABLE_COST_FREEZE), nothing driven, no backoff recorded",
+      all.outcome === "SKIPPED" && all.skipReason === "BILLABLE_COST_FREEZE" && drove.length === 0 && attempts2 === 0 && all.attempted === 0, all);
   }
 
   console.log("3. the shared deferred-sync choke point (Plaid webhook, connect follow-on, resume-sync, resume-stale-imports)");

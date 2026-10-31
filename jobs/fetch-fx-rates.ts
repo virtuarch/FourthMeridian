@@ -61,10 +61,18 @@ export interface FetchFxRatesResult {
   caughtUp: { dateISO: string; inserted: number }[];
   /** BETA LIFECYCLE L2 — set when a frozen run used the allowlisted FREE provider (once per day). */
   freeExemption?: { source: string; inserted: number };
+  /** Follow-up N3 — true when this day reached a provider (quotes were missing). */
+  vendorFetched?: boolean;
+  /** Follow-up N3 — vendor fetches this run made (≤ FX_MAX_VENDOR_FETCHES_PER_RUN). */
+  vendorFetches?: number;
+  /** Follow-up N3 — why the catch-up stopped early, when it did. */
+  catchUpStoppedBecause?: "COST_FREEZE" | "VENDOR_CAP";
 }
 
 /** BETA LIFECYCLE L2 — how many closed days before yesterday a run re-checks for missing quotes (bounded catch-up). */
 export const FX_CATCH_UP_DAYS = 7;
+/** Follow-up N3 — the most vendor fetches (days that reached a provider) one run may make, yesterday included. */
+export const FX_MAX_VENDOR_FETCHES_PER_RUN = 3;
 
 /**
  * BETA LIFECYCLE L2 — THE ONE ALLOWLISTED FREE-PROVIDER EXEMPTION (owner ruling
@@ -133,14 +141,24 @@ export async function fetchFxRates(deps: FetchFxRatesDeps = {}): Promise<FetchFx
   // BETA LIFECYCLE L2 — bounded catch-up: days a freeze (or an outage) left
   // without quotes, oldest last-week first. Each is the same missing-only,
   // network-free-when-covered fetch as yesterday's.
+  // Follow-up N3: the freeze is RE-READ (uncached) before EVERY catch-up day and
+  // the loop stops on the first freeze; and the whole run makes at most
+  // FX_MAX_VENDOR_FETCHES_PER_RUN vendor fetches (yesterday's included), so a
+  // quote no provider serves can never turn the catch-up into 8 calls a run.
   const caughtUp: FetchFxRatesResult["caughtUp"] = [];
   const base = Date.parse(`${dateISO}T00:00:00Z`);
+  let vendorFetches = r.vendorFetched ? 1 : 0;
+  let catchUpStoppedBecause: FetchFxRatesResult["catchUpStoppedBecause"];
   for (let back = FX_CATCH_UP_DAYS; back >= 1; back--) {
+    if (vendorFetches >= FX_MAX_VENDOR_FETCHES_PER_RUN) { catchUpStoppedBecause = "VENDOR_CAP"; break; }
+    const freeze = await (deps.costFreeze ?? readGlobalCostFreeze)();
+    if (freeze.frozen) { catchUpStoppedBecause = "COST_FREEZE"; break; }
     const d = toISODateUTC(new Date(base - back * 86_400_000));
     const c = await fetchFxRatesFor(d, deps, { costFreezeChecked: true });
+    if (c.vendorFetched) vendorFetches++;
     if (c.inserted > 0) caughtUp.push({ dateISO: d, inserted: c.inserted });
   }
-  return { ...r, caughtUp };
+  return { ...r, caughtUp, vendorFetches, ...(catchUpStoppedBecause ? { catchUpStoppedBecause } : {}) };
 }
 
 async function fetchFxRatesFor(dateISO: string, deps: FetchFxRatesDeps, opts: { costFreezeChecked?: boolean } = {}): Promise<FetchFxRatesResult> {
@@ -183,12 +201,13 @@ async function fetchOneDay(dateISO: string, registry: FxRegistry = defaultFxRegi
   }
 
   const day = await fetchDay(dateISO, registry, missing);
+  const vendorFetched = true;
 
   if (day.source === null) {
     // No retry beyond the failover chain — tomorrow's run / the backfill
     // script self-heal the gap (append-only archive, skip-if-present).
     console.warn(`[fx-cron] ${dateISO}: no provider produced data — ${day.notes.join(" | ")}`);
-    return { dateISO, source: "none", missingBefore: missing.length, inserted: 0, notes: day.notes, outcome: "COMPLETE", caughtUp: [] };
+    return { dateISO, source: "none", missingBefore: missing.length, inserted: 0, notes: day.notes, outcome: "COMPLETE", caughtUp: [], vendorFetched };
   }
 
   const res = await fxArchive.writeBatch(day.source, day.rates);
@@ -196,5 +215,5 @@ async function fetchOneDay(dateISO: string, registry: FxRegistry = defaultFxRegi
     `[fx-cron] ${toISODateUTC(new Date(`${dateISO}T00:00:00Z`))}: stored ${res.inserted}/${res.attempted} row(s) ` +
     `from ${day.source} (${missing.length} quote(s) were missing)`,
   );
-  return { dateISO, source: day.source, missingBefore: missing.length, inserted: res.inserted, notes: day.notes, outcome: "COMPLETE", caughtUp: [] };
+  return { dateISO, source: day.source, missingBefore: missing.length, inserted: res.inserted, notes: day.notes, outcome: "COMPLETE", caughtUp: [], vendorFetched };
 }

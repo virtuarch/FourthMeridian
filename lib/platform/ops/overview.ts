@@ -122,7 +122,7 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
     : null;
   const configuration = attemptSync("env-report", getEnvReport);
 
-  const jobs: JobHealthCounts = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0 };
+  const jobs: JobHealthCounts = { healthy: 0, running: 0, overdue: 0, failing: 0, dead: 0, neverRan: 0, skipped: 0 };
   for (const j of jobHealth.jobs) {
     if (j.status === "healthy") jobs.healthy++;
     else if (j.status === "running") jobs.running++;
@@ -130,6 +130,7 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
     else if (j.status === "failing") jobs.failing++;
     else if (j.status === "dead") jobs.dead++;
     else if (j.status === "never-ran") jobs.neverRan++;
+    else if (j.status === "skipped") jobs.skipped = (jobs.skipped ?? 0) + 1;
   }
   // P1 — the next DUE instant from the ledger and the execution cadence policy
   // (there are no registry slots left to read a "next slot" from).

@@ -178,7 +178,7 @@ export function registeredExecutions(s: SchedulerObservationResponse): number {
 
 // ── Honest job status ──────────────────────────────────────────────────────────
 
-export type HonestKind = "failed" | "late" | "never-ran" | "unknown" | "not-observed" | "running" | "waiting" | "healthy";
+export type HonestKind = "failed" | "late" | "never-ran" | "unknown" | "not-observed" | "running" | "waiting" | "skipped" | "healthy";
 
 export interface HonestStatus {
   kind: HonestKind;
@@ -190,7 +190,7 @@ export interface HonestStatus {
 
 /** Worst first. */
 const KIND_RANK: Record<HonestKind, number> = {
-  failed: 0, late: 1, "never-ran": 2, unknown: 3, "not-observed": 4, running: 5, waiting: 6, healthy: 7,
+  failed: 0, late: 1, "never-ran": 2, unknown: 3, "not-observed": 4, skipped: 5, running: 6, waiting: 7, healthy: 8,
 };
 
 /**
@@ -207,6 +207,11 @@ export function honestJobStatus(row: PlatformJobRow, evidence: SchedulerEvidence
   }
   if (row.lastRunStatus === "failed") return { kind: "failed", word: "Failed", tone: "bad", reason: "Last run failed" };
   if (row.status === "healthy") return { kind: "healthy", word: "Healthy", tone: "ok", reason: "Ran on schedule" };
+  // BETA LIFECYCLE L2 — the job ran on schedule but a cost freeze refused its
+  // work: neither healthy nor late. Said as such, with the recorded reason.
+  if (row.status === "skipped") {
+    return { kind: "skipped", word: "Skipped (cost freeze)", tone: "warn", reason: row.lastSkipReason ? `Refused before any vendor call — ${row.lastSkipReason}` : "Refused before any vendor call" };
+  }
 
   // never-ran · overdue · dead — what they MEAN depends on whether a wake happened.
   if (evidence.state === "inactive") return { kind: "not-observed", word: "Not observed", tone: "muted", reason: evidence.headline };

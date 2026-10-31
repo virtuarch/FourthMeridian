@@ -345,9 +345,53 @@ async function main() {
     }
   }
 
-  t.section("wallet re-add: one sync per wallet per entitled window, fail closed, new wallets not counted (review P3-1)");
+  t.section("FX catch-up: the freeze is re-read per day and stops the loop; vendor calls are capped per run (follow-up N3)");
   {
     fake.clearHooks(); setFlag(null); setState({});
+    const { fetchFxRates, FX_MAX_VENDOR_FETCHES_PER_RUN } = await import("@/jobs/fetch-fx-rates");
+    const { judgeGlobalCostFreeze } = await import("@/lib/platform/cost-freeze.core");
+    const oldKey = process.env.OXR_APP_ID; delete process.env.OXR_APP_ID;
+    const urls: string[] = [];
+    const trap = globalThis.fetch;
+    const { FRANKFURTER_QUOTES } = await import("@/lib/fx/providers/frankfurter");
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input); urls.push(url);
+      const date = url.match(/\/v1\/(\d{4}-\d{2}-\d{2})/)?.[1];
+      return new Response(JSON.stringify({ base: "USD", date, rates: Object.fromEntries(FRANKFURTER_QUOTES.map((q) => [q, 1.5])) }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      // SAR/AED are never served without the paid key, so every day stays "missing": the worst case for the catch-up.
+      const capped = await fetchFxRates({ costFreeze: async () => judgeGlobalCostFreeze(null) });
+      t.check(`an unfrozen run makes at most ${FX_MAX_VENDOR_FETCHES_PER_RUN} vendor fetches, then stops (VENDOR_CAP)`,
+        urls.length === FX_MAX_VENDOR_FETCHES_PER_RUN && capped.vendorFetches === FX_MAX_VENDOR_FETCHES_PER_RUN && capped.catchUpStoppedBecause === "VENDOR_CAP", { n: urls.length, capped });
+      urls.length = 0;
+      let reads = 0;
+      const midFreeze = await fetchFxRates({ costFreeze: async () => (++reads >= 3 ? judgeGlobalCostFreeze("true") : judgeGlobalCostFreeze(null)) });
+      t.check("a freeze landing DURING the catch-up stops it at the next day (re-read per day, uncached)",
+        midFreeze.catchUpStoppedBecause === "COST_FREEZE" && urls.length === 2 && reads === 3, { n: urls.length, reads, midFreeze });
+    } finally {
+      globalThis.fetch = trap;
+      if (oldKey !== undefined) process.env.OXR_APP_ID = oldKey;
+    }
+  }
+
+  t.section("wallet re-add / reactivation: ONE atomic sync claim per wallet per entitled window (review P3-1, follow-ups N4/N5)");
+  {
+    fake.clearHooks(); setFlag(null); setState({});
+    // The fake executes the route's single UPDATE … WHERE … RETURNING exactly as Postgres would:
+    // the window check and the claim are one statement (no read-then-write gap to race).
+    let claimStatements = 0;
+    fake.queryRaw = (sql: string, values: unknown[]) => {
+      if (!/UPDATE "Connection"/.test(sql)) return [];
+      claimStatements++;
+      const [now, , id, uid, opensAt] = values as [Date, Date, string, string, Date];
+      const row = fake.rows("Connection", { id, userId: uid })[0];
+      if (!row) return [];
+      const last = row.lastManualRefreshAt as Date | null;
+      if (last !== null && last.getTime() > opensAt.getTime()) return [];
+      row.lastManualRefreshAt = now;
+      return [{ id }];
+    };
     const body = { name: "BTC", walletChain: "BTC", walletAddress: wallet.walletAddress };
     const first = await call(WALLET, "/api/accounts/wallet", body);
     t.check("the first re-add in the window may re-read the chain (allowed plan; the trapped network makes it non-fatal)",
@@ -356,11 +400,26 @@ async function main() {
     const second = await call(WALLET, "/api/accounts/wallet", body);
     t.check("an immediate second re-add: share OK, NO chain sync (COOLDOWN), no network call",
       second.status === 200 && second.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === before, { s: second.status, b: second.body });
-    const third = await call(WALLET, "/api/accounts/wallet", body);
-    t.check("…and a third: still COOLDOWN (one sync per wallet per window, however often it is re-posted)", third.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === before);
+
+    // N5 — CONCURRENT re-adds after the window reopens: exactly one wins the claim.
+    for (const c of fake.rows("Connection", { userId })) c.lastManualRefreshAt = null;
+    const [a, b] = await Promise.all([call(WALLET, "/api/accounts/wallet", body), call(WALLET, "/api/accounts/wallet", body)]);
+    const winners = [a, b].filter((r) => r.body.initialSync?.errorCode !== "COOLDOWN").length;
+    t.check("two CONCURRENT re-adds: exactly ONE syncs, the other is COOLDOWN (one atomic claim)", winners === 1 && a.status === 200 && b.status === 200,
+      { a: a.body.initialSync, b: b.body.initialSync });
+
+    // N4 — delete, then re-add (the reactivation branch) inside the window: no sync either.
+    const w = fake.rows("FinancialAccount", { id: wallet.id })[0];
+    w.deletedAt = new Date();
+    const fetchBeforeReactivate = fetchCalls;
+    const reactivated = await call(WALLET, "/api/accounts/wallet", body);
+    t.check("delete-then-re-add (reactivation) inside the window: restored, NO chain sync (COOLDOWN)",
+      reactivated.status === 200 && reactivated.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === fetchBeforeReactivate, { s: reactivated.status, b: reactivated.body });
+
     const src = (await import("node:fs")).readFileSync("app/api/accounts/wallet/route.ts", "utf8");
-    t.check("the window is a conditional write on the wallet's own Connection (fail closed on any error); no per-user limiter counts new wallets",
-      /lastManualRefreshAt: \{ lte:/.test(src) && /return false;\n  \}\n\}/.test(src) && !/limitByUser\(userId, "wallet-add"/.test(src));
+    t.check("the claim is ONE UPDATE … WHERE … RETURNING on the tenant client (atomic); fail closed on any error; no per-user limiter counts new wallets",
+      /UPDATE "Connection"[\s\S]{0,300}RETURNING "id"/.test(src) && /return false;\n  \}\n\}/.test(src) && !/limitByUser\(userId, "wallet-add"/.test(src) && claimStatements >= 4);
+    fake.queryRaw = null;
   }
 
   t.section("plan-restricted deferrals say so — never \"syncing resumes automatically\" (review P3-3)");

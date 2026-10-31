@@ -197,7 +197,8 @@ async function main() {
     check("GET reads at PLATFORM_OPS READ", /export async function GET\(\)[\s\S]*?requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*?if \(err\) return err/.test(route));
     check("PATCH mutates only under FRESH CONTROL, error returned first",
       /export async function PATCH[\s\S]*?requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\);\s*if \(err\) return err;/.test(route) && !/requirePlatformAccess\([^)]*"CONTROL"/.test(route));
-    check("PATCH requires a structured reason and is paced on its own bucket", /parseOperatorReason\(/.test(route) && /limitByUser\(auth\.user\.id, "platform-policy-operational-controls"/.test(route));
+    check("PATCH requires a structured reason and is paced on its own bucket", /parseOperatorReason\(/.test(route) && /"platform-policy-operational-controls"/.test(route) && /limitByUser\(auth\.user\.id, bucket,/.test(route));
+    check("the cost freeze toggle is paced on its OWN bucket (follow-up N6)", /body\.control === "COST_FREEZE"\s*\?\s*"platform-policy-cost-freeze"/.test(route));
     check("the route never touches PlatformSetting or AuditLog itself", !/platformSetting|auditLog|setSetting/.test(route));
     check("the route exports no other mutating verb", !/export async function (POST|PUT|DELETE)/.test(route));
     check("only CONTROL (or break-glass) passes the mutation gate",

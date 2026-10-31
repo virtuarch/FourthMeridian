@@ -66,10 +66,13 @@ function respond(result: OperationalControlsMutationResult) {
 export async function PATCH(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
-  const limited = await limitByUser(auth.user.id, "platform-policy-operational-controls", { limit: 20, windowSec: 60 });
+  const body = await req.json().catch(() => null) as { reason?: unknown; control?: unknown } | null;
+  // Follow-up N6 — each control is paced on its OWN bucket: toggling the cost
+  // freeze can never exhaust the way out of maintenance, nor the reverse.
+  const bucket = body && typeof body === "object" && body.control === "COST_FREEZE"
+    ? "platform-policy-cost-freeze" : "platform-policy-operational-controls";
+  const limited = await limitByUser(auth.user.id, bucket, { limit: 20, windowSec: 60 });
   if (limited) return limited;
-
-  const body = await req.json().catch(() => null) as { reason?: unknown } | null;
   if (!body || typeof body !== "object") {
     return NextResponse.json({ error: "Body must be { action, expectedUpdatedAt, reason }." }, { status: 400, headers: NO_STORE });
   }

@@ -70,7 +70,7 @@ export interface DomainStatus {
 
 // ── Inputs (already read by their authorities) ──────────────────────────────
 
-export interface JobHealthCounts { healthy: number; running: number; overdue: number; failing: number; dead: number; neverRan: number }
+export interface JobHealthCounts { healthy: number; running: number; overdue: number; failing: number; dead: number; neverRan: number; /** BETA LIFECYCLE L2 — refused by a cost freeze (always set by the loader). */ skipped?: number }
 
 export interface AiOverviewInput {
   /** Billed (RETURNED) invocations in the window. */
