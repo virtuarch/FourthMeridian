@@ -26,10 +26,31 @@
  * onDelete: Cascade — they go with their parent. ProviderCall also has its
  * own rule so an orphan-free but long-lived execution cannot pin them.
  *
- * NOT here, by decision: AuditLog (security evidence; product events already
- * have their own 13-month job), Notification (lib/notifications/cleanup.ts),
- * RateLimit (sweep-rate-limits), financial data of any kind.
+ * NOT here, by decision: AuditLog DELETION (security evidence; product events
+ * already have their own 13-month job), Notification (lib/notifications/
+ * cleanup.ts), RateLimit (sweep-rate-limits), financial data of any kind.
+ *
+ * AuditLog MINIMISATION (R2 beta intake, owner decision 2026-10-31): the
+ * public access-request intake writes BETA_ACCESS_REQUESTED rows carrying the
+ * raw IP and user agent of an unauthenticated applicant. Those are retained
+ * for 90 days (abuse forensics), then MINIMISED in place — never deleted:
+ * ipAddress/userAgent are nulled and replaced in metadata by
+ *   - networkDigest + networkDigestKeyVersion: HMAC-SHA256(canonical ip) under
+ *     the DEDICATED, VERSIONED secret BETA_INTAKE_HASH_KEY_<VERSION> selected
+ *     by BETA_INTAKE_HASH_KEY_VERSION (default "v1") — lets an operator see
+ *     that two old submissions came from the same address without keeping the
+ *     address. Never NEXTAUTH_SECRET or any other secret. With no usable key
+ *     NO digest is stored (an unkeyed hash of an IPv4 address is trivially
+ *     reversible, so it would not be minimisation) — the raw fields are nulled
+ *     regardless — and the absence is logged once per process.
+ *     ROTATION: add BETA_INTAKE_HASH_KEY_V2, set BETA_INTAKE_HASH_KEY_VERSION=v2.
+ *     Rows minimised from then on carry v2 digests; rows already minimised keep
+ *     their v1 digest, labelled "v1" — digests correlate only within a version.
+ *   - uaFamily: browser | script | headless | empty | other.
+ * See runBetaIntakeNetworkMinimisation.
  */
+
+import { createHmac } from "node:crypto";
 
 const DAY_MS = 86_400_000;
 export const RETENTION_BATCH = 1000;
@@ -85,24 +106,237 @@ export interface RetentionDelegate {
   findMany(args: { where: Record<string, unknown>; orderBy: Record<string, "asc">; take: number; select: { id: true } }): Promise<{ id: string }[]>;
   deleteMany(args: { where: Record<string, unknown> }): Promise<{ count: number }>;
 }
-export type RetentionClient = Record<RetentionTable, RetentionDelegate>;
+export type RetentionClient = Record<RetentionTable, RetentionDelegate> & {
+  /** Optional so a test client for the delete rules need not model AuditLog. */
+  auditLog?: AuditMinimiseDelegate;
+};
 
+/** In a dry run `deleted` is the number of rows a real run WOULD delete (bounded like a real run). */
 export interface RetentionTableResult { deleted: number; batches: number; exhausted: boolean; cutoff: string; error?: string }
-export type DataRetentionResult = Record<RetentionTable, RetentionTableResult> & { totalDeleted: number };
+export type DataRetentionResult = Record<RetentionTable, RetentionTableResult> & {
+  totalDeleted: number;
+  /** True when nothing was written (counts are would-be). */
+  dryRun: boolean;
+  /** R2 — BETA_ACCESS_REQUESTED network-field minimisation (absent when the client has no auditLog). */
+  betaIntakeNetwork?: MinimisationResult;
+};
+
+// ── R2 — BETA_ACCESS_REQUESTED network-field minimisation ─────────────────────
+
+/** Days the raw IP + user agent of a beta-intake audit row are kept. */
+export const BETA_INTAKE_NETWORK_DAYS = 90;
+/** Rows per batch / batches per run (one update per row, so smaller than RETENTION_BATCH). */
+export const MINIMISE_BATCH = 200;
+export const MINIMISE_MAX_BATCHES = 10;
+/** The audit action minimised (literal: lib/audit-actions AuditAction.BETA_ACCESS_REQUESTED). */
+export const BETA_INTAKE_AUDIT_ACTION = "BETA_ACCESS_REQUESTED";
+/** Default BETA_INTAKE_HASH_KEY_VERSION. */
+export const NETWORK_DIGEST_DEFAULT_VERSION = "v1";
+/** Shortest accepted hash key (characters). Generate with `openssl rand -hex 32`. */
+export const NETWORK_DIGEST_MIN_KEY_LENGTH = 32;
+
+export type UaFamily = "browser" | "script" | "headless" | "empty" | "other";
+
+const HEADLESS_RE = /headlesschrome|phantomjs|puppeteer|playwright|selenium|webdriver|slimerjs|lighthouse/i;
+const SCRIPT_RE = /curl|wget|python|aiohttp|httpx|go-http-client|node-fetch|undici|axios|okhttp|java\/|libwww|perl|ruby|php|httpie|postman|insomnia|scrapy|bot\b|bot\/|crawler|spider|^node$|deno|bun\//i;
+const BROWSER_RE = /^mozilla\/5\.0 .*(chrome|crios|safari|firefox|fxios|edg|opr)\//i;
+
+/** Coarse, non-identifying classification of a user-agent string. */
+export function uaFamily(ua: string | null | undefined): UaFamily {
+  const s = (ua ?? "").trim();
+  if (!s) return "empty";
+  if (HEADLESS_RE.test(s)) return "headless";
+  if (SCRIPT_RE.test(s)) return "script";
+  if (BROWSER_RE.test(s)) return "browser";
+  return "other";
+}
+
+/** A usable digest key and the version label stored beside every digest it makes. */
+export interface NetworkDigestKey { key: Buffer; version: string }
+
+let warnedKey: string | null = null;
+function warnKeyOnce(msg: string): void {
+  if (warnedKey === msg) return;
+  warnedKey = msg;
+  console.warn(`[data-retention] ${msg} — beta-intake network fields will be nulled WITHOUT a digest`);
+}
+
+/**
+ * The digest key, from the DEDICATED versioned env vars (read from process.env
+ * at call time, the house pattern for secrets used at one site; lib/env.ts
+ * mirrors them for startup validation and the env report):
+ *   BETA_INTAKE_HASH_KEY_VERSION  "v1" (default), "v2", …
+ *   BETA_INTAKE_HASH_KEY_<V>      the secret for that version, ≥ 32 characters.
+ * Null — and logged once — when the version label is malformed or its key is
+ * unset/too short. NEVER falls back to NEXTAUTH_SECRET or any other secret.
+ */
+export function resolveNetworkDigestKey(source: Record<string, string | undefined> = process.env): NetworkDigestKey | null {
+  const version = (source.BETA_INTAKE_HASH_KEY_VERSION || NETWORK_DIGEST_DEFAULT_VERSION).trim().toLowerCase();
+  if (!/^v[1-9]\d{0,2}$/.test(version)) { warnKeyOnce(`BETA_INTAKE_HASH_KEY_VERSION "${version}" is not v1, v2, …`); return null; }
+  const name = `BETA_INTAKE_HASH_KEY_${version.toUpperCase()}`;
+  const secret = source[name];
+  if (!secret) { warnKeyOnce(`${name} is not set`); return null; }
+  if (secret.length < NETWORK_DIGEST_MIN_KEY_LENGTH) { warnKeyOnce(`${name} is shorter than ${NETWORK_DIGEST_MIN_KEY_LENGTH} characters`); return null; }
+  return { key: Buffer.from(secret, "utf8"), version };
+}
+
+/**
+ * Canonical text of an IP before digesting, so one address never yields two
+ * digests: trimmed, lowercased (IPv6 hex), an IPv4-mapped IPv6 address
+ * (`::ffff:203.0.113.9`) reduced to its IPv4 form, and IPv6 run through the
+ * WHATWG URL parser (RFC 5952 compression, zero-suppression). Unparseable
+ * input is digested as trimmed/lowercased text.
+ */
+export function canonicalIp(ip: string): string {
+  let s = ip.trim().toLowerCase();
+  if (s.startsWith("[") && s.endsWith("]")) s = s.slice(1, -1);
+  const mapped = /^(?:0{0,4}:){0,5}:?ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+  if (mapped) return mapped[1];
+  if (s.includes(":")) {
+    try {
+      const host = new URL(`http://[${s}]/`).hostname.slice(1, -1);
+      // The URL parser prints IPv4-mapped addresses in hex (::ffff:cb00:7109).
+      const hexMapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+      if (hexMapped) {
+        const hi = parseInt(hexMapped[1], 16), lo = parseInt(hexMapped[2], 16);
+        return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+      }
+      return host;
+    } catch { return s; }
+  }
+  return s;
+}
+
+export function networkDigest(ip: string, key: Buffer): string {
+  return createHmac("sha256", key).update(canonicalIp(ip)).digest("hex");
+}
+
+export interface AuditNetworkRow {
+  id: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  metadata: unknown;
+}
+
+/**
+ * PURE: the minimised form of one audit row. ipAddress/userAgent are always
+ * nulled; metadata keeps every existing key and gains uaFamily, a networkDigest
+ * (only when both an IP and a key exist) and networkMinimisedAt. Idempotent: a
+ * row already minimised keeps its earlier digest/family.
+ */
+export function minimiseAuditNetwork(row: AuditNetworkRow, key: NetworkDigestKey | null, now: Date): {
+  ipAddress: null; userAgent: null; metadata: Record<string, unknown>;
+} {
+  const m = row.metadata;
+  const base: Record<string, unknown> =
+    m && typeof m === "object" && !Array.isArray(m) ? { ...(m as Record<string, unknown>) }
+    : m == null ? {} : { originalMetadata: m };
+  if (row.userAgent != null || base.uaFamily === undefined) base.uaFamily = uaFamily(row.userAgent);
+  if (row.ipAddress && key) {
+    base.networkDigest = networkDigest(row.ipAddress, key.key);
+    base.networkDigestKeyVersion = key.version;
+  }
+  base.networkMinimisedAt ??= now.toISOString();
+  return { ipAddress: null, userAgent: null, metadata: base };
+}
+
+/** Rows due for minimisation: the action, past the window, with a raw field left. */
+export function betaIntakeMinimiseWhere(cutoff: Date): Record<string, unknown> {
+  return {
+    action: BETA_INTAKE_AUDIT_ACTION,
+    createdAt: { lt: cutoff },
+    OR: [{ ipAddress: { not: null } }, { userAgent: { not: null } }],
+  };
+}
+
+export interface AuditMinimiseDelegate {
+  findMany(args: {
+    where: Record<string, unknown>; orderBy: { createdAt: "asc" }; take: number;
+    select: { id: true; ipAddress: true; userAgent: true; metadata: true };
+  }): Promise<AuditNetworkRow[]>;
+  updateMany(args: { where: Record<string, unknown>; data: Record<string, unknown> }): Promise<{ count: number }>;
+  count(args: { where: Record<string, unknown> }): Promise<number>;
+}
+
+export interface MinimisationResult {
+  minimised: number; batches: number; exhausted: boolean; cutoff: string;
+  dryRun: boolean; digestKeyAvailable: boolean; digestKeyVersion: string | null; error?: string;
+}
+
+/**
+ * Minimise BETA_ACCESS_REQUESTED network fields older than 90 days. Bounded
+ * (MINIMISE_BATCH × MINIMISE_MAX_BATCHES per run, oldest first), idempotent
+ * (minimised rows no longer match the predicate), never deletes. Each update
+ * repeats the predicate beside the id, mirroring the delete rules. `dryRun`
+ * only COUNTS the rows that would change.
+ */
+export async function runBetaIntakeNetworkMinimisation(
+  client: { auditLog: AuditMinimiseDelegate },
+  now: Date = new Date(),
+  opts: { dryRun?: boolean; key?: NetworkDigestKey | null } = {},
+): Promise<MinimisationResult> {
+  const cutoff = retentionCutoffFor({ days: BETA_INTAKE_NETWORK_DAYS }, now);
+  const where = betaIntakeMinimiseWhere(cutoff);
+  const key = opts.key === undefined ? resolveNetworkDigestKey() : opts.key;
+  const res: MinimisationResult = {
+    minimised: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString(),
+    dryRun: !!opts.dryRun, digestKeyAvailable: !!key, digestKeyVersion: key?.version ?? null,
+  };
+  try {
+    if (opts.dryRun) {
+      res.minimised = await client.auditLog.count({ where });
+      res.exhausted = true;
+      return res;
+    }
+    while (res.batches < MINIMISE_MAX_BATCHES) {
+      const rows = await client.auditLog.findMany({
+        where, orderBy: { createdAt: "asc" }, take: MINIMISE_BATCH,
+        select: { id: true, ipAddress: true, userAgent: true, metadata: true },
+      });
+      res.batches++;
+      if (rows.length === 0) { res.exhausted = true; break; }
+      for (const row of rows) {
+        const data = minimiseAuditNetwork(row, key, now);
+        const upd = await client.auditLog.updateMany({ where: { AND: [{ id: row.id }, where] }, data });
+        res.minimised += upd.count;
+      }
+      if (rows.length < MINIMISE_BATCH) { res.exhausted = true; break; }
+    }
+  } catch (err) {
+    res.error = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+    console.error("[data-retention] beta-intake network minimisation failed:", err);
+  }
+  if (res.minimised > 0) {
+    console.log(`[data-retention] auditLog: minimised network fields on ${res.minimised} ${BETA_INTAKE_AUDIT_ACTION} row(s) older than ${BETA_INTAKE_NETWORK_DAYS} days${key ? "" : " (no digest key — digest omitted)"}${res.exhausted ? "" : " (more remain)"}`);
+  }
+  return res;
+}
 
 export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date): Date {
   return new Date(now.getTime() - rule.days * DAY_MS);
 }
 
-export async function runDataRetention(client?: RetentionClient, now: Date = new Date()): Promise<DataRetentionResult> {
+export async function runDataRetention(
+  client?: RetentionClient,
+  now: Date = new Date(),
+  opts: { dryRun?: boolean } = {},
+): Promise<DataRetentionResult> {
   const c = client ?? ((await import("@/lib/db")).systemDb as unknown as RetentionClient);
-  const out = { totalDeleted: 0 } as DataRetentionResult;
+  const dryRun = !!opts.dryRun;
+  const out = { totalDeleted: 0, dryRun } as DataRetentionResult;
   for (const rule of RETENTION_RULES) {
     const cutoff = retentionCutoffFor(rule, now);
     const where = rule.where(cutoff);
     const res: RetentionTableResult = { deleted: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString() };
     try {
-      while (res.batches < RETENTION_MAX_BATCHES) {
+      if (dryRun) {
+        // Read-only: the rows ONE real run would reach (same order, same bound).
+        const cap = RETENTION_BATCH * RETENTION_MAX_BATCHES;
+        const rows = await c[rule.table].findMany({ where, orderBy: { [rule.orderBy]: "asc" }, take: cap, select: { id: true } });
+        res.deleted = rows.length;
+        res.exhausted = rows.length < cap;
+      }
+      while (!dryRun && res.batches < RETENTION_MAX_BATCHES) {
         const rows = await c[rule.table].findMany({ where, orderBy: { [rule.orderBy]: "asc" }, take: RETENTION_BATCH, select: { id: true } });
         res.batches++;
         if (rows.length === 0) { res.exhausted = true; break; }
@@ -116,7 +350,9 @@ export async function runDataRetention(client?: RetentionClient, now: Date = new
     }
     out[rule.table] = res;
     out.totalDeleted += res.deleted;
-    if (res.deleted > 0) console.log(`[data-retention] ${rule.table}: deleted ${res.deleted} row(s) older than ${rule.days} days${res.exhausted ? "" : " (more remain)"}`);
+    if (res.deleted > 0) console.log(`[data-retention] ${rule.table}: ${dryRun ? "DRY RUN — would delete" : "deleted"} ${res.deleted} row(s) older than ${rule.days} days${res.exhausted ? "" : " (more remain)"}`);
   }
+  // R2 — minimise (never delete) beta-intake audit network fields past 90 days.
+  if (c.auditLog) out.betaIntakeNetwork = await runBetaIntakeNetworkMinimisation({ auditLog: c.auditLog }, now, { dryRun });
   return out;
 }

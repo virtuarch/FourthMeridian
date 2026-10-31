@@ -76,7 +76,7 @@ No v2.5 **code** blocker remains. Everything below is configuration, an external
 | 1 | `NEXT_PUBLIC_SENTRY_DSN` | ~~ABSENT from Production~~ **PRESENT on Production (verified by name, 2026-10-06, cutover plan §1)**. Configuration ≠ delivery: the last *proven* Production event delivery is the 2026-07-27 Sentry investigation (events from the v2.5 build up to 2026-07-26; [record](../plans/Sentry-Production-Health-Investigation.md)). Delivery from the v2.6 candidate is unproven until it is deployed; Preview delivery was never asserted (`environment-separation.md` asks to confirm `environment=preview` tagging). | Config (closed) + verification (open) | Deploy boots (it is in `PROD_REQUIRED_KEYS`); post-cutover acceptance should include one deliberately captured event |
 | 2 | `PLAID_ENV = production` | Key present, **value not verifiable** | Config — manual verification | Deploy (the V25-FINAL-2 guard throws if creds exist and the env is not production) |
 | 3 | `INVESTMENT_OBSERVATIONS_ENABLED = true` | Key present, **value not verifiable** | Config — manual verification | Correct investment display: `getCurrentPositions()` reads `PositionObservation` only (no Holding fallback), so a disabled writer yields a silently empty portfolio |
-| 4 | Turnstile site + secret keys | **Both ABSENT from Production** | Config | External beta — `verifyCaptchaToken` returns `true` with no secret, so CAPTCHA is a no-op |
+| 4 | Turnstile site + secret keys | **Both ABSENT from Production** | Config — Preview first, then **separate owner approval** for Production (see [Beta intake hardening](#beta-intake-hardening-r2-2026-10-31)) | External beta — with no secret `captchaMode()` is `not_configured` and `verifyCaptchaToken` returns `true`, so CAPTCHA is a no-op (logged once per process) |
 | 5 | `registration_mode = invite_only` | **Not verifiable** (DB `PlatformSetting`; ship default is `open`) | Config — manual verification | External beta |
 | 6 | Published support address | `support@fourthmeridian.com` exists only in `lib/email/senders.ts`; **0 user-facing occurrences** | Copy | External beta |
 | 7 | External uptime monitor on `/api/health` | Not present in repo config | Ops act | External beta (Sentry is error capture, not availability) |
@@ -84,6 +84,49 @@ No v2.5 **code** blocker remains. Everything below is configuration, an external
 | 9 | LLM / AI disclosure | `content/marketing/legal-ai.md` says "a third-party model provider" but names neither the provider nor a retention window | Policy + copy | External beta |
 
 Already satisfied and verified by name in Production: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `CRON_SECRET`, `RESEND_API_KEY`, `OPENAI_API_KEY`, `NEXTAUTH_SECRET`, `NEXTAUTH_URL`, `NEXT_PUBLIC_APP_URL`, `DATABASE_URL`, `DIRECT_URL`, `ENCRYPTION_KEY`, `DISABLE_SYSTEM_ADMIN`. Cron is configured in `vercel.json` (`/api/jobs/dispatch`). Prisma: 76 migrations, all applied, none pending — **no migration or backfill is required to merge or deploy.**
+
+## Beta intake hardening (R2, 2026-10-31)
+
+Owner-approved controls on the public `POST /api/access-request` intake and the shared CAPTCHA helper.
+
+### CAPTCHA (Cloudflare Turnstile) — behaviour
+
+| Mode (`captchaMode()` in `lib/captcha.ts`) | When | Behaviour |
+|---|---|---|
+| `not_configured` | `TURNSTILE_SECRET_KEY` unset | Verification skipped, returns `true`; one `[captcha] … NOT enforced` warning per process |
+| `enforced` | `TURNSTILE_SECRET_KEY` set | Only a Cloudflare `success: true` is `passed`. Missing token or `success: false` is `rejected`; non-2xx, network error, timeout (5 s) or a malformed reply is `unavailable`. Both **fail closed** |
+
+Callers sharing these semantics: access-request (every submission), register (every registration), and login step-up in `lib/auth.ts` (only after `LOGIN_CAPTCHA_THRESHOLD` failures on an identifier). `rejected` → the existing 400 (routes) / denied login. `unavailable` → an honest **503 "temporarily unavailable"** with `Retry-After` on access-request and register, and `TEMPORARILY_UNAVAILABLE` (the `AUTH_UNAVAILABLE_TOKEN` sentinel, Sentry `auth_stage: captcha`) on a step-up login — thrown before the user lookup, so it writes no `LOGIN_FAILED` row. **Consequence of fail-closed:** during a Cloudflare siteverify outage those three paths are refused until it recovers; ordinary logins below the threshold are unaffected.
+
+### Enabling Turnstile — Preview first, Production only after a separate approval
+
+1. In the Cloudflare dashboard create a Turnstile widget (Managed mode) whose hostnames include the Preview app and public-site hosts (`preview-app.`, `preview.`) — and, later, the Production hosts.
+2. In Vercel set, **scoped to Preview (develop branch) only**:
+   - `NEXT_PUBLIC_TURNSTILE_SITE_KEY` — the widget's site key (public; inlined into client bundles at **build** time, so a redeploy is required).
+   - `TURNSTILE_SECRET_KEY` — the widget's secret (Sensitive).
+   Set **both together**: the secret without the site key means no widget renders and every gated request is refused (boot-time `validateEnv()` logs a loud `[env] … Set both or neither` error for either half missing — warn-only, never fatal — and the verifier logs `[captcha] … NEXT_PUBLIC_TURNSTILE_SITE_KEY is not`).
+3. Redeploy Preview. Validate: the request-access form, `/register` and a login past 3 failed attempts all render the widget and succeed; a request with no/invalid token gets `400 CAPTCHA verification failed`; logs show `[captcha] Turnstile verification enforced (fail-closed)`.
+4. Production: repeat step 2 for the Production scope **only after the Preview validation is recorded and the owner approves separately.**
+
+Rollback: unset `TURNSTILE_SECRET_KEY` (and the site key) and redeploy — behaviour returns to `not_configured`.
+
+### Access-request limits
+
+| Control | Value | On exceed | Store failure |
+|---|---|---|---|
+| Per IP | 5 / 15 min | 429 | fail-open |
+| Global (all callers, counted after CAPTCHA) | PlatformSetting `beta_intake_global_limit_per_hour` per UTC hour — integer 10–1000, default **60**, Growth & Revenue WRITE, resettable | 429, generic message; the hour is recorded ONCE as `BETA_INTAKE_THROTTLED` | fail-open (availability; per-IP + CAPTCHA still apply). An unreadable/invalid setting ⇒ 60 |
+| Per address **as stored** (sha256 of lowercase + trim — deliberately NOT the canonical form, so `victim+1@` cannot fill `victim@`'s bucket) | 3 / 24 h | **identical 200, submission silently dropped** (no waitlist, event or per-submission audit row, no e-mail; the hour is recorded ONCE as `BETA_INTAKE_DUPLICATE_DROPPED`) — a 429 would be an existence oracle | fail-open |
+| Operator e-mail (`BETA_REQUESTS_EMAIL`) per **canonical** address (`+tag` dropped, Gmail dots folded — can only reduce operator mail) | 1 / 24 h | e-mail skipped, request still stored, `[access-request] operator notification throttled reason=email` | fail-open (e-mail sent) |
+| Operator e-mail, global | 20 / hour | e-mail skipped, request still stored, `… reason=global` | fail-open |
+
+All counters live in the existing `RateLimit` table (no raw addresses in keys; swept after 24 h). The limits honour `RATE_LIMIT_ENABLED`/`RATE_LIMIT_SHADOW` like every limiter; the operator-e-mail throttle is a cost control and applies in every environment. Origin/Referer headers are **not** used as a bot control.
+
+**Monitoring.** Each refusal by the global ceiling and each per-address drop increments a per-UTC-hour counter in the `RateLimit` store (`counter:beta-intake:<action>`, kept 24 h), and the FIRST event of each hour writes one `AuditLog` row — `BETA_INTAKE_THROTTLED` / `BETA_INTAKE_DUPLICATE_DROPPED`, no userId, metadata `{ hourWindow, limit }` only (no address, no hash). Never one row per request. Throttled rows mean legitimate applicants may have been turned away that hour: consider raising the setting.
+
+### Network-field retention
+
+`BETA_ACCESS_REQUESTED` audit rows keep the raw IP and user agent for **90 days**. The daily `purge-trash` run (`jobs/data-retention.ts`, `runBetaIntakeNetworkMinimisation`) then nulls `ipAddress`/`userAgent` and adds `metadata.uaFamily` (browser / script / headless / empty / other) and `metadata.networkDigest` = HMAC-SHA256 of the IP under the **dedicated** secret `BETA_INTAKE_HASH_KEY_<VERSION>` (version from `BETA_INTAKE_HASH_KEY_VERSION`, default `v1`; ≥ 32 characters, `openssl rand -hex 32`), with `metadata.networkDigestKeyVersion` beside it. **No key ⇒ no digest** (the raw fields are still nulled; logged once per process). It never falls back to `NEXTAUTH_SECRET`. IPv6 text is canonicalised first (lowercase, RFC 5952 compression, IPv4-mapped `::ffff:a.b.c.d` → `a.b.c.d`). Rows are never deleted; ≤ 2,000 rows per run, idempotent. `purgeTrash({ dryRun: true })` / `runDataRetention(…, { dryRun: true })` counts what would be deleted/minimised and writes nothing. **Rotation:** set `BETA_INTAKE_HASH_KEY_V2`, then `BETA_INTAKE_HASH_KEY_VERSION=v2`. Rows minimised from then on carry v2 digests; rows already minimised keep their v1 digest, labelled `v1`. Digests only correlate within one version; keep the old key until no comparison against v1 rows is needed (it is not used to re-hash). `validateEnv()` logs loudly (never fatal) for a short key, a malformed version, or a selected version whose key is unset.
 
 ## Source
 

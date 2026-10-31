@@ -31,6 +31,11 @@ export interface PurgeTrashResult {
   retention: DataRetentionResult;
 }
 
-export async function purgeTrash(): Promise<PurgeTrashResult> {
-  return { purgedGoals: 0, retention: await runDataRetention() };
+/**
+ * `dryRun` (R2) counts what the retention schedule WOULD delete/minimise and
+ * writes nothing. The registered job never passes it; it exists for operator
+ * scripts and tests.
+ */
+export async function purgeTrash(opts: { dryRun?: boolean } = {}): Promise<PurgeTrashResult> {
+  return { purgedGoals: 0, retention: await runDataRetention(undefined, new Date(), { dryRun: !!opts.dryRun }) };
 }

@@ -46,6 +46,7 @@
 
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getClientIp as extractClientIp } from "@/lib/security/client-ip";
@@ -63,6 +64,10 @@ interface RateLimitOutcome {
   limited: boolean;
   /** Seconds until the current window resets. */
   retryAfterSec: number;
+  /** The bucket count AFTER this increment (absent from injected test outcomes). */
+  count?: number;
+  /** Start of the fixed window this increment landed in (epoch ms). */
+  windowStartMs?: number;
 }
 
 /**
@@ -121,7 +126,7 @@ async function check(key: string, cfg: RateLimitConfig): Promise<RateLimitOutcom
     ? await incrementDb(key, new Date(windowStartMs))
     : incrementMemory(key, windowStartMs);
 
-  return { limited: count > cfg.limit, retryAfterSec };
+  return { limited: count > cfg.limit, retryAfterSec, count, windowStartMs };
 }
 
 /** Build the standard 429 response with a Retry-After header. */
@@ -285,6 +290,110 @@ export function limitByKey(
   cfg: RateLimitConfig,
 ): Promise<NextResponse | null> {
   return enforce(`key:${name}:${key}`, cfg);
+}
+
+/**
+ * One bucket shared by EVERY caller of a route (R2 — beta intake). Use for a
+ * global ceiling on a public endpoint so a distributed flood (many IPs, many
+ * addresses) is still bounded. Same flag/shadow/FAIL-OPEN posture as every
+ * enforce() limiter: a store error admits the request (availability over
+ * protection — the per-IP limiter and CAPTCHA remain).
+ */
+export function limitGlobal(name: string, cfg: RateLimitConfig): Promise<NextResponse | null> {
+  return enforce(`global:${name}`, cfg);
+}
+
+/**
+ * Canonical form of an e-mail address FOR LIMIT KEYS ONLY (never for storage or
+ * delivery): lowercased and trimmed, any `+tag` suffix dropped from the local
+ * part, and dots removed from Gmail local parts — so `A.B+x@GMail.com` and
+ * `ab@gmail.com` share one bucket.
+ */
+export function canonicalEmailForLimits(email: string): string {
+  const e = email.trim().toLowerCase();
+  const at = e.lastIndexOf("@");
+  if (at <= 0) return e;
+  let local = e.slice(0, at);
+  let domain = e.slice(at + 1);
+  const plus = local.indexOf("+");
+  if (plus > 0) local = local.slice(0, plus);
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") local = local.replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
+/**
+ * RateLimit-key forms of an e-mail — sha256 hex, because the RateLimit table
+ * must never hold a raw address (it is swept but not access-controlled like
+ * the waitlist). Two granularities, deliberately:
+ *
+ *   emailLimitKey          — the address AS STORED (lowercase + trim). Use for
+ *                            any limit whose effect falls on the address
+ *                            holder (e.g. silently dropping a submission):
+ *                            keying it on the canonical form would let
+ *                            `victim+1/+2/+3@` fill the bucket and block the
+ *                            real `victim@`.
+ *   canonicalEmailLimitKey — the canonical form (canonicalEmailForLimits).
+ *                            Use only where folding variants together can
+ *                            never hurt the address holder (e.g. throttling a
+ *                            notification to an operator).
+ */
+export function emailLimitKey(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
+}
+export function canonicalEmailLimitKey(email: string): string {
+  return createHash("sha256").update(canonicalEmailForLimits(email)).digest("hex");
+}
+
+/**
+ * Consume one unit of a THROTTLE quota and report whether the caller may
+ * proceed (R2 — operator-notification throttle). Unlike the limiters above:
+ *   - it is NOT gated by RATE_LIMIT_ENABLED / RATE_LIMIT_SHADOW — a throttle on
+ *     a side effect (an e-mail to an operator) is a cost control, not an abuse
+ *     response, and must hold in every environment;
+ *   - it never produces a response — the caller skips the side effect only;
+ *   - it FAILS OPEN (returns true) on a store error, so a limiter outage at
+ *     worst sends a notification that would otherwise have been suppressed.
+ * Buckets live in the same RateLimit store (`throttle:` prefix), swept by
+ * jobs/sweep-rate-limits.ts like every other window.
+ */
+export async function consumeThrottle(
+  key: string,
+  name: string,
+  cfg: RateLimitConfig,
+  runCheck: (k: string, c: RateLimitConfig) => Promise<RateLimitOutcome> = check,
+): Promise<boolean> {
+  try {
+    const outcome = await runCheck(`throttle:${name}:${key}`, cfg);
+    return !outcome.limited;
+  } catch (err) {
+    console.error("[rate-limit] throttle store error — failing open:", err);
+    return true;
+  }
+}
+
+/**
+ * Increment a fixed-window EVENT COUNTER and return the post-increment count
+ * and the window start (R2 — beta-intake monitoring). Same store as the
+ * limiters (`counter:` prefix; DB-backed in production, so it is shared across
+ * instances and survives cold starts; swept after 24 h by sweep-rate-limits).
+ * Not gated by RATE_LIMIT_ENABLED: it measures, it never blocks. Because the
+ * increment is atomic, exactly ONE caller per window sees `count === 1` — the
+ * idiom for "do X at most once per window". Returns null on a store error.
+ */
+export async function countInWindow(
+  name: string,
+  windowSec: number,
+  runCheck: (k: string, c: RateLimitConfig) => Promise<RateLimitOutcome> = check,
+): Promise<{ count: number; windowStartMs: number } | null> {
+  try {
+    const o = await runCheck(`counter:${name}`, { limit: Number.MAX_SAFE_INTEGER, windowSec });
+    if (o.count === undefined || o.windowStartMs === undefined) return null;
+    return { count: o.count, windowStartMs: o.windowStartMs };
+  } catch (err) {
+    console.error("[rate-limit] counter store error:", err);
+    return null;
+  }
 }
 
 /**

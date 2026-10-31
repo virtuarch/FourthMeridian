@@ -245,10 +245,19 @@ export const authOptions: NextAuthOptions = {
         // Authoritative check (the pre-login `captchaRequired` hint is advisory).
         // A missing/invalid token is denied like any other failed login
         // (non-enumerating, no audit write — same posture as the limited path).
-        // No-ops when CAPTCHA is unconfigured: verifyCaptchaToken returns true.
+        // No-ops when CAPTCHA is unconfigured: verifyCaptchaToken returns "passed".
+        // R2 — FAIL CLOSED, honestly: "unavailable" (Cloudflare unreachable) is
+        // the authority-unavailable sentinel, like the rate-limit store above —
+        // NOT return null, which the client would show as wrong credentials.
+        // Thrown before the user lookup, so it writes no LOGIN_FAILED row and
+        // never touches the account's failed-credential state.
         if (priorAttempts >= LOGIN_CAPTCHA_THRESHOLD) {
-          const captchaOk = await verifyCaptchaToken(credentials.captchaToken || null, ipAddress ?? undefined);
-          if (!captchaOk) return null;
+          const captcha = await verifyCaptchaToken(credentials.captchaToken || null, ipAddress ?? undefined);
+          if (captcha === "unavailable") {
+            captureAuthInfraFailure("captcha", new Error("authorize CAPTCHA siteverify unavailable"));
+            throw new Error(AUTH_UNAVAILABLE_TOKEN);
+          }
+          if (captcha !== "passed") return null;
         }
 
         // ── Kill switch: disable SYSTEM_ADMIN login via env flag ──────────────
