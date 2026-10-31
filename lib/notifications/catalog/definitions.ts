@@ -289,12 +289,11 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
   SPACE_INVITE_RECEIVED: {
     audience: "SPACE_MEMBER", consentClass: "AWARENESS", displayName: "Space invitation received",
     description:
-      "Sent to an existing user invited to a Space. Today the invitee gets TWO emails: the direct space-invite email " +
-      "and the registry notification email (AUDIT D-1, OWNER DECISION O-6).",
+      "Sent to an existing user invited to a Space: an in-app notice plus ONE email, the direct space-invite email. " +
+      "The registry EMAIL leg is excluded, so no preference can bring back the duplicate (AUDIT D-1, O-6, PR #166).",
     payload: { inviteId: ptr(), spaceName: disp(), inviterName: disp("string", true) },
     trigger: event("space.member.invited", "lib/events/handlers/space-invite-notification.ts", "app/api/spaces/[id]/invite/route.ts"),
     directLegs: [directEmail("space-invite", ["space-invite"])],
-    registryEmailPreviewSlugs: ["notification--space-invite-received"],
   },
   SPACE_INVITE_ACCEPTED: {
     audience: "SPACE_MEMBER", consentClass: "AWARENESS", displayName: "Space invitation accepted",
@@ -720,18 +719,20 @@ function registryStatus(def: NotificationTypeDefinition): DefinitionStatus {
 /** The IN_APP / EMAIL legs the registry delivers for a type, exactly as createNotification resolves them. */
 function registryLegs(def: NotificationTypeDefinition, emailPreviewSlugs: readonly string[] | undefined): ChannelLeg[] {
   const defaults = def.defaultChannels as readonly string[];
+  // A per-type exclusion beats every preference (resolveChannelEnabled step 0): no leg at all.
+  const excluded = (def.excludedChannels ?? []) as readonly string[];
   // A locked category uses its defaults only; DIGEST has no settings row. Every
   // other category's EMAIL/IN_APP can be switched on by an override row
   // (resolveChannelEnabled), so the leg exists with defaultOn = the registry default.
   const optable = !def.locked && MATRIX_CATEGORIES.includes(def.category);
   const legs: ChannelLeg[] = [];
-  if (defaults.includes("IN_APP") || optable) {
+  if (!excluded.includes("IN_APP") && (defaults.includes("IN_APP") || optable)) {
     legs.push({
       channel: "IN_APP", defaultOn: defaults.includes("IN_APP"),
       template: { id: `registry:${def.id}`, version: IN_APP_TEMPLATE_VERSION }, path: "REGISTRY",
     });
   }
-  if (defaults.includes("EMAIL") || optable) {
+  if (!excluded.includes("EMAIL") && (defaults.includes("EMAIL") || optable)) {
     legs.push({
       channel: "EMAIL", defaultOn: defaults.includes("EMAIL"),
       template: { id: "notification", version: EMAIL_TEMPLATE_VERSIONS.notification }, path: "REGISTRY",

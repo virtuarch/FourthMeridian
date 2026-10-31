@@ -140,6 +140,14 @@ function main(): void {
         check(`${def.key}: source ${src} really sends ${leg.email.template}${leg.email.builder ? `·${leg.email.builder}` : ""} or produces the in-app leg`, claims || producesInApp);
       }
     }
+    for (const id of NOTIFICATION_TYPE_IDS) {
+      const excluded = ((NOTIFICATION_REGISTRY[id] as NotificationTypeDefinition).excludedChannels ?? []) as readonly string[];
+      for (const ch of excluded) {
+        check(`${id}: excluded ${ch} has no registry leg (PR #166)`, !COMMS_CATALOG[id].channels.some((c) => c.path === "REGISTRY" && c.channel === ch));
+      }
+    }
+    check("SPACE_INVITE_RECEIVED: exactly one email leg, the direct space-invite",
+      COMMS_CATALOG.SPACE_INVITE_RECEIVED.channels.filter((c) => c.channel === "EMAIL").map((c) => `${c.path}:${c.email?.template}`).join() === "DIRECT:space-invite");
     check("every registry EMAIL leg uses the generic notification template",
       emailLegs.filter((e) => e.leg.path === "REGISTRY").every((e) => e.leg.email.template === "notification"));
 
