@@ -34,6 +34,7 @@
  */
 
 import type { ChainMovement, ChainMovementRole, ChainTimeBasis } from "./chain-movement";
+import type { EthHistoryDeps } from "./eth-history";
 
 export const ETH_BACKFILL_KIND = "eth-history";
 export const ETH_BACKFILL_VERSION = 1;
@@ -292,7 +293,8 @@ export function ethStatusFromCursor(raw: string | null | undefined, todayISO: st
 /**
  * The worker carries Ethereum only when its job runs at all (SOL_BACKFILL_ENABLED,
  * which gates the whole job — as for Bitcoin) AND Ethereum is opted in. Off:
- * syncs run the full rebuild inline exactly as before.
+ * a sync advances the same checkpoint by ONE bounded step inline (the INLINE
+ * step below) — never an unbounded rebuild.
  */
 export function ethWorkerEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return env.SOL_BACKFILL_ENABLED === "true" && env.ETH_BACKFILL_ENABLED === "true";
@@ -354,6 +356,53 @@ export function probeBudgetFor(allowanceCalls: number, configured: number): numb
 export function stepProbeBudget(allowanceProbes: number, stepMs: number, probesPerSecond: number): number {
   const byTime = Math.floor((Math.max(0, stepMs) / 1000) * Math.max(0, probesPerSecond));
   return Math.max(0, Math.min(allowanceProbes, byTime));
+}
+
+// ── The INLINE step (2026-10-31) ─────────────────────────────────────────────
+//
+// With the worker off, a sync used to run the FULL rebuild inline: an
+// unbounded walk from the finalized head (no deadline, 4,000 probes) that kept
+// nothing. On a wallet needing ~1,800 probes before the early-origin shortcut
+// can fire, the function was killed at ~1,000 probes (Vercel maxDuration) and
+// the next sync started again at the head — ~3.2k Alchemy calls per attempt,
+// for ever. A sync now runs ONE worker step instead (runEthHistoryBackfill):
+// the same checkpoint, the same proof, the same commit at the proven boundary,
+// bounded by a deadline and by the shared daily cap.
+
+/** Wall clock one sync's ETH history work may use (incremental + one step). */
+export const DEFAULT_ETH_INLINE_STEP_MS = 60_000;
+
+/**
+ * Sized against the routes that run a wallet sync: every one is ≤ 300 s, and
+ * the scheduled sweep starts no wallet after 90 s (wallet-refresh.ts), so
+ * 90 s + 60 s + the completing write (≤ 30 s, persistEthFullHistory) leaves
+ * well over a minute of headroom. Clamped: a bad value is the default, never
+ * "unbounded" and never past 120 s.
+ */
+export function ethInlineStepMs(env: Record<string, string | undefined> = process.env): number {
+  return num(env, "ETH_INLINE_STEP_MS", DEFAULT_ETH_INLINE_STEP_MS, 5_000, 120_000);
+}
+
+/**
+ * The probes one inline step may plan: what the shared daily allowance pays
+ * for (probeBudgetFor, the worker's own arithmetic), capped by the worker's
+ * per-step budget and by what the time left proves at the assumed rate.
+ * 0 ⇒ do not start (no allowance, unreadable allowance, or no time).
+ */
+export function inlineStepProbeBudget(args: { allowanceCalls: number | null; msLeft: number; cfg: Pick<EthBackfillWorkerConfig, "probeBudget" | "probesPerSecond"> }): number {
+  if (args.allowanceCalls === null) return 0; // unreadable is not "plenty"
+  return stepProbeBudget(probeBudgetFor(args.allowanceCalls, args.cfg.probeBudget), args.msLeft, args.cfg.probesPerSecond);
+}
+
+/**
+ * The deps with a FINITE deadline: the caller's own when it set one, else
+ * `defaultMs` from now on the deps' clock. The acquisition's own default is
+ * +∞ (eth-history.ts) — no request-time path may rely on it.
+ */
+export function boundedEthDeps(deps: EthHistoryDeps | undefined, defaultMs: number): EthHistoryDeps & { deadlineMs: number } {
+  const d = deps ?? {};
+  if (d.deadlineMs !== undefined && Number.isFinite(d.deadlineMs)) return { ...d, deadlineMs: d.deadlineMs };
+  return { ...d, deadlineMs: (d.now ?? Date.now)() + defaultMs };
 }
 
 export interface EthBackfillCandidate { accountId: string; connectionId: string; cursor: string | null }

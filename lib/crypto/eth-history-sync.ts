@@ -55,6 +55,7 @@ import {
 import {
   acquireEthHistory, finalizedBlockNumber, EARLIEST_PROVABLE_BLOCK, type EthHistoryDeps,
 } from "./eth-history";
+import { boundedEthDeps, ethInlineStepMs } from "./eth-history-backfill.core";
 import { resolveCryptoInstrumentId, ETH_ASSET } from "@/lib/investments/crypto-instrument";
 import {
   PERMITTED_ANCHOR_ORIGINS, type QuantityAnchor, type QuantityTimeline,
@@ -80,7 +81,11 @@ export type EthHistoryRefusal =
   | "NO_OBSERVED_ANCHOR"
   /** The incremental path fell back and the history worker carries the FULL
    *  rebuild (ETH_BACKFILL_ENABLED). Nothing was written. */
-  | "FULL_REBUILD_DEFERRED";
+  | "FULL_REBUILD_DEFERRED"
+  /** Worker off: this sync advanced the resumable checkpoint by one bounded
+   *  step (or could not start one) and the proof is not closed yet. No rows
+   *  were written; the proven boundary was committed (eth-history-backfill.ts). */
+  | "FULL_REBUILD_IN_PROGRESS";
 
 export interface EthHistoryResult {
   accountId: string;
@@ -133,6 +138,12 @@ export async function reconstructEthHistory(args: {
 }): Promise<EthHistoryResult> {
   const client = args.client ?? db;
   const { accountId } = args;
+  // BOUNDED (2026-10-31): every acquisition below — the incremental suffix and
+  // an explicit full rebuild — runs under a FINITE deadline (the caller's, else
+  // the inline step's), never the acquisition's +∞ default. A walk the clock
+  // stops refuses (COVERAGE_UNLICENSED, nothing written) instead of being
+  // killed by the function's time limit with nothing to show for it.
+  const deps = boundedEthDeps(args.deps, ethInlineStepMs());
 
   const account = await client.financialAccount.findUnique({
     where:  { id: accountId },
@@ -155,7 +166,7 @@ export async function reconstructEthHistory(args: {
   if (!args.full) {
     const incremental = await runIncrementalEthHistory({
       accountId, walletAddress: account.walletAddress, instrumentId: await resolveCryptoInstrumentId(ETH_ASSET),
-      todayISO: args.windowToISO, store: prismaEthHistoryStore(db), deps: args.deps, dryRun: args.dryRun,
+      todayISO: args.windowToISO, store: prismaEthHistoryStore(db), deps, dryRun: args.dryRun,
     });
     if (incremental.kind === "DONE") return incremental.result;
     if (incremental.kind === "REFUSED") {
@@ -178,10 +189,10 @@ export async function reconstructEthHistory(args: {
     // The upper bound is the FINALIZED head, never `latest`: a reorg-able block
     // is not evidence, and the anchor the reconciliation closes against must not
     // be able to change underneath the coverage it licenses.
-    const toBlock = await finalizedBlockNumber(args.deps);
+    const toBlock = await finalizedBlockNumber(deps);
     acquisition = await acquireEthHistory(
       { ownerAddress: account.walletAddress, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock },
-      args.deps ?? {},
+      deps,
     );
   } catch (e) {
     return { accountId, ok: false, refusal: "COVERAGE_UNLICENSED",

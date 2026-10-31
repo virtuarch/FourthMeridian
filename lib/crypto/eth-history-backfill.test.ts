@@ -9,7 +9,7 @@
  * eth-history.test.ts), every database touch from an in-memory store or fake.
  *
  * Pinned:
- *   - flag OFF: the sync makes exactly today's call and touches nothing else;
+ *   - flag OFF: the incremental path, else ONE bounded inline worker step (never an unbounded rebuild);
  *   - flag ON: an incremental fallback is QUEUED and nothing is written;
  *   - the worker resumes across PROBE_BUDGET stops (never restarts) and writes
  *     once, with movements that reconcile in exact wei;
@@ -31,7 +31,7 @@ import {
 } from "./eth-history-backfill.core";
 import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore } from "./eth-history-backfill";
 import {
-  reconstructEthHistoryForSync, enqueueEthHistoryBackfill, settleEthHistoryCheckpoint, prismaEthBackfillStore, ethHistoryPending, type EthSyncImpl,
+  reconstructEthHistoryForSync, enqueueEthHistoryBackfill, prismaEthBackfillStore, ethHistoryPending, type EthSyncImpl,
 } from "./eth-history-backfill.store";
 import type { EthHistoryResult } from "./eth-history-sync";
 import { walletHistoryCheckpointStatus, historyWorkerEnabledFor } from "./history-checkpoint-status";
@@ -131,32 +131,33 @@ async function main() {
   const c = ethWorkerConfig({ ETH_BACKFILL_PROBE_BUDGET: "999999" });
   check("worker config is clamped (a bad value falls back to the default, never unlimited)", c.probeBudget === 1_500 && !c.enabled);
 
-  // ══ 2. FLAG OFF — byte-for-byte today's call ══════════════════════════════
+  // ══ 2. FLAG OFF — the incremental path, else ONE bounded inline step ══════
+  //    (2026-10-31: never the unbounded inline FULL rebuild of before.)
   {
-    const calls: unknown[] = [];
-    const untouchable = new Proxy({}, { get(_t, k) { throw new Error(`client touched: ${String(k)}`); } }) as never;
+    const calls: Array<Record<string, unknown>> = [];
+    const steps: Array<Record<string, unknown>> = [];
     const meter = { x: 1 };
     const impl: EthSyncImpl = {
-      reconstruct: async (a) => { calls.push(a); return { accountId: a.accountId, ok: true, mode: "INCREMENTAL" }; },
-      pending: async () => { throw new Error("pending read with the flag off"); },
-      enqueue: async () => { throw new Error("enqueue with the flag off"); },
-      settle: async () => { throw new Error("settle after a non-FULL outcome"); },
+      reconstruct: async (a) => { calls.push(a as never); return { accountId: a.accountId, ok: true, mode: "INCREMENTAL" }; },
+      pending: async () => null,
+      enqueue: async () => { throw new Error("enqueue after an incremental success"); },
+      step: async (a) => { steps.push(a as never); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; },
     };
-    const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: untouchable, deferFull: false, deps: { meter } }, impl);
-    const arg = calls[0] as Record<string, unknown>;
-    check("flag off: ONE reconstructEthHistory call, with exactly the arguments of before (no deferFull)",
-      calls.length === 1 && JSON.stringify(Object.keys(arg).sort()) === JSON.stringify(["accountId", "deps", "windowFromISO", "windowToISO"])
-        && arg.accountId === "a1" && (arg.deps as { meter: unknown }).meter === meter && r.ok, JSON.stringify(arg));
-    // The client is a Proxy that throws on ANY access, and pending/enqueue/settle throw: reaching here proves none ran.
-    let touched = false;
-    try { await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: untouchable, deferFull: false }, {
-      ...impl, reconstruct: async (a) => ({ accountId: a.accountId, ok: false, refusal: "COVERAGE_UNLICENSED", mode: "INCREMENTAL" }) }); }
-    catch { touched = true; }
-    check("…and after an incremental result or a refusal, no checkpoint is read or written (the client is never touched)", !touched && calls.length === 1);
-    const settled: string[] = [];
-    await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: untouchable, deferFull: false }, {
-      ...impl, reconstruct: async (a) => ({ accountId: a.accountId, ok: true, mode: "FULL" }), settle: async (_c, id) => { settled.push(id); return true; } });
-    check("…only a SUCCESSFUL inline FULL rebuild settles a leftover worker checkpoint", settled.join() === "a1");
+    const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: {} as never, deferFull: false, deps: { meter } }, impl);
+    const arg = calls[0];
+    check("flag off: the incremental path runs with deferFull (a fallback can never rebuild inline), the caller's meter, a FINITE deadline",
+      calls.length === 1 && arg.deferFull === true && (arg.deps as { meter: unknown }).meter === meter
+        && Number.isFinite((arg.deps as { deadlineMs?: number }).deadlineMs) && r.ok && steps.length === 0, JSON.stringify(arg));
+    const queued: string[] = [];
+    const fb = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: {} as never, deferFull: false, deps: { meter } }, {
+      ...impl, reconstruct: async (a) => ({ accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }),
+      enqueue: async (_c, id, reason) => { queued.push(`${id}:${reason}`); return true; } });
+    check("…a fallback is QUEUED and ONE inline step runs on it, with the same bounded deps",
+      queued.join() === "a1:NO_COVERAGE" && steps.length === 1 && (steps[0].deps as { meter: unknown }).meter === meter
+        && Number.isFinite((steps[0].deps as { deadlineMs?: number }).deadlineMs) && fb.refusal === "FULL_REBUILD_IN_PROGRESS");
+    calls.length = 0; steps.length = 0;
+    await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: {} as never, deferFull: false }, { ...impl, pending: async () => "IMPORTING" });
+    check("…an owed rebuild skips the incremental path (it would only fall back) and takes one step", calls.length === 0 && steps.length === 1);
     const refresh = code(read("lib", "crypto", "wallet-history-refresh.ts"));
     check("the production ETH arm passes the gate, and only the gate",
       /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistoryForSync\(\{ \.\.\.a, client: db, deferFull: ethWorkerEnabled\(\), deps: \{ meter \} \}\)/.test(refresh));
@@ -175,7 +176,7 @@ async function main() {
       reconstruct: async (a) => { seen.push(a as never); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }; },
       pending: async () => null,
       enqueue: async (_c, id, reason) => { queued.push(`${id}:${reason}`); return true; },
-      settle: async () => false,
+      step: async () => { throw new Error("an inline step with the worker on"); },
     };
     const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: {} as never, deferFull: true }, impl);
     check("flag on: the incremental path runs with deferFull", seen.length === 1 && seen[0].deferFull === true);
@@ -487,24 +488,11 @@ async function main() {
       `${w?.movements.length} movements`);
   }
 
-  // ══ 12. INLINE SUCCESS SETTLES A LEFTOVER CHECKPOINT; FLAG OFF HIDES ETH STATE
+  // ══ 12. CONNECTIONS SHOWS AN INCOMPLETE ETH CHECKPOINT WHATEVER THE FLAG ═
   {
-    let stored: string | null = serializeCheckpoint({ ...queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO), provenFromBlock: 20_000_000, anchorBlock: HEAD });
-    const fake = {
-      accountConnection: { findFirst: async () => ({ connectionId: "c1", connection: { credential: null, cursor: null } }) },
-      $queryRaw: async () => [{ historyCheckpoint: stored }],
-      $executeRaw: async (_s: TemplateStringsArray, next: string, _id: string, expected: string | null) => { if (stored !== expected) return 0; stored = next; return 1; },
-    } as never;
-    const ok = await settleEthHistoryCheckpoint(fake, "a1", { accountId: "a1", ok: true, mode: "FULL",
-      coverage: { kind: "COMPLETE", fromISO: "2017-10-16", toISO: "2026-10-27", source: "ethereum-rpc" }, reconciliation: { reconciles: true, residualWei: "0", movementCount: 9 } });
-    const st = ethStatusFromCursor(stored, TODAY)!;
-    check("an inline FULL success marks a leftover IMPORTING checkpoint COMPLETE, with the licence it wrote",
-      ok && st.state === "COMPLETE" && st.historyFromISO === "2017-10-16" && st.historyToISO === "2026-10-27" && st.movementsFound === 9);
-    const again = stored;
-    check("…idempotent: a COMPLETE checkpoint is left alone", !(await settleEthHistoryCheckpoint(fake, "a1", { accountId: "a1", ok: true, mode: "FULL" })) && stored === again);
     const sd = code(read("lib", "connections", "space-data.ts"));
-    check("Connections hides an ETH checkpoint's state while the ETH worker is off (SOL/BTC states are sync-advanced and kept)",
-      /found\.chain !== "ETH" \|\| historyWorkerEnabledFor\("ETH"\)/.test(sd));
+    check("Connections no longer hides an ETH checkpoint's state while the ETH worker is off (syncs advance it now)",
+      !/found\.chain !== "ETH"/.test(sd) && !/historyWorkerEnabledFor\("ETH"\)/.test(sd));
   }
 
   // ══ 13. THE PRODUCTION STORE: CAS IN THE WRITE TRANSACTION ════════════════
@@ -568,14 +556,14 @@ async function main() {
     const ran: string[] = [];
     const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: fake, deferFull: true }, {
       reconstruct: async (a) => { ran.push(String(a.deferFull)); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }; },
-      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, settle: async () => false,
+      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, step: async () => { throw new Error("an inline step with the worker on"); },
     });
     check("flag on + RECOVERY_REQUIRED: the sync runs the INCREMENTAL path (not skipped)", ran.join() === "true");
     check("…and its fallback does NOT re-queue the wallet automatically (checkpoint unchanged, nothing written)",
       stored === recovered && r.refusal === "FULL_REBUILD_DEFERRED");
     const ok = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: fake, deferFull: true }, {
       reconstruct: async (a) => ({ accountId: a.accountId, ok: true, mode: "INCREMENTAL", derivedRowsWritten: 3 }),
-      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, settle: async () => false,
+      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, step: async () => { throw new Error("an inline step with the worker on"); },
     });
     check("…so a wallet whose stored history still verifies keeps refreshing incrementally", ok.ok && ok.mode === "INCREMENTAL");
 

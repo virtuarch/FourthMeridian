@@ -139,9 +139,10 @@ const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
   check("ETH is dispatched by the production sync refresh",
     // 2026-10-28: the ETH arm wraps the call in the shared provider-budget meter,
     // and (ETH history worker) goes through reconstructEthHistoryForSync, which
-    // with the worker off makes exactly the reconstructEthHistory call of before.
+    // runs reconstructEthHistory's incremental path (2026-10-31: a fallback is
+    // then one bounded worker step, never an inline full rebuild).
     /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistoryForSync\(/.test(refresh)
-      && /const r = await impl\.reconstruct\(\{ accountId, windowFromISO, windowToISO, deps \}\)/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts")))
+      && /const r = await impl\.reconstruct\(\{ accountId, windowFromISO, windowToISO, deps, deferFull: true \}\)/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts")))
       && /reconstruct: reconstructEthHistory,/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts"))),
     "a third reconstruction with no caller is the W6f defect repeated");
   check("…alongside BTC and SOL, by chain identity rather than a literal",
