@@ -3,6 +3,8 @@
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/widgets/cs-list-population.test.ts
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { listPopulation } from "./CsCustomersWidget";
 import type { CustomerListResponse } from "@/app/api/platform/customer-success/customers/route";
 
@@ -19,7 +21,7 @@ const one = listPopulation(list([row("USER")]));
 check("singular words", one === "1 account · 1 active customer", one);
 {
   // Regression (owner, 390 px): the population line once sat shrink-0 in the search row and widened the page to 446 px.
-  const src = require("node:fs").readFileSync(require("node:path").join(process.cwd(), "components/platform/widgets/CsCustomersWidget.tsx"), "utf8") as string;
+  const src = readFileSync(path.join(process.cwd(), "components/platform/widgets/CsCustomersWidget.tsx"), "utf8");
   const line = /<span className="([^"]*)" data-list-population>/.exec(src)?.[1] ?? "";
   check("the population line wraps to its own row below sm and never refuses to shrink", /max-sm:basis-full/.test(line) && !/shrink-0/.test(line) && /min-w-0/.test(line), line);
   check("the search row wraps", /<form className="flex flex-wrap items-center gap-2"/.test(src));
