@@ -300,8 +300,12 @@ export interface RevaluationDeps {
    * alone next time). Optional: absent ⇒ no attempt cap.
    */
   attemptsOf?(keys: readonly string[]): Promise<Map<string, { single: number; batch: number }>>;
-  /** Count one attempt — BEFORE the rebuild, so a killed run still counts. */
-  markAttempt?(key: string, kind: "single" | "batch"): Promise<void>;
+  /**
+   * Count one attempt — BEFORE the rebuild, so a killed run still counts. A
+   * "dry_*" mark CANCELS one earlier try of that kind: a rebuild that wrote
+   * nothing (writes off) is never counted as an attempt (review of #183).
+   */
+  markAttempt?(key: string, kind: "single" | "batch" | "dry_single" | "dry_batch"): Promise<void>;
   /**
    * OWNER RULING — an ABANDONED block must not keep an understated `supported`
    * row: metadata-only stamp of its ESTIMATE rows (isEstimated=true, the one
@@ -477,13 +481,16 @@ export async function revalueHoldersAfterPriceGaps(args: {
     run.deferred += owedPlans.length - active.length;
     const batchTries = (k: string, tries: Map<string, { single: number; batch: number }>) => tries.get(k)?.batch ?? 0;
     let progressed = true;
+    let stopPass = false; // writes went off: the WHOLE pass stops (never a loop of dry rebuilds)
     let batches = 0; // defensive bound: halving guarantees termination, this guarantees it even if a cap misbehaves
-    while (progressed && active.some((x) => x.queue.length > 0) && batches < REVALUATION_MAX_BATCHES_PER_PASS) {
+    while (!stopPass && progressed && active.some((x) => x.queue.length > 0) && batches < REVALUATION_MAX_BATCHES_PER_PASS) {
       progressed = false;
       const round = active.filter((x) => x.queue.length > 0);
       for (let i = 0; i < round.length; i++) {
         if (left() < REVALUATION_RESERVE_MS) break;
         if (batches >= REVALUATION_MAX_BATCHES_PER_PASS) break; // checked BEFORE any attempt is charged
+        // Writes switched off mid-run ⇒ stop the whole pass BEFORE charging anything.
+        if (args.deps.writesEnabled && !args.deps.writesEnabled()) { run.writesDisabled = true; stopPass = true; break; }
         const x = round[i];
         const share = (left() - REVALUATION_BATCH_MARGIN_MS) / (round.length - i);
         const model = estimateRebuildCost(observations, priorMsPerDay);
@@ -497,9 +504,13 @@ export async function revalueHoldersAfterPriceGaps(args: {
         try {
           const wrote = await args.deps.regenerate(x.h.accountId, batch.fromISO, batch.toISO);
           if (wrote === false) {
-            // Writes went off mid-run: a dry run retires nothing — the blocks stay owed, uncharged beyond this try.
+            // Writes went off mid-run: a dry run retires nothing and COUNTS for
+            // nothing — its attempt is cancelled, the blocks stay owed, and the
+            // WHOLE pass stops (no further dry rebuilds).
+            for (const b of batch.blocks) await args.deps.markAttempt?.(b.key, alone ? "dry_single" : "dry_batch").catch(() => {});
             run.writesDisabled = true;
             x.queue = [...batch.blocks, ...x.queue];
+            stopPass = true;
             break;
           }
           // DONE only now: a rebuild that never returned (killed) leaves its blocks owed.
@@ -599,6 +610,11 @@ function contiguousRanges(blocks: readonly RevaluationBlock[]): Array<{ fromISO:
 /** Rebuild-attempt counter units (beside the "done" marker unit) on the same usage table. */
 export const REVALUATION_TRY_UNIT = "revaluation_tries";
 export const REVALUATION_BATCH_TRY_UNIT = "revaluation_batch_tries";
+/** Every attempt unit; the dry_* units CANCEL a try whose rebuild wrote nothing. */
+export const REVALUATION_TRY_UNITS = {
+  single: REVALUATION_TRY_UNIT, batch: REVALUATION_BATCH_TRY_UNIT,
+  dry_single: "revaluation_dry_tries", dry_batch: "revaluation_dry_batch_tries",
+} as const;
 
 /** Production deps for revalueHoldersAfterPriceGaps over `client` (markers through the one usage writer). */
 export function prismaRevaluationDeps(client: Client, opts: { log?: (line: string) => void } = {}): RevaluationDeps {
@@ -620,20 +636,26 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
     async attemptsOf(keys) {
       const out = new Map<string, { single: number; batch: number }>();
       if (keys.length === 0) return out;
+      const units = Object.values(REVALUATION_TRY_UNITS);
       const rows = await client.apiUsageCounter.groupBy({
-        by: ["metric", "unit"], where: { provider: REVALUATION_ATTEMPT_PROVIDER, unit: { in: [REVALUATION_TRY_UNIT, REVALUATION_BATCH_TRY_UNIT] }, metric: { in: [...keys] } },
+        by: ["metric", "unit"], where: { provider: REVALUATION_ATTEMPT_PROVIDER, unit: { in: units }, metric: { in: [...keys] } },
         _sum: { count: true },
       });
       for (const r of rows) {
         const cur = out.get(r.metric) ?? { single: 0, batch: 0 };
-        if (r.unit === REVALUATION_TRY_UNIT) cur.single += Number(r._sum.count ?? 0); else cur.batch += Number(r._sum.count ?? 0);
+        const n = Number(r._sum.count ?? 0);
+        if (r.unit === REVALUATION_TRY_UNITS.single) cur.single += n;
+        else if (r.unit === REVALUATION_TRY_UNITS.batch) cur.batch += n;
+        else if (r.unit === REVALUATION_TRY_UNITS.dry_single) cur.single -= n; // a dry rebuild is not an attempt
+        else if (r.unit === REVALUATION_TRY_UNITS.dry_batch) cur.batch -= n;
         out.set(r.metric, cur);
       }
+      for (const [k, c] of out) out.set(k, { single: Math.max(0, c.single), batch: Math.max(0, c.batch) });
       return out;
     },
     async markAttempt(key, kind) {
       const { recordApiUsage } = await import("@/lib/usage/record");
-      await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, kind === "single" ? REVALUATION_TRY_UNIT : REVALUATION_BATCH_TRY_UNIT, 1);
+      await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, REVALUATION_TRY_UNITS[kind], 1);
     },
     async markUnavailable(accountId, fromISO, toISO) {
       // The binding's METADATA-ONLY stamp (regenerate-history.ts metadataOnlyStamps):

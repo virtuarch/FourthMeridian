@@ -204,7 +204,7 @@ async function main() {
         revaluedAlready: async (ks) => new Set(ks.filter((k) => o.done?.includes(k) || marks.includes(k))),
         markRevalued: async (k) => { marks.push(k); },
         attemptsOf: async (ks) => new Map(ks.filter((k) => tries.has(k)).map((k) => [k, { ...tries.get(k)! }])),
-        markAttempt: async (k, kind) => { const c = tries.get(k) ?? { single: 0, batch: 0 }; c[kind]++; tries.set(k, c); },
+        markAttempt: async (k, kind) => { const c = tries.get(k) ?? { single: 0, batch: 0 }; if (kind === "dry_single") c.single--; else if (kind === "dry_batch") c.batch--; else c[kind]++; tries.set(k, c); },
         markUnavailable: async (id, from, to) => { stamped.push(`${id}:${from}..${to}`); return dayCount(from, to); },
         regenerate: async (id, from, to) => {
           calls++;
@@ -296,6 +296,29 @@ async function main() {
       const rd = await revalueHoldersAfterPriceGaps({ accountIds: ["dr"], todayISO: TODAY, deadlineMs: 1e9, deps: { ...dry.deps, regenerate: async () => false } });
       check("a rebuild that wrote nothing (writes went off) marks NO block done — the blocks stay owed",
         dry.marks.length === 0 && rd.writesDisabled === true && rd.revalued === 0 && rd.deferred === 1 && await revaluationPending(dry.deps, ["dr"], TODAY), JSON.stringify(rd));
+      // The switch flips OFF mid-run (seen by the pre-charge check, or — a race — by the rebuild itself).
+      for (const how of ["pre-check", "rebuild"] as const) {
+        const ids = ["f1", "f2", "f3"];
+        const flip = mk({ owed: ids.map((id) => owe(id, "2025-10-28")) });
+        let checks = 0, calls = 0;
+        const flipDeps: RevaluationDeps = { ...flip.deps,
+          writesEnabled: how === "pre-check" ? () => ++checks <= 2 : () => true, // on for the run start + the first batch
+          regenerate: async (id, f, t) => { calls++; flip.regens.push(`${id}:${f}..${t}`); return how === "rebuild" && calls >= 2 ? false : undefined; } };
+        const before = JSON.stringify([...flip.tries.entries()]);
+        const rf = await revalueHoldersAfterPriceGaps({ accountIds: ids, deps: flipDeps, deadlineMs: 1e9, todayISO: TODAY });
+        const regensAtStop = flip.regens.length;
+        const netSingles = [...flip.tries.values()].reduce((a, c) => a + c.single, 0);
+        const netBatches = [...flip.tries.values()].reduce((a, c) => a + c.batch, 0);
+        check(`switch flips off mid-run (${how}): the WHOLE pass stops at once — no loop of dry rebuilds`,
+          rf.writesDisabled === true && regensAtStop === (how === "pre-check" ? 1 : 2), JSON.stringify({ rf, regens: flip.regens }));
+        check(`…the dry rebuild is NOT counted: net attempts = only the one real rebuild, no single try charged, nothing abandoned (${how})`,
+          netSingles === 0 && netBatches === flip.marks.length && rf.abandonedBlocks === 0 && before === "[]", JSON.stringify([...flip.tries.entries()]));
+        // Re-enable: three more passes ⇒ normal progress, no block abandoned, every block done.
+        for (let i = 0; i < 3; i++) await revalueHoldersAfterPriceGaps({ accountIds: ids, deps: { ...flip.deps, writesEnabled: () => true }, deadlineMs: 1e9, todayISO: TODAY });
+        const total = ids.length * blocksOf(owe("f1", "2025-10-28")).length;
+        check(`…after re-enable: normal progress — every block done, none abandoned (${how})`,
+          flip.marks.length === total && !(await revaluationPending(flip.deps, ids, TODAY)), `${flip.marks.length}/${total}`);
+      }
       const on = mk({ owed: [owe("ks")] });
       const rn = await revalueHoldersAfterPriceGaps({ accountIds: ["ks"], deps: { ...on.deps, writesEnabled: () => true }, deadlineMs: 1e9, todayISO: TODAY });
       check("writes ON: normal stamp, rebuild and done markers", on.stamped.length > 0 && rn.revalued === 1 && on.marks.length === blocksOf(owe("ks")).length);
@@ -497,6 +520,12 @@ async function main() {
       n === 3 && wheres.length === 1 && w.where.isEstimated === true && w.where.spaceId === "qa"
         && JSON.stringify(w.where.OR) === '[{"cryptoValuationStatus":null},{"cryptoValuationStatus":{"not":"unavailable"}}]'
         && JSON.stringify(w.data) === '{"cryptoValuationStatus":"unavailable"}', JSON.stringify(wheres));
+    const tryFake = { apiUsageCounter: { groupBy: async () => [
+      { metric: "k1", unit: "revaluation_tries", _sum: { count: BigInt(2) } }, { metric: "k1", unit: "revaluation_dry_tries", _sum: { count: BigInt(1) } },
+      { metric: "k1", unit: "revaluation_batch_tries", _sum: { count: BigInt(3) } }, { metric: "k1", unit: "revaluation_dry_batch_tries", _sum: { count: BigInt(3) } },
+    ] } } as unknown as Parameters<typeof prismaRevaluationDeps>[0];
+    const tc = (await prismaRevaluationDeps(tryFake).attemptsOf!(["k1"])).get("k1");
+    check("production attempt counts: a dry rebuild's try is CANCELLED (single 2−1, batch 3−3)", tc?.single === 1 && tc?.batch === 0, JSON.stringify(tc));
     const blocked = new Set(["2026-01-07", "2026-01-08"]);
     check("unblockedRanges: a membership-blocked day is never stamped (the rebuild skips it, nothing would restore it)",
       JSON.stringify(unblockedRanges("2026-01-05", "2026-01-11", (d) => blocked.has(d))) === '[{"fromISO":"2026-01-05","toISO":"2026-01-06"},{"fromISO":"2026-01-09","toISO":"2026-01-11"}]');

@@ -219,7 +219,7 @@ async function main() {
       revaluedAlready: async (keys) => new Set(keys.filter((k) => pmarks.has(k))),
       markRevalued: async (k) => { pmarks.add(k); },
       attemptsOf: async (keys) => new Map(keys.filter((k) => ptries.has(k)).map((k) => [k, { ...ptries.get(k)! }])),
-      markAttempt: async (k, kind) => { const c = ptries.get(k) ?? { single: 0, batch: 0 }; c[kind]++; ptries.set(k, c); },
+      markAttempt: async (k, kind) => { const c = ptries.get(k) ?? { single: 0, batch: 0 }; if (kind === "dry_single") c.single--; else if (kind === "dry_batch") c.batch--; else c[kind]++; ptries.set(k, c); },
       // The production stamp's contract: the status column only, ESTIMATE rows only (supported AND null qualify).
       markUnavailable: async (_id, from, to) => {
         let n = 0;
