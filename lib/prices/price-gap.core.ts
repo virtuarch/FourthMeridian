@@ -335,13 +335,20 @@ export function revaluationBlocks(evidenceKey: string, fromISO: string, toISO: s
  * The next rebuild: from the NEWEST owed block, the contiguous run of owed
  * blocks (newest first) whose day count fits `maxDays` — always at least one
  * block, so progress is guaranteed. Null when nothing is owed.
+ *
+ * `isolate(b)` — a block that must be rebuilt ALONE (it was in a batch that did
+ * not complete): it is never joined to a batch, so a failure is charged to it
+ * and only it — one bad day never burns its neighbours' attempts.
  */
-export function planRevaluationBatch(owedNewestFirst: readonly RevaluationBlock[], maxDays: number): { fromISO: string; toISO: string; blocks: RevaluationBlock[] } | null {
+export function planRevaluationBatch(
+  owedNewestFirst: readonly RevaluationBlock[], maxDays: number, isolate: (b: RevaluationBlock) => boolean = () => false,
+): { fromISO: string; toISO: string; blocks: RevaluationBlock[] } | null {
   if (owedNewestFirst.length === 0) return null;
   const blocks = [owedNewestFirst[0]];
   let days = dayIndex(blocks[0].toISO) - dayIndex(blocks[0].fromISO) + 1;
-  for (let i = 1; i < owedNewestFirst.length; i++) {
+  for (let i = 1; i < owedNewestFirst.length && !isolate(blocks[0]); i++) {
     const b = owedNewestFirst[i];
+    if (isolate(b)) break;
     const n = dayIndex(b.toISO) - dayIndex(b.fromISO) + 1;
     if (dayIndex(b.toISO) !== dayIndex(blocks[blocks.length - 1].fromISO) - 1 || days + n > maxDays) break;
     blocks.push(b); days += n;

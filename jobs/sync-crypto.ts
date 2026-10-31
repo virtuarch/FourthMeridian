@@ -61,7 +61,7 @@ import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-win
 import { reconcileProviderCapability, type CapabilityWideningPlan } from "@/lib/prices/capability-reconciliation";
 import { BTC_PRICE_SOURCE } from "@/lib/crypto/btc-price";
 import type { RevaluationRun } from "@/lib/prices/price-gap";
-import { WAKE_SAFE_MS } from "@/jobs/sol-history-backfill";
+import { WAKE_SAFE_MS, revaluationAbandonedReason } from "@/jobs/sol-history-backfill";
 
 export interface SyncCryptoResult extends WalletRefreshResult {
   continuation: boolean;
@@ -77,13 +77,27 @@ export interface SyncCryptoResult extends WalletRefreshResult {
   /** Price-gap fill + bounded revaluation after the history regeneration (counts only; null when it did not run). */
   revaluation: {
     gapInstruments: number; gapRowsInserted: number; owed: number; revalued: number; chunksRebuilt: number;
-    deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean;
+    deferred: number; alreadyRevalued: number; abandonedBlocks: number; rowsStampedUnavailable: number; failures: number; skippedForTime: boolean;
   } | null;
+  /**
+   * The job's own outcome (the worker's convention: JobRun.summary.outcome /
+   * partialReasons). PARTIAL when revaluation blocks were abandoned at the
+   * attempt cap (REVALUATION_ABANDONED) — their rows are stamped unavailable.
+   */
+  outcome: "COMPLETE" | "PARTIAL";
+  partialReasons: string[];
 }
 
 function revaluationSummary(r: RevaluationRun | null): SyncCryptoResult["revaluation"] {
   return r ? { gapInstruments: r.priceGaps?.acquired ?? 0, gapRowsInserted: r.priceGaps?.inserted ?? 0, owed: r.owed,
-    revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred, alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime } : null;
+    revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred, alreadyRevalued: r.alreadyRevalued,
+    abandonedBlocks: r.abandonedBlocks, rowsStampedUnavailable: r.rowsStampedUnavailable, failures: r.failures, skippedForTime: r.skippedForTime } : null;
+}
+
+/** PARTIAL when a revaluation abandoned blocks (never silent: the rows say unavailable, the run says why). */
+export function syncCryptoOutcome(r: RevaluationRun | null): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
+  const reasons = r && r.abandonedBlocks > 0 ? [revaluationAbandonedReason(r.abandonedBlocks, r.rowsStampedUnavailable)] : [];
+  return { outcome: reasons.length > 0 ? "PARTIAL" : "COMPLETE", partialReasons: reasons };
 }
 
 export async function syncCrypto(options: {
@@ -233,5 +247,7 @@ export async function syncCrypto(options: {
     }
   }
 
-  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage, revaluation: revaluationSummary(revaluation) };
+  const outcome = syncCryptoOutcome(revaluation);
+  if (outcome.outcome === "PARTIAL") console.warn(`[sync-crypto] PARTIAL — ${outcome.partialReasons.join(" | ")}`);
+  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage, revaluation: revaluationSummary(revaluation), ...outcome };
 }

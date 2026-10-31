@@ -162,6 +162,42 @@ async function main() {
       r3.revalued === 1 && regens.length > n && (store.get("2026-09-01")?.crypto ?? 0) > 26000 && Math.abs(store.get("2026-10-27")!.crypto - 26793.013084) < 0.005, JSON.stringify(r3));
   }
 
+  console.log("owner ruling: an ABANDONED block never stays `supported`");
+  {
+    // Fresh stale state: the SOL-only rows again, plus the frozen observation.
+    store.clear();
+    rebuild("2026-09-27", "2026-10-27", false);
+    store.set(FROZEN_DAY, { date: FROZEN_DAY, stocks: 0, crypto: 26744.23, total: 26744.23, cash: 0, savings: 0, debt: 0, netWorth: 26744.23, totalAssets: 26744.23, netLiquid: 0, cashOnHand: 0, isEstimated: false, cryptoValuationStatus: null });
+    const POISON = "2026-10-27"; // its block (10-26..11-01) also holds the frozen 10-28
+    const pmarks = new Set<string>();
+    const ptries = new Map<string, { single: number; batch: number }>();
+    const pdeps: RevaluationDeps = {
+      ...deps,
+      owed: async () => { const h = holderRevaluationFor({ ...holderArgs, accountId: "btc-p", snapshotMinBySpace: new Map([["qa", minOf()]]) }); return h ? [h] : []; },
+      revaluedAlready: async (keys) => new Set(keys.filter((k) => pmarks.has(k))),
+      markRevalued: async (k) => { pmarks.add(k); },
+      attemptsOf: async (keys) => new Map(keys.filter((k) => ptries.has(k)).map((k) => [k, { ...ptries.get(k)! }])),
+      markAttempt: async (k, kind) => { const c = ptries.get(k) ?? { single: 0, batch: 0 }; c[kind]++; ptries.set(k, c); },
+      // The production stamp's contract: the status column only, ESTIMATE rows only.
+      markUnavailable: async (_id, from, to) => {
+        let n = 0;
+        for (const d of days(from, to)) { const r = store.get(d); if (r && r.isEstimated && r.cryptoValuationStatus !== "unavailable") { store.set(d, { ...r, cryptoValuationStatus: "unavailable" }); n++; } }
+        return n;
+      },
+      regenerate: async (_id, from, to) => { if (from <= POISON && POISON <= to) throw new Error("poison"); rebuild(from, to, true); },
+    };
+    let last = null as Awaited<ReturnType<typeof revalueHoldersAfterPriceGaps>> | null;
+    for (let i = 0; i < 3; i++) last = await revalueHoldersAfterPriceGaps({ accountIds: ["btc-p"], deps: pdeps, deadlineMs: 1e9, todayISO: TODAY });
+    const p27 = store.get(POISON)!, p26 = store.get("2026-10-26")!;
+    check("the abandoned block's understated rows are stamped `unavailable` (value preserved, never $0, never `supported`)",
+      p27.cryptoValuationStatus === "unavailable" && p26.cryptoValuationStatus === "unavailable" && p27.crypto > 0 && p27.crypto < 100 && (last?.abandonedBlocks ?? 0) === 1,
+      JSON.stringify({ p27, last }));
+    check("…the frozen observation in the same block is untouched", JSON.stringify(store.get(FROZEN_DAY)) === JSON.stringify({ date: FROZEN_DAY, stocks: 0, crypto: 26744.23, total: 26744.23, cash: 0, savings: 0, debt: 0, netWorth: 26744.23, totalAssets: 26744.23, netLiquid: 0, cashOnHand: 0, isEstimated: false, cryptoValuationStatus: null }));
+    check("…every other block was rebuilt with BTC and is `supported` (the bad day burned no neighbour)",
+      days("2026-09-27", "2026-10-25").filter((d) => d !== BTC_UNPRICED_DAY).every((d) => store.get(d)!.crypto > 26000 && store.get(d)!.cryptoValuationStatus === "supported"));
+    check("…no estimate row anywhere reads `supported` while understated", [...store.values()].every((r) => !(r.isEstimated && r.cryptoValuationStatus === "supported" && r.crypto < 26000)));
+  }
+
   console.log("the day decision's holder-completeness guard");
   {
     const accounts: CryptoAccountBalance[] = [

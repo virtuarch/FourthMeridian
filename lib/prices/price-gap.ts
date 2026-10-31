@@ -29,7 +29,7 @@ import { resolveProviderForInstrument } from "./registry";
 import type { PriceRegistry } from "./types";
 import {
   planPriceGaps, priceGapAttemptKey, revaluationOwedFromISO, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
-  holderRevaluationFor, revaluationBlocks, planRevaluationBatch, REVALUATION_RESERVE_MS,
+  holderRevaluationFor, revaluationBlocks, planRevaluationBatch, REVALUATION_RESERVE_MS, type RevaluationBlock,
   REVALUATION_MAX_ATTEMPTS, REVALUATION_DEFAULT_MS_PER_DAY, REVALUATION_BATCH_MARGIN_MS,
   type HolderLicence, type HolderRevaluation, type InstrumentPriceFacts, type PriceGapDecision,
 } from "./price-gap.core";
@@ -277,10 +277,22 @@ export interface RevaluationDeps {
   revaluedAlready(keys: readonly string[]): Promise<Set<string>>;
   /** Record a block as done — only AFTER its rebuild returned. */
   markRevalued(key: string): Promise<void>;
-  /** Rebuild attempts recorded per block key (any day). Optional: absent ⇒ no attempt cap. */
-  attemptsOf?(keys: readonly string[]): Promise<Map<string, number>>;
-  /** Count one rebuild attempt of a block — BEFORE the rebuild, so a killed run still counts. */
-  markAttempt?(key: string): Promise<void>;
+  /**
+   * Rebuild attempts recorded per block key (any day): `single` — the block
+   * rebuilt ALONE (charged against REVALUATION_MAX_ATTEMPTS); `batch` — the block
+   * was in a multi-block batch (never charged; it only makes the block rebuild
+   * alone next time). Optional: absent ⇒ no attempt cap.
+   */
+  attemptsOf?(keys: readonly string[]): Promise<Map<string, { single: number; batch: number }>>;
+  /** Count one attempt — BEFORE the rebuild, so a killed run still counts. */
+  markAttempt?(key: string, kind: "single" | "batch"): Promise<void>;
+  /**
+   * OWNER RULING — an ABANDONED block must not keep an understated `supported`
+   * row: metadata-only stamp of its ESTIMATE rows (isEstimated=true, the one
+   * status column; frozen/observed rows never) to `unavailable`, over the
+   * holder's Spaces. Returns rows stamped. Optional: absent ⇒ not stamped.
+   */
+  markUnavailable?(accountId: string, fromISO: string, toISO: string): Promise<number>;
   /** Regenerate one account's wealth history over [fromISO, toISO] — existing rows included. */
   regenerate(accountId: string, fromISO: string, toISO: string): Promise<void>;
   now(): number;
@@ -298,8 +310,10 @@ export interface RevaluationRun {
   deferred: number;
   /** Holders whose current evidence state is already fully revalued — not repeated (no churn, no loop). */
   alreadyRevalued: number;
-  /** Blocks abandoned after REVALUATION_MAX_ATTEMPTS failed rebuilds (until the evidence changes). */
+  /** Blocks abandoned after REVALUATION_MAX_ATTEMPTS failed rebuilds (until the evidence changes); their estimate rows are stamped `unavailable`. */
   abandonedBlocks: number;
+  /** Estimate rows stamped `unavailable` this run because their block was abandoned. */
+  rowsStampedUnavailable: number;
   failures: number;
   /** The gap pass itself was skipped: too little wake time left. */
   skippedForTime: boolean;
@@ -311,11 +325,12 @@ async function owedBlocks(deps: Pick<RevaluationDeps, "revaluedAlready" | "attem
   const keys = plans.flatMap((p) => p.blocks.map((b) => b.key));
   const done = keys.length > 0 ? await deps.revaluedAlready(keys) : new Set<string>();
   const notDone = keys.filter((k) => !done.has(k));
-  const tries = deps.attemptsOf && notDone.length > 0 ? await deps.attemptsOf(notDone) : new Map<string, number>();
+  const tries = deps.attemptsOf && notDone.length > 0 ? await deps.attemptsOf(notDone) : new Map<string, { single: number; batch: number }>();
   return plans.map((p) => {
     const open = p.blocks.filter((b) => !done.has(b.key));
-    const live = open.filter((b) => (tries.get(b.key) ?? 0) < REVALUATION_MAX_ATTEMPTS);
-    return { h: p.h, live, abandoned: open.length - live.length, tries };
+    const live = open.filter((b) => (tries.get(b.key)?.single ?? 0) < REVALUATION_MAX_ATTEMPTS);
+    const abandoned = open.filter((b) => (tries.get(b.key)?.single ?? 0) >= REVALUATION_MAX_ATTEMPTS);
+    return { h: p.h, live, abandoned, tries };
   });
 }
 
@@ -363,7 +378,7 @@ export async function revalueHoldersAfterPriceGaps(args: {
   msPerDay?: number;
   log?: (line: string) => void;
 }): Promise<RevaluationRun> {
-  const run: RevaluationRun = { priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, failures: 0, skippedForTime: false };
+  const run: RevaluationRun = { priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, failures: 0, skippedForTime: false };
   const log = args.log ?? (() => {});
   const cap = Math.max(0, Math.floor(args.maxAccounts ?? DEFAULT_REVALUATION_MAX_ACCOUNTS));
   const left = () => args.deadlineMs - args.deps.now();
@@ -376,20 +391,30 @@ export async function revalueHoldersAfterPriceGaps(args: {
     const holders = (await args.deps.owed(args.accountIds)).sort((a, b) => a.accountId.localeCompare(b.accountId));
     if (holders.length === 0) return run;
     let started = 0;
-    for (const { h, live, abandoned } of await owedBlocks(args.deps, holders, todayISO)) {
-      run.abandonedBlocks += abandoned;
-      if (live.length === 0) { run.alreadyRevalued++; continue; }
+    /** Abandoned ⇒ never left `supported`: stamp its estimate rows `unavailable` (idempotent). */
+    const abandon = async (accountId: string, blk: RevaluationBlock) => {
+      run.abandonedBlocks++;
+      const n = await args.deps.markUnavailable?.(accountId, blk.fromISO, blk.toISO).catch(() => 0);
+      run.rowsStampedUnavailable += n ?? 0;
+      log(`revaluation ${accountId} ${blk.fromISO}..${blk.toISO} ABANDONED after ${REVALUATION_MAX_ATTEMPTS} attempts — estimate rows stamped unavailable (${n ?? 0})`);
+    };
+    for (const { h, live, abandoned, tries } of await owedBlocks(args.deps, holders, todayISO)) {
+      for (const blk of abandoned) await abandon(h.accountId, blk);
+      if (live.length === 0) { if (abandoned.length === 0) run.alreadyRevalued++; continue; }
       run.owed++;
       if (started >= cap || left() < REVALUATION_RESERVE_MS) { run.deferred++; continue; }
       started++;
       let failed = false;
+      // A block seen in an unfinished batch (killed or failed) rebuilds ALONE.
+      const suspect = new Set(live.filter((b) => (tries.get(b.key)?.batch ?? 0) > 0 || (tries.get(b.key)?.single ?? 0) > 0).map((b) => b.key));
       let queue = live;
       while (queue.length > 0) {
         if (left() < REVALUATION_RESERVE_MS) break;
         const maxDays = Math.floor((left() - REVALUATION_BATCH_MARGIN_MS) / msPerDay);
-        const batch = planRevaluationBatch(queue, maxDays)!;
+        const batch = planRevaluationBatch(queue, maxDays, (b) => suspect.has(b.key))!;
         queue = queue.filter((b) => !batch.blocks.includes(b));
-        for (const b of batch.blocks) await args.deps.markAttempt?.(b.key).catch(() => {});
+        const alone = batch.blocks.length === 1;
+        for (const b of batch.blocks) await args.deps.markAttempt?.(b.key, alone ? "single" : "batch").catch(() => {});
         const t0 = args.deps.now();
         try {
           await args.deps.regenerate(h.accountId, batch.fromISO, batch.toISO);
@@ -399,8 +424,18 @@ export async function revalueHoldersAfterPriceGaps(args: {
           const days = Math.round((Date.parse(batch.toISO) - Date.parse(batch.fromISO)) / 86_400_000) + 1;
           msPerDay = Math.max(1, (args.deps.now() - t0) / days);
         } catch (e) {
+          log(`revaluation ${h.accountId} ${batch.fromISO}..${batch.toISO} failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+          if (!alone) {
+            // Charge nobody yet: retry each block ALONE (this run, time permitting; else the next).
+            for (const b of batch.blocks) suspect.add(b.key);
+            queue = [...batch.blocks, ...queue];
+            continue;
+          }
           failed = true;
-          log(`revaluation ${h.accountId} ${batch.fromISO}..${batch.toISO} failed (non-fatal; retried next run, at most ${REVALUATION_MAX_ATTEMPTS} attempts): ${e instanceof Error ? e.message : String(e)}`);
+          const b = batch.blocks[0];
+          const n = (tries.get(b.key)?.single ?? 0) + 1;
+          tries.set(b.key, { single: n, batch: tries.get(b.key)?.batch ?? 0 });
+          if (n >= REVALUATION_MAX_ATTEMPTS) await abandon(h.accountId, b);
         }
       }
       if (failed) run.failures++;
@@ -414,8 +449,9 @@ export async function revalueHoldersAfterPriceGaps(args: {
   return run;
 }
 
-/** Rebuild-attempt counter unit (beside the "done" marker unit) on the same usage table. */
+/** Rebuild-attempt counter units (beside the "done" marker unit) on the same usage table. */
 export const REVALUATION_TRY_UNIT = "revaluation_tries";
+export const REVALUATION_BATCH_TRY_UNIT = "revaluation_batch_tries";
 
 /** Production deps for revalueHoldersAfterPriceGaps over `client` (markers through the one usage writer). */
 export function prismaRevaluationDeps(client: Client, opts: { log?: (line: string) => void } = {}): RevaluationDeps {
@@ -435,15 +471,38 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
       await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, PRICE_GAP_ATTEMPT_UNIT, 1);
     },
     async attemptsOf(keys) {
-      if (keys.length === 0) return new Map();
+      const out = new Map<string, { single: number; batch: number }>();
+      if (keys.length === 0) return out;
       const rows = await client.apiUsageCounter.groupBy({
-        by: ["metric"], where: { provider: REVALUATION_ATTEMPT_PROVIDER, unit: REVALUATION_TRY_UNIT, metric: { in: [...keys] } }, _sum: { count: true },
+        by: ["metric", "unit"], where: { provider: REVALUATION_ATTEMPT_PROVIDER, unit: { in: [REVALUATION_TRY_UNIT, REVALUATION_BATCH_TRY_UNIT] }, metric: { in: [...keys] } },
+        _sum: { count: true },
       });
-      return new Map(rows.map((r) => [r.metric, Number(r._sum.count ?? 0)]));
+      for (const r of rows) {
+        const cur = out.get(r.metric) ?? { single: 0, batch: 0 };
+        if (r.unit === REVALUATION_TRY_UNIT) cur.single += Number(r._sum.count ?? 0); else cur.batch += Number(r._sum.count ?? 0);
+        out.set(r.metric, cur);
+      }
+      return out;
     },
-    async markAttempt(key) {
+    async markAttempt(key, kind) {
       const { recordApiUsage } = await import("@/lib/usage/record");
-      await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, REVALUATION_TRY_UNIT, 1);
+      await recordApiUsage(REVALUATION_ATTEMPT_PROVIDER, key, kind === "single" ? REVALUATION_TRY_UNIT : REVALUATION_BATCH_TRY_UNIT, 1);
+    },
+    async markUnavailable(accountId, fromISO, toISO) {
+      // The binding's METADATA-ONLY stamp (regenerate-history.ts metadataOnlyStamps):
+      // one column, estimate rows only — a frozen observation is never touched.
+      const links = await client.spaceAccountLink.findMany({ where: { financialAccountId: accountId, status: "ACTIVE" }, select: { spaceId: true } });
+      if (links.length === 0) return 0;
+      const r = await client.spaceSnapshot.updateMany({
+        where: {
+          spaceId: { in: [...new Set(links.map((l) => l.spaceId))] },
+          date: { gte: new Date(`${fromISO}T00:00:00.000Z`), lte: new Date(`${toISO}T00:00:00.000Z`) },
+          isEstimated: true,
+          OR: [{ cryptoValuationStatus: null }, { cryptoValuationStatus: { not: "unavailable" } }],
+        },
+        data: { cryptoValuationStatus: "unavailable" },
+      });
+      return r.count;
     },
     async regenerate(accountId, fromISO, toISO) {
       const { resolveHistoricalWorkWindow } = await import("@/lib/snapshots/historical-work-window");

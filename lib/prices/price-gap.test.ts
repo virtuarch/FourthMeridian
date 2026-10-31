@@ -191,24 +191,29 @@ async function main() {
     const TODAY = "2026-10-31";
     const dayCount = (f: string, t: string) => Math.round((Date.parse(t) - Date.parse(f)) / 86_400_000) + 1;
     /** `perDayMs`: rebuild cost proportional to the batch (as real regeneration is); else a flat `regenMs` per call. */
-    const mk = (o: { owed: HolderRevaluation[]; done?: string[]; regenMs?: number; perDayMs?: number; fail?: (n: number) => boolean }) => {
-      const regens: string[] = []; const marks: string[] = []; const tries = new Map<string, number>(); let t = 0; let calls = 0;
+    const mk = (o: { owed: HolderRevaluation[]; done?: string[]; regenMs?: number; perDayMs?: number;
+      fail?: (n: number, from: string, to: string) => boolean; killAt?: (n: number) => boolean }) => {
+      const regens: string[] = []; const marks: string[] = []; const tries = new Map<string, { single: number; batch: number }>(); let t = 0; let calls = 0;
+      const stamped: string[] = [];
       const deps: RevaluationDeps = {
         acquireGaps: async () => ({ decisions: [], acquired: 1, inserted: 300, failures: 0, instruments: [], newlyPricedFromISO: "2025-10-28" }),
         owed: async (ids) => o.owed.filter((x) => ids.includes(x.accountId)),
         revaluedAlready: async (ks) => new Set(ks.filter((k) => o.done?.includes(k) || marks.includes(k))),
         markRevalued: async (k) => { marks.push(k); },
-        attemptsOf: async (ks) => new Map(ks.filter((k) => tries.has(k)).map((k) => [k, tries.get(k)!])),
-        markAttempt: async (k) => { tries.set(k, (tries.get(k) ?? 0) + 1); },
+        attemptsOf: async (ks) => new Map(ks.filter((k) => tries.has(k)).map((k) => [k, { ...tries.get(k)! }])),
+        markAttempt: async (k, kind) => { const c = tries.get(k) ?? { single: 0, batch: 0 }; c[kind]++; tries.set(k, c); },
+        markUnavailable: async (id, from, to) => { stamped.push(`${id}:${from}..${to}`); return dayCount(from, to); },
         regenerate: async (id, from, to) => {
           calls++;
           regens.push(`${id}:${from}..${to}`);
           t += o.perDayMs !== undefined ? o.perDayMs * dayCount(from, to) : o.regenMs ?? 1_000;
-          if (o.fail?.(calls)) throw new Error("killed mid-rebuild");
+          // A KILL: the process dies mid-rebuild (modelled as the clock running out, then the throw).
+          if (o.killAt?.(calls)) { t = 1e12; throw new Error("killed mid-rebuild"); }
+          if (o.fail?.(calls, from, to)) throw new Error("rebuild failed");
         },
         now: () => t,
       };
-      return { deps, regens, marks, tries, at: () => t, reset: () => { t = 0; } };
+      return { deps, regens, marks, tries, stamped, at: () => t, reset: () => { t = 0; } };
     };
     const owe = (id: string, from = "2026-09-27"): HolderRevaluation => ({ accountId: id, windowFromISO: from, valuedFromISO: from, evidenceKey: `revaluation:v2:${id}:k` });
     const blocksOf = (h: HolderRevaluation) => revaluationBlocks(h.evidenceKey, h.windowFromISO, TODAY);
@@ -232,22 +237,39 @@ async function main() {
     check("a holder already revalued under the SAME evidence state is not rebuilt again (no churn, no loop)", ra.alreadyRevalued === 1 && again.regens.join() === "b:2026-09-27..2026-10-31");
 
     // REVIEW (MEDIUM): DONE only after the rebuild returns — a kill mid-batch leaves the blocks owed.
-    const killed = mk({ owed: [owe("k")], fail: (n) => n === 1 });
+    const nBlocks = blocksOf(owe("k")).length;
+    const killed = mk({ owed: [owe("k")], killAt: (n) => n === 1 });
     const k1 = await revalueHoldersAfterPriceGaps({ accountIds: ["k"], deps: killed.deps, deadlineMs: 1e9, todayISO: TODAY });
-    check("killed mid-rebuild: NOT marked done (the block stays owed), one attempt counted, never thrown",
-      k1.failures === 1 && killed.marks.length === 0 && [...killed.tries.values()].every((n) => n === 1) && killed.tries.size === blocksOf(owe("k")).length, JSON.stringify(k1));
+    check("killed mid-rebuild: NOT marked done (the blocks stay owed), no attempt CHARGED (only a batch try), never thrown",
+      killed.marks.length === 0 && killed.tries.size === nBlocks && [...killed.tries.values()].every((c) => c.single === 0 && c.batch === 1) && k1.deferred === 1, JSON.stringify(k1));
     check("…and it is still pending", await revaluationPending(killed.deps, ["k"], TODAY));
     killed.reset();
     const k2 = await revalueHoldersAfterPriceGaps({ accountIds: ["k"], deps: killed.deps, deadlineMs: 1e9, todayISO: TODAY });
-    check("…the next run REDOES the same range and marks it done", k2.revalued === 1 && killed.regens[1] === killed.regens[0] && killed.marks.length === blocksOf(owe("k")).length, JSON.stringify(killed.regens));
+    const redone = killed.regens.slice(1);
+    check("…the next run REDOES the same range — block by block (each charged to itself) — and marks it done",
+      k2.revalued === 1 && redone.length === nBlocks && redone[0].endsWith(`..${TODAY}`) && redone[redone.length - 1].startsWith("k:2026-09-27..")
+        && killed.marks.length === nBlocks, JSON.stringify(killed.regens));
     const k3 = await revalueHoldersAfterPriceGaps({ accountIds: ["k"], deps: killed.deps, deadlineMs: 1e9, todayISO: TODAY });
-    check("…then a no-op", k3.alreadyRevalued === 1 && killed.regens.length === 2);
+    check("…then a no-op", k3.alreadyRevalued === 1 && killed.regens.length === nBlocks + 1);
 
-    const poison = mk({ owed: [owe("p")], fail: () => true });
-    for (let i = 0; i < REVALUATION_MAX_ATTEMPTS; i++) { poison.reset(); await revalueHoldersAfterPriceGaps({ accountIds: ["p"], deps: poison.deps, deadlineMs: 1e9, todayISO: TODAY }); }
-    const pAfter = await revalueHoldersAfterPriceGaps({ accountIds: ["p"], deps: poison.deps, deadlineMs: 1e9, todayISO: TODAY });
-    check(`a poison block is retried at most REVALUATION_MAX_ATTEMPTS (${REVALUATION_MAX_ATTEMPTS}) times, then abandoned (no loop, no reservation)`,
-      poison.regens.length === REVALUATION_MAX_ATTEMPTS && pAfter.abandonedBlocks === blocksOf(owe("p")).length && !(await revaluationPending(poison.deps, ["p"], TODAY)), JSON.stringify(pAfter));
+    // REVIEW: attempts are charged PER BLOCK — one bad day never burns its neighbours'.
+    const BAD = "2026-10-15";
+    const bad = mk({ owed: [owe("b")], fail: (_n, f, t) => f <= BAD && BAD <= t });
+    const r1b = await revalueHoldersAfterPriceGaps({ accountIds: ["b"], deps: bad.deps, deadlineMs: 1e9, todayISO: TODAY });
+    const badBlock = blocksOf(owe("b")).find((x) => x.fromISO <= BAD && BAD <= x.toISO)!;
+    check("a failed batch is retried block by block in the same run: every GOOD block is rebuilt and done",
+      bad.marks.length === nBlocks - 1 && !bad.marks.includes(badBlock.key) && r1b.failures === 1, JSON.stringify({ r: bad.regens, m: bad.marks.length }));
+    check("…only the bad block is left with a FAILED attempt; each neighbour was tried once, alone, and is done",
+      bad.tries.get(badBlock.key)?.single === 1
+        && [...bad.tries.entries()].filter(([key]) => key !== badBlock.key).every(([key, c]) => bad.marks.includes(key) && c.single <= 1), JSON.stringify([...bad.tries.entries()]));
+    for (let i = 1; i < REVALUATION_MAX_ATTEMPTS; i++) { bad.reset(); await revalueHoldersAfterPriceGaps({ accountIds: ["b"], deps: bad.deps, deadlineMs: 1e9, todayISO: TODAY }); }
+    check(`…after ${REVALUATION_MAX_ATTEMPTS} failures ONLY the bad block is abandoned and its rows stamped unavailable (never left supported)`,
+      bad.stamped.length >= 1 && bad.stamped.every((x) => x === `b:${badBlock.fromISO}..${badBlock.toISO}`) && bad.tries.get(badBlock.key)?.single === REVALUATION_MAX_ATTEMPTS,
+      JSON.stringify({ s: bad.stamped, t: bad.tries.get(badBlock.key) }));
+    const regensBefore = bad.regens.length;
+    const r4b = await revalueHoldersAfterPriceGaps({ accountIds: ["b"], deps: bad.deps, deadlineMs: 1e9, todayISO: TODAY });
+    check("…a later run never rebuilds it again (no poison loop), reports it abandoned, re-stamps idempotently, owes nothing",
+      bad.regens.length === regensBefore && r4b.abandonedBlocks === 1 && r4b.rowsStampedUnavailable > 0 && !(await revaluationPending(bad.deps, ["b"], TODAY)), JSON.stringify(r4b));
 
     // LARGE WINDOW: batches sized to the time left, newest first, progress across runs, nothing rebuilt twice.
     const big = mk({ owed: [owe("x", "2025-10-28")], perDayMs: 1_000 });
@@ -272,6 +294,9 @@ async function main() {
       kA.slice(0, -1).every((x) => kB.some((y) => y.key === x.key && y.fromISO === x.fromISO && y.toISO === x.toISO))
         && kA.every((x) => new Date(`${x.key.split(":").pop()}T00:00:00Z`).getUTCDay() === 1) && kA[kA.length - 1].fromISO === "2025-10-28");
     const batch = planRevaluationBatch(kA, 20);
+    const iso = planRevaluationBatch(kA, 10_000, (x) => x === kA[2]);
+    check("planRevaluationBatch: an isolated block is never joined — the batch stops before it, and an isolated head goes alone",
+      iso!.blocks.length === 2 && iso!.blocks[1] === kA[1] && planRevaluationBatch(kA.slice(2), 10_000, (x) => x === kA[2])!.blocks.length === 1);
     check("planRevaluationBatch: contiguous newest blocks within maxDays, at least one block", batch !== null && batch.toISO === TODAY && dayCount(batch.fromISO, batch.toISO) <= 20 && planRevaluationBatch(kA, 0)!.blocks.length === 1);
   }
 

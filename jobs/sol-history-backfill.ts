@@ -105,7 +105,7 @@ import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps, type 
 import { erc20HistoryConfig, type Erc20HistoryConfig } from "@/lib/crypto/erc20-history.core";
 import { SPL_PRICE_RUN_SEVERITY, type SplPriceRunStatus } from "@/lib/crypto/spl-history.core";
 import { effectiveDailyUsage, incrementalMeter, meterTotal, type IncrementalMeter, type MeterRecorder } from "@/lib/usage/provider-budget.core";
-import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS, REVALUATION_RESERVE_MS } from "@/lib/prices/price-gap.core";
+import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS, REVALUATION_RESERVE_MS, REVALUATION_MAX_ATTEMPTS } from "@/lib/prices/price-gap.core";
 import type { PriceGapRun, RevaluationOwed, RevaluationRun } from "@/lib/prices/price-gap";
 import {
   chainOrder, nextRotation, phaseDeadlineFor, PHASE_SETUP_MS, ROTATION_LOOKBACK_RUNS, ROTATION_SLOT_MS,
@@ -156,7 +156,8 @@ export interface SolBackfillJobSummary {
   /** The all-holder price-gap pass (every licensed crypto holder, every chain), when wired. */
   priceGapSweep?: { holders: number; skippedForTime: boolean };
   /** Crypto holders (every chain) revalued (state-derived, once per evidence state; existing rows included). */
-  holderRevaluation?: { holders: number; owed: number; revalued: number; chunksRebuilt: number; deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean };
+  holderRevaluation?: { holders: number; owed: number; revalued: number; chunksRebuilt: number; deferred: number; alreadyRevalued: number;
+    abandonedBlocks: number; rowsStampedUnavailable: number; failures: number; skippedForTime: boolean };
   /** A revaluation was owed at the start of the run, so its slice of the budget was reserved after the leader. */
   revaluationReserved?: boolean;
   /** This run's chain rotation and pass order — persisted, read back by the next run. Absent on a NO_WORK run. */
@@ -194,12 +195,19 @@ export interface SolBackfillJobSummary {
 }
 
 /** PURE (re-review F4) — the job's outcome from its summary: PARTIAL when any token price run stopped short. */
-export function solBackfillJobOutcome(s: Pick<SolBackfillJobSummary, "splPrices" | "ethTokens">): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
+export function solBackfillJobOutcome(s: Pick<SolBackfillJobSummary, "splPrices" | "ethTokens"> & Partial<Pick<SolBackfillJobSummary, "holderRevaluation">>): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
   const reasons: string[] = [];
+  const abandoned = s.holderRevaluation?.abandonedBlocks ?? 0;
+  if (abandoned > 0) reasons.push(revaluationAbandonedReason(abandoned, s.holderRevaluation?.rowsStampedUnavailable ?? 0));
   if (s.splPrices) reasons.push(`SPL_PRICES_${s.splPrices.status}: ${s.splPrices.reason ?? s.splPrices.status}`);
   const erc = s.ethTokens?.prices;
   if (erc && erc.status !== "COMPLETE") reasons.push(`ERC20_PRICES_${erc.status}: ${erc.reason ?? erc.status}`);
   return { outcome: reasons.length > 0 ? "PARTIAL" : "COMPLETE", partialReasons: reasons };
+}
+
+/** The PARTIAL reason for revaluation blocks abandoned at the attempt cap (shared by the worker and sync-crypto). */
+export function revaluationAbandonedReason(blocks: number, rowsStamped: number): string {
+  return `REVALUATION_ABANDONED: ${blocks} block(s) failed ${REVALUATION_MAX_ATTEMPTS} rebuilds; their estimate rows are stamped unavailable (${rowsStamped} this run), never shown as complete`;
 }
 
 export interface EthBackfillPassSummary {
@@ -515,7 +523,8 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     if (!r) return;
     if (r.priceGaps) addPriceGaps(summary, r.priceGaps);
     summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred,
-      alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime };
+      alreadyRevalued: r.alreadyRevalued, abandonedBlocks: r.abandonedBlocks, rowsStampedUnavailable: r.rowsStampedUnavailable,
+      failures: r.failures, skippedForTime: r.skippedForTime };
     summary.deferred += r.deferred; // still owed on disk: the next (self-continued) run takes them
   };
 
