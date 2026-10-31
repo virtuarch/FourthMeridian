@@ -30,6 +30,7 @@ import { chainOrder, nextRotation, phaseDeadlineFor, HISTORY_CHAINS, type Histor
 import { incrementalMeter, meterTotal, METER_FLUSH_EVERY_CALLS, type RequestMeter } from "@/lib/usage/provider-budget.core";
 import {
   acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, valuedFromISO, holderRevaluationFor, revaluationPending, revaluationBlocks,
+  planRevaluation, stampOwedHolders,
   REVALUATION_RESERVE_MS,
   type PriceGapDeps, type RevaluationDeps, type HolderLicence, type InstrumentPriceFacts, type RevaluationOwed, type HolderRevaluation,
 } from "@/lib/prices/price-gap";
@@ -277,7 +278,7 @@ async function main() {
         w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
           leftAtStart = deadlineMs - w.now();
           const skipped = leftAtStart < REVALUATION_RESERVE_MS;
-          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, failures: 0, skippedForTime: skipped };
+          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, blocksCredited: 0, failures: 0, skippedForTime: skipped };
         };
         const s = await w.run();
         return { s, leftAtStart, stepped: stepped(s, chain) };
@@ -300,7 +301,7 @@ async function main() {
       w.deps.revaluationPending = async () => true;
       w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
         leftAtStart = deadlineMs - w.now();
-        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, failures: 0, skippedForTime: false };
+        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, blocksCredited: 0, failures: 0, skippedForTime: false };
       };
       const s = await w.run();
       check("SOL + BTC backlogs, a revaluation owed: it runs BEFORE the follower chain (≥ REVALUATION_RESERVE_MS left), both chains still step",
@@ -313,7 +314,7 @@ async function main() {
     check("worker: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
       okOut.outcome === "COMPLETE" && abOut.outcome === "PARTIAL" && abOut.partialReasons.some((x) => x.startsWith("REVALUATION_ABANDONED: 2 block(s)")), JSON.stringify(abOut));
     const { syncCryptoOutcome } = await import("@/jobs/sync-crypto");
-    const runOf = (abandonedBlocks: number) => ({ priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: 3, rowsStampedPending: 0, failures: 0, skippedForTime: false });
+    const runOf = (abandonedBlocks: number) => ({ priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: 3, rowsStampedPending: 0, blocksCredited: 0, failures: 0, skippedForTime: false });
     check("sync-crypto: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
       syncCryptoOutcome(runOf(0)).outcome === "COMPLETE" && syncCryptoOutcome(null).outcome === "COMPLETE"
         && syncCryptoOutcome(runOf(1)).outcome === "PARTIAL" && syncCryptoOutcome(runOf(1)).partialReasons[0].startsWith("REVALUATION_ABANDONED: 1 block(s)"));
@@ -390,6 +391,45 @@ async function main() {
       check("kill switch OFF under the GLOBAL freeze: still SKIPPED, and nothing stamped", sf.outcome === "SKIPPED" && offFrozen.log.length === 0 && !sf.revaluationStamped, offFrozen.log.join());
       const on = mkK(true); await on.w.run();
       check("kill switch ON: the normal stamp and revaluation run", on.log[0] === "stamp:h1" && on.log.some((x) => x === "revalue:h1"), on.log.join());
+    }
+    {
+      // PERF 2026-10-31: the revaluation PLAN is read ONCE per pass (stamp + reservation + rebuild share it).
+      const w = world({ btc: 20, regen: true });
+      let owedCalls = 0, stampWrites = 0;
+      const holder: HolderRevaluation = { accountId: "h1", windowFromISO: "2026-09-01", valuedFromISO: "2026-09-01", evidenceKey: "revaluation:v2:h1:k", spaceIds: ["qa"] };
+      const marks = new Set<string>();
+      const rd: RevaluationDeps = {
+        acquireGaps: async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }),
+        owed: async () => { owedCalls++; return [holder]; },
+        revaluedAlready: async (ks) => new Set(ks.filter((k) => marks.has(k))),
+        markRevalued: async (k) => { marks.add(k); },
+        markUnavailable: async () => { stampWrites++; return 7; },
+        regenerate: async () => { w.deps.sleep(1_000); },
+        now: () => w.now(),
+      };
+      w.deps.cryptoHolders = async () => ["h1"];
+      w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+      w.deps.planRevaluation = (ids) => planRevaluation(rd, ids, DAY);
+      w.deps.stampOwedHolders = (ids, plan) => stampOwedHolders(rd, ids, DAY, plan);
+      w.deps.revaluationPending = (ids, plan) => revaluationPending(rd, ids, DAY, plan);
+      w.deps.revalueHolders = (ids, { deadlineMs, plan, alreadyStamped }) => revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs, todayISO: DAY, plan, alreadyStamped });
+      const s = await w.run();
+      check("TWO planning reads per pass: the job-start plan (stamp + reservation) and ONE fresh re-plan right before the rebuild (was ~3; a stale plan is never rebuilt from)",
+        owedCalls === 2 && s.revaluationReserved === true && (s.holderRevaluation?.chunksRebuilt ?? 0) > 0, JSON.stringify({ owedCalls, hr: s.holderRevaluation }));
+      check("ONE stamp truth: revaluationStamped = atStart + inRevaluation, and the rebuild did not re-stamp the plan",
+        s.revaluationStamped === 7 && s.revaluationStampedBreakdown?.atStart === 7 && s.revaluationStampedBreakdown?.inRevaluation === 0
+          && s.holderRevaluation?.rowsStampedPending === 0 && stampWrites === 1, JSON.stringify({ st: s.revaluationStamped, b: s.revaluationStampedBreakdown, stampWrites }));
+      // A gap fill moved a floor mid-pass ⇒ the rebuild stamps the newly owed blocks: the total says so.
+      const w2 = world({ btc: 20, regen: true });
+      w2.deps.cryptoHolders = async () => ["h1"];
+      w2.deps.acquirePriceGaps = w.deps.acquirePriceGaps;
+      w2.deps.planRevaluation = w.deps.planRevaluation;
+      w2.deps.stampOwedHolders = w.deps.stampOwedHolders;
+      w2.deps.revaluationPending = async () => true;
+      w2.deps.revalueHolders = async () => ({ ...runOf(0), rowsStampedPending: 4, rowsStampedUnavailable: 3 });
+      const s2 = await w2.run();
+      check("…and when the rebuild stamps newly owed blocks AND abandons one, revaluationStamped = atStart + inRevaluation (4 pending + 3 abandoned)",
+        s2.revaluationStampedBreakdown?.inRevaluation === 7 && s2.revaluationStamped === (s2.revaluationStampedBreakdown?.atStart ?? -1) + 7, JSON.stringify({ st: s2.revaluationStamped, b: s2.revaluationStampedBreakdown }));
     }
     // revaluationPending is the cheap state read the reservation is decided by.
     const marks = new Set<string>();
