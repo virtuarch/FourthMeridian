@@ -21,8 +21,8 @@ import type { StatusTone } from "../platform-surface";
 import type { ActivationBlocker } from "@/lib/notifications/automations/types";
 import type { Viewer } from "@/lib/notifications/content/types";
 import {
-  DELIVERY_STATUSES, SUPPRESSION_REASONS,
-  type Aggregate, type AutomationState, type DeliveryStatus, type StatusCounts, type SuppressionReason,
+  DELIVERY_SERIES_KEYS, DELIVERY_STATUSES, PROVIDER_SERIES_KEYS, SUPPRESSION_REASONS,
+  type Aggregate, type AutomationState, type DeliveryAnalytics, type DeliverySeriesKey, type ProviderSeriesKey, type DeliveryStatus, type StatusCounts, type SuppressionReason,
 } from "@/lib/platform/comms-center/contract-v1-section-4";
 
 const n = (v: number) => v.toLocaleString("en-US");
@@ -235,7 +235,34 @@ export const DELIVERY_STATUS_LABEL: Record<DeliveryStatus, string> = {
   QUEUED: "Queued", SCHEDULED: "Scheduled", SUPPRESSED: "Suppressed", CANCELLED: "Cancelled", CAPTURED: "Captured",
   ACCEPTED: "Accepted by provider", FAILED: "Failed", DEAD: "Dead", DELIVERED: "Delivered", BOUNCED: "Bounced", COMPLAINED: "Complained",
 };
-export const SERIES_LABEL = { accepted: "Accepted", failed: "Failed", dead: "Dead", suppressed: "Suppressed", captured: "Captured", cancelled: "Cancelled" } as const;
+/**
+ * Every day series, fixed and Phase C (exhaustive by type). "Accepted" is always
+ * "accepted by provider" — never delivered; "Delivered" is provider-confirmed.
+ */
+export const SERIES_LABEL = {
+  accepted: "Accepted by provider", failed: "Failed", dead: "Dead", suppressed: "Suppressed", captured: "Captured", cancelled: "Cancelled",
+  delivered: "Delivered (provider-confirmed)", bounced: "Bounced", complained: "Complained",
+} as const satisfies Record<DeliverySeriesKey | ProviderSeriesKey, string>;
+
+/** The series a payload renders: the six fixed ones, plus the Phase C ones only when measured AND present. */
+export function deliverySeriesKeys(d: Pick<DeliveryAnalytics, "measured" | "series">): Array<DeliverySeriesKey | ProviderSeriesKey> {
+  const extra = d.measured.delivered ? PROVIDER_SERIES_KEYS.filter((k) => d.series[k] !== undefined) : [];
+  return [...DELIVERY_SERIES_KEYS, ...extra];
+}
+
+/** The per-message row's statuses, in order, before delivery is measured (the A-2 ledger's written outcomes). */
+export const BYKEY_STATUSES = ["ACCEPTED", "FAILED", "DEAD", "SUPPRESSED", "CAPTURED", "CANCELLED"] as const satisfies readonly DeliveryStatus[];
+/** Once measured (Phase C): the provider-confirmed outcomes follow "accepted by provider". */
+export const BYKEY_STATUSES_MEASURED = ["ACCEPTED", "DELIVERED", "BOUNCED", "COMPLAINED", "FAILED", "DEAD", "SUPPRESSED", "CAPTURED", "CANCELLED"] as const satisfies readonly DeliveryStatus[];
+
+/** One per-message row: every status of the order, zeros included (the existing pattern), operator words only. */
+export function byKeyLine(counts: Partial<StatusCounts>, measuredDelivered: boolean): string {
+  return (measuredDelivered ? BYKEY_STATUSES_MEASURED : BYKEY_STATUSES).map((s) => `${n(counts[s] ?? 0)} ${DELIVERY_STATUS_LABEL[s].toLowerCase()}`).join(" · ");
+}
+
+/** Shown once delivery is measured: what "accepted" and "delivered" each mean. */
+export const DELIVERY_MEASURED_CAPTION =
+  "Delivered, bounced and complained are confirmed by the email provider’s signed events. “Accepted by provider” means the provider took the message; once it confirms delivery, the message counts as Delivered instead. Opens and clicks are never tracked.";
 /**
  * Operator words for every server SuppressionReason. Exhaustive by type: a
  * reason the server adds without a label here is a compile error, not a

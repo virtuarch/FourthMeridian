@@ -27,7 +27,7 @@ import { COMMS_CATALOG, EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/de
 import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  ACTIVATION_BLOCKER_LABEL, activationLines, COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
+  ACTIVATION_BLOCKER_LABEL, BYKEY_STATUSES, BYKEY_STATUSES_MEASURED, DELIVERY_STATUS_LABEL, SERIES_LABEL, byKeyLine, activationLines, COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
   STATUS_LABEL, statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
@@ -306,6 +306,32 @@ async function main() {
     check("delivery 200 ⇒ all eleven status tiles", count(dOk, "data-status-tile=") === 11);
     check("delivery 200 ⇒ all six series incl. captured / dead / cancelled", ["accepted", "failed", "dead", "suppressed", "captured", "cancelled"].every((k) => dOk.includes(`data-series="${k}"`)));
     check("measured.delivered false ⇒ explicit 'Delivery not yet measured'", dOk.includes("data-delivery-not-measured") && dOk.includes("Delivery not yet measured."));
+
+    // Phase C (v1.2): the per-message row and the series once delivery is measured.
+    const legacyLine = (c: StatusCounts) => (["ACCEPTED", "FAILED", "DEAD", "SUPPRESSED", "CAPTURED", "CANCELLED"] as const).map((st) => `${c[st].toLocaleString("en-US")} ${DELIVERY_STATUS_LABEL[st].toLowerCase()}`).join(" · ");
+    const rowCounts = { ...z, ACCEPTED: 3, DELIVERED: 9, BOUNCED: 2, COMPLAINED: 1, FAILED: 1 };
+    check("measured=false: the per-message row text is exactly today's (accepted … cancelled)", byKeyLine(rowCounts, false) === legacyLine(rowCounts) && !/delivered|bounced|complained/i.test(byKeyLine(rowCounts, false)));
+    check("measured=false: the rendered row is the same text", dOk.includes(legacyLine({ ...z, CAPTURED: 4 })));
+    check("the ordered row statuses are ONE exported constant each", BYKEY_STATUSES.join() === "ACCEPTED,FAILED,DEAD,SUPPRESSED,CAPTURED,CANCELLED"
+      && BYKEY_STATUSES_MEASURED.join() === "ACCEPTED,DELIVERED,BOUNCED,COMPLAINED,FAILED,DEAD,SUPPRESSED,CAPTURED,CANCELLED"
+      && !/\["ACCEPTED", "FAILED"/.test(strip("components/platform/comms/DeliveryView.tsx")));
+    check("measured=true: delivered / bounced / complained follow 'accepted by provider'", byKeyLine(rowCounts, true) === "3 accepted by provider · 9 delivered · 2 bounced · 1 complained · 1 failed · 0 dead · 0 suppressed · 0 captured · 0 cancelled");
+    const measured: DeliveryAnalytics = { ...delivery, measured: { delivered: true, opens: false, clicks: false }, totals: { ...z, ...rowCounts },
+      byKey: [{ key: "SYNC_FAILED", counts: rowCounts }], series: { ...delivery.series, delivered: sz, bounced: sz, complained: sz } };
+    const mOk = renderToStaticMarkup(createElement(DeliverySurface, { read: ok(measured), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    check("measured=true: the row renders delivered, bounced and complained", mOk.includes(byKeyLine(rowCounts, true)));
+    check("measured=true: the three provider series render after the six", ["delivered", "bounced", "complained"].every((k) => mOk.includes(`data-series="${k}"`)) && count(mOk, "data-series=") === 9
+      && mOk.indexOf('data-series="cancelled"') < mOk.indexOf('data-series="delivered"'));
+    check("measured=true: the provider-confirmed caption replaces 'not yet measured'; accepted stays 'accepted by provider'",
+      mOk.includes("data-delivery-measured") && mOk.includes("confirmed by the email provider") && !mOk.includes("data-delivery-not-measured") && mOk.includes("Accepted by provider"));
+    check("no copy equates accepted with delivered", !/accepted\s*(=|means|is)\s*delivered/i.test(mOk + dOk) && SERIES_LABEL.accepted === "Accepted by provider");
+    const partial = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...measured, series: { ...delivery.series, delivered: sz } }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    check("measured but a provider series absent ⇒ that series is not rendered", partial.includes('data-series="delivered"') && !partial.includes('data-series="bounced"'));
+    const unmeasuredWithKeys = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, series: { ...delivery.series, delivered: sz } }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    check("not measured ⇒ provider series never render, even if a key is present", !unmeasuredWithKeys.includes('data-series="delivered"'));
+    const visibleText = (h: string) => h.replace(/<[^>]*>/g, " ");
+    check("no raw status code ever appears in the rendered text (measured or not)",
+      ![...DELIVERY_STATUSES].some((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk) + visibleText(dOk))), DELIVERY_STATUSES.filter((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk))));
     check("Preview environment explains Captured", /Preview captures sends/.test(dOk));
     check("by-key rows show keys and counts only (no address)", dOk.includes("PASSWORD_RESET_LINK_SENT") && !/@/.test(dOk.replace(/@v\d/g, "")));
     const inApp = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, filters: { channel: "IN_APP" as const, status: null, template: null }, suppressedByReason: { ...r0, PREFERENCE_OFF: 3, RATE_LIMITED: 2 } }),
