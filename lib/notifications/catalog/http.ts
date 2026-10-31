@@ -117,13 +117,18 @@ export async function contractRefusal(upstream: Response): Promise<Response> {
  * shape with no-store (contractRefusal). Any throw from `work` is 503
  * UNAVAILABLE with a fixed message (the error is never echoed: it could carry data).
  */
-export async function runRead(deps: ReadDeps, work: (now: Date) => Response | Promise<Response>): Promise<Response> {
-  const [auth, err] = await deps.guard();
-  if (err) return contractRefusal(err);
+export async function runRead<R extends [{ user: { id: string } }, null] | [null, Response]>(
+  deps: Omit<ReadDeps, "guard"> & { guard: () => Promise<R> },
+  work: (now: Date, auth: NonNullable<R[0]>) => Response | Promise<Response>,
+): Promise<Response> {
+  const gate = await deps.guard();
+  if (gate[1]) return contractRefusal(gate[1]);
+  const auth = gate[0] as NonNullable<R[0]>;
   const limited = await deps.rateLimit(auth.user.id);
   if (limited) return contractRefusal(limited);
   try {
-    return await work((deps.now ?? (() => new Date()))());
+    // Comms Center B1: the gate's auth is handed on (the detail's `viewer` block needs the level).
+    return await work((deps.now ?? (() => new Date()))(), auth);
   } catch {
     return unavailable();
   }

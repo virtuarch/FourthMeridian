@@ -291,6 +291,15 @@ export interface ChannelMessage {
   finalAttempt?: boolean;
   /** The Notification row this email leg belongs to — the ledger's messageKey across retries. */
   notificationId?: string;
+  /**
+   * Comms Center B1 — the PUBLISHED operator content of this type's EMAIL leg,
+   * already substituted (lib/notifications/content/send.ts). Absent ⇒ the code
+   * rendering from title / body / href / actionLabel, byte for byte.
+   */
+  emailContent?: {
+    versionId: string;
+    content: import("@/lib/email/templates/notification").NotificationEmailContent;
+  };
 }
 
 /**
