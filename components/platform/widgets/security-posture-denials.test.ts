@@ -22,7 +22,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 
 const NOW = Date.parse("2026-10-21T12:00:00.000Z");
 const trip = (type: string, over: Partial<AnomalyTrip> = {}): AnomalyTrip => ({
-  id: `t-${type}`, type, keyKind: "unknown", keyRef: "…a1b2c3", count: 1, threshold: 1, windowMinutes: 60, at: new Date(NOW - 5 * 60_000).toISOString(), ...over,
+  id: `t-${type}`, type, keyKind: "unknown", keyRef: "h1a2b3c4d", legacy: false, count: 1, threshold: 1, windowMinutes: 60, at: new Date(NOW - 5 * 60_000).toISOString(), ...over,
 });
 const anomalies = (trips: AnomalyTrip[]): AnomaliesResponse => ({ trips, summary: { failedLoginsWindow: 0, windowMinutes: 15, tripsLast24h: trips.length } });
 const ok = <T,>(data: T) => ({ data, loading: false, error: null });
@@ -41,10 +41,12 @@ console.log("1. the reading");
 
 console.log("2. rendered in the Detections column, with the trip's opaque key");
 {
-  const html = renderToStaticMarkup(createElement(SecurityPostureSurface, { sources: sources(anomalies([trip(ACCESS_DENIED_TRIP_TYPE, { keyRef: "…9f9f9f" })])), nowMs: NOW }));
+  const html = renderToStaticMarkup(createElement(SecurityPostureSurface, { sources: sources(anomalies([trip(ACCESS_DENIED_TRIP_TYPE, { keyRef: "h9f9f9f9f" })])), nowMs: NOW }));
   const t = text(html);
   check("the reading appears", /Platform access refused · newest page 1/.test(t), t.slice(0, 400));
-  check("the trip row words the type and shows the opaque digest only", /platform access denied/.test(t) && /…9f9f9f/.test(t) && !/ckuser|platform-denied:/.test(t));
+  check("the trip row words the type and shows the opaque digest only", /platform access denied/.test(t) && /h9f9f9f9f/.test(t) && !/ckuser|platform-denied:/.test(t));
+  const legacy = text(renderToStaticMarkup(createElement(SecurityPostureSurface, { sources: sources(anomalies([trip(ACCESS_DENIED_TRIP_TYPE, { keyRef: "", legacy: true })])), nowMs: NOW })));
+  check("a pre-keyHash (legacy) denial trip says 'legacy (digest unavailable)', not 'no key recorded'", /legacy \(digest unavailable\)/.test(legacy) && !/no key recorded/.test(legacy));
   const empty = text(renderToStaticMarkup(createElement(SecurityPostureSurface, { sources: sources(anomalies([])), nowMs: NOW })));
   check("with no trips the reading is 0, not absent", /Platform access refused · newest page 0/.test(empty));
 }
