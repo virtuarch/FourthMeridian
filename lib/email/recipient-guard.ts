@@ -26,6 +26,15 @@
  * trimmed and lower-cased on both sides. Unset or empty ⇒ capture EVERYTHING.
  * No wildcards, no domains: an entry matches one address only.
  *
+ * ASCII ONLY, AND THE ENTRY IS WHAT GETS SENT (review of #166): toLowerCase()
+ * folds some non-ASCII code points into ASCII (KELVIN SIGN U+212A → "k",
+ * ANGSTROM SIGN U+212B → "å"), so a crafted `to` could compare equal to an
+ * entry while its RAW string went to the provider. Two independent closures:
+ *   1. outside Production any `to` with a non-ASCII character is captured, and
+ *      non-ASCII allowlist entries are ignored;
+ *   2. an allowed non-production send is addressed to the MATCHED ALLOWLIST
+ *      ENTRY (canonical, lower-cased), never the caller's raw string.
+ *
  * Pure: reads only the env object it is handed. Logs nothing itself; the
  * redacted log line is built by describeGuardedRecipient() (domain + short hash,
  * never the address).
@@ -68,24 +77,39 @@ export function normalizeAddress(address: string): string {
 /** Parse EMAIL_NONPROD_ALLOWLIST into a set of normalised exact addresses. */
 export function parseNonprodAllowlist(raw: string | undefined): ReadonlySet<string> {
   if (!raw) return new Set();
-  return new Set(raw.split(",").map(normalizeAddress).filter((a) => a.length > 0));
+  // ASCII is checked on the RAW entry, before lower-casing can fold a
+  // non-ASCII code point (U+212A) into an ASCII-looking one.
+  return new Set(
+    raw.split(",").filter((a) => isAscii(a)).map(normalizeAddress).filter((a) => a.length > 0),
+  );
+}
+
+/** True when every character is 7-bit ASCII. */
+export function isAscii(s: string): boolean {
+  return /^[\x00-\x7F]*$/.test(s);
 }
 
 export type RecipientDecision =
-  | { deliver: true; environment: EmailEnvironment }
+  /** `to` = the address the provider receives (Production: the caller's; else: the matched entry). */
+  | { deliver: true; environment: EmailEnvironment; to: string }
   | { deliver: false; environment: EmailEnvironment; reason: "ENVIRONMENT_GUARD" };
 
 /**
  * May a real provider send to `to` in this environment?
  *   production            → always.
- *   anything else         → only an exact (normalised) allowlist match.
+ *   anything else         → only an ASCII `to` whose normalised form exactly
+ *                           matches an entry; delivered TO THAT ENTRY.
  *   unset/empty allowlist → never (fail closed).
  */
 export function decideRecipient(to: string, e: RecipientGuardEnv): RecipientDecision {
   const environment = emailEnvironment(e);
-  if (environment === "production") return { deliver: true, environment };
+  if (environment === "production") return { deliver: true, environment, to };
+  if (!isAscii(to)) return { deliver: false, environment, reason: "ENVIRONMENT_GUARD" };
   const allow = parseNonprodAllowlist(e.EMAIL_NONPROD_ALLOWLIST);
-  if (allow.has(normalizeAddress(to))) return { deliver: true, environment };
+  const normalized = normalizeAddress(to);
+  for (const entry of allow) {
+    if (entry === normalized) return { deliver: true, environment, to: entry };
+  }
   return { deliver: false, environment, reason: "ENVIRONMENT_GUARD" };
 }
 

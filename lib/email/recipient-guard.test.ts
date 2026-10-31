@@ -44,6 +44,7 @@ function harness(env: EmailSendEnv) {
   const provided: EmailMessage[] = [];
   const captured: EmailMessage[] = [];
   const logs: string[] = [];
+  const levels: string[] = [];
   const provider: EmailProvider = {
     name: "fake-provider",
     async send(m) { provided.push(m); return { status: "sent", provider: "fake-provider", id: "id_1" }; },
@@ -52,8 +53,8 @@ function harness(env: EmailSendEnv) {
     name: "capture",
     async send(m) { captured.push(m); return { status: "captured", provider: "capture" }; },
   };
-  const send = createEmailSender({ env, provider, capture, log: (l) => logs.push(l) });
-  return { send, provided, captured, logs };
+  const send = createEmailSender({ env, provider, capture, log: (l, lvl) => { logs.push(l); levels.push(lvl); } });
+  return { send, provided, captured, logs, levels };
 }
 
 const isGuarded = (r: EmailResult) => r.status === "captured" && r.provider === "none" && r.reason === "ENVIRONMENT_GUARD";
@@ -93,6 +94,10 @@ async function main() {
   const unknownEnvs: [string, EmailSendEnv][] = [
     ["Vercel, VERCEL_ENV unset", { VERCEL: "1", RESEND_API_KEY: "re_fake" }],
     ["Vercel, VERCEL_ENV unexpected", { VERCEL: "1", VERCEL_ENV: "staging", RESEND_API_KEY: "re_fake" }],
+    // Exact comparison only — a loosened trim/lower-case would accept these.
+    ["Vercel, VERCEL_ENV 'production ' (trailing space)", { VERCEL: "1", VERCEL_ENV: "production ", RESEND_API_KEY: "re_fake" }],
+    ["Vercel, VERCEL_ENV 'Production' (capitalised)", { VERCEL: "1", VERCEL_ENV: "Production", RESEND_API_KEY: "re_fake" }],
+    ["Vercel, VERCEL_ENV ' production' (leading space)", { VERCEL: "1", VERCEL_ENV: " production", RESEND_API_KEY: "re_fake" }],
     ["Vercel development", { VERCEL: "1", VERCEL_ENV: "development", RESEND_API_KEY: "re_fake" }],
     ["off Vercel, NODE_ENV=production (local next start / CI / scripts)", { NODE_ENV: "production", RESEND_API_KEY: "re_fake" }],
     ["off Vercel, VERCEL_ENV=production but no VERCEL=1", { VERCEL_ENV: "production", RESEND_API_KEY: "re_fake" }],
@@ -106,6 +111,54 @@ async function main() {
   }
   check("only VERCEL=1 + VERCEL_ENV=production classifies as production",
     emailEnvironment(PROD) === "production" && unknownEnvs.every(([, e]) => emailEnvironment(e) !== "production"));
+
+  console.log("4b. An unknown Vercel environment captures LOUDLY (console.warn, fixed text)");
+  {
+    const h = harness({ VERCEL: "1", VERCEL_ENV: "Production", RESEND_API_KEY: "re_fake" });
+    await h.send("smoke", "anyone@example.com");
+    check("unknown Vercel env → warn level + the fixed message",
+      h.levels.join() === "warn" && h.logs[0]?.includes("email guard: unknown Vercel environment, capturing"), { l: h.logs, v: h.levels });
+    const p = harness({ ...PREVIEW });
+    await p.send("smoke", "anyone@example.com");
+    check("Preview capture stays at info (not the misconfiguration warning)",
+      p.levels.join() === "info" && !p.logs[0]?.includes("unknown Vercel environment"), { l: p.logs, v: p.levels });
+    const off = harness({ NODE_ENV: "production", RESEND_API_KEY: "re_fake" });
+    await off.send("smoke", "anyone@example.com");
+    check("off-Vercel unknown stays at info (no Vercel runtime to misconfigure)", off.levels.join() === "info");
+    const spied: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => { spied.push(a.map(String).join(" ")); };
+    try {
+      await createEmailSender({ env: { VERCEL: "1", VERCEL_ENV: "production ", RESEND_API_KEY: "re_fake" }, provider: { name: "p", send: async () => ({ status: "sent", provider: "p" }) }, capture: { name: "c", send: async () => ({ status: "captured", provider: "capture" }) } })("smoke", "a@example.com");
+    } finally { console.warn = orig; }
+    check("default wiring sends the warning to console.warn", spied.length === 1 && spied[0].includes("email guard: unknown Vercel environment, capturing") && !spied[0].includes("a@example.com"), spied);
+  }
+
+  console.log("4c. Unicode case-folding cannot smuggle a raw address to the provider");
+  {
+    const KELVIN = "\u212A"; // KELVIN SIGN — toLowerCase() → "k"
+    const ANGSTROM = "\u212B"; // ANGSTROM SIGN — toLowerCase() → "å"
+    check("precondition: the Kelvin sign really folds to ASCII k", `${KELVIN}`.toLowerCase() === "k");
+    const h = harness({ ...PREVIEW, EMAIL_NONPROD_ALLOWLIST: "kelvin@example.com" });
+    const r = await h.send("smoke", `${KELVIN}elvin@example.com`);
+    check("a Kelvin-sign address is captured outside production (non-ASCII refused)", isGuarded(r) && h.provided.length === 0, r);
+    const a = harness({ ...PREVIEW, EMAIL_NONPROD_ALLOWLIST: "\u00e5se@example.com" });
+    check("an Angstrom-sign address is captured, and a non-ASCII entry admits nothing",
+      isGuarded(await a.send("smoke", `${ANGSTROM}se@example.com`)) && isGuarded(await a.send("smoke", "\u00e5se@example.com")) && a.provided.length === 0);
+    check("pure decision: non-ASCII refused even when it folds onto an entry",
+      decideRecipient(`${KELVIN}elvin@example.com`, { ...PREVIEW, EMAIL_NONPROD_ALLOWLIST: "kelvin@example.com" }).deliver === false);
+    const m = harness({ ...PREVIEW, EMAIL_NONPROD_ALLOWLIST: "owner@example.com" });
+    await m.send("smoke", "  OWNER@Example.com ");
+    check("an allowed non-production send is addressed to the MATCHED ENTRY, not the raw string",
+      m.provided.length === 1 && m.provided[0].to === "owner@example.com", m.provided.map((x) => x.to));
+    const d = decideRecipient(" Owner@Example.COM", { ...PREVIEW, EMAIL_NONPROD_ALLOWLIST: "owner@example.com" });
+    check("parse: a non-ASCII allowlist entry is dropped (defence in depth)",
+      [...parseNonprodAllowlist("\u00e5se@example.com, a@b.c, \u212Aelvin@example.com")].join("|") === "a@b.c");
+    check("pure decision returns the canonical entry", d.deliver === true && d.to === "owner@example.com", d);
+    const pr = harness({ ...PROD });
+    await pr.send("smoke", `${KELVIN}elvin@example.com`);
+    check("production is unchanged: the caller's address goes through verbatim", pr.provided[0]?.to === `${KELVIN}elvin@example.com`);
+  }
 
   console.log("5. Case and whitespace normalisation (both sides)");
   {

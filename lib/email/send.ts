@@ -65,8 +65,8 @@ export interface EmailSenderDeps {
   provider: EmailProvider;
   /** The in-memory transport (test mode / no key). */
   capture: EmailProvider;
-  /** Sink for the redacted guard line. */
-  log?: (line: string) => void;
+  /** Sink for the redacted guard line ("warn" = unknown Vercel environment). */
+  log?: (line: string, level: "info" | "warn") => void;
 }
 
 export type SendEmailFn = (
@@ -77,7 +77,7 @@ export type SendEmailFn = (
 
 /** Build a sendEmail over injected env + transports. */
 export function createEmailSender(deps: EmailSenderDeps): SendEmailFn {
-  const log = deps.log ?? ((line: string) => console.info(line));
+  const log = deps.log ?? ((line: string, level: "info" | "warn") => console[level](line));
   return (name, to, data = {}) => send(deps, log, name, to, data);
 }
 
@@ -97,7 +97,7 @@ export const sendEmail: SendEmailFn = createEmailSender({
 
 async function send(
   deps: EmailSenderDeps,
-  log: (line: string) => void,
+  log: (line: string, level: "info" | "warn") => void,
   name: EmailTemplateName,
   to: string,
   data: Record<string, unknown>,
@@ -136,11 +136,17 @@ async function send(
   // and ONLY here, so no path can reach the provider around it.
   const decision = decideRecipient(to, env);
   if (!decision.deliver) {
-    log(
-      `[email] captured by the non-production recipient guard: template=${name} ` +
-        `environment=${decision.environment} ${describeGuardedRecipient(to)}`,
-    );
+    const detail = `template=${name} environment=${decision.environment} ${describeGuardedRecipient(to)}`;
+    if (env.VERCEL === "1" && decision.environment === "unknown") {
+      // A Vercel runtime whose VERCEL_ENV is not exactly production/preview/
+      // development — most likely a misconfigured Production. Loud, fixed text.
+      log(`[email] email guard: unknown Vercel environment, capturing — ${detail}`, "warn");
+    } else {
+      log(`[email] captured by the non-production recipient guard: ${detail}`, "info");
+    }
     return { status: "captured", provider: "none", reason: decision.reason };
   }
-  return deps.provider.send(message);
+  // Production: the caller's address. Elsewhere: the MATCHED allowlist entry,
+  // never the raw string (no Unicode case-folding smuggling — recipient-guard.ts).
+  return deps.provider.send({ ...message, to: decision.to });
 }

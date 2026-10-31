@@ -20,11 +20,18 @@ This catalog lists every email-sending path in the repository, as of PR D ("Emai
   - a Vercel runtime with an unexpected or unset `VERCEL_ENV`;
   - anything off Vercel (local `next start`, CI, scripts), even with `NODE_ENV=production`.
 - **Allowlist.** `EMAIL_NONPROD_ALLOWLIST` holds comma-separated exact addresses, trimmed and lower-cased on both sides. It has no wildcards or domains. If it is unset or empty, everything is captured. Production ignores it.
+- **ASCII only, and the matched entry is sent** (from the #166 review). `toLowerCase()` folds some non-ASCII characters into ASCII (the Kelvin sign U+212A becomes `k`). So outside Production:
+  - a `to` containing any non-ASCII character is captured;
+  - a non-ASCII allowlist entry (checked before lower-casing) is ignored;
+  - an allowed send is addressed to the **matched allowlist entry**, never the caller's raw string.
+
+  Production still sends the caller's address verbatim.
+- **Unknown Vercel environment is loud.** If `VERCEL=1` and `VERCEL_ENV` is not exactly `production`, `preview` or `development`, the capture is logged at `console.warn` with the fixed text "email guard: unknown Vercel environment, capturing", so a misconfigured Production is visible. Any other capture logs at `console.info`.
 - **Captured result.** `{ status: "captured", provider: "none", reason: "ENVIRONMENT_GUARD" }`. The provider is never called, and the message is not put in the in-memory capture buffer either.
   - "captured" is a non-failure. Routes only log `status === "error"`.
   - The notification channel records the row as `captured`.
   - `jobs/retry-notifications.ts` selects `status: "error"` rows only, so a captured delivery is never retried. A retry that the guard captures closes the row as `captured`.
-- **Log line.** One `console.info` per guarded send: `template=<name> environment=<env> domain=<domain> hash=<12 hex of sha256>`. The full address and its local part are never logged.
+- **Log line.** One line per guarded send (`console.info`, or `console.warn` for an unknown Vercel environment): `template=<name> environment=<env> domain=<domain> hash=<12 hex of sha256>`. The full address and its local part are never logged.
 - **Paths verified to reach the provider only through it:**
   - every direct `sendEmail` caller in §1 and §3;
   - `sendSecurityAlert`;
@@ -37,6 +44,7 @@ This catalog lists every email-sending path in the repository, as of PR D ("Emai
 - **Two gates for the preview script.** `EMAIL_PREVIEW_ALLOWED_TO` stays as the script's own first gate: it requires an exact match with `--to`, and the script refuses before rendering or sending otherwise. The chokepoint guard is the second gate. A local run is never Production, so the address must be in **both** variables. If it is in the first only, the script logs `sent <slug>: captured`.
 - **Email health.** `getEmailDeliveryHealth().counts.captured` is its own category, separate from `error`. `describeDirectSendCoverage().recipientGuard` reports `{ environment, active, allowlistCount }`, a count only and never the addresses, and the note says when recipients are captured.
   - **Follow-up:** `components/platform/widgets/OpsEmailDeliveryWidget.tsx` belongs to Session 2, so it is untouched. It does not display `recipientGuard` yet.
+  - **Follow-up:** `lib/alerts/run.ts` still reports a guard capture of the platform-alert email as `NO_EMAIL_TRANSPORT`, which is retried next cycle. A distinct `CAPTURED_NONPROD` reason, without retry, would touch the alert reason union, `latest-evaluation.ts` and the Session 2 alerts widget, so it was deferred.
 - **Configuration.** `EMAIL_NONPROD_ALLOWLIST` was set on Vercel Preview on 2026-10-31 by Session 1, at the owner's request. It takes effect on the next Preview deploy after merge. It is documented in `.env.example`, and its value is never committed.
 
 ## Shared design
