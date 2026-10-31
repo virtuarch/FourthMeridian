@@ -39,23 +39,26 @@ export interface PreviewCase {
   data: BetaInviteData;
 }
 
-/** Every template built on the design system, in a few variants each. */
+/** Every template built on the design system, in a few variants each (both invite origins). */
 export function previewCases(): PreviewCase[] {
   const inviteUrl = buildBetaInviteUrl(PREVIEW_APP_BASE, PREVIEW_TOKEN);
   const cases: PreviewCase[] = [];
-  for (const days of [1, 7, 14, 30]) {
-    for (const named of [false, true]) {
-      cases.push({
-        slug: `beta-invite--${named ? "named" : "unnamed"}--${days}d`,
-        template: "beta-invite",
-        data: {
-          recipientName: named ? "Alex Example" : null,
-          inviteUrl,
-          issuedAt: PREVIEW_ISSUED_AT,
-          expiresAt: new Date(PREVIEW_ISSUED_AT.getTime() + days * DAY_MS),
-          preview: true,
-        },
-      });
+  for (const origin of ["request", "direct"] as const) {
+    for (const days of [1, 7, 14, 30]) {
+      for (const named of [false, true]) {
+        cases.push({
+          slug: `beta-invite--${origin}--${named ? "named" : "unnamed"}--${days}d`,
+          template: "beta-invite",
+          data: {
+            origin,
+            recipientName: named ? "Alex Example" : null,
+            inviteUrl,
+            issuedAt: PREVIEW_ISSUED_AT,
+            expiresAt: new Date(PREVIEW_ISSUED_AT.getTime() + days * DAY_MS),
+            preview: true,
+          },
+        });
+      }
     }
   }
   return cases;

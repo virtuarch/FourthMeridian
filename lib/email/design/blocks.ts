@@ -87,18 +87,24 @@ export function paragraphHtml(b: Extract<EmailBlock, { kind: "paragraph" }>): st
   return `<p class="fm-text" style="${P_STYLE}">${escapeHtml(b.text)}</p>`;
 }
 
+/** CTA padding: on the link for every client, on the cell for Outlook (Word). */
+export const CTA_PADDING = "14px 32px";
+
 /**
- * Bulletproof button: a table cell carries the fill (so Outlook paints it from
- * `bgcolor`), the link carries the padding, and the URL is ALSO printed below
- * as text so the email works even when the button does not render.
+ * Bulletproof button. The table cell carries the fill (`bgcolor` + style) AND,
+ * for Outlook's Word engine — which ignores padding on an <a> — the padding via
+ * `mso-padding-alt`, which only Outlook reads. Every other client ignores
+ * mso-padding-alt and pads the inline-block link instead, so the button looks
+ * the same everywhere. The URL is ALSO printed below as text so the email works
+ * even when the button does not render.
  */
 export function ctaHtml(b: Extract<EmailBlock, { kind: "cta" }>): string {
   const href = escapeHtml(safeHttpUrl(b.url));
   const label = escapeHtml(b.label);
   return (
     `<table role="presentation" cellpadding="0" cellspacing="0" border="0" class="fm-cta" style="margin:8px 0 16px 0;"><tr>` +
-    `<td align="center" bgcolor="${LIGHT.ctaBg}" style="border-radius:8px;background-color:${LIGHT.ctaBg};">` +
-    `<a href="${href}" target="_blank" rel="noopener" style="display:inline-block;padding:14px 32px;font-family:${FONT_STACK};` +
+    `<td align="center" bgcolor="${LIGHT.ctaBg}" class="fm-cta-cell" style="border-radius:8px;background-color:${LIGHT.ctaBg};mso-padding-alt:${CTA_PADDING};">` +
+    `<a href="${href}" target="_blank" rel="noopener" style="display:inline-block;padding:${CTA_PADDING};font-family:${FONT_STACK};` +
     `font-size:16px;line-height:20px;font-weight:600;color:${LIGHT.ctaText};text-decoration:none;border-radius:8px;` +
     `border:1px solid ${LIGHT.ctaBg};background-color:${LIGHT.ctaBg};">${label}</a>` +
     `</td></tr></table>` +

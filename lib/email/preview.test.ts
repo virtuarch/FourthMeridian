@@ -79,7 +79,11 @@ async function main() {
     const all = [...g.files.entries()];
     check("every file carries the non-redeemable token", all.every(([, c]) => c.includes(`invite=${PREVIEW_TOKEN}`)));
     check("no 64-hex (real-shaped) token anywhere", all.every(([, c]) => !/[0-9a-f]{64}/i.test(c)));
-    check("every subject is [PREVIEW]-prefixed", all.filter(([p]) => p.endsWith(".html")).every(([, c]) => c.includes("<title>[PREVIEW] Your Fourth Meridian beta access is approved</title>")));
+    const htmls = all.filter(([p]) => p.endsWith(".html"));
+    check("every subject is [PREVIEW]-prefixed", htmls.every(([, c]) => /<title>\[PREVIEW\] [^<]+<\/title>/.test(c)));
+    check("request variants use the approval subject", htmls.filter(([p]) => p.includes("--request--")).every(([, c]) => c.includes("<title>[PREVIEW] Your Fourth Meridian beta access is approved</title>")));
+    check("direct variants use the invitation subject", htmls.filter(([p]) => p.includes("--direct--")).every(([, c]) => c.includes("<title>[PREVIEW] You&#39;re invited to the Fourth Meridian beta</title>")));
+    check("both origins are previewed", previewCases().some((c) => c.data.origin === "request") && previewCases().some((c) => c.data.origin === "direct"));
     const days = previewCases().map((c) => wholeDaysBetween(c.data.issuedAt, c.data.expiresAt));
     check("variants cover 1/7/14/30 days, named and unnamed", [1, 7, 14, 30].every((d) => days.includes(d))
       && previewCases().some((c) => c.data.recipientName) && previewCases().some((c) => !c.data.recipientName));

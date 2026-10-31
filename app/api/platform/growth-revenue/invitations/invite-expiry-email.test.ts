@@ -62,6 +62,16 @@ for (const k of ["log", "error", "warn", "info", "debug"] as const) {
   };
 }
 
+const REQUEST_LEAD = "Your Fourth Meridian beta access is approved.";
+const DIRECT_LEAD = "You've been invited to join the Fourth Meridian beta.";
+function assertOrigin(label: string, email: string, origin: "request" | "direct") {
+  const msg = lastTo(email);
+  const ok = origin === "request"
+    ? msg?.subject === "Your Fourth Meridian beta access is approved" && msg.text.includes(REQUEST_LEAD) && msg.text.includes("If you didn't request access")
+    : msg?.subject === "You're invited to the Fourth Meridian beta" && msg.text.includes(DIRECT_LEAD) && msg.text.includes("If you weren't expecting this invitation");
+  t.check(`${label}: ${origin} copy`, !!ok, msg?.subject);
+}
+
 async function main() {
   await installFakePrisma(fake);
   const { POST: APPROVE } = (await import("@/app/api/platform/growth-revenue/requests/[id]/approve/route")) as unknown as { POST: IdH };
@@ -75,6 +85,7 @@ async function main() {
     const r = await invoke(APPROVE as never, request(`/api/platform/growth-revenue/requests/${w.req.id}/approve`, { method: "POST", cookie: w.cookie }), { id: w.req.id });
     t.check("approve → 200", r.status === 200, r.body);
     assertEmailMatchesRow("approve", email, 14);
+    assertOrigin("approve", email, "request");
   }
 
   t.section("resend (14-day TTL)");
@@ -84,6 +95,31 @@ async function main() {
     const r = await invoke(RESEND as never, request(`/api/platform/growth-revenue/requests/${w.req.id}/resend`, { method: "POST", cookie: w.cookie }), { id: w.req.id });
     t.check("resend → 200", r.status === 200, r.body);
     assertEmailMatchesRow("resend", email, 14);
+    assertOrigin("resend of a legacy row (no events, no audit → not determinable)", email, "request");
+  }
+
+  t.section("resend picks the origin from the row's history");
+  {
+    // (a) A request with a recorded form submission → request copy.
+    const email = "submitted@example.test";
+    const w = await world(email, "APPROVED");
+    fake.seed("BetaAccessRequestEvent", { email, receivedAt: new Date() });
+    await invoke(RESEND as never, request(`/api/platform/growth-revenue/requests/${w.req.id}/resend`, { method: "POST", cookie: w.cookie }), { id: w.req.id });
+    assertOrigin("resend after a form submission", email, "request");
+
+    // (b) Created by a direct invite, then re-sent → direct copy.
+    const d = "direct-then-resent@example.test";
+    const w2 = await world("unrelated@example.test", "PENDING");
+    await invoke(DIRECT as never, request("/api/platform/growth-revenue/invitations", { method: "POST", cookie: w2.cookie, body: { email: d, expiresDays: 5 } }));
+    const row = fake.one("BetaAccessRequest", { email: d })!;
+    const rr = await invoke(RESEND as never, request(`/api/platform/growth-revenue/requests/${row.id}/resend`, { method: "POST", cookie: w2.cookie }), { id: row.id });
+    t.check("resend of the direct invite → 200", rr.status === 200, rr.body);
+    assertOrigin("resend of a direct invite", d, "direct");
+
+    // (c) A direct invite to someone who ALSO submitted the form → request copy.
+    fake.seed("BetaAccessRequestEvent", { email: d, receivedAt: new Date() });
+    await invoke(RESEND as never, request(`/api/platform/growth-revenue/requests/${row.id}/resend`, { method: "POST", cookie: w2.cookie }), { id: row.id });
+    assertOrigin("resend of a direct invite whose address also requested", d, "request");
   }
 
   for (const days of [3, 7, 30]) {
@@ -93,6 +129,7 @@ async function main() {
     const r = await invoke(DIRECT as never, request("/api/platform/growth-revenue/invitations", { method: "POST", cookie: w.cookie, body: { email, expiresDays: days } }));
     t.check("direct invite → 200", r.status === 200, r.body);
     assertEmailMatchesRow(`direct ${days}d`, email, days);
+    assertOrigin(`direct ${days}d`, email, "direct");
   }
 
   t.section("default direct invite (no expiresDays → route default)");
@@ -109,7 +146,7 @@ async function main() {
     const invites = capturedEmails().filter((m) => m.to !== "unrelated@example.test");
     const tokens = invites.map((m) => m.text.match(/invite=([0-9a-f]{64})/)?.[1]).filter(Boolean) as string[];
     const leaks = logged.filter((l) => tokens.some((tk) => l.includes(tk)) || invites.some((m) => l.includes(m.to)) || l.includes("/register?invite="));
-    t.check("tokens were issued (the check is live)", tokens.length >= 6, tokens.length);
+    t.check("tokens were issued (the check is live)", tokens.length >= 9, tokens.length);
     t.check("no console line carries a token, an invite link or an invitee address", leaks.length === 0, leaks);
   }
 

@@ -65,6 +65,7 @@ const SIMPLE_TEMPLATES: {
     senderKey: betaInviteTemplate.sender,
     expectFrom: "Fourth Meridian Beta <beta@fourthmeridian.com>",
     rendered: betaInviteTemplate.render({
+      origin: "request",
       inviteUrl: BETA_INVITE_URL,
       issuedAt: new Date("2026-10-31T15:04:00Z"),
       expiresAt: new Date("2026-11-03T15:04:00Z"),

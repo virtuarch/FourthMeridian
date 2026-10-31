@@ -24,7 +24,7 @@ import { PRODUCTION_SITE_ORIGIN, resolveEmailSiteOrigin, type EmailBrandConfig }
 import { daysPhrase, formatUtcDateTimeLabelled, wholeDaysBetween } from "@/lib/email/design/datetime";
 import { cleanText, escapeHtml, safeHttpUrl } from "@/lib/email/design/escape";
 import { renderEmail, renderSecurityEmail } from "@/lib/email/design/render";
-import { betaInviteTemplate, renderBetaInvite, BETA_INVITE_SUBJECT } from "@/lib/email/templates/beta-invite";
+import { betaInviteTemplate, renderBetaInvite, BETA_INVITE_SUBJECT, BETA_DIRECT_INVITE_SUBJECT } from "@/lib/email/templates/beta-invite";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -114,6 +114,15 @@ console.log("3. validity days + labelled UTC expiry");
     check(`${c.label}: "${c.expect}"`, formatUtcDateTimeLabelled(expires) === c.expect, formatUtcDateTimeLabelled(expires));
   }
   check("a partial day is floored (6d 23h → 6)", wholeDaysBetween(new Date(0), new Date(7 * DAY - 3600_000)) === 6);
+  const T0 = new Date("2026-10-31T15:04:00Z").getTime();
+  const span = (ms: number) => wholeDaysBetween(new Date(T0), new Date(T0 + ms));
+  check("7d − 3 ms → 7 (clock skew between issue and expiry)", span(7 * DAY - 3) === 7, span(7 * DAY - 3));
+  check("7d + 3 ms → 7", span(7 * DAY + 3) === 7, span(7 * DAY + 3));
+  check("7d − 59 s → 7 (inside the 1-minute tolerance)", span(7 * DAY - 59_000) === 7, span(7 * DAY - 59_000));
+  check("7d − 61 s → 6 (outside the tolerance: floored)", span(7 * DAY - 61_000) === 6, span(7 * DAY - 61_000));
+  check("6.5d → 6", span(6.5 * DAY) === 6, span(6.5 * DAY));
+  check("1d − 3 ms → 1", span(DAY - 3) === 1, span(DAY - 3));
+  check("30 s → 0 (never rounds up to a first day)", span(30_000) === 0, span(30_000));
   check("non-positive span → 0", wholeDaysBetween(new Date(DAY), new Date(0)) === 0);
   check("daysPhrase singular / plural / zero", daysPhrase(1) === "1 day" && daysPhrase(3) === "3 days" && daysPhrase(0) === "less than a day");
   check("invalid date refuses to format", throws(() => formatUtcDateTimeLabelled(new Date("nope"))));
@@ -132,16 +141,16 @@ console.log("4. escaping + URL validation");
   const issuedAt = new Date("2026-10-31T15:04:00Z");
   const expiresAt = new Date(issuedAt.getTime() + 7 * DAY);
   const evil = `<script>alert(1)</script>" onmouseover="x`;
-  const r = renderBetaInvite({ recipientName: evil, inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
+  const r = renderBetaInvite({ origin: "request", recipientName: evil, inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
   check("malicious name: no raw <script> in html", !r.html.includes("<script>"));
   check("malicious name: escaped form present", r.html.includes("&lt;script&gt;alert(1)&lt;/script&gt;&quot; onmouseover=&quot;x"));
-  const nl = renderBetaInvite({ recipientName: "Eve\n\nClick http://evil.test", inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
+  const nl = renderBetaInvite({ origin: "request", recipientName: "Eve\n\nClick http://evil.test", inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
   check("name with line breaks cannot forge text lines", nl.text.includes("Hi Eve Click http://evil.test,") && !nl.text.includes("Eve\n"));
 
-  check("javascript: invite URL is refused", throws(() => renderBetaInvite({ inviteUrl: "javascript:alert(1)", issuedAt, expiresAt }, { brand: BRAND })));
-  const quoted = renderBetaInvite({ inviteUrl: `https://app.example.test/register?invite="><img src=x onerror=alert(1)>`, issuedAt, expiresAt }, { brand: BRAND });
+  check("javascript: invite URL is refused", throws(() => renderBetaInvite({ origin: "request", inviteUrl: "javascript:alert(1)", issuedAt, expiresAt }, { brand: BRAND })));
+  const quoted = renderBetaInvite({ origin: "request", inviteUrl: `https://app.example.test/register?invite="><img src=x onerror=alert(1)>`, issuedAt, expiresAt }, { brand: BRAND });
   check("quote-breaking URL is percent-encoded in href", !quoted.html.includes("<img src=x") && quoted.html.includes("invite=%22%3E%3Cimg%20src=x"));
-  check("expiresAt before issuedAt is refused", throws(() => renderBetaInvite({ inviteUrl: URL_OK, issuedAt: expiresAt, expiresAt: issuedAt }, { brand: BRAND })));
+  check("expiresAt before issuedAt is refused", throws(() => renderBetaInvite({ origin: "request", inviteUrl: URL_OK, issuedAt: expiresAt, expiresAt: issuedAt }, { brand: BRAND })));
 }
 
 // ── 5. beta invite ───────────────────────────────────────────────────────────
@@ -150,11 +159,11 @@ console.log("5. beta approval invitation");
   const issuedAt = new Date("2026-10-24T15:04:00Z");
   const expiresAt = new Date(issuedAt.getTime() + 14 * DAY);
   const EXP = "Saturday, November 7, 2026 at 3:04 PM UTC";
-  const r = renderBetaInvite({ recipientName: null, inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
+  const r = renderBetaInvite({ origin: "request", recipientName: null, inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
 
   check("subject", r.subject === BETA_INVITE_SUBJECT && r.subject === "Your Fourth Meridian beta access is approved");
   check("neutral greeting without a name", r.text.includes("\nHello,\n") && !r.text.includes("Hi "));
-  check("greets by name when known", renderBetaInvite({ recipientName: "Sam", inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND }).text.includes("Hi Sam,"));
+  check("greets by name when known", renderBetaInvite({ origin: "request", recipientName: "Sam", inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND }).text.includes("Hi Sam,"));
   check("text: approval line", r.text.includes("Your Fourth Meridian beta access is approved."));
   check("text: computed validity", r.text.includes("You have 14 days to redeem your invitation."));
   check("text: labelled absolute expiry", r.text.includes(`It expires on ${EXP}.`));
@@ -164,6 +173,16 @@ console.log("5. beta approval invitation");
   check("html: same expiry", r.html.includes(`It expires on ${EXP}.`) && r.html.includes("You have 14 days to redeem your invitation."));
   check("html: CTA href + visible fallback URL", r.html.split(`href="${URL_OK}"`).length - 1 === 2 && r.html.includes(`>${URL_OK}</a>`));
   check("html: CTA label", r.html.includes(">Get Started</a>"));
+  {
+    // Outlook (Word) ignores padding on <a>: the cell carries fill + mso-only padding;
+    // other clients pad the inline-block link with the SAME value (identical look).
+    const cell = r.html.match(/<td[^>]*class="fm-cta-cell"[^>]*>/)?.[0] ?? "";
+    const link = r.html.match(/<td[^>]*class="fm-cta-cell"[^>]*><a [^>]*>/)?.[0]?.slice(cell.length) ?? "";
+    check("CTA cell: bgcolor attribute + background-color style", cell.includes(`bgcolor="${LIGHT.ctaBg}"`) && cell.includes(`background-color:${LIGHT.ctaBg};`), cell);
+    check("CTA cell: Outlook padding via mso-padding-alt:14px 32px", cell.includes("mso-padding-alt:14px 32px;"), cell);
+    check("CTA cell: no standard padding (other clients would double it)", !/[;"]padding:/.test(cell), cell);
+    check("CTA link: inline-block with the matching 14px 32px padding", link.includes("display:inline-block;padding:14px 32px;"), link);
+  }
   check("html: logo alt text", r.html.includes(`alt="Fourth Meridian"`));
   check("html: logo is the hosted 128 px mark on the site origin", r.html.includes(`src="${BRAND.siteOrigin}/brand/fm-mark-dark-128.png"`));
   check("html: wordmark is real text", /<td[^>]*class="fm-heading"[^>]*>Fourth Meridian<\/td>/.test(r.html));
@@ -174,12 +193,12 @@ console.log("5. beta approval invitation");
   }
   check("footer: reason line", r.text.includes("You're receiving this email because a Fourth Meridian beta invitation was issued to this address."));
   check("footer: support contact", r.html.includes(`mailto:${BRAND.supportEmail}`) && r.text.includes(`Contact ${BRAND.supportEmail}.`));
-  const noSupport = renderBetaInvite({ inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: { ...BRAND, supportEmail: null } });
+  const noSupport = renderBetaInvite({ origin: "request", inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: { ...BRAND, supportEmail: null } });
   check("footer: support line omitted when none is configured", !noSupport.html.includes("mailto:") && !noSupport.text.includes("Questions?"));
 
   // Validity is computed, never a constant.
   for (const days of [1, 3, 7, 9, 14, 30]) {
-    const v = renderBetaInvite({ inviteUrl: URL_OK, issuedAt, expiresAt: new Date(issuedAt.getTime() + days * DAY) }, { brand: BRAND });
+    const v = renderBetaInvite({ origin: "request", inviteUrl: URL_OK, issuedAt, expiresAt: new Date(issuedAt.getTime() + days * DAY) }, { brand: BRAND });
     const phrase = days === 1 ? "1 day" : `${days} days`;
     check(`${days}-day invite says "${phrase}" in both parts`, v.text.includes(`You have ${phrase} to redeem`) && v.html.includes(`You have ${phrase} to redeem`));
   }
@@ -200,9 +219,26 @@ console.log("5. beta approval invitation");
   check("brass is an accent rule, never text colour", !new RegExp(`(^|[^-])color:${BRASS[500]}`).test(r.html) && r.html.includes(`background-color:${BRASS[500]}`));
 
   // The registry template uses the env-derived brand (Production site origin when unset).
-  const viaRegistry = betaInviteTemplate.render({ inviteUrl: URL_OK, issuedAt, expiresAt });
+  const viaRegistry = betaInviteTemplate.render({ origin: "request", inviteUrl: URL_OK, issuedAt, expiresAt });
   check("registry render returns html + text", typeof viaRegistry.html === "string" && viaRegistry.text.includes(URL_OK));
   check("registry render links legal pages on the site origin", viaRegistry.html!.includes(`href="${resolveEmailSiteOrigin()}/privacy"`));
+}
+
+// ── 5b. origin copy ──────────────────────────────────────────────────────────
+console.log("5b. request vs direct invitation copy");
+{
+  const issuedAt = new Date("2026-10-31T15:04:00Z");
+  const expiresAt = new Date(issuedAt.getTime() + 7 * DAY);
+  const req = renderBetaInvite({ origin: "request", inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
+  const dir = renderBetaInvite({ origin: "direct", inviteUrl: URL_OK, issuedAt, expiresAt }, { brand: BRAND });
+  check("request: subject", req.subject === "Your Fourth Meridian beta access is approved");
+  check("request: heading + lead + ignore line (both parts)", ["Beta access approved", "Your Fourth Meridian beta access is approved.",
+    "If you didn't request access, you can ignore this email; the link expires on its own."].every((l) => req.text.includes(l) && req.html.includes(escapeHtml(l))));
+  check("direct: subject", dir.subject === "You're invited to the Fourth Meridian beta" && dir.subject === BETA_DIRECT_INVITE_SUBJECT);
+  check("direct: heading + lead + guidance (both parts)", ["You're invited to the Fourth Meridian beta", "You've been invited to join the Fourth Meridian beta.",
+    "If you weren't expecting this invitation, you can ignore this email; the link expires on its own."].every((l) => dir.text.includes(l) && dir.html.includes(escapeHtml(l))));
+  check("direct: never claims a request or an approval", !/request(ed)? access|approved/i.test(dir.text) && !/approved/i.test(dir.html), dir.text);
+  check("direct: shares expiry + CTA + next steps", dir.text.includes("You have 7 days to redeem your invitation.") && dir.text.includes(`Get Started:\n${URL_OK}`) && dir.text.includes("What happens next"));
 }
 
 // ── 6. security variant ──────────────────────────────────────────────────────

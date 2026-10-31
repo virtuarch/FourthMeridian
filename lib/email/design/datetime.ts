@@ -11,14 +11,22 @@
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** How close to a whole day a span must be to count as that whole day. */
+export const WHOLE_DAY_TOLERANCE_MS = 60 * 1000;
+
 /**
- * Whole days from `from` to `to`: elapsed time floored to complete 24-hour days.
- * Epoch-millisecond arithmetic is UTC by construction, so a local DST shift never
- * gains or loses a day. Negative or invalid spans return 0.
+ * Whole days from `from` to `to`. A span within ±1 minute of a whole number of
+ * 24-hour days IS that many days (so a 7-day TTL computed a few milliseconds
+ * apart from its issue time still reads "7 days", never "6"); any other span is
+ * floored to complete days (6.5 days → 6), so the email never promises time the
+ * invite does not have. Epoch-millisecond arithmetic is UTC by construction, so
+ * a local DST shift never gains or loses a day. Negative or invalid spans → 0.
  */
 export function wholeDaysBetween(from: Date, to: Date): number {
   const span = to.getTime() - from.getTime();
   if (!Number.isFinite(span) || span <= 0) return 0;
+  const nearest = Math.round(span / DAY_MS);
+  if (nearest > 0 && Math.abs(span - nearest * DAY_MS) <= WHOLE_DAY_TOLERANCE_MS) return nearest;
   return Math.floor(span / DAY_MS);
 }
 

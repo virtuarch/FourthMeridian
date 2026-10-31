@@ -108,6 +108,7 @@ async function main(): Promise<void> {
   const INVITE_URL = `https://app.fourthmeridian.com/register?invite=${TOKEN}`;
   const RECIPIENT = "invitee.private@example.com";
   const inviteData = {
+    origin: "request",
     inviteUrl: INVITE_URL,
     issuedAt: new Date("2026-10-31T15:04:00Z"),
     expiresAt: new Date("2026-11-07T15:04:00Z"),

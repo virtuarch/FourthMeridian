@@ -32,11 +32,37 @@ export interface BetaInviteData {
   issuedAt: Date;
   /** When it stops working (the `inviteExpiresAt` the route wrote). */
   expiresAt: Date;
+  /**
+   * Why this person is being invited:
+   *   "request" — they asked for access (approve, or a resend of an approval);
+   *   "direct"  — an operator invited them with no request behind it.
+   * The copy differs: a direct invitee never "requested access".
+   */
+  origin: BetaInviteOrigin;
   /** Preview tool only (scripts/email-preview.ts): prefixes the subject "[PREVIEW] ". */
   preview?: boolean;
 }
 
+export type BetaInviteOrigin = "request" | "direct";
+
 export const BETA_INVITE_SUBJECT = "Your Fourth Meridian beta access is approved";
+export const BETA_DIRECT_INVITE_SUBJECT = "You're invited to the Fourth Meridian beta";
+
+/** The origin-specific lines. Everything else (expiry, CTA, next steps, footer) is shared. */
+const COPY: Record<BetaInviteOrigin, { subject: string; heading: string; lead: string; ignore: string }> = {
+  request: {
+    subject: BETA_INVITE_SUBJECT,
+    heading: "Beta access approved",
+    lead:    "Your Fourth Meridian beta access is approved.",
+    ignore:  "If you didn't request access, you can ignore this email; the link expires on its own.",
+  },
+  direct: {
+    subject: BETA_DIRECT_INVITE_SUBJECT,
+    heading: BETA_DIRECT_INVITE_SUBJECT,
+    lead:    "You've been invited to join the Fourth Meridian beta.",
+    ignore:  "If you weren't expecting this invitation, you can ignore this email; the link expires on its own.",
+  },
+};
 
 function asDate(value: unknown, field: string): Date {
   const d = value instanceof Date ? value : new Date(value as string);
@@ -57,13 +83,15 @@ export function renderBetaInvite(
   const expiresLabel = formatUtcDateTimeLabelled(expiresAt);
   const name = data.recipientName ? cleanText(data.recipientName) : "";
   const greeting = name ? `Hi ${name},` : "Hello,";
+  // Anything but an explicit "direct" gets the request copy (the historical default).
+  const copy = COPY[data.origin === "direct" ? "direct" : "request"];
 
   return renderEmail({
-    subject: `${data.preview === true ? "[PREVIEW] " : ""}${BETA_INVITE_SUBJECT}`,
+    subject: `${data.preview === true ? "[PREVIEW] " : ""}${copy.subject}`,
     preheader: `Create your account within ${daysPhrase(days)}. Your invitation expires ${expiresLabel}.`,
     blocks: [
-      { kind: "hero", heading: "Beta access approved", greeting },
-      { kind: "paragraph", text: "Your Fourth Meridian beta access is approved." },
+      { kind: "hero", heading: copy.heading, greeting },
+      { kind: "paragraph", text: copy.lead },
       {
         kind: "expiry",
         headline: `You have ${daysPhrase(days)} to redeem your invitation.`,
@@ -81,7 +109,7 @@ export function renderBetaInvite(
       },
       {
         kind: "security",
-        text: "If you didn't request access, you can ignore this email; the link expires on its own.",
+        text: copy.ignore,
       },
     ],
     footer: {
