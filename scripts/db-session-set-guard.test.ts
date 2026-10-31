@@ -75,7 +75,15 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
   const run = (args: string[], url: string | undefined) => spawnSync("bash", [script, ...args], {
     env: { PATH: process.env.PATH ?? "", ...(url === undefined ? {} : { DIAG_DATABASE_URL: url }) } as unknown as NodeJS.ProcessEnv, encoding: "utf8", timeout: 20_000,
   });
-  const URL = "postgresql://nobody:nothing@127.0.0.1:1/none";
+  // A remote-shaped but unresolvable host (RFC 2606 .invalid): it passes the helper's
+  // URL validation (which refuses localhost) and can never connect anywhere.
+  const URL = "postgresql://nobody:nothing@guard-test.invalid:1/none";
+  const local = run(["-c", "select 1"], "postgresql://nobody:nothing@127.0.0.1:1/none");
+  check("a localhost URL ⇒ refused (exit 2)", local.status === 2 && /REFUSED/.test(local.stderr), `${local.status} ${local.stderr}`);
+  for (const junk of ["", "   ", "not-a-url", "DIAG_DATABASE_URL="]) {
+    const r = run(["-c", "select 1"], junk);
+    check(`a non-URL value ⇒ refused, never a local-socket fallback: ${JSON.stringify(junk)}`, r.status === 2 && /REFUSED/.test(r.stderr) && !/\/tmp\/\.s\.PGSQL/.test(r.stderr), `${r.status} ${r.stderr}`);
+  }
   const noUrl = run(["-c", "select 1"], undefined);
   check("no DIAG_DATABASE_URL ⇒ refused (exit 2)", noUrl.status === 2 && /REFUSED/.test(noUrl.stderr));
   for (const bad of [
