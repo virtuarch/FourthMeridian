@@ -242,6 +242,20 @@ export interface HolderRevaluation {
   valuedFromISO: string | null;
   /** The durable key of this evidence state (block keys extend it). */
   evidenceKey: string;
+  /**
+   * Last day the rebuild can recompute (the writable ceiling); absent ⇒ today.
+   * Together with windowFromISO (clipped to the holder's evidence floor) this is
+   * EXACTLY the span the canonical rebuild recomputes — so no block is ever
+   * marked done, and no row stamped, outside what a rebuild will revisit.
+   */
+  windowToISO?: string;
+  /**
+   * The days this holder COULD CONTRIBUTE value to its Spaces' rows: inside the
+   * window and not known to hold zero (holderContributionSpans). Absent ⇒ the
+   * whole window. The pending stamp covers only these days — never a day the
+   * holder held nothing.
+   */
+  contributes?: ReadonlyArray<{ fromISO: string; toISO: string }>;
 }
 
 /** FNV-1a 32-bit, hex — a stable short digest (pure; no node:crypto in a core). */
@@ -286,6 +300,10 @@ export function holderRevaluationFor(args: {
   /** Earliest stored row per Space the holder is ACTIVE in (absent ⇒ no rows). */
   snapshotMinBySpace: ReadonlyMap<string, string>;
   spaceIds: readonly string[];
+  /** The holder's earliest account-level evidence (resolveEvidenceFloor): the rebuild never recomputes before it. */
+  evidenceFloorISO?: string | null;
+  /** The writable ceiling (recentWealthWindow().toDate). */
+  ceilingISO?: string | null;
 }): HolderRevaluation | null {
   if (args.allLicences.size === 0) return null;
   const mins = args.spaceIds.map((s) => args.snapshotMinBySpace.get(s)).filter((d): d is string => !!d);
@@ -299,11 +317,58 @@ export function holderRevaluationFor(args: {
     if (valued === null || v > valued) valued = v;
   }
   if (unpriced) valued = null;
-  const windowFromISO = valued !== null && valued < earliestRow ? valued : earliestRow;
+  let windowFromISO = valued !== null && valued < earliestRow ? valued : earliestRow;
+  // REVIEW #183 P1 — the canonical rebuild clamps to the holder's evidence floor
+  // (historical-work-window planner); a window starting earlier would hold
+  // blocks that are marked done without being recomputed, and stamped rows that
+  // nothing ever restores. Before its evidence the holder is not applicable.
+  if (args.evidenceFloorISO && args.evidenceFloorISO > windowFromISO) windowFromISO = args.evidenceFloorISO;
+  if (args.ceilingISO && windowFromISO > args.ceilingISO) return null;
   return {
     accountId: args.accountId, windowFromISO, valuedFromISO: valued,
+    ...(args.ceilingISO ? { windowToISO: args.ceilingISO } : {}),
     evidenceKey: revaluationEvidenceKey({ accountId: args.accountId, licences: args.allLicences, floors: args.floors, spaceIds: args.spaceIds }),
   };
+}
+
+/**
+ * The days a holder COULD CONTRIBUTE value, within [fromISO, toISO]: a day is
+ * excluded only when EVERY instrument's carried quantity on it is a CONFIRMED
+ * zero (an observation of 0 carried forward). A day before the account's first
+ * observation is unknown — it could contribute — and is included; an instrument
+ * not yet observed on a day contributes nothing on it (a token before its first
+ * observation was not held). Ranges, oldest first.
+ */
+export function holderContributionSpans(
+  observations: ReadonlyArray<{ instrumentId: string; dateISO: string; quantity: number }>, fromISO: string, toISO: string, eps = 0,
+): Array<{ fromISO: string; toISO: string }> {
+  if (fromISO > toISO) return [];
+  const sorted = [...observations].sort((a, b) => a.dateISO.localeCompare(b.dateISO));
+  const firstObs = sorted[0]?.dateISO ?? null;
+  const qty = new Map<string, number>();
+  let i = 0;
+  const out: Array<{ fromISO: string; toISO: string }> = [];
+  const first = dayIndex(fromISO), last = dayIndex(toISO);
+  for (let d = first; d <= last; d++) {
+    const iso = isoOfIndex(d);
+    while (i < sorted.length && sorted[i].dateISO <= iso) { qty.set(sorted[i].instrumentId, sorted[i].quantity); i++; }
+    const unknown = firstObs === null || iso < firstObs;
+    const held = [...qty.values()].some((q) => Math.abs(q) > eps);
+    if (!(unknown || held)) continue;
+    const prev = out[out.length - 1];
+    if (prev && dayIndex(prev.toISO) === d - 1) prev.toISO = iso; else out.push({ fromISO: iso, toISO: iso });
+  }
+  return out;
+}
+
+/** Intersection of two sorted range lists (inclusive ISO days). */
+export function intersectRanges(a: ReadonlyArray<{ fromISO: string; toISO: string }>, b: ReadonlyArray<{ fromISO: string; toISO: string }>): Array<{ fromISO: string; toISO: string }> {
+  const out: Array<{ fromISO: string; toISO: string }> = [];
+  for (const x of a) for (const y of b) {
+    const f = x.fromISO > y.fromISO ? x.fromISO : y.fromISO, t = x.toISO < y.toISO ? x.toISO : y.toISO;
+    if (f <= t) out.push({ fromISO: f, toISO: t });
+  }
+  return out.sort((p, q) => p.fromISO.localeCompare(q.fromISO));
 }
 
 /** One epoch-anchored block of a holder's revaluation window (clipped to the window). */
@@ -389,19 +454,25 @@ export function estimateRebuildCost(observations: ReadonlyArray<{ days: number; 
   const prior = Math.max(1, priorMsPerDay);
   const obs = observations.filter((o) => o.days > 0 && Number.isFinite(o.ms) && o.ms >= 0);
   const distinct = new Set(obs.map((o) => o.days)).size;
+  // The SHRUNK estimate (prior + measurements, overhead at most the default) —
+  // also the FLOOR of a fitted slope: a noisy pair can fit a slope near zero or
+  // negative, and a floor of 1 ms/day would size the next batch to the whole
+  // window and overrun the deadline (review of #183, P2).
+  const shrunkOverhead = obs.length > 0 ? Math.min(REVALUATION_DEFAULT_CALL_OVERHEAD_MS, Math.min(...obs.map((o) => o.ms)) / 2) : REVALUATION_DEFAULT_CALL_OVERHEAD_MS;
+  const shrunk = Math.max(1, (prior * REVALUATION_PRIOR_WEIGHT_DAYS + obs.reduce((a, o) => a + Math.max(0, o.ms - shrunkOverhead), 0))
+    / (REVALUATION_PRIOR_WEIGHT_DAYS + obs.reduce((a, o) => a + o.days, 0)));
   if (distinct >= 2) {
     const n = obs.length;
     const mx = obs.reduce((a, o) => a + o.days, 0) / n, my = obs.reduce((a, o) => a + o.ms, 0) / n;
     const sxx = obs.reduce((a, o) => a + (o.days - mx) ** 2, 0), sxy = obs.reduce((a, o) => a + (o.days - mx) * (o.ms - my), 0);
     const slope = sxx > 0 ? sxy / sxx : prior;
-    const msPerDay = Math.max(1, slope);
+    // Floor: the shrunk prior, capped at the prior itself (the shrunk value also
+    // carries per-call overhead, so uncapped it would overrule a good fit).
+    const msPerDay = Math.max(Math.min(prior, shrunk), slope);
     const overheadMs = Math.max(0, Math.min(Math.max(...obs.map((o) => o.ms)), my - msPerDay * mx));
     return { overheadMs, msPerDay };
   }
-  const overheadMs = obs.length > 0 ? Math.min(REVALUATION_DEFAULT_CALL_OVERHEAD_MS, Math.min(...obs.map((o) => o.ms)) / 2) : REVALUATION_DEFAULT_CALL_OVERHEAD_MS;
-  const perDayTotal = obs.reduce((a, o) => a + Math.max(0, o.ms - overheadMs), 0);
-  const days = obs.reduce((a, o) => a + o.days, 0);
-  return { overheadMs, msPerDay: Math.max(1, (prior * REVALUATION_PRIOR_WEIGHT_DAYS + perDayTotal) / (REVALUATION_PRIOR_WEIGHT_DAYS + days)) };
+  return { overheadMs: shrunkOverhead, msPerDay: shrunk };
 }
 
 /** Days a batch may cover within `budgetMs` under `model` (never below 0; the planner still takes one block). */

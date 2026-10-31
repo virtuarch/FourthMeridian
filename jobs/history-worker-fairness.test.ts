@@ -343,6 +343,33 @@ async function main() {
       check("sync-crypto: under the GLOBAL freeze the revaluation's price-gap fetch is replaced by an empty run (DB recompute only)",
         /if \(platformFrozen\) revalDeps\.acquireGaps = async \(\) => \(\{ decisions: \[\], acquired: 0/.test(sc) && /deps: revalDeps,/.test(sc));
     }
+    {
+      // Session 2 ruling: STAMP, DON'T REBUILD for frozen / refused holders — then unfreeze clears it.
+      const mkW = (o: { global?: boolean; refuse?: boolean }) => {
+        const w = world({ btc: 1 });
+        const log: string[] = [];
+        w.deps.costFreeze = async () => (o.global ? { frozen: true, state: "FROZEN", reason: "COST_FREEZE" } as never : { frozen: false, state: "MISSING", reason: null });
+        w.deps.billableAccounts = async (ids) => new Map(ids.map((id) => [id, o.refuse && id === "frozen1" ? { allowed: false, reason: "COST_FREEZE" } as never : { allowed: true }] as const));
+        w.deps.cryptoHolders = async () => ["ok1", "frozen1"];
+        w.deps.stampOwedHolders = async (ids) => { log.push(`stamp:${[...ids].sort().join("+")}`); return 5; };
+        w.deps.acquirePriceGaps = async (ids) => { log.push(`prices:${ids.join("+")}`); return { decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }; };
+        w.deps.revalueHolders = async (ids) => { log.push(`revalue:${[...ids].sort().join("+")}`); return runOf(0); };
+        return { w, log };
+      };
+      const g = mkW({ global: true });
+      const gs = await g.w.run();
+      check("GLOBAL freeze: owed holders are STAMPED (status only), the job reports SKIPPED, and nothing paid runs (no step, no price fetch, no revaluation, no usage)",
+        gs.outcome === "SKIPPED" && gs.revaluationStamped === 5 && g.log.join() === "stamp:frozen1+ok1" && g.w.ran.length === 0 && Object.keys(g.w.ledger).length === 0,
+        JSON.stringify({ o: gs.outcome, l: g.log, ran: g.w.ran, led: g.w.ledger }));
+      const r = mkW({ refuse: true });
+      await r.w.run();
+      check("per-account refusal: the refused holder is stamped with the rest, but never revalued or price-fetched",
+        r.log[0] === "stamp:frozen1+ok1" && r.log.filter((x) => !x.startsWith("stamp:")).every((x) => !x.includes("frozen1")) && r.log.some((x) => x.startsWith("revalue:ok1")), r.log.join(" | "));
+      const u = mkW({});
+      await u.w.run();
+      check("after unfreeze: the holder is revalued (its rebuild clears the stamp — proved in stale-holder-revaluation.test.ts)",
+        u.log.some((x) => x.startsWith("revalue:") && x.includes("frozen1")), u.log.join(" | "));
+    }
     // revaluationPending is the cheap state read the reservation is decided by.
     const marks = new Set<string>();
     const h: HolderRevaluation = { accountId: "b0", windowFromISO: "2026-10-01", valuedFromISO: "2026-10-01", evidenceKey: "revaluation:v2:b0:k" };

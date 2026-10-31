@@ -967,7 +967,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
    * V26-CRYPTO-STATUS-1 — days that are NOT rewritten but whose crypto verdict
    * must still be recorded. Applied as single-column updates (see below).
    */
-  const metadataOnlyStamps: Array<{ date: Date; status: NonNullable<DayRegenResult["cryptoValuationStatus"]> }> = [];
+  const metadataOnlyStamps: Array<{ date: Date; status: NonNullable<DayRegenResult["cryptoValuationStatus"]> | null }> = [];
 
   /**
    * Days where SOME component was supported and some was not. Each carries the
@@ -1319,6 +1319,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // a correct value as `legacy-unrecorded` forever. Stamping is what makes the
     // repair reach every day the regeneration actually classified.
     if (applyWrites && plan.stamp !== null) metadataOnlyStamps.push({ date: d, status: plan.stamp });
+    // …and a real recompute with no material crypto CLEARS a stale stamp (a pending `unavailable`).
+    else if (applyWrites && plan.clearStamp) metadataOnlyStamps.push({ date: d, status: null });
   }
 
   // Only UPDATED days are written. `writes` is already filtered to them.
