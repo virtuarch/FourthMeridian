@@ -14,7 +14,7 @@
  */
 
 import {
-  CATALOG_CATEGORIES, COMMS_CHANNELS, CONSENT_CLASSES, AUDIENCES, DEFINITION_STATUS_ORDER,
+  CATALOG_CATEGORIES, COMMS_CHANNELS, CONSENT_CLASSES, AUDIENCES, DEFINITION_STATUS_ORDER, EMAIL_STORM_LIMIT,
   type CatalogItem, type CommsChannel, type ConsentClass, type DaySeries, type DefinitionStatus, type PreviewChannel, type Severity,
 } from "@/lib/notifications/catalog/types";
 import type { StatusTone } from "../platform-surface";
@@ -28,11 +28,10 @@ const n = (v: number) => v.toLocaleString("en-US");
 // ── Owner-approved decisions, as UI copy (one place) ────────────────────────────
 
 /**
- * Mirrors EMAIL_STORM_LIMIT.maxPerRecipient (lib/notifications/catalog/definitions.ts).
- * A literal on purpose: importing definitions.ts would pull the whole catalog
- * and registry into the client bundle. comms-center.test.ts pins it equal.
+ * The server's EMAIL_STORM_LIMIT.maxPerRecipient, imported from the client-safe
+ * vocabulary (lib/notifications/catalog/types.ts, Comms B1) — no local copy.
  */
-export const STORM_MAX_PER_HOUR = 5;
+export const STORM_MAX_PER_HOUR: number = EMAIL_STORM_LIMIT.maxPerRecipient;
 
 /** The consent classes the server's storm limit never applies to (storm.ts: SECURITY_CRITICAL, CEREMONY, OPERATOR). */
 const STORM_EXEMPT: ReadonlySet<ConsentClass> = new Set(["SECURITY_CRITICAL", "CEREMONY", "OPERATOR"]);
