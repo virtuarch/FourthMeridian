@@ -15,11 +15,13 @@
  * until the attempt cap):
  *   RETRY    status "error" AND attempts < MAX_DELIVERY_ATTEMPTS (3 total:
  *            the create-time attempt + up to 2 retries).
- *   NEVER    "sent" / "captured" (delivered) · "skipped" (deliberate) ·
+ *   NEVER    "sent" / "captured" (accepted, or held back by capture / the
+ *            non-production recipient guard — never a failure) · "skipped" (deliberate) ·
  *            "error" at the cap — the terminal, queryable dead-letter state
  *            (no DLQ infrastructure, by the investigation's ruling).
  *   OBSOLETE a delivery whose notification is archived, expired, or already
- *            READ in-app, or whose recipient has no email — re-mailing has
+ *            READ in-app, or whose recipient has no email, or whose type now
+ *            excludes EMAIL (registry `excludedChannels`) — re-mailing has
  *            no value; the row is closed as "skipped" (existing vocabulary:
  *            a skip by design) WITHOUT an attempt increment, and exits the
  *            retry set. Deleted notifications need no handling — deliveries
@@ -55,6 +57,7 @@ import { db } from "@/lib/db";
 import { IndeterminateWriteError, resolveConditionalWrite } from "@/lib/db/conditional-write";
 import { emailNotificationAdapter } from "@/lib/notifications/channels/email";
 import { recomputeActionLabel } from "@/lib/notifications/action-label";
+import { getNotificationDefinition } from "@/lib/notifications/registry";
 import type {
   ChannelAdapter,
   NotificationCategory,
@@ -211,12 +214,16 @@ export async function retryNotifications(
     // Obsolete: close as "skipped" (no attempt increment — nothing was
     // attempted); the row exits the retry set by status. Original error
     // text is left in place for forensics.
+    // Also obsolete: a type whose registry entry now EXCLUDES the EMAIL channel
+    // (SPACE_INVITE_RECEIVED since 2026-10-31 — its email is the dedicated
+    // space-invite email). A legacy failed row must not resurrect the duplicate.
     const obsolete =
       n === null ||
       n.archivedAt !== null ||
       n.readAt !== null ||
       (n.expiresAt !== null && n.expiresAt <= now) ||
-      !n.user?.email;
+      !n.user?.email ||
+      getNotificationDefinition(n.type)?.excludedChannels?.includes("EMAIL") === true;
     if (obsolete) {
       await client.notificationDelivery.update({
         where: { id: row.id },

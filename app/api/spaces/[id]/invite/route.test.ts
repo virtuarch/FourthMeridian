@@ -38,10 +38,16 @@ async function main() {
     t.check("the invitation e-mail goes to the invitee (and only to them)",
       mails.some((m) => m.to === "loner@example.test" && /invited to Household/.test(m.subject)) && mails.every((m) => m.to === "loner@example.test"),
       mails.map((m) => [m.to, m.subject]));
-    t.known("the invitee receives ONE e-mail per invitation", mails.length === 1,
-      `J-D4: the route's space-invite mail AND the SPACE_INVITE_RECEIVED notification's EMAIL channel both send (${mails.length} mails)`);
-    t.check("MEMBER_INVITED audit in S + an in-app notification for the invitee",
-      fake.rows("AuditLog", { action: "MEMBER_INVITED", spaceId: w.S }).length === 1 && fake.rows("Notification", { userId: w.ids.loner }).length === 1);
+    // J-D4 FIXED (2026-10-31): ONE email per invitation — the dedicated
+    // space-invite email. SPACE_INVITE_RECEIVED is IN_APP only (EMAIL excluded).
+    t.check("the invitee receives exactly ONE e-mail per invitation", mails.length === 1, mails.map((m) => m.subject));
+    t.check("…and it is the dedicated space-invite email (not the generic notification email)",
+      mails.length === 1 && /^You've been invited to Household on Fourth Meridian$/.test(mails[0].subject), mails.map((m) => m.subject));
+    t.check("the invite's in-app notification has NO email delivery row",
+      fake.rows("NotificationDelivery").length === 0, fake.rows("NotificationDelivery"));
+    t.check("MEMBER_INVITED audit in S + exactly one in-app SPACE_INVITE_RECEIVED notification for the invitee",
+      fake.rows("AuditLog", { action: "MEMBER_INVITED", spaceId: w.S }).length === 1 &&
+        fake.rows("Notification", { userId: w.ids.loner, type: "SPACE_INVITE_RECEIVED" }).length === 1);
     t.check("no membership is created by inviting", !fake.one("SpaceMember", { spaceId: w.S, userId: w.ids.loner }));
     t.check("the OWNER can invite as VIEWER or ADMIN", (await invite("owner", w.S, { username: "stranger", role: "ADMIN" })).body.role === "ADMIN");
   }
