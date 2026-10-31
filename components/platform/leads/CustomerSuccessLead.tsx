@@ -87,7 +87,7 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
       <div className={GRID}>
         <Block id="cs-attention" label="Who needs help, and why" className="min-w-0 lg:col-span-7"
           hint={<span className="text-[11px] text-[var(--text-faint)]">Now</span>}>
-          <Surface className="flex-1 p-4 sm:p-5">
+          <Surface className="flex flex-1 flex-col justify-center p-4 sm:p-5">
             {o ? (
               o.customers.active === 0 ? <ChartMessage>No active customers</ChartMessage> : (
                 <ShareBars items={attentionBars(o)} ariaLabel="Active customers needing help, by reason" noun="customer"

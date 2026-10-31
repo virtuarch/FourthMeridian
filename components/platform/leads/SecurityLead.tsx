@@ -126,7 +126,7 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
       <div className={GRID}>
         <ActivityCard f={p.f} />
         <Block id="sec-2fa" label="Two-factor coverage" className="min-w-0 lg:col-span-4" hint={<span className="text-[11px] text-[var(--text-faint)]">Now</span>}>
-          <Surface className="flex flex-1 flex-col gap-4 p-4 sm:p-5">
+          <Surface className="flex flex-1 flex-col justify-center gap-5 p-4 sm:p-5">
             {s ? coverageRows(s).map((r) => (
               <div key={r.key} className="flex min-w-0 flex-col gap-1.5" data-coverage={r.key}>
                 <div className="flex items-baseline justify-between gap-2">
