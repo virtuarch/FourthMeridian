@@ -78,6 +78,12 @@ export interface CommsDeliveryRow {
   notificationId: string | null;
   environment: LedgerEnvironment;
   acceptedAt: Date | null;
+  /**
+   * Comms Center B1 — the operator content version (CommsTemplateVersion.id)
+   * this send rendered. Absent / null = the code default. Set only on the rows
+   * of a leg that actually rendered published content.
+   */
+  contentVersionId?: string | null;
 }
 
 /** The single write the ledger performs. Injected so tests never need a database. */

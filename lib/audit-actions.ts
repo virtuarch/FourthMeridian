@@ -388,6 +388,17 @@ export const AuditAction = {
   POLICY_GROUP_ENDED:              "POLICY_GROUP_ENDED",
   POLICY_GROUP_COST_FROZEN:        "POLICY_GROUP_COST_FROZEN",
   POLICY_GROUP_COST_UNFROZEN:      "POLICY_GROUP_COST_UNFROZEN",
+  // COMMS CENTER B1 (contract v1.1 §9.2) — a Customer Success operator saved a
+  // DRAFT content version, asked the AI for a suggestion, PUBLISHED a version
+  // (CONTROL, reason required) or ROLLED BACK (CONTROL, reason required) a
+  // notification template (lib/notifications/content/store.ts). ONE row per
+  // operation, in the same transaction; target = the COMMS_TEMPLATE stream
+  // "<key>:<channel>:<variant>"; metadata carries ids, versions, content HASHES
+  // and codes — never the text, never customer data.
+  COMMS_TEMPLATE_DRAFT_SAVED:      "COMMS_TEMPLATE_DRAFT_SAVED",
+  COMMS_TEMPLATE_AI_SUGGESTED:     "COMMS_TEMPLATE_AI_SUGGESTED",
+  COMMS_TEMPLATE_PUBLISHED:        "COMMS_TEMPLATE_PUBLISHED",
+  COMMS_TEMPLATE_ROLLED_BACK:      "COMMS_TEMPLATE_ROLLED_BACK",
   JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
   JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
   REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",

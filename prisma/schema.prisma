@@ -3905,6 +3905,9 @@ model CommsDelivery {
   notificationId    String? // soft ref to the IN_APP twin, no FK
   environment       String // production | preview | development
   acceptedAt        DateTime?
+  // Comms Center B1 — the operator content version this send rendered
+  // (CommsTemplateVersion.id, soft ref); null = the code default.
+  contentVersionId  String?
   createdAt         DateTime  @default(now())
 
   @@index([createdAt])
@@ -3912,6 +3915,85 @@ model CommsDelivery {
   @@index([recipientUserId, createdAt])
   @@index([recipientHash])
   @@index([messageKey])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMS CENTER B1 — editable template content (contract v1.1 §2, §3, §8.1, §8.3).
+// One CommsTemplate HEAD per content stream (definitionKey × channel × variant):
+// the live version (null = the code default) and the optimistic token
+// `revision`. CommsTemplateVersion rows are IMMUTABLE (fm_system holds UPDATE on
+// publishedAt / publishAuditLogId only); state is derived, never stored.
+// CommsAiSuggestion is the AI-authoring audit: template text and placeholder
+// NAMES only — never customer data. fm_system only; fm_app / fm_auth: nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CommsTemplate {
+  id                 String                 @id @default(cuid())
+  definitionKey      String
+  channel            String // EMAIL | IN_APP
+  variant            String                 @default("default")
+  publishedVersionId String? // null = the code default is live
+  revision           Int                    @default(0) // optimistic token: +1 on draft save, publish, rollback
+  headVersion        Int                    @default(0) // highest version number issued
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  versions           CommsTemplateVersion[]
+
+  @@unique([definitionKey, channel, variant])
+}
+
+model CommsTemplateVersion {
+  id                     String        @id @default(cuid())
+  templateId             String
+  template               CommsTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  version                Int
+  subject                String
+  preheader              String?
+  blocks                 Json // ContentBlock[] — validated before insert
+  placeholdersUsed       String[]
+  contentHash            String // sha256 of canonical JSON {subject, preheader, blocks}
+  validatorVersion       Int
+  createdByKind          String // OPERATOR | AI_ASSISTED | ROLLBACK
+  actorKind              String // PLATFORM_OPERATOR | SYSTEM_ADMIN
+  createdById            String? // soft ref (as PolicyGroupVersion.createdById)
+  parentVersionId        String?
+  basePublishedVersionId String?
+  restoredFromVersionId  String?
+  sourceSuggestionId     String?
+  aiEditedAfterAccept    Boolean?
+  createdAuditLogId      String
+  publishedAt            DateTime? // set ONCE
+  publishAuditLogId      String?
+  createdAt              DateTime      @default(now())
+
+  @@unique([templateId, version])
+  @@index([templateId, createdAt])
+}
+
+model CommsAiSuggestion {
+  id                String    @id @default(cuid()) // = AiInvocation.correlationId
+  templateId        String // soft ref → CommsTemplate
+  baseVersionId     String
+  mode              String // POLISH | CHECK
+  tone              String?
+  status            String // OFFERED | REJECTED | UNAVAILABLE | ACCEPTED | EXPIRED
+  unavailableReason String? // KILL_SWITCH | COST_FREEZE | ALLOWANCE | PROVIDER
+  unavailableDetail String?
+  rejectionCodes    String[] // ContentIssueCode values (REJECTED)
+  suggestedContent  Json? // ContentBody — OFFERED / ACCEPTED only; template text only
+  suggestedHash     String?
+  notes             Json?
+  model             String?
+  requestedById     String // soft ref, operator
+  requestAuditLogId String
+  acceptedVersionId String?
+  expiresAt         DateTime
+  createdAt         DateTime  @default(now())
+  resolvedAt        DateTime?
+
+  @@index([templateId, createdAt])
+  @@index([status, expiresAt])
+  @@index([requestedById, createdAt])
 }
 
 // CommsDeliveryDaily (Comms Center A-2a) — counts only, per UTC day × key ×

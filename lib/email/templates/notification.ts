@@ -42,7 +42,26 @@ export interface NotificationEmailData {
   preferencesUrl?: string;
   /** Preview tool only: prefixes the subject "[PREVIEW] ". */
   preview?: boolean;
+  /**
+   * Comms Center B1 — a PUBLISHED operator content version, already substituted
+   * and with every URL resolved from the trusted app base
+   * (lib/notifications/content/render.ts emailContent). When present it replaces
+   * the subject, the preheader and the block list; the frame (header, footer
+   * reason, preference link, support, legal) stays code. Absent ⇒ the code
+   * rendering below, byte for byte.
+   */
+  content?: NotificationEmailContent;
 }
+
+/** The operator-content part of a notification email (Comms Center B1). Blocks are the design system's. */
+export interface NotificationEmailContent {
+  subject: string;
+  preheader: string;
+  blocks: EmailBlock[];
+}
+
+/** Operator content may only use these blocks: never `security` (the security variant) or `expiry` (ceremony links). */
+const CONTENT_BLOCK_KINDS: ReadonlySet<EmailBlock["kind"]> = new Set(["hero", "paragraph", "cta", "info", "divider"]);
 
 export const DEFAULT_NOTIFICATION_ACTION_LABEL = "View in Fourth Meridian";
 
@@ -70,15 +89,21 @@ export function renderNotificationEmail(
   data: NotificationEmailData,
   opts: { brand?: EmailBrandConfig } = {},
 ): RenderedEmail {
-  const blocks: EmailBlock[] = [{ kind: "hero", heading: data.title }];
-  if (data.body) blocks.push({ kind: "paragraph", text: data.body });
-  if (data.actionUrl) {
+  const content = data.content;
+  if (content && content.blocks.some((b) => !CONTENT_BLOCK_KINDS.has(b.kind))) {
+    throw new Error("email: operator content may not carry this block kind");
+  }
+  const blocks: EmailBlock[] = content ? [...content.blocks] : [{ kind: "hero", heading: data.title }];
+  if (!content && data.body) blocks.push({ kind: "paragraph", text: data.body });
+  if (!content && data.actionUrl) {
     blocks.push({ kind: "cta", label: data.actionLabel || DEFAULT_NOTIFICATION_ACTION_LABEL, url: data.actionUrl });
   }
   return renderEmail({
-    subject: `${data.preview === true ? "[PREVIEW] " : ""}${data.title}`,
-    preheader: data.body ?? data.title,
+    subject: `${data.preview === true ? "[PREVIEW] " : ""}${content ? content.subject : data.title}`,
+    preheader: content ? content.preheader : data.body ?? data.title,
     blocks,
+    // Operator content is never rendered as the security variant (contract v1.1 §5.1).
+    variant: "standard",
     footer: {
       reason: notificationFooterReason(data.category),
       ...(data.preferencesUrl ? { link: { label: "Manage notification settings", url: data.preferencesUrl } } : {}),
