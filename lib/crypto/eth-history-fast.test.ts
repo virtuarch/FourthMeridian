@@ -25,12 +25,18 @@
  *     than a walk chunk;
  *   - reverted transactions' fees are counted, listed or not;
  *   - phantom listings, an unavailable index, a throttled index, a contract
- *     account, and the shared-cap arithmetic (≤ 4 calls per budget unit).
+ *     account, and the shared-cap arithmetic (≤ 4 calls per budget unit);
+ *   - LIVENESS: a fresh, very active signed wallet under a tight deadline
+ *     advances every step (the key proof stops at the first signed receipt);
+ *   - the CANCELLING PAIR (an unlisted send + an unlisted receive netting 0
+ *     inside one long index-empty gap) is caught by the nonce;
+ *   - index pages are charged at their compute cost and capped per run;
+ *   - internal-call credits are asked for (category "internal").
  */
 
 import {
   acquireEthHistory, ethFastPathEnabled, fastProbePoints, parseAssetTransfersPage, EARLIEST_PROVABLE_BLOCK,
-  WEI_PER_GWEI, ASSET_TRANSFERS_METHOD, DEFAULT_CHUNK_BLOCKS,
+  WEI_PER_GWEI, ASSET_TRANSFERS_METHOD, DEFAULT_CHUNK_BLOCKS, INDEX_PAGE_UNITS, INDEX_PAGE_BUDGET_SHARE, FAST_UNITS_PER_PROBE,
   type EthAccountState, type EthHistoryAcquisition, type EthHistoryCursor, type EthHistoryDeps, type EthRpcTransport,
 } from "./eth-history";
 import { reconcileMovementsAgainstBalance, type ChainCoverage, type ChainMovement } from "./chain-movement";
@@ -422,9 +428,132 @@ async function main() {
     for (const [name, opts] of cases) {
       const r = await acquire(opts, { fastPath: true });
       check(`${name}: calls ≤ 4 × budget units + 16`, r.calls <= 4 * r.acq.probesUsed + 16, `calls ${r.calls}, units ${r.acq.probesUsed}`);
+      // …and on the PROBE side alone (pages, charged at their compute cost, excluded): state + evidence calls ≤ 4 per probe unit.
+      const pages = r.acq.fastPath?.pages ?? 0;
+      check(`${name}: probe-side calls ≤ 4 × probe units + 16`, r.calls - pages <= 4 * (r.acq.probesUsed - INDEX_PAGE_UNITS * pages) + 16,
+        `calls ${r.calls - pages}, probe units ${r.acq.probesUsed - INDEX_PAGE_UNITS * pages}`);
     }
     const { fast, walk } = await both({ events: dense });
     check("dense consecutive changes: identical to the walk", result(fast.acq) === result(walk.acq));
+  }
+
+  // ══ 11. LIVENESS: A FRESH, VERY ACTIVE SIGNED WALLET UNDER A TIGHT DEADLINE ═
+  console.log("\n11. 300 own transactions, 20 requests per step: every step advances");
+  {
+    const busy: IndexedSimEvent[] = [{ block: 20_000_000, delta: ETH(10) }];
+    for (let i = 0; i < 300; i++) {
+      busy.push({ block: 20_000_001 + i * 1_000, delta: -ETH(0.01) - GAS(10 + (i % 7)), originated: true, feeWei: GAS(10 + (i % 7)) });
+    }
+    let t = Date.parse(NOW_ISO);
+    const sim = simulate({ events: busy, onRequest: () => { t += 1_000; } });
+    const store = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
+    const outcomes: string[] = [];
+    const bounds: Array<number | null> = [];
+    let firstStepRequests = 0;
+    for (let i = 0; i < 60; i++) {
+      const before = sim.stats.requests;
+      const o = await runEthHistoryBackfill({ accountId: "a1", store, todayISO: TODAY },
+        { probeBudget: 1_500, now: () => t, deadlineMs: t + 20_000, eth: { transport: sim.transport, fastPath: true } });
+      if (i === 0) firstStepRequests = sim.stats.requests - before;
+      outcomes.push(o.failure ? `${o.stoppedBecause}:${o.failure.code}` : o.stoppedBecause);
+      const c = store.cp();
+      if (c && !c.reachedFloor) bounds.push(c.provenFromBlock);
+      if (o.stoppedBecause !== "PROBE_BUDGET") break;
+    }
+    const walk = await acquire({ events: busy }, { fastPath: false, probeBudget: 200_000 });
+    check("the FIRST step already proves a boundary (the key proof did not eat the deadline)", bounds.length > 0 && bounds[0] !== null,
+      `bounds ${bounds.join(",")}; first step ${firstStepRequests} requests`);
+    check("every backward step moves the proven boundary DOWN (monotone progress, no chunk halving)",
+      bounds.every((b, i) => b !== null && (i === 0 || b < (bounds[i - 1] as number))) && !(store.cp()?.chunkBlocks !== undefined && store.cp()!.chunkBlocks < DEFAULT_CHUNK_BLOCKS),
+      bounds.join(","));
+    check("…and the wallet COMPLETEs, once, with exactly the walk's 301 changes",
+      outcomes[outcomes.length - 1] === "COMPLETE" && store.writes.length === 1 && movesKey(store.writes[0].movements) === movesKey(walk.acq.movements)
+        && walk.acq.changeBlocks.length === 301, `${outcomes.join(" ")}`);
+    console.log(`     ${outcomes.length} steps, ${sim.stats.requests} requests (walk alone: ${walk.sim.stats.requests} requests)`);
+  }
+
+  // ══ 12. THE CANCELLING PAIR ════════════════════════════════════════════════
+  console.log("\n12. An unlisted send + an unlisted receive netting 0 inside one long index-empty gap");
+  {
+    const events: IndexedSimEvent[] = [
+      ...TYPICAL,
+      // Both inside the 21.5M → 23.0M gap, which (signed wallet) closes in ONE step.
+      { block: 22_100_000, delta: -ETH(1) - GAS(20), originated: true, feeWei: GAS(20), indexed: false },
+      { block: 22_400_000, delta: ETH(1) + GAS(20), indexed: false },
+    ];
+    const r = await acquire({ events }, { fastPath: true });
+    const walk = await acquire({ events }, { fastPath: false });
+    check("the gap's endpoints agree in balance (the hazard is real)", r.sim.stateAt(21_500_000).balance === r.sim.stateAt(22_999_999).balance);
+    check("the nonce catches it: both blocks found, the gap bisected",
+      r.acq.changeBlocks.includes(22_100_000) && r.acq.changeBlocks.includes(22_400_000) && (r.acq.fastPath?.fallbackIntervals ?? 0) >= 1,
+      JSON.stringify(r.acq.changeBlocks));
+    check("…identical to the walk", result(r.acq) === result(walk.acq));
+  }
+
+  // ══ 13. PAGING AGAINST THE BUDGET ══════════════════════════════════════════
+  console.log("\n13. Index pages are charged at their compute cost and capped per run");
+  {
+    const budget = 80;
+    const r = await acquire({ events: MANY, index: { pageSize: 1 } }, { fastPath: true, probeBudget: budget });
+    const fp = r.acq.fastPath!;
+    const cap = Math.max(2, Math.floor((budget * INDEX_PAGE_BUDGET_SHARE) / INDEX_PAGE_UNITS));
+    check(`each page costs ${INDEX_PAGE_UNITS} units, each probed block ${FAST_UNITS_PER_PROBE} (the whole budget accounted)`,
+      // (the anchor probe precedes the fast path: 1 unit, as in the walk)
+      r.acq.probesUsed === INDEX_PAGE_UNITS * fp.pages + FAST_UNITS_PER_PROBE * (fp.statesProbed - 1) + 1, `units ${r.acq.probesUsed}, pages ${fp.pages}, states ${fp.statesProbed}`);
+    check(`pages capped at ${INDEX_PAGE_BUDGET_SHARE * 100}% of the run's budget (${cap})`, fp.pages <= cap, `pages ${fp.pages}`);
+    check("…the run still proved something and stopped honestly (PROBE_BUDGET)",
+      r.acq.coverage.kind === "COMPLETE" && r.acq.cursor.stoppedBecause === "PROBE_BUDGET" && (r.acq.cursor.provenFromBlock ?? HEAD) < HEAD);
+    const big = await acquire({ events: MANY, index: { pageSize: 1 } }, { fastPath: true });
+    const walk = await acquire({ events: MANY }, { fastPath: false });
+    check("with the default budget the same 1-per-page index pages through to an identical result", result(big.acq) === result(walk.acq) && big.acq.fastPath!.pages === 20);
+  }
+
+  // ══ 14. INTERNAL-CALL CREDITS ══════════════════════════════════════════════
+  console.log("\n14. Credits paid by an internal call are asked for (category \"internal\")");
+  {
+    const events: IndexedSimEvent[] = [
+      ...TYPICAL,
+      { block: 22_500_000, delta: ETH(0.4), internal: true },
+      { block: 24_800_000, delta: ETH(0.6), internal: true },
+    ];
+    const { fast, walk } = await both({ events });
+    const K = events.length;
+    const expected = 2 + 2 * SENDS + 3 * (2 * K + 2) + 2 * (K - SENDS) + 2;
+    check("identical to the walk", result(fast.acq) === result(walk.acq));
+    check("listed, so no interval fell back", fast.acq.fastPath?.fallbackIntervals === 0, JSON.stringify(fast.acq.fastPath));
+    check(`exactly ${expected} calls (8K + 10)`, fast.calls === expected, `got ${fast.calls}`);
+  }
+
+  // ══ 15. THE KEY PROOF'S READS ARE BOUNDED ══════════════════════════════════
+  console.log("\n15. The key proof stops at the first signed receipt, and on the clock");
+  {
+    const busy: IndexedSimEvent[] = [{ block: 20_000_000, delta: ETH(10) }];
+    for (let i = 0; i < 40; i++) busy.push({ block: 20_000_001 + i * 1_000, delta: -GAS(10), originated: true, feeWei: GAS(10) });
+    // anchor probe · pages · ONE key-proof batch · one probe group = 4 requests.
+    let t = 0;
+    const r = await acquire({ events: busy, onRequest: () => { t += 1_000; } }, { fastPath: true, now: () => t, deadlineMs: 4_000 });
+    check("4 requests suffice to prove a boundary: the key proof read ONE batch and stopped at the first signed receipt",
+      // receipts read = the one key-proof batch (2 blocks, both also change blocks) + evidence for the rest proven.
+      r.acq.coverage.kind === "COMPLETE" && (r.acq.cursor.provenFromBlock ?? HEAD) < HEAD && r.acq.changeBlocks.length >= 2
+        && r.meter["eth_getBlockReceipts"] === r.acq.changeBlocks.length,
+      `${JSON.stringify(r.acq.cursor)} ${JSON.stringify(r.meter)}`);
+  }
+  {
+    // A receive-only wallet whose newest "from" listings are phantoms (no signed
+    // receipt): the key proof keeps looking — but never past the deadline.
+    const events: IndexedSimEvent[] = [{ block: 21_000_000, delta: ETH(2) }];
+    const phantom = Array.from({ length: 8 }, (_, i) => ({ block: 25_990_000 + i, dir: "from" as const }));
+    let t = 0, late = 0;
+    const deadline = 4_000;
+    const r = await acquire({ events, index: { phantom }, onRequest: () => { if (t >= deadline) late++; t += 1_000; } },
+      { fastPath: true, now: () => t, deadlineMs: deadline });
+    check("no request starts at or after the deadline while looking for the key proof", late === 0 && r.acq.coverage.kind !== "COMPLETE",
+      `late ${late}, ${JSON.stringify(r.meter)}`);
+    const full = await acquire({ events, index: { phantom } }, { fastPath: true });
+    const walk = await acquire({ events, index: { phantom } }, { fastPath: false });
+    check("…not found within KEY_PROOF_MAX_BLOCKS ⇒ laid out as receive-only (chunk-bounded), identical to the walk",
+      result(full.acq) === result(walk.acq) && maxProbeGap(full.sim.stats.probesAt, EARLIEST_PROVABLE_BLOCK, HEAD) <= DEFAULT_CHUNK_BLOCKS
+        && (full.meter["eth_getBlockReceipts"] ?? 0) <= 8 + 1, JSON.stringify(full.meter));
   }
 
   console.log(`\neth-history-fast: ${passes} passed, ${failures} failed`);

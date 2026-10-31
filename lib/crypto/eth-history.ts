@@ -622,9 +622,24 @@ export interface EthHistoryAcquisition {
 //
 // BUDGET. In fast mode each probed block is charged 2 budget units (its 3
 // state calls + up to one 2-call evidence read: every change block and every
-// receipt read is a probed block) and each index page 1 unit, so the calls a
-// run sends stay ≤ 4 per unit — the arithmetic the shared-cap planner
-// (probeBudgetFor, CALLS_PER_PROBE + EVIDENCE_CALLS_PER_PROBE) already assumes.
+// receipt read is a probed block), so the calls a run sends stay ≤ 4 per unit —
+// the arithmetic the shared-cap planner (probeBudgetFor, CALLS_PER_PROBE +
+// EVIDENCE_CALLS_PER_PROBE) already assumes. An index PAGE is one call but
+// ≈ 150 CU, ≈ 8 state calls' worth, so it is charged at its COMPUTE cost:
+// INDEX_PAGE_UNITS = 8 units (more than the 1 its call count needs), and pages
+// may use at most INDEX_PAGE_BUDGET_SHARE of a run's budget — so compute spent
+// on paging is bounded per budget unit the way calls are, and paging can never
+// starve the proof of the probes that make the step advance. A REFUSED page
+// (no index on this endpoint) is charged by its call count only: it returned
+// nothing, and the walk that takes over keeps the rest of the budget.
+//
+// KEY PROOF READS. K is read from the newest "sent" candidates' receipts in
+// small batches (KEY_PROOF_BATCH_BLOCKS), STOPPING at the first receipt this
+// address signed, on the clock and the budget, and after at most
+// KEY_PROOF_MAX_BLOCKS blocks. Not found ⇒ the segment is laid out as for a
+// receive-only wallet (chunk-bounded gaps: never worse than the walk). Those
+// ≤ 8 blocks are probe points the segment then charges; a run that stops first
+// leaves ≤ 16 uncharged calls, inside the planner's STEP_CALL_RESERVE.
 //
 // COST. For a fresh wallet with K change blocks, S of them own transactions,
 // and an index that fits in one page per stream (≤ 1,000 transfers each way):
@@ -659,6 +674,14 @@ export const ASSET_TRANSFERS_PAGE_SIZE = 1_000;
 export const DEFAULT_FAST_PATH_MAX_PAGES = 100;
 /** Budget units per probed block in fast mode (see BUDGET above). */
 export const FAST_UNITS_PER_PROBE = 2;
+/** Budget units per index page: its compute cost (≈ 150 CU) in state-call terms (≈ 19 CU). See BUDGET. */
+export const INDEX_PAGE_UNITS = 8;
+/** At most this share of a run's budget may go to index pages (always ≥ one batch of both streams). */
+export const INDEX_PAGE_BUDGET_SHARE = 0.25;
+/** Receipt reads per request while looking for the key proof. */
+export const KEY_PROOF_BATCH_BLOCKS = 2;
+/** Blocks examined for the key proof per run, at most. */
+export const KEY_PROOF_MAX_BLOCKS = 8;
 
 /** `ETH_HISTORY_FAST_PATH`: default ON; "0" / "false" / "off" / "no" turns it off. */
 export function ethFastPathEnabled(env: Record<string, string | undefined> = process.env): boolean {
@@ -1051,10 +1074,14 @@ export async function acquireEthHistory(
   const candidates = new Map<number, boolean>();
 
   /** Header + receipts for several blocks, batched (fast path only — the walk's reads are unchanged). */
-  async function prefetchRaw(blocks: readonly number[]): Promise<void> {
+  async function prefetchRaw(blocks: readonly number[], opts: { per?: number; until?: () => boolean; onClock?: boolean } = {}): Promise<void> {
     const need = [...new Set(blocks)].filter((b) => !rawEvidence.has(b));
-    const per = Math.max(1, Math.floor(batchSize / 2));
+    const per = opts.per ?? Math.max(1, Math.floor(batchSize / 2));
     for (let i = 0; i < need.length; i += per) {
+      // Key-proof reads stop on the clock and as soon as the proof is in hand;
+      // evidence reads (after the walk) run to the end, as the walk's do.
+      if (opts.onClock && clock() >= deadlineMs) return;
+      if (opts.until?.()) return;
       const slice = need.slice(i, i + per);
       const calls: EthRpcCall[] = slice.flatMap((b) => {
         const tag = "0x" + b.toString(16);
@@ -1111,7 +1138,11 @@ export async function acquireEthHistory(
       if (clock() >= deadlineMs) { budgetExhausted = true; return "stopped"; }
       const F = knownFloor();
       const binding = ss.filter((x) => !x.exhausted && x.floor === F);
-      if (probesUsed + binding.length > budget) { budgetExhausted = true; return "stopped"; }
+      // Pages are charged at their compute cost and capped at a share of the
+      // run's budget (always at least one batch of both streams).
+      const pageCap = Math.max(2, Math.floor((budget * INDEX_PAGE_BUDGET_SHARE) / INDEX_PAGE_UNITS));
+      if (fastStats.pages + binding.length > pageCap
+        || probesUsed + binding.length * INDEX_PAGE_UNITS > budget) { budgetExhausted = true; return "stopped"; }
       const calls: EthRpcCall[] = binding.map((x) => ({
         method: ASSET_TRANSFERS_METHOD,
         params: [{
@@ -1124,8 +1155,10 @@ export async function acquireEthHistory(
         }],
       }));
       let pages: AssetTransfersPage[];
+      let served = false;
       try {
         const res = await callBatchWithBackoff(calls, transport, { retries: throttleRetries, sleepImpl });
+        served = true;
         pages = res.map(parseAssetTransfersPage);
       } catch (e) {
         if (e instanceof EthThrottleError) throw e;
@@ -1134,7 +1167,8 @@ export async function acquireEthHistory(
         return "fallback";
       } finally {
         rpcReads += calls.length;
-        probesUsed += calls.length; // one budget unit per page (see BUDGET)
+        // A served page at its compute cost (see BUDGET); a refused call by its call count.
+        probesUsed += calls.length * (served ? INDEX_PAGE_UNITS : 1);
         fastStats.pages += calls.length;
       }
       binding.forEach((x, k) => {
@@ -1152,13 +1186,16 @@ export async function acquireEthHistory(
     }
 
     // K — the key proof — from a receipt this address signed, read from the
-    // blocks the index says it sent from (the evidence phase needs them anyway).
+    // newest blocks the index says it sent from, a couple at a time, stopping
+    // at the first proof, on the clock, the budget, and KEY_PROOF_MAX_BLOCKS.
     if (!ownerSigned) {
-      const sent = [...candidates.entries()].filter(([b, f]) => f && b > segLo && b <= top).map(([b]) => b).sort((x, y) => y - x);
       const room = Math.max(0, Math.floor((budget - probesUsed) / unitsPerProbe));
-      if (sent.length > 0 && room > 0) {
-        await prefetchRaw(sent.slice(0, room));
-        if (sent.slice(0, room).some((b) => ownerSent(rawEvidence.get(b)?.receipts))) ownerSigned = true;
+      const sent = [...candidates.entries()].filter(([b, f]) => f && b > segLo && b <= top).map(([b]) => b)
+        .sort((x, y) => y - x).slice(0, Math.min(KEY_PROOF_MAX_BLOCKS, room));
+      const proven = () => sent.some((b) => ownerSent(rawEvidence.get(b)?.receipts));
+      if (sent.length > 0) {
+        await prefetchRaw(sent, { per: KEY_PROOF_BATCH_BLOCKS, until: proven, onClock: true });
+        if (proven()) ownerSigned = true;
       }
     }
 

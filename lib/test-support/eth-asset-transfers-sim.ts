@@ -26,6 +26,8 @@ export interface IndexedSimEvent {
   reverted?: boolean;
   /** Override whether the index lists this event at all. */
   indexed?: boolean;
+  /** Value arrived through an INTERNAL call (a contract paying out): listed only under category "internal". */
+  internal?: boolean;
 }
 
 export interface AssetTransfersSimOpts {
@@ -41,14 +43,16 @@ interface Row { id: number; method: string; params: unknown[] }
 const hex = (n: number) => "0x" + n.toString(16);
 
 /** The listings (block, direction) an honest-but-blind index holds for these events. */
-export function indexListings(events: readonly IndexedSimEvent[], opts: AssetTransfersSimOpts): Array<{ block: number; dir: "from" | "to" }> {
-  const out: Array<{ block: number; dir: "from" | "to" }> = [];
+type Listing = { block: number; dir: "from" | "to"; category?: "external" | "internal" };
+export function indexListings(events: readonly IndexedSimEvent[], opts: AssetTransfersSimOpts): Listing[] {
+  const out: Listing[] = [];
   for (const e of events) {
     if (e.indexed === false) continue;
     const dir = e.originated ? "from" : "to";
-    if (e.indexed === true) { out.push({ block: e.block, dir }); continue; }
+    const category = e.internal ? "internal" as const : "external" as const;
+    if (e.indexed === true) { out.push({ block: e.block, dir, category }); continue; }
     const residual = e.delta + (e.feeWei ?? BigInt(0)) - (e.withdrawalWei ?? BigInt(0));
-    if (e.originated ? e.reverted !== true : residual > BigInt(0)) out.push({ block: e.block, dir });
+    if (e.originated ? e.reverted !== true : residual > BigInt(0)) out.push({ block: e.block, dir, category });
   }
   for (const p of opts.phantom ?? []) out.push(p);
   return out;
@@ -67,7 +71,8 @@ export function serveAssetTransfers(r: Row, events: readonly IndexedSimEvent[], 
   const hi = q.toBlock ? Number(BigInt(q.toBlock)) : Number.MAX_SAFE_INTEGER;
   const desc = q.order === "desc";
   const listed = indexListings(events, opts)
-    .filter((l) => l.dir === dir && l.block >= lo && l.block <= hi)
+    // The vendor filters by category: an internal-call credit is listed only when "internal" is asked for.
+    .filter((l) => l.dir === dir && l.block >= lo && l.block <= hi && (q.category ?? ["external"]).includes(l.category ?? "external"))
     .sort((a, b) => (desc ? b.block - a.block : a.block - b.block));
   const max = Math.min(opts.pageSize ?? Number.MAX_SAFE_INTEGER, q.maxCount ? Number(BigInt(q.maxCount)) : 1000);
   const offset = q.pageKey ? Number(q.pageKey.replace(/^off-/, "")) : 0;
@@ -77,7 +82,7 @@ export function serveAssetTransfers(r: Row, events: readonly IndexedSimEvent[], 
     jsonrpc: "2.0", id: r.id,
     result: {
       transfers: page.map((l, i) => ({
-        blockNum: hex(l.block), hash: `0xtx${l.block}${l.dir}${i}`, category: "external",
+        blockNum: hex(l.block), hash: `0xtx${l.block}${l.dir}${i}`, category: l.category ?? "external",
         from: l.dir === "from" ? owner : "0x0000000000000000000000000000000000001234",
         to: l.dir === "to" ? owner : "0x0000000000000000000000000000000000001234",
         // Deliberately WRONG values: the fast path must never read them.
