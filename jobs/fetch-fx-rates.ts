@@ -149,7 +149,9 @@ export async function fetchFxRates(deps: FetchFxRatesDeps = {}): Promise<FetchFx
   const base = Date.parse(`${dateISO}T00:00:00Z`);
   let vendorFetches = r.vendorFetched ? 1 : 0;
   let catchUpStoppedBecause: FetchFxRatesResult["catchUpStoppedBecause"];
-  for (let back = FX_CATCH_UP_DAYS; back >= 1; back--) {
+  // Newest-first (follow-up P3-4): a gap 1–5 days old is the one a customer is
+  // looking at; the oldest days are the first to give way to the per-run cap.
+  for (let back = 1; back <= FX_CATCH_UP_DAYS; back++) {
     if (vendorFetches >= FX_MAX_VENDOR_FETCHES_PER_RUN) { catchUpStoppedBecause = "VENDOR_CAP"; break; }
     const freeze = await (deps.costFreeze ?? readGlobalCostFreeze)();
     if (freeze.frozen) { catchUpStoppedBecause = "COST_FREEZE"; break; }
@@ -193,7 +195,11 @@ async function fetchOneDay(dateISO: string, registry: FxRegistry = defaultFxRegi
     select: { quote: true },
   });
   const have = new Set(existing.map((r) => r.quote));
-  const missing = SUPPORTED_QUOTES.filter((q) => !have.has(q));
+  // Follow-up P3-4 — only quotes a CONFIGURED provider can serve count as
+  // missing: SAR/AED without the paid key are unservable, and counting them
+  // would send every day to a vendor forever for rows that can never arrive.
+  const servable = new Set(registry.adapters.flatMap((a) => a.supportedQuotes(SUPPORTED_QUOTES)));
+  const missing = SUPPORTED_QUOTES.filter((q) => servable.has(q) && !have.has(q));
 
   if (missing.length === 0) {
     console.log(`[fx-cron] ${dateISO}: fully covered (${have.size} quotes) — no fetch needed`);

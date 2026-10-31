@@ -356,19 +356,33 @@ async function main() {
     const { FRANKFURTER_QUOTES } = await import("@/lib/fx/providers/frankfurter");
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input); urls.push(url);
-      const date = url.match(/\/v1\/(\d{4}-\d{2}-\d{2})/)?.[1];
-      return new Response(JSON.stringify({ base: "USD", date, rates: Object.fromEntries(FRANKFURTER_QUOTES.map((q) => [q, 1.5])) }), { status: 200 });
+      return new Response(JSON.stringify({ base: "USD", date: "1999-01-04", rates: Object.fromEntries(FRANKFURTER_QUOTES.map((q) => [q, 1.5])) }), { status: 200 });
     }) as typeof fetch;
+    // Yesterday holds every quote the free provider serves (SAR/AED are absent: no configured provider serves them).
+    const { yesterdayUTCISO } = await import("@/lib/fx/config");
+    const yday = new Date(`${yesterdayUTCISO()}T00:00:00Z`);
+    for (const q of FRANKFURTER_QUOTES) {
+      if (fake.rows("FxRate", { base: "USD", quote: q }).some((r) => (r.date as Date).getTime() === yday.getTime())) continue;
+      fake.seed("FxRate", { date: yday, base: "USD", quote: q, rate: 1.5, source: "frankfurter" });
+    }
     try {
-      // SAR/AED are never served without the paid key, so every day stays "missing": the worst case for the catch-up.
+      // The provider answers every day with an EARLIER banking day (no close for the requested date), so
+      // nothing is stored and every day stays missing — the worst case for the catch-up. (Yesterday is
+      // already covered for the free provider's quotes by the section above; SAR/AED, which no configured
+      // provider serves without the paid key, are NOT counted as missing — follow-up P3-4.)
       const capped = await fetchFxRates({ costFreeze: async () => judgeGlobalCostFreeze(null) });
       t.check(`an unfrozen run makes at most ${FX_MAX_VENDOR_FETCHES_PER_RUN} vendor fetches, then stops (VENDOR_CAP)`,
         urls.length === FX_MAX_VENDOR_FETCHES_PER_RUN && capped.vendorFetches === FX_MAX_VENDOR_FETCHES_PER_RUN && capped.catchUpStoppedBecause === "VENDOR_CAP", { n: urls.length, capped });
+      const dayOf = (u: string) => u.match(/\/v1\/(\d{4}-\d{2}-\d{2})/)?.[1] ?? "";
+      t.check("newest-first: the catch-up fetched the days right before yesterday, most recent first",
+        urls.length >= 2 && dayOf(urls[0]) > dayOf(urls[1]) && dayOf(urls[urls.length - 1]) < capped.dateISO, urls.map(dayOf));
+      t.check("yesterday (free quotes present) is covered: unservable SAR/AED are not counted as missing, so no vendor call for it",
+        !urls.some((u) => dayOf(u) === capped.dateISO) && capped.missingBefore === 0, { urls: urls.map(dayOf), capped });
       urls.length = 0;
       let reads = 0;
       const midFreeze = await fetchFxRates({ costFreeze: async () => (++reads >= 3 ? judgeGlobalCostFreeze("true") : judgeGlobalCostFreeze(null)) });
       t.check("a freeze landing DURING the catch-up stops it at the next day (re-read per day, uncached)",
-        midFreeze.catchUpStoppedBecause === "COST_FREEZE" && urls.length === 2 && reads === 3, { n: urls.length, reads, midFreeze });
+        midFreeze.catchUpStoppedBecause === "COST_FREEZE" && urls.length === 1 && reads === 3, { n: urls.length, reads, midFreeze });
     } finally {
       globalThis.fetch = trap;
       if (oldKey !== undefined) process.env.OXR_APP_ID = oldKey;
@@ -417,8 +431,10 @@ async function main() {
       reactivated.status === 200 && reactivated.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === fetchBeforeReactivate, { s: reactivated.status, b: reactivated.body });
 
     const src = (await import("node:fs")).readFileSync("app/api/accounts/wallet/route.ts", "utf8");
-    t.check("the claim is ONE UPDATE … WHERE … RETURNING on the tenant client (atomic); fail closed on any error; no per-user limiter counts new wallets",
-      /UPDATE "Connection"[\s\S]{0,300}RETURNING "id"/.test(src) && /return false;\n  \}\n\}/.test(src) && !/limitByUser\(userId, "wallet-add"/.test(src) && claimStatements >= 4);
+    const lib = (await import("node:fs")).readFileSync("lib/connections/re-add-sync-window.ts", "utf8");
+    t.check("the claim is ONE UPDATE … WHERE … RETURNING on the tenant client (atomic; proven on Postgres by the RLS suite, check 72); fail closed; no per-user limiter counts new wallets",
+      /UPDATE "Connection"[\s\S]{0,300}RETURNING "id"/.test(lib) && /withTenantDb\(userId, \(tx\) => claimReAddSyncWindowAtomic\(tx,/.test(src)
+        && /return false;\n  \}\n\}/.test(src) && !/limitByUser\(userId, "wallet-add"/.test(src) && claimStatements >= 4);
     fake.queryRaw = null;
   }
 

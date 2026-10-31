@@ -66,6 +66,12 @@ function respond(result: OperationalControlsMutationResult) {
 export async function PATCH(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
+  // Follow-up P3-5 — a coarse limiter BEFORE the body is read or parsed (after
+  // the fresh CONTROL check). It sits above the two per-control buckets below
+  // (40 > 20 + 20 per minute), so it only stops a flood — it can never make one
+  // control's use exhaust the other's way out.
+  const flood = await limitByUser(auth.user.id, "platform-policy-operational-controls-any", { limit: 40, windowSec: 60 });
+  if (flood) return flood;
   const body = await req.json().catch(() => null) as { reason?: unknown; control?: unknown } | null;
   // Follow-up N6 — each control is paced on its OWN bucket: toggling the cost
   // freeze can never exhaust the way out of maintenance, nor the reverse.

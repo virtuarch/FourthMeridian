@@ -24,7 +24,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceContext } from "@/lib/space";
-import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource, Prisma } from "@prisma/client";
+import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
+import { claimReAddSyncWindowAtomic } from "@/lib/connections/re-add-sync-window";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
@@ -98,13 +99,9 @@ async function claimReAddSyncWindow(userId: string, connectionId: string | null)
     // both pass (no read-then-write gap). On the tenant role under RLS: a row
     // that is not ours is simply not updated (no row returned ⇒ no sync). Not
     // a count-returning bulk write: it returns the claimed key, or nothing.
-    const claimed = await withTenantDb(userId, (tx) => tx.$queryRaw<{ id: string }[]>(Prisma.sql`
-      UPDATE "Connection"
-         SET "lastManualRefreshAt" = ${now}, "updatedAt" = ${now}
-       WHERE "id" = ${connectionId} AND "userId" = ${userId}
-         AND ("lastManualRefreshAt" IS NULL OR "lastManualRefreshAt" <= ${windowOpensAt})
-      RETURNING "id"`));
-    return Array.isArray(claimed) && claimed.length === 1;
+    // (lib/connections/re-add-sync-window.ts — proven on real Postgres by the
+    // RLS foreground suite, check 72.)
+    return await withTenantDb(userId, (tx) => claimReAddSyncWindowAtomic(tx, { connectionId, userId, now, windowOpensAt }));
   } catch (e) {
     console.warn("[POST /api/accounts/wallet] re-add sync window unreadable; no sync (fail closed):", e instanceof Error ? e.message : e);
     return false;

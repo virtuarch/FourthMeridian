@@ -143,7 +143,12 @@ async function main() {
     const { honestJobStatus } = await import("@/components/platform/ops-visual/ops-visual-model");
     const row = { job: "fetch-fx-rates", status: "skipped", lastRunStatus: "succeeded", consecutiveFailures: 0, totalRuns: 3, lastSkipReason: "BILLABLE_COST_FREEZE" } as never;
     const h = honestJobStatus(row, { state: "active" } as never);
-    check("honestJobStatus: \"Skipped (cost freeze)\" with the recorded reason", h.kind === "skipped" && h.word === "Skipped (cost freeze)" && h.reason.includes("BILLABLE_COST_FREEZE"), h);
+    check("honestJobStatus: \"Skipped (cost freeze)\" with a HUMAN reason, never the raw code", h.kind === "skipped" && h.word === "Skipped (cost freeze)" && !h.reason.includes("BILLABLE_") && /cost freeze/i.test(h.reason), h);
+    const { skipLabel } = await import("@/lib/jobs/skip-label");
+    check("the label follows the reason: plan restriction / policy unavailable are not called a cost freeze",
+      skipLabel("BILLABLE_BETA_PAUSED") === "Skipped (plan restriction)" && skipLabel("BILLABLE_NOT_ENTITLED") === "Skipped (plan restriction)"
+        && skipLabel("BILLABLE_NO_OWNER") === "Skipped (plan restriction)" && skipLabel("BILLABLE_POLICY_UNAVAILABLE") === "Skipped (policy unavailable)"
+        && honestJobStatus({ ...(row as object), lastSkipReason: "BILLABLE_BETA_ENDED" } as never, { state: "active" } as never).word === "Skipped (plan restriction)");
     const src = readFileSync("app/api/platform/platform-ops/job-health/route.ts", "utf8");
     check("the job-health route counts skipped jobs (the counts add up) and returns lastSkipReason",
       /else if \(j\.status === "skipped"\) counts\.skipped = \(counts\.skipped \?\? 0\) \+ 1;/.test(src) && /lastSkipReason:\s+j\.lastSkipReason,/.test(src));
@@ -280,7 +285,7 @@ async function main() {
     check("fetch-fx-rates: SKIPPED before any read or vendor call (Open Exchange Rates is key-metered; free fallback blocked by default)",
       fx.source === "skipped" && fx.inserted === 0 && fx.billableRestricted === "BILLABLE_COST_FREEZE" && fx.outcome === "SKIPPED" && fx.skipReason === "BILLABLE_COST_FREEZE" && fetchCalls === before, fx);
     check("fetch-fx-rates: an unfrozen run re-checks the previous days (bounded catch-up, FX_CATCH_UP_DAYS)",
-      /FX_CATCH_UP_DAYS = 7/.test(readFileSync("jobs/fetch-fx-rates.ts", "utf8")) && /for \(let back = FX_CATCH_UP_DAYS; back >= 1; back--\)/.test(readFileSync("jobs/fetch-fx-rates.ts", "utf8")));
+      /FX_CATCH_UP_DAYS = 7/.test(readFileSync("jobs/fetch-fx-rates.ts", "utf8")) && /for \(let back = 1; back <= FX_CATCH_UP_DAYS; back\+\+\)/.test(readFileSync("jobs/fetch-fx-rates.ts", "utf8")));
     const px = await quiet(() => fetchSecurityPrices(new Date("2026-10-31T12:00:00Z"), { costFreeze: async () => frozenFlag }));
     check("fetch-security-prices: SKIPPED (Tiingo), nothing fetched or written; status `skipped`, never `ok`",
       px.billableRestricted === "BILLABLE_COST_FREEZE" && px.status === "skipped" && px.outcome === "SKIPPED" && px.fetched === 0 && px.inserted === 0 && fetchCalls === before, px);

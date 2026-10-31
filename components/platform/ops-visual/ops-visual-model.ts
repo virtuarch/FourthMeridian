@@ -30,6 +30,7 @@ import type { AttentionItem, AttentionSeverity, AttentionEntityKind } from "@/li
 import type { RefreshDailySeries } from "@/lib/platform/refresh/types";
 import type { OperationCommand } from "@/lib/platform/operations/registry";
 import { SCHEDULED_JOB_NAMES, continuationOf, jobLabel, manualAvailability } from "./job-catalog";
+import { skipLabel, skipReasonText } from "@/lib/jobs/skip-label";
 
 /** A fetched source as the house hooks return it. */
 export interface Fetched<T> { data: T | null; loading: boolean; error: string | null }
@@ -210,7 +211,7 @@ export function honestJobStatus(row: PlatformJobRow, evidence: SchedulerEvidence
   // BETA LIFECYCLE L2 — the job ran on schedule but a cost freeze refused its
   // work: neither healthy nor late. Said as such, with the recorded reason.
   if (row.status === "skipped") {
-    return { kind: "skipped", word: "Skipped (cost freeze)", tone: "warn", reason: row.lastSkipReason ? `Refused before any vendor call — ${row.lastSkipReason}` : "Refused before any vendor call" };
+    return { kind: "skipped", word: skipLabel(row.lastSkipReason), tone: "warn", reason: skipReasonText(row.lastSkipReason) };
   }
 
   // never-ran · overdue · dead — what they MEAN depends on whether a wake happened.

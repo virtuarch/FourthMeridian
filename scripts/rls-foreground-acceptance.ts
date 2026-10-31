@@ -51,6 +51,9 @@ insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserI
 insert into "ImportMappingProfile" (id,"spaceId",name,source,mapping,"createdByUserId","updatedAt") values
   ('prof_alice','space_a','Alice bank','CSV','{"date":"Date"}'::jsonb,'alice',now());
 
+insert into "Connection" (id,"userId",provider,status,"lastManualRefreshAt","updatedAt") values
+  ('conn_alice_window','alice','WALLET','ACTIVE',null,now());
+
 insert into "Merchant" (id,"canonicalKey","displayName","updatedAt") values
   ('m_coffee','coffee','Coffee',now());
 update "Transaction" set "merchantId" = 'm_coffee' where id = 'tx_alice_1';
@@ -420,6 +423,18 @@ async function main(): Promise<void> {
   // a keyed update of the same account in the same phase (see the route).
   const bulk = CONVERTED_ROUTES.flatMap((f) =>
     [...code(f).matchAll(/\btx\.(\w+)\.(updateMany|deleteMany)\(/g)].map((m) => `${f}:${m[1]}.${m[2]}`));
+  // BETA LIFECYCLE L2 follow-up (P3-3) — RAW writes count too. No converted route
+  // may run $executeRaw / $executeRawUnsafe / $queryRawUnsafe on a tenant client,
+  // and the ONLY raw tenant statement allowed is the wallet re-add window claim,
+  // which lives in lib/connections/re-add-sync-window.ts (one UPDATE … RETURNING,
+  // proven below, check 72) — the route itself holds no raw SQL.
+  const rawWrites = CONVERTED_ROUTES.flatMap((f) =>
+    [...code(f).matchAll(/\.\$(executeRaw|executeRawUnsafe|queryRawUnsafe|queryRaw)\b/g)].map((m) => `${f}:$${m[1]}`));
+  const claimSrc = code("lib/connections/re-add-sync-window.ts");
+  check(73, "[source] the converted routes run NO raw SQL on a tenant client; the one allowlisted raw tenant statement is the re-add window claim (a single UPDATE … RETURNING, no $executeRaw)",
+    rawWrites.length === 0 && (claimSrc.match(/\$queryRaw/g) ?? []).length >= 1 && !/\$executeRaw|Unsafe/.test(claimSrc)
+    && (claimSrc.match(/UPDATE "Connection"/g) ?? []).length === 1 && /RETURNING "id"/.test(claimSrc),
+    rawWrites.join(" | "));
   check(34, "[source] the converted routes issue NO count-returning bulk write on a tenant client, except the one that follows a keyed update of the same account",
     bulk.length === 1 && bulk[0] === "app/api/accounts/wallet/route.ts:accountConnection.updateMany"
     && /tx\.financialAccount\.update\(\{\s*where: \{ id: archivedFa\.id \}[\s\S]{0,200}tx\.accountConnection\.updateMany/.test(code("app/api/accounts/wallet/route.ts")),
@@ -982,6 +997,36 @@ async function main(): Promise<void> {
     check(71, "[source] POST /api/spaces creates through createSharedSpace and never calls space.create",
       /createSharedSpace\(/.test(code("app/api/spaces/route.ts")) && !/\.space\s*\.\s*create\s*\(/.test(code("app/api/spaces/route.ts"))
       && !/\.space\s*\.\s*create\s*\(/.test(code("lib/spaces/create-shared-space.ts")));
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // C12. THE WALLET RE-ADD SYNC WINDOW — one atomic claim (BETA LIFECYCLE L2, follow-up P3-2)
+  // ════════════════════════════════════════════════════════════════════════
+  // The in-memory route test cannot catch a wrong predicate (its fake applies the
+  // rule itself), so the real statement runs here, as fm_app, against Postgres.
+  {
+    const { claimReAddSyncWindowAtomic } = await import("@/lib/connections/re-add-sync-window");
+    const CID = "conn_alice_window";
+    const now = new Date();
+    const opensAt = new Date(now.getTime() - 60 * 60_000); // a 60-minute window
+    const claim = (who: string, at: Date, opens: Date) =>
+      attempt(() => as(who, (tx) => claimReAddSyncWindowAtomic(tx, { connectionId: CID, userId: who, now: at, windowOpensAt: opens })));
+
+    // Two CONCURRENT claims on an open window (lastManualRefreshAt NULL): exactly one wins.
+    const [a, b] = await Promise.all([claim("alice", now, opensAt), claim("alice", now, opensAt)]);
+    const winners = [a, b].filter((r) => r.ok && r.value === true).length;
+    const stored = truth(`select to_char("lastManualRefreshAt" at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS') from "Connection" where id='${CID}'`);
+    check(72, "[re-add window] on real Postgres as fm_app: two CONCURRENT claims ⇒ exactly ONE wins; the timestamp round-trips; a closed window returns nothing; another user's row returns nothing and is untouched; an open window (at/after the bound) claims again",
+      winners === 1 && a.ok && b.ok && stored === now.toISOString().slice(0, 23)
+      && await (async () => {
+        const closed = await claim("alice", new Date(now.getTime() + 1_000), opensAt); // last refresh = now > opensAt ⇒ closed
+        const bobTry = await claim("bob", new Date(now.getTime() + 2_000), new Date(now.getTime() + 10 * 60_000));
+        const afterBob = truth(`select to_char("lastManualRefreshAt" at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS') from "Connection" where id='${CID}'`);
+        const later = new Date(now.getTime() + 61 * 60_000);
+        const reopened = await claim("alice", later, new Date(later.getTime() - 60 * 60_000)); // last refresh exactly ≤ bound
+        return closed.ok && closed.value === false && bobTry.ok && bobTry.value === false && afterBob === stored && reopened.ok && reopened.value === true;
+      })(),
+      `a=${JSON.stringify(a)} b=${JSON.stringify(b)} stored=${stored} want=${now.toISOString().slice(0, 23)}`);
   }
 
   for (const c of [dbMod.tenantDb, dbMod.authDb, dbMod.systemDb, dbMod.db]) {

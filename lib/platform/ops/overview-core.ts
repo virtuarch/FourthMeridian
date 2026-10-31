@@ -200,22 +200,28 @@ export function deriveSources(s: ConnectionHealthResult, policies: RefreshPolici
 }
 
 export function deriveJobs(j: JobHealthCounts, nextSlotAt: string | null, now: Date): DomainStatus {
-  const recorded = j.healthy + j.running + j.overdue + j.failing + j.dead;
+  // BETA LIFECYCLE L2 — a SKIPPED job ran (it is recorded) but a cost freeze or
+  // a plan restriction refused its work: never counted healthy.
+  const skipped = j.skipped ?? 0;
+  const recorded = j.healthy + j.running + j.overdue + j.failing + j.dead + skipped;
   const state: DomainState =
     j.dead > 0 || j.failing > 0 ? "FAILED"
     : j.overdue > 0 ? "STALE"
     : recorded === 0 ? "UNKNOWN"
+    : skipped > 0 ? "DEGRADED"
     : "HEALTHY";
   const headline =
     state === "FAILED" ? `${j.dead + j.failing} job${j.dead + j.failing === 1 ? "" : "s"} failing or dead.`
     : state === "STALE" ? `${j.overdue} job${j.overdue === 1 ? "" : "s"} overdue against the registry cadence.`
     : state === "UNKNOWN" ? `No job has recorded a run yet (${j.neverRan} registered).`
+    : state === "DEGRADED" ? `${skipped} job${skipped === 1 ? "" : "s"} skipped — their work was refused (cost freeze or plan restriction)${j.healthy ? `; ${j.healthy} healthy` : ""}${j.neverRan ? `; ${j.neverRan} never ran` : ""}.`
     : `${recorded} scheduled job${recorded === 1 ? "" : "s"} recorded runs and all are healthy${j.neverRan ? `; ${j.neverRan} never ran` : ""}.`;
   const facts: DomainFact[] = [
     { label: "Healthy", value: String(j.healthy), tone: "ok" },
     { label: "Running", value: String(j.running) },
     { label: "Overdue", value: String(j.overdue), tone: j.overdue ? "warn" : undefined },
     { label: "Failing / dead", value: String(j.failing + j.dead), tone: j.failing + j.dead ? "bad" : undefined },
+    { label: "Skipped (cost freeze / plan)", value: String(skipped), tone: skipped ? "warn" : undefined },
     { label: "Never ran", value: String(j.neverRan), tone: j.neverRan ? "muted" : undefined },
     { label: "Next slot", value: nextSlotAt ? relative(nextSlotAt, now) : "not derivable" },
   ];
@@ -225,6 +231,7 @@ export function deriveJobs(j: JobHealthCounts, nextSlotAt: string | null, now: D
     state === "FAILED" ? { value: `${j.dead + j.failing} failing`, qualifier: [neverRan, next].filter(Boolean).join(" · ") }
     : state === "STALE" ? { value: `${j.overdue} overdue`, qualifier: [neverRan, next].filter(Boolean).join(" · ") }
     : state === "UNKNOWN" ? { value: "no runs yet", qualifier: [neverRan ?? "none registered", next].join(" · ") }
+    : state === "DEGRADED" ? { value: `${skipped} skipped`, qualifier: [`${j.healthy} healthy`, neverRan, next].filter(Boolean).join(" · ") }
     : { value: `${recorded} healthy`, qualifier: [neverRan, next].filter(Boolean).join(" · ") };
   return { key: "jobs", title: "Scheduled jobs", state, headline, figure, facts, basis: "JobRun ledger against the job registry", workspace: "platform-jobs" };
 }
