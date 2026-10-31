@@ -153,8 +153,8 @@ async function main() {
   console.log("3. Detail drawer body + preview");
   {
     const prot = catalog.items.find((i) => i.protected && i.consentClass === "SECURITY_CRITICAL" && i.channels.some((c) => c.channel === "EMAIL"))!;
-    const detail = (await catalogDetail(prot.key, NOW).json()) as CatalogDetail;
-    const details = await Promise.all(catalog.items.map(async (i) => (await catalogDetail(i.key, NOW).json()) as CatalogDetail));
+    const detail = (await (await catalogDetail(prot.key, NOW)).json()) as CatalogDetail;
+    const details = await Promise.all(catalog.items.map(async (i) => (await (await catalogDetail(i.key, NOW)).json()) as CatalogDetail));
     const html = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(detail), preview: createElement("div", null, "PREVIEW SLOT") }));
     check("SECURITY_CRITICAL protected detail says it can't be muted", html.includes("can’t be muted"));
     check("security email: storm limit exempt, phrased as owner policy", /Owner policy: security messages are exempt/.test(html));
