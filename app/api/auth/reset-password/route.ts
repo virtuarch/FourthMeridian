@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
 
     // Notify the account's own email that a reset completed. NON-THROWING: a
     // delivery failure is logged and recorded, but never fails the reset.
-    const emailResult = await sendEmail("security-alert", user.email, { ...passwordResetCompletedAlert(new Date()) });
+    const emailResult = await sendEmail("security-alert", user.email, { ...passwordResetCompletedAlert(new Date()) }, { key: "PASSWORD_RESET", recipientUserId: user.id });
     if (emailResult.status === "error") {
       console.error("[reset-password] security-alert email failed to send:", emailResult.error);
     }

@@ -278,7 +278,7 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     : plan.action === "approve" ? "request"
     : await inviteOrigin(client, requestId, email);
   const inviteUrl = buildBetaInviteUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
-  const emailResult = await sendEmail("beta-invite", email, { inviteUrl, issuedAt: now, expiresAt, origin });
+  const emailResult = await sendEmail("beta-invite", email, { inviteUrl, issuedAt: now, expiresAt, origin }, { key: "BETA_INVITATION_ISSUED", recipientUserId: null });
   if (emailResult.status === "error") {
     console.error(`[beta-invite:${plan.action}] invite email failed to send:`, emailResult.error);
   }

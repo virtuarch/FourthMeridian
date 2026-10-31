@@ -167,7 +167,7 @@ export async function POST(
     inviterName,
     role,
     inviteUrl: buildInviteUrl(env.NEXT_PUBLIC_APP_URL),
-  });
+  }, { key: "SPACE_INVITE_RECEIVED", recipientUserId: targetUser.id });
   if (emailResult.status === "error") {
     console.error("[spaces/invite] invitation email failed to send:", emailResult.error);
   }

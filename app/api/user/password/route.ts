@@ -84,7 +84,7 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
 
   // Notify the account's own email. NON-THROWING: a delivery failure is logged
   // and recorded, but never fails the password change.
-  const emailResult = await sendEmail("security-alert", dbUser.email, { ...passwordChangedAlert(new Date()) });
+  const emailResult = await sendEmail("security-alert", dbUser.email, { ...passwordChangedAlert(new Date()) }, { key: "PASSWORD_CHANGED", recipientUserId: user.id });
   if (emailResult.status === "error") {
     console.error("[user/password] security-alert email failed to send:", emailResult.error);
   }
