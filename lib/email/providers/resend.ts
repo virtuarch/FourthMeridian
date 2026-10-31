@@ -17,6 +17,10 @@
  *
  * NON-THROWING: every path resolves to an EmailResult. A missing key or an SDK
  * failure returns { status: "error" } rather than throwing into a caller.
+ *
+ * LOGGING HYGIENE: this adapter logs nothing itself, and the error string it
+ * returns (which callers log) is passed through redactProviderError(), so no
+ * recipient address, link or token can ride a provider error into the logs.
  */
 
 import "server-only";
@@ -38,40 +42,87 @@ function getClient(): Resend | null {
   return _client;
 }
 
+// ── Payload + error hygiene ───────────────────────────────────────────────────
+
+/** The subset of the Resend client this adapter calls (a seam for tests). */
+export interface ResendLikeClient {
+  emails: { send: (payload: ResendPayload) => Promise<{ data: { id: string } | null; error: { message: string } | null }> };
+}
+
+export interface ResendPayload {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  replyTo?: string;
+}
+
+/**
+ * The provider payload for a message. Text is always sent; `html` only when
+ * the template rendered one, so the message goes out as multipart/alternative
+ * with the text part as the plain alternative.
+ */
+export function buildResendPayload(message: EmailMessage): ResendPayload {
+  return {
+    from: message.from,
+    to: message.to,
+    subject: message.subject,
+    text: message.text,
+    ...(message.html ? { html: message.html } : {}),
+    ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+  };
+}
+
+/**
+ * Provider error strings reach the callers' console.error lines verbatim. A
+ * validation error can echo the recipient address or a URL from the body, so
+ * addresses, URLs and long hex runs (raw tokens) are masked and the length
+ * capped before the string leaves this adapter.
+ */
+export function redactProviderError(raw: string): string {
+  return raw
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/[^\s@"'<>(),;:]+@[^\s@"'<>(),;:]+/g, "[email]")
+    .replace(/\b[0-9a-f]{32,}\b/gi, "[token]")
+    .slice(0, 300);
+}
+
 // ── Adapter ───────────────────────────────────────────────────────────────────
 
-export const resendAdapter: EmailProvider = {
-  name: PROVIDER_NAME,
+/** Build an adapter over a client getter (the real one below; a fake in tests). */
+export function createResendAdapter(clientFor: () => ResendLikeClient | null): EmailProvider {
+  return {
+    name: PROVIDER_NAME,
 
-  async send(message: EmailMessage): Promise<EmailResult> {
-    const client = getClient();
-    if (!client) {
-      return {
-        status: "error",
-        provider: PROVIDER_NAME,
-        error: "RESEND_API_KEY is not set — cannot send via Resend.",
-      };
-    }
-
-    try {
-      const { data, error } = await client.emails.send({
-        from: message.from,
-        to: message.to,
-        subject: message.subject,
-        text: message.text,
-        ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-      });
-
-      if (error) {
-        return { status: "error", provider: PROVIDER_NAME, error: error.message };
+    async send(message: EmailMessage): Promise<EmailResult> {
+      const client = clientFor();
+      if (!client) {
+        return {
+          status: "error",
+          provider: PROVIDER_NAME,
+          error: "RESEND_API_KEY is not set — cannot send via Resend.",
+        };
       }
-      return { status: "sent", provider: PROVIDER_NAME, id: data?.id };
-    } catch (err) {
-      return {
-        status: "error",
-        provider: PROVIDER_NAME,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  },
-};
+
+      try {
+        const { data, error } = await client.emails.send(buildResendPayload(message));
+
+        if (error) {
+          return { status: "error", provider: PROVIDER_NAME, error: redactProviderError(error.message) };
+        }
+        return { status: "sent", provider: PROVIDER_NAME, id: data?.id };
+      } catch (err) {
+        return {
+          status: "error",
+          provider: PROVIDER_NAME,
+          error: redactProviderError(err instanceof Error ? err.message : String(err)),
+        };
+      }
+    },
+  };
+}
+
+export const resendAdapter: EmailProvider = createResendAdapter(
+  () => getClient() as unknown as ResendLikeClient | null,
+);

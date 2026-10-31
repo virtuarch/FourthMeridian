@@ -15,6 +15,11 @@
  *   2. Capture transport — sendEmail() records the fully-rendered message.
  *   3. Test-mode refusal — even with RESEND_API_KEY set, sendEmail never sends
  *      for real in test mode; the result is "captured", not "sent".
+ *   4. html + text: a design-system template's message carries both parts and
+ *      both reach the Resend payload; a text-only template sends no html key.
+ *   5. Non-throwing render: a template that refuses its data is an error result.
+ *   6. Log hygiene: no token, link or recipient address in any console call or
+ *      in the provider error string callers log.
  */
 
 // Force test mode BEFORE the chokepoint's transport selection reads it.
@@ -29,6 +34,8 @@ import {
   clearCapturedEmails,
   capturedEmails,
 } from "@/lib/email/providers/capture";
+import { createResendAdapter, type ResendPayload, type ResendLikeClient } from "@/lib/email/providers/resend";
+import type { EmailMessage } from "@/lib/email/types";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -94,6 +101,80 @@ async function main(): Promise<void> {
   // Restore env for hygiene.
   if (prevKey === undefined) delete process.env.RESEND_API_KEY;
   else process.env.RESEND_API_KEY = prevKey;
+
+  // ── 4. html + text reach the provider ───────────────────────────────────────
+  console.log("4. html + text reach the provider payload");
+  const TOKEN = "f".repeat(64);
+  const INVITE_URL = `https://app.fourthmeridian.com/register?invite=${TOKEN}`;
+  const RECIPIENT = "invitee.private@example.com";
+  const inviteData = {
+    inviteUrl: INVITE_URL,
+    issuedAt: new Date("2026-10-31T15:04:00Z"),
+    expiresAt: new Date("2026-11-07T15:04:00Z"),
+  };
+  clearCapturedEmails();
+  const res3 = await sendEmail("beta-invite", RECIPIENT, inviteData);
+  const inv = lastCapturedEmail();
+  check("beta-invite is captured", res3.status === "captured", res3.status);
+  check("captured message carries html", typeof inv?.html === "string" && inv.html.startsWith("<!DOCTYPE html>"));
+  check("captured message still carries text", typeof inv?.text === "string" && inv.text.includes(INVITE_URL));
+  check("captured smoke message (text-only) has no html key", capturedEmails().length === 1 && !("html" in (msg ?? {})));
+
+  const payloads: ResendPayload[] = [];
+  const okClient: ResendLikeClient = {
+    emails: { send: async (p) => { payloads.push(p); return { data: { id: "re_test_1" }, error: null }; } },
+  };
+  const adapter = createResendAdapter(() => okClient);
+  const r4 = await adapter.send(inv as EmailMessage);
+  check("adapter reports sent with the provider id", r4.status === "sent" && r4.id === "re_test_1", JSON.stringify(r4));
+  check("payload carries html AND text", payloads[0]?.html === inv?.html && payloads[0]?.text === inv?.text);
+  check("payload carries subject/from/to unchanged", payloads[0]?.subject === inv?.subject && payloads[0]?.from === inv?.from && payloads[0]?.to === RECIPIENT);
+  await adapter.send({ to: RECIPIENT, from: "a <a@example.com>", subject: "s", text: "t" });
+  check("text-only message → payload has no html key", !("html" in payloads[1]!) && payloads[1]?.text === "t");
+
+  // ── 5. render failure is a result, not a throw ──────────────────────────────
+  console.log("5. a refused render is an error result");
+  clearCapturedEmails();
+  let threw = false;
+  let res5: Awaited<ReturnType<typeof sendEmail>> | undefined;
+  try {
+    res5 = await sendEmail("beta-invite", RECIPIENT, { ...inviteData, inviteUrl: `javascript:alert('${TOKEN}')` });
+  } catch { threw = true; }
+  check("does not throw", !threw);
+  check("status error, nothing captured", res5?.status === "error" && capturedEmails().length === 0, JSON.stringify(res5));
+  check("error message does not echo the data", !!res5?.error && !res5.error.includes(TOKEN) && !res5.error.includes("javascript"), res5?.error);
+
+  // ── 6. no token, link or address in logs ────────────────────────────────────
+  console.log("6. log hygiene");
+  const logged: string[] = [];
+  const orig = { log: console.log, error: console.error, warn: console.warn, info: console.info, debug: console.debug };
+  const spy = (...a: unknown[]) => { logged.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ")); };
+  console.log = spy; console.error = spy; console.warn = spy; console.info = spy; console.debug = spy;
+  let errRes: Awaited<ReturnType<typeof adapter.send>>;
+  let throwRes: Awaited<ReturnType<typeof adapter.send>>;
+  try {
+    clearCapturedEmails();
+    await sendEmail("beta-invite", RECIPIENT, inviteData);
+    // A provider validation error that echoes the recipient and the body link.
+    const echoing = createResendAdapter(() => ({
+      emails: { send: async () => ({ data: null, error: { message: `Invalid \`to\` field ${RECIPIENT}; body link ${INVITE_URL} token ${TOKEN}` } }) },
+    }));
+    errRes = await echoing.send(lastCapturedEmail()!);
+    const throwing = createResendAdapter(() => ({
+      emails: { send: async () => { throw new Error(`socket closed sending to <${RECIPIENT}> (${INVITE_URL})`); } },
+    }));
+    throwRes = await throwing.send(lastCapturedEmail()!);
+    // What the routes do with a failed result (approve/resend/invitations).
+    if (errRes.status === "error") console.error("[beta-approve] invite email failed to send:", errRes.error);
+    if (throwRes.status === "error") console.error("[beta-resend] invite email failed to send:", throwRes.error);
+  } finally {
+    Object.assign(console, orig);
+  }
+  const leaks = logged.filter((l) => l.includes(TOKEN) || l.includes(INVITE_URL) || l.includes(RECIPIENT) || l.includes("invitee.private"));
+  check("console calls were made (the spy is live)", logged.length >= 2, String(logged.length));
+  check("no console call carries the token, the link or the address", leaks.length === 0, leaks.join(" | "));
+  check("returned provider error is redacted", errRes!.status === "error" && errRes!.error!.includes("[email]") && errRes!.error!.includes("[url]") && !errRes!.error!.includes(TOKEN), errRes!.error);
+  check("thrown provider error is redacted", throwRes!.status === "error" && !throwRes!.error!.includes(RECIPIENT) && !throwRes!.error!.includes(TOKEN), throwRes!.error);
 
   console.log(
     failures === 0 ? "\nAll email chokepoint checks passed." : `\n${failures} failure(s).`,

@@ -54,17 +54,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   const rawToken = crypto.randomBytes(32).toString("hex");
   const now = new Date();
+  const expiry = new Date(now.getTime() + INVITE_TTL_MS);
   await db.betaAccessRequest.update({
     where: { id },
     data: {
       inviteTokenHash: hashResetToken(rawToken),
-      inviteExpiresAt: new Date(now.getTime() + INVITE_TTL_MS),
+      inviteExpiresAt: expiry,
       invitedAt:       now,
     },
   });
 
   const inviteUrl = buildBetaInviteUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
-  const emailResult = await sendEmail("beta-invite", request.email, { inviteUrl });
+  // The email states the REAL expiry just written to the row (issuedAt/expiresAt).
+  const emailResult = await sendEmail("beta-invite", request.email, { inviteUrl, issuedAt: now, expiresAt: expiry });
   if (emailResult.status === "error") {
     console.error("[beta-resend] invite email failed to send:", emailResult.error);
   }
