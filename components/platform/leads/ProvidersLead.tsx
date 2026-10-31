@@ -47,7 +47,7 @@ import type { AiUsageTrend } from "@/lib/platform/ai/ai-usage";
 import type { ProviderOperationSummary, RefreshDailySeries } from "@/lib/platform/refresh/types";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
 import { LazyDisclosure } from "./lead-kit";
-import { Caption, ChartMessage, Doorway } from "./visual-kit";
+import { Caption, ChartMessage, Doorway, goToSection } from "./visual-kit";
 import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
 import { DayBars, DayBarsLegend, DAY_BAR_COLORS } from "../ops-visual/DayBars";
 import { StatusWord } from "../ops-visual/UnifiedJobs";
@@ -294,7 +294,12 @@ export function ProvidersLeadSurface(p: ProvidersLeadSurfaceProps) {
     <>
       <div className="min-w-0 space-y-8 sm:space-y-10 max-lg:space-y-6!" data-providers-dashboard>
         {/* A — Integration health hero. */}
-        <HealthHero model={hero} />
+        <HealthHero model={{ ...hero, actions: {
+          healthy: { label: "Show each provider", onSelect: () => goToSection("providers-tiles") },
+          failed: { label: "Show sync activity", onSelect: () => goToSection("providers-sync") },
+          limited: { label: "Show each provider", onSelect: () => goToSection("providers-tiles") },
+          spend: { label: "Open AI & Costs", onSelect: () => p.onOpenWorkspace("platform-ai") },
+        } }} />
 
         {/* B — Sync activity (7) · Health distribution (5). */}
         <div className="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">

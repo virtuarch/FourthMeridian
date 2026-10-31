@@ -74,3 +74,30 @@ export function Meter({ pct, tone, label }: { pct: number; tone: StatusTone; lab
     </span>
   );
 }
+
+/**
+ * Platform Spaces 2.0 — bring a dashboard section into view and give it focus
+ * (a KPI's "show me the breakdown" action). Leaves room for the sticky headers
+ * and moves focus to the section so keyboard and screen-reader users land
+ * there too. A missing section is a no-op (never a dead click: callers only
+ * wire sections they render).
+ */
+export function goToSection(id: string): void {
+  if (typeof document === "undefined") return;
+  // After a state change (a mobile analytics group switching in) the section paints next frame.
+  requestAnimationFrame(() => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.scrollMarginTop = "112px";
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+    // A named, visibly focused landing: the section takes its heading as its name.
+    const heading = el.querySelector("h2, h3");
+    if (heading && !el.hasAttribute("aria-labelledby")) {
+      if (!heading.id) heading.id = `${id}-heading`;
+      el.setAttribute("aria-labelledby", heading.id);
+    }
+    el.classList.add("rounded-[var(--radius-lg)]", "outline-none", "focus-visible:ring-2", "focus-visible:ring-[var(--meridian-400)]");
+    el.focus({ preventScroll: true });
+  });
+}

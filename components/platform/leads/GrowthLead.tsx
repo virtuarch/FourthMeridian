@@ -34,7 +34,7 @@ import type { AcquisitionResponse } from "@/lib/platform/growth/acquisition-type
 import type { ProductAnalyticsResponse } from "@/lib/platform/growth/product-analytics-types";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
 import { LazyDisclosure } from "./lead-kit";
-import { Caption, ChartMessage, Doorway, Segmented } from "./visual-kit";
+import { Caption, ChartMessage, Doorway, Segmented, goToSection } from "./visual-kit";
 import { HealthHero } from "../ops-visual/HealthHero";
 import { DayBars } from "../ops-visual/DayBars";
 import type { Fetched } from "../ops-visual/ops-visual-model";
@@ -59,8 +59,9 @@ function Loading({ f, what }: { f: Fetched<unknown>; what: string }) {
 
 // ── Cards with their own toggle ──────────────────────────────────────────────
 
-function AcquisitionCard({ acq }: { acq: Fetched<AcquisitionResponse> }) {
-  const [series, setSeries] = useState<"requests" | "registrations">("requests");
+type AcqSeries = "requests" | "registrations";
+
+function AcquisitionCard({ acq, series, setSeries }: { acq: Fetched<AcquisitionResponse>; series: AcqSeries; setSeries: (s: AcqSeries) => void }) {
   const a = acq.data;
   const days = a ? (series === "requests" ? a.requests.perDay : a.registrations.perDay) : [];
   const noun = series === "requests" ? "request" : "registration";
@@ -152,6 +153,8 @@ export interface GrowthLeadSurfaceProps {
 }
 
 export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
+  // Lifted so the Registrations KPI can open the acquisition chart ON its series.
+  const [acqSeries, setAcqSeries] = useState<AcqSeries>("requests");
   const a = p.acq.data, pa = p.pa.data;
   const group = p.group ?? "acquisition";
   const drawers = GROWTH_DRAWERS.filter((d) => d.keys.some(p.hasHosted));
@@ -172,12 +175,17 @@ export function GrowthLeadSurface(p: GrowthLeadSurfaceProps) {
           <span className="text-[11px] text-[var(--text-muted)]">Period</span>
           <Segmented label="Period" value={p.period} onChange={p.onPeriod} options={[{ id: "30", label: "30 d" }, { id: "90", label: "90 d" }]} />
         </div>
-        <HealthHero model={growthHero(p.acq, p.pa)} />
+        <HealthHero model={{ ...growthHero(p.acq, p.pa), actions: {
+          requests: { label: "Show the request calendar", onSelect: () => { p.onGroup?.("acquisition"); goToSection("growth-calendar"); } },
+          registrations: { label: "Show registrations per day", onSelect: () => { setAcqSeries("registrations"); goToSection("growth-acquisition"); } },
+          ...(p.betaList ? { waitlist: { label: "Open the beta signup list", onSelect: () => goToSection("growth-beta") } } : {}),
+          engaged: { label: "Show active accounts", onSelect: () => { p.onGroup?.("engagement"); goToSection("growth-active"); } },
+        } }} />
       </div>
 
       {/* 2 — acquisition overview (8) · waitlist (4). */}
       <div className={GRID}>
-        <AcquisitionCard acq={p.acq} />
+        <AcquisitionCard acq={p.acq} series={acqSeries} setSeries={setAcqSeries} />
         <Block id="growth-waitlist" label="Waitlist" className="min-w-0 max-lg:hidden lg:col-span-4"
           hint={<span className="text-[11px] text-[var(--text-faint)]">Now</span>}>
           <Surface className="flex-1 p-4 sm:p-5">

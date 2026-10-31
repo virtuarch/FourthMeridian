@@ -24,6 +24,7 @@
  * to the Operations hero exactly as accepted (no Operations markup changes).
  */
 
+import { ChevronRight } from "lucide-react";
 import { COMPACT_HERO_ROWS } from "@/components/space/compact/CompactHeroCard";
 import { COMPACT_HERO } from "@/components/space/compact/compact-hero";
 import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
@@ -47,7 +48,25 @@ export interface HeroModel {
   provenance?: ProvenanceKind;
   /** The two compact KPI strips' and the desktop tiles' accessible names. */
   kpiLabels?: { first: string; second: string; all: string };
+  /**
+   * Platform Spaces 2.0 (owner) — the KPIs that OPEN something real (a drawer
+   * of records, a view, or the chart that breaks the figure down), keyed by KPI
+   * key. A KPI without an entry stays a static figure: no hover, no chevron, no
+   * button — never fake clickability.
+   */
+  actions?: Readonly<Record<string, KpiAction>>;
 }
+
+export interface KpiAction {
+  /** What opens, in words ("Open the attention list") — the tile's accessible name suffix. */
+  label: string;
+  onSelect: () => void;
+  /** True when it opens a dialog / drawer (aria-haspopup). */
+  dialog?: boolean;
+}
+
+const TILE_BUTTON =
+  "group block w-full min-w-0 cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] rounded-[inherit]";
 
 function Dot({ tone, size = 10 }: { tone: StatusTone; size?: number }) {
   return <span aria-hidden className="inline-block shrink-0 rounded-full" style={{ width: size, height: size, background: TONE_COLOR[tone] }} />;
@@ -58,6 +77,8 @@ export function HealthHero({ model }: { model: HeroModel }) {
   const title = model.title ?? "Platform health";
   const dot = model.dot ?? true;
   const labels = model.kpiLabels ?? { first: "Platform health figures", second: "Platform activity figures", all: "Platform health figures" };
+  const actions = model.actions ?? {};
+  const actionable = kpis.some((k) => actions[k.key]);
   const pair = (from: number) => kpis.slice(from, from + 2).map((k) => ({
     key: k.key,
     label: k.label,
@@ -87,8 +108,40 @@ export function HealthHero({ model }: { model: HeroModel }) {
         </div>
       </section>
       <div className="mt-3 flex flex-col gap-2 lg:hidden">
-        <CompactKpiStrip ariaLabel={labels.first} items={pair(0)} />
-        <CompactKpiStrip ariaLabel={labels.second} items={pair(2)} />
+        {!actionable ? (
+          <>
+            <CompactKpiStrip ariaLabel={labels.first} items={pair(0)} />
+            <CompactKpiStrip ariaLabel={labels.second} items={pair(2)} />
+          </>
+        ) : (
+          /* The Personal strip's exact tile treatment (CompactKpiStrip has no
+             action slot and is not changed): an actionable tile is a button with
+             a chevron; a static one stays a plain figure. */
+          <div className="grid grid-cols-2 gap-2" aria-label={labels.all} role="group" data-compact-kpi-strip>
+            {kpis.map((k) => {
+              const a = actions[k.key];
+              const body = (
+                <>
+                  <span className="flex items-center justify-between gap-1">
+                    <span className="truncate text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">{k.label}</span>
+                    {a && <ChevronRight size={12} aria-hidden className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--text-secondary)]" />}
+                  </span>
+                  <span className="mt-1 block text-[13px] font-semibold leading-tight tabular-nums text-[var(--text-primary)] [overflow-wrap:anywhere]">{k.value}</span>
+                  <span className="mt-0.5 block text-[11px] leading-tight tabular-nums [overflow-wrap:anywhere]" style={{ color: k.tone && k.tone !== "muted" ? TONE_COLOR[k.tone] : "var(--text-muted)" }}>{k.sub}</span>
+                </>
+              );
+              const tile = "min-w-0 rounded-[var(--radius-lg)] border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-3 py-2.5";
+              return a ? (
+                <button key={k.key} type="button" onClick={a.onSelect} aria-haspopup={a.dialog ? "dialog" : undefined}
+                  aria-label={`${k.label}: ${k.value}, ${k.sub} — ${a.label}`} className={`${TILE_BUTTON} ${tile} min-h-11 transition-colors hover:border-[var(--border-hairline-strong)]`} data-compact-kpi={k.key} data-kpi-action>
+                  {body}
+                </button>
+              ) : (
+                <div key={k.key} className={tile} role="group" aria-label={`${k.label}: ${k.value}, ${k.sub}`} data-compact-kpi={k.key}>{body}</div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* DESKTOP (≥ lg) — the bare hero, then four figure tiles. */}
@@ -103,15 +156,33 @@ export function HealthHero({ model }: { model: HeroModel }) {
           <Figure value={verdict.word} size="hero" className="leading-none sm:text-5xl" tone={verdict.tone === "bad" ? "down" : "neutral"} />
         </div>
         <p className="mt-2.5 truncate text-sm text-[var(--text-secondary)]">{caption}</p>
-        <dl className="mt-6 grid grid-cols-4 gap-4" aria-label={labels.all}>
-          {kpis.map((k) => (
-            <Surface key={k.key} className="min-w-0 px-4 py-3.5">
-              <dt className="truncate text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">{k.label}</dt>
-              <dd className="mt-1.5"><Figure value={k.value} size="figure" tone={k.tone === "muted" ? "muted" : "neutral"} /></dd>
-              <dd className="mt-0.5 truncate text-[11px]" style={{ color: k.tone && k.tone !== "muted" ? TONE_COLOR[k.tone] : "var(--text-muted)" }}>{k.sub}</dd>
-            </Surface>
-          ))}
-        </dl>
+        <div className="mt-6 grid grid-cols-4 gap-4" role="group" aria-label={labels.all}>
+          {kpis.map((k) => {
+            const a = actions[k.key];
+            const inner = (
+              <>
+                <span className="flex items-center justify-between gap-1">
+                  <span className="truncate text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">{k.label}</span>
+                  {a && <ChevronRight size={12} aria-hidden className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--text-secondary)]" />}
+                </span>
+                <span className="mt-1.5 block"><Figure value={k.value} size="figure" tone={k.tone === "muted" ? "muted" : "neutral"} /></span>
+                <span className="mt-0.5 block truncate text-[11px]" style={{ color: k.tone && k.tone !== "muted" ? TONE_COLOR[k.tone] : "var(--text-muted)" }}>{k.sub}</span>
+              </>
+            );
+            return (
+              <Surface key={k.key} className={`min-w-0 ${a ? "transition-colors hover:border-[var(--border-hairline-strong)]" : ""}`}>
+                {a ? (
+                  <button type="button" onClick={a.onSelect} aria-haspopup={a.dialog ? "dialog" : undefined} aria-label={`${k.label}: ${k.value}, ${k.sub} — ${a.label}`}
+                    className={`${TILE_BUTTON} px-4 py-3.5`} data-kpi-action={k.key}>
+                    {inner}
+                  </button>
+                ) : (
+                  <div className="px-4 py-3.5" role="group" aria-label={`${k.label}: ${k.value}, ${k.sub}`}>{inner}</div>
+                )}
+              </Surface>
+            );
+          })}
+        </div>
       </section>
     </div>
   );

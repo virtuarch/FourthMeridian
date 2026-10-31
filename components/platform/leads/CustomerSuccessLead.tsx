@@ -27,7 +27,7 @@ import { useSharedWidgetFetch } from "../workspace-session";
 import type { CsOverviewResponse } from "@/lib/platform/customer/overview-types";
 import type { PlatformViewLeadProps } from "./lead-contract";
 import { LazyDisclosure } from "./lead-kit";
-import { Caption, ChartMessage, Doorway, Segmented } from "./visual-kit";
+import { Caption, ChartMessage, Doorway, Segmented, goToSection } from "./visual-kit";
 import { HealthHero } from "../ops-visual/HealthHero";
 import { DayBars, DayBarsLegend } from "../ops-visual/DayBars";
 import type { Fetched } from "../ops-visual/ops-visual-model";
@@ -75,7 +75,12 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
           <span className="text-[11px] text-[var(--text-muted)]">Sync-issue period</span>
           <Segmented label="Period" value={p.period} onChange={p.onPeriod} options={[{ id: "30", label: "30 d" }, { id: "90", label: "90 d" }]} />
         </div>
-        <HealthHero model={csHero(p.f)} />
+        <HealthHero model={{ ...csHero(p.f), actions: {
+          ...(p.customerList ? { customers: { label: "Open the customer list", onSelect: () => goToSection("cs-customers") } } : {}),
+          help: { label: "Show who needs help and why", onSelect: () => goToSection("cs-attention") },
+          connected: { label: "Show where customers are", onSelect: () => { p.onGroup?.("onboarding"); goToSection("cs-stages"); } },
+          issues: { label: "Open Incidents", onSelect: () => p.onOpenWorkspace(INCIDENTS_WORKSPACE) },
+        } }} />
       </div>
 
       {/* 2 — needs help (7) · connection health (5). */}
