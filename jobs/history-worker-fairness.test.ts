@@ -414,8 +414,8 @@ async function main() {
       w.deps.revaluationPending = (ids, plan) => revaluationPending(rd, ids, DAY, plan);
       w.deps.revalueHolders = (ids, { deadlineMs, plan, alreadyStamped }) => revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs, todayISO: DAY, plan, alreadyStamped });
       const s = await w.run();
-      check("ONE planning read per pass: stamp, reservation and rebuild share the plan (was ~3 per pass)",
-        owedCalls === 1 && s.revaluationReserved === true && (s.holderRevaluation?.chunksRebuilt ?? 0) > 0, JSON.stringify({ owedCalls, hr: s.holderRevaluation }));
+      check("TWO planning reads per pass: the job-start plan (stamp + reservation) and ONE fresh re-plan right before the rebuild (was ~3; a stale plan is never rebuilt from)",
+        owedCalls === 2 && s.revaluationReserved === true && (s.holderRevaluation?.chunksRebuilt ?? 0) > 0, JSON.stringify({ owedCalls, hr: s.holderRevaluation }));
       check("ONE stamp truth: revaluationStamped = atStart + inRevaluation, and the rebuild did not re-stamp the plan",
         s.revaluationStamped === 7 && s.revaluationStampedBreakdown?.atStart === 7 && s.revaluationStampedBreakdown?.inRevaluation === 0
           && s.holderRevaluation?.rowsStampedPending === 0 && stampWrites === 1, JSON.stringify({ st: s.revaluationStamped, b: s.revaluationStampedBreakdown, stampWrites }));
@@ -426,10 +426,10 @@ async function main() {
       w2.deps.planRevaluation = w.deps.planRevaluation;
       w2.deps.stampOwedHolders = w.deps.stampOwedHolders;
       w2.deps.revaluationPending = async () => true;
-      w2.deps.revalueHolders = async () => ({ ...runOf(0), rowsStampedPending: 4 });
+      w2.deps.revalueHolders = async () => ({ ...runOf(0), rowsStampedPending: 4, rowsStampedUnavailable: 3 });
       const s2 = await w2.run();
-      check("…and when the rebuild stamps newly owed blocks, revaluationStamped = atStart + inRevaluation",
-        s2.revaluationStampedBreakdown?.inRevaluation === 4 && s2.revaluationStamped === (s2.revaluationStampedBreakdown?.atStart ?? -1) + 4, JSON.stringify({ st: s2.revaluationStamped, b: s2.revaluationStampedBreakdown }));
+      check("…and when the rebuild stamps newly owed blocks AND abandons one, revaluationStamped = atStart + inRevaluation (4 pending + 3 abandoned)",
+        s2.revaluationStampedBreakdown?.inRevaluation === 7 && s2.revaluationStamped === (s2.revaluationStampedBreakdown?.atStart ?? -1) + 7, JSON.stringify({ st: s2.revaluationStamped, b: s2.revaluationStampedBreakdown }));
     }
     // revaluationPending is the cheap state read the reservation is decided by.
     const marks = new Set<string>();

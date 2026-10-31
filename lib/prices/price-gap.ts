@@ -327,7 +327,7 @@ export interface RevaluationDeps {
    * (the WEALTH_REGENERATION_ENABLED kill switch): its blocks are then never
    * marked done (defence in depth — a dry run must not retire a block).
    */
-  regenerate(accountId: string, fromISO: string, toISO: string): Promise<void | false>;
+  regenerate(accountId: string, fromISO: string, toISO: string): Promise<void | false | RebuildReport>;
   /**
    * Are snapshot writes enabled (wealthRegenerationEnabled)? Optional: absent ⇒
    * enabled. When false NOTHING runs — no stamp (no rebuild could restore it),
@@ -336,6 +336,14 @@ export interface RevaluationDeps {
   writesEnabled?(): boolean;
   now(): number;
 }
+
+/**
+ * What a rebuild REPORTS (review of #185, P3): the Spaces it actually rebuilt.
+ * A Space whose rebuild failed is absent — so no credit, and no "done", ever
+ * rests on a swallowed failure. A rebuild that reports nothing (void) earns its
+ * own blocks only, never another holder's credit.
+ */
+export interface RebuildReport { rebuiltSpaceIds: readonly string[] }
 
 export interface RevaluationRun {
   priceGaps: PriceGapRun | null;
@@ -484,16 +492,31 @@ export async function revalueHoldersAfterPriceGaps(args: {
     // are stamped `unavailable` now: metadata-only, values preserved, only the
     // (Space, day) rows the holder could contribute to and the rebuild will
     // recompute, idempotent. The rebuild restores them per block.
-    let plans = args.plan ? planFor(args.plan, args.accountIds).plans : await readPlans();
-    if (!args.alreadyStamped) {
-      for (const p of plans) {
+    //
+    // REVIEW of #185 (P1): the caller's plan was read at job START, before the
+    // history passes — a licence widened or a link added mid-pass changes the
+    // key and the window, and a stale plan would neither stamp the new window nor
+    // stop marking the superseded key's blocks done. So the plan is ALWAYS
+    // re-read here, immediately before the rebuild (≈ 7 round trips), and every
+    // key not stamped earlier this pass is stamped now. The caller's plan only
+    // says which keys are already stamped.
+    const stamped = new Set<string>(args.plan && args.alreadyStamped ? planFor(args.plan, args.accountIds).plans.map((p) => p.h.evidenceKey) : []);
+    const counted = new Set<string>();
+    const stampUnseen = async (ps: OwedHolderPlan[]) => {
+      for (const p of ps) {
+        if (stamped.has(p.h.evidenceKey)) {
+          // Already stamped (by the caller, or earlier in this call): abandoned blocks are COUNTED once, never re-stamped.
+          if (!counted.has(p.h.evidenceKey)) { run.abandonedBlocks += p.abandoned.length; counted.add(p.h.evidenceKey); }
+          continue;
+        }
+        counted.add(p.h.evidenceKey);
         for (const blk of p.abandoned) await abandon(p.h, blk);
         run.rowsStampedPending += await stamp(p.h, p.live);
+        stamped.add(p.h.evidenceKey);
       }
-    } else {
-      // Counted, not re-stamped (the caller's stamp covered them — see its own counter).
-      run.abandonedBlocks += plans.reduce((a, p) => a + p.abandoned.length, 0);
-    }
+    };
+    let plans = await readPlans();
+    await stampUnseen(plans);
     if (left() < REVALUATION_RESERVE_MS) {
       run.skippedForTime = true;
       run.owed = plans.filter((p) => p.live.length > 0).length;
@@ -509,9 +532,8 @@ export async function revalueHoldersAfterPriceGaps(args: {
     }
     if (run.priceGaps?.newlyPricedFromISO) {
       // A lowered floor is new evidence: new keys, newly owed blocks — stamp them before rebuilding.
-      const seen = new Set(plans.map((p) => p.h.evidenceKey));
       plans = await readPlans();
-      for (const p of plans) if (!seen.has(p.h.evidenceKey)) run.rowsStampedPending += await stamp(p.h, p.live);
+      await stampUnseen(plans);
     }
     if (plans.length === 0) return run;
 
@@ -527,9 +549,9 @@ export async function revalueHoldersAfterPriceGaps(args: {
     const active = owedPlans.slice(0, cap).map((p) => ({ ...p, queue: [...p.live], failed: false }));
     /** Blocks retired THIS pass (own rebuild or credit) — never marked twice. */
     const doneKeys = new Set<string>();
-    /** Did a rebuild of `a` regenerate every Space `b` is in? (Unknown Spaces ⇒ no credit.) */
-    const covers = (a: HolderRevaluation, b: HolderRevaluation) =>
-      !!a.spaceIds && !!b.spaceIds && b.spaceIds.length > 0 && b.spaceIds.every((sp) => a.spaceIds!.includes(sp));
+    /** Did the rebuild REPORT every Space `b` is in as rebuilt? (Unknown or empty Spaces ⇒ no credit.) */
+    const coveredBy = (rebuilt: readonly string[], b: HolderRevaluation) =>
+      !!b.spaceIds && b.spaceIds.length > 0 && b.spaceIds.every((sp) => rebuilt.includes(sp));
     run.deferred += owedPlans.length - active.length;
     const batchTries = (k: string, tries: Map<string, { single: number; batch: number }>) => tries.get(k)?.batch ?? 0;
     let progressed = true;
@@ -556,6 +578,11 @@ export async function revalueHoldersAfterPriceGaps(args: {
         batches++;
         try {
           const wrote = await args.deps.regenerate(x.h.accountId, batch.fromISO, batch.toISO);
+          const report = wrote && typeof wrote === "object" ? wrote : null;
+          // A Space of this holder that did NOT rebuild ⇒ the batch did not complete: never "done".
+          if (report && x.h.spaceIds && x.h.spaceIds.some((sp) => !report.rebuiltSpaceIds.includes(sp))) {
+            throw new Error(`space rebuild failed (${x.h.spaceIds.filter((sp) => !report.rebuiltSpaceIds.includes(sp)).join(",")})`);
+          }
           if (wrote === false) {
             // Writes went off mid-run: a dry run retires nothing and COUNTS for
             // nothing — its attempt is cancelled, the blocks stay owed, and the
@@ -576,7 +603,7 @@ export async function revalueHoldersAfterPriceGaps(args: {
           // owed block is satisfied when (a) all of its Spaces were rebuilt
           // (its spaceIds ⊆ this holder's) and (b) the block lies inside the batch.
           for (const other of plans) {
-            if (other.h.accountId === x.h.accountId || !covers(x.h, other.h)) continue;
+            if (other.h.accountId === x.h.accountId || !report || !coveredBy(report.rebuiltSpaceIds, other.h)) continue;
             const credited = other.live.filter((b) => b.fromISO >= batch.fromISO && b.toISO <= batch.toISO && !doneKeys.has(b.key));
             for (const b of credited) { doneKeys.add(b.key); await args.deps.markRevalued(b.key).catch(() => {}); run.blocksCredited++; }
             const act = active.find((a) => a.h.accountId === other.h.accountId);
@@ -768,7 +795,7 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
     writesEnabled: () => process.env.WEALTH_REGENERATION_ENABLED === "true", // = wealthRegenerationEnabled() (no static import of the binding)
     async regenerate(accountId, fromISO, toISO) {
       const { resolveHistoricalWorkWindow } = await import("@/lib/snapshots/historical-work-window");
-      const { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
+      const { regenerateWealthHistoryForAccountsDetailed, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
       // The binding writes only under this switch (applyWrites): a rebuild now would be a dry run.
       if (!wealthRegenerationEnabled()) return false;
       // The canonical planner, told the batch start as floor and impacted-from
@@ -782,8 +809,10 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
       });
       const from = plan.fromDate > fromISO ? plan.fromDate : fromISO;
       const to = plan.toDate < toISO ? plan.toDate : toISO;
-      if (from > to) return;
-      await regenerateWealthHistoryForAccounts([accountId], { fromDate: from, toDate: to });
+      if (from > to) return { rebuiltSpaceIds: [] };
+      // The detailed variant REPORTS which Spaces rebuilt (a failed one is not swallowed into a credit).
+      const r = await regenerateWealthHistoryForAccountsDetailed([accountId], { fromDate: from, toDate: to });
+      return { rebuiltSpaceIds: r.rebuilt };
     },
     now: Date.now,
   };

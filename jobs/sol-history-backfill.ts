@@ -664,10 +664,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       maxInstruments: Math.max(0, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS - summary.priceGaps.acquired),
       plan: revalPlan, alreadyStamped: !!revalPlan }).catch(() => null);
     if (!r) return;
-    if (r.rowsStampedPending > 0) {
+    // ONE stamp truth: pending stamps of newly owed keys AND in-pass abandonment stamps.
+    const inRev = r.rowsStampedPending + r.rowsStampedUnavailable;
+    if (inRev > 0) {
       const b = summary.revaluationStampedBreakdown ?? { atStart: 0, inRevaluation: 0 };
-      summary.revaluationStampedBreakdown = { atStart: b.atStart, inRevaluation: b.inRevaluation + r.rowsStampedPending };
-      summary.revaluationStamped = (summary.revaluationStamped ?? 0) + r.rowsStampedPending;
+      summary.revaluationStampedBreakdown = { atStart: b.atStart, inRevaluation: b.inRevaluation + inRev };
+      summary.revaluationStamped = (summary.revaluationStamped ?? 0) + inRev;
     }
     if (r.priceGaps) addPriceGaps(summary, r.priceGaps);
     summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred,
