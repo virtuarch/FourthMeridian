@@ -85,6 +85,8 @@ export interface AutomationRunCounts {
 export interface AutomationActivationEnv {
   VERCEL_ENV?: string;
   COMMS_AUTOMATIONS_PREVIEW_ENABLED?: string;
+  /** process.env is passed as-is (its other keys are ignored). */
+  [key: string]: string | undefined;
 }
 
 /** THE activation gate. Pure; the only path to true. Callers pass process.env per call. */
