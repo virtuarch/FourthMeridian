@@ -2,18 +2,24 @@
 -- Owner-authorised, STRICTLY READ-ONLY investigation of Production beta access requests (2026-10-31).
 --
 -- Run ONLY through the read-only helper, which wraps everything in ONE transaction
--- that begins `SET TRANSACTION READ ONLY` (nothing can be written):
+-- that begins SET TRANSACTION READ ONLY (nothing can be written):
 --
---   DIAG_DATABASE_URL='<production read-only or pooled URL — never paste it into chat>' \
---     scripts/db-readonly-psql.sh -f docs/operations/sql/beta-request-prod-investigation.sql
--- (pass a REAL file — the helper scans its contents before connecting — and check the
--- first output row reads read_only_guard = on).
+--   DIAG_DATABASE_URL='<read-only URL; never paste it in chat>' DIAG_REQUIRE_ROLE=fm_diag_ro scripts/db-readonly-psql.sh -f docs/operations/sql/beta-request-prod-investigation.sql
+-- (exact sequence: docs/operations/sql/prod-diag-readonly-role.md section 4). Pass a REAL file: the
+-- helper scans its contents before connecting. The first rows must read read_only_guard = on and
+-- read_only_role_guard = verified.
+--
+-- HELPER-SAFE TEXT: the helper's scan is quote-unaware and fails closed, so this file contains
+-- no backslash except the \echo / \pset lines, and no colon directly followed by a letter,
+-- digit or quote (a literal colon is written chr(58)). Keep it that way when editing.
 --
 -- PRIVACY: every signal is computed INSIDE the database. Nothing here outputs a full
 -- email address, a raw IP, a user agent or note text. The output contains:
 --   - the request id's last 6 characters,
---   - a masked email (first 2 characters of the local part, the domain CATEGORY,
---     and the domain itself only for well-known free-mail providers),
+--   - a masked email (first 2 characters of the local part, only the first 1 when the
+--     local part has 3 characters or fewer, the domain CATEGORY, and the domain itself only
+--     for well-known free-mail providers),
+--   - whether the request carried a country (present / absent; never the country),
 --   - counts, time buckets and derived flags.
 -- The output is safe to paste back for analysis.
 -- Shared networks are compared by md5 of the IP INSIDE SQL. Only the COUNT of other
@@ -49,8 +55,8 @@ WITH req AS (
 ),
 canon AS (
   SELECT id, CASE WHEN dom IN ('gmail.com','googlemail.com')
-                  THEN replace(regexp_replace(loc, '\+.*$', ''), '.', '') || '@gmail.com'
-                  ELSE regexp_replace(loc, '\+.*$', '') || '@' || dom END AS ckey
+                  THEN replace(regexp_replace(loc, '[+].*$', ''), '.', '') || '@gmail.com'
+                  ELSE regexp_replace(loc, '[+].*$', '') || '@' || dom END AS ckey
     FROM req
 ),
 aud AS (
@@ -70,19 +76,19 @@ aud1 AS (  -- one audit row per requester (earliest)
 ev AS (
   SELECT lower(trim(email)) AS em, count(*) AS submissions, min("receivedAt") AS first_at, max("receivedAt") AS last_at,
          bool_or(source ? 'utmSource' OR source ? 'referrerHost' OR source ? 'landingPath') AS has_source,
-         max(source->>'country') AS country
+         CASE WHEN bool_or(source ? 'country') THEN 'present' ELSE 'absent' END AS country
     FROM "BetaAccessRequestEvent" GROUP BY 1
 )
 SELECT right(q.id, 6) AS req,
        q.status,
-       to_char(date_trunc('hour', q."createdAt"), 'YYYY-MM-DD HH24":00"') AS created_hour_utc,
-       left(q.loc, 2) || '…@' ||
+       to_char(date_trunc('hour', q."createdAt"), 'YYYY-MM-DD HH24') || chr(58) || '00' AS created_hour_utc,
+       CASE WHEN length(q.loc) <= 3 THEN left(q.loc, 1) ELSE left(q.loc, 2) END || '…@' ||
          CASE WHEN q.dom IN ('gmail.com','googlemail.com','outlook.com','hotmail.com','live.com','yahoo.com','icloud.com','me.com','proton.me','protonmail.com','aol.com','gmx.com','mail.com','yandex.com')
               THEN q.dom ELSE '(custom domain)' END AS masked_email,
        CASE WHEN q.dom IN ('mailinator.com','guerrillamail.com','guerrillamail.net','sharklasers.com','10minutemail.com','temp-mail.org','tempmail.com','yopmail.com','trashmail.com','getnada.com','dispostable.com','maildrop.cc','throwawaymail.com','mintemail.com','fakeinbox.com','spamgourmet.com','mailnesia.com','emailondeck.com','tempr.email','moakt.com','mohmal.com','burnermail.io','33mail.com','grr.la','spam4.me','trbvm.com','dropmail.me','tempmailo.com','emailfake.com','fakemail.net')
             THEN 'yes' ELSE 'no' END AS disposable,
        CASE WHEN length(q.loc) <= 5 THEN '<=5' WHEN length(q.loc) <= 12 THEN '6-12' ELSE '13+' END AS local_len_bucket,
-       (q.loc ~ '\d{4,}') AS local_has_4digits,
+       (q.loc ~ '[0-9]{4,}') AS local_has_4digits,
        (q.loc LIKE '%+%') AS plus_alias,
        (SELECT count(*) FROM canon c2 WHERE c2.ckey = c.ckey) AS alias_group,
        coalesce(e.submissions, 0) AS submissions,
@@ -94,7 +100,7 @@ SELECT right(q.id, 6) AS req,
             WHEN NOT a.has_ip THEN NULL
             ELSE (SELECT count(DISTINCT a2.ehash) - 1 FROM aud a2 WHERE a2.net = a.net AND a2.ehash IS NOT NULL) END AS others_on_network,
        (SELECT count(*) - 1 FROM req q3 WHERE q3."createdAt" BETWEEN q."createdAt" - interval '10 minutes' AND q."createdAt" + interval '10 minutes') AS others_within_10m,
-       e.has_source, e.country,
+       e.has_source, coalesce(e.country, 'absent') AS country,
        (q."decidedAt" IS NOT NULL) AS decided, (q."redeemedAt" IS NOT NULL) AS redeemed,
        (SELECT count(*) FROM "AuditLog" l WHERE l.action IN ('BETA_ACCESS_APPROVED','BETA_ACCESS_DENIED','BETA_INVITATION_CREATED','BETA_INVITATION_RESENT','BETA_INVITATION_REVOKED')
           AND l.metadata->>'emailHash' = q.ehash) AS decision_events
@@ -113,4 +119,4 @@ SELECT CASE WHEN n = 1 THEN '1 requester' WHEN n <= 3 THEN '2-3 requesters' ELSE
 
 \echo '== F. Current rate-limit rows for the intake (last ~24-48h only; counts, no keys)'
 SELECT count(*) AS windows, coalesce(max(count), 0) AS max_hits_in_a_window
-  FROM "RateLimit" WHERE key LIKE 'ip:access-request:%';
+  FROM "RateLimit" WHERE key LIKE ('ip' || chr(58) || 'access-request' || chr(58) || '%');

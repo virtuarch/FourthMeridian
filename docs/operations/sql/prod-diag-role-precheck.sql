@@ -38,6 +38,23 @@ SELECT 8, 'SECURITY DEFINER functions in public executable by PUBLIC (expect non
   FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef
    AND has_function_privilege('public', p.oid, 'EXECUTE')
 UNION ALL
+-- 12-14: what would make scripts/db-readonly-psql.sh's DIAG_REQUIRE_ROLE guard refuse fm_diag_ro
+-- (it counts PUBLIC grants; it checks every non-system schema, not only public).
+SELECT 12, 'role guard: schemas where PUBLIC holds CREATE (expect none)',
+       coalesce(string_agg(s.nspname, ', '), 'none')
+  FROM pg_namespace s CROSS JOIN LATERAL aclexplode(coalesce(s.nspacl, acldefault('n', s.nspowner))) a
+ WHERE a.grantee = 0 AND a.privilege_type = 'CREATE'
+   AND s.nspname NOT IN ('pg_catalog', 'information_schema') AND s.nspname !~ '^pg_(toast|temp_)'
+UNION ALL
+SELECT 13, 'role guard: tables/sequences in any non-system schema writable by PUBLIC (expect 0)', count(*)::text
+  FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) a
+ WHERE a.grantee = 0 AND s.nspname NOT IN ('pg_catalog', 'information_schema') AND s.nspname !~ '^pg_(toast|temp_)'
+   AND ((c.relkind IN ('r','p','v','m','f') AND a.privilege_type IN ('INSERT','UPDATE','DELETE','TRUNCATE'))
+     OR (c.relkind = 'S' AND a.privilege_type IN ('USAGE','UPDATE')))
+UNION ALL
+SELECT 14, 'role guard: PUBLIC holds CREATE on this database (expect false)',
+       has_database_privilege('public', current_database(), 'CREATE')::text
+UNION ALL
 SELECT 9, 'server version', current_setting('server_version')
 UNION ALL
 SELECT 10, 'current user (must be postgres)', current_user::text

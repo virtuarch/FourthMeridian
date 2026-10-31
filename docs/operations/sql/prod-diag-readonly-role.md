@@ -84,12 +84,43 @@ Then, connected **as `fm_diag_ro`**:
    - If it is unreachable, use Supavisor in **session mode** (port 5432) with username `fm_diag_ro.<project-ref>`:
      `postgresql://fm_diag_ro.<project-ref>:<password>@aws-<n>-<region>.pooler.supabase.com:5432/postgres?sslmode=require`.
    - Through the pooler, `CONNECTION LIMIT 2` counts server connections, not clients.
-3. **Run** the owner command sequence (hidden prompt → helper with `DIAG_REQUIRE_ROLE=fm_diag_ro`). The first output rows must be `read_only_guard = on` and `read_only_role_guard = verified`.
+3. **Run** the owner command sequence (zsh, from the repository root). The password is read by a hidden prompt, never echoed, never in a command line:
+   ```zsh
+   read -rs "DIAG_PW?fm_diag_ro password: "; echo
+   DIAG_DATABASE_URL="postgresql://fm_diag_ro:${DIAG_PW}@db.<project-ref>.supabase.co:5432/postgres?sslmode=require" \
+   DIAG_REQUIRE_ROLE=fm_diag_ro \
+     scripts/db-readonly-psql.sh -f docs/operations/sql/beta-request-prod-investigation.sql
+   unset DIAG_PW
+   ```
+   - Through the pooler, swap in the session-mode host and the `fm_diag_ro.<project-ref>` user name from step 2.
+   - The password may contain raw `@ / : # !` characters. The helper splits it out of the URL and hands it to psql as `PGPASSWORD`, so it never appears in `ps`, in a trace or in an error. A literal `%` must be typed as `%25`; a malformed escape is refused without echoing the value. Simplest: generate a password without `%`.
+   - Do **not** set `DIAG_ALLOW_LOCAL`. It is a test-only override for the throwaway-container tests and prints a warning.
+   - The output must begin with exactly these two results:
+     ```
+      read_only_guard 
+     -----------------
+      on
+     (1 row)
+
+      read_only_role_guard 
+     ----------------------
+      verified
+     (1 row)
+     ```
+   - If the role guard refuses, the run stops before the investigation, with `ERROR:  role guard refused: …` naming the reason (superuser, BYPASSRLS, CREATEROLE/CREATEDB/REPLICATION, a write privilege on a table, column or sequence, `pg_write_all_data`, CREATE on a schema or the database, or a different role). Nothing ran, so nothing to undo. Stop, and report the message.
+   - ⚠️ **Schema CREATE through PUBLIC.** The guard counts privileges granted to PUBLIC. On 2026-10-31, Production's schema `public` still granted CREATE to PUBLIC (`=UC/postgres`, see [prod-revoke-schema-create.md](prod-revoke-schema-create.md)). Until change A there is executed, the guard refuses with `role guard refused: fm_diag_ro has CREATE (via fm_diag_ro) on schema: public`. This is intended: it fails closed. Precheck rows 12–14 ([prod-diag-role-precheck.sql](prod-diag-role-precheck.sql)) list everything that would trip it, before the role is created.
 
 ## 5. Security review
 
 **Can it write?** No. **Writes are prevented by privileges:** the role holds no INSERT/UPDATE/DELETE/TRUNCATE privilege on anything, and its RLS policies are `FOR SELECT` only.
-Read-only defaults are defence in depth only: the role-level `default_transaction_read_only` (a default the role could override), plus the helper's read-only transaction, input scan and database-side role guard (`DIAG_REQUIRE_ROLE=fm_diag_ro`, which aborts unless the connected role is exactly this one, is not superuser, cannot bypass RLS and holds no write grant).
+Read-only defaults are defence in depth only: the role-level `default_transaction_read_only` (a default the role could override), plus the helper's read-only transaction, input scan and database-side role guard.
+The role guard is `DIAG_REQUIRE_ROLE=fm_diag_ro`. It is a plpgsql `DO` block that RAISEs, so Postgres cannot constant-fold it the way it folded the earlier `ELSE (1/0)` form, which could never pass. It aborts unless:
+- the session is exactly this role;
+- neither this role nor any role it can become (`pg_has_role … MEMBER`, so inherited or via `SET ROLE`) is superuser, BYPASSRLS, CREATEROLE, CREATEDB, REPLICATION or `pg_write_all_data`;
+- none of them holds INSERT/UPDATE/DELETE/TRUNCATE on any table or column, or USAGE/UPDATE on any sequence, in any non-system schema;
+- none of them holds CREATE on any schema or on the database.
+
+All of this is proved against a throwaway container by `scripts/db-readonly-psql-container.test.ts`.
 
 **Can it read beyond the investigation?**
 - Only the listed columns of 4 tables.
