@@ -1,6 +1,16 @@
-# Production read-only diagnostic role, `fm_diag_ro` (PROPOSAL; NOT EXECUTED)
+# Production read-only diagnostic role, `fm_diag_ro` (EXECUTED AND RETIRED 2026-10-31)
 
-Owner decision 6 (2026-10-31) asked for the exact SQL, privileges, security review and rollback **before** anything is executed. Creating this role is a Production schema/security change and needs the owner's separate approval.
+**Status.** The owner approved this on 2026-10-31. The role was created per §2, with the helper pinned at `8320dc3`, and it was used for one masked, read-only investigation. Every run printed `read_only_guard = on` and `read_only_role_guard = verified`. The role was then dropped per §6: afterwards there were 0 roles, 0 policies and 0 sessions. Findings: [docs/plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md](../../plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md).
+
+The helper has been hardened since that run, after a third independent review:
+- the run ends in ROLLBACK, never COMMIT;
+- `DIAG_REQUIRE_ROLE` is mandatory for remote hosts;
+- every statement's first word must be on an allowlist;
+- the role guard is stricter (§5).
+
+Re-using this document for another run needs the owner's separate approval again. Creating the role is a Production schema/security change.
+
+Owner decision 6 (2026-10-31) asked for the exact SQL, privileges, security review and rollback **before** anything was executed.
 
 Purpose: run `docs/operations/sql/beta-request-prod-investigation.sql` (through `scripts/db-readonly-psql.sh`) with a database-enforced least-privilege, read-only identity, instead of the owner's admin connection.
 
@@ -93,7 +103,10 @@ Then, connected **as `fm_diag_ro`**:
    )
    ```
    - Through the pooler, swap in the session-mode host and the `fm_diag_ro.<project-ref>` user name from step 2.
-   - The password may contain raw `@ / : # !` characters. The helper splits it out of the URL and hands it to psql only through a 0600 pgpass file in a private directory, which is removed on exit. psql runs under `env -i` with an allowlisted environment, so the password never appears in `ps`, in an environment, in a trace or in an error. The helper prints the psql binary it resolved (`db-readonly-psql: using psql at …`) before connecting: check that it is the one you expect. It always adds `require_auth=scram-sha-256`. `sslrootcert=` is accepted with `sslmode=verify-full`, and `channel_binding=require` is optional. A literal `%` must be typed as `%25`; a malformed escape is refused without echoing the value. Simplest: generate a password without `%`.
+   - Password characters: generate the password from letters and digits only. Raw `:` `!` `~` and the like work. `@ / ? #` must be percent-encoded (`%40 %2F %3F %23`), and a literal `%` as `%25`. Otherwise the helper refuses the URL without echoing it: an `@` after the host could point the connection somewhere else. The helper splits the password out of the URL and hands it to psql only through a 0600 pgpass file in a private directory, which is removed on exit. psql runs under `env -i` with an allowlisted environment, so the password never appears in `ps`, in an environment, in a trace or in an error. The helper prints the psql binary it resolved (`db-readonly-psql: using psql at …`) before connecting: check that it is the one you expect. It always adds `require_auth=scram-sha-256`. `sslrootcert=` is accepted with `sslmode=verify-full`, and `channel_binding=require` is optional. A literal `%` must be typed as `%25`; a malformed escape is refused without echoing the value.
+   - The pgpass file lives in `${TMPDIR:-/tmp}/db-readonly-psql.XXXXXX/` and is removed on normal exit, error, Ctrl-C, HUP and TERM. A `kill -9` cannot be trapped. After one, remove it by hand: `rm -rf "${TMPDIR:-/tmp}"/db-readonly-psql.*`.
+   - Run the helper as `scripts/db-readonly-psql.sh`, not `bash scripts/…`. Its `#!/bin/bash -p` shebang ignores `BASH_ENV`/`ENV`, `SHELLOPTS` and functions exported by the calling shell.
+   - The host name is resolved first. A name that resolves to loopback or to an unspecified address (`localtest.me`, `*.nip.io`, `*.sslip.io`, a hosts-file entry) is refused, and so is a name that cannot be resolved.
    - Do **not** set `DIAG_ALLOW_LOCAL`. It is a test-only override for the throwaway-container tests and prints a warning.
    - The output must begin with exactly these two results:
      ```
@@ -107,8 +120,8 @@ Then, connected **as `fm_diag_ro`**:
       verified
      (1 row)
      ```
-   - If the role guard refuses, the run stops before the investigation, with `ERROR:  role guard refused: …` naming the reason. Possible reasons: a different role; superuser, BYPASSRLS, CREATEROLE, CREATEDB or REPLICATION; membership in `pg_write_all_data`, `pg_execute_server_program`, `pg_write_server_files`, `pg_signal_backend`, `pg_checkpoint`, `pg_maintain` or `pg_create_subscription`; owning any object; a write privilege on a table, column, sequence or large object; CREATE on a schema or the database; or EXECUTE on a SECURITY DEFINER function other than the two allowlisted ones (below). Nothing ran, so nothing to undo. Stop, and report the message.
-   - **PUBLIC grants count.** The guard counts privileges granted to PUBLIC. Production's schema `public` granted CREATE to PUBLIC until 2026-10-31, when change A was executed ([prod-revoke-schema-create.md](prod-revoke-schema-create.md)). Before that, the guard would have refused with `role guard refused: fm_diag_ro has CREATE (via fm_diag_ro) on schema: public`. Precheck rows 12–15 ([prod-diag-role-precheck.sql](prod-diag-role-precheck.sql)) list everything that would trip it, before the role is created.
+   - If the role guard refuses, the run stops before the investigation, with `ERROR:  role guard refused: …` naming the reason (the full list is in §5). Nothing ran, so nothing to undo. Stop, and report the message.
+   - **PUBLIC grants count.** The guard counts privileges granted to PUBLIC. Production's schema `public` granted CREATE to PUBLIC until 2026-10-31, when change A was executed ([prod-revoke-schema-create.md](prod-revoke-schema-create.md)). Before that, the guard would have refused with `role guard refused: fm_diag_ro has CREATE (via fm_diag_ro) on schema: public`. Precheck rows 12–18 ([prod-diag-role-precheck.sql](prod-diag-role-precheck.sql)) list everything that would trip it, before the role is created.
    - **SECURITY DEFINER allowlist.** A SECURITY DEFINER function runs with its owner's rights, so the guard refuses any that `fm_diag_ro` can EXECUTE in a schema it can USE. There are two exceptions, matched by schema, name and argument types, and only while they are declared `STABLE` or `IMMUTABLE`: `public.fm_visible_space_ids()` and `public.fm_may_join_space(text)`.
      - These are Production's RLS helpers: `LANGUAGE sql STABLE`, read-only SELECTs.
      - Migration `20261006000000_rls_function_execute_least_privilege` already revokes their EXECUTE from PUBLIC. If that holds on Production, `fm_diag_ro` cannot execute them at all, and the allowlist is only a fallback.
@@ -118,14 +131,24 @@ Then, connected **as `fm_diag_ro`**:
 ## 5. Security review
 
 **Can it write?** No. **Writes are prevented by privileges:** the role holds no INSERT/UPDATE/DELETE/TRUNCATE privilege on anything, and its RLS policies are `FOR SELECT` only.
-Read-only defaults are defence in depth only: the role-level `default_transaction_read_only` (a default the role could override), plus the helper's read-only transaction, input scan and database-side role guard.
-The role guard is `DIAG_REQUIRE_ROLE=fm_diag_ro`. It is a plpgsql `DO` block that RAISEs, so Postgres cannot constant-fold it the way it folded the earlier `ELSE (1/0)` form, which could never pass. It aborts unless:
-- the session is exactly this role;
-- neither this role nor any role it can become (`pg_has_role … MEMBER`, so inherited or via `SET ROLE`) is superuser, BYPASSRLS, CREATEROLE, CREATEDB, REPLICATION or `pg_write_all_data`;
-- none of them holds INSERT/UPDATE/DELETE/TRUNCATE on any table or column, or USAGE/UPDATE on any sequence, in any non-system schema;
-- none of them holds CREATE on any schema or on the database.
 
-All of this is proved against a throwaway container by `scripts/db-readonly-psql-container.test.ts`.
+**The real barriers are database-side:**
+1. **One explicit transaction, ended by ROLLBACK.** The helper's first command is `BEGIN; SET TRANSACTION READ ONLY; SET LOCAL statement_timeout …`, and its last command is `ROLLBACK`; there is no `psql -1` and no COMMIT. On any error psql stops and the server aborts the transaction. A rolled-back transaction also reverts session-level `set_config`, and the container test proves this.
+2. **The role guard,** which is mandatory for every remote run.
+
+The helper's input scan is **best-effort** defence in depth on top of those: a keyword scan cannot see SQL assembled at run time. It allowlists the first word of each statement and refuses known SQL-in-a-string executors, transaction control, `$`, interpolation and meta-commands. The role-level `default_transaction_read_only` is a default the role could override.
+
+The role guard is `DIAG_REQUIRE_ROLE=fm_diag_ro`. It is a plpgsql `DO` block that RAISEs, so Postgres cannot constant-fold it the way it folded the earlier `ELSE (1/0)` form, which could never pass. Every catalog reference is `pg_catalog`-qualified, and `search_path` is pinned to `pg_catalog` while the guard runs. It aborts unless all of the following hold, for this role **and every role it can become** (`pg_has_role … MEMBER`, so inherited or via `SET ROLE`):
+- the session is exactly this role;
+- not superuser, BYPASSRLS, CREATEROLE, CREATEDB or REPLICATION;
+- not a member of `pg_write_all_data`, `pg_read_all_data`, `pg_read_server_files`, `pg_write_server_files`, `pg_execute_server_program`, `pg_signal_backend`, `pg_checkpoint`, `pg_maintain` or `pg_create_subscription`;
+- owns no object: none in `pg_shdepend` for this database or shared, and no relation, function, type or schema;
+- no INSERT/UPDATE/DELETE/TRUNCATE on any table or column, no USAGE/UPDATE on any sequence, and no ownership of or UPDATE on any large object; also, `lo_compat_privileges` is off;
+- no CREATE on any schema or on the database;
+- no USAGE on any foreign server, no user mapping for the role or for PUBLIC, and no EXECUTE on any `dblink*` function;
+- no EXECUTE on any user-created SECURITY DEFINER function (oid ≥ 16384, `pg_catalog` included) in a schema it can use, except `public.fm_visible_space_ids()` and `public.fm_may_join_space(text)` while they are STABLE or IMMUTABLE (§4).
+
+All of this is proved against a throwaway `postgres:17-alpine` container (Production runs 17.6) by `scripts/db-readonly-psql-container.test.ts`. Precheck rows 12–18 list anything in Production that would trip the guard.
 
 **Can it read beyond the investigation?**
 - Only the listed columns of 4 tables.
@@ -134,12 +157,13 @@ All of this is proved against a throwaway container by `scripts/db-readonly-psql
 - Raw email, IP and user agent ARE readable by this role, because the investigation computes on them. That exposure is bounded by: the owner holding the only password, a 24-hour expiry, 2 connections, the helper's masked output, and the rollback below.
 
 **Residual risks:**
+0. **Masked output can still re-identify people (quasi-identifiers).** No single column contains PII, but a combination can single someone out: created hour, free-mail domain, local-part length bucket, note length, network sharing and submission counts, especially in a small population (20 requests). Treat the masked output as personal data. Share it only with people who need it, don't publish it, and don't join it with other sources.
 1. Anyone holding the password could run their own `SELECT email …`. Mitigations: expiry, immediate drop after use, no sharing.
 2. The policy and grant DDL is a Production schema change (owner approval).
 3. Supabase may log role creation (expected).
 4. `ALTER ROLE … SET` settings apply at login and are not session-leakable through the pooler, because they are role-scoped.
 
-**Not given:** BYPASSRLS, `pg_read_all_data`, membership in `fm_backup` / `fm_system`, any function EXECUTE, `CREATE`.
+**Not given:** BYPASSRLS, `pg_read_all_data`, `pg_read_server_files`, membership in `fm_backup` / `fm_system`, any function EXECUTE beyond PUBLIC's defaults (the guard refuses those it can't allowlist), `CREATE`, foreign servers or user mappings.
 
 ## 6. Rollback (one transaction, idempotent)
 

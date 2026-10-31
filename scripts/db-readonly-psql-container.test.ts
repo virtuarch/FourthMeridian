@@ -24,7 +24,7 @@
  * The helper refuses localhost; these runs set the TEST-ONLY override
  * DIAG_ALLOW_LOCAL=1 (loud on stderr; never for a real database).
  *
- * Container: `docker run -d --rm` postgres:16-alpine on 127.0.0.1 (docker-assigned
+ * Container: `docker run -d --rm` postgres:17-alpine (Production runs 17.6) on 127.0.0.1 (docker-assigned
  * free port), random password, no named volume; torn down with `docker rm -f -v`.
  * SKIPs (exit 0, with a SKIP line) when docker or psql is unavailable.
  *
@@ -73,7 +73,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { teardo
 
 const tmp = mkdtempSync(path.join(tmpdir(), "db-ro-psql-container-"));
 try {
-  const runC = sh("docker", ["run", "-d", "--rm", "--name", NAME, "-e", `POSTGRES_PASSWORD=${SUPER_PW}`, "-p", "127.0.0.1::5432", "postgres:16-alpine"]);
+  const runC = sh("docker", ["run", "-d", "--rm", "--name", NAME, "-e", `POSTGRES_PASSWORD=${SUPER_PW}`, "-p", "127.0.0.1::5432", "postgres:17-alpine"]);
   if (runC.status !== 0) throw new Error(`docker run failed: ${runC.stderr}`);
   started = true;
   const portOut = sh("docker", ["port", NAME, "5432/tcp"]).stdout.trim().split("\n")[0] ?? "";
@@ -140,7 +140,7 @@ try {
   writeFileSync(roleSql, block.replace("<APPROVAL_TIME_PLUS_24H_UTC>", expiry));
   const created = suFile(roleSql);
   check("§2 role SQL runs as written (one transaction)", created.status === 0, created.stderr);
-  const RO_PW = `Ro!p@ss/w:rd#${randomBytes(6).toString("hex")}`;   // raw specials: what the owner's prompt may receive
+  const RO_PW = `Ro!p:ss-w~rd_${randomBytes(6).toString("hex")}`;   // raw : ! ~ are fine; @ / ? # must be percent-encoded
   check("fm_diag_ro password set (container only)", su(`ALTER ROLE fm_diag_ro PASSWORD '${RO_PW}'`).status === 0);
 
   const helper = (args: string[], o: { user: string; pw: string; require?: string; bashArgs?: string[]; env?: Record<string, string>; rawUrl?: string }) =>
@@ -196,6 +196,11 @@ try {
       CREATE ROLE diag_owner_fn  LOGIN PASSWORD '${pw}'; CREATE FUNCTION owned_fn() RETURNS int LANGUAGE sql AS 'SELECT 1'; ALTER FUNCTION owned_fn() OWNER TO diag_owner_fn;
       REVOKE EXECUTE ON FUNCTION owned_fn() FROM PUBLIC;
       CREATE ROLE diag_lo        LOGIN PASSWORD '${pw}'; SELECT lo_create(424242); GRANT UPDATE ON LARGE OBJECT 424242 TO diag_lo;
+      CREATE ROLE diag_rsf       LOGIN PASSWORD '${pw}'; GRANT pg_read_server_files TO diag_rsf;
+      CREATE ROLE diag_maintain  LOGIN PASSWORD '${pw}'; GRANT pg_maintain TO diag_maintain;
+      CREATE FOREIGN DATA WRAPPER fm_dummy_fdw; CREATE SERVER fm_dummy_srv FOREIGN DATA WRAPPER fm_dummy_fdw;
+      CREATE ROLE diag_fsrv      LOGIN PASSWORD '${pw}'; GRANT USAGE ON FOREIGN SERVER fm_dummy_srv TO diag_fsrv;
+      CREATE ROLE diag_umap      LOGIN PASSWORD '${pw}'; CREATE USER MAPPING FOR diag_umap SERVER fm_dummy_srv;
     `);
     check("negative-case roles created", mk.status === 0, mk.stderr);
     for (const [role, reason] of [
@@ -208,6 +213,8 @@ try {
       ["diag_signal", /member of pg_signal_backend/], ["diag_ckpt", /member of pg_checkpoint/], ["diag_subscr", /member of pg_create_subscription/],
       ["diag_srv_inh", /member of pg_execute_server_program/], ["diag_owner_tbl", /owns database objects/], ["diag_owner_fn", /owns database objects/],
       ["diag_lo", /can write a large object/],
+      ["diag_readall", /member of pg_read_all_data/], ["diag_rsf", /member of pg_read_server_files/], ["diag_maintain", /member of pg_maintain/],
+      ["diag_fsrv", /can use a foreign server/], ["diag_umap", /user mapping exists|owns database objects/],
     ] as Array<[string, RegExp]>) {
       const r = helper(["-c", "select 1 as after_guard"], { user: role, pw, require: role });
       check(`refused: ${role}`, r.status !== 0 && /role guard refused/.test(r.stderr) && reason.test(r.stderr) && !/verified|after_guard/.test(r.stdout),
@@ -215,8 +222,6 @@ try {
     }
     const mismatch = helper(["-c", "select 1 as after_guard"], { user: "fm_diag_ro", pw: RO_PW, require: "diag_readall" });
     check("refused: connected role ≠ DIAG_REQUIRE_ROLE", mismatch.status !== 0 && /connected as fm_diag_ro, expected diag_readall/.test(mismatch.stderr) && !/after_guard/.test(mismatch.stdout), mismatch.stderr);
-    const readAll = helper(["-c", "select 1 as after_guard"], { user: "diag_readall", pw, require: "diag_readall" });
-    check("pg_read_all_data alone is fine (verified)", readAll.status === 0 && /verified/.test(readAll.stdout), `${readAll.status} ${readAll.stderr}`);
 
     // SECURITY DEFINER: the two STABLE Production helpers are allowlisted; anything else is refused.
     const ro = (sql = "select 1 as after_guard") => helper(["-c", sql], { user: "fm_diag_ro", pw: RO_PW, require: "fm_diag_ro" });
@@ -243,6 +248,19 @@ try {
     const loc = ro();
     check("lo_compat_privileges = on ⇒ refused", loc.status !== 0 && /lo_compat_privileges/.test(loc.stderr), loc.stderr);
     su("ALTER DATABASE postgres RESET lo_compat_privileges");
+    su("CREATE USER MAPPING FOR PUBLIC SERVER fm_dummy_srv");
+    const pubMap = ro();
+    check("a user mapping for PUBLIC ⇒ refused", pubMap.status !== 0 && /user mapping exists/.test(pubMap.stderr), pubMap.stderr);
+    su("DROP USER MAPPING FOR PUBLIC SERVER fm_dummy_srv");
+    const ext = su("CREATE EXTENSION dblink");
+    const dbl = ro();
+    check("dblink installed (EXECUTE to PUBLIC) ⇒ refused", ext.status === 0 && dbl.status !== 0 && /dblink function/.test(dbl.stderr), `${ext.stderr} ${dbl.stderr}`);
+    su("DROP EXTENSION dblink");
+    const cat = su("CREATE FUNCTION pg_catalog.fm_cat_writer() RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER AS 'INSERT INTO public.canary VALUES (1)'");
+    const catR = ro();
+    check("a user-created VOLATILE SECURITY DEFINER function in pg_catalog (oid >= 16384) ⇒ refused",
+      cat.status === 0 && catR.status !== 0 && /pg_catalog\.fm_cat_writer\(\)/.test(catR.stderr), `${cat.stderr} ${catR.stderr}`);
+    su("DROP FUNCTION pg_catalog.fm_cat_writer()");
     const again = ro();
     check("back to the Production shape ⇒ verified again", again.status === 0 && /verified/.test(again.stdout), again.stderr);
   }
@@ -256,6 +274,8 @@ try {
     const asSuper = { user: "postgres", pw: SUPER_PW };
     const nulFile = path.join(tmp, "nul.sql");
     writeFileSync(nulFile, Buffer.from("select 1;\nCOM\u0000\nMIT;\ninsert into canary values (1);\n", "binary"));
+    const caseLabelFile = path.join(tmp, "caselabel.sql");
+    writeFileSync(caseLabelFile, "SELECT 1 AS case;\nEND;\ninsert into canary values (1);\n");
     const crlfFile = path.join(tmp, "crlf.sql");
     writeFileSync(crlfFile, "select 1;\r\nend\r\n;\r\nselect nextval('canary_seq');\r\n");
     const before = { rows: count("select count(*) from canary"), seq: count("select last_value || ':' || is_called from canary_seq") };
@@ -284,6 +304,11 @@ try {
       ["END with newline before ';' (-c)", ["-c", "select 1;\nend\n;"]],
       ["CRLF file with a bare END", ["-f", crlfFile]],
       ["'case' in a string to balance an END", ["-c", "select 'case'; end"]],
+      ["CASE as a column label to balance an END", ["-c", "SELECT 1 AS case; END; insert into canary values (1)"]],
+      ["CASE label + END in a file", ["-f", caseLabelFile]],
+      ["dollar-quote tag with digits ($q1$)", ["-c", "select $q1$x$q1$"]],
+      ["query_to_xml running an INSERT from a string", ["-c", "select query_to_xml('insert into canary values (1) returning 1', true, true, '')"]],
+      ["ts_stat running SQL from a string", ["-c", "select * from ts_stat('select to_tsvector(''x'')')"]],
       ["U&'…' escape", ["-c", "select U&'\\0043OMMIT'"]],
       ["SET LOCAL statement_timeout", ["-c", "SET LOCAL statement_timeout = 0"]],
       ["\\pset 'pager'", ["-c", "\\pset 'pager' on"]],
@@ -299,6 +324,19 @@ try {
     }
     const ro = helper(["-c", "show transaction_read_only"], asSuper);
     check("even the superuser's session is read-only inside the helper", ro.status === 0 && /transaction_read_only\s*\n-+\n\s*on/.test(ro.stdout), ro.stdout);
+    // The run ENDS IN ROLLBACK (no -1/COMMIT): the server counts a rollback, and a
+    // rolled-back transaction reverts even a session-level set_config.
+    const stat = () => Number(count("select xact_rollback from pg_stat_database where datname = 'postgres'"));
+    const rb0 = stat();
+    const plain = helper(["-c", "select 1 as ok"], asSuper);
+    spawnSync("sleep", ["1"]);
+    const rb1 = stat();
+    check(`a successful helper run ends in ROLLBACK (xact_rollback ${rb0}→${rb1})`, plain.status === 0 && rb1 >= rb0 + 1, `${plain.status} ${plain.stderr}`);
+    const rev = spawnSync("psql", ["-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-h", "127.0.0.1", "-p", PORT, "-U", "postgres", "-d", "postgres",
+      "-c", "BEGIN", "-c", "SELECT set_config('application_name', 'leaked_setting', false)", "-c", "ROLLBACK", "-c", "SHOW application_name"], {
+      encoding: "utf8", env: { PATH: process.env.PATH ?? "", PGPASSWORD: SUPER_PW } as unknown as NodeJS.ProcessEnv });
+    check("PostgreSQL: ROLLBACK reverts a SESSION-level set_config made inside the transaction",
+      rev.status === 0 && rev.stdout.includes("leaked_setting") && (rev.stdout.trim().split("\n").pop() ?? "") !== "leaked_setting", rev.stdout);
     const after = { rows: count("select count(*) from canary"), seq: count("select last_value || ':' || is_called from canary_seq") };
     check(`ZERO rows committed: canary ${before.rows}→${after.rows}, sequence ${before.seq}→${after.seq}`, before.rows === "0" && after.rows === "0" && before.seq === after.seq);
     check("no file was written by \\o or a backtick", !existsSync(path.join(tmp, "out.txt")) && !existsSync(path.join(tmp, "pwned")));
@@ -356,9 +394,10 @@ try {
     const pre = suFile(path.join(ROOT, "docs", "operations", "sql", "prod-diag-role-precheck.sql"));
     const row = (n: number) => (pre.stdout.split("\n").find((l) => new RegExp(`^\\s*${n} \\|`).test(l)) ?? "").split("|").pop()?.trim() ?? "(missing)";
     const r15 = "public.fm_may_join_space(text) s [allowlisted], public.fm_visible_space_ids() s [allowlisted]";
-    check("prod-diag-role-precheck.sql runs (rows 12–15 = the role guard's PUBLIC tripwires: none / 0 / false / only the allowlisted pair)",
-      pre.status === 0 && row(12) === "none" && row(13) === "0" && row(14) === "false" && row(15).split(", ").sort().join(", ") === r15,
-      `${pre.status} 12=${row(12)} 13=${row(13)} 14=${row(14)} 15=${row(15)} ${pre.stderr}`);
+    check("prod-diag-role-precheck.sql runs (rows 12–18 = the role guard's PUBLIC tripwires: none / 0 / false / only the allowlisted pair / 0 / 0 / none)",
+      pre.status === 0 && row(12) === "none" && row(13) === "0" && row(14) === "false" && row(15).split(", ").sort().join(", ") === r15
+        && row(16) === "0" && row(17) === "0" && row(18) === "none",
+      `${pre.status} 12=${row(12)} 13=${row(13)} 14=${row(14)} 15=${row(15)} 16=${row(16)} 17=${row(17)} 18=${row(18)} ${pre.stderr}`);
     if (has("zsh", ["--version"])) {
       // The owner's sequence (prod-diag-readonly-role.md §4), host swapped for the container
       // and the TEST-ONLY local override added. The password arrives on stdin, as from the hidden prompt.

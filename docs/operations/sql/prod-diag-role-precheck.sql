@@ -38,7 +38,7 @@ SELECT 8, 'SECURITY DEFINER functions in public executable by PUBLIC (expect non
   FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef
    AND has_function_privilege('public', p.oid, 'EXECUTE')
 UNION ALL
--- 12-15: what would make scripts/db-readonly-psql.sh's DIAG_REQUIRE_ROLE guard refuse fm_diag_ro
+-- 12-18: what would make scripts/db-readonly-psql.sh's DIAG_REQUIRE_ROLE guard refuse fm_diag_ro
 -- (it counts PUBLIC grants; it checks every non-system schema, not only public).
 SELECT 12, 'role guard: schemas where PUBLIC holds CREATE (expect none)',
        coalesce(string_agg(s.nspname, ', '), 'none')
@@ -62,8 +62,18 @@ SELECT 15, 'role guard: SECURITY DEFINER functions PUBLIC can execute in a schem
                     OR (p.proname = 'fm_may_join_space' AND oidvectortypes(p.proargtypes) = 'text'))
                  THEN ' [allowlisted]' ELSE ' [REFUSED]' END, ', '), 'none')
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
- WHERE p.prosecdef AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_(toast|temp_)'
+ WHERE p.prosecdef AND p.oid >= 16384   -- every user-created function, pg_catalog included
    AND has_schema_privilege('public', n.oid, 'USAGE') AND has_function_privilege('public', p.oid, 'EXECUTE')
+UNION ALL
+SELECT 16, 'role guard: foreign servers PUBLIC can use (expect 0)', count(*)::text
+  FROM pg_foreign_server fs WHERE has_server_privilege('public', fs.oid, 'USAGE')
+UNION ALL
+SELECT 17, 'role guard: user mappings for PUBLIC (expect 0)', count(*)::text
+  FROM pg_user_mappings WHERE umuser = 0
+UNION ALL
+SELECT 18, 'role guard: dblink* functions PUBLIC can execute (expect none)',
+       coalesce(string_agg(DISTINCT p.proname::text, ', '), 'none')
+  FROM pg_proc p WHERE p.proname LIKE 'dblink%' AND has_function_privilege('public', p.oid, 'EXECUTE')
 UNION ALL
 SELECT 9, 'server version', current_setting('server_version')
 UNION ALL

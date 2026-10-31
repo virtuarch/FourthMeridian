@@ -71,10 +71,11 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
 {
   const script = path.join(ROOT, "scripts", "db-readonly-psql.sh");
   const src = readFileSync(script, "utf8");
-  check("tracing is switched off on the first executable line", /^#!\/usr\/bin\/env bash\n\{ set \+x \+v; \} 2>\/dev\/null/.test(src));
-  check("one transaction: psql -1, run under env -i with an allowlisted environment",
-    /^env -i "\$\{psql_env\[@\]\}" "\$psql_bin" "\$url" [^\n]*-1\b/m.test(src));
-  check("read-only and the timeout are transaction-local", /-c "SET TRANSACTION READ ONLY; SET LOCAL statement_timeout/.test(src));
+  check("tracing is switched off on the first executable line", /^#!\/bin\/bash -p\n\{ set \+x \+v; \} 2>\/dev\/null/.test(src));
+  check("psql runs under env -i with an allowlisted environment, WITHOUT -1 (whose end is a COMMIT)",
+    /^env -i "\$\{psql_env\[@\]\}" "\$psql_bin" "\$url" -X -w -q -v ON_ERROR_STOP=1 -P pager=off \\$/m.test(src) && !/^env -i [^\n]* -1\b/m.test(src));
+  check("one explicit transaction: BEGIN + SET TRANSACTION READ ONLY first, ROLLBACK last",
+    /-c "BEGIN; SET TRANSACTION READ ONLY; SET LOCAL statement_timeout/.test(src) && /\n  -c "ROLLBACK"\n/.test(src));
   check("it never issues a session-level read-only SET itself", !/SET default_transaction_read_only/i.test(src.replace(/^#.*$/gm, "")));
   check("the URL / password is never echoed or printed",
     !src.split("\n").some((l) => /(?:echo|printf '[^']*' )[^\n]*\$\{?(?:url|raw|DIAG_DATABASE_URL|PGPASSWORD|PGPASS_LINE|DECODED_PW|pw_enc|userinfo|esc|out)\b/.test(l)
@@ -89,11 +90,24 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
   const rec = path.join(tmp, "rec");
   writeFileSync(path.join(fakeBin, "psql"), `#!/bin/sh\nmkdir -p '${rec}'\nprintf '%s\\n' "$@" > '${rec}/argv'\nenv > '${rec}/env'\ncat "$PGPASSFILE" > '${rec}/pass'\nls -l "$PGPASSFILE" | cut -c1-10 > '${rec}/mode'\nexit 0\n`);
   chmodSync(path.join(fakeBin, "psql"), 0o755);
+  // A fake resolver (getent is tried first): every name resolves to TEST-NET-1 except the
+  // loopback fixtures — deterministic, no DNS in the unit test.
+  writeFileSync(path.join(fakeBin, "getent"), `#!/bin/sh
+case "$2" in
+  loop.test|localtest.me|127.0.0.1.nip.io) echo "127.0.0.1       STREAM $2" ;;
+  loop6.test) echo "::1             STREAM $2" ;;
+  mapped.test) echo "::ffff:127.0.0.1 STREAM $2" ;;
+  zero.test) echo "0.0.0.0         STREAM $2" ;;
+  nx.test) exit 2 ;;
+  *) echo "192.0.2.10      STREAM $2" ;;
+esac
+`);
+  chmodSync(path.join(fakeBin, "getent"), 0o755);
   const reached = () => existsSync(path.join(rec, "argv"));
   const run = (args: string[], url: string | undefined, opts: { bashArgs?: string[]; env?: Record<string, string> } = {}) => {
     rmSync(rec, { recursive: true, force: true });
     return spawnSync("bash", [...(opts.bashArgs ?? []), script, ...args], {
-      env: { PATH: `${fakeBin}:${process.env.PATH ?? ""}`, ...(url === undefined ? {} : { DIAG_DATABASE_URL: url }), ...(opts.env ?? {}) } as unknown as NodeJS.ProcessEnv,
+      env: { PATH: `${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", ...(url === undefined ? {} : { DIAG_DATABASE_URL: url }), ...(opts.env ?? {}) } as unknown as NodeJS.ProcessEnv,
       encoding: "utf8", timeout: 20_000,
     });
   };
@@ -135,6 +149,18 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
     ["sslmode=prefer on a remote host", "postgresql://u:p@remote.invalid:1/db?sslmode=prefer"],
     ["no password", "postgresql://u@remote.invalid:1/db"],
     ["empty password", "postgresql://u:@remote.invalid:1/db"],
+    ["a name resolving to 127.0.0.1 (loop.test)", "postgresql://u:p@loop.test:5432/db"],
+    ["localtest.me (resolves to loopback)", "postgresql://u:p@localtest.me:5432/db"],
+    ["127.0.0.1.nip.io (resolves to loopback)", "postgresql://u:p@127.0.0.1.nip.io:5432/db"],
+    ["a name resolving to ::1", "postgresql://u:p@loop6.test:5432/db"],
+    ["a name resolving to ::ffff:127.0.0.1", "postgresql://u:p@mapped.test:5432/db"],
+    ["a name resolving to 0.0.0.0", "postgresql://u:p@zero.test:5432/db"],
+    ["an unresolvable name (fail closed)", "postgresql://u:p@nx.test:5432/db"],
+    ["'@' in the query", "postgresql://u:p@db.example.com:5432/db?application_name=a@evil.test"],
+    ["'@' in the path", "postgresql://u:p@db.example.com:5432/db@evil.test"],
+    ["raw '@' in the password", "postgresql://u:p@ss@db.example.com:5432/db"],
+    ["raw '/' in the password (authority ends at '/')", "postgresql://u:p/w@db.example.com:5432/db"],
+    ["'#' anywhere", "postgresql://u:p#x@db.example.com:5432/db"],
   ];
   for (const [name, u] of badUrls) {
     const r = run(["-c", "select 1"], u);
@@ -144,6 +170,10 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
     const r = run(["-c", "select 1"], "postgresql://u:p@remote.invalid:1/db?host=127.0.0.1", { env: { DIAG_ALLOW_LOCAL: "1" } });
     check("DIAG_ALLOW_LOCAL=1 never re-enables ?host= / redirection parameters", refused(r), r.stderr);
     const l = run(["-c", "select 1"], "postgresql://u:p@127.0.0.1:1/db?sslmode=disable", { env: { DIAG_ALLOW_LOCAL: "1" } });
+    const noRole = run(["-c", "select 1"], "postgresql://u:p@db.example.com:5432/db", { env: { DIAG_REQUIRE_ROLE: "" } });
+    check("a remote host without DIAG_REQUIRE_ROLE ⇒ refused (the role guard is mandatory)", refused(noRole) && /DIAG_REQUIRE_ROLE is required/.test(noRole.stderr), noRole.stderr);
+    const localNoRole = run(["-c", "select 1"], "postgresql://u:p@127.0.0.1:1/db?sslmode=disable", { env: { DIAG_ALLOW_LOCAL: "1", DIAG_REQUIRE_ROLE: "" } });
+    check("…but a local test container (DIAG_ALLOW_LOCAL=1) may run without it", localNoRole.status === 0 && reached(), localNoRole.stderr);
     check("DIAG_ALLOW_LOCAL=1 (test-only) is loud on stderr", reached() && /WARNING — DIAG_ALLOW_LOCAL=1 is a TEST-ONLY override/.test(l.stderr), l.stderr);
     const t = run(["-c", "select 1"], "postgresql://u:p@127.0.0.1:1/db", { env: { DIAG_ALLOW_LOCAL: "true" } });
     check("DIAG_ALLOW_LOCAL other than exactly 1 ⇒ still refused", refused(t), t.stderr);
@@ -165,7 +195,10 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
     check("argv URL: password-free, host lower-cased, sslmode=require + require_auth=scram-sha-256 added, Prisma params dropped",
       argv[0] === "postgresql://fm_diag_ro.ref@pooler.example.com:6543/postgres?sslmode=require&require_auth=scram-sha-256", argv[0]);
     check("argv never contains the password (ps-safe)", !argv.some((a) => /p@ss|p%40ss/.test(a)));
-    check("psql runs with -X -w -1 and ON_ERROR_STOP=1", ["-X", "-w", "-1", "ON_ERROR_STOP=1"].every((f) => argv.includes(f)));
+    check("psql runs with -X -w and ON_ERROR_STOP=1, and never -1", ["-X", "-w", "ON_ERROR_STOP=1"].every((f) => argv.includes(f)) && !argv.includes("-1"));
+    const cs = argv.flatMap((a, i) => (argv[i - 1] === "-c" ? [a] : []));
+    check("first command BEGINs read-only, the role guard follows, the LAST command is ROLLBACK (never COMMIT)",
+      /^BEGIN; SET TRANSACTION READ ONLY;/.test(cs[0] ?? "") && /^DO \$fm_role_guard\$/.test(cs[1] ?? "") && cs[cs.length - 1] === "ROLLBACK" && !cs.some((c) => /\bCOMMIT\b/i.test(c)), cs.join(" | ").slice(0, 300));
     const names = env.map((l) => l.split("=")[0]).filter((n) => !["PWD", "SHLVL", "_", "OLDPWD"].includes(n)).sort();   // PWD/SHLVL/_ are added by the fake psql's own /bin/sh
     check("psql's environment is exactly the env -i allowlist (HOME LANG PATH PGCONNECT_TIMEOUT PGPASSFILE TERM)",
       JSON.stringify(names) === JSON.stringify(["HOME", "LANG", "PATH", "PGCONNECT_TIMEOUT", "PGPASSFILE", "TERM"]), names.join(","));
@@ -173,9 +206,16 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
     check("pgpass file = the DECODED password, ':' escaped, mode 0600", pass === "*:*:*:*:p@ss/w\\:rd\n" && mode === "-rw-------", `${JSON.stringify(pass)} ${mode}`);
     const passPath = env.find((l) => l.startsWith("PGPASSFILE="))?.slice("PGPASSFILE=".length) ?? "";
     check("the pgpass file and its private directory are removed on exit", passPath !== "" && !existsSync(passPath) && !existsSync(path.dirname(passPath)), passPath);
-    const raw = run(["-c", "select 1"], "postgresql://u:p@ss/w:rd#!x\\y@remote.example.com:5432/postgres");
+    const raw = run(["-c", "select 1"], "postgresql://u:p:w!x\\y%40z%2F%3F%23@remote.example.com:5432/postgres");
     const rawPass = reached() ? readFileSync(path.join(rec, "pass"), "utf8") : "";
-    check("a raw password with @ / : # ! \\ (owner prompt) is split and escaped correctly", raw.status === 0 && rawPass === "*:*:*:*:p@ss/w\\:rd#!x\\\\y\n", `${raw.stderr} ${JSON.stringify(rawPass)}`);
+    check("raw : ! \\ and encoded %40 %2F %3F %23 in the password are decoded and pgpass-escaped", raw.status === 0 && rawPass === "*:*:*:*:p\\:w!x\\\\y@z/?#\n", `${raw.stderr} ${JSON.stringify(rawPass)}`);
+    const sys = run(["-c", "select 1"], "postgresql://u:p@remote.example.com/db?sslmode=verify-full&sslrootcert=system");
+    const sysArgv = reached() ? readFileSync(path.join(rec, "argv"), "utf8").split("\n") : [];
+    check("sslrootcert=system with verify-full is accepted", sys.status === 0 && /sslmode=verify-full&sslrootcert=system&require_auth=scram-sha-256$/.test(sysArgv[0] ?? ""), `${sys.stderr} ${sysArgv[0]}`);
+    const sysNo = run(["-c", "select 1"], "postgresql://u:p@remote.example.com/db?sslmode=require&sslrootcert=system");
+    check("sslrootcert=system without verify-full ⇒ refused", refused(sysNo), sysNo.stderr);
+    // DIAG_DATABASE_URL is unexported at once: the fake psql (and every other child) never sees it.
+
     const ctl = run(["-c", "select 1"], "postgresql://u:a%0Ab@remote.example.com:5432/postgres");
     check("a password decoding to a control character (newline) ⇒ refused", refused(ctl), ctl.stderr);
     const cert = path.join(tmp, "root.crt"); writeFileSync(cert, "x");
@@ -192,6 +232,26 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
       const x = run(["-c", "select 1"], u);
       check(`refused: ${name}`, refused(x), x.stderr);
     }
+  }
+
+  console.log("  — #!/bin/bash -p: run directly, BASH_ENV and imported functions are ignored");
+  {
+    const marker = path.join(tmp, "bash-env-ran");
+    const benv = path.join(tmp, "benv.sh"); writeFileSync(benv, `touch '${marker}'\nset -x\n`);
+    rmSync(rec, { recursive: true, force: true });
+    const d = spawnSync(script, ["-c", "select 1"], { encoding: "utf8", timeout: 20_000, env: {
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", DIAG_DATABASE_URL: "postgresql://u:SecretPw1@db.example.com:5432/db",
+      BASH_ENV: benv, ENV: benv, "BASH_FUNC_grep%%": "() { echo hijacked; return 1; }", "BASH_FUNC_refuse%%": "() { :; }",
+    } as unknown as NodeJS.ProcessEnv });
+    check("executed directly: BASH_ENV/ENV not sourced, exported functions not imported, still reaches psql",
+      d.status === 0 && reached() && !existsSync(marker) && !/hijacked|SecretPw1/.test(`${d.stdout}${d.stderr}`), `${d.status} ${d.stderr}`);
+    const env = reached() ? readFileSync(path.join(rec, "env"), "utf8") : "";
+    check("DIAG_DATABASE_URL never reaches a child process", reached() && !/DIAG_DATABASE_URL|SecretPw1/.test(env));
+    const bad = spawnSync(script, ["-c", "select 1; end"], { encoding: "utf8", timeout: 20_000, env: {
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`, DIAG_REQUIRE_ROLE: "fm_diag_ro", DIAG_DATABASE_URL: "postgresql://u:p@db.example.com:5432/db",
+      "BASH_FUNC_refuse%%": "() { :; }", "BASH_FUNC_grep%%": "() { return 1; }",
+    } as unknown as NodeJS.ProcessEnv });
+    check("an imported function named refuse/grep cannot disable a refusal", bad.status === 2 && /REFUSED/.test(bad.stderr), `${bad.status} ${bad.stderr}`);
   }
 
   console.log("  — the password never reaches stdout/stderr (bash -x, SHELLOPTS=xtrace, bad percent-escape)");
@@ -271,13 +331,26 @@ console.log("\n2. the diagnostic wrapper is transaction-scoped and refuses sessi
     "SET LOCAL statement_timeout = 0", "SET LOCAL lock_timeout = 0", "SET LOCAL idle_in_transaction_session_timeout = 0", "SET LOCAL transaction_timeout = 0",
     "\\pset 'pager' on", "\\pset \"pager\" always", "\\pset PAGER on", "\\pset format aligned pager",
     "select '2026-10-31'::date", "select 1::text", "select 1 \u0001", "select 1\u007f",
+    // 2026-10-31 third review: statement first-word allowlist, '$', SQL-in-a-string executors
+    "SELECT 1 AS case; END", "select 1 as case; end; select 1", "END", "listen x", "fetch all from c", "execute p", "checkpoint",
+    "(select 1)", "'x'", "explain analyze select 1", "explain (analyze) select 1", "explain analyse select 1", "set work_mem = '8MB'",
+    "set role postgres", "set session authorization postgres", "set local work_mem = '1MB'; end",
+    "select $q1$x$q1$", "select $1", "select $$", "select 1 $",
+    "select query_to_xml('select 1', true, true, '')", "select query_to_xml_and_xmlschema('select 1', true, true, '')",
+    "select table_to_xml('t', true, true, '')", "select cursor_to_xml('c', 1, true, true, '')", "select database_to_xml(true, true, '')",
+    "select schema_to_xml('public', true, true, '')", "select * from ts_stat('select 1')", "select ts_rewrite('a'::tsquery, 'select 1')",
+    "select ts_rewrite(to_tsquery('a'), 'select 1')", "select xpath('/a', '<a/>')", "select * from crosstab('select 1')", "select * from connectby('t', 'a', 'b', '1', 0)",
+    "select pg_read_file('/etc/passwd')", "select pg_ls_dir('.')", "select dblink('x', 'select 1')",
   ]) {
     const r = run(["-c", bad], URL);
     check(`refused before connecting: ${JSON.stringify(bad)}`, refused(r), `${r.status} ${r.stderr}`);
   }
   for (const ok of [
     "select current_setting('default_transaction_read_only')", "SET LOCAL work_mem = '8MB'", "SHOW transaction_read_only", "select 1 offset 0",
-    "select CAST('2026-10-31' AS date)", "select case when true then 1 end", "select x :: numeric", "\\echo == A", "\\qecho x", "\\pset footer off", "select count(*) from \"BetaAccessRequest\" where status = 'PENDING'",
+    "select CAST('2026-10-31' AS date)", "select case when true then 1 end", "select x :: numeric",
+    "with a as (select 1) select * from a", "values (1)", "table pg_class", "show work_mem", "explain select 1", "explain (format json) select 1",
+    "set local work_mem = '8MB'", "set transaction isolation level repeatable read", "select a$b from t", "select 1; select 2",
+    "-- a note\nselect 1", "/* c */ select 1", "\\echo == A", "\\qecho x", "\\pset footer off", "select count(*) from \"BetaAccessRequest\" where status = 'PENDING'",
   ]) {
     const r = run(["-c", ok], URL);
     check(`allowed through the guard: ${JSON.stringify(ok)}`, r.status === 0 && reached(), `${r.status} ${r.stderr}`);
