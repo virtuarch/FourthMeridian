@@ -94,7 +94,9 @@ check("the machine exemption is EXACT — a sibling path is judged",
   !write(PROD_APP, PROD_SITE, { pathname: "/api/plaid/webhook-x" }).allowed &&
   !write(PROD_APP, PROD_SITE, { pathname: "/api/plaid/webhook/x" }).allowed &&
   !write(PROD_APP, PROD_SITE, { pathname: "/api/plaid/link-token" }).allowed);
-check("MACHINE_WRITE_PATHS is exactly the Plaid webhook", MACHINE_WRITE_PATHS.length === 1 && MACHINE_WRITE_PATHS[0] === "/api/plaid/webhook");
+check("MACHINE_WRITE_PATHS is exactly the Plaid and Resend webhooks", JSON.stringify(MACHINE_WRITE_PATHS) === JSON.stringify(["/api/plaid/webhook", "/api/webhooks/resend"]));
+check("Resend webhook POST with a foreign Origin passes (svix-signature-authenticated, not a browser authority)", write(PROD_APP, "https://evil.com", { pathname: "/api/webhooks/resend" }).allowed);
+check("…a near-miss Resend path is NOT exempt", !write(PROD_APP, PROD_SITE, { pathname: "/api/webhooks/resend/x" }).allowed);
 check("cron (GET + Bearer) is outside the check", write(PROD_APP, null, { method: "GET", pathname: "/api/jobs/dispatch" }).allowed);
 check("NextAuth credential POST from a sibling is refused (login CSRF)", !write(PROD_APP, PREVIEW_SITE, { pathname: "/api/auth/callback/credentials" }).allowed);
 check("NextAuth credential POST from itself is accepted", write(PROD_APP, PROD_APP, { pathname: "/api/auth/callback/credentials" }).allowed);
@@ -171,8 +173,8 @@ function census() {
   // than the browser session. If a new one appears it MUST be enumerated.
   const machineLike = mutating.filter((p) => /plaid-verification|svix-signature|stripe-signature|x-hub-signature|x-signature|verifyWebhook/i.test(readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "")));
   const machinePaths = machineLike.map(toPath).sort();
-  check("the only signature-authenticated mutating route is the Plaid webhook",
-    JSON.stringify(machinePaths) === JSON.stringify(["/api/plaid/webhook"]), JSON.stringify(machinePaths));
+  check("the only signature-authenticated mutating routes are the Plaid and Resend webhooks",
+    JSON.stringify(machinePaths) === JSON.stringify(["/api/plaid/webhook", "/api/webhooks/resend"]), JSON.stringify(machinePaths));
   for (const m of MACHINE_WRITE_PATHS) {
     check(`exempt path ${m} exists as a mutating route`, mutatingPaths.includes(m));
   }

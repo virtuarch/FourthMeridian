@@ -53,6 +53,8 @@ export interface LedgerEnv {
   VERCEL_ENV?: string;
   NODE_ENV?: string;
   COMMS_RECIPIENT_HASH_SALT?: string;
+  /** Phase C — presence only (measured.delivered); the value is never read into output. */
+  RESEND_WEBHOOK_SECRET?: string;
 }
 
 /** Same classification as lib/env.ts deploymentEnvironment(), over an injected env. */

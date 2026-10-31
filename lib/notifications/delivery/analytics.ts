@@ -20,7 +20,16 @@
  *
  * SERIES (C2, C4). Six fixed keys — accepted, failed, dead, suppressed,
  * captured, cancelled — always present, each a dense DaySeries with its own
- * `{window, from, to}`; `days.length` is exactly 7, 30 or 90.
+ * `{window, from, to}`; `days.length` is exactly 7, 30 or 90. Phase C (v1.2):
+ * `delivered` / `bounced` / `complained` are added — optional keys — only when
+ * `measured.delivered` is true.
+ *
+ * DELIVERED vs ACCEPTED (Phase C). ACCEPTED = the provider accepted the send.
+ * DELIVERED / BOUNCED / COMPLAINED come ONLY from a signature-verified provider
+ * event, appended to the ledger as the message's final row — so a delivered
+ * message counts once, as DELIVERED, not also as ACCEPTED. `measured.delivered`
+ * is true only when RESEND_WEBHOOK_SECRET is configured and a verified event
+ * exists in this environment; until then ACCEPTED is the honest ceiling.
  *
  * PII (§3.2): aggregates only — catalog keys, channels, statuses, reasons,
  * counts and dates. The source never selects a recipient column.
@@ -35,8 +44,9 @@ import { NO_STORE } from "@/lib/notifications/catalog/http";
 import { COMMS_CHANNELS, type CommsChannel, type DaySeries } from "@/lib/notifications/catalog/types";
 // The response types live in the pure types module (re-exported for the UI by
 // lib/notifications/catalog/types.ts); re-exported here for existing importers.
-import type { DeliveryAnalytics, DeliveryWindow, ReasonCounts, SeriesKey, StatusCounts } from "@/lib/notifications/delivery/types";
-export type { DeliveryAnalytics, DeliveryWindow, ReasonCounts, SeriesKey, StatusCounts };
+import type { DeliveryAnalytics, DeliveryWindow, ProviderSeriesKey, ReasonCounts, SeriesKey, StatusCounts } from "@/lib/notifications/delivery/types";
+export type { DeliveryAnalytics, DeliveryWindow, ProviderSeriesKey, ReasonCounts, SeriesKey, StatusCounts };
+import { webhookConfigured } from "@/lib/notifications/delivery/provider-events";
 import { ledgerEnvironment, type LedgerEnv } from "@/lib/notifications/delivery/record";
 import {
   DELIVERY_STATUSES,
@@ -58,6 +68,13 @@ export const SERIES_STATUS = {
   cancelled: "CANCELLED",
 } as const satisfies Record<SeriesKey, DeliveryStatus>;
 export const SERIES_KEYS = Object.keys(SERIES_STATUS) as SeriesKey[];
+
+/** Phase C — the optional series, emitted only when measured.delivered is true. */
+export const PROVIDER_SERIES_STATUS = {
+  delivered: "DELIVERED",
+  bounced: "BOUNCED",
+  complained: "COMPLAINED",
+} as const satisfies Record<ProviderSeriesKey, DeliveryStatus>;
 
 /** One aggregated cell from the source: UTC day × key × channel × status × reason. */
 export interface DeliveryCountRow {
@@ -83,6 +100,11 @@ export interface DeliveryReadSource {
   /** The first UTC day the ledger (or its rollup) holds a row for; null = nothing observed yet. */
   ledgerSince(): Promise<string | null>;
   counts(q: DeliveryCountQuery): Promise<DeliveryCountRow[]>;
+  /**
+   * Phase C — does this environment hold at least one signature-verified
+   * provider event? Absent ⇒ false (a source that cannot say never claims delivery).
+   */
+  verifiedEventExists?(): Promise<boolean>;
 }
 
 const DAY_MS = 86_400_000;
@@ -152,8 +174,17 @@ export async function buildDeliveryAnalytics(args: {
   }
 
   const observed = since !== null;
-  const series = Object.fromEntries(SERIES_KEYS.map((key) =>
+  // Phase C (v1.2) — "delivered" is measured PER ENVIRONMENT: only once the
+  // webhook secret is configured AND a verified event has been received.
+  const delivered = webhookConfigured(args.env.RESEND_WEBHOOK_SECRET)
+    && (source.verifiedEventExists ? await source.verifiedEventExists() : false);
+  const series: DeliveryAnalytics["series"] = Object.fromEntries(SERIES_KEYS.map((key) =>
     [key, denseSeries(window, days, since, perSeries.get(SERIES_STATUS[key]) ?? new Map())])) as Record<SeriesKey, DaySeries>;
+  if (delivered) {
+    for (const [key, status] of Object.entries(PROVIDER_SERIES_STATUS) as Array<[ProviderSeriesKey, DeliveryStatus]>) {
+      series[key] = denseSeries(window, days, since, perSeries.get(status) ?? new Map());
+    }
+  }
 
   return {
     window,
@@ -164,7 +195,7 @@ export async function buildDeliveryAnalytics(args: {
     suppressedByReason: observed ? reasons : null,
     byKey: observed ? [...byKey.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, counts]) => ({ key, counts })) : null,
     series,
-    measured: { delivered: false, opens: false, clicks: false },
+    measured: { delivered, opens: false, clicks: false },
     // Every sendEmail call site and createNotification write the ledger (A-2a).
     coverage: { ledgerSince: since, directSendsCovered: true, environment: ledgerEnvironment(args.env) },
     providerHealth: { href: "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers", source: "GET /api/platform/platform-ops/email-health" },

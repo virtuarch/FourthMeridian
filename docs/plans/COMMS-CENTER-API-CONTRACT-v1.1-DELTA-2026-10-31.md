@@ -1161,6 +1161,19 @@ The required ones join `REASON_REQUIRED_ACTIONS` (`lib/audit.ts:221`).
 - Unverified bodies → 401. They are never stored and never logged in full.
 - **Replay** → `providerEventId @unique` (the svix id), so a duplicate is acknowledged and ignored.
 
+### 10.2 v1.2 note — Phase C as built (2026-10-31)
+
+- **Route:** `POST /api/webhooks/resend` (`app/api/webhooks/resend/route.ts`; decision in `lib/notifications/delivery/provider-events.ts`, verification in `lib/notifications/delivery/svix.ts`). Listed in `MACHINE_WRITE_PATHS`.
+- **Inert until configured:** with no usable `RESEND_WEBHOOK_SECRET` every request is **503 `UNAVAILABLE`** and nothing is verified, read, stored or counted.
+- **Order:** inert check → per-IP rate limit (600/min) → body cap (64 KB; Content-Length pre-check, then the raw body) → svix verify (401; counted by reason only, under `ApiUsageCounter` provider `RESEND_WEBHOOK`, unit `rejections`) → parse (400) → classify → match → one transaction (event insert + optional ledger append). A duplicate svix id is **200 `{ duplicate: true }`** and writes nothing. A store failure is 500, so Resend retries; the transaction left nothing behind.
+- **Stored types:** `delivered | bounced | complained | delivery_delayed` only. `email.opened` / `email.clicked` (O-13) and every other type are acknowledged and **dropped before any read or write**.
+- **`CommsProviderEvent`** (migration `20261031230000_comms_provider_events`): `providerEventId` (svix id, unique), `type`, `providerMessageId`, `deliveryId` and `messageKey` (soft refs; null = unmatched), `outcome` (`APPLIED | NO_CHANGE | NOTE | UNMATCHED`), `occurredAt`, `receivedAt`. No address, subject, body, bounce text or payload. Grants: fm_system `SELECT, INSERT, DELETE`.
+- **Retention: 90 days** (owner decision 2026-10-31). This supersedes the 30 days in §8.7 and v1 §6.5.
+- **Reconciliation:** by Resend message id (`CommsDelivery.providerMessageId`, which A-2a already stores; now indexed). A status-moving event **appends** a ledger row (same `messageKey` and `attempt`) with `DELIVERED`, `BOUNCED` or `COMPLAINED`. The new nullable `CommsDelivery.deliveredAt` holds the provider's delivery instant. **Forward only**, ranked `ACCEPTED < DELIVERED < BOUNCED < COMPLAINED`: a late `delivered` never overwrites `BOUNCED`/`COMPLAINED`, and a repeat is `NO_CHANGE`. `delivery_delayed` is a `NOTE` and never writes the ledger. An event for an attempt that a later attempt superseded is `NO_CHANGE`. An unknown id is stored `UNMATCHED` and never creates a ledger row.
+- **§4.11 analytics:** the type is now `measured: { delivered: boolean; opens: false; clicks: false }`. `delivered` is **per environment**: it is true only when the secret is configured **and** at least one verified event exists. Only then are the optional `series.delivered`, `series.bounced` and `series.complained` present. The six C4 keys are unchanged. A delivered message counts once, as `DELIVERED`, not also as `ACCEPTED`.
+- **Platform Ops email health** (`GET /api/platform/platform-ops/email-health`) gains a read-only `webhook` block: `configured`, `lastVerifiedEventAt`, `countsByType`, `unmatched`, `signatureFailures {total, byReason}`, and `acceptedWithoutEvent72h` (ACCEPTED with no outcome after 72 h; a flag, never a resend; null until configured).
+- **Follow-ups, not built:** a recipient **suppression list** fed by `BOUNCED`/`COMPLAINED` final statuses (the contract does not specify one); the `notification-retry` move and the remaining B3 folds.
+
 ---
 
 ## 11. Owner decisions

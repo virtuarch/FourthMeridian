@@ -48,11 +48,15 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  *
  *   /api/plaid/webhook — Plaid; verified by the `plaid-verification` JWT
  *                        (app/api/plaid/webhook/route.ts).
+ *   /api/webhooks/resend — Resend delivery events; verified by the svix
+ *                        signature (`svix-signature`, HMAC-SHA256 over the raw
+ *                        body; app/api/webhooks/resend/route.ts). Inert (503)
+ *                        until RESEND_WEBHOOK_SECRET is configured.
  *
  * Cron (/api/jobs/*) is GET with `Authorization: Bearer CRON_SECRET` and is
  * therefore already outside this check; it needs no entry.
  */
-export const MACHINE_WRITE_PATHS: readonly string[] = ["/api/plaid/webhook"];
+export const MACHINE_WRITE_PATHS: readonly string[] = ["/api/plaid/webhook", "/api/webhooks/resend"];
 
 export type WriteOriginVerdict =
   | { allowed: true; basis: "safe-method" | "machine-path" | "same-origin" | "sec-fetch-same-origin" | "non-browser" }

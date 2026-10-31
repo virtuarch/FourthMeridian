@@ -360,7 +360,8 @@ async function main(): Promise<void> {
   {
     const sql = readFileSync("prisma/migrations/20261031220000_comms_automations/migration.sql", "utf8").replace(/--[^\n]*/g, "");
     const names = readdirSync("prisma/migrations").filter((n) => /^\d{14}_/.test(n)).sort();
-    check("it sorts after 20261031210000 (the B1 migration) and is the newest", names.indexOf("20261031220000_comms_automations") > names.indexOf("20261031210000_comms_template_versions") && names.at(-1) === "20261031220000_comms_automations");
+    // Phase C's 20261031230000_comms_provider_events now follows it; it must still sort after B1.
+    check("it sorts after 20261031210000 (the B1 migration)", names.indexOf("20261031220000_comms_automations") > names.indexOf("20261031210000_comms_template_versions"));
     check("additive only: no DROP, no ALTER COLUMN, no UPDATE / DELETE of rows; CommsDelivery gains two columns", !/\bDROP\b|ALTER\s+COLUMN|^\s*UPDATE\s|^\s*DELETE\s/im.test(sql)
       && /ALTER TABLE "CommsDelivery" ADD COLUMN "mode" TEXT NOT NULL DEFAULT 'LIVE'/.test(sql) && /ALTER TABLE "CommsDelivery" ADD COLUMN "automationRunItemId" TEXT;/.test(sql));
     for (const t of ["AutomationDefinition", "AutomationRun", "AutomationRunItem"]) {

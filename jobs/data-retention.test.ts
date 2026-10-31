@@ -72,7 +72,7 @@ async function main() {
     check("windows: sessions 30, AI 90, jobs 90, refresh 60, provider calls 60, webhooks 30, sync issues 90, usage 90, waitlist 180, briefs 90, automation runs 90",
       days.userSession === 30 && days.aiInvocation === 90 && days.jobRun === 90 && days.refreshExecution === 60 && days.providerCall === 60
       && days.plaidWebhookEvent === 30 && days.syncIssue === 90 && days.apiUsageCounter === 90 && days.betaAccessRequest === 180
-      && days.betaAccessRequestEvent === 180 && days.dailyBrief === 90 && days.automationRun === 90, JSON.stringify(days));
+      && days.betaAccessRequestEvent === 180 && days.dailyBrief === 90 && days.automationRun === 90 && days.commsProviderEvent === 90, JSON.stringify(days));
     check("cutoff is exactly N days before now", retentionCutoffFor({ days: 30 }, NOW).getTime() === daysAgo(30).getTime());
   }
 
@@ -105,6 +105,7 @@ async function main() {
       ],
       betaAccessRequestEvent: [{ id: "e-old", receivedAt: daysAgo(181) }, { id: "e-new", receivedAt: daysAgo(1) }],
       dailyBrief: [{ id: "d-old", briefDay: daysAgo(91) }, { id: "d-new", briefDay: daysAgo(1) }],
+      commsProviderEvent: [{ id: "cpe-old", receivedAt: daysAgo(91) }, { id: "cpe-edge", receivedAt: daysAgo(89) }, { id: "cpe-new", receivedAt: daysAgo(1) }],
     });
     const r = await quiet(() => runDataRetention(client, NOW));
     const left = (t: RetentionTable) => data[t].map((x) => x.id).sort().join();
@@ -119,7 +120,8 @@ async function main() {
     check("waitlist: denied/pending/expired-approval > 180 d deleted; recent and REDEEMED kept", left("betaAccessRequest") === "b-denied-new,b-pending-new,b-redeemed-old", left("betaAccessRequest"));
     check("waitlist events > 180 d deleted", left("betaAccessRequestEvent") === "e-new");
     check("DailyBrief > 90 d deleted", left("dailyBrief") === "d-new");
-    check("totals add up (1+1+1+1+1+1+2+1+3+1+1)", r.totalDeleted === 14, `${r.totalDeleted}`);
+    check("CommsProviderEvent > 90 d deleted (Comms Center C); 89 d and recent kept", left("commsProviderEvent") === "cpe-edge,cpe-new", left("commsProviderEvent"));
+    check("totals add up (1+1+1+1+1+1+2+1+3+1+1+1)", r.totalDeleted === 15, `${r.totalDeleted}`);
     check("every table reports exhausted", RETENTION_RULES.every((rule) => r[rule.table].exhausted));
   }
 
