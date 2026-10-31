@@ -495,8 +495,16 @@ console.log("Phase 1 UX · views");
     getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.viewControl === "drilldown"
       && getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views?.[0].id === "groups");
 
-  check("areas not yet redesigned are unchanged: no views outside PLATFORM_OPS and GROWTH_REVENUE",
-    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS" && a !== "GROWTH_REVENUE" && a !== "SECURITY_OPS" && a !== "CUSTOMER_SUCCESS").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
+  // PLATFORM SPACES 2.0 — every area's default workspace is now a dashboard view;
+  // the secondary workspaces (Security audit / operator actions, CS incidents) keep no views.
+  check("secondary workspaces outside PLATFORM_OPS keep no views",
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).slice(1).every((w) => w.views === undefined && w.label === undefined)));
+  check("every non-Ops area's Overview is ONE dashboard view with a lead",
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => { const w = getPlatformAreaWorkspaces(a)[0]; return w.views?.length === 1 && !!w.views[0].lead && w.views[0].sections.length === 0; }));
+  {
+    const mo = getPlatformWorkspaceComposition("MERCHANT_OPS", "platform-overview");
+    check("Merchant Operations: lead 'merchant', merchant_review still composed (hosted)", mo?.views?.[0].lead === "merchant" && mo.sections.join() === "merchant_review");
+  }
   // PLATFORM SPACES 2.0 — Growth is ONE dashboard view (lead "growth") hosting
   // all seven former sections, the beta signup list among them.
   {
@@ -517,7 +525,7 @@ console.log("Phase 1 UX · views");
       // VISUAL SPEC §5 — one dashboard view; its id stays "ai" (default URL unchanged).
       "platform-ai": ["ai"],
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
-    }) && Object.keys(platformAreaViewIds("MERCHANT_OPS")).length === 0);
+    }));
 
   // The view validator: unknown ⇒ default, never a ghost; no views ⇒ null.
   const ids = ["overview", "jobs", "pipeline"];
