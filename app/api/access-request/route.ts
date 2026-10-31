@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
         applicantEmail: normalizedEmail,
         note:           trimmedNote || null,
         queueUrl,
-      });
+      }, { key: "BETA_REQUEST_RECEIVED", recipientUserId: null });
       if (notify.status === "error") {
         console.error("[access-request] operator notification failed to send:", notify.error);
       }

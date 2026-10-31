@@ -9,6 +9,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/crypto/sol-backfill-revaluation.test.ts
  */
 
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
 import { solHistoryBackfill, type SolBackfillJobDeps } from "@/jobs/sol-history-backfill";
 import { workerConfig } from "@/lib/crypto/sol-backfill-worker.core";
 import { emptyCheckpoint, serializeCheckpoint, parseCheckpoint, type SolBackfillCheckpoint } from "@/lib/crypto/sol-history-backfill.core";
@@ -45,7 +46,7 @@ function world(cursors: Record<string, string | null>, o: {
       cursors[id] = c.nextCursor;
     },
   });
-  const deps: SolBackfillJobDeps = {
+  const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
     now: () => t, sleep: async (ms) => { t += ms; }, wakeStartedAt: async () => null,
     wallets: async () => Object.keys(cursors).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: cursors[id] })),
     claimLock: async (c, s) => { if (o.busy?.includes(c) || locks.has(c)) { log.push(`lock-busy:${c}`); return false; } locks.set(c, s); log.push(`lock:${c}`); return true; },

@@ -29,6 +29,8 @@ import { PlaidItemStatus } from "@prisma/client";
 import { limitByUser } from "@/lib/rate-limit";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
+import { assertBillableAllowed } from "@/lib/entitlements/billable-gate";
+import { billableRefusalResponse } from "@/lib/entitlements/consume";
 
 // Resuming a large remaining history can take a while — same budget as the
 // connect flow and the daily cron. Raised 60→300 (Vercel Pro ceiling) after
@@ -113,6 +115,15 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ resumed: false, reason: "too-soon" });
   }
 
+  // ── BETA LIFECYCLE L2 — THE BILLABLE GATE, BEFORE THE MARKER IS RE-ARMED ────
+  // The marker write below is itself a side effect (it re-spaces the import's
+  // recovery clock), so a frozen / paused / ended / unverifiable customer is
+  // refused HERE: the marker, the lock, the cursor and the Item's status stay
+  // exactly as they were, and no provider is called. The Item bills its
+  // connector — the session user (the lookup above is scoped to them).
+  const billable = await assertBillableAllowed({ userId: user.id, operation: "plaid_resume_sync" });
+  if (!billable.allowed) return billableRefusalResponse(billable.reason, "Resuming this import");
+
   // Reset the marker to now() BEFORE syncing: this re-arms the age gate so a
   // second concurrent resume request is refused as "too-soon", and (if this
   // attempt is itself interrupted) spaces the next attempt one budget out.
@@ -135,7 +146,10 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // transactions from the persisted cursor, balances + today's snapshot, history
   // backfill, the anchor, and health on failure — one RefreshExecution that stays
   // RUNNING for the whole of it.
-  const outcome = await syncPlaidItemFromWebhook(item.id, "RESUME", "IMPORT_RECOVERY", admission);
+  const outcome = await syncPlaidItemFromWebhook(item.id, "RESUME", "IMPORT_RECOVERY", admission, { billable });
+  if (outcome === "plan-restricted") {
+    return NextResponse.json({ resumed: false, reason: "plan-restricted" });
+  }
   if (outcome === "not-admitted") {
     return NextResponse.json({ resumed: false, reason: "not-admitted" });
   }

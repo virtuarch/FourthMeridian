@@ -24,6 +24,7 @@
 process.env.DATABASE_URL = "postgresql://stub@127.0.0.1:1/fintracker_unit_stub";
 process.env.INVESTMENT_OBSERVATIONS_ENABLED = "true";
 
+import { allowAllBillable } from "@/lib/test-support/billable-open";
 import { readFileSync } from "fs";
 import { join } from "path";
 import type { RawBtcTx } from "@/lib/crypto/btc-explorer";
@@ -600,9 +601,10 @@ async function main() {
     let t = 0;
     const sweep = await refreshScheduledWallets({ now: new Date("2026-09-21T12:00:00Z"), deps: {
       listWallets: async () => [
-        { accountId: "priced", chain: "BTC", lastSuccessAt: null },
-        { accountId: "unpriced", chain: "BTC", lastSuccessAt: null },
+        { accountId: "priced", chain: "BTC", lastSuccessAt: null, ownerUserId: "owner-1" },
+        { accountId: "unpriced", chain: "BTC", lastSuccessAt: null, ownerUserId: "owner-1" },
       ],
+      billable: allowAllBillable,
       sync: async (accountId) => ({ accountId, chain: "BTC", support: "HISTORY_SUPPORTED", ok: true, netWorthParticipation: "LEGACY_BALANCE_COLUMN",
         valuationModel: "ADAPTER_VALUED",
         valuation: accountId === "unpriced" ? { status: "UNAVAILABLE", reason: "no close" } : { status: "PRICED" } }),

@@ -43,6 +43,7 @@ import {
   COHORTS, DEFAULT_POLICY_GROUP, DIMENSION_KEYS, ENTITLEMENT_DIMENSIONS, FAIL_CLOSED_VALUES, OVERLAYS, POLICY_GROUPS,
   type EntitlementDimensionKey, type EntitlementValue, type EntitlementValues,
 } from "./catalogue";
+import type { PolicyGroupEndedTransitionKind, PolicyGroupLifecycleState } from "./lifecycle";
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
 
@@ -199,6 +200,17 @@ export interface CatalogueGroup {
   source: "DB" | "CODE";
   /** ISO day the current definition took effect. */
   effectiveFrom: string;
+  /**
+   * BETA LIFECYCLE (L1) — the group's lifecycle state and cost freeze. Absent ⇒
+   * ACTIVE and not frozen (a code group, or a catalogue built without lifecycle
+   * facts). The billable gate never trusts an absent value: it requires the
+   * catalogue's `lifecycleSource` to be "DB" (lib/entitlements/billable-gate-core.ts).
+   */
+  lifecycle?: PolicyGroupLifecycleState;
+  costFrozen?: boolean;
+  endedTransition?: PolicyGroupEndedTransitionKind | null;
+  /** The lifecycle optimistic token (bumped by every transition). */
+  lifecycleVersion?: number;
 }
 
 export interface PolicyGroupCatalogue {
@@ -208,6 +220,21 @@ export interface PolicyGroupCatalogue {
   /** The DEFAULT group key (registration, reconciliation, the unassigned fallback). */
   defaultKey: string;
   loadedAt: string | null;
+  /**
+   * BETA LIFECYCLE (L1) — where the per-group lifecycle / cost-freeze facts came
+   * from: DB = read with this catalogue; CODE = the code catalogue by
+   * construction (every group ACTIVE); UNAVAILABLE = the lifecycle read failed
+   * (values still resolve; the billable gate FAILS CLOSED). Absent ⇒ CODE.
+   */
+  lifecycleSource?: "DB" | "CODE" | "UNAVAILABLE";
+  /**
+   * True when the cached loader served this catalogue as the LAST GOOD read
+   * after a failed read. Entitlement VALUES may use it (≤ 5 min); billable
+   * decisions never do (lib/entitlements/billable-gate-core.ts).
+   */
+  servedFromLastGood?: boolean;
+  /** L2 — true when the GLOBAL cost freeze (platform_cost_frozen) was folded in (or its read failed). */
+  globalCostFrozen?: boolean;
 }
 
 function codeGroup(key: string, isDefault: boolean): CatalogueGroup {
@@ -224,11 +251,13 @@ export const CODE_CATALOGUE: PolicyGroupCatalogue = Object.freeze({
   groups: Object.freeze(Object.fromEntries(Object.keys(POLICY_GROUPS).map((k) => [k, codeGroup(k, k === DEFAULT_POLICY_GROUP)]))),
   defaultKey: DEFAULT_POLICY_GROUP,
   loadedAt: null,
+  lifecycleSource: "CODE" as const,
 });
 
 /** The code catalogue, marked as a fallback (the DB read failed or the table is absent). */
 export function codeFallbackCatalogue(): PolicyGroupCatalogue {
-  return { ...CODE_CATALOGUE, source: "CODE_FALLBACK" };
+  // BETA LIFECYCLE — the lifecycle facts are unknown when the read failed: billable fails closed.
+  return { ...CODE_CATALOGUE, source: "CODE_FALLBACK", lifecycleSource: "UNAVAILABLE" };
 }
 
 /** One PolicyGroup row as the loader selects it. */
@@ -242,6 +271,16 @@ export interface PolicyGroupRowFacts {
   currentVersion: number;
 }
 
+/** BETA LIFECYCLE — one PolicyGroup row's lifecycle columns (a SEPARATE read, so a database
+ *  without the lifecycle migration still resolves values; only billable decisions fail closed). */
+export interface PolicyGroupLifecycleFacts {
+  key: string;
+  lifecycle: PolicyGroupLifecycleState;
+  costFrozen: boolean;
+  endedTransition: PolicyGroupEndedTransitionKind | null;
+  lifecycleVersion: number;
+}
+
 /** One PolicyGroupVersion row as the loader selects it (only current versions are needed). */
 export interface PolicyGroupVersionFacts {
   groupKey: string;
@@ -250,13 +289,23 @@ export interface PolicyGroupVersionFacts {
   createdAt: Date;
 }
 
-/** PURE — the catalogue from the rows (rows win over code; code groups without a row are kept). */
+/**
+ * PURE — the catalogue from the rows (rows win over code; code groups without a row are kept).
+ *
+ * BETA LIFECYCLE — `lifecycle` is the separate lifecycle read: an array ⇒
+ * lifecycleSource DB (a DB row missing from it reads ACTIVE — it cannot happen
+ * within one read, and ACTIVE is what the column default says); null ⇒ the read
+ * FAILED ⇒ UNAVAILABLE (every group ACTIVE for VALUES; billable fails closed);
+ * undefined ⇒ not asked (CODE — tests and pre-lifecycle callers).
+ */
 export function buildPolicyGroupCatalogue(
   rows: readonly PolicyGroupRowFacts[],
   versions: readonly PolicyGroupVersionFacts[],
   loadedAt: Date,
+  lifecycle?: readonly PolicyGroupLifecycleFacts[] | null,
 ): PolicyGroupCatalogue {
   const current = new Map(versions.map((v) => [`${v.groupKey}#${v.version}`, v] as const));
+  const life = new Map((lifecycle ?? []).map((l) => [l.key, l] as const));
   const groups: Record<string, CatalogueGroup> = {};
   for (const r of rows) {
     const v = current.get(`${r.key}#${r.currentVersion}`);
@@ -269,6 +318,10 @@ export function buildPolicyGroupCatalogue(
       archived: r.archivedAt !== null, archivedAt: r.archivedAt?.toISOString() ?? null,
       isDefault: false, builtIn: r.builtIn, version: r.currentVersion, source: "DB",
       effectiveFrom: (v?.createdAt ?? loadedAt).toISOString().slice(0, 10),
+      lifecycle: life.get(r.key)?.lifecycle ?? "ACTIVE",
+      costFrozen: life.get(r.key)?.costFrozen ?? false,
+      endedTransition: life.get(r.key)?.endedTransition ?? null,
+      lifecycleVersion: life.get(r.key)?.lifecycleVersion ?? 0,
     };
   }
   for (const k of Object.keys(POLICY_GROUPS)) if (!(k in groups)) groups[k] = codeGroup(k, false);
@@ -278,7 +331,8 @@ export function buildPolicyGroupCatalogue(
   const dbDefault = rows.find((r) => r.isDefault && r.archivedAt === null);
   const defaultKey = dbDefault?.key ?? DEFAULT_POLICY_GROUP;
   groups[defaultKey] = { ...groups[defaultKey], isDefault: true };
-  return { source: "DB", groups, defaultKey, loadedAt: loadedAt.toISOString() };
+  const lifecycleSource = lifecycle === undefined ? "CODE" : lifecycle === null ? "UNAVAILABLE" : "DB";
+  return { source: "DB", groups, defaultKey, loadedAt: loadedAt.toISOString(), lifecycleSource };
 }
 
 // ── Lookups ───────────────────────────────────────────────────────────────────

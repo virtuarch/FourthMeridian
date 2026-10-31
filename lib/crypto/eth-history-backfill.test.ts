@@ -18,6 +18,7 @@
  *   - status reads truthfully in the SOL/BTC vocabulary.
  */
 
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
@@ -344,7 +345,7 @@ async function main() {
     const store = new MemoryStore(serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO)));
     const ledger: Record<string, number> = {};
     const log: string[] = [];
-    const base: SolBackfillJobDeps = {
+    const base: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
       now: () => t, sleep: async (ms) => { t += ms; }, wakeStartedAt: async () => null,
       wallets: async () => [],
       claimLock: async (cId, s) => { if (locks.has(cId)) return false; locks.set(cId, s); return true; },

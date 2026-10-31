@@ -3871,6 +3871,66 @@ model NotificationDelivery {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CommsDelivery (Comms Center A-2a) — THE delivery ledger: one row per send
+// ATTEMPT (retries append rows sharing a messageKey) on any channel (every sendEmail call, every in-app create outcome).
+// Contract docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md §6.1.
+// APPEND-ONLY metadata. NEVER a recipient address, subject, body, link, token
+// or payload value: the recipient is a soft userId, or (only when there is no
+// user) a SALTED HMAC of the address (lib/notifications/delivery/record.ts).
+// No open/click fields, ever (owner decision O-13). "ACCEPTED" = the provider
+// (or the in-app inbox) accepted it — never "delivered" (Phase C webhooks).
+// Retention: 90 days, then rolled into CommsDeliveryDaily and deleted
+// (lib/notifications/delivery/rollup.ts, run by jobs/data-retention.ts).
+// fm_system: SELECT, INSERT, DELETE. fm_app / fm_auth: nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+model CommsDelivery {
+  id                String    @id @default(cuid())
+  // The MESSAGE this attempt belongs to: the Notification id for a registry
+  // email / in-app leg (stable across retries), a generated send id for a
+  // direct send. One message = one (channel, messageKey); its outcome is the
+  // row with the highest `attempt` (contract v1.0.2).
+  messageKey        String
+  definitionKey     String // catalog key (lib/notifications/catalog)
+  definitionVersion Int
+  templateVersion   Int?
+  channel           String // CommsChannel: IN_APP | EMAIL | OPERATOR_EMAIL
+  status            String // QUEUED | ACCEPTED | CAPTURED | FAILED | DEAD | SUPPRESSED | CANCELLED
+  reason            String? // SuppressionReason (SUPPRESSED), ENVIRONMENT_GUARD (CAPTURED)
+  provider          String? // "resend" | "none" (guard) | "in-app"
+  providerMessageId String?
+  attempt           Int       @default(1)
+  errorCode         String? // closed set: RENDER | TIMEOUT | NO_TRANSPORT | PROVIDER | STORE | PREFERENCE_READ | RECIPIENT_LOOKUP
+  recipientUserId   String? // soft ref, no FK; nulled by the account purge
+  recipientHash     String? // HMAC-SHA256(salt, address) when no userId; never the address
+  notificationId    String? // soft ref to the IN_APP twin, no FK
+  environment       String // production | preview | development
+  acceptedAt        DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([definitionKey, createdAt])
+  @@index([recipientUserId, createdAt])
+  @@index([recipientHash])
+  @@index([messageKey])
+}
+
+// CommsDeliveryDaily (Comms Center A-2a) — counts only, per UTC day × key ×
+// channel × status × reason. Written ONLY by the retention rollup, in the same
+// transaction that deletes the rolled CommsDelivery rows (so a row is counted
+// in exactly one of the two tables). No recipient of any kind.
+// fm_system: SELECT, INSERT, UPDATE (the upsert). fm_app / fm_auth: nothing.
+model CommsDeliveryDaily {
+  day           DateTime @db.Date
+  definitionKey String
+  channel       String
+  status        String
+  reason        String   @default("")
+  count         Int
+
+  @@id([day, definitionKey, channel, status, reason])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // NotificationPreference (OPS-3 S3) — category × channel preference OVERRIDES.
 // DEFAULT-BY-ABSENCE (frozen F11): a row exists only when the user deviates
 // from the registry default (lib/notifications/registry.ts). Resolution order,
@@ -4568,6 +4628,68 @@ model PolicyGroup {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
   versions       PolicyGroupVersion[]
+
+  /// BETA LIFECYCLE (L1, owner decisions 2026-10-31) — ACTIVE / PAUSED / ENDED.
+  /// PAUSED: sign-in and reads stay; beta-only capabilities and NEW billable
+  /// operations are suspended; reversible. ENDED: the group grants nothing —
+  /// members resolve READ_ONLY (see `endedTransition`). Changed only by the
+  /// audited CONTROL write (lib/platform/policies/policy-group-lifecycle-write.ts),
+  /// every change recorded as a PolicyGroupTransition row.
+  lifecycle        PolicyGroupLifecycle        @default(ACTIVE)
+  /// COST FREEZE — independent of `lifecycle`: denies every NEW billable / metered
+  /// operation for the group's members, overriding every allowance (Founder
+  /// overlay and per-customer AI override included). Reversible; membership untouched.
+  costFrozen       Boolean                     @default(false)
+  /// What ENDED resolves to. READ_ONLY today; FREE is reserved until a Free
+  /// group is defined (an ENDED group with FREE still resolves READ_ONLY).
+  endedTransition  PolicyGroupEndedTransition?
+  /// Optimistic token for lifecycle writes (bumped by every transition).
+  lifecycleVersion Int                         @default(0)
+  transitions      PolicyGroupTransition[]
+}
+
+/// BETA LIFECYCLE — the policy-group lifecycle state.
+enum PolicyGroupLifecycle {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+/// BETA LIFECYCLE — what an ENDED group's members resolve to.
+enum PolicyGroupEndedTransition {
+  READ_ONLY
+  FREE
+}
+
+/// BETA LIFECYCLE — one recorded lifecycle / cost-freeze change.
+enum PolicyGroupTransitionKind {
+  PAUSE
+  RESUME
+  END
+  FREEZE
+  UNFREEZE
+}
+
+/// BETA LIFECYCLE — APPEND-ONLY history of every lifecycle and cost-freeze
+/// change of a Policy Group (fm_system holds SELECT + INSERT only). Written in
+/// the same transaction as the PolicyGroup update and its operator-action audit
+/// row. No customer data: the reason, the operator and the before/after state.
+model PolicyGroupTransition {
+  id               String                    @id @default(cuid())
+  groupKey         String
+  group            PolicyGroup               @relation(fields: [groupKey], references: [key], onDelete: Restrict, onUpdate: Restrict)
+  kind             PolicyGroupTransitionKind
+  fromLifecycle    PolicyGroupLifecycle
+  toLifecycle      PolicyGroupLifecycle
+  costFrozenBefore Boolean
+  costFrozenAfter  Boolean
+  reasonCode       String
+  reasonNote       String?
+  /// Soft reference to the operator (no FK: history outlives accounts).
+  operatorId       String?
+  createdAt        DateTime                  @default(now())
+
+  @@index([groupKey, createdAt])
 }
 
 /// POLICY EDITOR — one IMMUTABLE version of a Policy Group: the FULL values

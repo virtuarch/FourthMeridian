@@ -16,6 +16,7 @@
  */
 
 import type { SyncConnection } from "@/lib/sync/status";
+import { planRestrictedDeferralMessage } from "@/lib/sync/deferred-ingestion";
 import type { ConnectionIntelligenceStatus } from "@/lib/connections/intelligence";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { relativeUpdated, type ConnectionTone } from "@/lib/connections/connection-summary";
@@ -137,7 +138,11 @@ export function connectionHealth(
     const conn: HealthLine =
       connection.state === "needs_reauth" ? { key: "connection", label: "Connection", tone: "attention", text: "Needs reconnecting" }
       : connection.state === "error" ? { key: "connection", label: "Connection", tone: "attention", text: "Connection issue" }
-      : connection.state === "sync_deferred" ? { key: "connection", label: "Connection", tone: "neutral", text: "Connected — syncing resumes automatically" }
+      : connection.state === "sync_deferred"
+        ? (planRestrictedDeferralMessage(connection.deferredReason)
+            // BETA LIFECYCLE L2 — a plan refusal does NOT resume on its own: say why, in the lifecycle wording.
+            ? { key: "connection", label: "Connection", tone: "attention", text: `Connected — sync paused. ${planRestrictedDeferralMessage(connection.deferredReason)}` }
+            : { key: "connection", label: "Connection", tone: "neutral", text: "Connected — syncing resumes automatically" })
       : { key: "connection", label: "Connection", tone: "ok", text: "Connected" };
     lines.push(conn);
     const bal = rel(i?.balancesUpdatedAt, now);

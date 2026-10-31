@@ -23,6 +23,7 @@
  */
 
 import { createContext, useContext } from "react";
+import { planRestrictedDeferralMessage } from "@/lib/sync/deferred-ingestion";
 import {
   CheckCircle2,
   Circle,
@@ -297,12 +298,17 @@ function SyncDeferredContent({
   connection: SyncConnection;
   accounts:   AccountLite[];
 }) {
+  // BETA LIFECYCLE L2 — a deferral the customer's PLAN caused does not resume on
+  // its own; it says so in the lifecycle wording.
+  const planMessage = planRestrictedDeferralMessage(connection.deferredReason);
   return (
     <div className="flex flex-col">
-      <EyebrowHeading eyebrow="Sync pending" institution={connection.institution} />
+      <EyebrowHeading eyebrow={planMessage ? "Sync paused" : "Sync pending"} institution={connection.institution} />
       <p className="mt-1.5 mb-4 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md">
-        Your account is connected. Financial data will begin syncing when platform
-        ingestion resumes — no action is needed from you.
+        {planMessage
+          ? <>{planMessage} Your connection and stored data are unchanged.</>
+          : <>Your account is connected. Financial data will begin syncing when platform
+        ingestion resumes — no action is needed from you.</>}
       </p>
       <ul className="space-y-1.5">
         <DoneStatusRow label="Account connected" />

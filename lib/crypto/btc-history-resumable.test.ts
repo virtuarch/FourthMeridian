@@ -10,6 +10,7 @@
  *   npx tsx lib/crypto/btc-history-resumable.test.ts
  */
 
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -795,7 +796,7 @@ async function main() {
     const stores = { b1: new MemoryStore({ addresses: [A], complete: true }, "b1"), b2: new MemoryStore({ addresses: [A], complete: true }, "b2") } as Record<string, MemoryStore>;
     const clk = { get t() { return t; }, set t(v: number) { t = v; } };
     const esplora: Record<string, number> = {};
-    const deps: SolBackfillJobDeps = {
+    const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
       now: () => t, sleep: async (ms) => { t += ms; },
       wakeStartedAt: async () => null,
       wallets: async () => [{ accountId: "s1", connectionId: "c-s1", address: "7irKphsVxEfU8wtDhVgCyq7nQXUo9Q13ivUevk8qBMSN", cursor: null }],

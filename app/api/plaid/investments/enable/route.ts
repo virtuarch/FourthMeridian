@@ -72,6 +72,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // Owner ruling (2026-10-30) — a missing / invalid policy assignment fails
   // closed: enabling Investments starts a new paid Plaid product AND a full
   // refresh, so it is refused before the limiter, admission or any provider call.
+  // BETA LIFECYCLE — the same seam refuses it under a paused / ended /
+  // cost-frozen group or an unreadable lifecycle (owner decision 2026-10-31).
   const failClosed = refuseIfFailClosed(await entitlementsForUser(user.id), "Enable Investments");
   if (failClosed) return failClosed;
 

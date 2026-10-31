@@ -8,6 +8,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/usage/provider-budget.test.ts
  */
 
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
 import { readFileSync } from "node:fs";
 import {
   meterTotal, meterDelta, effectiveDailyUsage, splitLedgerCalls, usageMetric, recordProviderMeter, providerCallsOn,
@@ -113,7 +114,7 @@ async function main() {
     const cursors: Record<string, string | null> = { a: mk("a"), b: null };
     let t = Date.parse(`${DAY}T10:00:00Z`);
     const budgets: number[] = [];
-    const world = (o: { gaps?: (ids: string[]) => PriceGapRun; regenLog?: string[] } = {}): SolBackfillJobDeps => ({
+    const world = (o: { gaps?: (ids: string[]) => PriceGapRun; regenLog?: string[] } = {}): SolBackfillJobDeps => ({ ...OPEN_BACKFILL_GATES,
       now: () => t, sleep: async (ms) => { t += ms; },
       wakeStartedAt: async () => null,
       wallets: async () => Object.keys(cursors).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: cursors[id] })),

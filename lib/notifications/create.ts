@@ -74,7 +74,43 @@ import type {
   ChannelAdapter,
   NotificationInput,
   NotificationRenderData,
+  NotificationTypeDefinition,
 } from "@/lib/notifications/types";
+import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/delivery/record";
+import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import { runAfterResponse } from "@/lib/notifications/delivery/defer";
+import type { CommsDeliveryRow, LedgerWriter } from "@/lib/notifications/delivery/types";
+
+// ── Delivery ledger (Comms Center A-2a) ──────────────────────────────────────
+//
+// Every createNotification OUTCOME is one IN_APP CommsDelivery row: ACCEPTED
+// (the Notification row — the in-app inbox — was written), SUPPRESSED with
+// PREFERENCE_OFF / DEDUPE_OPEN, or FAILED (STORE). The email leg's own row is
+// written by sendEmail itself (lib/email/send.ts); here only the email legs
+// that never reach sendEmail are recorded: SUPPRESSED PREFERENCE_OFF (the
+// user's EMAIL override, or the IN_APP-off coupling that drops the email too)
+// and NO_RECIPIENT. Metadata only. Best-effort: a ledger failure is one
+// redacted log line (recordDelivery) and never changes the result.
+
+/** The ledger writer: injected (tests), the injected client's own delegate, or the production writer. */
+function ledgerWriterFor(ctx: { client?: NotificationWriteClient; ledger?: LedgerWriter } | undefined): LedgerWriter | null {
+  if (ctx?.ledger) return ctx.ledger;
+  if (ctx?.client) {
+    // A test-injected client records only if it models the ledger; it never falls through to a real DB.
+    const c = ctx.client as unknown as { commsDelivery?: { createMany(args: { data: CommsDeliveryRow[] }): Promise<unknown> } };
+    const delegate = c.commsDelivery;
+    return delegate ? (row) => delegate.createMany({ data: [row] }) : null;
+  }
+  return writeDeliveryRow;
+}
+
+/** One outcome createNotification records (the key, recipient, env and clock are filled in by `note`). */
+type LedgerNote = Omit<Parameters<typeof notificationLedgerRow>[0], "key" | "recipientUserId" | "env" | "now">;
+
+/** True when the type has an EMAIL leg that is on by default but the user's override turned off. */
+function emailOffByPreference(def: NotificationTypeDefinition, emailEnabled: boolean): boolean {
+  return !emailEnabled && !def.excludedChannels?.includes("EMAIL") && resolveChannelEnabled(def, "EMAIL", []);
+}
 
 // ── Narrow write-client contract (injection seam for pure tests) ─────────────
 
@@ -187,20 +223,9 @@ export function fillDedupeTemplate(
 }
 
 // ── Deferred execution (S4) ───────────────────────────────────────────────────
-
-/**
- * Run delivery work post-response when a request scope exists (next/server
- * after() — the D2.x deferred-history precedent), inline otherwise (unit
- * tests, scripts, any non-request context, where after() throws).
- */
-async function runAfterResponse(task: () => Promise<void>): Promise<void> {
-  try {
-    const { after } = await import("next/server");
-    after(task);
-  } catch {
-    await task();
-  }
-}
+// runAfterResponse (post-response via next/server after() in a request scope,
+// inline otherwise) lives in lib/notifications/delivery/defer.ts, shared with
+// the sendEmail ledger write.
 
 /**
  * S4: deliver ONE email attempt through the channel adapter and record ONE
@@ -223,15 +248,31 @@ async function deliverEmailAndRecord(args: {
   actionLabel?: string;
   client: NotificationWriteClient;
   adapter: ChannelAdapter;
+  /** A-2a: the ledger writer, for the leg that never reaches sendEmail (no recipient). */
+  writer?: LedgerWriter | null;
 }): Promise<void> {
   try {
-    const recipient = await args.client.user.findUnique({
-      where: { id: args.userId },
-      select: { email: true },
-    });
+    let recipient: { email: string } | null;
+    try {
+      recipient = await args.client.user.findUnique({
+        where: { id: args.userId },
+        select: { email: true },
+      });
+    } catch (lookupErr) {
+      // The address could not be read: the email leg is never attempted. Recorded, then
+      // re-thrown into the existing best-effort catch below (unchanged behaviour).
+      if (args.writer) {
+        await recordDelivery(args.writer, notificationLedgerRow({
+          key: args.type, channel: "EMAIL", status: "FAILED", errorCode: "RECIPIENT_LOOKUP",
+          recipientUserId: args.userId, notificationId: args.notificationId, env: process.env, now: new Date(),
+        }));
+      }
+      throw lookupErr;
+    }
 
     const result = await args.adapter.deliver({
       userId: args.userId,
+      notificationId: args.notificationId,
       ...(recipient?.email ? { email: recipient.email } : {}),
       type: args.type,
       category: args.category,
@@ -241,6 +282,14 @@ async function deliverEmailAndRecord(args: {
       ...(args.href ? { href: args.href } : {}),
       ...(args.actionLabel ? { actionLabel: args.actionLabel } : {}),
     });
+
+    if (!recipient?.email && result.status === "skipped" && args.writer) {
+      // The adapter skipped before sendEmail (which records every send it makes).
+      await recordDelivery(args.writer, notificationLedgerRow({
+        key: args.type, channel: "EMAIL", status: "SUPPRESSED", reason: "NO_RECIPIENT",
+        recipientUserId: args.userId, notificationId: args.notificationId, env: process.env, now: new Date(),
+      }));
+    }
 
     await args.client.notificationDelivery.create({
       data: {
@@ -279,6 +328,8 @@ export async function createNotification(
     prefClient?: PreferenceClient;
     /** Injected EMAIL transport for tests; defaults to the OPS-1-backed adapter. */
     emailAdapter?: ChannelAdapter;
+    /** Injected delivery-ledger writer for tests (A-2a). */
+    ledger?: LedgerWriter;
   },
 ): Promise<CreateNotificationResult> {
   // 1. Registry gate — unknown types throw at the producer (programmer error).
@@ -304,6 +355,17 @@ export async function createNotification(
   // creates no row — and since the row anchors NotificationDelivery (FK),
   // no email ships either; the row is the delivery anchor by design (S3
   // semantics stand). A preference-read failure → non-throwing error result.
+  const writer = ledgerWriterFor(ctx);
+  const ledgerNow = new Date();
+  /** Record ledger rows post-response (inline outside a request); never throws, never blocks the result. */
+  const note = async (...rows: LedgerNote[]) => {
+    if (!writer || rows.length === 0) return;
+    const built = rows.map((r) => notificationLedgerRow({ ...r, key: def.id, recipientUserId: input.userId, env: process.env, now: ledgerNow }));
+    await runAfterResponse(async () => {
+      for (const row of built) await recordDelivery(writer, row);
+    });
+  };
+
   let overrides: PreferenceOverride[] = [];
   if (!def.locked) {
     // Locked categories never read overrides — registry defaults are
@@ -316,16 +378,31 @@ export async function createNotification(
         select: { category: true, channel: true, enabled: true },
       });
     } catch (prefErr) {
+      // Nothing is sent: the in-app row is not written, and its email leg (when the
+      // type has one by default) is lost with it. Both are FAILED PREFERENCE_READ.
+      await note(
+        { channel: "IN_APP", status: "FAILED", errorCode: "PREFERENCE_READ" },
+        ...(!def.excludedChannels?.includes("EMAIL") && resolveChannelEnabled(def, "EMAIL", [])
+          ? [{ channel: "EMAIL" as const, status: "FAILED" as const, errorCode: "PREFERENCE_READ" as const }]
+          : []),
+      );
       return {
         status: "error",
         error: prefErr instanceof Error ? prefErr.message : String(prefErr),
       };
     }
   }
+  const emailEnabled = resolveChannelEnabled(def, "EMAIL", overrides);
   if (!resolveChannelEnabled(def, "IN_APP", overrides)) {
+    // The row anchors the email leg, so an enabled email is lost with it: record both.
+    await note(
+      { channel: "IN_APP", status: "SUPPRESSED", reason: "PREFERENCE_OFF" },
+      ...(emailEnabled || emailOffByPreference(def, emailEnabled)
+        ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "PREFERENCE_OFF" as const }]
+        : []),
+    );
     return { status: "skipped" };
   }
-  const emailEnabled = resolveChannelEnabled(def, "EMAIL", overrides);
 
   // 2. Dedupe key (F3). "refresh" falls back to suppress in v1 (frozen).
   const dedupeKey =
@@ -358,6 +435,12 @@ export async function createNotification(
   // S4: on a successful insert, ship the EMAIL leg (preference-gated above)
   // and record its NotificationDelivery row. Post-response in request scope.
   const finishCreated = async (id: string): Promise<CreateNotificationResult> => {
+    await note(
+      { channel: "IN_APP", status: "ACCEPTED", notificationId: id },
+      ...(emailOffByPreference(def, emailEnabled)
+        ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "PREFERENCE_OFF" as const, notificationId: id }]
+        : []),
+    );
     if (emailEnabled) {
       const adapter = ctx?.emailAdapter ?? emailNotificationAdapter;
       await runAfterResponse(() =>
@@ -373,6 +456,7 @@ export async function createNotification(
           ...(rendered.actionLabel ? { actionLabel: rendered.actionLabel } : {}),
           client,
           adapter,
+          writer,
         }),
       );
     }
@@ -388,12 +472,19 @@ export async function createNotification(
     return finishCreated(created.id);
   } catch (err) {
     if (!isUniqueViolation(err) || dedupeKey === null) {
+      await note({ channel: "IN_APP", status: "FAILED", errorCode: "STORE" });
       return {
         status: "error",
         error: err instanceof Error ? err.message : String(err),
       };
     }
   }
+
+  // Dedupe suppression drops the email leg with the in-app one.
+  const noteDedupe = () => note(
+    { channel: "IN_APP", status: "SUPPRESSED", reason: "DEDUPE_OPEN" },
+    ...(emailEnabled ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "DEDUPE_OPEN" as const }] : []),
+  );
 
   // Unique violation on (userId, dedupeKey): resolve suppress-while-open.
   try {
@@ -404,6 +495,7 @@ export async function createNotification(
 
     // Open holder → the condition is already surfaced. Suppress.
     if (existing && existing.archivedAt === null) {
+      await noteDedupe();
       return { status: "suppressed" };
     }
 
@@ -428,8 +520,10 @@ export async function createNotification(
     // A second unique violation means a concurrent producer won the retry
     // race — the condition IS surfaced, which is exactly suppression.
     if (isUniqueViolation(retryErr)) {
+      await noteDedupe();
       return { status: "suppressed" };
     }
+    await note({ channel: "IN_APP", status: "FAILED", errorCode: "STORE" });
     return {
       status: "error",
       error: retryErr instanceof Error ? retryErr.message : String(retryErr),

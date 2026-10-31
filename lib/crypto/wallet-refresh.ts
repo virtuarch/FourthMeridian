@@ -43,6 +43,10 @@
 
 import { SYNCABLE_CHAINS, syncWalletByChain, walletRefreshTrigger, outcomeRevalued, outcomeRequoted, type WalletSyncOutcome } from './wallet-sync-dispatch';
 import { isDueForScheduledRefresh, type RefreshPolicy } from '@/lib/platform/refresh-policy.core';
+import {
+  billableAllowedForUsers, createBillableBatchGate, tallyBillableDenial,
+  type BillableBatchLoader, type BillableDenialTally,
+} from '@/lib/entitlements/billable-gate';
 
 /**
  * Work budget per sweep: no wallet STARTS after this. Sized against measurement,
@@ -64,6 +68,8 @@ export interface ScheduledWalletCandidate {
   lastFailureAt?: Date | null;
   /** IDEMP-004 — the wallet's Connection, whose syncLockedAt the sweep claims (null: no Connection, nothing to lock). */
   connectionId?: string | null;
+  /** BETA LIFECYCLE L2 — the account owner, who is billed (null/absent: no billing owner ⇒ refused). */
+  ownerUserId?: string | null;
 }
 
 const HOUR_MS = 3_600_000;
@@ -114,6 +120,14 @@ export interface WalletRefreshDeps {
    * production always supplies it.
    */
   lock?: { claim(connectionId: string, at: Date): Promise<boolean>; release(connectionId: string): Promise<void> };
+  /**
+   * BETA LIFECYCLE L2 — the batch billable decision for the wallets' OWNERS
+   * (ONE policy read per sweep; production: billableAllowedForUsers). A wallet
+   * with no owner has no billing owner and is refused (owner ruling
+   * 2026-10-31). Optional in the TYPE only so pure tests can omit it — an
+   * absent gate falls back to the production batch read, never to "allowed".
+   */
+  billable?: BillableBatchLoader;
 }
 
 export interface ChainTally { attempted: number; succeeded: number; failed: number; durationMs: number }
@@ -145,6 +159,15 @@ export interface WalletRefreshResult {
   notAdmitted?: string;
   /** IDEMP-004 — due wallets skipped because another path held the wallet lease. */
   skippedLocked?: number;
+  /**
+   * BETA LIFECYCLE L2 — due wallets whose billed owner may not cause paid work
+   * (frozen / paused / ended / unverifiable / NO owner). Not attempted, not
+   * deferred (the continuation does not spin on them), no lease taken, no
+   * success or failure clock moved, Connection status untouched — they are
+   * still due when the restriction lifts. Reasons in `planRestrictedReasons`.
+   */
+  planRestricted?: number;
+  planRestrictedReasons?: BillableDenialTally;
 }
 
 async function defaultDeps(): Promise<WalletRefreshDeps> {
@@ -170,7 +193,7 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
           OR: [{ ownerUserId: null }, { ownerUser: { deactivatedAt: null } }],
         },
         select: {
-          id: true, walletChain: true, lastUpdated: true,
+          id: true, walletChain: true, lastUpdated: true, ownerUserId: true,
           connections: {
             where:  { deletedAt: null, connectionId: { not: null } },
             select: { connection: { select: { id: true, lastSyncedAt: true } } },
@@ -193,6 +216,7 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
           lastSuccessAt: synced ? new Date(Math.min(synced.getTime(), r.lastUpdated.getTime())) : null,
           lastFailureAt: failedAt.get(r.id) ?? null,
           connectionId: r.connections.map((c) => c.connection?.id).find((id): id is string => typeof id === "string") ?? null,
+          ownerUserId: r.ownerUserId,
         };
       });
     },
@@ -201,6 +225,7 @@ async function defaultDeps(): Promise<WalletRefreshDeps> {
     sync: (accountId, chain) => syncWalletByChain(accountId, chain, { trigger: walletRefreshTrigger() }),
     policy: async () => (await loadRefreshPolicies(db)).WALLET,
     admit: () => admitOperationalWork({ work: 'REFRESH_EXECUTION' }),
+    billable: (ids, op) => billableAllowedForUsers(ids, op),
     clock: () => Date.now(),
     lock: {
       claim: async (connectionId, at) => {
@@ -248,6 +273,11 @@ export async function refreshScheduledWallets(options: {
     return finish();
   }
 
+  // BETA LIFECYCLE L2 — ONE policy read for the due wallets' owners (re-read at
+  // most every BILLABLE_BATCH_MAX_AGE_MS, so a freeze mid-sweep lands ≤ 30 s).
+  const gate = createBillableBatchGate(due.map((w) => w.ownerUserId), 'wallet_sync', {
+    load: deps.billable ?? ((ids, op) => billableAllowedForUsers(ids, op)), clock: deps.clock,
+  });
   for (let i = 0; i < due.length; i++) {
     if (deps.clock() - start >= budgetMs) {
       result.deferred = due.length - i;
@@ -255,6 +285,14 @@ export async function refreshScheduledWallets(options: {
       break;
     }
     const w = due[i];
+    // BETA LIFECYCLE L2 — before the lease, before any provider call.
+    const billable = await gate.decide(w.ownerUserId);
+    if (!billable.allowed) {
+      result.planRestricted = (result.planRestricted ?? 0) + 1;
+      tallyBillableDenial((result.planRestrictedReasons ??= {}), billable.reason);
+      console.log(`[wallet-refresh] ${w.chain} wallet plan-restricted (${billable.reason}) — skipped, nothing marked`);
+      continue;
+    }
     // IDEMP-004 — the scheduled sweep takes the SAME per-wallet lease as the
     // manual route and Refresh All; a wallet another path is syncing right now
     // is skipped (counted), never interleaved with.

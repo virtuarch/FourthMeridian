@@ -6,6 +6,7 @@
  * owner asked for before throughput is enabled.
  */
 
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { workerConfig, orderCandidates, createRateLimiter, estimateBackfill, requestsForHistory } from "@/lib/crypto/sol-backfill-worker.core";
@@ -111,7 +112,7 @@ async function main() {
         async anchor() { return null; },
         async commit(c) { if (c.expectedCursor !== cursors[id]) throw new Error("cas"); cursors[id] = c.nextCursor; },
       });
-      const deps: SolBackfillJobDeps = {
+      const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
         now: () => t, sleep: async (ms) => { t += ms; },
         wakeStartedAt: async () => (o.wake === undefined ? null : o.wake === null ? null : t - o.wake),
         wallets: async () => Object.keys(cursors).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: cursors[id] })),
