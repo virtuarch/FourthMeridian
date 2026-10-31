@@ -108,8 +108,11 @@ const _e = {
   BETA_REQUESTS_EMAIL: process.env.BETA_REQUESTS_EMAIL,
 
   // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
-  // CAPTCHA is DISABLED (verifyCaptchaToken skips → true; widgets don't
-  // render). The secret gates server-side verification (lib/captcha.ts reads
+  // CAPTCHA is NOT CONFIGURED (captchaMode() "not_configured": verify skips →
+  // true, logged once; widgets don't render). Set BOTH together: with the
+  // secret present verification is ENFORCED and FAILS CLOSED (R2), so a secret
+  // without the site key refuses every gated request. The secret gates
+  // server-side verification (lib/captcha.ts reads
   // process.env.TURNSTILE_SECRET_KEY directly — the single verify site); the
   // NEXT_PUBLIC site key is inlined into client bundles by Next, so client
   // widgets read process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY directly (they

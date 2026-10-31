@@ -37,6 +37,10 @@ import {
   peekKey,
   getClientIp,
   checkStrict,
+  limitGlobal,
+  canonicalEmailForLimits,
+  emailLimitKey,
+  consumeThrottle,
   type LimitVerdict,
 } from "@/lib/rate-limit";
 
@@ -242,6 +246,49 @@ async function main(): Promise<void> {
   else envw.RATE_LIMIT_ENABLED = prevEnabled;
   if (prevShadow === undefined) delete envw.RATE_LIMIT_SHADOW;
   else envw.RATE_LIMIT_SHADOW = prevShadow;
+
+  // ── 8. R2 beta-intake helpers ───────────────────────────────────────────────
+  console.log("8. Beta-intake helpers (global limiter, email keys, throttle)");
+  {
+    const savedEnabled = envw.RATE_LIMIT_ENABLED;
+    const savedShadow = envw.RATE_LIMIT_SHADOW;
+    delete envw.RATE_LIMIT_SHADOW;
+
+    // canonicalEmailForLimits / emailLimitKey
+    check("canonical: case + whitespace folded", canonicalEmailForLimits("  Alice@Example.COM ") === "alice@example.com");
+    check("canonical: +tag dropped on any domain", canonicalEmailForLimits("bob+beta@example.com") === "bob@example.com");
+    check("canonical: Gmail dots dropped, googlemail folded", canonicalEmailForLimits("A.B.C+x@GoogleMail.com") === "abc@gmail.com");
+    check("canonical: dots kept outside Gmail", canonicalEmailForLimits("a.b@example.com") === "a.b@example.com");
+    const k1 = emailLimitKey("A.B+x@gmail.com");
+    check("emailLimitKey is 64-char hex and never contains the address",
+      /^[0-9a-f]{64}$/.test(k1) && !k1.includes("gmail"), k1);
+    check("emailLimitKey: variants share one key", k1 === emailLimitKey("ab@gmail.com"));
+    check("emailLimitKey: different addresses differ", k1 !== emailLimitKey("ac@gmail.com"));
+
+    // limitGlobal — one shared bucket regardless of caller
+    envw.RATE_LIMIT_ENABLED = "true";
+    const gcfg = { limit: 3, windowSec: 3600 };
+    const g = [];
+    for (let i = 0; i < 4; i++) g.push(await limitGlobal("r2-global-test", gcfg));
+    check("limitGlobal: N allowed, N+1 → 429", g.slice(0, 3).every((r) => r === null) && g[3]?.status === 429);
+    check("limitGlobal: bucket scoped by name", (await limitGlobal("r2-global-other", gcfg)) === null);
+
+    // consumeThrottle — independent of RATE_LIMIT_ENABLED, fail-open
+    envw.RATE_LIMIT_ENABLED = "false";
+    const tcfg = { limit: 1, windowSec: 86_400 };
+    const t1 = await consumeThrottle("h1", "r2-throttle-test", tcfg);
+    const t2 = await consumeThrottle("h1", "r2-throttle-test", tcfg);
+    const t3 = await consumeThrottle("h2", "r2-throttle-test", tcfg);
+    check("consumeThrottle: first allowed, second suppressed — even with limiting disabled", t1 === true && t2 === false);
+    check("consumeThrottle: keyed per key", t3 === true);
+    const origErr = console.error; console.error = () => {};
+    const tErr = await consumeThrottle("h3", "r2-throttle-test", tcfg, async () => { throw new Error("P2024"); });
+    console.error = origErr;
+    check("consumeThrottle: store error → true (fail-open)", tErr === true);
+
+    if (savedEnabled === undefined) delete envw.RATE_LIMIT_ENABLED; else envw.RATE_LIMIT_ENABLED = savedEnabled;
+    if (savedShadow === undefined) delete envw.RATE_LIMIT_SHADOW; else envw.RATE_LIMIT_SHADOW = savedShadow;
+  }
 
   console.log(failures === 0 ? "\nAll rate-limit tests passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);

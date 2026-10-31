@@ -13,12 +13,35 @@
  * still records a fresh request row; approval simply never happens for an email
  * that already has an account, and the register route would 409 anyway.)
  *
- * DEFENSES: limitByIp (5 / 15 min, mirroring register) + CAPTCHA
- * (verifyCaptchaToken, env-gated off until Wave 2 configures Turnstile keys —
- * skipped verification returns true, so this endpoint behaves normally in
- * dev/test today). An AuditLog row (BETA_ACCESS_REQUESTED, no userId) captures
- * ip/user-agent so the intake is forensically visible even though the request
- * row itself keeps minimal PII.
+ * DEFENSES (R2 beta-intake hardening, 2026-10-31 — in request order):
+ *   1. per-IP limit, 5 / 15 min (limitByIp, mirroring register). Fail-open on a
+ *      store error, like every enforce() limiter.
+ *   2. shape validation + PRIV-012 consent (400s, nothing stored).
+ *   3. CAPTCHA (lib/captcha.ts verifyCaptchaToken). When TURNSTILE_SECRET_KEY is
+ *      configured it is ENFORCED and FAILS CLOSED (a Cloudflare error/timeout is
+ *      a refusal); when it is not configured verification is skipped (logged
+ *      once) — see captchaMode().
+ *   4. GLOBAL limit, 60 / hour across all callers (limitGlobal) → 429 with the
+ *      generic "too many requests" body. Placed AFTER the CAPTCHA so that, once
+ *      Turnstile is enforced, only challenge-passing traffic spends the shared
+ *      budget. FAIL-OPEN on a store error (availability: a limiter outage must
+ *      not close the waitlist; per-IP + CAPTCHA still apply).
+ *   5. per-normalised-email limit, 3 / 24 h, keyed on sha256 of the canonical
+ *      address (lib/rate-limit emailLimitKey — never the raw address in
+ *      RateLimit.key). Over the limit the submission is DROPPED SILENTLY with
+ *      the identical 200: a 429 here would tell a prober that the address was
+ *      recently submitted, i.e. an existence oracle.
+ *   6. operator-notification throttle (consumeThrottle): at most 1 e-mail per
+ *      normalised address per 24 h and 20 per hour overall. A throttled
+ *      submission is still stored; only the e-mail is skipped (logged).
+ * An AuditLog row (BETA_ACCESS_REQUESTED, no userId) captures ip/user-agent so
+ * the intake is forensically visible even though the request row itself keeps
+ * minimal PII; jobs/data-retention.ts minimises those two fields after 90 days.
+ *
+ * ORIGIN IS NOT A BOT CONTROL. This route deliberately does not check the
+ * Origin/Referer header as abuse protection: any non-browser client sets it to
+ * whatever it likes. The proxy/CSRF posture is unchanged by R2; the controls
+ * above are the bot controls.
  *
  * OPERATIONALIZATION P0 (2026-10-07) — ACQUISITION FACTS. Every submission,
  * including a repeat for an address already on the waitlist, ALSO inserts one
@@ -43,7 +66,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { limitByIp } from "@/lib/rate-limit";
+import { limitByIp, limitGlobal, limitByKey, consumeThrottle, emailLimitKey, type RateLimitConfig } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
 import { verifyCaptchaToken } from "@/lib/captcha";
 import { sendEmail } from "@/lib/email/send";
@@ -58,9 +81,36 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const NOTE_MAX = 1000;
 
+// R2 — named limits (see header). Fixed windows in the RateLimit store; the
+// 24 h windows are the longest any caller uses (jobs/sweep-rate-limits.ts keeps
+// rows for 24 h past their window START, which is exactly enough).
+const ACCESS_REQUEST_IP_LIMIT:         RateLimitConfig = { limit: 5,  windowSec: 15 * 60 };
+const ACCESS_REQUEST_GLOBAL_LIMIT:     RateLimitConfig = { limit: 60, windowSec: 60 * 60 };
+const ACCESS_REQUEST_EMAIL_LIMIT:      RateLimitConfig = { limit: 3,  windowSec: 24 * 60 * 60 };
+const OPERATOR_NOTIFY_EMAIL_THROTTLE:  RateLimitConfig = { limit: 1,  windowSec: 24 * 60 * 60 };
+const OPERATOR_NOTIFY_GLOBAL_THROTTLE: RateLimitConfig = { limit: 20, windowSec: 60 * 60 };
+
+/** The one success body — identical for new, repeat, and silently-dropped submissions. */
+const IDENTICAL_OK = {
+  success: true,
+  message: "Thanks — your request has been received. We'll email you if you're approved.",
+} as const;
+
+/**
+ * R2 — may the operator be e-mailed about this submission? Per-address first, so
+ * repeats never spend the global budget. Returns the throttling reason, or null
+ * when the e-mail may be sent.
+ */
+async function operatorNotifyThrottle(emailKey: string): Promise<"email" | "global" | null> {
+  if (!(await consumeThrottle(emailKey, "beta-request-notify-email", OPERATOR_NOTIFY_EMAIL_THROTTLE))) return "email";
+  if (!(await consumeThrottle("all", "beta-request-notify-global", OPERATOR_NOTIFY_GLOBAL_THROTTLE))) return "global";
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const limited = await limitByIp(req, "access-request", { limit: 5, windowSec: 900 });
+    // NB: no Origin/Referer check here — Origin is not a bot control (header).
+    const limited = await limitByIp(req, "access-request", ACCESS_REQUEST_IP_LIMIT);
     if (limited) return limited;
 
     const meta = getRequestMeta(req);
@@ -82,14 +132,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Note must be ${NOTE_MAX} characters or fewer.` }, { status: 400 });
     }
 
-    // CAPTCHA — env-gated off in this slice (no TURNSTILE_SECRET_KEY ⇒ true).
+    // CAPTCHA — enforced + fail-closed when TURNSTILE_SECRET_KEY is set;
+    // skipped (logged once) when it is not. See lib/captcha.ts.
     const captchaOk = await verifyCaptchaToken(captchaToken, meta.ip);
     if (!captchaOk) {
       return NextResponse.json({ error: "CAPTCHA verification failed. Please try again." }, { status: 400 });
     }
 
+    // GLOBAL ceiling — 429 with the generic body. Fail-open on a store error.
+    const globalLimited = await limitGlobal("access-request", ACCESS_REQUEST_GLOBAL_LIMIT);
+    if (globalLimited) return globalLimited;
+
     const normalizedEmail = email.toLowerCase().trim();
     const trimmedNote = typeof note === "string" ? note.trim() : "";
+    const emailKey = emailLimitKey(normalizedEmail);
+
+    // Per-address ceiling — over it, DROP SILENTLY with the identical 200 (a
+    // 429 would disclose that the address was recently submitted). Nothing is
+    // stored, audited or e-mailed for a dropped submission.
+    if (await limitByKey(emailKey, "access-request-email", ACCESS_REQUEST_EMAIL_LIMIT)) {
+      console.warn("[access-request] per-email limit reached — submission dropped (identical 200)");
+      return NextResponse.json(IDENTICAL_OK);
+    }
 
     // INSERT … ON CONFLICT DO NOTHING, by email.
     //
@@ -146,7 +210,15 @@ export async function POST(req: NextRequest) {
     // is unset (no guessed mailbox); non-throwing so a delivery failure never
     // affects the applicant's identical 200. The applicant never receives this —
     // only the approval invite (beta-invite) is applicant-facing.
-    if (env.BETA_REQUESTS_EMAIL) {
+    //
+    // R2 — THROTTLED (operatorNotifyThrottle): the request above is stored
+    // either way; a throttled submission only skips the e-mail (the queue is
+    // the record). Throttle store errors fail OPEN (the e-mail is sent).
+    const throttled = env.BETA_REQUESTS_EMAIL ? await operatorNotifyThrottle(emailKey) : null;
+    if (throttled) {
+      console.warn(`[access-request] operator notification throttled reason=${throttled} (request stored)`);
+    }
+    if (env.BETA_REQUESTS_EMAIL && !throttled) {
       const queueUrl = `${env.NEXT_PUBLIC_APP_URL}/dashboard/platform/GROWTH_REVENUE`;
       const notify = await sendEmail("beta-request", env.BETA_REQUESTS_EMAIL, {
         applicantEmail: normalizedEmail,
@@ -159,10 +231,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Identical 200 regardless of prior state — non-enumerating.
-    return NextResponse.json({
-      success: true,
-      message: "Thanks — your request has been received. We'll email you if you're approved.",
-    });
+    return NextResponse.json(IDENTICAL_OK);
   } catch (err) {
     console.error("[access-request] error:", err);
     return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });

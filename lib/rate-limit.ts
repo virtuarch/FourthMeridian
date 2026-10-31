@@ -46,6 +46,7 @@
 
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getClientIp as extractClientIp } from "@/lib/security/client-ip";
@@ -285,6 +286,72 @@ export function limitByKey(
   cfg: RateLimitConfig,
 ): Promise<NextResponse | null> {
   return enforce(`key:${name}:${key}`, cfg);
+}
+
+/**
+ * One bucket shared by EVERY caller of a route (R2 — beta intake). Use for a
+ * global ceiling on a public endpoint so a distributed flood (many IPs, many
+ * addresses) is still bounded. Same flag/shadow/FAIL-OPEN posture as every
+ * enforce() limiter: a store error admits the request (availability over
+ * protection — the per-IP limiter and CAPTCHA remain).
+ */
+export function limitGlobal(name: string, cfg: RateLimitConfig): Promise<NextResponse | null> {
+  return enforce(`global:${name}`, cfg);
+}
+
+/**
+ * Canonical form of an e-mail address FOR LIMIT KEYS ONLY (never for storage or
+ * delivery): lowercased and trimmed, any `+tag` suffix dropped from the local
+ * part, and dots removed from Gmail local parts — so `A.B+x@GMail.com` and
+ * `ab@gmail.com` share one bucket.
+ */
+export function canonicalEmailForLimits(email: string): string {
+  const e = email.trim().toLowerCase();
+  const at = e.lastIndexOf("@");
+  if (at <= 0) return e;
+  let local = e.slice(0, at);
+  let domain = e.slice(at + 1);
+  const plus = local.indexOf("+");
+  if (plus > 0) local = local.slice(0, plus);
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") local = local.replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
+/**
+ * The RateLimit-key form of an e-mail: sha256 hex of its canonical form. The
+ * RateLimit table must never hold a raw address (it is swept but not
+ * access-controlled like the waitlist), so every per-email bucket keys on this.
+ */
+export function emailLimitKey(email: string): string {
+  return createHash("sha256").update(canonicalEmailForLimits(email)).digest("hex");
+}
+
+/**
+ * Consume one unit of a THROTTLE quota and report whether the caller may
+ * proceed (R2 — operator-notification throttle). Unlike the limiters above:
+ *   - it is NOT gated by RATE_LIMIT_ENABLED / RATE_LIMIT_SHADOW — a throttle on
+ *     a side effect (an e-mail to an operator) is a cost control, not an abuse
+ *     response, and must hold in every environment;
+ *   - it never produces a response — the caller skips the side effect only;
+ *   - it FAILS OPEN (returns true) on a store error, so a limiter outage at
+ *     worst sends a notification that would otherwise have been suppressed.
+ * Buckets live in the same RateLimit store (`throttle:` prefix), swept by
+ * jobs/sweep-rate-limits.ts like every other window.
+ */
+export async function consumeThrottle(
+  key: string,
+  name: string,
+  cfg: RateLimitConfig,
+  runCheck: (k: string, c: RateLimitConfig) => Promise<RateLimitOutcome> = check,
+): Promise<boolean> {
+  try {
+    const outcome = await runCheck(`throttle:${name}:${key}`, cfg);
+    return !outcome.limited;
+  } catch (err) {
+    console.error("[rate-limit] throttle store error — failing open:", err);
+    return true;
+  }
 }
 
 /**
