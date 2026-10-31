@@ -262,6 +262,8 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.BETA_MODE_CHANGED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.BETA_INVITATION_REVOKED,
+  // BETA-REQUEST RISK — an operator's verdict on a request's advisory signals.
+  AuditAction.BETA_REQUEST_RISK_REVIEWED,
   // PR B — changing the invitation validity policy, and extending an issued
   // invitation without rotating its token, are consequential and carry a reason.
   AuditAction.BETA_INVITATION_VALIDITY_CHANGED,

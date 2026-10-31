@@ -26,6 +26,7 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireFreshUser } from "@/lib/session";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
+import { accountDeletionScheduledAlert } from "@/lib/email/security-alerts";
 import { formatDateTime } from "@/lib/format";
 import { AuditAction } from "@/lib/audit-actions";
 import { limitByUser } from "@/lib/rate-limit";
@@ -113,14 +114,7 @@ export async function POST(req: NextRequest) {
 
     // Notify. NON-THROWING: a delivery failure is logged and audited, never
     // fails the request.
-    const emailResult = await sendEmail("security-alert", dbUser.email, {
-      title:   "Your account is scheduled for deletion",
-      message:
-        `Your Fourth Meridian account is scheduled for deletion on ` +
-        `${formatDateTime(scheduledAt.toISOString())}. You can cancel any time ` +
-        `before then by signing back in and choosing "Cancel deletion". If this ` +
-        `wasn't you, sign in now to cancel.`,
-    });
+    const emailResult = await sendEmail("security-alert", dbUser.email, { ...accountDeletionScheduledAlert(scheduledAt) });
     if (emailResult.status === "error") {
       console.error("[user/delete] security-alert email failed to send:", emailResult.error);
     }

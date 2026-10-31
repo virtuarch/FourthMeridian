@@ -22,14 +22,14 @@ import { env } from "@/lib/env";
 import { requireFreshUser } from "@/lib/session";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
+import { emailChangeRequestedAlert } from "@/lib/email/security-alerts";
 import { buildEmailChangeUrl } from "@/lib/email/email-change-url";
-import { formatDateTime } from "@/lib/format";
+import { EMAIL_CHANGE_TTL_MS } from "@/lib/email/token-ttl";
 import { createNotification } from "@/lib/notifications/create";
 import { AuditAction } from "@/lib/audit-actions";
 import { limitByIp, limitByUser } from "@/lib/rate-limit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const CHANGE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 export async function POST(req: NextRequest) {
   try {
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
 
     // ── Store the pending change (hashed token, 1h TTL) ────────────────────────
     const rawToken = crypto.randomBytes(32).toString("hex");
-    const expiry   = new Date(Date.now() + CHANGE_TTL_MS);
+    const expiry   = new Date(Date.now() + EMAIL_CHANGE_TTL_MS);
 
     await withTenantDb(user.id, (tx) => tx.user.update({
       where: { id: user.id },
@@ -111,11 +111,7 @@ export async function POST(req: NextRequest) {
 
     // Warn the OLD address BEFORE any swap — the strongest takeover defense.
     const oldResult = await sendEmail("security-alert", dbUser.email, {
-      title:   "Email change requested",
-      message:
-        `A change of your Fourth Meridian account email to ${normalizedNew} was ` +
-        `requested on ${formatDateTime(new Date().toISOString())}. The change is ` +
-        `not complete until confirmed from the new address.`,
+      ...emailChangeRequestedAlert(normalizedNew, new Date()),
     });
     if (oldResult.status === "error") {
       console.error("[email/request] old-address alert failed to send:", oldResult.error);

@@ -302,6 +302,8 @@ function main() {
       "app/api/platform/growth-revenue/requests/[id]/deny/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/resend/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/revoke/route.ts",
+      // BETA-REQUEST RISK — an operator verdict on a request's advisory signals.
+      "app/api/platform/growth-revenue/requests/[id]/risk-review/route.ts",
       // PR B — the audited extend and the invitation-validity setting, fresh
       // GROWTH_REVENUE WRITE with a required reason (never CONTROL).
       "app/api/platform/growth-revenue/requests/[id]/extend/route.ts",

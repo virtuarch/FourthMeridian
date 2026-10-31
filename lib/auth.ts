@@ -36,8 +36,8 @@ import { requiresTotpEnrollment } from "@/lib/auth-totp-policy";
 import { PlatformSettingKey } from "@/lib/platform-settings";
 import { verifyTOTP } from "@/lib/totp";
 import { sendEmail } from "@/lib/email/send";
+import { accountReactivatedAlert, accountDeletionCancelledAlert } from "@/lib/email/security-alerts";
 import { createNotification } from "@/lib/notifications/create";
-import { formatDateTime } from "@/lib/format";
 import { UserRole } from "@prisma/client";
 import { resolveRevocation, invalidateSession, setCachedRevocation } from "@/lib/session-cache";
 import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT, SESSION_TOKEN_SHAPE } from "@/lib/auth/session-proof";
@@ -480,10 +480,7 @@ export const authOptions: NextAuthOptions = {
             reactivationAudit.write,
           ]);
 
-          const emailResult = await sendEmail("security-alert", user.email, {
-            title:   "Your account was reactivated",
-            message: `Your Fourth Meridian account was reactivated on ${formatDateTime(new Date().toISOString())}.`,
-          });
+          const emailResult = await sendEmail("security-alert", user.email, { ...accountReactivatedAlert(new Date()) });
           if (emailResult.status === "error") {
             console.error("[auth] reactivation security-alert email failed to send:", emailResult.error);
           }
@@ -517,10 +514,7 @@ export const authOptions: NextAuthOptions = {
             cancellationAudit.write,
           ]);
 
-          const emailResult = await sendEmail("security-alert", user.email, {
-            title:   "Your account deletion was cancelled",
-            message: `Your scheduled Fourth Meridian account deletion was cancelled on ${formatDateTime(new Date().toISOString())}. Your account is active again.`,
-          });
+          const emailResult = await sendEmail("security-alert", user.email, { ...accountDeletionCancelledAlert(new Date()) });
           if (emailResult.status === "error") {
             console.error("[auth] deletion-cancellation security-alert email failed to send:", emailResult.error);
           }

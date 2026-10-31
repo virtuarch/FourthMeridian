@@ -6,7 +6,8 @@
  * single site, the chokepoint idiom).
  *
  * RESOLUTION (frozen F11 — default-by-absence):
- *   1. locked category (ACCOUNT_SECURITY) → forced ON, always.
+ *   0. type excludes the channel (excludedChannels) → OFF, always.
+ *   1. locked category (ACCOUNT_SECURITY) → registry defaults, always.
  *   2. override row present               → the row wins.
  *   3. otherwise                          → the registry default
  *      (defaultChannels includes the channel).
@@ -57,9 +58,9 @@ export function isLockedCategory(category: string): boolean {
 /**
  * The registry DEFAULT for (category, channel): enabled when ANY type in the
  * category defaults to that channel. (Categories are channel-uniform today
- * except deliberate per-type outliers like SYNC_COMPLETED-off and
- * invite-email-on; "any" makes the category toggle mean "the category's
- * channel-using types", which is the least surprising reading.)
+ * except deliberate per-type outliers like SYNC_COMPLETED-off; "any" makes
+ * the category toggle mean "the category's channel-using types", which is the
+ * least surprising reading.)
  */
 export function categoryDefault(category: string, channel: PreferenceChannel): boolean {
   return Object.values(NOTIFICATION_REGISTRY).some(
@@ -91,6 +92,9 @@ export function resolveChannelEnabled(
   // (S5 amendment; the S4 freeze's own words). Not "all channels on": the
   // security EMAIL guarantee lives in the OPS-2 security-alert flow, and
   // forcing the notification email too would double-email every event.
+  // A per-type exclusion beats every preference: the channel is owned by a
+  // dedicated flow (SPACE_INVITE_RECEIVED's email = the route's space-invite).
+  if (def.excludedChannels?.includes(channel)) return false;
   if (def.locked) return def.defaultChannels.includes(channel);
   const row = overrides.find(
     (o) => o.category === def.category && o.channel === channel,
@@ -170,6 +174,7 @@ export async function isChannelEnabledForUser(
   ctx?: { client?: PreferenceClient },
 ): Promise<boolean> {
   const def = NOTIFICATION_REGISTRY[type];
+  if ((def as NotificationTypeDefinition).excludedChannels?.includes(channel)) return false;
   // Locked: registry defaults authoritative, no read needed (S5 amendment).
   if (def.locked) return (def.defaultChannels as readonly string[]).includes(channel);
   const overrides = await client(ctx).notificationPreference.findMany({

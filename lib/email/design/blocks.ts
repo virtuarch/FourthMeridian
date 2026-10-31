@@ -40,6 +40,11 @@ export type EmailBlock =
 export interface FooterInput {
   /** One sentence: why this recipient got this email. Supplied by each template. */
   reason: string;
+  /**
+   * Optional single footer link (e.g. "Manage notification settings"), printed
+   * under the reason line. The URL goes through safeHttpUrl like every other.
+   */
+  link?: { label: string; url: string };
 }
 
 const P_STYLE = `margin:0 0 16px 0;font-family:${FONT_STACK};font-size:16px;line-height:24px;color:${LIGHT.text};`;
@@ -186,6 +191,10 @@ export function footerHtml(footer: FooterInput, brand: EmailBrandConfig): string
   return (
     `<tr><td class="fm-canvas fm-pad" bgcolor="${LIGHT.canvas}" style="background-color:${LIGHT.canvas};padding:24px 40px 8px 40px;">` +
     `<p class="fm-muted" style="margin:0 0 8px 0;${small}">${escapeHtml(footer.reason)}</p>` +
+    (footer.link
+      ? `<p class="fm-muted" style="margin:0 0 8px 0;${small}"><a href="${escapeHtml(safeHttpUrl(footer.link.url))}" target="_blank" rel="noopener" ` +
+        `class="fm-muted" style="color:${LIGHT.muted};text-decoration:underline;">${escapeHtml(footer.link.label)}</a></p>`
+      : "") +
     support +
     `<p class="fm-muted" style="margin:0 0 8px 0;${small}">${links}</p>` +
     `<p class="fm-muted" style="margin:0;${small}">&copy; ${escapeHtml(WORDMARK)}</p>` +
@@ -212,6 +221,7 @@ export function blockText(b: EmailBlock): string {
 
 export function footerText(footer: FooterInput, brand: EmailBrandConfig): string {
   const lines = [footer.reason];
+  if (footer.link) lines.push(`${footer.link.label}: ${safeHttpUrl(footer.link.url)}`);
   if (brand.supportEmail) lines.push(`Questions? Contact ${brand.supportEmail}.`);
   for (const l of LEGAL_LINKS) lines.push(`${l.label}: ${safeHttpUrl(`${brand.siteOrigin}${l.path}`)}`);
   return `--\n${lines.join("\n")}`;

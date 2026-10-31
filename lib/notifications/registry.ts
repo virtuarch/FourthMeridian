@@ -41,6 +41,7 @@ import type {
   NotificationTypeDefinition,
   RetentionPolicy,
 } from "@/lib/notifications/types";
+import { connectionAttentionCopy } from "@/lib/notifications/connection-attention";
 
 // ── Shared policy values ──────────────────────────────────────────────────────
 
@@ -303,9 +304,16 @@ export const NOTIFICATION_REGISTRY = {
   //    MemberRoleChanged).
   SPACE_INVITE_RECEIVED: {
     ...SPACES,
-    // The one type that defaults to email too — it is the product's proto-
-    // notification (SpaceInvite.seenAt + the OPS-1 S3 invite email).
-    defaultChannels: ["IN_APP", "EMAIL"] as const satisfies readonly NotificationChannel[],
+    // ONE EMAIL PER INVITATION (2026-10-31): IN_APP only. The invitee's email
+    // is the route's dedicated `space-invite` email (app/api/spaces/[id]/
+    // invite/route.ts), sent once per invite. This type used to default to
+    // EMAIL too, which mailed the invitee a second, generic `notification`
+    // email. EXCLUDED, not merely off by default, so a SPACES/EMAIL
+    // preference cannot bring the duplicate back (lib/notifications/
+    // preferences.ts resolveChannelEnabled) and the retry job closes any
+    // legacy failed EMAIL delivery of this type instead of re-sending it.
+    defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
+    excludedChannels: ["EMAIL"] as const satisfies readonly NotificationChannel[],
     // WIRED (OPS-3 S1): EV-1 handler on MemberInvited
     // (lib/events/handlers/space-invite-notification.ts).
     status: "WIRED" as const,
@@ -392,12 +400,15 @@ export const NOTIFICATION_REGISTRY = {
     dedupe: "suppress" as const,
     dedupeKeyTemplate: "SYNC_FAILED:item:{plaidItemId}:open",
     icon: "triangle-alert",
-    pointerContract: ["plaidItemId", "institutionName"],
-    render: (d) => ({
-      title: `${str(d, "institutionName", "A connection")} needs attention`,
-      body: "We couldn't sync this institution. Reconnect to resume updates.",
-      href: "/dashboard/connections",
-    }),
+    // connectionState (lib/notifications/connection-attention.ts) is derived by
+    // the producer from the PlaidItem.status the call site just wrote; rows
+    // written before it existed (or any unknown value) render the conservative
+    // "sync-failed" copy — never "disconnected".
+    pointerContract: ["plaidItemId", "institutionName", "connectionState"],
+    render: (d) => {
+      const copy = connectionAttentionCopy(d.connectionState, str(d, "institutionName", "your institution"));
+      return { title: copy.title, body: copy.body, href: "/dashboard/connections", actionLabel: copy.actionLabel };
+    },
   },
   // WIRED (reopening the D2-deferred decision consciously): produced ONLY when
   // the FULL deferred pipeline finishes for an item (initial connect or a

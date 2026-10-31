@@ -43,7 +43,11 @@ export interface EmailMessage {
  * one of these statuses; callers branch on `status` instead of catching.
  *
  *   sent      — handed to the real provider, which accepted it (id present).
- *   captured  — recorded by the dev/test capture transport (not really sent).
+ *   captured  — not sent to any provider: recorded by the dev/test capture
+ *               transport (provider "capture"), or held back by the
+ *               non-production recipient guard (provider "none", reason
+ *               "ENVIRONMENT_GUARD" — lib/email/recipient-guard.ts). A
+ *               non-failure: never retried, never logged as an error.
  *   skipped   — no send performed by design (e.g. email disabled / no creds in
  *               a context that must not fall back to capture).
  *   error     — the transport attempted a send and failed (error present).
@@ -52,10 +56,12 @@ export interface EmailResult {
   status: "sent" | "captured" | "skipped" | "error";
   /** Provider message id when status === "sent". */
   id?: string;
-  /** Which transport produced this result: "resend" | "capture". */
+  /** Which transport produced this result: "resend" | "capture" | "none" (guarded). */
   provider: string;
   /** Human-readable failure reason when status === "error". */
   error?: string;
+  /** Why a send was captured instead of sent (Comms Center contract §O-4). */
+  reason?: "ENVIRONMENT_GUARD";
 }
 
 /**
