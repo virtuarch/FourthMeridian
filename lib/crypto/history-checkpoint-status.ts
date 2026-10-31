@@ -105,3 +105,15 @@ export function historyWorkerEnabledFor(chain: string | null | undefined, env: R
   if (k === "ETH") return ethWorkerEnabled(env);
   return false;
 }
+
+/**
+ * What Connections shows of a checkpoint's state (2026-10-31). A LICENSED
+ * (complete) history being re-proved in the background is still complete:
+ * its queued / importing re-proof is not shown ("Queued" never labels a
+ * complete history). Everything else — an incomplete import, and a failure
+ * or recovery of any import — is shown as is.
+ */
+export function visibleHistoryImport<T extends { state: string }>(status: T | null, licensed: boolean): T | null {
+  if (!status) return null;
+  return licensed && (status.state === "QUEUED" || status.state === "IMPORTING") ? null : status;
+}

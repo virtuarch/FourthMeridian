@@ -65,6 +65,11 @@ import { tenantRefreshDeps } from "@/lib/refresh/deps";
 import { finalizeWalletSync } from "@/lib/refresh/wallet-post-sync";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },

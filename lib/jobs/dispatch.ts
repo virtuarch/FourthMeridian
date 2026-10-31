@@ -35,6 +35,7 @@ import {
 } from "@/lib/jobs/run";
 import { SCHEDULED_JOBS, type ScheduledJob } from "@/lib/jobs/registry";
 import { systemDb } from "@/lib/db";
+import { reapStaleRefreshExecutions, type StaleExecutionReapClient } from "@/lib/plaid/refresh-ledger";
 import { loadJobCadencePolicies, type JobCadencePolicies } from "@/lib/jobs/cadence-policy";
 import {
   decideJobDue, type JobDueDecision, type JobLedgerFact,
@@ -165,7 +166,7 @@ export async function loadJobLedgerFacts(
 export type JobRunner = (
   name: string,
   fn: () => Promise<unknown>,
-  options: { trigger: JobTrigger },
+  options: { trigger: JobTrigger; budgetStartedAt?: Date },
 ) => Promise<unknown>;
 
 export interface DispatchDeps {
@@ -176,6 +177,13 @@ export interface DispatchDeps {
   policies?: JobCadencePolicies;
   /** Injected ledger client (tests). Production uses the system principal. */
   client?: JobLedgerClient;
+  /**
+   * The RefreshExecution stale-row reaper (tests inject it). Production, with
+   * nothing injected: reapStaleRefreshExecutions on the system principal (the
+   * operational ledger's own authority). A test that injects a client or facts
+   * and no reaper runs none.
+   */
+  reapStaleExecutions?: (now: Date) => Promise<number>;
 }
 
 const wakeLabel = (now: Date) =>
@@ -193,6 +201,12 @@ export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<D
   // Crashed runs first: a stale `running` row is a dead claim, and the job it
   // belongs to is due NOW, not a cadence later.
   const finalized = client ? await finalizeStaleRunsForWake(client, now) : [];
+  // …and the same sweep for the refresh ledger: an execution whose process was
+  // killed at the function time limit (an inline ETH history walk, 2026-10-31)
+  // never wrote its completion and would read RUNNING for ever. Never throws.
+  const reap = opts?.reapStaleExecutions
+    ?? (opts?.client || opts?.facts ? null : (at: Date) => reapStaleRefreshExecutions(systemDb as unknown as StaleExecutionReapClient, at));
+  if (reap) await reap(now).catch(() => 0);
   const loaded = opts?.facts ?? await loadJobLedgerFacts(client!, jobs);
   const facts: JobLedgerFacts = finalized.length === 0 ? loaded : new Map(
     jobs.map((j) => j.name).flatMap((name): Array<[string, JobLedgerFact]> => {
@@ -215,7 +229,8 @@ export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<D
 
   for (const job of due) {
     try {
-      await runner(job.name, job.run, { trigger: "cron" });
+      // Every job in this wake shares ONE function invocation (maxDuration): its budget starts at the wake.
+      await runner(job.name, job.run, { trigger: "cron", budgetStartedAt: now });
       dispatched.push({ job: job.name, ok: true });
     } catch (err) {
       if (err instanceof JobAlreadyRunningError) {

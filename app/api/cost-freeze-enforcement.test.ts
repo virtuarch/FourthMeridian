@@ -326,7 +326,28 @@ async function main() {
     try {
       t.check("the frozen registry holds ONLY the allowlisted free provider, even with OXR_APP_ID set",
         freezeExemptFxRegistry().adapters.map((a) => a.source).join() === FREE_FX_EXEMPTION.source && FREE_FX_EXEMPTION.maxFetchesPerDayWhileFrozen === 1);
+      // The FX archive writes with ONE raw `INSERT … ON CONFLICT DO NOTHING` (lib/fx/archive.ts). The fake
+      // records raw statements without executing them, which is why an earlier version of this test saw no
+      // stored rows — a test artefact, not a production bug. Emulate that one statement faithfully here.
+      fake.executeRaw = (sql, values) => {
+        if (!/INSERT INTO "FxRate"/.test(sql)) return 1;
+        const flat = ((values[0] as { values?: unknown[] })?.values ?? []) as unknown[];
+        let inserted = 0;
+        for (let i = 0; i + 5 < flat.length; i += 6) {
+          const [, dateISO, base, quote, rate, source] = flat.slice(i, i + 6) as [string, string, string, string, number, string];
+          const date = new Date(`${dateISO}T00:00:00Z`);
+          if (fake.rows("FxRate", { base, quote }).some((r) => (r.date as Date).getTime() === date.getTime())) continue; // ON CONFLICT DO NOTHING
+          fake.seed("FxRate", { date, base, quote, rate, source });
+          inserted++;
+        }
+        return inserted;
+      };
       const first = await fetchFxRates();
+      const { FRANKFURTER_QUOTES: FQ } = await import("@/lib/fx/providers/frankfurter");
+      const stored = fake.rows("FxRate", { base: "USD", source: "frankfurter" })
+        .filter((r) => (r.date as Date).toISOString().slice(0, 10) === first.dateISO).map((r) => r.quote as string).sort();
+      t.check("REGRESSION: the once-a-day free fetch under the freeze PERSISTS yesterday's quotes (the cache refreshes during a freeze)",
+        first.freeExemption?.inserted === FQ.length && stored.join() === [...FQ].sort().join(), { inserted: first.freeExemption?.inserted, stored });
       t.check("frozen run #1: one free-provider fetch (Frankfurter), ZERO Open Exchange Rates calls; recorded SKIPPED for the paid path",
         urls.length >= 1 && urls.every((u) => u.includes("api.frankfurter.dev") && !/app_id|openexchangerates/i.test(u))
           && first.freeExemption?.source === "frankfurter" && first.outcome === "SKIPPED" && first.skipReason === "BILLABLE_COST_FREEZE" && first.caughtUp.length === 0,
@@ -345,9 +366,66 @@ async function main() {
     }
   }
 
-  t.section("wallet re-add: one sync per wallet per entitled window, fail closed, new wallets not counted (review P3-1)");
+  t.section("FX catch-up: the freeze is re-read per day and stops the loop; vendor calls are capped per run (follow-up N3)");
   {
     fake.clearHooks(); setFlag(null); setState({});
+    const { fetchFxRates, FX_MAX_VENDOR_FETCHES_PER_RUN } = await import("@/jobs/fetch-fx-rates");
+    const { judgeGlobalCostFreeze } = await import("@/lib/platform/cost-freeze.core");
+    const oldKey = process.env.OXR_APP_ID; delete process.env.OXR_APP_ID;
+    const urls: string[] = [];
+    const trap = globalThis.fetch;
+    const { FRANKFURTER_QUOTES } = await import("@/lib/fx/providers/frankfurter");
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input); urls.push(url);
+      return new Response(JSON.stringify({ base: "USD", date: "1999-01-04", rates: Object.fromEntries(FRANKFURTER_QUOTES.map((q) => [q, 1.5])) }), { status: 200 });
+    }) as typeof fetch;
+    // Yesterday already holds every quote the free provider serves — STORED by the frozen-exemption run above
+    // (SAR/AED are absent: no configured provider serves them without the paid key).
+    const { yesterdayUTCISO } = await import("@/lib/fx/config");
+    const yday = new Date(`${yesterdayUTCISO()}T00:00:00Z`);
+    t.check("precondition: yesterday's free quotes are in the archive from the exemption run (no seeding)",
+      FRANKFURTER_QUOTES.every((q) => fake.rows("FxRate", { base: "USD", quote: q }).some((r) => (r.date as Date).getTime() === yday.getTime())));
+    try {
+      // The provider answers every day with an EARLIER banking day (no close for the requested date), so
+      // nothing is stored and every day stays missing — the worst case for the catch-up. (Yesterday is
+      // already covered for the free provider's quotes by the section above; SAR/AED, which no configured
+      // provider serves without the paid key, are NOT counted as missing — follow-up P3-4.)
+      const capped = await fetchFxRates({ costFreeze: async () => judgeGlobalCostFreeze(null) });
+      t.check(`an unfrozen run makes at most ${FX_MAX_VENDOR_FETCHES_PER_RUN} vendor fetches, then stops (VENDOR_CAP)`,
+        urls.length === FX_MAX_VENDOR_FETCHES_PER_RUN && capped.vendorFetches === FX_MAX_VENDOR_FETCHES_PER_RUN && capped.catchUpStoppedBecause === "VENDOR_CAP", { n: urls.length, capped });
+      const dayOf = (u: string) => u.match(/\/v1\/(\d{4}-\d{2}-\d{2})/)?.[1] ?? "";
+      t.check("newest-first: the catch-up fetched the days right before yesterday, most recent first",
+        urls.length >= 2 && dayOf(urls[0]) > dayOf(urls[1]) && dayOf(urls[urls.length - 1]) < capped.dateISO, urls.map(dayOf));
+      t.check("yesterday (free quotes present) is covered: unservable SAR/AED are not counted as missing, so no vendor call for it",
+        !urls.some((u) => dayOf(u) === capped.dateISO) && capped.missingBefore === 0, { urls: urls.map(dayOf), capped });
+      urls.length = 0;
+      let reads = 0;
+      const midFreeze = await fetchFxRates({ costFreeze: async () => (++reads >= 3 ? judgeGlobalCostFreeze("true") : judgeGlobalCostFreeze(null)) });
+      t.check("a freeze landing DURING the catch-up stops it at the next day (re-read per day, uncached)",
+        midFreeze.catchUpStoppedBecause === "COST_FREEZE" && urls.length === 1 && reads === 3, { n: urls.length, reads, midFreeze });
+    } finally {
+      globalThis.fetch = trap;
+      if (oldKey !== undefined) process.env.OXR_APP_ID = oldKey;
+    }
+  }
+
+  t.section("wallet re-add / reactivation: ONE atomic sync claim per wallet per entitled window (review P3-1, follow-ups N4/N5)");
+  {
+    fake.clearHooks(); setFlag(null); setState({});
+    // The fake executes the route's single UPDATE … WHERE … RETURNING exactly as Postgres would:
+    // the window check and the claim are one statement (no read-then-write gap to race).
+    let claimStatements = 0;
+    fake.queryRaw = (sql: string, values: unknown[]) => {
+      if (!/UPDATE "Connection"/.test(sql)) return [];
+      claimStatements++;
+      const [now, , id, uid, opensAt] = values as [Date, Date, string, string, Date];
+      const row = fake.rows("Connection", { id, userId: uid })[0];
+      if (!row) return [];
+      const last = row.lastManualRefreshAt as Date | null;
+      if (last !== null && last.getTime() > opensAt.getTime()) return [];
+      row.lastManualRefreshAt = now;
+      return [{ id }];
+    };
     const body = { name: "BTC", walletChain: "BTC", walletAddress: wallet.walletAddress };
     const first = await call(WALLET, "/api/accounts/wallet", body);
     t.check("the first re-add in the window may re-read the chain (allowed plan; the trapped network makes it non-fatal)",
@@ -356,11 +434,28 @@ async function main() {
     const second = await call(WALLET, "/api/accounts/wallet", body);
     t.check("an immediate second re-add: share OK, NO chain sync (COOLDOWN), no network call",
       second.status === 200 && second.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === before, { s: second.status, b: second.body });
-    const third = await call(WALLET, "/api/accounts/wallet", body);
-    t.check("…and a third: still COOLDOWN (one sync per wallet per window, however often it is re-posted)", third.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === before);
+
+    // N5 — CONCURRENT re-adds after the window reopens: exactly one wins the claim.
+    for (const c of fake.rows("Connection", { userId })) c.lastManualRefreshAt = null;
+    const [a, b] = await Promise.all([call(WALLET, "/api/accounts/wallet", body), call(WALLET, "/api/accounts/wallet", body)]);
+    const winners = [a, b].filter((r) => r.body.initialSync?.errorCode !== "COOLDOWN").length;
+    t.check("two CONCURRENT re-adds: exactly ONE syncs, the other is COOLDOWN (one atomic claim)", winners === 1 && a.status === 200 && b.status === 200,
+      { a: a.body.initialSync, b: b.body.initialSync });
+
+    // N4 — delete, then re-add (the reactivation branch) inside the window: no sync either.
+    const w = fake.rows("FinancialAccount", { id: wallet.id })[0];
+    w.deletedAt = new Date();
+    const fetchBeforeReactivate = fetchCalls;
+    const reactivated = await call(WALLET, "/api/accounts/wallet", body);
+    t.check("delete-then-re-add (reactivation) inside the window: restored, NO chain sync (COOLDOWN)",
+      reactivated.status === 200 && reactivated.body.initialSync?.errorCode === "COOLDOWN" && fetchCalls === fetchBeforeReactivate, { s: reactivated.status, b: reactivated.body });
+
     const src = (await import("node:fs")).readFileSync("app/api/accounts/wallet/route.ts", "utf8");
-    t.check("the window is a conditional write on the wallet's own Connection (fail closed on any error); no per-user limiter counts new wallets",
-      /lastManualRefreshAt: \{ lte:/.test(src) && /return false;\n  \}\n\}/.test(src) && !/limitByUser\(userId, "wallet-add"/.test(src));
+    const lib = (await import("node:fs")).readFileSync("lib/connections/re-add-sync-window.ts", "utf8");
+    t.check("the claim is ONE UPDATE … WHERE … RETURNING on the tenant client (atomic; proven on Postgres by the RLS suite, check 72); fail closed; no per-user limiter counts new wallets",
+      /UPDATE "Connection"[\s\S]{0,300}RETURNING "id"/.test(lib) && /withTenantDb\(userId, \(tx\) => claimReAddSyncWindowAtomic\(tx,/.test(src)
+        && /return false;\n  \}\n\}/.test(src) && !/limitByUser\(userId, "wallet-add"/.test(src) && claimStatements >= 4);
+    fake.queryRaw = null;
   }
 
   t.section("plan-restricted deferrals say so — never \"syncing resumes automatically\" (review P3-3)");

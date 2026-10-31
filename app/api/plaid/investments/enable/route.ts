@@ -60,6 +60,11 @@ interface EnableBody {
 // refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
 // this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
 // must never span a network round trip).
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;

@@ -47,6 +47,11 @@ import {
   type DryRunPlan,
 } from "@/lib/platform/operations/execute";
 
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export const runtime = "nodejs";
 
 const RECENT_LIMIT = 20;
