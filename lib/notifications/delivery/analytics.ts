@@ -105,6 +105,12 @@ export interface DeliveryReadSource {
    * provider event? Absent ⇒ false (a source that cannot say never claims delivery).
    */
   verifiedEventExists?(): Promise<boolean>;
+  /**
+   * Phase C — final-ACCEPTED provider-email messages with NO provider message id
+   * (UNCERTAIN_ACCEPTANCE) over the query's range and filters (status ignored). Absent ⇒ the
+   * payload omits `acceptedUncertain`.
+   */
+  acceptedUncertainCount?(q: DeliveryCountQuery): Promise<number>;
 }
 
 const DAY_MS = 86_400_000;
@@ -186,6 +192,18 @@ export async function buildDeliveryAnalytics(args: {
     }
   }
 
+  // Phase C — accepted-uncertain (a subset of ACCEPTED), same range and filters; a status
+  // filter other than ACCEPTED leaves none.
+  let acceptedUncertain: number | null | undefined;
+  if (source.acceptedUncertainCount) {
+    if (!observed || observedFrom === null || observedFrom > to) acceptedUncertain = observed ? 0 : null;
+    else if (filters.status && filters.status !== "ACCEPTED") acceptedUncertain = 0;
+    else {
+      const n = await source.acceptedUncertainCount({ from: observedFrom, to, channel: filters.channel, status: null, key: filters.template });
+      acceptedUncertain = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    }
+  }
+
   return {
     window,
     from,
@@ -196,6 +214,7 @@ export async function buildDeliveryAnalytics(args: {
     byKey: observed ? [...byKey.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, counts]) => ({ key, counts })) : null,
     series,
     measured: { delivered, opens: false, clicks: false },
+    ...(acceptedUncertain !== undefined ? { acceptedUncertain } : {}),
     // Every sendEmail call site and createNotification write the ledger (A-2a).
     coverage: { ledgerSince: since, directSendsCovered: true, environment: ledgerEnvironment(args.env) },
     providerHealth: { href: "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers", source: "GET /api/platform/platform-ops/email-health" },

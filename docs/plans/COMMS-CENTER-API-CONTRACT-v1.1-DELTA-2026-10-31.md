@@ -1181,6 +1181,9 @@ The required ones join `REASON_REQUIRED_ACTIONS` (`lib/audit.ts:221`).
   - **F5:** unchanged. The per-IP limit is a coarse bound, because svix egress IPs are shared.
   - **F6:** the route-guard census credits `handleResendWebhook`.
   - No migration.
+- **§4.11 `acceptedUncertain?: number | null`** (additive, optional; Session 2 request): the final-ACCEPTED provider emails with no provider id (R4 `UNCERTAIN_ACCEPTANCE`, "accepted, can't be confirmed").
+  - It is a subset of `totals.ACCEPTED`, scoped to the same environment, observed window and channel/template filters.
+  - It is 0 under any status filter other than ACCEPTED, and null when nothing is observed.
 - **Follow-ups, not built:** a recipient **suppression list** fed by `BOUNCED`/`COMPLAINED` final statuses (the contract does not specify one); the `notification-retry` move and the remaining B3 folds.
 
 ---

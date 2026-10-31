@@ -481,6 +481,34 @@ async function main() {
     check("read-store's probe applies it", /commsProviderEvent\.findFirst\(\{ where: MEASURING_EVENT_WHERE/.test(rs));
   }
 
+  console.log("\nanalytics: accepted-uncertain (optional, additive)");
+  {
+    const seen: Array<{ from: string; to: string; channel: string | null; key: string | null }> = [];
+    const src = (since: string | null, withCount = true): DeliveryReadSource => ({
+      ledgerSince: async () => since,
+      counts: async () => [{ day: "2026-10-31", definitionKey: "SPACE_INVITE_RECEIVED", channel: "EMAIL", status: "ACCEPTED", reason: "", count: 5 }],
+      ...(withCount ? { acceptedUncertainCount: async (q: { from: string; to: string; channel: string | null; key: string | null }) => { seen.push(q); return 2; } } : {}),
+    });
+    const run = (s: DeliveryReadSource, filters: { channel: null | "EMAIL"; status: null | "ACCEPTED" | "FAILED"; template: string | null } = { channel: null, status: null, template: null }) =>
+      buildDeliveryAnalytics({ source: s, window: "7d", filters, now: NOW, env: {} });
+    const a = await run(src("2026-10-28"));
+    check("present as a number, a SUBSET of ACCEPTED (totals unchanged)", a.acceptedUncertain === 2 && a.totals?.ACCEPTED === 5, { u: a.acceptedUncertain, t: a.totals?.ACCEPTED });
+    check("scoped to the OBSERVED window: asked from ledgerSince (inside the window) to today", seen[0]?.from === "2026-10-28" && seen[0]?.to === "2026-10-31", seen[0]);
+    await run(src("2026-10-01"));
+    check("…and from the window start when the ledger is older", seen[1]?.from === "2026-10-25", seen[1]);
+    await run(src("2026-10-01"), { channel: "EMAIL", status: "ACCEPTED", template: "SPACE_INVITE_RECEIVED" });
+    check("the channel / template filters are passed through", seen[2]?.channel === "EMAIL" && seen[2]?.key === "SPACE_INVITE_RECEIVED");
+    const f = await run(src("2026-10-01"), { channel: null, status: "FAILED", template: null });
+    check("a status filter other than ACCEPTED ⇒ 0, without a query", f.acceptedUncertain === 0 && seen.length === 3);
+    const none = await run(src(null));
+    check("nothing observed ⇒ null (like totals)", none.acceptedUncertain === null && none.totals === null);
+    const absent = await run(src("2026-10-28", false));
+    check("a source that cannot count it ⇒ the key is ABSENT (existing shape unchanged)", !("acceptedUncertain" in absent));
+    const rs = readFileSync(join(process.cwd(), "lib/notifications/delivery/read-store.ts"), "utf8");
+    check("the store counts final-ACCEPTED, LIVE, resend, NULL provider id messages only",
+      /async acceptedUncertainCount\(q\)[\s\S]{0,1400}"mode" = 'LIVE'[\s\S]{0,900}WHERE "status" = 'ACCEPTED' AND "provider" = 'resend' AND "providerMessageId" IS NULL/.test(rs));
+  }
+
   // Type-level: the appended row is a CommsDeliveryRow the production writer accepts.
   const _typecheck: CommsDeliveryRow | null = decideReconciliation({ type: "delivered", providerMessageId: "msg-resend-1", occurredAt: NOW }, [acceptedRow()]).append;
   void _typecheck;
