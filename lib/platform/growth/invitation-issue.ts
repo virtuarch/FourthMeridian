@@ -75,6 +75,13 @@ export interface IssueInput {
    * request read after the first committed) sends one email, not two.
    */
   expectedInvitedAt?: unknown;
+  /**
+   * approve only (PR C): the status the caller read. Given ⇒ a request found in
+   * any other un-approved status is refused STATUS_CHANGED (nothing minted or
+   * sent) — a batch never reverses a denial that landed after its read. Absent
+   * (single Approve) ⇒ unchanged behaviour.
+   */
+  expectedStatus?: "PENDING";
   reason?: OperatorReason;
   ipAddress?: string | null;
   userAgent?: string | null;
@@ -156,7 +163,7 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     const row = input.requestId ? await loadRow(client, { id: input.requestId }) : null;
     email = row?.email ?? "";
     const hasAccount = row ? await accountExists(client, row.email) : false;
-    plan = input.kind === "approve" ? planApprove(row, hasAccount) : planReissue(row, hasAccount);
+    plan = input.kind === "approve" ? planApprove(row, hasAccount, input.expectedStatus) : planReissue(row, hasAccount);
   }
   if (plan.action === "refuse") return refuse(plan.refusal);
   if (plan.action === "alreadyApproved") return { ok: true, outcome: "alreadyApproved", requestId: plan.row.id };

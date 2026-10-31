@@ -464,6 +464,25 @@ async function main() {
     t.check(`no console line carries a token or invite link (${tokens.length} tokens checked)`, tokens.length >= 10 && leaks.length === 0, leaks.slice(0, 3));
   }
 
+  // ── PR C — the optional expectedStatus guard (approve) ────────────────────
+  t.section("PR C. approve expectedStatus: a DENIED row is refused STATUS_CHANGED; without it, unchanged");
+  {
+    await world();
+    const actor = { userId: admin.id, via: "SYSTEM_ADMIN" as const, area: "GROWTH_REVENUE" };
+    const d = fake.seed("BetaAccessRequest", { email: "denied-guard@example.test", status: "DENIED" });
+    const guarded = await issueBetaInvitation({ client: db, actor, kind: "approve", requestId: d.id as string, expectedStatus: "PENDING" });
+    t.check("expectedStatus PENDING on a DENIED row → refused STATUS_CHANGED (409)", !guarded.ok && guarded.code === "STATUS_CHANGED" && guarded.status === 409, guarded);
+    t.check("…nothing minted, nothing sent, nothing audited", row({ id: d.id }).status === "DENIED" && row({ id: d.id }).inviteTokenHash == null
+      && sentTo("denied-guard@example.test").length === 0 && audits("BETA_ACCESS_APPROVED").length === 0);
+    const p = fake.seed("BetaAccessRequest", { email: "pending-guard@example.test", status: "PENDING" });
+    const okGuarded = await issueBetaInvitation({ client: db, actor, kind: "approve", requestId: p.id as string, expectedStatus: "PENDING" });
+    t.check("expectedStatus PENDING on a PENDING row → issued as normal", okGuarded.ok && okGuarded.outcome === "issued" && sentTo("pending-guard@example.test").length === 1, okGuarded);
+    const unguarded = await issueBetaInvitation({ client: db, actor, kind: "approve", requestId: d.id as string });
+    t.check("WITHOUT expectedStatus a DENIED approve behaves as before (issued, audit before = DENIED)",
+      unguarded.ok && unguarded.outcome === "issued" && row({ id: d.id }).status === "APPROVED" && sentTo("denied-guard@example.test").length === 1
+      && ((audits("BETA_ACCESS_APPROVED").find((a) => (a.metadata as { target?: { id?: string } }).target?.id === d.id)?.metadata as { change?: { before?: { status?: string } } })?.change?.before?.status) === "DENIED", unguarded);
+  }
+
   t.done();
 }
 

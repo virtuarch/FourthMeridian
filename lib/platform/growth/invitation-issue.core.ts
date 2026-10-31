@@ -113,7 +113,8 @@ export type IssueRefusalCode =
   | "INVALID_VALIDITY"
   | "INVALID_EMAIL"
   | "CONFLICT"
-  | "WOULD_SHORTEN";
+  | "WOULD_SHORTEN"
+  | "STATUS_CHANGED";
 
 export interface IssueRefusal {
   code: IssueRefusalCode;
@@ -125,6 +126,7 @@ export interface IssueRefusal {
 const STATUS_OF: Record<IssueRefusalCode, IssueRefusal["status"]> = {
   NOT_FOUND: 404, INVALID_VALIDITY: 400, INVALID_EMAIL: 400,
   REDEEMED: 409, ACCOUNT_EXISTS: 409, NOT_APPROVED: 409, DENIED: 409, LIVE_INVITE: 409, CONFLICT: 409, WOULD_SHORTEN: 409,
+  STATUS_CHANGED: 409,
 };
 
 export function refusal(code: IssueRefusalCode, message?: string): IssueRefusal {
@@ -142,6 +144,7 @@ const DEFAULT_MESSAGE: Record<IssueRefusalCode, string> = {
   INVALID_EMAIL:    "A valid email is required.",
   CONFLICT:         "This invitation changed while your action was being saved. Reload and try again.",
   WOULD_SHORTEN:    "That would shorten this invitation. Extend only lengthens it — use Revoke to end an invitation early.",
+  STATUS_CHANGED:   "This request's status changed since it was selected (denied, revoked or re-queued) — not approved.",
 };
 
 /** What the I/O layer must do. `expectedHash` is the optimistic token for a rotation. */
@@ -152,11 +155,18 @@ export type IssuePlan =
   | { action: "alreadyApproved"; row: InviteRowFacts }
   | { action: "refuse"; refusal: IssueRefusal };
 
-export function planApprove(row: InviteRowFacts | null, accountExists: boolean): IssuePlan {
+/**
+ * `expectedStatus` (PR C): the status the caller's screen / batch read. When
+ * given, any OTHER approvable status read here (e.g. DENIED after a revoke that
+ * landed in between) is refused STATUS_CHANGED instead of being approved. The
+ * single-row Approve passes nothing, so it may still reverse a denial.
+ */
+export function planApprove(row: InviteRowFacts | null, accountExists: boolean, expectedStatus?: "PENDING"): IssuePlan {
   if (!row) return { action: "refuse", refusal: refusal("NOT_FOUND") };
   if (row.status === "REDEEMED") return { action: "refuse", refusal: refusal("REDEEMED") };
   // I4 — a repeat or a concurrent second click on an APPROVED row sends nothing.
   if (row.status === "APPROVED") return { action: "alreadyApproved", row };
+  if (expectedStatus !== undefined && row.status !== expectedStatus) return { action: "refuse", refusal: refusal("STATUS_CHANGED") };
   // E-6 — an invite for an address that already has an account can never be redeemed.
   if (accountExists) return { action: "refuse", refusal: refusal("ACCOUNT_EXISTS") };
   return { action: "approve", row };
