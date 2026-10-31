@@ -33,8 +33,31 @@ const n = (v: number) => v.toLocaleString("en-US");
 
 // ── Limits the `limits` block does not carry (contract §2.2, fixed) ──────────────
 
-/** §2.2: heading / greeting ≤ 120, info title ≤ 120, ≤ 8 items of ≤ 200. Same on both channels. */
+/**
+ * §2.2 contract values for the per-block limits — the FALLBACK only, for a server
+ * older than v1.1.1 that does not send them in `limits`. The server's numbers
+ * always win (`blockLimits`).
+ */
 export const FIXED_LIMITS = { heading: 120, greeting: 120, infoTitle: 120, infoItem: 200, infoItems: 8 } as const;
+
+export type BlockLimits = { -readonly [K in keyof typeof FIXED_LIMITS]: number };
+
+/**
+ * The per-block limits the editor enforces: the server's (`limits.heading` …,
+ * v1.1.1) when present as a number, else the contract fallback. A server `null`
+ * means that block kind is not allowed on the channel — such a block can't be
+ * added there, so the fallback number only ever labels a stray one.
+ */
+export function blockLimits(limits: Limits): BlockLimits {
+  const pick = (v: number | null | undefined, fallback: number) => (typeof v === "number" ? v : fallback);
+  return {
+    heading: pick(limits.heading, FIXED_LIMITS.heading),
+    greeting: pick(limits.greeting, FIXED_LIMITS.greeting),
+    infoTitle: pick(limits.infoTitle, FIXED_LIMITS.infoTitle),
+    infoItem: pick(limits.infoItem, FIXED_LIMITS.infoItem),
+    infoItems: pick(limits.infoItems, FIXED_LIMITS.infoItems),
+  };
+}
 /** §2.2 block-count floor: an email needs one block, an in-app message none. */
 export const MIN_BLOCKS: Record<EditableChannel, number> = { EMAIL: 1, IN_APP: 0 };
 /** §2.2 allowed kinds per channel, in the order the "Add block" menu offers them. */
@@ -121,6 +144,7 @@ export function locationLabel(loc: ContentLocation | null, body?: ContentBody | 
 
 /** Every text field the editor renders, in document order (the CTA `link` is a select, not text). */
 export function editorFields(body: ContentBody, channel: EditableChannel, limits: Limits, subjectLabel?: string): EditorField[] {
+  const B = blockLimits(limits);
   const out: EditorField[] = [{ key: "subject", location: { field: "subject" }, where: "subject", label: subjectLabel ?? (channel === "EMAIL" ? "Subject" : "Title"), value: body.subject, max: limits.subject, multiLine: false }];
   if (channel === "EMAIL" && body.preheader !== null) {
     out.push({ key: "preheader", location: { field: "preheader" }, where: "preheader", label: "Preheader", value: body.preheader, max: limits.preheader ?? 140, multiLine: false });
@@ -131,14 +155,14 @@ export function editorFields(body: ContentBody, channel: EditableChannel, limits
       out.push({ key: fieldKey(loc), location: loc, where, label, value, max, multiLine });
     switch (b.kind) {
       case "hero":
-        push(at("heading"), "body", "Heading", b.heading, FIXED_LIMITS.heading);
-        if (b.greeting !== undefined) push(at("greeting"), "body", "Greeting", b.greeting, FIXED_LIMITS.greeting);
+        push(at("heading"), "body", "Heading", b.heading, B.heading);
+        if (b.greeting !== undefined) push(at("greeting"), "body", "Greeting", b.greeting, B.greeting);
         break;
       case "paragraph": push(at("text"), "body", "Text", b.text, limits.paragraph, true); break;
       case "cta": push(at("label"), "cta", "Button label", b.label, limits.ctaLabel); break;
       case "info":
-        if (b.title !== undefined) push(at("title"), "body", "List title", b.title, FIXED_LIMITS.infoTitle);
-        b.items.forEach((item, i) => push(at("items", i), "body", `Item ${i + 1}`, item, FIXED_LIMITS.infoItem));
+        if (b.title !== undefined) push(at("title"), "body", "List title", b.title, B.infoTitle);
+        b.items.forEach((item, i) => push(at("items", i), "body", `Item ${i + 1}`, item, B.infoItem));
         break;
       default: break;
     }
@@ -302,12 +326,12 @@ export function moveBlock(body: ContentBody, index: number, dir: -1 | 1): Conten
   return { ...body, blocks };
 }
 
-/** Add / remove a list item (≤ FIXED_LIMITS.infoItems, ≥ 1) or the optional hero greeting / list title. */
-export function editBlock(body: ContentBody, index: number, op: "add-item" | "remove-item" | "toggle-greeting" | "toggle-title" | "toggle-ordered", item?: number): ContentBody {
+/** Add / remove a list item (≤ `maxItems` — the server's `limits.infoItems` via blockLimits — and ≥ 1) or the optional hero greeting / list title. */
+export function editBlock(body: ContentBody, index: number, op: "add-item" | "remove-item" | "toggle-greeting" | "toggle-title" | "toggle-ordered", item?: number, maxItems: number = FIXED_LIMITS.infoItems): ContentBody {
   const b = body.blocks[index];
   if (!b) return body;
   let next: ContentBlock = b;
-  if (b.kind === "info" && op === "add-item" && b.items.length < FIXED_LIMITS.infoItems) next = { ...b, items: [...b.items, ""] };
+  if (b.kind === "info" && op === "add-item" && b.items.length < maxItems) next = { ...b, items: [...b.items, ""] };
   else if (b.kind === "info" && op === "remove-item" && item !== undefined && b.items.length > 1) next = { ...b, items: b.items.filter((_, i) => i !== item) };
   else if (b.kind === "info" && op === "toggle-title") next = b.title === undefined ? { ...b, title: "" } : (({ title: _t, ...rest }) => rest)(b);
   else if (b.kind === "info" && op === "toggle-ordered") next = { ...b, ordered: !b.ordered };
@@ -333,6 +357,13 @@ export const VIEWER_WHY = {
   ai: "Your access doesn’t include AI assistance.",
 } as const;
 
+/** The restore "why": the server's `rollbackUnavailableReason` (v1.1.1); the history-derived guess only when it is absent. */
+export function rollbackWhy(v: Pick<Viewer, "rollbackUnavailableReason">, hasRollbackTarget: boolean): string {
+  if (v.rollbackUnavailableReason === "NOTHING_TO_RESTORE") return VIEWER_WHY.rollbackNoTarget;
+  if (v.rollbackUnavailableReason === "NO_PERMISSION") return VIEWER_WHY.rollback;
+  return hasRollbackTarget ? VIEWER_WHY.rollback : VIEWER_WHY.rollbackNoTarget;
+}
+
 export interface EditorControls {
   locked: string | null;
   edit: Control;
@@ -357,6 +388,7 @@ export interface ControlFacts {
   base: Pick<TemplateVersionDTO, "id" | "state"> | null;
   /** An AI suggestion loaded into the editor has expired. */
   suggestionExpired: boolean;
+  /** Fallback only (a server older than v1.1.1 without `viewer.rollbackUnavailableReason`): derived from the history. */
   hasRollbackTarget: boolean;
 }
 
@@ -385,7 +417,7 @@ export function editorControls(f: ControlFacts): EditorControls {
     : f.dirty ? off("Save the draft first; only a saved draft can be published.")
     : !f.base || f.base.state !== "DRAFT" ? off("Open a saved draft to publish it.")
     : on;
-  const rollback = !v.canRollback ? off(f.hasRollbackTarget ? VIEWER_WHY.rollback : VIEWER_WHY.rollbackNoTarget) : on;
+  const rollback = !v.canRollback ? off(rollbackWhy(v, f.hasRollbackTarget)) : on;
   const ai = !v.canAiSuggest ? off(VIEWER_WHY.ai)
     : !f.ai.available ? off(aiUnavailableText(f.ai.reason ?? "KILL_SWITCH", f.ai.detail ?? null))
     : f.dirty ? off("Save first: AI polishes a saved version, so the suggestion has an unchanging original.")

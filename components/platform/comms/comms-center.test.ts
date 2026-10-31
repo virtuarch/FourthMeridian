@@ -27,7 +27,7 @@ import { COMMS_CATALOG, EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/de
 import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
+  ACTIVATION_BLOCKER_LABEL, activationLines, COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
   STATUS_LABEL, statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
@@ -274,6 +274,20 @@ async function main() {
     const dh = renderToStaticMarkup(createElement(AutomationDetailBody, { read: ok(detail), runs: ok(runs) }));
     check("automation detail is read-only: actions listed as seams, none a button", dh.includes("data-action-seams") && dh.includes("Activate · requires elevated operator permission · not yet available")
       && !/<button[^>]*>(Activate|Pause|Disable|Dry run|Test send)</.test(dh));
+    check("a v1 detail (no activationBlockers / viewer) shows no Activation section", !dh.includes("data-activation-blockers") && !dh.includes("data-activation-ready"));
+    const blockers = ["DEFINITION_CHANGED", "OWNER_APPROVAL_REQUIRED", "DRY_RUN_REQUIRED", "TRIGGER_NOT_AVAILABLE", "DEFINITION_NOT_ACTIVATABLE", "PROTECTED", "MARKETING_NOT_IN_V1", "STATE"];
+    const v11 = { ...detail, activationBlockers: blockers, viewer: { activationDisabledReason: "ACTIVATION_DISABLED_PENDING_HARDENING" } };
+    const dv = renderToStaticMarkup(createElement(AutomationDetailBody, { read: ok(v11 as AutomationDetail), runs: ok(runs) }));
+    check("v1.1 detail: the hard gate and every blocker in plain English", dv.includes("data-activation-blockers") && dv.includes("Activation is switched off until the safety hardening ships")
+      && dv.includes("The message definition changed since this automation was checked — edit it to re-check.") && blockers.every((b) => dv.includes(ACTIVATION_BLOCKER_LABEL[b as keyof typeof ACTIVATION_BLOCKER_LABEL])));
+    const activationHtml = dv.slice(dv.indexOf('aria-label="Activation"'), dv.indexOf('aria-label="Conditions"'));
+    check("no raw blocker / gate code ever renders", !/[A-Z]{3,}_[A-Z_]{3,}/.test(activationHtml), activationHtml.slice(0, 200));
+    check("an unknown code is dropped, never shown raw", activationLines({ activationBlockers: ["SOMETHING_NEW"], viewer: null }).length === 0);
+    const clear = renderToStaticMarkup(createElement(AutomationDetailBody, { read: ok({ ...detail, activationBlockers: [], viewer: { activationDisabledReason: null } } as AutomationDetail), runs: ok(runs) }));
+    check("no blockers and the gate open ⇒ 'checks pass'", clear.includes("data-activation-ready"));
+    check("the blocker / gate label maps are exhaustive by type (a new code fails to compile)",
+      /ACTIVATION_BLOCKER_LABEL = \{[\s\S]*?\} as const satisfies Record<ActivationBlocker, string>;/.test(strip("components/platform/comms/comms-model.ts"))
+        && /ACTIVATION_DISABLED_LABEL = \{[\s\S]*?\} as const satisfies Record<NonNullable<Viewer\["activationDisabledReason"\]>, string>;/.test(strip("components/platform/comms/comms-model.ts")));
 
     const delSoon = renderToStaticMarkup(createElement(DeliverySurface, { read: soon, filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
     check("delivery 404 ⇒ coming soon; commitments + provider link still shown", delSoon.includes('data-comms-state="coming-soon"') && delSoon.includes("No open or click tracking, ever")

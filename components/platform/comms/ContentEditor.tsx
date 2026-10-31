@@ -26,12 +26,12 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ArrowDown, ArrowUp, Check, Eye, GitCompare, Loader2, Lock, Plus, RefreshCw, RotateCcw, Save, Sparkles, Trash2, Upload, X } from "lucide-react";
 import type { CatalogDetail, PreviewChannel } from "@/lib/notifications/catalog/types";
 import {
-  AI_TONES,
+  AI_TONES, CODE_DEFAULT_VERSION_ID,
   type AiSuggestMode, type AiSuggestResult, type AiTone, type CatalogDetailV11Additions, type ContentBody, type ContentIssue, type ContentPreviewResponse,
   type EditableChannel, type TemplateVersionDTO, type VersionsResponse,
 } from "@/lib/notifications/content/types";
 import {
-  CODE_DEFAULT_VERSION_ID, postAiSuggest, postPublish, postRender, postRollback, postSaveDraft, previewUrl, readVersion, readVersions, versionsUrl,
+  postAiSuggest, postPublish, postRender, postRollback, postSaveDraft, previewUrl, readVersion, readVersions, versionsUrl,
   type CommsReadResult,
 } from "@/lib/platform/comms-center/client";
 import { OperatorReasonField, EMPTY_OPERATOR_REASON, reasonPayload, type OperatorReasonValue } from "../widgets/OperatorReasonField";
@@ -44,7 +44,7 @@ import { useNowTick } from "@/components/brief/use-now-tick";
 import { utcStamp } from "./comms-model";
 import {
   BLOCK_KINDS, BLOCK_LABEL, CHANNEL_WORD, CREATED_BY_LABEL, LOCK_TEXT, RENDER_DEBOUNCE_MS, VERSION_STATE_LABEL, VERSION_STATE_TONE,
-  acceptSuggestion, addBlock, aiAcceptWhy, aiRemainingText, bodyOfVersion, canAddBlock, canMoveBlock, canRemoveBlock, changeRows, charCount, diffBodies,
+  acceptSuggestion, addBlock, aiAcceptWhy, blockLimits, aiRemainingText, bodyOfVersion, canAddBlock, canMoveBlock, canRemoveBlock, changeRows, charCount, diffBodies,
   discardSuggestion, draftFrom, editBlock, editorControls, editorFields, expiryText, insertToken, insertablePlaceholders, isRestorable, issueGate,
   legOptions, linkPlaceholders, liveText, lockedLegReason, moveBlock, notesByCategory, placeIssues, placeholderHint, provenanceText, removeBlock,
   guardDiscard, setField, writeRefusalText,
@@ -503,6 +503,7 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
   const [focused, setFocused] = useState<EditorField | null>(null);
   const ro = !edit.enabled;
   const links = linkPlaceholders(data.placeholders);
+  const maxItems = blockLimits(data.limits).infoItems;
 
   const insert = (name: string) => {
     if (!focused) return;
@@ -566,7 +567,7 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
               )}
               {!ro && b.kind === "info" && (
                 <div className="flex flex-wrap gap-1.5">
-                  <SmallBtn onClick={() => onChange((x) => editBlock(x, i, "add-item"))} disabled={b.items.length >= 8}><Plus size={11} aria-hidden /> Item</SmallBtn>
+                  <SmallBtn onClick={() => onChange((x) => editBlock(x, i, "add-item", undefined, maxItems))} disabled={b.items.length >= maxItems}><Plus size={11} aria-hidden /> Item</SmallBtn>
                   <SmallBtn onClick={() => onChange((x) => editBlock(x, i, "toggle-title"))}>{b.title === undefined ? "Add title" : "Remove title"}</SmallBtn>
                   <SmallBtn onClick={() => onChange((x) => editBlock(x, i, "toggle-ordered"))}>{b.ordered ? "Bulleted" : "Numbered"}</SmallBtn>
                 </div>

@@ -18,6 +18,8 @@ import {
   type CatalogItem, type CommsChannel, type ConsentClass, type DaySeries, type DefinitionStatus, type PreviewChannel, type Severity,
 } from "@/lib/notifications/catalog/types";
 import type { StatusTone } from "../platform-surface";
+import type { ActivationBlocker } from "@/lib/notifications/automations/types";
+import type { Viewer } from "@/lib/notifications/content/types";
 import {
   DELIVERY_STATUSES, SUPPRESSION_REASONS,
   type Aggregate, type AutomationState, type DeliveryStatus, type StatusCounts, type SuppressionReason,
@@ -297,4 +299,36 @@ export function utcStamp(iso: string | null | undefined): string {
   if (!iso) return "—";
   const t = Date.parse(iso);
   return Number.isNaN(t) ? "—" : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+// ── Activation (v1.1 §6.2, §6.3; the B2 hard gate) ──────────────────────────────
+
+/**
+ * Operator words for every activation blocker the server can return. Exhaustive
+ * by type: a blocker the server adds without a label here is a compile error —
+ * a raw code never renders.
+ */
+export const ACTIVATION_BLOCKER_LABEL = {
+  TRIGGER_NOT_AVAILABLE: "The trigger this automation listens to isn’t emitted yet.",
+  DEFINITION_NOT_ACTIVATABLE: "This message can’t be sent by an automation.",
+  PROTECTED: "This message is protected, so no automation may send it.",
+  MARKETING_NOT_IN_V1: "Marketing messages can’t be automated yet.",
+  OWNER_APPROVAL_REQUIRED: "A customer-facing automation needs the owner’s approval of this version first.",
+  DRY_RUN_REQUIRED: "Run a successful dry run of this version first.",
+  STATE: "The automation’s current state doesn’t allow activation.",
+  DEFINITION_CHANGED: "The message definition changed since this automation was checked — edit it to re-check.",
+} as const satisfies Record<ActivationBlocker, string>;
+
+/** Why activation is off for EVERY automation, regardless of permission (the B2 hard gate). */
+export const ACTIVATION_DISABLED_LABEL = {
+  ACTIVATION_DISABLED_PENDING_HARDENING: "Activation is switched off until the safety hardening ships. Dry runs and owner approval still work.",
+} as const satisfies Record<NonNullable<Viewer["activationDisabledReason"]>, string>;
+
+/** The activation lines for a detail: the hard gate first, then each blocker. Unknown codes are dropped, never shown raw. */
+export function activationLines(d: { activationBlockers?: readonly string[]; viewer?: Pick<Viewer, "activationDisabledReason"> | null }): string[] {
+  const out: string[] = [];
+  const gate = d.viewer?.activationDisabledReason;
+  if (gate && gate in ACTIVATION_DISABLED_LABEL) out.push(ACTIVATION_DISABLED_LABEL[gate]);
+  for (const b of d.activationBlockers ?? []) if (b in ACTIVATION_BLOCKER_LABEL) out.push(ACTIVATION_BLOCKER_LABEL[b as ActivationBlocker]);
+  return out;
 }

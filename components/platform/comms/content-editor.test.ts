@@ -27,10 +27,12 @@ import { CODE_DEFAULT_ID } from "@/lib/notifications/content/store";
 import { catalogDetail } from "@/lib/notifications/catalog/http";
 import type { AiSuggestResult, ContentBody, ContentIssue, TemplateVersionDTO, VersionsResponse, Viewer } from "@/lib/notifications/content/types";
 import type { CatalogDetail } from "@/lib/notifications/catalog/types";
-import { CODE_DEFAULT_VERSION_ID, type CommsReadResult } from "@/lib/platform/comms-center/client";
+import type { CommsReadResult } from "@/lib/platform/comms-center/client";
+import { CODE_DEFAULT_VERSION_ID } from "@/lib/notifications/content/types";
+import * as clientModule from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  CONTENT_CONFLICT_TEXT, FIXED_LIMITS, LOCK_TEXT, VIEWER_WHY,
+  CONTENT_CONFLICT_TEXT, FIXED_LIMITS, LOCK_TEXT, VIEWER_WHY, blockLimits,
   acceptSuggestion, addBlock, aiRemainingText, aiUnavailableText, canAddBlock, canMoveBlock, canRemoveBlock, changeRows, charCount, diffBodies, discardSuggestion,
   draftFrom, editBlock, editDraft, editorControls, editorFields, expiryText, fieldKey, insertToken, insertablePlaceholders, issueGate, legOptions, linkPlaceholders,
   locationLabel, moveBlock, notesByCategory, placeIssues, rebaseDraft, removeBlock, setField, saveOutcome, stateAfterLiveChange, stateAfterSave, writeRefusalText,
@@ -105,7 +107,9 @@ async function main() {
     check("placeholders carry no source / pii (client view)", email.placeholders.every((p) => !("source" in p) && !("pii" in p)));
     const locked = await versionsFor("SPACE_INVITE_RECEIVED", "EMAIL", null);
     check("the space-invite ceremony email leg reads 200 with locked PROTECTED", !locked.contentEditable && locked.locked?.reason === "PROTECTED");
-    check("the reserved rollback id is the server's", CODE_DEFAULT_VERSION_ID === CODE_DEFAULT_ID);
+    check("the reserved rollback id is the server's export, with no client-side copy", CODE_DEFAULT_VERSION_ID === CODE_DEFAULT_ID && !("CODE_DEFAULT_VERSION_ID" in clientModule));
+    check("v1.1.1: the server sends every per-block limit (null where the kind isn't allowed)", email.limits.heading === LIMITS.EMAIL.heading && email.limits.infoItems === LIMITS.EMAIL.infoItems
+      && inApp.limits.heading === null && inApp.limits.infoItems === null);
   }
 
   console.log("1. fields and issue placement");
@@ -118,8 +122,13 @@ async function main() {
     };
     check("editor fields == the server's fieldsOf (keys, maxima, allowedIn class) — EMAIL, every block kind", keys(rich, "EMAIL") === serverKeys(rich, "EMAIL"), [keys(rich, "EMAIL"), serverKeys(rich, "EMAIL")]);
     check("editor fields == the server's fieldsOf — IN_APP code default", keys(codeInApp, "IN_APP") === serverKeys(codeInApp, "IN_APP"));
-    check("the fixed §2.2 limits match the server's LIMITS", FIXED_LIMITS.heading === LIMITS.EMAIL.heading && FIXED_LIMITS.infoItem === LIMITS.EMAIL.infoItem
-      && FIXED_LIMITS.infoTitle === LIMITS.EMAIL.infoTitle && FIXED_LIMITS.infoItems === LIMITS.EMAIL.infoItems);
+    const custom = { ...email.limits, heading: 50, greeting: 40, infoTitle: 30, infoItem: 60, infoItems: 3 };
+    const tiny = editorFields(rich, "EMAIL", custom);
+    check("the server's per-block limits WIN over the contract fallback", tiny.find((f) => f.key === "b0.heading")?.max === 50 && tiny.find((f) => f.key === "b0.greeting")?.max === 40
+      && tiny.find((f) => f.key === "b2.title")?.max === 30 && tiny.find((f) => f.key === "b2.items.0")?.max === 60 && blockLimits(custom).infoItems === 3);
+    const legacy = { blocks: 12, subject: 120, preheader: 140, paragraph: 1200, ctaLabel: 40 };
+    check("an older server without per-block limits ⇒ the contract fallback", JSON.stringify(blockLimits(legacy)) === JSON.stringify(FIXED_LIMITS));
+    check("a list stops growing at the server's infoItems", (editBlock({ subject: "s", preheader: "p", blocks: [{ kind: "info", items: ["a", "b", "c"] }] }, 0, "add-item", undefined, 3).blocks[0] as { items: string[] }).items.length === 3);
     check("locations label in operator words", locationLabel({ field: "block", blockIndex: 2, prop: "items", itemIndex: 1 }, rich) === "Block 3 · List item 2"
       && locationLabel({ field: "block", blockIndex: 1, prop: "text" }, rich) === "Block 2 · Paragraph text" && locationLabel(null) === "Whole message");
 
@@ -230,7 +239,14 @@ async function main() {
     check("a view-only viewer: every control disabled with one line why (no permission level named)",
       !ro.edit.enabled && ro.edit.why === VIEWER_WHY.edit && ro.publish.why === VIEWER_WHY.publish && ro.rollback.why === VIEWER_WHY.rollback && ro.ai.why === VIEWER_WHY.ai
         && [ro.edit, ro.save, ro.publish, ro.rollback, ro.ai].every((c) => c.shown && !/WRITE|READ\b|level/i.test(c.why ?? "")));
-    check("nothing to restore ⇒ that reason instead", editorControls(facts({ viewer: NONE, hasRollbackTarget: false })).rollback.why === VIEWER_WHY.rollbackNoTarget);
+    check("restore why: the server's rollbackUnavailableReason wins over the history guess",
+      editorControls(facts({ viewer: { ...NONE, rollbackUnavailableReason: "NOTHING_TO_RESTORE" }, hasRollbackTarget: true })).rollback.why === VIEWER_WHY.rollbackNoTarget
+        && editorControls(facts({ viewer: { ...NONE, rollbackUnavailableReason: "NO_PERMISSION" }, hasRollbackTarget: false })).rollback.why === VIEWER_WHY.rollback);
+    check("an older server without the reason ⇒ the history-derived fallback", editorControls(facts({ viewer: NONE, hasRollbackTarget: false })).rollback.why === VIEWER_WHY.rollbackNoTarget
+      && editorControls(facts({ viewer: NONE, hasRollbackTarget: true })).rollback.why === VIEWER_WHY.rollback);
+    const realNothing = (await versionsFor("SYNC_FAILED", "EMAIL", "sync-failed")).viewer;
+    check("the real handler: a never-published stream says NOTHING_TO_RESTORE", realNothing.rollbackUnavailableReason === "NOTHING_TO_RESTORE"
+      && editorControls(facts({ viewer: realNothing, hasRollbackTarget: true })).rollback.why === VIEWER_WHY.rollbackNoTarget);
     const dirtyErr = editorControls(facts({ dirty: true, blockingErrors: true }));
     check("errors block Save; a dirty editor blocks Publish and AI", !dirtyErr.save.enabled && /errors/.test(dirtyErr.save.why ?? "") && !dirtyErr.publish.enabled && !dirtyErr.ai.enabled);
     check("Save is on for a dirty, clean-checked draft", editorControls(facts({ dirty: true })).save.enabled);

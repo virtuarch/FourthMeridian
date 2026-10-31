@@ -21,7 +21,8 @@ import { AUTOMATION_ACTION_SEAMS, automationRunsUrl, automationUrl, automationsU
 import type { AutomationDetail, AutomationsResponse, AutomationSummary, RunsResponse } from "@/lib/platform/comms-center/contract-v1-section-4";
 import { DetailDrawer } from "../ui";
 import { ToneBadge } from "../platform-surface";
-import { AUTOMATION_STATE_TONE, CHANNEL_LABEL, COMMS_POLICY, SUPPRESSION_LABEL, humanize, utcStamp } from "./comms-model";
+import type { Viewer } from "@/lib/notifications/content/types";
+import { AUTOMATION_STATE_TONE, CHANNEL_LABEL, COMMS_POLICY, SUPPRESSION_LABEL, activationLines, humanize, utcStamp } from "./comms-model";
 import { Chip, DrawerSection, FactList, ListMeta, PolicyNote, ReadState, okData, useCommsRead, type CommsRead } from "./comms-kit";
 
 const n = (v: number) => v.toLocaleString("en-US");
@@ -89,6 +90,9 @@ export function AutomationDetailBody({ read, runs }: { read: CommsRead<Automatio
   const d = okData(read);
   if (!d) return <ReadState read={read} what="this automation" comingSoon={AUTOMATIONS_COMING_SOON} />;
   const r = okData(runs);
+  // v1.1 servers add `activationBlockers` and `viewer`; a v1 payload has neither and shows no Activation section.
+  const v11 = d as typeof d & { activationBlockers?: string[]; viewer?: Pick<Viewer, "activationDisabledReason"> | null };
+  const activation = v11.activationBlockers !== undefined || v11.viewer?.activationDisabledReason ? activationLines(v11) : null;
   return (
     <div className="flex min-w-0 flex-col gap-5" data-automation-detail={d.id}>
       <DrawerSection title="About">
@@ -109,6 +113,16 @@ export function AutomationDetailBody({ read, runs }: { read: CommsRead<Automatio
         ]} />
         {d.autoPausedReason && <PolicyNote>Auto-paused: {humanize(d.autoPausedReason)}. Re-activating requires elevated operator permission.</PolicyNote>}
       </DrawerSection>
+
+      {activation !== null && (
+        <DrawerSection title="Activation">
+          {activation.length === 0
+            ? <p className="text-xs text-[var(--text-secondary)]" data-activation-ready>No blockers: the activation checks pass.</p>
+            : <ul className="flex min-w-0 flex-col gap-1" aria-label="Activation blockers" data-activation-blockers>
+                {activation.map((line) => <li key={line} className="min-w-0 break-words text-xs text-[var(--text-secondary)]">{line}</li>)}
+              </ul>}
+        </DrawerSection>
+      )}
 
       <DrawerSection title="Conditions">
         {d.conditions.length === 0 ? <p className="text-xs text-[var(--text-secondary)]">None — every trigger event qualifies.</p> : (
