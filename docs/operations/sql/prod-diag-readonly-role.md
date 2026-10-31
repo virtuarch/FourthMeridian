@@ -1,0 +1,126 @@
+# Production read-only diagnostic role, `fm_diag_ro` (PROPOSAL; NOT EXECUTED)
+
+Owner decision 6 (2026-10-31) asked for the exact SQL, privileges, security review and rollback **before** anything is executed. Creating this role is a Production schema/security change and needs the owner's separate approval.
+
+Purpose: run `docs/operations/sql/beta-request-prod-investigation.sql` (through `scripts/db-readonly-psql.sh`) with a database-enforced least-privilege, read-only identity, instead of the owner's admin connection.
+
+## 1. Design
+
+| Property | Value | Why |
+|---|---|---|
+| Login | yes, own password, `VALID UNTIL` = 7 days | dedicated, expiring, individually revocable |
+| Superuser, BYPASSRLS, CREATEDB, CREATEROLE, REPLICATION | **no** | row-level security and grants apply |
+| `default_transaction_read_only` | `on`, at the role level | read-only is enforced by the database, not only by the helper |
+| `statement_timeout` / `idle_in_transaction_session_timeout` | 60 s / 60 s | cannot hold locks or run away |
+| `CONNECTION LIMIT` | 2 | |
+| Schema | `USAGE` on `public` only | |
+| Table access | **column-level SELECT** on the 4 tables the query reads, and only the columns it reads | no other table, and no other column (no tokens, no `redeemedUserId`, no `inviteTokenHash`) |
+| Row-level security | one `FOR SELECT` policy per table. `AuditLog` is limited to the beta request and decision actions. `RateLimit` is limited to `ip:access-request:%` keys | cannot read other audit history or other limiter keys |
+| Functions, sequences, write privileges | none | |
+
+## 2. SQL: create (run as the Supabase `postgres` role, in ONE transaction)
+
+```sql
+BEGIN;
+
+-- Role. The password is chosen by the owner and entered interactively (see §4); never paste it into a file or chat.
+CREATE ROLE fm_diag_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT
+  CONNECTION LIMIT 2 VALID UNTIL '2026-11-08 00:00:00+00';
+ALTER ROLE fm_diag_ro SET default_transaction_read_only = on;
+ALTER ROLE fm_diag_ro SET statement_timeout = '60s';
+ALTER ROLE fm_diag_ro SET idle_in_transaction_session_timeout = '60s';
+
+GRANT USAGE ON SCHEMA public TO fm_diag_ro;
+
+-- Column-level SELECT: exactly the columns the investigation reads.
+GRANT SELECT (id, email, status, note, "createdAt", "decidedAt", "redeemedAt") ON public."BetaAccessRequest"      TO fm_diag_ro;
+GRANT SELECT (email, "receivedAt", source)                                      ON public."BetaAccessRequestEvent" TO fm_diag_ro;
+GRANT SELECT (action, metadata, "ipAddress", "userAgent", "createdAt")          ON public."AuditLog"               TO fm_diag_ro;
+GRANT SELECT (key, count)                                                       ON public."RateLimit"              TO fm_diag_ro;
+
+-- Row-level security (all four tables FORCE RLS; without a policy this role sees zero rows).
+CREATE POLICY fm_diag_ro_sel ON public."BetaAccessRequest"      FOR SELECT TO fm_diag_ro USING (true);
+CREATE POLICY fm_diag_ro_sel ON public."BetaAccessRequestEvent" FOR SELECT TO fm_diag_ro USING (true);
+CREATE POLICY fm_diag_ro_sel ON public."AuditLog"               FOR SELECT TO fm_diag_ro
+  USING (action IN ('BETA_ACCESS_REQUESTED','BETA_ACCESS_APPROVED','BETA_ACCESS_DENIED',
+                    'BETA_INVITATION_CREATED','BETA_INVITATION_RESENT','BETA_INVITATION_REVOKED'));
+CREATE POLICY fm_diag_ro_sel ON public."RateLimit"              FOR SELECT TO fm_diag_ro USING (key LIKE 'ip:access-request:%');
+
+COMMIT;
+```
+
+Before the `CREATE POLICY` lines, check that RLS is enabled on `BetaAccessRequestEvent` and `RateLimit` in Production:
+
+```sql
+SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname IN ('BetaAccessRequest','BetaAccessRequestEvent','AuditLog','RateLimit');
+```
+
+A policy on a table without RLS is harmless, but the column grants still apply.
+
+## 3. Verification after creation (as the owner, read-only)
+
+```sql
+SELECT rolname, rolsuper, rolbypassrls, rolcanlogin, rolconnlimit, rolvaliduntil, rolconfig FROM pg_roles WHERE rolname = 'fm_diag_ro';
+SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges WHERE grantee = 'fm_diag_ro' ORDER BY 1,2;
+SELECT tablename, policyname, cmd, qual FROM pg_policies WHERE 'fm_diag_ro' = ANY (roles);
+```
+
+Then, connected **as `fm_diag_ro`**:
+1. `SHOW transaction_read_only;` must return `on`.
+2. `SELECT 1 FROM "User" LIMIT 1;` must fail with *permission denied*.
+3. `SELECT "inviteTokenHash" FROM "BetaAccessRequest" LIMIT 1;` must fail with *permission denied*.
+4. `UPDATE "RateLimit" SET count = count WHERE false;` must fail (read-only or permission denied).
+
+## 4. Running the investigation with it
+
+1. **Set the password** (owner, Supabase SQL editor or psql as `postgres`): `\password fm_diag_ro`. Use a generated password and keep it in your password manager.
+2. **Build the URL.** Use the DIRECT host, not the pooler:
+   `postgresql://fm_diag_ro:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require`
+   - If only the pooler is reachable, Supavisor needs the username `fm_diag_ro.<project-ref>`.
+3. **Run** the steps in the investigation instructions (`read -rs DIAG_DATABASE_URL` → `/tmp/ro-psql.sh -f /tmp/beta-q.sql`). The first output row must be `read_only_guard = on`.
+
+## 5. Security review
+
+**Can it write?** No, on four independent layers:
+1. no write privilege on any object;
+2. `default_transaction_read_only = on` at the role level;
+3. the helper's read-only transaction plus its input scan;
+4. RLS policies are `FOR SELECT` only.
+
+**Can it read beyond the investigation?**
+- Only the listed columns of 4 tables.
+- Audit rows only for 6 beta actions.
+- Limiter rows only for the intake key.
+- Raw email, IP and user agent ARE readable by this role, because the investigation computes on them. That exposure is bounded by: the owner holding the only password, a 7-day expiry, 2 connections, the helper's masked output, and the rollback below.
+
+**Residual risks:**
+1. Anyone holding the password could run their own `SELECT email …`. Mitigations: expiry, immediate drop after use, no sharing.
+2. The policy and grant DDL is a Production schema change (owner approval).
+3. Supabase may log role creation (expected).
+4. `ALTER ROLE … SET` settings apply at login and are not session-leakable through the pooler, because they are role-scoped.
+
+**Not given:** BYPASSRLS, `pg_read_all_data`, membership in `fm_backup` / `fm_system`, any function EXECUTE, `CREATE`.
+
+## 6. Rollback (one transaction, idempotent)
+
+```sql
+BEGIN;
+DROP POLICY IF EXISTS fm_diag_ro_sel ON public."BetaAccessRequest";
+DROP POLICY IF EXISTS fm_diag_ro_sel ON public."BetaAccessRequestEvent";
+DROP POLICY IF EXISTS fm_diag_ro_sel ON public."AuditLog";
+DROP POLICY IF EXISTS fm_diag_ro_sel ON public."RateLimit";
+REVOKE ALL ON public."BetaAccessRequest", public."BetaAccessRequestEvent", public."AuditLog", public."RateLimit" FROM fm_diag_ro;
+REVOKE USAGE ON SCHEMA public FROM fm_diag_ro;
+DROP ROLE IF EXISTS fm_diag_ro;
+COMMIT;
+```
+
+**Recommended:** run the rollback as soon as the investigation output is captured. Expiry happens anyway on 2026-11-08. If `DROP ROLE` reports dependent privileges, `REASSIGN OWNED BY fm_diag_ro TO postgres; DROP OWNED BY fm_diag_ro;` clears them. The role owns nothing, so this is not expected.
+
+## 7. Approval checklist (owner)
+
+- [ ] Approve the role creation SQL in §2 for Production.
+- [ ] Set the password interactively; do not share it.
+- [ ] Run the §3 verification checks.
+- [ ] Run the investigation and paste the masked output.
+- [ ] Run the §6 rollback.
