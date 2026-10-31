@@ -8,18 +8,27 @@
  *
  * WHEN IT NOTIFIES — a SUSTAINED failure only, never one transient blip:
  *   1. this attempt FAILED (outcome.ok === false), and
- *   2. the wallet's Connection is DEGRADED (errorCode set) and has been since
- *      the outage's FIRST observed failure — the latest
- *      WALLET_CONNECTION_STATUS_CHANGED → DEGRADED audit row
- *      (lib/connections/health-transitions.ts, the existing health history) —
- *      at least WALLET_SYNC_SUSTAINED_HOURS (24 h) ago.
- *   So at least two failed attempts, 24 h apart, with no success between them
- *   (a success clears errorCode and writes HEALTHY, which ends the outage). At
- *   the default 6-hourly wallet cadence that is ≥ 4 missed sync windows.
- *   Measured from the first FAILURE, not from the last success, so a pause in
- *   attempts (a Cost Freeze, a deactivated owner) can never turn the first
- *   failure after it into a notice. No audit row ⇒ no evidence of an outage
- *   start ⇒ no notice (conservative).
+ *   2. it belongs to an UNBROKEN RUN OF FAILED SYNC ATTEMPTS whose first failed
+ *      attempt started at least WALLET_SYNC_SUSTAINED_HOURS (24 h) ago.
+ *   The run is read from the per-attempt ledger every wallet sync already
+ *   writes (RefreshExecution: sourceKind WALLET, sourceRef = the account,
+ *   overallStatus per attempt — runFullRefresh in syncWalletByChain), through
+ *   the DF-2 execution-query seam (listWalletAttemptOutcomes, last 7 days): the
+ *   first FAILED attempt after the latest SUCCEEDED / PARTIAL one. (FAILED =
+ *   no provider stage succeeded; an ok:false run whose import stage succeeded
+ *   reads PARTIAL and resets the run — the conservative direction.) ANY successful
+ *   attempt resets the run — including one that leaves a Connection code
+ *   behind (BTC NO_USED_ADDRESSES: the xpub reads fine, nothing is used yet).
+ *   So "degraded for a week, then one timeout" is NOT sustained: the run is one
+ *   failure long. (Review fix 2026-10-31: the Connection's DEGRADED-since time
+ *   was the wrong clock — a DEGRADED period can be made of SUCCESSFUL syncs.)
+ *   SKIPPED attempts and attempts still RUNNING are neither failure nor
+ *   success. Measured from the first FAILURE, never from the last success, so
+ *   a pause in attempts (Cost Freeze, a deactivated owner) cannot turn the
+ *   first failure after it into a notice. At least two failed attempts, 24 h
+ *   apart (≥ 4 sync windows at the default 6-hourly cadence). No ledger row ⇒
+ *   no evidence ⇒ no notice (conservative). Rows live 60 days
+ *   (jobs/data-retention.ts), far beyond the 24 h this needs.
  *
  * WHAT IT CLAIMS — real states only (lib/notifications/wallet-attention.ts):
  *   "temporary"        the provider could not be read (timeout, rate limit,
@@ -54,12 +63,16 @@
  */
 
 import { systemDb } from "@/lib/db";
-import { AuditAction } from "@/lib/audit-actions";
 import { createNotification } from "@/lib/notifications/create";
 import { retireOpenNotification } from "@/lib/notifications/resolve";
-import { isSustainedWalletFailure, walletAttentionState, walletNetworkLabel } from "@/lib/notifications/wallet-attention";
+import { failureRunStartFrom, isSustainedWalletFailure, walletAttentionStateFor, walletNetworkLabel } from "@/lib/notifications/wallet-attention";
 
-export { WALLET_SYNC_SUSTAINED_HOURS, walletAttentionState, isSustainedWalletFailure } from "@/lib/notifications/wallet-attention";
+/** How far back the attempt ledger is read (a longer run still reads as at least this old). */
+const WALLET_ATTEMPT_LOOKBACK_DAYS = 7;
+/** At most this many attempts are read; a truncated window can only UNDER-state a run's age. */
+const WALLET_ATTEMPT_LOOKBACK_ROWS = 200;
+
+export { WALLET_SYNC_SUSTAINED_HOURS, walletAttentionState, walletAttentionStateFor, isSustainedWalletFailure, failureRunStartFrom } from "@/lib/notifications/wallet-attention";
 
 // ── Reads (injected in tests; systemDb in production) ────────────────────────
 
@@ -75,8 +88,12 @@ export interface WalletAttentionAccount {
 
 export interface WalletAttentionReads {
   account(accountId: string): Promise<WalletAttentionAccount | null>;
-  /** When the Connection's current outage began (latest → DEGRADED transition), or null. */
-  degradedSince(userId: string, connectionId: string): Promise<Date | null>;
+  /**
+   * When the current unbroken run of FAILED sync attempts began: the first
+   * FAILED attempt after the latest successful (SUCCEEDED / PARTIAL) one, or
+   * null when there is none on record.
+   */
+  failureRunStart(accountId: string, now: Date): Promise<Date | null>;
   /** The global Cost Freeze (true = frozen OR unreadable). */
   costFrozen(): Promise<boolean>;
 }
@@ -100,21 +117,15 @@ const productionReads: WalletAttentionReads = {
       walletChain: fa.walletChain, connection: fa.connections[0]?.connection ?? null,
     };
   },
-  async degradedSince(userId, connectionId) {
-    // Wallet transitions are rare (one row per HEALTHY↔DEGRADED flip); the
-    // user's latest few cover every wallet they hold. Newest first.
-    const rows = await systemDb.auditLog.findMany({
-      where: { userId, action: AuditAction.WALLET_CONNECTION_STATUS_CHANGED },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-      select: { createdAt: true, metadata: true },
+  async failureRunStart(accountId, now) {
+    // Through the DF-2 execution-query seam (read-boundary.test.ts): bounded rows,
+    // the decision is ours. A run older than the window still reads as ≥ 7 days.
+    const { listWalletAttemptOutcomes } = await import("@/lib/platform/refresh/execution-query");
+    const rows = await listWalletAttemptOutcomes(accountId, {
+      since: new Date(now.getTime() - WALLET_ATTEMPT_LOOKBACK_DAYS * 24 * 3_600_000),
+      take: WALLET_ATTEMPT_LOOKBACK_ROWS,
     });
-    for (const r of rows) {
-      const meta = (r.metadata ?? {}) as { connectionId?: unknown; to?: unknown };
-      if (meta.connectionId !== connectionId) continue;
-      return meta.to === "DEGRADED" ? r.createdAt : null; // the latest transition decides
-    }
-    return null;
+    return failureRunStartFrom(rows);
   },
   async costFrozen() {
     const { readGlobalCostFreeze } = await import("@/lib/platform/cost-freeze");
@@ -139,7 +150,7 @@ export interface WalletAttentionDeps {
 export type WalletAttentionVerdict =
   | "NOTIFIED"        // the chokepoint was called (it may still suppress on the open key)
   | "RETIRED"         // a success released the open key
-  | "NOT_SUSTAINED"   // failing, but not for long enough (or no outage start on record)
+  | "NOT_SUSTAINED"   // failing, but the unbroken run of failed attempts is < 24 h old (or not on record)
   | "NOT_NOTIFIABLE"  // platform-side code / no error code recorded
   | "REMOVED"         // the user removed the wallet, or it has no owner
   | "COST_FROZEN"     // the global Cost Freeze is on (or unreadable)
@@ -162,10 +173,13 @@ export async function evaluateWalletSyncAttention(outcome: WalletSyncOutcomeLike
       return "RETIRED";
     }
 
-    const state = walletAttentionState(account.connection?.errorCode ?? outcome.errorCode);
-    if (!state || !account.connection) return "NOT_NOTIFIABLE";
-    const since = await reads.degradedSince(userId, account.connection.id);
-    if (!isSustainedWalletFailure(since, (deps.now ?? (() => new Date()))())) return "NOT_SUSTAINED";
+    // This attempt's own code and the Connection's (an adapter's more specific
+    // diagnosis, e.g. BTC INVALID_XPUB, is written there and never overwritten).
+    const state = walletAttentionStateFor(outcome.errorCode, account.connection?.errorCode);
+    if (!state) return "NOT_NOTIFIABLE";
+    const now = (deps.now ?? (() => new Date()))();
+    const since = await reads.failureRunStart(outcome.accountId, now);
+    if (!isSustainedWalletFailure(since, now)) return "NOT_SUSTAINED";
     if (await reads.costFrozen()) return "COST_FROZEN";
 
     await (deps.create ?? createNotification)({

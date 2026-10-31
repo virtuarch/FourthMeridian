@@ -86,6 +86,24 @@ async function main() {
     t.check("second trigger → duplicate: ledger says IN_APP SUPPRESSED DEDUPE_OPEN, no EMAIL row, one e-mail total",
       second === "duplicate" && ledger.filter((r) => r.channel === "EMAIL").length === 1
         && ledger.some((r) => r.channel === "IN_APP" && r.status === "SUPPRESSED" && r.reason === "DEDUPE_OPEN") && capturedEmails().length === 1);
+    // REVIEW FIX (M5) — retirement can never release the one-time key.
+    const { retireOpenNotification } = await import("@/lib/notifications/resolve");
+    const retired = await retireOpenNotification(u.id as string, "ACCOUNT_WELCOME", {});
+    const held = fake.rows("Notification", { userId: u.id, type: "ACCOUNT_WELCOME" });
+    t.check("retireOpenNotification(ACCOUNT_WELCOME) is a no-op: 0 retired, the row keeps its :once key, unarchived",
+      retired === 0 && held.length === 1 && held[0].dedupeKey === `ACCOUNT_WELCOME:user:${u.id}:once` && held[0].archivedAt === null);
+    t.check("…so a later trigger is still a duplicate",
+      (await sendWelcome({ userId: u.id as string, email: "w@example.test" }, { create, send })) === "duplicate" && capturedEmails().length === 1);
+
+    // REVIEW FIX — the :once key is freed by retention after 90 d; safe only while nothing can re-trigger.
+    const prod = walk("lib").concat(walk("app"), walk("jobs"), walk("scripts"));
+    const callers = prod.filter((f) => f !== "lib/notifications/welcome.ts" && /\bsendWelcome\(/.test(stripComments(readFileSync(f, "utf8")))).sort();
+    t.check("sendWelcome is called from exactly the register and verify-email routes",
+      callers.join() === "app/api/auth/register/route.ts,app/api/auth/verify-email/route.ts", callers);
+    t.check("email change never welcomes", !/welcome/i.test(stripComments(readFileSync("app/api/user/email/confirm/route.ts", "utf8"))));
+    const resets = prod.filter((f) => /emailVerifiedAt:\s*null/.test(stripComments(readFileSync(f, "utf8"))));
+    t.check("nothing resets emailVerifiedAt to null (the verify route welcomes only on null → set)", resets.length === 0, resets);
+
     // Every preference off: the welcome is locked per type — it still lands.
     reset();
     const v = fake.seed("User", { email: "v@example.test", username: "v", passwordHash: "x", emailVerifiedAt: new Date() });
@@ -148,27 +166,73 @@ async function main() {
     t.check("a repeat webhook and the cron for the same outage → still one notice, one e-mail (suppress-while-open)",
       syncFailed(reauth.id).length === 1 && capturedEmails().length === 1);
 
+    // REVIEW FIX — escalation while the reauth notice is open: updated in place, no second e-mail.
+    await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-reauth" });
+    const esc = syncFailed(reauth.id);
+    t.check("NEEDS_REAUTH → REVOKED while open: the SAME notice now says disconnected (state, title, body)",
+      esc.length === 1 && (esc[0].metadata as Record<string, unknown>).connectionState === "disconnected"
+        && esc[0].title === "Bank ext-reauth is disconnected" && /can no longer sync/.test(String(esc[0].body))
+        && esc[0].dedupeKey === `SYNC_FAILED:item:${reauth.id}:open` && esc[0].archivedAt === null, esc.map((r) => r.title));
+    t.check("…and NO second e-mail for the escalation (decision: the outage's one e-mail stands)", capturedEmails().length === 1, subjects());
+    await notifyItemSyncFailed(reauth.id as string);
+    t.check("…a later observation keeps it disconnected (no downgrade, still one row)",
+      syncFailed(reauth.id).length === 1 && (syncFailed(reauth.id)[0].metadata as Record<string, unknown>).connectionState === "disconnected");
+
+    // The removal rule still applies to escalation: reauth notice open, the user removes, then the revoke lands.
+    const gone = mkItem("ext-gone"); link(gone.id, false);
+    await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-gone", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
+    fake.table("AccountConnection").forEach((r) => { if (r.plaidItemDbId === gone.id) r.deletedAt = new Date(); });
+    await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-gone" });
+    t.check("removed by the user mid-outage: the open notice is NOT escalated to 'disconnected', no e-mail",
+      syncFailed(gone.id).length === 1 && (syncFailed(gone.id)[0].metadata as Record<string, unknown>).connectionState === "reauth-required"
+        && capturedEmails().length === 2, subjects());
+
+    // An email ANCHOR (FINANCIAL in-app off, email on — A-2b) is archived and never re-rendered by an
+    // escalation: rewriting its metadata would drop the anchor marker, and the outage would e-mail again
+    // once in-app is turned back on.
+    const anchored = mkItem("ext-anchor"); link(anchored.id, false);
+    const pref = fake.seed("NotificationPreference", { userId: u.id, category: "FINANCIAL", channel: "IN_APP", enabled: false });
+    await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-anchor", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
+    const before = capturedEmails().length;
+    await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-anchor" });
+    fake.table("NotificationPreference").splice(fake.table("NotificationPreference").indexOf(pref), 1);
+    await notifyItemSyncFailed(anchored.id as string);
+    t.check("an archived email anchor is left alone by the escalation: in-app back on, still no second e-mail",
+      syncFailed(anchored.id).length === 1 && capturedEmails().length === before
+        && (syncFailed(anchored.id)[0].metadata as Record<string, unknown>).connectionState === "reauth-required", subjects());
+
     await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-removed" });
     t.check("the user REMOVED the connection: webhook REVOKED writes the status but notifies NOBODY",
-      fake.one("PlaidItem", { id: removed.id })!.status === "REVOKED" && syncFailed(removed.id).length === 0 && capturedEmails().length === 1);
+      fake.one("PlaidItem", { id: removed.id })!.status === "REVOKED" && syncFailed(removed.id).length === 0 && capturedEmails().length === 3);
 
     await deliver({ webhook_type: "ITEM", webhook_code: "USER_PERMISSION_REVOKED", item_id: "ext-revoked" });
     const n3 = syncFailed(revoked.id);
     t.check("a PROVIDER-side revocation (connections live) → one notice, state disconnected",
-      n3.length === 1 && (n3[0].metadata as Record<string, unknown>).connectionState === "disconnected" && capturedEmails().length === 2);
+      n3.length === 1 && (n3[0].metadata as Record<string, unknown>).connectionState === "disconnected" && capturedEmails().length === 4);
 
     await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-dead", error: { error_code: "ITEM_LOGIN_REQUIRED" } });
     t.check("an item already REVOKED is never re-notified", syncFailed(dead.id).length === 0 && fake.one("PlaidItem", { id: dead.id })!.status === "REVOKED");
     await deliver({ webhook_type: "ITEM", webhook_code: "PENDING_EXPIRATION", item_id: "ext-expiring" });
     await deliver({ webhook_type: "ITEM", webhook_code: "ERROR", item_id: "ext-expiring", error: { error_code: "INSTITUTION_DOWN" } });
     t.check("PENDING_EXPIRATION and a transient ITEM/ERROR move no state and notify nobody",
-      syncFailed(expiring.id).length === 0 && fake.one("PlaidItem", { id: expiring.id })!.status === "ACTIVE" && capturedEmails().length === 2);
+      syncFailed(expiring.id).length === 0 && fake.one("PlaidItem", { id: expiring.id })!.status === "ACTIVE" && capturedEmails().length === 4);
   }
 
   // ── 3. Wallet sync failure ──────────────────────────────────────────────────
   t.section("3. wallet sync failure: sustained only, never under Cost Freeze, removal suppressed, recovery releases");
   {
-    function wallet(opts: { degradedHoursAgo?: number | null; errorCode?: string | null; deleted?: boolean } = {}) {
+    let runSeq = 0;
+    /** One sync attempt in the per-attempt ledger (RefreshExecution), `hoursAgo` before now. */
+    const attempt = (fa: Record<string, unknown>, overallStatus: string, hoursAgo: number) => fake.seed("RefreshExecution", {
+      runId: `run-${++runSeq}`, trigger: "CRON", profile: "WALLET_SYNC", sourceKind: "WALLET", sourceRef: fa.id, overallStatus,
+      startedAt: new Date(Date.now() - hoursAgo * HOUR),
+    });
+    /**
+     * A wallet whose current failure run began `runStartHoursAgo` ago (null: no run on
+     * record). The current failed attempt (now) is always in the ledger, as
+     * runFullRefresh writes it before syncWalletByChain evaluates.
+     */
+    function wallet(opts: { runStartHoursAgo?: number | null; errorCode?: string | null; deleted?: boolean } = {}) {
       reset();
       const u = fake.seed("User", { email: "coin@example.test", username: "coin", passwordHash: "x", emailVerifiedAt: new Date() });
       const fa = fake.seed("FinancialAccount", {
@@ -177,12 +241,9 @@ async function main() {
       });
       const c = fake.seed("Connection", { userId: u.id, provider: "WALLET", errorCode: opts.errorCode === undefined ? "BALANCE_UNAVAILABLE" : opts.errorCode });
       fake.seed("AccountConnection", { financialAccountId: fa.id, connectionId: c.id });
-      if (opts.degradedHoursAgo !== null) {
-        fake.seed("AuditLog", {
-          userId: u.id, action: "WALLET_CONNECTION_STATUS_CHANGED",
-          metadata: { provider: "WALLET", connectionId: c.id, from: "HEALTHY", to: "DEGRADED", errorCode: "BALANCE_UNAVAILABLE" },
-          createdAt: new Date(Date.now() - (opts.degradedHoursAgo ?? 25) * HOUR),
-        });
+      if (opts.runStartHoursAgo !== null) {
+        attempt(fa, "FAILED", opts.runStartHoursAgo ?? 25);
+        attempt(fa, "FAILED", 0);
       }
       return { u, fa, c };
     }
@@ -191,14 +252,36 @@ async function main() {
     const ok = (fa: Record<string, unknown>) => evaluateWalletSyncAttention({ accountId: fa.id as string, chain: "BTC", ok: true });
     const notices = () => fake.rows("Notification", { type: "WALLET_SYNC_FAILED" });
 
-    let w = wallet({ degradedHoursAgo: 1 });
+    let w = wallet({ runStartHoursAgo: 1 });
     t.check("a failure 1 h into an outage (a blip) → NOT_SUSTAINED, nothing written", (await fail(w.fa)) === "NOT_SUSTAINED" && notices().length === 0);
-    w = wallet({ degradedHoursAgo: 23.9 });
+    w = wallet({ runStartHoursAgo: 23.9 });
     t.check("23.9 h → still NOT_SUSTAINED (threshold 24 h)", (await fail(w.fa)) === "NOT_SUSTAINED" && notices().length === 0);
-    w = wallet({ degradedHoursAgo: null });
-    t.check("no outage start on record → no notice (conservative)", (await fail(w.fa)) === "NOT_SUSTAINED" && notices().length === 0);
+    w = wallet({ runStartHoursAgo: null });
+    t.check("no failed attempt on record → no notice (conservative)", (await fail(w.fa)) === "NOT_SUSTAINED" && notices().length === 0);
 
-    w = wallet({ degradedHoursAgo: 25 });
+    // REVIEW FIX — the clock is the run of FAILED ATTEMPTS, not the Connection's DEGRADED period.
+    // An xpub with NO_USED_ADDRESSES has been DEGRADED for a week while every sync SUCCEEDED;
+    // one timeout now must not be "more than a day" of failure.
+    w = wallet({ runStartHoursAgo: null, errorCode: "NO_USED_ADDRESSES" });
+    fake.seed("AuditLog", { userId: w.u.id, action: "WALLET_CONNECTION_STATUS_CHANGED",
+      metadata: { provider: "WALLET", connectionId: w.c.id, from: "HEALTHY", to: "DEGRADED", errorCode: "NO_USED_ADDRESSES" },
+      createdAt: new Date(Date.now() - 7 * 24 * HOUR) });
+    attempt(w.fa, "FAILED", 8 * 24);                          // an old, long-closed failure
+    for (let d = 6; d >= 1; d--) attempt(w.fa, "SUCCEEDED", d * 24); // a week of successful syncs (HEALTHY_NOOP each)
+    attempt(w.fa, "SUCCEEDED", 1);
+    attempt(w.fa, "FAILED", 0);                               // the one timeout
+    t.check("degraded a week with SUCCESSFUL syncs, then ONE failure → NOT_SUSTAINED (no false 'more than a day')",
+      (await fail(w.fa)) === "NOT_SUSTAINED" && notices().length === 0);
+    w = wallet({ runStartHoursAgo: null });
+    attempt(w.fa, "FAILED", 30); attempt(w.fa, "PARTIAL", 2); attempt(w.fa, "FAILED", 0);
+    t.check("a PARTIAL attempt (balance read, a later stage failed) is a success: it resets the run",
+      (await fail(w.fa)) === "NOT_SUSTAINED" && notices().length === 0);
+    w = wallet({ runStartHoursAgo: null });
+    attempt(w.fa, "FAILED", 30); attempt(w.fa, "SKIPPED", 10); attempt(w.fa, "FAILED", 0);
+    t.check("a SKIPPED attempt is neither: the 30 h run of failures still notifies",
+      (await fail(w.fa)) === "NOTIFIED" && notices().length === 1);
+
+    w = wallet({ runStartHoursAgo: 25 });
     const v1 = await fail(w.fa);
     const n = notices();
     t.check("failing ≥ 24 h → ONE notice for the owner, keyed per wallet", v1 === "NOTIFIED" && n.length === 1 && n[0].userId === w.u.id
@@ -219,28 +302,34 @@ async function main() {
     t.check("a clean success RELEASES it: archived, key freed", (await ok(w.fa)) === "RETIRED"
       && notices()[0].archivedAt instanceof Date && notices()[0].dedupeKey === null);
     fake.table("Connection").forEach((r) => { if (r.id === w.c.id) r.errorCode = "BALANCE_UNAVAILABLE"; });
+    fake.table("RefreshExecution").splice(0);
+    attempt(w.fa, "SUCCEEDED", 60); attempt(w.fa, "FAILED", 48); attempt(w.fa, "FAILED", 0);
     t.check("…so the NEXT sustained outage notifies again", (await fail(w.fa)) === "NOTIFIED" && notices().length === 2
       && notices().filter((r) => r.archivedAt === null).length === 1);
 
-    w = wallet({ degradedHoursAgo: 25 });
+    w = wallet({ runStartHoursAgo: 25 });
     fake.seed("PlatformSetting", { key: "platform_cost_frozen", value: "true" });
     t.check("under the global Cost Freeze → COST_FROZEN, nothing written", (await fail(w.fa)) === "COST_FROZEN" && notices().length === 0);
-    w = wallet({ degradedHoursAgo: 25 });
+    w = wallet({ runStartHoursAgo: 25 });
     fake.on("PlatformSetting", "findUnique", () => { throw new Error("unreadable"); });
     t.check("an UNREADABLE freeze flag counts as frozen (fail closed)", (await fail(w.fa)) === "COST_FROZEN" && notices().length === 0);
     fake.clearHooks();
 
-    w = wallet({ degradedHoursAgo: 25, deleted: true });
+    w = wallet({ runStartHoursAgo: 25, deleted: true });
     t.check("a wallet the user REMOVED → REMOVED, nothing written", (await fail(w.fa)) === "REMOVED" && notices().length === 0);
-    w = wallet({ degradedHoursAgo: 25, errorCode: "PROVIDER_NOT_CONFIGURED" });
+    w = wallet({ runStartHoursAgo: 25, errorCode: "PROVIDER_NOT_CONFIGURED" });
     t.check("a platform-side cause (provider not configured) → never notified", (await fail(w.fa, "PROVIDER_NOT_CONFIGURED")) === "NOT_NOTIFIABLE" && notices().length === 0);
-    w = wallet({ degradedHoursAgo: 25, errorCode: "INVALID_WALLET_ADDRESS" });
+    w = wallet({ runStartHoursAgo: 25, errorCode: "INVALID_XPUB" });
+    await fail(w.fa, "BALANCE_UNAVAILABLE");
+    t.check("BTC INVALID_XPUB on the Connection (the attempt's own code generic) → needs-attention",
+      (notices()[0]?.metadata as Record<string, unknown>)?.walletState === "needs-attention");
+    w = wallet({ runStartHoursAgo: 25, errorCode: "INVALID_WALLET_ADDRESS" });
     await fail(w.fa, "INVALID_WALLET_ADDRESS");
     t.check("an invalid address → state needs-attention, 'needs attention' copy",
       (notices()[0]?.metadata as Record<string, unknown>)?.walletState === "needs-attention" && /needs attention/.test(String(notices()[0]?.title))
         && !/disconnect/i.test(String(notices()[0]?.body)));
 
-    w = wallet({ degradedHoursAgo: 25 });
+    w = wallet({ runStartHoursAgo: 25 });
     fake.seed("NotificationPreference", { userId: w.u.id, category: "FINANCIAL", channel: "EMAIL", enabled: true });
     fake.seed("NotificationPreference", { userId: w.u.id, category: "FINANCIAL", channel: "IN_APP", enabled: false });
     await fail(w.fa);

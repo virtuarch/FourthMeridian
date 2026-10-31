@@ -146,6 +146,8 @@ export interface CommsDefinition {
   trigger: {
     kind: "TRIGGER" | "CALL_SITE";
     triggerKey: TriggerKey | null;
+    /** Further controlled triggers that produce the SAME definition (e.g. a grant's reinstate / level change). */
+    additionalTriggerKeys?: readonly TriggerKey[];
     /** Repo-relative producer file(s). Paths, not line numbers: lines drift with every edit. */
     sources: readonly string[];
   };

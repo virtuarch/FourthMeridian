@@ -167,7 +167,11 @@ export function unobservedSeries(now: Date, window: "7d" | "30d" | "90d" = "30d"
 export function toCatalogDetail(d: CommsDefinition, now: Date, recent: DaySeries = unobservedSeries(now)): CatalogDetail {
   return {
     ...toCatalogItem(d),
-    trigger: { kind: d.trigger.kind, triggerKey: d.trigger.triggerKey, sources: [...d.trigger.sources] },
+    trigger: {
+      kind: d.trigger.kind, triggerKey: d.trigger.triggerKey,
+      ...(d.trigger.additionalTriggerKeys ? { additionalTriggerKeys: [...d.trigger.additionalTriggerKeys] } : {}),
+      sources: [...d.trigger.sources],
+    },
     payload: d.payload.map((p) => ({ ...p })),
     eligibility: [...d.eligibility],
     dedupe: { ...d.dedupe },

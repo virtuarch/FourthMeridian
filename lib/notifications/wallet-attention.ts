@@ -16,7 +16,7 @@
  * "disconnected": a wallet sync failure never disconnects the wallet.
  */
 
-/** How long a wallet must have been failing (since its first failure) before it notifies. */
+/** How long an unbroken run of failed sync attempts must have lasted (from its first failed attempt) before it notifies. */
 export const WALLET_SYNC_SUSTAINED_HOURS = 24;
 
 export const WALLET_ATTENTION_STATES = ["temporary", "needs-attention"] as const;
@@ -32,6 +32,20 @@ export function walletAttentionState(errorCode: string | null | undefined): Wall
   if (!errorCode) return null;
   if (PLATFORM_SIDE_CODES.has(errorCode)) return null;
   if (NEEDS_ATTENTION_CODES.has(errorCode)) return "needs-attention";
+  return "temporary";
+}
+
+/**
+ * The state one FAILED attempt may claim, from this attempt's own code and the
+ * Connection's (where an adapter's specific diagnosis — BTC INVALID_XPUB — is
+ * kept). Platform-side on either ⇒ no notice; needs-attention on either ⇒
+ * needs-attention; any other code ⇒ temporary; no code at all ⇒ no notice.
+ */
+export function walletAttentionStateFor(attemptCode: string | null | undefined, connectionCode: string | null | undefined): WalletAttentionState | null {
+  const codes = [attemptCode, connectionCode].filter((c): c is string => typeof c === "string" && c.length > 0);
+  if (codes.length === 0) return null;
+  if (codes.some((c) => walletAttentionState(c) === null)) return null;
+  if (codes.some((c) => walletAttentionState(c) === "needs-attention")) return "needs-attention";
   return "temporary";
 }
 
@@ -65,7 +79,23 @@ export function walletAttentionCopy(state: unknown, wallet: string, network: str
   };
 }
 
-/** True when the outage that started at `degradedSince` has lasted the sustained threshold. */
-export function isSustainedWalletFailure(degradedSince: Date | null, now: Date): boolean {
-  return degradedSince !== null && now.getTime() - degradedSince.getTime() >= WALLET_SYNC_SUSTAINED_HOURS * 3_600_000;
+/**
+ * The start of the CURRENT unbroken run of FAILED attempts, from attempt rows
+ * NEWEST FIRST: walk back until the first successful attempt (SUCCEEDED /
+ * PARTIAL — any attempt whose provider read worked, even one that left a
+ * Connection code); the oldest FAILED attempt seen before it starts the run.
+ * SKIPPED / RUNNING rows are neither and are passed over. Null = no failure.
+ */
+export function failureRunStartFrom(rowsNewestFirst: ReadonlyArray<{ startedAt: Date; overallStatus: string }>): Date | null {
+  let start: Date | null = null;
+  for (const r of rowsNewestFirst) {
+    if (r.overallStatus === "SUCCEEDED" || r.overallStatus === "PARTIAL") break;
+    if (r.overallStatus === "FAILED") start = r.startedAt;
+  }
+  return start;
+}
+
+/** True when the unbroken run of failed attempts that began at `runStart` has lasted the sustained threshold. */
+export function isSustainedWalletFailure(runStart: Date | null, now: Date): boolean {
+  return runStart !== null && now.getTime() - runStart.getTime() >= WALLET_SYNC_SUSTAINED_HOURS * 3_600_000;
 }

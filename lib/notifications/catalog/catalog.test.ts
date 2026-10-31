@@ -157,7 +157,11 @@ function main(): void {
         if (src.startsWith("lib/events/handlers/")) continue; // the in-app producer of a two-leg type
         const claims = sites.some((s) => s.file === src && s.template === leg.email.template && (leg.email.builder === undefined || s.builder === leg.email.builder));
         const producesInApp = def.notificationTypeId !== null && new RegExp(`type:\\s*"${def.notificationTypeId}"`).test(read(src));
-        check(`${def.key}: source ${src} really sends ${leg.email.template}${leg.email.builder ? `·${leg.email.builder}` : ""} or produces the in-app leg`, claims || producesInApp);
+        // A TRIGGER site: it calls a producer module listed in the same sources (the welcome routes → welcome.ts).
+        const callsProducer = def.trigger.sources.some((other) => other !== src && other.startsWith("lib/")
+          && stripComments(read(src)).includes(`"@/${other.replace(/\.ts$/, "")}"`));
+        check(`${def.key}: source ${src} really sends ${leg.email.template}${leg.email.builder ? `·${leg.email.builder}` : ""}, produces the in-app leg, or calls its listed producer`,
+          claims || producesInApp || callsProducer);
       }
     }
     for (const id of NOTIFICATION_TYPE_IDS) {
@@ -240,7 +244,14 @@ function main(): void {
     check("BUILD_OFF DIGEST_SENT: one DIRECT digest leg, default OFF, its producer the only source",
       COMMS_CATALOG.DIGEST_SENT.channels.filter((c) => c.path === "DIRECT").map((c) => `${c.email?.template}:${c.defaultOn}`).join() === "digest:false"
         && COMMS_CATALOG.DIGEST_SENT.trigger.sources.join() === "lib/notifications/digest.ts");
-    check("every trigger key in a definition is in the trigger catalog", defs.every((d) => d.trigger.triggerKey === null || d.trigger.triggerKey in TRIGGER_CATALOG));
+    check("every trigger key in a definition is in the trigger catalog", defs.every((d) =>
+      (d.trigger.triggerKey === null || d.trigger.triggerKey in TRIGGER_CATALOG) && (d.trigger.additionalTriggerKeys ?? []).every((k) => k in TRIGGER_CATALOG)));
+    check("PLATFORM_ACCESS_GRANTED is triggered by create, reinstate and level change; _REVOKED by revoke",
+      [COMMS_CATALOG.PLATFORM_ACCESS_GRANTED.trigger.triggerKey, ...(COMMS_CATALOG.PLATFORM_ACCESS_GRANTED.trigger.additionalTriggerKeys ?? [])].sort().join()
+        === "platform.grant.created,platform.grant.level_changed,platform.grant.reinstated"
+        && COMMS_CATALOG.PLATFORM_ACCESS_REVOKED.trigger.triggerKey === "platform.grant.revoked");
+    check("ACCOUNT_WELCOME lists its producer and both trigger routes",
+      ["lib/notifications/welcome.ts", "app/api/auth/register/route.ts", "app/api/auth/verify-email/route.ts"].every((f) => COMMS_CATALOG.ACCOUNT_WELCOME.trigger.sources.includes(f)));
     check("the trigger catalog is exactly TRIGGER_KEYS", Object.keys(TRIGGER_CATALOG).sort().join() === [...TRIGGER_KEYS].sort().join());
     check("no trigger is a comms-originated event (§5.1: no self-triggering)", TRIGGER_KEYS.every((k) => !/delivery|notification|email\.|comms/.test(k)));
   }

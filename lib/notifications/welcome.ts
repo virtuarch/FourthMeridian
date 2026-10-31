@@ -29,6 +29,25 @@
  * new account has nothing else in its storm window, and the verification email
  * before it is CEREMONY (exempt, never counted).
  *
+ * ONE-SHOT, BY DESIGN (no retry, no duplicates). If the in-app anchor cannot
+ * be written (createNotification "error"), nothing is sent and nothing retries;
+ * if the email is held by the storm limit (RATE_LIMITED / RATE_LIMIT_UNVERIFIED)
+ * or fails, the anchor already exists, so a later trigger is "duplicate". In
+ * both cases this account's welcome is LOST for good. That is the deliberate
+ * trade: a missed welcome is harmless, a second one is not.
+ *
+ * WHY THE ":once" KEY STAYS ONCE. Retention (lib/notifications/cleanup.ts)
+ * deletes an archived row after the type's deleteDays (90 d), which frees the
+ * key. That is safe only because NOTHING can trigger a welcome again:
+ *   - sendWelcome is called from exactly two places — the register route
+ *     (invited signups) and the verify-email route (a FIRST verification) —
+ *     pinned by lib/notifications/new-notifications.test.ts;
+ *   - the verify route welcomes only on the null → set transition of
+ *     emailVerifiedAt, and nothing ever resets emailVerifiedAt to null;
+ *   - email change (app/api/user/email/confirm) does NOT call sendWelcome.
+ * Any change to those three facts (a new caller, an emailVerifiedAt reset, a
+ * welcome on email change) must first give the welcome a durable marker.
+ *
  * Best-effort and NON-THROWING: registration / verification already succeeded.
  */
 

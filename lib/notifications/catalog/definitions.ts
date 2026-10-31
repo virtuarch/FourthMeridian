@@ -216,7 +216,7 @@ interface RegistryCatalogMeta {
   status?: DefinitionStatus;
   /** Typed payload, keyed by the registry pointerContract (catalog.test.ts asserts the key sets match). */
   payload: Record<string, FieldSpec>;
-  trigger: { kind: "TRIGGER" | "CALL_SITE"; triggerKey: TriggerKey | null; sources: readonly string[] };
+  trigger: { kind: "TRIGGER" | "CALL_SITE"; triggerKey: TriggerKey | null; additionalTriggerKeys?: readonly TriggerKey[]; sources: readonly string[] };
   /** Direct email legs that accompany this type today (security-alert, the duplicate Space invite). */
   directLegs?: readonly ChannelLeg[];
   /** Preview slugs (lib/email/preview.ts) for the registry EMAIL leg, when one exists. */
@@ -324,7 +324,10 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
       "an in-app notice plus a security-alert email naming the area, the level and the grantor's role (never their identity). " +
       "Once per audited grant change; a repeated grant at the same level sends nothing.",
     payload: { area: disp(), areaLabel: disp(), level: disp(), levelLabel: disp(), change: disp() },
-    trigger: event("platform.grant.created", "lib/notifications/platform-access.ts"),
+    trigger: {
+      ...event("platform.grant.created", "lib/notifications/platform-access.ts", "app/api/admin/platform-grants/route.ts"),
+      additionalTriggerKeys: ["platform.grant.reinstated", "platform.grant.level_changed"],
+    },
     directLegs: [{ ...securityEmail("platformAccessGrantedAlert", "platform-access-granted"),
       previewSlugs: ["security-alert--platform-access-granted", "security-alert--platform-access-changed"] }],
   },
@@ -332,7 +335,7 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     ...ACCT, displayName: "Platform access removed",
     description: "Sent to an operator when a system administrator revokes their access to a Platform area: an in-app notice plus a security-alert email.",
     payload: { area: disp(), areaLabel: disp(), level: disp(), levelLabel: disp() },
-    trigger: event("platform.grant.revoked", "lib/notifications/platform-access.ts"),
+    trigger: event("platform.grant.revoked", "lib/notifications/platform-access.ts", "app/api/admin/platform-grants/[grantId]/route.ts"),
     directLegs: [securityEmail("platformAccessRemovedAlert", "platform-access-removed")],
   },
 
@@ -376,7 +379,8 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     description:
       "Sent when a bank sync fails with a health-classified error, or when the Plaid webhook reports that the bank needs the " +
       "user to sign in again (NEEDS_REAUTH) or that access was revoked: in-app plus email, one live notice per item until it " +
-      "recovers, shared by the webhook and every sync path. Suppressed when the user removed the connection themselves. The email follows only the FINANCIAL email " +
+      "recovers, shared by the webhook and every sync path. If the item is revoked while the notice is open, that notice is " +
+      "updated in place to \"disconnected\" (no second email). Suppressed when the user removed the connection themselves. The email follows only the FINANCIAL email " +
       "preference: turning FINANCIAL in-app off hides the notice but does not stop the email (owner ruling 2026-10-31).",
     payload: { plaidItemId: ptr(), institutionName: disp(), connectionState: disp() },
     // lib/plaid/webhook-health.ts: the Plaid webhook's NEEDS_REAUTH / REVOKED transition (owner-approved
@@ -399,8 +403,8 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
   WALLET_SYNC_FAILED: {
     audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", displayName: "Wallet sync failed",
     description:
-      "Sent when a crypto wallet has been failing to sync for at least 24 hours (two or more failed attempts, no success " +
-      "between): in-app, plus email for users who turned FINANCIAL email on. Says either that the provider could not be read " +
+      "Sent when a crypto wallet's sync attempts have failed without a break for at least 24 hours (from the first failed " +
+      "attempt; any successful attempt resets it): in-app, plus email for users who turned FINANCIAL email on. Says either that the provider could not be read " +
       "(still connected, retrying) or that the address needs attention; never \"disconnected\". One live notice per wallet " +
       "until a clean sync. Not sent for a wallet the user removed, for platform-side causes, or under the Cost Freeze.",
     payload: { financialAccountId: ptr(), walletName: disp("string", true), network: disp(), walletState: disp() },
@@ -463,9 +467,11 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     description:
       "Sent once per account when it becomes usable: at registration for an invited (pre-verified) account, after the first " +
       "successful email verification otherwise, never beside the verification email. An in-app notice plus the welcome email. " +
-      "Not preference-suppressible (locked per type); the email is storm-limited like every SERVICE email.",
+      "Not preference-suppressible (locked per type); the email is storm-limited like every SERVICE email. " +
+      "ONE-SHOT by design: if the in-app row cannot be written, or the storm limit holds the email, the welcome is not " +
+      "retried — it is lost rather than ever sent twice.",
     payload: {},
-    trigger: event("account.registered", "lib/notifications/welcome.ts"),
+    trigger: event("account.registered", "lib/notifications/welcome.ts", "app/api/auth/register/route.ts", "app/api/auth/verify-email/route.ts"),
     directLegs: [directEmail("welcome", ["welcome--named", "welcome--unnamed"])],
   },
   SECURITY_ANOMALY_DETECTED: {
