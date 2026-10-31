@@ -59,6 +59,7 @@ export function maintenanceConsequences(blocks: readonly string[]): string[] {
 export const DISTINCTION_LINES = [
   "Paid AI kill switch (AI Cost Controls): stops paid AI only. Independent of maintenance; either one blocks paid AI.",
   "Ingestion pause: stops account refreshes only. Connections and AI continue.",
+  "Global cost freeze: stops every new provider-charging operation, for every customer and platform-wide, until unfrozen. Stored data stays readable.",
 ] as const;
 
 export function relatedStateWord(state: FlagState, onWord: string): string {
@@ -140,4 +141,68 @@ export function lastChangedText(model: OperationalControlsReadModel, format: (is
   const m = model.maintenance;
   if (!m.updatedAt) return null;
   return `Last changed ${format(m.updatedAt)}${m.updatedBy ? ` by ${m.updatedBy}` : ""}`;
+}
+
+// ── BETA LIFECYCLE L2 — the GLOBAL cost freeze (owner ruling 2026-10-31) ──────
+// Same contract as maintenance (PATCH with `control: "COST_FREEZE"`): an action,
+// the version read, a reason AND a note; "Saved" only when the server's model
+// reads the promised state.
+
+export const COST_FREEZE_LABEL = "Global cost freeze";
+
+export function costFreezeStateWord(state: FlagState): { word: string; tone: StatusTone } {
+  switch (state) {
+    case "ON":      return { word: "Frozen", tone: "bad" };
+    case "OFF":     return { word: "Not frozen", tone: "ok" };
+    case "MISSING": return { word: "Not configured", tone: "muted" };
+    case "INVALID": return { word: "Unreadable — frozen", tone: "bad" };
+  }
+}
+
+export function costFreezeCaption(state: FlagState): string {
+  return state === "ON" || state === "INVALID"
+    ? "No new provider-charging work starts — for any customer, or platform-wide (market data, historical prices, FX, crypto price steps). Stored data, exports and existing Briefs stay readable; nothing is disconnected."
+    : "Paid work runs normally. Freezing stops every new provider-charging operation until unfrozen; it never disconnects anyone or deletes data.";
+}
+
+export const COST_FREEZE_ACTION_LABEL: Record<MaintenanceAction, string> = {
+  ENABLE: "Freeze paid work",
+  DISABLE: "Unfreeze",
+  RESET: "Reset to not configured",
+};
+
+export function costFreezeConfirmationSentence(action: MaintenanceAction, env: DeploymentEnvironmentName, host: string | null): string {
+  const where = `${environmentBadge(env).word}${host ? ` (${host})` : ""}`;
+  switch (action) {
+    case "ENABLE":  return `You are freezing all paid work on ${where}. Every new AI, Plaid, crypto-provider and price-vendor operation stops for every customer, and platform price jobs stop, until it is unfrozen. No one is disconnected.`;
+    case "DISABLE": return `You are unfreezing paid work on ${where}. An explicit "off" is stored; paid work resumes within about half a minute.`;
+    case "RESET":   return `You are resetting the cost freeze on ${where} to not configured. The stored row is deleted; absent means off, so paid work resumes.`;
+  }
+}
+
+const COST_FREEZE_APPLIED: Record<MaintenanceAction, string> = {
+  ENABLE: "Saved — paid work is frozen.",
+  DISABLE: "Saved — paid work is not frozen.",
+  RESET: "Saved — the cost freeze is not configured.",
+};
+
+export function resolveCostFreezeOutcome(
+  outcome: MutationOutcome<OperationalControlsReadModel>,
+  action: MaintenanceAction,
+): { model: OperationalControlsReadModel | null; close: boolean; notice: PolicyNotice } {
+  if (outcome.kind === "applied") {
+    const state = outcome.model?.costFreeze?.state;
+    if (state !== EXPECTED_STATE[action]) {
+      return {
+        model: outcome.model?.costFreeze ? outcome.model : null,
+        close: false,
+        notice: { tone: "bad", text: `The server did not confirm the change: the cost freeze reads "${state ? costFreezeStateWord(state).word : "unknown"}". Reload and check before trying again.` },
+      };
+    }
+  }
+  return resolveMutationOutcome(outcome, COST_FREEZE_APPLIED[action]);
+}
+
+export function costFreezePatchBody(model: OperationalControlsReadModel, action: MaintenanceAction, reason: { code: string; note?: string }) {
+  return { control: "COST_FREEZE" as const, action, expectedUpdatedAt: model.costFreeze?.updatedAt ?? null, reason: { code: reason.code, note: reason.note ?? "" } };
 }

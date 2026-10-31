@@ -78,7 +78,9 @@ export interface WalletHistoryTarget {
 
 export type RecoveryRefusalCode =
   | "NOT_FOUND" | "NOT_A_WALLET" | "NOT_ACTIVE" | "NO_WALLET_ACCOUNT" | "UNSUPPORTED_CHAIN" | "NOT_HISTORY_LINK"
-  | "NO_CHECKPOINT" | "WRONG_STATE" | "NEEDS_INVESTIGATION" | "WORKER_DISABLED" | "NOT_ADMITTED" | "BUDGET_EXHAUSTED" | "ALREADY_RUNNING";
+  | "NO_CHECKPOINT" | "WRONG_STATE" | "NEEDS_INVESTIGATION" | "WORKER_DISABLED" | "NOT_ADMITTED" | "BUDGET_EXHAUSTED" | "ALREADY_RUNNING"
+  /** BETA LIFECYCLE L2 — the wallet owner's plan refuses paid work (frozen / paused / ended / unverifiable / no owner). */
+  | "PLAN_RESTRICTED";
 
 export const REFUSAL_HTTP_STATUS: Readonly<Record<RecoveryRefusalCode, number>> = {
   NOT_FOUND: 404,
@@ -86,6 +88,8 @@ export const REFUSAL_HTTP_STATUS: Readonly<Record<RecoveryRefusalCode, number>> 
   NOT_ACTIVE: 409, NO_CHECKPOINT: 409, WRONG_STATE: 409, NEEDS_INVESTIGATION: 409, WORKER_DISABLED: 409, BUDGET_EXHAUSTED: 409, ALREADY_RUNNING: 409,
   // A platform condition (maintenance / ingestion paused), not a permissions problem.
   NOT_ADMITTED: 503,
+  // The customer's plan, not the operator's permissions.
+  PLAN_RESTRICTED: 403,
 };
 
 export interface RecoveryRefusal { code: RecoveryRefusalCode; message: string }

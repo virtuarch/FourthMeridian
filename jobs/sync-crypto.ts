@@ -62,6 +62,8 @@ import { reconcileProviderCapability, type CapabilityWideningPlan } from "@/lib/
 import { BTC_PRICE_SOURCE } from "@/lib/crypto/btc-price";
 import type { RevaluationRun } from "@/lib/prices/price-gap";
 import { WAKE_SAFE_MS, revaluationAbandonedReason } from "@/jobs/sol-history-backfill";
+import { readGlobalCostFreeze, type GlobalCostFreezeReader } from "@/lib/platform/cost-freeze";
+import { billableSkipCode, type BillableSkipCode } from "@/lib/entitlements/billable-gate-core";
 
 export interface SyncCryptoResult extends WalletRefreshResult {
   continuation: boolean;
@@ -80,12 +82,23 @@ export interface SyncCryptoResult extends WalletRefreshResult {
     deferred: number; alreadyRevalued: number; abandonedBlocks: number; rowsStampedUnavailable: number; failures: number; skippedForTime: boolean;
   } | null;
   /**
-   * The job's own outcome (the worker's convention: JobRun.summary.outcome /
-   * partialReasons). PARTIAL when revaluation blocks were abandoned at the
-   * attempt cap (REVALUATION_ABANDONED) — their rows are stamped unavailable.
+   * BETA LIFECYCLE L2 — set when the GLOBAL cost freeze (or an unreadable flag)
+   * stopped the platform-wide vendor steps: the CoinGecko capability probe and
+   * the held-asset close-archive maintenance. Recorded as SKIPPED with the
+   * billable skip code; no archive row, cursor or capability state moves.
+   * (Per-wallet work is refused by the billable gate inside the sweep.)
    */
-  outcome: "COMPLETE" | "PARTIAL";
+  platformSkipped?: { reason: BillableSkipCode; steps: string[] };
+  /**
+   * The job's own outcome (the worker's convention: JobRun.summary.outcome /
+   * partialReasons). "SKIPPED" under the global cost freeze (BETA LIFECYCLE L2;
+   * job health: `skipped`, not a success) — it wins; otherwise PARTIAL when
+   * revaluation blocks were abandoned at the attempt cap (REVALUATION_ABANDONED,
+   * their rows stamped unavailable), else COMPLETE.
+   */
+  outcome: "COMPLETE" | "PARTIAL" | "SKIPPED";
   partialReasons: string[];
+  skipReason?: BillableSkipCode;
 }
 
 function revaluationSummary(r: RevaluationRun | null): SyncCryptoResult["revaluation"] {
@@ -104,14 +117,28 @@ export async function syncCrypto(options: {
   continuation?: boolean;
   /** Test seam for the sweep; production passes nothing. */
   refresh?: Partial<WalletRefreshDeps>;
+  /** Test seam: the global cost-freeze read (production: the uncached PlatformSetting read). */
+  costFreeze?: GlobalCostFreezeReader;
 } = {}): Promise<SyncCryptoResult> {
   const continuation = options.continuation === true;
   // V26-ORCH-1 — stamped BEFORE the sweep so every row it writes falls at or
   // after it: the planner measures what changed from this instant onward.
   const runStartedAt = new Date();
 
+  // ── BETA LIFECYCLE L2 — THE GLOBAL COST FREEZE, BEFORE ANY PLATFORM VENDOR CALL ──
+  // The capability probe and the close-archive maintenance bill no single
+  // customer (CoinGecko, per instrument). Under a global freeze — or a flag
+  // that cannot be read — they do not start. Cached archive rows stay readable.
+  const freeze = continuation ? null : await (options.costFreeze ?? readGlobalCostFreeze)();
+  const platformFrozen = freeze?.frozen === true;
+  let platformSkipped: SyncCryptoResult["platformSkipped"];
+  if (platformFrozen) {
+    platformSkipped = { reason: billableSkipCode(freeze!.reason!), steps: ["capability-reconciliation", "close-archive-maintenance"] };
+    console.log(`[sync-crypto] global cost freeze (${freeze!.state}) — platform price steps SKIPPED (${platformSkipped.reason}); nothing advanced`);
+  }
+
   let capabilityWidening: CapabilityWideningPlan | null = null;
-  if (!continuation) {
+  if (!continuation && !platformFrozen) {
     try {
       const plan = await reconcileProviderCapability(BTC_PRICE_SOURCE, {
         secret: process.env.COINGECKO_API_KEY,
@@ -155,7 +182,7 @@ export async function syncCrypto(options: {
   // vendor cost for an archive the main slot has already mended this cycle.
   // Non-fatal by construction.
   let closeCoverage: CryptoCloseCoverage[] = [];
-  if (!continuation) {
+  if (!continuation && !platformFrozen) {
     try {
       closeCoverage = await maintainHeldCryptoCloseCoverage(todayUTCISO(runStartedAt));
       for (const c of closeCoverage) {
@@ -202,7 +229,12 @@ export async function syncCrypto(options: {
         where:  { id: { in: result.syncedAccountIds } },
         select: { id: true, walletChain: true },
       });
-      const historyAccountIds = chains.filter((a) => chainSupportsHistory(a.walletChain)).map((a) => a.id);
+      // BETA LIFECYCLE L2 — the rebuild reaches the price vendors (Tiingo /
+      // CoinGecko history): re-asked per triggering account's billed owner, so
+      // a freeze that landed during the sweep is honoured before the price step.
+      const historyCandidates = chains.filter((a) => chainSupportsHistory(a.walletChain)).map((a) => a.id);
+      const { billableAccountIds } = await import("@/lib/platform/policies/billable-subjects");
+      const historyAccountIds = historyCandidates.length > 0 ? (await billableAccountIds(historyCandidates, "price_history")).allowed : [];
       if (historyAccountIds.length > 0) {
         try {
           // A capability widening supersedes the ordinary incremental window: the
@@ -233,8 +265,14 @@ export async function syncCrypto(options: {
           const { revalueHoldersAfterPriceGaps, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
           const log = (l: string) => console.log(`[sync-crypto] ${l}`);
           const wake = await db.jobRun.findFirst({ where: { startedAt: { gte: new Date(runStartedAt.getTime() - 300_000) } }, orderBy: { startedAt: "asc" }, select: { startedAt: true } });
+          // BETA LIFECYCLE L2 — the revaluation itself is DB recompute (no vendor);
+          // its price-gap fetch is a platform-wide CoinGecko call, so under the
+          // GLOBAL cost freeze it is skipped (an empty gap run, nothing recorded)
+          // while the recompute of already-held evidence still runs.
+          const revalDeps = prismaRevaluationDeps(db, { log });
+          if (platformFrozen) revalDeps.acquireGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
           revaluation = await revalueHoldersAfterPriceGaps({
-            accountIds: historyAccountIds, deps: prismaRevaluationDeps(db, { log }), log,
+            accountIds: historyAccountIds, deps: revalDeps, log,
             deadlineMs: (wake ? wake.startedAt.getTime() : runStartedAt.getTime()) + WAKE_SAFE_MS,
           });
           const g = revaluation.priceGaps;
@@ -249,5 +287,6 @@ export async function syncCrypto(options: {
 
   const outcome = syncCryptoOutcome(revaluation);
   if (outcome.outcome === "PARTIAL") console.warn(`[sync-crypto] PARTIAL — ${outcome.partialReasons.join(" | ")}`);
-  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage, revaluation: revaluationSummary(revaluation), ...outcome };
+  return { ...result, continuation, snapshotSpaces, wealthRegenSpaces, closeCoverage, revaluation: revaluationSummary(revaluation), ...outcome,
+    ...(platformSkipped ? { platformSkipped, outcome: "SKIPPED" as const, skipReason: platformSkipped.reason } : {}) };
 }

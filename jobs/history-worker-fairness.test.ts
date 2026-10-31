@@ -16,6 +16,8 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs jobs/history-worker-fairness.test.ts
  */
 
+import { readFileSync } from "node:fs";
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
 import { solHistoryBackfill, solBackfillJobOutcome, WAKE_SAFE_MS, PRICE_GAP_RESERVE_MS, type SolBackfillJobDeps, type SolBackfillJobSummary } from "@/jobs/sol-history-backfill";
 import { workerConfig } from "@/lib/crypto/sol-backfill-worker.core";
 import { btcWorkerConfig } from "@/lib/crypto/btc-backfill-worker.core";
@@ -66,7 +68,7 @@ function world(o: { sol?: number; btc?: number; eth?: number; persist?: boolean;
     for (const [k, v] of Object.entries(meter)) { const d = v - (flushed[k] ?? 0); if (d > 0) { ledger[`${prefix}:${k}`] = (ledger[`${prefix}:${k}`] ?? 0) + d; flushed[k] = v; } }
   };
   const ids = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
-  const deps: SolBackfillJobDeps = {
+  const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
     now: () => t, sleep: async (ms) => { t += ms; },
     wakeStartedAt: async () => (o.wakeAgoMs === undefined ? null : t - (typeof o.wakeAgoMs === "function" ? o.wakeAgoMs(runNo) : o.wakeAgoMs)),
     wallets: async () => ids("s", o.sol ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: importingSol(id) })),
@@ -325,6 +327,22 @@ async function main() {
       check("worker run with an abandoned block: summary.outcome PARTIAL (REVALUATION_ABANDONED), holderRevaluation.abandonedBlocks 1",
         s.outcome === "PARTIAL" && !!s.partialReasons?.some((x) => x.startsWith("REVALUATION_ABANDONED")) && s.holderRevaluation?.abandonedBlocks === 1, JSON.stringify({ o: s.outcome, r: s.partialReasons }));
     }
+    {
+      // L2 × reservation: the early (reserved) holder set passes the SAME billable gate — a refused owner gets no revaluation.
+      const w = world({ btc: 20 });
+      const seen: string[][] = [];
+      w.deps.cryptoHolders = async () => ["ok1", "frozen1"];
+      w.deps.billableAccounts = async (ids) => new Map(ids.map((id) => [id, id === "frozen1" ? { allowed: false, reason: "COST_FREEZE" } as never : { allowed: true }] as const));
+      w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+      w.deps.revaluationPending = async (ids) => { seen.push([...ids]); return true; };
+      w.deps.revalueHolders = async (ids) => { seen.push([...ids]); return runOf(0); };
+      await w.run();
+      check("cost freeze × reservation: a refused (frozen) owner's holder is in neither the pending read nor the revaluation",
+        seen.length >= 2 && seen.every((x) => !x.includes("frozen1") && x.includes("ok1")), JSON.stringify(seen));
+      const sc = readFileSync("jobs/sync-crypto.ts", "utf8");
+      check("sync-crypto: under the GLOBAL freeze the revaluation's price-gap fetch is replaced by an empty run (DB recompute only)",
+        /if \(platformFrozen\) revalDeps\.acquireGaps = async \(\) => \(\{ decisions: \[\], acquired: 0/.test(sc) && /deps: revalDeps,/.test(sc));
+    }
     // revaluationPending is the cheap state read the reservation is decided by.
     const marks = new Set<string>();
     const h: HolderRevaluation = { accountId: "b0", windowFromISO: "2026-10-01", valuedFromISO: "2026-10-01", evidenceKey: "revaluation:v2:b0:k" };
@@ -455,7 +473,7 @@ async function main() {
           snapshotMinBySpace: new Map([["sp", snapshotStart]]), spaceIds: ["sp"] });
         return h ? [h] : [];
       });
-      const deps: SolBackfillJobDeps = {
+      const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
         now: () => t, sleep: async (ms) => { t += ms; },
         wakeStartedAt: async () => (o.wakeAgoMs !== undefined ? t - o.wakeAgoMs : null),
         wallets: async () => [{ accountId: "s0", connectionId: "c-s0", address: ADDR, cursor: cursors.s0 }],

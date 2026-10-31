@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
 
     // Notify. NON-THROWING: a delivery failure is logged and audited, never
     // fails the request.
-    const emailResult = await sendEmail("security-alert", dbUser.email, { ...accountDeletionScheduledAlert(scheduledAt) });
+    const emailResult = await sendEmail("security-alert", dbUser.email, { ...accountDeletionScheduledAlert(scheduledAt) }, { key: "ACCOUNT_DELETION_REQUESTED", recipientUserId: user.id });
     if (emailResult.status === "error") {
       console.error("[user/delete] security-alert email failed to send:", emailResult.error);
     }

@@ -43,6 +43,7 @@
  */
 
 import type { EffectiveEntitlements } from "@/lib/entitlements/resolve";
+import type { LifecycleRestriction } from "@/lib/entitlements/lifecycle";
 import type { AdmissionVerdict } from "@/lib/platform/admission/types";
 import type { RefreshTrigger } from "@/lib/plaid/refresh-execution-types";
 import type { RefreshSummary } from "@/lib/plaid/refresh";
@@ -124,7 +125,15 @@ const BUDGET_REASON = "BUDGET" as unknown as RefreshSkipReason;
  *  rollout switch refuses every manual refresh (NOT_ENTITLED), customer- or operator-initiated;
  *  scheduled platform refresh is not an entitlement and continues. */
 export function isManualRefreshEntitled(e: EffectiveEntitlements): boolean {
-  return e.failClosed !== true;
+  // BETA LIFECYCLE (review fix 1) — a paused / ended / cost-frozen group, or an
+  // unreadable lifecycle, refuses every manual refresh (PLAN_RESTRICTED), not
+  // only until a cooldown passes.
+  return e.failClosed !== true && e.lifecycleRestriction == null;
+}
+
+/** The refusal reason for a not-entitled manual refresh: PLAN_RESTRICTED under a lifecycle restriction. */
+function notEntitledReason(e: EffectiveEntitlements): { reason: "NOT_ENTITLED" | "PLAN_RESTRICTED"; restriction?: LifecycleRestriction } {
+  return e.failClosed !== true && e.lifecycleRestriction != null ? { reason: "PLAN_RESTRICTED", restriction: e.lifecycleRestriction } : { reason: "NOT_ENTITLED" };
 }
 
 function triggerFor(authority: RefreshAllRequest["authority"]): RefreshTrigger {
@@ -183,7 +192,7 @@ export async function refreshAllForUser(req: RefreshAllRequest, deps: RefreshAll
       excluded.push(it.id); continue;
     }
     if (!entitled) {
-      outcomes.push({ kind: "PLAID_ITEM", id: it.id, label: it.institutionName, decision: "REFUSED", reason: "NOT_ENTITLED", entitlement: "manualBankRefreshCooldownMinutes" });
+      outcomes.push({ kind: "PLAID_ITEM", id: it.id, label: it.institutionName, decision: "REFUSED", ...notEntitledReason(req.entitlements), entitlement: "manualBankRefreshCooldownMinutes" });
       excluded.push(it.id); continue;
     }
     const cd = checkManualRefreshCooldown(it.lastManualRefreshAt, cooldownMs, startedAt.getTime());
@@ -227,7 +236,7 @@ export async function refreshAllForUser(req: RefreshAllRequest, deps: RefreshAll
       outcomes.push({ kind: "WALLET", id: w.accountId, label, decision: "REFUSED", reason: "NOT_REFRESHABLE" }); continue;
     }
     if (!entitled) {
-      outcomes.push({ kind: "WALLET", id: w.accountId, label, decision: "REFUSED", reason: "NOT_ENTITLED", entitlement: "manualBankRefreshCooldownMinutes" }); continue;
+      outcomes.push({ kind: "WALLET", id: w.accountId, label, decision: "REFUSED", ...notEntitledReason(req.entitlements), entitlement: "manualBankRefreshCooldownMinutes" }); continue;
     }
     if (now().getTime() - startedAt.getTime() > budgetMs) {
       outcomes.push({ kind: "WALLET", id: w.accountId, label, decision: "SKIPPED", reason: BUDGET_REASON }); continue;

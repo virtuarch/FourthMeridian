@@ -37,6 +37,8 @@ import type { RefreshTrigger, RefreshProfile } from "@/lib/plaid/refresh-executi
 // admitting HERE covers three of the seven producers at one seam.
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
+import { billableSkipCode, type BillableDecision, type BillableOperation } from "@/lib/entitlements/billable-gate-core";
+import { billableForPlaidItem } from "@/lib/platform/policies/billable-subjects";
 
 export { LOCK_TTL_MS };
 
@@ -49,7 +51,38 @@ export { LOCK_TTL_MS };
  * says nobody is and nobody will until an operator changes the platform's state.
  * Collapsing them would make an intentional pause read as healthy contention.
  */
-export type WebhookSyncOutcome = "ran" | "skipped-locked" | "not-admitted";
+export type WebhookSyncOutcome = "ran" | "skipped-locked" | "not-admitted" | "plan-restricted";
+
+/**
+ * BETA LIFECYCLE L2 — the billable gate at the shared choke point. Every
+ * producer of the deferred pipeline (the Plaid webhook, the connect follow-on
+ * import, resume-sync, resume-stale-imports) reaches the provider through
+ * here, so ONE gate covers all four. The Item bills the user who CONNECTED it
+ * (PlaidItem.userId — lib/platform/policies/billable-subjects.ts).
+ *
+ * A refusal follows the admission-denial contract exactly: no lock claimed,
+ * no syncIncompleteAt stamped or cleared, no lastSyncedAt / cursor / health
+ * change, no provider call — one SKIPPED RefreshExecution whose
+ * admissionReason is the billable skip code (e.g. BILLABLE_COST_FREEZE), so
+ * Platform Ops sees "deferred by plan", never "completed". After the
+ * restriction lifts, the Item resumes from its persisted cursor (the next
+ * webhook, the daily sync-banks sweep, or resume-stale-imports when an import
+ * was incomplete).
+ */
+export interface WebhookSyncGate {
+  /** A decision already taken by a batch caller (resume-stale-imports); single-item callers pass none. */
+  billable?: BillableDecision;
+  /** Test seams — production passes none. */
+  checkBillable?: (plaidItemId: string, operation: BillableOperation) => Promise<BillableDecision>;
+  recordDenial?: typeof recordAdmissionDenial;
+  /** Replaces the locked pipeline (tests prove it is never reached on a refusal). */
+  runPipeline?: () => Promise<WebhookSyncOutcome>;
+}
+
+/** The billable operation each trigger represents. */
+export function webhookSyncOperation(trigger: RefreshTrigger): BillableOperation {
+  return trigger === "RESUME" ? "plaid_resume_sync" : trigger === "WEBHOOK" ? "plaid_webhook_sync" : "plaid_sync";
+}
 
 /**
  * Claim the per-item sync lock, run the full deferred pipeline, release the
@@ -91,6 +124,7 @@ export async function syncPlaidItemFromWebhook(
    * trigger) pass nothing and this resolves for itself.
    */
   admission?: StampedAdmissionVerdict,
+  gate: WebhookSyncGate = {},
 ): Promise<WebhookSyncOutcome> {
   // ── OPS-2D-4 — ADMISSION ────────────────────────────────────────────────────
   // Before the lock, before the pipeline, before any provider call. A denial
@@ -104,6 +138,21 @@ export async function syncPlaidItemFromWebhook(
     console.log(`[plaid webhook] item ${plaidItemId} not admitted — ${verdict.reason}`);
     return "not-admitted";
   }
+
+  // ── BETA LIFECYCLE L2 — THE BILLABLE GATE ───────────────────────────────────
+  // After admission, before the lock, before the pipeline, before any provider
+  // call: a frozen / paused / ended (or unverifiable) customer's Item records a
+  // deferred fact and nothing else (see WebhookSyncGate).
+  const billable = gate.billable
+    ?? await (gate.checkBillable ?? billableForPlaidItem)(plaidItemId, webhookSyncOperation(trigger));
+  if (!billable.allowed) {
+    await (gate.recordDenial ?? recordAdmissionDenial)({
+      itemId: plaidItemId, trigger, profile, admissionReason: billableSkipCode(billable.reason),
+    }).catch((e) => console.warn(`[plaid webhook] deferred-fact record failed for ${plaidItemId} (non-fatal):`, e instanceof Error ? e.message : String(e)));
+    console.log(`[plaid webhook] item ${plaidItemId} plan-restricted — ${billable.reason}; no provider call, no lock, no marker written`);
+    return "plan-restricted";
+  }
+  if (gate.runPipeline) return gate.runPipeline();
 
   // DF-2C — one immutable RefreshExecution per deferred-sync attempt. The lock
   // claim/release and the never-throws contract are UNCHANGED: they live inside

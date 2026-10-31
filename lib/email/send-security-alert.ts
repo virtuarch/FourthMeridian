@@ -11,7 +11,7 @@
  */
 
 import "server-only";
-import type { EmailResult } from "@/lib/email/types";
+import type { EmailResult, EmailSendContext } from "@/lib/email/types";
 import type { SecurityAlertData } from "@/lib/email/templates/security-alert";
 import { sendEmail } from "@/lib/email/send";
 
@@ -20,6 +20,7 @@ export const SECURITY_ALERT_BUILD_ERROR = "security-alert data failed to build";
 export async function sendSecurityAlert(
   to: string,
   build: () => SecurityAlertData,
+  ctx?: EmailSendContext,
   send: typeof sendEmail = sendEmail,
 ): Promise<EmailResult> {
   let data: SecurityAlertData;
@@ -28,5 +29,5 @@ export async function sendSecurityAlert(
   } catch {
     return { status: "error", provider: "none", error: SECURITY_ALERT_BUILD_ERROR };
   }
-  return send("security-alert", to, { ...data });
+  return send("security-alert", to, { ...data }, ctx);
 }

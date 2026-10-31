@@ -80,6 +80,9 @@ const _e = {
   HELIUS_API_KEY:       process.env.HELIUS_API_KEY,
 
   RESEND_API_KEY:       process.env.RESEND_API_KEY,
+  // Comms Center A-2a — the delivery-ledger recipient-hash salt. Read for its
+  // PRESENCE only here (never logged); lib/notifications/delivery/record.ts uses it.
+  COMMS_RECIPIENT_HASH_SALT: process.env.COMMS_RECIPIENT_HASH_SALT,
   EMAIL_FROM_DEFAULT:   process.env.EMAIL_FROM_DEFAULT,
 
   // Security Ops alerts inbox (Wave 3 ⑧). Optional — the anomaly detector sends
@@ -435,6 +438,15 @@ export function getEnvReport(): EnvReport {
     );
   }
 
+  // COMMS_RECIPIENT_HASH_SALT (Comms Center A-2a) — presence only. Unset on a
+  // deployment ⇒ ledger rows with no userId carry no recipient hash (fail-safe,
+  // but the purge can then match those rows by userId only). Never a fail.
+  keys.push(
+    _e.COMMS_RECIPIENT_HASH_SALT
+      ? { key: "COMMS_RECIPIENT_HASH_SALT", status: "pass", scope: "optional" }
+      : { key: "COMMS_RECIPIENT_HASH_SALT", status: "warn", scope: "optional", note: "unset — the delivery ledger stores no recipient hash" },
+  );
+
   // OPENAI ENVIRONMENT SEPARATION — the key (presence only), the project pin and
   // the expected-environment guard. A state the credential seam REFUSES on is a
   // "fail" here, because the next AI call will fail; it is never a boot throw
@@ -558,6 +570,16 @@ export function validateEnv(): EnvReport {
     console.warn(
       `[env] QUANTITY_AUTHORITY_MODE has unrecognised value ${JSON.stringify(qam)} — ` +
       `treated as "off" (expected "off" | "compare" | "adopt").`
+    );
+  }
+
+  // COMMS_RECIPIENT_HASH_SALT (Comms Center A-2a) — warn, never throw, on a
+  // DEPLOYED environment (Vercel Preview or Production) where it is unset.
+  if (_e.VERCEL === "1" && !_e.COMMS_RECIPIENT_HASH_SALT) {
+    console.warn(
+      "[env] COMMS_RECIPIENT_HASH_SALT is unset on this deployment — delivery-ledger rows with no " +
+      "recipient userId (operator inboxes, beta applicants) are stored WITHOUT a recipient hash. " +
+      "Sending is unaffected. Set a long random secret per environment.",
     );
   }
 

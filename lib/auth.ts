@@ -480,7 +480,7 @@ export const authOptions: NextAuthOptions = {
             reactivationAudit.write,
           ]);
 
-          const emailResult = await sendEmail("security-alert", user.email, { ...accountReactivatedAlert(new Date()) });
+          const emailResult = await sendEmail("security-alert", user.email, { ...accountReactivatedAlert(new Date()) }, { key: "ACCOUNT_REACTIVATED", recipientUserId: user.id });
           if (emailResult.status === "error") {
             console.error("[auth] reactivation security-alert email failed to send:", emailResult.error);
           }
@@ -514,7 +514,7 @@ export const authOptions: NextAuthOptions = {
             cancellationAudit.write,
           ]);
 
-          const emailResult = await sendEmail("security-alert", user.email, { ...accountDeletionCancelledAlert(new Date()) });
+          const emailResult = await sendEmail("security-alert", user.email, { ...accountDeletionCancelledAlert(new Date()) }, { key: "ACCOUNT_DELETION_CANCELLED", recipientUserId: user.id });
           if (emailResult.status === "error") {
             console.error("[auth] deletion-cancellation security-alert email failed to send:", emailResult.error);
           }

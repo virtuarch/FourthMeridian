@@ -24,6 +24,9 @@
 
 import "server-only";
 import { planNeedsAttentionSentence, planUnavailableSentence } from '@/lib/ai/conversation/refusal-sentences';
+import type { LifecycleRestriction } from "./lifecycle";
+import type { BillableDenialReason } from "./billable-gate-core";
+import { RESTRICTION_CODES, restrictionMessage, restrictionStatus } from "./restriction-messages";
 import { NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { env } from "@/lib/env";
@@ -65,6 +68,18 @@ function planNeedsAttentionResponse(surfaceLabel: string, dimension: Entitlement
 }
 
 /**
+ * BETA LIFECYCLE — the ONE refusal for paid work under a lifecycle restriction:
+ * the owner's wording (lib/entitlements/restriction-messages.ts), its code, 403
+ * for a group state and 503 for an unreadable policy. Never "not on your plan".
+ */
+export function planRestrictedResponse(restriction: LifecycleRestriction, dimension: EntitlementDimensionKey | null = null): NextResponse {
+  return NextResponse.json(
+    { error: restrictionMessage(restriction), code: RESTRICTION_CODES[restriction], restriction, ...(dimension ? { entitlement: dimension } : {}) },
+    { status: restrictionStatus(restriction), headers: NO_STORE },
+  );
+}
+
+/**
  * A 403 when a boolean dimension is off for this customer, else null. The body
  * names the surface in plain words and the dimension (so an operator can map
  * the refusal to the Policy Group), never the policy internals. When the
@@ -79,6 +94,8 @@ export function refuseIfDisabled(
   const d = e.dimensions[dimension];
   if (ENTITLEMENT_DIMENSIONS[dimension].kind !== "boolean" || d.value === true) return null;
   if (e.failClosed === true) return planNeedsAttentionResponse(surfaceLabel, dimension);
+  // BETA LIFECYCLE — off because the group is paused / ended / frozen (or unreadable): say so.
+  if (e.lifecycleRestriction != null && d.source === "LIFECYCLE") return planRestrictedResponse(e.lifecycleRestriction, dimension);
   return NextResponse.json(
     { error: planUnavailableSentence(surfaceLabel), entitlement: dimension },
     { status: 403, headers: NO_STORE },
@@ -95,19 +112,61 @@ export function refuseIfDisabled(
  * be what stands between a broken assignment and a paid call.
  */
 export function refuseIfFailClosed(e: EffectiveEntitlements, surfaceLabel: string): NextResponse | null {
-  return e.failClosed === true ? planNeedsAttentionResponse(surfaceLabel, null) : null;
+  if (e.failClosed === true) return planNeedsAttentionResponse(surfaceLabel, null);
+  // BETA LIFECYCLE (review fix 1/2) — every caller of this seam is a NEW costly
+  // operation (manual refresh, Brief generation, Investments enable): a paused,
+  // ended or cost-frozen group, or an unreadable lifecycle, refuses it
+  // explicitly — never left to a cooldown that eventually passes or an
+  // allowance check that may be switched off.
+  if (e.lifecycleRestriction != null) return planRestrictedResponse(e.lifecycleRestriction);
+  return null;
 }
+
+/**
+ * L2 ENFORCEMENT — the HTTP refusal for a billable-gate denial
+ * (lib/entitlements/billable-gate.ts). A lifecycle reason (frozen, paused,
+ * ended, unreadable policy) gets the owner's lifecycle wording; a missing /
+ * invalid assignment (NOT_ENTITLED) or no billing owner (NO_OWNER) gets the
+ * "plan needs attention" sentence. Never "Connection limit reached".
+ */
+export function billableRefusalResponse(reason: BillableDenialReason, surfaceLabel: string, opts: { reassurance?: string } = {}): NextResponse {
+  const res = reason === "NOT_ENTITLED" || reason === "NO_OWNER" ? planNeedsAttentionResponse(surfaceLabel, null) : planRestrictedResponse(reason);
+  if (!opts.reassurance) return res;
+  // A follow-up sentence after the owner's wording (the body keeps code / restriction unchanged).
+  return NextResponse.json(
+    { ...refusalBodyOf(reason, surfaceLabel), error: `${refusalBodyOf(reason, surfaceLabel).error} ${opts.reassurance}`, reassurance: opts.reassurance },
+    { status: res.status, headers: NO_STORE },
+  );
+}
+
+/** The plain body billableRefusalResponse sends (shared so a reassurance can extend it). */
+function refusalBodyOf(reason: BillableDenialReason, surfaceLabel: string): { error: string; code: string; restriction?: LifecycleRestriction } {
+  if (reason === "NOT_ENTITLED" || reason === "NO_OWNER") return { error: planNeedsAttentionSentence(surfaceLabel), code: PLAN_NEEDS_ATTENTION_CODE };
+  return { error: restrictionMessage(reason), code: RESTRICTION_CODES[reason], restriction: reason };
+}
+
+/**
+ * BETA LIFECYCLE L2 (owner ruling 2026-10-31) — a refused connect or REPAIR
+ * never disconnects anyone: the copy says so.
+ */
+export const NOTHING_DISCONNECTED_SENTENCE = "Your existing connections stay connected — nothing has been disconnected.";
+
+/** BETA LIFECYCLE — the same refusal under its precise name (new code should call this). */
+export const refuseIfBillableRestricted = refuseIfFailClosed;
 
 /**
  * A count dimension as the integer a rate limiter takes. Never below 1 (a zero
  * would mean "always limited"; use a boolean dimension for off) — EXCEPT in the
  * fail-closed state, where a 0 from FAIL_CLOSED_VALUES is the deliberate deny
- * (e.g. maxConnections 0 ⇒ the connection cap refuses every NEW connection).
+ * (e.g. maxConnections 0 ⇒ the connection cap refuses every NEW connection),
+ * and (BETA LIFECYCLE) under a lifecycle restriction (paused / ended /
+ * cost-frozen group), where a 0 from READ_ONLY_VALUES is the same deliberate deny.
  */
 export function countLimit(e: EffectiveEntitlements, dimension: EntitlementDimensionKey): number {
   const d = e.dimensions[dimension];
   if (ENTITLEMENT_DIMENSIONS[dimension].kind !== "count") throw new Error(`${dimension} is not a count dimension`);
-  return Math.max(e.failClosed === true ? 0 : 1, Math.floor(Number(d.value)));
+  const deliberateZero = e.failClosed === true || (e.lifecycleRestriction != null && d.source === "LIFECYCLE");
+  return Math.max(deliberateZero ? 0 : 1, Math.floor(Number(d.value)));
 }
 
 /** The provenance sentence for one dimension — for a refusal body or an operator view. */

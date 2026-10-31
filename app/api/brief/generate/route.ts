@@ -51,6 +51,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // NEW generation is paid work: refused here (403, "plan needs attention")
   // before pacing, the claim or any model call. The $0 allowance would refuse it
   // too; this says why honestly instead of "you've used today's allowance".
+  // BETA LIFECYCLE (owner decision 2026-10-31) — the same seam refuses NEW
+  // generation when the plan's group is paused, ended or cost-frozen, or its
+  // state is unreadable — explicitly, whether or not `ai_daily_allowance_enforced`
+  // is on (reading the stored Brief via GET /api/brief stays allowed).
   const failClosed = refuseIfFailClosed(entitlements, 'The Daily Brief');
   if (failClosed) return failClosed;
   // SEC-AI-004 — fails closed on a limiter store error (lib/ai/pacing.ts), like the allowance.

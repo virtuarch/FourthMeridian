@@ -167,7 +167,7 @@ function resolveDestinationDefault(): string | null {
 }
 
 async function sendAlertEmailDefault(to: string, data: AlertEmailData): Promise<{ status: string; provider?: string }> {
-  const res = await sendEmail("platform-alert", to, data as unknown as Record<string, unknown>);
+  const res = await sendEmail("platform-alert", to, data as unknown as Record<string, unknown>, { key: "PLATFORM_ALERT", recipientUserId: null });
   return { status: res.status, provider: res.provider };
 }
 

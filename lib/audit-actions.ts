@@ -376,6 +376,18 @@ export const AuditAction = {
   POLICY_GROUP_ROLLED_BACK:        "POLICY_GROUP_ROLLED_BACK",
   POLICY_GROUP_ARCHIVED:           "POLICY_GROUP_ARCHIVED",
   POLICY_GROUP_DEFAULT_CHANGED:    "POLICY_GROUP_DEFAULT_CHANGED",
+  // BETA LIFECYCLE (L1, owner decisions 2026-10-31) — a PLATFORM_OPS CONTROL
+  // holder paused, resumed (incl. reopening an ended group — reason note
+  // required), ended, cost-froze or unfroze a customer Policy Group
+  // (lib/platform/policies/policy-group-lifecycle-write.ts). ONE row per
+  // transition, in the same transaction as the PolicyGroupTransition row;
+  // reason-required; target = the POLICY_GROUP; metadata carries the
+  // before/after state and member COUNTS — never a customer id.
+  POLICY_GROUP_PAUSED:             "POLICY_GROUP_PAUSED",
+  POLICY_GROUP_RESUMED:            "POLICY_GROUP_RESUMED",
+  POLICY_GROUP_ENDED:              "POLICY_GROUP_ENDED",
+  POLICY_GROUP_COST_FROZEN:        "POLICY_GROUP_COST_FROZEN",
+  POLICY_GROUP_COST_UNFROZEN:      "POLICY_GROUP_COST_UNFROZEN",
   JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
   JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
   REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",
@@ -575,6 +587,12 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.POLICY_GROUP_ROLLED_BACK,
   AuditAction.POLICY_GROUP_ARCHIVED,
   AuditAction.POLICY_GROUP_DEFAULT_CHANGED,
+  // Beta lifecycle — pause / resume / end / cost freeze / unfreeze (counts only).
+  AuditAction.POLICY_GROUP_PAUSED,
+  AuditAction.POLICY_GROUP_RESUMED,
+  AuditAction.POLICY_GROUP_ENDED,
+  AuditAction.POLICY_GROUP_COST_FROZEN,
+  AuditAction.POLICY_GROUP_COST_UNFROZEN,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   AuditAction.OPERATOR_REFRESH_ALL,

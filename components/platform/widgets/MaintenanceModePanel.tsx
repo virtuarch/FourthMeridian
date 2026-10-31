@@ -34,6 +34,8 @@ import {
 import { BTN, BTN_NEUTRAL, BTN_PRIMARY, CadenceForm, Notice, formatUtc, mutate, type OperatorReasonInput, type PolicyNotice } from "./policy-editor-kit";
 import { requestNoticeRevalidation } from "@/components/notices/NoticeRail";
 import {
+  COST_FREEZE_ACTION_LABEL, COST_FREEZE_LABEL, costFreezeCaption, costFreezeConfirmationSentence, costFreezePatchBody,
+  costFreezeStateWord, resolveCostFreezeOutcome,
   ACTION_LABEL, DISTINCTION_LINES, MAINTENANCE_LABEL, OPERATIONAL_CONTROLS_SUBJECT, OPERATIONAL_CONTROLS_TITLE,
   availableActions, confirmLabel, confirmationSentence, environmentBadge, lastChangedText, maintenanceCaption,
   maintenanceConsequences, maintenancePatchBody, maintenanceStateWord, relatedStateWord, resolveMaintenanceOutcome,
@@ -93,6 +95,7 @@ function MaintenanceCard({ model, editable, onModel }: {
         {DISTINCTION_LINES.map((line) => <p key={line} className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{line}</p>)}
         <KeyRow label="Paid AI kill switch now" value={relatedStateWord(model.related.aiKillSwitch.state, "paused")} />
         <KeyRow label="Ingestion pause now" value={relatedStateWord(model.related.ingestionPaused.state, "paused")} />
+        {model.costFreeze ? <KeyRow label="Global cost freeze now" value={relatedStateWord(model.costFreeze.state, "frozen")} /> : null}
       </div>
 
       {open ? (
@@ -131,6 +134,88 @@ function MaintenanceCard({ model, editable, onModel }: {
   );
 }
 
+/**
+ * BETA LIFECYCLE L2 — the GLOBAL cost freeze toggle (owner ruling 2026-10-31):
+ * the same two-step, reason-and-note, environment-named confirmation as
+ * maintenance, PATCHing `control: "COST_FREEZE"`. The server re-checks the
+ * highest Platform Ops grant on every write and audits it in the same
+ * transaction.
+ */
+function CostFreezeCard({ model, editable, onModel }: {
+  model: OperationalControlsReadModel; editable: boolean; onModel: (m: OperationalControlsReadModel) => void;
+}) {
+  const [open, setOpen] = useState<MaintenanceAction | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<PolicyNotice | null>(null);
+  const f = model.costFreeze;
+  if (!f) return null;
+  const state = costFreezeStateWord(f.state);
+  const env = environmentBadge(model.environment);
+  const host = typeof window === "undefined" ? null : window.location.host;
+
+  const submit = async (action: MaintenanceAction, reason: OperatorReasonInput) => {
+    setBusy(true);
+    setNotice(null);
+    const outcome = await mutate<OperationalControlsReadModel>(OPERATIONAL_CONTROLS_URL, "PATCH", costFreezePatchBody(model, action, reason), "cost freeze");
+    const r = resolveCostFreezeOutcome(outcome, action);
+    if (r.model) onModel(r.model);
+    if (r.close) setOpen(null);
+    setNotice(r.notice);
+    setBusy(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-3 rounded-[var(--radius-sm)] border p-4" style={{ borderColor: "var(--border-hairline-strong)" }} role="region" aria-label={COST_FREEZE_LABEL}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-[var(--text-primary)]">{COST_FREEZE_LABEL}</span>
+        <span className="inline-flex items-center gap-3">
+          <span className="rounded-[var(--radius-sm)] border px-1.5 text-[10px] font-semibold tracking-wide" style={{ color: TONE_COLOR[env.tone], borderColor: TONE_COLOR[env.tone] }} aria-label={`Environment: ${env.word}`}>
+            {env.word}
+          </span>
+          <ToneBadge word={state.word} tone={state.tone} />
+        </span>
+      </div>
+      <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{costFreezeCaption(f.state)}</p>
+      {f.state === "INVALID" && f.invalidRaw !== null && (
+        <p className="text-[11px]" style={{ color: TONE_COLOR.bad }} role="alert">Stored value: <code>{f.invalidRaw}</code></p>
+      )}
+      {f.updatedAt && <p className="text-[10px] text-[var(--text-muted)]">Last changed {formatUtc(f.updatedAt)}{f.updatedBy ? ` by ${f.updatedBy}` : ""}</p>}
+      {open ? (
+        <CadenceForm
+          key={open}
+          ariaLabel={`${COST_FREEZE_ACTION_LABEL[open]} (${env.word})`}
+          intent="edit"
+          control={null}
+          consequences={[]}
+          warning={costFreezeConfirmationSentence(open, model.environment, host)}
+          busy={busy}
+          notice={notice}
+          canSave
+          canReset={false}
+          noteRequired
+          saveLabel={confirmLabel(open, model.environment)}
+          onSave={(reason) => void submit(open, reason)}
+          onReset={() => {}}
+          onCancel={() => { setOpen(null); setNotice(null); }}
+        />
+      ) : (
+        <>
+          <Notice notice={notice} />
+          <div className="flex flex-wrap gap-2">
+            {availableActions(f.state).map((action) => (
+              <button key={action} type="button" disabled={!editable} onClick={() => { setNotice(null); setOpen(action); }}
+                className={BTN} style={action === "RESET" ? BTN_NEUTRAL : BTN_PRIMARY}>
+                {action === "RESET" ? <RotateCcw size={12} aria-hidden /> : <Power size={12} aria-hidden />} {COST_FREEZE_ACTION_LABEL[action]}
+              </button>
+            ))}
+          </div>
+          {!editable && <p className="text-[10px] text-[var(--text-muted)]">Changing the cost freeze needs the highest Platform Ops grant level.</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Prop-driven and fetch-free: the host passes the shared read and the publish side. */
 export function MaintenanceModePanel({ state, editable = false, onModel = () => {} }: {
   state: SharedFetchState<OperationalControlsReadModel>;
@@ -146,7 +231,10 @@ export function MaintenanceModePanel({ state, editable = false, onModel = () => 
       ) : !data ? (
         <p className="flex items-start gap-1.5 text-xs" style={{ color: TONE_COLOR.bad }} role="alert"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden /><span>{unavailableText(OPERATIONAL_CONTROLS_SUBJECT)}</span></p>
       ) : (
-        <MaintenanceCard model={data} editable={editable} onModel={onModel} />
+        <>
+          <MaintenanceCard model={data} editable={editable} onModel={onModel} />
+          <CostFreezeCard model={data} editable={editable} onModel={onModel} />
+        </>
       )}
     </div>
   );

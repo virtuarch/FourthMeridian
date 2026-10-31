@@ -129,6 +129,14 @@ export interface RegenerateWealthHistoryArgs {
   now?:     Date;
   client?:  Client;
   /**
+   * BETA LIFECYCLE L2 — which of these accounts' billed OWNERS may cause a
+   * paid historical-price fetch now (Tiingo / CoinGecko). Default: the
+   * billable gate (`price_history`, one batch read). A Space is SHARED: a
+   * frozen / ownerless co-member's instruments are not fetched for them.
+   * Valuation itself is unchanged (stored prices are still read).
+   */
+  priceAccountFilter?: PriceAccountFilter;
+  /**
    * 2026-07-14 (Phase 2 — amendment system) — when true, this run is an
    * EXPLICIT, consent-gated SnapshotAmendment, not the automatic pipeline. It
    * (a) exempts every day from the frozen + membership-changed guards (the core
@@ -224,6 +232,25 @@ export interface RegenerateWealthHistoryResult {
  * Regenerate the estimated Wealth history of one Space over a bounded window.
  * Deterministic and idempotent: identical facts ⇒ identical rows.
  */
+export type PriceAccountFilter = (accountIds: readonly string[]) => Promise<ReadonlySet<string>>;
+
+/**
+ * BETA LIFECYCLE L2 — the accounts whose billed owner may cause a paid price
+ * fetch. ONE batch decision; any failure ⇒ the EMPTY set (fail closed: no
+ * fetch, stored prices still read).
+ */
+export async function billedPriceAccountIds(accountIds: readonly string[], filter?: PriceAccountFilter): Promise<ReadonlySet<string>> {
+  if (accountIds.length === 0) return new Set();
+  try {
+    if (filter) return await filter(accountIds);
+    const { billableAccountIds } = await import("@/lib/platform/policies/billable-subjects");
+    return new Set((await billableAccountIds(accountIds, "price_history")).allowed);
+  } catch (e) {
+    console.warn("[wealth-regen] price-history billable check failed; no price fetch (fail closed):", e instanceof Error ? e.message : e);
+    return new Set();
+  }
+}
+
 export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs): Promise<RegenerateWealthHistoryResult> {
   const client = args.client ?? db;
   const now = args.now ?? new Date();
@@ -634,7 +661,15 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // only the snapshot upserts, so a "read-only" impact report still made live
   // provider calls and wrote price rows. Valuation reads stored evidence only;
   // acquisition is a separate, effectful phase and is skipped entirely here.
-  if (cryptoAccounts.length > 0 && !args.dryRun) {
+  // BETA LIFECYCLE L2 — ONE batch decision for the accounts whose instruments
+  // a price fetch would serve (review P2-1): a restricted or ownerless
+  // co-member's holdings are not fetched for them.
+  const priceCandidates = [...cryptoAccounts, ...accounts.filter((a) => a.type === "investment")].map((a) => a.id);
+  const priceAllowed = !args.dryRun && priceCandidates.length > 0
+    ? await billedPriceAccountIds(priceCandidates, args.priceAccountFilter)
+    : new Set<string>();
+  const pricedCryptoAccounts = cryptoAccounts.filter((a) => priceAllowed.has(a.id));
+  if (pricedCryptoAccounts.length > 0 && !args.dryRun) {
     try {
       // V26-PRICE-PROVIDER-UNIFICATION — crypto prices are acquired through the
       // SAME path as equities (coverage → acquisition plan → capability routing
@@ -651,7 +686,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // authority the observations were written against. Bitcoin is included
       // because it is held, not because it is Bitcoin.
       const heldInstrumentIds = [...new Set((await Promise.all(
-        assetsOf(cryptoAccounts).map((a) => resolveCryptoInstrumentId(a).catch(() => null)),
+        assetsOf(pricedCryptoAccounts).map((a) => resolveCryptoInstrumentId(a).catch(() => null)),
       )).filter((id): id is string => id !== null))];
       const r = await backfillHeldInstrumentPrices(heldInstrumentIds, fromDate, toDate,
         (line) => console.log(`[wealth-regen] ${spaceId}: ${line}`));
@@ -682,9 +717,18 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         ).map((r) => r.instrumentId),
       ),
     ];
-    if (heldInstrumentIds.length > 0) {
+    // L2 — fetch only the instruments held by accounts whose billed owner is allowed.
+    const pricedInvestment = investmentAccounts.filter((a) => priceAllowed.has(a.id)).map((a) => a.id);
+    const fetchInstrumentIds = pricedInvestment.length === investmentAccounts.length ? heldInstrumentIds
+      : pricedInvestment.length === 0 ? []
+      : [...new Set((await client.positionObservation.findMany({
+          where:    { financialAccountId: { in: pricedInvestment }, quantity: { gt: 0 }, supersededById: null, deletedAt: null },
+          select:   { instrumentId: true },
+          distinct: ["instrumentId"],
+        })).map((r) => r.instrumentId))];
+    if (fetchInstrumentIds.length > 0) {
       try {
-        const r = await backfillHeldInstrumentPrices(heldInstrumentIds, fromDate, toDate, (line) => console.log(`[wealth-regen] ${spaceId}: ${line}`));
+        const r = await backfillHeldInstrumentPrices(fetchInstrumentIds, fromDate, toDate, (line) => console.log(`[wealth-regen] ${spaceId}: ${line}`));
         console.log(`[wealth-regen] ${spaceId}: equity price backfill — planned ${r.planned}, stored ${r.inserted} row(s)`);
       } catch (e) {
         console.warn(`[wealth-regen] ${spaceId}: equity price backfill failed (non-fatal):`, e instanceof Error ? e.message : e);

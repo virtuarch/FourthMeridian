@@ -56,6 +56,15 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-incidents", kind: "standard", domain: "platform",
     label: "Incidents", icon: "TriangleAlert",
   },
+  // Customer Success — the Communications Center (owner-approved, 2026-10-31):
+  // every message the product sends, its automations, its delivery history and
+  // the customers' aggregate preferences. Its four views are leads over the
+  // /api/platform/customer-success/notifications reads (contract
+  // docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md); no section rows.
+  "platform-communications": {
+    id: "platform-communications", kind: "standard", domain: "platform",
+    label: "Communications", icon: "Mail",
+  },
   // Security Operations (redesign §4.9) — the end-user security feed and the
   // operator-action feed each get a workspace beside Posture.
   "platform-audit": {
@@ -134,7 +143,10 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant";
+export type PlatformViewLead =
+  | "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant"
+  // Customer Success › Communications Center — one lead per view.
+  | "comms-library" | "comms-automations" | "comms-delivery" | "comms-preferences";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -366,6 +378,21 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       views: [{ id: "overview", label: "Customers", lead: "customer-success", sections: [], hosted: ["cs_customers"] }],
     }),
     { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
+    // COMMUNICATIONS CENTER (owner-approved, 2026-10-31) — four views, each a
+    // LEAD over the Comms Center read API and nothing else: no section key, no
+    // DB row, no seeding (the leads self-fetch; the server routes gate on
+    // CUSTOMER_SUCCESS READ). Library is live (PR #168); Automations, Delivery &
+    // History and Preferences probe their routes and say "coming soon" until
+    // Session 1 deploys them (components/platform/comms/*).
+    withViews({
+      workspaceId: "platform-communications",
+      views: [
+        { id: "library", label: "Library", lead: "comms-library", sections: [] },
+        { id: "automations", label: "Automations", lead: "comms-automations", sections: [] },
+        { id: "delivery", label: "Delivery & History", lead: "comms-delivery", sections: [] },
+        { id: "preferences", label: "Preferences", lead: "comms-preferences", sections: [] },
+      ],
+    }),
   ],
   MERCHANT_OPS: [
     // PLATFORM SPACES 2.0 — ONE merchant-identity dashboard (components/

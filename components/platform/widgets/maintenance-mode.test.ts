@@ -11,6 +11,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs components/platform/widgets/maintenance-mode.test.ts
  */
 
+import { costFreezePatchBody, costFreezeConfirmationSentence, resolveCostFreezeOutcome } from "./maintenance-mode-view";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
@@ -37,6 +38,7 @@ function model(state: FlagState, environment: OperationalControlsReadModel["envi
       key: "fact:maintenance", state, invalidRaw: state === "INVALID" ? "yes" : null,
       updatedAt: state === "MISSING" ? null : "2026-10-24T20:00:00.000Z", updatedBy: state === "MISSING" ? null : "Ops Person", blocks: BLOCKS,
     },
+    costFreeze: { key: "platform_cost_frozen", state: "MISSING", invalidRaw: null, updatedAt: null, updatedBy: null },
     related: { aiKillSwitch: { key: "fact:kill-switch", state: "OFF" }, ingestionPaused: { key: "fact:ingestion", state: "MISSING" } },
   };
 }
@@ -125,4 +127,22 @@ console.log("source");
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
+// ── BETA LIFECYCLE L2 — the global cost freeze toggle (owner ruling 2026-10-31) ──
+{
+  const frozen = { ...model("OFF"), costFreeze: { key: "platform_cost_frozen", state: "ON" as FlagState, invalidRaw: null, updatedAt: "2026-10-31T09:00:00.000Z", updatedBy: "Ops Person" } };
+  const html = render(frozen);
+  check("the panel renders a Global cost freeze card with its state (Frozen) and the Unfreeze action",
+    /aria-label="Global cost freeze"/.test(html) && html.includes("Frozen") && html.includes("Unfreeze"));
+  const off = render(model("OFF"));
+  check("…not configured offers Freeze paid work", off.includes("Freeze paid work") && off.includes("Not configured"));
+  const ro = render(frozen, false);
+  check("…read-only without the highest grant (buttons disabled, the reason shown)", /disabled=""/.test(ro) && ro.includes("Changing the cost freeze needs the highest Platform Ops grant level."));
+  check("the PATCH body targets the cost freeze, carrying the version read and the reason",
+    JSON.stringify(costFreezePatchBody(frozen, "DISABLE", { code: "SUPPORT_REQUEST", note: "unfreeze" }))
+      === JSON.stringify({ control: "COST_FREEZE", action: "DISABLE", expectedUpdatedAt: "2026-10-31T09:00:00.000Z", reason: { code: "SUPPORT_REQUEST", note: "unfreeze" } }));
+  check("the confirmation says nobody is disconnected", costFreezeConfirmationSentence("ENABLE", "production", null).includes("No one is disconnected"));
+  const applied = resolveCostFreezeOutcome({ kind: "applied", model: { ...frozen, costFreeze: { ...frozen.costFreeze, state: "OFF" } } } as never, "ENABLE");
+  check("\"Saved\" only when the server's model reads the promised state", applied.close === false && applied.notice.tone === "bad");
+}
+
 process.exit(failures === 0 ? 0 : 1);

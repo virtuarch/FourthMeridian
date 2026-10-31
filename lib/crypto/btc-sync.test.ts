@@ -232,7 +232,7 @@ async function main(): Promise<void> {
 
   const walletRoute = code(read("app", "api", "accounts", "wallet", "route.ts"));
   check("wallet route runs balance sync on add (run-on-add)",
-    walletRoute.includes("syncWalletBestEffort(fa.id, chain)"));
+    walletRoute.includes("syncWalletBestEffort(fa.id, chain, billable)"));
   // No Transaction-model usage / import (the `db.$transaction` atomic wrapper is
   // unrelated and allowed — hence the capital-T model-name boundary check).
   check("wallet route creates/imports no transactions",
@@ -248,9 +248,9 @@ async function main(): Promise<void> {
   // dispatcher, which routes BTC back to syncBtcWallet. The guarantee is
   // unchanged: connecting an already-active wallet re-reads its balance.
   check("wallet route syncs on re-add of an existing wallet (active-dup branch)",
-    walletRoute.includes("syncWalletBestEffort(activeFa.id, chain)"));
+    walletRoute.includes("syncWalletBestEffort(activeFa.id, chain, billable)"));
   check("…and on restore of an archived one",
-    walletRoute.includes("syncWalletBestEffort(archivedFa.id, chain)"));
+    walletRoute.includes("syncWalletBestEffort(archivedFa.id, chain, billable)"));
 
   // AccountCard was retired with the standalone /dashboard/accounts page; the
   // live surface that renders the wallet sync affordance is now ConnectionCard

@@ -7,6 +7,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/crypto/wallet-refresh-lock.test.ts
  */
 
+import { allowAllBillable } from "@/lib/test-support/billable-open";
 import { readFileSync } from "node:fs";
 import { resolveRefreshPolicy } from "@/lib/platform/refresh-policy.core";
 import { refreshScheduledWallets, type ScheduledWalletCandidate, type WalletRefreshDeps } from "@/lib/crypto/wallet-refresh";
@@ -26,7 +27,8 @@ function harness(wallets: ScheduledWalletCandidate[], held: Set<string>, opts: {
   let t = NOW.getTime();
   const log: string[] = [];
   const deps: WalletRefreshDeps = {
-    listWallets: async () => wallets,
+    listWallets: async () => wallets.map((w) => ({ ownerUserId: "owner-1", ...w })),
+    billable: allowAllBillable,
     sync: async (id, chain) => {
       log.push(`sync:${id}:${[...held].includes(`conn-${id}`) ? "held" : "free"}`);
       t += 100;

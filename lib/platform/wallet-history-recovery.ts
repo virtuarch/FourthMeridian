@@ -36,6 +36,8 @@
  * about any other customer is read or returned.
  */
 
+import type { BillableDecision, BillableDenialReason } from "@/lib/entitlements/billable-gate-core";
+import { restrictionMessage } from "@/lib/entitlements/restriction-messages";
 import type { PrismaClient } from "@prisma/client";
 import type { OperatorActionInput, OperatorReason } from "@/lib/audit";
 import { AuditAction } from "@/lib/audit-actions";
@@ -61,6 +63,13 @@ export interface WalletHistoryRecoveryDeps {
   loadTarget(connectionId: string): Promise<WalletHistoryTarget | null>;
   /** The canonical admission evaluator (maintenance / ingestion paused). */
   admit(): Promise<{ admitted: true } | { admitted: false; reason: string; label: string }>;
+  /**
+   * BETA LIFECYCLE L2 — the wallet account's billed OWNER may cause paid work
+   * (production: billableForAccounts, `crypto_backfill`). An ownerless wallet
+   * is NO_OWNER ⇒ refused. Asked after admission, before the budget, the lock
+   * and any provider call.
+   */
+  billable(accountId: string): Promise<BillableDecision>;
   limits(chain: ResumableChain): PassLimits;
   probeBudgetFor(allowanceCalls: number, configured: number): number;
   /** Today's ledger calls for the chain's provider (ALCHEMY for SOL/ETH, ESPLORA for BTC); null = unreadable. */
@@ -200,6 +209,13 @@ export async function resumeWalletHistory(
   const admission = await deps.admit();
   if (!admission.admitted) return refuse({ code: "NOT_ADMITTED", message: admission.label }, chain, { admissionReason: admission.reason });
 
+  // BETA LIFECYCLE L2 — an operator resume of a restricted customer's wallet is
+  // refused (the same answer CS Refresh All gives); nothing is claimed or moved.
+  const billable = await deps.billable(accountId);
+  if (!billable.allowed) {
+    return refuse({ code: "PLAN_RESTRICTED", message: billableRefusalMessage(billable.reason) }, chain, { billableReason: billable.reason });
+  }
+
   const budget = await budgetFor(chain, el.status.requestsToday, today, deps);
   if (budget.exhausted) {
     return refuse(budgetRefusal(chain), chain, { dailyRequestCap: budget.dailyRequestCap, usedToday: budget.usedToday });
@@ -312,6 +328,10 @@ export function productionWalletHistoryRecoveryDeps(client: PrismaClient, env: R
         connectionId: c.id, provider: c.provider, status: c.status, accountIds, chain, historyLinkConnectionId,
         cursor: c.cursor, historyCheckpoint, lockedAt: c.syncLockedAt,
       };
+    },
+    async billable(accountId) {
+      const { billableForAccounts } = await import("@/lib/platform/policies/billable-subjects");
+      return (await billableForAccounts([accountId], "crypto_backfill")).get(accountId) ?? { allowed: false, reason: "POLICY_UNAVAILABLE" };
     },
     async admit() {
       const { admitOperationalWork } = await import("@/lib/platform/admission/facts");
@@ -428,4 +448,11 @@ async function runChainPass(
     probeBudget: budget.probeBudget, now, deadlineMs: args.deadlineMs, eth: { meter },
   });
   return { stoppedBecause: o.stoppedBecause, rowsWritten: o.rowsWritten, impactedFromISO: o.impactedFromISO, failureCode: o.failure?.code ?? null };
+}
+
+/** BETA LIFECYCLE L2 — the operator-facing sentence for a plan refusal (the customer's lifecycle wording). */
+function billableRefusalMessage(reason: BillableDenialReason): string {
+  if (reason === "NO_OWNER") return "This wallet has no billing owner, so no paid history work can run for it.";
+  if (reason === "NOT_ENTITLED") return "The wallet owner's plan needs attention; paid history work cannot run for it now.";
+  return restrictionMessage(reason);
 }

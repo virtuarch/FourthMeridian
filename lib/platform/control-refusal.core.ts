@@ -10,7 +10,9 @@ import { AuditAction } from "@/lib/audit-actions";
 import { isOperatorReasonCode, type OperatorActionInput } from "@/lib/audit";
 
 export type ControlName = "refresh-cadence" | "job-cadence" | "ai-cost-controls" | "beta-reconciliation" | "policy-groups";
-export type ControlVerb = "change" | "reset" | "apply" | "create" | "rollback" | "archive" | "default";
+export type ControlVerb = "change" | "reset" | "apply" | "create" | "rollback" | "archive" | "default"
+  // BETA LIFECYCLE (L1) — the policy-group lifecycle actions.
+  | "pause" | "resume" | "end" | "freeze" | "unfreeze";
 export type ControlRefusalCode = "VALIDATION" | "CONFLICT" | "NOT_FOUND" | "NOT_EDITABLE";
 
 export interface ControlRefusal {

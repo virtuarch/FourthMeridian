@@ -33,6 +33,17 @@
 
   The comms routes wrap the shared gate and limiter rather than changing them. `Retry-After` and the operator-TOTP denial header are kept.
 
+**v1.0.2 clarifications (2026-10-31, from the review of the Phase A-2a PR #170):**
+- **The ledger is one row per ATTEMPT; reads count MESSAGES** (§6.1, §4.11). This replaces §6.1's "one row per message, `attempts` incremented in place". `CommsDelivery` is append-only:
+  - every attempt is its own row with an `attempt` number (1-based);
+  - a stable `messageKey` groups the attempts of one message. It is the Notification id for registry legs (IN_APP and its EMAIL leg, distinguished by `channel`) and a generated send id for a direct send;
+  - a message is `(channel, messageKey)`. Its outcome is the row with the highest `attempt` (ties: latest `createdAt`, then `id`), on that row's UTC day.
+- **`totals`, `byKey` and every `series` count each message once, by its final status.** A retried-then-accepted email is 1 `ACCEPTED`, not a `FAILED`; an email that dies after its retries is 1 `DEAD`. The `status` filter applies to the final status. The daily rollup counts messages the same way: an expired attempt that a later attempt supersedes is deleted uncounted.
+- **Per-delivery rows (§4.13, later):** `attempts` = the highest `attempt` of the message; `lastAttemptAt` = that row's `createdAt`.
+- **Retention is 90 days** (owner decision, O-9). After that, only the daily counts are kept.
+- **Error codes** (no provider text is stored): `RENDER | TIMEOUT | NO_TRANSPORT | PROVIDER | STORE | PREFERENCE_READ | RECIPIENT_LOOKUP`. Resend does not expose an HTTP class, so 4xx and 5xx are one `PROVIDER` code.
+- **Recipient:** `recipientUserId`, or (only when there is no user) `HMAC-SHA256(COMMS_RECIPIENT_HASH_SALT, address)`. With no salt, no hash is stored. There is no `audience`, `mode`, `dedupeKey`, `idempotencyKey` or automation column yet; those arrive with Phase B.
+
 ---
 
 ## 0. Agreed constraints (from Session 2) and how this contract meets them

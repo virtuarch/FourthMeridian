@@ -48,6 +48,8 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireUser } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
+import { assertBillableAllowed } from "@/lib/entitlements/billable-gate";
+import { billableRefusalResponse } from "@/lib/entitlements/consume";
 import {
   regenerateWealthHistoryForAccounts,
   maxAvailableWealthWindow,
@@ -114,6 +116,13 @@ export async function POST(req: NextRequest) {
   if (!wealthRegenerationEnabled()) {
     return NextResponse.json({ rebuilt: false, enabled: false });
   }
+
+  // BETA LIFECYCLE L2 — the rebuild reaches the price vendors (Tiingo /
+  // CoinGecko history through backfillHeldInstrumentPrices). The selected
+  // connections are the caller's own (enforced above), so the caller — their
+  // connector — is billed; never the Space. Refused before any rebuild.
+  const billable = await assertBillableAllowed({ userId: user.id, operation: "price_history" });
+  if (!billable.allowed) return billableRefusalResponse(billable.reason, "Rebuilding intelligence");
 
   // Window: the MAX-available intelligence window (earliest transaction →
   // yesterday) — the SAME helper the initial connect (backgroundHistorySync A9)
