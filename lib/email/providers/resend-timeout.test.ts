@@ -8,7 +8,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/email/providers/resend-timeout.test.ts
  */
 
-import { createResendAdapter, RESEND_SEND_TIMEOUT_MS, type ResendLikeClient } from "./resend";
+import { buildResendPayload, createResendAdapter, RESEND_SEND_TIMEOUT_MS, type ResendLikeClient } from "./resend";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -47,6 +47,15 @@ async function main() {
   const def = await createResendAdapter(() => prompt).send(MSG);
   check("default bound: prompt answer still sent", def.status === "sent");
   check("…and its timer was cleared", timers() === before, { before, after: timers() });
+
+  // Comms B2 HARDENING A1 — the provider Idempotency-Key rides the SDK's request options.
+  const seen: unknown[] = [];
+  const recording: ResendLikeClient = { emails: { send: async (_p, o) => { seen.push(o); return { data: { id: "re_2" }, error: null }; } } };
+  await createResendAdapter(() => recording).send({ ...MSG, idempotencyKey: "item_abc" });
+  await createResendAdapter(() => recording).send(MSG);
+  check("an idempotency key is passed as the SDK's { idempotencyKey } option (the Idempotency-Key header)", (seen[0] as { idempotencyKey?: string } | undefined)?.idempotencyKey === "item_abc", seen);
+  check("…and no options at all when the caller gave none", seen[1] === undefined, seen);
+  check("…never inside the payload (the key is a header, not message content)", !("idempotencyKey" in buildResendPayload({ ...MSG, idempotencyKey: "item_abc" })));
 
   clearTimeout(watchdog);
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

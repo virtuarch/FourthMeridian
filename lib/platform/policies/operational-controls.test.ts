@@ -176,10 +176,11 @@ async function main() {
     check("the actions are reason-required in the audit chokepoint", REASON_REQUIRED_ACTIONS.has(AuditAction.PLATFORM_POLICY_CHANGED) && REASON_REQUIRED_ACTIONS.has(AuditAction.PLATFORM_POLICY_RESET));
   }
 
-  console.log("no lockout — maintenance denies exactly its three work classes");
+  console.log("no lockout — maintenance denies exactly its four work classes");
   {
-    check("maintenance denies REFRESH_EXECUTION, CONNECTION_ESTABLISHMENT, PAID_AI_REQUEST — nothing else",
-      [...workDeniedBy("maintenanceMode")].sort().join() === "CONNECTION_ESTABLISHMENT,PAID_AI_REQUEST,REFRESH_EXECUTION");
+    // Comms B2 hardening A5 (2026-10-31): + COMMS_AUTOMATION_SEND (maintenance stops automation sends).
+    check("maintenance denies REFRESH_EXECUTION, CONNECTION_ESTABLISHMENT, PAID_AI_REQUEST, COMMS_AUTOMATION_SEND — nothing else",
+      [...workDeniedBy("maintenanceMode")].sort().join() === "COMMS_AUTOMATION_SEND,CONNECTION_ESTABLISHMENT,PAID_AI_REQUEST,REFRESH_EXECUTION");
     const on = { maintenanceMode: readFactState("maintenance_mode", "true"), ingestionPaused: readFactState("ingestion_paused", null) };
     check("the policy denies paid AI under maintenance", evaluateAdmission({ work: "PAID_AI_REQUEST" }, on).decision === "DENY");
     const strip = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
