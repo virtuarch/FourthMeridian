@@ -89,7 +89,7 @@ Token lifetimes are single constants in `lib/email/token-ttl.ts`. Each one is re
 | `beta-invite` (origin `direct`) | You're invited to the Fourth Meridian beta | `lib/platform/growth/invitation-issue.ts:274` via `app/api/platform/growth-revenue/invitations/route.ts` | any address (operator-entered) | same | same | yes (PR #157) | `beta-invite--direct--…` |
 | `password-reset` | Reset your Fourth Meridian password | `app/api/auth/forgot-password/route.ts:82` | account email | Reset password → `/reset-password?token=` | `PASSWORD_RESET_TTL_MS` 1 h. Single-use (conditional consume, `reset-password/route.ts`). Unknown accounts get an identical 200 (unchanged). | yes (security variant) | `password-reset` |
 | `security-alert` · `passwordResetCompletedAlert` | Fourth Meridian security alert: Your password was reset | `app/api/auth/reset-password/route.ts:84` | account | none | — | yes | `security-alert--password-reset-completed` |
-| `email-verification` | Verify your Fourth Meridian email | `app/api/auth/register/route.ts:371` (uninvited registration only); resend `lib/email/verification.ts:76` (token resend and identifier resend) | new account | Verify email address → `/verify-email?token=` | `EMAIL_VERIFICATION_TTL_MS` 1 h. Idempotent: not cleared on use. Rotated on resend. Identifier resend is a generic 200 (unchanged). | yes (security variant) | `email-verification` |
+| `email-verification` | Verify your Fourth Meridian email | `app/api/auth/register/route.ts:372` (uninvited registration only); resend `lib/email/verification.ts:76` (token resend and identifier resend) | new account | Verify email address → `/verify-email?token=` | `EMAIL_VERIFICATION_TTL_MS` 1 h. Idempotent: not cleared on use. Rotated on resend. Identifier resend is a generic 200 (unchanged). | yes (security variant) | `email-verification` |
 | `email-change` | Confirm your new Fourth Meridian email | `app/api/user/email/request/route.ts:107` | the NEW address | Confirm new email → `/confirm-email-change?token=` | `EMAIL_CHANGE_TTL_MS` 1 h; not cleared on confirm (unchanged) | yes (security variant) | `email-change--confirm-new-address` |
 | `security-alert` · `emailChangeRequestedAlert` | … Email change requested | `app/api/user/email/request/route.ts:113` | the OLD address | none | — | yes (still names the new address, as before) | `security-alert--email-change-old-address` |
 | `security-alert` · `passwordChangedAlert` | … Your password was changed | `app/api/user/password/route.ts:87` | account | none | — | yes | `security-alert--password-changed` |
@@ -101,6 +101,10 @@ Token lifetimes are single constants in `lib/email/token-ttl.ts`. Each one is re
 | `security-alert` · `accountDeletionCancelledAlert` | … Your account deletion was cancelled | `lib/auth.ts:517` | account | none | — | yes | `security-alert--account-deletion-cancelled` |
 | `security-alert` · `accountDeletedAlert` | … Your account has been deleted | `lib/account-deletion/purge.ts:520` (injected `email` seam, after commit) | account | none | — | yes | `security-alert--account-deleted` |
 | `security-alert` · `ownerSignInAnomalyAlert` | … Unusual sign-in activity on your account | `lib/security/anomaly-alerts.ts:198` | resolved account owner only | Reset your password → `/forgot-password` (no token) | — | yes; the inline link became the CTA, same destination | `security-alert--owner-sign-in-anomaly` |
+| `welcome` (new 2026-10-31) | Welcome to Fourth Meridian | `lib/notifications/welcome.ts:68` (`sendWelcome`), called ONCE per account: invited signup at `app/api/auth/register/route.ts:385` (after commit; the account is pre-verified, so no verification email exists); uninvited signup at `app/api/auth/verify-email/route.ts:92` (after the FIRST successful verification; never beside the verification email) | the new account | Open Fourth Meridian → `/dashboard` (no token). Next steps name only real features: Connections (banks, crypto wallets) and shared Spaces (invite by username) | — | design system (default variant); one CTA; footer "one-time email because you created a Fourth Meridian account" | `welcome--named`, `welcome--unnamed` |
+| `security-alert` · `platformAccessGrantedAlert` (new 2026-10-31) | … You were given access to {area} / … Your {area} access changed | `lib/notifications/platform-access.ts:94`, called after commit by `app/api/admin/platform-grants/route.ts:185` (create · reinstate · level change; the same-level no-op sends nothing) | the grantee | Open {area} → `/dashboard/platform/{AREA}` | — | security variant; names the area, the level and the grantor's ROLE ("a Fourth Meridian system administrator"), never the grantor's name or address | `security-alert--platform-access-granted`, `security-alert--platform-access-changed` |
+| `security-alert` · `platformAccessRemovedAlert` (new 2026-10-31) | … Your access to {area} was removed | `lib/notifications/platform-access.ts:86`, called after commit by `app/api/admin/platform-grants/[grantId]/route.ts:88` (revoke; a non-ACTIVE grant is a 400 and sends nothing) | the former grantee | none | — | security variant | `security-alert--platform-access-removed` |
+| `digest` (BUILT, OFF) | Your Fourth Meridian digest: {period} | `lib/notifications/digest.ts:45`, behind `DIGEST_ENABLED = false` (`lib/notifications/digest.ts:24`). **Never sent**: nothing imports or schedules the producer (pinned by `lib/notifications/new-notifications.test.ts` §5) | — | Open Fourth Meridian → `/dashboard`; footer link "Manage notification settings" | — | design system skeleton, pending the owner's digest proposal (O-14) | `digest` |
 | `space-invite` | You've been invited to {Space} on Fourth Meridian | `app/api/spaces/[id]/invite/route.ts:165` | existing user | Review invitation → `/dashboard/spaces` | No token: acceptance is identity-gated in-app | yes | `space-invite` |
 
 **One email per Space invite (2026-10-31).** `space-invite` is the invitation's **only** email. The `SPACE_INVITE_RECEIVED` notification, produced by `lib/events/handlers/space-invite-notification.ts` on `MemberInvited` (its only producer), is now **IN_APP only**: registry `defaultChannels: ["IN_APP"]` plus `excludedChannels: ["EMAIL"]`. The dedicated email and when it is sent are unchanged.
@@ -115,6 +119,12 @@ Token lifetimes are single constants in `lib/email/token-ttl.ts`. Each one is re
 ## 2. "Institution needs attention" (`SYNC_FAILED` through `notification`)
 
 Producer: `lib/plaid/sync-notifications.ts` `notifyItemSyncFailed`. Registry: `lib/notifications/registry.ts` `SYNC_FAILED`. Defaults: IN_APP plus EMAIL, `FINANCIAL` category, which the user can turn off, suppress-while-open. All of that is **unchanged**.
+
+**Plaid webhook trigger (new 2026-10-31).** When a verified Plaid webhook moves an item to `NEEDS_REAUTH` (ITEM/ERROR `ITEM_LOGIN_REQUIRED` | `INVALID_ACCESS_TOKEN`) or `REVOKED` (`USER_PERMISSION_REVOKED` | `USER_ACCOUNT_REVOKED`), `lib/plaid/webhook-health.ts:50` calls the same `notifyItemSyncFailed` right after the health write (`lib/plaid/webhook-receiver.ts:246` → `applyWebhookHealthTransition`). No new type and no new email:
+- the state is read back from the status the webhook just wrote: `reauth-required` ("{Institution} needs you to sign in again") or `disconnected`;
+- the key is the shared `SYNC_FAILED:item:{plaidItemId}:open`, so a webhook, the cron and an interactive sync of the same outage produce ONE notice and ONE email; recovery retires it as before;
+- the removed-by-user rule applies: a connection the user removed gets nothing; an item already `REVOKED` is never re-notified (the receiver skips the transition);
+- `PENDING_EXPIRATION` / `PENDING_DISCONNECT` still move no state and send nothing (catalogued as BUILD: `PLAID_ITEM_PENDING_EXPIRATION`). The two v1 catalog keys `PLAID_ITEM_REAUTH_REQUIRED` and `PLAID_ITEM_REVOKED` are RETIRED tombstones: the notice records under `SYNC_FAILED`.
 
 ### How the state is derived
 
@@ -198,7 +208,17 @@ REVOKED has two live writers:
 ### Follow-ups (payload changes NOT made here)
 
 - **Distinguishing "institution no longer supported" from other ERROR codes.** `PlaidItem.errorCode` is on the row, so the producer could read it later without touching call sites.
-- **Notifying from the webhook on NEEDS_REAUTH and REVOKED.** That is a new trigger, so it is out of scope.
+- **Closed 2026-10-31: notifying from the webhook on NEEDS_REAUTH and REVOKED** (see "Plaid webhook trigger" above).
+
+## 2b. Wallet sync failure (`WALLET_SYNC_FAILED` through `notification`, new 2026-10-31)
+
+Producer: `lib/crypto/wallet-sync-notifications.ts:172` (`evaluateWalletSyncAttention`), called once per real attempt from `lib/crypto/wallet-sync-dispatch.ts:698` (`syncWalletByChain`, after `runFullRefresh`) — scheduled sweep, manual sync, Refresh All and wallet create alike. Registry `WALLET_SYNC_FAILED`, `FINANCIAL`, consent SERVICE.
+- **Sustained only.** Notifies when this attempt failed AND the wallet's Connection has been DEGRADED since its first failure (the latest `WALLET_CONNECTION_STATUS_CHANGED` → `DEGRADED` audit row) for at least 24 h (`WALLET_SYNC_SUSTAINED_HOURS`). Measured from the first failure, not the last success, so a pause in attempts (Cost Freeze) never turns one failure into a notice. No audit row ⇒ no notice.
+- **Real states** (`lib/notifications/wallet-attention.ts`): `temporary` ("We haven't been able to update {wallet}" — still connected, retrying) or `needs-attention` (invalid address / extended key). Never "disconnected". Platform-side codes (`PROVIDER_NOT_CONFIGURED`, `CHAIN_UNSUPPORTED`) never notify.
+- **Suppressed** for a wallet the user removed (`FinancialAccount.deletedAt`, re-read at notify time) and under the global Cost Freeze (re-read; unreadable = frozen). A freeze or plan SKIP never reaches the producer at all: every gate runs before `syncWalletByChain`.
+- **Dedupe / release:** `WALLET_SYNC_FAILED:account:{financialAccountId}:open`; a clean successful sync retires it (`lib/crypto/wallet-sync-notifications.ts:161`).
+- **Channels:** IN_APP by default; EMAIL is opt-in via the FINANCIAL email preference and, as for `SYNC_FAILED` (O-7), follows only that preference. Email default is off because a provider outage hits every wallet on a chain at once.
+- Previews: `notification--wallet-temporary`, `notification--wallet-needs-attention`. The notice carries the account label and network name, never the address.
 
 ## 3. Operator / internal emails (minimal internal variant: same shell, no customer guidance)
 
@@ -214,11 +234,9 @@ REVOKED has two live writers:
 | Email | Status | Evidence |
 |---|---|---|
 | Beta **denial** | Does not exist, deliberately (silent denial) | `app/api/platform/growth-revenue/requests/[id]/deny/route.ts` header |
-| **Welcome** / registration complete | Does not exist. Invited signups get no email at all. | `app/api/auth/register/route.ts` (verification is sent only on the uninvited path) |
-| **Digest** | `DIGEST_SENT` is EMAIL-only but `status: "VOCABULARY"`, with no producer | `lib/notifications/registry.ts` `DIGEST_SENT` |
-| **Platform Spaces** grants / invitations | No email: the route contains no `sendEmail` or `createNotification` | `app/api/admin/platform-grants/route.ts` |
-| Wallet sync failure | No notification and no email | audit §2 row 8 |
-| Plaid webhook reauth / revoked | No notification and no email (see §2) | `lib/plaid/webhook-receiver.ts` |
+| Plaid webhook **PENDING_EXPIRATION** / PENDING_DISCONNECT | Approved, not built (`PLAID_ITEM_PENDING_EXPIRATION`, BUILD): the item still syncs until the date, so the shared `SYNC_FAILED` open key would be retired by the next successful sync | `lib/plaid/webhook-receiver.ts` FIN-007 header |
+
+Removed from this list on 2026-10-31 (now built): the welcome (`welcome`, §1), the digest (`digest`, built OFF, §1), Platform access granted / removed (§1), wallet sync failure (§2b) and the Plaid webhook reauth / revoked notice (§2).
 
 ## 5. Known gaps
 

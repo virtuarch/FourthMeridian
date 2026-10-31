@@ -26,6 +26,7 @@ import { env } from "@/lib/env";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
+import { sendWelcome } from "@/lib/notifications/welcome";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
 import { EMAIL_VERIFICATION_TTL_MS } from "@/lib/email/token-ttl";
 import { possessive } from "@/lib/format";
@@ -372,6 +373,16 @@ export async function POST(req: NextRequest) {
       if (emailResult.status === "error") {
         console.error("[register] verification email failed to send:", emailResult.error);
       }
+    }
+
+    // ── Welcome (owner-approved 2026-10-31) ───────────────────────────────────
+    // INVITED signups only: the account is pre-verified and usable now, and no
+    // verification email was sent above, so the welcome stands alone. Uninvited
+    // signups are welcomed after their first successful verification instead
+    // (app/api/auth/verify-email/route.ts) — never beside the verification
+    // email. Once per account (lib/notifications/welcome.ts); non-throwing.
+    if (invitedFlow) {
+      await sendWelcome({ userId: user.id, email: normalizedEmail, firstName: firstName.trim() });
     }
 
     // `verificationRequired` mirrors exactly whether a verification email was

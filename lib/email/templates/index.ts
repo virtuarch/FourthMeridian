@@ -19,6 +19,8 @@ import { notificationTemplate } from "@/lib/email/templates/notification";
 import { betaInviteTemplate } from "@/lib/email/templates/beta-invite";
 import { betaRequestTemplate } from "@/lib/email/templates/beta-request";
 import { platformAlertTemplate } from "@/lib/email/templates/platform-alert";
+import { welcomeTemplate } from "@/lib/email/templates/welcome";
+import { digestTemplate } from "@/lib/email/templates/digest";
 
 /**
  * name -> template. Typed so `send.ts` can look up a template by name and get a
@@ -36,6 +38,9 @@ export const EMAIL_TEMPLATES: Record<EmailTemplateName, EmailTemplate<never>> = 
   "beta-invite":        betaInviteTemplate as EmailTemplate<never>,
   "beta-request":       betaRequestTemplate as EmailTemplate<never>,
   "platform-alert":     platformAlertTemplate as EmailTemplate<never>,
+  "welcome":            welcomeTemplate as EmailTemplate<never>,
+  // Built, shipped OFF: only lib/notifications/digest.ts sends it, behind DIGEST_ENABLED = false.
+  "digest":             digestTemplate as EmailTemplate<never>,
 };
 
 export function getTemplate(name: EmailTemplateName): EmailTemplate<never> {

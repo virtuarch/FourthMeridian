@@ -118,7 +118,9 @@ const emailLegs = defs.flatMap((d) => d.channels.filter((c) => c.email).map((leg
 function main(): void {
   console.log("1. completeness");
   {
-    check("the catalog has 58 entries at v1 (contract §4.2 C7c)", defs.length === 58, defs.length);
+    // 58 at v1 (contract §4.2 C7c); 2026-10-31: +PLATFORM_ACCESS_REVOKED (the approved revoke notice) and
+    // +PLAID_ITEM_PENDING_EXPIRATION (approved, not built). Every other new notification reused its v1 key.
+    check("the catalog has 60 entries", defs.length === 60, defs.length);
     check("catalog size ≤ 100, so limit=100 returns it in one page", defs.length <= 100);
     check("every key is unique and equals its definition key", new Set(CATALOG_KEYS).size === defs.length && defs.every((d, i) => d.key === CATALOG_KEYS[i]));
     check("keys follow the F2 grammar (SCREAMING_SNAKE, ≥ 2 segments)", defs.every((d) => /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/.test(d.key)));
@@ -218,11 +220,26 @@ function main(): void {
     ];
     check("every key the contract (§8) names is catalogued", CONTRACT_KEYS.every((k) => k in COMMS_CATALOG), CONTRACT_KEYS.filter((k) => !(k in COMMS_CATALOG)));
     const byStatus = (s: string) => defs.filter((d) => d.status === s).map((d) => d.key).sort().join();
-    check("BUILD = the five §8.2 keys", byStatus("BUILD") === ["ACCOUNT_WELCOME", "PLATFORM_ACCESS_GRANTED", "PLAID_ITEM_REAUTH_REQUIRED", "PLAID_ITEM_REVOKED", "WALLET_SYNC_FAILED"].sort().join());
+    // 2026-10-31: the five §8.2 keys are built — three as registry types (ENABLED), the two webhook keys as
+    // SYNC_FAILED (RETIRED tombstones). Left BUILD: the webhook's PENDING_EXPIRATION notice, approved, not built.
+    check("BUILD = PLAID_ITEM_PENDING_EXPIRATION only", byStatus("BUILD") === "PLAID_ITEM_PENDING_EXPIRATION", byStatus("BUILD"));
+    check("RETIRED = the two webhook keys folded into SYNC_FAILED, with no channel",
+      byStatus("RETIRED") === "PLAID_ITEM_REAUTH_REQUIRED,PLAID_ITEM_REVOKED"
+        && COMMS_CATALOG.PLAID_ITEM_REAUTH_REQUIRED.channels.length === 0 && COMMS_CATALOG.PLAID_ITEM_REVOKED.channels.length === 0);
+    check("the built keys are ENABLED registry types",
+      ["ACCOUNT_WELCOME", "WALLET_SYNC_FAILED", "PLATFORM_ACCESS_GRANTED", "PLATFORM_ACCESS_REVOKED"].every((k) =>
+        (COMMS_CATALOG as Record<string, CommsDefinition>)[k]?.status === "ENABLED" && (COMMS_CATALOG as Record<string, CommsDefinition>)[k]?.notificationTypeId === k));
+    check("SYNC_FAILED lists the webhook producer", COMMS_CATALOG.SYNC_FAILED.trigger.sources.includes("lib/plaid/webhook-health.ts"));
     check("BUILD_OFF = DIGEST_SENT; NONE_BY_DESIGN = BETA_REQUEST_DENIED", byStatus("BUILD_OFF") === "DIGEST_SENT" && byStatus("NONE_BY_DESIGN") === "BETA_REQUEST_DENIED");
-    check("ENABLED = 21 WIRED registry types + 13 direct/banner keys", defs.filter((d) => d.status === "ENABLED").length === 34);
-    check("NONE_BY_DESIGN has no channel; non-ENABLED definitions claim no DIRECT leg",
-      COMMS_CATALOG.BETA_REQUEST_DENIED.channels.length === 0 && defs.filter((d) => d.status !== "ENABLED").every((d) => d.channels.every((c) => c.path !== "DIRECT")));
+    check("ENABLED = 25 WIRED registry types + 13 direct/banner keys", defs.filter((d) => d.status === "ENABLED").length === 38,
+      defs.filter((d) => d.status === "ENABLED").length);
+    // BUILD_OFF is BUILT (a real producer + template behind an OFF constant), so its DIRECT leg exists, default off.
+    check("NONE_BY_DESIGN has no channel; non-ENABLED definitions claim no DIRECT leg (BUILD_OFF aside)",
+      COMMS_CATALOG.BETA_REQUEST_DENIED.channels.length === 0
+        && defs.filter((d) => d.status !== "ENABLED" && d.status !== "BUILD_OFF").every((d) => d.channels.every((c) => c.path !== "DIRECT")));
+    check("BUILD_OFF DIGEST_SENT: one DIRECT digest leg, default OFF, its producer the only source",
+      COMMS_CATALOG.DIGEST_SENT.channels.filter((c) => c.path === "DIRECT").map((c) => `${c.email?.template}:${c.defaultOn}`).join() === "digest:false"
+        && COMMS_CATALOG.DIGEST_SENT.trigger.sources.join() === "lib/notifications/digest.ts");
     check("every trigger key in a definition is in the trigger catalog", defs.every((d) => d.trigger.triggerKey === null || d.trigger.triggerKey in TRIGGER_CATALOG));
     check("the trigger catalog is exactly TRIGGER_KEYS", Object.keys(TRIGGER_CATALOG).sort().join() === [...TRIGGER_KEYS].sort().join());
     check("no trigger is a comms-originated event (§5.1: no self-triggering)", TRIGGER_KEYS.every((k) => !/delivery|notification|email\.|comms/.test(k)));
@@ -301,8 +318,8 @@ function main(): void {
     // OWNER RULING 2026-10-31 (O-7) — replaces the A-1 "SYNC_FAILED email is lost when FINANCIAL IN_APP is off" finding:
     // the email follows only its own preference. Behaviour is proven in lib/notifications/comms-a2b.test.ts.
     const independent = NOTIFICATION_TYPE_IDS.filter((id) => (NOTIFICATION_REGISTRY[id] as NotificationTypeDefinition).emailIndependentOfInApp);
-    check("RULED (O-7): only SYNC_FAILED's email is independent of in-app, and it is the SERVICE (connection-failure) class",
-      independent.join() === "SYNC_FAILED" && independent.every((id) => COMMS_CATALOG[id].consentClass === "SERVICE"), independent);
+    check("RULED (O-7): only the connection-failure emails (SYNC_FAILED, WALLET_SYNC_FAILED) are independent of in-app, both SERVICE",
+      [...independent].sort().join() === "SYNC_FAILED,WALLET_SYNC_FAILED" && independent.every((id) => COMMS_CATALOG[id].consentClass === "SERVICE"), independent);
     check("RULED (O-7): the catalog says so in SYNC_FAILED's description",
       /does not stop the email/.test(COMMS_CATALOG.SYNC_FAILED.description));
 

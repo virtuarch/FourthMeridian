@@ -205,6 +205,14 @@ export interface NotificationTypeDefinition {
    * `{placeholders}` name pointerContract keys. Null when dedupe === "none".
    */
   dedupeKeyTemplate: string | null;
+  /**
+   * ONE-TIME condition (ACCOUNT_WELCOME): the dedupe key is never released.
+   * An archived holder still suppresses — dismissing the notice can never make
+   * it fire again — and nothing retires the key. Its template ends ":once"
+   * instead of ":open" (registry.test.ts). Absent = the F3 suppress-while-open
+   * semantics (an archived holder releases its key).
+   */
+  dedupeNeverReleases?: true;
   /** Iconography key (lucide icon name) — UI stays switch-free. */
   icon: NotificationIconKey;
   /**

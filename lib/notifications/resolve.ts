@@ -58,6 +58,8 @@ export async function retireOpenNotification(
 ): Promise<number> {
   const def = getNotificationDefinition(type);
   if (!def || def.dedupe === "none" || def.dedupeKeyTemplate === null) return 0;
+  // A one-time condition (ACCOUNT_WELCOME) is never retired: its key is never released.
+  if (def.dedupeNeverReleases === true) return 0;
 
   let dedupeKey: string;
   try {
