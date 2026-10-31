@@ -12,10 +12,11 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/crypto/eth-history-incremental.test.ts
  */
 
+import { serveAssetTransfers } from "@/lib/test-support/eth-asset-transfers-sim";
 import { readFileSync } from "node:fs";
 import { baseUnitsToWhole, reconcileMovementsAgainstOpening, type ChainCoverage } from "./chain-movement";
 import {
-  acquireEthHistory, provablyUnchanged, readAccountStateAt, EARLIEST_PROVABLE_BLOCK, ETH_HISTORY_SOURCE, WEI_PER_GWEI,
+  acquireEthHistory, provablyUnchanged, readAccountStateAt, EARLIEST_PROVABLE_BLOCK, ETH_HISTORY_SOURCE, WEI_PER_GWEI, ASSET_TRANSFERS_METHOD,
   type EthAccountState, type EthRpcTransport,
 } from "./eth-history";
 import { ETH_RECONSTRUCTION_VERSION, replayEthHistory, sameQuantity, earliestRowDifference } from "./eth-history-rows";
@@ -52,6 +53,8 @@ function simulate(opts: { events: readonly SimEvent[]; head: number; headTimeSec
     stats.requests++; stats.calls += rows.length;
     const out = rows.map((r) => {
       if (opts.failOn?.(r.method)) throw new Error(`simulated provider failure on ${r.method}`);
+      // The ETH history FAST PATH's index (2026-10-31), with the vendor's blind spots.
+      if (r.method === ASSET_TRANSFERS_METHOD) return serveAssetTransfers(r, sorted, { owner: OWNER });
       const blockParam = r.method === "eth_getBlockByNumber" || r.method === "eth_getBlockReceipts" ? r.params[0] : r.params[1];
       const b = blockParam === "finalized" ? opts.head : Number(BigInt(blockParam as string));
       stats.minBlock = Math.min(stats.minBlock, b);
@@ -98,9 +101,9 @@ const anchorFor = (quantity: number, todayISO: string) => ({
 });
 
 /** The full-rebuild reference: acquire from the provable floor, replay through the shared derivation. */
-async function fullRebuild(events: SimEvent[], head: number) {
+async function fullRebuild(events: SimEvent[], head: number, fastPath?: boolean) {
   const sim = simulate({ events, head, headTimeSec: T1 + (head - HEAD1) * 12 });
-  const acq = await acquireEthHistory({ ownerAddress: OWNER, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock: head }, { transport: sim.transport });
+  const acq = await acquireEthHistory({ ownerAddress: OWNER, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock: head }, { transport: sim.transport, ...(fastPath !== undefined ? { fastPath } : {}) });
   if (acq.coverage.kind !== "COMPLETE") throw new Error("reference acquisition not COMPLETE");
   const todayISO = acq.coverage.toISO;
   const { rows } = replayEthHistory({
@@ -174,6 +177,10 @@ async function main() {
   }
 
   const base = await fullRebuild(HISTORY, HEAD1);
+  // The WALK's full rebuild, for the cost comparison below: with the fast path
+  // (default ON) the full rebuild itself costs about as much as a suffix.
+  const baseWalk = await fullRebuild(HISTORY, HEAD1, false);
+  check("the fast full rebuild is the walk's, row for row", JSON.stringify(base.rows) === JSON.stringify(baseWalk.rows) && JSON.stringify(base.coverage) === JSON.stringify(baseWalk.coverage));
   console.log(`\n(reference full rebuild: ${base.rows.length} rows, ${base.stats.requests} requests, coverage ${JSON.stringify(base.coverage)})`);
 
   console.log("\nA. no new events, six hours later (same day)");
@@ -184,10 +191,10 @@ async function main() {
     const r = outcome.kind === "DONE" ? outcome.result : null;
     check("incremental, NO_CHANGE, nothing historical changed", r?.mode === "NO_CHANGE" && r.impactedFromISO === null, JSON.stringify(outcome).slice(0, 200));
     check("no write at all: the rows and coverage already say this", s.state.applies === 0 && snapshot(s.state.rows) === before);
-    check(`bounded RPC work (${stats.requests} requests, ${stats.calls} calls) — vs ${base.stats.requests} for the full rebuild`,
+    check(`bounded RPC work (${stats.requests} requests, ${stats.calls} calls) — vs ${baseWalk.stats.requests} for the walk's full rebuild (${base.stats.requests} with the fast path)`,
       // ×5, not ×10: since the EARLY ORIGIN the full rebuild itself stops at the
       // wallet's origin instead of walking to Byzantium, so it is far cheaper.
-      stats.requests <= 30 && stats.requests * 5 < base.stats.requests);
+      stats.requests <= 30 && stats.requests * 5 < baseWalk.stats.requests);
     check("no genesis scan: nothing below the day before the boundary was read", stats.minBlock > HEAD1 - 10_000, String(stats.minBlock));
   }
 
