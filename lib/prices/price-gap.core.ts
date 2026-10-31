@@ -256,6 +256,8 @@ export interface HolderRevaluation {
    * holder held nothing.
    */
   contributes?: ReadonlyArray<{ fromISO: string; toISO: string }>;
+  /** The holder's ACTIVE Spaces (sorted) — what its rebuild regenerates (cross-holder credit). */
+  spaceIds?: readonly string[];
 }
 
 /** FNV-1a 32-bit, hex — a stable short digest (pure; no node:crypto in a core). */

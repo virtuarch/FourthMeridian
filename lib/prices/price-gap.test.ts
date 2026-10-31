@@ -13,7 +13,7 @@ import {
   valuedFromISO, planPriceGaps, acquireHistoricalPriceGaps, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
   priceGapAttemptKey, revaluationOwedFromISO, cryptoHolderLicences, revalueHoldersAfterPriceGaps, REVALUATION_RESERVE_MS,
   holderRevaluationFor, holderRevaluations, revaluationBlocks, planRevaluationBatch, revaluationPending, REVALUATION_MAX_ATTEMPTS,
-  estimateRebuildCost, batchDaysFor, REVALUATION_SUSPECT_HALVINGS, prismaRevaluationDeps,
+  estimateRebuildCost, batchDaysFor, REVALUATION_SUSPECT_HALVINGS, prismaRevaluationDeps, planRevaluation,
   unblockedRanges, holderContributionSpans, holderStampRanges, REVALUATION_MAX_BATCHES_PER_PASS, stampOwedHolders,
   type HolderLicence, type HolderRevaluation, type InstrumentPriceFacts, type PriceGapDeps, type RevaluationDeps,
 } from "./price-gap";
@@ -382,6 +382,75 @@ async function main() {
         sizes[0] <= 7 && sizes.length >= 2 && sizes[1] >= 28 && t <= 1_200_000 + 100_000, JSON.stringify({ sizes, t }));
     }
 
+    // CROSS-HOLDER CREDIT (live: SOL's rebuilds recomputed BTC/ETH days yet left their blocks owed).
+    {
+      const spacesOf: Record<string, string[]> = { "s-sol": ["qa"], "s-btc": ["qa"], "s-eth": ["qa", "other"] };
+      const sp = (id: string): HolderRevaluation => ({ ...owe(id, "2025-10-28"), spaceIds: spacesOf[id] });
+      const cr = mk({ owed: [sp("s-sol"), sp("s-btc"), sp("s-eth")], perDayMs: 1_000 });
+      // The rebuild REPORTS the Spaces it rebuilt (the production shape).
+      const report = (id: string) => ({ rebuiltSpaceIds: spacesOf[id] });
+      const crDeps: RevaluationDeps = { ...cr.deps, regenerate: async (id, f, t) => { await cr.deps.regenerate(id, f, t); return report(id); } };
+      const rc = await revalueHoldersAfterPriceGaps({ accountIds: ["s-sol", "s-btc", "s-eth"], deps: crDeps, deadlineMs: 1e12, todayISO: TODAY });
+      const n = blocksOf(owe("x", "2025-10-28")).length;
+      const done = (id: string) => cr.marks.filter((k) => k.includes(`:${id}:`)).length;
+      const rebuiltBy = (id: string) => cr.regens.filter((x) => x.startsWith(`${id}:`)).length;
+      check("a holder whose Spaces the rebuild REPORTS rebuilt is CREDITED (its blocks done without its own rebuild)",
+        done("s-btc") === n && done("s-sol") === n && rc.blocksCredited >= n && Math.min(rebuiltBy("s-sol"), rebuiltBy("s-btc")) === 0, JSON.stringify({ rc, regens: cr.regens.length }));
+      check("…a holder in an EXTRA Space the rebuild did not cover is never credited (it rebuilds itself)", done("s-eth") === n && rebuiltBy("s-eth") > 0);
+
+      // REVIEW #185 P3 — no credit behind a swallowed failure, and a holder's own blocks are not "done" if one of its Spaces failed.
+      const fl = mk({ owed: [sp("s-btc"), { ...owe("s-sol2", "2025-10-28"), spaceIds: ["qa"] }], perDayMs: 1_000 });
+      const flDeps: RevaluationDeps = { ...fl.deps, regenerate: async (id, f, t) => { await fl.deps.regenerate(id, f, t); return { rebuiltSpaceIds: [] }; } }; // "qa" failed
+      await revalueHoldersAfterPriceGaps({ accountIds: ["s-btc", "s-sol2"], deps: flDeps, deadlineMs: 1e12, todayISO: TODAY });
+      check("a rebuild that REPORTS its Space failed: no credit for anyone, and its own blocks are NOT marked done",
+        fl.marks.length === 0, JSON.stringify(fl.marks.slice(0, 3)));
+      const vd = mk({ owed: [sp("s-btc"), { ...owe("s-sol3", "2025-10-28"), spaceIds: ["qa"] }], perDayMs: 1_000 }); // regenerate returns void
+      await revalueHoldersAfterPriceGaps({ accountIds: ["s-btc", "s-sol3"], deps: vd.deps, deadlineMs: 1e12, todayISO: TODAY });
+      check("a rebuild that reports NOTHING earns its own blocks only — never another holder's credit",
+        vd.regens.some((x) => x.startsWith("s-btc:")) && vd.regens.some((x) => x.startsWith("s-sol3:")), vd.regens.slice(0, 4).join());
+
+      const pgSrc = readFileSync("lib/prices/price-gap.ts", "utf8"), rhSrc = readFileSync("lib/snapshots/regenerate-history.ts", "utf8");
+      check("production: the rebuild reports ONLY Spaces whose regeneration returned (rebuilt, never attempted)",
+        /return \{ rebuiltSpaceIds: r\.rebuilt \};/.test(pgSrc) && /regenerateWealthHistoryForAccountsDetailed\(\[accountId\]/.test(pgSrc)
+          && /await regenerateWealthHistory\(\{ spaceId[^}]*\}\);\s*rebuilt\.push\(spaceId\);/.test(rhSrc) && /failed\.push\(spaceId\);/.test(rhSrc));
+      // Partial-block credit: the batch must CONTAIN the other holder's block, overlap is not enough.
+      const pb = mk({ owed: [{ ...owe("a-thu", "2026-10-15"), spaceIds: ["qa"] }, { ...owe("b-mon", "2026-10-12"), spaceIds: ["qa"] }] });
+      const pbDeps: RevaluationDeps = { ...pb.deps, regenerate: async (id, f, t) => { await pb.deps.regenerate(id, f, t); return { rebuiltSpaceIds: ["qa"] }; } };
+      await revalueHoldersAfterPriceGaps({ accountIds: ["a-thu", "b-mon"], deps: pbDeps, deadlineMs: 1e12, todayISO: "2026-10-25" });
+      check("a batch 10-15..10-25 credits B's CONTAINED block (10-19..10-25) but NOT the partly covered 10-12..10-18 — B rebuilds that itself",
+        pb.regens[0] === "a-thu:2026-10-15..2026-10-25" && pb.regens.includes("b-mon:2026-10-12..2026-10-18") && !pb.regens.some((x) => x.startsWith("b-mon:2026-10-19")), pb.regens.join());
+
+      // Empty spaceIds: never credited (every() over [] is vacuously true).
+      const es = mk({ owed: [{ ...owe("a-q", "2026-10-12"), spaceIds: ["qa"] }, { ...owe("b-none", "2026-10-12"), spaceIds: [] }] });
+      const esDeps: RevaluationDeps = { ...es.deps, regenerate: async (id, f, t) => { await es.deps.regenerate(id, f, t); return { rebuiltSpaceIds: ["qa"] }; } };
+      await revalueHoldersAfterPriceGaps({ accountIds: ["a-q", "b-none"], deps: esDeps, deadlineMs: 1e12, todayISO: "2026-10-25" });
+      check("a holder with EMPTY spaceIds is never credited (it rebuilds itself)", es.regens.some((x) => x.startsWith("b-none:")), es.regens.join());
+    }
+
+    // REVIEW #185 P1 — a STALE job-start plan: the rebuild re-plans and stamps the new key; the superseded key is never marked done.
+    {
+      for (const kase of ["licence-widened", "link-added"] as const) {
+        let phase = 1;
+        const st = mk({ owed: [] });
+        const k1: HolderRevaluation = { accountId: "eth", windowFromISO: "2026-09-01", valuedFromISO: "2026-09-01", windowToISO: TODAY, evidenceKey: "K1", spaceIds: ["qa"] };
+        const k2: HolderRevaluation = kase === "licence-widened"
+          ? { ...k1, windowFromISO: "2025-11-01", valuedFromISO: "2025-11-01", evidenceKey: "K2" }
+          : { ...k1, evidenceKey: "K2", spaceIds: ["qa", "new-space"] }; // a link added mid-pass: a new Space, a new key
+        const deps: RevaluationDeps = { ...st.deps, owed: async () => [phase === 1 ? k1 : k2],
+          regenerate: async (id, f, t) => { await st.deps.regenerate(id, f, t); return { rebuiltSpaceIds: (phase === 1 ? k1 : k2).spaceIds! }; } };
+        const plan = await planRevaluation(deps, ["eth"], TODAY);
+        await stampOwedHolders(deps, ["eth"], TODAY, plan);
+        const atStart = st.stamped.length;
+        phase = 2; // the history pass changed the evidence after the plan was read
+        const r = await revalueHoldersAfterPriceGaps({ accountIds: ["eth"], deps, deadlineMs: 1e12, todayISO: TODAY, plan, alreadyStamped: true });
+        const after = st.stamped.slice(atStart);
+        check(`stale plan (${kase}): the NEW key's window is stamped before the rebuild`,
+          after.length > 0 && r.rowsStampedPending > 0 && (kase === "link-added" || after.some((x) => x.startsWith("eth:2025-11-01"))), JSON.stringify({ after, r: r.rowsStampedPending }));
+        check(`…and only the NEW key's blocks are marked done — never the superseded K1 (${kase})`,
+          st.marks.length > 0 && st.marks.every((m) => m.startsWith("K2:")), JSON.stringify(st.marks.slice(0, 3)));
+      }
+    }
+
     // LARGE WINDOW: batches sized to the time left, newest first, progress across runs, nothing rebuilt twice.
     const big = mk({ owed: [owe("x", "2025-10-28")], perDayMs: 1_000 });
     const DEADLINE = 150_000;
@@ -492,11 +561,11 @@ async function main() {
       spaceAccountLink: { findMany: async () => [{ financialAccountId: "w", spaceId: "qa" }] },
       spaceSnapshot: { groupBy: async () => [{ spaceId: "qa", _min: { date: new Date("2026-09-27T00:00:00Z") } }] },
       // resolveEvidenceFloor's reads (no evidence ⇒ no floor) and the contribution read (no rows ⇒ unknown ⇒ could contribute).
-      transaction: { aggregate: async () => ({ _min: { date: null } }) },
-      investmentEvent: { aggregate: async () => ({ _min: { date: null } }) },
-      investmentEventCoverage: { aggregate: async () => ({ _min: { earliestReturnedDate: null } }) },
-      positionObservation: { aggregate: async () => ({ _min: { date: null } }), findMany: async () => [] },
-      positionCoverage: { aggregate: async () => ({ _min: { coveredFromDate: null } }),
+      transaction: { groupBy: async () => [] },
+      investmentEvent: { groupBy: async () => [] },
+      investmentEventCoverage: { groupBy: async () => [] },
+      positionObservation: { groupBy: async () => [], findMany: async () => [] },
+      positionCoverage: { groupBy: async () => [],
         findMany: async (q: { where: { financialAccountId: { in: string[] }; instrument?: { NOT?: { aliases?: unknown } } } }) =>
           rows.filter((r) => q.where.financialAccountId.in.includes(r.financialAccountId) && !(q.where.instrument?.NOT?.aliases && r.token)) },
     }) as unknown as Parameters<typeof holderRevaluations>[0];
@@ -572,6 +641,79 @@ async function main() {
     } });
     check(`the ${REVALUATION_MAX_BATCHES_PER_PASS}-call bound trips BEFORE charging: attempts === rebuilds === the bound (${many.length} blocks owed)`,
       many.length > REVALUATION_MAX_BATCHES_PER_PASS && attempts === REVALUATION_MAX_BATCHES_PER_PASS && rebuilt === REVALUATION_MAX_BATCHES_PER_PASS, `${attempts} ${rebuilt}`);
+  }
+
+  console.log("PERF 2026-10-31: planning reads are batched (constant in the number of holders) and match the canonical floor reader");
+  {
+    // An in-memory store for the five evidence sources; the fake HONOURS `where` (deletedAt, supersededById,
+    // outcome, reconciliation, kind, token instrument), so a filter the batched reader drops is caught.
+    type EvRow = { financialAccountId: string; d: string } & Record<string, unknown>;
+    const ev: Record<string, EvRow[]> = {
+      transaction: [{ financialAccountId: "a1", d: "2025-03-01", deletedAt: null }, { financialAccountId: "a2", d: "2026-06-10", deletedAt: null },
+        { financialAccountId: "a2", d: "2020-01-01", deletedAt: new Date() }], // a DELETED tx must not count
+      investmentEvent: [{ financialAccountId: "a1", d: "2024-11-05", deletedAt: null, supersededById: null },
+        { financialAccountId: "a1", d: "2019-01-01", deletedAt: null, supersededById: "x" }], // a SUPERSEDED event must not count
+      investmentEventCoverage: [{ financialAccountId: "a4", d: "2023-02-02", outcome: "PARTIAL", paginationReconciled: true }], // not COMPLETE ⇒ ignored
+      positionObservation: [{ financialAccountId: "a2", d: "2026-05-01", deletedAt: null, supersededById: null },
+        { financialAccountId: "a3", d: "2022-01-01", deletedAt: null, supersededById: null },
+        { financialAccountId: "a3", d: "2018-01-01", deletedAt: new Date(), supersededById: null }],
+      positionCoverage: [{ financialAccountId: "a3", d: "2021-06-01", kind: "COMPLETE", token: true },
+        { financialAccountId: "a2", d: "2017-01-01", kind: "COMPLETE", token: false }], // a NATIVE licence is not a token licence
+    };
+    const field: Record<string, string> = { transaction: "date", investmentEvent: "date", investmentEventCoverage: "earliestReturnedDate", positionObservation: "date", positionCoverage: "coveredFromDate" };
+    const matches = (r: EvRow, where: Record<string, unknown>, t: string): boolean => Object.entries(where).every(([k, v]) => {
+      if (k === "financialAccountId") return (v as { in: string[] }).in.includes(r.financialAccountId);
+      if (k === field[t]) return r.d !== null; // "{ not: null }" on the dated field
+      if (k === "instrument") return r.token === true; // IS_TOKEN_INSTRUMENT
+      if (v && typeof v === "object" && "in" in (v as object)) return (v as { in: unknown[] }).in.includes(r[k]);
+      if (v === null) return r[k] === null || r[k] === undefined;
+      return r[k] === v;
+    });
+    let queries = 0;
+    const mkEv = () => Object.fromEntries(Object.keys(ev).map((t) => [t, {
+      aggregate: async (q: { where: Record<string, unknown> }) => {
+        queries++;
+        const rows = ev[t].filter((r) => matches(r, q.where, t)).map((r) => r.d).sort();
+        return { _min: { [field[t]]: rows[0] ? new Date(`${rows[0]}T00:00:00Z`) : null } };
+      },
+      groupBy: async (q: { where: Record<string, unknown> }) => {
+        queries++;
+        const rows = ev[t].filter((r) => matches(r, q.where, t));
+        const ids = [...new Set(rows.map((r) => r.financialAccountId))];
+        return ids.map((id) => ({ financialAccountId: id, _min: { [field[t]]: new Date(`${rows.filter((r) => r.financialAccountId === id).map((r) => r.d).sort()[0]}T00:00:00Z`) } }));
+      },
+    }]));
+    const { resolveEvidenceFloor, resolveEvidenceFloorsByAccount } = await import("@/lib/snapshots/historical-work-window");
+    const c = mkEv() as unknown as Parameters<typeof resolveEvidenceFloor>[0];
+    const batched = await resolveEvidenceFloorsByAccount(c, ["a1", "a2", "a3", "a4"]);
+    const batchQueries = queries;
+    let same = true;
+    for (const id of ["a1", "a2", "a3", "a4"]) if ((await resolveEvidenceFloor(c, [id])) !== batched.get(id)) same = false;
+    check("resolveEvidenceFloorsByAccount: per account EQUAL to resolveEvidenceFloor (a1 2024-11-05, a2 2026-05-01, a3 2021-06-01, a4 none)",
+      same && batched.get("a1") === "2024-11-05" && batched.get("a2") === "2026-05-01" && batched.get("a3") === "2021-06-01" && batched.get("a4") === null, JSON.stringify([...batched]));
+    check("…in FIVE queries for four accounts (one per source), not five per account", batchQueries === 5, String(batchQueries));
+
+    // holderRevaluations: query count does not grow with the number of holders.
+    const countFor = async (n: number) => {
+      let q = 0;
+      const ids = Array.from({ length: n }, (_, i) => `w${i}`);
+      const tick = <T,>(v: T) => { q++; return v; };
+      const fake = {
+        positionCoverage: {
+          findMany: async () => tick(ids.map((id) => ({ financialAccountId: id, instrumentId: "eth", kind: "COMPLETE", coveredFromDate: new Date("2025-01-01T00:00:00Z"), coveredToDate: new Date("2026-10-30T00:00:00Z"), caveats: [], source: "rpc" }))),
+          groupBy: async () => tick([]),
+        },
+        priceObservation: { groupBy: async () => tick([{ instrumentId: "eth", _min: { date: new Date("2025-10-28T00:00:00Z") } }]) },
+        spaceAccountLink: { findMany: async () => tick(ids.map((id) => ({ financialAccountId: id, spaceId: "qa" }))) },
+        spaceSnapshot: { groupBy: async () => tick([{ spaceId: "qa", _min: { date: new Date("2025-10-28T00:00:00Z") } }]) },
+        transaction: { groupBy: async () => tick([]) }, investmentEvent: { groupBy: async () => tick([]) }, investmentEventCoverage: { groupBy: async () => tick([]) },
+        positionObservation: { groupBy: async () => tick([]), findMany: async () => tick([]) },
+      } as unknown as Parameters<typeof holderRevaluations>[0];
+      const hs = await holderRevaluations(fake, ids);
+      return { q, n: hs.length };
+    };
+    const c3 = await countFor(3), c30 = await countFor(30);
+    check("holderRevaluations: the SAME number of queries for 3 holders and for 30 (no N+1)", c3.n === 3 && c30.n === 30 && c3.q === c30.q, JSON.stringify({ c3, c30 }));
   }
 
   if (failures > 0) { console.error(`\nprice-gap: ${failures} failed.`); process.exit(1); }
