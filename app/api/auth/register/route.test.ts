@@ -216,6 +216,13 @@ async function main() {
       t.check("siteverify was consulted once, and no user lookup happened", siteverify === 1 && fake.callsTo("User").length === 0);
       t.check("a missing token with CAPTCHA configured → 400 without a network call",
         (await register(form())).status === 400 && siteverify === 1);
+      // R2 — Cloudflare unreachable → honest 503 (fail-closed), never a pass.
+      globalThis.fetch = (async () => { siteverify++; return new Response("down", { status: 502 }); }) as typeof fetch;
+      const origErr = console.error; console.error = () => {};
+      const down = await register(form({ captchaToken: "tok" })).finally(() => { console.error = origErr; });
+      t.check("siteverify 502 → 503 'temporarily unavailable' with Retry-After, nothing written",
+        down.status === 503 && String(down.body.error).includes("temporarily unavailable") && !!down.headers.get("retry-after")
+        && fake.callsTo("User").length === 0, down);
     } finally {
       globalThis.fetch = realFetch;
       delete process.env.TURNSTILE_SECRET_KEY;

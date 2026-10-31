@@ -94,9 +94,9 @@ Owner-approved controls on the public `POST /api/access-request` intake and the 
 | Mode (`captchaMode()` in `lib/captcha.ts`) | When | Behaviour |
 |---|---|---|
 | `not_configured` | `TURNSTILE_SECRET_KEY` unset | Verification skipped, returns `true`; one `[captcha] … NOT enforced` warning per process |
-| `enforced` | `TURNSTILE_SECRET_KEY` set | Only a Cloudflare `success: true` passes. Missing token, `success: false`, non-2xx, network error, timeout (5 s) or malformed JSON all **fail closed** |
+| `enforced` | `TURNSTILE_SECRET_KEY` set | Only a Cloudflare `success: true` is `passed`. Missing token or `success: false` is `rejected`; non-2xx, network error, timeout (5 s) or a malformed reply is `unavailable`. Both **fail closed** |
 
-Callers sharing these semantics: access-request (every submission), register (every registration), and login step-up in `lib/auth.ts` (only after `LOGIN_CAPTCHA_THRESHOLD` failures on an identifier). **Consequence of fail-closed:** during a Cloudflare siteverify outage, access requests, registrations and step-up logins are refused until it recovers; ordinary logins below the threshold are unaffected.
+Callers sharing these semantics: access-request (every submission), register (every registration), and login step-up in `lib/auth.ts` (only after `LOGIN_CAPTCHA_THRESHOLD` failures on an identifier). `rejected` → the existing 400 (routes) / denied login. `unavailable` → an honest **503 "temporarily unavailable"** with `Retry-After` on access-request and register, and `TEMPORARILY_UNAVAILABLE` (the `AUTH_UNAVAILABLE_TOKEN` sentinel, Sentry `auth_stage: captcha`) on a step-up login — thrown before the user lookup, so it writes no `LOGIN_FAILED` row. **Consequence of fail-closed:** during a Cloudflare siteverify outage those three paths are refused until it recovers; ordinary logins below the threshold are unaffected.
 
 ### Enabling Turnstile — Preview first, Production only after a separate approval
 
@@ -104,7 +104,7 @@ Callers sharing these semantics: access-request (every submission), register (ev
 2. In Vercel set, **scoped to Preview (develop branch) only**:
    - `NEXT_PUBLIC_TURNSTILE_SITE_KEY` — the widget's site key (public; inlined into client bundles at **build** time, so a redeploy is required).
    - `TURNSTILE_SECRET_KEY` — the widget's secret (Sensitive).
-   Set **both together**: the secret without the site key means no widget renders and every gated request is refused (the server logs a `[captcha] … NEXT_PUBLIC_TURNSTILE_SITE_KEY is not` error).
+   Set **both together**: the secret without the site key means no widget renders and every gated request is refused (boot-time `validateEnv()` logs a loud `[env] … Set both or neither` error for either half missing — warn-only, never fatal — and the verifier logs `[captcha] … NEXT_PUBLIC_TURNSTILE_SITE_KEY is not`).
 3. Redeploy Preview. Validate: the request-access form, `/register` and a login past 3 failed attempts all render the widget and succeed; a request with no/invalid token gets `400 CAPTCHA verification failed`; logs show `[captcha] Turnstile verification enforced (fail-closed)`.
 4. Production: repeat step 2 for the Production scope **only after the Preview validation is recorded and the owner approves separately.**
 
@@ -116,15 +116,15 @@ Rollback: unset `TURNSTILE_SECRET_KEY` (and the site key) and redeploy — behav
 |---|---|---|---|
 | Per IP | 5 / 15 min | 429 | fail-open |
 | Global (all callers, counted after CAPTCHA) | 60 / hour | 429, generic message | fail-open (availability; per-IP + CAPTCHA still apply) |
-| Per normalised address (sha256 of canonical email; `+tag` dropped, Gmail dots folded) | 3 / 24 h | **identical 200, submission silently dropped** — a 429 would be an existence oracle | fail-open |
-| Operator e-mail (`BETA_REQUESTS_EMAIL`) per address | 1 / 24 h | e-mail skipped, request still stored, `[access-request] operator notification throttled reason=email` | fail-open (e-mail sent) |
+| Per address **as stored** (sha256 of lowercase + trim — deliberately NOT the canonical form, so `victim+1@` cannot fill `victim@`'s bucket) | 3 / 24 h | **identical 200, submission silently dropped** (no waitlist, event or audit row, no e-mail) — a 429 would be an existence oracle | fail-open |
+| Operator e-mail (`BETA_REQUESTS_EMAIL`) per **canonical** address (`+tag` dropped, Gmail dots folded — can only reduce operator mail) | 1 / 24 h | e-mail skipped, request still stored, `[access-request] operator notification throttled reason=email` | fail-open (e-mail sent) |
 | Operator e-mail, global | 20 / hour | e-mail skipped, request still stored, `… reason=global` | fail-open |
 
 All counters live in the existing `RateLimit` table (no raw addresses in keys; swept after 24 h). The limits honour `RATE_LIMIT_ENABLED`/`RATE_LIMIT_SHADOW` like every limiter; the operator-e-mail throttle is a cost control and applies in every environment. Origin/Referer headers are **not** used as a bot control.
 
 ### Network-field retention
 
-`BETA_ACCESS_REQUESTED` audit rows keep the raw IP and user agent for **90 days**. The daily `purge-trash` run (`jobs/data-retention.ts`, `runBetaIntakeNetworkMinimisation`) then nulls `ipAddress`/`userAgent` and adds `metadata.uaFamily` (browser / script / headless / empty / other) and `metadata.networkDigest` = HMAC-SHA256 of the IP under a key derived from `NEXTAUTH_SECRET` (`networkDigestKeyId: "nextauth-hmac-v1"`; no secret ⇒ no digest stored). Rows are never deleted; ≤ 2,000 rows per run, idempotent. Rotating `NEXTAUTH_SECRET` means digests from before and after the rotation no longer correlate.
+`BETA_ACCESS_REQUESTED` audit rows keep the raw IP and user agent for **90 days**. The daily `purge-trash` run (`jobs/data-retention.ts`, `runBetaIntakeNetworkMinimisation`) then nulls `ipAddress`/`userAgent` and adds `metadata.uaFamily` (browser / script / headless / empty / other) and `metadata.networkDigest` = HMAC-SHA256 of the IP under a key derived from `NEXTAUTH_SECRET` (`networkDigestKeyId: "nextauth-hmac-v1"`; no secret ⇒ no digest stored). IPv6 text is canonicalised first (lowercase, RFC 5952 compression, IPv4-mapped `::ffff:a.b.c.d` → `a.b.c.d`). Rows are never deleted; ≤ 2,000 rows per run, idempotent. `purgeTrash({ dryRun: true })` / `runDataRetention(…, { dryRun: true })` counts what would be deleted/minimised and writes nothing. Rotating `NEXTAUTH_SECRET` means digests from before and after the rotation no longer correlate.
 
 ## Source
 

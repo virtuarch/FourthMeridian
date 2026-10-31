@@ -13,26 +13,31 @@
  * TWO MODES (`captchaMode()`):
  *
  *   "not_configured" — no `TURNSTILE_SECRET_KEY`. Verification is SKIPPED and
- *     returns `true` with no network call (dev/test, and any deploy that has
+ *     returns "passed" with no network call (dev/test, and any deploy that has
  *     not been given keys). A single warning is logged per process so an
  *     unprotected deploy is visible in the logs rather than silent.
  *
  *   "enforced" — a secret is configured. A token is verified against
- *     Cloudflare's siteverify endpoint and ONLY a positive `success: true`
- *     passes. Everything else FAILS CLOSED and returns `false`:
- *       - missing/empty token,
- *       - Cloudflare `success: false`,
- *       - non-2xx from Cloudflare,
- *       - network error, timeout (VERIFY_TIMEOUT_MS) or malformed JSON.
+ *     Cloudflare's siteverify endpoint and ONLY a positive `success: true` is
+ *     "passed". Everything else FAILS CLOSED, as one of two verdicts:
+ *       "rejected"    — missing/empty token, or Cloudflare `success: false`.
+ *                       The CHALLENGE failed: callers answer with their
+ *                       ordinary 400 / denied login.
+ *       "unavailable" — non-2xx from Cloudflare, network error, timeout
+ *                       (VERIFY_TIMEOUT_MS) or a malformed reply. We could not
+ *                       CONSULT the authority: callers answer honestly with
+ *                       "temporarily unavailable" (503 on the routes, the
+ *                       AUTH_UNAVAILABLE_TOKEN sentinel in authorize()).
+ *     Both deny. Neither is ever treated as a pass.
  *
  * WHY FAIL CLOSED (owner decision, R2): the earlier fail-open posture meant a
  * bot only had to wait for — or induce — a siteverify error or timeout to
  * bypass the challenge entirely, so a configured CAPTCHA was not actually a
  * control. The cost is accepted: during a Cloudflare siteverify outage,
  * CAPTCHA-gated actions (access requests, registrations, and step-up logins
- * past the failure threshold) are refused with the callers' ordinary "CAPTCHA
- * verification failed" responses until Cloudflare recovers. Ordinary logins
- * below the step-up threshold never call this and are unaffected.
+ * past the failure threshold) are refused as "temporarily unavailable" until
+ * Cloudflare recovers. Ordinary logins below the step-up threshold never call
+ * this and are unaffected.
  *
  * NO SDK: Turnstile verification is one POST to a documented URL, so there is no
  * import to isolate — the single-import-site house rule is satisfied by having
@@ -49,11 +54,18 @@ export const VERIFY_TIMEOUT_MS = 5_000;
 
 /** The subset of the siteverify JSON response we read. */
 interface SiteverifyResponse {
-  success: boolean;
+  success?: unknown;
   "error-codes"?: string[];
 }
 
 export type CaptchaMode = "enforced" | "not_configured";
+
+/** The verification verdict. Only "passed" may proceed (see header). */
+export type CaptchaVerdict = "passed" | "rejected" | "unavailable";
+
+/** Generic copy for the "unavailable" verdict on the public routes (503). */
+export const CAPTCHA_UNAVAILABLE_MESSAGE =
+  "Verification is temporarily unavailable. Please try again in a few minutes.";
 
 /** Whether server-side CAPTCHA verification is enforced on this deploy. */
 export function captchaMode(): CaptchaMode {
@@ -80,27 +92,30 @@ function logModeOnce(mode: CaptchaMode): void {
  * Verify a Turnstile token for a client IP.
  *
  * @param token  The `cf-turnstile-response` value posted by the widget. May be
- *               empty/absent — a failed challenge when enforced, ignored when
- *               not configured.
+ *               empty/absent — "rejected" when enforced, ignored when not
+ *               configured.
  * @param ip     The caller's IP (Cloudflare's `remoteip`), best-effort. Optional.
  * @param opts   `timeoutMs` override (tests).
- * @returns      `true` only if CAPTCHA is not configured OR Cloudflare positively
- *               confirmed the token. `false` in every other case (fail-closed).
+ * @returns      "passed" only if CAPTCHA is not configured OR Cloudflare
+ *               positively confirmed the token; "rejected" for a missing or
+ *               failed challenge; "unavailable" when Cloudflare could not be
+ *               consulted. Fail-closed: only "passed" may proceed.
  */
 export async function verifyCaptchaToken(
   token: string | undefined | null,
   ip?: string,
   opts: { timeoutMs?: number } = {},
-): Promise<boolean> {
+): Promise<CaptchaVerdict> {
   const mode = captchaMode();
   logModeOnce(mode);
-  if (mode === "not_configured") return true;
+  if (mode === "not_configured") return "passed";
 
   const secret = process.env.TURNSTILE_SECRET_KEY as string;
 
   // An enforced CAPTCHA with no token is a failed challenge.
-  if (!token) return false;
+  if (!token) return "rejected";
 
+  let res: Response;
   try {
     const form = new URLSearchParams();
     form.set("secret", secret);
@@ -109,7 +124,6 @@ export async function verifyCaptchaToken(
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? VERIFY_TIMEOUT_MS);
-    let res: Response;
     try {
       res = await fetch(SITEVERIFY_URL, {
         method:  "POST",
@@ -120,17 +134,27 @@ export async function verifyCaptchaToken(
     } finally {
       clearTimeout(timer);
     }
-
-    if (!res.ok) {
-      console.error(`[captcha] siteverify HTTP ${res.status} — failing CLOSED`);
-      return false;
-    }
-
-    const data = (await res.json()) as SiteverifyResponse;
-    return data.success === true;
   } catch (err) {
-    // Network error / abort (timeout) / malformed JSON — fail CLOSED (see header).
-    console.error("[captcha] siteverify call failed — failing CLOSED:", err instanceof Error ? err.message : err);
-    return false;
+    // Network error / abort (timeout) — fail CLOSED as unavailable.
+    console.error("[captcha] siteverify call failed — failing CLOSED (unavailable):", err instanceof Error ? err.message : err);
+    return "unavailable";
   }
+
+  if (!res.ok) {
+    console.error(`[captcha] siteverify HTTP ${res.status} — failing CLOSED (unavailable)`);
+    return "unavailable";
+  }
+
+  let data: SiteverifyResponse;
+  try {
+    data = (await res.json()) as SiteverifyResponse;
+  } catch {
+    console.error("[captcha] siteverify returned malformed JSON — failing CLOSED (unavailable)");
+    return "unavailable";
+  }
+  if (!data || typeof data !== "object" || typeof data.success !== "boolean") {
+    console.error("[captcha] siteverify reply has no boolean `success` — failing CLOSED (unavailable)");
+    return "unavailable";
+  }
+  return data.success ? "passed" : "rejected";
 }

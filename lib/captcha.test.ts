@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   const a = await verifyCaptchaToken("anything");
   const b = await verifyCaptchaToken(undefined);
   loud();
-  check("no secret → true (skipped), even without a token", a === true && b === true);
+  check("no secret → passed (skipped), even without a token", a === "passed" && b === "passed");
   check("no secret → never calls Cloudflare", fetchCalled === false);
   check("no secret → the not-enforced warning is logged ONCE per process", warns === 1, `warns=${warns}`);
   restoreFetch();
@@ -56,22 +56,25 @@ async function main(): Promise<void> {
 
   fetchCalled = false;
   stubFetch(async () => { fetchCalled = true; return new Response("{}"); });
-  check("enforced + missing token → false without a network call",
-    (await verifyCaptchaToken(undefined)) === false && (await verifyCaptchaToken("")) === false && fetchCalled === false);
+  check("enforced + missing token → rejected without a network call",
+    (await verifyCaptchaToken(undefined)) === "rejected" && (await verifyCaptchaToken("")) === "rejected" && fetchCalled === false);
   restoreFetch();
 
   let sentBody = "";
   stubFetch(async (_u, init) => { sentBody = String(init?.body ?? ""); return new Response(JSON.stringify({ success: true }), { status: 200 }); });
-  check("enforced + Cloudflare success:true → true", (await verifyCaptchaToken("tok", "203.0.113.9")) === true);
+  check("enforced + Cloudflare success:true → passed", (await verifyCaptchaToken("tok", "203.0.113.9")) === "passed");
   check("…posts secret, token and remoteip", sentBody.includes("secret=test-secret") && sentBody.includes("response=tok") && sentBody.includes("remoteip=203.0.113.9"), sentBody);
   restoreFetch();
 
   stubFetch(async () => new Response(JSON.stringify({ success: false, "error-codes": ["invalid-input-response"] }), { status: 200 }));
-  check("enforced + Cloudflare success:false → false", (await verifyCaptchaToken("tok")) === false);
+  check("enforced + Cloudflare success:false → rejected (the challenge failed)", (await verifyCaptchaToken("tok")) === "rejected");
   restoreFetch();
 
+  quiet();
   stubFetch(async () => new Response(JSON.stringify({ ok: 1 }), { status: 200 }));
-  check("enforced + 200 without success:true → false", (await verifyCaptchaToken("tok")) === false);
+  const noSuccess = await verifyCaptchaToken("tok");
+  loud();
+  check("enforced + 200 without a boolean success → unavailable (malformed reply, still denied)", noSuccess === "unavailable");
   restoreFetch();
 
   // ── Fail CLOSED on outage ───────────────────────────────────────────────────
@@ -102,11 +105,12 @@ async function main(): Promise<void> {
   restoreFetch();
   loud();
 
-  check("enforced + Cloudflare HTTP 500 → false (fail-CLOSED)", r500 === false);
-  check("enforced + non-2xx even with a success body → false", r503 === false);
-  check("enforced + fetch throws → false (fail-CLOSED)", rThrow === false);
-  check("enforced + malformed JSON → false (fail-CLOSED)", rJson === false);
-  check("enforced + timeout → false (fail-CLOSED), promptly", rTimeout === false && elapsed < 2_000, `elapsed=${elapsed}ms`);
+  check("enforced + Cloudflare HTTP 500 → unavailable (fail-CLOSED)", r500 === "unavailable");
+  check("enforced + non-2xx even with a success body → unavailable", r503 === "unavailable");
+  check("enforced + fetch throws → unavailable (fail-CLOSED)", rThrow === "unavailable");
+  check("enforced + malformed JSON → unavailable (fail-CLOSED)", rJson === "unavailable");
+  check("enforced + timeout → unavailable (fail-CLOSED), promptly", rTimeout === "unavailable" && elapsed < 2_000, `elapsed=${elapsed}ms`);
+  check("no outage verdict is ever passed", [r500, r503, rThrow, rJson, rTimeout, noSuccess].every((v) => v !== "passed"));
 
   delete process.env.TURNSTILE_SECRET_KEY;
   delete process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;

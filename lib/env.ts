@@ -546,6 +546,24 @@ export function validateEnv(): EnvReport {
     );
   }
 
+  // TURNSTILE PAIRING (R2) — the two keys are one setting. Secret without site
+  // key: no widget renders, and the fail-closed verifier refuses EVERY access
+  // request, registration and step-up login. Site key without secret: the
+  // widget renders but nothing is verified server-side (CAPTCHA is a no-op).
+  // Never fatal (matches the warn-only misconfiguration checks here, and must
+  // not take a deploy down) — but loud.
+  const tsSecret = !!_e.TURNSTILE_SECRET_KEY;
+  const tsSite   = !!_e.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+  if (tsSecret !== tsSite) {
+    console.error(
+      tsSecret
+        ? "[env] TURNSTILE_SECRET_KEY is set but NEXT_PUBLIC_TURNSTILE_SITE_KEY is NOT — no CAPTCHA widget can render, " +
+          "so every CAPTCHA-gated request (access request, registration, step-up login) will be REFUSED. Set both or neither."
+        : "[env] NEXT_PUBLIC_TURNSTILE_SITE_KEY is set but TURNSTILE_SECRET_KEY is NOT — the widget renders but tokens are " +
+          "NOT verified server-side (CAPTCHA is a no-op). Set both or neither."
+    );
+  }
+
   // QUANTITY_AUTHORITY_MODE (REVIEW-3) — a MONEY switch: "adopt" repoints
   // historical quantity replay inside valuation (lib/investments/
   // quantity-authority.ts). Never fatal (the reader treats any unrecognised

@@ -319,11 +319,25 @@ export function canonicalEmailForLimits(email: string): string {
 }
 
 /**
- * The RateLimit-key form of an e-mail: sha256 hex of its canonical form. The
- * RateLimit table must never hold a raw address (it is swept but not
- * access-controlled like the waitlist), so every per-email bucket keys on this.
+ * RateLimit-key forms of an e-mail — sha256 hex, because the RateLimit table
+ * must never hold a raw address (it is swept but not access-controlled like
+ * the waitlist). Two granularities, deliberately:
+ *
+ *   emailLimitKey          — the address AS STORED (lowercase + trim). Use for
+ *                            any limit whose effect falls on the address
+ *                            holder (e.g. silently dropping a submission):
+ *                            keying it on the canonical form would let
+ *                            `victim+1/+2/+3@` fill the bucket and block the
+ *                            real `victim@`.
+ *   canonicalEmailLimitKey — the canonical form (canonicalEmailForLimits).
+ *                            Use only where folding variants together can
+ *                            never hurt the address holder (e.g. throttling a
+ *                            notification to an operator).
  */
 export function emailLimitKey(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
+}
+export function canonicalEmailLimitKey(email: string): string {
   return createHash("sha256").update(canonicalEmailForLimits(email)).digest("hex");
 }
 

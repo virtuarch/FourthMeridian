@@ -247,6 +247,13 @@ async function main() {
       const r = await signIn({ identifier: "cap", password: PW });
       t.check("once over the threshold, the right password WITHOUT a passing CAPTCHA is refused — before the user lookup",
         r.status === 401 && !r.cookie && fake.callsTo("User", "findFirst").length === 3);
+      // R2 — Cloudflare unreachable is an honest "temporarily unavailable", not a bad password.
+      globalThis.fetch = (async () => new Response("upstream down", { status: 500 })) as typeof fetch;
+      const origErr = console.error; console.error = () => {};
+      const down = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" }).finally(() => { console.error = origErr; });
+      t.check("siteverify 500 past the threshold → error=TEMPORARILY_UNAVAILABLE, no cookie", down.error === "TEMPORARILY_UNAVAILABLE" && !down.cookie, down);
+      t.check("…counted as no failed-credential attempt: no LOGIN_FAILED row, no user lookup",
+        fake.rows("AuditLog", { action: "LOGIN_FAILED" }).length === 3 && fake.callsTo("User", "findFirst").length === 3);
       globalThis.fetch = (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as typeof fetch;
       const pass = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" });
       t.check("…and with a passing CAPTCHA it signs in", pass.status === 200, { pass, f: lastFailure() });

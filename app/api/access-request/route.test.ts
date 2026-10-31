@@ -18,6 +18,12 @@ import "@/lib/test-support/route-env";
 process.env.BETA_REQUESTS_EMAIL = "ops@fm.test.invalid";
 process.env.RATE_LIMIT_ENABLED = "true";
 
+// Pin the limiter clock (lib/rate-limit reads Date.now()) to the middle of an
+// hour and of a UTC day, so the fixed 1 h / 24 h windows can never roll over
+// mid-run and flake the ceiling assertions.
+const FIXED_NOW = Date.parse("2026-10-31T12:30:00.000Z");
+Date.now = () => FIXED_NOW;
+
 async function main() {
   const { FakePrisma, installFakePrisma } = await import("@/lib/test-support/fake-prisma");
   const { invoke, request, makeChecker } = await import("@/lib/test-support/route-harness");
@@ -66,31 +72,45 @@ async function main() {
     t.check("one operator e-mail", operatorEmails() === 1, capturedEmails());
   }
 
-  t.section("3. repeats of the same canonical address — stored, but the operator is not re-mailed");
+  t.section("3. repeats — stored; the operator is not re-mailed for a variant of the same canonical address");
   {
     const logs: string[] = [];
-    const r2 = await quietWarn(() => submit({ email: "alice@example.test" }), logs); counted.n++;
-    const r3 = await quietWarn(() => submit({ email: "ALICE+again@example.test" }), logs); counted.n++;
+    const r2 = await quietWarn(() => submit({ email: "alice+beta@example.test" }), logs); counted.n++;
+    const r3 = await quietWarn(() => submit({ email: "ALICE@example.test" }), logs); counted.n++;
     t.check("both 200 with the identical body", r2.status === 200 && r3.status === 200
       && JSON.stringify(r2.body) === JSON.stringify(firstBody) && JSON.stringify(r3.body) === JSON.stringify(firstBody));
-    t.check("each repeat is a stored event (3 events, 1 waitlist row per stored spelling)",
-      fake.rows("BetaAccessRequestEvent").length === 3, fake.rows("BetaAccessRequestEvent").length);
-    t.check("operator e-mail throttled per address (still 1)", operatorEmails() === 1);
+    t.check("each repeat is a stored event (3 events)", fake.rows("BetaAccessRequestEvent").length === 3, fake.rows("BetaAccessRequestEvent").length);
+    t.check("operator e-mail throttled per CANONICAL address (still 1)", operatorEmails() === 1);
     t.check("throttle logged with reason=email", logs.some((l) => l.includes("throttled reason=email")), logs);
   }
 
-  t.section("4. per-address ceiling (3/24h) — the 4th is DROPPED with the identical 200");
+  t.section("4. per-address ceiling (3/24h, keyed on the address AS STORED) — the 4th is DROPPED with the identical 200");
   {
     const logs: string[] = [];
-    const before = { ev: fake.rows("BetaAccessRequestEvent").length, au: fake.rows("AuditLog").length };
-    const r4 = await quietWarn(() => submit({ email: "Alice+third@Example.test" }), logs); counted.n++;
-    t.check("200, byte-identical to a first submission (no existence oracle)", r4.status === 200 && JSON.stringify(r4.body) === JSON.stringify(firstBody), r4);
-    t.check("nothing stored, audited or e-mailed for the dropped submission",
-      fake.rows("BetaAccessRequestEvent").length === before.ev && fake.rows("AuditLog").length === before.au && operatorEmails() === 1);
+    const third = await quietWarn(() => submit({ email: "Alice+Beta@Example.TEST" }), logs); counted.n++;
+    t.check("control: the 3rd submission of the same stored address is admitted", third.status === 200 && fake.rows("BetaAccessRequestEvent").length === 4);
+    const before = { req: fake.rows("BetaAccessRequest").length, ev: fake.rows("BetaAccessRequestEvent").length, au: fake.rows("AuditLog").length };
+    const r4 = await quietWarn(() => submit({ email: "alice+beta@EXAMPLE.test" }), logs); counted.n++;
+    t.check("4th → 200, byte-identical to a first submission (no existence oracle)", r4.status === 200 && JSON.stringify(r4.body) === JSON.stringify(firstBody), r4);
+    t.check("nothing stored for the dropped submission: no waitlist row, no event row, no audit row, no e-mail",
+      fake.rows("BetaAccessRequest").length === before.req && fake.rows("BetaAccessRequestEvent").length === before.ev
+      && fake.rows("AuditLog").length === before.au && operatorEmails() === 1);
     t.check("no log line carries the raw address", logs.length > 0 && logs.every((l) => !l.toLowerCase().includes("alice")), logs);
   }
+  {
+    // Review fix: +tag variants must not be able to fill the real address's bucket.
+    for (let i = 0; i < 4; i++) { await quietWarn(() => submit({ email: "victim+x@example.test" })); counted.n++; }
+    const evBefore = fake.rows("BetaAccessRequestEvent").length;
+    const real = await quietWarn(() => submit({ email: "victim@example.test" })); counted.n++;
+    t.check("after victim+x@ hits its ceiling, the real victim@ is still STORED (variants cannot silently block it)",
+      real.status === 200 && fake.rows("BetaAccessRequestEvent").length === evBefore + 1
+      && fake.rows("BetaAccessRequest").some((r) => r.email === "victim@example.test"));
+    for (const v of ["victim+1@example.test", "victim+2@example.test", "victim+3@example.test"]) { await quietWarn(() => submit({ email: v })); counted.n++; }
+    const real2 = await quietWarn(() => submit({ email: "victim@example.test" })); counted.n++;
+    t.check("…nor do three distinct +1/+2/+3 variants", real2.status === 200 && fake.rows("BetaAccessRequestEvent").length === evBefore + 5);
+  }
 
-  t.section("5. CAPTCHA enforced + Cloudflare 500 → refused (fail-closed), nothing stored");
+  t.section("5. CAPTCHA enforced — unavailable → 503, rejected → 400, passed → 200 (fail-closed)");
   {
     process.env.TURNSTILE_SECRET_KEY = "test-secret";
     process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY = "test-site";
@@ -99,8 +119,12 @@ async function main() {
     const before = fake.rows("BetaAccessRequestEvent").length;
     try {
       const r = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" }));
-      t.check("400 CAPTCHA failure", r.status === 400 && String(r.body.error).includes("CAPTCHA"), r);
-      t.check("nothing stored", fake.rows("BetaAccessRequestEvent").length === before);
+      t.check("Cloudflare 500 → 503 'temporarily unavailable' with Retry-After", r.status === 503
+        && String(r.body.error).includes("temporarily unavailable") && !!r.headers.get("retry-after"), r);
+      globalThis.fetch = (async () => new Response(JSON.stringify({ success: false }), { status: 200 })) as typeof fetch;
+      const rej = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" }));
+      t.check("Cloudflare success:false → 400 CAPTCHA failure", rej.status === 400 && String(rej.body.error).includes("CAPTCHA"), rej);
+      t.check("nothing stored for either", fake.rows("BetaAccessRequestEvent").length === before);
       globalThis.fetch = (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as typeof fetch;
       const ok = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" })); counted.n++;
       t.check("…and a confirmed token is admitted", ok.status === 200 && fake.rows("BetaAccessRequestEvent").length === before + 1);
@@ -114,10 +138,11 @@ async function main() {
   t.section("6. operator global throttle — at most 20 e-mails per hour, requests still stored");
   {
     const logs: string[] = [];
-    const sentBefore = operatorEmails(); // alice + bob = 2
+    const sentBefore = operatorEmails(); // alice + victim (canonical) + bob = 3
+    const evBefore = fake.rows("BetaAccessRequestEvent").length;
     for (let i = 0; i < 20; i++) { await quietWarn(() => submit({ email: `user${i}@example.test` }), logs); counted.n++; }
-    t.check("e-mails capped at 20 in the hour", operatorEmails() === 20, { sentBefore, now: operatorEmails() });
-    t.check("every submission was still stored", fake.rows("BetaAccessRequestEvent").length === 4 + 20, fake.rows("BetaAccessRequestEvent").length);
+    t.check("e-mails capped at 20 in the hour", sentBefore === 3 && operatorEmails() === 20, { sentBefore, now: operatorEmails() });
+    t.check("every submission was still stored", fake.rows("BetaAccessRequestEvent").length === evBefore + 20, fake.rows("BetaAccessRequestEvent").length);
     t.check("throttle logged with reason=global", logs.some((l) => l.includes("throttled reason=global")));
   }
 

@@ -105,9 +105,12 @@ export type RetentionClient = Record<RetentionTable, RetentionDelegate> & {
   auditLog?: AuditMinimiseDelegate;
 };
 
+/** In a dry run `deleted` is the number of rows a real run WOULD delete (bounded like a real run). */
 export interface RetentionTableResult { deleted: number; batches: number; exhausted: boolean; cutoff: string; error?: string }
 export type DataRetentionResult = Record<RetentionTable, RetentionTableResult> & {
   totalDeleted: number;
+  /** True when nothing was written (counts are would-be). */
+  dryRun: boolean;
   /** R2 — BETA_ACCESS_REQUESTED network-field minimisation (absent when the client has no auditLog). */
   betaIntakeNetwork?: MinimisationResult;
 };
@@ -152,8 +155,35 @@ export function networkDigestKey(secret: string | undefined | null = process.env
   return createHmac("sha256", secret).update("fm:beta-intake:network-digest:v1").digest();
 }
 
+/**
+ * Canonical text of an IP before digesting, so one address never yields two
+ * digests: trimmed, lowercased (IPv6 hex), an IPv4-mapped IPv6 address
+ * (`::ffff:203.0.113.9`) reduced to its IPv4 form, and IPv6 run through the
+ * WHATWG URL parser (RFC 5952 compression, zero-suppression). Unparseable
+ * input is digested as trimmed/lowercased text.
+ */
+export function canonicalIp(ip: string): string {
+  let s = ip.trim().toLowerCase();
+  if (s.startsWith("[") && s.endsWith("]")) s = s.slice(1, -1);
+  const mapped = /^(?:0{0,4}:){0,5}:?ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+  if (mapped) return mapped[1];
+  if (s.includes(":")) {
+    try {
+      const host = new URL(`http://[${s}]/`).hostname.slice(1, -1);
+      // The URL parser prints IPv4-mapped addresses in hex (::ffff:cb00:7109).
+      const hexMapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+      if (hexMapped) {
+        const hi = parseInt(hexMapped[1], 16), lo = parseInt(hexMapped[2], 16);
+        return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+      }
+      return host;
+    } catch { return s; }
+  }
+  return s;
+}
+
 export function networkDigest(ip: string, key: Buffer): string {
-  return createHmac("sha256", key).update(ip.trim().toLowerCase()).digest("hex");
+  return createHmac("sha256", key).update(canonicalIp(ip)).digest("hex");
 }
 
 export interface AuditNetworkRow {
@@ -261,15 +291,27 @@ export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date)
   return new Date(now.getTime() - rule.days * DAY_MS);
 }
 
-export async function runDataRetention(client?: RetentionClient, now: Date = new Date()): Promise<DataRetentionResult> {
+export async function runDataRetention(
+  client?: RetentionClient,
+  now: Date = new Date(),
+  opts: { dryRun?: boolean } = {},
+): Promise<DataRetentionResult> {
   const c = client ?? ((await import("@/lib/db")).systemDb as unknown as RetentionClient);
-  const out = { totalDeleted: 0 } as DataRetentionResult;
+  const dryRun = !!opts.dryRun;
+  const out = { totalDeleted: 0, dryRun } as DataRetentionResult;
   for (const rule of RETENTION_RULES) {
     const cutoff = retentionCutoffFor(rule, now);
     const where = rule.where(cutoff);
     const res: RetentionTableResult = { deleted: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString() };
     try {
-      while (res.batches < RETENTION_MAX_BATCHES) {
+      if (dryRun) {
+        // Read-only: the rows ONE real run would reach (same order, same bound).
+        const cap = RETENTION_BATCH * RETENTION_MAX_BATCHES;
+        const rows = await c[rule.table].findMany({ where, orderBy: { [rule.orderBy]: "asc" }, take: cap, select: { id: true } });
+        res.deleted = rows.length;
+        res.exhausted = rows.length < cap;
+      }
+      while (!dryRun && res.batches < RETENTION_MAX_BATCHES) {
         const rows = await c[rule.table].findMany({ where, orderBy: { [rule.orderBy]: "asc" }, take: RETENTION_BATCH, select: { id: true } });
         res.batches++;
         if (rows.length === 0) { res.exhausted = true; break; }
@@ -283,9 +325,9 @@ export async function runDataRetention(client?: RetentionClient, now: Date = new
     }
     out[rule.table] = res;
     out.totalDeleted += res.deleted;
-    if (res.deleted > 0) console.log(`[data-retention] ${rule.table}: deleted ${res.deleted} row(s) older than ${rule.days} days${res.exhausted ? "" : " (more remain)"}`);
+    if (res.deleted > 0) console.log(`[data-retention] ${rule.table}: ${dryRun ? "DRY RUN — would delete" : "deleted"} ${res.deleted} row(s) older than ${rule.days} days${res.exhausted ? "" : " (more remain)"}`);
   }
   // R2 — minimise (never delete) beta-intake audit network fields past 90 days.
-  if (c.auditLog) out.betaIntakeNetwork = await runBetaIntakeNetworkMinimisation({ auditLog: c.auditLog }, now);
+  if (c.auditLog) out.betaIntakeNetwork = await runBetaIntakeNetworkMinimisation({ auditLog: c.auditLog }, now, { dryRun });
   return out;
 }

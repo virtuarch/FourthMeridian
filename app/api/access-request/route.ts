@@ -18,21 +18,27 @@
  *      store error, like every enforce() limiter.
  *   2. shape validation + PRIV-012 consent (400s, nothing stored).
  *   3. CAPTCHA (lib/captcha.ts verifyCaptchaToken). When TURNSTILE_SECRET_KEY is
- *      configured it is ENFORCED and FAILS CLOSED (a Cloudflare error/timeout is
- *      a refusal); when it is not configured verification is skipped (logged
- *      once) — see captchaMode().
+ *      configured it is ENFORCED and FAILS CLOSED: "rejected" → 400, and
+ *      "unavailable" (Cloudflare error/timeout/non-2xx/malformed) → 503
+ *      "temporarily unavailable"; when it is not configured verification is
+ *      skipped (logged once) — see captchaMode().
  *   4. GLOBAL limit, 60 / hour across all callers (limitGlobal) → 429 with the
  *      generic "too many requests" body. Placed AFTER the CAPTCHA so that, once
  *      Turnstile is enforced, only challenge-passing traffic spends the shared
  *      budget. FAIL-OPEN on a store error (availability: a limiter outage must
  *      not close the waitlist; per-IP + CAPTCHA still apply).
- *   5. per-normalised-email limit, 3 / 24 h, keyed on sha256 of the canonical
- *      address (lib/rate-limit emailLimitKey — never the raw address in
- *      RateLimit.key). Over the limit the submission is DROPPED SILENTLY with
+ *   5. per-address limit, 3 / 24 h, keyed on sha256 of the address AS STORED
+ *      (lowercase + trim; lib/rate-limit emailLimitKey — never the raw address
+ *      in RateLimit.key). NOT the canonical form: folding +tag / Gmail-dot
+ *      variants here would let `victim+1/+2/+3@` fill the bucket and silently
+ *      block the real `victim@`. Over the limit the submission is DROPPED —
+ *      no waitlist row, no BetaAccessRequestEvent row, no audit row, no e-mail —
+ *      SILENTLY, with
  *      the identical 200: a 429 here would tell a prober that the address was
  *      recently submitted, i.e. an existence oracle.
  *   6. operator-notification throttle (consumeThrottle): at most 1 e-mail per
- *      normalised address per 24 h and 20 per hour overall. A throttled
+ *      CANONICAL address (canonicalEmailLimitKey — variants folded, which can
+ *      only reduce operator mail, never block an applicant) per 24 h and 20 per hour overall. A throttled
  *      submission is still stored; only the e-mail is skipped (logged).
  * An AuditLog row (BETA_ACCESS_REQUESTED, no userId) captures ip/user-agent so
  * the intake is forensically visible even though the request row itself keeps
@@ -66,9 +72,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { limitByIp, limitGlobal, limitByKey, consumeThrottle, emailLimitKey, type RateLimitConfig } from "@/lib/rate-limit";
+import { limitByIp, limitGlobal, limitByKey, consumeThrottle, emailLimitKey, canonicalEmailLimitKey, type RateLimitConfig } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
-import { verifyCaptchaToken } from "@/lib/captcha";
+import { verifyCaptchaToken, CAPTCHA_UNAVAILABLE_MESSAGE } from "@/lib/captcha";
 import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
@@ -101,8 +107,8 @@ const IDENTICAL_OK = {
  * repeats never spend the global budget. Returns the throttling reason, or null
  * when the e-mail may be sent.
  */
-async function operatorNotifyThrottle(emailKey: string): Promise<"email" | "global" | null> {
-  if (!(await consumeThrottle(emailKey, "beta-request-notify-email", OPERATOR_NOTIFY_EMAIL_THROTTLE))) return "email";
+async function operatorNotifyThrottle(canonicalKey: string): Promise<"email" | "global" | null> {
+  if (!(await consumeThrottle(canonicalKey, "beta-request-notify-email", OPERATOR_NOTIFY_EMAIL_THROTTLE))) return "email";
   if (!(await consumeThrottle("all", "beta-request-notify-global", OPERATOR_NOTIFY_GLOBAL_THROTTLE))) return "global";
   return null;
 }
@@ -134,8 +140,12 @@ export async function POST(req: NextRequest) {
 
     // CAPTCHA — enforced + fail-closed when TURNSTILE_SECRET_KEY is set;
     // skipped (logged once) when it is not. See lib/captcha.ts.
-    const captchaOk = await verifyCaptchaToken(captchaToken, meta.ip);
-    if (!captchaOk) {
+    // "unavailable" (Cloudflare unreachable) → honest 503; "rejected" → 400.
+    const captcha = await verifyCaptchaToken(captchaToken, meta.ip);
+    if (captcha === "unavailable") {
+      return NextResponse.json({ error: CAPTCHA_UNAVAILABLE_MESSAGE }, { status: 503, headers: { "Retry-After": "60" } });
+    }
+    if (captcha !== "passed") {
       return NextResponse.json({ error: "CAPTCHA verification failed. Please try again." }, { status: 400 });
     }
 
@@ -149,7 +159,7 @@ export async function POST(req: NextRequest) {
 
     // Per-address ceiling — over it, DROP SILENTLY with the identical 200 (a
     // 429 would disclose that the address was recently submitted). Nothing is
-    // stored, audited or e-mailed for a dropped submission.
+    // stored (no waitlist or event row), audited or e-mailed for a dropped submission.
     if (await limitByKey(emailKey, "access-request-email", ACCESS_REQUEST_EMAIL_LIMIT)) {
       console.warn("[access-request] per-email limit reached — submission dropped (identical 200)");
       return NextResponse.json(IDENTICAL_OK);
@@ -214,7 +224,7 @@ export async function POST(req: NextRequest) {
     // R2 — THROTTLED (operatorNotifyThrottle): the request above is stored
     // either way; a throttled submission only skips the e-mail (the queue is
     // the record). Throttle store errors fail OPEN (the e-mail is sent).
-    const throttled = env.BETA_REQUESTS_EMAIL ? await operatorNotifyThrottle(emailKey) : null;
+    const throttled = env.BETA_REQUESTS_EMAIL ? await operatorNotifyThrottle(canonicalEmailLimitKey(normalizedEmail)) : null;
     if (throttled) {
       console.warn(`[access-request] operator notification throttled reason=${throttled} (request stored)`);
     }

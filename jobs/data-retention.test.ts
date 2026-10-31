@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import {
   runDataRetention, retentionCutoffFor, RETENTION_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES,
-  uaFamily, networkDigest, networkDigestKey, minimiseAuditNetwork, runBetaIntakeNetworkMinimisation,
+  uaFamily, networkDigest, networkDigestKey, canonicalIp, minimiseAuditNetwork, runBetaIntakeNetworkMinimisation,
   BETA_INTAKE_AUDIT_ACTION, MINIMISE_BATCH, MINIMISE_MAX_BATCHES,
   type RetentionClient, type RetentionTable,
 } from "@/jobs/data-retention";
@@ -140,10 +140,18 @@ async function main() {
     check("one table failing does not stop the others", !!r.aiInvocation.error && data.jobRun.length === 0 && data.aiInvocation.length === 1);
   }
 
+  {
+    const { client, data, calls } = makeClient({ plaidWebhookEvent: [{ id: "w1", receivedAt: daysAgo(40) }, { id: "w2", receivedAt: daysAgo(10) }] });
+    const r = await quiet(() => runDataRetention(client, NOW, { dryRun: true }));
+    check("dryRun: delete rules report would-delete counts and delete nothing",
+      r.dryRun === true && r.plaidWebhookEvent.deleted === 1 && r.totalDeleted === 1 && data.plaidWebhookEvent.length === 2
+      && !calls.some((c) => c.op === "delete"));
+  }
+
   console.log("\nwiring");
   {
     const strip = (p: string) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    check("the registered purge-trash body runs the retention schedule", /runDataRetention\(\)/.test(strip("jobs/purge-trash.ts")));
+    check("the registered purge-trash body runs the retention schedule", /runDataRetention\(/.test(strip("jobs/purge-trash.ts")));
     check("retention defaults to the system principal", /\.systemDb as unknown as RetentionClient/.test(strip("jobs/data-retention.ts")));
     check("no financial table is in the schedule", !RETENTION_RULES.some((r) => /transaction|financialAccount|snapshot|holding|position/i.test(r.table)));
   }
@@ -184,6 +192,15 @@ async function main() {
     const again = minimiseAuditNetwork({ id: "a1", ipAddress: null, userAgent: null, metadata: m.metadata }, key, new Date(NOW.getTime() + 86_400_000));
     check("idempotent: re-minimising keeps digest, family and first instant", again.metadata.networkDigest === m.metadata.networkDigest
       && again.metadata.uaFamily === "script" && again.metadata.networkMinimisedAt === NOW.toISOString());
+    check("canonicalIp: IPv4-mapped IPv6 → IPv4 (text and hex forms)",
+      canonicalIp("::ffff:203.0.113.9") === "203.0.113.9" && canonicalIp("::FFFF:203.0.113.9") === "203.0.113.9"
+      && canonicalIp("0:0:0:0:0:ffff:203.0.113.9") === "203.0.113.9" && canonicalIp("::ffff:cb00:7109") === "203.0.113.9",
+      canonicalIp("::ffff:cb00:7109"));
+    check("canonicalIp: IPv6 lowercased + compressed", canonicalIp(" 2001:DB8:0:0:0:0:0:1 ") === "2001:db8::1" && canonicalIp("[2001:db8::1]") === "2001:db8::1");
+    check("canonicalIp: IPv4 and junk pass through trimmed", canonicalIp(" 198.51.100.7 ") === "198.51.100.7" && canonicalIp("Unknown") === "unknown");
+    check("digest: one address, one digest across spellings",
+      networkDigest("::ffff:203.0.113.9", key) === networkDigest("203.0.113.9", key)
+      && networkDigest("2001:DB8::0001", key) === networkDigest("2001:db8::1", key));
     check("null metadata → object", minimiseAuditNetwork({ ...row, metadata: null }, key, NOW).metadata.uaFamily === "script");
   }
 
@@ -240,6 +257,10 @@ async function main() {
     // runDataRetention wires it in when the client has auditLog
     const { client } = makeClient({});
     rows.length = 0; rows.push(mk("w", 100));
+    const dryFull = await quiet(() => runDataRetention(Object.assign(client, { auditLog }), NOW, { dryRun: true }));
+    check("runDataRetention dryRun passes through: would-minimise counted, nothing written",
+      dryFull.dryRun === true && dryFull.betaIntakeNetwork?.dryRun === true && dryFull.betaIntakeNetwork.minimised === 1
+      && rows[0].ipAddress === "198.51.100.1", JSON.stringify(dryFull.betaIntakeNetwork));
     const full = await quiet(() => runDataRetention(Object.assign(client, { auditLog }), NOW));
     check("runDataRetention runs the minimisation (and still deletes nothing from AuditLog)",
       full.betaIntakeNetwork?.minimised === 1 && rows.length === 1, JSON.stringify(full.betaIntakeNetwork));

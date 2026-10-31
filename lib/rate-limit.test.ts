@@ -40,6 +40,7 @@ import {
   limitGlobal,
   canonicalEmailForLimits,
   emailLimitKey,
+  canonicalEmailLimitKey,
   consumeThrottle,
   type LimitVerdict,
 } from "@/lib/rate-limit";
@@ -259,11 +260,15 @@ async function main(): Promise<void> {
     check("canonical: +tag dropped on any domain", canonicalEmailForLimits("bob+beta@example.com") === "bob@example.com");
     check("canonical: Gmail dots dropped, googlemail folded", canonicalEmailForLimits("A.B.C+x@GoogleMail.com") === "abc@gmail.com");
     check("canonical: dots kept outside Gmail", canonicalEmailForLimits("a.b@example.com") === "a.b@example.com");
-    const k1 = emailLimitKey("A.B+x@gmail.com");
-    check("emailLimitKey is 64-char hex and never contains the address",
+    const k1 = canonicalEmailLimitKey("A.B+x@gmail.com");
+    check("canonicalEmailLimitKey is 64-char hex and never contains the address",
       /^[0-9a-f]{64}$/.test(k1) && !k1.includes("gmail"), k1);
-    check("emailLimitKey: variants share one key", k1 === emailLimitKey("ab@gmail.com"));
-    check("emailLimitKey: different addresses differ", k1 !== emailLimitKey("ac@gmail.com"));
+    check("canonicalEmailLimitKey: variants share one key", k1 === canonicalEmailLimitKey("ab@gmail.com"));
+    check("canonicalEmailLimitKey: different addresses differ", k1 !== canonicalEmailLimitKey("ac@gmail.com"));
+    const e1 = emailLimitKey("  Victim@Example.test ");
+    check("emailLimitKey (as stored): case/whitespace folded only", /^[0-9a-f]{64}$/.test(e1) && e1 === emailLimitKey("victim@example.test"));
+    check("emailLimitKey: +tag and Gmail-dot variants are DISTINCT buckets (a variant cannot fill the base address's bucket)",
+      emailLimitKey("victim+1@example.test") !== e1 && emailLimitKey("a.b@gmail.com") !== emailLimitKey("ab@gmail.com"));
 
     // limitGlobal — one shared bucket regardless of caller
     envw.RATE_LIMIT_ENABLED = "true";

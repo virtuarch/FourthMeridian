@@ -112,6 +112,19 @@ if (process.argv[2] === "child") {
     out4.slice(0, 200),
   );
 
+  console.log("4b. R2 — Turnstile keys must be paired (loud, never fatal)");
+  {
+    const secretOnly = run({ ...CORE, NODE_ENV: "test", TURNSTILE_SECRET_KEY: "s" });
+    check("secret without site key → still boots, loud REFUSED warning",
+      secretOnly.includes("VALIDATE_OK") && secretOnly.includes("NEXT_PUBLIC_TURNSTILE_SITE_KEY is NOT") && secretOnly.includes("REFUSED"), secretOnly.slice(0, 300));
+    const siteOnly = run({ ...CORE, NODE_ENV: "test", NEXT_PUBLIC_TURNSTILE_SITE_KEY: "k" });
+    check("site key without secret → still boots, loud no-op warning",
+      siteOnly.includes("VALIDATE_OK") && siteOnly.includes("TURNSTILE_SECRET_KEY is NOT") && siteOnly.includes("no-op"), siteOnly.slice(0, 300));
+    const both = run({ ...CORE, NODE_ENV: "test", TURNSTILE_SECRET_KEY: "s", NEXT_PUBLIC_TURNSTILE_SITE_KEY: "k" });
+    const neither = run({ ...CORE, NODE_ENV: "test" });
+    check("both or neither → no pairing warning", !/Set both or neither/.test(both) && !/Set both or neither/.test(neither));
+  }
+
   // ── V25-FINAL-2 — production Plaid configuration gate ──────────────────────
   const PLAID = { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec" };
 
