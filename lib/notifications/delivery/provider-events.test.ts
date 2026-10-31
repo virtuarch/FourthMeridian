@@ -17,6 +17,7 @@ import {
   buildWebhookHealth,
   decideReconciliation,
   handleResendWebhook,
+  isExpectedUnmatchable,
   MAX_WEBHOOK_BODY_BYTES,
   type LedgerRowRead,
   type ProviderEventInsert,
@@ -322,6 +323,26 @@ async function main() {
     const off = buildWebhookHealth({ lastReceivedAt: null, byTypeOutcome: [], rejections: [], acceptedWithoutEvent: 9 }, false, 7);
     check("unconfigured: configured false, no stale-ACCEPTED claim", off.configured === false && off.acceptedWithoutEvent72h === null && off.lastVerifiedEventAt === null);
     check("health carries no opens/clicks keys", !/open|click/i.test(JSON.stringify(h)));
+  }
+
+  console.log("\nN-b: UNCERTAIN_ACCEPTANCE rows are expected-unmatchable");
+  {
+    // An idempotency-conflict send: ACCEPTED, provider resend, NO provider id (lib/email/providers/resend.ts R4).
+    const uncertain = acceptedRow({ id: "row-u", messageKey: "item-u", providerMessageId: null });
+    check("an ACCEPTED resend row with no provider id is expected-unmatchable; one with an id is not",
+      isExpectedUnmatchable(uncertain) && !isExpectedUnmatchable(acceptedRow()) && !isExpectedUnmatchable({ ...uncertain, status: "FAILED" }));
+    const s = memStore([uncertain]);
+    const r = await handleResendWebhook(signed(body("email.delivered", "msg-other")), deps(s.store).d);
+    check("an event never matches it (UNMATCHED for the event's own id; the uncertain row is untouched)",
+      r.body.outcome === "UNMATCHED" && s.ledger.length === 1 && s.ledger[0].status === "ACCEPTED");
+    const h = buildWebhookHealth({ lastReceivedAt: null, byTypeOutcome: [], rejections: [], acceptedWithoutEvent: 4, acceptedUncertain: 2 }, true, 7);
+    check("health counts them APART: awaiting confirmation 4 (matchable only), accepted-uncertain 2",
+      h.acceptedWithoutEvent72h === 4 && h.acceptedUncertain72h === 2, h);
+    const off = buildWebhookHealth({ lastReceivedAt: null, byTypeOutcome: [], rejections: [], acceptedWithoutEvent: 4, acceptedUncertain: 2 }, false, 7);
+    check("unconfigured: neither count is claimed", off.acceptedWithoutEvent72h === null && off.acceptedUncertain72h === null);
+    const sql = readFileSync(join(process.cwd(), "lib/notifications/delivery/provider-event-store.ts"), "utf8");
+    check("the store's awaiting count requires a provider id; the uncertain count is the no-id ACCEPTED rows",
+      /"status" = 'ACCEPTED' AND "providerMessageId" IS NOT NULL\)\)::int AS n/.test(sql) && /"status" = 'ACCEPTED' AND "providerMessageId" IS NULL\)\)::int AS u/.test(sql));
   }
 
   console.log("\nanalytics: delivered vs accepted (v1.2)");

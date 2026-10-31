@@ -92,16 +92,20 @@ export async function readWebhookHealthRows(since: Date, staleBefore: Date | nul
       select: { metric: true, count: true },
     }),
     staleBefore && staleBefore > since
-      ? db.$queryRaw<Array<{ n: number }>>`
+      ? db.$queryRaw<Array<{ n: number; u: number }>>`
           WITH finals AS (
-            SELECT DISTINCT ON ("channel", "messageKey") "status"
+            SELECT DISTINCT ON ("channel", "messageKey") "status", "providerMessageId"
               FROM "CommsDelivery"
              WHERE "provider" = 'resend' AND "mode" = 'LIVE'
                AND "channel" IN ('EMAIL', 'OPERATOR_EMAIL')
                AND "createdAt" >= (${utcWall(since)})::timestamp AND "createdAt" < (${utcWall(staleBefore)})::timestamp
              ORDER BY "channel", "messageKey", "attempt" DESC, "createdAt" DESC, "id" DESC
           )
-          SELECT COUNT(*)::int AS n FROM finals WHERE "status" = 'ACCEPTED'`
+          -- N-b: an ACCEPTED row with NO provider id (an UNCERTAIN_ACCEPTANCE idempotency conflict) can
+          -- never match an event — counted apart, never as "awaiting confirmation" (isExpectedUnmatchable).
+          SELECT (COUNT(*) FILTER (WHERE "status" = 'ACCEPTED' AND "providerMessageId" IS NOT NULL))::int AS n,
+                 (COUNT(*) FILTER (WHERE "status" = 'ACCEPTED' AND "providerMessageId" IS NULL))::int AS u
+            FROM finals`
       : Promise.resolve(null),
   ]);
   return {
@@ -109,5 +113,6 @@ export async function readWebhookHealthRows(since: Date, staleBefore: Date | nul
     byTypeOutcome: grouped.map((g) => ({ type: g.type, outcome: g.outcome, count: g._count._all })),
     rejections: usage.map((u) => ({ metric: u.metric, count: Number(u.count) })),
     acceptedWithoutEvent: stale ? Number(stale[0]?.n ?? 0) : null,
+    acceptedUncertain: stale ? Number(stale[0]?.u ?? 0) : null,
   };
 }

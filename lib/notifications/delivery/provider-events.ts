@@ -318,8 +318,10 @@ export interface WebhookHealthRows {
   lastReceivedAt: Date | null;
   byTypeOutcome: Array<{ type: string; outcome: string; count: number }>;
   rejections: Array<{ metric: string; count: number }>;
-  /** ACCEPTED provider emails (final status) older than 72 h with no outcome event; null when not read. */
+  /** ACCEPTED provider emails (final status) WITH a provider id, older than 72 h, with no outcome event; null when not read. */
   acceptedWithoutEvent: number | null;
+  /** N-b — ACCEPTED provider emails with NO provider id (UNCERTAIN_ACCEPTANCE) in the same range; null when not read. */
+  acceptedUncertain?: number | null;
 }
 
 export interface ResendWebhookHealth {
@@ -334,8 +336,25 @@ export interface ResendWebhookHealth {
   unmatched: number;
   /** Signature rejections in the window (UTC days), total and by reason. */
   signatureFailures: { total: number; byReason: Record<string, number> };
-  /** ACCEPTED emails older than 72 h with no verified outcome; null until the webhook is configured. Flag only, never resent. */
+  /**
+   * ACCEPTED emails older than 72 h with no verified outcome; null until the webhook is configured.
+   * Flag only, never resent. EXCLUDES expected-unmatchable rows (no provider id — see acceptedUncertain72h).
+   */
   acceptedWithoutEvent72h: number | null;
+  /**
+   * N-b — ACCEPTED-uncertain: accepted under an idempotency conflict (UNCERTAIN_ACCEPTANCE), so the
+   * provider returned no message id and no event can ever match. Expected, not missing data. Null until configured.
+   */
+  acceptedUncertain72h: number | null;
+}
+
+/**
+ * N-b — an ACCEPTED provider row with no provider message id (an UNCERTAIN_ACCEPTANCE send: the
+ * provider refused a repeated idempotency key and returned no id) can never be matched to a
+ * webhook event. It is EXPECTED-UNMATCHABLE: never "awaiting delivery confirmation", never unmatched.
+ */
+export function isExpectedUnmatchable(row: { status: string; provider: string | null; providerMessageId: string | null }): boolean {
+  return row.status === "ACCEPTED" && row.provider === "resend" && !row.providerMessageId;
 }
 
 export function buildWebhookHealth(rows: WebhookHealthRows, configured: boolean, windowDays: number): ResendWebhookHealth {
@@ -360,5 +379,6 @@ export function buildWebhookHealth(rows: WebhookHealthRows, configured: boolean,
     unmatched,
     signatureFailures: { total, byReason },
     acceptedWithoutEvent72h: configured ? rows.acceptedWithoutEvent : null,
+    acceptedUncertain72h: configured ? (rows.acceptedUncertain ?? null) : null,
   };
 }
