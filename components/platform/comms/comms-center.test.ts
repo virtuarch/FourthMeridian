@@ -83,6 +83,8 @@ async function main() {
       (["SERVICE", "AWARENESS", "MARKETING"] as const).every((c) => stormNote({ consentClass: c, channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) === COMMS_POLICY.storm)
         && (["SECURITY_CRITICAL", "CEREMONY", "OPERATOR"] as const).every((c) => /^Exempt/.test(stormNote({ consentClass: c, channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) ?? ""))
         && stormNote({ consentClass: "AWARENESS", channels: [{ channel: "IN_APP", defaultOn: true, templateVersion: null, path: "REGISTRY" }] }) === null);
+    check("the storm number is IMPORTED from the client-safe EMAIL_STORM_LIMIT (no local literal)",
+      /STORM_MAX_PER_HOUR: number = EMAIL_STORM_LIMIT\.maxPerRecipient;/.test(strip("components/platform/comms/comms-model.ts")) && !/STORM_MAX_PER_HOUR\s*=\s*\d/.test(strip("components/platform/comms/comms-model.ts")));
     check("the UI's storm number mirrors the server's EMAIL_STORM_LIMIT (5 per 60 minutes)",
       STORM_MAX_PER_HOUR === EMAIL_STORM_LIMIT.maxPerRecipient && EMAIL_STORM_LIMIT.windowMinutes === 60 && COMMS_POLICY.storm.includes(`${EMAIL_STORM_LIMIT.maxPerRecipient} emails per person per hour`)
         && /not sent/.test(COMMS_POLICY.storm));

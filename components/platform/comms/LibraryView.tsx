@@ -12,10 +12,13 @@
  * A row opens the detail drawer: description, trigger + producer files, payload
  * field NAMES with PII flags (never values), eligibility, dedupe, frequency cap,
  * retention, the recent day series (null = not observed; delivery counts are never withheld),
- * supported actions, the owner-surface link and the synthetic preview.
+ * supported actions, the owner-surface link, the content editor (contract v1.1,
+ * ContentEditor.tsx) and the synthetic preview.
  *
- * Read-only. Nothing here sends: previews render server-side from synthetic
- * fixtures and the email HTML is shown in a script-less sandboxed iframe.
+ * Nothing here sends a message: previews render server-side from synthetic
+ * fixtures and the email HTML is shown in a script-less sandboxed iframe. The
+ * only writes are the content editor's (drafts, publish, restore), through the
+ * typed client.
  */
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -28,6 +31,8 @@ import {
   type CatalogFilters,
 } from "@/lib/platform/comms-center/client";
 import { DetailDrawer } from "../ui";
+import type { CatalogDetailV11Additions } from "@/lib/notifications/content/types";
+import { ContentPanel } from "./ContentEditor";
 import { ToneBadge } from "../platform-surface";
 import { Segmented } from "../leads/visual-kit";
 import {
@@ -217,7 +222,7 @@ function TriggerRow({ t }: { t: TriggerItem }) {
 
 // ── Detail ──────────────────────────────────────────────────────────────────────
 
-export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDetail>; preview: ReactNode }) {
+export function CatalogDetailBody({ read, preview, content }: { read: CommsRead<CatalogDetail>; preview: ReactNode; content?: ReactNode }) {
   const d = okData(read);
   if (!d) return <ReadState read={read} what="this definition" />;
   const storm = stormNote(d);
@@ -247,6 +252,11 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         <FactList rows={[
           ["Kind", d.trigger.kind === "TRIGGER" ? "Controlled trigger" : "Code call site"],
           ["Trigger key", d.trigger.triggerKey ? <code key="t" className="break-all font-mono text-[11px]">{d.trigger.triggerKey}</code> : "—"],
+          ...(d.trigger.additionalTriggerKeys && d.trigger.additionalTriggerKeys.length > 0
+            ? [["Also triggered by", <span key="at" className="flex min-w-0 flex-col gap-0.5" data-additional-triggers>
+                {d.trigger.additionalTriggerKeys.map((k) => <code key={k} className="break-all font-mono text-[11px]">{k}</code>)}
+              </span>] as const]
+            : []),
         ]} />
         {d.trigger.sources.length > 0 && (
           <ul aria-label="Producer source files" className="flex flex-col gap-1">
@@ -306,6 +316,8 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
           </Link>
         )}
       </DrawerSection>
+
+      {content && <DrawerSection title="Content">{content}</DrawerSection>}
 
       {d.supportedActions.includes("PREVIEW") && <DrawerSection title="Preview">{preview}</DrawerSection>}
     </div>
@@ -390,7 +402,9 @@ function PreviewPanel({ item }: { item: CatalogDetail }) {
 function DetailDrawerBody({ itemKey }: { itemKey: string }) {
   const read = useCommsRead<CatalogDetail>(catalogDetailUrl(itemKey));
   const d = okData(read);
-  return <CatalogDetailBody read={read} preview={d ? <PreviewPanel key={d.key} item={d} /> : null} />;
+  // v1.1 servers add `content` / `viewer` to the detail; an older payload has no Content section.
+  return <CatalogDetailBody read={read} preview={d ? <PreviewPanel key={d.key} item={d} /> : null}
+    content={d && "content" in d ? <ContentPanel key={d.key} detail={d as CatalogDetail & Partial<CatalogDetailV11Additions>} /> : null} />;
 }
 
 // ── The lead ────────────────────────────────────────────────────────────────────
