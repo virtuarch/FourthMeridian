@@ -36,6 +36,7 @@ import * as alerts from "@/lib/email/security-alerts";
 import { getNotificationDefinition } from "@/lib/notifications/registry";
 import { buildNotificationEmailData } from "@/lib/notifications/channels/email-data";
 import { CONNECTION_STATES } from "@/lib/notifications/connection-attention";
+import { WALLET_ATTENTION_STATES } from "@/lib/notifications/wallet-attention";
 
 /** The token every preview link carries. Deliberately not a 64-char hex token. */
 export const PREVIEW_TOKEN = "preview-not-redeemable";
@@ -116,6 +117,13 @@ export function previewCases(): PreviewCase[] {
       count: 8, windowMinutes: 15, threshold: 5,
     })],
   ];
+  // Platform access changes (synthetic area/level; the grantor is only ever a role).
+  const securityOps = { area: "SECURITY_OPS", areaLabel: "Security Operations", levelLabel: "read-only" };
+  sec.push(
+    ["platform-access-granted", alerts.platformAccessGrantedAlert({ ...securityOps, kind: "granted" }, at, PREVIEW_APP_BASE)],
+    ["platform-access-changed", alerts.platformAccessGrantedAlert({ ...securityOps, levelLabel: "read and write", kind: "level_changed" }, at, PREVIEW_APP_BASE)],
+    ["platform-access-removed", alerts.platformAccessRemovedAlert(securityOps, at)],
+  );
   for (const [slug, data] of sec) cases.push(pc(`security-alert--${slug}`, "security-alert", data));
 
   // Space member invitation (no token: identity-gated in-app acceptance).
@@ -133,6 +141,26 @@ export function previewCases(): PreviewCase[] {
   }
   cases.push(notificationCase("notification--connection-legacy-no-state", "SYNC_FAILED", {
     plaidItemId: "preview-item", institutionName: "Example Bank",
+  }));
+
+  // Wallet sync failure (sustained): one case per real state. Synthetic account id + label, never an address.
+  for (const walletState of WALLET_ATTENTION_STATES) {
+    cases.push(notificationCase(`notification--wallet-${walletState}`, "WALLET_SYNC_FAILED", {
+      financialAccountId: "preview-account", walletName: "Example BTC Wallet", network: "Bitcoin", walletState,
+    }));
+  }
+
+  // Welcome (one-time): with and without a first name. The link carries no token.
+  const dashboardUrl = `${PREVIEW_APP_BASE}/dashboard`;
+  cases.push(pc("welcome--named", "welcome", { firstName: "Alex", dashboardUrl }));
+  cases.push(pc("welcome--unnamed", "welcome", { firstName: null, dashboardUrl }));
+
+  // Digest: BUILT, SHIPPED OFF (DIGEST_ENABLED = false) — rendered here only so it can be reviewed.
+  cases.push(pc("digest", "digest", {
+    periodLabel: "Oct 30 – Oct 31",
+    items: ["Your Daily Brief is ready", "New: an example feature update"],
+    dashboardUrl,
+    preferencesUrl: `${PREVIEW_APP_BASE}/dashboard/settings/notifications`,
   }));
 
   // Operator / internal.

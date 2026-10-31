@@ -390,3 +390,25 @@ export async function getExecutionIdByRunId(runId: string): Promise<string | nul
     return null;
   }
 }
+
+/**
+ * The recent ATTEMPT OUTCOMES of one wallet (sourceKind WALLET, sourceRef = the
+ * FinancialAccount id): start time + overall status only, newest first,
+ * bounded by `since` and `take`. Rows, not a verdict — the one product consumer
+ * (WALLET_SYNC_FAILED, lib/crypto/wallet-sync-notifications.ts) derives "an
+ * unbroken run of failed attempts" from them itself (lib/notifications/
+ * wallet-attention.ts failureRunStartFrom). No payload, error text or ids leave
+ * the seam. fm_system; rides @@index([sourceRef, startedAt]). Throws on a
+ * failed read — the caller treats that as "no evidence" (no notice).
+ */
+export async function listWalletAttemptOutcomes(
+  accountId: string,
+  opts: { since: Date; take: number },
+): Promise<Array<{ startedAt: Date; overallStatus: string }>> {
+  return systemDb.refreshExecution.findMany({
+    where: { sourceKind: "WALLET", sourceRef: accountId, startedAt: { gte: opts.since } },
+    orderBy: { startedAt: "desc" },
+    take: Math.max(1, Math.min(opts.take, 500)),
+    select: { startedAt: true, overallStatus: true },
+  });
+}

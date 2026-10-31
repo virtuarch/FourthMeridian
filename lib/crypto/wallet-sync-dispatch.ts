@@ -68,6 +68,7 @@ import type { RefreshTrigger, RefreshStageRecorder } from "@/lib/plaid/refresh-e
 import { currentJobRun } from "@/lib/jobs/run";
 import { WALLET_CHAIN_FACTS, SYNCABLE_CHAINS, type WalletChainFacts } from "./wallet-sync-dispatch.core";
 import type { WalletTokenSyncOutcome } from "./wallet-token-capture";
+import { evaluateWalletSyncAttention } from "./wallet-sync-notifications";
 
 /** How far this system can go on a given chain. See the header. */
 export type WalletChainSupport =
@@ -179,6 +180,8 @@ export function walletSyncUserMessage(
  */
 export interface WalletSyncContext {
   trigger?: RefreshTrigger;
+  /** Test seam: the post-sync notification evaluation (default evaluateWalletSyncAttention). */
+  attention?: (outcome: WalletSyncOutcome) => Promise<unknown>;
 }
 
 export function walletRefreshTrigger(explicit?: RefreshTrigger): RefreshTrigger {
@@ -666,7 +669,7 @@ export async function syncWalletByChain(
   }
   };
 
-  return runFullRefresh<WalletSyncOutcome>(
+  const outcome = await runFullRefresh<WalletSyncOutcome>(
     {
       source: { kind: "WALLET", ref: accountId, network: key },
       trigger: walletRefreshTrigger(context.trigger),
@@ -686,6 +689,14 @@ export async function syncWalletByChain(
           : undefined,
     },
   );
+
+  // WALLET_SYNC_FAILED (owner-approved 2026-10-31) — one evaluation per real
+  // attempt: notify on a SUSTAINED failure, release the open notice on a clean
+  // success (lib/crypto/wallet-sync-notifications.ts). Every Cost Freeze / plan
+  // gate runs BEFORE this function, so a skipped sync never reaches here.
+  // Non-throwing; context.attention is the test seam (default: production).
+  await (context.attention ?? evaluateWalletSyncAttention)(outcome);
+  return outcome;
 }
 
 /**

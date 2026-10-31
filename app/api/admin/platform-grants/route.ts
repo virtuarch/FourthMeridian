@@ -31,6 +31,7 @@ import { isIssuableLevel } from "@/lib/platform/policy";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
 import { getClientIp } from "@/lib/api";
+import { notifyPlatformAccessChange } from "@/lib/notifications/platform-access";
 
 export const runtime = "nodejs";
 
@@ -147,7 +148,7 @@ export async function POST(req: NextRequest) {
   // a revoked row is REINSTATED (status→ACTIVE, level set, grantedBy/At
   // refreshed, revoked* cleared) rather than re-created — one row per (user,
   // area), forever, fully attributable.
-  const [grant] = await db.$transaction([
+  const [grant, auditRow] = await db.$transaction([
     db.platformGrant.upsert({
       where:  { userId_area: { userId, area: areaVal } },
       create: {
@@ -177,6 +178,20 @@ export async function POST(req: NextRequest) {
       },
     }),
   ]);
+
+  // Owner-approved 2026-10-31 — tell the grantee (in-app + security-alert
+  // email), AFTER the commit. Once per audited mutation; the no-op above never
+  // reaches here. Non-throwing (lib/notifications/platform-access.ts).
+  await notifyPlatformAccessChange({
+    kind: action === AuditAction.PLATFORM_GRANT_CREATED ? "granted"
+      : action === AuditAction.PLATFORM_GRANT_REINSTATED ? "reinstated"
+      : "level_changed",
+    userId,
+    email: grant.user?.email ?? null,
+    area: areaVal,
+    level: levelVal,
+    auditLogId: auditRow.id,
+  });
 
   return NextResponse.json({ grant, changed: true }, { status: 200 });
 }

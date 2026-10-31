@@ -123,8 +123,8 @@ for (const [key, e] of entries) {
     check(`${key}: only ACCOUNT_SECURITY (and the named per-type locks) are locked`, e.locked === false);
   }
 }
-check("the per-type lock list is exactly the Security Ops bell (O-8)",
-  PER_TYPE_LOCKED_TYPES.join() === "SECURITY_ANOMALY_DETECTED");
+check("the per-type lock list is exactly the Security Ops bell (O-8) and the one-time welcome (2026-10-31)",
+  [...PER_TYPE_LOCKED_TYPES].sort().join() === "ACCOUNT_WELCOME,SECURITY_ANOMALY_DETECTED");
 // Lock uniformity per category (the preference matrix is per category), except
 // for the named per-type locks, which never change their category's row.
 const lockByCategory = new Map<string, Set<boolean>>();
@@ -157,9 +157,11 @@ for (const [key, e] of entries) {
       placeholders.every((p) => p === "userId" || e.pointerContract.includes(p)),
       placeholders.join(","),
     );
+    // A ONE-TIME condition (dedupeNeverReleases) is never retired: ":once";
+    // every other condition retires on resolution: ":open".
     check(
-      `${key}: condition key carries an :open-style resolution suffix`,
-      (e.dedupeKeyTemplate ?? "").endsWith(":open"),
+      `${key}: condition key carries its lifetime suffix (${e.dedupeNeverReleases ? ":once" : ":open"})`,
+      (e.dedupeKeyTemplate ?? "").endsWith(e.dedupeNeverReleases ? ":once" : ":open"),
     );
   }
 }
@@ -230,7 +232,14 @@ const WIRED = new Set<string>([
   "IMPORT_COMPLETED_WITH_ERRORS",
   // Wave 3 ⑧ — Security Ops anomaly bell (lib/security/anomaly-alerts.ts).
   "SECURITY_ANOMALY_DETECTED",
+  // Owner-approved 2026-10-31 — the new notifications.
+  "ACCOUNT_WELCOME",          // lib/notifications/welcome.ts (register + verify-email)
+  "WALLET_SYNC_FAILED",       // lib/crypto/wallet-sync-notifications.ts (syncWalletByChain)
+  "PLATFORM_ACCESS_GRANTED",  // lib/notifications/platform-access.ts (admin platform-grants POST)
+  "PLATFORM_ACCESS_REVOKED",  // lib/notifications/platform-access.ts (admin platform-grants PATCH)
 ]);
+check("only ACCOUNT_WELCOME never releases its dedupe key",
+  entries.filter(([, e]) => e.dedupeNeverReleases).map(([k]) => k).join() === "ACCOUNT_WELCOME");
 for (const [key, e] of entries) {
   if (WIRED.has(key)) {
     check(`${key}: status is WIRED (producer landed)`, e.status === "WIRED");

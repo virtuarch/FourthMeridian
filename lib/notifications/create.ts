@@ -543,7 +543,9 @@ export async function createNotification(
     //     turned off: its email went out with it).
     // Releasing either would re-email the same outage. Their key is released by
     // retirement (resolve.ts), when the condition really ends.
-    if (existing && (existing.archivedAt === null || emailAnchorOnly || isEmailAnchorMetadata(existing.metadata))) {
+    // A ONE-TIME type (dedupeNeverReleases — ACCOUNT_WELCOME) is open for good:
+    // an archived holder (the user dismissed it) still suppresses.
+    if (existing && (existing.archivedAt === null || emailAnchorOnly || def.dedupeNeverReleases === true || isEmailAnchorMetadata(existing.metadata))) {
       await noteDedupe();
       return { status: "suppressed" };
     }
