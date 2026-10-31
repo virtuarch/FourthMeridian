@@ -199,7 +199,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     <Block id="cs-customer-list" label={section.label} className="min-w-0" hint={<LoadedStamp checkedAt={loadedAt} />}>
       <Surface className="flex min-w-0 flex-1 flex-col gap-3 p-4 sm:p-5">
       {/* PLATFORM SPACES 2.0 — compact search; the figures above the list live in the dashboard hero (no duplicate tiles). */}
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); void loadList(search); }}>
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setShowAll(false); void loadList(search); }}>
         <label className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:max-w-sm lg:min-h-8">
           <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
           <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
@@ -294,6 +294,15 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     {/* UI-009 — the instant every relative age in this panel is measured from. */}
                     <Row label="Detail checked" value={fmtUtc(detail.checkedAt)} />
                     <Row label="Sessions" value={String(detail.activity.activeSessions)} />
+                  </Section>
+
+                  {/* The list's per-customer roll-up (desktop column) — here for every width,
+                      so a phone keeps a path to it. Same cells, same estimate note. */}
+                  <Section title="Usage · 30 d">
+                    {rollupCells({ ...detail.rollup } as CustomerRollupFields, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell) => (
+                      <Row key={cell.key} label={cell.word} value={cell.value} />
+                    ))}
+                    <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{ROLLUP_NOTE}</p>
                   </Section>
 
                   <Section title="Cohort & policy">
