@@ -43,9 +43,11 @@ done
 # read-only transaction (proved on Preview: COMMIT in a file, SET TRANSACTION
 # READ WRITE before the first query). Refused before connecting.
 for text in "${scan[@]}"; do
-  u=$(printf '%s' "$text" | sed 's/--.*$//' | tr '[:lower:]' '[:upper:]')
+  # No comment stripping: a '--' inside a string literal would hide what follows it
+  # (proved on Preview). The scan fails closed instead.
+  u=$(printf '%s' "$text" | tr '[:lower:]' '[:upper:]')
   if printf '%s' "$u" | grep -Eq '(^|[^A-Z_])(COMMIT|ROLLBACK|BEGIN|ABORT|SAVEPOINT|START[[:space:]]+TRANSACTION|READ[[:space:]]+WRITE|SESSION[[:space:]]+CHARACTERISTICS|COPY|DO|CALL|PREPARE|LISTEN|NOTIFY)([^A-Z_]|$)|^[[:space:]]*END[[:space:]]*;' \
-     || printf '%s' "$text" | grep -Eq '\\(!|o|w|g[^a-z]|gexec|copy|i|ir|include|connect|c )'; then
+     || printf '%s' "$text" | grep -Eq '\\(!|o|w|g[^a-z]|gx|gexec|s[[:space:]]|lo_|setenv|copy|i|ir|include|connect|c )'; then
     echo "db-readonly-psql: REFUSED — transaction control / side-effect command in input." >&2
     exit 2
   fi
