@@ -56,6 +56,7 @@
   - Applies to types flagged `emailIndependentOfInApp` (only `SYNC_FAILED`). Their EMAIL leg follows only the category's EMAIL preference.
   - IN_APP off + EMAIL on: the Notification row is written **archived at birth** (an email anchor, invisible in-app) and the email ships from it. Ledger: `IN_APP SUPPRESSED PREFERENCE_OFF` plus the email's own row.
   - The anchor carries a chokepoint-owned metadata marker (`_commsEmailAnchor`; a producer-supplied value is stripped). While it holds the suppress-while-open key the outage is open, **whatever the user's in-app setting is now**. Turning in-app back on mid-outage does not re-email it. So there is one email per outage, and retirement (which now also releases archived holders) re-arms it.
+  - **Re-enabling in-app mid-outage shows no bell until the next outage.** The anchor keeps the dedupe key for the outage it already emailed about (owner ruling), so later syncs of that outage are suppressed and nothing new is created. The next outage, after retirement, produces a visible bell and an email as usual.
   - EMAIL off: `EMAIL SUPPRESSED PREFERENCE_OFF`.
   - Every other type keeps the F11/S3 coupling.
   - The retry job retries a failed anchor email under the normal policy (attempt cap, DEAD on the last attempt) while the anchor still holds its key. After retirement it is closed OBSOLETE as before.

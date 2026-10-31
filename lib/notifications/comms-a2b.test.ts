@@ -507,6 +507,23 @@ async function stormLimit(): Promise<void> {
     check("10 CONCURRENT sends in one invocation ⇒ exactly 5 sent (check-and-reserve is atomic)", rs.filter((r) => r.status === "sent").length === 5 && w.sent.length === 5, rs.map((r) => r.status));
   }
   {
+    // A NON-ACCEPTED send (provider error) releases its reservation at once — even with the ledger write deferred.
+    const queued: Array<() => Promise<void>> = [];
+    const pending = new PendingSends();
+    let fail = true;
+    const sent: EmailMessage[] = [];
+    const send = createEmailSender({
+      env: PROD, capture, now: () => NOW, log: () => undefined, storm: async () => 0, pending,
+      defer: async (task) => { queued.push(task); }, ledger: async () => undefined,
+      provider: { name: "resend", async send(m) { sent.push(m); return fail ? { status: "error", provider: "resend", error: "boom" } : { status: "sent", provider: "resend", id: "x" }; } },
+    });
+    for (let i = 0; i < 5; i++) await send("notification", ADDRESS, ND, notif("user_1"));
+    check("5 provider errors leave no reservation behind", pending.count("u:user_1", NOW.getTime()) === 0);
+    fail = false;
+    const sixth = await send("notification", ADDRESS, ND, notif("user_1"));
+    check("…so a 6th send to the same recipient is NOT rate-limited", sixth.status === "sent" && sent.length === 6, sixth);
+  }
+  {
     // A send whose ledger write fails keeps its reservation until it ages out (an unrecorded send still counts).
     let t = NOW.getTime();
     const w = stormWorld({ failWrites: true, clock: () => new Date(t) });
