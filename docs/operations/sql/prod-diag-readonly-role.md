@@ -22,10 +22,13 @@ Purpose: run `docs/operations/sql/beta-request-prod-investigation.sql` (through 
 
 ```sql
 BEGIN;
+SET LOCAL lock_timeout = '3s';   -- CREATE POLICY takes ACCESS EXCLUSIVE on hot tables: never queue behind app traffic (retry on timeout)
 
--- Role. The password is chosen by the owner and entered interactively (see §4); never paste it into a file or chat.
-CREATE ROLE fm_diag_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT
-  CONNECTION LIMIT 2 VALID UNTIL '2026-11-08 00:00:00+00';
+-- Role. The password is set ONLY with psql `\password fm_diag_ro` (§4) — never ALTER ROLE … PASSWORD '…' in the SQL editor
+-- (the plaintext would land in query history / logs / pg_stat_statements).
+-- VALID UNTIL: set to (approval time + 24 h, UTC) when executing — replace the placeholder.
+CREATE ROLE fm_diag_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+  CONNECTION LIMIT 2 VALID UNTIL '<APPROVAL_TIME_PLUS_24H_UTC>';
 ALTER ROLE fm_diag_ro SET default_transaction_read_only = on;
 ALTER ROLE fm_diag_ro SET statement_timeout = '60s';
 ALTER ROLE fm_diag_ro SET idle_in_transaction_session_timeout = '60s';
@@ -63,6 +66,7 @@ A policy on a table without RLS is harmless, but the column grants still apply.
 SELECT rolname, rolsuper, rolbypassrls, rolcanlogin, rolconnlimit, rolvaliduntil, rolconfig FROM pg_roles WHERE rolname = 'fm_diag_ro';
 SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges WHERE grantee = 'fm_diag_ro' ORDER BY 1,2;
 SELECT tablename, policyname, cmd, qual FROM pg_policies WHERE 'fm_diag_ro' = ANY (roles);
+SELECT count(*) AS memberships FROM pg_auth_members WHERE member = 'fm_diag_ro'::regrole;   -- expect 0
 ```
 
 Then, connected **as `fm_diag_ro`**:
@@ -74,18 +78,18 @@ Then, connected **as `fm_diag_ro`**:
 ## 4. Running the investigation with it
 
 1. **Set the password** (owner, Supabase SQL editor or psql as `postgres`): `\password fm_diag_ro`. Use a generated password and keep it in your password manager.
-2. **Build the URL.** Use the DIRECT host, not the pooler:
-   `postgresql://fm_diag_ro:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require`
-   - If only the pooler is reachable, Supavisor needs the username `fm_diag_ro.<project-ref>`.
+2. **Build the URL.** Preferred: the DIRECT host
+   `postgresql://fm_diag_ro:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require`.
+   - The direct host may be IPv6-only unless Supabase's IPv4 add-on is enabled.
+   - If it is unreachable, use Supavisor in **session mode** (port 5432) with username `fm_diag_ro.<project-ref>`:
+     `postgresql://fm_diag_ro.<project-ref>:<password>@aws-<n>-<region>.pooler.supabase.com:5432/postgres?sslmode=require`.
+   - Through the pooler, `CONNECTION LIMIT 2` counts server connections, not clients.
 3. **Run** the steps in the investigation instructions (`read -rs DIAG_DATABASE_URL` → `/tmp/ro-psql.sh -f /tmp/beta-q.sql`). The first output row must be `read_only_guard = on`.
 
 ## 5. Security review
 
-**Can it write?** No, on four independent layers:
-1. no write privilege on any object;
-2. `default_transaction_read_only = on` at the role level;
-3. the helper's read-only transaction plus its input scan;
-4. RLS policies are `FOR SELECT` only.
+**Can it write?** No. **Writes are prevented by privileges:** the role holds no INSERT/UPDATE/DELETE/TRUNCATE privilege on anything, and its RLS policies are `FOR SELECT` only.
+Read-only defaults are defence in depth only: the role-level `default_transaction_read_only` (a default the role could override), plus the helper's read-only transaction, input scan and database-side role guard (`DIAG_REQUIRE_ROLE=fm_diag_ro`, which aborts unless the connected role is exactly this one, is not superuser, cannot bypass RLS and holds no write grant).
 
 **Can it read beyond the investigation?**
 - Only the listed columns of 4 tables.
@@ -104,7 +108,10 @@ Then, connected **as `fm_diag_ro`**:
 ## 6. Rollback (one transaction, idempotent)
 
 ```sql
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'fm_diag_ro';   -- DROP ROLE does not end open sessions
+
 BEGIN;
+SET LOCAL lock_timeout = '3s';
 DROP POLICY IF EXISTS fm_diag_ro_sel ON public."BetaAccessRequest";
 DROP POLICY IF EXISTS fm_diag_ro_sel ON public."BetaAccessRequestEvent";
 DROP POLICY IF EXISTS fm_diag_ro_sel ON public."AuditLog";
@@ -115,7 +122,13 @@ DROP ROLE IF EXISTS fm_diag_ro;
 COMMIT;
 ```
 
-**Recommended:** run the rollback as soon as the investigation output is captured. Expiry happens anyway on 2026-11-08. If `DROP ROLE` reports dependent privileges, `REASSIGN OWNED BY fm_diag_ro TO postgres; DROP OWNED BY fm_diag_ro;` clears them. The role owns nothing, so this is not expected.
+**Recommended:** run the rollback as soon as the investigation output is captured. Expiry happens anyway on 2026-11-08. If `DROP ROLE` reports dependencies, run `DROP OWNED BY fm_diag_ro;` and retry. The role owns nothing, so this is not expected.
+
+**Validated on Preview (rolled back, nothing kept):**
+- the §2 SQL, the full investigation with only these grants, and the §6 rollback all work;
+- the role sees exactly the beta rows (831 other audit rows and 648 other limiter keys are hidden);
+- reads of `"User"`, `"inviteTokenHash"`, `SELECT *` and `"userId"` are refused, and an UPDATE or INSERT is refused;
+- expiry is enforced through Supavisor as well.
 
 ## 7. Approval checklist (owner)
 
