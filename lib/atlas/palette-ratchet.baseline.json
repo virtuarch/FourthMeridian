@@ -37,7 +37,5 @@
   "app/admin/providers/page.tsx": 27,
   "app/admin/spaces/page.tsx": 68,
   "app/admin/users/page.tsx": 62,
-  "app/merchant-ops/MergeReviewList.tsx": 11,
-  "app/merchant-ops/page.tsx": 1,
   "app/plaid-oauth-return/page.tsx": 11
 }
