@@ -186,3 +186,121 @@ export function revaluationOwedFromISO(args: {
   }
   return from !== null && floor !== null && from < args.earliestSnapshotISO ? { fromISO: from, floorISO: floor } : null;
 }
+
+// ── Holder revaluation over EXISTING rows (2026-10-31, P1) ──────────────────
+//
+// THE DEFECT (live on Preview, QA Space, 2026-10-31): 31 stored rows
+// (2026-09-27..2026-10-27) were written on 10-28 05:16, before the BTC wallet
+// was linked (12:55). They hold SOL only (~$76) and are stamped "supported".
+// The revaluation above is owed only while valued-from precedes the EARLIEST
+// snapshot, and rebuilds only [valued-from, earliest snapshot − 1] — so once the
+// prefix was filled the stale interior rows were never revisited, and the chart
+// fell from $27,888 to $91 (10-27 stored $76.04; correct $26,793.01).
+//
+// THE RULE NOW: a holder's revaluation is owed whenever its EVIDENCE changes —
+// the licences it holds (native AND token), the price floors serving them, or
+// the Spaces it belongs to — and it covers EVERY existing row of those Spaces
+// from the earlier of valued-from and the earliest stored row, through today.
+// Days that recompute identically are UNCHANGED and not rewritten
+// (planDayPersistence), so a re-run churns nothing; days the holder existed on
+// but cannot be valued become `unavailable`, never `supported`, never $0.
+// Bounded: the window is taken in fixed chunks, NEWEST first (the visible
+// cliff first), each marked durably, so a large window progresses across runs.
+
+/** Do not start a price-gap pass or a revaluation chunk with less than this left of the wake. */
+export const REVALUATION_RESERVE_MS = 60_000;
+/** Days per revaluation chunk — about one REVALUATION_RESERVE_MS of rebuild on Vercel. */
+export const REVALUATION_CHUNK_DAYS = 60;
+/** Version of the evidence fingerprint; bumping it re-owes every holder once. */
+export const REVALUATION_EVIDENCE_VERSION = "v2";
+
+/** One holder whose evidence state owes a revaluation of its Spaces' rows. */
+export interface HolderRevaluation {
+  accountId: string;
+  /** First day to rebuild: min(valued-from, earliest stored row of its Spaces). */
+  windowFromISO: string;
+  /** max(licence start, price floor) across its native instruments; null when one is unpriced. */
+  valuedFromISO: string | null;
+  /** The durable key of this evidence state (chunk keys extend it). */
+  evidenceKey: string;
+}
+
+/** FNV-1a 32-bit, hex — a stable short digest (pure; no node:crypto in a core). */
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * The evidence fingerprint of one holder: every licence it holds (native and
+ * token: instrument → licence start), the price floor of each (or "none"), and
+ * the Spaces it belongs to. Any change — a licence widening, a new price
+ * coverage, a token licence, a new Space link — is a new key, i.e. a new owed
+ * revaluation. The same state is the same key, so a re-run owes nothing.
+ */
+export function revaluationEvidenceKey(args: {
+  accountId: string;
+  licences: ReadonlyMap<string, string>;
+  floors: ReadonlyMap<string, string>;
+  spaceIds: readonly string[];
+}): string {
+  const parts = [...args.licences.keys()].sort().map((id) => `${id}=${args.licences.get(id)}/${args.floors.get(id) ?? "none"}`);
+  const spaces = [...new Set(args.spaceIds)].sort().join(",");
+  return `revaluation:${REVALUATION_EVIDENCE_VERSION}:${args.accountId}:${fnv1a(`${parts.join(";")}|${spaces}`)}`;
+}
+
+/**
+ * Does this holder's persisted state call for a revaluation of its Spaces'
+ * existing rows, and from when? Null when it holds no licence or its Spaces hold
+ * no row yet (the initial build is the normal path's). An unpriced native
+ * instrument does NOT excuse it: its existing rows must still be re-decided, and
+ * the day rule refuses them (`unavailable`) rather than leave them "supported".
+ */
+export function holderRevaluationFor(args: {
+  accountId: string;
+  /** Native price-blocking licences (instrument → start): valued-from. */
+  nativeLicences: ReadonlyMap<string, string>;
+  /** Every licence (native + token): the fingerprint. */
+  allLicences: ReadonlyMap<string, string>;
+  floors: ReadonlyMap<string, string>;
+  /** Earliest stored row per Space the holder is ACTIVE in (absent ⇒ no rows). */
+  snapshotMinBySpace: ReadonlyMap<string, string>;
+  spaceIds: readonly string[];
+}): HolderRevaluation | null {
+  if (args.allLicences.size === 0) return null;
+  const mins = args.spaceIds.map((s) => args.snapshotMinBySpace.get(s)).filter((d): d is string => !!d);
+  if (mins.length === 0) return null;
+  const earliestRow = mins.reduce((m, d) => (d < m ? d : m));
+  let valued: string | null = null;
+  let unpriced = false;
+  for (const [id, lic] of args.nativeLicences) {
+    const v = valuedFromISO(lic, args.floors.get(id) ?? null);
+    if (v === null) { unpriced = true; continue; }
+    if (valued === null || v > valued) valued = v;
+  }
+  if (unpriced) valued = null;
+  const windowFromISO = valued !== null && valued < earliestRow ? valued : earliestRow;
+  return {
+    accountId: args.accountId, windowFromISO, valuedFromISO: valued,
+    evidenceKey: revaluationEvidenceKey({ accountId: args.accountId, licences: args.allLicences, floors: args.floors, spaceIds: args.spaceIds }),
+  };
+}
+
+/** One bounded slice of a holder's revaluation window. */
+export interface RevaluationChunk { fromISO: string; toISO: string; key: string }
+
+/**
+ * The window [fromISO, toISO] in REVALUATION_CHUNK_DAYS slices anchored at
+ * fromISO (so a slice's key is stable as `toISO` advances day by day), returned
+ * NEWEST first: the most recent rows are the ones a reader sees first.
+ */
+export function revaluationChunks(evidenceKey: string, fromISO: string, toISO: string, chunkDays = REVALUATION_CHUNK_DAYS): RevaluationChunk[] {
+  const out: RevaluationChunk[] = [];
+  const size = Math.max(1, Math.floor(chunkDays));
+  for (let from = fromISO; from <= toISO; from = minusDaysISO(from, -size)) {
+    const end = minusDaysISO(from, -(size - 1));
+    out.push({ fromISO: from, toISO: end < toISO ? end : toISO, key: `${evidenceKey}:${from}` });
+  }
+  return out.reverse();
+}

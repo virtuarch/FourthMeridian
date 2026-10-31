@@ -29,7 +29,8 @@ import { resolveProviderForInstrument } from "./registry";
 import type { PriceRegistry } from "./types";
 import {
   planPriceGaps, priceGapAttemptKey, revaluationOwedFromISO, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
-  type HolderLicence, type InstrumentPriceFacts, type PriceGapDecision,
+  holderRevaluationFor, revaluationChunks, REVALUATION_RESERVE_MS,
+  type HolderLicence, type HolderRevaluation, type InstrumentPriceFacts, type PriceGapDecision,
 } from "./price-gap.core";
 
 /** ApiUsageCounter vocabulary for the durable once-a-day gap marker (no new table). */
@@ -160,10 +161,12 @@ export async function earliestRawCloseByInstrument(client: Client, instrumentIds
  * native wealth history would never be revalued (token rows are valued by
  * lib/crypto/token-valuation.ts, under their own licences).
  */
-export async function cryptoHolderLicences(client: Client, accountIds: readonly string[]): Promise<HolderLicence[]> {
+export async function cryptoHolderLicences(client: Client, accountIds: readonly string[], opts: { includeTokens?: boolean } = {}): Promise<HolderLicence[]> {
   if (accountIds.length === 0) return [];
   const rows = await client.positionCoverage.findMany({
-    where: { financialAccountId: { in: [...accountIds] }, instrument: { assetClass: AssetClass.CRYPTO, ...NOT_TOKEN_INSTRUMENT } },
+    // includeTokens — the revaluation FINGERPRINT only (holderRevaluations): a new
+    // token licence must re-decide the wallet's rows, but never sets a floor.
+    where: { financialAccountId: { in: [...accountIds] }, instrument: opts.includeTokens ? { assetClass: AssetClass.CRYPTO } : { assetClass: AssetClass.CRYPTO, ...NOT_TOKEN_INSTRUMENT } },
     select: { financialAccountId: true, instrumentId: true, kind: true, coveredFromDate: true, coveredToDate: true, caveats: true, source: true },
   });
   const out: HolderLicence[] = [];
@@ -219,85 +222,160 @@ export async function revaluationOwed(client: Client, accountIds: readonly strin
   }
 }
 
-// ── Bounded revaluation of the holders a price gap fill reaches ────────────
+// ── Bounded revaluation of the holders whose evidence changed ──────────────
 
 export const REVALUATION_ATTEMPT_PROVIDER = "REVALUATION";
-/** Do not start a price-gap pass or a revaluation with less than this left of the wake. */
-export const REVALUATION_RESERVE_MS = 60_000;
 /** Accounts revalued per run at most; the rest stay owed (state) and run next time. */
 export const DEFAULT_REVALUATION_MAX_ACCOUNTS = 10;
 
-/** Durable once-per-floor marker key for one account's revaluation. */
-export function revaluationAttemptKey(accountId: string, floorISO: string): string {
-  return `revaluation:${accountId}:${floorISO}`;
+/**
+ * Every holder (of these) whose Spaces already hold rows, with its evidence
+ * fingerprint and the window its revaluation covers (price-gap.core.ts
+ * holderRevaluationFor). Reads only. Whether the fingerprint was already
+ * revalued is the caller's marker question. Never throws.
+ */
+export async function holderRevaluations(client: Client, accountIds: readonly string[]): Promise<HolderRevaluation[]> {
+  if (accountIds.length === 0) return [];
+  try {
+    const all = await cryptoHolderLicences(client, accountIds, { includeTokens: true });
+    if (all.length === 0) return [];
+    const native = await cryptoHolderLicences(client, accountIds);
+    const floors = await earliestRawCloseByInstrument(client, [...new Set(all.map((l) => l.instrumentId))]);
+    const accounts = [...new Set(all.map((l) => l.financialAccountId))].sort();
+    const links = await client.spaceAccountLink.findMany({
+      where: { financialAccountId: { in: accounts }, status: "ACTIVE" }, select: { financialAccountId: true, spaceId: true },
+    });
+    const spaceIds = [...new Set(links.map((l) => l.spaceId))];
+    const mins = spaceIds.length === 0 ? [] : await client.spaceSnapshot.groupBy({ by: ["spaceId"], where: { spaceId: { in: spaceIds } }, _min: { date: true } });
+    const snapshotMinBySpace = new Map(mins.filter((m) => m._min.date).map((m) => [m.spaceId, isoOf(m._min.date!)]));
+    const byAccount = (rows: HolderLicence[], id: string) => {
+      const m = new Map<string, string>();
+      for (const l of rows) if (l.financialAccountId === id) { const cur = m.get(l.instrumentId); if (!cur || l.licensedFromISO < cur) m.set(l.instrumentId, l.licensedFromISO); }
+      return m;
+    };
+    const out: HolderRevaluation[] = [];
+    for (const accountId of accounts) {
+      const h = holderRevaluationFor({
+        accountId, nativeLicences: byAccount(native, accountId), allLicences: byAccount(all, accountId), floors, snapshotMinBySpace,
+        spaceIds: links.filter((l) => l.financialAccountId === accountId).map((l) => l.spaceId),
+      });
+      if (h) out.push(h);
+    }
+    return out;
+  } catch (e) {
+    console.warn("[price-gap] holderRevaluations failed (non-fatal):", e instanceof Error ? e.message : String(e));
+    return [];
+  }
 }
 
 export interface RevaluationDeps {
   acquireGaps(accountIds: readonly string[]): Promise<PriceGapRun>;
-  owed(accountIds: readonly string[]): Promise<RevaluationOwed[]>;
+  /** Holders (of these) whose Spaces hold rows, with their evidence key and window (holderRevaluations). */
+  owed(accountIds: readonly string[]): Promise<HolderRevaluation[]>;
   /** Of these keys, those already recorded (any day within retention). */
   revaluedAlready(keys: readonly string[]): Promise<Set<string>>;
   markRevalued(key: string): Promise<void>;
-  /** Regenerate one account's wealth history over [fromISO, toISO]. */
+  /** Regenerate one account's wealth history over [fromISO, toISO] — existing rows included. */
   regenerate(accountId: string, fromISO: string, toISO: string): Promise<void>;
   now(): number;
 }
 
 export interface RevaluationRun {
   priceGaps: PriceGapRun | null;
-  /** Accounts whose persisted state owes a revaluation (after this run's gap fill). */
+  /** Holders with at least one unmarked chunk of their current evidence state (after this run's gap fill). */
   owed: number;
+  /** Holders whose every remaining chunk was rebuilt this run. */
   revalued: number;
-  /** Owed, unmarked, not run this time (cap or wake time) — still owed on disk, picked up next run. */
+  /** Chunks rebuilt this run (each a bounded slice of a holder's window). */
+  chunksRebuilt: number;
+  /** Owed, not finished this time (cap or wake time) — unmarked chunks stay owed, picked up next run. */
   deferred: number;
-  /** Owed but already revalued once under the same floor — not repeated (a history snapshots cannot reach never loops). */
+  /** Holders whose current evidence state is already fully revalued — not repeated (no churn, no loop). */
   alreadyRevalued: number;
   failures: number;
   /** The gap pass itself was skipped: too little wake time left. */
   skippedForTime: boolean;
 }
 
+/** The chunk plan of each holder, and which chunks are still owed. */
+async function owedChunks(deps: Pick<RevaluationDeps, "revaluedAlready">, holders: HolderRevaluation[], todayISO: string) {
+  const plans = holders.map((h) => ({ h, chunks: revaluationChunks(h.evidenceKey, h.windowFromISO, todayISO) }));
+  const keys = plans.flatMap((p) => p.chunks.map((c) => c.key));
+  const done = keys.length > 0 ? await deps.revaluedAlready(keys) : new Set<string>();
+  return plans.map((p) => ({ h: p.h, todo: p.chunks.filter((c) => !done.has(c.key)) }));
+}
+
+/**
+ * Is any holder (of these) owed revaluation work under its CURRENT evidence?
+ * Cheap reads only (no acquisition): the worker asks before its passes so it
+ * can reserve the revaluation's slice of the job budget. Never throws.
+ */
+export async function revaluationPending(deps: Pick<RevaluationDeps, "owed" | "revaluedAlready">, accountIds: readonly string[], todayISO = minusDaysISO(yesterdayUTCISO(), -1)): Promise<boolean> {
+  if (accountIds.length === 0) return false;
+  try {
+    const holders = await deps.owed(accountIds);
+    const plans = await owedChunks(deps, holders, todayISO);
+    return plans.some((p) => p.todo.length > 0);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * After a sweep's ordinary regeneration: fill historical price gaps for these
- * accounts, then regenerate ONLY the accounts whose persisted state now owes a
- * revaluation (valued-from before their earliest snapshot) — the holders the
- * new floor reaches — over just the missing days, bounded by `maxAccounts` and
- * by the wake deadline. Each account is revalued at most once per floor
- * (durable marker); the rest stay owed on disk and are taken next run.
- * Never throws.
+ * accounts, then revalue every holder whose EVIDENCE state (licences native and
+ * token, price floors, Space links) has not yet been revalued — over EVERY
+ * existing row of its Spaces from min(valued-from, earliest row) through today,
+ * not only the days before the earliest row (the 2026-10-31 stale-interior
+ * defect). Newest chunk first, one durable marker per chunk (set before the
+ * rebuild, so a failing one is not retried every run), bounded by `maxAccounts`
+ * and by the wake deadline; unfinished chunks stay owed and run next time.
+ * Rebuilding goes through the canonical regeneration, whose per-day persistence
+ * (planDayPersistence) leaves identical days unwritten and frozen rows
+ * untouched — so a re-run churns nothing. Never throws.
  */
 export async function revalueHoldersAfterPriceGaps(args: {
   accountIds: readonly string[];
   deps: RevaluationDeps;
   deadlineMs: number;
   maxAccounts?: number;
+  /** The window's last day (default: today UTC). */
+  todayISO?: string;
   log?: (line: string) => void;
 }): Promise<RevaluationRun> {
-  const run: RevaluationRun = { priceGaps: null, owed: 0, revalued: 0, deferred: 0, alreadyRevalued: 0, failures: 0, skippedForTime: false };
+  const run: RevaluationRun = { priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, failures: 0, skippedForTime: false };
   const log = args.log ?? (() => {});
   const cap = Math.max(0, Math.floor(args.maxAccounts ?? DEFAULT_REVALUATION_MAX_ACCOUNTS));
   const left = () => args.deadlineMs - args.deps.now();
+  const todayISO = args.todayISO ?? minusDaysISO(yesterdayUTCISO(), -1);
   if (args.accountIds.length === 0) return run;
   if (left() < REVALUATION_RESERVE_MS) { run.skippedForTime = true; return run; }
   try {
     run.priceGaps = await args.deps.acquireGaps(args.accountIds);
-    const owed = (await args.deps.owed(args.accountIds)).sort((a, b) => a.accountId.localeCompare(b.accountId));
-    run.owed = owed.length;
-    if (owed.length === 0) return run;
-    const done = await args.deps.revaluedAlready(owed.map((o) => revaluationAttemptKey(o.accountId, o.floorISO)));
-    for (const o of owed) {
-      const key = revaluationAttemptKey(o.accountId, o.floorISO);
-      if (done.has(key)) { run.alreadyRevalued++; continue; }
-      if (run.revalued + run.failures >= cap || left() < REVALUATION_RESERVE_MS) { run.deferred++; continue; }
-      const toISO = minusDaysISO(o.earliestSnapshotISO, 1);
-      await args.deps.markRevalued(key).catch(() => {}); // before: a failing rebuild is not retried every run
-      try {
-        await args.deps.regenerate(o.accountId, o.fromISO, toISO);
-        run.revalued++;
-      } catch (e) {
-        run.failures++;
-        log(`revaluation ${o.fromISO}..${toISO} failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    const holders = (await args.deps.owed(args.accountIds)).sort((a, b) => a.accountId.localeCompare(b.accountId));
+    if (holders.length === 0) return run;
+    let started = 0;
+    for (const { h, todo } of await owedChunks(args.deps, holders, todayISO)) {
+      if (todo.length === 0) { run.alreadyRevalued++; continue; }
+      run.owed++;
+      if (started >= cap || left() < REVALUATION_RESERVE_MS) { run.deferred++; continue; }
+      started++;
+      let failed = false;
+      let stopped = false;
+      for (const c of todo) {
+        if (left() < REVALUATION_RESERVE_MS) { stopped = true; break; }
+        await args.deps.markRevalued(c.key).catch(() => {}); // before: a failing rebuild is not retried every run
+        try {
+          await args.deps.regenerate(h.accountId, c.fromISO, c.toISO);
+          run.chunksRebuilt++;
+        } catch (e) {
+          failed = true;
+          log(`revaluation ${h.accountId} ${c.fromISO}..${c.toISO} failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
+      if (failed) run.failures++;
+      else if (stopped) run.deferred++;
+      else run.revalued++;
     }
   } catch (e) {
     run.failures++;
@@ -310,7 +388,7 @@ export async function revalueHoldersAfterPriceGaps(args: {
 export function prismaRevaluationDeps(client: Client, opts: { log?: (line: string) => void } = {}): RevaluationDeps {
   return {
     acquireGaps: (ids) => acquireHistoricalPriceGaps({ accountIds: ids, deps: prismaPriceGapDeps(client, { log: opts.log }), log: opts.log }),
-    owed: (ids) => revaluationOwed(client, ids),
+    owed: (ids) => holderRevaluations(client, ids),
     async revaluedAlready(keys) {
       if (keys.length === 0) return new Set();
       const rows = await client.apiUsageCounter.findMany({
@@ -326,15 +404,19 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
     async regenerate(accountId, fromISO, toISO) {
       const { resolveHistoricalWorkWindow } = await import("@/lib/snapshots/historical-work-window");
       const { regenerateWealthHistoryForAccounts } = await import("@/lib/snapshots/regenerate-history");
-      // The canonical planner, told the floor and impacted-from (the V26-CAP-1
-      // override), then clamped to the days the snapshots do not yet hold.
+      // The canonical planner, told the chunk start as floor and impacted-from
+      // (the V26-CAP-1 override) — still intersected with the evidence floor and
+      // the writable ceiling — then clamped to the chunk. A floor below the
+      // archive's is safe: an unpriced day is refused by the day rule (stored
+      // value preserved, verdict `unavailable`), never written as $0.
       const plan = await resolveHistoricalWorkWindow({
         financialAccountIds: [accountId], initialBuild: false,
         capabilityOverride: { blockingPriceFloorISO: fromISO, impactedFromISO: fromISO },
       });
+      const from = plan.fromDate > fromISO ? plan.fromDate : fromISO;
       const to = plan.toDate < toISO ? plan.toDate : toISO;
-      if (plan.fromDate > to) return;
-      await regenerateWealthHistoryForAccounts([accountId], { fromDate: plan.fromDate, toDate: to });
+      if (from > to) return;
+      await regenerateWealthHistoryForAccounts([accountId], { fromDate: from, toDate: to });
     },
     now: Date.now,
   };

@@ -297,3 +297,26 @@ export function valueCryptoDay(input: CryptoDayInput): CryptoDayValuation {
     unknownQuantityAccountIds: [],
   };
 }
+
+/**
+ * P1 2026-10-31 — THE HOLDER-COMPLETENESS GUARD. Which crypto holders that
+ * EXISTED on this day (in scope, with a held or unknown quantity) are NOT in the
+ * valuation's positions? Sorted account ids; empty when the day is complete.
+ *
+ * valueCryptoDay is all-or-nothing, so a licensed valuation names every held
+ * account by construction — this is the invariant restated as a check the day
+ * decision consumes (regenerateDay `cryptoHoldersNotValued`), so no future path
+ * can mark a day `supported` while a holder that existed is missing from its
+ * value. A refused valuation returns [] here: its refusal already decides the
+ * day (held-but-unvalued ⇒ `unavailable`).
+ */
+export function cryptoHoldersNotValued(input: Pick<CryptoDayInput, "accounts" | "materialityEpsilon">, valuation: CryptoDayValuation): string[] {
+  if (!valuation.licensed) return [];
+  const eps = input.materialityEpsilon ?? DEFAULT_MATERIALITY;
+  const valued = new Set(valuation.positions.map((p) => p.financialAccountId));
+  return input.accounts
+    .filter((a) => a.applicable !== false && (a.nativeBalance === null || Math.abs(a.nativeBalance) > eps))
+    .map((a) => a.financialAccountId)
+    .filter((id) => !valued.has(id))
+    .sort();
+}

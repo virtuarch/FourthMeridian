@@ -27,8 +27,9 @@ import type { SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
 import { chainOrder, nextRotation, phaseDeadlineFor, HISTORY_CHAINS, type HistoryChain } from "@/lib/crypto/history-worker-schedule.core";
 import { incrementalMeter, meterTotal, METER_FLUSH_EVERY_CALLS, type RequestMeter } from "@/lib/usage/provider-budget.core";
 import {
-  acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, revaluationAttemptKey, valuedFromISO,
-  type PriceGapDeps, type RevaluationDeps, type HolderLicence, type InstrumentPriceFacts, type RevaluationOwed,
+  acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, valuedFromISO, holderRevaluationFor, revaluationPending,
+  REVALUATION_RESERVE_MS,
+  type PriceGapDeps, type RevaluationDeps, type HolderLicence, type InstrumentPriceFacts, type RevaluationOwed, type HolderRevaluation,
 } from "@/lib/prices/price-gap";
 
 let failures = 0, passes = 0;
@@ -262,6 +263,56 @@ async function main() {
     check("ETH_BACKFILL_START_RESERVE_MS above the job budget is clamped: ETH still steps", (s.eth?.walletsRun ?? 0) === 1 && s.eth?.stoppedBecause !== "JOB_BUDGET", JSON.stringify(s.eth));
   }
 
+  console.log("P1 2026-10-31 fairness: a history backlog cannot starve an owed holder revaluation");
+  {
+    for (const chain of ["BTC", "ETH", "SOL"] as const) {
+      const run = async (pending: boolean) => {
+        const w = world({ sol: chain === "SOL" ? 20 : 0, btc: chain === "BTC" ? 20 : 0, eth: chain === "ETH" ? 1 : 0 });
+        let leftAtStart = -1;
+        w.deps.cryptoHolders = async () => ["h1"];
+        w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+        w.deps.revaluationPending = async () => pending;
+        w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
+          leftAtStart = deadlineMs - w.now();
+          const skipped = leftAtStart < REVALUATION_RESERVE_MS;
+          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, failures: 0, skippedForTime: skipped };
+        };
+        const s = await w.run();
+        return { s, leftAtStart, stepped: stepped(s, chain) };
+      };
+      const starved = await run(false);
+      // (ETH's fake wallet is one bounded step, so it may leave time over; BTC/SOL backlogs spend every ms.)
+      if (chain !== "ETH") check(`${chain} backlog, nothing reported owed: the revaluation runs last on what is left (the live starvation)`,
+        starved.leftAtStart < REVALUATION_RESERVE_MS && starved.stepped && !starved.s.revaluationReserved, JSON.stringify({ left: starved.leftAtStart }));
+      const fair = await run(true);
+      check(`${chain} backlog, a revaluation owed: its slice is reserved — it starts with ≥ REVALUATION_RESERVE_MS and the chain still steps`,
+        fair.leftAtStart >= REVALUATION_RESERVE_MS && fair.s.revaluationReserved === true && fair.s.holderRevaluation?.revalued === 1 && fair.stepped,
+        JSON.stringify({ left: fair.leftAtStart, h: fair.s.holderRevaluation }));
+    }
+    // Two backlogs: the reserved slice is taken right after the leader, so the FOLLOWER cannot eat it either.
+    {
+      const w = world({ sol: 20, btc: 20 });
+      let leftAtStart = -1;
+      w.deps.cryptoHolders = async () => ["h1"];
+      w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+      w.deps.revaluationPending = async () => true;
+      w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
+        leftAtStart = deadlineMs - w.now();
+        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, failures: 0, skippedForTime: false };
+      };
+      const s = await w.run();
+      check("SOL + BTC backlogs, a revaluation owed: it runs BEFORE the follower chain (≥ REVALUATION_RESERVE_MS left), both chains still step",
+        leftAtStart >= REVALUATION_RESERVE_MS && stepped(s, "SOL") && stepped(s, "BTC"), JSON.stringify({ left: leftAtStart, order: s.schedule?.order }));
+    }
+    // revaluationPending is the cheap state read the reservation is decided by.
+    const marks = new Set<string>();
+    const h: HolderRevaluation = { accountId: "b0", windowFromISO: "2026-10-01", valuedFromISO: "2026-10-01", evidenceKey: "revaluation:v2:b0:k" };
+    const rd = { owed: async () => [h], revaluedAlready: async (ks: readonly string[]) => new Set(ks.filter((k) => marks.has(k))) };
+    const before = await revaluationPending(rd, ["b0"], DAY);
+    marks.add(`${h.evidenceKey}:2026-10-01`);
+    check("revaluationPending: owed until its chunks are marked, then not (no reservation on a quiet run)", before === true && (await revaluationPending(rd, ["b0"], DAY)) === false);
+  }
+
   console.log("ERC-20 review N3: a native ETH backlog cannot starve the token pass");
   {
     const erc20Cfg = erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: "true" });
@@ -375,6 +426,14 @@ async function main() {
         const from = valuedFromISO(l.licensedFromISO, facts[l.instrumentId as "SOL"]);
         return from && from < snapshotStart ? [{ accountId: l.financialAccountId, fromISO: from, floorISO: facts[l.instrumentId as "SOL"]!, earliestSnapshotISO: snapshotStart }] : [];
       });
+      // The holder revaluation's own view: evidence-keyed, existing rows included (price-gap.core holderRevaluationFor).
+      const holders = async (ids: readonly string[]): Promise<HolderRevaluation[]> => licences.filter((l) => ids.includes(l.financialAccountId)).flatMap((l) => {
+        const lic = new Map([[l.instrumentId, l.licensedFromISO]]);
+        const f = facts[l.instrumentId as "SOL"];
+        const h = holderRevaluationFor({ accountId: l.financialAccountId, nativeLicences: lic, allLicences: lic, floors: new Map(f ? [[l.instrumentId, f]] : []),
+          snapshotMinBySpace: new Map([["sp", snapshotStart]]), spaceIds: ["sp"] });
+        return h ? [h] : [];
+      });
       const deps: SolBackfillJobDeps = {
         now: () => t, sleep: async (ms) => { t += ms; },
         wakeStartedAt: async () => (o.wakeAgoMs !== undefined ? t - o.wakeAgoMs : null),
@@ -390,10 +449,10 @@ async function main() {
         revalueHolders: (ids, { deadlineMs, attempted, maxInstruments }) => {
           const rd: RevaluationDeps = {
             acquireGaps: (x) => acquireHistoricalPriceGaps({ accountIds: x, attempted, maxInstruments, deps: gapDeps, yesterdayISO: "2026-10-27" }),
-            owed, revaluedAlready: async (keys) => new Set(keys.filter((k) => revalued.has(k))), markRevalued: async (k) => { revalued.add(k); },
+            owed: holders, revaluedAlready: async (keys) => new Set(keys.filter((k) => revalued.has(k))), markRevalued: async (k) => { revalued.add(k); },
             regenerate: async (id, from, to) => { log.push(`revalue:${id}:${from}..${to}`); }, now: () => t,
           };
-          return revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs });
+          return revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs, todayISO: DAY });
         },
       };
       return { deps, requests, log, cursors, attempts, revalued, run: () => solHistoryBackfill({ config: { ...solCfg, jobBudgetMs: 240_000 }, deps }) };
@@ -406,9 +465,10 @@ async function main() {
     const cp = parseSol(w.cursors.s0, "s0", ADDR);
     check("…the SOL holder is flagged from its new valued-from and rebuilt under its lock this run",
       s1.revaluationsRederived === 1 && w.log.includes("regen:s0:2025-10-28") && cp?.valuationCheckedFloorISO === "2025-10-28" && !cp?.snapshotPendingFromISO, w.log.join(","));
-    check("…the non-SOL holder is revalued over just the missing days", w.log.includes("revalue:e0:2025-10-28..2026-09-26") && s1.holderRevaluation?.revalued === 1, w.log.join(","));
+    check("…the non-SOL holder is revalued from its new valued-from THROUGH TODAY (existing rows included), newest chunk first",
+      w.log.filter((x) => x.startsWith("revalue:e0:"))[0] === "revalue:e0:2026-10-23..2026-10-28" && w.log.some((x) => x.startsWith("revalue:e0:2025-10-28..")) && s1.holderRevaluation?.revalued === 1, w.log.join(","));
     check("…observations are shared per instrument: the durable once-a-day markers are set",
-      w.attempts.has(priceGapAttemptKey("COINGECKO", "SOL", "2026-09-27")) && w.revalued.has(revaluationAttemptKey("e0", "2025-10-28")));
+      w.attempts.has(priceGapAttemptKey("COINGECKO", "SOL", "2026-09-27")) && [...w.revalued].some((k) => k.startsWith("revaluation:v2:e0:")));
 
     const before = w.log.length;
     const s2 = await w.run();
@@ -417,7 +477,8 @@ async function main() {
 
     const covered = mk({ earliest: "2021-01-01", snapshotStart: "2021-01-01" });
     const s3 = await covered.run();
-    check("covered archive: no request, nothing owed", covered.requests.length === 0 && s3.priceGaps.acquired === 0 && covered.log.length === 0);
+    check("covered archive: no request, SOL not flagged (its own path); the ETH holder's existing rows are revalued ONCE",
+      covered.requests.length === 0 && s3.priceGaps.acquired === 0 && !covered.log.some((x) => x.startsWith("regen:")) && (s3.holderRevaluation?.owed ?? 0) === 1, covered.log.join(","));
 
     const late = mk({ earliest: "2026-09-27", wakeAgoMs: WAKE_SAFE_MS - PRICE_GAP_RESERVE_MS + 1_000 });
     const s4 = await late.run();

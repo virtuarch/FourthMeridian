@@ -11,8 +11,9 @@ import { readFileSync } from "node:fs";
 import { minusDaysISO } from "./config";
 import {
   valuedFromISO, planPriceGaps, acquireHistoricalPriceGaps, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS,
-  priceGapAttemptKey, revaluationOwedFromISO, cryptoHolderLicences, revalueHoldersAfterPriceGaps, revaluationAttemptKey, REVALUATION_RESERVE_MS,
-  type HolderLicence, type InstrumentPriceFacts, type PriceGapDeps, type RevaluationDeps, type RevaluationOwed,
+  priceGapAttemptKey, revaluationOwedFromISO, cryptoHolderLicences, revalueHoldersAfterPriceGaps, REVALUATION_RESERVE_MS,
+  holderRevaluationFor, holderRevaluations, revaluationChunks, revaluationPending, REVALUATION_CHUNK_DAYS,
+  type HolderLicence, type HolderRevaluation, type InstrumentPriceFacts, type PriceGapDeps, type RevaluationDeps,
 } from "./price-gap";
 
 let failures = 0;
@@ -185,42 +186,96 @@ async function main() {
     check("two blocking instruments ⇒ the LATER valued-from (a day needs both)", two?.fromISO === "2026-02-01" && two?.floorISO === "2026-02-01");
   }
 
-  console.log("REVIEW FIX 2 — bounded revaluation of only the holders the new floor reaches");
+  console.log("REVIEW FIX 2 (+ P1 2026-10-31) — bounded revaluation, keyed by evidence, over existing rows too");
   {
-    const mk = (o: { owed: RevaluationOwed[]; done?: string[]; now?: () => number; regenMs?: number }) => {
+    const TODAY = "2026-10-31";
+    const mk = (o: { owed: HolderRevaluation[]; done?: string[]; now?: () => number; regenMs?: number }) => {
       const regens: string[] = []; const marks: string[] = []; let t = 0;
       const deps: RevaluationDeps = {
         acquireGaps: async () => ({ decisions: [], acquired: 1, inserted: 300, failures: 0, instruments: [], newlyPricedFromISO: "2025-10-28" }),
         owed: async (ids) => o.owed.filter((x) => ids.includes(x.accountId)),
-        revaluedAlready: async (ks) => new Set(ks.filter((k) => o.done?.includes(k))),
+        revaluedAlready: async (ks) => new Set(ks.filter((k) => o.done?.includes(k) || marks.includes(k))),
         markRevalued: async (k) => { marks.push(k); },
         regenerate: async (id, from, to) => { regens.push(`${id}:${from}..${to}`); t += o.regenMs ?? 1_000; },
         now: o.now ?? (() => t),
       };
       return { deps, regens, marks, at: () => t };
     };
-    const owe = (id: string): RevaluationOwed => ({ accountId: id, fromISO: "2025-10-28", floorISO: "2025-10-28", earliestSnapshotISO: "2026-09-27" });
-    // The sweep had 40 ETH/BTC/SOL accounts; only 3 SOL holders are owed by state.
+    // Window of one chunk: 2026-09-27..today (35 days < REVALUATION_CHUNK_DAYS).
+    const owe = (id: string, from = "2026-09-27"): HolderRevaluation => ({ accountId: id, windowFromISO: from, valuedFromISO: from, evidenceKey: `revaluation:v2:${id}:k` });
     const sweepIds = Array.from({ length: 40 }, (_, i) => `acct-${String(i).padStart(2, "0")}`);
     const w = mk({ owed: [owe("acct-03"), owe("acct-17"), owe("acct-29")] });
-    const r = await revalueHoldersAfterPriceGaps({ accountIds: sweepIds, deps: w.deps, deadlineMs: 1e9 });
-    check("ONLY the owed holders are regenerated, over just the missing days (valued-from .. day before the earliest snapshot)",
-      w.regens.join() === "acct-03:2025-10-28..2026-09-26,acct-17:2025-10-28..2026-09-26,acct-29:2025-10-28..2026-09-26" && r.revalued === 3, w.regens.join());
+    const r = await revalueHoldersAfterPriceGaps({ accountIds: sweepIds, deps: w.deps, deadlineMs: 1e9, todayISO: TODAY });
+    check("ONLY the owed holders are regenerated — through TODAY, existing rows included (not clamped to the earliest snapshot)",
+      w.regens.join() === "acct-03:2026-09-27..2026-10-31,acct-17:2026-09-27..2026-10-31,acct-29:2026-09-27..2026-10-31" && r.revalued === 3, w.regens.join());
     const many = mk({ owed: Array.from({ length: 14 }, (_, i) => owe(`h${String(i).padStart(2, "0")}`)) });
-    const rm = await revalueHoldersAfterPriceGaps({ accountIds: Array.from({ length: 14 }, (_, i) => `h${String(i).padStart(2, "0")}`), deps: many.deps, deadlineMs: 1e9, maxAccounts: 10 });
+    const rm = await revalueHoldersAfterPriceGaps({ accountIds: Array.from({ length: 14 }, (_, i) => `h${String(i).padStart(2, "0")}`), deps: many.deps, deadlineMs: 1e9, maxAccounts: 10, todayISO: TODAY });
     check("per-run account cap: 10 revalued, 4 deferred (still owed on disk, unmarked)", rm.revalued === 10 && rm.deferred === 4 && many.marks.length === 10);
     const slow = mk({ owed: [owe("a"), owe("b"), owe("c")], regenMs: 50_000 });
-    const rs = await revalueHoldersAfterPriceGaps({ accountIds: ["a", "b", "c"], deps: slow.deps, deadlineMs: 120_000 });
+    const rs = await revalueHoldersAfterPriceGaps({ accountIds: ["a", "b", "c"], deps: slow.deps, deadlineMs: 120_000, todayISO: TODAY });
     check("wake time: stops starting rebuilds with < 60 s left and defers the rest", rs.revalued === 2 && rs.deferred === 1, JSON.stringify(rs));
     const late = mk({ owed: [owe("a")] });
-    const rl = await revalueHoldersAfterPriceGaps({ accountIds: ["a"], deps: late.deps, deadlineMs: REVALUATION_RESERVE_MS - 1 });
+    const rl = await revalueHoldersAfterPriceGaps({ accountIds: ["a"], deps: late.deps, deadlineMs: REVALUATION_RESERVE_MS - 1, todayISO: TODAY });
     check("too little wake left ⇒ the whole pass is skipped (no gap request, no rebuild)", rl.skippedForTime && rl.priceGaps === null && late.regens.length === 0);
-    const again = mk({ owed: [owe("a"), owe("b")], done: [revaluationAttemptKey("a", "2025-10-28")] });
-    const ra = await revalueHoldersAfterPriceGaps({ accountIds: ["a", "b"], deps: again.deps, deadlineMs: 1e9 });
-    check("an account already revalued under the same floor is not rebuilt again (no loop)", ra.alreadyRevalued === 1 && again.regens.join() === "b:2025-10-28..2026-09-26");
+    const again = mk({ owed: [owe("a"), owe("b")], done: [`${owe("a").evidenceKey}:2026-09-27`] });
+    const ra = await revalueHoldersAfterPriceGaps({ accountIds: ["a", "b"], deps: again.deps, deadlineMs: 1e9, todayISO: TODAY });
+    check("a holder already revalued under the SAME evidence state is not rebuilt again (no churn, no loop)", ra.alreadyRevalued === 1 && again.regens.join() === "b:2026-09-27..2026-10-31");
     const failing = mk({ owed: [owe("a")] });
-    const rf = await revalueHoldersAfterPriceGaps({ accountIds: ["a"], deps: { ...failing.deps, regenerate: async () => { throw new Error("boom"); } }, deadlineMs: 1e9 });
+    const rf = await revalueHoldersAfterPriceGaps({ accountIds: ["a"], deps: { ...failing.deps, regenerate: async () => { throw new Error("boom"); } }, deadlineMs: 1e9, todayISO: TODAY });
     check("a failing rebuild is counted, marked (not retried every run), never thrown", rf.failures === 1 && failing.marks.length === 1);
+
+    // LARGE WINDOW: chunked, newest first, and progress survives across runs.
+    let clock = 0;
+    const big = mk({ owed: [owe("x", "2025-10-28")], regenMs: 40_000, now: () => clock });
+    const bigDeps = { ...big.deps, regenerate: async (id: string, f: string, to: string) => { big.regens.push(`${id}:${f}..${to}`); clock += 40_000; } };
+    const r1 = await revalueHoldersAfterPriceGaps({ accountIds: ["x"], deps: bigDeps, deadlineMs: 150_000, todayISO: TODAY });
+    const chunks = revaluationChunks(owe("x", "2025-10-28").evidenceKey, "2025-10-28", TODAY);
+    check("a 369-day window is cut into REVALUATION_CHUNK_DAYS slices, NEWEST first (the visible cliff first)",
+      chunks.length === Math.ceil(369 / REVALUATION_CHUNK_DAYS) && chunks[0].toISO === TODAY && chunks[chunks.length - 1].fromISO === "2025-10-28"
+        && big.regens[0] === `x:${chunks[0].fromISO}..${TODAY}`, JSON.stringify(chunks.slice(0, 2)));
+    check("…the wake stops it part-way: deferred, with the done chunks marked", r1.deferred === 1 && r1.chunksRebuilt === 3 && big.marks.length === 3, JSON.stringify(r1));
+    clock = 0;
+    const r2 = await revalueHoldersAfterPriceGaps({ accountIds: ["x"], deps: bigDeps, deadlineMs: 1e9, todayISO: TODAY });
+    check("…the next run resumes at the first UNMARKED chunk and finishes (no chunk rebuilt twice)",
+      r2.revalued === 1 && r2.chunksRebuilt === chunks.length - 3 && new Set(big.regens).size === chunks.length && big.regens.length === chunks.length, JSON.stringify(r2));
+    const r3 = await revalueHoldersAfterPriceGaps({ accountIds: ["x"], deps: bigDeps, deadlineMs: 1e9, todayISO: TODAY });
+    check("…and a third run is a no-op (idempotent)", r3.alreadyRevalued === 1 && r3.chunksRebuilt === 0 && big.regens.length === chunks.length);
+    check("revaluationPending: true while a chunk is unmarked, false once all are",
+      (await revaluationPending(mk({ owed: [owe("p")] }).deps, ["p"], TODAY)) === true && (await revaluationPending(bigDeps, ["x"], TODAY)) === false);
+  }
+
+  console.log("P1 2026-10-31 — the holder's evidence state decides; existing rows are in the window");
+  {
+    const base = {
+      accountId: "btc", nativeLicences: new Map([["BTC", "2025-01-01"]]), allLicences: new Map([["BTC", "2025-01-01"]]),
+      floors: new Map([["BTC", "2025-10-28"]]), snapshotMinBySpace: new Map([["qa", "2026-09-27"]]), spaceIds: ["qa"],
+    };
+    const h = holderRevaluationFor(base);
+    check("the live case: valued-from 2025-10-28 before the earliest row ⇒ window from 2025-10-28 (prefix AND existing rows)",
+      h?.windowFromISO === "2025-10-28" && h.valuedFromISO === "2025-10-28", JSON.stringify(h));
+    const covered = holderRevaluationFor({ ...base, snapshotMinBySpace: new Map([["qa", "2025-10-28"]]) });
+    check("…prefix already filled (the state after R1c): STILL owed — the stale interior rows are in the window (was: nothing owed)",
+      covered !== null && covered.windowFromISO === "2025-10-28" && revaluationOwedFromISO({ licences: base.nativeLicences, floors: base.floors, earliestSnapshotISO: "2025-10-28" }) === null);
+    const earlier = holderRevaluationFor({ ...base, snapshotMinBySpace: new Map([["qa", "2024-06-01"]]) });
+    check("rows older than valued-from are in the window too (they must turn `unavailable`, not stay `supported`)", earlier?.windowFromISO === "2024-06-01");
+    const unpriced = holderRevaluationFor({ ...base, floors: new Map() });
+    check("an unpriced holder is NOT excused: its existing rows are re-decided (the day rule refuses them, never $0)",
+      unpriced !== null && unpriced.valuedFromISO === null && unpriced.windowFromISO === "2026-09-27");
+    check("no rows in its Spaces ⇒ not owed here (the initial build is the normal path's)", holderRevaluationFor({ ...base, snapshotMinBySpace: new Map() }) === null);
+    check("no licence ⇒ not owed", holderRevaluationFor({ ...base, nativeLicences: new Map(), allLicences: new Map() }) === null);
+    const k = (o: Partial<typeof base>) => holderRevaluationFor({ ...base, ...o })!.evidenceKey;
+    const k0 = k({});
+    check("same evidence ⇒ same key (re-run owes nothing)", k0 === k({}) && k0.startsWith("revaluation:v2:btc:"));
+    check("licence widening ⇒ new key", k({ nativeLicences: new Map([["BTC", "2024-01-01"]]), allLicences: new Map([["BTC", "2024-01-01"]]) }) !== k0);
+    check("new price coverage (floor moved) ⇒ new key", k({ floors: new Map([["BTC", "2025-06-01"]]) }) !== k0);
+    check("new Space link ⇒ new key", k({ spaceIds: ["qa", "other"], snapshotMinBySpace: new Map([["qa", "2026-09-27"], ["other", "2026-01-01"]]) }) !== k0);
+    check("a token licence (SPL/ERC-20) changes the key but never the native floor",
+      k({ allLicences: new Map([["BTC", "2025-01-01"], ["usdc", "2026-03-01"]]) }) !== k0
+        && holderRevaluationFor({ ...base, allLicences: new Map([["BTC", "2025-01-01"], ["usdc", "2026-03-01"]]) })!.valuedFromISO === "2025-10-28");
+    const tokenOnly = holderRevaluationFor({ ...base, nativeLicences: new Map(), allLicences: new Map([["usdc", "2026-03-01"]]) });
+    check("a token-only licence still owes the existing-row repair (native and token parity)", tokenOnly !== null && tokenOnly.windowFromISO === "2026-09-27");
+    check("chunk keys are anchored at the window start: stable as today advances",
+      revaluationChunks("k", "2025-10-28", "2026-10-31").map((c) => c.key).slice(1).join() === revaluationChunks("k", "2025-10-28", "2026-11-01").map((c) => c.key).slice(1).join());
   }
 
   console.log("wiring");
@@ -258,6 +313,25 @@ async function main() {
     const owedWithToken = revaluationOwedFromISO({ licences: new Map([["sol", "2026-01-01"], ["spam", "2026-03-01"]]), floors, earliestSnapshotISO: "2026-06-01" });
     check("…so the native wallet is still revalued when its price floor deepens (a token licence would block it)",
       owedNative !== null && owedWithToken === null, `${JSON.stringify(owedNative)} vs ${JSON.stringify(owedWithToken)}`);
+  }
+
+  console.log("holderRevaluations (I/O, fake client): token licences join the fingerprint, never the floor");
+  {
+    const cov = (acct: string, inst: string, token: boolean, from: string) => ({ financialAccountId: acct, instrumentId: inst, token, kind: "COMPLETE",
+      coveredFromDate: new Date(`${from}T00:00:00Z`), coveredToDate: new Date("2026-10-30T00:00:00Z"), caveats: [], source: "rpc" });
+    const mkClient = (rows: ReturnType<typeof cov>[]) => ({
+      positionCoverage: { findMany: async (q: { where: { financialAccountId: { in: string[] }; instrument?: { NOT?: { aliases?: unknown } } } }) =>
+        rows.filter((r) => q.where.financialAccountId.in.includes(r.financialAccountId) && !(q.where.instrument?.NOT?.aliases && r.token)) },
+      priceObservation: { groupBy: async (q: { where: { instrumentId: { in: string[] } } }) =>
+        q.where.instrumentId.in.filter((id) => id === "eth").map((id) => ({ instrumentId: id, _min: { date: new Date("2025-10-28T00:00:00Z") } })) },
+      spaceAccountLink: { findMany: async () => [{ financialAccountId: "w", spaceId: "qa" }] },
+      spaceSnapshot: { groupBy: async () => [{ spaceId: "qa", _min: { date: new Date("2026-09-27T00:00:00Z") } }] },
+    }) as unknown as Parameters<typeof holderRevaluations>[0];
+    const nativeOnly = await holderRevaluations(mkClient([cov("w", "eth", false, "2025-01-01")]), ["w"]);
+    const withToken = await holderRevaluations(mkClient([cov("w", "eth", false, "2025-01-01"), cov("w", "usdc", true, "2026-03-01")]), ["w"]);
+    check("native only: window from valued-from (2025-10-28), keyed", nativeOnly.length === 1 && nativeOnly[0].windowFromISO === "2025-10-28" && nativeOnly[0].valuedFromISO === "2025-10-28", JSON.stringify(nativeOnly));
+    check("a new (unpriced) token licence: NEW key — the rows are re-decided — but valued-from is unchanged",
+      withToken.length === 1 && withToken[0].evidenceKey !== nativeOnly[0].evidenceKey && withToken[0].valuedFromISO === "2025-10-28", JSON.stringify(withToken));
   }
 
   if (failures > 0) { console.error(`\nprice-gap: ${failures} failed.`); process.exit(1); }

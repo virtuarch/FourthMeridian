@@ -26,8 +26,9 @@
  * shared RAW_CLOSE archive does not reach back as far as a synced wallet's
  * licensed balance history and the provider can serve the older dates, one
  * bounded acquisition per INSTRUMENT (lib/prices/price-gap.ts); then only the
- * holders the new floor reaches are revalued, bounded per run and by the wake
- * (revalueHoldersAfterPriceGaps). Deferred holders stay owed on disk.
+ * holders whose evidence changed are revalued over their Spaces' existing rows
+ * too, bounded per run and by the wake (revalueHoldersAfterPriceGaps).
+ * Deferred holders stay owed on disk.
  *
  * CAPABILITY RECONCILIATION (V26-CAP-1) runs on the main slot only, before the
  * sweep: a declared widening of the price provider's reach is noticed where the
@@ -75,14 +76,14 @@ export interface SyncCryptoResult extends WalletRefreshResult {
   closeCoverage: CryptoCloseCoverage[];
   /** Price-gap fill + bounded revaluation after the history regeneration (counts only; null when it did not run). */
   revaluation: {
-    gapInstruments: number; gapRowsInserted: number; owed: number; revalued: number;
+    gapInstruments: number; gapRowsInserted: number; owed: number; revalued: number; chunksRebuilt: number;
     deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean;
   } | null;
 }
 
 function revaluationSummary(r: RevaluationRun | null): SyncCryptoResult["revaluation"] {
   return r ? { gapInstruments: r.priceGaps?.acquired ?? 0, gapRowsInserted: r.priceGaps?.inserted ?? 0, owed: r.owed,
-    revalued: r.revalued, deferred: r.deferred, alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime } : null;
+    revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred, alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime } : null;
 }
 
 export async function syncCrypto(options: {
@@ -209,10 +210,11 @@ export async function syncCrypto(options: {
         // PRICE GAPS, AFTER the ordinary regeneration — so a gap fill (dated a
         // year back, created during this run) can never widen the measured
         // window above for every account in the sweep. Then ONLY the accounts
-        // whose persisted state now owes a revaluation (the holders the new
-        // floor reaches) are rebuilt, over just the missing days, at most
-        // DEFAULT_REVALUATION_MAX_ACCOUNTS and only while the wake has time;
-        // the rest stay owed on disk and are taken by the next sweep.
+        // whose evidence state (licences, price floors, Space links) is not yet
+        // revalued are rebuilt — over EVERY existing row of their Spaces, not
+        // only the days before the earliest one (P1 2026-10-31) — in chunks, at
+        // most DEFAULT_REVALUATION_MAX_ACCOUNTS and only while the wake has
+        // time; the rest stay owed on disk and are taken by the next sweep.
         try {
           const { revalueHoldersAfterPriceGaps, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
           const log = (l: string) => console.log(`[sync-crypto] ${l}`);

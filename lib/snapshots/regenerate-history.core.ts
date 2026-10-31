@@ -190,6 +190,13 @@ export interface DayRegenInput {
    * false (every pre-existing caller unchanged).
    */
   digitalAssetHeldUnvalued?: boolean;
+  /**
+   * P1 2026-10-31 — crypto holders that EXISTED on this day but are absent from
+   * `digitalAssetValue` (historical-crypto-valuation.core cryptoHoldersNotValued).
+   * Non-empty ⇒ the day's crypto is held-but-unvalued: never `supported`, the
+   * stored value preserved, never $0. Absent ⇒ none (pre-existing callers).
+   */
+  cryptoHoldersNotValued?: readonly string[];
   /** Trust tier of the walked-back cash/card component (typically "derived"). */
   cashCardTier: CompletenessTier;
   /**
@@ -399,7 +406,9 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
   // former is an immutable observation this function must never classify, and
   // the latter was computed against a different account set, so this run has no
   // authority over it. Both return before this line.
-  const heldUnvalued = input.digitalAssetHeldUnvalued === true;
+  // P1 2026-10-31 — a holder that existed on the day but is missing from the
+  // value makes the value an understatement: it is never `supported`.
+  const heldUnvalued = input.digitalAssetHeldUnvalued === true || (input.cryptoHoldersNotValued?.length ?? 0) > 0;
   const cryptoMaterial = heldUnvalued || Math.abs(base.totalDigitalAssets) > CRYPTO_MATERIALITY_EPSILON;
   const cryptoVerdict: CryptoValuationStatus | null =
     heldUnvalued ? "unavailable"

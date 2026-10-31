@@ -105,7 +105,7 @@ import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps, type 
 import { erc20HistoryConfig, type Erc20HistoryConfig } from "@/lib/crypto/erc20-history.core";
 import { SPL_PRICE_RUN_SEVERITY, type SplPriceRunStatus } from "@/lib/crypto/spl-history.core";
 import { effectiveDailyUsage, incrementalMeter, meterTotal, type IncrementalMeter, type MeterRecorder } from "@/lib/usage/provider-budget.core";
-import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
+import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS, REVALUATION_RESERVE_MS } from "@/lib/prices/price-gap.core";
 import type { PriceGapRun, RevaluationOwed, RevaluationRun } from "@/lib/prices/price-gap";
 import {
   chainOrder, nextRotation, phaseDeadlineFor, PHASE_SETUP_MS, ROTATION_LOOKBACK_RUNS, ROTATION_SLOT_MS,
@@ -155,8 +155,10 @@ export interface SolBackfillJobSummary {
   revaluationsRederived: number;
   /** The all-holder price-gap pass (every licensed crypto holder, every chain), when wired. */
   priceGapSweep?: { holders: number; skippedForTime: boolean };
-  /** Non-Solana holders revalued after a price gap fill (state-derived, once per floor). */
-  holderRevaluation?: { holders: number; owed: number; revalued: number; deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean };
+  /** Non-Solana holders revalued (state-derived, once per evidence state; existing rows included). */
+  holderRevaluation?: { holders: number; owed: number; revalued: number; chunksRebuilt: number; deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean };
+  /** A revaluation was owed at the start of the run, so its slice of the budget was reserved after the leader. */
+  revaluationReserved?: boolean;
   /** This run's chain rotation and pass order — persisted, read back by the next run. Absent on a NO_WORK run. */
   schedule?: HistoryWorkerSchedule;
   dailyRequestCap: number;
@@ -296,6 +298,13 @@ export interface SolBackfillJobDeps {
   cryptoHolders?(): Promise<string[]>;
   /** Revalue these holders where persisted state owes it (lib/prices/price-gap.ts revalueHoldersAfterPriceGaps). */
   revalueHolders?(accountIds: string[], opts: { deadlineMs: number; attempted: Map<string, string>; maxInstruments: number }): Promise<RevaluationRun>;
+  /**
+   * Is any of these holders owed revaluation work under its current evidence
+   * (lib/prices/price-gap.ts revaluationPending)? Reads only. When true the run
+   * RESERVES REVALUATION_RESERVE_MS for it after the leader, so a history
+   * backlog can no longer starve it (live 2026-10-31: BTC took the whole budget).
+   */
+  revaluationPending?(accountIds: string[]): Promise<boolean>;
   /** Absent ⇒ the job carries Solana only. */
   btc?: BtcBackfillJobDeps;
   /** Absent ⇒ no Ethereum pass. */
@@ -486,17 +495,25 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     ];
   };
   const solHasWork = solWork().length > 0;
-  /** Revalue the non-Solana holders a price gap fill reached (state-derived, once per floor, wake-bounded). */
+  const solIds = new Set(parsed.map((w) => w.accountId));
+  let revalued = false;
+  /**
+   * Revalue the non-Solana holders whose evidence state is not yet revalued —
+   * existing rows included (state-derived, once per evidence state, chunked,
+   * wake-bounded). Solana holders are rebuilt by their own pass under their
+   * lock; the sync-crypto sweep revalues every chain's holders the same way.
+   */
   const revalueOtherHolders = async () => {
+    if (revalued) return; // once per run (it may run early, when reserved)
     if (!deps.revalueHolders || holderIds.length === 0) return;
-    const solIds = new Set(parsed.map((w) => w.accountId));
     const ids = holderIds.filter((id) => !solIds.has(id));
     if (ids.length === 0) return;
+    revalued = true;
     const r = await deps.revalueHolders(ids, { deadlineMs: jobDeadline, attempted: priceGapAttempted,
       maxInstruments: Math.max(0, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS - summary.priceGaps.acquired) }).catch(() => null);
     if (!r) return;
     if (r.priceGaps) addPriceGaps(summary, r.priceGaps);
-    summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, deferred: r.deferred,
+    summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred,
       alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime };
     summary.deferred += r.deferred; // still owed on disk: the next (self-continued) run takes them
   };
@@ -515,6 +532,18 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     if (tokenPlan) summary.ethTokens = { ...tokenPlan.summary, dailyRequestCap: cfg.dailyRequestCap };
     Object.assign(summary, solBackfillJobOutcome(summary));
     return summary;
+  }
+
+  // FAIRNESS (P1 2026-10-31) — when a holder revaluation is owed, reserve its
+  // slice: the leader stops short of it and it runs right after the sweep,
+  // BEFORE the other chains. Asked by state (reads only), so a run with nothing
+  // owed keeps the whole budget for history work, as before.
+  let reserveRevaluation = false;
+  if (deps.revalueHolders && deps.revaluationPending && deps.cryptoHolders) {
+    const early = await deps.cryptoHolders().catch(() => [] as string[]);
+    const ids = early.filter((id) => !solIds.has(id));
+    reserveRevaluation = ids.length > 0 && await deps.revaluationPending(ids).catch(() => false);
+    if (reserveRevaluation) { summary.revaluationReserved = true; if (holderIds.length === 0) holderIds = early; }
   }
 
   const take = createRateLimiter(cfg.maxRequestsPerSecond, deps.now, deps.sleep);
@@ -698,7 +727,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     // backlog (whose leader phase is the whole budget) would skip it every run.
     // Never at the cost of the leader's own need.
     const sweepPending = !swept && !!deps.acquirePriceGaps && !!deps.cryptoHolders;
-    const endBy = sweepPending && jobDeadline - PRICE_GAP_RESERVE_MS - deps.now() >= needMs[leader] ? jobDeadline - PRICE_GAP_RESERVE_MS : jobDeadline;
+    // The leader's own need first; then, as it fits, the revaluation's and the sweep's reserves.
+    const fits = (reserve: number) => reserve > 0 && jobDeadline - reserve - deps.now() >= needMs[leader];
+    const both = (sweepPending ? PRICE_GAP_RESERVE_MS : 0) + (reserveRevaluation ? REVALUATION_RESERVE_MS : 0);
+    const endBy = fits(both) ? jobDeadline - both
+      : sweepPending && fits(PRICE_GAP_RESERVE_MS) ? jobDeadline - PRICE_GAP_RESERVE_MS
+      : jobDeadline;
     await runPhase(leader, queue.length + 1, endBy);
   }
   if (!swept) {
@@ -709,6 +743,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       if (!order.includes("SOL") && solWork().length > 0) { queue.push("SOL"); summary.schedule.order.push("SOL"); }
     }
   }
+  if (reserveRevaluation) await revalueOtherHolders(); // its reserved slice, before the other chains
   while (queue.length > 0) {
     const chain = queue.shift()!;
     await runPhase(chain, queue.length + 1);
@@ -948,7 +983,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
   const { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
   const { WALLET_LOCK_TTL_MS } = await import("@/lib/refresh/wallet-lock");
   const { providerCallsOn, recordProviderMeter, ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK } = await import("@/lib/usage/provider-budget");
-  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed, revalueHoldersAfterPriceGaps, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
+  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed, revalueHoldersAfterPriceGaps, prismaRevaluationDeps, revaluationPending } = await import("@/lib/prices/price-gap");
   return {
     now: Date.now,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1007,6 +1042,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
         // The run's shared dedup: an instrument this run already acquired is not requested again.
         acquireGaps: (ids) => acquireHistoricalPriceGaps({ accountIds: ids, attempted, maxInstruments, deps: prismaPriceGapDeps(systemDb, { log }), log }) } });
     },
+    revaluationPending: (accountIds) => revaluationPending(prismaRevaluationDeps(systemDb), accountIds),
     providerUsageToday: (dayISO) => providerCallsOn(systemDb, ALCHEMY_USAGE_PROVIDER, dayISO),
     revaluationOwed: (accountIds) => revaluationOwed(systemDb, accountIds),
     recordUsage: async (meter, flushed) => { await recordProviderMeter(ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK.SOLANA, meter, { flushed }); },
