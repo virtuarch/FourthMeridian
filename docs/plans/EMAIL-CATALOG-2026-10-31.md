@@ -6,8 +6,46 @@ This catalog lists every email-sending path in the repository, as of PR D ("Emai
 
 - Re-grepped `sendEmail(`, purge's injected `email(` seam, `sendNotificationEmail` (no hits), the provider layer and any direct Resend use.
 - Resend is imported only in `lib/email/providers/resend.ts`; nothing else imports the SDK.
-- Every send goes through `lib/email/send.ts`.
+- Every send goes through `lib/email/send.ts`, and its non-production recipient guard (next section) runs immediately before the provider is called.
 - `lib/email/catalog.test.ts` greps the same call sites and fails if a template, a sending file or a security-alert builder is missing from this document or from `previewCases()`.
+
+## Non-production recipient guard (2026-10-31)
+
+**Owner requirement:** Preview must never email an unauthorized recipient. Preview carries a real `RESEND_API_KEY`. This guard implements Comms Center contract v1 §O-4 / §5.6 step 1 ("Environment guard").
+
+- **Where.** One chokepoint, `lib/email/send.ts`. The pure decision lives in `lib/email/recipient-guard.ts`. It runs after test mode (always capture) and after the no-key case (capture), and immediately before the real provider is called. It is the only place that calls the provider.
+- **Which environment sends freely.** Only Production, meaning a Vercel deployment with `VERCEL=1` and `VERCEL_ENV=production`. Everything else is non-production and fails closed:
+  - Preview;
+  - Vercel development;
+  - a Vercel runtime with an unexpected or unset `VERCEL_ENV`;
+  - anything off Vercel (local `next start`, CI, scripts), even with `NODE_ENV=production`.
+- **Allowlist.** `EMAIL_NONPROD_ALLOWLIST` holds comma-separated exact addresses, trimmed and lower-cased on both sides. It has no wildcards or domains. If it is unset or empty, everything is captured. Production ignores it.
+- **ASCII only, and the matched entry is sent** (from the #166 review). `toLowerCase()` folds some non-ASCII characters into ASCII (the Kelvin sign U+212A becomes `k`). So outside Production:
+  - a `to` containing any non-ASCII character is captured;
+  - a non-ASCII allowlist entry (checked before lower-casing) is ignored;
+  - an allowed send is addressed to the **matched allowlist entry**, never the caller's raw string.
+
+  Production still sends the caller's address verbatim.
+- **Unknown Vercel environment is loud.** If `VERCEL=1` and `VERCEL_ENV` is not exactly `production`, `preview` or `development`, the capture is logged at `console.warn` with the fixed text "email guard: unknown Vercel environment, capturing", so a misconfigured Production is visible. Any other capture logs at `console.info`.
+- **Captured result.** `{ status: "captured", provider: "none", reason: "ENVIRONMENT_GUARD" }`. The provider is never called, and the message is not put in the in-memory capture buffer either.
+  - "captured" is a non-failure. Routes only log `status === "error"`.
+  - The notification channel records the row as `captured`.
+  - `jobs/retry-notifications.ts` selects `status: "error"` rows only, so a captured delivery is never retried. A retry that the guard captures closes the row as `captured`.
+- **Log line.** One line per guarded send (`console.info`, or `console.warn` for an unknown Vercel environment): `template=<name> environment=<env> domain=<domain> hash=<12 hex of sha256>`. The full address and its local part are never logged.
+- **Paths verified to reach the provider only through it:**
+  - every direct `sendEmail` caller in §1 and §3;
+  - `sendSecurityAlert`;
+  - the purge's injected `sendEmail` seam;
+  - `lib/alerts/run.ts`;
+  - the notification EMAIL channel (`lib/notifications/channels/email.ts`), both at creation and when re-delivered by the retry job;
+  - `scripts/email-preview.ts`.
+
+  `lib/email/recipient-guard.test.ts` source-scans these paths. The Resend SDK is imported only by the adapter, the adapter only by `send.ts`, nothing calls `api.resend.com`, and `send.ts` calls the provider exactly once, after the guard.
+- **Two gates for the preview script.** `EMAIL_PREVIEW_ALLOWED_TO` stays as the script's own first gate: it requires an exact match with `--to`, and the script refuses before rendering or sending otherwise. The chokepoint guard is the second gate. A local run is never Production, so the address must be in **both** variables. If it is in the first only, the script logs `sent <slug>: captured`.
+- **Email health.** `getEmailDeliveryHealth().counts.captured` is its own category, separate from `error`. `describeDirectSendCoverage().recipientGuard` reports `{ environment, active, allowlistCount }`, a count only and never the addresses, and the note says when recipients are captured.
+  - **Follow-up:** `components/platform/widgets/OpsEmailDeliveryWidget.tsx` belongs to Session 2, so it is untouched. It does not display `recipientGuard` yet.
+  - **Follow-up:** `lib/alerts/run.ts` still reports a guard capture of the platform-alert email as `NO_EMAIL_TRANSPORT`, which is retried next cycle. A distinct `CAPTURED_NONPROD` reason, without retry, would touch the alert reason union, `latest-evaluation.ts` and the Session 2 alerts widget, so it was deferred.
+- **Configuration.** `EMAIL_NONPROD_ALLOWLIST` was set on Vercel Preview on 2026-10-31 by Session 1, at the owner's request. It takes effect on the next Preview deploy after merge. It is documented in `.env.example`, and its value is never committed.
 
 ## Shared design
 
@@ -64,7 +102,15 @@ Token lifetimes are single constants in `lib/email/token-ttl.ts`. Each one is re
 | `security-alert` · `accountDeletedAlert` | … Your account has been deleted | `lib/account-deletion/purge.ts:520` (injected `email` seam, after commit) | account | none | — | yes | `security-alert--account-deleted` |
 | `security-alert` · `ownerSignInAnomalyAlert` | … Unusual sign-in activity on your account | `lib/security/anomaly-alerts.ts:198` | resolved account owner only | Reset your password → `/forgot-password` (no token) | — | yes; the inline link became the CTA, same destination | `security-alert--owner-sign-in-anomaly` |
 | `space-invite` | You've been invited to {Space} on Fourth Meridian | `app/api/spaces/[id]/invite/route.ts:165` | existing user | Review invitation → `/dashboard/spaces` | No token: acceptance is identity-gated in-app | yes | `space-invite` |
-| `notification` (all notification types) | the notification title | `lib/notifications/channels/email.ts` (`sendEmail("notification", …)`), reached via `lib/notifications/create.ts` (`adapter.deliver`, at creation, when EMAIL is enabled for the type's category) and **re-delivered** by `jobs/retry-notifications.ts` (`adapter.deliver`, up to 3 attempts total). The retry selects the persisted `metadata` (read only) and recomputes the email-only CTA label through the same registry render (`lib/notifications/action-label.ts`). | notification recipient | registry `href` with registry `actionLabel` (default "View in Fourth Meridian"); footer link "Manage notification settings" → `/dashboard/settings/notifications` | — | yes | see §2 and `notification--space-invite-received` |
+
+**One email per Space invite (2026-10-31).** `space-invite` is the invitation's **only** email. The `SPACE_INVITE_RECEIVED` notification, produced by `lib/events/handlers/space-invite-notification.ts` on `MemberInvited` (its only producer), is now **IN_APP only**: registry `defaultChannels: ["IN_APP"]` plus `excludedChannels: ["EMAIL"]`. The dedicated email and when it is sent are unchanged.
+- **Preferences cannot bring the duplicate back.** The exclusion beats a `SPACES`/`EMAIL` opt-in in `resolveChannelEnabled` and `isChannelEnabledForUser`.
+- **The same opt-in still enables email for the other `SPACES` types.** Those are `SPACE_INVITE_ACCEPTED`, `MEMBER_REMOVED` and the rest; none of them defaults to email.
+- **The matrix default for `SPACES`/`EMAIL` is now off.** No `SPACES` type defaults to email.
+- **Retry job.** `jobs/retry-notifications.ts` closes a legacy failed `SPACE_INVITE_RECEIVED` EMAIL delivery as `skipped` instead of re-sending it.
+- **Preview case removed.** The `notification--space-invite-received` preview case is gone, since that email no longer exists.
+- **Tests.** The pinned `t.known` J-D4 in `app/api/spaces/[id]/invite/route.test.ts` is now a check: exactly one email (`space-invite`), one in-app notification and no `NotificationDelivery` row.
+| `notification` (all notification types) | the notification title | `lib/notifications/channels/email.ts` (`sendEmail("notification", …)`), reached via `lib/notifications/create.ts` (`adapter.deliver`, at creation, when EMAIL is enabled for the type's category) and **re-delivered** by `jobs/retry-notifications.ts` (`adapter.deliver`, up to 3 attempts total). The retry selects the persisted `metadata` (read only) and recomputes the email-only CTA label through the same registry render (`lib/notifications/action-label.ts`). | notification recipient | registry `href` with registry `actionLabel` (default "View in Fourth Meridian"); footer link "Manage notification settings" → `/dashboard/settings/notifications` | — | yes | see §2 (`SPACE_INVITE_RECEIVED` no longer emails; see `space-invite` above) |
 
 ## 2. "Institution needs attention" (`SYNC_FAILED` through `notification`)
 
@@ -174,11 +220,11 @@ REVOKED has two live writers:
 | Wallet sync failure | No notification and no email | audit §2 row 8 |
 | Plaid webhook reauth / revoked | No notification and no email (see §2) | `lib/plaid/webhook-receiver.ts` |
 
-## 5. Known gaps (unchanged by this PR)
+## 5. Known gaps
 
 - Suppress-while-open dedupe can keep the generic copy when a later reauth occurs (§2).
 - `scripts/email-preview.ts` passes a variable template name to `sendEmail`. It sends only the preview cases, only to the exact `EMAIL_PREVIEW_ALLOWED_TO` address, and only with `--send`. `lib/email/catalog.test.ts` declares it in `VARIABLE_NAME_SENDERS`.
 
-- **Two emails per Space invite (inferred).** The invitee gets `space-invite` (direct) plus `notification` for `SPACE_INVITE_RECEIVED`.
-- **No retries or provider idempotency key.** "Sent" means accepted by the provider.
-- **No Preview recipient allowlist or sandbox in `send.ts`** (audit §1.5).
+- **No provider idempotency key.** "Sent" means accepted by the provider. Retries exist only for notification EMAIL deliveries (`jobs/retry-notifications.ts`).
+- **Closed 2026-10-31: two emails per Space invite.** See "One email per Space invite" under `space-invite` in §1.
+- **Closed 2026-10-31: no Preview recipient allowlist in `send.ts`** (audit §1.5). See "Non-production recipient guard".

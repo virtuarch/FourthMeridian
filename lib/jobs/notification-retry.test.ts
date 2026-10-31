@@ -67,7 +67,9 @@ const NOW = new Date("2026-07-08T07:30:00Z");
 function liveNotification(over: Partial<NonNullable<RetryableDeliveryRow["notification"]>> = {}) {
   return {
     userId: "u1",
-    type: "SPACE_INVITE_RECEIVED",
+    // A SPACES type that still has an email leg to retry (SPACE_INVITE_RECEIVED
+    // excludes EMAIL since 2026-10-31 — covered in its own section below).
+    type: "SPACE_INVITE_ACCEPTED",
     category: "SPACES",
     priority: "NORMAL",
     title: "You were invited",
@@ -227,6 +229,9 @@ async function main(): Promise<void> {
       ["read in-app", { readAt: new Date() }],
       ["expired", { expiresAt: new Date(NOW.getTime() - 1000) }],
       ["no recipient email", { user: null }],
+      // 2026-10-31 — one email per Space invite: a legacy failed EMAIL row of a
+      // type whose registry entry now EXCLUDES email is closed, never re-sent.
+      ["legacy SPACE_INVITE_RECEIVED (EMAIL excluded)", { type: "SPACE_INVITE_RECEIVED", category: "SPACES" }],
     ];
     for (const [label, over] of cases) {
       const { client, store } = makeStore([errorRow("d1", { notification: liveNotification(over) })]);
@@ -383,7 +388,7 @@ async function main(): Promise<void> {
     check("retry: null metadata → 'Review connection'", none[0] === "Review connection", JSON.stringify(none));
     const noHref = await labels({ connectionState: "reauth-required", institutionName: "Chase" }, { href: null });
     check("retry: no href → no label (no CTA to label)", noHref.length === 1 && noHref[0] === undefined, JSON.stringify(noHref));
-    const other = await labels({ inviteId: "x" }, { type: "SPACE_INVITE_RECEIVED", category: "SPACES" });
+    const other = await labels({ inviteId: "x" }, { type: "SPACE_INVITE_ACCEPTED", category: "SPACES" });
     check("retry: a type without an actionLabel keeps the generic default", other[0] === undefined, JSON.stringify(other));
     const src = readFileSync("jobs/retry-notifications.ts", "utf8");
     check("retry: metadata is only selected, never written",
