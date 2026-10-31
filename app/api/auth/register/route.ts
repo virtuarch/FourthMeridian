@@ -27,6 +27,7 @@ import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
+import { EMAIL_VERIFICATION_TTL_MS } from "@/lib/email/token-ttl";
 import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
@@ -45,7 +46,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 
 // OPS-1 S2b — email-verification token TTL (mirrors password reset: 1 hour).
-const VERIFICATION_TTL_MS = 60 * 60 * 1000;
+const VERIFICATION_TTL_MS = EMAIL_VERIFICATION_TTL_MS; // shared with the email copy (lib/email/token-ttl.ts)
 
 // PO-5A — the Terms/Privacy policy version recorded on consent. Bump when the
 // legal documents materially change (so re-consent can be required later).

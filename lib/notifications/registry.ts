@@ -41,6 +41,7 @@ import type {
   NotificationTypeDefinition,
   RetentionPolicy,
 } from "@/lib/notifications/types";
+import { connectionAttentionCopy } from "@/lib/notifications/connection-attention";
 
 // ── Shared policy values ──────────────────────────────────────────────────────
 
@@ -392,12 +393,15 @@ export const NOTIFICATION_REGISTRY = {
     dedupe: "suppress" as const,
     dedupeKeyTemplate: "SYNC_FAILED:item:{plaidItemId}:open",
     icon: "triangle-alert",
-    pointerContract: ["plaidItemId", "institutionName"],
-    render: (d) => ({
-      title: `${str(d, "institutionName", "A connection")} needs attention`,
-      body: "We couldn't sync this institution. Reconnect to resume updates.",
-      href: "/dashboard/connections",
-    }),
+    // connectionState (lib/notifications/connection-attention.ts) is derived by
+    // the producer from the PlaidItem.status the call site just wrote; rows
+    // written before it existed (or any unknown value) render the conservative
+    // "sync-failed" copy — never "disconnected".
+    pointerContract: ["plaidItemId", "institutionName", "connectionState"],
+    render: (d) => {
+      const copy = connectionAttentionCopy(d.connectionState, str(d, "institutionName", "your institution"));
+      return { title: copy.title, body: copy.body, href: "/dashboard/connections", actionLabel: copy.actionLabel };
+    },
   },
   // WIRED (reopening the D2-deferred decision consciously): produced ONLY when
   // the FULL deferred pipeline finishes for an item (initial connect or a

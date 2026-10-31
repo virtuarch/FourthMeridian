@@ -6,6 +6,10 @@
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs scripts/email-preview.ts --out <dir>
  *
+ * Only some cases (comma-separated slug prefixes, e.g. the four reviewed ones):
+ *
+ *   ... scripts/email-preview.ts --out <dir> --only security-alert--data,password-reset,notification--connection,email-verification
+ *
  * Optional real send, for eyeballing in an inbox:
  *
  *   ... scripts/email-preview.ts --out <dir> --send --to <addr>

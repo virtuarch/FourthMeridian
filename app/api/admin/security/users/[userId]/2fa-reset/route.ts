@@ -28,7 +28,7 @@ import { requireFreshSystemAdmin } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
-import { formatDateTime } from "@/lib/format";
+import { twoFactorResetAlert } from "@/lib/email/security-alerts";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import {
   ADMIN_TWO_FACTOR_RESET_STATUS,
@@ -126,12 +126,7 @@ export async function POST(
   const revokedSessions = await revokeAllUserSessions(userId);
 
   // Notify the target. NON-THROWING: delivery failure never undoes the reset.
-  const emailResult = await sendEmail("security-alert", target.email, {
-    title:   "Two-factor authentication was reset on your account",
-    message: `An administrator reset two-factor authentication on your Fourth Meridian account on ${formatDateTime(new Date().toISOString())}. ` +
-             `You have been signed out everywhere and will be asked to set up two-factor authentication again at your next sign-in. ` +
-             `If you did not expect this, contact support immediately.`,
-  });
+  const emailResult = await sendEmail("security-alert", target.email, { ...twoFactorResetAlert(new Date()) });
   if (emailResult.status === "error") {
     console.error("[admin-2fa-reset] security-alert email failed to send:", emailResult.error);
   }

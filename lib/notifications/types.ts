@@ -133,6 +133,12 @@ export interface RenderedNotification {
   body?: string;
   /** Optional in-app destination, e.g. "/dashboard/connections". */
   href?: string;
+  /**
+   * Optional email CTA label for `href` (e.g. "Reconnect Chase"). Email-only:
+   * not persisted on the Notification row; the email channel falls back to a
+   * generic label when absent.
+   */
+  actionLabel?: string;
 }
 
 /**
@@ -242,6 +248,8 @@ export interface ChannelMessage {
   title: string;
   body?: string;
   href?: string;
+  /** Email CTA label for href (RenderedNotification.actionLabel). */
+  actionLabel?: string;
 }
 
 /**

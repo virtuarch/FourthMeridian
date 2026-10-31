@@ -15,7 +15,7 @@ import { requireFreshUser } from "@/lib/session";
 import { withApiHandler } from "@/lib/api";
 import { revokeOtherUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
-import { formatDateTime } from "@/lib/format";
+import { passwordChangedAlert } from "@/lib/email/security-alerts";
 import { createNotification } from "@/lib/notifications/create";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
@@ -84,10 +84,7 @@ export const PATCH = withApiHandler(async (req: NextRequest) => {
 
   // Notify the account's own email. NON-THROWING: a delivery failure is logged
   // and recorded, but never fails the password change.
-  const emailResult = await sendEmail("security-alert", dbUser.email, {
-    title:   "Your password was changed",
-    message: `Your Fourth Meridian password was changed on ${formatDateTime(new Date().toISOString())}.`,
-  });
+  const emailResult = await sendEmail("security-alert", dbUser.email, { ...passwordChangedAlert(new Date()) });
   if (emailResult.status === "error") {
     console.error("[user/password] security-alert email failed to send:", emailResult.error);
   }

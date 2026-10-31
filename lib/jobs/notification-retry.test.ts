@@ -352,6 +352,44 @@ async function main(): Promise<void> {
       !/prisma\.|\.jobRun\.|telemetry/i.test(code));
   }
 
+  // ── 9. PR D — the retried email keeps the state CTA label ─────────────────
+  // The label is email-only (never persisted); the retry recomputes it from the
+  // persisted type + metadata through the same registry render.
+  {
+    const labels = async (metadata: unknown, over: Partial<NonNullable<RetryableDeliveryRow["notification"]>> = {}) => {
+      const seen: (string | undefined)[] = [];
+      const { client } = makeStore([errorRow("d-label", {
+        notification: liveNotification({
+          type: "SYNC_FAILED", category: "FINANCIAL", priority: "HIGH",
+          title: "Chase needs you to sign in again", href: "/dashboard/connections", metadata, ...over,
+        }),
+      })]);
+      const adapter: ChannelAdapter = {
+        channel: "EMAIL", name: "fake",
+        async deliver(message) { seen.push(message.actionLabel); return { status: "sent", provider: "fake", id: "m" }; },
+      };
+      await mute(() => retryNotifications(client, adapter, NOW));
+      return seen;
+    };
+    const reauth = await labels({ plaidItemId: "i", institutionName: "Chase", connectionState: "reauth-required" });
+    check("retry: reauth row resends 'Reconnect Chase'", reauth.length === 1 && reauth[0] === "Reconnect Chase", JSON.stringify(reauth));
+    const disc = await labels({ plaidItemId: "i", institutionName: "Chase", connectionState: "disconnected" });
+    check("retry: disconnected row resends 'Reconnect'", disc[0] === "Reconnect", JSON.stringify(disc));
+    const legacy = await labels({ plaidItemId: "i", institutionName: "Chase" });
+    check("retry: row without a state → conservative 'Review connection'", legacy[0] === "Review connection", JSON.stringify(legacy));
+    const junk = await labels({ plaidItemId: "i", institutionName: "Chase", connectionState: "disconnected!!" });
+    check("retry: unknown state → 'Review connection', never a reconnect claim", junk[0] === "Review connection", JSON.stringify(junk));
+    const none = await labels(null);
+    check("retry: null metadata → 'Review connection'", none[0] === "Review connection", JSON.stringify(none));
+    const noHref = await labels({ connectionState: "reauth-required", institutionName: "Chase" }, { href: null });
+    check("retry: no href → no label (no CTA to label)", noHref.length === 1 && noHref[0] === undefined, JSON.stringify(noHref));
+    const other = await labels({ inviteId: "x" }, { type: "SPACE_INVITE_RECEIVED", category: "SPACES" });
+    check("retry: a type without an actionLabel keeps the generic default", other[0] === undefined, JSON.stringify(other));
+    const src = readFileSync("jobs/retry-notifications.ts", "utf8");
+    check("retry: metadata is only selected, never written",
+      /metadata: true/.test(src) && !/data:\s*\{[^}]*metadata/.test(src));
+  }
+
   if (failures > 0) {
     console.error(`\nnotification-retry tests: ${failures} FAILED`);
     process.exit(1);
