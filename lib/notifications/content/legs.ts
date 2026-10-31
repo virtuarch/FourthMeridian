@@ -184,10 +184,10 @@ function capWords(s: string, max: number): string {
   return `${(at > max / 2 ? cut.slice(0, at) : cut).trimEnd()}…`;
 }
 
-/** §2.2 limits, per channel. */
+/** §2.2 limits, per channel. The block-kind limits apply only where the kind is allowed (§3.2 publishes them as null on IN_APP). */
 export const LIMITS = {
-  EMAIL: { blocksMin: 1, blocks: 12, subject: 120, preheader: 140, paragraph: 1200, ctaLabel: 40, heading: 120, infoItems: 8, infoItem: 200, infoTitle: 120 },
-  IN_APP: { blocksMin: 0, blocks: 2, subject: 120, preheader: null, paragraph: 280, ctaLabel: 40, heading: 120, infoItems: 8, infoItem: 200, infoTitle: 120 },
+  EMAIL: { blocksMin: 1, blocks: 12, subject: 120, preheader: 140, paragraph: 1200, ctaLabel: 40, heading: 120, greeting: 120, infoItems: 8, infoItem: 200, infoTitle: 120 },
+  IN_APP: { blocksMin: 0, blocks: 2, subject: 120, preheader: null, paragraph: 280, ctaLabel: 40, heading: 120, greeting: 120, infoItems: 8, infoItem: 200, infoTitle: 120 },
 } as const;
 
 /** The leg spec of an editable leg; undefined otherwise. */

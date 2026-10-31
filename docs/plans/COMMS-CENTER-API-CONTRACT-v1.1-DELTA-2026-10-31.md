@@ -10,6 +10,11 @@
 - **D5:** the two optimistic tokens and the 409 `CONFLICT` body (§0.3).
 - **D6:** test-send eligibility on `viewer`; `divergesFrom` on `CatalogDetail`; publish returns `revision` (§1.1, §2.1, §3.4, §6.9).
 
+**v1.1.1 (2026-10-31, additive; requested by Session 2's UI).** Nothing existing changes shape or meaning.
+1. **`CODE_DEFAULT_VERSION_ID = "code-default"`** is exported from the client-safe `lib/notifications/content/types.ts`. It is the sentinel `[id]` for "the code default" (§3.5 rollback, `restoredFromVersionId`). The server's `CODE_DEFAULT_ID` is this same constant.
+2. **Per-block limits on `limits`** (§3.2): `heading`, `greeting`, `infoTitle`, `infoItems` (count) and `infoItem` (characters), next to the existing five. Values are the §2.2 numbers (EMAIL 120 / 120 / 120 / 8 / 200); **`null` on IN_APP**, where hero and info blocks are not allowed (as `preheader`). They are the same numbers `validateContent` enforces: a breach is `FIELD_TOO_LONG` located at `{ field: "block", blockIndex, prop: "heading" | "greeting" | "title" | "items", itemIndex? }`, or `TOO_MANY_ITEMS` at `prop: "items"`. `greeting` now has its own limit (it was `heading`'s; the value is unchanged). The fields are optional in the TS type for compatibility, and the server always sends them.
+3. **`viewer.rollbackUnavailableReason?: "NO_PERMISSION" | "NOTHING_TO_RESTORE"`** (§1.1). `canRollback: boolean` is unchanged. The reason is absent when `canRollback` is true. `NO_PERMISSION` means the operator lacks CS CONTROL or the leg is not content-editable (`locked` says which). `NOTHING_TO_RESTORE` means the operator is permitted but the stream has never had a published version. Permission is reported first.
+
 **What this is.** A **delta** on `docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md` (cited as **v1 §n**), including its v1.0.1–v1.0.3 notes. v1.0.3 was read from `origin/feat/comms-a2b-policy` (PR #177, not yet merged into `develop`). Whatever this delta does not restate, v1 still governs: vocabulary, list and series conventions, the PII rule, the delivery vocabulary, the mutation envelope and the read APIs. Where the two disagree, **this delta wins**, and every such override is listed in §0.2.
 
 **Basis.**
@@ -132,6 +137,7 @@ interface Viewer {
   canEditContent: boolean;      // POST /versions would pass the gate:      CS WRITE   ∧ leg contentEditable
   canPublish: boolean;          // publish:                                  CS CONTROL ∧ leg contentEditable
   canRollback: boolean;         // rollback:                                 CS CONTROL ∧ leg contentEditable ∧ the stream has a SUPERSEDED version or a published one (code-default target)
+  rollbackUnavailableReason?: "NO_PERMISSION" | "NOTHING_TO_RESTORE";   // v1.1.1 — absent ⇔ canRollback
   canAiSuggest: boolean;        // ai-suggest gate:                          CS WRITE   ∧ leg contentEditable   (availability is `ai`, §3.2, not this)
   canTestSend: boolean;         // POST /test-send gate:                     CS WRITE   ∧ definition has an EMAIL or IN_APP leg
   canEditAutomation: boolean;   // POST / PATCH /automations:                CS WRITE   ∧ definition automatable ∧ ¬protected
@@ -403,7 +409,8 @@ interface VersionsResponse extends ListEnvelope<TemplateVersionDTO> {   // newes
   /** The code default as a body (never a row): what "rollback to code default" restores, and the left side of a first diff. */
   codeDefault: ContentBody & { placeholdersUsed: string[] };
   placeholders: Array<Pick<PlaceholderSpec, "name" | "kind" | "allowedIn" | "maxLength" | "fallback" | "sample">>; // no `source`, no pii values
-  limits: { blocks: number; subject: number; preheader: number | null; paragraph: number; ctaLabel: number };
+  limits: { blocks: number; subject: number; preheader: number | null; paragraph: number; ctaLabel: number;
+            heading: number | null; greeting: number | null; infoTitle: number | null; infoItems: number | null; infoItem: number | null };  // v1.1.1 per-block; null = kind not allowed (IN_APP)
   contentEditable: boolean;                  // false ⇒ items empty, and every write → 409 PROTECTED / NOT_EDITABLE
   locked: { reason: "PROTECTED" | "NOT_EDITABLE" } | null;
   viewer: Viewer;                            // §1.1 (D2)

@@ -101,7 +101,7 @@ export function fieldsOf(body: ContentBody, channel: EditableChannel): ContentFi
     switch (b.kind) {
       case "hero":
         out.push({ location: at("heading"), where: "body", value: b.heading, multiLine: false, max: L.heading, required: true });
-        if (b.greeting !== undefined) out.push({ location: at("greeting"), where: "body", value: b.greeting, multiLine: false, max: L.heading, required: true });
+        if (b.greeting !== undefined) out.push({ location: at("greeting"), where: "body", value: b.greeting, multiLine: false, max: L.greeting, required: true });
         break;
       case "paragraph":
         out.push({ location: at("text"), where: "body", value: b.text, multiLine: true, max: L.paragraph, required: true });
@@ -149,7 +149,8 @@ export interface ValidateOptions {
 const issue = (code: ContentIssueCode, severity: ContentIssue["severity"], location: ContentLocation | null, message: string, placeholder?: string): ContentIssue =>
   ({ code, severity, location, message, ...(placeholder ? { placeholder } : {}) });
 
-const ALLOWED_KINDS: Record<EditableChannel, ReadonlySet<string>> = {
+/** The block kinds each channel allows (§2.2) — also what decides which per-block limits §3.2 publishes. */
+export const BLOCK_KINDS_BY_CHANNEL: Record<EditableChannel, ReadonlySet<string>> = {
   EMAIL: new Set(["hero", "paragraph", "cta", "info", "divider"]),
   IN_APP: new Set(["paragraph", "cta"]),
 };
@@ -170,7 +171,7 @@ export function validateContent(spec: LegSpec, body: ContentBody, opts: Validate
   const counts = new Map<string, number>();
   body.blocks.forEach((b, blockIndex) => {
     counts.set(b.kind, (counts.get(b.kind) ?? 0) + 1);
-    if (!ALLOWED_KINDS[ch].has(b.kind)) {
+    if (!BLOCK_KINDS_BY_CHANNEL[ch].has(b.kind)) {
       issues.push(issue("BLOCK_KIND_NOT_ALLOWED", "error", { field: "block", blockIndex, prop: "text" }, `A "${String(b.kind).slice(0, 20)}" block is not allowed here.`));
       return;
     }

@@ -69,7 +69,9 @@ async function main(): Promise<void> {
   const { createEmailSender } = await import("@/lib/email/send");
   const { renderNotificationEmail } = await import("@/lib/email/templates/notification");
   const { COMMS_CATALOG } = await import("@/lib/notifications/catalog/definitions");
-  const { definitionLock } = await import("./legs");
+  const { definitionLock, LIMITS } = await import("./legs");
+  const { CODE_DEFAULT_VERSION_ID } = await import("./types");
+  const { CODE_DEFAULT_ID } = store;
   const { NOTIFICATION_REGISTRY } = await import("@/lib/notifications/registry");
   const { AuditAction, OPERATOR_ACTION_FEED_ACTIONS } = await import("@/lib/audit-actions");
   const { REASON_REQUIRED_ACTIONS } = await import("@/lib/audit");
@@ -361,6 +363,25 @@ async function main(): Promise<void> {
   check("the versions list carries stream, revision, live, codeDefault, placeholders (no source / pii), limits",
     vc.stream.variant === "reauth-required" && typeof vc.revision === "number" && vc.live.source === "PUBLISHED" && vc.codeDefault.subject.includes("{{institutionName}}")
     && vc.placeholders.every((p: any) => !("source" in p) && !("pii" in p)) && vc.limits.subject === 120 && vc.items.length > 0);
+  // v1.1.1 — per-block limits on the versions list are the validator's numbers; null where the block kind is not allowed.
+  check("limits (v1.1.1): IN_APP publishes null for hero / info limits",
+    vc.limits.heading === null && vc.limits.greeting === null && vc.limits.infoTitle === null && vc.limits.infoItems === null && vc.limits.infoItem === null
+    && vc.limits.paragraph === LIMITS.IN_APP.paragraph && vc.limits.ctaLabel === LIMITS.IN_APP.ctaLabel, vc.limits);
+  const ve = (await j(await H.versionsList("SYNC_FAILED", new URL("https://x.invalid/v?channel=EMAIL&variant=disconnected"), CONTROL as never, NOW, svc))).body;
+  check("limits (v1.1.1): EMAIL publishes heading / greeting / info limits equal to the validator's",
+    ve.limits.heading === LIMITS.EMAIL.heading && ve.limits.greeting === LIMITS.EMAIL.greeting && ve.limits.infoTitle === LIMITS.EMAIL.infoTitle
+    && ve.limits.infoItems === LIMITS.EMAIL.infoItems && ve.limits.infoItem === LIMITS.EMAIL.infoItem && ve.limits.preheader === LIMITS.EMAIL.preheader, ve.limits);
+  // v1.1.1 — canRollback split into a reason.
+  check("rollback reason: absent when canRollback is true", vc.viewer.canRollback === true && !("rollbackUnavailableReason" in vc.viewer));
+  check("rollback reason: READ / WRITE ⇒ NO_PERMISSION", vr.viewer.rollbackUnavailableReason === "NO_PERMISSION" && vw.viewer.rollbackUnavailableReason === "NO_PERMISSION");
+  check("rollback reason: CONTROL on a never-published stream ⇒ NOTHING_TO_RESTORE (canRollback still false)",
+    ve.live.source === "CODE_DEFAULT" && ve.items.length === 0 && ve.viewer.canRollback === false && ve.viewer.rollbackUnavailableReason === "NOTHING_TO_RESTORE", ve.viewer);
+  const veW = (await j(await H.versionsList("SYNC_FAILED", new URL("https://x.invalid/v?channel=EMAIL&variant=disconnected"), WRITE as never, NOW, svc))).body;
+  check("rollback reason: permission is reported before nothing-to-restore (WRITE on an empty stream ⇒ NO_PERMISSION)", veW.viewer.rollbackUnavailableReason === "NO_PERMISSION");
+  const vLocked = (await j(await H.versionsList("SPACE_INVITE_RECEIVED", new URL("https://x.invalid/v?channel=EMAIL"), CONTROL as never, NOW, svc))).body;
+  check("rollback reason: CONTROL on a locked leg ⇒ NO_PERMISSION (with `locked` set)",
+    vLocked.contentEditable === false && vLocked.locked !== null && vLocked.viewer.rollbackUnavailableReason === "NO_PERMISSION", vLocked.viewer);
+  check("CODE_DEFAULT_VERSION_ID (client-safe) is the server's sentinel", CODE_DEFAULT_VERSION_ID === CODE_DEFAULT_ID && CODE_DEFAULT_VERSION_ID === "code-default");
   check("test send: verified + Production ⇒ eligible", vc.viewer.testSendEligible === true && vc.viewer.testSendIneligibleReason === null);
   self = { email: "op@example.invalid", verified: false };
   check("test send: unverified ⇒ SELF_UNVERIFIED", (await v(WRITE)).viewer.testSendIneligibleReason === "SELF_UNVERIFIED");
