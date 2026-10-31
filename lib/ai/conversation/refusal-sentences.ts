@@ -77,6 +77,14 @@ export const planUnavailableSentence = (surfaceLabel: string): string =>
 export const planNeedsAttentionSentence = (surfaceLabel: string): string =>
   `${surfaceLabel} is paused: your account’s plan needs attention, so new requests are on hold until it’s fixed. Your data is safe and nothing was changed.`;
 
+/**
+ * BETA LIFECYCLE — the owner's wording for a paused / ended / cost-frozen /
+ * unreadable plan, from the ONE helper (lib/entitlements/restriction-messages.ts,
+ * pure and client-safe). Re-exported so the recogniser below lists them.
+ */
+export { restrictionMessage, RESTRICTION_KINDS } from '@/lib/entitlements/restriction-messages';
+import { RESTRICTION_MESSAGES } from '@/lib/entitlements/restriction-messages';
+
 /** The surface label every Conversations refusal is built with. */
 export const CONVERSATIONS_LABEL = 'Conversations';
 
@@ -90,6 +98,7 @@ const EXACT: ReadonlySet<string> = new Set<string>([
   allowanceUnpricedSentence(CONVERSATIONS_LABEL),
   planUnavailableSentence(CONVERSATIONS_LABEL),
   planNeedsAttentionSentence(CONVERSATIONS_LABEL),
+  ...Object.values(RESTRICTION_MESSAGES),
 ]);
 
 /**

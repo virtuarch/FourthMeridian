@@ -26,14 +26,28 @@
  * fallback is never MORE permissive (review fix 2): under CODE_FALLBACK the
  * resolver fails closed every customer ASSIGNED to a key the code catalogue
  * does not hold (a DB-only group), whatever the rollout switch says.
+ *
+ * BETA LIFECYCLE (L1) — the per-group lifecycle / cost-freeze columns are read
+ * by a SEPARATE query in the same load, so a database without migration
+ * 20261031130000_policy_group_lifecycle (or a failed lifecycle read) still
+ * resolves entitlement VALUES exactly as before; the catalogue is then marked
+ * `lifecycleSource: "UNAVAILABLE"` and every BILLABLE decision fails closed.
+ *
+ * BILLABLE READS NEVER USE THE STALE PATHS. `loadFreshPolicyGroupCatalogue`
+ * returns a catalogue only when it came from a SUCCESSFUL read (lifecycle
+ * included) at most CATALOGUE_TTL_MS (30 s) ago — never the last-good copy
+ * (marked `servedFromLastGood`) and never the code fallback; otherwise null,
+ * which the billable gate turns into POLICY_UNAVAILABLE. Sign-in and reads keep
+ * using `loadPolicyGroupCatalogue` and are unaffected.
  */
 
 import "server-only";
 import { systemDb } from "@/lib/db";
 import {
   buildPolicyGroupCatalogue, codeFallbackCatalogue, CODE_CATALOGUE,
-  type PolicyGroupCatalogue, type PolicyGroupRowFacts, type PolicyGroupVersionFacts,
+  type PolicyGroupCatalogue, type PolicyGroupLifecycleFacts, type PolicyGroupRowFacts, type PolicyGroupVersionFacts,
 } from "@/lib/entitlements/policy-groups";
+import { isCatalogueFreshForBillable } from "@/lib/entitlements/billable-gate-core";
 
 export const CATALOGUE_TTL_MS = 30_000;
 export const CATALOGUE_FAILURE_RETRY_MS = 5_000;
@@ -46,6 +60,10 @@ export interface PolicyGroupCatalogueReadClient {
     findMany(args: {
       select: { key: true; label: true; description: true; isDefault: true; builtIn: true; archivedAt: true; currentVersion: true };
     }): Promise<PolicyGroupRowFacts[]>;
+    /** BETA LIFECYCLE — the separate lifecycle read. */
+    findMany(args: {
+      select: { key: true; lifecycle: true; costFrozen: true; endedTransition: true; lifecycleVersion: true };
+    }): Promise<PolicyGroupLifecycleFacts[]>;
   };
   policyGroupVersion?: {
     findMany(args: {
@@ -65,10 +83,22 @@ export async function readPolicyGroupCatalogue(client: PolicyGroupCatalogueReadC
     where: { OR: rows.map((r) => ({ groupKey: r.key, version: r.currentVersion })) },
     select: { groupKey: true, version: true, values: true, createdAt: true },
   });
-  return buildPolicyGroupCatalogue(rows, versions, now);
+  // BETA LIFECYCLE — a failure here never fails the VALUES read (see the header).
+  let lifecycle: PolicyGroupLifecycleFacts[] | null;
+  try {
+    lifecycle = await client.policyGroup.findMany({
+      select: { key: true, lifecycle: true, costFrozen: true, endedTransition: true, lifecycleVersion: true },
+    });
+  } catch (error) {
+    console.error("[policy-group-catalogue] lifecycle read failed; billable operations fail closed —",
+      error instanceof Error ? error.message.split("\n")[0].slice(0, 200) : "unknown error");
+    lifecycle = null;
+  }
+  return buildPolicyGroupCatalogue(rows, versions, now, lifecycle);
 }
 
-let cached: { catalogue: PolicyGroupCatalogue; expiresAt: number } | null = null;
+/** `fresh` = the entry came from a successful read (a failure entry is never fresh for billable). */
+let cached: { catalogue: PolicyGroupCatalogue; expiresAt: number; fresh: boolean } | null = null;
 let lastGood: { catalogue: PolicyGroupCatalogue; at: number } | null = null;
 let inFlight: Promise<PolicyGroupCatalogue> | null = null;
 let generation = 0;
@@ -76,6 +106,13 @@ let generation = 0;
 /** TEST-ONLY — age the last good read (so the max-age path is provable without a clock seam). */
 export function ageLastGoodPolicyGroupCatalogueForTests(ms: number): void {
   if (lastGood) lastGood = { ...lastGood, at: lastGood.at - ms };
+}
+
+/** TEST-ONLY — age the CACHED catalogue's read time (so the 30 s billable freshness is provable without a clock seam). */
+export function ageCachedPolicyGroupCatalogueForTests(ms: number): void {
+  if (cached?.catalogue.loadedAt) {
+    cached = { ...cached, catalogue: { ...cached.catalogue, loadedAt: new Date(Date.parse(cached.catalogue.loadedAt) - ms).toISOString() } };
+  }
 }
 
 /** Drop the cached catalogue (called after every local write, and by tests). */
@@ -94,14 +131,15 @@ export function loadPolicyGroupCatalogue(): Promise<PolicyGroupCatalogue> {
   const p = (async () => {
     try {
       const catalogue = await readPolicyGroupCatalogue(systemDb as unknown as PolicyGroupCatalogueReadClient);
-      if (gen === generation) { cached = { catalogue, expiresAt: Date.now() + CATALOGUE_TTL_MS }; lastGood = { catalogue, at: Date.now() }; }
+      if (gen === generation) { cached = { catalogue, expiresAt: Date.now() + CATALOGUE_TTL_MS, fresh: true }; lastGood = { catalogue, at: Date.now() }; }
       return catalogue;
     } catch (error) {
       const recent = lastGood !== null && Date.now() - lastGood.at <= LAST_GOOD_MAX_AGE_MS ? lastGood.catalogue : null;
       console.error("[policy-group-catalogue] read failed; serving", recent ? "the last good catalogue" : "the code catalogue (strict fallback)", "—",
         error instanceof Error ? error.message.split("\n")[0].slice(0, 200) : "unknown error");
-      const fallback = recent ?? codeFallbackCatalogue();
-      if (gen === generation) cached = { catalogue: fallback, expiresAt: Date.now() + CATALOGUE_FAILURE_RETRY_MS };
+      // BETA LIFECYCLE — the last good copy is MARKED, so a billable decision can never use it.
+      const fallback = recent ? { ...recent, servedFromLastGood: true } : codeFallbackCatalogue();
+      if (gen === generation) cached = { catalogue: fallback, expiresAt: Date.now() + CATALOGUE_FAILURE_RETRY_MS, fresh: false };
       return fallback;
     } finally {
       if (gen === generation) inFlight = null;
@@ -109,4 +147,22 @@ export function loadPolicyGroupCatalogue(): Promise<PolicyGroupCatalogue> {
   })();
   inFlight = p;
   return p;
+}
+
+/**
+ * BETA LIFECYCLE — the catalogue for a BILLABLE decision: a successful read at
+ * most CATALOGUE_TTL_MS old, or null (⇒ POLICY_UNAVAILABLE, fail closed).
+ * Shares the cache and the in-flight read with `loadPolicyGroupCatalogue`; a
+ * cached successful read that has aged past 30 s (the read itself takes time
+ * before the TTL starts) is dropped and re-read once. A cached FAILURE is not
+ * retried here before its 5 s retry window, so an outage never turns every
+ * billable call into a database read. Never throws.
+ */
+export async function loadFreshPolicyGroupCatalogue(): Promise<PolicyGroupCatalogue | null> {
+  const first = await loadPolicyGroupCatalogue();
+  if (isCatalogueFreshForBillable(first, Date.now())) return first;
+  if (cached && !cached.fresh && cached.expiresAt > Date.now()) return null;
+  if (cached?.fresh) cached = null;
+  const second = await loadPolicyGroupCatalogue();
+  return isCatalogueFreshForBillable(second, Date.now()) ? second : null;
 }
