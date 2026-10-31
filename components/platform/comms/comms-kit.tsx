@@ -80,10 +80,12 @@ export function useLastGoodRead<T>(url: string | null): { read: CommsRead<T>; da
   const read = useCommsRead<T>(url);
   const current = okData(read);
   const [good, setGood] = useState<{ url: string; data: T; n: number } | null>(null);
-  useEffect(() => {
-    if (current === null || url === null) return;
-    setGood((g) => (g && g.url === url && g.data === current ? g : { url, data: current, n: (g && g.url === url ? g.n : 0) + 1 }));
-  }, [current, url]);
+  // Adjust state while rendering when the read's answer changes (React's sanctioned
+  // "store info from previous renders" pattern — no effect, no extra commit): a NEW
+  // good answer for this url is kept and counted; anything else leaves `good` alone.
+  if (current !== null && url !== null && !(good && good.url === url && good.data === current)) {
+    setGood({ url, data: current, n: (good && good.url === url ? good.n : 0) + 1 });
+  }
   const kept = good && good.url === url ? good : null;
   return {
     read,

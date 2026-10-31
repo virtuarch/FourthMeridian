@@ -40,6 +40,7 @@ import { TONE_COLOR, ToneBadge } from "../platform-surface";
 import { Segmented } from "../leads/visual-kit";
 import { Chip, FilterSelect, PolicyNote, PreviewRendition, ReadState, WideTargets, okData, useCommsRead, useLastGoodRead } from "./comms-kit";
 import { useContentDraft } from "./use-content-draft";
+import { useNowTick } from "@/components/brief/use-now-tick";
 import { utcStamp } from "./comms-model";
 import {
   BLOCK_KINDS, BLOCK_LABEL, CHANNEL_WORD, CREATED_BY_LABEL, LOCK_TEXT, RENDER_DEBOUNCE_MS, VERSION_STATE_LABEL, VERSION_STATE_TONE,
@@ -270,6 +271,8 @@ export function ContentEditor(p: ContentEditorProps) {
     if (!ed.state && liveBody) ed.init({ draft: draftFrom(liveBody, liveId, data.revision), base: liveVersion });
   });
 
+  /** The viewer's clock (shared minute tick; null during server render) for suggestion expiry. */
+  const now = useNowTick();
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState<null | "save" | "publish" | "rollback" | "ai">(null);
   const [savedIssues, setSavedIssues] = useState<ContentIssue[] | null>(null);
@@ -325,7 +328,7 @@ export function ContentEditor(p: ContentEditorProps) {
     viewer: data.viewer, locked: data.locked, contentEditable: data.contentEditable, ai: data.ai,
     dirty: draft?.dirty ?? false, blockingErrors: gate.blocks, conflict: ed.conflict !== null,
     base: base ? { id: base.id, state: base.state } : null,
-    suggestionExpired: suggestionExpired || (draft?.source.kind === "AI_SUGGESTION" && expiryText(draft.source.expiresAt, Date.now()).expired),
+    suggestionExpired: suggestionExpired || (draft?.source.kind === "AI_SUGGESTION" && now !== null && expiryText(draft.source.expiresAt, now).expired),
     hasRollbackTarget: data.live.source === "PUBLISHED" || data.items.some(isRestorable),
   });
 
@@ -471,7 +474,8 @@ function CheckLine({ status, stale, gate }: { status: CheckStatus; stale: boolea
 }
 
 function SuggestionBanner({ expiresAt, onDiscard, disabled }: { expiresAt: string; onDiscard: () => void; disabled: boolean }) {
-  const e = expiryText(expiresAt, Date.now());
+  const now = useNowTick();
+  const e = now === null ? { text: "", expired: false } : expiryText(expiresAt, now);
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px]" data-ai-draft>
       <Chip tone="info"><Sparkles size={10} aria-hidden /> AI suggestion, unsaved</Chip>
@@ -775,6 +779,7 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept, acceptBlo
   const [mode, setMode] = useState<AiSuggestMode>("POLISH");
   const [tone, setTone] = useState<AiTone>("NEUTRAL");
   const [result, setResult] = useState<AiSuggestResult | null>(null);
+  const now = useNowTick();
   const [failure, setFailure] = useState<{ text: string; issues?: ContentIssue[] } | null>(null);
   if (!control.shown) return null;
   const remaining = aiRemainingText(data.ai);
@@ -786,7 +791,7 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept, acceptBlo
     if (r.kind === "ok") setResult(r.data);
     else setFailure({ text: writeRefusalText(r), ...(r.kind === "error" && r.issues ? { issues: r.issues } : {}) });
   };
-  const exp = result ? expiryText(result.expiresAt, Date.now()) : null;
+  const exp = result && now !== null ? expiryText(result.expiresAt, now) : null;
   const acceptWhy = result ? aiAcceptWhy(result, base, acceptBlock, exp?.expired ?? false) : null;
   return (
     <Sub title="Polish with Fourth Meridian AI" hint={remaining ? <span className="text-[11px] tabular-nums text-[var(--text-muted)]" data-ai-remaining>{remaining}</span> : undefined}>

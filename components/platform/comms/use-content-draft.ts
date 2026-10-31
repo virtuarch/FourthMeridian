@@ -19,7 +19,7 @@
  * DOM-less: tested by content-editor-state.test.ts with the repo's stub-root harness.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ContentBody, TemplateVersionDTO } from "@/lib/notifications/content/types";
 import type { CommsReadResult } from "@/lib/platform/comms-center/client";
 import { editDraft, rebaseDraft, sameBody, saveOutcome, stateAfterLiveChange, stateAfterSave, type Draft, type EditorState, type SaveOutcome } from "./content-model";
@@ -50,18 +50,24 @@ export interface ContentDraftApi {
 export function useContentDraft(initial: () => EditorState | null, reload: { loadCount: number; revision: number }): ContentDraftApi {
   const [state, setState] = useState<EditorState | null>(initial);
   const [conflict, setConflictState] = useState<{ current: number | null; atLoad: number } | null>(null);
+  // The last COMMITTED state and load count, for handlers (save's snapshot and its
+  // `typedSince`, setConflict's `atLoad`). Written after every commit — each
+  // keystroke is a discrete event React commits synchronously, so a handler that
+  // runs later always sees it.
   const ref = useRef(state);
-  ref.current = state;
   const loads = useRef(reload.loadCount);
-  loads.current = reload.loadCount;
+  useLayoutEffect(() => {
+    ref.current = state;
+    loads.current = reload.loadCount;
+  });
 
-  // A conflict is resolved by the first SUCCESSFUL reload after it.
-  useEffect(() => {
-    if (!conflict || reload.loadCount <= conflict.atLoad) return;
-    if (conflict.current !== null && reload.revision < conflict.current) return; // an older read than the server's token: not resolved yet
-    setState((prev) => (prev ? { ...prev, draft: rebaseDraft(prev.draft, { revision: reload.revision }) } : prev));
+  // A conflict is resolved by the first SUCCESSFUL reload after it whose revision
+  // reached the server's token (an older read leaves it open). Adjusted while
+  // rendering, when the inputs change — no effect, no cascading commit.
+  if (conflict && reload.loadCount > conflict.atLoad && (conflict.current === null || reload.revision >= conflict.current)) {
     setConflictState(null);
-  }, [conflict, reload.loadCount, reload.revision]);
+    setState((prev) => (prev ? { ...prev, draft: rebaseDraft(prev.draft, { revision: reload.revision }) } : prev));
+  }
 
   // Leaving the page with unsaved text asks first.
   const dirty = state?.draft.dirty ?? false;
