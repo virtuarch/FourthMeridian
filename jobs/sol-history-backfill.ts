@@ -445,7 +445,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     // The owner valuation ruling outranks the freeze for the STATUS only: owed
     // holders' rows are stamped `unavailable` (DB-only, values preserved, no
     // vendor, no checkpoint, no usage marker); the rebuild waits for unfreeze.
-    if (deps.stampOwedHolders && deps.cryptoHolders) {
+    if (deps.stampOwedHolders && deps.cryptoHolders && deps.regenerationEnabled()) {
       summary.revaluationStamped = await deps.stampOwedHolders(await deps.cryptoHolders().catch(() => [] as string[])).catch(() => 0);
     }
     console.log(`[${SOL_BACKFILL_JOB}] global cost freeze (${freeze.state}) — SKIPPED (${summary.platformSkipped}); no vendor call, no checkpoint moved.`);
@@ -527,7 +527,9 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
   // Owed holders' rows off `supported`/`none` FIRST — every holder, a billable-refused
   // one included (stamp, don't rebuild); the rebuild of allowed holders follows.
-  if (deps.stampOwedHolders && deps.cryptoHolders) {
+  // Gated on the regeneration kill switch (as sync-crypto is): with writes off no
+  // rebuild could ever restore a stamp, so nothing is stamped (review of #183).
+  if (deps.stampOwedHolders && deps.cryptoHolders && deps.regenerationEnabled()) {
     summary.revaluationStamped = await deps.stampOwedHolders(await deps.cryptoHolders().catch(() => [] as string[])).catch(() => 0);
   }
   const ledger = deps.providerUsageToday ? await deps.providerUsageToday(day).catch(() => null) : null;
@@ -629,7 +631,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
    */
   const revalueOtherHolders = async () => {
     if (revalued) return; // once per run (it may run early, when reserved)
-    if (!deps.revalueHolders || holderIds.length === 0) return;
+    if (!deps.revalueHolders || holderIds.length === 0 || !deps.regenerationEnabled()) return; // kill switch off ⇒ no stamp, no dry-run "rebuild", no marker
     const ids = holderIds;
     revalued = true;
     const r = await deps.revalueHolders(ids, { deadlineMs: jobDeadline, attempted: priceGapAttempted,
@@ -663,7 +665,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   // BEFORE the other chains. Asked by state (reads only), so a run with nothing
   // owed keeps the whole budget for history work, as before.
   let reserveRevaluation = false;
-  if (deps.revalueHolders && deps.revaluationPending && deps.cryptoHolders) {
+  if (deps.revalueHolders && deps.revaluationPending && deps.cryptoHolders && deps.regenerationEnabled()) {
     const holders = await deps.cryptoHolders().catch(() => [] as string[]);
     // L2 — the revaluation's first step is a paid price-gap fetch: only holders
     // whose billed owner may cause one (the same batch gate as the sweep).

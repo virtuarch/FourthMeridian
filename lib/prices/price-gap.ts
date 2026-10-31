@@ -310,7 +310,18 @@ export interface RevaluationDeps {
    */
   markUnavailable?(accountId: string, fromISO: string, toISO: string): Promise<number>;
   /** Regenerate one account's wealth history over [fromISO, toISO] — existing rows included. */
-  regenerate(accountId: string, fromISO: string, toISO: string): Promise<void>;
+  /**
+   * Returns `false` when the rebuild WROTE NOTHING because writes are disabled
+   * (the WEALTH_REGENERATION_ENABLED kill switch): its blocks are then never
+   * marked done (defence in depth — a dry run must not retire a block).
+   */
+  regenerate(accountId: string, fromISO: string, toISO: string): Promise<void | false>;
+  /**
+   * Are snapshot writes enabled (wealthRegenerationEnabled)? Optional: absent ⇒
+   * enabled. When false NOTHING runs — no stamp (no rebuild could restore it),
+   * no attempt, no marker.
+   */
+  writesEnabled?(): boolean;
   now(): number;
 }
 
@@ -335,6 +346,8 @@ export interface RevaluationRun {
   failures: number;
   /** The gap pass itself was skipped: too little wake time left. */
   skippedForTime: boolean;
+  /** Snapshot writes are disabled (kill switch): nothing stamped, rebuilt or marked. */
+  writesDisabled?: boolean;
 }
 
 /** Each holder's blocks still owed: not done, and not abandoned at the attempt cap. */
@@ -405,6 +418,7 @@ export async function revalueHoldersAfterPriceGaps(args: {
   const priorMsPerDay = Math.max(1, args.msPerDay ?? REVALUATION_DEFAULT_MS_PER_DAY);
   const observations: Array<{ days: number; ms: number }> = [];
   if (args.accountIds.length === 0) return run;
+  if (args.deps.writesEnabled && !args.deps.writesEnabled()) { run.writesDisabled = true; return run; }
   try {
     const stamp = (h: HolderRevaluation, blocks: readonly RevaluationBlock[]) => stampHolderBlocks(args.deps, h, blocks);
     /** Abandoned ⇒ never left `supported`/`none`: stamp its rows `unavailable` (idempotent). */
@@ -481,7 +495,13 @@ export async function revalueHoldersAfterPriceGaps(args: {
         progressed = true;
         batches++;
         try {
-          await args.deps.regenerate(x.h.accountId, batch.fromISO, batch.toISO);
+          const wrote = await args.deps.regenerate(x.h.accountId, batch.fromISO, batch.toISO);
+          if (wrote === false) {
+            // Writes went off mid-run: a dry run retires nothing — the blocks stay owed, uncharged beyond this try.
+            run.writesDisabled = true;
+            x.queue = [...batch.blocks, ...x.queue];
+            break;
+          }
           // DONE only now: a rebuild that never returned (killed) leaves its blocks owed.
           for (const b of batch.blocks) await args.deps.markRevalued(b.key).catch(() => {});
           run.chunksRebuilt += batch.blocks.length;
@@ -539,10 +559,11 @@ async function stampHolderBlocks(deps: Pick<RevaluationDeps, "markUnavailable">,
  * rebuild's paid fetch is gated). Never throws; returns rows stamped.
  */
 export async function stampOwedHolders(
-  deps: Pick<RevaluationDeps, "owed" | "revaluedAlready" | "attemptsOf" | "markUnavailable">, accountIds: readonly string[],
+  deps: Pick<RevaluationDeps, "owed" | "revaluedAlready" | "attemptsOf" | "markUnavailable" | "writesEnabled">, accountIds: readonly string[],
   todayISO = minusDaysISO(yesterdayUTCISO(), -1),
 ): Promise<number> {
   if (accountIds.length === 0 || !deps.markUnavailable) return 0;
+  if (deps.writesEnabled && !deps.writesEnabled()) return 0; // no rebuild could restore it
   try {
     let n = 0;
     for (const p of await owedBlocks(deps, await deps.owed(accountIds), todayISO)) n += await stampHolderBlocks(deps, p.h, [...p.live, ...p.abandoned]);
@@ -622,6 +643,12 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
       // `none`) qualify; both are restored by a real recompute (planDayPersistence
       // stamp / clearStamp). Per Space, days a membership change blocks are
       // EXCLUDED: the rebuild skips them (no authority), so nothing would restore them.
+      //
+      // BY DESIGN (review of #183, P3): if the holder is later UNLINKED from a
+      // Space, the stamps it left there stay `unavailable`. That is accurate —
+      // those stored values omitted a holder that was a member on those days —
+      // and the automatic path has no authority over a membership-changed day;
+      // only an explicit amendment (Phase 2) may revise and clear them.
       const { loadRevokedLinkWindows } = await import("@/lib/snapshots/regenerate-history");
       const { membershipChangedOn } = await import("@/lib/snapshots/regenerate-history.core");
       const links = await client.spaceAccountLink.findMany({ where: { financialAccountId: accountId, status: "ACTIVE" }, select: { spaceId: true } });
@@ -642,9 +669,12 @@ export function prismaRevaluationDeps(client: Client, opts: { log?: (line: strin
       }
       return count;
     },
+    writesEnabled: () => process.env.WEALTH_REGENERATION_ENABLED === "true", // = wealthRegenerationEnabled() (no static import of the binding)
     async regenerate(accountId, fromISO, toISO) {
       const { resolveHistoricalWorkWindow } = await import("@/lib/snapshots/historical-work-window");
-      const { regenerateWealthHistoryForAccounts } = await import("@/lib/snapshots/regenerate-history");
+      const { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
+      // The binding writes only under this switch (applyWrites): a rebuild now would be a dry run.
+      if (!wealthRegenerationEnabled()) return false;
       // The canonical planner, told the batch start as floor and impacted-from
       // (the V26-CAP-1 override) — still intersected with the evidence floor and
       // the writable ceiling — then clamped to the batch. A floor below the

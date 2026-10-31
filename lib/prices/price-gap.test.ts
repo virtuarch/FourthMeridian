@@ -14,7 +14,7 @@ import {
   priceGapAttemptKey, revaluationOwedFromISO, cryptoHolderLicences, revalueHoldersAfterPriceGaps, REVALUATION_RESERVE_MS,
   holderRevaluationFor, holderRevaluations, revaluationBlocks, planRevaluationBatch, revaluationPending, REVALUATION_MAX_ATTEMPTS,
   estimateRebuildCost, batchDaysFor, REVALUATION_SUSPECT_HALVINGS, prismaRevaluationDeps,
-  unblockedRanges, holderContributionSpans, holderStampRanges, REVALUATION_MAX_BATCHES_PER_PASS,
+  unblockedRanges, holderContributionSpans, holderStampRanges, REVALUATION_MAX_BATCHES_PER_PASS, stampOwedHolders,
   type HolderLicence, type HolderRevaluation, type InstrumentPriceFacts, type PriceGapDeps, type RevaluationDeps,
 } from "./price-gap";
 
@@ -284,6 +284,25 @@ async function main() {
       bad.regens.length === regensBefore && r4b.abandonedBlocks === 1 && r4b.rowsStampedUnavailable > 0
         && bad.stamped.slice(stampsBefore).join() === `b:${badBlock.fromISO}..${badBlock.toISO}` && !(await revaluationPending(bad.deps, ["b"], TODAY)),
       JSON.stringify({ r4b, s: bad.stamped.slice(stampsBefore) }));
+
+    // REVIEW #183 (P2): writes disabled ⇒ nothing stamped, attempted or marked; a dry-run rebuild never retires a block.
+    {
+      const off = mk({ owed: [owe("ks")] });
+      const ro = await revalueHoldersAfterPriceGaps({ accountIds: ["ks"], deps: { ...off.deps, writesEnabled: () => false }, deadlineMs: 1e9, todayISO: TODAY });
+      const so = await stampOwedHolders({ ...off.deps, writesEnabled: () => false }, ["ks"], TODAY);
+      check("writes OFF: no stamp, no attempt, no rebuild, no done marker (and the stamp-only pass stamps nothing)",
+        ro.writesDisabled === true && off.stamped.length === 0 && off.tries.size === 0 && off.regens.length === 0 && off.marks.length === 0 && so === 0, JSON.stringify(ro));
+      const dry = mk({ owed: [owe("dr")] });
+      const rd = await revalueHoldersAfterPriceGaps({ accountIds: ["dr"], todayISO: TODAY, deadlineMs: 1e9, deps: { ...dry.deps, regenerate: async () => false } });
+      check("a rebuild that wrote nothing (writes went off) marks NO block done — the blocks stay owed",
+        dry.marks.length === 0 && rd.writesDisabled === true && rd.revalued === 0 && rd.deferred === 1 && await revaluationPending(dry.deps, ["dr"], TODAY), JSON.stringify(rd));
+      const on = mk({ owed: [owe("ks")] });
+      const rn = await revalueHoldersAfterPriceGaps({ accountIds: ["ks"], deps: { ...on.deps, writesEnabled: () => true }, deadlineMs: 1e9, todayISO: TODAY });
+      check("writes ON: normal stamp, rebuild and done markers", on.stamped.length > 0 && rn.revalued === 1 && on.marks.length === blocksOf(owe("ks")).length);
+      const src = readFileSync("lib/prices/price-gap.ts", "utf8");
+      check("production: the rebuild returns false (a dry run) when WEALTH_REGENERATION_ENABLED is off, and writesEnabled reads the same switch",
+        /if \(!wealthRegenerationEnabled\(\)\) return false;/.test(src) && /writesEnabled: \(\) => process\.env\.WEALTH_REGENERATION_ENABLED === "true"/.test(src));
+    }
 
     // OWNER RULING (live 2026-10-31): an OWED window is off `supported` before any rebuild.
     {
