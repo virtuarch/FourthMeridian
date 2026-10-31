@@ -38,7 +38,7 @@ SELECT 8, 'SECURITY DEFINER functions in public executable by PUBLIC (expect non
   FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef
    AND has_function_privilege('public', p.oid, 'EXECUTE')
 UNION ALL
--- 12-14: what would make scripts/db-readonly-psql.sh's DIAG_REQUIRE_ROLE guard refuse fm_diag_ro
+-- 12-15: what would make scripts/db-readonly-psql.sh's DIAG_REQUIRE_ROLE guard refuse fm_diag_ro
 -- (it counts PUBLIC grants; it checks every non-system schema, not only public).
 SELECT 12, 'role guard: schemas where PUBLIC holds CREATE (expect none)',
        coalesce(string_agg(s.nspname, ', '), 'none')
@@ -54,6 +54,16 @@ SELECT 13, 'role guard: tables/sequences in any non-system schema writable by PU
 UNION ALL
 SELECT 14, 'role guard: PUBLIC holds CREATE on this database (expect false)',
        has_database_privilege('public', current_database(), 'CREATE')::text
+UNION ALL
+SELECT 15, 'role guard: SECURITY DEFINER functions PUBLIC can execute in a schema PUBLIC can use (allowlisted = OK; any other ⇒ guard refuses)',
+       coalesce(string_agg(n.nspname || '.' || p.proname || '(' || oidvectortypes(p.proargtypes) || ') ' || p.provolatile::text
+         || CASE WHEN n.nspname = 'public' AND p.provolatile IN ('s','i')
+                  AND ((p.proname = 'fm_visible_space_ids' AND oidvectortypes(p.proargtypes) = '')
+                    OR (p.proname = 'fm_may_join_space' AND oidvectortypes(p.proargtypes) = 'text'))
+                 THEN ' [allowlisted]' ELSE ' [REFUSED]' END, ', '), 'none')
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE p.prosecdef AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_(toast|temp_)'
+   AND has_schema_privilege('public', n.oid, 'USAGE') AND has_function_privilege('public', p.oid, 'EXECUTE')
 UNION ALL
 SELECT 9, 'server version', current_setting('server_version')
 UNION ALL

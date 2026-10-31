@@ -162,7 +162,7 @@ Evidence: [`docs/plans/PREVIEW-AI-FAILURE-AND-CONVERSATION-PERSISTENCE-2026-10-2
 | `SET default_transaction_read_only = on` (or any `SET name = …` / `SET SESSION …`) | `BEGIN READ ONLY;` … `COMMIT;`, or `SET TRANSACTION READ ONLY` as the first statement of an explicit transaction |
 | `SET statement_timeout = …` | `SET LOCAL statement_timeout = …` inside the transaction |
 | `RESET …`, `set_config(name, value, false)` | `set_config(name, value, true)` (transaction-local; this is what `lib/db/tenant-context.ts` does) |
-| `psql -c "SET …" -c "select …"` (each `-c` is its own transaction) | [`scripts/db-readonly-psql.sh`](../../scripts/db-readonly-psql.sh): `psql -1` + `SET TRANSACTION READ ONLY`. Before connecting it refuses session-level `SET` / `RESET`, any `set_config`, psql meta-commands other than `\echo` / `\qecho` / `\pset`, `:var` interpolation, extra psql arguments, and local or redirected URLs. The password goes to psql only as `PGPASSWORD` |
+| `psql -c "SET …" -c "select …"` (each `-c` is its own transaction) | [`scripts/db-readonly-psql.sh`](../../scripts/db-readonly-psql.sh): `psql -1` + `SET TRANSACTION READ ONLY`. Before connecting it refuses session-level `SET` / `RESET`, any `set_config`, psql meta-commands other than `\echo` / `\qecho` / `\pset`, `:var` interpolation, extra psql arguments, local or redirected URLs, control bytes, and an END that doesn't close a CASE. The password reaches psql only through a private 0600 pgpass file, and psql runs under `env -i` |
 
 Use `SHOW name` to read a setting; it changes nothing.
 

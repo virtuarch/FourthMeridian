@@ -121,6 +121,12 @@ try {
     INSERT INTO "AuditLog" (action, metadata, "ipAddress", "userAgent", "userId") VALUES ('USER_LOGIN', '{}', '198.51.100.99', 'curl/8', 'u1');
     INSERT INTO "RateLimit" VALUES ('ip:access-request:abc', 3), ('ip:login:zzz', 9);
     INSERT INTO "User" VALUES ('u1', 'owner@example.com');
+    -- Production's two SECURITY DEFINER RLS helpers: STABLE, SECURITY DEFINER, EXECUTE to PUBLIC (the default).
+    CREATE FUNCTION public.fm_visible_space_ids() RETURNS SETOF text LANGUAGE sql STABLE SECURITY DEFINER
+      SET search_path = pg_catalog, public AS $$ SELECT id FROM public."User" $$;
+    CREATE FUNCTION public.fm_may_join_space(space text) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
+      SET search_path = pg_catalog, public AS $$ SELECT space IS NOT NULL $$;
+    GRANT EXECUTE ON FUNCTION public.fm_visible_space_ids(), public.fm_may_join_space(text) TO PUBLIC;
   `);
   check("container schema + seed rows created", setup.status === 0, setup.stderr);
 
@@ -180,6 +186,16 @@ try {
       CREATE ROLE diag_schema    LOGIN PASSWORD '${pw}'; GRANT CREATE ON SCHEMA public TO diag_schema;
       CREATE ROLE diag_db        LOGIN PASSWORD '${pw}'; GRANT CREATE ON DATABASE postgres TO diag_db;
       CREATE ROLE diag_readall   LOGIN PASSWORD '${pw}'; GRANT pg_read_all_data TO diag_readall;
+      CREATE ROLE diag_srvprog   LOGIN PASSWORD '${pw}'; GRANT pg_execute_server_program TO diag_srvprog;
+      CREATE ROLE diag_srvfiles  LOGIN PASSWORD '${pw}'; GRANT pg_write_server_files TO diag_srvfiles;
+      CREATE ROLE diag_signal    LOGIN PASSWORD '${pw}'; GRANT pg_signal_backend TO diag_signal;
+      CREATE ROLE diag_ckpt      LOGIN PASSWORD '${pw}'; GRANT pg_checkpoint TO diag_ckpt;
+      CREATE ROLE diag_subscr    LOGIN PASSWORD '${pw}'; GRANT pg_create_subscription TO diag_subscr;
+      CREATE ROLE diag_srv_inh   LOGIN PASSWORD '${pw}'; CREATE ROLE diag_srv_mid NOLOGIN; GRANT pg_execute_server_program TO diag_srv_mid; GRANT diag_srv_mid TO diag_srv_inh;
+      CREATE ROLE diag_owner_tbl LOGIN PASSWORD '${pw}'; CREATE TABLE owned_by_diag (x int); ALTER TABLE owned_by_diag OWNER TO diag_owner_tbl;
+      CREATE ROLE diag_owner_fn  LOGIN PASSWORD '${pw}'; CREATE FUNCTION owned_fn() RETURNS int LANGUAGE sql AS 'SELECT 1'; ALTER FUNCTION owned_fn() OWNER TO diag_owner_fn;
+      REVOKE EXECUTE ON FUNCTION owned_fn() FROM PUBLIC;
+      CREATE ROLE diag_lo        LOGIN PASSWORD '${pw}'; SELECT lo_create(424242); GRANT UPDATE ON LARGE OBJECT 424242 TO diag_lo;
     `);
     check("negative-case roles created", mk.status === 0, mk.stderr);
     for (const [role, reason] of [
@@ -188,6 +204,10 @@ try {
       ["diag_inherit", /can write .*canary/], ["diag_noinherit", /can write \(.*via diag_writer\).*canary/],
       ["diag_pwad", /pg_write_all_data|can write/], ["diag_schema", /CREATE \(via diag_schema\) on schema: public/],
       ["diag_db", /CREATE on database postgres/],
+      ["diag_srvprog", /member of pg_execute_server_program/], ["diag_srvfiles", /member of pg_write_server_files/],
+      ["diag_signal", /member of pg_signal_backend/], ["diag_ckpt", /member of pg_checkpoint/], ["diag_subscr", /member of pg_create_subscription/],
+      ["diag_srv_inh", /member of pg_execute_server_program/], ["diag_owner_tbl", /owns database objects/], ["diag_owner_fn", /owns database objects/],
+      ["diag_lo", /can write a large object/],
     ] as Array<[string, RegExp]>) {
       const r = helper(["-c", "select 1 as after_guard"], { user: role, pw, require: role });
       check(`refused: ${role}`, r.status !== 0 && /role guard refused/.test(r.stderr) && reason.test(r.stderr) && !/verified|after_guard/.test(r.stdout),
@@ -197,6 +217,34 @@ try {
     check("refused: connected role ≠ DIAG_REQUIRE_ROLE", mismatch.status !== 0 && /connected as fm_diag_ro, expected diag_readall/.test(mismatch.stderr) && !/after_guard/.test(mismatch.stdout), mismatch.stderr);
     const readAll = helper(["-c", "select 1 as after_guard"], { user: "diag_readall", pw, require: "diag_readall" });
     check("pg_read_all_data alone is fine (verified)", readAll.status === 0 && /verified/.test(readAll.stdout), `${readAll.status} ${readAll.stderr}`);
+
+    // SECURITY DEFINER: the two STABLE Production helpers are allowlisted; anything else is refused.
+    const ro = (sql = "select 1 as after_guard") => helper(["-c", sql], { user: "fm_diag_ro", pw: RO_PW, require: "fm_diag_ro" });
+    const can = su("select has_function_privilege('fm_diag_ro', 'public.fm_visible_space_ids()', 'EXECUTE') and has_function_privilege('fm_diag_ro', 'public.fm_may_join_space(text)', 'EXECUTE')").stdout.trim();
+    const base = ro();
+    check("fm_diag_ro CAN execute the two STABLE SECURITY DEFINER helpers (PUBLIC) and the guard still passes",
+      can === "t" && base.status === 0 && /verified/.test(base.stdout), `${can} ${base.status} ${base.stderr}`);
+    const path0 = ro("show search_path");
+    check("the guard restores search_path afterwards (pinned to pg_catalog only while it runs)", path0.status === 0 && /"\$user", public/.test(path0.stdout), path0.stdout);
+    su(`CREATE FUNCTION public.fm_evil_writer() RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER AS 'INSERT INTO public.canary VALUES (1)'`);
+    const evilFn = ro();
+    check("a VOLATILE writer SECURITY DEFINER function executable by PUBLIC ⇒ refused",
+      evilFn.status !== 0 && /SECURITY DEFINER function\(s\).*fm_evil_writer\(\)/.test(evilFn.stderr) && !/after_guard/.test(evilFn.stdout), evilFn.stderr);
+    su("DROP FUNCTION public.fm_evil_writer()");
+    su("ALTER FUNCTION public.fm_may_join_space(text) VOLATILE");
+    const vol = ro();
+    check("an allowlisted name turned VOLATILE ⇒ refused", vol.status !== 0 && /fm_may_join_space\(text\)/.test(vol.stderr), vol.stderr);
+    su("ALTER FUNCTION public.fm_may_join_space(text) STABLE");
+    su(`CREATE FUNCTION public.fm_may_join_space(space integer) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS 'SELECT true'`);
+    const sig = ro();
+    check("an allowlisted name with a different signature ⇒ refused", sig.status !== 0 && /fm_may_join_space\(integer\)/.test(sig.stderr), sig.stderr);
+    su("DROP FUNCTION public.fm_may_join_space(integer)");
+    su("ALTER DATABASE postgres SET lo_compat_privileges = on");
+    const loc = ro();
+    check("lo_compat_privileges = on ⇒ refused", loc.status !== 0 && /lo_compat_privileges/.test(loc.stderr), loc.stderr);
+    su("ALTER DATABASE postgres RESET lo_compat_privileges");
+    const again = ro();
+    check("back to the Production shape ⇒ verified again", again.status === 0 && /verified/.test(again.stdout), again.stderr);
   }
 
   console.log("\n3. P2-a / P3 — bypasses committed nothing, even as the superuser");
@@ -206,6 +254,10 @@ try {
     const gset = path.join(tmp, "gset.sql");
     writeFileSync(gset, "select 'COMM' || 'IT' as x \\gset\n:x\ninsert into canary values (1);\n");
     const asSuper = { user: "postgres", pw: SUPER_PW };
+    const nulFile = path.join(tmp, "nul.sql");
+    writeFileSync(nulFile, Buffer.from("select 1;\nCOM\u0000\nMIT;\ninsert into canary values (1);\n", "binary"));
+    const crlfFile = path.join(tmp, "crlf.sql");
+    writeFileSync(crlfFile, "select 1;\r\nend\r\n;\r\nselect nextval('canary_seq');\r\n");
     const before = { rows: count("select count(*) from canary"), seq: count("select last_value || ':' || is_called from canary_seq") };
     const attempts: Array<[string, string[]]> = [
       ["\\c (no argument) then INSERT", ["-c", "\\c", "-c", "insert into canary values (1)"]],
@@ -225,6 +277,16 @@ try {
       ["DO block INSERT", ["-c", "DO $$ BEGIN INSERT INTO canary VALUES (1); END $$"]],
       ["CTE INSERT", ["-c", "WITH x AS (INSERT INTO canary VALUES (1) RETURNING 1) SELECT * FROM x"]],
       ["END; then INSERT", ["-c", "select 1; END; insert into canary values (1)"]],
+      ["NUL byte in a file: COM\\0\\nMIT;", ["-f", nulFile]],
+      ["bare END (-c 'select 1; end')", ["-c", "select 1; end"]],
+      ["END AND NO CHAIN", ["-c", "select 1; END AND NO CHAIN"]],
+      ["END with CR before ';' (-c)", ["-c", "select 1;\rend\r;"]],
+      ["END with newline before ';' (-c)", ["-c", "select 1;\nend\n;"]],
+      ["CRLF file with a bare END", ["-f", crlfFile]],
+      ["'case' in a string to balance an END", ["-c", "select 'case'; end"]],
+      ["U&'…' escape", ["-c", "select U&'\\0043OMMIT'"]],
+      ["SET LOCAL statement_timeout", ["-c", "SET LOCAL statement_timeout = 0"]],
+      ["\\pset 'pager'", ["-c", "\\pset 'pager' on"]],
     ];
     for (const [name, args] of attempts) {
       const r = helper(args, asSuper);
@@ -278,8 +340,8 @@ try {
       check(`${label}: read_only_guard = on, read_only_role_guard = verified (first rows)`,
         /^\s*read_only_guard\s*\n-+\n\s*on\s*\n/.test(out) && /read_only_role_guard\s*\n-+\n\s*verified\b/.test(out), out.slice(0, 400));
       check(`${label}: sections A–F all ran`, ["== A.", "== B.", "== C.", "== D.", "== E.", "== F."].every((s) => out.includes(s)));
-      check(`${label}: ≤3-char local parts show 1 char (a…@gmail.com, a…@(custom domain)); longer ones 2 (jo…)`,
-        out.includes("a…@gmail.com") && out.includes("a…@(custom domain)") && out.includes("jo…@gmail.com") && !out.includes("ab…@"));
+      check(`${label}: local part ≤2 chars shows NONE (…@gmail.com), 3 chars shows 1 (a…@(custom domain)), longer shows 2 (jo…)`,
+        / …@gmail\.com/.test(out) && !out.includes("a…@gmail.com") && out.includes("a…@(custom domain)") && out.includes("jo…@gmail.com") && !out.includes("ab…@"));
       check(`${label}: no raw email, IP, user agent, note, token hash or country value`,
         !/ab@gmail|abc@example|johnsmith|203\.0\.113|198\.51|Mozilla|let me in|SECRET_TOKEN|ZZCOUNTRY|owner@example/.test(out));
       check(`${label}: country is bucketed present/absent`, /\bpresent\b/.test(out) && /\babsent\b/.test(out));
@@ -292,23 +354,29 @@ try {
       check(`fm_diag_ro cannot read ${name} (permission denied)`, d.status !== 0 && /permission denied/.test(d.stderr), d.stderr);
     }
     const pre = suFile(path.join(ROOT, "docs", "operations", "sql", "prod-diag-role-precheck.sql"));
-    check("prod-diag-role-precheck.sql runs (rows 12–14 = the role guard's PUBLIC tripwires: none / 0 / false)",
-      pre.status === 0 && /12 \| role guard: schemas where PUBLIC holds CREATE \(expect none\)\s*\| none/.test(pre.stdout)
-        && /13 \| [^\n]*\| 0\s*\n/.test(pre.stdout) && /14 \| [^\n]*\| false/.test(pre.stdout), `${pre.status} ${pre.stdout} ${pre.stderr}`);
+    const row = (n: number) => (pre.stdout.split("\n").find((l) => new RegExp(`^\\s*${n} \\|`).test(l)) ?? "").split("|").pop()?.trim() ?? "(missing)";
+    const r15 = "public.fm_may_join_space(text) s [allowlisted], public.fm_visible_space_ids() s [allowlisted]";
+    check("prod-diag-role-precheck.sql runs (rows 12–15 = the role guard's PUBLIC tripwires: none / 0 / false / only the allowlisted pair)",
+      pre.status === 0 && row(12) === "none" && row(13) === "0" && row(14) === "false" && row(15).split(", ").sort().join(", ") === r15,
+      `${pre.status} 12=${row(12)} 13=${row(13)} 14=${row(14)} 15=${row(15)} ${pre.stderr}`);
     if (has("zsh", ["--version"])) {
       // The owner's sequence (prod-diag-readonly-role.md §4), host swapped for the container
       // and the TEST-ONLY local override added. The password arrives on stdin, as from the hidden prompt.
-      const seq = [
-        `read -rs "DIAG_PW?fm_diag_ro password: "; echo`,
-        `DIAG_ALLOW_LOCAL=1 DIAG_DATABASE_URL="postgresql://fm_diag_ro:\${DIAG_PW}@127.0.0.1:${PORT}/postgres?sslmode=disable" \\`,
-        `DIAG_REQUIRE_ROLE=fm_diag_ro \\`,
-        `  scripts/db-readonly-psql.sh -f docs/operations/sql/beta-request-prod-investigation.sql`,
-        `rc=$?; unset DIAG_PW; exit $rc`,
-      ].join("\n");
+      const zblock = /```zsh\n([\s\S]*?)```/.exec(readFileSync(ROLE_DOC, "utf8"))?.[1] ?? "";
+      check("§4 owner block: a ( … ) subshell with a trap that unsets the password, and no line continuations",
+        /^\s*\(\s*\n\s*trap 'unset DIAG_PW' EXIT INT TERM\n/.test(zblock) && !/\\\n/.test(zblock) && /\n\s*\)\s*$/.test(zblock), zblock);
+      const seq = zblock
+        .replace("db.<project-ref>.supabase.co:5432", `127.0.0.1:${PORT}`)
+        .replace("sslmode=require", "sslmode=disable")
+        .replace('DIAG_DATABASE_URL="', 'DIAG_ALLOW_LOCAL=1 DIAG_DATABASE_URL="');
+      check("§4 owner block adapted to the container (host, sslmode, test-only override)", seq.includes(`127.0.0.1:${PORT}`) && seq.includes("DIAG_ALLOW_LOCAL=1 DIAG_DATABASE_URL="));
       const z = spawnSync("zsh", ["-f", "-c", seq], { cwd: ROOT, encoding: "utf8", input: `${RO_PW}\n`, timeout: 60_000,
         env: { PATH: process.env.PATH ?? "", HOME: tmp } as unknown as NodeJS.ProcessEnv });
       check5("owner zsh sequence", z);
       check("owner zsh sequence: password absent from output", !`${z.stdout}${z.stderr}`.includes(RO_PW.slice(0, 12)));
+      const zi = spawnSync("zsh", ["-f", "-c", `${seq}\nprint -r -- "after=\${DIAG_PW-unset}"`], { cwd: ROOT, encoding: "utf8", input: `${RO_PW}\n`, timeout: 60_000,
+        env: { PATH: process.env.PATH ?? "", HOME: tmp } as unknown as NodeJS.ProcessEnv });
+      check("owner zsh sequence: DIAG_PW does not survive the block", /after=unset/.test(zi.stdout), zi.stdout.slice(-200));
     } else {
       console.log("  SKIP owner zsh sequence: zsh not installed");
     }

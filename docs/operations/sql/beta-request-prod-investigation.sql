@@ -10,15 +10,16 @@
 -- read_only_role_guard = verified.
 --
 -- HELPER-SAFE TEXT: the helper's scan is quote-unaware and fails closed, so this file contains
--- no backslash except the \echo / \pset lines, and no colon directly followed by a letter,
--- digit or quote (a literal colon is written chr(58)). Keep it that way when editing.
+-- no backslash except the \echo / \pset lines; no colon followed by a letter, digit, quote or
+-- brace (casts are written CAST(x AS type), never with a double colon; a literal colon is chr(58));
+-- no control bytes, dollar quoting or U& strings. Keep it that way when editing.
 --
 -- PRIVACY: every signal is computed INSIDE the database. Nothing here outputs a full
 -- email address, a raw IP, a user agent or note text. The output contains:
 --   - the request id's last 6 characters,
---   - a masked email (first 2 characters of the local part, only the first 1 when the
---     local part has 3 characters or fewer, the domain CATEGORY, and the domain itself only
---     for well-known free-mail providers),
+--   - a masked email (first 2 characters of the local part; only the first 1 when the
+--     local part has 3 characters; NONE when it has 2 or fewer; the domain CATEGORY, and the
+--     domain itself only for well-known free-mail providers),
 --   - whether the request carried a country (present / absent; never the country),
 --   - counts, time buckets and derived flags.
 -- The output is safe to paste back for analysis.
@@ -31,12 +32,12 @@
 SELECT status, count(*) FROM "BetaAccessRequest" GROUP BY 1 ORDER BY 1;
 
 \echo '== B. Submission timeline (requests per UTC day, events per UTC day)'
-SELECT d::date AS day,
-       (SELECT count(*) FROM "BetaAccessRequest" r WHERE r."createdAt"::date = d::date) AS new_requests,
-       (SELECT count(*) FROM "BetaAccessRequestEvent" e WHERE e."receivedAt"::date = d::date) AS submissions
-  FROM generate_series((SELECT min("createdAt")::date FROM "BetaAccessRequest"), current_date, interval '1 day') d
- WHERE EXISTS (SELECT 1 FROM "BetaAccessRequestEvent" e WHERE e."receivedAt"::date = d::date)
-    OR EXISTS (SELECT 1 FROM "BetaAccessRequest" r WHERE r."createdAt"::date = d::date)
+SELECT CAST(d AS date) AS day,
+       (SELECT count(*) FROM "BetaAccessRequest" r WHERE CAST(r."createdAt" AS date) = CAST(d AS date)) AS new_requests,
+       (SELECT count(*) FROM "BetaAccessRequestEvent" e WHERE CAST(e."receivedAt" AS date) = CAST(d AS date)) AS submissions
+  FROM generate_series((SELECT CAST(min("createdAt") AS date) FROM "BetaAccessRequest"), current_date, interval '1 day') d
+ WHERE EXISTS (SELECT 1 FROM "BetaAccessRequestEvent" e WHERE CAST(e."receivedAt" AS date) = CAST(d AS date))
+    OR EXISTS (SELECT 1 FROM "BetaAccessRequest" r WHERE CAST(r."createdAt" AS date) = CAST(d AS date))
  ORDER BY 1;
 
 \echo '== C. Evidence coverage: audit rows with network and agent data'
@@ -46,7 +47,7 @@ SELECT count(*) AS audit_rows, count("ipAddress") AS with_ip, count("userAgent")
 
 \echo '== D. Per-request evidence (masked)'
 WITH req AS (
-  SELECT r.id, r.status::text AS status, r."createdAt", r."decidedAt", r."redeemedAt", r.note,
+  SELECT r.id, CAST(r.status AS text) AS status, r."createdAt", r."decidedAt", r."redeemedAt", r.note,
          lower(trim(r.email)) AS em,
          split_part(lower(trim(r.email)), '@', 2) AS dom,
          split_part(lower(trim(r.email)), '@', 1) AS loc,
@@ -82,7 +83,7 @@ ev AS (
 SELECT right(q.id, 6) AS req,
        q.status,
        to_char(date_trunc('hour', q."createdAt"), 'YYYY-MM-DD HH24') || chr(58) || '00' AS created_hour_utc,
-       CASE WHEN length(q.loc) <= 3 THEN left(q.loc, 1) ELSE left(q.loc, 2) END || '…@' ||
+       CASE WHEN length(q.loc) <= 2 THEN '' WHEN length(q.loc) <= 3 THEN left(q.loc, 1) ELSE left(q.loc, 2) END || '…@' ||
          CASE WHEN q.dom IN ('gmail.com','googlemail.com','outlook.com','hotmail.com','live.com','yahoo.com','icloud.com','me.com','proton.me','protonmail.com','aol.com','gmx.com','mail.com','yandex.com')
               THEN q.dom ELSE '(custom domain)' END AS masked_email,
        CASE WHEN q.dom IN ('mailinator.com','guerrillamail.com','guerrillamail.net','sharklasers.com','10minutemail.com','temp-mail.org','tempmail.com','yopmail.com','trashmail.com','getnada.com','dispostable.com','maildrop.cc','throwawaymail.com','mintemail.com','fakeinbox.com','spamgourmet.com','mailnesia.com','emailondeck.com','tempr.email','moakt.com','mohmal.com','burnermail.io','33mail.com','grr.la','spam4.me','trbvm.com','dropmail.me','tempmailo.com','emailfake.com','fakemail.net')

@@ -84,16 +84,16 @@ Then, connected **as `fm_diag_ro`**:
    - If it is unreachable, use Supavisor in **session mode** (port 5432) with username `fm_diag_ro.<project-ref>`:
      `postgresql://fm_diag_ro.<project-ref>:<password>@aws-<n>-<region>.pooler.supabase.com:5432/postgres?sslmode=require`.
    - Through the pooler, `CONNECTION LIMIT 2` counts server connections, not clients.
-3. **Run** the owner command sequence (zsh, from the repository root). The password is read by a hidden prompt, never echoed, never in a command line:
+3. **Run** the owner command sequence. Paste the whole block into zsh, from the repository root. It runs in a `( … )` subshell, and a trap unsets the password on exit, Ctrl-C or kill. The password is read by a hidden prompt; it is never echoed and never in a command line. The helper call is ONE line on purpose, with no `\` continuations: a broken continuation would turn the `VAR=…` prefixes into plain shell assignments.
    ```zsh
-   read -rs "DIAG_PW?fm_diag_ro password: "; echo
-   DIAG_DATABASE_URL="postgresql://fm_diag_ro:${DIAG_PW}@db.<project-ref>.supabase.co:5432/postgres?sslmode=require" \
-   DIAG_REQUIRE_ROLE=fm_diag_ro \
-     scripts/db-readonly-psql.sh -f docs/operations/sql/beta-request-prod-investigation.sql
-   unset DIAG_PW
+   (
+     trap 'unset DIAG_PW' EXIT INT TERM
+     read -rs "DIAG_PW?fm_diag_ro password: "; echo
+     DIAG_DATABASE_URL="postgresql://fm_diag_ro:${DIAG_PW}@db.<project-ref>.supabase.co:5432/postgres?sslmode=require" DIAG_REQUIRE_ROLE=fm_diag_ro scripts/db-readonly-psql.sh -f docs/operations/sql/beta-request-prod-investigation.sql
+   )
    ```
    - Through the pooler, swap in the session-mode host and the `fm_diag_ro.<project-ref>` user name from step 2.
-   - The password may contain raw `@ / : # !` characters. The helper splits it out of the URL and hands it to psql as `PGPASSWORD`, so it never appears in `ps`, in a trace or in an error. A literal `%` must be typed as `%25`; a malformed escape is refused without echoing the value. Simplest: generate a password without `%`.
+   - The password may contain raw `@ / : # !` characters. The helper splits it out of the URL and hands it to psql only through a 0600 pgpass file in a private directory, which is removed on exit. psql runs under `env -i` with an allowlisted environment, so the password never appears in `ps`, in an environment, in a trace or in an error. The helper prints the psql binary it resolved (`db-readonly-psql: using psql at …`) before connecting: check that it is the one you expect. It always adds `require_auth=scram-sha-256`. `sslrootcert=` is accepted with `sslmode=verify-full`, and `channel_binding=require` is optional. A literal `%` must be typed as `%25`; a malformed escape is refused without echoing the value. Simplest: generate a password without `%`.
    - Do **not** set `DIAG_ALLOW_LOCAL`. It is a test-only override for the throwaway-container tests and prints a warning.
    - The output must begin with exactly these two results:
      ```
@@ -107,8 +107,13 @@ Then, connected **as `fm_diag_ro`**:
       verified
      (1 row)
      ```
-   - If the role guard refuses, the run stops before the investigation, with `ERROR:  role guard refused: …` naming the reason (superuser, BYPASSRLS, CREATEROLE/CREATEDB/REPLICATION, a write privilege on a table, column or sequence, `pg_write_all_data`, CREATE on a schema or the database, or a different role). Nothing ran, so nothing to undo. Stop, and report the message.
-   - ⚠️ **Schema CREATE through PUBLIC.** The guard counts privileges granted to PUBLIC. On 2026-10-31, Production's schema `public` still granted CREATE to PUBLIC (`=UC/postgres`, see [prod-revoke-schema-create.md](prod-revoke-schema-create.md)). Until change A there is executed, the guard refuses with `role guard refused: fm_diag_ro has CREATE (via fm_diag_ro) on schema: public`. This is intended: it fails closed. Precheck rows 12–14 ([prod-diag-role-precheck.sql](prod-diag-role-precheck.sql)) list everything that would trip it, before the role is created.
+   - If the role guard refuses, the run stops before the investigation, with `ERROR:  role guard refused: …` naming the reason. Possible reasons: a different role; superuser, BYPASSRLS, CREATEROLE, CREATEDB or REPLICATION; membership in `pg_write_all_data`, `pg_execute_server_program`, `pg_write_server_files`, `pg_signal_backend`, `pg_checkpoint`, `pg_maintain` or `pg_create_subscription`; owning any object; a write privilege on a table, column, sequence or large object; CREATE on a schema or the database; or EXECUTE on a SECURITY DEFINER function other than the two allowlisted ones (below). Nothing ran, so nothing to undo. Stop, and report the message.
+   - **PUBLIC grants count.** The guard counts privileges granted to PUBLIC. Production's schema `public` granted CREATE to PUBLIC until 2026-10-31, when change A was executed ([prod-revoke-schema-create.md](prod-revoke-schema-create.md)). Before that, the guard would have refused with `role guard refused: fm_diag_ro has CREATE (via fm_diag_ro) on schema: public`. Precheck rows 12–15 ([prod-diag-role-precheck.sql](prod-diag-role-precheck.sql)) list everything that would trip it, before the role is created.
+   - **SECURITY DEFINER allowlist.** A SECURITY DEFINER function runs with its owner's rights, so the guard refuses any that `fm_diag_ro` can EXECUTE in a schema it can USE. There are two exceptions, matched by schema, name and argument types, and only while they are declared `STABLE` or `IMMUTABLE`: `public.fm_visible_space_ids()` and `public.fm_may_join_space(text)`.
+     - These are Production's RLS helpers: `LANGUAGE sql STABLE`, read-only SELECTs.
+     - Migration `20261006000000_rls_function_execute_least_privilege` already revokes their EXECUTE from PUBLIC. If that holds on Production, `fm_diag_ro` cannot execute them at all, and the allowlist is only a fallback.
+     - Revoking EXECUTE from PUBLIC again here would be a Production change outside this scope, so it is not done.
+     - Any other reachable SECURITY DEFINER function, or either of these turned VOLATILE, makes the guard refuse. Precheck row 15 lists them.
 
 ## 5. Security review
 
