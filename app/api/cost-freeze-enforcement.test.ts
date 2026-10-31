@@ -326,7 +326,28 @@ async function main() {
     try {
       t.check("the frozen registry holds ONLY the allowlisted free provider, even with OXR_APP_ID set",
         freezeExemptFxRegistry().adapters.map((a) => a.source).join() === FREE_FX_EXEMPTION.source && FREE_FX_EXEMPTION.maxFetchesPerDayWhileFrozen === 1);
+      // The FX archive writes with ONE raw `INSERT … ON CONFLICT DO NOTHING` (lib/fx/archive.ts). The fake
+      // records raw statements without executing them, which is why an earlier version of this test saw no
+      // stored rows — a test artefact, not a production bug. Emulate that one statement faithfully here.
+      fake.executeRaw = (sql, values) => {
+        if (!/INSERT INTO "FxRate"/.test(sql)) return 1;
+        const flat = ((values[0] as { values?: unknown[] })?.values ?? []) as unknown[];
+        let inserted = 0;
+        for (let i = 0; i + 5 < flat.length; i += 6) {
+          const [, dateISO, base, quote, rate, source] = flat.slice(i, i + 6) as [string, string, string, string, number, string];
+          const date = new Date(`${dateISO}T00:00:00Z`);
+          if (fake.rows("FxRate", { base, quote }).some((r) => (r.date as Date).getTime() === date.getTime())) continue; // ON CONFLICT DO NOTHING
+          fake.seed("FxRate", { date, base, quote, rate, source });
+          inserted++;
+        }
+        return inserted;
+      };
       const first = await fetchFxRates();
+      const { FRANKFURTER_QUOTES: FQ } = await import("@/lib/fx/providers/frankfurter");
+      const stored = fake.rows("FxRate", { base: "USD", source: "frankfurter" })
+        .filter((r) => (r.date as Date).toISOString().slice(0, 10) === first.dateISO).map((r) => r.quote as string).sort();
+      t.check("REGRESSION: the once-a-day free fetch under the freeze PERSISTS yesterday's quotes (the cache refreshes during a freeze)",
+        first.freeExemption?.inserted === FQ.length && stored.join() === [...FQ].sort().join(), { inserted: first.freeExemption?.inserted, stored });
       t.check("frozen run #1: one free-provider fetch (Frankfurter), ZERO Open Exchange Rates calls; recorded SKIPPED for the paid path",
         urls.length >= 1 && urls.every((u) => u.includes("api.frankfurter.dev") && !/app_id|openexchangerates/i.test(u))
           && first.freeExemption?.source === "frankfurter" && first.outcome === "SKIPPED" && first.skipReason === "BILLABLE_COST_FREEZE" && first.caughtUp.length === 0,
@@ -358,13 +379,12 @@ async function main() {
       const url = String(input); urls.push(url);
       return new Response(JSON.stringify({ base: "USD", date: "1999-01-04", rates: Object.fromEntries(FRANKFURTER_QUOTES.map((q) => [q, 1.5])) }), { status: 200 });
     }) as typeof fetch;
-    // Yesterday holds every quote the free provider serves (SAR/AED are absent: no configured provider serves them).
+    // Yesterday already holds every quote the free provider serves — STORED by the frozen-exemption run above
+    // (SAR/AED are absent: no configured provider serves them without the paid key).
     const { yesterdayUTCISO } = await import("@/lib/fx/config");
     const yday = new Date(`${yesterdayUTCISO()}T00:00:00Z`);
-    for (const q of FRANKFURTER_QUOTES) {
-      if (fake.rows("FxRate", { base: "USD", quote: q }).some((r) => (r.date as Date).getTime() === yday.getTime())) continue;
-      fake.seed("FxRate", { date: yday, base: "USD", quote: q, rate: 1.5, source: "frankfurter" });
-    }
+    t.check("precondition: yesterday's free quotes are in the archive from the exemption run (no seeding)",
+      FRANKFURTER_QUOTES.every((q) => fake.rows("FxRate", { base: "USD", quote: q }).some((r) => (r.date as Date).getTime() === yday.getTime())));
     try {
       // The provider answers every day with an EARLIER banking day (no close for the requested date), so
       // nothing is stored and every day stays missing — the worst case for the catch-up. (Yesterday is

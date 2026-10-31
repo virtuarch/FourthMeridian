@@ -117,6 +117,13 @@ export class FakePrisma {
   private hooks: { model: string; op: string; fn: FakeHook; once: boolean }[] = [];
   /** Handler for `$queryRaw` / `$queryRawUnsafe`. Unset ⇒ throws (no silent stub). */
   queryRaw: ((sql: string, values: unknown[]) => unknown) | null = null;
+  /**
+   * Optional handler for `$executeRaw` / `$executeRawUnsafe` (returns the affected
+   * row count). Unset ⇒ the statement is RECORDED in `raw` and answers 1 WITHOUT
+   * touching any table — a test that needs the write to land (e.g. the FX
+   * archive's INSERT … ON CONFLICT) must emulate it here or seed the rows.
+   */
+  executeRaw: ((sql: string, values: unknown[]) => number) | null = null;
   private seq = 0;
   private partialUniques: { model: string; fields: string[]; where: Row; name: string }[] = [];
 
@@ -145,7 +152,7 @@ export class FakePrisma {
     this.partialUniques.push({ model, fields, where, name });
   }
   callsTo(model: string, op?: string): FakeCall[] { return this.calls.filter((c) => c.model === model && (!op || c.op === op)); }
-  reset(): void { this.tables.clear(); this.calls.length = 0; this.raw.length = 0; this.hooks = []; this.queryRaw = null; }
+  reset(): void { this.tables.clear(); this.calls.length = 0; this.raw.length = 0; this.hooks = []; this.queryRaw = null; this.executeRaw = null; }
 
   // ── client surface ──────────────────────────────────────────────────────────
   delegate(model: string, tx?: TxState): Record<string, (args?: Record<string, unknown>) => LazyPromise<unknown>> {
@@ -216,7 +223,11 @@ export class FakePrisma {
     return s && typeof s === "object" && !Array.isArray(s) && Array.isArray((s as { values?: unknown[] }).values) ? (s as { values: unknown[] }).values : values;
   }
   private execRaw(s: TemplateStringsArray | string, values: unknown[]): LazyPromise<number> {
-    return new LazyPromise(async () => { this.raw.push({ sql: this.sqlOf(s), values }); return 1; });
+    return new LazyPromise(async () => {
+      const sql = this.sqlOf(s);
+      this.raw.push({ sql, values });
+      return this.executeRaw ? this.executeRaw(sql, values) : 1;
+    });
   }
   private doQueryRaw(s: TemplateStringsArray | string, rawValues: unknown[]): LazyPromise<unknown> {
     return new LazyPromise(async () => {
