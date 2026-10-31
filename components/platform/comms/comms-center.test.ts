@@ -25,7 +25,8 @@ import { DELIVERY_STATUSES, SUPPRESSION_REASONS } from "@/lib/platform/comms-cen
 import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  COMMS_POLICY, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, previewChannelsFor, statusChips, stormNote, suppressionRows, totalOf,
+  COMMS_POLICY, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
+  statusChips, stormNote, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
 import { AutomationDetailBody, AutomationsSurface } from "./AutomationsView";
@@ -81,6 +82,8 @@ async function main() {
       stormNote({ consentClass: "AWARENESS", channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) === COMMS_POLICY.storm
         && /exempt/.test(stormNote({ consentClass: "SECURITY_CRITICAL", channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) ?? "")
         && stormNote({ consentClass: "AWARENESS", channels: [{ channel: "IN_APP", defaultOn: true, templateVersion: null, path: "REGISTRY" }] }) === null);
+    check("storm limit is stated as OWNER POLICY, never as backend fact", /^Owner policy:/.test(COMMS_POLICY.storm)
+      && /^Owner policy:/.test(stormNote({ consentClass: "SECURITY_CRITICAL", channels: [{ channel: "EMAIL", defaultOn: true, templateVersion: 1, path: "DIRECT" }] }) ?? ""));
     check("small cells: value / withheld '<5' / not observed '—'",
       countCell(12, false).text === "12" && countCell(0, false).text === "0" && countCell(null, true).state === "withheld" && countCell(null, true).text === "<5" && countCell(null, false).state === "not-observed");
     check("envelope notes: floor, capped, more", envelopeNotes({ floor: true, capped: true, nextCursor: "c" }).length === 3 && envelopeNotes({ floor: false, capped: false }).length === 0);
@@ -98,7 +101,7 @@ async function main() {
 
   console.log("2. Library render (real catalog DTOs)");
   {
-    const props = { more: null, filters: EMPTY_CATALOG_FILTERS, draftQ: "", onDraftQ: () => {}, onFilters: () => {}, onOpen: () => {}, onMore: () => {}, triggers: ok(triggers) };
+    const props = { more: null, filters: EMPTY_CATALOG_FILTERS, draftQ: "", onDraftQ: () => {}, onFilters: () => {}, onOpen: () => {}, onMore: () => {}, triggers: ok(triggers), chipTotals: catalog.totals };
     const html = renderToStaticMarkup(createElement(LibrarySurface, { ...props, read: ok(catalog) }));
     check("one row per catalog item", count(html, "data-catalog-row=") === catalog.items.length, { rows: count(html, "data-catalog-row="), items: catalog.items.length });
     check("status chips rendered", html.includes("data-status-chips") && html.includes("Enabled"));
@@ -113,23 +116,66 @@ async function main() {
     check("503 ⇒ honest unavailable state, never an empty list", failed.includes('data-comms-state="unavailable"') && !failed.includes("data-catalog-list") && !failed.includes("No definitions match"));
     const empty = renderToStaticMarkup(createElement(LibrarySurface, { ...props, read: ok({ ...catalog, items: [] }) }));
     check("a real empty result says so (distinct from unavailable)", empty.includes("No definitions match these filters.") && !empty.includes("data-comms-state"));
+
+    // P2-1 — with a status selected, the server's list totals count only that
+    // status; the chips must use the status-free totals (or show no counts).
+    const enabledOnly = (await catalogList(new URL("http://x/api?limit=100&status=ENABLED"), NOW).json()) as CatalogResponse;
+    check("(server fact) a status-filtered list zeroes every other status in `totals`", enabledOnly.totals.ENABLED > 0 && enabledOnly.totals.BUILD === 0 && catalog.totals.BUILD > 0);
+    const chip = (h: string, s: string) => h.match(new RegExp(`data-status-chip="${s}"[^>]*>([\\s\\S]*?)</button>`))?.[1] ?? "";
+    const withStatus = renderToStaticMarkup(createElement(LibrarySurface, { ...props, filters: { ...EMPTY_CATALOG_FILTERS, status: "ENABLED" }, read: ok(enabledOnly), chipTotals: catalog.totals }));
+    check("status selected: unselected chips show the status-free counts (BUILD is not 0)",
+      chip(withStatus, "BUILD").includes(`>${catalog.totals.BUILD}<`) && chip(withStatus, "ENABLED").includes(`>${catalog.totals.ENABLED}<`), chip(withStatus, "BUILD"));
+    check("status selected: the selected chip is pressed, the list holds only that status",
+      /aria-pressed="true"[^>]*data-status-chip="ENABLED"/.test(withStatus) && count(withStatus, "data-catalog-row=") === enabledOnly.items.length);
+    const unknown = renderToStaticMarkup(createElement(LibrarySurface, { ...props, filters: { ...EMPTY_CATALOG_FILTERS, status: "ENABLED" }, read: ok(enabledOnly), chipTotals: null }));
+    check("status selected, chip totals not yet known ⇒ chips WITHOUT counts (never the misleading zeros)",
+      chip(unknown, "BUILD").trim() === "Approved, not built" && !/>0</.test(chip(unknown, "BUILD")));
+
+    // (5) a page with more rows is never called complete.
+    // Scoped to the catalog block (the Triggers block below has its own, complete, footer).
+    const paged = renderToStaticMarkup(createElement(LibrarySurface, { ...props, read: ok({ ...catalog, nextCursor: "abc" }) })).split('id="comms-triggers"')[0];
+    check("nextCursor set ⇒ no 'complete' claim, a 'more rows' note and a Show more button",
+      !paged.includes("complete (not a floor") && paged.includes("More rows exist beyond this page.") && paged.includes("Show more"));
+
+    // (6) Retry on 503 / error; previous rows dimmed + aria-busy while a filter reloads.
+    const retry = () => {};
+    const down503 = renderToStaticMarkup(createElement(LibrarySurface, { ...props, read: { ...down, retry } }));
+    check("503 offers Retry", down503.includes("data-retry") && down503.includes(">Retry<"));
+    const err = renderToStaticMarkup(createElement(LibrarySurface, { ...props, read: { loading: false, result: { kind: "error", status: 500, code: null, error: "Request failed (500)." }, retry } }));
+    check("error offers Retry", err.includes('data-comms-state="error"') && err.includes(">Retry<"));
+    const reloading = renderToStaticMarkup(createElement(LibrarySurface, { ...props, read: { loading: true, result: null, previous: { kind: "ok", data: catalog } } }));
+    check("reloading keeps the previous rows, dimmed and aria-busy, and says Updating",
+      count(reloading, "data-catalog-row=") === catalog.items.length
+        && /<ul[^>]*aria-busy="true"[^>]*opacity-50[^>]*data-catalog-list/.test(reloading)
+        && reloading.includes("Updating the notification catalog"));
   }
 
   console.log("3. Detail drawer body + preview");
   {
     const prot = catalog.items.find((i) => i.protected && i.consentClass === "SECURITY_CRITICAL" && i.channels.some((c) => c.channel === "EMAIL"))!;
     const detail = (await catalogDetail(prot.key, NOW).json()) as CatalogDetail;
+    const details = await Promise.all(catalog.items.map(async (i) => (await catalogDetail(i.key, NOW).json()) as CatalogDetail));
     const html = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(detail), preview: createElement("div", null, "PREVIEW SLOT") }));
-    check("protected detail says security alerts can't be muted", html.includes(COMMS_POLICY.protectedAlerts.replace("’", "&#x27;").replace("’", "’")) || html.includes("can’t be muted"));
-    check("security email: storm limit exempt", /exempt/.test(html));
-    check("delivery retention from the server, counts-only wording", html.includes(`${detail.retention.deliveryDays} days, then counts only`));
-    check("a server retention that differs from the owner's 90 days is flagged, never silently shown",
-      detail.retention.deliveryDays === 90 ? !html.includes("owner-approved policy") : html.includes("(owner-approved policy: 90 days)"));
+    check("SECURITY_CRITICAL protected detail says it can't be muted", html.includes("can’t be muted"));
+    check("security email: storm limit exempt, phrased as owner policy", /Owner policy: security messages are exempt/.test(html));
+    check("delivery retention uses the ONE wording (owner policy + server caveat while they differ)", html.includes(retentionText(detail.retention.deliveryDays)));
+    check("retentionText: caveat while the server differs, none once it reports 90, none without a server figure",
+      retentionText(180) === "Owner policy: 90 days, then counts only. Server currently reports 180 days (pending alignment)."
+        && retentionText(90) === "Owner policy: 90 days, then counts only." && retentionText(null) === retentionText(90));
+    const nonSec = details.find((x) => x.protected && x.consentClass !== "SECURITY_CRITICAL");
+    if (nonSec) {
+      const h = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(nonSec), preview: null }));
+      check("a protected NON-security definition gets the generic note, never 'muted'", h.includes("Operators can’t disable, pause or re-route this message.") && !h.includes("can’t be muted"));
+    } else check("a protected non-security definition exists in the catalog", false);
+    check("protectedNote: muted wording only for SECURITY_CRITICAL", /muted/.test(protectedNote("SECURITY_CRITICAL")) && !/muted/.test(protectedNote("CEREMONY")));
+    check("isInternalPath: '/x' yes; '//host', 'https://', 'javascript:', '' no",
+      isInternalPath("/dashboard/platform/GROWTH_REVENUE") && !isInternalPath("//evil.example") && !isInternalPath("https://x") && !isInternalPath("javascript:alert(1)") && !isInternalPath("") && !isInternalPath(null));
+    const offsite = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok({ ...detail, ownerSurface: { area: "GROWTH_REVENUE", href: "//evil.example/x" } }), preview: null }));
+    check("a non-internal ownerSurface href is never rendered as a link", !offsite.includes("evil.example") && !offsite.includes("Managed in"));
     check("recent series: the server's all-null series draws ONLY not-observed days (never a 0 bar)",
       count(html, 'data-day-state="not-observed"') === detail.recent.days.length && !html.includes('data-day-state="observed"'));
     check("preview slot rendered when PREVIEW is supported", detail.supportedActions.includes("PREVIEW") === html.includes("PREVIEW SLOT"));
 
-    const details = await Promise.all(catalog.items.map(async (i) => (await catalogDetail(i.key, NOW).json()) as CatalogDetail));
     const piiDef = details.find((d) => d.payload.some((f) => f.pii));
     if (piiDef) {
       const h = renderToStaticMarkup(createElement(CatalogDetailBody, { read: ok(piiDef), preview: null }));
@@ -174,7 +220,8 @@ async function main() {
 
     const delSoon = renderToStaticMarkup(createElement(DeliverySurface, { read: soon, filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
     check("delivery 404 ⇒ coming soon; commitments + provider link still shown", delSoon.includes('data-comms-state="coming-soon"') && delSoon.includes("No open or click tracking, ever")
-      && delSoon.includes('href="/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"') && delSoon.includes("90 days") && !delSoon.includes("data-delivery-totals"));
+      && delSoon.includes('href="/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"') && delSoon.includes(retentionText(null)) && !delSoon.includes("data-delivery-totals"));
+    check("Delivery window toggle: every segment ≥ 44 px wide (WideTargets)", /data-wide-targets[^>]*>[\s\S]*?aria-label="Window"/.test(delSoon) && delSoon.includes("[&amp;_button]:min-w-11"));
     const z = Object.fromEntries(DELIVERY_STATUSES.map((s) => [s, 0])) as StatusCounts;
     const r0 = Object.fromEntries(SUPPRESSION_REASONS.map((r) => [r, 0])) as Record<(typeof SUPPRESSION_REASONS)[number], number>;
     const sz = series([null, null, 0, 3, 0, 1, 0]);
@@ -201,6 +248,8 @@ async function main() {
     ], coupledSuppression: [{ key: "SYNC_FAILED", usersAffected: { value: null, withheld: true }, explanation: "Email is dropped when FINANCIAL in-app is off." }] };
     const pOk = renderToStaticMarkup(createElement(PreferencesSurface, { read: ok(prefs) }));
     check("preferences 200 ⇒ population + one row per category", pOk.includes(">42<") && count(pOk, "data-preference-row=") === 2);
+    // (7) one shared `withheld` flag: "<5" only for a NULL count when withheld; a number stays a number.
+    check("shared withheld flag: optedOut 12 stays 12, null optedIn under withheld ⇒ '<5'", /Turned off <span[^>]*data-count-state="value"[^>]*>12</.test(pOk));
     check("withheld cells render '<5' distinctly; not observed renders '—'", count(pOk, 'data-count-state="withheld"') === 2 && count(pOk, 'data-count-state="not-observed"') === 2 && pOk.includes("&lt;5"));
     check("locked category is marked", pOk.includes("Locked"));
   }

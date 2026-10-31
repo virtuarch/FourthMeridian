@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   AUTOMATION_ACTION_SEAMS, COMMS_BASE, DEFAULT_DELIVERY_FILTERS, EMPTY_CATALOG_FILTERS,
-  automationRunsUrl, automationUrl, automationsUrl, catalogDetailUrl, catalogUrl, classifyCommsResponse, commsRead,
+  automationRunsUrl, automationUrl, automationsUrl, catalogDetailUrl, catalogTotalsUrl, catalogUrl, classifyCommsResponse, commsRead,
   deliveryUrl, preferencesUrl, previewUrl, queryString, triggersUrl, type FetchLike,
 } from "./client";
 
@@ -36,6 +36,10 @@ async function main() {
     const totp = classifyCommsResponse(403, { error: "Forbidden.", code: "OPERATOR_TOTP_REQUIRED" });
     check("403 OPERATOR_TOTP_REQUIRED ⇒ denied with a two-factor message", totp.kind === "denied" && /Two-factor/.test(totp.error) && totp.code === "OPERATOR_TOTP_REQUIRED");
     check("401 ⇒ denied", classifyCommsResponse(401, { error: "Authentication required.", code: "UNAUTHENTICATED" }).kind === "denied");
+    const forbidden = classifyCommsResponse(403, { error: "Forbidden.", code: "FORBIDDEN" });
+    check("403 FORBIDDEN ⇒ denied (code kept, server message shown)", forbidden.kind === "denied" && forbidden.code === "FORBIDDEN" && forbidden.error === "Forbidden.");
+    const e500 = classifyCommsResponse(500, null);
+    check("500 ⇒ error (not coming soon, not unavailable)", e500.kind === "error" && e500.status === 500 && e500.error === "Request failed (500).");
     check("429 ⇒ rate limited", classifyCommsResponse(429, { error: "slow", code: "RATE_LIMITED" }).kind === "rate-limited");
     const inv = classifyCommsResponse(409, { error: "This definition has no banner rendition.", code: "INVALID_STATE" });
     check("409 INVALID_STATE keeps its code (the preview's 'no such channel')", inv.kind === "error" && inv.code === "INVALID_STATE");
@@ -68,6 +72,9 @@ async function main() {
         === `${COMMS_BASE}/catalog?status=ENABLED&category=SPACES&audience=ACCOUNT_HOLDER&channel=EMAIL&consentClass=AWARENESS&q=invite&limit=100`);
     check("q is URL-encoded; blank q is dropped", catalogUrl({ ...EMPTY_CATALOG_FILTERS, q: "a&b c" }).includes("q=a%26b+c") && !catalogUrl({ ...EMPTY_CATALOG_FILTERS, q: "   " }).includes("q="));
     check("a cursor rides last", catalogUrl(EMPTY_CATALOG_FILTERS, "abc_-") === `${COMMS_BASE}/catalog?limit=100&cursor=abc_-`);
+    check("chip totals: the same filters WITHOUT status, one row",
+      catalogTotalsUrl({ status: "ENABLED", category: "SPACES", audience: null, channel: "EMAIL", consentClass: null, q: "x" })
+        === `${COMMS_BASE}/catalog?category=SPACES&channel=EMAIL&q=x&limit=1`);
     check("detail key is path-encoded", catalogDetailUrl("A/B") === `${COMMS_BASE}/catalog/A%2FB`);
     check("preview: channel always, variant only when chosen",
       previewUrl("SYNC_FAILED", "in-app", null) === `${COMMS_BASE}/catalog/SYNC_FAILED/preview?channel=in-app`

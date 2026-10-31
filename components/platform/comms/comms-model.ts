@@ -28,16 +28,39 @@ const n = (v: number) => v.toLocaleString("en-US");
 export const COMMS_POLICY = {
   elevated: "Activating a customer-facing automation requires elevated operator permission.",
   protectedAlerts: "Security alerts can’t be muted, paused or re-routed.",
-  retention: "Delivery records are kept 90 days; after that only daily counts remain.",
+  /** Generic: a protected message that is not security-critical (ceremony, banner, none-by-design). */
+  protectedGeneric: "Operators can’t disable, pause or re-route this message.",
   noTracking: "No open or click tracking, ever — no tracking pixels and no link rewriting.",
-  storm: "Storm limit: at most 5 emails per person per hour from automations. Security messages are exempt.",
+  /** Stated as owner POLICY: no server field reports the limit yet. */
+  storm: "Owner policy: at most 5 emails per person per hour from automations; security messages are exempt.",
   noPii: "No recipient addresses or message bodies are shown here. Previews use synthetic data only.",
   previewBanner: "[PREVIEW] synthetic — fictional data, never sent",
 } as const;
 
-export const STORM_LIMIT = { emails: 5, perHours: 1 } as const;
-/** Owner decision: delivery rows are kept 90 days, then counts only (the detail flags a server value that differs). */
+/** Owner decision: delivery rows are kept 90 days, then counts only. */
 export const DELIVERY_RETENTION_POLICY_DAYS = 90;
+
+/**
+ * THE one retention wording (Library detail and Delivery). `serverDays` is what
+ * the server reports (CatalogDetail.retention.deliveryDays), or null where no
+ * server figure is available; the caveat drops itself once the server says 90.
+ */
+export function retentionText(serverDays: number | null): string {
+  const base = `Owner policy: ${DELIVERY_RETENTION_POLICY_DAYS} days, then counts only.`;
+  return serverDays !== null && serverDays !== DELIVERY_RETENTION_POLICY_DAYS
+    ? `${base} Server currently reports ${n(serverDays)} days (pending alignment).`
+    : base;
+}
+
+/** The protected note for a definition: "muted" wording only for security-critical messages. */
+export function protectedNote(consentClass: ConsentClass): string {
+  return consentClass === "SECURITY_CRITICAL" ? COMMS_POLICY.protectedAlerts : COMMS_POLICY.protectedGeneric;
+}
+
+/** A server-supplied href is followed only when it is an internal app path ("/x", never "//host" or a scheme). */
+export function isInternalPath(href: string | null | undefined): href is string {
+  return typeof href === "string" && href.startsWith("/") && !href.startsWith("//") && !href.startsWith("/\\");
+}
 
 // ── Labels ──────────────────────────────────────────────────────────────────────
 
@@ -101,7 +124,7 @@ export function previewChannelsFor(channels: ReadonlyArray<{ channel: CommsChann
 export function stormNote(d: Pick<CatalogItem, "consentClass" | "channels">): string | null {
   if (!d.channels.some((c) => c.channel === "EMAIL")) return null;
   return d.consentClass === "SECURITY_CRITICAL"
-    ? "Storm limit: exempt — security messages are never held back by the 5-per-hour email limit."
+    ? "Owner policy: security messages are exempt from the 5-emails-per-hour storm limit."
     : COMMS_POLICY.storm;
 }
 
@@ -154,7 +177,17 @@ export function daySummaryText(s: DaySummary, noun = "send"): string {
 export type CountState = "value" | "withheld" | "not-observed";
 export interface CountCell { state: CountState; text: string; value: number | null }
 
-/** One count that may be withheld (observed small cell) or not observed. */
+/**
+ * One count that may be withheld (observed small cell) or not observed.
+ * "<5" ONLY when the count is null AND withheld is true; a null count with
+ * withheld false is "not observed"; a number is always shown as itself.
+ *
+ * NOTE for Session 1 (contract §4.12): a PreferenceCell carries ONE `withheld`
+ * flag for TWO counts (optedOut, optedIn). If a cell has withheld: true and
+ * both counts null, the UI cannot tell whether both were small cells or one
+ * was simply not observed — it renders both as "<5". A per-count flag (or the
+ * C1 `Aggregate` shape per count) would remove the ambiguity.
+ */
 export function countCell(value: number | null, withheld: boolean): CountCell {
   if (value !== null) return { state: "value", text: n(value), value };
   return withheld ? { state: "withheld", text: "<5", value: null } : { state: "not-observed", text: "—", value: null };

@@ -14,7 +14,7 @@
  * a later change wires to its route, with the owner's permission rule in its copy.
  */
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
 import { AUTOMATION_ACTION_SEAMS, automationRunsUrl, automationUrl, automationsUrl } from "@/lib/platform/comms-center/client";
@@ -157,21 +157,27 @@ export function AutomationDetailBody({ read, runs }: { read: CommsRead<Automatio
   );
 }
 
-function AutomationDrawerBody({ id }: { id: string }) {
+function AutomationDrawerBody({ id, onName }: { id: string; onName: (id: string, name: string) => void }) {
   const read = useCommsRead<AutomationDetail>(automationUrl(id));
-  const runs = useCommsRead<RunsResponse>(okData(read) ? automationRunsUrl(id) : null);
+  const detail = okData(read);
+  const runs = useCommsRead<RunsResponse>(detail ? automationRunsUrl(id) : null);
+  // The drawer title comes from the detail when the row is not in the loaded list.
+  const detailName = detail?.name ?? null;
+  useEffect(() => { if (detailName) onName(id, detailName); }, [id, detailName, onName]);
   return <AutomationDetailBody read={read} runs={runs} />;
 }
 
 export function CommsAutomationsLead() {
   const read = useCommsRead<AutomationsResponse>(automationsUrl());
   const [open, setOpen] = useState<string | null>(null);
-  const name = okData(read)?.items.find((a) => a.id === open)?.name;
+  const [detailName, setDetailName] = useState<{ id: string; name: string } | null>(null);
+  const onName = useCallback((id: string, name: string) => setDetailName({ id, name }), []);
+  const name = okData(read)?.items.find((a) => a.id === open)?.name ?? (detailName && detailName.id === open ? detailName.name : undefined);
   return (
     <>
       <AutomationsSurface read={read} onOpen={setOpen} />
-      <DetailDrawer open={open !== null} onClose={() => setOpen(null)} eyebrow="Automation" title={name ?? ""} size="xl">
-        {open && <AutomationDrawerBody key={open} id={open} />}
+      <DetailDrawer open={open !== null} onClose={() => setOpen(null)} eyebrow="Automation" title={name ?? "Automation"} size="xl">
+        {open && <AutomationDrawerBody key={open} id={open} onName={onName} />}
       </DetailDrawer>
     </>
   );

@@ -20,35 +20,61 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AlertTriangle, Clock, Loader2, Lock } from "lucide-react";
 import { commsRead, type CommsReadResult } from "@/lib/platform/comms-center/client";
-import type { DaySeries } from "@/lib/notifications/catalog/types";
+import type { ConsentClass, DaySeries } from "@/lib/notifications/catalog/types";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
-import { countCell, dayCells, daySummary, daySummaryText, envelopeNotes, utcStamp, type CountCell } from "./comms-model";
+import { countCell, dayCells, daySummary, daySummaryText, envelopeNotes, protectedNote, utcStamp, type CountCell } from "./comms-model";
 
 // ── Reads ───────────────────────────────────────────────────────────────────────
 
-export type CommsRead<T> = { loading: true; result: null } | { loading: false; result: CommsReadResult<T> };
+/**
+ * A read's state. While a NEW url loads, `previous` holds the last answer (of
+ * the previous url) so a list can stay visible, dimmed and aria-busy, instead
+ * of flashing empty — it is never presented as the current answer. `retry`
+ * re-issues the same url (the 503 / error states offer it).
+ */
+export type CommsRead<T> =
+  | { loading: true; result: null; previous?: CommsReadResult<T> | null; retry?: () => void }
+  | { loading: false; result: CommsReadResult<T>; retry?: () => void };
 
 /**
- * Read `url` (null ⇒ nothing to read). The answer is stored WITH its url, so a
- * changed url reads as loading until its own answer lands — never the old data.
+ * Read `url` (null ⇒ nothing to read). The answer is stored WITH its url (and
+ * attempt), so a changed url reads as loading until its own answer lands.
  */
 export function useCommsRead<T>(url: string | null): CommsRead<T> {
-  const [state, setState] = useState<{ url: string; result: CommsReadResult<T> } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const key = url === null ? null : `${attempt}|${url}`;
+  const [state, setState] = useState<{ key: string; result: CommsReadResult<T> } | null>(null);
   useEffect(() => {
-    if (url === null) return;
+    if (key === null || url === null) return;
     const ctrl = new AbortController();
     void commsRead<T>(url, { signal: ctrl.signal }).then((result) => {
-      if (!ctrl.signal.aborted) setState({ url, result });
+      if (!ctrl.signal.aborted) setState({ key, result });
     });
     return () => ctrl.abort();
-  }, [url]);
-  if (url === null || !state || state.url !== url) return { loading: true, result: null };
-  return { loading: false, result: state.result };
+  }, [key, url]);
+  const retry = () => setAttempt((a) => a + 1);
+  if (key === null || !state || state.key !== key) return { loading: true, result: null, previous: state?.result ?? null, retry };
+  return { loading: false, result: state.result, retry };
 }
 
 /** The data of an ok read, else null. */
 export function okData<T>(r: CommsRead<T>): T | null {
   return !r.loading && r.result.kind === "ok" ? r.result.data : null;
+}
+
+/** The PREVIOUS answer's data while a new url loads (render dimmed + aria-busy), else null. */
+export function staleData<T>(r: CommsRead<T>): T | null {
+  return r.loading && r.previous?.kind === "ok" ? r.previous.data : null;
+}
+
+function RetryButton({ onRetry }: { onRetry?: () => void }) {
+  if (!onRetry) return null;
+  return (
+    <button type="button" onClick={onRetry} data-retry
+      className="min-h-11 shrink-0 self-start rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8">
+      Retry
+    </button>
+  );
 }
 
 const NOTE = "flex items-start gap-2 rounded-[var(--radius-md)] border border-[var(--border-hairline)] px-3 py-2.5 text-xs leading-relaxed";
@@ -61,7 +87,7 @@ export function ReadState({ read, what, comingSoon }: { read: CommsRead<unknown>
   if (read.loading) {
     return (
       <p role="status" className="flex items-center gap-1.5 py-3 text-xs text-[var(--text-secondary)]">
-        <Loader2 size={12} className="animate-spin" aria-hidden /> Reading {what}…
+        <Loader2 size={12} className="animate-spin" aria-hidden /> {read.previous?.kind === "ok" ? `Updating ${what}…` : `Reading ${what}…`}
       </p>
     );
   }
@@ -81,9 +107,10 @@ export function ReadState({ read, what, comingSoon }: { read: CommsRead<unknown>
       );
     case "unavailable":
       return (
-        <div role="alert" className={NOTE} style={{ color: "var(--coral-400)" }} data-comms-state="unavailable">
+        <div role="alert" className={`${NOTE} flex-wrap`} style={{ color: "var(--coral-400)" }} data-comms-state="unavailable">
           <AlertTriangle size={14} aria-hidden className="mt-0.5 shrink-0" />
-          <p className="min-w-0">{`${what[0].toUpperCase()}${what.slice(1)} is unavailable right now (503) — nothing is shown rather than an empty or zero result. Try again shortly.`}</p>
+          <p className="min-w-0 flex-1">{`${what[0].toUpperCase()}${what.slice(1)} is unavailable right now (503) — nothing is shown rather than an empty or zero result.`}</p>
+          <RetryButton onRetry={read.retry} />
         </div>
       );
     case "denied":
@@ -98,9 +125,10 @@ export function ReadState({ read, what, comingSoon }: { read: CommsRead<unknown>
     case "rate-limited":
     case "error":
       return (
-        <p role="alert" className="flex items-center gap-1.5 py-3 text-xs" style={{ color: "var(--coral-400)" }} data-comms-state={r.kind}>
-          <AlertTriangle size={12} aria-hidden /> {r.error}
-        </p>
+        <div role="alert" className="flex flex-wrap items-center gap-2 py-3 text-xs" style={{ color: "var(--coral-400)" }} data-comms-state={r.kind}>
+          <span className="flex min-w-0 items-center gap-1.5"><AlertTriangle size={12} aria-hidden /> {r.error}</span>
+          <RetryButton onRetry={read.retry} />
+        </div>
       );
   }
 }
@@ -114,7 +142,7 @@ export function ListMeta({ checkedAt, floor, capped, nextCursor, extra }: { chec
       <span className="tabular-nums">
         Checked <time dateTime={checkedAt}>{utcStamp(checkedAt)}</time>
         {extra ? ` · ${extra}` : ""}
-        {!floor && !capped ? " · complete (not a floor, not capped)" : ""}
+        {!floor && !capped && !nextCursor ? " · complete (not a floor, not capped)" : ""}
       </span>
       {notes.map((t) => <span key={t} data-list-note>{t}</span>)}
     </div>
@@ -231,12 +259,17 @@ export function Chip({ children, tone = "muted", title }: { children: ReactNode;
   );
 }
 
-export function ProtectedBadge() {
+export function ProtectedBadge({ consentClass }: { consentClass: ConsentClass }) {
   return (
-    <Chip tone="warn" title="Security alerts can’t be muted, paused or re-routed">
+    <Chip tone="warn" title={protectedNote(consentClass)}>
       <Lock size={10} aria-hidden /> Protected
     </Chip>
   );
+}
+
+/** Gives every button inside (e.g. a shared Segmented) a ≥ 44 px width, without forking the shared control. */
+export function WideTargets({ children }: { children: ReactNode }) {
+  return <span className="inline-flex max-w-full [&_button]:min-w-11" data-wide-targets>{children}</span>;
 }
 
 export function FactList({ rows }: { rows: ReadonlyArray<readonly [string, ReactNode]> }) {

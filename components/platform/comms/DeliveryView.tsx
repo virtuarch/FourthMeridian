@@ -29,9 +29,9 @@ import {
 } from "@/lib/platform/comms-center/contract-v1-section-4";
 import { Segmented } from "../leads/visual-kit";
 import {
-  CHANNEL_LABEL, COMMS_POLICY, DELIVERY_STATUS_LABEL, SERIES_LABEL, deliveryTiles, suppressionRows, utcStamp,
+  CHANNEL_LABEL, COMMS_POLICY, DELIVERY_STATUS_LABEL, SERIES_LABEL, deliveryTiles, retentionText, suppressionRows, utcStamp,
 } from "./comms-model";
-import { DaySeriesBars, DaySeriesLegend, FilterSelect, ListMeta, PolicyNote, ReadState, okData, useCommsRead, type CommsRead } from "./comms-kit";
+import { DaySeriesBars, DaySeriesLegend, FilterSelect, ListMeta, PolicyNote, ReadState, WideTargets, okData, staleData, useCommsRead, type CommsRead } from "./comms-kit";
 
 const n = (v: number) => v.toLocaleString("en-US");
 
@@ -54,7 +54,8 @@ function Commitments({ href }: { href: string }) {
   return (
     <ul className="flex list-disc flex-col gap-1 pl-5 text-[11px] text-[var(--text-muted)]" aria-label="Delivery commitments" data-delivery-commitments>
       <li>{COMMS_POLICY.noTracking}</li>
-      <li>{COMMS_POLICY.retention}</li>
+      {/* The delivery payload reports no retention figure, so the owner policy stands alone (same wording as the Library detail). */}
+      <li>{retentionText(null)}</li>
       <li>{COMMS_POLICY.noPii}</li>
       <li>
         Email provider health is owned by Platform Operations —{" "}
@@ -73,15 +74,19 @@ export interface DeliverySurfaceProps {
 }
 
 export function DeliverySurface({ read, filters, onFilters }: DeliverySurfaceProps) {
-  const d = okData(read);
+  // While a filter / window change reloads, the previous figures stay visible, dimmed and aria-busy.
+  const current = okData(read);
+  const d = current ?? staleData(read);
+  const stale = current === null && d !== null;
+  const busy = { "aria-busy": stale || undefined, "data-stale": stale || undefined, className: `flex min-w-0 flex-col gap-4 transition-opacity ${stale ? "opacity-50" : ""}` };
   const tiles = d ? deliveryTiles(d.totals, d.measured.delivered) : [];
   const reasons = d ? suppressionRows(d.suppressedByReason) : null;
   return (
     <div className="flex min-w-0 flex-col gap-8 md:gap-10" data-comms-view="delivery">
       <Block id="comms-delivery" label="Delivery & history" className="min-w-0"
         hint={<span className="text-[11px] text-[var(--text-faint)] max-sm:hidden">Counts only</span>}
-        action={<Segmented label="Window" value={filters.window} onChange={(w: DeliveryWindow) => onFilters({ ...filters, window: w })}
-          options={[{ id: "7d", label: "7 d" }, { id: "30d", label: "30 d" }, { id: "90d", label: "90 d" }]} />}>
+        action={<WideTargets><Segmented label="Window" value={filters.window} onChange={(w: DeliveryWindow) => onFilters({ ...filters, window: w })}
+          options={[{ id: "7d", label: "7 d" }, { id: "30d", label: "30 d" }, { id: "90d", label: "90 d" }]} /></WideTargets>}>
         <Surface className="flex min-w-0 flex-col gap-4 p-4 sm:p-5">
           <div className="grid min-w-0 grid-cols-2 gap-3 sm:max-w-md">
             <FilterSelect label="Channel" value={filters.channel} options={COMMS_CHANNELS.map((c) => ({ value: c, label: CHANNEL_LABEL[c] }))}
@@ -93,7 +98,7 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
           <ReadState read={read} what="delivery history" comingSoon={DELIVERY_COMING_SOON} />
 
           {d && (
-            <>
+            <div {...busy}>
               {!d.measured.delivered && (
                 <p className="rounded-[var(--radius-md)] border border-[var(--border-hairline)] px-3 py-2 text-xs text-[var(--text-secondary)]" data-delivery-not-measured>
                   <span className="font-medium text-[var(--text-primary)]">Delivery not yet measured.</span>{" "}
@@ -116,14 +121,15 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
                 {d.coverage.environment !== "production" ? ` ${d.coverage.environment === "preview" ? "Preview" : "Development"} captures sends instead of delivering them — volume shows under Captured.` : ""}
               </PolicyNote>
               <ListMeta checkedAt={d.checkedAt} floor={d.floor} capped={d.capped} extra={`${d.from} → ${d.to} UTC`} />
-            </>
+            </div>
           )}
-          <Commitments href={d?.providerHealth.href ?? PROVIDER_HEALTH_HREF} />
+          {/* The contract fixes this href; the client constant is used, never a server-supplied URL. */}
+          <Commitments href={PROVIDER_HEALTH_HREF} />
         </Surface>
       </Block>
 
       {d && (
-        <>
+        <div {...busy} className={`flex min-w-0 flex-col gap-8 transition-opacity md:gap-10 ${stale ? "opacity-50" : ""}`}>
           <Block id="comms-delivery-series" label="Per day, by outcome" className="min-w-0">
             <Surface className="flex min-w-0 flex-col gap-4 p-4 sm:p-5">
               <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3" data-delivery-series>
@@ -173,7 +179,7 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
               </Surface>
             </Block>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

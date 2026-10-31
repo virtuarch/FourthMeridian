@@ -621,7 +621,8 @@ console.log("Security · Posture + Audit + Operator actions");
   const nav = readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8");
   check("both identities are registered with nav-resolvable icons",
     getPlatformWorkspace("platform-audit")?.icon === "ScrollText" && getPlatformWorkspace("platform-operator-actions")?.icon === "UserCog"
-      && /ScrollText, UserCog,\n/.test(nav));
+      // The icon list's tail, pinned exactly: Security's two, then Communications' Mail, then the close.
+      && /ScrollText, UserCog,\n  \/\/ Platform redesign — Customer Success › Communications\.\n  Mail,\n\};/.test(nav));
 }
 
 if (failures > 0) {

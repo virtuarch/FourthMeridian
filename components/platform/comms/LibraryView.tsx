@@ -22,20 +22,20 @@ import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ChevronRight, ExternalLink, Search } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
-import type { CatalogDetail, CatalogItem, CatalogResponse, PreviewChannel, PreviewResponse, TriggerItem, TriggersResponse } from "@/lib/notifications/catalog/types";
+import type { CatalogDetail, CatalogItem, CatalogResponse, DefinitionStatus, PreviewChannel, PreviewResponse, TriggerItem, TriggersResponse } from "@/lib/notifications/catalog/types";
 import {
-  AUTOMATION_ACTION_SEAMS, EMPTY_CATALOG_FILTERS, catalogDetailUrl, catalogUrl, previewUrl, readCatalog, triggersUrl,
+  AUTOMATION_ACTION_SEAMS, EMPTY_CATALOG_FILTERS, catalogDetailUrl, catalogTotalsUrl, catalogUrl, previewUrl, readCatalog, triggersUrl,
   type CatalogFilters,
 } from "@/lib/platform/comms-center/client";
 import { DetailDrawer } from "../ui";
 import { ToneBadge } from "../platform-surface";
 import { Segmented } from "../leads/visual-kit";
 import {
-  CHANNEL_LABEL, COMMS_POLICY, CONSENT_LABEL, DELIVERY_RETENTION_POLICY_DAYS, FILTER_OPTIONS, PREVIEW_LABEL, SEVERITY_TONE, STATUS_LABEL, STATUS_TONE,
+  CHANNEL_LABEL, COMMS_POLICY, CONSENT_LABEL, FILTER_OPTIONS, isInternalPath, protectedNote, retentionText, PREVIEW_LABEL, SEVERITY_TONE, STATUS_LABEL, STATUS_TONE,
   automationsLine, humanize, previewChannelsFor, statusChips, stormNote, totalOf,
 } from "./comms-model";
 import {
-  Chip, DaySeriesBars, DaySeriesLegend, DrawerSection, FactList, FilterSelect, ListMeta, PolicyNote, ProtectedBadge, ReadState, okData, useCommsRead,
+  Chip, DaySeriesBars, DaySeriesLegend, DrawerSection, FactList, FilterSelect, ListMeta, PolicyNote, ProtectedBadge, ReadState, WideTargets, okData, staleData, useCommsRead,
   type CommsRead,
 } from "./comms-kit";
 
@@ -55,12 +55,24 @@ export interface LibrarySurfaceProps {
   onOpen: (key: string) => void;
   onMore: (cursor: string) => void;
   triggers: CommsRead<TriggersResponse>;
+  /**
+   * Chip counts for the CURRENT filters EXCEPT status. The server computes
+   * `totals` after applying the status filter, so with a status selected the
+   * list's own totals would read 0 for every other status. null ⇒ not known
+   * (yet): chips render without counts rather than with wrong ones.
+   */
+  chipTotals: Record<DefinitionStatus, number> | null;
 }
 
 export function LibrarySurface(p: LibrarySurfaceProps) {
-  const data = okData(p.read);
-  const items = data ? [...data.items, ...(p.more?.items ?? [])] : [];
-  const nextCursor = p.more ? p.more.nextCursor : data?.nextCursor ?? null;
+  const current = okData(p.read);
+  const previous = staleData(p.read);
+  // While a filter change reloads, the previous rows stay visible, dimmed and aria-busy.
+  const data = current ?? previous;
+  const isStale = current === null && previous !== null;
+  const items = data ? [...data.items, ...(current ? p.more?.items ?? [] : [])] : [];
+  const nextCursor = current && p.more ? p.more.nextCursor : data?.nextCursor ?? null;
+  const chipCount = (v: number) => (p.chipTotals ? <span className="text-[var(--text-muted)]">{n(v)}</span> : null);
   const set = (patch: Partial<CatalogFilters>) => p.onFilters({ ...p.filters, ...patch });
   const filtered = Object.entries(p.filters).some(([k, v]) => (k === "q" ? (v as string).trim() !== "" : v !== null));
 
@@ -69,17 +81,19 @@ export function LibrarySurface(p: LibrarySurfaceProps) {
       <Block id="comms-catalog" label="Notification library" className="min-w-0"
         hint={<span className="text-[11px] text-[var(--text-faint)] max-sm:hidden">Every message the product can send</span>}>
         <Surface className="flex min-w-0 flex-col gap-4 p-4 sm:p-5">
-          {/* Status totals as chips (they count the other filters' result). */}
+          {/* Status chips. Their counts come from `chipTotals` — the other filters
+              WITHOUT status (see the prop) — and are omitted while unknown. */}
           {data && (
             <div role="group" aria-label="Filter by status" className="flex min-w-0 flex-wrap gap-2" data-status-chips>
               <button type="button" aria-pressed={p.filters.status === null} onClick={() => set({ status: null })} className={CHIP_BTN}
                 style={{ borderColor: p.filters.status === null ? "var(--border-hairline-strong)" : "var(--border-hairline)", color: p.filters.status === null ? "var(--text-primary)" : "var(--text-secondary)" }}>
-                All <span className="text-[var(--text-muted)]">{n(totalOf(data.totals))}</span>
+                All {p.chipTotals && chipCount(totalOf(p.chipTotals))}
               </button>
-              {statusChips(data.totals).map((c) => (
+              {statusChips(p.chipTotals ?? data.totals).map((c) => (
                 <button key={c.status} type="button" aria-pressed={p.filters.status === c.status} onClick={() => set({ status: p.filters.status === c.status ? null : c.status })} className={CHIP_BTN}
+                  data-status-chip={c.status}
                   style={{ borderColor: p.filters.status === c.status ? "var(--border-hairline-strong)" : "var(--border-hairline)", color: p.filters.status === c.status ? "var(--text-primary)" : "var(--text-secondary)" }}>
-                  {c.label} <span className="text-[var(--text-muted)]">{n(c.count)}</span>
+                  {c.label} {chipCount(c.count)}
                 </button>
               ))}
             </div>
@@ -109,13 +123,15 @@ export function LibrarySurface(p: LibrarySurfaceProps) {
           {data && (
             <>
               {items.length === 0 ? (
-                <p role="status" className="text-xs text-[var(--text-secondary)]">No definitions match these filters.</p>
+                isStale ? null : <p role="status" className="text-xs text-[var(--text-secondary)]">No definitions match these filters.</p>
               ) : (
-                <ul aria-label="Notification definitions" className="flex min-w-0 flex-col gap-2 md:gap-0 md:divide-y md:divide-[var(--border-hairline)]" data-catalog-list>
+                <ul aria-label="Notification definitions" aria-busy={isStale || undefined}
+                  className={`flex min-w-0 flex-col gap-2 transition-opacity md:gap-0 md:divide-y md:divide-[var(--border-hairline)] ${isStale ? "opacity-50" : ""}`}
+                  data-catalog-list data-stale={isStale || undefined}>
                   {items.map((it) => <li key={it.key} className="min-w-0"><CatalogRow item={it} onOpen={p.onOpen} /></li>)}
                 </ul>
               )}
-              {nextCursor && (
+              {nextCursor && !isStale && (
                 <button type="button" disabled={p.more?.loading} onClick={() => p.onMore(nextCursor)}
                   className="min-h-11 self-start rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-3 text-xs text-[var(--text-secondary)] lg:min-h-8">
                   {p.more?.loading ? "Loading…" : "Show more"}
@@ -143,7 +159,7 @@ function CatalogRow({ item, onOpen }: { item: CatalogItem; onOpen: (key: string)
         <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <span className="min-w-0 truncate text-sm font-medium text-[var(--text-primary)]">{item.displayName}</span>
           <ToneBadge word={STATUS_LABEL[item.status]} tone={STATUS_TONE[item.status]} />
-          {item.protected && <ProtectedBadge />}
+          {item.protected && <ProtectedBadge consentClass={item.consentClass} />}
         </span>
         <code className="min-w-0 truncate font-mono text-[11px] text-[var(--text-muted)]">{item.key}</code>
         <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -211,9 +227,9 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         <p className="text-xs leading-relaxed text-[var(--text-secondary)]">{d.description}</p>
         <div className="flex flex-wrap items-center gap-1.5">
           <ToneBadge word={STATUS_LABEL[d.status]} tone={STATUS_TONE[d.status]} />
-          {d.protected && <ProtectedBadge />}
+          {d.protected && <ProtectedBadge consentClass={d.consentClass} />}
         </div>
-        {d.protected && <PolicyNote>{COMMS_POLICY.protectedAlerts}</PolicyNote>}
+        {d.protected && <PolicyNote>{protectedNote(d.consentClass)}</PolicyNote>}
         <FactList rows={[
           ["Key", <code key="k" className="break-all font-mono text-[11px]">{d.key}</code>],
           ["Definition version", `v${d.definitionVersion}`],
@@ -268,7 +284,7 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         <FactList rows={[
           ["In-app archive", d.retention.inAppArchiveDays !== null ? `${n(d.retention.inAppArchiveDays)} days` : "—"],
           ["In-app delete", d.retention.inAppDeleteDays !== null ? `${n(d.retention.inAppDeleteDays)} days` : "—"],
-          ["Delivery records", `${n(d.retention.deliveryDays)} days, then counts only${d.retention.deliveryDays !== DELIVERY_RETENTION_POLICY_DAYS ? ` (owner-approved policy: ${DELIVERY_RETENTION_POLICY_DAYS} days)` : ""}`],
+          ["Delivery records", retentionText(d.retention.deliveryDays)],
         ]} />
       </DrawerSection>
 
@@ -283,7 +299,7 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         {d.supportedActions.some((a) => a === "TEST_SEND" || a === "ACTIVATE_AUTOMATION" || a === "PAUSE_AUTOMATION") && (
           <PolicyNote>{`Test sends and automation actions arrive with the automation engine; ${AUTOMATION_ACTION_SEAMS.find((s) => s.action === "test-send")!.note.toLowerCase()}`}</PolicyNote>
         )}
-        {d.ownerSurface && (
+        {d.ownerSurface && isInternalPath(d.ownerSurface.href) && (
           <Link href={d.ownerSurface.href} prefetch={false}
             className="inline-flex min-h-11 items-center gap-1.5 self-start text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8">
             Managed in {humanize(d.ownerSurface.area)} <ExternalLink size={12} aria-hidden />
@@ -312,7 +328,7 @@ export function PreviewSurface({ channels, channel, onChannel, variant, onVarian
       <div className="flex min-w-0 flex-wrap items-end gap-3">
         {channels.length > 1 && (
           <div className="max-w-full overflow-x-auto">
-            <Segmented label="Preview channel" value={channel} onChange={onChannel} options={channels.map((c) => ({ id: c, label: PREVIEW_LABEL[c] }))} />
+            <WideTargets><Segmented label="Preview channel" value={channel} onChange={onChannel} options={channels.map((c) => ({ id: c, label: PREVIEW_LABEL[c] }))} /></WideTargets>
           </div>
         )}
         {p && p.variants.length > 1 && (
@@ -385,6 +401,11 @@ export function CommsLibraryLead() {
   const [open, setOpen] = useState<string | null>(null);
   const url = catalogUrl(filters);
   const read = useCommsRead<CatalogResponse>(url);
+  // The server's `totals` count the result AFTER the status filter; with a
+  // status selected the chips need the same filters WITHOUT status — one
+  // lightweight read (limit=1: totals are computed before pagination).
+  const chipRead = useCommsRead<CatalogResponse>(filters.status ? catalogTotalsUrl(filters) : null);
+  const chipTotals = filters.status ? okData(chipRead)?.totals ?? null : okData(read)?.totals ?? null;
   const triggers = useCommsRead<TriggersResponse>(triggersUrl());
   const [more, setMore] = useState<{ forUrl: string; items: CatalogItem[]; nextCursor: string | null; loading: boolean; error: string | null } | null>(null);
   const activeMore = more && more.forUrl === url ? more : null;
@@ -412,7 +433,7 @@ export function CommsLibraryLead() {
   return (
     <>
       <LibrarySurface read={read} more={activeMore} filters={filters} draftQ={draftQ} onDraftQ={setDraftQ}
-        onFilters={(f) => { setFilters(f); if (f.q !== draftQ) setDraftQ(f.q); }} onOpen={setOpen} onMore={loadMore} triggers={triggers} />
+        onFilters={(f) => { setFilters(f); if (f.q !== draftQ) setDraftQ(f.q); }} onOpen={setOpen} onMore={loadMore} triggers={triggers} chipTotals={chipTotals} />
       <DetailDrawer open={open !== null} onClose={() => setOpen(null)} eyebrow="Notification library" title={openItem?.displayName ?? open ?? ""} size="xl">
         {open && <DetailDrawerBody key={open} itemKey={open} />}
       </DetailDrawer>

@@ -157,7 +157,7 @@ const WORKSPACE_ICONS_BY_NAME: Record<string, LucideIcon> = {
   TriangleAlert,
   // Platform redesign — Security › Audit, Security › Operator actions.
   ScrollText, UserCog,
-  // Customer Success › Communications.
+  // Platform redesign — Customer Success › Communications.
   Mail,
 };
 

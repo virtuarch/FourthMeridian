@@ -118,6 +118,18 @@ export function catalogUrl(f: CatalogFilters, cursor: string | null = null): str
   ])}`;
 }
 
+/**
+ * The status-chip totals: the same filters WITHOUT status, one row only. The
+ * server computes `totals` over the filtered set BEFORE pagination (and AFTER
+ * the status filter), so this is the cheap way to count every status at once.
+ */
+export function catalogTotalsUrl(f: CatalogFilters): string {
+  return `${COMMS_BASE}/catalog${queryString([
+    ["category", f.category], ["audience", f.audience], ["channel", f.channel], ["consentClass", f.consentClass],
+    ["q", f.q.trim()], ["limit", 1],
+  ])}`;
+}
+
 export function catalogDetailUrl(key: string): string {
   return `${COMMS_BASE}/catalog/${encodeURIComponent(key)}`;
 }
