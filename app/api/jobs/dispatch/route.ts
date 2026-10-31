@@ -22,6 +22,14 @@
  * CRON_SECRET is set on the project. Any request missing that exact header
  * gets a 401; no fallback auth.
  *
+ * SINGLE-JOB WAKE (2026-11-01): `?only=comms-automations` — after the same
+ * CRON_SECRET check — considers and (if due) runs ONLY that job, through the
+ * same due rule and runJob claim; nothing else runs and no other job's ledger
+ * is touched. The keys are a hard-coded allowlist (SINGLE_JOB_DISPATCH_ALLOWLIST
+ * in lib/jobs/dispatch.ts); anything else is 400. It exists so Preview (no
+ * crons) can wake the automation executor without the bank / wallet / FX jobs.
+ * With no `only` the wake is exactly as before.
+ *
  * REVERTIBILITY: the three per-job routes (sync-banks, fetch-fx-rates,
  * process-deletions) remain deployed and CRON_SECRET-guarded — any job is
  * individually revertible to its own vercel.json cron entry without a code
@@ -39,7 +47,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api";
 import { isAuthorizedCronRequest } from "@/lib/jobs/cron-auth";
-import { dispatchDueJobs } from "@/lib/jobs/dispatch";
+import { dispatchDueJobs, parseSingleJobDispatch } from "@/lib/jobs/dispatch";
 
 // One slot's job(s) per invocation. 60 s was the Hobby-tier maximum; the project
 // is on the paid tier (CH-3), and the 06:00 slot now hosts sync-banks AND the
@@ -54,7 +62,14 @@ export const GET = withApiHandler(async (req: NextRequest) => {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await dispatchDueJobs(new Date());
+  // SINGLE-JOB DISPATCH — `?only=<key>` narrows the wake to ONE allowlisted job (lib/jobs/dispatch.ts
+  // SINGLE_JOB_DISPATCH_ALLOWLIST: comms-automations only). Decided AFTER the CRON_SECRET check; any
+  // other value (or a repeated / empty one) is 400 and nothing runs. Without `only` the wake is unchanged.
+  const narrowed = parseSingleJobDispatch(req.nextUrl.searchParams.getAll("only"));
+  if (!narrowed.ok) {
+    return NextResponse.json({ error: "Unknown job for ?only= (allowed: comms-automations)", code: "VALIDATION" }, { status: 400 });
+  }
+  const result = narrowed.only ? await dispatchDueJobs(new Date(), { only: narrowed.only }) : await dispatchDueJobs(new Date());
 
   return NextResponse.json(
     { ok: result.failures === 0, ...result },

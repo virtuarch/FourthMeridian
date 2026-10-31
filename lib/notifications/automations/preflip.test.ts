@@ -1,7 +1,7 @@
 /**
  * lib/notifications/automations/preflip.test.ts  (Comms Center B2 — PRE-FLIP residuals R1–R4)
  *
- * Session 2's independent re-review of #190 left these before AUTOMATION_ACTIVATION_ENABLED may be
+ * Session 2's independent re-review of #190 left these before automation activation could be
  * flipped. The REAL engine over the in-memory Prisma fake, fake transports — no database, no
  * network, no real send. Each check pins a BEHAVIOUR; a mutation of its guard fails here:
  *
@@ -285,9 +285,11 @@ async function main(): Promise<void> {
   }
 
   // ── The gate ──────────────────────────────────────────────────────────────
-  console.log("the activation gate stays closed");
-  check("AUTOMATION_ACTIVATION_ENABLED is still the code constant false (flipping it is a separate owner-approved PR)",
-    T.AUTOMATION_ACTIVATION_ENABLED === false && /export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;/.test(readFileSync("lib/notifications/automations/types.ts", "utf8")));
+  console.log("the activation gate: Preview only");
+  check("the gate is automationActivationEnabled(env): open ONLY on Preview with the exact flag; Production closed even with the flag",
+    T.automationActivationEnabled({ VERCEL_ENV: "production", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === false
+    && T.automationActivationEnabled({ VERCEL_ENV: "preview", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === true
+    && !/AUTOMATION_ACTIVATION_ENABLED/.test(readFileSync("lib/notifications/automations/types.ts", "utf8")));
 
   console.log(failures === 0 ? "\n✅ comms automations pre-flip R1–R4: all checks passed" : `\n❌ ${failures} check(s) failed`);
   if (failures > 0) process.exit(1);

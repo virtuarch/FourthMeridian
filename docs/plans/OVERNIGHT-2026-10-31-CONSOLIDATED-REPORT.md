@@ -116,7 +116,7 @@ The deployed Preview app uses this role through `DATABASE_URL`, so Preview is do
 
 1. **Preview credential reset** (§6).
 2. **Beta requests:** what to do with the 13-request single-actor cluster versus the ~7 plausible ones. No invitations have been sent.
-3. **Separation of duties for automations:** today one System Admin can both approve and activate via break-glass.
+3. ~~**Separation of duties for automations:** today one System Admin can both approve and activate via break-glass.~~ **RESOLVED by owner ruling 2026-11-01 (N10):** one System Admin MAY both approve and activate, through CONTROL + fresh authentication, a version-bound approval and an audited reason; no two-person rule; revisit when there are multiple administrative operators. Recorded in `COMMS-CENTER-API-CONTRACT-v1.1-DELTA-2026-10-31.md` (v1.1.2). Production automations remain OFF.
 4. **Post-deploy smoke:** add a Vercel Deployment Protection bypass secret so Preview smoke can actually reach the app.
 5. **Production promotion:** all of tonight's work is on Preview only. A release needs separate approval. Migrations 1–5 must precede the code that depends on them.
 6. **Plaid (no action recommended):** nothing to disconnect. Every path that starts a Plaid subscription is gated while frozen.

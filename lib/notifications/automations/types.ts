@@ -66,21 +66,37 @@ export interface AutomationRunCounts {
 }
 
 /**
- * ACTIVATION HARD GATE (review of PR #187, 2026-10-31). A CODE constant — never an
- * env var, never a PlatformSetting — so no deploy-time or operator action can open
- * it. While false:
+ * ACTIVATION GATE (review of PR #187 → hardening #190 → pre-flip #193 → owner approval
+ * 2026-11-01: PREVIEW ONLY). Activation is open ONLY when BOTH hold, read from the env on
+ * EVERY call (never cached, so unsetting the flag is a kill switch without a code change):
+ *   (a) VERCEL_ENV is exactly "preview"   — Production, Development, local and an unset
+ *       VERCEL_ENV are all closed; NO flag can open Production (it is not a parameter);
+ *   (b) COMMS_AUTOMATIONS_PREVIEW_ENABLED is exactly "true" — "TRUE", "1", " true" are closed.
+ * While closed:
  *   · POST /automations/[id]/activate refuses with 409 ACTIVATION_DISABLED_PENDING_HARDENING
- *     before any state write (owner approval and dry run still work);
+ *     before any automation state is read or written (the refusal is audited);
  *   · viewer.canActivate is false with `activationDisabledReason`;
- *   · the ENGINE sends nothing: if an ACTIVE row exists anyway, the executor writes
- *     nothing and reports { outcome: "SKIPPED", skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING" }.
- * It may be flipped ONLY after review items A1–A9 are fixed (the tracked follow-up PR).
- * HARDENING (the A1–A9 / N1–N11 PR) fixed them but deliberately leaves this false: flipping it is a
- * SEPARATE owner-approved PR, after that one merges. N10 (separation of duties between the owner
- * approval and the CONTROL activation) is an OWNER decision and is not changed by the hardening PR.
+ *   · the ENGINE sends nothing: an ACTIVE row or a pending item is held and the executor reports
+ *     { outcome: "SKIPPED", skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING" }; the gate is
+ *     re-read before EVERY send, so closing it mid-pass stops the pass before the next send.
+ * The reason CODE is unchanged (the UI labels map it). N10 — one System Admin may both approve
+ * and activate: owner ruling 2026-11-01 (docs/plans/COMMS-CENTER-API-CONTRACT-v1.1-DELTA-2026-10-31.md §v1.1.2).
  */
-export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;
+export interface AutomationActivationEnv {
+  VERCEL_ENV?: string;
+  COMMS_AUTOMATIONS_PREVIEW_ENABLED?: string;
+  /** process.env is passed as-is (its other keys are ignored). */
+  [key: string]: string | undefined;
+}
+
+/** THE activation gate. Pure; the only path to true. Callers pass process.env per call. */
+export function automationActivationEnabled(env: AutomationActivationEnv): boolean {
+  return env.VERCEL_ENV === "preview" && env.COMMS_AUTOMATIONS_PREVIEW_ENABLED === "true";
+}
+
 export const ACTIVATION_DISABLED_REASON = "ACTIVATION_DISABLED_PENDING_HARDENING" as const;
+/** The operator-facing text of the closed gate (the code above is unchanged: UI labels map it). */
+export const ACTIVATION_DISABLED_TEXT = "Automation activation is not enabled in this environment (Preview only, when its switch is on; never Production). Owner approval and dry runs still work.";
 
 /** v1.1 §6.2 — why activate would refuse now (empty ⇒ the §6.3 checks pass). */
 export type ActivationBlocker =
