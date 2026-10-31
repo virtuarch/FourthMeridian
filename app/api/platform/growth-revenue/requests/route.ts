@@ -108,12 +108,16 @@ export async function GET() {
       select:   { email: true, source: true },
     }),
     invitations.length === 0 ? Promise.resolve([]) : db.auditLog.findMany({
-      where:   { action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_INVITATION_CREATED, AuditAction.BETA_INVITATION_RESENT] } },
+      where:   { action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_INVITATION_CREATED, AuditAction.BETA_INVITATION_RESENT, AuditAction.BETA_INVITATION_EMAIL_OUTCOME] } },
       orderBy: { createdAt: "desc" },
       take:    500, // newest first; the first row per betaRequestId wins below
-      select:  { createdAt: true, metadata: true },
+      select:  { createdAt: true, metadata: true, action: true },
     }),
   ]);
+  // PR B — an issuance row and its EMAIL_OUTCOME row can share a millisecond;
+  // the outcome (written after the send) must win that tie.
+  inviteAudits.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+    || Number(b.action === AuditAction.BETA_INVITATION_EMAIL_OUTCOME) - Number(a.action === AuditAction.BETA_INVITATION_EMAIL_OUTCOME));
   const statsByEmail = new Map(eventStats.map((g) => [g.email, { count: g._count._all, last: g._max.receivedAt }] as const));
   const firstSourceByEmail = new Map(firstEvents.map((e) => [e.email, (e.source as AcquisitionSource | null) ?? null] as const));
   const inviteEmailById = new Map<string, InviteEmailOutcome>();

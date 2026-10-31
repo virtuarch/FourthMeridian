@@ -1,107 +1,53 @@
 /**
- * POST /api/platform/growth-revenue/requests/[id]/resend  (PO-3B · B1-C)
+ * POST /api/platform/growth-revenue/requests/[id]/resend  (PO-3B · B1-C · PR B)
  *
- * Resend the invitation for an already-APPROVED beta request: rotate the
- * single-use token in place and re-email it. Reuses the SAME invite primitives
- * as approve (hashResetToken + beta-invite template + buildBetaInviteUrl) — NOT a
- * second invite system — preserving email-binding (enforced at redemption),
- * hashing, single-use, and the 14-day expiry.
+ * Resend = REISSUE the invitation for an already-APPROVED beta request: rotate
+ * the single-use token and re-email it. A thin wrapper over THE issuance
+ * mechanism (lib/platform/growth/invitation-issue.ts, kind "reissue"):
+ *   - APPROVED only (409 otherwise — including a row revoked meanwhile).
+ *   - The rotation is conditional on the token hash observed (and, when the body
+ *     carries it, the `expectedInvitedAt` the operator's screen showed), so two
+ *     concurrent resends — or a double-click processed back to back — produce
+ *     ONE new link and ONE email; the loser answers 200 { alreadyReissued: true }
+ *     and sends nothing.
+ *   - Expiry: the optional body `{ validityDays }` (1–30) or the configured
+ *     invitation validity — no longer forced to 14 days.
+ *   - The email copy follows the row's origin (PR #157).
  *
- * Distinct from approve so the action reads honestly in the audit trail:
- * BETA_INVITATION_RESENT (approve is for a first decision on a PENDING request).
+ * Audited as BETA_INVITATION_RESENT (approve is for a first decision).
  *
  * AUTHORIZATION: requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE").
  */
 
-import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
+import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { env } from "@/lib/env";
-import { hashResetToken } from "@/lib/password-reset-token";
-import { sendEmail } from "@/lib/email/send";
-import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
-import { AuditAction } from "@/lib/audit-actions";
-import { auditEmailHash, recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
-import { BetaAccessRequestStatus } from "@prisma/client";
+import { issueBetaInvitation } from "@/lib/platform/growth/invitation-issue";
+import { issueResultResponse, parseOptionalReason } from "@/lib/platform/growth/invitation-http";
 
 export const runtime = "nodejs";
-
-const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-
-/**
- * Which copy the re-sent email uses. "direct" ONLY on positive evidence that the
- * row came from an operator's direct invite with no request behind it:
- *   - a BETA_INVITATION_CREATED audit row targets this request, AND
- *   - no BETA_ACCESS_APPROVED audit row does (it was never approved from the queue), AND
- *   - no BetaAccessRequestEvent exists for the email (no form submission recorded).
- * Anything else — including rows whose audit history is gone, and requests that
- * predate submission events (2026-10-07) — is "request", the historical copy.
- */
-async function inviteOrigin(id: string, email: string): Promise<"request" | "direct"> {
-  const byRequest = (action: string) => ({ action, metadata: { path: ["betaRequestId"], equals: id } });
-  const [created, approved, submissions] = await Promise.all([
-    db.auditLog.findFirst({ where: byRequest(AuditAction.BETA_INVITATION_CREATED), select: { id: true } }),
-    db.auditLog.findFirst({ where: byRequest(AuditAction.BETA_ACCESS_APPROVED), select: { id: true } }),
-    db.betaAccessRequestEvent.count({ where: { email } }),
-  ]);
-  return created && !approved && submissions === 0 ? "direct" : "request";
-}
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
 
   const { id } = await ctx.params;
+  const body = (await req.json().catch(() => ({}))) as { validityDays?: unknown; reason?: unknown; expectedInvitedAt?: unknown };
+  const reason = parseOptionalReason(body.reason);
+  if (!reason.ok) return reason.response;
 
-  const request = await db.betaAccessRequest.findUnique({
-    where:  { id },
-    select: { id: true, email: true, status: true },
-  });
-  if (!request) {
-    return NextResponse.json({ error: "Request not found." }, { status: 404 });
-  }
-  // Resend only makes sense for a live (un-redeemed) invitation.
-  if (request.status !== BetaAccessRequestStatus.APPROVED) {
-    return NextResponse.json(
-      { error: "Only an approved, un-redeemed invitation can be resent." },
-      { status: 409 },
-    );
-  }
-
-  const rawToken = crypto.randomBytes(32).toString("hex");
-  const now = new Date();
-  const expiry = new Date(now.getTime() + INVITE_TTL_MS);
-  await db.betaAccessRequest.update({
-    where: { id },
-    data: {
-      inviteTokenHash: hashResetToken(rawToken),
-      inviteExpiresAt: expiry,
-      invitedAt:       now,
-    },
-  });
-
-  const inviteUrl = buildBetaInviteUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
-  const origin = await inviteOrigin(id, request.email);
-  // The email states the REAL expiry just written to the row (issuedAt/expiresAt).
-  const emailResult = await sendEmail("beta-invite", request.email, { inviteUrl, issuedAt: now, expiresAt: expiry, origin });
-  if (emailResult.status === "error") {
-    console.error("[beta-resend] invite email failed to send:", emailResult.error);
-  }
-
-  // SEC-PLAT-2 — through the operator-action envelope (actor, target, result);
-  // the legacy metadata keys ride in `detail` so existing readers keep working.
-  await recordOperatorAction(db, {
-    actor:  operatorActorFrom(auth, "GROWTH_REVENUE"),
-    action: AuditAction.BETA_INVITATION_RESENT,
-    target: { kind: "BETA_REQUEST", id },
-    result: "SUCCESS",
-    detail: { betaRequestId: id, emailHash: auditEmailHash(request.email), emailStatus: emailResult.status },
+  const result = await issueBetaInvitation({
+    client: db,
+    actor: operatorActorFrom(auth, "GROWTH_REVENUE"),
+    kind: "reissue",
+    requestId: id,
+    validityDays: body.validityDays,
+    expectedInvitedAt: body.expectedInvitedAt,
+    reason: reason.reason,
     ipAddress: getClientIp(req),
     userAgent: req.headers.get("user-agent"),
   });
-
-  return NextResponse.json({ success: true, emailStatus: emailResult.status });
+  return issueResultResponse(result);
 }
