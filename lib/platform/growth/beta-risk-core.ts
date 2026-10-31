@@ -17,7 +17,14 @@
  *
  * SIGNALS (§3) — strength alone:
  *   moderate  BURST_WINDOW, SHARED_NETWORK, AUTOMATION_UA, ALIAS_CLUSTER, DUPLICATE_NOTE
- *   weak      REPEATED_SUBMISSION, DISPOSABLE_DOMAIN, NO_BROWSER_SIGNALS
+ *   weak      REPEATED_SUBMISSION, DISPOSABLE_DOMAIN, NO_BROWSER_SIGNALS, UNRECOGNISED_UA
+ *
+ * USER AGENTS. Only an EMPTY, SCRIPT or HEADLESS client raises AUTOMATION_UA.
+ * A user agent that matches no known family (`other`) is only the weak
+ * UNRECOGNISED_UA: in-app browsers (Instagram / Facebook / LinkedIn webviews on
+ * iOS) carry no "Safari" token, so "not a browser we recognise" is not evidence
+ * of automation. The family patterns live here (UA_*_PATTERN) and the reader
+ * binds them into its SQL, so the tested patterns ARE the ones that run.
  *
  * CLASSIFICATION (§4):
  *   high          ≥ 2 moderate, at least one of SHARED_NETWORK / AUTOMATION_UA / BURST_WINDOW
@@ -53,7 +60,7 @@ export const DUPLICATE_NOTE_MIN_CHARS = 12;
 
 export const BETA_RISK_REASON_CODES = [
   "BURST_WINDOW", "SHARED_NETWORK", "AUTOMATION_UA", "REPEATED_SUBMISSION",
-  "ALIAS_CLUSTER", "DUPLICATE_NOTE", "DISPOSABLE_DOMAIN", "NO_BROWSER_SIGNALS",
+  "ALIAS_CLUSTER", "DUPLICATE_NOTE", "DISPOSABLE_DOMAIN", "NO_BROWSER_SIGNALS", "UNRECOGNISED_UA",
 ] as const;
 export type BetaRiskReasonCode = (typeof BETA_RISK_REASON_CODES)[number];
 
@@ -63,7 +70,7 @@ export const MODERATE_SIGNALS: ReadonlySet<BetaRiskReasonCode> = new Set<BetaRis
   "BURST_WINDOW", "SHARED_NETWORK", "AUTOMATION_UA", "ALIAS_CLUSTER", "DUPLICATE_NOTE",
 ]);
 export const WEAK_SIGNALS: ReadonlySet<BetaRiskReasonCode> = new Set<BetaRiskReasonCode>([
-  "REPEATED_SUBMISSION", "DISPOSABLE_DOMAIN", "NO_BROWSER_SIGNALS",
+  "REPEATED_SUBMISSION", "DISPOSABLE_DOMAIN", "NO_BROWSER_SIGNALS", "UNRECOGNISED_UA",
 ]);
 /** The network- / automation-based moderates, one of which `high` requires. */
 export const HIGH_ANCHOR_SIGNALS: ReadonlySet<BetaRiskReasonCode> = new Set<BetaRiskReasonCode>([
@@ -74,12 +81,13 @@ export const HIGH_ANCHOR_SIGNALS: ReadonlySet<BetaRiskReasonCode> = new Set<Beta
 export const BETA_RISK_REASON_LABEL: Readonly<Record<BetaRiskReasonCode, string>> = {
   BURST_WINDOW:        "Submitted during a burst of requests",
   SHARED_NETWORK:      "Same network as other requesters",
-  AUTOMATION_UA:       "Submitted by a non-browser client",
+  AUTOMATION_UA:       "Submitted by a script or headless client",
   REPEATED_SUBMISSION: "Submitted several times",
   ALIAS_CLUSTER:       "Address variant of another request",
   DUPLICATE_NOTE:      "Note identical to another request's",
   DISPOSABLE_DOMAIN:   "Disposable email domain",
   NO_BROWSER_SIGNALS:  "No referrer, landing page or campaign",
+  UNRECOGNISED_UA:     "Unrecognised client software",
 };
 
 export const BETA_RISK_LEVEL_LABEL: Readonly<Record<BetaRiskLevel, string>> = {
@@ -91,7 +99,28 @@ export const BETA_RISK_LEVEL_LABEL: Readonly<Record<BetaRiskLevel, string>> = {
 
 /** The user-agent family the reader derives IN SQL — the raw string never reaches JS. */
 export type UaFamily = "browser" | "script" | "headless" | "empty" | "other";
-const NON_BROWSER: ReadonlySet<UaFamily> = new Set<UaFamily>(["script", "headless", "empty", "other"]);
+/** Families that raise AUTOMATION_UA (moderate). `other` is only UNRECOGNISED_UA (weak). */
+const AUTOMATION_FAMILIES: ReadonlySet<UaFamily> = new Set<UaFamily>(["script", "headless", "empty"]);
+
+/**
+ * Case-insensitive POSIX regexes (Postgres `~*`; also valid JS), tested in this
+ * order: empty → script → headless → browser → other. The reader binds these as
+ * SQL parameters; uaFamilyOf() applies them in JS for tests only.
+ */
+export const UA_SCRIPT_PATTERN =
+  "(curl|python|go-http|wget|axios|node-fetch|undici|httpclient|okhttp|java/|libwww|scrapy|aiohttp|httpie|postman|insomnia)";
+export const UA_HEADLESS_PATTERN = "(headless|phantomjs|puppeteer|playwright|selenium)";
+/** Browsers incl. iOS in-app webviews: an AppleWebKit or Gecko/ engine token counts. */
+export const UA_BROWSER_PATTERN = "(chrome|safari|firefox|edg/|opr/|applewebkit|gecko/)";
+
+/** JS mirror of the reader's SQL CASE — the same patterns, the same order. */
+export function uaFamilyOf(ua: string | null | undefined): UaFamily {
+  if (!ua || ua.trim() === "") return "empty";
+  if (new RegExp(UA_SCRIPT_PATTERN, "i").test(ua)) return "script";
+  if (new RegExp(UA_HEADLESS_PATTERN, "i").test(ua)) return "headless";
+  if (new RegExp(UA_BROWSER_PATTERN, "i").test(ua)) return "browser";
+  return "other";
+}
 
 // ── DTO ──────────────────────────────────────────────────────────────────────
 
@@ -300,9 +329,13 @@ export function assessBetaRisk(requests: readonly BetaRiskRequestFacts[], fleet:
       add("SHARED_NETWORK", { count: shared.count, windowMinutes: SHARED_NETWORK_WINDOW_MINUTES, firstAt: iso(shared.first), lastAt: iso(shared.last) });
     }
 
-    const automated = req.audit.filter((a) => a.uaFamily !== null && NON_BROWSER.has(a.uaFamily)).sort((a, b) => a.at.getTime() - b.at.getTime());
+    const automated = req.audit.filter((a) => a.uaFamily !== null && AUTOMATION_FAMILIES.has(a.uaFamily)).sort((a, b) => a.at.getTime() - b.at.getTime());
     if (automated.length > 0) {
       add("AUTOMATION_UA", { count: automated.length, firstAt: iso(automated[0].at), lastAt: iso(automated[automated.length - 1].at) });
+    }
+    const unrecognised = req.audit.filter((a) => a.uaFamily === "other").sort((a, b) => a.at.getTime() - b.at.getTime());
+    if (unrecognised.length > 0) {
+      add("UNRECOGNISED_UA", { count: unrecognised.length, firstAt: iso(unrecognised[0].at), lastAt: iso(unrecognised[unrecognised.length - 1].at) });
     }
 
     if (times.length >= REPEATED_SUBMISSION_MIN) {

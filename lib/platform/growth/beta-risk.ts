@@ -12,7 +12,8 @@
  *     not brute-forceable against a known IP list) outside it; NULL when the IP
  *     was absent or the extractor's "unknown";
  *   · a user-agent FAMILY (browser / script / headless / empty / other) by a
- *     CASE over case-insensitive regexes.
+ *     CASE over case-insensitive regexes — the UA_*_PATTERN constants of the
+ *     core, bound as parameters, so the tested patterns are the ones that run.
  * Neither column appears in a SELECT list; the privacy scan
  * (lib/platform/observability-privacy.test.ts) pins this file.
  *
@@ -35,6 +36,7 @@ import { boundAcquisitionSource } from "@/lib/marketing/acquisition";
 import { DISPOSABLE_EMAIL_DOMAINS } from "@/lib/marketing/disposable-domains";
 import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import {
+  UA_BROWSER_PATTERN, UA_HEADLESS_PATTERN, UA_SCRIPT_PATTERN,
   assessBetaRisk, canonicalEmailKey, emailDomain, noteFingerprint, tally,
   type BetaRiskAuditFact, type BetaRiskRequestFacts, type UaFamily,
 } from "./beta-risk-core";
@@ -63,8 +65,9 @@ export interface BetaRiskResult {
 }
 
 /**
- * Assess the given requests against the fleet. Unknown ids are skipped (no
- * entry in `byId`). Never throws for a missing review table: the verdicts then
+ * Assess the given requests against the fleet. Unknown ids, and requests that
+ * were never submitted through the public form (no event AND no forensic row —
+ * a direct invitation), are skipped (no entry in `byId`). Never throws for a missing review table: the verdicts then
  * read as null with a note, and the signals still compute.
  */
 export async function loadBetaRisk(
@@ -99,9 +102,9 @@ export async function loadBetaRisk(
              CASE WHEN "ipAddress" IS NULL OR btrim("ipAddress") = '' OR lower(btrim("ipAddress")) = 'unknown' THEN NULL
                   ELSE md5(${salt}::text || "ipAddress") END AS net,
              CASE WHEN "userAgent" IS NULL OR btrim("userAgent") = '' THEN 'empty'
-                  WHEN "userAgent" ~* '(curl|python|go-http|wget|axios|node-fetch|undici|httpclient|okhttp|java/|libwww|scrapy|aiohttp|httpie|postman|insomnia)' THEN 'script'
-                  WHEN "userAgent" ~* 'headless|phantomjs|puppeteer|playwright|selenium' THEN 'headless'
-                  WHEN "userAgent" ~* '(chrome|safari|firefox|edg/)' THEN 'browser'
+                  WHEN "userAgent" ~* ${UA_SCRIPT_PATTERN} THEN 'script'
+                  WHEN "userAgent" ~* ${UA_HEADLESS_PATTERN} THEN 'headless'
+                  WHEN "userAgent" ~* ${UA_BROWSER_PATTERN} THEN 'browser'
                   ELSE 'other' END AS ua
         FROM "AuditLog"
        WHERE "action" = ${AuditAction.BETA_ACCESS_REQUESTED}
@@ -165,6 +168,11 @@ export async function loadBetaRisk(
     const requesterKey = md5(r.email.trim().toLowerCase());
     const auditKey = auditEmailHash(r.email);
     const events = eventsByKey.get(requesterKey) ?? [];
+    const audit = auditByKey.get(auditKey) ?? [];
+    // Never submitted through the public form (a direct invitation, PO-3C):
+    // there is nothing to assess, so the row carries NO risk block rather than
+    // a misleading "insufficient evidence".
+    if (events.length === 0 && audit.length === 0) continue;
     facts.push({
       requestId: r.id,
       requesterKey,
@@ -174,7 +182,7 @@ export async function loadBetaRisk(
       noteHash: fingerprint.get(r.id) ?? null,
       eventTimes: events.map((e) => e.at),
       sourcePresent: events.some((e) => e.sourcePresent),
-      audit: auditByKey.get(auditKey) ?? [],
+      audit,
     });
   }
 

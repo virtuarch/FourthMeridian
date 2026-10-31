@@ -23,6 +23,15 @@ let POST: H;
 let GET: H;
 let QUEUE: () => Promise<Response>;
 
+/** The writer's row lock (`SELECT "id" FROM "BetaAccessRequest" … FOR UPDATE`), answered from the fake store. */
+const forUpdate = (sql: string, values: unknown[]) => {
+  if (!/FOR UPDATE/.test(sql)) return undefined;
+  locks.push(String(values[0]));
+  const row = fake.one("BetaAccessRequest", { id: values[0] as string });
+  return row ? [{ id: row.id }] : [];
+};
+const locks: string[] = [];
+
 async function world() {
   fake.reset();
   freshCache();
@@ -30,6 +39,12 @@ async function world() {
   const admin = fake.seed("User", { email: "ops@example.test", username: "ops", passwordHash: hash, emailVerifiedAt: new Date(), role: "SYSTEM_ADMIN", totpEnabled: true, totpSecret: "x" });
   const user  = fake.seed("User", { email: "u@example.test", username: "u", passwordHash: hash, emailVerifiedAt: new Date() });
   const req   = fake.seed("BetaAccessRequest", { email: "applicant@example.test", status: "PENDING", note: "Keen to try the beta for budgeting" });
+  fake.queryRaw = (sql, values) => {
+    const r = forUpdate(sql, values);
+    if (r !== undefined) return r;
+    throw new Error("unexpected raw query");
+  };
+  locks.length = 0;
   return { admin, user, req };
 }
 const post = (cookie: string | undefined, id: string, body: unknown) =>
@@ -62,6 +77,7 @@ async function main() {
       && (meta.reason as { code?: string })?.code === "ABUSE"
       && JSON.stringify(meta.change) === JSON.stringify({ before: { reviewStatus: null }, after: { reviewStatus: "SUSPICIOUS" } }), meta);
     t.check("the request row is byte-identical (status, decision, token untouched)", JSON.stringify(fake.one("BetaAccessRequest", { id: w.req.id })) === before);
+    t.check("the writer locked the request row (SELECT … FOR UPDATE) before reading the previous verdict", locks.length === 1 && locks[0] === w.req.id, locks);
 
     const r2 = await post(s.cookie, w.req.id as string, { status: "LEGITIMATE", reason: { code: "BETA_ONBOARDING" } });
     t.check("a second verdict APPENDS (history kept)", r2.status === 200 && reviews().length === 2 && audits().length === 2);
@@ -116,7 +132,7 @@ async function main() {
     // The queue's own submission count (groupBy) is outside this suite — answer empty.
     fake.on("BetaAccessRequestEvent", "groupBy", () => []);
     const s = await signIn(fake, w.admin.id as string);
-    // No $queryRaw handler ⇒ the risk read fails ⇒ the queue still answers.
+    // Fleet reads unanswered ⇒ the risk read fails ⇒ the queue still answers.
     const plain = await invoke(QUEUE as never, request("/api/platform/growth-revenue/requests", { cookie: s.cookie }));
     const row0 = ((plain.body.pending ?? []) as Record<string, unknown>[])[0];
     t.check("risk read unavailable → 200, rows without `risk`, a note", plain.status === 200 && row0 && !("risk" in row0)
@@ -126,7 +142,11 @@ async function main() {
     const k = createHash("md5").update(email).digest("hex");
     const now = Date.now();
     let sawIp = false;
-    fake.queryRaw = (sql) => {
+    // A direct (cold) invitation: an APPROVED row that never came through the public form.
+    const direct = fake.seed("BetaAccessRequest", { email: "invited-directly@example.test", status: "APPROVED", invitedAt: new Date(), inviteExpiresAt: new Date(Date.now() + 86_400_000) });
+    fake.queryRaw = (sql, values) => {
+      const locked = forUpdate(sql, values);
+      if (locked !== undefined) return locked;
       if (/"ipAddress"\s*(AS|,|\n\s*FROM)/.test(sql) || /"userAgent"\s*(AS|,|\n\s*FROM)/.test(sql)) sawIp = true;
       if (sql.includes('"BetaAccessRequestEvent"')) return [{ k, at: new Date(now - 60_000), source: null }];
       if (sql.includes('"AuditLog"')) return [{ h: auditEmailHash(email), at: new Date(now - 60_000), net: "salted-digest", ua: "script" }];
@@ -140,6 +160,8 @@ async function main() {
       && JSON.stringify(risk.reasons?.map((x) => x.code)) === JSON.stringify(["AUTOMATION_UA", "NO_BROWSER_SIGNALS"]), risk);
     t.check("…and the latest operator verdict", risk?.review?.status === "SUSPICIOUS" && risk.review.by === "ops", risk?.review);
     t.check("the raw SQL never selects ipAddress / userAgent as a column", !sawIp);
+    const inv = ((q.body.invitations ?? []) as Record<string, unknown>[]).find((r) => r.id === direct.id);
+    t.check("a direct invitation (no public-form event, no forensic row) carries NO risk block — not 'insufficient'", !!inv && !("risk" in inv), inv);
     t.check("the risk block carries no digest, hash or user-agent", !JSON.stringify(risk).includes("salted-digest") && !JSON.stringify(risk).includes(auditEmailHash(email)) && !JSON.stringify(risk).includes(k) && !/script"/.test(JSON.stringify(risk)), risk);
   }
 

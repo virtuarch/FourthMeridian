@@ -9,9 +9,17 @@
 -- operator decided about it.
 --
 -- APPEND-ONLY: a verdict is changed by inserting a newer row (the latest row is
--- the current state). The FK cascades with its request, so the 180-day
--- waitlist retention and the DB-002 e-mail scrub remove a request's reviews
--- with it (the cascade runs as the table owner; fm_system holds no DELETE).
+-- the current state).
+--
+-- CASCADE, BY DESIGN: the FK is ON DELETE CASCADE, so deleting a request erases
+-- its review rows. Two paths delete requests today:
+--   · the account-deletion purge (lib/account-deletion/purge.ts — by e-mail);
+--   · the retention job (jobs/data-retention.ts — DENIED, PENDING and
+--     unredeemed APPROVED requests untouched for 180 days; REDEEMED is kept).
+-- The referential action runs as the table owner, so fm_system needs (and holds)
+-- no DELETE here. Accountability is NOT lost: every verdict also wrote a
+-- BETA_REQUEST_RISK_REVIEWED AuditLog row (request id only, no address), and
+-- AuditLog is not purged with the request.
 --
 -- AUTHORITY (least privilege):
 --   fm_system  SELECT, INSERT   (no UPDATE / DELETE — history is immutable)

@@ -3366,10 +3366,15 @@ model BetaAccessRequest {
 // recomputed from the event + audit facts at read time).
 //
 // It NEVER changes the request: status, decision fields and the invite token
-// stay with the approve / deny / revoke routes. Cascades with its request, so
-// the 180-day waitlist retention and the DB-002 e-mail scrub remove it too.
-// `operatorId` is a soft reference to the acting operator (actor identity on a
-// platform record, like BetaAccessRequest.decidedById).
+// stay with the approve / deny / revoke routes.
+//
+// CASCADES WITH ITS REQUEST, BY DESIGN: deleting a BetaAccessRequest erases its
+// verdicts — the account-deletion purge (lib/account-deletion/purge.ts, by
+// e-mail) and the retention job (jobs/data-retention.ts: DENIED, PENDING and
+// unredeemed APPROVED requests untouched for 180 days; REDEEMED is kept).
+// Accountability survives in the BETA_REQUEST_RISK_REVIEWED AuditLog rows,
+// which name the request by id only. `operatorId` is a soft reference to the
+// acting operator (actor identity on a platform record, like decidedById).
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum BetaRiskReviewStatus {

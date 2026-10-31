@@ -11,7 +11,7 @@ import {
   ALIAS_CLUSTER_MIN, BETA_RISK_LEVEL_LABEL, BETA_RISK_REASON_CODES, BETA_RISK_REASON_LABEL, BURST_MIN_REQUESTERS,
   BURST_WINDOW_MINUTES, DUPLICATE_NOTE_MIN, DUPLICATE_NOTE_MIN_CHARS, HIGH_ANCHOR_SIGNALS, MODERATE_SIGNALS,
   REPEATED_SUBMISSION_MIN, SHARED_NETWORK_MIN_OTHERS, SHARED_NETWORK_WINDOW_MINUTES, WEAK_SIGNALS,
-  assessBetaRisk, canonicalEmailKey, classify, emailDomain, noteFingerprint, tally,
+  assessBetaRisk, canonicalEmailKey, classify, emailDomain, noteFingerprint, tally, uaFamilyOf,
   type BetaRiskAuditFact, type BetaRiskFleetFacts, type BetaRiskRequestFacts, type UaFamily,
 } from "./beta-risk-core";
 import { DISPOSABLE_EMAIL_DOMAINS, isDisposableDomain } from "@/lib/marketing/disposable-domains";
@@ -82,10 +82,12 @@ console.log("1. thresholds + vocabulary are named and pinned");
   check("shared network = ≥ 3 OTHER requesters within 24 h", SHARED_NETWORK_MIN_OTHERS === 3 && SHARED_NETWORK_WINDOW_MINUTES === 1440);
   check("repeated = ≥ 3 submissions; alias / duplicate note = ≥ 2 requests; note ≥ 12 chars",
     REPEATED_SUBMISSION_MIN === 3 && ALIAS_CLUSTER_MIN === 2 && DUPLICATE_NOTE_MIN === 2 && DUPLICATE_NOTE_MIN_CHARS === 12);
-  check("eight reason codes, each with a label", BETA_RISK_REASON_CODES.length === 8 && BETA_RISK_REASON_CODES.every((c) => BETA_RISK_REASON_LABEL[c]?.length > 0));
+  check("nine reason codes, each with a label", BETA_RISK_REASON_CODES.length === 9 && BETA_RISK_REASON_CODES.every((c) => BETA_RISK_REASON_LABEL[c]?.length > 0));
   check("every code is exactly one of moderate / weak", BETA_RISK_REASON_CODES.every((c) => MODERATE_SIGNALS.has(c) !== WEAK_SIGNALS.has(c)));
   check("moderate = burst, network, UA, alias, duplicate note",
     [...MODERATE_SIGNALS].sort().join() === ["ALIAS_CLUSTER", "AUTOMATION_UA", "BURST_WINDOW", "DUPLICATE_NOTE", "SHARED_NETWORK"].join());
+  check("weak = repeated, disposable, no browser signals, unrecognised UA",
+    [...WEAK_SIGNALS].sort().join() === ["DISPOSABLE_DOMAIN", "NO_BROWSER_SIGNALS", "REPEATED_SUBMISSION", "UNRECOGNISED_UA"].join());
   check("the high anchors are network / automation / burst", [...HIGH_ANCHOR_SIGNALS].sort().join() === "AUTOMATION_UA,BURST_WINDOW,SHARED_NETWORK");
   const words = [...Object.values(BETA_RISK_REASON_LABEL), ...Object.values(BETA_RISK_LEVEL_LABEL)].join(" ").toLowerCase();
   check("labels are neutral — never bot / fraud / malicious / spam", !/\b(bot|bots|fraud|fraudulent|malicious|spam|spammer|fake)\b/.test(words), words);
@@ -105,6 +107,24 @@ console.log("2. canonical e-mail, domain, note fingerprint, disposable list");
   check("disposable: listed domains + subdomains match, ordinary ones do not",
     isDisposableDomain("mailinator.com") && isDisposableDomain("x.yopmail.com") && !isDisposableDomain("gmail.com") && !isDisposableDomain("example.com"));
   check("the vendored list is a meaningful, lower-case set", DISPOSABLE_EMAIL_DOMAINS.size >= 100 && [...DISPOSABLE_EMAIL_DOMAINS].every((d) => d === d.toLowerCase() && d.includes(".")));
+}
+
+console.log("2b. user-agent families — in-app webviews are browsers, not automation");
+{
+  const IG = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 334.0.4.32.98 (iPhone15,2; iOS 17_5; en_US; en; scale=3.00; 1179x2556; 609146838)";
+  const FB = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/459.0.0.48.106;FBBV/600000000;FBDV/iPhone14,5;FBMD/iPhone;FBSN/iOS;FBSV/17.4.1;FBSS/3;FBCR/;FBID/phone;FBLC/en_US;FBOP/80]";
+  const LI = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [LinkedInApp]/9.29.8126";
+  check("Instagram iOS webview → browser", uaFamilyOf(IG) === "browser");
+  check("Facebook iOS webview → browser", uaFamilyOf(FB) === "browser");
+  check("LinkedIn iOS webview → browser", uaFamilyOf(LI) === "browser");
+  check("desktop Safari / Chrome / Firefox → browser",
+    uaFamilyOf("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15") === "browser"
+    && uaFamilyOf("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0") === "browser");
+  check("curl / python-requests → script", uaFamilyOf("curl/8.4.0") === "script" && uaFamilyOf("python-requests/2.31.0") === "script");
+  check("HeadlessChrome → headless (headless outranks the Chrome token)",
+    uaFamilyOf("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/120.0.0.0 Safari/537.36") === "headless");
+  check("empty / whitespace → empty", uaFamilyOf("") === "empty" && uaFamilyOf("   ") === "empty" && uaFamilyOf(null) === "empty");
+  check("an unknown token → other", uaFamilyOf("SomeReader/1.0") === "other");
 }
 
 console.log("3. LEGITIMATE — a single browser submission with a campaign source");
@@ -202,6 +222,16 @@ console.log("9. weak signals — disposable domain, repeats, no browser signals"
   check("a headless client alone is one moderate ⇒ review", r4.get("W4")?.level === "review" && codes(r4.get("W4")).join() === "AUTOMATION_UA");
   const r5 = assess([...background, { id: "W5", email: "p@s.com", times: [0], net: "w5", ua: "empty", sourcePresent: false }]);
   check("empty UA + no source ⇒ automation (moderate) + no browser signals (weak) ⇒ review", r5.get("W5")?.level === "review" && codes(r5.get("W5")).join() === "AUTOMATION_UA,NO_BROWSER_SIGNALS");
+  const r6 = assess([...background, { id: "W6", email: "p@t.com", times: [0], net: "w6", ua: "other", sourcePresent: true }]);
+  check("an UNRECOGNISED client alone is ONE weak signal (never AUTOMATION_UA) ⇒ none",
+    r6.get("W6")?.level === "none" && codes(r6.get("W6")).join() === "UNRECOGNISED_UA", r6.get("W6"));
+  const r7 = assess([...background, { id: "W7", email: "p@u.com", times: [0], net: "w7", ua: "other", sourcePresent: false }]);
+  check("unrecognised client + no source (two weak) ⇒ review, not high",
+    r7.get("W7")?.level === "review" && codes(r7.get("W7")).join() === "NO_BROWSER_SIGNALS,UNRECOGNISED_UA", r7.get("W7"));
+  const iosBurst: Spec[] = Array.from({ length: 6 }, (_, i) => ({ id: `IG${i}`, email: `ig${i}@ig${i}.com`, times: [i], net: `cell-${i}`, ua: uaFamilyOf("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 334.0"), sourcePresent: false }));
+  const r8 = assess([...background, ...iosBurst]);
+  check("a launch spike from Instagram webviews is a burst only ⇒ review, never high",
+    iosBurst.every((x) => r8.get(x.id)?.level === "review" && codes(r8.get(x.id)).join() === "BURST_WINDOW"), iosBurst.map((x) => codes(r8.get(x.id))));
 }
 
 console.log("10. insufficient evidence — no forensic audit row");

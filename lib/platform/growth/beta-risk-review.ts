@@ -9,6 +9,20 @@
  * written in ONE transaction so neither can commit without the other. The
  * request itself (status, decision fields, invite token) and the heuristic
  * evidence are never touched — this module holds no update or delete.
+ *
+ * SERIALISED. The transaction first takes a row lock on the request
+ * (`SELECT … FOR UPDATE` on BetaAccessRequest — fm_system holds UPDATE there,
+ * which FOR UPDATE requires), so two concurrent verdicts on one request run
+ * one after the other and each audit row's `before` is the verdict that was
+ * really current. The lock changes no data.
+ *
+ * LIFECYCLE. Review rows cascade with their request (FK ON DELETE CASCADE): the
+ * account-deletion purge (lib/account-deletion/purge.ts, by e-mail) and the
+ * retention job (jobs/data-retention.ts — DENIED, PENDING and unredeemed
+ * APPROVED requests untouched for 180 days; REDEEMED kept) erase a request's
+ * verdicts with it, BY DESIGN. Accountability survives in the
+ * BETA_REQUEST_RISK_REVIEWED AuditLog rows, which reference the request by id
+ * only and are not purged with it.
  */
 
 import "server-only";
@@ -55,8 +69,10 @@ export async function recordBetaRiskReview(
   const note = typeof input.note === "string" && input.note.trim() !== "" ? assertOperatorNoteSafe(input.note) : null;
 
   return client.$transaction(async (tx) => {
-    const request = await tx.betaAccessRequest.findUnique({ where: { id: input.requestId }, select: { id: true } });
-    if (!request) return { ok: false, code: "NOT_FOUND" } as const;
+    // Row lock: concurrent verdicts on the same request serialise here.
+    const locked = await tx.$queryRaw<{ id: string }[]>`
+      SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${input.requestId} FOR UPDATE`;
+    if (locked.length === 0) return { ok: false, code: "NOT_FOUND" } as const;
 
     const previous = await tx.betaAccessRequestReview.findFirst({
       where: { requestId: input.requestId },
