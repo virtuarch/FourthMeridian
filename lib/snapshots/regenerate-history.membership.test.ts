@@ -213,7 +213,7 @@ function testPure(): void {
 // ── B. THE I/O HALF, AGAINST A FAKE CLIENT ───────────────────────────────────
 
 type Link = { id: string; spaceId: string; financialAccountId: string; status: "ACTIVE" | "REVOKED"; createdAt: Date; revokedAt: Date | null };
-type Account = { id: string; type: string; syncStatus: string | null; currency: string; balance: number; lastUpdated: Date; createdAt: Date };
+type Account = { id: string; type: string; syncStatus: string | null; currency: string; balance: number; lastUpdated: Date; createdAt: Date; deletedAt?: Date | null };
 type Valuation = { id: string; financialAccountId: string; effectiveDate: Date; value: number; currency: string; recordedAt: Date };
 type Tx = { financialAccountId: string; date: Date };
 
@@ -225,9 +225,16 @@ function fakeClient(state: { links: Link[]; accounts: Account[]; valuations?: Va
     (where.financialAccountId?.in ?? where.id?.in ?? []).includes(id);
   const client = {
     spaceAccountLink: {
-      findMany: async ({ where }: { where: { spaceId: string; status: string } }) => {
+      // Honours the two real query shapes: REVOKED links (any revokedAt), and
+      // ACTIVE links whose account is trashed (financialAccount.deletedAt not null).
+      findMany: async ({ where }: { where: { spaceId: string; status: string; financialAccount?: { deletedAt: { not: null } } } }) => {
         hit("spaceAccountLink.findMany");
-        return state.links.filter((l) => l.spaceId === where.spaceId && l.status === where.status && l.revokedAt !== null);
+        const rows = state.links.filter((l) => l.spaceId === where.spaceId && l.status === where.status);
+        if (!where.financialAccount) return rows;
+        return rows.flatMap((l) => {
+          const a = state.accounts.find((x) => x.id === l.financialAccountId);
+          return a?.deletedAt ? [{ ...l, financialAccount: { deletedAt: a.deletedAt } }] : [];
+        });
       },
     },
     financialAccount: {
@@ -317,6 +324,42 @@ async function testLoader(): Promise<void> {
     check("another Space's revoked links are never read", (await loadRevokedLinkWindows(client, "OTHER", TODAY)).length === 0);
   }
 
+  console.log("9b. Loader — membership exits the first cut missed (fail closed)");
+  {
+    // A REVOKED link with no revokedAt: the exit is unknown ⇒ taken as today.
+    const { client } = fakeClient({
+      links: [{ id: "L-x", spaceId: "S", financialAccountId: "FA-x", status: "REVOKED", createdAt: T("2026-03-01"), revokedAt: null }],
+      accounts: [acct("FA-x", "checking", "synced", "2026-03-01")],
+    });
+    const w = await loadRevokedLinkWindows(client, "S", TODAY);
+    check("a REVOKED link with null revokedAt is NOT ignored — it blocks every earlier day", w.length === 1 && w[0].linkId === "L-x" && w[0].contributesFromISO === null && w[0].revokedOnISO === "2026-10-30", JSON.stringify(w));
+  }
+  {
+    // An ACTIVE link to a trashed account leaves the member set at deletedAt.
+    const trashed = { ...acct("FA-t", "checking", "synced", "2026-03-01"), deletedAt: T("2026-09-15T10:00:00Z") };
+    const { client } = fakeClient({
+      links: [{ id: "L-t", spaceId: "S", financialAccountId: "FA-t", status: "ACTIVE", createdAt: T("2026-03-01"), revokedAt: null },
+              { id: "L-live", spaceId: "S", financialAccountId: "FA-live", status: "ACTIVE", createdAt: T("2026-03-01"), revokedAt: null }],
+      accounts: [trashed, acct("FA-live", "checking", "synced", "2026-03-01")],
+    });
+    const w = await loadRevokedLinkWindows(client, "S", TODAY);
+    check("an ACTIVE link to a trashed account is a membership exit at its deletedAt", w.length === 1 && w[0].linkId === "L-t" && w[0].revokedOnISO === "2026-09-15" && w[0].contributesFromISO === null, JSON.stringify(w));
+    check("days before the trash date are blocked; days after are not", blockedSet(w, ["2026-09-14", "2026-09-15", "2026-09-16"]).join() === "2026-09-14");
+    check("an ACTIVE link to a live account is never a window", !w.some((x) => x.linkId === "L-live"));
+  }
+  {
+    const { membershipExitLinks } = await import("./regenerate-history");
+    const d = (s: string) => new Date(s);
+    const out = membershipExitLinks(
+      [{ id: "A", financialAccountId: "F", createdAt: d("2026-01-01"), revokedAt: d("2026-04-01") }],
+      [{ id: "A", financialAccountId: "F", createdAt: d("2026-01-01"), deletedAt: d("2026-06-01") }], TODAY);
+    const rev = membershipExitLinks(
+      [{ id: "B", financialAccountId: "G", createdAt: d("2026-01-01"), revokedAt: d("2026-06-01") }],
+      [{ id: "B", financialAccountId: "G", createdAt: d("2026-01-01"), deletedAt: d("2026-04-01") }], TODAY);
+    check("membershipExitLinks keeps the EARLIER exit for one link, whichever set holds it",
+      out.length === 1 && out[0].exitAt.toISOString().startsWith("2026-04-01") && rev.length === 1 && rev[0].exitAt.toISOString().startsWith("2026-04-01"));
+  }
+
   console.log("10. Loader — batching (no N+1) across a mixed Space");
   {
     const links: Link[] = [];
@@ -334,7 +377,7 @@ async function testLoader(): Promise<void> {
     const { client, calls } = fakeClient({ links, accounts, valuations });
     const w = await loadRevokedLinkWindows(client, "S", TODAY);
     check("10 windows for 10 revoked links", w.length === 10);
-    check("every read issued exactly once", Object.values(calls).every((n) => n === 1), JSON.stringify(calls));
+    check("a fixed number of reads, never per link: link reads exactly twice (revoked + trashed-active), every other read once", calls["spaceAccountLink.findMany"] === 2 && Object.entries(calls).every(([k, n]) => k === "spaceAccountLink.findMany" || n === 1), JSON.stringify(calls));
     check("6 ledger-floored, 4 unbounded",
       w.filter((x) => x.basis === "MANUAL_ASSET_LEDGER_FLOOR").length === 6 && w.filter((x) => x.contributesFromISO === null).length === 4);
     const plaidOnly = fakeClient({ links: links.filter((l) => l.id.startsWith("L-p")), accounts });

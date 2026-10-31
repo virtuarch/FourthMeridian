@@ -134,7 +134,7 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies";
+export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -325,21 +325,59 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
     // BETA V2 — one "Security posture" surface (hosted by the first composed key,
     // sec_auth_posture; SecurityPostureWidget) absorbs the four former card-grain
     // widgets, which stay registered and are REPRESENTED by the host below.
-    { workspaceId: "platform-overview", sections: ["sec_auth_posture"] },
+    // PLATFORM SPACES 2.0 — the Overview is ONE analytical security dashboard
+    // (components/platform/leads/SecurityLead.tsx): failed sign-ins hero ·
+    // sign-in activity · 2FA coverage · failures by weekday × hour · reasons ·
+    // event calendar · detector windows (and what is NOT recorded) · operator
+    // activity. The posture widget (and the sections it absorbs) is HOSTED
+    // unchanged in a drawer.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [{ id: "overview", label: "Security", lead: "security", sections: [], hosted: ["sec_auth_posture"] }],
+    }),
     // Redesign §4.9 — Audit and Operator actions as their own workspaces.
     { workspaceId: "platform-audit", sections: ["sec_audit_feed"] },
     { workspaceId: "platform-operator-actions", sections: ["sec_operator_actions"] },
   ],
   GROWTH_REVENUE: [
-    { workspaceId: "platform-overview", sections: ["growth_signups", "growth_product_analytics", "growth_beta_requests", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
+    // PLATFORM SPACES 2.0 — ONE acquisition & growth dashboard
+    // (components/platform/leads/GrowthLead.tsx): hero · acquisition per day ·
+    // waitlist · the BETA SIGNUP LIST (hosted in the page, third, by owner
+    // requirement) · request calendar · sources · funnel · onboarding and
+    // retention cohort heatmaps · active accounts · adoption · time of week.
+    // The six other former widgets are HOSTED unchanged in its drawers, so every
+    // section key stays composed and every capability stays reachable.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [
+        { id: "overview", label: "Growth", lead: "growth", sections: [],
+          hosted: ["growth_beta_requests", "growth_signups", "growth_product_analytics", "growth_users", "growth_activity", "growth_funnel", "growth_policy_groups"] },
+      ],
+    }),
   ],
   // Redesign §4.3 — Customers (the list + audited profile) and Incidents.
   CUSTOMER_SUCCESS: [
-    { workspaceId: "platform-overview", sections: ["cs_customers"] },
+    // PLATFORM SPACES 2.0 — ONE dashboard (components/platform/leads/
+    // CustomerSuccessLead.tsx): who needs help and why · connection health ·
+    // the audited customer list HOSTED in the page (third) · where customers
+    // are · onboarding friction heatmap · sync-issue trend.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [{ id: "overview", label: "Customers", lead: "customer-success", sections: [], hosted: ["cs_customers"] }],
+    }),
     { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
   ],
   MERCHANT_OPS: [
-    { workspaceId: "platform-overview", sections: ["merchant_review"] },
+    // PLATFORM SPACES 2.0 — ONE merchant-identity dashboard (components/
+    // platform/leads/MerchantLead.tsx) built on what the Space really does:
+    // resolution coverage, category provenance, aliases, customer rules and
+    // the merge review (the review page itself stays at /merchant-ops; the
+    // dashboard links to it). No payment / settlement figures — none exist.
+    // merchant_review stays composed (hosted) so the section keeps its home.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [{ id: "overview", label: "Merchant identity", lead: "merchant", sections: [], hosted: ["merchant_review"] }],
+    }),
   ],
 };
 

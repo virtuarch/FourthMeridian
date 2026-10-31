@@ -495,8 +495,27 @@ console.log("Phase 1 UX · views");
     getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.viewControl === "drilldown"
       && getPlatformWorkspaceComposition("PLATFORM_OPS", "platform-policies")?.views?.[0].id === "groups");
 
-  check("other areas are unchanged: no views anywhere outside PLATFORM_OPS",
-    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).every((w) => w.views === undefined && w.label === undefined)));
+  // PLATFORM SPACES 2.0 — every area's default workspace is now a dashboard view;
+  // the secondary workspaces (Security audit / operator actions, CS incidents) keep no views.
+  check("secondary workspaces outside PLATFORM_OPS keep no views",
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).slice(1).every((w) => w.views === undefined && w.label === undefined)));
+  check("every non-Ops area's Overview is ONE dashboard view with a lead",
+    ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => { const w = getPlatformAreaWorkspaces(a)[0]; return w.views?.length === 1 && !!w.views[0].lead && w.views[0].sections.length === 0; }));
+  {
+    const mo = getPlatformWorkspaceComposition("MERCHANT_OPS", "platform-overview");
+    check("Merchant Operations: lead 'merchant', merchant_review still composed (hosted)", mo?.views?.[0].lead === "merchant" && mo.sections.join() === "merchant_review");
+  }
+  // PLATFORM SPACES 2.0 — Growth is ONE dashboard view (lead "growth") hosting
+  // all seven former sections, the beta signup list among them.
+  {
+    const g = getPlatformWorkspaceComposition("GROWTH_REVENUE", "platform-overview");
+    const v = g?.views?.[0];
+    check("Growth: one view 'overview' led by the growth dashboard, nothing stacked inline",
+      g?.views?.length === 1 && v?.id === "overview" && v.lead === "growth" && v.sections.length === 0);
+    check("Growth: every former section is hosted (the beta list included) and still composed",
+      JSON.stringify([...(v?.hosted ?? [])].sort()) === JSON.stringify(["growth_activity", "growth_beta_requests", "growth_funnel", "growth_policy_groups", "growth_product_analytics", "growth_signups", "growth_users"])
+        && JSON.stringify([...(g?.sections ?? [])].sort()) === JSON.stringify([...(v?.hosted ?? [])].sort()));
+  }
   check("platformAreaViewIds: PLATFORM_OPS lists every workspace's views (first = default); other areas list none",
     JSON.stringify(platformAreaViewIds("PLATFORM_OPS")) === JSON.stringify({
       "platform-overview": ["overview", "jobs", "pipeline"],
@@ -506,7 +525,7 @@ console.log("Phase 1 UX · views");
       // VISUAL SPEC §5 — one dashboard view; its id stays "ai" (default URL unchanged).
       "platform-ai": ["ai"],
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
-    }) && Object.keys(platformAreaViewIds("SECURITY_OPS")).length === 0);
+    }));
 
   // The view validator: unknown ⇒ default, never a ghost; no views ⇒ null.
   const ids = ["overview", "jobs", "pipeline"];
@@ -555,6 +574,8 @@ console.log("Customer Success · Customers + Incidents");
     cs.map((w) => w.workspaceId).join(",") === "platform-overview,platform-incidents", cs.map((w) => w.workspaceId).join(","));
   check("customers on the first, sync incidents on the second; nothing else moved",
     cs[0].sections.join() === "cs_customers" && cs[1]?.sections.join() === "cs_sync_issues");
+  check("PLATFORM SPACES 2.0 — Customers is one dashboard view (lead 'customer-success') hosting the audited list",
+    cs[0].views?.length === 1 && cs[0].views[0].lead === "customer-success" && JSON.stringify(cs[0].views[0].hosted) === JSON.stringify(["cs_customers"]) && cs[0].views[0].sections.length === 0);
   check("Incidents is a registered Platform identity with a nav-resolvable icon",
     getPlatformWorkspace("platform-incidents")?.label === "Incidents"
       && /WORKSPACE_ICONS_BY_NAME[^{]*\{[^}]*\bTriangleAlert,/.test(readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8")));
@@ -568,6 +589,9 @@ console.log("Security · Posture + Audit + Operator actions");
   check("the two feeds are composed directly, no longer absorbed",
     sec[1]?.sections.join() === "sec_audit_feed" && sec[2]?.sections.join() === "sec_operator_actions"
       && !("sec_audit_feed" in PLATFORM_SECTION_REPRESENTATION) && !("sec_operator_actions" in PLATFORM_SECTION_REPRESENTATION));
+  check("PLATFORM SPACES 2.0 — the Overview is one dashboard view (lead 'security') hosting the posture widget",
+    sec[0]?.views?.length === 1 && sec[0].views[0].lead === "security" && sec[0].views[0].sections.length === 0
+      && JSON.stringify(sec[0].views[0].hosted) === JSON.stringify(["sec_auth_posture"]) && sec[0].sections.join() === "sec_auth_posture");
   check("anomalies and sessions stay absorbed by the posture host",
     PLATFORM_SECTION_REPRESENTATION.sec_anomalies === "sec_auth_posture" && PLATFORM_SECTION_REPRESENTATION.sec_sessions === "sec_auth_posture");
   const nav = readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8");

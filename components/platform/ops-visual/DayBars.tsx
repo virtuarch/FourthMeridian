@@ -42,6 +42,7 @@ export function DayBars({
   height = 200,
   noun = "execution",
   palette = DAY_BAR_COLORS,
+  failedWord = "failed",
 }: {
   days: readonly DayBar[];
   ariaLabel: string;
@@ -54,6 +55,8 @@ export function DayBars({
    * Costs) passes its own, so a token is never drawn in a failure colour.
    */
   palette?: { readonly succeeded: string; readonly other: string; readonly failed: string };
+  /** The word for the third stack in the summary and tooltip (default "failed"; e.g. "opened"). */
+  failedWord?: string;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
@@ -83,7 +86,7 @@ export function DayBars({
 
   const sumAll = observed.reduce((a, d) => a + total(d), 0);
   const failedAll = observed.reduce((a, d) => a + d.failed, 0);
-  const summary = `${ariaLabel}: ${days.length} days, ${observed.length} observed${days.length - observed.length ? `, ${days.length - observed.length} without data` : ""}; ${sumAll} ${noun}s, ${failedAll} failed`;
+  const summary = `${ariaLabel}: ${days.length} days, ${observed.length} observed${days.length - observed.length ? `, ${days.length - observed.length} without data` : ""}; ${sumAll} ${noun}s, ${failedAll} ${failedWord}`;
 
   const h = hover !== null ? days[hover] : null;
   const plural = (k: number) => `${k.toLocaleString("en-US")} ${noun}${k === 1 ? "" : "s"}`;
@@ -146,7 +149,7 @@ export function DayBars({
             <div className="rounded-[var(--radius-sm)] border border-[var(--border-hairline-strong)] px-2.5 py-1.5 shadow-[var(--shadow-e3)]" style={{ background: "var(--glass-thick)" }}>
               <p className="text-sm font-medium tabular-nums text-[var(--text-primary)]">{h.observed ? plural(total(h)) : "No data"}</p>
               <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                {shortDate(h.day)}{h.observed && h.failed > 0 ? ` · ${h.failed.toLocaleString("en-US")} failed` : ""}
+                {shortDate(h.day)}{h.observed && h.failed > 0 ? ` · ${h.failed.toLocaleString("en-US")} ${failedWord}` : ""}
               </p>
             </div>
           </div>
