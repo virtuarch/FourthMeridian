@@ -326,8 +326,9 @@ async function main() {
       check(`${f}: no access-level literal / control flag / raw fetch / matchMedia`, !/\bCONTROL\b|canControl|canWrite|matchMedia|innerWidth|\bfetch\(/.test(src));
       check(`${f}: tokens only — no raw hex colour`, !/#[0-9a-fA-F]{3,8}\b/.test(src));
     }
-    const lib = strip(`${dir}/LibraryView.tsx`);
-    check("the iframe is sandbox=\"\" (no allow-*) and fed by srcDoc only", /<iframe[^>]*sandbox=""/.test(lib) && !/allow-scripts|allow-same-origin|<iframe[^>]*\ssrc=/.test(lib) && /srcDoc=\{p\.html\}/.test(lib));
+    const kit = strip(`${dir}/comms-kit.tsx`);
+    check("the iframe (PreviewRendition, comms-kit) is sandbox=\"\" (no allow-*) and fed by srcDoc only", /<iframe[^>]*sandbox=""/.test(kit) && !/allow-scripts|allow-same-origin|<iframe[^>]*\ssrc=/.test(kit) && /srcDoc=\{p\.html\}/.test(kit));
+    check("exactly one iframe in the comms views (no second, unreviewed rendition)", files.reduce((a, f) => a + (strip(f).match(/<iframe/g) ?? []).length, 0) === 1);
     check("no view posts or patches anything", files.every((f) => !/method\s*:|"POST"|"PATCH"/.test(strip(f))));
   }
 

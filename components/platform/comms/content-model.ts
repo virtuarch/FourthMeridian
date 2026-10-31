@@ -423,6 +423,15 @@ export function aiUnavailableText(reason: AiUnavailableReason, detail: string | 
   }
 }
 
+/** Why "Accept into editor" is off (null = it may be accepted). */
+export function aiAcceptWhy(r: Pick<AiSuggestResult, "baseVersionId" | "changes">, base: Pick<TemplateVersionDTO, "id"> | null, editorBlock: string | null, expired: boolean): string | null {
+  if (r.changes.length === 0) return "Nothing to accept: the suggestion matches your saved text.";
+  if (expired) return "This suggestion expired. Request a new one.";
+  if (editorBlock) return editorBlock;
+  if (!base || r.baseVersionId !== base.id) return "The editor has moved to another version since this suggestion was made. Request a new one.";
+  return null;
+}
+
 /** "12 AI calls left today" (or null when the server didn't say). */
 export function aiRemainingText(ai: AiAvailability): string | null {
   if (!ai.available || ai.remainingCallsToday === undefined) return null;
@@ -530,6 +539,12 @@ export interface Draft {
   beforeSuggestion: { body: ContentBody; dirty: boolean; parentVersionId: string | null } | null;
 }
 
+/** The unsaved-content guard (drawer close, another row, another leg): asks first when dirty. */
+export const DISCARD_CONTENT_TEXT = "Discard your unsaved content changes?";
+export function guardDiscard(dirty: boolean, confirm: (text: string) => boolean): boolean {
+  return !dirty || confirm(DISCARD_CONTENT_TEXT);
+}
+
 export const CONTENT_CONFLICT_TEXT = "Someone else changed this content since you opened it. Your text is still here — reload the latest version, check it, then save again.";
 
 /** The editor's starting draft: the live content (published version, or the code default). */
@@ -558,32 +573,64 @@ export function discardSuggestion(d: Draft): Draft {
   return { ...d, body: d.beforeSuggestion.body, dirty: d.beforeSuggestion.dirty, parentVersionId: d.beforeSuggestion.parentVersionId, source: { kind: "MANUAL" }, beforeSuggestion: null };
 }
 
-export type SaveSettled =
-  | { kind: "saved"; draft: Draft; version: TemplateVersionDTO; notice: string }
-  | { kind: "conflict"; draft: Draft; current: number | null; notice: string }
-  | { kind: "invalid"; draft: Draft; issues: ContentIssue[]; notice: string }
-  | { kind: "refused"; draft: Draft; notice: string; expired?: boolean };
+/** The editor's state: the draft and the saved version it sits on (null = the code default). */
+export interface EditorState { draft: Draft; base: TemplateVersionDTO | null }
 
-/**
- * A draft save's outcome. EVERY non-success keeps the operator's text exactly
- * as typed (`draft` is the same object): a 409 CONFLICT says so and offers a
- * reload; a 400 CONTENT_INVALID places its issues; anything else is told.
- */
-export function settleSave(d: Draft, r: CommsReadResult<{ result: TemplateVersionDTO }>): SaveSettled {
-  if (r.kind === "ok") {
-    const v = r.data.result;
-    return { kind: "saved", version: v, notice: `Saved as draft v${v.version}.`, draft: { ...draftFrom(bodyOfVersion(v), v.id, v.revision) } };
-  }
-  if (r.kind === "error" && r.status === 409 && r.code === "CONFLICT") return { kind: "conflict", draft: d, current: r.current ?? null, notice: CONTENT_CONFLICT_TEXT };
-  if (r.kind === "error" && r.code === "CONTENT_INVALID") return { kind: "invalid", draft: d, issues: r.issues ?? [], notice: "Not saved: fix the errors shown below." };
-  if (r.kind === "error" && r.code === "SUGGESTION_EXPIRED") return { kind: "refused", draft: d, expired: true, notice: "Not saved: the AI suggestion expired. Request a new one, or discard it to go back to your text." };
-  return { kind: "refused", draft: d, notice: `Not saved: ${writeRefusalText(r)}` };
+export type SaveOutcome =
+  | { kind: "saved"; version: TemplateVersionDTO; notice: string }
+  | { kind: "conflict"; current: number | null; notice: string }
+  | { kind: "invalid"; issues: ContentIssue[]; notice: string }
+  | { kind: "refused"; notice: string; expired?: boolean };
+
+/** What a draft save's response MEANS (independent of the editor's state). */
+export function saveOutcome(r: CommsReadResult<{ result: TemplateVersionDTO }>): SaveOutcome {
+  if (r.kind === "ok") return { kind: "saved", version: r.data.result, notice: `Saved as draft v${r.data.result.version}.` };
+  if (r.kind === "error" && r.status === 409 && r.code === "CONFLICT") return { kind: "conflict", current: r.current ?? null, notice: CONTENT_CONFLICT_TEXT };
+  if (r.kind === "error" && r.code === "CONTENT_INVALID") return { kind: "invalid", issues: r.issues ?? [], notice: "Not saved: fix the errors shown below." };
+  if (r.kind === "error" && r.code === "SUGGESTION_EXPIRED") return { kind: "refused", expired: true, notice: "Not saved: the AI suggestion expired. Request a new one, or discard it to go back to your text." };
+  return { kind: "refused", notice: `Not saved: ${writeRefusalText(r)}` };
 }
 
-/** After a CONFLICT reload: the SAME unsaved text, now aimed at the server's present revision. */
-export function rebaseDraft(d: Draft, latest: Pick<VersionsResponse, "revision" | "items">): Draft {
-  const parentStillExists = d.parentVersionId === null || latest.items.some((v) => v.id === d.parentVersionId);
-  return { ...d, revision: latest.revision, parentVersionId: parentStillExists ? d.parentVersionId : null };
+/**
+ * The editor state after a save, applied to the state AT RESOLUTION (`prev`),
+ * never to the snapshot taken at the click. `sent` is the body that was sent.
+ *   • any refusal (409 / 400 / 403 / 429 / 503 / network) ⇒ `prev` unchanged —
+ *     including anything typed while the request was in flight;
+ *   • success and nothing typed since ⇒ a clean draft on the saved version;
+ *   • success but the operator kept typing ⇒ THEIR text stays (still dirty), now
+ *     based on the saved version and its revision (a MANUAL edit on top of it).
+ */
+export function stateAfterSave(prev: EditorState, sent: ContentBody, r: CommsReadResult<{ result: TemplateVersionDTO }>): EditorState {
+  if (r.kind !== "ok") return prev;
+  const v = r.data.result;
+  if (sameBody(prev.draft.body, sent)) return { draft: draftFrom(bodyOfVersion(v), v.id, v.revision), base: v };
+  return { draft: { ...prev.draft, parentVersionId: v.id, revision: v.revision, source: { kind: "MANUAL" }, beforeSuggestion: null, dirty: true }, base: v };
+}
+
+/**
+ * The editor state after a publish / restore made `published` (null = the code
+ * default) live at `revision`. A dirty draft is NEVER replaced: it keeps its text,
+ * lineage and base, and only aims at the new revision.
+ */
+export function stateAfterLiveChange(prev: EditorState, change: { revision: number; published: TemplateVersionDTO | null; body: ContentBody }): EditorState {
+  if (prev.draft.dirty) return { ...prev, draft: { ...prev.draft, revision: change.revision } };
+  return { draft: draftFrom(change.body, change.published?.id ?? null, change.revision), base: change.published };
+}
+
+/**
+ * After a SUCCESSFUL reload that resolves a CONFLICT: the SAME unsaved text, aimed
+ * at the server's present revision. The parent is kept even when it is not on
+ * the first page — versions are never deleted, and the server validates lineage.
+ */
+export function rebaseDraft(d: Draft, latest: Pick<VersionsResponse, "revision">): Draft {
+  return { ...d, revision: latest.revision };
+}
+
+/** "about 45 min" / "about 3 h" for a Retry-After. */
+export function retryAfterText(seconds: number | null | undefined): string | null {
+  if (!seconds || seconds <= 0) return null;
+  const mins = Math.ceil(seconds / 60);
+  return mins < 90 ? `Try again in about ${n(mins)} min.` : `Try again in about ${n(Math.round(mins / 60))} h.`;
 }
 
 /** One sentence for any refused write (409 codes, 400, 401/403 with the house copy, 429, 503, network). */
@@ -592,7 +639,9 @@ export function writeRefusalText(r: CommsReadResult<unknown>): string {
     case "ok": return "";
     case "denied": return r.error;
     case "rate-limited": return "Too many requests — wait a moment and try again.";
-    case "unavailable": return r.ai ? aiUnavailableText(r.ai.reason, r.ai.detail) : "The service is unavailable right now (503). Nothing was changed.";
+    case "unavailable": return r.ai
+      ? [aiUnavailableText(r.ai.reason, r.ai.detail), retryAfterText(r.ai.retryAfterSeconds)].filter(Boolean).join(" ")
+      : "The service is unavailable right now (503). Nothing was changed.";
     case "not-found": return r.error;
     case "coming-soon": return "This action isn’t deployed yet.";
     case "error":

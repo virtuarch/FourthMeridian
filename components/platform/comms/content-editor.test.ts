@@ -33,7 +33,8 @@ import {
   CONTENT_CONFLICT_TEXT, FIXED_LIMITS, LOCK_TEXT, VIEWER_WHY,
   acceptSuggestion, addBlock, aiRemainingText, aiUnavailableText, canAddBlock, canMoveBlock, canRemoveBlock, changeRows, charCount, diffBodies, discardSuggestion,
   draftFrom, editBlock, editDraft, editorControls, editorFields, expiryText, fieldKey, insertToken, insertablePlaceholders, issueGate, legOptions, linkPlaceholders,
-  locationLabel, moveBlock, notesByCategory, placeIssues, rebaseDraft, removeBlock, setField, settleSave, writeRefusalText, type ControlFacts,
+  locationLabel, moveBlock, notesByCategory, placeIssues, rebaseDraft, removeBlock, setField, saveOutcome, stateAfterLiveChange, stateAfterSave, writeRefusalText,
+  aiAcceptWhy, guardDiscard, type ControlFacts, type EditorState,
 } from "./content-model";
 import { ContentEditor, ContentPanel } from "./ContentEditor";
 import { CatalogDetailBody } from "./LibraryView";
@@ -249,22 +250,39 @@ async function main() {
     const d0 = draftFrom(codeEmail, null, 3);
     const typed = editDraft(d0, setField(codeEmail, { field: "subject" }, "My unsaved subject {{institutionName}}"));
     const conflict: CommsReadResult<{ result: TemplateVersionDTO }> = { kind: "error", status: 409, code: "CONFLICT", error: "Stale.", current: 5 };
-    const c = settleSave(typed, conflict);
-    check("409 CONFLICT: the SAME draft (text kept, still dirty), current token reported, conflict copy", c.kind === "conflict" && c.draft === typed && c.draft.dirty && c.current === 5 && c.notice === CONTENT_CONFLICT_TEXT);
-    const rebased = rebaseDraft(typed, { revision: 5, items: [] });
+    const st: EditorState = { draft: typed, base: null };
+    const sent = typed.body;
+    // The operator kept typing while the request was in flight: `prev` at resolution differs from what was sent.
+    const later: EditorState = { ...st, draft: editDraft(typed, setField(typed.body, { field: "subject" }, "Typed DURING the save {{institutionName}}")) };
+    const c = saveOutcome(conflict);
+    check("409 CONFLICT outcome: current token, conflict copy", c.kind === "conflict" && c.current === 5 && c.notice === CONTENT_CONFLICT_TEXT);
+    check("409 CONFLICT: the state AT RESOLUTION is kept (text typed in flight survives)", stateAfterSave(later, sent, conflict) === later);
+    const rebased = rebaseDraft(typed, { revision: 5 });
     check("reload ⇒ rebase: same text, new expectedRevision", rebased.body === typed.body && rebased.revision === 5 && rebased.dirty);
-    const rebasedLost = rebaseDraft({ ...typed, parentVersionId: "gone" }, { revision: 6, items: [] });
-    check("a parent that vanished from the stream falls back to null (server validates lineage)", rebasedLost.parentVersionId === null);
+    const rebasedOld = rebaseDraft({ ...typed, parentVersionId: "v1-not-on-page-1" }, { revision: 6 });
+    check("rebase keeps the parent even when it is not on the first page (versions are never deleted)", rebasedOld.parentVersionId === "v1-not-on-page-1");
     const issues: ContentIssue[] = [{ code: "EMPTY_FIELD", severity: "error", location: { field: "subject" }, message: "empty" }];
-    const inv = settleSave(typed, { kind: "error", status: 400, code: "CONTENT_INVALID", error: "x", issues });
-    check("400 CONTENT_INVALID: text kept, issues carried", inv.kind === "invalid" && inv.draft === typed && inv.issues === issues);
-    const denied = settleSave(typed, { kind: "denied", status: 403, code: "OPERATOR_TOTP_REQUIRED", error: "Two-factor verification is required for operator access." });
-    check("403 fresh-auth / TOTP: text kept, the house denied copy", denied.kind === "refused" && denied.draft === typed && /Two-factor/.test(denied.notice));
-    const net = settleSave(typed, { kind: "error", status: 0, code: null, error: "Network error — the request did not complete." });
-    check("network failure: text kept", net.draft === typed);
-    const saved = settleSave(typed, { kind: "ok", data: { result: version({ id: "v7", version: 7, revision: 6, body: typed.body }) } });
-    check("saved: clean draft on the new version and revision", saved.kind === "saved" && !saved.draft.dirty && saved.draft.parentVersionId === "v7" && saved.draft.revision === 6 && /v7/.test(saved.notice));
-
+    const invalid: CommsReadResult<{ result: TemplateVersionDTO }> = { kind: "error", status: 400, code: "CONTENT_INVALID", error: "x", issues };
+    const inv = saveOutcome(invalid);
+    check("400 CONTENT_INVALID: issues carried; state kept", inv.kind === "invalid" && inv.issues === issues && stateAfterSave(later, sent, invalid) === later);
+    const deniedR: CommsReadResult<{ result: TemplateVersionDTO }> = { kind: "denied", status: 403, code: "OPERATOR_TOTP_REQUIRED", error: "Two-factor verification is required for operator access." };
+    const denied = saveOutcome(deniedR);
+    check("403 fresh-auth / TOTP: the house denied copy; state kept", denied.kind === "refused" && /Two-factor/.test(denied.notice) && stateAfterSave(later, sent, deniedR) === later);
+    const netR: CommsReadResult<{ result: TemplateVersionDTO }> = { kind: "error", status: 0, code: null, error: "Network error — the request did not complete." };
+    check("network failure: state kept", stateAfterSave(later, sent, netR) === later);
+    const okR: CommsReadResult<{ result: TemplateVersionDTO }> = { kind: "ok", data: { result: version({ id: "v7", version: 7, revision: 6, body: typed.body }) } };
+    const savedState = stateAfterSave(st, sent, okR);
+    check("saved, nothing typed since: clean draft on the new version and revision", !savedState.draft.dirty && savedState.draft.parentVersionId === "v7" && savedState.draft.revision === 6 && savedState.base?.id === "v7" && /v7/.test(saveOutcome(okR).notice));
+    const savedTyped = stateAfterSave(later, sent, okR);
+    check("saved, but the operator typed since: THEIR text stays, dirty, now on v7 / revision 6", savedTyped.draft.body === later.draft.body && savedTyped.draft.dirty
+      && savedTyped.draft.parentVersionId === "v7" && savedTyped.draft.revision === 6 && savedTyped.draft.source.kind === "MANUAL" && savedTyped.base?.id === "v7");
+    const pub = version({ id: "v8", version: 8, state: "PUBLISHED", revision: 7, body: codeEmail });
+    const liveClean = stateAfterLiveChange(savedState, { revision: 7, published: pub, body: codeEmail });
+    check("publish / restore with a clean editor: the editor moves to the live version", !liveClean.draft.dirty && liveClean.draft.parentVersionId === "v8" && liveClean.base?.id === "v8" && liveClean.draft.revision === 7);
+    const liveDirty = stateAfterLiveChange(later, { revision: 7, published: null, body: codeEmail });
+    check("publish / restore never clobbers a dirty draft (text, parent and base kept; revision moves)", liveDirty.draft.body === later.draft.body && liveDirty.draft.dirty
+      && liveDirty.draft.parentVersionId === later.draft.parentVersionId && liveDirty.base === later.base && liveDirty.draft.revision === 7);
+    const saved = { draft: savedState.draft };
     const sug: AiSuggestResult = {
       suggestionId: "sg1", baseVersionId: "v7", mode: "POLISH", base: typed.body, suggestion: setField(typed.body, { field: "subject" }, "Polished {{institutionName}}"),
       changes: [{ location: { field: "subject" }, before: typed.body.subject, after: "Polished {{institutionName}}" }],
@@ -277,8 +295,16 @@ async function main() {
       && acc.source.suggestionId === "sg1" && acc.parentVersionId === "v7");
     const back = discardSuggestion(acc);
     check("discard: back to the operator's text, MANUAL", back.body === saved.draft.body && back.source.kind === "MANUAL" && !back.dirty);
-    const exp = settleSave(acc, { kind: "error", status: 409, code: "SUGGESTION_EXPIRED", error: "x" });
-    check("SUGGESTION_EXPIRED: text kept, flagged expired", exp.kind === "refused" && exp.expired === true && exp.draft === acc);
+    const expR: CommsReadResult<{ result: TemplateVersionDTO }> = { kind: "error", status: 409, code: "SUGGESTION_EXPIRED", error: "x" };
+    const exp = saveOutcome(expR);
+    const accState: EditorState = { draft: acc, base: null };
+    check("SUGGESTION_EXPIRED: text kept, flagged expired", exp.kind === "refused" && exp.expired === true && stateAfterSave(accState, acc.body, expR) === accState);
+    const v7 = version({ id: "v7", version: 7 });
+    check("AI accept: off when nothing changed / expired / unsaved edits / the editor moved to another version",
+      aiAcceptWhy(sug, v7, null, false) === null && aiAcceptWhy({ ...sug, changes: [] }, v7, null, false) !== null && /expired/.test(aiAcceptWhy(sug, v7, null, true) ?? "")
+        && aiAcceptWhy(sug, v7, "Save first.", false) === "Save first." && /another version/.test(aiAcceptWhy(sug, version({ id: "v9" }), null, false) ?? ""));
+    check("AI 503 retry-after shown in the refusal", /Try again in about 60 min/.test(writeRefusalText({ kind: "unavailable", error: "x", ai: { reason: "ALLOWANCE", detail: "EXHAUSTED", retryAfterSeconds: 3600 } })));
+    check("discard guard: asks only when dirty", guardDiscard(false, () => false) && !guardDiscard(true, () => false) && guardDiscard(true, () => true));
 
     console.log("6. diffs, notes, expiry, AI copy");
     const rows = changeRows(sug);

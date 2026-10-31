@@ -21,7 +21,7 @@
  * typed client.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ChevronRight, ExternalLink, Search } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
@@ -33,6 +33,7 @@ import {
 import { DetailDrawer } from "../ui";
 import type { CatalogDetailV11Additions } from "@/lib/notifications/content/types";
 import { ContentPanel } from "./ContentEditor";
+import { guardDiscard } from "./content-model";
 import { ToneBadge } from "../platform-surface";
 import { Segmented } from "../leads/visual-kit";
 import {
@@ -40,9 +41,13 @@ import {
   automationsLine, humanize, previewChannelsFor, statusChips, stormNote, totalOf,
 } from "./comms-model";
 import {
-  Chip, DaySeriesBars, DaySeriesLegend, DrawerSection, FactList, FilterSelect, ListMeta, PolicyNote, ProtectedBadge, ReadState, WideTargets, okData, staleData, useCommsRead,
+  Chip, DaySeriesBars, DaySeriesLegend, DrawerSection, FactList, FilterSelect, ListMeta, PolicyNote, PreviewRendition, ProtectedBadge, ReadState, WideTargets, okData, staleData,
+  useCommsRead, useLastGoodRead,
   type CommsRead,
 } from "./comms-kit";
+
+/** Moved to comms-kit (no LibraryView ⇄ ContentEditor cycle); re-exported for existing importers. */
+export { PreviewRendition };
 
 const n = (v: number) => v.toLocaleString("en-US");
 const CHIP_BTN = "inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-7";
@@ -360,36 +365,6 @@ export function PreviewSurface({ channels, channel, onChannel, variant, onVarian
   );
 }
 
-export function PreviewRendition({ p }: { p: PreviewResponse }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-3" data-preview-rendition={p.channel}>
-      <p className="rounded-[var(--radius-sm)] border border-dashed px-2.5 py-1.5 text-[11px] font-medium" style={{ borderColor: "var(--accent-warning)", color: "var(--accent-warning)" }} data-preview-banner>
-        {COMMS_POLICY.previewBanner}
-      </p>
-      {p.subject !== null && <p className="text-xs text-[var(--text-primary)]"><span className="text-[var(--text-muted)]">Subject </span>{p.subject}</p>}
-      {p.html !== null && (
-        // sandbox="" (no allow-scripts, no allow-same-origin): the template renders as inert markup.
-        <iframe title={`${PREVIEW_LABEL[p.channel]} preview (synthetic)`} sandbox="" srcDoc={p.html} referrerPolicy="no-referrer"
-          className="h-[28rem] w-full min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)]" style={{ background: "var(--surface-inset)" }} data-preview-frame />
-      )}
-      {p.inApp && (
-        <div className="flex min-w-0 flex-col gap-1 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-3" style={{ background: "var(--surface-inset)" }} data-preview-inapp>
-          <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">In-app · icon {p.inApp.icon}</span>
-          <span className="text-sm font-medium text-[var(--text-primary)]">{p.inApp.title}</span>
-          {p.inApp.body && <span className="text-xs text-[var(--text-secondary)]">{p.inApp.body}</span>}
-          {p.inApp.href && <code className="break-all font-mono text-[11px] text-[var(--text-muted)]">{p.inApp.href}</code>}
-        </div>
-      )}
-      {p.text !== null && !p.inApp && (
-        <pre className="max-h-72 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3 font-mono text-[11px] text-[var(--text-secondary)]" data-preview-text>{p.text}</pre>
-      )}
-      <span className="text-[11px] tabular-nums text-[var(--text-muted)]">
-        Definition v{p.definitionVersion}{p.templateVersion !== null ? ` · template v${p.templateVersion}` : ""} · synthetic data
-      </span>
-    </div>
-  );
-}
-
 function PreviewPanel({ item }: { item: CatalogDetail }) {
   const channels = previewChannelsFor(item.channels);
   const [channel, setChannel] = useState<PreviewChannel>(channels[0] ?? "in-app");
@@ -399,12 +374,16 @@ function PreviewPanel({ item }: { item: CatalogDetail }) {
   return <PreviewSurface channels={channels} channel={channel} onChannel={(c) => { setChannel(c); setVariant(null); }} variant={variant} onVariant={setVariant} read={read} />;
 }
 
-function DetailDrawerBody({ itemKey }: { itemKey: string }) {
-  const read = useCommsRead<CatalogDetail>(catalogDetailUrl(itemKey));
-  const d = okData(read);
+function DetailDrawerBody({ itemKey, onDirty }: { itemKey: string; onDirty: (dirty: boolean) => void }) {
+  // The last good detail stays on screen through a refresh (a publish / restore
+  // re-reads it), so the content editor below is never unmounted with its draft.
+  const { read, data: d } = useLastGoodRead<CatalogDetail>(catalogDetailUrl(itemKey));
+  const [liveNonce, setLiveNonce] = useState(0);
+  const shown: CommsRead<CatalogDetail> = d ? { loading: false, result: { kind: "ok", data: d } } : read;
+  const onLiveChanged = () => { read.retry?.(); setLiveNonce((x) => x + 1); };
   // v1.1 servers add `content` / `viewer` to the detail; an older payload has no Content section.
-  return <CatalogDetailBody read={read} preview={d ? <PreviewPanel key={d.key} item={d} /> : null}
-    content={d && "content" in d ? <ContentPanel key={d.key} detail={d as CatalogDetail & Partial<CatalogDetailV11Additions>} /> : null} />;
+  return <CatalogDetailBody read={shown} preview={d ? <PreviewPanel key={`${d.key}|${liveNonce}`} item={d} /> : null}
+    content={d && "content" in d ? <ContentPanel key={d.key} detail={d as CatalogDetail & Partial<CatalogDetailV11Additions>} onDirty={onDirty} onLiveChanged={onLiveChanged} /> : null} />;
 }
 
 // ── The lead ────────────────────────────────────────────────────────────────────
@@ -412,7 +391,14 @@ function DetailDrawerBody({ itemKey }: { itemKey: string }) {
 export function CommsLibraryLead() {
   const [filters, setFilters] = useState<CatalogFilters>(EMPTY_CATALOG_FILTERS);
   const [draftQ, setDraftQ] = useState("");
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpenRaw] = useState<string | null>(null);
+  const contentDirty = useRef(false);
+  const setOpen = (next: string | null) => {
+    if (next === open) return;
+    if (!guardDiscard(contentDirty.current, (t) => window.confirm(t))) return;
+    contentDirty.current = false;
+    setOpenRaw(next);
+  };
   const url = catalogUrl(filters);
   const read = useCommsRead<CatalogResponse>(url);
   // The server's `totals` count the result AFTER the status filter; with a
@@ -449,7 +435,7 @@ export function CommsLibraryLead() {
       <LibrarySurface read={read} more={activeMore} filters={filters} draftQ={draftQ} onDraftQ={setDraftQ}
         onFilters={(f) => { setFilters(f); if (f.q !== draftQ) setDraftQ(f.q); }} onOpen={setOpen} onMore={loadMore} triggers={triggers} chipTotals={chipTotals} />
       <DetailDrawer open={open !== null} onClose={() => setOpen(null)} eyebrow="Notification library" title={openItem?.displayName ?? open ?? ""} size="xl">
-        {open && <DetailDrawerBody key={open} itemKey={open} />}
+        {open && <DetailDrawerBody key={open} itemKey={open} onDirty={(d) => { contentDirty.current = d; }} />}
       </DetailDrawer>
     </>
   );

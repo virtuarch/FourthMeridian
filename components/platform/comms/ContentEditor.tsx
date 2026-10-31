@@ -38,15 +38,15 @@ import { OperatorReasonField, EMPTY_OPERATOR_REASON, reasonPayload, type Operato
 import { BTN, BTN_NEUTRAL, BTN_PRIMARY, BTN_QUIET, FIELD } from "../widgets/policy-editor-kit";
 import { TONE_COLOR, ToneBadge } from "../platform-surface";
 import { Segmented } from "../leads/visual-kit";
-import { Chip, FilterSelect, PolicyNote, ReadState, WideTargets, okData, staleData, useCommsRead } from "./comms-kit";
-import { PreviewRendition } from "./LibraryView";
+import { Chip, FilterSelect, PolicyNote, PreviewRendition, ReadState, WideTargets, okData, useCommsRead, useLastGoodRead } from "./comms-kit";
+import { useContentDraft } from "./use-content-draft";
 import { utcStamp } from "./comms-model";
 import {
   BLOCK_KINDS, BLOCK_LABEL, CHANNEL_WORD, CREATED_BY_LABEL, LOCK_TEXT, RENDER_DEBOUNCE_MS, VERSION_STATE_LABEL, VERSION_STATE_TONE,
-  acceptSuggestion, addBlock, aiRemainingText, aiUnavailableText, bodyOfVersion, canAddBlock, canMoveBlock, canRemoveBlock, changeRows, charCount, diffBodies,
-  discardSuggestion, draftFrom, editBlock, editDraft, editorControls, editorFields, expiryText, insertToken, insertablePlaceholders, isRestorable, issueGate,
-  legOptions, linkPlaceholders, liveText, lockedLegReason, moveBlock, notesByCategory, placeIssues, placeholderHint, provenanceText, rebaseDraft, removeBlock,
-  setField, settleSave, writeRefusalText,
+  acceptSuggestion, addBlock, aiAcceptWhy, aiRemainingText, bodyOfVersion, canAddBlock, canMoveBlock, canRemoveBlock, changeRows, charCount, diffBodies,
+  discardSuggestion, draftFrom, editBlock, editorControls, editorFields, expiryText, insertToken, insertablePlaceholders, isRestorable, issueGate,
+  legOptions, linkPlaceholders, liveText, lockedLegReason, moveBlock, notesByCategory, placeIssues, placeholderHint, provenanceText, removeBlock,
+  guardDiscard, setField, writeRefusalText,
   type Control, type DiffRow, type Draft, type EditorField, type LegOption,
 } from "./content-model";
 
@@ -129,35 +129,43 @@ function Sub({ title, children, hint }: { title: string; children: ReactNode; hi
  * (no `content` on the detail). A definition with no email / in-app leg, or a
  * content-locked one, shows the lock and no control.
  */
-export function ContentPanel({ detail }: { detail: DetailV11 }) {
+export function ContentPanel({ detail, onDirty, onLiveChanged }: { detail: DetailV11; onDirty?: (dirty: boolean) => void; onLiveChanged?: () => void }) {
   const legs = legOptions(detail);
   const first = legs.find((l) => l.editable) ?? legs[0] ?? null;
   const [leg, setLeg] = useState<{ channel: EditableChannel; variant: string } | null>(first ? { channel: first.channel, variant: first.variants[0] } : null);
   const dirty = useRef(false);
-  const read = useCommsRead<VersionsResponse>(leg ? versionsUrl(detail.key, leg.channel, leg.variant) : null);
+  // The last good stream stays mounted through a failed reload (503 / 429 / 401 / network): the draft is never lost.
+  const v = useLastGoodRead<VersionsResponse>(leg ? versionsUrl(detail.key, leg.channel, leg.variant) : null);
   if (detail.content === undefined) return null;
   if (!leg || legs.length === 0) {
     return <LockedNote reason={lockedLegReason(detail)} />;
   }
   const choose = (next: { channel: EditableChannel; variant: string }) => {
     if (next.channel === leg.channel && next.variant === leg.variant) return;
-    if (dirty.current && !window.confirm("Discard your unsaved content changes?")) return;
+    if (!guardDiscard(dirty.current, (t) => window.confirm(t))) return;
     dirty.current = false;
+    onDirty?.(false);
     setLeg(next);
   };
   const current = legs.find((l) => l.channel === leg.channel)!;
-  const data = okData(read) ?? staleData(read);
+  const data = v.data;
   return (
     <div className="flex min-w-0 flex-col gap-3" data-content-panel={detail.key}>
       <LegPicker legs={legs} leg={leg} current={current} onChoose={choose} />
       {detail.divergesFrom === "connection-attention" && (
         <PolicyNote>Editing this changes the notification bell and email copy only — the Connections page keeps its own wording.</PolicyNote>
       )}
-      {!data ? <ReadState read={read} what="this message’s content" /> : (
-        <ContentEditor key={`${leg.channel}|${leg.variant}`} itemKey={detail.key} channel={leg.channel} variant={leg.variant} data={data}
-          refreshing={read.loading} onReload={() => read.retry?.()} onDirty={(d) => { dirty.current = d; }} />
+      {data && v.failure && !v.failure.loading && (
+        <div role="alert" className="flex min-w-0 flex-wrap items-center gap-2 text-[11px]" style={{ color: TONE_COLOR.warn }} data-reload-failed>
+          <span className="min-w-0 flex-1">Couldn’t read the latest content: {writeRefusalText(v.failure.result)} Your text is kept in the editor.</span>
+          <button type="button" onClick={() => v.read.retry?.()} className={BTN} style={BTN_NEUTRAL}><RefreshCw size={11} aria-hidden /> Retry</button>
+        </div>
       )}
-      {data && !read.loading && read.result.kind !== "ok" && <ReadState read={read} what="the latest content" />}
+      {!data ? <ReadState read={v.read} what="this message’s content" /> : (
+        <ContentEditor key={`${leg.channel}|${leg.variant}`} itemKey={detail.key} channel={leg.channel} variant={leg.variant} data={data}
+          refreshing={v.read.loading} loadCount={v.loads} onReload={() => v.read.retry?.()} onLiveChanged={onLiveChanged}
+          onDirty={(d) => { dirty.current = d; onDirty?.(d); }} />
+      )}
     </div>
   );
 }
@@ -189,7 +197,7 @@ function LegPicker({ legs, leg, current, onChoose }: {
       )}
       {current.variants.length > 1 && (
         <div className="min-w-[10rem] flex-1 sm:max-w-xs">
-          <FilterSelect label="Variant" value={leg.variant} anyLabel="Default" options={current.variants.map((v) => ({ value: v, label: v }))}
+          <FilterSelect label="Variant" value={leg.variant} includeAny={false} options={current.variants.map((v) => ({ value: v, label: v }))}
             onChange={(v) => onChoose({ channel: leg.channel, variant: v ?? current.variants[0] })} />
         </div>
       )}
@@ -209,36 +217,46 @@ export interface ContentEditorProps {
   itemKey: string;
   channel: EditableChannel;
   variant: string;
+  /** The LAST GOOD stream read (a failed reload keeps it). */
   data: VersionsResponse;
   refreshing: boolean;
+  /** Successful reads of the stream so far: a conflict resolves only when this rises. */
+  loadCount?: number;
   onReload: () => void;
   onDirty?: (dirty: boolean) => void;
+  /** A publish / restore landed: the drawer re-reads the detail and the preview. */
+  onLiveChanged?: () => void;
 }
 
 export function ContentEditor(p: ContentEditorProps) {
   const { data, channel, variant, itemKey } = p;
   const liveId = data.live.source === "PUBLISHED" ? data.live.versionId : null;
   const liveFromPage = liveId ? data.items.find((v) => v.id === liveId) ?? null : null;
-  const [fetchedLive, setFetchedLive] = useState<TemplateVersionDTO | null>(null);
-  const liveVersion = liveFromPage ?? (fetchedLive && fetchedLive.id === liveId ? fetchedLive : null);
+  const [fetchedLive, setFetchedLive] = useState<{ id: string; v: TemplateVersionDTO | null; error: string | null } | null>(null);
+  const [liveAttempt, setLiveAttempt] = useState(0);
+  const liveVersion = liveFromPage ?? (fetchedLive && fetchedLive.id === liveId ? fetchedLive.v : null);
+  const liveError = !liveFromPage && fetchedLive && fetchedLive.id === liveId ? fetchedLive.error : null;
   const codeDefault: ContentBody = { subject: data.codeDefault.subject, preheader: data.codeDefault.preheader, blocks: data.codeDefault.blocks };
   const liveBody: ContentBody | null = liveId === null ? codeDefault : liveVersion ? bodyOfVersion(liveVersion) : null;
 
-  // The live version is normally on the first page; when not, read it once.
+  // The live version is normally on the first page; when not, read it (with an honest failure + Retry).
   useEffect(() => {
-    if (!liveId || liveFromPage || (fetchedLive && fetchedLive.id === liveId)) return;
+    if (!liveId || liveFromPage) return;
     let alive = true;
-    void readVersion(itemKey, liveId).then((r) => { if (alive && r.kind === "ok") setFetchedLive(r.data); });
+    void readVersion(itemKey, liveId).then((r) => {
+      if (!alive) return;
+      setFetchedLive(r.kind === "ok" ? { id: liveId, v: r.data, error: null } : { id: liveId, v: null, error: writeRefusalText(r) || "The live version couldn’t be read." });
+    });
     return () => { alive = false; };
-  }, [itemKey, liveId, liveFromPage, fetchedLive]);
+  }, [itemKey, liveId, liveFromPage, liveAttempt]);
 
-  const [draft, setDraft] = useState<Draft | null>(() => (liveBody ? draftFrom(liveBody, liveId, data.revision) : null));
-  const [base, setBase] = useState<TemplateVersionDTO | null>(liveVersion);
+  const ed = useContentDraft(() => (liveBody ? { draft: draftFrom(liveBody, liveId, data.revision), base: liveVersion } : null), { loadCount: p.loadCount ?? 0, revision: data.revision });
+  const draft = ed.state?.draft ?? null;
+  const base = ed.state?.base ?? null;
   useEffect(() => {
-    if (draft === null && liveBody) { setDraft(draftFrom(liveBody, liveId, data.revision)); setBase(liveVersion); }
-  }, [draft, liveBody, liveId, liveVersion, data.revision]);
+    if (!ed.state && liveBody) ed.init({ draft: draftFrom(liveBody, liveId, data.revision), base: liveVersion });
+  });
 
-  const [conflict, setConflict] = useState<{ current: number | null } | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState<null | "save" | "publish" | "rollback" | "ai">(null);
   const [savedIssues, setSavedIssues] = useState<ContentIssue[] | null>(null);
@@ -247,17 +265,14 @@ export function ContentEditor(p: ContentEditorProps) {
   const { onDirty } = p;
   useEffect(() => { onDirty?.(draft?.dirty ?? false); }, [draft?.dirty, onDirty]);
 
-  // After a CONFLICT, the operator's reload brings the server's present revision:
-  // keep the text exactly as typed, aim the next write at the new token.
-  const wasRefreshing = useRef(false);
+  // A conflict resolved by a successful reload (the hook rebased the draft): say so once.
+  const hadConflict = useRef(false);
   useEffect(() => {
-    const finished = wasRefreshing.current && !p.refreshing;
-    wasRefreshing.current = p.refreshing;
-    if (!conflict || !draft || !finished) return;
-    setDraft(rebaseDraft(draft, data));
-    setConflict(null);
+    if (ed.conflict) { hadConflict.current = true; return; }
+    if (!hadConflict.current) return;
+    hadConflict.current = false;
     setNotice({ tone: "warn", text: `Reloaded: live is now ${liveText(data.live)}. Your unsaved text is kept — review it against the history, then save again.` });
-  }, [conflict, p.refreshing, data, draft]);
+  }, [ed.conflict, data.live]);
 
   // ── Live check (POST /render, 30/min bucket: debounced + manual) ──
   const [checked, setChecked] = useState<Checked | null>(null);
@@ -290,10 +305,12 @@ export function ContentEditor(p: ContentEditorProps) {
   const current = checked && checked.forBody === bodyJson ? checked : null;
   const liveIssues = current?.issues ?? savedIssues ?? [];
   const gate = issueGate(current?.issues ?? []);
+  /** The freshest revision known: what the operator last saw, from their own writes or the latest read. */
+  const freshRevision = Math.max(draft?.revision ?? 0, data.revision);
 
   const controls = editorControls({
     viewer: data.viewer, locked: data.locked, contentEditable: data.contentEditable, ai: data.ai,
-    dirty: draft?.dirty ?? false, blockingErrors: gate.blocks, conflict: conflict !== null,
+    dirty: draft?.dirty ?? false, blockingErrors: gate.blocks, conflict: ed.conflict !== null,
     base: base ? { id: base.id, state: base.state } : null,
     suggestionExpired: suggestionExpired || (draft?.source.kind === "AI_SUGGESTION" && expiryText(draft.source.expiresAt, Date.now()).expired),
     hasRollbackTarget: data.live.source === "PUBLISHED" || data.items.some(isRestorable),
@@ -308,53 +325,63 @@ export function ContentEditor(p: ContentEditorProps) {
     );
   }
   if (!draft) {
-    return <p role="status" className="flex items-center gap-1.5 py-3 text-xs text-[var(--text-secondary)]"><Loader2 size={12} className="animate-spin" aria-hidden /> Reading the live version…</p>;
+    return liveError ? (
+      <div role="alert" className="flex min-w-0 flex-wrap items-center gap-2 py-3 text-xs" style={{ color: TONE_COLOR.bad }} data-live-read-failed>
+        <span className="min-w-0 flex-1">The live version couldn’t be read: {liveError}</span>
+        <button type="button" onClick={() => { setFetchedLive(null); setLiveAttempt((x) => x + 1); }} className={BTN} style={BTN_NEUTRAL}><RefreshCw size={11} aria-hidden /> Retry</button>
+      </div>
+    ) : <p role="status" className="flex items-center gap-1.5 py-3 text-xs text-[var(--text-secondary)]"><Loader2 size={12} className="animate-spin" aria-hidden /> Reading the live version…</p>;
   }
 
-  const update = (body: ContentBody) => { setDraft(editDraft(draft, body)); setSavedIssues(null); };
+  const update = (fn: (b: ContentBody) => ContentBody) => { ed.edit(fn); setSavedIssues(null); };
 
   const save = async () => {
     setBusy("save"); setNotice(null);
-    const r = await postSaveDraft(itemKey, {
-      expectedRevision: draft.revision,
+    const o = await ed.save((sent) => postSaveDraft(itemKey, {
+      expectedRevision: sent.revision,
       body: {
-        channel, ...(variant !== "default" ? { variant } : {}), parentVersionId: draft.parentVersionId, content: draft.body,
-        source: draft.source.kind === "AI_SUGGESTION" ? { kind: "AI_SUGGESTION", suggestionId: draft.source.suggestionId } : { kind: "MANUAL" },
+        channel, ...(variant !== "default" ? { variant } : {}), parentVersionId: sent.parentVersionId, content: sent.body,
+        source: sent.source.kind === "AI_SUGGESTION" ? { kind: "AI_SUGGESTION", suggestionId: sent.source.suggestionId } : { kind: "MANUAL" },
       },
-    });
+    }));
     setBusy(null);
-    const s = settleSave(draft, r);
-    setDraft(s.draft);
-    if (s.kind === "saved") { setBase(s.version); setSavedIssues(s.version.issues); setSuggestionExpired(false); setNotice({ tone: "ok", text: s.notice }); p.onReload(); }
-    else if (s.kind === "conflict") { setConflict({ current: s.current }); setNotice({ tone: "warn", text: s.notice }); }
-    else if (s.kind === "invalid") { setSavedIssues(s.issues); setChecked({ forBody: bodyJson, issues: s.issues, preview: current?.preview ?? null }); setNotice({ tone: "bad", text: s.notice }); }
-    else { if (s.expired) setSuggestionExpired(true); setNotice({ tone: "bad", text: s.notice }); }
+    if (!o) return;
+    if (o.kind === "saved") {
+      const typedSince = ed.latest()?.draft.dirty ?? false;
+      setSavedIssues(o.version.issues); setSuggestionExpired(false);
+      setNotice({ tone: "ok", text: typedSince ? `${o.notice} Your newer typing is kept as unsaved changes on top of it.` : o.notice });
+      p.onReload();
+    } else if (o.kind === "conflict") setNotice({ tone: "warn", text: o.notice });
+    else if (o.kind === "invalid") { setSavedIssues(o.issues); setNotice({ tone: "bad", text: o.notice }); }
+    else { if (o.expired) setSuggestionExpired(true); setNotice({ tone: "bad", text: o.notice }); }
   };
 
   const openVersion = (v: TemplateVersionDTO) => {
     if (draft.dirty && !window.confirm("Replace your unsaved text with this version?")) return;
-    setDraft(draftFrom(bodyOfVersion(v), v.id, data.revision)); setBase(v); setSavedIssues(v.issues); setSuggestionExpired(false);
+    ed.replace((s) => ({ draft: draftFrom(bodyOfVersion(v), v.id, Math.max(s.draft.revision, data.revision)), base: v }));
+    setSavedIssues(v.issues); setSuggestionExpired(false);
     setNotice({ tone: "ok", text: `Editing from v${v.version}. Saving creates a new draft; nothing changes until you publish.` });
   };
 
-  const afterLiveChange = (text: string, revision: number, newBase: TemplateVersionDTO | null, newBody: ContentBody | null) => {
-    setNotice({ tone: "ok", text });
-    if (draft.dirty) {
-      setDraft({ ...draft, revision });
-      setNotice({ tone: "ok", text: `${text} Your unsaved text is kept in the editor.` });
-    } else if (newBody) {
-      setDraft(draftFrom(newBody, newBase?.id ?? null, revision)); setBase(newBase); setSavedIssues(newBase?.issues ?? null);
-    }
+  const afterLiveChange = (text: string, revision: number, published: TemplateVersionDTO | null, body: ContentBody) => {
+    const keptDirty = ed.latest()?.draft.dirty ?? false;
+    ed.liveChanged({ revision, published, body });
+    if (!keptDirty) setSavedIssues(published?.issues ?? null);
+    setNotice({ tone: "ok", text: keptDirty ? `${text} Your unsaved text is kept in the editor.` : text });
     p.onReload();
+    p.onLiveChanged?.();
   };
 
   const conflictNotice = (r: CommsReadResult<unknown>) => {
-    if (r.kind === "error" && r.code === "CONFLICT") setConflict({ current: r.current ?? null });
+    if (r.kind === "error" && r.code === "CONFLICT") ed.setConflict(r.current ?? null);
   };
+
+  const aiAcceptBlock = draft.dirty ? "Save or discard your changes first: the suggestion is based on the saved version."
+    : null;
 
   return (
     <div className="flex min-w-0 flex-col gap-4" data-content-editor="editable" aria-busy={p.refreshing || undefined}>
-      {conflict && (
+      {ed.conflict && (
         <div role="alert" className="flex min-w-0 flex-wrap items-center gap-2 rounded-[var(--radius-md)] border px-3 py-2 text-xs" style={{ borderColor: TONE_COLOR.warn, color: TONE_COLOR.warn }} data-conflict>
           <span className="min-w-0 flex-1">Someone else changed this; reload. Your unsaved text stays in the editor.</span>
           <button type="button" onClick={p.onReload} disabled={p.refreshing} className={BTN} style={BTN_QUIET} data-reload>
@@ -380,7 +407,7 @@ export function ContentEditor(p: ContentEditorProps) {
 
       <Sub title="Save and publish">
         {draft.source.kind === "AI_SUGGESTION" && (
-          <SuggestionBanner expiresAt={draft.source.expiresAt} onDiscard={() => { setDraft(discardSuggestion(draft)); setSuggestionExpired(false); setNotice(null); }} />
+          <SuggestionBanner expiresAt={draft.source.expiresAt} onDiscard={() => { ed.replace((s) => ({ ...s, draft: discardSuggestion(s.draft) })); setSuggestionExpired(false); setNotice(null); }} />
         )}
         <div className="flex flex-wrap items-center gap-2">
           {controls.save.shown && controls.edit.enabled && (
@@ -389,8 +416,11 @@ export function ContentEditor(p: ContentEditorProps) {
             </button>
           )}
           {draft.dirty && (
-            <button type="button" onClick={() => { if (window.confirm("Discard your unsaved text?")) { setDraft(liveBody ? draftFrom(base ? bodyOfVersion(base) : liveBody, base?.id ?? liveId, draft.revision) : draft); setNotice(null); } }}
-              disabled={busy !== null} className={BTN} style={BTN_NEUTRAL}>
+            <button type="button" onClick={() => {
+              if (!window.confirm("Discard your unsaved text?")) return;
+              ed.replace((s) => ({ ...s, draft: draftFrom(s.base ? bodyOfVersion(s.base) : codeDefault, s.base?.id ?? null, s.draft.revision) }));
+              setNotice(null);
+            }} disabled={busy !== null} className={BTN} style={BTN_NEUTRAL}>
               <X size={11} aria-hidden /> Discard changes
             </button>
           )}
@@ -401,18 +431,18 @@ export function ContentEditor(p: ContentEditorProps) {
         {draft.dirty && controls.edit.enabled && <Why c={controls.save} />}
         <NoticeLine notice={notice} />
         {controls.publish.shown && (
-          <PublishBox itemKey={itemKey} base={base} control={controls.publish} busy={busy === "publish"} revision={draft.revision}
+          <PublishBox key={base?.id ?? "none"} itemKey={itemKey} base={base} control={controls.publish} busy={busy === "publish"} revision={freshRevision}
             onBusy={(b) => setBusy(b ? "publish" : null)}
             onPublished={(v, revision) => afterLiveChange(`Published v${v.version}. Every send from now on uses it; messages already delivered keep their text.`, revision, v, bodyOfVersion(v))}
             onRefused={(r) => { conflictNotice(r); setNotice({ tone: r.kind === "error" && r.code === "CONFLICT" ? "warn" : "bad", text: `Not published: ${writeRefusalText(r)}` }); }} />
         )}
       </Sub>
 
-      <AiBox itemKey={itemKey} data={data} base={base} control={controls.ai} busy={busy === "ai"} onBusy={(b) => setBusy(b ? "ai" : null)}
-        onAccept={(s) => { setDraft(acceptSuggestion(draft, s)); setSuggestionExpired(false); setNotice({ tone: "ok", text: "Suggestion loaded into the editor as an unsaved draft. Review it, then save." }); }} />
+      <AiBox itemKey={itemKey} data={data} base={base} control={controls.ai} busy={busy === "ai"} onBusy={(b) => setBusy(b ? "ai" : null)} acceptBlock={aiAcceptBlock}
+        onAccept={(s) => { ed.replace((st) => ({ ...st, draft: acceptSuggestion(st.draft, s) })); setSuggestionExpired(false); setNotice({ tone: "ok", text: "Suggestion loaded into the editor as an unsaved draft. Review it, then save." }); }} />
 
-      <HistoryBox itemKey={itemKey} channel={channel} variant={variant} data={data} liveBody={liveBody} control={controls.rollback} canEdit={controls.edit.enabled}
-        busy={busy === "rollback"} onBusy={(b) => setBusy(b ? "rollback" : null)} onOpen={openVersion}
+      <HistoryBox key={data.revision} itemKey={itemKey} channel={channel} variant={variant} data={data} liveBody={liveBody} control={controls.rollback} canEdit={controls.edit.enabled}
+        revision={freshRevision} busy={busy === "rollback"} onBusy={(b) => setBusy(b ? "rollback" : null)} onOpen={openVersion}
         onRestored={(text, revision, published) => afterLiveChange(text, revision, published, published ? bodyOfVersion(published) : codeDefault)}
         onRefused={(r) => { conflictNotice(r); setNotice({ tone: "bad", text: `Not restored: ${writeRefusalText(r)}` }); }} />
     </div>
@@ -447,7 +477,8 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
   draft: Draft;
   edit: Control;
   issues: readonly ContentIssue[];
-  onChange: (b: ContentBody) => void;
+  /** An edit as a function of the CURRENT body (never a body captured at render). */
+  onChange: (fn: (b: ContentBody) => ContentBody) => void;
 }) {
   const body = draft.body;
   const fields = editorFields(body, channel, data.limits);
@@ -463,13 +494,13 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
     const cur = fields.find((f) => f.key === focused.key);
     if (!cur) return;
     const r = insertToken(cur.value, name, el?.selectionStart ?? null, el?.selectionEnd ?? null);
-    onChange(setField(body, cur.location, r.value));
+    onChange((b) => setField(b, cur.location, r.value));
     requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(r.caret, r.caret); });
   };
 
   const field = (f: EditorField) => (
     <TextField key={f.key} f={f} issues={placed.field[f.key]} readOnly={ro} registerRef={(el) => { refs.current[f.key] = el; }}
-      onFocus={() => setFocused(f)} onChange={(v) => onChange(setField(body, f.location, v))} />
+      onFocus={() => setFocused(f)} onChange={(v) => onChange((b) => setField(b, f.location, v))} />
   );
   const top = fields.filter((f) => f.location.field !== "block");
 
@@ -489,9 +520,9 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
                 <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">{i + 1} · {BLOCK_LABEL[b.kind] ?? String(b.kind)}</span>
                 {!ro && (
                   <span className="ml-auto flex flex-wrap items-center gap-1">
-                    <IconBtn label={`Move block ${i + 1} up`} disabled={!up.ok} title={up.why} onClick={() => onChange(moveBlock(body, i, -1))}><ArrowUp size={12} aria-hidden /></IconBtn>
-                    <IconBtn label={`Move block ${i + 1} down`} disabled={!down.ok} title={down.why} onClick={() => onChange(moveBlock(body, i, 1))}><ArrowDown size={12} aria-hidden /></IconBtn>
-                    <IconBtn label={`Remove block ${i + 1}`} disabled={!del.ok} title={del.why} onClick={() => onChange(removeBlock(body, i))}><Trash2 size={12} aria-hidden /></IconBtn>
+                    <IconBtn label={`Move block ${i + 1} up`} disabled={!up.ok} title={up.why} onClick={() => onChange((b) => moveBlock(b, i, -1))}><ArrowUp size={12} aria-hidden /></IconBtn>
+                    <IconBtn label={`Move block ${i + 1} down`} disabled={!down.ok} title={down.why} onClick={() => onChange((b) => moveBlock(b, i, 1))}><ArrowDown size={12} aria-hidden /></IconBtn>
+                    <IconBtn label={`Remove block ${i + 1}`} disabled={!del.ok} title={del.why} onClick={() => onChange((b) => removeBlock(b, i))}><Trash2 size={12} aria-hidden /></IconBtn>
                   </span>
                 )}
               </div>
@@ -500,7 +531,7 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
                 <div key={f.key} className="flex min-w-0 items-end gap-1">
                   <div className="min-w-0 flex-1">{field(f)}</div>
                   {!ro && b.kind === "info" && f.location.field === "block" && f.location.prop === "items" && b.items.length > 1 && (
-                    <IconBtn label={`Remove ${f.label.toLowerCase()}`} onClick={() => onChange(editBlock(body, i, "remove-item", (f.location as { itemIndex?: number }).itemIndex))}><X size={12} aria-hidden /></IconBtn>
+                    <IconBtn label={`Remove ${f.label.toLowerCase()}`} onClick={() => onChange((x) => editBlock(x, i, "remove-item", (f.location as { itemIndex?: number }).itemIndex))}><X size={12} aria-hidden /></IconBtn>
                   )}
                 </div>
               ))}
@@ -508,7 +539,7 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
                 <div className="flex min-w-0 flex-col gap-1">
                   <label className="flex min-w-0 flex-col gap-1 text-[11px] text-[var(--text-secondary)]">
                     Button link (a link placeholder — never a typed URL)
-                    <select value={b.link} disabled={ro} onChange={(e) => onChange(setField(body, { field: "block", blockIndex: i, prop: "link" }, e.target.value))}
+                    <select value={b.link} disabled={ro} onChange={(e) => { const link = e.target.value; onChange((x) => setField(x, { field: "block", blockIndex: i, prop: "link" }, link)); }}
                       className={FIELD} style={{ borderColor: "var(--border-hairline)" }} data-cta-link>
                       {!links.some((l) => l.name === b.link) && <option value={b.link}>{b.link ? `Unknown: ${b.link}` : "Choose a link…"}</option>}
                       {links.map((l) => <option key={l.name} value={l.name}>{`{{${l.name}}}`} · sample {l.sample}</option>)}
@@ -519,13 +550,13 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
               )}
               {!ro && b.kind === "info" && (
                 <div className="flex flex-wrap gap-1.5">
-                  <SmallBtn onClick={() => onChange(editBlock(body, i, "add-item"))} disabled={b.items.length >= 8}><Plus size={11} aria-hidden /> Item</SmallBtn>
-                  <SmallBtn onClick={() => onChange(editBlock(body, i, "toggle-title"))}>{b.title === undefined ? "Add title" : "Remove title"}</SmallBtn>
-                  <SmallBtn onClick={() => onChange(editBlock(body, i, "toggle-ordered"))}>{b.ordered ? "Bulleted" : "Numbered"}</SmallBtn>
+                  <SmallBtn onClick={() => onChange((x) => editBlock(x, i, "add-item"))} disabled={b.items.length >= 8}><Plus size={11} aria-hidden /> Item</SmallBtn>
+                  <SmallBtn onClick={() => onChange((x) => editBlock(x, i, "toggle-title"))}>{b.title === undefined ? "Add title" : "Remove title"}</SmallBtn>
+                  <SmallBtn onClick={() => onChange((x) => editBlock(x, i, "toggle-ordered"))}>{b.ordered ? "Bulleted" : "Numbered"}</SmallBtn>
                 </div>
               )}
               {!ro && b.kind === "hero" && (
-                <div className="flex flex-wrap gap-1.5"><SmallBtn onClick={() => onChange(editBlock(body, i, "toggle-greeting"))}>{b.greeting === undefined ? "Add greeting" : "Remove greeting"}</SmallBtn></div>
+                <div className="flex flex-wrap gap-1.5"><SmallBtn onClick={() => onChange((x) => editBlock(x, i, "toggle-greeting"))}>{b.greeting === undefined ? "Add greeting" : "Remove greeting"}</SmallBtn></div>
               )}
             </li>
           );
@@ -535,7 +566,7 @@ function BodyEditor({ data, channel, draft, edit, issues, onChange }: {
         <div className="flex min-w-0 flex-wrap items-center gap-1.5" role="group" aria-label="Add a block" data-add-block>
           {BLOCK_KINDS[channel].map((k) => {
             const a = canAddBlock(body, channel, k, data.limits);
-            return <SmallBtn key={k} disabled={!a.ok} title={a.why ?? undefined} onClick={() => onChange(addBlock(body, channel, k, data.placeholders))}><Plus size={11} aria-hidden /> {BLOCK_LABEL[k]}</SmallBtn>;
+            return <SmallBtn key={k} disabled={!a.ok} title={a.why ?? undefined} onClick={() => onChange((x) => addBlock(x, channel, k, data.placeholders))}><Plus size={11} aria-hidden /> {BLOCK_LABEL[k]}</SmallBtn>;
           })}
           <span className="text-[11px] text-[var(--text-muted)]">{body.blocks.length} / {data.limits.blocks} blocks</span>
         </div>
@@ -683,7 +714,7 @@ function PublishBox({ itemKey, base, control, busy, revision, onBusy, onPublishe
     <div className="flex min-w-0 flex-col gap-2 border-t border-[var(--border-hairline)] pt-3" data-publish>
       {!open ? (
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => setOpen(true)} disabled={!control.enabled || busy} className={BTN} style={BTN_PRIMARY} data-publish-open>
+          <button type="button" onClick={() => { setReason(EMPTY_OPERATOR_REASON); setAck(false); setExtra(null); setOpen(true); }} disabled={!control.enabled || busy} className={BTN} style={BTN_PRIMARY} data-publish-open>
             <Upload size={11} aria-hidden /> Publish{base && base.state === "DRAFT" ? ` v${base.version}` : ""}…
           </button>
           <Why c={control} />
@@ -708,7 +739,7 @@ function PublishBox({ itemKey, base, control, busy, revision, onBusy, onPublishe
             <button type="button" onClick={() => void go()} disabled={busy || !r || (needAck && !ack) || errors.length > 0} className={BTN} style={BTN_PRIMARY} data-publish-confirm>
               {busy ? <Loader2 size={11} className="animate-spin" aria-hidden /> : <Check size={11} aria-hidden />} Publish
             </button>
-            <button type="button" onClick={() => { setOpen(false); setExtra(null); }} disabled={busy} className={BTN} style={BTN_NEUTRAL}><X size={11} aria-hidden /> Cancel</button>
+            <button type="button" onClick={() => { setOpen(false); setExtra(null); setAck(false); setReason(EMPTY_OPERATOR_REASON); }} disabled={busy} className={BTN} style={BTN_NEUTRAL}><X size={11} aria-hidden /> Cancel</button>
           </div>
         </div>
       )}
@@ -718,7 +749,7 @@ function PublishBox({ itemKey, base, control, busy, revision, onBusy, onPublishe
 
 // ── AI ──────────────────────────────────────────────────────────────────────────
 
-function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept }: {
+function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept, acceptBlock }: {
   itemKey: string;
   data: VersionsResponse;
   base: TemplateVersionDTO | null;
@@ -726,6 +757,8 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept }: {
   busy: boolean;
   onBusy: (b: boolean) => void;
   onAccept: (s: AiSuggestResult) => void;
+  /** Why Accept is off right now (unsaved edits), else null. */
+  acceptBlock: string | null;
 }) {
   const [mode, setMode] = useState<AiSuggestMode>("POLISH");
   const [tone, setTone] = useState<AiTone>("NEUTRAL");
@@ -742,6 +775,7 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept }: {
     else setFailure({ text: writeRefusalText(r), ...(r.kind === "error" && r.issues ? { issues: r.issues } : {}) });
   };
   const exp = result ? expiryText(result.expiresAt, Date.now()) : null;
+  const acceptWhy = result ? aiAcceptWhy(result, base, acceptBlock, exp?.expired ?? false) : null;
   return (
     <Sub title="Polish with Fourth Meridian AI" hint={remaining ? <span className="text-[11px] tabular-nums text-[var(--text-muted)]" data-ai-remaining>{remaining}</span> : undefined}>
       <PolicyNote>The AI sees only this saved version’s text and placeholder names — never customer data. It suggests; it can’t save or publish.</PolicyNote>
@@ -749,7 +783,7 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept }: {
         <WideTargets><Segmented label="AI mode" value={mode} onChange={setMode} options={(["POLISH", "CHECK"] as const).map((m) => ({ id: m, label: MODE_LABEL[m] }))} /></WideTargets>
         {mode === "POLISH" && (
           <div className="min-w-[8rem]">
-            <FilterSelect label="Tone" value={tone === "NEUTRAL" ? null : tone} anyLabel="Neutral" options={AI_TONES.filter((t) => t !== "NEUTRAL").map((t) => ({ value: t, label: TONE_LABEL[t] }))} onChange={(v) => setTone((v as AiTone | null) ?? "NEUTRAL")} />
+            <FilterSelect label="Tone" value={tone} includeAny={false} options={AI_TONES.map((t) => ({ value: t, label: TONE_LABEL[t] }))} onChange={(v) => setTone((v as AiTone | null) ?? "NEUTRAL")} />
           </div>
         )}
         <button type="button" onClick={() => void run()} disabled={!control.enabled || busy} className={BTN} style={BTN_QUIET} data-ai-run>
@@ -781,11 +815,12 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept }: {
             </div>
           )}
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={() => { onAccept(result); setResult(null); }} disabled={result.changes.length === 0 || (exp?.expired ?? false)} className={BTN} style={BTN_PRIMARY} data-ai-accept>
+            <button type="button" onClick={() => { onAccept(result); setResult(null); }} disabled={acceptWhy !== null} className={BTN} style={BTN_PRIMARY} data-ai-accept>
               <Check size={11} aria-hidden /> Accept into editor
             </button>
             <button type="button" onClick={() => setResult(null)} className={BTN} style={BTN_NEUTRAL}><X size={11} aria-hidden /> Discard</button>
           </div>
+          {acceptWhy && <p className="text-[11px] leading-relaxed text-[var(--text-muted)]" data-ai-accept-why>{acceptWhy}</p>}
         </div>
       )}
     </Sub>
@@ -794,8 +829,10 @@ function AiBox({ itemKey, data, base, control, busy, onBusy, onAccept }: {
 
 // ── History ─────────────────────────────────────────────────────────────────────
 
-function HistoryBox({ itemKey, channel, variant, data, liveBody, control, canEdit, busy, onBusy, onOpen, onRestored, onRefused }: {
+function HistoryBox({ itemKey, channel, variant, data, liveBody, control, canEdit, revision, busy, onBusy, onOpen, onRestored, onRefused }: {
   itemKey: string;
+  /** The freshest known stream revision (the same token save / publish send). */
+  revision: number;
   channel: EditableChannel;
   variant: string;
   data: VersionsResponse;
@@ -823,7 +860,7 @@ function HistoryBox({ itemKey, channel, variant, data, liveBody, control, canEdi
     if (!restoring || !r) return;
     onBusy(true);
     const res = await postRollback(itemKey, restoring.id, {
-      reason: r, expectedRevision: data.revision,
+      reason: r, expectedRevision: revision,
       ...(restoring.id === CODE_DEFAULT_VERSION_ID ? { body: { channel, ...(variant !== "default" ? { variant } : {}) } } : {}),
     });
     onBusy(false);
