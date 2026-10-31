@@ -369,14 +369,12 @@ export function stepProbeBudget(allowanceProbes: number, stepMs: number, probesP
 // the same checkpoint, the same proof, the same commit at the proven boundary,
 // bounded by a deadline and by the shared daily cap.
 
-/** Wall clock one sync's ETH history work may use (incremental + one step). */
+/** Wall clock one sync's ETH history work may use (incremental + one step), at most. */
 export const DEFAULT_ETH_INLINE_STEP_MS = 60_000;
 
 /**
- * Sized against the routes that run a wallet sync: every one is ≤ 300 s, and
- * the scheduled sweep starts no wallet after 90 s (wallet-refresh.ts), so
- * 90 s + 60 s + the completing write (≤ 30 s, persistEthFullHistory) leaves
- * well over a minute of headroom. Clamped: a bad value is the default, never
+ * The step's own cap; the WAKE-AWARE deadline below also bounds it by what
+ * is left of the function. Clamped: a bad value is the default, never
  * "unbounded" and never past 120 s.
  */
 export function ethInlineStepMs(env: Record<string, string | undefined> = process.env): number {
@@ -384,9 +382,68 @@ export function ethInlineStepMs(env: Record<string, string | undefined> = proces
 }
 
 /**
+ * The part of a function invocation its work may plan into — the history
+ * worker's WAKE_SAFE_MS (jobs/sol-history-backfill.ts; pinned equal in
+ * eth-history-inline-step.test.ts), i.e. 300 s maxDuration minus 40 s of
+ * margin. Every route and job that syncs a wallet exports maxDuration = 300
+ * (pinned by the census in refresh-execution-reaper.test.ts).
+ */
+export const INLINE_FUNCTION_SAFE_MS = 260_000;
+/** Reserved after the deadline for the completing write (persistEthFullHistory's txTimeoutMs on the worker store). */
+export const INLINE_COMMIT_RESERVE_MS = 30_000;
+/**
+ * Reserved after the deadline for block evidence: the acquisition stops
+ * PROBING at the deadline but still reads header + receipts (one 2-call
+ * request) per change it already proved. At the inline rate (≤ 240 probes
+ * per 60 s, ≥ 2 probes per change ⇒ ≤ 120 requests) that is ≈ 15 s at the
+ * live ~8 requests/s; 20 s with margin.
+ */
+export const INLINE_EVIDENCE_RESERVE_MS = 20_000;
+/** Below this much time an inline run does not start at all (nothing useful fits). */
+export const INLINE_MIN_START_MS = 5_000;
+/**
+ * An incremental suffix stopped by its clock or probe budget is STRUCTURAL —
+ * the gap since the licence is too large for one run, and only grows — when
+ * the run had at least this much of a window. It then hands over to the
+ * resumable rebuild (which converges across runs) instead of refusing on
+ * every sync for ever. With less, the stop says only that THIS run was short
+ * (a late wake): it refuses, touching nothing, and a later run decides.
+ */
+export const INCREMENTAL_STRUCTURAL_WINDOW_MS = 30_000;
+
+/**
+ * The deadline for one sync's ETH history work: the step's own cap from now,
+ * but never past what the FUNCTION has left — measured from when it began
+ * (`budgetStartedAtMs`: the dispatch wake, or the job's start; null for a
+ * request, whose history work starts within seconds of the request) — minus
+ * the evidence and commit reserves, which run after the deadline.
+ */
+export function inlineEthDeadlineMs(a: { nowMs: number; budgetStartedAtMs: number | null; stepMs: number }): number {
+  const start = a.budgetStartedAtMs ?? a.nowMs;
+  return Math.min(a.nowMs + a.stepMs, start + INLINE_FUNCTION_SAFE_MS - INLINE_COMMIT_RESERVE_MS - INLINE_EVIDENCE_RESERVE_MS);
+}
+
+/**
+ * Probes the DEPLOYED inline step is assumed to prove per second — measured
+ * live on Preview (2026-10-30/31: 1,000-1,067 probes in ≈ 240 s ⇒ ≈ 4.2/s;
+ * each probe 3 calls). The worker's 25/s (ETH_BACKFILL_PROBES_PER_SECOND) was
+ * measured from a local run and is NOT used here. Conservative on purpose:
+ * the acquisition stops on the clock anyway, so the rate only caps the calls
+ * a step may plan (an over-estimate costs a halved chunk, an under-estimate
+ * only an early stop).
+ */
+export const DEFAULT_ETH_INLINE_PROBES_PER_SECOND = 4;
+
+/** The inline step's limits: the worker's per-step probe cap, at the measured inline rate. */
+export function ethInlineStepConfig(env: Record<string, string | undefined> = process.env): Pick<EthBackfillWorkerConfig, "probeBudget" | "probesPerSecond"> {
+  return { probeBudget: ethWorkerConfig(env).probeBudget,
+    probesPerSecond: num(env, "ETH_INLINE_PROBES_PER_SECOND", DEFAULT_ETH_INLINE_PROBES_PER_SECOND, 1, 200) };
+}
+
+/**
  * The probes one inline step may plan: what the shared daily allowance pays
- * for (probeBudgetFor, the worker's own arithmetic), capped by the worker's
- * per-step budget and by what the time left proves at the assumed rate.
+ * for (probeBudgetFor, the worker's own arithmetic), capped by the per-step
+ * budget and by what the time left proves at the assumed rate.
  * 0 ⇒ do not start (no allowance, unreadable allowance, or no time).
  */
 export function inlineStepProbeBudget(args: { allowanceCalls: number | null; msLeft: number; cfg: Pick<EthBackfillWorkerConfig, "probeBudget" | "probesPerSecond"> }): number {
@@ -395,14 +452,15 @@ export function inlineStepProbeBudget(args: { allowanceCalls: number | null; msL
 }
 
 /**
- * The deps with a FINITE deadline: the caller's own when it set one, else
- * `defaultMs` from now on the deps' clock. The acquisition's own default is
- * +∞ (eth-history.ts) — no request-time path may rely on it.
+ * The deps with a FINITE deadline: the caller's own when it set one, else the
+ * wake-aware inline deadline (inlineEthDeadlineMs) on the deps' clock. The
+ * acquisition's own default is +∞ (eth-history.ts) — no request-time path may
+ * rely on it.
  */
-export function boundedEthDeps(deps: EthHistoryDeps | undefined, defaultMs: number): EthHistoryDeps & { deadlineMs: number } {
+export function boundedEthDeps(deps: EthHistoryDeps | undefined, opts: { stepMs: number; budgetStartedAtMs: number | null }): EthHistoryDeps & { deadlineMs: number } {
   const d = deps ?? {};
   if (d.deadlineMs !== undefined && Number.isFinite(d.deadlineMs)) return { ...d, deadlineMs: d.deadlineMs };
-  return { ...d, deadlineMs: (d.now ?? Date.now)() + defaultMs };
+  return { ...d, deadlineMs: inlineEthDeadlineMs({ nowMs: (d.now ?? Date.now)(), budgetStartedAtMs: opts.budgetStartedAtMs, stepMs: opts.stepMs }) };
 }
 
 export interface EthBackfillCandidate { accountId: string; connectionId: string; cursor: string | null }

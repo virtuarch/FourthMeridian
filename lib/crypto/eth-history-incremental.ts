@@ -56,6 +56,14 @@ export type EthIncrementalFallback =
   | "BOUNDARY_UNRESOLVED"
   | "CHECKPOINT_MISMATCH"
   | "RECONCILIATION_MISMATCH"
+  /**
+   * The suffix since the licence did not close within a full run's clock /
+   * probe budget (2026-10-31). The gap only grows, so refusing would refuse on
+   * every sync for ever; the resumable rebuild converges across runs instead.
+   * Only raised when the caller says the run had a full window
+   * (`budgetStopFallsBack`) — a short run refuses and decides nothing.
+   */
+  | "SUFFIX_EXCEEDS_RUN"
   | "EXPLICIT_FULL";
 
 export type EthIncrementalOutcome =
@@ -94,6 +102,12 @@ export async function runIncrementalEthHistory(args: {
   store: EthHistoryStore;
   deps?: EthHistoryDeps;
   dryRun?: boolean;
+  /**
+   * The run had a full window (INCREMENTAL_STRUCTURAL_WINDOW_MS or more): a
+   * suffix its clock or probe budget stopped is then a FALLBACK
+   * (SUFFIX_EXCEEDS_RUN), not a refusal. Absent/false: the refusal of before.
+   */
+  budgetStopFallsBack?: boolean;
 }): Promise<EthIncrementalOutcome> {
   const { accountId, instrumentId, store } = args;
   const deps = args.deps ?? {};
@@ -155,6 +169,14 @@ export async function runIncrementalEthHistory(args: {
       reason: `incremental acquisition failed: ${e instanceof Error ? e.message : String(e)}` };
   }
   const { coverage: suffixCoverage, cursor, movements } = acquisition;
+  // A clock / probe-budget stop over a full window: the suffix is larger than
+  // one run can prove (it only grows) ⇒ the resumable rebuild, never a
+  // refusal repeated on every sync. Throttles and provider errors stay refusals.
+  const budgetStopped = cursor.stoppedBecause === "PROBE_BUDGET"
+    || (suffixCoverage.kind !== "COMPLETE" && suffixCoverage.caveats.includes("PAGE_BUDGET_EXHAUSTED"));
+  if (budgetStopped && args.budgetStopFallsBack && (suffixCoverage.kind !== "COMPLETE" || !cursor.reachedWindowStart)) {
+    return fallback("SUFFIX_EXCEEDS_RUN", `suffix from block ${resumeBlock} to ${head.number} did not close within the run (${acquisition.probesUsed} probes)`);
+  }
   if (suffixCoverage.kind !== "COMPLETE") {
     const premisesUnmet = suffixCoverage.kind === "UNKNOWN" && suffixCoverage.caveats.includes("PROOF_PREMISES_UNMET");
     return { kind: "REFUSED", refusal: premisesUnmet ? "PROOF_PREMISES_UNMET" : "COVERAGE_UNLICENSED",

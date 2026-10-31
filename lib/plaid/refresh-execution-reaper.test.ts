@@ -10,7 +10,7 @@
  *     npx tsx --require ./scripts/lib/server-only-preload.cjs lib/plaid/refresh-execution-reaper.test.ts
  */
 
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import {
   reapStaleRefreshExecutions, REFRESH_EXECUTION_MAX_DURATION_MS, STALE_EXECUTION_MARGIN_MS, STALE_EXECUTION_ERROR_SUMMARY,
@@ -110,6 +110,34 @@ async function main() {
     const src = readFileSync(join(process.cwd(), "lib", "jobs", "dispatch.ts"), "utf8");
     check("production binds it to the system principal (the operational ledger's authority) when nothing is injected",
       /reapStaleRefreshExecutions\(systemDb as unknown as StaleExecutionReapClient, at\)/.test(src));
+  }
+
+  console.log("4. census: the reaper's threshold stays above every caller's maxDuration");
+  {
+    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(join(dir, e.name)) : e.name === "route.ts" ? [join(dir, e.name)] : []);
+    const routes = walk(join(process.cwd(), "app"));
+    const rel = (f: string) => f.slice(process.cwd().length + 1);
+    // Routes that open RefreshExecutions: wallet syncs, Plaid refreshes, job / operator runs.
+    const RUNS = /syncWalletByChain|runFullRefresh|refreshScheduledWallets|runJob\(|dispatchDueJobs|resyncConnection|refreshAll|exchangePublicToken|handlePlaidWebhook|resumeSync/;
+    const durations = routes.map((f) => {
+      const src = readFileSync(f, "utf8");
+      const m = /export const maxDuration\s*=\s*(\d+)/.exec(src);
+      return { f: rel(f), runs: RUNS.test(src), seconds: m ? Number(m[1]) : null };
+    });
+    const runners = durations.filter((d) => d.runs);
+    const missing = runners.filter((d) => d.seconds === null).map((d) => d.f);
+    check(`every route that runs a refresh pins maxDuration explicitly (${runners.length} route(s))`, missing.length === 0 && runners.length >= 10, missing.join(", "));
+    check("…including the wallet sync, the wallet add and the operator Run Now routes (the census is not vacuous)",
+      ["app/api/accounts/[id]/sync/route.ts", "app/api/accounts/wallet/route.ts", "app/api/platform/platform-ops/operations/route.ts"]
+        .every((f) => runners.some((d) => d.f === f && d.seconds === 300)));
+    const longest = Math.max(...durations.map((d) => d.seconds ?? 0));
+    check(`no route may outlive the reaper's notion of a function (longest ${longest} s ≤ ${REFRESH_EXECUTION_MAX_DURATION_MS / 1000} s)`,
+      longest * 1000 <= REFRESH_EXECUTION_MAX_DURATION_MS, durations.filter((d) => (d.seconds ?? 0) * 1000 > REFRESH_EXECUTION_MAX_DURATION_MS).map((d) => d.f).join(", "));
+    check("…and the reap threshold sits strictly above it, with margin", REFRESH_EXECUTION_MAX_DURATION_MS + STALE_EXECUTION_MARGIN_MS > longest * 1000 + 60_000);
+    const vercel = JSON.parse(readFileSync(join(process.cwd(), "vercel.json"), "utf8")) as { functions?: Record<string, { maxDuration?: number }> };
+    const overrides = Object.values(vercel.functions ?? {}).map((v) => v.maxDuration ?? 0);
+    check("vercel.json raises no function past it either", overrides.every((s) => s * 1000 <= REFRESH_EXECUTION_MAX_DURATION_MS));
   }
 
   console.log(failures ? `\nrefresh-execution-reaper: ${failures} FAILED` : "\nrefresh-execution-reaper: all passed");

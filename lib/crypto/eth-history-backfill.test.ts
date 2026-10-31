@@ -162,10 +162,14 @@ async function main() {
     check("the production ETH arm passes the gate, and only the gate",
       /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistoryForSync\(\{ \.\.\.a, client: db, deferFull: ethWorkerEnabled\(\), deps: \{ meter \} \}\)/.test(refresh));
     const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
+    // reconstructEthHistory's body only (the settling helper is declared after it).
+    const body = SYNC.slice(SYNC.indexOf("export async function reconstructEthHistory("), SYNC.indexOf("export function incrementalWindowIsStructural("));
+    const settle = body.indexOf("return incrementalResultForSync(accountId, incremental, args.deferFull === true)!");
     check("the deferral returns before ANY full-rebuild work (acquisition, finalized head, write)",
-      SYNC.indexOf('"FULL_REBUILD_DEFERRED"') > 0 && SYNC.indexOf('"FULL_REBUILD_DEFERRED"') < SYNC.indexOf("finalizedBlockNumber(")
-        && SYNC.indexOf('"FULL_REBUILD_DEFERRED"') < SYNC.indexOf("acquireEthHistory(") && SYNC.indexOf('"FULL_REBUILD_DEFERRED"') < SYNC.indexOf("$transaction"));
-    check("…and only when asked (args.deferFull), so the default path is unchanged", /if \(args\.deferFull\) \{/.test(SYNC));
+      settle > 0 && settle < body.indexOf("finalizedBlockNumber(") && settle < body.indexOf("acquireEthHistory(") && !body.includes("$transaction"));
+    check("…and only when asked (args.deferFull), so the default path is unchanged",
+      /if \(incremental\.kind !== "FALLBACK" \|\| args\.deferFull\)/.test(body) && /if \(!deferFull\) return null;/.test(SYNC)
+        && /refusal: "FULL_REBUILD_DEFERRED"/.test(SYNC.slice(SYNC.indexOf("export function incrementalResultForSync("))));
   }
 
   // ══ 3. FLAG ON — fallback ⇒ queued, nothing written ═══════════════════════

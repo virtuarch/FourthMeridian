@@ -166,7 +166,7 @@ export async function loadJobLedgerFacts(
 export type JobRunner = (
   name: string,
   fn: () => Promise<unknown>,
-  options: { trigger: JobTrigger },
+  options: { trigger: JobTrigger; budgetStartedAt?: Date },
 ) => Promise<unknown>;
 
 export interface DispatchDeps {
@@ -229,7 +229,8 @@ export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<D
 
   for (const job of due) {
     try {
-      await runner(job.name, job.run, { trigger: "cron" });
+      // Every job in this wake shares ONE function invocation (maxDuration): its budget starts at the wake.
+      await runner(job.name, job.run, { trigger: "cron", budgetStartedAt: now });
       dispatched.push({ job: job.name, ok: true });
     } catch (err) {
       if (err instanceof JobAlreadyRunningError) {

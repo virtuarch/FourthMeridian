@@ -26,8 +26,16 @@ import { WEI_PER_GWEI, EARLIEST_PROVABLE_BLOCK, type EthAccountState, type EthRp
 import { reconcileMovementsAgainstBalance, type ChainCoverage, type ChainMovement } from "./chain-movement";
 import {
   queuedCheckpoint, serializeCheckpoint, parseCheckpoint, backfillStatus, boundedEthDeps, inlineStepProbeBudget, probeBudgetFor,
-  ethInlineStepMs, ethWorkerConfig, DEFAULT_ETH_INLINE_STEP_MS, type EthBackfillCheckpoint,
+  ethInlineStepMs, ethInlineStepConfig, inlineEthDeadlineMs, DEFAULT_ETH_INLINE_STEP_MS, DEFAULT_ETH_INLINE_PROBES_PER_SECOND,
+  INLINE_FUNCTION_SAFE_MS, INLINE_COMMIT_RESERVE_MS, INLINE_EVIDENCE_RESERVE_MS, INCREMENTAL_STRUCTURAL_WINDOW_MS, type EthBackfillCheckpoint,
 } from "./eth-history-backfill.core";
+import { incrementalResultForSync, incrementalWindowIsStructural } from "./eth-history-sync";
+import { runIncrementalEthHistory, type EthHistoryStore, type StoredDerivedRow } from "./eth-history-incremental";
+import { acquireEthHistory as acquire, ETH_HISTORY_SOURCE } from "./eth-history";
+import { ETH_RECONSTRUCTION_VERSION, replayEthHistory } from "./eth-history-rows";
+import { baseUnitsToWhole } from "./chain-movement";
+import { runJob, type JobRunWriteClient } from "@/lib/jobs/run";
+import { WAKE_SAFE_MS } from "@/jobs/sol-history-backfill";
 import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore } from "./eth-history-backfill";
 import { reconstructEthHistoryForSync, runInlineEthHistoryStep, type EthSyncImpl } from "./eth-history-backfill.store";
 import type { EthHistoryResult } from "./eth-history-sync";
@@ -37,8 +45,9 @@ import { meterTotal } from "@/lib/usage/provider-budget.core";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
-  if (ok) { passes++; console.log(`  ✓ ${name}`); }
-  else { failures++; console.log(`[FAIL] ${name}`); if (detail) console.log(`        ${detail}`); }
+  // stdout directly: some sections mute console.log around the code under test, never the verdicts.
+  if (ok) { passes++; process.stdout.write(`  ✓ ${name}\n`); }
+  else { failures++; process.stdout.write(`[FAIL] ${name}\n${detail ? `        ${detail}\n` : ""}`); }
 }
 const hex = (n: bigint | number) => "0x" + BigInt(n).toString(16);
 const ETH = (n: number) => BigInt(Math.round(n * 1e9)) * BigInt(1e9);
@@ -113,7 +122,7 @@ const EVENTS: SimEvent[] = [
 ];
 const NOW_ISO = "2026-10-31T05:36:00.000Z";
 const TODAY = "2026-10-31";
-const CFG = ethWorkerConfig({});
+const CFG = ethInlineStepConfig({});
 const queued = () => serializeCheckpoint(queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO));
 
 /** A checkpoint some way into the proof (fast provider, small budget, walk only). */
@@ -247,10 +256,10 @@ async function main() {
   console.log("4. no inline path reaches the acquisition without a finite deadline");
   {
     const T = 1_000_000;
-    const b = boundedEthDeps(undefined, 60_000);
+    const b = boundedEthDeps(undefined, { stepMs: 60_000, budgetStartedAtMs: null });
     check("boundedEthDeps: none ⇒ now + default", Number.isFinite(b.deadlineMs) && b.deadlineMs > Date.now() && b.deadlineMs <= Date.now() + 60_000);
-    check("…an infinite one is replaced on the deps' own clock", boundedEthDeps({ deadlineMs: Infinity, now: () => T }, 5_000).deadlineMs === T + 5_000);
-    check("…a caller's finite one is kept", boundedEthDeps({ deadlineMs: T + 1, now: () => T }, 5_000).deadlineMs === T + 1);
+    check("…an infinite one is replaced on the deps' own clock", boundedEthDeps({ deadlineMs: Infinity, now: () => T }, { stepMs: 5_000, budgetStartedAtMs: null }).deadlineMs === T + 5_000);
+    check("…a caller's finite one is kept", boundedEthDeps({ deadlineMs: T + 1, now: () => T }, { stepMs: 5_000, budgetStartedAtMs: null }).deadlineMs === T + 1);
     check("the inline step is 60 s by default and clamped (never unbounded, never past 120 s)",
       ethInlineStepMs({}) === 60_000 && ethInlineStepMs({ ETH_INLINE_STEP_MS: "999999999" }) === 60_000 && ethInlineStepMs({ ETH_INLINE_STEP_MS: "Infinity" }) === 60_000
         && ethInlineStepMs({ ETH_INLINE_STEP_MS: "90000" }) === 90_000);
@@ -268,7 +277,7 @@ async function main() {
       JSON.stringify(seen));
     const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
     check("reconstructEthHistory hands its acquisitions the BOUNDED deps only (args.deps never reaches one)",
-      /const deps = boundedEthDeps\(args\.deps, ethInlineStepMs\(\)\);/.test(SYNC) && (SYNC.match(/args\.deps/g) ?? []).length === 1);
+      /const deps = boundedEthDeps\(args\.deps, \{ stepMs: ethInlineStepMs\(\), budgetStartedAtMs: currentBudgetStartedAtMs\(\) \}\);/.test(SYNC) && (SYNC.match(/args\.deps/g) ?? []).length === 1);
     // Every production call of the worker step passes a deadline. (The store's
     // reconstructEthHistoryResumable forwards `args.deps` untouched; its one
     // caller is the job's `eth.reconstruct`, scanned here.)
@@ -354,8 +363,190 @@ async function main() {
       /const st = walletHistoryCheckpointStatus\(/.test(sd) && !/found\.chain !== "ETH"/.test(sd) && !/historyWorkerEnabledFor\("ETH"\)/.test(sd));
   }
 
+  await wakeAware();
+  await probeRate();
+  await incrementalNeverLocksOut();
+
   console.log(`\neth-history-inline-step: ${passes} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);
+}
+
+// ══ 8. WAKE-AWARE DEADLINE ═══════════════════════════════════════════════════
+async function wakeAware() {
+  console.log("8. the inline deadline is wake-aware and reserves the evidence + commit after it");
+  const now = Date.parse(NOW_ISO);
+  const RESERVED = INLINE_COMMIT_RESERVE_MS + INLINE_EVIDENCE_RESERVE_MS;
+  check("a request (no wake): the step's own 60 s", inlineEthDeadlineMs({ nowMs: now, budgetStartedAtMs: null, stepMs: 60_000 }) === now + 60_000);
+  check("…early in a wake: still 60 s", inlineEthDeadlineMs({ nowMs: now, budgetStartedAtMs: now - 100_000, stepMs: 60_000 }) === now + 60_000);
+  check("…late in a wake (started 200 s ago): only what the function has left, minus the reserves",
+    inlineEthDeadlineMs({ nowMs: now, budgetStartedAtMs: now - 200_000, stepMs: 60_000 }) === now - 200_000 + INLINE_FUNCTION_SAFE_MS - RESERVED);
+  check("…the function's safe budget is the worker's WAKE_SAFE_MS (300 s maxDuration − 40 s)", INLINE_FUNCTION_SAFE_MS === WAKE_SAFE_MS && WAKE_SAFE_MS < 300_000);
+  const store = code(read("lib", "crypto", "eth-history-backfill.store.ts"));
+  const tx = Number(/txTimeoutMs: (\d[\d_]*)/.exec(store)?.[1].replace(/_/g, "") ?? NaN);
+  check("…the commit reserve covers the completing write's transaction timeout", INLINE_COMMIT_RESERVE_MS >= tx && tx > 0, `${INLINE_COMMIT_RESERVE_MS} vs ${tx}`);
+  check("…the evidence reserve covers ≥ 2 s per 10 planned probes at the inline rate (header + receipts per change)",
+    INLINE_EVIDENCE_RESERVE_MS >= (CFG.probesPerSecond * 60 / 2) * 125, String(INLINE_EVIDENCE_RESERVE_MS));
+
+  // Through runJob: the wake's start reaches the sync entry point.
+  const fakeJobs: JobRunWriteClient = { jobRun: { create: async () => ({ id: "jr" }), update: async () => ({}), updateMany: async () => ({ count: 0 }) } };
+  const calls: string[] = [];
+  const spy = (pending: "IMPORTING" | null): EthSyncImpl => ({
+    reconstruct: async (a) => { calls.push(`incremental:${a.deps!.deadlineMs! - Date.now()}`); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", fallbackReason: "NO_COVERAGE" }; },
+    pending: async () => pending, enqueue: async () => true,
+    step: async (a) => { calls.push(`step:${a.deps.deadlineMs - Date.now()}`); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; },
+  });
+  const sync = (impl: EthSyncImpl) => reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: {} as never, deferFull: false }, impl);
+  const log = console.log; console.log = () => {};
+  let late: EthHistoryResult[] = []; let mid: EthHistoryResult | null = null;
+  try {
+    late = await runJob("sync-crypto", async () => [await sync(spy(null)), await sync(spy("IMPORTING"))], { client: fakeJobs, budgetStartedAt: new Date(Date.now() - 250_000) });
+    const lateCalls = calls.length;
+    check("a LATE wake (250 s in): no incremental, no step, no request — and nothing queued", lateCalls === 0 && late.every((r) => !r.ok), calls.join());
+    check("…reported as this run's shortness, not as a failure of the history",
+      late[0].refusal === "COVERAGE_UNLICENSED" && late[1].refusal === "FULL_REBUILD_IN_PROGRESS" && late.every((r) => /no time left/.test(r.reason ?? "")));
+    mid = await runJob("sync-crypto", () => sync(spy("IMPORTING")), { client: fakeJobs, budgetStartedAt: new Date(Date.now() - 190_000) });
+  } finally { console.log = log; }
+  const left = Number(calls[0]?.split(":")[1]);
+  check("a wake 190 s in: the step gets only the ~20 s the function has left before its reserves (not 60 s)",
+    calls.length === 1 && calls[0].startsWith("step:") && left <= 260_000 - 190_000 - RESERVED + 1_000 && left > 0 && !mid!.ok, calls.join());
+  // (The dispatch wake handing its instant to every job is pinned in lib/jobs/dispatch.test.ts §5.)
+}
+
+// ══ 9. CALIBRATED INLINE PROBE RATE ══════════════════════════════════════════
+async function probeRate() {
+  console.log("9. the inline probe rate is the measured live one, not the local worker's");
+  check("default 4 probes/s (Preview 10-30/31: 1,000–1,067 probes in ≈ 240 s)", DEFAULT_ETH_INLINE_PROBES_PER_SECOND === 4 && ethInlineStepConfig({}).probesPerSecond === 4);
+  check("…clamped (a bad value is the default)", ethInlineStepConfig({ ETH_INLINE_PROBES_PER_SECOND: "0" }).probesPerSecond === 4
+    && ethInlineStepConfig({ ETH_INLINE_PROBES_PER_SECOND: "1e9" }).probesPerSecond === 4 && ethInlineStepConfig({ ETH_INLINE_PROBES_PER_SECOND: "10" }).probesPerSecond === 10);
+  check("…so a 60 s step plans 240 probes, not the worker's 1,500", inlineStepProbeBudget({ allowanceCalls: 1_000_000, msLeft: 60_000, cfg: CFG }) === 240);
+  const STORE = code(read("lib", "crypto", "eth-history-backfill.store.ts"));
+  check("the inline step defaults to that config", /const cfg = args\.cfg \?\? ethInlineStepConfig\(\);/.test(STORE));
+}
+
+// ══ 10. A LARGE INCREMENTAL SUFFIX NEVER LOCKS THE WALLET OUT ═══════════════
+const OLD_HEAD = 25_000_000;
+const NEW_HEAD = 26_000_000;
+const T_NEW = Date.UTC(2026, 9, 31, 4, 0, 0) / 1000;
+const dayOf = (b: number) => new Date((T_NEW + (b - NEW_HEAD) * 12) * 1000).toISOString().slice(0, 10);
+const LICENSED: SimEvent[] = [
+  { block: FIRST, delta: ETH(1) },
+  { block: 24_000_000, delta: -ETH(0.1) - GAS(10), originated: true, feeWei: GAS(10) },
+];
+// 24 balance changes since the licence: far more than one 60 s run proves at the live rate.
+const GAP: SimEvent[] = Array.from({ length: 24 }, (_, k) => ({ block: OLD_HEAD + 30_000 + k * 39_001, delta: ETH(0.01 * (k + 1)) }));
+
+/** The licensed history at OLD_HEAD (as a full rebuild left it), in an incremental store. */
+async function licensedIncrementalStore() {
+  const sim = simulate({ events: LICENSED, head: OLD_HEAD, headTimeSec: T_NEW - (NEW_HEAD - OLD_HEAD) * 12 });
+  const acq = await acquire({ ownerAddress: OWNER, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock: OLD_HEAD }, { transport: sim.transport });
+  if (acq.coverage.kind !== "COMPLETE") throw new Error("fixture: licence not COMPLETE");
+  const state = { rows: new Map<string, StoredDerivedRow>(), coverage: null as { kind: string; coveredFromISO: string | null; coveredToISO: string | null; source: string } | null };
+  const license = (movements: ChainMovement[], coverage: ChainCoverage & { kind: "COMPLETE" }, anchorWei: bigint, toISO: string) => {
+    const { rows } = replayEthHistory({ accountId: "a1", instrumentId: "inst", movements, coverage,
+      anchor: { observationId: "obs", dateISO: toISO, effectiveDateTimeISO: `${toISO}T00:00:00.000Z`, quantity: baseUnitsToWhole(anchorWei, 18), origin: "OBSERVED", completeness: "observed" },
+      windowFromISO: coverage.fromISO, windowToISO: toISO });
+    state.rows = new Map(rows.map((r) => [r.dateISO, { dateISO: r.dateISO, quantity: r.quantity, completeness: r.basis, version: ETH_RECONSTRUCTION_VERSION }]));
+    state.coverage = { kind: "COMPLETE", coveredFromISO: coverage.fromISO, coveredToISO: coverage.toISO, source: coverage.source };
+  };
+  license(acq.movements, acq.coverage, acq.anchorBalanceWei!, acq.coverage.toISO);
+  const store: EthHistoryStore = {
+    coverage: async () => state.coverage,
+    derivedStats: async (_a, _i, from, to) => {
+      const r = [...state.rows.values()].filter((x) => x.dateISO >= from && x.dateISO <= to);
+      return { count: r.length, notCurrentVersion: r.filter((x) => x.version !== ETH_RECONSTRUCTION_VERSION).length };
+    },
+    derivedRow: async (_a, _i, d) => state.rows.get(d) ?? null,
+    derivedRowsFrom: async (_a, _i, from) => [...state.rows.values()].filter((r) => r.dateISO >= from).sort((x, y) => x.dateISO.localeCompare(y.dateISO)),
+    anchor: async () => ({ id: "obs", date: new Date(`${dayOf(NEW_HEAD)}T00:00:00.000Z`), origin: "OBSERVED", completeness: "observed" }),
+    applySuffix: async ({ deleteDatesISO, insert, coverage }) => {
+      for (const d of deleteDatesISO) state.rows.delete(d);
+      for (const r of insert) state.rows.set(r.dateISO, { dateISO: r.dateISO, quantity: r.quantity, completeness: r.basis, version: ETH_RECONSTRUCTION_VERSION });
+      if (coverage.kind === "COMPLETE") state.coverage = { kind: "COMPLETE", coveredFromISO: coverage.fromISO, coveredToISO: coverage.toISO, source: ETH_HISTORY_SOURCE };
+    },
+  };
+  return { store, state, license };
+}
+
+/** The checkpoint store whose completing write also writes the licence the incremental path reads (persistEthFullHistory's job). */
+class LicensingStore extends MemoryStore {
+  constructor(cursor: string | null, private onWrite: (c: Parameters<EthBackfillStore["complete"]>[0]) => void) { super(cursor); }
+  override async complete(c: Parameters<EthBackfillStore["complete"]>[0]): Promise<EthHistoryResult> {
+    const r = await super.complete(c);
+    if (r.ok) this.onWrite(c);
+    return r;
+  }
+}
+
+async function incrementalNeverLocksOut() {
+  console.log("10. an incremental suffix larger than one run converges (never refused for ever)");
+  const today = dayOf(NEW_HEAD);
+  const setup = async () => {
+    const inc = await licensedIncrementalStore();
+    const clock = { t: Date.parse(`${today}T05:00:00.000Z`) };
+    const sim = simulate({ events: [...LICENSED, ...GAP], head: NEW_HEAD, headTimeSec: T_NEW, clock, msPerCall: 400 });
+    const cp = new LicensingStore(null, (c) => inc.license(c.movements, c.coverage, c.anchorBalanceWei, c.windowToISO));
+    const impl: EthSyncImpl = {
+      // reconstructEthHistory's incremental arm, with this store (the SAME settling helpers production uses).
+      reconstruct: async (a) => {
+        const deps = a.deps as typeof a.deps & { deadlineMs: number };
+        const outcome = await runIncrementalEthHistory({ accountId: "a1", walletAddress: OWNER, instrumentId: "inst", todayISO: a.windowToISO,
+          store: inc.store, deps, budgetStopFallsBack: incrementalWindowIsStructural(deps) });
+        return incrementalResultForSync("a1", outcome, a.deferFull === true)!;
+      },
+      pending: async () => { const c = cp.cp(); if (!c || c.completedAtISO) return null; const st = backfillStatus(c).state; return st === "RECOVERY_REQUIRED" ? null : st; },
+      enqueue: async (_c, id, reason) => {
+        const c = cp.cp(); if (cp.cursor !== null && !c?.completedAtISO) return false;
+        cp.cursor = serializeCheckpoint(queuedCheckpoint(id, reason, new Date(clock.t).toISOString())); return true;
+      },
+      step: (a) => runInlineEthHistoryStep({ accountId: a.accountId, store: cp, todayISO: a.todayISO, deps: a.deps, allowanceCalls: 1_000_000 }),
+    };
+    const sync = (deps: Partial<Parameters<typeof reconstructEthHistoryForSync>[0]["deps"]> = {}) =>
+      reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: today, windowToISO: today, client: {} as never, deferFull: false,
+        deps: { transport: sim.transport, batchSize: 3, now: () => clock.t, ...deps } }, impl);
+    return { inc, clock, sim, cp, sync };
+  };
+  const log = console.log; console.log = () => {};
+  try {
+    // A short run (a late wake: 10 s) is NOT structural: it refuses and touches nothing.
+    {
+      const { cp, clock, sync, inc } = await setup();
+      const before = JSON.stringify(inc.state.coverage);
+      const r = await sync({ deadlineMs: clock.t + 10_000 });
+      console.log = log;
+      check("a SHORT run whose suffix does not close refuses — no checkpoint queued, licence untouched (its shortness decides nothing)",
+        !r.ok && r.refusal === "COVERAGE_UNLICENSED" && cp.cursor === null && JSON.stringify(inc.state.coverage) === before, `${r.refusal} ${r.reason}`);
+      console.log = () => {};
+    }
+    const { cp, clock, sync, inc } = await setup();
+    const results: EthHistoryResult[] = [];
+    for (let i = 0; i < 150; i++) {
+      const r = await sync();
+      results.push(r);
+      if (r.ok) break;
+      clock.t += 6 * 3_600_000;
+    }
+    console.log = log;
+    const first = results[0];
+    check("a FULL run whose suffix does not close FALLS BACK (SUFFIX_EXCEEDS_RUN) into the resumable rebuild, queued at once",
+      first.refusal === "FULL_REBUILD_IN_PROGRESS" || first.fallbackReason === "SUFFIX_EXCEEDS_RUN" || /SUFFIX_EXCEEDS_RUN/.test(cp.cp()?.reason ?? ""),
+      `${first.refusal} ${first.reason} / cp ${cp.cp()?.reason}`);
+    check("…the queued generation names the cause", cp.cp()?.reason === "SUFFIX_EXCEEDS_RUN");
+    check("…no sync was ever refused for coverage (the old permanent lockout)", results.every((r) => r.refusal !== "COVERAGE_UNLICENSED"), results.map((r) => r.refusal).join(","));
+    const done = results.at(-1)!;
+    check(`…and the wallet CONVERGES: COMPLETE after ${results.length} bounded syncs, the new licence reaching the new head`,
+      done.ok && done.mode === "FULL" && results.length > 2 && inc.state.coverage?.coveredToISO === today && cp.writes.length === 1,
+      `${done.refusal} ${done.reason} (${results.length} runs) cov ${JSON.stringify(inc.state.coverage)}`);
+    const balance = [...LICENSED, ...GAP].reduce((a, e) => a + e.delta, BigInt(0));
+    check("…its movements reconcile to the head balance in wei", cp.writes[0]?.anchorBalanceWei === balance && reconcileMovementsAgainstBalance(cp.writes[0].movements, balance).reconciles);
+    clock.t += 3_600_000;
+    console.log = () => {};
+    const after = await sync();
+    console.log = log;
+    check("…after which the INCREMENTAL path serves the wallet again (cheap, no rebuild queued)",
+      after.ok && (after.mode === "NO_CHANGE" || after.mode === "INCREMENTAL") && cp.cp()?.completedAtISO !== null, `${after.refusal} ${after.reason} ${after.mode}`);
+  } finally { console.log = log; }
+  check("the structural-window threshold leaves a late wake's few seconds out, and a full run in",
+    INCREMENTAL_STRUCTURAL_WINDOW_MS > INLINE_EVIDENCE_RESERVE_MS && INCREMENTAL_STRUCTURAL_WINDOW_MS <= DEFAULT_ETH_INLINE_STEP_MS / 2);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

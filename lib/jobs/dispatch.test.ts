@@ -152,12 +152,14 @@ async function main(): Promise<void> {
 
   // ── 5. Execution through the runner, in registry order, trigger "cron" ────
   {
-    const ran: string[] = []; const triggers: string[] = [];
+    const ran: string[] = []; const triggers: string[] = []; const budgets: Array<Date | undefined> = [];
     const jobs = fakeJobs();
     const result = await muteConsole(() => dispatchDueJobs(NOW, {
       jobs, facts: facts({}), policies: policiesFor(jobs),
-      runner: async (name, fn, options) => { ran.push(name); triggers.push(options.trigger); return fn(); },
+      runner: async (name, fn, options) => { ran.push(name); triggers.push(options.trigger); budgets.push(options.budgetStartedAt); return fn(); },
     }));
+    // 2026-10-31: every job of a wake shares ONE function invocation — the inline ETH step sizes its deadline from it.
+    check("every job is handed the WAKE's instant as its budget start", budgets.length === 3 && budgets.every((d) => d === NOW));
     check("every due job executes through the runner (runJob seam)", ran.join() === "a,b,c");
     check("sequencing follows registry order", ran[0] === "a" && ran[1] === "b" && ran[2] === "c");
     check("trigger is \"cron\"", triggers.every((t) => t === "cron"));

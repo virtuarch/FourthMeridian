@@ -18,9 +18,10 @@ import { btcHistoryLink as historyLink, readHistoryCheckpoint, casHistoryCheckpo
 import { reconstructEthHistory, persistEthFullHistory, type EthHistoryResult } from "./eth-history-sync";
 import type { EthHistoryDeps } from "./eth-history";
 import {
-  parseCheckpoint, queuedCheckpoint, serializeCheckpoint, backfillStatus, boundedEthDeps, ethInlineStepMs, ethWorkerConfig, inlineStepProbeBudget,
-  type EthBackfillState, type EthBackfillWorkerConfig,
+  parseCheckpoint, queuedCheckpoint, serializeCheckpoint, backfillStatus, boundedEthDeps, ethInlineStepMs, ethInlineStepConfig, inlineStepProbeBudget,
+  INLINE_MIN_START_MS, type EthBackfillState, type EthBackfillWorkerConfig,
 } from "./eth-history-backfill.core";
+import { currentBudgetStartedAtMs } from "@/lib/jobs/run";
 import { workerConfig } from "./sol-backfill-worker.core";
 import { providerCallsOn, ALCHEMY_USAGE_PROVIDER, meterTotal } from "@/lib/usage/provider-budget";
 import { readErc20Section, carriedTokens } from "./erc20-history.core";
@@ -81,8 +82,11 @@ const PRODUCTION_IMPL: EthSyncImpl = {
 
 /**
  * What `refreshWalletHistory` calls for ETH. Every path here runs under a
- * FINITE deadline (boundedEthDeps: the caller's, else ETH_INLINE_STEP_MS from
- * now) — never the acquisition's +∞ default.
+ * FINITE deadline (boundedEthDeps: the caller's, else the wake-aware inline
+ * deadline — ETH_INLINE_STEP_MS from now, never past the function's safe
+ * budget minus the evidence and commit reserves) — never the acquisition's +∞
+ * default. An incremental suffix too large for a full run falls back
+ * (SUFFIX_EXCEEDS_RUN) into the same resumable path, so it converges.
  *
  * `deferFull` false (the worker does not carry Ethereum) — 2026-10-31: the
  * FULL rebuild is NEVER run inline any more. It used to be: an unbounded walk
@@ -107,7 +111,11 @@ export async function reconstructEthHistoryForSync(
   impl: EthSyncImpl = PRODUCTION_IMPL,
 ): Promise<EthHistoryResult> {
   const { accountId, windowFromISO, windowToISO } = args;
-  const deps = boundedEthDeps(args.deps, ethInlineStepMs());
+  // WAKE-AWARE: bounded by the step's cap AND by what the function has left
+  // (the dispatch wake's start when under a job), minus the evidence and
+  // commit reserves that run after the deadline (inlineEthDeadlineMs).
+  const deps = boundedEthDeps(args.deps, { stepMs: ethInlineStepMs(), budgetStartedAtMs: currentBudgetStartedAtMs() });
+  const clock = deps.now ?? Date.now;
 
   let pending: EthBackfillState | null = null;
   try { pending = await impl.pending(args.client, accountId); }
@@ -118,6 +126,13 @@ export async function reconstructEthHistoryForSync(
   if (pending && args.deferFull) {
     return { accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED",
       reason: `history is carried by the background worker (${pending.toLowerCase()})` };
+  }
+  if (deps.deadlineMs - clock() < INLINE_MIN_START_MS) {
+    // A late wake: nothing useful fits. No request is sent and nothing is
+    // written or queued — this run's shortness decides nothing; a later one runs.
+    return pending
+      ? { accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS", mode: "FULL", reason: "no time left in this run; history continues on a later sync" }
+      : { accountId, ok: false, refusal: "COVERAGE_UNLICENSED", mode: "INCREMENTAL", reason: "no time left in this run; history refreshes on a later sync" };
   }
   if (!pending) {
     const r = await impl.reconstruct({ accountId, windowFromISO, windowToISO, deps, deferFull: true });
@@ -152,7 +167,7 @@ export async function runInlineEthHistoryStep(args: {
 }): Promise<EthHistoryResult> {
   const { accountId, deps } = args;
   const now = deps.now ?? Date.now;
-  const cfg = args.cfg ?? ethWorkerConfig();
+  const cfg = args.cfg ?? ethInlineStepConfig();
   const inProgress = (reason: string): EthHistoryResult => ({ accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS", mode: "FULL", reason });
   const probeBudget = inlineStepProbeBudget({ allowanceCalls: args.allowanceCalls, msLeft: deps.deadlineMs - now(), cfg });
   if (probeBudget <= 0) {

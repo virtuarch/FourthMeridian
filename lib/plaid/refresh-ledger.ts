@@ -703,10 +703,10 @@ export function activeLedger(): LedgerHandle | null {
 // ── The stale-execution reaper (2026-10-31) ──────────────────────────────────
 
 /**
- * The longest a refresh execution can legitimately run: every route and job
- * that opens one exports `maxDuration` ≤ 300 s (a route that exports none gets
- * the platform default, which is no longer). A process the platform kills at
- * that limit never reaches its completion write.
+ * The longest a refresh execution can legitimately run: every route that
+ * opens one exports `maxDuration` ≤ 300 s explicitly, and vercel.json raises
+ * none — both pinned by the census in refresh-execution-reaper.test.ts. A
+ * process the platform kills at that limit never reaches its completion write.
  */
 export const REFRESH_EXECUTION_MAX_DURATION_MS = 300_000;
 /** Margin past it before an open row is called dead (clock skew, a slow completion write). */

@@ -206,9 +206,21 @@ export interface CurrentJobRun {
   jobName: string;
   trigger: JobTrigger;
   executionId: string;
+  /**
+   * When the enclosing FUNCTION invocation began (ms) — for a dispatch wake,
+   * the wake (sync-banks and close-archive may have run first); otherwise the
+   * job's own start. Work that must finish inside the function's maxDuration
+   * (the inline ETH history step) sizes its deadline from this, not from "now".
+   */
+  budgetStartedAtMs: number;
 }
 
 const jobRunContext = new AsyncLocalStorage<CurrentJobRun>();
+
+/** When the function this code runs in began, if it runs under a job (null: a request — its caller's own start applies). */
+export function currentBudgetStartedAtMs(): number | null {
+  return jobRunContext.getStore()?.budgetStartedAtMs ?? null;
+}
 
 /** The JobRun this code is executing under, or null outside any runJob body. */
 export function currentJobRun(): CurrentJobRun | null {
@@ -245,6 +257,8 @@ export interface RunJobOptions {
   trigger?: JobTrigger;
   /** Test injection seam — production callers never pass this. */
   client?: JobRunWriteClient;
+  /** When the enclosing function invocation began (the dispatch wake passes its instant). Default: this job's start. */
+  budgetStartedAt?: Date;
 }
 
 /**
@@ -300,7 +314,8 @@ export async function runJob<T>(
   }
 
   try {
-    const result = await jobRunContext.run({ id: runId, jobName, trigger, executionId }, fn);
+    const budgetStartedAtMs = Math.min(options?.budgetStartedAt?.getTime() ?? startedAt.getTime(), startedAt.getTime());
+    const result = await jobRunContext.run({ id: runId, jobName, trigger, executionId, budgetStartedAtMs }, fn);
     await complete({
       status: "succeeded",
       completedAt: new Date(),

@@ -35,6 +35,11 @@ import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { checkManualRefreshCooldown, markManualRefreshed } from "@/lib/plaid/refreshCooldown";
 
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export const runtime = "nodejs";
 
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
