@@ -16,8 +16,12 @@ import { randomBytes } from "node:crypto";
 import {
   buildWebhookHealth,
   decideReconciliation,
+  currentRow,
+  DuplicateProviderEvent,
   handleResendWebhook,
   isExpectedUnmatchable,
+  MEASURING_EVENT_WHERE,
+  UNMATCHED_GRACE_MS,
   MAX_WEBHOOK_BODY_BYTES,
   type LedgerRowRead,
   type ProviderEventInsert,
@@ -44,10 +48,13 @@ const NOW_S = String(Math.floor(NOW.getTime() / 1000));
 const EMAIL = "customer.person@example.com";
 const SUBJECT = "Your secret subject line";
 
-function body(type: string, emailId = "msg-resend-1", extra: Record<string, unknown> = {}): string {
+/** An event instant older than the F2 grace window (an id genuinely unknown here is stored UNMATCHED). */
+const OLD_EVENT_AT = "2026-10-31T11:40:00.000Z";
+
+function body(type: string, emailId = "msg-resend-1", extra: Record<string, unknown> = {}, createdAt = "2026-10-31T11:59:30.000Z"): string {
   return JSON.stringify({
     type,
-    created_at: "2026-10-31T11:59:30.000Z",
+    created_at: createdAt,
     data: { email_id: emailId, to: [EMAIL], from: "Fourth Meridian <noreply@fourthmeridian.com>", subject: SUBJECT, created_at: "2026-10-31T11:58:00.000Z", ...extra },
   });
 }
@@ -59,24 +66,57 @@ function signed(raw: string, opts: { id?: string; ts?: string; secret?: string; 
   return { rawBody: raw, headers: { id, timestamp: ts, signature: opts.sigHeader ? opts.sigHeader(good) : `v1,${good}` } };
 }
 
-/** An in-memory store: CommsDelivery rows + CommsProviderEvent with providerEventId UNIQUE. */
-function memStore(seed: LedgerRowRead[] = []) {
+/**
+ * An in-memory store with TRANSACTION semantics close to Postgres READ COMMITTED: each
+ * transaction stages its writes and applies them at commit; reads see committed rows only;
+ * an appended row's createdAt is the transaction's START (Postgres now()); lockMessage is a
+ * per-key mutex held to commit (pg_advisory_xact_lock); a repeated svix id throws
+ * DuplicateProviderEvent and rolls the transaction back.
+ */
+function memStore(seed: LedgerRowRead[] = [], opts: { beforeCommit?: (types: string[]) => Promise<void> } = {}) {
   const ledger = [...seed];
   const events = new Map<string, ProviderEventInsert>();
-  let t = 0;
-  const calls = { find: 0, commit: 0 };
+  const locks = new Map<string, Promise<void>>();
+  let clock = 0;
+  const calls = { find: 0, commit: 0, locks: 0 };
   const store: ProviderEventStore = {
-    async findMessageRows(pmid) {
-      calls.find++;
-      const hit = ledger.filter((r) => r.providerMessageId === pmid).sort((a, b) => b.attempt - a.attempt)[0];
-      return hit ? ledger.filter((r) => r.channel === hit.channel && r.messageKey === hit.messageKey) : [];
-    },
-    async commit(event, append) {
+    async transaction(fn) {
       calls.commit++;
-      if (events.has(event.providerEventId)) return "duplicate";
-      events.set(event.providerEventId, event);
-      if (append) ledger.push({ ...append, id: `row-${ledger.length + 1}`, createdAt: new Date(NOW.getTime() + ++t * 1000) });
-      return "stored";
+      const startedAt = new Date(NOW.getTime() + ++clock * 1000);
+      const staged: { events: ProviderEventInsert[]; rows: CommsDeliveryRow[] } = { events: [], rows: [] };
+      const releases: Array<() => void> = [];
+      try {
+        const out = await fn({
+          async findMessageRows(pmid) {
+            calls.find++;
+            await new Promise((r) => setImmediate(r));
+            const hit = ledger.filter((r) => r.providerMessageId === pmid).sort((a, b) => b.attempt - a.attempt)[0];
+            return hit ? ledger.filter((r) => r.channel === hit.channel && r.messageKey === hit.messageKey) : [];
+          },
+          async lockMessage(key) {
+            calls.locks++;
+            const prior = locks.get(key) ?? Promise.resolve();
+            let release!: () => void;
+            const mine = new Promise<void>((r) => { release = r; });
+            locks.set(key, prior.then(() => mine));
+            releases.push(release);
+            await prior;
+          },
+          async insertEvent(event) {
+            if (events.has(event.providerEventId) || staged.events.some((e) => e.providerEventId === event.providerEventId)) throw new DuplicateProviderEvent();
+            staged.events.push(event);
+          },
+          async appendLedgerRow(row) { staged.rows.push(row); },
+        });
+        await opts.beforeCommit?.(staged.events.map((e) => e.type));
+        // A concurrent duplicate that committed first wins (the UNIQUE index at commit).
+        for (const e of staged.events) if (events.has(e.providerEventId)) throw new DuplicateProviderEvent();
+        for (const e of staged.events) events.set(e.providerEventId, e);
+        for (const r of staged.rows) ledger.push({ ...r, id: `row-${ledger.length + 1}`, createdAt: startedAt });
+        return out;
+      } finally {
+        for (const r of releases) r();
+      }
     },
   };
   return { store, ledger, events, calls };
@@ -238,7 +278,7 @@ async function main() {
   console.log("\nunknown message ids");
   {
     const s = memStore([acceptedRow()]);
-    const r = await handleResendWebhook(signed(body("email.delivered", "msg-never-sent")), deps(s.store).d);
+    const r = await handleResendWebhook(signed(body("email.delivered", "msg-never-sent", {}, OLD_EVENT_AT)), deps(s.store).d);
     const ev = [...s.events.values()][0];
     check("an unknown provider id: stored UNMATCHED, deliveryId/messageKey null, NO ledger row created",
       r.body.outcome === "UNMATCHED" && ev?.deliveryId === null && ev?.messageKey === null && s.ledger.length === 1, { r: r.body, ev });
@@ -284,7 +324,7 @@ async function main() {
   {
     const s = memStore([acceptedRow({ recipientUserId: null, recipientHash: "hmac-already-on-ledger" })]);
     await handleResendWebhook(signed(body("email.bounced", "msg-resend-1", { bounce: { message: `550 ${EMAIL} does not exist`, type: "Permanent", subType: "General" } })), deps(s.store).d);
-    await handleResendWebhook(signed(body("email.delivered", "msg-unknown-2")), deps(s.store).d);
+    await handleResendWebhook(signed(body("email.delivered", "msg-unknown-2", {}, OLD_EVENT_AT)), deps(s.store).d);
     const blob = JSON.stringify({ events: [...s.events.values()], ledger: s.ledger });
     check("no recipient address, subject, from or bounce text anywhere in what was stored",
       !blob.includes(EMAIL) && !blob.includes("customer.person") && !blob.includes(SUBJECT) && !blob.includes("noreply@") && !blob.includes("does not exist") && !blob.includes("Permanent"));
@@ -301,10 +341,13 @@ async function main() {
   console.log("\nthe route adapter (static)");
   {
     const route = readFileSync(join(process.cwd(), "app/api/webhooks/resend/route.ts"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
-    check("reads the RAW body with req.text() and never req.json()", /await req\.text\(\)/.test(route) && !/req\.json\(\)/.test(route));
+    check("reads the RAW body through the capped streaming reader and never req.json() / req.text()",
+      /readBodyCapped\(req\.body, MAX_WEBHOOK_BODY_BYTES\)/.test(route) && !/req\.json\(\)/.test(route) && !/req\.text\(\)/.test(route));
     check("inert check precedes the rate limiter, which precedes the body read",
-      route.indexOf("webhookConfigured(secret)") > -1 && route.indexOf("webhookConfigured(secret)") < route.indexOf("limitByIp(") && route.indexOf("limitByIp(") < route.indexOf("req.text()"));
-    check("a Content-Length over the cap is refused before the body is read", route.indexOf("MAX_WEBHOOK_BODY_BYTES") > -1 && route.indexOf("MAX_WEBHOOK_BODY_BYTES") < route.indexOf("req.text()"));
+      route.indexOf("webhookConfigured(secret)") > -1 && route.indexOf("webhookConfigured(secret)") < route.indexOf("limitByIp(") && route.indexOf("limitByIp(") < route.indexOf("readBodyCapped("));
+    check("a Content-Length over the cap is refused before the body is read", route.indexOf("MAX_WEBHOOK_BODY_BYTES") > -1 && route.indexOf("MAX_WEBHOOK_BODY_BYTES") < route.indexOf("readBodyCapped("));
+    check("F6: no // PUBLIC: annotation — the census credits the receiver itself", !/\/\/\s*PUBLIC:/.test(readFileSync(join(process.cwd(), "app/api/webhooks/resend/route.ts"), "utf8")) && /handleResendWebhook\(/.test(route));
+    check("an over-cap streamed body is a 413", /if \(!body\.ok\)[\s\S]{0,160}status: 413/.test(route));
     check("the secret is read from RESEND_WEBHOOK_SECRET and never put in a response or log", /process\.env\.RESEND_WEBHOOK_SECRET/.test(route) && !/console\./.test(route));
   }
 
@@ -332,7 +375,7 @@ async function main() {
     check("an ACCEPTED resend row with no provider id is expected-unmatchable; one with an id is not",
       isExpectedUnmatchable(uncertain) && !isExpectedUnmatchable(acceptedRow()) && !isExpectedUnmatchable({ ...uncertain, status: "FAILED" }));
     const s = memStore([uncertain]);
-    const r = await handleResendWebhook(signed(body("email.delivered", "msg-other")), deps(s.store).d);
+    const r = await handleResendWebhook(signed(body("email.delivered", "msg-other", {}, OLD_EVENT_AT)), deps(s.store).d);
     check("an event never matches it (UNMATCHED for the event's own id; the uncertain row is untouched)",
       r.body.outcome === "UNMATCHED" && s.ledger.length === 1 && s.ledger[0].status === "ACCEPTED");
     const h = buildWebhookHealth({ lastReceivedAt: null, byTypeOutcome: [], rejections: [], acceptedWithoutEvent: 4, acceptedUncertain: 2 }, true, 7);
@@ -367,6 +410,75 @@ async function main() {
       ["accepted", "failed", "dead", "suppressed", "captured", "cancelled"].every((k) => k in a.series) && c.totals?.ACCEPTED === 3 && c.totals?.DELIVERED === 2);
     const noProbe = await buildDeliveryAnalytics({ source: { ledgerSince: async () => null, counts: async () => [] }, window: "7d", filters: { channel: null, status: null, template: null }, now: NOW, env: { RESEND_WEBHOOK_SECRET: SECRET } });
     check("a source without the probe never claims delivered", noProbe.measured.delivered === false);
+  }
+
+  console.log("\nREVIEW F1: concurrent events of one message are serialised");
+  {
+    // bounced starts FIRST and holds its commit; delivered starts second while bounced is in flight.
+    let releaseBounced!: () => void;
+    const bouncedHeld = new Promise<void>((r) => { releaseBounced = r; });
+    const s = memStore([acceptedRow()], { beforeCommit: async (types) => { if (types.includes("bounced")) await bouncedHeld; } });
+    const pBounced = handleResendWebhook(signed(body("email.bounced")), deps(s.store).d);
+    await new Promise((r) => setTimeout(r, 5));
+    const pDelivered = handleResendWebhook(signed(body("email.delivered")), deps(s.store).d);
+    await new Promise((r) => setTimeout(r, 5));
+    releaseBounced();
+    const [b, d] = await Promise.all([pBounced, pDelivered]);
+    const appended = s.ledger.slice(1).map((r) => r.status);
+    check("two parallel commits: bounced APPLIED, the late delivered re-reads under the lock and is NO_CHANGE",
+      b.body.outcome === "APPLIED" && d.body.outcome === "NO_CHANGE", { b: b.body, d: d.body });
+    check("exactly one forward row was appended (BOUNCED) — no DELIVERED written after it", appended.join() === "BOUNCED", appended);
+    check("the final status is BOUNCED (rank-aware read)", currentRow(s.ledger)?.status === "BOUNCED");
+    const newest = [...s.ledger].sort((x, y) => y.createdAt.getTime() - x.createdAt.getTime() || (y.id > x.id ? 1 : -1))[0];
+    check("…and by plain newest-row order too (no reliance on the rank tie-break)", newest.status === "BOUNCED", newest.status);
+    check("the message lock was taken by both transactions", s.calls.locks === 2, s.calls);
+  }
+  {
+    // Rank-aware defence: same attempt, BOUNCED older and DELIVERED newer (a pre-fix race result).
+    const raced = [acceptedRow(), acceptedRow({ id: "row-b", status: "BOUNCED", createdAt: new Date("2026-10-31T11:59:00Z") }), acceptedRow({ id: "row-d", status: "DELIVERED", createdAt: new Date("2026-10-31T11:59:30Z") })];
+    check("currentRow ranks within an attempt: BOUNCED beats a newer DELIVERED", currentRow(raced)?.id === "row-b");
+    check("finalAttempts (rollup) is rank-aware too", finalAttempts(raced, raced).map((r) => r.id).join() === "row-b");
+    const r = decideReconciliation({ type: "delivered", providerMessageId: "msg-resend-1", occurredAt: NOW }, raced);
+    check("a further delivered against that history is NO_CHANGE (current = BOUNCED)", r.outcome === "NO_CHANGE");
+    const b2 = decideReconciliation({ type: "bounced", providerMessageId: "msg-resend-1", occurredAt: NOW }, raced);
+    check("a repeated bounced against that history is NO_CHANGE (the decision reads BOUNCED, not the newer DELIVERED)", b2.outcome === "NO_CHANGE", b2);
+    const c = decideReconciliation({ type: "complained", providerMessageId: "msg-resend-1", occurredAt: NOW }, raced);
+    check("complained still moves forward from BOUNCED", c.outcome === "APPLIED" && c.append?.status === "COMPLAINED");
+    const sql = readFileSync(join(process.cwd(), "lib/notifications/delivery/read-store.ts"), "utf8");
+    check("the analytics read orders rank before createdAt within an attempt",
+      /"attempt" DESC,[\s\S]{0,200}CASE "status" WHEN 'COMPLAINED' THEN 3 WHEN 'BOUNCED' THEN 2 WHEN 'DELIVERED' THEN 1 ELSE 0 END DESC,[\s\S]{0,40}"createdAt" DESC/.test(sql));
+    const store = readFileSync(join(process.cwd(), "lib/notifications/delivery/provider-event-store.ts"), "utf8");
+    check("the production lock is a transaction-scoped advisory lock on hashtext(key)", /pg_advisory_xact_lock\(hashtext\(\$\{key\}\)\)/.test(store) && !/pg_advisory_lock\(/.test(store));
+  }
+
+  console.log("\nREVIEW F2: an event that beats its ledger row is retried, not lost");
+  {
+    const s = memStore([]);
+    const req = signed(body("email.delivered", "msg-late-row"), { id: "msg_early_1" });
+    const r = await handleResendWebhook(req, deps(s.store).d);
+    check("no ledger row yet and the event is young: 409 RETRY, NOTHING stored (svix id not consumed)",
+      r.status === 409 && r.body.code === "RETRY" && s.events.size === 0 && s.ledger.length === 0, { r: r.body, n: s.events.size });
+    // The send's after-response ledger write lands; svix redelivers the SAME svix id.
+    s.ledger.push(acceptedRow({ providerMessageId: "msg-late-row", messageKey: "notif-late" }));
+    const again = await handleResendWebhook(req, deps(s.store).d);
+    check("the redelivery (same svix id) now matches and APPLIES — the message reaches DELIVERED",
+      again.status === 200 && again.body.outcome === "APPLIED" && currentRow(s.ledger)?.status === "DELIVERED", again.body);
+    const old = await handleResendWebhook(signed(body("email.delivered", "msg-elsewhere", {}, OLD_EVENT_AT)), deps(s.store).d);
+    check("an unknown id OLDER than the grace window is stored UNMATCHED (bounded: retries stop)", old.status === 200 && old.body.outcome === "UNMATCHED");
+    const edge = new Date(NOW.getTime() - UNMATCHED_GRACE_MS + 1000).toISOString();
+    const young = await handleResendWebhook(signed(body("email.bounced", "msg-elsewhere-2", {}, edge)), deps(s.store).d);
+    check("…one just inside the window is still a 409", young.status === 409);
+    check("the grace is keyed on the event's created_at, not the per-attempt svix timestamp",
+      /now\.getTime\(\) - parsed\.occurredAt\.getTime\(\) < UNMATCHED_GRACE_MS/.test(readFileSync(join(process.cwd(), "lib/notifications/delivery/provider-events.ts"), "utf8")));
+  }
+
+  console.log("\nREVIEW F3: measured.delivered ignores UNMATCHED events");
+  {
+    const matches = (row: { outcome: string }) => row.outcome !== MEASURING_EVENT_WHERE.outcome.not;
+    check("the measuring predicate excludes UNMATCHED and keeps APPLIED / NO_CHANGE / NOTE",
+      !matches({ outcome: "UNMATCHED" }) && ["APPLIED", "NO_CHANGE", "NOTE"].every((o) => matches({ outcome: o })));
+    const rs = readFileSync(join(process.cwd(), "lib/notifications/delivery/read-store.ts"), "utf8");
+    check("read-store's probe applies it", /commsProviderEvent\.findFirst\(\{ where: MEASURING_EVENT_WHERE/.test(rs));
   }
 
   // Type-level: the appended row is a CommsDeliveryRow the production writer accepts.

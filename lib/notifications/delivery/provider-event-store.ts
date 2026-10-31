@@ -7,15 +7,16 @@
  * machine route with no session. Imported lazily, as lib/notifications/
  * delivery/store.ts is, so the receiver stays free of the database at import.
  *
- * COST: the match is two indexed reads (@@index([providerMessageId]), then
- * @@index([messageKey]), ≤ 50 rows); the commit is one transaction of one or
- * two INSERTs. Never selects a payload: none is stored.
+ * COST: one transaction — two indexed reads (@@index([providerMessageId]), then
+ * @@index([messageKey]), ≤ 50 rows), the per-message advisory lock and the same two
+ * reads again, then one or two INSERTs. Never selects a payload: none is stored.
  */
 
 import "server-only";
 import { Prisma } from "@prisma/client";
 import type { CommsDeliveryRow } from "@/lib/notifications/delivery/types";
 import {
+  DuplicateProviderEvent,
   WEBHOOK_REJECTION_UNIT,
   WEBHOOK_USAGE_PROVIDER,
   type LedgerRowRead,
@@ -38,34 +39,51 @@ async function sys() {
   return (await import("@/lib/db")).systemDb;
 }
 
-export const providerEventStore: ProviderEventStore = {
-  async findMessageRows(providerMessageId) {
-    const db = await sys();
-    const hit = await db.commsDelivery.findFirst({
-      where: { providerMessageId },
-      orderBy: [{ attempt: "desc" }, { createdAt: "desc" }],
-      select: { channel: true, messageKey: true },
-    });
-    if (!hit) return [];
-    const rows = await db.commsDelivery.findMany({
-      where: { channel: hit.channel, messageKey: hit.messageKey },
-      orderBy: [{ attempt: "desc" }, { createdAt: "desc" }],
-      take: MESSAGE_ROWS_MAX,
-      select: LEDGER_SELECT,
-    });
-    return rows as unknown as LedgerRowRead[];
-  },
+/** The slice of a Prisma transaction client the reconciliation uses. */
+type Tx = Prisma.TransactionClient;
 
-  async commit(event: ProviderEventInsert, append: CommsDeliveryRow | null) {
+async function findMessageRowsIn(db: Tx, providerMessageId: string): Promise<LedgerRowRead[]> {
+  const hit = await db.commsDelivery.findFirst({
+    where: { providerMessageId },
+    orderBy: [{ attempt: "desc" }, { createdAt: "desc" }],
+    select: { channel: true, messageKey: true },
+  });
+  if (!hit) return [];
+  const rows = await db.commsDelivery.findMany({
+    where: { channel: hit.channel, messageKey: hit.messageKey },
+    orderBy: [{ attempt: "desc" }, { createdAt: "desc" }],
+    take: MESSAGE_ROWS_MAX,
+    select: LEDGER_SELECT,
+  });
+  return rows as unknown as LedgerRowRead[];
+}
+
+/**
+ * REVIEW F1 — the read, the decision and both writes run in ONE interactive transaction
+ * (provider-events.ts reconcileEvent), serialised per message by a transaction-scoped
+ * advisory lock: pg_advisory_xact_lock(hashtext(key)) is released at COMMIT / ROLLBACK, so
+ * it can never leak (and is safe through the transaction-mode pooler). Bounded: a lock wait
+ * is one other event of the same message, itself ≤ 2 INSERTs.
+ */
+export const providerEventStore: ProviderEventStore = {
+  async transaction(fn) {
     const db = await sys();
     try {
-      await db.$transaction(async (tx) => {
-        await tx.commsProviderEvent.createMany({ data: [event] });
-        if (append) await tx.commsDelivery.createMany({ data: [append] });
-      });
-      return "stored";
+      return await db.$transaction(async (tx) => fn({
+        findMessageRows: (pmid) => findMessageRowsIn(tx, pmid),
+        async lockMessage(key) {
+          // Selected as an int: Prisma cannot deserialise pg_advisory_xact_lock's `void`.
+          await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${key}))) AS l`;
+        },
+        async insertEvent(event) {
+          await tx.commsProviderEvent.createMany({ data: [event] });
+        },
+        async appendLedgerRow(row) {
+          await tx.commsDelivery.createMany({ data: [row] });
+        },
+      }), { timeout: 15_000, maxWait: 5_000 });
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return "duplicate";
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") throw new DuplicateProviderEvent();
       throw err;
     }
   },
@@ -99,7 +117,10 @@ export async function readWebhookHealthRows(since: Date, staleBefore: Date | nul
              WHERE "provider" = 'resend' AND "mode" = 'LIVE'
                AND "channel" IN ('EMAIL', 'OPERATOR_EMAIL')
                AND "createdAt" >= (${utcWall(since)})::timestamp AND "createdAt" < (${utcWall(staleBefore)})::timestamp
-             ORDER BY "channel", "messageKey", "attempt" DESC, "createdAt" DESC, "id" DESC
+             ORDER BY "channel", "messageKey", "attempt" DESC,
+                  -- REVIEW F1: rank-aware within an attempt (provider-events.ts STATUS_RANK / currentRow)
+                  CASE "status" WHEN 'COMPLAINED' THEN 3 WHEN 'BOUNCED' THEN 2 WHEN 'DELIVERED' THEN 1 ELSE 0 END DESC,
+                  "createdAt" DESC, "id" DESC
           )
           -- N-b: an ACCEPTED row with NO provider id (an UNCERTAIN_ACCEPTANCE idempotency conflict) can
           -- never match an event — counted apart, never as "awaiting confirmation" (isExpectedUnmatchable).

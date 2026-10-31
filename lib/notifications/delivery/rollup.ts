@@ -72,8 +72,8 @@ export interface RollupTx {
     /** Every attempt (any age) of the batch's messages — to find each message's final attempt. */
     findAttempts(args: {
       where: { messageKey: { in: string[] } };
-      select: { id: true; messageKey: true; channel: true; attempt: true; createdAt: true };
-    }): Promise<Array<Pick<RollupSourceRow, "id" | "messageKey" | "channel" | "attempt" | "createdAt">>>;
+      select: { id: true; messageKey: true; channel: true; attempt: true; createdAt: true; status: true };
+    }): Promise<AttemptRow[]>;
     deleteMany(args: { where: { id: { in: string[] }; createdAt: { lt: Date } } }): Promise<{ count: number }>;
   };
   commsDeliveryDaily: {
@@ -131,9 +131,21 @@ export function groupDaily(rows: readonly RollupSourceRow[]): Array<DailyKey & {
   return [...cells.values()];
 }
 
-/** True when `a` is a LATER attempt than `b` (attempt, then createdAt, then id). */
-function later(a: { attempt: number; createdAt: Date; id: string }, b: { attempt: number; createdAt: Date; id: string }): boolean {
+/** One attempt row as the final-attempt lookup reads it (`status` optional for older fakes ⇒ rank 0). */
+export type AttemptRow = Pick<RollupSourceRow, "id" | "messageKey" | "channel" | "attempt" | "createdAt"> & { status?: string };
+
+/**
+ * Comms Center C review F1 — within one attempt, a verified provider-event status outranks the
+ * row it was appended to whatever their createdAt order (the same ranking as provider-events.ts
+ * STATUS_RANK / currentRow and the analytics read).
+ */
+const EVENT_RANK: Readonly<Record<string, number>> = { DELIVERED: 1, BOUNCED: 2, COMPLAINED: 3 };
+const rankOf = (s: string | undefined) => (s ? EVENT_RANK[s] ?? 0 : 0);
+
+/** True when `a` is a LATER attempt than `b` (attempt, then event rank, then createdAt, then id). */
+function later(a: { attempt: number; createdAt: Date; id: string; status?: string }, b: { attempt: number; createdAt: Date; id: string; status?: string }): boolean {
   return a.attempt !== b.attempt ? a.attempt > b.attempt
+    : rankOf(a.status) !== rankOf(b.status) ? rankOf(a.status) > rankOf(b.status)
     : a.createdAt.getTime() !== b.createdAt.getTime() ? a.createdAt > b.createdAt
     : a.id > b.id;
 }
@@ -141,9 +153,9 @@ function later(a: { attempt: number; createdAt: Date; id: string }, b: { attempt
 /** The batch rows that are their message's final attempt, given every attempt of those messages. Pure. */
 export function finalAttempts<R extends RollupSourceRow>(
   batch: readonly R[],
-  attempts: ReadonlyArray<Pick<RollupSourceRow, "id" | "messageKey" | "channel" | "attempt" | "createdAt">>,
+  attempts: ReadonlyArray<AttemptRow>,
 ): R[] {
-  const best = new Map<string, { id: string; attempt: number; createdAt: Date }>();
+  const best = new Map<string, { id: string; attempt: number; createdAt: Date; status?: string }>();
   for (const a of [...attempts, ...batch]) {
     const k = `${a.channel}\u0000${a.messageKey}`;
     const cur = best.get(k);
@@ -171,7 +183,7 @@ export async function runCommsDeliveryRollup(client: RollupClient, now: Date = n
         if (rows.length === 0) return { rows: 0, counted: 0, test: 0, cells: 0 };
         const attempts = await tx.commsDelivery.findAttempts({
           where: { messageKey: { in: [...new Set(rows.map((r) => r.messageKey))] } },
-          select: { id: true, messageKey: true, channel: true, attempt: true, createdAt: true },
+          select: { id: true, messageKey: true, channel: true, attempt: true, createdAt: true, status: true },
         });
         // A8 — a TEST row is deleted with the batch and never counted (its message is a test message).
         const allFinals = finalAttempts(rows, attempts);
@@ -221,7 +233,7 @@ export function rollupClientFrom(p: PrismaRollupLike): RollupClient {
     $transaction: (fn, options) => p.$transaction((tx) => fn({
       commsDelivery: {
         findMany: (args) => tx.commsDelivery.findMany(args) as Promise<RollupSourceRow[]>,
-        findAttempts: (args) => tx.commsDelivery.findMany(args) as Promise<Array<Pick<RollupSourceRow, "id" | "messageKey" | "channel" | "attempt" | "createdAt">>>,
+        findAttempts: (args) => tx.commsDelivery.findMany(args) as Promise<AttemptRow[]>,
         deleteMany: (args) => tx.commsDelivery.deleteMany(args),
       },
       commsDeliveryDaily: { upsert: (args) => tx.commsDeliveryDaily.upsert(args) },
