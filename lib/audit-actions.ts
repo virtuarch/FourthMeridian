@@ -247,6 +247,11 @@ export const AuditAction = {
   BETA_INVITATION_CREATED:  "BETA_INVITATION_CREATED",
   BETA_INVITATION_RESENT:   "BETA_INVITATION_RESENT",
   BETA_INVITATION_REVOKED:  "BETA_INVITATION_REVOKED",
+  // BETA-REQUEST RISK (2026-10-31) — an operator recorded a review verdict
+  // (UNREVIEWED / LEGITIMATE / SUSPICIOUS) on a request's advisory risk signals.
+  // Appends one BetaAccessRequestReview row in the same transaction; never
+  // changes the request's status or the heuristic evidence. Reason-required.
+  BETA_REQUEST_RISK_REVIEWED: "BETA_REQUEST_RISK_REVIEWED",
   // PO-3C — the LAUNCH axis (development/beta/live), separate from the signup gate.
   PRODUCT_STATUS_CHANGED:   "PRODUCT_STATUS_CHANGED",
   // PO-4A — Platform Operations per-connection controls. An operator triggered a
@@ -528,6 +533,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.BETA_INVITATION_CREATED,
   AuditAction.BETA_INVITATION_RESENT,
   AuditAction.BETA_INVITATION_REVOKED,
+  AuditAction.BETA_REQUEST_RISK_REVIEWED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,

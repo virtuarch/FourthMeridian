@@ -43,6 +43,7 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   BETA_INVITATION_CREATED:      "Sent a direct invitation",
   BETA_INVITATION_RESENT:       "Resent an invitation",
   BETA_INVITATION_REVOKED:      "Revoked an invitation",
+  BETA_REQUEST_RISK_REVIEWED:   "Reviewed a beta request's risk signals",
   PRODUCT_STATUS_CHANGED:       "Changed product status",
   CONNECTION_RESYNC_TRIGGERED:  "Resynced a connection",
   CONNECTION_REAUTH_REQUESTED:  "Requested reauthorization",

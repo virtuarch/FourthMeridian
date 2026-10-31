@@ -199,6 +199,40 @@ console.log("source · PLATFORM SPACES 2.0 — the acquisition route is a GROWTH
   check("the acquisition DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName|requesterKey)\??\s*:/m.test(dto));
 }
 
+console.log("source · BETA-REQUEST RISK — IP and user agent are reduced in SQL; the risk DTO carries no identity");
+{
+  const reader = strip("lib/platform/growth/beta-risk.ts");
+  check("the risk reader reads through fm_system only", /systemDb/.test(reader) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(reader));
+  check("the risk reader never selects ipAddress / userAgent through Prisma", !/\b(ipAddress|userAgent)\s*:\s*true/.test(reader));
+  // Every SQL mention of the two columns sits inside a reducing expression
+  // (IS NULL / btrim / lower / md5 / ~* regex); none is a bare select-list item.
+  const mentions = [...reader.matchAll(/"(ipAddress|userAgent)"/g)].map((m) => reader.slice(Math.max(0, m.index! - 40), m.index! + m[0].length + 12));
+  check("ipAddress / userAgent appear only inside reducing SQL expressions",
+    mentions.length > 0 && mentions.every((s) => /(IS NULL|btrim\(|lower\(|md5\(|~\*|\|\|)/.test(s)) && !/"(ipAddress|userAgent)"\s*(AS\b|,\s*$|,\s*"|\s+FROM\b)/m.test(reader), mentions.join(" ¦ "));
+  check("the network digest is salted per read (not a stable, reversible md5 of the IP)",
+    /randomBytes\(/.test(reader) && /md5\(\$\{salt\}::text \|\| "ipAddress"\)/.test(reader));
+  check("the raw SQL aliases are exactly k / at / source and h / at / net / ua", /AS k,\s*"receivedAt" AS at,\s*"source"/.test(reader) && /AS h,[\s\S]*AS at,[\s\S]*AS net,[\s\S]*AS ua\b/.test(reader));
+  check("the risk reader is bounded (row caps + look-back)", /BETA_RISK_EVENT_CAP/.test(reader) && /BETA_RISK_AUDIT_CAP/.test(reader) && /BETA_RISK_REQUEST_CAP/.test(reader) && /BETA_RISK_LOOKBACK_DAYS/.test(reader));
+  check("the review reader labels operators (username → name → opaque), never by e-mail",
+    /operatorDisplayName\(/.test(reader) && /select:\s*\{\s*id:\s*true,\s*username:\s*true,\s*name:\s*true\s*\}/.test(reader));
+  const dto = strip("lib/platform/growth/beta-risk-types.ts");
+  check("the risk DTO declares no address, IP, user agent, digest or domain field",
+    !/^\s*(userId|email|emailHash|ip|ipAddress|userAgent|ua|uaFamily|network|networkDigest|digest|hash|domain|requesterKey|auditKey|canonical\w*)\??\s*:/m.test(dto));
+  const core = strip("lib/platform/growth/beta-risk-core.ts");
+  const evidence = core.slice(core.indexOf("export interface BetaRiskEvidence"), core.indexOf("export interface BetaRiskAssessment"));
+  check("risk evidence is counts, a window and timestamps only",
+    [...evidence.matchAll(/^\s*(\w+)\??\s*:/gm)].map((m) => m[1]).sort().join() === "code,count,evidence,firstAt,label,lastAt,windowMinutes");
+  const review = strip("lib/platform/growth/beta-risk-review.ts");
+  check("the review writer never updates or deletes (append-only) and never touches the request's state",
+    !/betaAccessRequestReview\.(update|updateMany|upsert|delete|deleteMany)\(/.test(review) && !/betaAccessRequest\.(update|updateMany|upsert|delete|deleteMany)\(/.test(review));
+  check("the review writer audits inside its transaction", /\$transaction\(async \(tx\)/.test(review) && /recordOperatorAction\(tx,/.test(review));
+  const route = strip("app/api/platform/growth-revenue/requests/[id]/risk-review/route.ts");
+  check("the risk-review route: GET is a GROWTH_REVENUE READ gate, POST a FRESH WRITE gate, rate limited, imports no db, no-store",
+    /requirePlatformAccess\(\s*["']GROWTH_REVENUE["']\s*,\s*["']READ["']\s*\)/.test(route)
+    && /requireFreshPlatformAccess\(\s*["']GROWTH_REVENUE["']\s*,\s*["']WRITE["']\s*\)/.test(route)
+    && /limitByUser\(/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+}
+
 console.log("source · PLATFORM SPACES 2.0 — the Security analytics route is a SECURITY_OPS READ gate; the reader aggregates in SQL");
 {
   const route = strip("app/api/platform/security-ops/analytics/route.ts");

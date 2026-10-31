@@ -19,6 +19,13 @@
  *     resend routes already write (`metadata.emailStatus`, the OPS-1
  *     EmailResult verbatim). "sent" means the provider ACCEPTED the message;
  *     Fourth Meridian holds no delivery receipt, and the widget says so.
+ *
+ * BETA-REQUEST RISK (2026-10-31) — pending AND invitation rows carry an
+ * optional ADVISORY `risk` block (lib/platform/growth/beta-risk.ts on
+ * fm_system): a level, reason codes with counts / timestamps, and the latest
+ * operator verdict. Identity-free (no IP, user agent or digest leaves the
+ * reader). If the risk read fails the queue still answers, without `risk`
+ * and with a note — the signals never gate the queue.
  */
 
 import { NextResponse } from "next/server";
@@ -27,6 +34,8 @@ import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { BetaAccessRequestStatus } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
 import type { AcquisitionSource } from "@/lib/marketing/acquisition";
+import { loadBetaRisk } from "@/lib/platform/growth/beta-risk";
+import type { BetaRequestRisk } from "@/lib/platform/growth/beta-risk-types";
 
 export const runtime = "nodejs";
 
@@ -43,6 +52,8 @@ export interface BetaRequestRow {
   lastRequestedAt: string | null;
   /** The FIRST submission's bounded acquisition context, or null. */
   acquisition: AcquisitionSource | null;
+  /** Advisory risk signals + the latest operator verdict; absent when the risk read failed. */
+  risk?: BetaRequestRisk;
 }
 
 /** The last invite EMAIL attempt for an invitation — the OPS-1 EmailResult
@@ -60,12 +71,16 @@ export interface BetaInvitationRow {
   inviteExpiresAt: string | null;
   expired:         boolean;       // inviteExpiresAt < now (derived at read time)
   inviteEmail:     InviteEmailOutcome;
+  /** Advisory risk signals + the latest operator verdict; absent when the risk read failed. */
+  risk?:           BetaRequestRisk;
 }
 
 export interface BetaRequestsResponse {
   pending:     BetaRequestRow[];
   invitations: BetaInvitationRow[];
   counts:      { pending: number; approved: number; denied: number; redeemed: number };
+  /** Plain-language notes about the risk read (a cap reached, or the read unavailable). */
+  riskNotes?:  string[];
 }
 
 export async function GET() {
@@ -127,6 +142,22 @@ export async function GET() {
     });
   }
 
+  // Advisory risk — never fatal to the queue.
+  let riskById = new Map<string, BetaRequestRisk>();
+  let riskNotes: string[] = [];
+  try {
+    const risk = await loadBetaRisk([...pending.map((r) => r.id), ...invitations.map((r) => r.id)], { now });
+    riskById = risk.byId;
+    riskNotes = risk.notes;
+  } catch (e) {
+    console.error("[growth-requests] risk signals unavailable:", (e as Error).message);
+    riskNotes = ["Risk signals are unavailable right now."];
+  }
+  const riskOf = (id: string) => {
+    const r = riskById.get(id);
+    return r ? { risk: r } : {};
+  };
+
   return NextResponse.json({
     pending: pending.map((r) => ({
       id:        r.id,
@@ -139,6 +170,7 @@ export async function GET() {
       requestCount:    statsByEmail.get(r.email)?.count ?? 0,
       lastRequestedAt: statsByEmail.get(r.email)?.last?.toISOString() ?? null,
       acquisition:     firstSourceByEmail.get(r.email) ?? null,
+      ...riskOf(r.id),
     })),
     invitations: invitations.map((r) => ({
       id:              r.id,
@@ -147,6 +179,7 @@ export async function GET() {
       inviteExpiresAt: r.inviteExpiresAt?.toISOString() ?? null,
       expired:         r.inviteExpiresAt != null && r.inviteExpiresAt < now,
       inviteEmail:     inviteEmailById.get(r.id) ?? { status: null, at: null },
+      ...riskOf(r.id),
     })),
     counts: {
       pending:  pendingCount,
@@ -154,5 +187,6 @@ export async function GET() {
       denied:   deniedCount,
       redeemed: redeemedCount,
     },
+    ...(riskNotes.length > 0 ? { riskNotes } : {}),
   } satisfies BetaRequestsResponse);
 }

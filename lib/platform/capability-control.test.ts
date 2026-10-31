@@ -286,6 +286,8 @@ function main() {
       "app/api/platform/growth-revenue/requests/[id]/deny/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/resend/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/revoke/route.ts",
+      // BETA-REQUEST RISK — an operator verdict on a request's advisory signals.
+      "app/api/platform/growth-revenue/requests/[id]/risk-review/route.ts",
       // MERCHANT-OPS AUTHORITY (2026-10-06): merge / dismiss, fresh WRITE on the
       // MERCHANT_OPS area — no longer ordinary Space membership.
       "app/api/merchant-ops/decide/route.ts",
