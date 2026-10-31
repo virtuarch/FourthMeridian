@@ -124,7 +124,7 @@ export interface Viewer {
   canDryRun: boolean;
   canActivate: boolean;
   /** Comms Center B2 — why canActivate is false regardless of grants (the activation hard gate); null when open. */
-  activationDisabledReason: "ACTIVATION_DISABLED_PENDING_HARDENING" | null;
+  activationDisabledReason?: "ACTIVATION_DISABLED_PENDING_HARDENING" | null;
   canApproveAsOwner: boolean;
   canPauseDisable: boolean;
   testSendEligible: boolean;
