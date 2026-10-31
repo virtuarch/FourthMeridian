@@ -130,6 +130,14 @@ export interface EthBackfillCheckpoint {
   /** Set when automatic runs must stop (an operator decides). */
   recovery?: { code: EthBackfillFailureCode; atISO: string } | null;
   /**
+   * Consecutive FULL-window runs whose incremental suffix did not close
+   * (SUFFIX_EXCEEDS_RUN), counted on a COMPLETE checkpoint (2026-10-31). A
+   * COMPLETE history is re-proved (a new generation) only at
+   * SUFFIX_STOPS_BEFORE_REBUILD — never from one slow run. Reset by an
+   * incremental success; absent ⇒ 0.
+   */
+  suffixStops?: number;
+  /**
    * ERC-20 HISTORY — the wallet's token-history section (erc20-history.core.ts
    * owns its shape). Opaque here: native code never reads it, and every native
    * write spreads the checkpoint, so it is carried through unchanged.
@@ -402,14 +410,26 @@ export const INLINE_EVIDENCE_RESERVE_MS = 20_000;
 /** Below this much time an inline run does not start at all (nothing useful fits). */
 export const INLINE_MIN_START_MS = 5_000;
 /**
- * An incremental suffix stopped by its clock or probe budget is STRUCTURAL —
- * the gap since the licence is too large for one run, and only grows — when
- * the run had at least this much of a window. It then hands over to the
- * resumable rebuild (which converges across runs) instead of refusing on
- * every sync for ever. With less, the stop says only that THIS run was short
- * (a late wake): it refuses, touching nothing, and a later run decides.
+ * An incremental suffix stopped by its clock or probe budget COUNTS toward a
+ * re-proof only when the run had the step's FULL cap (within this slack of
+ * ETH_INLINE_STEP_MS — so not a late wake, whose deadline the function's end
+ * truncated). With less, the stop says only that THIS run was short: it
+ * refuses, touching nothing, and a later run decides.
  */
-export const INCREMENTAL_STRUCTURAL_WINDOW_MS = 30_000;
+export const INCREMENTAL_FULL_WINDOW_SLACK_MS = 5_000;
+/**
+ * Full-cap suffix stops in a row before a COMPLETE history is re-proved by
+ * the resumable rebuild (which converges across runs; the gap only grows, so
+ * refusing for ever would lock the wallet out). One or two slow runs are
+ * counted on the checkpoint and refused; the history stays COMPLETE.
+ */
+export const SUFFIX_STOPS_BEFORE_REBUILD = 3;
+
+/** The stops recorded on a checkpoint (a junk value is 0). */
+export function suffixStopsOf(cp: Pick<EthBackfillCheckpoint, "suffixStops"> | null): number {
+  const n = cp?.suffixStops;
+  return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? n : 0;
+}
 
 /**
  * The deadline for one sync's ETH history work: the step's own cap from now,

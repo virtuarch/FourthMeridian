@@ -27,19 +27,19 @@ import { reconcileMovementsAgainstBalance, type ChainCoverage, type ChainMovemen
 import {
   queuedCheckpoint, serializeCheckpoint, parseCheckpoint, backfillStatus, boundedEthDeps, inlineStepProbeBudget, probeBudgetFor,
   ethInlineStepMs, ethInlineStepConfig, inlineEthDeadlineMs, DEFAULT_ETH_INLINE_STEP_MS, DEFAULT_ETH_INLINE_PROBES_PER_SECOND,
-  INLINE_FUNCTION_SAFE_MS, INLINE_COMMIT_RESERVE_MS, INLINE_EVIDENCE_RESERVE_MS, INCREMENTAL_STRUCTURAL_WINDOW_MS, type EthBackfillCheckpoint,
+  INLINE_FUNCTION_SAFE_MS, INLINE_COMMIT_RESERVE_MS, INLINE_EVIDENCE_RESERVE_MS, SUFFIX_STOPS_BEFORE_REBUILD, suffixStopsOf, type EthBackfillCheckpoint,
 } from "./eth-history-backfill.core";
-import { incrementalResultForSync, incrementalWindowIsStructural } from "./eth-history-sync";
-import { runIncrementalEthHistory, type EthHistoryStore, type StoredDerivedRow } from "./eth-history-incremental";
+import { reconstructEthHistory, incrementalWindowIsStructural } from "./eth-history-sync";
+import type { EthHistoryStore, StoredDerivedRow } from "./eth-history-incremental";
 import { acquireEthHistory as acquire, ETH_HISTORY_SOURCE } from "./eth-history";
 import { ETH_RECONSTRUCTION_VERSION, replayEthHistory } from "./eth-history-rows";
 import { baseUnitsToWhole } from "./chain-movement";
 import { runJob, type JobRunWriteClient } from "@/lib/jobs/run";
 import { WAKE_SAFE_MS } from "@/jobs/sol-history-backfill";
 import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore } from "./eth-history-backfill";
-import { reconstructEthHistoryForSync, runInlineEthHistoryStep, type EthSyncImpl } from "./eth-history-backfill.store";
+import { reconstructEthHistoryForSync, runInlineEthHistoryStep, enqueueEthCheckpoint, resetEthSuffixStops, type EthSyncImpl } from "./eth-history-backfill.store";
 import type { EthHistoryResult } from "./eth-history-sync";
-import { walletHistoryCheckpointStatus } from "./history-checkpoint-status";
+import { walletHistoryCheckpointStatus, visibleHistoryImport } from "./history-checkpoint-status";
 import { historyImportText, unprovenHistorySummary } from "@/lib/connections/connection-detail.core";
 import { meterTotal } from "@/lib/usage/provider-budget.core";
 
@@ -190,7 +190,7 @@ async function main() {
         return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }; },
       pending: async () => { const cp = store.cp(); if (!cp || cp.completedAtISO) return null; const s = backfillStatus(cp).state; return s === "RECOVERY_REQUIRED" ? null : s; },
       enqueue: async (_c, id, reason) => { if (store.cursor !== null) return false; store.cursor = serializeCheckpoint(queuedCheckpoint(id, reason, new Date(clock.t).toISOString())); return true; },
-      step: (a) => runInlineEthHistoryStep({ accountId: a.accountId, store, todayISO: a.todayISO, deps: a.deps, allowanceCalls: 1_000_000 }),
+      step: (a) => runInlineEthHistoryStep({ accountId: a.accountId, store, todayISO: a.todayISO, deps: a.deps, allowanceCalls: 1_000_000 }), clearSuffixStops: async () => false,
     };
     let result: EthHistoryResult | null = null;
     let runs = 0; let worstRunMs = 0;
@@ -267,7 +267,7 @@ async function main() {
     const spy: EthSyncImpl = {
       reconstruct: async (a) => { seen.push({ where: "incremental", deadlineMs: a.deps?.deadlineMs }); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", fallbackReason: "NO_COVERAGE" }; },
       pending: async () => null, enqueue: async () => true,
-      step: async (a) => { seen.push({ where: "step", deadlineMs: a.deps.deadlineMs }); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; },
+      step: async (a) => { seen.push({ where: "step", deadlineMs: a.deps.deadlineMs }); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; }, clearSuffixStops: async () => false,
     };
     const t = Date.now();
     await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: {} as never, deferFull: false }, spy);
@@ -360,7 +360,7 @@ async function main() {
       words?.text === "In progress" && words.tone === "progress" && !/automatic|complete/i.test(unprovenHistorySummary(st?.state, false, null)));
     const sd = code(read("lib", "connections", "space-data.ts"));
     check("space-data passes every chain's checkpoint status through — no ETH worker gate hides it",
-      /const st = walletHistoryCheckpointStatus\(/.test(sd) && !/found\.chain !== "ETH"/.test(sd) && !/historyWorkerEnabledFor\("ETH"\)/.test(sd));
+      /const found = walletHistoryCheckpointStatus\(/.test(sd) && !/found\.chain !== "ETH"/.test(sd) && !/historyWorkerEnabledFor\("ETH"\)/.test(sd));
   }
 
   await wakeAware();
@@ -393,7 +393,7 @@ async function wakeAware() {
   const spy = (pending: "IMPORTING" | null): EthSyncImpl => ({
     reconstruct: async (a) => { calls.push(`incremental:${a.deps!.deadlineMs! - Date.now()}`); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", fallbackReason: "NO_COVERAGE" }; },
     pending: async () => pending, enqueue: async () => true,
-    step: async (a) => { calls.push(`step:${a.deps.deadlineMs - Date.now()}`); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; },
+    step: async (a) => { calls.push(`step:${a.deps.deadlineMs - Date.now()}`); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; }, clearSuffixStops: async () => false,
   });
   const sync = (impl: EthSyncImpl) => reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: {} as never, deferFull: false }, impl);
   const log = console.log; console.log = () => {};
@@ -478,75 +478,109 @@ class LicensingStore extends MemoryStore {
 }
 
 async function incrementalNeverLocksOut() {
-  console.log("10. an incremental suffix larger than one run converges (never refused for ever)");
+  console.log("10. an incremental suffix larger than one run converges through the REAL reconstructEthHistory call site; one slow run never re-proves a COMPLETE history");
   const today = dayOf(NEW_HEAD);
-  const setup = async () => {
+  // The REAL sync stack: reconstructEthHistoryForSync → reconstructEthHistory (its incremental call
+  // site and settling) → runIncrementalEthHistory; enqueue / reset are the production rule on this
+  // in-memory checkpoint cell. Only the database is replaced (account row, incremental store, instrument).
+  const setup = async (startCursor: string | null = null, gap: SimEvent[] = GAP) => {
     const inc = await licensedIncrementalStore();
     const clock = { t: Date.parse(`${today}T05:00:00.000Z`) };
-    const sim = simulate({ events: [...LICENSED, ...GAP], head: NEW_HEAD, headTimeSec: T_NEW, clock, msPerCall: 400 });
-    const cp = new LicensingStore(null, (c) => inc.license(c.movements, c.coverage, c.anchorBalanceWei, c.windowToISO));
+    const sim = simulate({ events: [...LICENSED, ...gap], head: NEW_HEAD, headTimeSec: T_NEW, clock, msPerCall: 400 });
+    const cp = new LicensingStore(startCursor, (c) => inc.license(c.movements, c.coverage, c.anchorBalanceWei, c.windowToISO));
+    const account = { financialAccount: { findUnique: async () => ({ id: "a1", walletChain: "ETH", walletAddress: OWNER }) } } as never;
     const impl: EthSyncImpl = {
-      // reconstructEthHistory's incremental arm, with this store (the SAME settling helpers production uses).
-      reconstruct: async (a) => {
-        const deps = a.deps as typeof a.deps & { deadlineMs: number };
-        const outcome = await runIncrementalEthHistory({ accountId: "a1", walletAddress: OWNER, instrumentId: "inst", todayISO: a.windowToISO,
-          store: inc.store, deps, budgetStopFallsBack: incrementalWindowIsStructural(deps) });
-        return incrementalResultForSync("a1", outcome, a.deferFull === true)!;
-      },
+      reconstruct: (a) => reconstructEthHistory({ ...a, client: account, incrementalStore: inc.store, instrumentId: "inst" }),
       pending: async () => { const c = cp.cp(); if (!c || c.completedAtISO) return null; const st = backfillStatus(c).state; return st === "RECOVERY_REQUIRED" ? null : st; },
-      enqueue: async (_c, id, reason) => {
-        const c = cp.cp(); if (cp.cursor !== null && !c?.completedAtISO) return false;
-        cp.cursor = serializeCheckpoint(queuedCheckpoint(id, reason, new Date(clock.t).toISOString())); return true;
-      },
+      enqueue: (_c, id, reason) => enqueueEthCheckpoint(cp, id, reason, new Date(clock.t)),
       step: (a) => runInlineEthHistoryStep({ accountId: a.accountId, store: cp, todayISO: a.todayISO, deps: a.deps, allowanceCalls: 1_000_000 }),
+      clearSuffixStops: (_c, id) => resetEthSuffixStops(cp, id),
     };
     const sync = (deps: Partial<Parameters<typeof reconstructEthHistoryForSync>[0]["deps"]> = {}) =>
       reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: today, windowToISO: today, client: {} as never, deferFull: false,
         deps: { transport: sim.transport, batchSize: 3, now: () => clock.t, ...deps } }, impl);
     return { inc, clock, sim, cp, sync };
   };
+  const completeCp = serializeCheckpoint({ ...queuedCheckpoint("a1", "NO_COVERAGE", NOW_ISO), completedAtISO: NOW_ISO, licensedFromISO: "2017-10-16", licensedToISO: dayOf(OLD_HEAD), movementsFound: 2 });
   const log = console.log; console.log = () => {};
   try {
-    // A short run (a late wake: 10 s) is NOT structural: it refuses and touches nothing.
+    // A short run (a late wake: 10 s) does not even count: it refuses and touches nothing.
     {
-      const { cp, clock, sync, inc } = await setup();
+      const { cp, clock, sync, inc } = await setup(completeCp);
       const before = JSON.stringify(inc.state.coverage);
       const r = await sync({ deadlineMs: clock.t + 10_000 });
-      console.log = log;
-      check("a SHORT run whose suffix does not close refuses — no checkpoint queued, licence untouched (its shortness decides nothing)",
-        !r.ok && r.refusal === "COVERAGE_UNLICENSED" && cp.cursor === null && JSON.stringify(inc.state.coverage) === before, `${r.refusal} ${r.reason}`);
-      console.log = () => {};
+      check("a SHORT run whose suffix does not close refuses — checkpoint byte-identical, licence untouched (its shortness decides nothing)",
+        !r.ok && r.refusal === "COVERAGE_UNLICENSED" && cp.cursor === completeCp && JSON.stringify(inc.state.coverage) === before, `${r.refusal} ${r.reason}`);
     }
-    const { cp, clock, sync, inc } = await setup();
+    // ONE slow full-cap run over a COMPLETE checkpoint: counted, still COMPLETE, nothing queued.
+    {
+      const { cp, sync, inc, clock } = await setup(completeCp);
+      const before = JSON.stringify(inc.state.coverage);
+      const r = await sync();
+      const after = cp.cp()!;
+      check("ONE slow full-cap run over a COMPLETE checkpoint leaves it COMPLETE (counted, not re-queued, no re-walk)",
+        !r.ok && r.refusal === "COVERAGE_UNLICENSED" && after.completedAtISO === NOW_ISO && suffixStopsOf(after) === 1
+          && backfillStatus(after).state === "COMPLETE" && after.licensedFromISO === "2017-10-16" && JSON.stringify(inc.state.coverage) === before,
+        `${r.refusal} ${r.reason} / ${JSON.stringify({ state: backfillStatus(after).state, stops: after.suffixStops })}`);
+      check("…so Connections never says \"Queued\" for that complete history",
+        walletHistoryCheckpointStatus(null, cp.cursor, today)?.state === "COMPLETE");
+      // A second slow run, then an incremental success, resets the count: stops must run IN A ROW.
+      clock.t += 6 * 3_600_000;
+      await sync();
+      const two = suffixStopsOf(cp.cp());
+      const ok = await resetEthSuffixStops(cp, "a1");
+      check("…two in a row are still only counted; an incremental success resets the count", two === 2 && cp.cp()!.completedAtISO !== null && ok && suffixStopsOf(cp.cp()) === 0);
+    }
+    // Through the sync entry point: an incremental SUCCESS resets a count already on the checkpoint.
+    {
+      const counted = serializeCheckpoint({ ...parseCheckpoint(completeCp, "a1")!, suffixStops: 2 });
+      const { cp, sync } = await setup(counted, []); // nothing moved since the licence: the suffix closes
+      const r = await sync();
+      check("a sync whose incremental suffix closes resets the count (stops must run in a row) and leaves the history COMPLETE",
+        r.ok && suffixStopsOf(cp.cp()) === 0 && cp.cp()!.completedAtISO === NOW_ISO, `${r.refusal} ${r.reason} stops ${cp.cp()?.suffixStops}`);
+    }
+    // A wallet licensed before any checkpoint existed: the first stop creates a COMPLETE one to count on.
+    {
+      const { cp, sync } = await setup(null);
+      await sync();
+      check("a licensed wallet with no checkpoint yet gets a COMPLETE one carrying the count (never a QUEUED one)",
+        cp.cp()?.completedAtISO !== null && suffixStopsOf(cp.cp()) === 1 && backfillStatus(cp.cp()!).state === "COMPLETE");
+    }
+    // Repeated full-cap stops: the re-proof is queued on the Nth, and converges.
+    const { cp, clock, sync, inc } = await setup(completeCp);
     const results: EthHistoryResult[] = [];
+    let queuedAt = -1; let queuedReason: string | null = null;
     for (let i = 0; i < 150; i++) {
       const r = await sync();
       results.push(r);
+      if (queuedAt < 0 && cp.cp() && !cp.cp()!.completedAtISO) { queuedAt = i; queuedReason = cp.cp()!.reason; }
       if (r.ok) break;
       clock.t += 6 * 3_600_000;
     }
-    console.log = log;
-    const first = results[0];
-    check("a FULL run whose suffix does not close FALLS BACK (SUFFIX_EXCEEDS_RUN) into the resumable rebuild, queued at once",
-      first.refusal === "FULL_REBUILD_IN_PROGRESS" || first.fallbackReason === "SUFFIX_EXCEEDS_RUN" || /SUFFIX_EXCEEDS_RUN/.test(cp.cp()?.reason ?? ""),
-      `${first.refusal} ${first.reason} / cp ${cp.cp()?.reason}`);
-    check("…the queued generation names the cause", cp.cp()?.reason === "SUFFIX_EXCEEDS_RUN");
-    check("…no sync was ever refused for coverage (the old permanent lockout)", results.every((r) => r.refusal !== "COVERAGE_UNLICENSED"), results.map((r) => r.refusal).join(","));
+    check(`the re-proof is queued on the ${SUFFIX_STOPS_BEFORE_REBUILD}rd full-cap stop in a row — not before`,
+      queuedAt === SUFFIX_STOPS_BEFORE_REBUILD - 1 && results.slice(0, SUFFIX_STOPS_BEFORE_REBUILD - 1).every((r) => r.refusal === "COVERAGE_UNLICENSED"),
+      `queued at run ${queuedAt}: ${results.slice(0, 4).map((r) => r.refusal).join(",")}`);
+    check("…the queued generation names the cause (SUFFIX_EXCEEDS_RUN)", queuedReason === "SUFFIX_EXCEEDS_RUN", String(queuedReason));
+    check("…no sync after the queueing was refused for coverage", results.slice(SUFFIX_STOPS_BEFORE_REBUILD - 1).every((r) => r.refusal !== "COVERAGE_UNLICENSED"), results.map((r) => r.refusal).join(","));
     const done = results.at(-1)!;
     check(`…and the wallet CONVERGES: COMPLETE after ${results.length} bounded syncs, the new licence reaching the new head`,
-      done.ok && done.mode === "FULL" && results.length > 2 && inc.state.coverage?.coveredToISO === today && cp.writes.length === 1,
+      done.ok && done.mode === "FULL" && inc.state.coverage?.coveredToISO === today && cp.writes.length === 1,
       `${done.refusal} ${done.reason} (${results.length} runs) cov ${JSON.stringify(inc.state.coverage)}`);
-    const balance = [...LICENSED, ...GAP].reduce((a, e) => a + e.delta, BigInt(0));
+    const balance = [...LICENSED, ...GAP].reduce((x, e) => x + e.delta, BigInt(0));
     check("…its movements reconcile to the head balance in wei", cp.writes[0]?.anchorBalanceWei === balance && reconcileMovementsAgainstBalance(cp.writes[0].movements, balance).reconciles);
     clock.t += 3_600_000;
-    console.log = () => {};
     const after = await sync();
-    console.log = log;
-    check("…after which the INCREMENTAL path serves the wallet again (cheap, no rebuild queued)",
-      after.ok && (after.mode === "NO_CHANGE" || after.mode === "INCREMENTAL") && cp.cp()?.completedAtISO !== null, `${after.refusal} ${after.reason} ${after.mode}`);
+    check("…after which the INCREMENTAL path serves the wallet again (cheap, no rebuild queued, count 0)",
+      after.ok && (after.mode === "NO_CHANGE" || after.mode === "INCREMENTAL") && cp.cp()?.completedAtISO !== null && suffixStopsOf(cp.cp()) === 0,
+      `${after.refusal} ${after.reason} ${after.mode}`);
   } finally { console.log = log; }
-  check("the structural-window threshold leaves a late wake's few seconds out, and a full run in",
-    INCREMENTAL_STRUCTURAL_WINDOW_MS > INLINE_EVIDENCE_RESERVE_MS && INCREMENTAL_STRUCTURAL_WINDOW_MS <= DEFAULT_ETH_INLINE_STEP_MS / 2);
+  check("a re-proved LICENSED history never reads \"Queued\" / \"Importing\" in Connections; failures still show",
+    visibleHistoryImport({ state: "QUEUED" }, true) === null && visibleHistoryImport({ state: "IMPORTING" }, true) === null
+      && visibleHistoryImport({ state: "FAILED" }, true)?.state === "FAILED" && visibleHistoryImport({ state: "QUEUED" }, false)?.state === "QUEUED");
+  const sd = code(read("lib", "connections", "space-data.ts"));
+  check("…and space-data applies that rule", /const st = visibleHistoryImport\(found, walletHistory\.licensed\);/.test(sd));
+  check("the stop only counts with the step's FULL cap (a late wake's remainder never counts)",
+    incrementalWindowIsStructural({ deadlineMs: 60_000, now: () => 0 }) && !incrementalWindowIsStructural({ deadlineMs: 50_000, now: () => 0 }));
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

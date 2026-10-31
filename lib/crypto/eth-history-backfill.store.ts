@@ -19,7 +19,7 @@ import { reconstructEthHistory, persistEthFullHistory, type EthHistoryResult } f
 import type { EthHistoryDeps } from "./eth-history";
 import {
   parseCheckpoint, queuedCheckpoint, serializeCheckpoint, backfillStatus, boundedEthDeps, ethInlineStepMs, ethInlineStepConfig, inlineStepProbeBudget,
-  INLINE_MIN_START_MS, type EthBackfillState, type EthBackfillWorkerConfig,
+  INLINE_MIN_START_MS, SUFFIX_STOPS_BEFORE_REBUILD, suffixStopsOf, type EthBackfillState, type EthBackfillWorkerConfig,
 } from "./eth-history-backfill.core";
 import { currentBudgetStartedAtMs } from "@/lib/jobs/run";
 import { workerConfig } from "./sol-backfill-worker.core";
@@ -27,26 +27,67 @@ import { providerCallsOn, ALCHEMY_USAGE_PROVIDER, meterTotal } from "@/lib/usage
 import { readErc20Section, carriedTokens } from "./erc20-history.core";
 import { runEthHistoryBackfill, EthCheckpointConflictError, type EthBackfillStore, type EthBackfillDeps, type EthBackfillOutcome } from "./eth-history-backfill";
 
+/** One account's checkpoint cell: read and compare-and-swap (prismaEthBackfillStore's, or any test store). */
+export type EthCheckpointCell = Pick<EthBackfillStore, "readCursor" | "casCursor">;
+
+function prismaCell(client: PrismaClient, connectionId: string): EthCheckpointCell {
+  return { readCursor: () => readHistoryCheckpoint(client, connectionId), casCursor: (e, n) => casHistoryCheckpoint(client, connectionId, e, n) };
+}
+
 /**
- * Hand an account's FULL rebuild to the worker (QUEUED, reason = the
- * incremental fallback). Idempotent: a queued / importing / failed checkpoint
- * is never replaced; a COMPLETE one starts a new generation (the incremental
- * path fell back again). A value that is not this account's ETH checkpoint is
- * never overwritten.
+ * Hand an account's FULL rebuild to the resumable checkpoint (QUEUED, reason
+ * = the incremental fallback); true only when it was queued. Idempotent: a
+ * queued / importing / failed checkpoint is never replaced; a COMPLETE one
+ * starts a new generation (the incremental path fell back again). A value
+ * that is not this account's ETH checkpoint is never overwritten.
+ *
+ * SUFFIX_EXCEEDS_RUN (a full-cap run whose incremental suffix did not close)
+ * is not enough on its own to re-prove a COMPLETE history (2026-10-31): the
+ * stop is COUNTED on the checkpoint, which stays COMPLETE (a wallet licensed
+ * before any checkpoint existed gets a COMPLETE one to count on), and only
+ * the SUFFIX_STOPS_BEFORE_REBUILD-th stop in a row queues the new generation.
+ * An incremental success resets the count (resetEthSuffixStops).
  */
-export async function enqueueEthHistoryBackfill(client: PrismaClient, accountId: string, reason: string, now: Date = new Date()): Promise<boolean> {
-  const link = await historyLink(client, accountId);
-  if (!link) return false;
-  const raw = await readHistoryCheckpoint(client, link.connectionId);
+export async function enqueueEthCheckpoint(cell: EthCheckpointCell, accountId: string, reason: string, now: Date = new Date()): Promise<boolean> {
+  const raw = await cell.readCursor();
   const existing = parseCheckpoint(raw, accountId);
   // ERC-20 HISTORY — a standalone token section (no native checkpoint yet) is
   // not a native checkpoint: it never blocks the queue, and the token section
   // (wherever it lives) is carried into the new document untouched.
   const tokenOnly = readErc20Section(raw, accountId).host === "STANDALONE";
   if (raw !== null && !tokenOnly && !existing?.completedAtISO) return false;
-  const next = { ...queuedCheckpoint(accountId, reason, now.toISOString()), snapshotPendingFromISO: existing?.snapshotPendingFromISO ?? null,
+  const nowISO = now.toISOString();
+  if (reason === "SUFFIX_EXCEEDS_RUN") {
+    const stops = suffixStopsOf(existing) + 1;
+    if (stops < SUFFIX_STOPS_BEFORE_REBUILD) {
+      const complete = existing ?? { ...queuedCheckpoint(accountId, "INCREMENTAL_LICENCE", nowISO), completedAtISO: nowISO, ...carriedTokens(raw, accountId) };
+      await cell.casCursor(raw, serializeCheckpoint({ ...complete, suffixStops: stops }));
+      return false; // counted; the history stays COMPLETE
+    }
+  }
+  const next = { ...queuedCheckpoint(accountId, reason, nowISO), snapshotPendingFromISO: existing?.snapshotPendingFromISO ?? null,
     ...carriedTokens(raw, accountId) };
-  return casHistoryCheckpoint(client, link.connectionId, raw, serializeCheckpoint(next));
+  return cell.casCursor(raw, serializeCheckpoint(next));
+}
+
+/** The production binding of enqueueEthCheckpoint, on the account's history link. */
+export async function enqueueEthHistoryBackfill(client: PrismaClient, accountId: string, reason: string, now: Date = new Date()): Promise<boolean> {
+  const link = await historyLink(client, accountId);
+  return link ? enqueueEthCheckpoint(prismaCell(client, link.connectionId), accountId, reason, now) : false;
+}
+
+/** An incremental success: the suffix stops recorded on the checkpoint no longer run in a row. */
+export async function resetEthSuffixStops(cell: EthCheckpointCell, accountId: string): Promise<boolean> {
+  const raw = await cell.readCursor();
+  const cp = parseCheckpoint(raw, accountId);
+  if (!cp || suffixStopsOf(cp) === 0) return false;
+  return cell.casCursor(raw, serializeCheckpoint({ ...cp, suffixStops: 0 }));
+}
+
+/** The production binding of resetEthSuffixStops. */
+export async function clearEthSuffixStops(client: PrismaClient, accountId: string): Promise<boolean> {
+  const link = await historyLink(client, accountId);
+  return link ? resetEthSuffixStops(prismaCell(client, link.connectionId), accountId) : false;
 }
 
 /**
@@ -75,9 +116,12 @@ export interface EthSyncImpl {
   enqueue: typeof enqueueEthHistoryBackfill;
   /** One bounded worker step for this account, inline (worker off). */
   step: typeof inlineEthHistoryStepForSync;
+  /** After an incremental success: reset the suffix-stop count. */
+  clearSuffixStops: typeof clearEthSuffixStops;
 }
 const PRODUCTION_IMPL: EthSyncImpl = {
   reconstruct: reconstructEthHistory, pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, step: inlineEthHistoryStepForSync,
+  clearSuffixStops: clearEthSuffixStops,
 };
 
 /**
@@ -85,8 +129,10 @@ const PRODUCTION_IMPL: EthSyncImpl = {
  * FINITE deadline (boundedEthDeps: the caller's, else the wake-aware inline
  * deadline — ETH_INLINE_STEP_MS from now, never past the function's safe
  * budget minus the evidence and commit reserves) — never the acquisition's +∞
- * default. An incremental suffix too large for a full run falls back
- * (SUFFIX_EXCEEDS_RUN) into the same resumable path, so it converges.
+ * default. An incremental suffix too large for full runs falls back
+ * (SUFFIX_EXCEEDS_RUN) into the same resumable path — after
+ * SUFFIX_STOPS_BEFORE_REBUILD full-cap stops in a row, never one — so it
+ * converges, and a COMPLETE history is not re-proved because one run was slow.
  *
  * `deferFull` false (the worker does not carry Ethereum) — 2026-10-31: the
  * FULL rebuild is NEVER run inline any more. It used to be: an unbounded walk
@@ -136,11 +182,22 @@ export async function reconstructEthHistoryForSync(
   }
   if (!pending) {
     const r = await impl.reconstruct({ accountId, windowFromISO, windowToISO, deps, deferFull: true });
+    if (r.ok) {
+      try { await impl.clearSuffixStops(args.client, accountId); }
+      catch (e) { console.warn(`[eth-history] could not reset the suffix-stop count for ${accountId} (non-fatal):`, e instanceof Error ? e.message : String(e)); }
+      return r;
+    }
     if (r.refusal !== "FULL_REBUILD_DEFERRED") return r;
-    try { await impl.enqueue(args.client, accountId, r.fallbackReason ?? "UNKNOWN"); }
+    let queued = false;
+    try { queued = await impl.enqueue(args.client, accountId, r.fallbackReason ?? "UNKNOWN"); }
     catch (e) {
       // Nothing was written; the next sync falls back and enqueues again.
       console.warn(`[eth-history] could not queue the full rebuild for ${accountId} (non-fatal):`, e instanceof Error ? e.message : String(e));
+    }
+    if (r.fallbackReason === "SUFFIX_EXCEEDS_RUN" && !queued) {
+      // Counted, not queued: one slow run never re-proves a COMPLETE history.
+      return { accountId, ok: false, refusal: "COVERAGE_UNLICENSED", mode: "INCREMENTAL",
+        reason: `the incremental suffix did not close within a full run; counted (a re-proof is queued only after ${SUFFIX_STOPS_BEFORE_REBUILD} in a row)` };
     }
     if (args.deferFull) return r;
   }

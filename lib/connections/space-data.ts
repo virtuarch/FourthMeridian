@@ -86,7 +86,7 @@ import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
 import { chartReadyRange } from "@/lib/connections/connection-detail.core";
 import { getSnapshotDates } from "@/lib/data/snapshots";
 import { transactionAccountPopulation, type AccountPopulationEntry } from "@/lib/data/transaction-population";
-import { walletHistoryCheckpointStatus, historyWorkerEnabledFor } from "@/lib/crypto/history-checkpoint-status";
+import { walletHistoryCheckpointStatus, historyWorkerEnabledFor, visibleHistoryImport } from "@/lib/crypto/history-checkpoint-status";
 import { readHistoryCheckpoints } from "@/lib/crypto/btc-history-checkpoint";
 import { connectionDestinations } from "@/lib/connections/connection-facts";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
@@ -529,7 +529,8 @@ async function loadConnectionIntelligence(
       // one is shown whatever the worker flag — never hidden into "nothing
       // happening". `facts.historyWorkerEnabled` decides only whether the words
       // promise automatic progress (connection-detail.core.ts).
-      const st = walletHistoryCheckpointStatus(facets?.historyCursor ?? null, facets?.historyCheckpoint ?? null, now.toISOString().slice(0, 10));
+      const found = walletHistoryCheckpointStatus(facets?.historyCursor ?? null, facets?.historyCheckpoint ?? null, now.toISOString().slice(0, 10));
+      const st = visibleHistoryImport(found, walletHistory.licensed);
       walletHistory.historyImport = st ? { state: st.state, provenFromISO: st.historyFromISO, lastProgressAtISO: st.lastProgressAtISO,
         signaturesProcessed: st.signaturesProcessed, lastFailureCode: st.lastFailureCode } : null;
     }

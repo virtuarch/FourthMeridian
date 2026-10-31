@@ -60,8 +60,9 @@ export type EthIncrementalFallback =
    * The suffix since the licence did not close within a full run's clock /
    * probe budget (2026-10-31). The gap only grows, so refusing would refuse on
    * every sync for ever; the resumable rebuild converges across runs instead.
-   * Only raised when the caller says the run had a full window
-   * (`budgetStopFallsBack`) — a short run refuses and decides nothing.
+   * Only raised when the caller says the run had the full cap
+   * (`budgetStopFallsBack`) — a short run refuses and decides nothing — and
+   * only acted on after repeated stops (eth-history-backfill.store.ts).
    */
   | "SUFFIX_EXCEEDS_RUN"
   | "EXPLICIT_FULL";
@@ -103,9 +104,10 @@ export async function runIncrementalEthHistory(args: {
   deps?: EthHistoryDeps;
   dryRun?: boolean;
   /**
-   * The run had a full window (INCREMENTAL_STRUCTURAL_WINDOW_MS or more): a
-   * suffix its clock or probe budget stopped is then a FALLBACK
-   * (SUFFIX_EXCEEDS_RUN), not a refusal. Absent/false: the refusal of before.
+   * The run had the step's FULL cap (incrementalWindowIsStructural): a suffix
+   * its clock or probe budget stopped is then a FALLBACK (SUFFIX_EXCEEDS_RUN),
+   * which the sync COUNTS on the checkpoint and turns into a re-proof only
+   * after SUFFIX_STOPS_BEFORE_REBUILD in a row. Absent/false: a refusal.
    */
   budgetStopFallsBack?: boolean;
 }): Promise<EthIncrementalOutcome> {

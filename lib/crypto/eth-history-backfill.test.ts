@@ -141,7 +141,7 @@ async function main() {
       reconstruct: async (a) => { calls.push(a as never); return { accountId: a.accountId, ok: true, mode: "INCREMENTAL" }; },
       pending: async () => null,
       enqueue: async () => { throw new Error("enqueue after an incremental success"); },
-      step: async (a) => { steps.push(a as never); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; },
+      step: async (a) => { steps.push(a as never); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_IN_PROGRESS" }; }, clearSuffixStops: async () => false,
     };
     const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: "2026-01-01", windowToISO: TODAY, client: {} as never, deferFull: false, deps: { meter } }, impl);
     const arg = calls[0];
@@ -180,7 +180,7 @@ async function main() {
       reconstruct: async (a) => { seen.push(a as never); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }; },
       pending: async () => null,
       enqueue: async (_c, id, reason) => { queued.push(`${id}:${reason}`); return true; },
-      step: async () => { throw new Error("an inline step with the worker on"); },
+      step: async () => { throw new Error("an inline step with the worker on"); }, clearSuffixStops: async () => false,
     };
     const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: {} as never, deferFull: true }, impl);
     check("flag on: the incremental path runs with deferFull", seen.length === 1 && seen[0].deferFull === true);
@@ -560,14 +560,14 @@ async function main() {
     const ran: string[] = [];
     const r = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: fake, deferFull: true }, {
       reconstruct: async (a) => { ran.push(String(a.deferFull)); return { accountId: a.accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: "NO_COVERAGE" }; },
-      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, step: async () => { throw new Error("an inline step with the worker on"); },
+      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, step: async () => { throw new Error("an inline step with the worker on"); }, clearSuffixStops: async () => false,
     });
     check("flag on + RECOVERY_REQUIRED: the sync runs the INCREMENTAL path (not skipped)", ran.join() === "true");
     check("…and its fallback does NOT re-queue the wallet automatically (checkpoint unchanged, nothing written)",
       stored === recovered && r.refusal === "FULL_REBUILD_DEFERRED");
     const ok = await reconstructEthHistoryForSync({ accountId: "a1", windowFromISO: TODAY, windowToISO: TODAY, client: fake, deferFull: true }, {
       reconstruct: async (a) => ({ accountId: a.accountId, ok: true, mode: "INCREMENTAL", derivedRowsWritten: 3 }),
-      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, step: async () => { throw new Error("an inline step with the worker on"); },
+      pending: ethHistoryPending, enqueue: enqueueEthHistoryBackfill, step: async () => { throw new Error("an inline step with the worker on"); }, clearSuffixStops: async () => false,
     });
     check("…so a wallet whose stored history still verifies keeps refreshing incrementally", ok.ok && ok.mode === "INCREMENTAL");
 

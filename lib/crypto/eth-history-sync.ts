@@ -50,12 +50,12 @@ import {
   type EthHistoryMode,
 } from "./eth-history-rows";
 import {
-  prismaEthHistoryStore, runIncrementalEthHistory, type EthIncrementalFallback, type EthIncrementalOutcome,
+  prismaEthHistoryStore, runIncrementalEthHistory, type EthIncrementalFallback, type EthIncrementalOutcome, type EthHistoryStore,
 } from "./eth-history-incremental";
 import {
   acquireEthHistory, finalizedBlockNumber, EARLIEST_PROVABLE_BLOCK, type EthHistoryDeps,
 } from "./eth-history";
-import { boundedEthDeps, ethInlineStepMs, INCREMENTAL_STRUCTURAL_WINDOW_MS } from "./eth-history-backfill.core";
+import { boundedEthDeps, ethInlineStepMs, INCREMENTAL_FULL_WINDOW_SLACK_MS } from "./eth-history-backfill.core";
 import { currentBudgetStartedAtMs } from "@/lib/jobs/run";
 import { resolveCryptoInstrumentId, ETH_ASSET } from "@/lib/investments/crypto-instrument";
 import {
@@ -130,6 +130,9 @@ export async function reconstructEthHistory(args: {
   dryRun?: boolean;
   /** Skip the incremental path: an explicit repair / full rebuild. */
   full?: boolean;
+  /** Test seams: the incremental path's store and instrument (production: Prisma on `db`, resolved). */
+  incrementalStore?: EthHistoryStore;
+  instrumentId?: string;
   /**
    * The history worker carries the FULL rebuild (eth-history-backfill.ts): on
    * an incremental fallback return FULL_REBUILD_DEFERRED — writing nothing —
@@ -166,8 +169,8 @@ export async function reconstructEthHistory(args: {
   let fallbackReason: EthIncrementalFallback = "EXPLICIT_FULL";
   if (!args.full) {
     const incremental = await runIncrementalEthHistory({
-      accountId, walletAddress: account.walletAddress, instrumentId: await resolveCryptoInstrumentId(ETH_ASSET),
-      todayISO: args.windowToISO, store: prismaEthHistoryStore(db), deps, dryRun: args.dryRun,
+      accountId, walletAddress: account.walletAddress, instrumentId: args.instrumentId ?? await resolveCryptoInstrumentId(ETH_ASSET),
+      todayISO: args.windowToISO, store: args.incrementalStore ?? prismaEthHistoryStore(db), deps, dryRun: args.dryRun,
       budgetStopFallsBack: incrementalWindowIsStructural(deps),
     });
     // DONE / REFUSED, or (deferFull) a fallback handed to the resumable
@@ -221,9 +224,13 @@ export async function reconstructEthHistory(args: {
   });
 }
 
-/** Did this run have a full window, so that a clock-stopped incremental suffix is structural (INCREMENTAL_STRUCTURAL_WINDOW_MS)? */
-export function incrementalWindowIsStructural(deps: EthHistoryDeps & { deadlineMs: number }): boolean {
-  return deps.deadlineMs - (deps.now ?? Date.now)() >= INCREMENTAL_STRUCTURAL_WINDOW_MS;
+/**
+ * Did this run have the step's FULL cap (not a late wake's remainder), so
+ * that a clock-stopped incremental suffix counts toward a re-proof
+ * (SUFFIX_STOPS_BEFORE_REBUILD, counted on the checkpoint)?
+ */
+export function incrementalWindowIsStructural(deps: EthHistoryDeps & { deadlineMs: number }, stepMs: number = ethInlineStepMs()): boolean {
+  return deps.deadlineMs - (deps.now ?? Date.now)() >= stepMs - INCREMENTAL_FULL_WINDOW_SLACK_MS;
 }
 
 /**
