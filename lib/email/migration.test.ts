@@ -345,12 +345,12 @@ async function main(): Promise<void> {
     const { sendSecurityAlert, SECURITY_ALERT_BUILD_ERROR } = await import("@/lib/email/send-security-alert");
     let sent = 0;
     const spy = (async () => { sent++; return { status: "captured", provider: "capture" }; }) as never;
-    const bad = await sendSecurityAlert("x@example.invalid", () => alerts.dataExportedAlert(new Date(), "not a url ?token=secret-ish"), spy)
+    const bad = await sendSecurityAlert("x@example.invalid", () => alerts.dataExportedAlert(new Date(), "not a url ?token=secret-ish"), undefined, spy)
       .catch(() => ({ status: "threw", provider: "none", error: "threw" as string | undefined }));
     check("builder throw → error result (no exception)", bad.status === "error" && bad.provider === "none");
     check("…with the fixed, redacted message", bad.error === SECURITY_ALERT_BUILD_ERROR && !String(bad.error).includes("secret-ish"));
     check("…and nothing is sent", sent === 0);
-    const ok = await sendSecurityAlert("x@example.invalid", () => alerts.dataExportedAlert(new Date(), "https://app.fourthmeridian.com"), spy);
+    const ok = await sendSecurityAlert("x@example.invalid", () => alerts.dataExportedAlert(new Date(), "https://app.fourthmeridian.com"), { key: "DATA_EXPORTED", recipientUserId: "u1" }, spy);
     check("a valid base still sends", ok.status === "captured" && sent === 1);
     const route = readFileSync("app/api/user/export/route.ts", "utf8");
     check("the export route builds the alert only inside sendSecurityAlert",

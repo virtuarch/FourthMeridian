@@ -3871,6 +3871,60 @@ model NotificationDelivery {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CommsDelivery (Comms Center A-2a) — THE delivery ledger: one row per send
+// attempt on any channel (every sendEmail call, every in-app create outcome).
+// Contract docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md §6.1.
+// APPEND-ONLY metadata. NEVER a recipient address, subject, body, link, token
+// or payload value: the recipient is a soft userId, or (only when there is no
+// user) a SALTED HMAC of the address (lib/notifications/delivery/record.ts).
+// No open/click fields, ever (owner decision O-13). "ACCEPTED" = the provider
+// (or the in-app inbox) accepted it — never "delivered" (Phase C webhooks).
+// Retention: 90 days, then rolled into CommsDeliveryDaily and deleted
+// (lib/notifications/delivery/rollup.ts, run by jobs/data-retention.ts).
+// fm_system: SELECT, INSERT, DELETE. fm_app / fm_auth: nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+model CommsDelivery {
+  id                String    @id @default(cuid())
+  definitionKey     String // catalog key (lib/notifications/catalog)
+  definitionVersion Int
+  templateVersion   Int?
+  channel           String // CommsChannel: IN_APP | EMAIL | OPERATOR_EMAIL
+  status            String // QUEUED | ACCEPTED | CAPTURED | FAILED | DEAD | SUPPRESSED | CANCELLED
+  reason            String? // SuppressionReason (SUPPRESSED), ENVIRONMENT_GUARD (CAPTURED)
+  provider          String? // "resend" | "none" (guard) | "in-app"
+  providerMessageId String?
+  attempt           Int       @default(1)
+  errorCode         String? // closed set: RENDER | TIMEOUT | NO_TRANSPORT | PROVIDER | STORE
+  recipientUserId   String? // soft ref, no FK; nulled by the account purge
+  recipientHash     String? // HMAC-SHA256(salt, address) when no userId; never the address
+  notificationId    String? // soft ref to the IN_APP twin, no FK
+  environment       String // production | preview | development
+  acceptedAt        DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([definitionKey, createdAt])
+  @@index([recipientUserId, createdAt])
+  @@index([recipientHash])
+}
+
+// CommsDeliveryDaily (Comms Center A-2a) — counts only, per UTC day × key ×
+// channel × status × reason. Written ONLY by the retention rollup, in the same
+// transaction that deletes the rolled CommsDelivery rows (so a row is counted
+// in exactly one of the two tables). No recipient of any kind.
+// fm_system: SELECT, INSERT, UPDATE (the upsert). fm_app / fm_auth: nothing.
+model CommsDeliveryDaily {
+  day           DateTime @db.Date
+  definitionKey String
+  channel       String
+  status        String
+  reason        String   @default("")
+  count         Int
+
+  @@id([day, definitionKey, channel, status, reason])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // NotificationPreference (OPS-3 S3) — category × channel preference OVERRIDES.
 // DEFAULT-BY-ABSENCE (frozen F11): a row exists only when the user deviates
 // from the registry default (lib/notifications/registry.ts). Resolution order,

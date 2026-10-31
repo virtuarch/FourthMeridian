@@ -126,7 +126,7 @@ export async function POST(
   const revokedSessions = await revokeAllUserSessions(userId);
 
   // Notify the target. NON-THROWING: delivery failure never undoes the reset.
-  const emailResult = await sendEmail("security-alert", target.email, { ...twoFactorResetAlert(new Date()) });
+  const emailResult = await sendEmail("security-alert", target.email, { ...twoFactorResetAlert(new Date()) }, { key: "TWO_FACTOR_RESET_BY_ADMIN", recipientUserId: userId });
   if (emailResult.status === "error") {
     console.error("[admin-2fa-reset] security-alert email failed to send:", emailResult.error);
   }

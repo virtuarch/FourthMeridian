@@ -259,6 +259,13 @@ export interface ChannelMessage {
   href?: string;
   /** Email CTA label for href (RenderedNotification.actionLabel). */
   actionLabel?: string;
+  /**
+   * Comms Center A-2a — delivery-ledger facts (never rendered): the 1-based
+   * attempt number, and whether this is the LAST attempt (an error is then
+   * recorded as DEAD). The retry job sets both; create-time sends are attempt 1.
+   */
+  attempt?: number;
+  finalAttempt?: boolean;
 }
 
 /**

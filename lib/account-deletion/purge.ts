@@ -60,6 +60,7 @@ import { db } from "@/lib/db";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
 import { accountDeletedAlert } from "@/lib/email/security-alerts";
+import { recipientHash } from "@/lib/notifications/delivery/record";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
@@ -138,6 +139,9 @@ export interface PurgeTxClient {
   };
   investmentEvent: {
     updateMany(args: { where: Prisma.InvestmentEventWhereInput; data: Prisma.InvestmentEventUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
+  commsDelivery: {
+    updateMany(args: { where: Prisma.CommsDeliveryWhereInput; data: Prisma.CommsDeliveryUpdateManyMutationInput }): Promise<{ count: number }>;
   };
   auditLog: {
     create(args: { data: Prisma.AuditLogUncheckedCreateInput }): Promise<unknown>;
@@ -484,6 +488,14 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
     await tx.platformSetting.updateMany({ where: { updatedById: userId }, data: { updatedById: null } });
     await tx.merchantRule.deleteMany({ where: { ownerUserId: userId } });
     await tx.investmentEvent.updateMany({ where: { createdByUserId: userId }, data: { createdByUserId: null } });
+    // Comms Center A-2a — the delivery ledger keeps its COUNTS but forgets who:
+    // the soft recipientUserId, and the salted recipient hash of the address
+    // (rows sent before an account existed, e.g. a beta invite), are nulled.
+    const ledgerHash = recipientHash(user.email, process.env);
+    await tx.commsDelivery.updateMany({
+      where: ledgerHash ? { OR: [{ recipientUserId: userId }, { recipientHash: ledgerHash }] } : { recipientUserId: userId },
+      data:  { recipientUserId: null, recipientHash: null },
+    });
 
     // 7. ACCOUNT_DELETED audit (written BEFORE the delete). userId is set now;
     //    the user delete below SetNulls it, so the row survives anonymized
@@ -517,7 +529,11 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
   // ── 9. Final notice — AFTER commit, exactly once ───────────────────────────
   // Reuses the security-alert template. NON-THROWING: delivery failure never
   // blocks. Only the worker whose transaction committed reaches this line.
-  const emailResult = await email("security-alert", user.email, { ...accountDeletedAlert() });
+  const emailResult = await email("security-alert", user.email, { ...accountDeletedAlert() }, {
+    // The account no longer exists: no userId, and no recipient hash either —
+    // nothing on the ledger may link back to the purged person.
+    key: "ACCOUNT_DELETED", recipientUserId: null, hashRecipient: false,
+  });
   if (emailResult.status === "error") {
     console.error("[purge] deletion-complete security-alert email failed to send:", redactedErrorForLog(emailResult.error));
   }

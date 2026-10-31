@@ -52,8 +52,12 @@ export const CS_COMMS_READ_LIMIT = { limit: 120, windowSec: 60 } as const;
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 100;
 
-/** §6.5 (PROPOSED, O-9) — delivery-ledger retention the detail reports. No ledger exists yet. */
-export const DELIVERY_RETENTION_DAYS = 180;
+/**
+ * Owner decision (2026-10-31, O-9): per-delivery records are kept 90 days, then
+ * counts only (lib/notifications/delivery/rollup.ts — the single source).
+ */
+export { DELIVERY_RETENTION_DAYS } from "@/lib/notifications/delivery/rollup";
+import { DELIVERY_RETENTION_DAYS } from "@/lib/notifications/delivery/rollup";
 
 export interface ReadDeps {
   /** The platform gate; the route passes () => requirePlatformAccess("CUSTOMER_SUCCESS", "READ"). */
@@ -66,7 +70,7 @@ export interface ReadDeps {
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: NO_STORE });
 const validation = (error: string) => json({ error, code: "VALIDATION" }, 400);
 const notFound = () => json({ error: "No catalog definition has that key.", code: "NOT_FOUND" }, 404);
-const unavailable = () => json({ error: "The notification catalog is unavailable.", code: "UNAVAILABLE" }, 503);
+const unavailable = () => json({ error: "The notification data is unavailable.", code: "UNAVAILABLE" }, 503);
 
 /** v1.0.1 — the codes a refusal from the shared gate or limiter is mapped to (§3.4). */
 export const GATE_CODES = { 401: "UNAUTHENTICATED", 403: "FORBIDDEN", 429: "RATE_LIMITED", 503: "UNAVAILABLE" } as const;
@@ -152,7 +156,7 @@ export function toCatalogItem(d: CommsDefinition): CatalogItem {
 const DAY_MS = 86_400_000;
 const isoDay = (t: number) => new Date(t).toISOString().slice(0, 10);
 
-/** C1 + C2 — a dense 30-day series of `null` (not observed): the delivery ledger does not exist yet. */
+/** C1 + C2 — a dense series of `null` (not observed): the shape of `recent` before the ledger holds a row. */
 export function unobservedSeries(now: Date, window: "7d" | "30d" | "90d" = "30d"): DaySeries {
   const n = window === "7d" ? 7 : window === "30d" ? 30 : 90;
   const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
@@ -160,7 +164,7 @@ export function unobservedSeries(now: Date, window: "7d" | "30d" | "90d" = "30d"
   return { window, from: days[0].day, to: days[n - 1].day, days, floor: false };
 }
 
-export function toCatalogDetail(d: CommsDefinition, now: Date): CatalogDetail {
+export function toCatalogDetail(d: CommsDefinition, now: Date, recent: DaySeries = unobservedSeries(now)): CatalogDetail {
   return {
     ...toCatalogItem(d),
     trigger: { kind: d.trigger.kind, triggerKey: d.trigger.triggerKey, sources: [...d.trigger.sources] },
@@ -169,7 +173,7 @@ export function toCatalogDetail(d: CommsDefinition, now: Date): CatalogDetail {
     dedupe: { ...d.dedupe },
     frequencyCap: d.frequencyCap ? { ...d.frequencyCap } : null,
     retention: { ...d.retention, deliveryDays: DELIVERY_RETENTION_DAYS },
-    recent: unobservedSeries(now),
+    recent,
   };
 }
 
@@ -283,11 +287,17 @@ export function catalogList(url: URL, now: Date): Response {
   return json(body);
 }
 
-/** GET /catalog/[key] (§4.3). */
-export function catalogDetail(key: string, now: Date): Response {
+/**
+ * GET /catalog/[key] (§4.3). `recentFor` reads the delivery ledger's 30-day
+ * series for the key (lib/notifications/delivery/analytics.ts recentSeriesForKey);
+ * a throw is 503 via runRead — never a fabricated all-null "not observed".
+ * Omitted (pure tests): the not-observed shape.
+ */
+export async function catalogDetail(key: string, now: Date, recentFor?: (key: string, now: Date) => Promise<DaySeries>): Promise<Response> {
   const def = getCatalogDefinition(key);
   if (!def) return notFound();
-  return json(toCatalogDetail(def, now) satisfies CatalogDetail);
+  const recent = recentFor ? await recentFor(def.key, now) : unobservedSeries(now);
+  return json(toCatalogDetail(def, now, recent) satisfies CatalogDetail);
 }
 
 /** GET /catalog/[key]/preview?channel=…&variant=… (§4.4). Renders only; never sends. */

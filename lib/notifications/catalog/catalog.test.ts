@@ -71,7 +71,7 @@ function walk(dir: string, out: string[] = []): string[] {
 
 // ── Grep every email send site (the lib/email/catalog.test.ts patterns) ───────
 
-type Site = { file: string; template: string; builder: string | null; via: string };
+type Site = { file: string; template: string; builder: string | null; via: string; ledgerKey: string | null };
 const NOT_SENDERS = new Set(["lib/email/send.ts", "lib/email/preview.ts", "lib/email/send-security-alert.ts"]);
 /** The preview tool sends only preview cases to the allowlisted local address — not a production message. */
 const TOOLING = new Set(["scripts/email-preview.ts"]);
@@ -83,6 +83,8 @@ const GUARDED_RE = /(?<![.\w])sendSecurityAlert\(/g;
 const ADAPTER_RE = /\b(?:adapter|args\.adapter)\.deliver\(/g;
 const VARIABLE_RE = /\bsendEmail\(\s*(?!["\s])/g;
 const BUILDER_RE = /\b(\w+Alert)\(/;
+/** A-2a — the delivery-ledger context a send site passes: `{ key: "CATALOG_KEY", … }` (4th argument). */
+const LEDGER_KEY_RE = /\bkey:\s*"([A-Z][A-Z0-9_]+)"/;
 
 const sites: Site[] = [];
 const variableSites = new Set<string>();
@@ -91,11 +93,21 @@ for (const root of ["app", "lib", "jobs", "scripts"]) {
     if (NOT_SENDERS.has(file)) continue;
     const code = stripComments(read(file));
     const builderAfter = (at: number) => BUILDER_RE.exec(code.slice(at, at + 400))?.[1] ?? null;
+    // The key must sit inside THIS call: the text up to the next send call (or 600 chars).
+    const keyAfter = (at: number) => {
+      const rest = code.slice(at, at + 600);
+      const next = rest.search(/\b(sendEmail|sendSecurityAlert)\(|(?<![.\w])email\(\s*"/);
+      return LEDGER_KEY_RE.exec(next > 0 ? rest.slice(0, next) : rest)?.[1] ?? null;
+    };
     for (const m of code.matchAll(LITERAL_RE)) {
-      sites.push({ file, template: m[2], builder: m[2] === "security-alert" ? builderAfter(m.index! + m[0].length) : null, via: m[1] });
+      const at = m.index! + m[0].length;
+      sites.push({ file, template: m[2], builder: m[2] === "security-alert" ? builderAfter(at) : null, via: m[1], ledgerKey: keyAfter(at) });
     }
-    for (const m of code.matchAll(GUARDED_RE)) sites.push({ file, template: "security-alert", builder: builderAfter(m.index! + m[0].length), via: "sendSecurityAlert" });
-    for (const _ of code.matchAll(ADAPTER_RE)) sites.push({ file, template: "notification", builder: null, via: "adapter.deliver" });
+    for (const m of code.matchAll(GUARDED_RE)) {
+      const at = m.index! + m[0].length;
+      sites.push({ file, template: "security-alert", builder: builderAfter(at), via: "sendSecurityAlert", ledgerKey: keyAfter(at) });
+    }
+    for (const _ of code.matchAll(ADAPTER_RE)) sites.push({ file, template: "notification", builder: null, via: "adapter.deliver", ledgerKey: null });
     for (const _ of code.matchAll(VARIABLE_RE)) variableSites.add(file);
   }
 }
@@ -129,7 +141,12 @@ function main(): void {
       const owners = emailLegs.filter(({ def, leg }) =>
         leg.path === "DIRECT" && leg.email.template === s.template && (s.builder === null || leg.email.builder === s.builder) && def.trigger.sources.includes(s.file));
       check(`${label}: exactly one catalog leg`, owners.length === 1, owners.map((o) => o.def.key));
+      // A-2a (contract §2 invariant: every production sendEmail names a key) — and it is THAT leg's key.
+      check(`${label}: names its catalog key for the delivery ledger (${owners[0]?.def.key})`,
+        owners.length === 1 && s.ledgerKey === owners[0].def.key, s.ledgerKey);
     }
+    check("the registry EMAIL leg records under the registry type id (= the catalog key) and the recipient's userId",
+      /key:\s*message\.type,\s*recipientUserId:\s*message\.userId/.test(stripComments(read("lib/notifications/channels/email.ts"))));
     check("the registry EMAIL path is present (adapter + chokepoint caller)",
       [...REGISTRY_EMAIL_PATH].every((f) => sites.some((s) => s.file === f && s.template === "notification")));
     for (const { def, leg } of emailLegs.filter((e) => e.leg.path === "DIRECT")) {
@@ -279,7 +296,8 @@ function main(): void {
       resolveChannelEnabled(NOTIFICATION_REGISTRY.SECURITY_ANOMALY_DETECTED, "IN_APP", [{ category: "PLATFORM", channel: "IN_APP", enabled: false }]) === false);
     check("FINDING pinned: SYNC_FAILED email is lost when FINANCIAL IN_APP is off (create.ts returns skipped before the email leg)",
       resolveChannelEnabled(NOTIFICATION_REGISTRY.SYNC_FAILED, "IN_APP", [{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]) === false &&
-      /if \(!resolveChannelEnabled\(def, "IN_APP", overrides\)\) \{\s*return \{ status: "skipped" \};/.test(read("lib/notifications/create.ts")));
+      // A-2a: the branch now RECORDS the loss on the delivery ledger (EMAIL SUPPRESSED PREFERENCE_OFF) — and still sends nothing.
+      /if \(!resolveChannelEnabled\(def, "IN_APP", overrides\)\) \{(?:(?!deliverEmailAndRecord|\.deliver\(|sendEmail)[\s\S])*?return \{ status: "skipped" \};/.test(read("lib/notifications/create.ts")));
 
     // Every direct leg is unconditional: no direct-send source reads a preference.
     const directSources = new Set(defs.flatMap((d) => (d.channels.some((c) => c.path === "DIRECT") ? d.trigger.sources : [])));

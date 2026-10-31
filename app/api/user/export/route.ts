@@ -61,7 +61,7 @@ export async function POST() {
       // The alert (and its CTA link) is built INSIDE the non-throwing send: a
       // malformed app base becomes an error result, never a failed export.
       const emailResult = await sendSecurityAlert(dbUser.email, () =>
-        dataExportedAlert(new Date(), env.NEXT_PUBLIC_APP_URL));
+        dataExportedAlert(new Date(), env.NEXT_PUBLIC_APP_URL), { key: "DATA_EXPORTED", recipientUserId: user.id });
       emailStatus = emailResult.status;
       if (emailResult.status === "error") {
         console.error("[user/export] security-alert email failed to send:", emailResult.error);

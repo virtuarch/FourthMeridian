@@ -187,7 +187,7 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
   try {
     // The raw identifier / IP is withheld from email (it stays on the audit
     // row's metadata.key and the in-app notification's anomalyKey).
-    await sendEmail("security-alert", env.SECURITY_ALERTS_EMAIL, { ...securityOpsAnomalyAlert(anomaly) });
+    await sendEmail("security-alert", env.SECURITY_ALERTS_EMAIL, { ...securityOpsAnomalyAlert(anomaly) }, { key: "SECURITY_ANOMALY_INBOX", recipientUserId: null });
   } catch (err) {
     console.warn("[security/anomaly-alerts] security@ email failed (non-fatal):", err);
   }
@@ -195,7 +195,7 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
   // (c) The lockout hybrid — owner-facing email, ONLY for a resolvable account.
   if (anomaly.ownerEmailEligible && ctx.userEmail) {
     try {
-      await sendEmail("security-alert", ctx.userEmail, { ...ownerSignInAnomalyAlert(env.NEXT_PUBLIC_APP_URL) });
+      await sendEmail("security-alert", ctx.userEmail, { ...ownerSignInAnomalyAlert(env.NEXT_PUBLIC_APP_URL) }, { key: "SIGN_IN_ANOMALY_OWNER", recipientUserId: ctx.userId ?? null });
     } catch (err) {
       console.warn("[security/anomaly-alerts] owner email failed (non-fatal):", err);
     }

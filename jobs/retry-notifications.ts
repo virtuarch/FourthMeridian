@@ -280,6 +280,9 @@ export async function retryNotifications(
       // persisted type + metadata through the same registry render (SYNC_FAILED
       // without a derivable state → the conservative "Review connection").
       ...(n.href && actionLabel ? { actionLabel } : {}),
+      // Delivery ledger (A-2a): this is attempt attempts+1; at the cap an error is DEAD.
+      attempt: row.attempts + 1,
+      finalAttempt: row.attempts + 1 >= MAX_DELIVERY_ATTEMPTS,
     });
 
     // Outcome write — ChannelResult verbatim, deliveredAt only on "sent"

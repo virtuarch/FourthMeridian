@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
 
     // Notify. NON-THROWING: a delivery failure is logged and recorded, but
     // never fails the deactivation.
-    const emailResult = await sendEmail("security-alert", dbUser.email, { ...accountDeactivatedAlert(new Date()) });
+    const emailResult = await sendEmail("security-alert", dbUser.email, { ...accountDeactivatedAlert(new Date()) }, { key: "ACCOUNT_DEACTIVATED", recipientUserId: user.id });
     if (emailResult.status === "error") {
       console.error("[user/deactivate] security-alert email failed to send:", emailResult.error);
     }

@@ -26,10 +26,18 @@
  * onDelete: Cascade — they go with their parent. ProviderCall also has its
  * own rule so an orphan-free but long-lived execution cannot pin them.
  *
+ * COMMS CENTER A-2a — CommsDelivery is NOT a plain delete rule: its rows are
+ * ROLLED into CommsDeliveryDaily (counts only) and deleted in the same
+ * transaction after 90 days (lib/notifications/delivery/rollup.ts). It runs
+ * after the rules, through the same system principal, and its failure never
+ * affects them (reported as `commsDelivery`).
+ *
  * NOT here, by decision: AuditLog (security evidence; product events already
  * have their own 13-month job), Notification (lib/notifications/cleanup.ts),
  * RateLimit (sweep-rate-limits), financial data of any kind.
  */
+
+import { runCommsDeliveryRollup, type CommsRollupResult, type RollupClient } from "@/lib/notifications/delivery/rollup";
 
 const DAY_MS = 86_400_000;
 export const RETENTION_BATCH = 1000;
@@ -88,15 +96,21 @@ export interface RetentionDelegate {
 export type RetentionClient = Record<RetentionTable, RetentionDelegate>;
 
 export interface RetentionTableResult { deleted: number; batches: number; exhausted: boolean; cutoff: string; error?: string }
-export type DataRetentionResult = Record<RetentionTable, RetentionTableResult> & { totalDeleted: number };
+export type DataRetentionResult = Record<RetentionTable, RetentionTableResult> & {
+  totalDeleted: number;
+  /** The delivery-ledger rollup; null when an injected client carried no comms client (unit tests of the rules). */
+  commsDelivery: CommsRollupResult | null;
+};
 
 export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date): Date {
   return new Date(now.getTime() - rule.days * DAY_MS);
 }
 
-export async function runDataRetention(client?: RetentionClient, now: Date = new Date()): Promise<DataRetentionResult> {
+export async function runDataRetention(client?: RetentionClient, now: Date = new Date(), comms?: RollupClient): Promise<DataRetentionResult> {
   const c = client ?? ((await import("@/lib/db")).systemDb as unknown as RetentionClient);
-  const out = { totalDeleted: 0 } as DataRetentionResult;
+  // An injected rules client never implies the real database for the rollup.
+  const commsClient = comms ?? (client ? null : ((await import("@/lib/db")).systemDb as unknown as RollupClient));
+  const out = { totalDeleted: 0, commsDelivery: null } as DataRetentionResult;
   for (const rule of RETENTION_RULES) {
     const cutoff = retentionCutoffFor(rule, now);
     const where = rule.where(cutoff);
@@ -118,5 +132,7 @@ export async function runDataRetention(client?: RetentionClient, now: Date = new
     out.totalDeleted += res.deleted;
     if (res.deleted > 0) console.log(`[data-retention] ${rule.table}: deleted ${res.deleted} row(s) older than ${rule.days} days${res.exhausted ? "" : " (more remain)"}`);
   }
+  // runCommsDeliveryRollup never throws (its failure is reported in the result).
+  if (commsClient) out.commsDelivery = await runCommsDeliveryRollup(commsClient, now);
   return out;
 }

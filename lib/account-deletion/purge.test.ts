@@ -55,6 +55,7 @@ interface World {
   audits: Array<{ userId: string | null; action: string; metadata: Record<string, unknown>; createdAt: Date }>;
   links: Array<{ id: string; addedByUserId: string; status: string }>;
   aiInvocations: Array<{ id: string; userId: string | null }>;
+  ledger: Array<{ id: string; recipientUserId: string | null; recipientHash: string | null }>;
   betaRequests: Array<{ id: string; email: string }>;
   betaEvents: Array<{ id: string; email: string }>;
   mergeDecisions: Array<{ id: string; decidedByUserId: string | null }>;
@@ -83,6 +84,7 @@ function baseWorld(): World {
     audits: [],
     links: [{ id: "L1", addedByUserId: USER, status: "ACTIVE" }],
     aiInvocations: [{ id: "ai1", userId: USER }, { id: "ai2", userId: OTHER }],
+    ledger: [{ id: "cd1", recipientUserId: USER, recipientHash: null }, { id: "cd2", recipientUserId: OTHER, recipientHash: null }],
     betaRequests: [{ id: "b1", email: "jane@example.com" }, { id: "b2", email: "someone@else.com" }],
     betaEvents: [{ id: "e1", email: "JANE@example.com" }],
     mergeDecisions: [{ id: "m1", decidedByUserId: USER }],
@@ -172,6 +174,18 @@ function makeFake(world: World, hooks: Hooks = {}) {
       let n = 0; W.settings.forEach((r) => { if (r.updatedById === where.updatedById) { r.updatedById = null; n++; } }); return { count: n };
     } },
     investmentEvent: { updateMany: async () => ({ count: 0 }) },
+    commsDelivery: { updateMany: async ({ where, data }: { where: { recipientUserId?: string; OR?: Array<{ recipientUserId?: string; recipientHash?: string }> }; data: { recipientUserId?: null; recipientHash?: null } }) => {
+      const conds = where.OR ?? [{ recipientUserId: where.recipientUserId }];
+      let n = 0;
+      W.ledger.forEach((r) => {
+        if (conds.some((c) => (c.recipientUserId !== undefined && r.recipientUserId === c.recipientUserId) || (c.recipientHash !== undefined && r.recipientHash === c.recipientHash))) {
+          if ("recipientUserId" in data) r.recipientUserId = null;
+          if ("recipientHash" in data) r.recipientHash = null;
+          n++;
+        }
+      });
+      return { count: n };
+    } },
     merchantRule: { deleteMany: async ({ where }: { where: { ownerUserId: string } }) => {
       const b = W.merchantRules.length; W.merchantRules = W.merchantRules.filter((r) => r.ownerUserId !== where.ownerUserId); return { count: b - W.merchantRules.length };
     } },
@@ -311,6 +325,8 @@ async function main() {
     const fake = makeFake(world);
     const { deps } = depsFor(fake);
     await quiet(() => purgeUser(USER, deps));
+    check("CommsDelivery recipient nulled for the subject only (the row and its count stay)",
+      world.ledger.length === 2 && world.ledger.find((r) => r.id === "cd1")!.recipientUserId === null && world.ledger.find((r) => r.id === "cd2")!.recipientUserId === OTHER);
     check("AiInvocation.userId nulled for the subject only", world.aiInvocations.find((r) => r.id === "ai1")!.userId === null && world.aiInvocations.find((r) => r.id === "ai2")!.userId === OTHER);
     check("BetaAccessRequest + events for the e-mail deleted (case-insensitive), others kept",
       world.betaRequests.map((r) => r.id).join() === "b2" && world.betaEvents.length === 0);
