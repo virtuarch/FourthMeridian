@@ -147,11 +147,11 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
 
       {/* 3 — failures: weekday × hour (6) · reasons (6). */}
       <div className={`${GRID} ${only("signins")}`} data-group="signins">
+        {/* The weekday × hour grid is OMITTED (not drawn empty) when there are too few failures for a pattern. */}
+        {(!s || failedTotal >= FAILURE_PATTERN_MIN) && (
         <Block id="sec-failure-hours" label="When sign-ins fail" className="min-w-0 lg:col-span-6">
           <Surface className="flex-1 p-4 sm:p-5">
-            {!s ? <Loading f={p.f} what="failures" /> : failedTotal < FAILURE_PATTERN_MIN ? (
-              <ChartMessage>{`${n(failedTotal)} failed sign-in${failedTotal === 1 ? "" : "s"} in ${s.windowDays} days — too few for a weekly pattern`}</ChartMessage>
-            ) : (
+            {!s ? <Loading f={p.f} what="failures" /> : (
               <>
                 <HeatGrid layout={weekHourLayout(s.failedByHour)} rowHeight={14} labelWidth={30}
                   ariaLabel={`Failed sign-ins by weekday and UTC hour, last ${s.windowDays} days: ${n(failedTotal)}`}
@@ -161,7 +161,9 @@ export function SecurityLeadSurface(p: SecurityLeadSurfaceProps) {
             )}
           </Surface>
         </Block>
-        <Block id="sec-failure-reasons" label="Why sign-ins fail" className="min-w-0 lg:col-span-6">
+        )}
+        <Block id="sec-failure-reasons" label="Why sign-ins fail" className={`min-w-0 ${s && failedTotal < FAILURE_PATTERN_MIN ? "lg:col-span-12" : "lg:col-span-6"}`}
+          hint={s && failedTotal < FAILURE_PATTERN_MIN && failedTotal > 0 ? <span className="text-[11px] text-[var(--text-faint)]">{`too few (${n(failedTotal)}) for a weekday × hour pattern`}</span> : undefined}>
           <Surface className="flex-1 p-4 sm:p-5">
             {!s ? <Loading f={p.f} what="failure reasons" /> : s.failureReasons.length === 0 ? (
               <ChartMessage>{`No failed sign-ins in ${s.windowDays} days`}</ChartMessage>

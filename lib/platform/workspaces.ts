@@ -134,7 +134,7 @@ export interface PlatformWorkspaceView {
 }
 
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
-export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security";
+export type PlatformViewLead = "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -357,7 +357,14 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
   ],
   // Redesign §4.3 — Customers (the list + audited profile) and Incidents.
   CUSTOMER_SUCCESS: [
-    { workspaceId: "platform-overview", sections: ["cs_customers"] },
+    // PLATFORM SPACES 2.0 — ONE dashboard (components/platform/leads/
+    // CustomerSuccessLead.tsx): who needs help and why · connection health ·
+    // the audited customer list HOSTED in the page (third) · where customers
+    // are · onboarding friction heatmap · sync-issue trend.
+    withViews({
+      workspaceId: "platform-overview",
+      views: [{ id: "overview", label: "Customers", lead: "customer-success", sections: [], hosted: ["cs_customers"] }],
+    }),
     { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
   ],
   MERCHANT_OPS: [
