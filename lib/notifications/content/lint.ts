@@ -64,10 +64,29 @@ const DOMAIN = new RegExp(`\\b${LABEL}(?:\\.${LABEL})*\\.[a-z]{2,63}\\b`, "gi");
 const CAPITALISED_PAIR = /^[A-Z][a-z]+\.[A-Z][a-z]+$/;
 const BARE_QUAD = /\b\d{1,3}(?:\.\d{1,3}){3}\b(?!\s*\/)/g;
 
+/**
+ * Common generic TLDs. Together with EVERY two-letter label (all ccTLDs are two
+ * letters), a Capitalised.Capitalised pair ending in one of these is a REAL
+ * domain ("Evil.Com", "Evil.Ru") and stays a hard error: mail clients auto-link it.
+ */
+export const KNOWN_GTLDS: ReadonlySet<string> = new Set([
+  "com", "net", "org", "info", "biz", "name", "pro", "mobi", "gov", "edu", "mil", "int", "aero", "coop", "museum", "jobs", "travel", "tel", "asia", "cat", "post",
+  "app", "dev", "page", "web", "site", "online", "website", "store", "shop", "tech", "blog", "cloud", "link", "click", "live", "life", "world", "today", "news",
+  "top", "xyz", "club", "vip", "win", "bid", "loan", "loans", "work", "email", "finance", "financial", "money", "bank", "pay", "cash", "credit", "fund", "capital",
+  "fun", "space", "art", "design", "agency", "digital", "network", "services", "solutions", "support", "help", "group", "global", "city", "company", "center",
+  "media", "studio", "systems", "zone", "one", "best", "icu", "buzz", "monster", "rest", "bar", "cyou", "sbs", "lol", "wtf", "porn", "sex", "xxx", "adult",
+  "google", "apple", "amazon", "microsoft", "crypto", "nft", "eth", "game", "games", "bet", "casino", "poker", "plus", "inc", "llc", "ltd", "gmbh",
+]);
+const isKnownTld = (label: string) => label.length === 2 || KNOWN_GTLDS.has(label);
+
 function domainHits(s: string): { hard: string[]; soft: string[] } {
   const hard: string[] = [];
   const soft: string[] = [];
-  for (const m of normaliseKeepCase(s).matchAll(DOMAIN)) (CAPITALISED_PAIR.test(m[0]) ? soft : hard).push(m[0].toLowerCase());
+  for (const m of normaliseKeepCase(s).matchAll(DOMAIN)) {
+    const tld = m[0].slice(m[0].lastIndexOf(".") + 1).toLowerCase();
+    // Only a Capitalised.Capitalised pair whose second word is NOT a TLD ("Done.Open", "Mr.Smith") is softened.
+    (CAPITALISED_PAIR.test(m[0]) && !isKnownTld(tld) ? soft : hard).push(m[0].toLowerCase());
+  }
   return { hard, soft };
 }
 

@@ -190,6 +190,13 @@ function lexicons(): void {
     const iss = manual(sf, withText(t), "reauth-required");
     check(`"${t}" does not block saving (no LINK error)`, !iss.some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "error"), iss);
   }
+  for (const t of ["Evil.Com", "Visit Evil.Ru now", "Google.Com", "Evil.Shop", "Evil.Io"]) {
+    check(`a Capitalised real domain "${t}" stays a hard LINK error in a manual draft`, manual(sf, withText(t), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "error"));
+  }
+  for (const t of ["Done.Open", "Thanks, Mr.Smith"]) {
+    const iss = manual(sf, withText(t), "reauth-required");
+    check(`a non-TLD continuation "${t}" is only a LINK warning`, iss.some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "warning") && !iss.some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "error"));
+  }
   check("a Capitalised.Capitalised pair is a manual WARNING, and an AI error when added", manual(sf, withText("Done.Open"), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "warning") && aiCodes(withText("Done.Open")).includes("LINK_NOT_ALLOWED"));
   check("a bare dotted quad is a manual WARNING; with a path it is an ERROR",
     manual(sf, withText("1.2.3.4"), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "warning") && !manual(sf, withText("1.2.3.4"), "reauth-required").some((i) => i.code === "LINK_NOT_ALLOWED" && i.severity === "error")
