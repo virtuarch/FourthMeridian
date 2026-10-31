@@ -547,8 +547,9 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   const viewIds = useMemo(() => platformAreaViewIds(area), [area]);
   const { activeTab, activeView, setActiveTab: setActiveTabRaw, setActiveView: setActiveViewRaw } = usePlatformWorkspaceNavigation({ available, selectedKey, viewIds, selectedView });
   // Comms content editor: a workspace or view switch unmounts the Library drawer, so unsaved content asks first.
-  const setActiveTab = useCallback((id: string) => { if (confirmLeaveCommsContent()) setActiveTabRaw(id); }, [setActiveTabRaw]);
-  const setActiveView = useCallback((id: string) => { if (confirmLeaveCommsContent()) setActiveViewRaw(id); }, [setActiveViewRaw]);
+  // Re-selecting the active tab/view unmounts nothing, so it never asks (and never clears the flag).
+  const setActiveTab = useCallback((id: string) => { if (id === activeTab || confirmLeaveCommsContent()) setActiveTabRaw(id); }, [activeTab, setActiveTabRaw]);
+  const setActiveView = useCallback((id: string) => { if (id === activeView || confirmLeaveCommsContent()) setActiveViewRaw(id); }, [activeView, setActiveViewRaw]);
 
   // Operational COMPOSITION (which section keys + doorways each workspace renders)
   // stays Platform-owned — it is data-needs metadata, NOT mount context, and is

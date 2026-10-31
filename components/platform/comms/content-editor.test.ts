@@ -397,9 +397,9 @@ async function main() {
     check("the save notice uses the save's own typedSince (not a post-await state read)", /o\.typedSince/.test(ed) && !/ed\.latest\(\)\?\.draft\.dirty/.test(ed.slice(ed.indexOf("const save = async"), ed.indexOf("const openVersion"))));
     check("HistoryBox is not keyed by revision (open View / restore form survive a write)", !/<HistoryBox key=/.test(ed));
     const dash = strip("components/platform/PlatformSpaceDashboard.tsx");
-    check("the dashboard's workspace and view switches ask the unsaved-content guard",
-      /const setActiveTab = useCallback\(\(id: string\) => \{ if \(confirmLeaveCommsContent\(\)\) setActiveTabRaw\(id\); \}/.test(dash)
-        && /const setActiveView = useCallback\(\(id: string\) => \{ if \(confirmLeaveCommsContent\(\)\) setActiveViewRaw\(id\); \}/.test(dash)
+    check("the dashboard's workspace and view switches ask the unsaved-content guard (re-selecting the active one never asks or clears it)",
+      /const setActiveTab = useCallback\(\(id: string\) => \{ if \(id === activeTab \|\| confirmLeaveCommsContent\(\)\) setActiveTabRaw\(id\); \}/.test(dash)
+        && /const setActiveView = useCallback\(\(id: string\) => \{ if \(id === activeView \|\| confirmLeaveCommsContent\(\)\) setActiveViewRaw\(id\); \}/.test(dash)
         && !/onSelect=\{setActiveViewRaw\}|onSelectTab=\{setActiveTabRaw\}/.test(dash));
     const lib = strip("components/platform/comms/LibraryView.tsx");
     check("the Library drawer close / row change asks the same guard and reports dirtiness to it", /confirmLeaveCommsContent\(\)/.test(lib) && /onDirty=\{setUnsavedCommsContent\}/.test(lib));
