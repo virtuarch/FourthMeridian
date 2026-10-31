@@ -48,6 +48,42 @@ export interface PlaidItemReadClient {
       select: { userId: true; institutionName: true; status?: true };
     }): Promise<ItemOwnerRow | null>;
   };
+  /**
+   * Read only for a REVOKED item, to tell a removal ON OUR SIDE from a provider
+   * revocation (removedByUser below). Optional so narrow test fakes stay valid;
+   * a client without it never suppresses (the conservative path: notify).
+   */
+  accountConnection?: {
+    count(args: { where: { plaidItemDbId: string; deletedAt: null | { not: null } } }): Promise<number>;
+  };
+}
+
+/**
+ * OWNER DECISION 2026-10-31 — a user who removes a connection themselves must
+ * not be told "{Institution} is disconnected — Reconnect" (email or in-app) by
+ * the late failure of a sync that was already in flight.
+ *
+ * REVOKED has two live writers:
+ *   - lib/plaid/disconnect.ts disconnectPlaidItemIfOrphaned — the removal on OUR
+ *     side. It runs only once every AccountConnection on the item is
+ *     soft-deleted (deletedAt set): the user's account removal
+ *     (lib/accounts/disconnect.ts), plus the cleanup/self-heal/supersede paths
+ *     that act on an already-orphaned item;
+ *   - the Plaid webhook USER_PERMISSION_REVOKED / USER_ACCOUNT_REVOKED
+ *     (lib/plaid/webhook-receiver.ts) — a PROVIDER-side revocation. It leaves the
+ *     item's connections live, so it still notifies with the "disconnected" copy.
+ *
+ * The existing marker, so no migration: REVOKED with zero live connections and
+ * at least one soft-deleted one. An item with no connection rows at all is NOT
+ * treated as removed (no evidence), so it still notifies.
+ */
+export async function removedByUser(client: PlaidItemReadClient, plaidItemId: string): Promise<boolean> {
+  if (!client.accountConnection) return false;
+  const [live, removed] = await Promise.all([
+    client.accountConnection.count({ where: { plaidItemDbId: plaidItemId, deletedAt: null } }),
+    client.accountConnection.count({ where: { plaidItemDbId: plaidItemId, deletedAt: { not: null } } }),
+  ]);
+  return live === 0 && removed > 0;
 }
 
 function itemClient(ctx?: { itemClient?: PlaidItemReadClient }): PlaidItemReadClient {
@@ -101,6 +137,14 @@ export async function notifyItemSyncFailed(
     });
     if (!item) return;
 
+    const connectionState = connectionStateFromItemStatus(item.status);
+    if (connectionState === "disconnected" && (await removedByUser(itemClient(ctx), plaidItemId))) {
+      // Suppression record — the item id only (no PII). Dedupe/retire unaffected:
+      // nothing is created, so there is no :open key to hold or release.
+      console.log(`[notifyItemSyncFailed] suppressed for item ${plaidItemId}: removed by the user (REVOKED, every connection removed)`);
+      return;
+    }
+
     await (ctx?.createFn ?? createNotification)({
       type: "SYNC_FAILED",
       userId: item.userId,
@@ -110,7 +154,7 @@ export async function notifyItemSyncFailed(
         // Derived from the status every call site writes BEFORE calling this
         // (setPlaidItemHealth). Only changes the copy — not when this fires,
         // the dedupe key, channels or preferences.
-        connectionState: connectionStateFromItemStatus(item.status),
+        connectionState,
       },
     });
   } catch (err) {

@@ -14,8 +14,18 @@
  *   PlaidItem.status   connectionState      why
  *   NEEDS_REAUTH    →  "reauth-required"    ITEM_LOGIN_REQUIRED / INVALID_ACCESS_TOKEN,
  *                                           or an operator's request-reauth
- *   REVOKED         →  "disconnected"       the item was removed (itemRemove); no call
- *                                           site produces it today, kept for honesty
+ *   REVOKED         →  "disconnected"       the item was removed (itemRemove). Reached
+ *                                           when a user removes a connection while a
+ *                                           sync is in flight: the late failure's
+ *                                           ERROR write is dropped for a REVOKED item
+ *                                           (lib/connections/health-transitions.ts),
+ *                                           the call site still notifies, and the
+ *                                           status read back is REVOKED. OWNER
+ *                                           DECISION 2026-10-31: that user-initiated
+ *                                           case is SUPPRESSED in the producer
+ *                                           (sync-notifications.ts removedByUser);
+ *                                           a provider revocation (webhook
+ *                                           USER_PERMISSION_REVOKED) still notifies.
  *   ERROR / ACTIVE /
  *   missing/unknown →  "sync-failed"        the conservative default
  *

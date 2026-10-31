@@ -54,6 +54,7 @@
 import { db } from "@/lib/db";
 import { IndeterminateWriteError, resolveConditionalWrite } from "@/lib/db/conditional-write";
 import { emailNotificationAdapter } from "@/lib/notifications/channels/email";
+import { recomputeActionLabel } from "@/lib/notifications/action-label";
 import type {
   ChannelAdapter,
   NotificationCategory,
@@ -79,6 +80,8 @@ export interface RetryableDeliveryRow {
     title: string;
     body: string | null;
     href: string | null;
+    /** The createNotification input data — read (never written) to recompute the email CTA label. */
+    metadata?: unknown;
     readAt: Date | null;
     archivedAt: Date | null;
     expiresAt: Date | null;
@@ -102,6 +105,7 @@ export interface NotificationRetryClient {
             title: true;
             body: true;
             href: true;
+            metadata: true;
             readAt: true;
             archivedAt: true;
             expiresAt: true;
@@ -179,6 +183,7 @@ export async function retryNotifications(
           title: true,
           body: true,
           href: true,
+          metadata: true,
           readAt: true,
           archivedAt: true,
           expiresAt: true,
@@ -254,6 +259,7 @@ export async function retryNotifications(
     // Re-deliver through the SAME adapter create.ts uses — no second email
     // path. The adapter never throws by contract.
     result.retried++;
+    const actionLabel = recomputeActionLabel(n.type, n.metadata);
     const outcome = await adapter.deliver({
       userId: n.userId,
       email: n.user!.email,
@@ -263,6 +269,10 @@ export async function retryNotifications(
       title: n.title,
       ...(n.body ? { body: n.body } : {}),
       ...(n.href ? { href: n.href } : {}),
+      // The CTA label is email-only and never persisted: recompute it from the
+      // persisted type + metadata through the same registry render (SYNC_FAILED
+      // without a derivable state → the conservative "Review connection").
+      ...(n.href && actionLabel ? { actionLabel } : {}),
     });
 
     // Outcome write — ChannelResult verbatim, deliveredAt only on "sent"

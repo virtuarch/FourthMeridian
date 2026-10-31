@@ -238,6 +238,59 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── 5b. owner decision 2026-10-31: no notify for a removal on our side ────
+  console.log("5b. user removal mid-sync → no notification; provider revocation still notifies");
+  {
+    async function produce(status: string, conns: { live: number; removed: number } | null) {
+      const counted: unknown[] = [];
+      const client: PlaidItemReadClient = {
+        plaidItem: { async findUnique() { return { userId: "u1", institutionName: "Chase", status }; } },
+        ...(conns
+          ? {
+              accountConnection: {
+                async count(args) {
+                  counted.push(args.where);
+                  return args.where.deletedAt === null ? conns.live : conns.removed;
+                },
+              },
+            }
+          : {}),
+      };
+      const calls: { data?: Record<string, unknown> }[] = [];
+      const logs: string[] = [];
+      const orig = console.log;
+      console.log = (...a: unknown[]) => { logs.push(a.map(String).join(" ")); };
+      try {
+        await notifyItemSyncFailed("item_9", {
+          itemClient: client,
+          createFn: (async (input: { data?: Record<string, unknown> }) => { calls.push(input); return { status: "created", id: "n" }; }) as never,
+        });
+      } finally { console.log = orig; }
+      return { calls, logs, counted };
+    }
+    const userRemoved = await produce("REVOKED", { live: 0, removed: 2 });
+    check("user removal mid-sync (REVOKED, every connection soft-deleted) → no notification", userRemoved.calls.length === 0, userRemoved.calls);
+    check("…recorded as a suppression with a reason and no PII",
+      userRemoved.logs.length === 1 && /suppressed for item item_9: removed by the user/.test(userRemoved.logs[0]) && !/Chase|u1/.test(userRemoved.logs[0]), userRemoved.logs);
+    check("…the marker reads live AND soft-deleted connections of THIS item",
+      JSON.stringify(userRemoved.counted) === JSON.stringify([{ plaidItemDbId: "item_9", deletedAt: null }, { plaidItemDbId: "item_9", deletedAt: { not: null } }]), userRemoved.counted);
+    const provider = await produce("REVOKED", { live: 2, removed: 0 });
+    check("provider revocation (REVOKED, connections still live) → notifies with the disconnected copy",
+      provider.calls.length === 1 && provider.calls[0].data?.connectionState === "disconnected" &&
+      getNotificationDefinition("SYNC_FAILED")!.render(provider.calls[0].data!).title === "Chase is disconnected");
+    const partial = await produce("REVOKED", { live: 1, removed: 3 });
+    check("REVOKED with a live connection left → still notifies (not a full removal)", partial.calls.length === 1);
+    const noRows = await produce("REVOKED", { live: 0, removed: 0 });
+    check("REVOKED with no connection rows at all → still notifies (no evidence of a removal)", noRows.calls.length === 1);
+    const noReader = await produce("REVOKED", null);
+    check("a client that cannot read connections never suppresses (conservative)", noReader.calls.length === 1);
+    for (const [status, state] of [["ERROR", "sync-failed"], ["NEEDS_REAUTH", "reauth-required"]] as const) {
+      const r = await produce(status, { live: 0, removed: 2 });
+      check(`${status} unchanged: notifies (${state}) even if connections are removed, and never reads them`,
+        r.calls.length === 1 && r.calls[0].data?.connectionState === state && r.counted.length === 0, r);
+    }
+  }
+
   // ── 6. no token in logs / error results ────────────────────────────────────
   console.log("6. no token in logs or error results");
   {
@@ -265,6 +318,26 @@ async function main(): Promise<void> {
       const lines = readFileSync(f, "utf8").split("\n").filter((l) => /console\.(log|error|warn|info)\(/.test(l));
       check(`${f}: no console line references a link or token`, lines.every((l) => !/(resetUrl|verifyUrl|confirmUrl|inviteUrl|rawToken|token\b)/.test(l)), lines);
     }
+  }
+
+  // ── 6b. the export alert is built inside the non-throwing send ────────────
+  console.log("6b. a malformed app base never fails the export");
+  {
+    const { sendSecurityAlert, SECURITY_ALERT_BUILD_ERROR } = await import("@/lib/email/send-security-alert");
+    let sent = 0;
+    const spy = (async () => { sent++; return { status: "captured", provider: "capture" }; }) as never;
+    const bad = await sendSecurityAlert("x@example.invalid", () => alerts.dataExportedAlert(new Date(), "not a url ?token=secret-ish"), spy)
+      .catch(() => ({ status: "threw", provider: "none", error: "threw" as string | undefined }));
+    check("builder throw → error result (no exception)", bad.status === "error" && bad.provider === "none");
+    check("…with the fixed, redacted message", bad.error === SECURITY_ALERT_BUILD_ERROR && !String(bad.error).includes("secret-ish"));
+    check("…and nothing is sent", sent === 0);
+    const ok = await sendSecurityAlert("x@example.invalid", () => alerts.dataExportedAlert(new Date(), "https://app.fourthmeridian.com"), spy);
+    check("a valid base still sends", ok.status === "captured" && sent === 1);
+    const route = readFileSync("app/api/user/export/route.ts", "utf8");
+    check("the export route builds the alert only inside sendSecurityAlert",
+      /sendSecurityAlert\(dbUser\.email,\s*\(\)\s*=>\s*\n?\s*dataExportedAlert\(/.test(route) && !/\.\.\.dataExportedAlert\(/.test(route));
+    check("the export route records the email status, then audits (order unchanged)",
+      route.indexOf("sendSecurityAlert(") < route.indexOf("AuditAction.DATA_EXPORTED") && /emailStatus = emailResult\.status/.test(route));
   }
 
   // ── 7. the security variant carries no promotional block ───────────────────

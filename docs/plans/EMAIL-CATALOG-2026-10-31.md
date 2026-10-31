@@ -55,7 +55,7 @@ Token lifetimes are single constants in `lib/email/token-ttl.ts`. Each one is re
 | `email-change` | Confirm your new Fourth Meridian email | `app/api/user/email/request/route.ts:107` | the NEW address | Confirm new email → `/confirm-email-change?token=` | `EMAIL_CHANGE_TTL_MS` 1 h; not cleared on confirm (unchanged) | yes (security variant) | `email-change--confirm-new-address` |
 | `security-alert` · `emailChangeRequestedAlert` | … Email change requested | `app/api/user/email/request/route.ts:113` | the OLD address | none | — | yes (still names the new address, as before) | `security-alert--email-change-old-address` |
 | `security-alert` · `passwordChangedAlert` | … Your password was changed | `app/api/user/password/route.ts:87` | account | none | — | yes | `security-alert--password-changed` |
-| `security-alert` · `dataExportedAlert` | … Your data was exported | `app/api/user/export/route.ts:61` | account | **Review account security → `/dashboard/settings/security`** (verified page) | — | yes; added a CTA and a labelled UTC time; never carries exported data | `security-alert--data-exported` |
+| `security-alert` · `dataExportedAlert` | … Your data was exported | `app/api/user/export/route.ts:63` via `lib/email/send-security-alert.ts` (`sendSecurityAlert` builds the alert inside the non-throwing send) | account | **Review account security → `/dashboard/settings/security`** (verified page) | — | yes; added a CTA and a labelled UTC time; never carries exported data. A malformed app base gives an error result with a fixed message, and the export and its audit row (`emailStatus: "error"`) still complete. | `security-alert--data-exported` |
 | `security-alert` · `twoFactorResetAlert` | … Two-factor authentication was reset on your account | `app/api/admin/security/users/[userId]/2fa-reset/route.ts:129` | target user | none | — | yes | `security-alert--two-factor-reset` |
 | `security-alert` · `accountDeactivatedAlert` | … Your account was deactivated | `app/api/user/deactivate/route.ts:92` | account | none | — | yes | `security-alert--account-deactivated` |
 | `security-alert` · `accountReactivatedAlert` | … Your account was reactivated | `lib/auth.ts:483` | account | none | — | yes | `security-alert--account-reactivated` |
@@ -64,7 +64,7 @@ Token lifetimes are single constants in `lib/email/token-ttl.ts`. Each one is re
 | `security-alert` · `accountDeletedAlert` | … Your account has been deleted | `lib/account-deletion/purge.ts:520` (injected `email` seam, after commit) | account | none | — | yes | `security-alert--account-deleted` |
 | `security-alert` · `ownerSignInAnomalyAlert` | … Unusual sign-in activity on your account | `lib/security/anomaly-alerts.ts:198` | resolved account owner only | Reset your password → `/forgot-password` (no token) | — | yes; the inline link became the CTA, same destination | `security-alert--owner-sign-in-anomaly` |
 | `space-invite` | You've been invited to {Space} on Fourth Meridian | `app/api/spaces/[id]/invite/route.ts:165` | existing user | Review invitation → `/dashboard/spaces` | No token: acceptance is identity-gated in-app | yes | `space-invite` |
-| `notification` (all notification types) | the notification title | `lib/notifications/channels/email.ts` (`sendEmail("notification", …)`), reached only via `createNotification` when EMAIL is enabled for the type's category | notification recipient | registry `href` with registry `actionLabel` (default "View in Fourth Meridian"); footer link "Manage notification settings" → `/dashboard/settings/notifications` | — | yes | see §2 and `notification--space-invite-received` |
+| `notification` (all notification types) | the notification title | `lib/notifications/channels/email.ts` (`sendEmail("notification", …)`), reached via `lib/notifications/create.ts` (`adapter.deliver`, at creation, when EMAIL is enabled for the type's category) and **re-delivered** by `jobs/retry-notifications.ts` (`adapter.deliver`, up to 3 attempts total). The retry selects the persisted `metadata` (read only) and recomputes the email-only CTA label through the same registry render (`lib/notifications/action-label.ts`). | notification recipient | registry `href` with registry `actionLabel` (default "View in Fourth Meridian"); footer link "Manage notification settings" → `/dashboard/settings/notifications` | — | yes | see §2 and `notification--space-invite-received` |
 
 ## 2. "Institution needs attention" (`SYNC_FAILED` through `notification`)
 
@@ -85,7 +85,9 @@ Producer: `lib/plaid/sync-notifications.ts` `notifyItemSyncFailed`. Registry: `l
 | `app/api/plaid/investments/enable/route.ts:153` | same | same | `reauth-required`, `sync-failed` |
 | `app/api/platform/platform-ops/connections/[id]/resync/route.ts:175` | same | same | `reauth-required`, `sync-failed` |
 | `app/api/platform/platform-ops/connections/[id]/request-reauth/route.ts:71` | operator request; REVOKED items are refused (409) | NEEDS_REAUTH | `reauth-required` |
-| Plaid webhook (`lib/plaid/webhook-receiver.ts`, `lib/plaid/webhook-health.ts`, `lib/plaid/webhook-sync.ts`) | NEEDS_REAUTH / REVOKED transitions | — | **none: the webhook does not notify** (gap, unchanged) |
+| Any call site above, when the user removed the connection while that sync was in flight | late failure for an already-REVOKED item; its ERROR write is dropped (`lib/connections/health-transitions.ts`) | stays REVOKED, every AccountConnection soft-deleted | **none: suppressed** (owner decision 2026-10-31, below) |
+| Any call site above, after a provider-side revocation | late failure for an item the webhook marked REVOKED (USER_PERMISSION_REVOKED / USER_ACCOUNT_REVOKED); connections stay live | REVOKED | `disconnected` |
+| Plaid webhook (`lib/plaid/webhook-receiver.ts`, `lib/plaid/webhook-health.ts`, `lib/plaid/webhook-sync.ts`) | NEEDS_REAUTH / REVOKED transitions | — | **none: the webhook itself does not notify** (gap, unchanged) |
 
 ### Copy and CTA by state
 
@@ -99,7 +101,42 @@ Producer: `lib/plaid/sync-notifications.ts` `notifyItemSyncFailed`. Registry: `l
 
 - **"Temporary, we'll retry automatically."** Transient codes (ITEM_LOCKED, INSTITUTION_DOWN, PRODUCT_NOT_READY, 429 …) classify to null and never notify. An ERROR item is excluded from the cron, which selects `status: ACTIVE` only (`jobs/sync-banks.ts`). The default copy therefore makes **no** retry promise.
 - **"Stale"** (no successful sync for N). No producer observes it.
-- **`disconnected`**. The copy exists and is truthful, but no call site produces a REVOKED status before notifying today.
+- **`disconnected` is produced only after a provider-side revocation.** The user-initiated removal race is suppressed (next section).
+
+### Owner decision 2026-10-31: no "disconnected" notification for a removal the user made
+
+If a user removes a connection themselves, the late failure of a sync already in flight sends **no** email and **no** in-app notification.
+
+REVOKED has two live writers:
+- **`lib/plaid/disconnect.ts` `disconnectPlaidItemIfOrphaned`: removal on our side.** It runs only once every AccountConnection on the item has `deletedAt` set. That covers the user's account removal (`lib/accounts/disconnect.ts`) and the cleanup, self-heal and supersede paths that act on an already-orphaned item.
+- **The Plaid webhook `USER_PERMISSION_REVOKED` / `USER_ACCOUNT_REVOKED` (`lib/plaid/webhook-receiver.ts`): provider-side revocation.** It leaves the connections live.
+
+`lib/account-deletion/purge.ts` also writes REVOKED, but the user row is deleted at the end of the purge.
+
+**Rule** (`removedByUser` in `lib/plaid/sync-notifications.ts`, before `createNotification`):
+- **Suppressed:** status REVOKED with **zero live and at least one soft-deleted** AccountConnection. This marker already exists, so no migration is needed.
+- **Recording:** the suppression is a log line with the item id and the reason, and no PII. Nothing is created, so dedupe and retire are unaffected.
+
+**Still notifies, with the `disconnected` copy:**
+- a provider revocation;
+- REVOKED with any live connection left;
+- REVOKED with no connection rows at all (no evidence of a removal).
+
+ERROR and NEEDS_REAUTH are unchanged: they never read connections.
+
+**Residual (conservative by design):** a removal path might orphan an item without soft-deleting its connection rows, for example by re-pointing them to a replacement item. I have not verified whether any path does. Such an item has no connection rows, so a late failure on it would still notify `disconnected`.
+
+### Retry path
+
+- `jobs/retry-notifications.ts` re-sends a failed EMAIL delivery from the persisted row: title, body and href.
+- The CTA label is email-only and never persisted, so the retry recomputes it with `recomputeActionLabel(type, metadata)`. That function runs the same registry render over the persisted `metadata` (the producer's data, including `connectionState`).
+- If no state can be derived (legacy rows, unknown value, null metadata), the label is the conservative "Review connection".
+- Nothing new is written.
+
+### Dedupe keeps the first copy (by design)
+
+- Suppress-while-open dedupe (`SYNC_FAILED:item:{id}:open`) can keep the generic copy when a later reauth occurs. An item first notified as `sync-failed` (ERROR) that later needs reauth produces no second notification while the first is open, so the live row and any retry keep the `sync-failed` copy.
+- This behaviour is unchanged by design: no new trigger, no dedupe change.
 
 ### Fallback and preview cases
 
@@ -138,6 +175,9 @@ Producer: `lib/plaid/sync-notifications.ts` `notifyItemSyncFailed`. Registry: `l
 | Plaid webhook reauth / revoked | No notification and no email (see §2) | `lib/plaid/webhook-receiver.ts` |
 
 ## 5. Known gaps (unchanged by this PR)
+
+- Suppress-while-open dedupe can keep the generic copy when a later reauth occurs (§2).
+- `scripts/email-preview.ts` passes a variable template name to `sendEmail`. It sends only the preview cases, only to the exact `EMAIL_PREVIEW_ALLOWED_TO` address, and only with `--send`. `lib/email/catalog.test.ts` declares it in `VARIABLE_NAME_SENDERS`.
 
 - **Two emails per Space invite (inferred).** The invitee gets `space-invite` (direct) plus `notification` for `SPACE_INVITE_RECEIVED`.
 - **No retries or provider idempotency key.** "Sent" means accepted by the provider.
