@@ -129,6 +129,14 @@ export async function redeemBetaInvite(
   client: Prisma.TransactionClient,
   input: { requestId: string; redeemedUserId: string; now?: Date },
 ): Promise<void> {
+  // ⚠️ STATUS-ONLY BY NECESSITY. This write runs under the pre-identity role
+  // (fm_auth), which may SELECT only ("id","status") on BetaAccessRequest
+  // (migration 20261002000600). Postgres needs SELECT on every column an UPDATE's
+  // WHERE reads, so an `inviteExpiresAt` or `inviteTokenHash` predicate here is
+  // `42501 permission denied` and takes invite_only registration down (the RLS
+  // acceptance suite, checks 50–51, proves it). Expiry and the token are
+  // enforced by validateInvite() moments earlier; that window is an accepted
+  // residual (audit §3.4). Do not add predicates without widening the grant.
   const { count } = await client.betaAccessRequest.updateMany({
     where: { id: input.requestId, status: BetaAccessRequestStatus.APPROVED },
     data: {

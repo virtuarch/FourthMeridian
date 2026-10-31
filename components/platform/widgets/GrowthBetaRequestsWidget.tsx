@@ -11,6 +11,8 @@
  *   - Beta mode control (open | invite_only | closed) — PUT /registration-mode, confirmed
  *   - Pending request → Approve / Deny  (existing WRITE routes)
  *   - Approved invitation → Resend / Revoke (PO-3B WRITE routes)
+ *   - PR C — Waiting rows → select (one, many, all eligible on the page) → bulk
+ *     review (server dry run) → confirm → results (BulkApprovePanel)
  * Every mutation goes through requireFreshPlatformAccess("GROWTH_REVENUE","WRITE")
  * server-side and lands an AuditLog row (→ Security Ops operator feed). Destructive
  * / high-impact actions (mode change, revoke) require an explicit ConfirmDialog.
@@ -25,7 +27,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, X, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2 } from "lucide-react";
+import { Check, X, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2, CalendarClock } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
 import {
   UtcStamp,
@@ -44,6 +46,10 @@ import type {
 } from "@/app/api/platform/growth-revenue/requests/route";
 import type { BetaStatusResponse } from "@/app/api/platform/growth-revenue/beta-status/route";
 import { describeAcquisitionSource } from "@/lib/marketing/acquisition";
+import { InvitationValidityControl, useInvitationPolicy, daysLabel } from "../growth/InvitationValidityControl";
+import { INVITATION_VALIDITY_MAX_DAYS, INVITATION_VALIDITY_MIN_DAYS } from "@/lib/platform/growth/invitation-issue.core";
+import { BulkApprovePanel } from "../growth/BulkApprovePanel";
+import { disabledReason, headerState, pruneSelection, toggleAllEligible, toggleSelected } from "../growth/bulk-approve-model";
 
 type Mode = BetaStatusResponse["registrationMode"];
 type ProductStatus = BetaStatusResponse["productStatus"];
@@ -116,7 +122,14 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const [revokeId, setRevokeId]                         = useState<string | null>(null); // revoke confirm
   const [inviteOpen, setInviteOpen]                     = useState(false); // direct-invite form
   const [inviteEmail, setInviteEmail]                   = useState("");
-  const [inviteDays, setInviteDays]                     = useState("7");
+  // null ⇒ the configured invitation validity (PR B); a typed value is the per-invite override.
+  const [inviteDays, setInviteDays]                     = useState<string | null>(null);
+  const [extendId, setExtendId]                         = useState<string | null>(null); // extend confirm
+  const [extendDays, setExtendDays]                     = useState<string | null>(null);
+  const policy = useInvitationPolicy().data;
+  const validityDays = policy?.validityDays ?? null;
+  const validityMin = policy?.min ?? INVITATION_VALIDITY_MIN_DAYS;
+  const validityMax = policy?.max ?? INVITATION_VALIDITY_MAX_DAYS;
   // PLATFORM SPACES 2.0 — the list's own view state (client-side over the rows the route returns).
   const [tab, setTab]                                   = useState<"pending" | "invited">("pending");
   const [query, setQuery]                               = useState("");
@@ -128,6 +141,8 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   // SEC-PLAT-2 — mode / status changes and revocation carry a required reason
   // (lib/audit.ts REASON_REQUIRED_ACTIONS); one value serves whichever confirm is open.
   const [reason, setReason]                             = useState<OperatorReasonValue>(EMPTY_OPERATOR_REASON);
+  // PR C — the Waiting rows selected for bulk approval (ids; the server re-decides every one).
+  const [selected, setSelected]                         = useState<Set<string>>(() => new Set());
   const closeConfirm = (close: () => void) => () => { close(); setReason(EMPTY_OPERATOR_REASON); };
 
   const load = useCallback(async () => {
@@ -141,6 +156,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
       if (!rReq.ok) throw new Error(rReq.status === 403 ? "Not authorized" : `Request failed (${rReq.status})`);
       const body = (await rReq.json()) as BetaRequestsResponse;
       setReqs(body);
+      setSelected((s) => pruneSelection(s, body.pending));
       // First read only: open on the tab that has work in it (Waiting, unless it is empty and invitations are not).
       if (!firstLoadDone.current) {
         firstLoadDone.current = true;
@@ -193,15 +209,25 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const sendInvite = () =>
     run("invite", "/api/platform/growth-revenue/invitations",
       { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: inviteEmail.trim(), expiresDays: Number(inviteDays) || 7 }) },
-      () => { setInviteOpen(false); setInviteEmail(""); setInviteDays("7"); });
+        // No override ⇒ the server applies the configured validity.
+        body: JSON.stringify({ email: inviteEmail.trim(), ...(inviteDays !== null && inviteDays.trim() !== "" ? { expiresDays: Number(inviteDays) } : {}) }) },
+      () => { setInviteOpen(false); setInviteEmail(""); setInviteDays(null); });
 
   const decide = (id: string, action: "approve" | "deny") =>
     run(id, `/api/platform/growth-revenue/requests/${id}/${action}`, { method: "POST" },
       () => setSelectedRequestId(null));
 
-  const resend = (id: string) =>
-    run(id, `/api/platform/growth-revenue/requests/${id}/resend`, { method: "POST" });
+  // PR B — the invitedAt this screen showed makes a double-click send one email.
+  const resend = (id: string, invitedAt: string | null) =>
+    run(id, `/api/platform/growth-revenue/requests/${id}/resend`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedInvitedAt: invitedAt }) });
+
+  // PR B — extend keeps the token (no email); the reason is required.
+  const extend = (id: string) =>
+    run(id, `/api/platform/growth-revenue/requests/${id}/extend`,
+      { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ validityDays: Number(extendDays ?? validityDays ?? ""), reason: reasonPayload(reason) }) },
+      closeConfirm(() => { setExtendId(null); setExtendDays(null); }));
 
   const revoke = (id: string) =>
     run(id, `/api/platform/growth-revenue/requests/${id}/revoke`,
@@ -235,6 +261,11 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const totalRows = tab === "pending" ? reqs?.counts.pending ?? 0 : reqs?.counts.approved ?? 0;
   const truncated = totalRows > loadedRows ? `showing ${loadedRows} of ${totalRows} (${tab === "pending" ? "oldest" : "newest"} first)` : null;
   const limit = showAll ? Infinity : LIST_ROWS;
+  // PR C — "this page" is the Waiting rows currently shown; select-all takes only the eligible ones.
+  const pendingPage = pendingRows.slice(0, limit);
+  const pageSelect = headerState(selected, pendingPage);
+  const selectedRequests = (reqs?.pending ?? []).filter((r) => selected.has(r.id));
+  const CB = "h-4 w-4 cursor-pointer accent-[var(--meridian-400)] disabled:cursor-not-allowed disabled:opacity-40";
   const TH = "px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]";
   const TD = "px-2 py-2.5 align-middle";
 
@@ -270,7 +301,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
         ) : (
           <>
             {/* While a panel or confirm is open the error is announced THERE (once). */}
-            {error && !(selectedRequest || selectedInvitation || pendingMode || pendingStatus || revokeId) && (
+            {error && !(selectedRequest || selectedInvitation || pendingMode || pendingStatus || revokeId || extendId) && (
               <p role="alert" className="text-[11px] text-[var(--accent-negative)]">{error}</p>
             )}
 
@@ -330,6 +361,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                     )}
                   </div>
                 )}
+                <div className="sm:col-span-2">
+                  <InvitationValidityControl canWrite={canWrite} />
+                </div>
                 {status && (
                   <p className="text-[11px] text-[var(--text-muted)] tabular-nums sm:col-span-2">
                     {`Invitations: ${status.invitations.sent} emailed · ${status.invitations.accepted} accepted · ${status.invitations.expired} expired · ${status.invitations.revoked} revoked`}
@@ -352,14 +386,14 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                   <label htmlFor="growth-invite-days" className="text-[11px] text-[var(--text-secondary)]">Expires in</label>
                   <input
                     id="growth-invite-days"
-                    type="number" min={1} max={30} value={inviteDays} onChange={(e) => setInviteDays(e.target.value)}
+                    type="number" min={validityMin} max={validityMax} value={inviteDays ?? (validityDays !== null ? String(validityDays) : "")} onChange={(e) => setInviteDays(e.target.value)}
                     className="min-h-11 w-16 rounded-[var(--radius-sm)] border bg-transparent px-2 text-xs tabular-nums text-[var(--text-primary)] lg:min-h-8"
                     style={{ borderColor: "var(--border-hairline)" }}
                   />
-                  <span className="text-[11px] text-[var(--text-muted)]">days</span>
+                  <span className="text-[11px] text-[var(--text-muted)] tabular-nums">{`days (${validityMin}–${validityMax})`}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button type="button" onClick={() => { setInviteOpen(false); setInviteEmail(""); }} disabled={acting !== null}
+                  <button type="button" onClick={() => { setInviteOpen(false); setInviteEmail(""); setInviteDays(null); }} disabled={acting !== null}
                     className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold disabled:opacity-40 lg:min-h-8"
                     style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>
                     Cancel
@@ -411,6 +445,13 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
             </div>
 
             {/* ── The list: compact table ≥ lg, two-line rows below ────────── */}
+            {tab === "pending" && canWrite && (
+              <BulkApprovePanel canWrite={canWrite} selectedRows={selectedRequests}
+                validityDefault={validityDays} min={validityMin} max={validityMax}
+                onClear={() => setSelected(new Set())}
+                onFinished={async () => { setSelected(new Set()); await load(); }} />
+            )}
+
             {tab === "pending" ? (
               pendingRows.length === 0 ? (
                 <p className="py-4 text-xs text-[var(--text-secondary)]">{q ? "No waiting request matches." : "No pending requests."}</p>
@@ -418,14 +459,41 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                 <>
                   <table className="w-full table-fixed text-xs max-lg:hidden" aria-label="Waiting beta requests">
                     <thead className="border-b border-[var(--border-hairline)]">
-                      <tr><th className={`${TH} w-[34%]`}>Email</th><th className={TH}>Requested</th><th className={TH}>Submissions</th><th className={`${TH} w-[30%]`}>Source</th><th className={`${TH} w-8`}><span className="sr-only">Open</span></th></tr>
+                      <tr>
+                        {canWrite && (
+                          <th className={`${TH} w-8`}>
+                            <input type="checkbox" className={CB} data-bulk-select-all
+                              aria-label="Select all eligible requests on this page"
+                              title="Select all eligible requests on this page"
+                              checked={pageSelect === "all"} ref={(el) => { if (el) el.indeterminate = pageSelect === "some"; }}
+                              disabled={!pendingPage.some((r) => disabledReason(r) === null)}
+                              onChange={() => setSelected((s) => toggleAllEligible(s, pendingPage))} />
+                          </th>
+                        )}
+                        <th className={`${TH} w-[34%]`}>Email</th>
+                        {/* RISK SLOT (risk session) — the advisory column header goes here: <th className={TH}>Review</th> */}
+                        <th className={TH}>Requested</th><th className={TH}>Submissions</th><th className={`${TH} w-[30%]`}>Source</th><th className={`${TH} w-8`}><span className="sr-only">Open</span></th>
+                      </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--border-hairline)]">
-                      {pendingRows.slice(0, limit).map((r) => (
+                      {pendingPage.map((r) => (
                         <tr key={r.id} onClick={() => openRequest(r.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
+                          {canWrite && (
+                            <td className={`${TD} w-8`} onClick={(e) => e.stopPropagation()}>
+                              <input type="checkbox" className={CB} data-bulk-select
+                                aria-label={`Select ${r.email} for bulk approval`}
+                                title={disabledReason(r) ?? `Select ${r.email}`}
+                                checked={selected.has(r.id)} disabled={disabledReason(r) !== null}
+                                onChange={() => setSelected((s) => toggleSelected(s, r))} />
+                            </td>
+                          )}
                           <td className={`${TD} truncate font-medium text-[var(--text-primary)]`}>
                             <button type="button" onClick={(e) => { e.stopPropagation(); openRequest(r.id); }} aria-haspopup="dialog" className="max-w-full truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{r.email}</button>
+                            {canWrite && (disabledReason(r) !== null ? (
+                              <span className="block truncate text-[10px] font-normal text-[var(--text-faint)]" data-bulk-ineligible>{disabledReason(r)}</span>
+                            ) : null)}
                           </td>
+                          {/* RISK SLOT (risk session) — <td className={TD}><BetaRiskBadge risk={r.risk} /></td> goes here. Not imported yet. */}
                           <td className={`${TD} tabular-nums text-[var(--text-secondary)]`}>{`${timeAgo(r.createdAt)} ago`}</td>
                           <td className={`${TD} tabular-nums text-[var(--text-secondary)]`}>{r.requestCount > 1 ? `${r.requestCount}×` : "1"}</td>
                           <td className={`${TD} truncate text-[var(--text-muted)]`}>{describeAcquisitionSource(r.acquisition) ?? "—"}</td>
@@ -434,16 +502,39 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                       ))}
                     </tbody>
                   </table>
+                  {canWrite && (
+                    <label className="-mx-1 flex min-h-11 items-center gap-2 text-[11px] text-[var(--text-secondary)] lg:hidden">
+                      <span className="flex w-8 shrink-0 justify-center">
+                        <input type="checkbox" className={CB} data-bulk-select-all
+                          checked={pageSelect === "all"} ref={(el) => { if (el) el.indeterminate = pageSelect === "some"; }}
+                          disabled={!pendingPage.some((r) => disabledReason(r) === null)}
+                          onChange={() => setSelected((s) => toggleAllEligible(s, pendingPage))} />
+                      </span>
+                      Select all eligible on this page
+                    </label>
+                  )}
                   <ul className="-mx-1 divide-y divide-[var(--border-hairline)] lg:hidden" aria-label="Waiting beta requests">
-                    {pendingRows.slice(0, limit).map((r) => (
-                      <li key={r.id}>
+                    {pendingPage.map((r) => (
+                      <li key={r.id} className="flex min-w-0 items-center">
+                        {canWrite && (
+                          <label className="flex min-h-11 w-8 shrink-0 items-center justify-center" title={disabledReason(r) ?? undefined}>
+                            <input type="checkbox" className={CB} data-bulk-select
+                              aria-label={`Select ${r.email} for bulk approval`}
+                              checked={selected.has(r.id)} disabled={disabledReason(r) !== null}
+                              onChange={() => setSelected((s) => toggleSelected(s, r))} />
+                          </label>
+                        )}
                         <button type="button" onClick={() => openRequest(r.id)} aria-haspopup="dialog"
-                          className="flex min-h-11 w-full items-center justify-between gap-2 px-1 py-2 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]">
+                          className="flex min-h-11 min-w-0 flex-1 items-center justify-between gap-2 px-1 py-2 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)]">
                           <span className="min-w-0">
                             <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{r.email}</span>
                             <span className="block truncate text-[10px] text-[var(--text-muted)]">
                               {`${timeAgo(r.createdAt)} ago`}{r.requestCount > 1 ? ` · ${r.requestCount}×` : ""}{describeAcquisitionSource(r.acquisition) ? ` · ${describeAcquisitionSource(r.acquisition)}` : ""}
                             </span>
+                            {/* RISK SLOT (risk session) — <BetaRiskBadge risk={r.risk} /> goes here on phones. */}
+                            {canWrite && (disabledReason(r) !== null ? (
+                              <span className="block truncate text-[10px] text-[var(--text-faint)]" data-bulk-ineligible>{disabledReason(r)}</span>
+                            ) : null)}
                           </span>
                           <ChevronRight size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
                         </button>
@@ -534,8 +625,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                       </div>
                     )}
                     <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
-                      Approve mints a single-use, email-bound invite (14-day expiry) and emails it. Redemption requires
-                      registration mode = invite-only.
+                      {`Approve mints a single-use, email-bound invite (${validityDays !== null ? `expires after ${daysLabel(validityDays)}` : "configured validity"}) and emails it. Redemption requires registration mode = invite-only.`}
                     </p>
                     {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>}
                   </div>
@@ -577,8 +667,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                       receipt, so &ldquo;handed to provider&rdquo; is not &ldquo;delivered&rdquo;.
                     </p>
                     <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
-                      Resend rotates the single-use token and re-emails it (email-binding + expiry preserved). Revoke kills
-                      the invitation only — it never removes users or existing access.
+                      Resend rotates the single-use token and re-emails it with a fresh expiry (the configured validity).
+                      Extend keeps the link and changes only its expiry. Revoke kills the invitation only — it never
+                      removes users or existing access.
                     </p>
                     {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>}
                   </div>
@@ -590,7 +681,12 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                     style={{ background: "rgba(248,113,113,.1)", color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)" }}>
                     <Ban size={13} aria-hidden /> Revoke
                   </button>
-                  <button onClick={() => resend(selectedInvitation.id)} disabled={acting !== null}
+                  <button onClick={() => { setError(null); setExtendDays(null); setExtendId(selectedInvitation.id); }} disabled={acting !== null}
+                    className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
+                    style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
+                    <CalendarClock size={13} aria-hidden /> Extend
+                  </button>
+                  <button onClick={() => resend(selectedInvitation.id, selectedInvitation.invitedAt)} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "var(--surface-inset)", color: "var(--text-primary)", borderColor: "var(--border-hairline)" }}>
                     {acting === selectedInvitation.id ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <Send size={13} aria-hidden />} Resend
@@ -626,6 +722,27 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
               confirmDisabled={reasonPayload(reason) === null}
               onConfirm={() => changeStatus(pendingStatus)}
               onClose={closeConfirm(() => setPendingStatus(null))}
+            />
+          )}
+          {canWrite && extendId && (
+            <ConfirmDialog
+              icon={CalendarClock}
+              title="Extend this invitation?"
+              message={<>The link already sent keeps working and no email is sent. It will expire this many days from now.
+                <span className="mt-3 flex items-center gap-2">
+                  <input type="number" min={validityMin} max={validityMax} step={1} aria-label="Extend by days"
+                    value={extendDays ?? (validityDays !== null ? String(validityDays) : "")} onChange={(e) => setExtendDays(e.target.value)} disabled={acting === extendId}
+                    className="min-h-11 w-16 rounded-[var(--radius-sm)] border bg-transparent px-2 text-base tabular-nums text-[var(--text-primary)] sm:text-xs lg:min-h-8"
+                    style={{ borderColor: "var(--border-hairline)" }} />
+                  <span className="text-[11px] text-[var(--text-muted)] tabular-nums">{`days (${validityMin}–${validityMax})`}</span>
+                </span>
+                {error && <ActionError message={error} />}<OperatorReasonField value={reason} onChange={setReason} disabled={acting === extendId} /></>}
+              confirmLabel="Extend invitation"
+              confirmTone="meridian"
+              busy={acting === extendId}
+              confirmDisabled={reasonPayload(reason) === null || !(extendDays ?? validityDays)}
+              onConfirm={() => extend(extendId)}
+              onClose={closeConfirm(() => { setExtendId(null); setExtendDays(null); })}
             />
           )}
           {canWrite && revokeId && (

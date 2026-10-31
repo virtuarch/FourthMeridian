@@ -288,6 +288,13 @@ function main() {
       "app/api/platform/growth-revenue/requests/[id]/revoke/route.ts",
       // BETA-REQUEST RISK — an operator verdict on a request's advisory signals.
       "app/api/platform/growth-revenue/requests/[id]/risk-review/route.ts",
+      // PR B — the audited extend and the invitation-validity setting, fresh
+      // GROWTH_REVENUE WRITE with a required reason (never CONTROL).
+      "app/api/platform/growth-revenue/requests/[id]/extend/route.ts",
+      "app/api/platform/growth-revenue/invitation-policy/route.ts",
+      // PR C — bulk approval: the same fresh GROWTH_REVENUE WRITE as single
+      // approve (never CONTROL); each row goes through issueBetaInvitation.
+      "app/api/platform/growth-revenue/requests/bulk-approve/route.ts",
       // MERCHANT-OPS AUTHORITY (2026-10-06): merge / dismiss, fresh WRITE on the
       // MERCHANT_OPS area — no longer ordinary Space membership.
       "app/api/merchant-ops/decide/route.ts",

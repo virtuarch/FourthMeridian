@@ -36,6 +36,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import type { AcquisitionSource } from "@/lib/marketing/acquisition";
 import { loadBetaRisk } from "@/lib/platform/growth/beta-risk";
 import type { BetaRequestRisk } from "@/lib/platform/growth/beta-risk-types";
+import { approvalEligibility } from "@/lib/platform/growth/bulk-approve.core";
 
 export const runtime = "nodejs";
 
@@ -54,6 +55,12 @@ export interface BetaRequestRow {
   acquisition: AcquisitionSource | null;
   /** Advisory risk signals + the latest operator verdict; absent when the risk read failed. */
   risk?: BetaRequestRisk;
+  /**
+   * PR C — may this row be bulk-approved right now? The server's issuance rule
+   * (approvalEligibility), never a client guess; the bulk route re-decides at
+   * execution. Optional: absent means "not computed", not "approvable".
+   */
+  eligibility?: { approvable: boolean; reason?: string };
 }
 
 /** The last invite EMAIL attempt for an invitation — the OPS-1 EmailResult
@@ -109,7 +116,7 @@ export async function GET() {
 
   // ── Derived: submission counts + first source (pending), last invite email (invitations)
   const pendingEmails = pending.map((r) => r.email);
-  const [eventStats, firstEvents, inviteAudits] = await Promise.all([
+  const [eventStats, firstEvents, inviteAudits, accountRows] = await Promise.all([
     pendingEmails.length === 0 ? Promise.resolve([]) : db.betaAccessRequestEvent.groupBy({
       by:     ["email"],
       where:  { email: { in: pendingEmails } },
@@ -123,12 +130,22 @@ export async function GET() {
       select:   { email: true, source: true },
     }),
     invitations.length === 0 ? Promise.resolve([]) : db.auditLog.findMany({
-      where:   { action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_INVITATION_CREATED, AuditAction.BETA_INVITATION_RESENT] } },
+      where:   { action: { in: [AuditAction.BETA_ACCESS_APPROVED, AuditAction.BETA_INVITATION_CREATED, AuditAction.BETA_INVITATION_RESENT, AuditAction.BETA_INVITATION_EMAIL_OUTCOME] } },
       orderBy: { createdAt: "desc" },
       take:    500, // newest first; the first row per betaRequestId wins below
-      select:  { createdAt: true, metadata: true },
+      select:  { createdAt: true, metadata: true, action: true },
+    }),
+    // PR C — which pending addresses already have an account (the one fact eligibility needs beyond the row).
+    pendingEmails.length === 0 ? Promise.resolve([]) : db.user.findMany({
+      where:  { email: { in: pendingEmails } },
+      select: { email: true },
     }),
   ]);
+  const hasAccount = new Set(accountRows.map((u) => u.email));
+  // PR B — an issuance row and its EMAIL_OUTCOME row can share a millisecond;
+  // the outcome (written after the send) must win that tie.
+  inviteAudits.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+    || Number(b.action === AuditAction.BETA_INVITATION_EMAIL_OUTCOME) - Number(a.action === AuditAction.BETA_INVITATION_EMAIL_OUTCOME));
   const statsByEmail = new Map(eventStats.map((g) => [g.email, { count: g._count._all, last: g._max.receivedAt }] as const));
   const firstSourceByEmail = new Map(firstEvents.map((e) => [e.email, (e.source as AcquisitionSource | null) ?? null] as const));
   const inviteEmailById = new Map<string, InviteEmailOutcome>();
@@ -171,6 +188,7 @@ export async function GET() {
       lastRequestedAt: statsByEmail.get(r.email)?.last?.toISOString() ?? null,
       acquisition:     firstSourceByEmail.get(r.email) ?? null,
       ...riskOf(r.id),
+      eligibility:     eligibilityView(r, hasAccount.has(r.email)),
     })),
     invitations: invitations.map((r) => ({
       id:              r.id,
@@ -189,4 +207,13 @@ export async function GET() {
     },
     ...(riskNotes.length > 0 ? { riskNotes } : {}),
   } satisfies BetaRequestsResponse);
+}
+
+/** PR C — the bulk-approval eligibility of one listed row (the same pure rule the bulk route applies). */
+function eligibilityView(
+  r: { id: string; email: string; status: BetaAccessRequestStatus },
+  accountExists: boolean,
+): NonNullable<BetaRequestRow["eligibility"]> {
+  const e = approvalEligibility({ id: r.id, email: r.email, status: r.status, inviteTokenHash: null, inviteExpiresAt: null }, accountExists);
+  return e.approvable ? { approvable: true } : { approvable: false, reason: e.reason };
 }
