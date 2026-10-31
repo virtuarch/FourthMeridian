@@ -233,6 +233,12 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.POLICY_GROUP_ROLLED_BACK,
   AuditAction.POLICY_GROUP_ARCHIVED,
   AuditAction.POLICY_GROUP_DEFAULT_CHANGED,
+  // Beta lifecycle (owner decisions 2026-10-31) — every lifecycle / cost-freeze change.
+  AuditAction.POLICY_GROUP_PAUSED,
+  AuditAction.POLICY_GROUP_RESUMED,
+  AuditAction.POLICY_GROUP_ENDED,
+  AuditAction.POLICY_GROUP_COST_FROZEN,
+  AuditAction.POLICY_GROUP_COST_UNFROZEN,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class

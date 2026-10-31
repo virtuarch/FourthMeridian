@@ -102,12 +102,15 @@ export function refuseIfFailClosed(e: EffectiveEntitlements, surfaceLabel: strin
  * A count dimension as the integer a rate limiter takes. Never below 1 (a zero
  * would mean "always limited"; use a boolean dimension for off) — EXCEPT in the
  * fail-closed state, where a 0 from FAIL_CLOSED_VALUES is the deliberate deny
- * (e.g. maxConnections 0 ⇒ the connection cap refuses every NEW connection).
+ * (e.g. maxConnections 0 ⇒ the connection cap refuses every NEW connection),
+ * and (BETA LIFECYCLE) under a lifecycle restriction (paused / ended /
+ * cost-frozen group), where a 0 from READ_ONLY_VALUES is the same deliberate deny.
  */
 export function countLimit(e: EffectiveEntitlements, dimension: EntitlementDimensionKey): number {
   const d = e.dimensions[dimension];
   if (ENTITLEMENT_DIMENSIONS[dimension].kind !== "count") throw new Error(`${dimension} is not a count dimension`);
-  return Math.max(e.failClosed === true ? 0 : 1, Math.floor(Number(d.value)));
+  const deliberateZero = e.failClosed === true || (e.lifecycleRestriction != null && d.source === "LIFECYCLE");
+  return Math.max(deliberateZero ? 0 : 1, Math.floor(Number(d.value)));
 }
 
 /** The provenance sentence for one dimension — for a refusal body or an operator view. */

@@ -39,6 +39,18 @@
  * stored definition is invalid resolves FAIL CLOSED (INVALID_POLICY_GROUP)
  * whether or not the rollout switch is on.
  *
+ * BETA LIFECYCLE (L1, owner decisions 2026-10-31) — the group IN FORCE carries a
+ * lifecycle state and a cost freeze (lib/entitlements/lifecycle.ts). After the
+ * fail-closed check and BEFORE the overlay / override / platform setting:
+ *   costFrozen → COST_FREEZE, billable dimensions READ_ONLY;
+ *   ENDED      → BETA_ENDED, EVERY dimension READ_ONLY;
+ *   PAUSED     → BETA_PAUSED, billable dimensions READ_ONLY;
+ * each restricted dimension reports source LIFECYCLE and no user-level value
+ * (Founder overlay, per-customer AI override) can lift it. Non-restricted
+ * dimensions resolve exactly as before. `lifecycleRestriction` names the
+ * restriction (null when none). An ACTIVE, unfrozen group — every group until
+ * an operator changes one — resolves byte-for-byte as before.
+ *
  * "Platform policy / safety constraint" (admission facts like maintenance_mode,
  * provider locks and cooldown floors) is enforced where work executes, not here:
  * this resolver says what the customer is ENTITLED to; the execution path says
@@ -59,8 +71,9 @@ import {
 } from "./catalogue";
 import { parseAllowanceSettingValue, resolveAiDailyAllowance } from "./ai-allowance";
 import { CODE_CATALOGUE, type PolicyGroupCatalogue } from "./policy-groups";
+import { lifecycleRestrictionOf, restrictedValue, type GroupLifecycleFacts, type LifecycleRestriction, type PolicyGroupLifecycleState } from "./lifecycle";
 
-export type EntitlementSource = "POLICY" | "POLICY_DEFAULT" | "OVERLAY" | "CEILING" | "USER_OVERRIDE" | "PLATFORM_SETTING" | "FAIL_CLOSED";
+export type EntitlementSource = "POLICY" | "POLICY_DEFAULT" | "OVERLAY" | "CEILING" | "USER_OVERRIDE" | "PLATFORM_SETTING" | "FAIL_CLOSED" | "LIFECYCLE";
 
 /**
  * Why an assignment failed closed: no row at all, a row naming a key the
@@ -144,6 +157,15 @@ export interface EffectiveEntitlements {
   failClosed: boolean;
   /** Why it failed closed; null when it did not. */
   failClosedReason: FailClosedReason | null;
+  /**
+   * BETA LIFECYCLE — the in-force group's lifecycle and freeze (null / false when
+   * fail closed: no group is in force), and the restriction they impose
+   * (lib/entitlements/lifecycle.ts precedence). Optional in the TYPE only so
+   * hand-built fixtures stay valid; the resolver always sets all three.
+   */
+  lifecycle?: PolicyGroupLifecycleState | null;
+  costFrozen?: boolean;
+  lifecycleRestriction?: LifecycleRestriction | null;
 }
 
 function clamp(key: EntitlementDimensionKey, asked: EntitlementValue): { value: EntitlementValue; clamped: boolean } {
@@ -235,11 +257,28 @@ export function resolveEffectiveEntitlements(
       aiDailyUsdAllowanceOverride: override,
       failClosed: true,
       failClosedReason: reason,
+      lifecycle: null,
+      costFrozen: false,
+      lifecycleRestriction: null,
     };
   }
+  // BETA LIFECYCLE — the group in force's lifecycle and freeze (absent ⇒ ACTIVE, not frozen).
+  const life: GroupLifecycleFacts = { lifecycle: group?.lifecycle ?? "ACTIVE", costFrozen: group?.costFrozen === true };
+  const restriction = lifecycleRestrictionOf(life);
   for (const key of DIMENSION_KEYS) {
     const policyValue = planValues[key];
     const overlayValue = overlay && key in overlay.values ? (overlay.values[key] as EntitlementValue) : null;
+    const restricted = restriction ? restrictedValue(life, key) : null;
+    if (restricted !== null) {
+      // No user-level value is a candidate here: overlay, override and platform setting are reported, never applied.
+      const { value, clamped } = clamp(key, restricted);
+      const dim: EffectiveDimension = {
+        key, value, source: clamped ? "CEILING" : "LIFECYCLE", ceiling: ENTITLEMENT_DIMENSIONS[key].ceiling, policyValue, overlayValue, clamped,
+      };
+      if (key === "aiDailyUsdAllowance") { dim.platformValue = platform.aiDailyUsdAllowanceUsd; dim.overrideValue = override; }
+      dimensions[key] = dim;
+      continue;
+    }
     if (key === "aiDailyUsdAllowance") {
       // The ONE precedence function — enforcement and every operator view agree.
       const r = resolveAiDailyAllowance({
@@ -277,6 +316,9 @@ export function resolveEffectiveEntitlements(
     aiDailyUsdAllowanceOverride: override,
     failClosed: false,
     failClosedReason: null,
+    lifecycle: life.lifecycle,
+    costFrozen: life.costFrozen,
+    lifecycleRestriction: restriction,
   };
 }
 
@@ -291,6 +333,7 @@ export function explainEntitlement(d: EffectiveDimension): string {
     case "PLATFORM_SETTING": return `${label}: ${v} — platform setting (policy ${String(d.policyValue)}).`;
     case "POLICY":           return `${label}: ${v} — policy group.`;
     case "POLICY_DEFAULT":   return `${label}: ${v} — default policy group (no assignment recorded).`;
+    case "LIFECYCLE":        return `${label}: ${v} — restricted: the customer's policy group is paused, ended or cost-frozen (policy ${String(d.policyValue)}).`;
     case "FAIL_CLOSED":      return `${label}: ${v} — restricted (fail closed): the customer's policy-group assignment is missing or invalid, or the group's stored definition is invalid; correct it in Customer Success (or the group in Policies) to restore the plan.`;
   }
 }

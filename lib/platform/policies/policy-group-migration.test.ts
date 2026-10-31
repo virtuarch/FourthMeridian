@@ -27,7 +27,11 @@ const raw = readFileSync(`prisma/migrations/${DIR}/migration.sql`, "utf8");
 const sql = raw.replace(/^--.*$/gm, "");
 const schema = readFileSync("prisma/schema.prisma", "utf8");
 
-check("the migration is the newest, after 20261028120000", readdirSync("prisma/migrations").filter((d) => /^\d{14}_/.test(d)).sort().at(-1) === DIR);
+// Ordering, not "newest": later migrations (e.g. 20261031120000_policy_group_lifecycle) build on this one.
+{
+  const dirs = readdirSync("prisma/migrations").filter((d) => /^\d{14}_/.test(d)).sort();
+  check("the migration exists and sorts after 20261028120000", dirs.includes(DIR) && DIR > "20261028120000");
+}
 check("creates exactly PolicyGroup and PolicyGroupVersion", [...sql.matchAll(/CREATE TABLE "(\w+)"/g)].map((m) => m[1]).join() === "PolicyGroup,PolicyGroupVersion");
 const altered = [...sql.matchAll(/ALTER TABLE (?:public\.)?"?([\w%]+)"?/g)].map((m) => m[1]);
 check("alters only its own two tables (no existing table touched)", altered.every((t) => t === "PolicyGroup" || t === "PolicyGroupVersion" || t === "%I"), altered);

@@ -4523,6 +4523,68 @@ model PolicyGroup {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
   versions       PolicyGroupVersion[]
+
+  /// BETA LIFECYCLE (L1, owner decisions 2026-10-31) — ACTIVE / PAUSED / ENDED.
+  /// PAUSED: sign-in and reads stay; beta-only capabilities and NEW billable
+  /// operations are suspended; reversible. ENDED: the group grants nothing —
+  /// members resolve READ_ONLY (see `endedTransition`). Changed only by the
+  /// audited CONTROL write (lib/platform/policies/policy-group-lifecycle-write.ts),
+  /// every change recorded as a PolicyGroupTransition row.
+  lifecycle        PolicyGroupLifecycle        @default(ACTIVE)
+  /// COST FREEZE — independent of `lifecycle`: denies every NEW billable / metered
+  /// operation for the group's members, overriding every allowance (Founder
+  /// overlay and per-customer AI override included). Reversible; membership untouched.
+  costFrozen       Boolean                     @default(false)
+  /// What ENDED resolves to. READ_ONLY today; FREE is reserved until a Free
+  /// group is defined (an ENDED group with FREE still resolves READ_ONLY).
+  endedTransition  PolicyGroupEndedTransition?
+  /// Optimistic token for lifecycle writes (bumped by every transition).
+  lifecycleVersion Int                         @default(0)
+  transitions      PolicyGroupTransition[]
+}
+
+/// BETA LIFECYCLE — the policy-group lifecycle state.
+enum PolicyGroupLifecycle {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+/// BETA LIFECYCLE — what an ENDED group's members resolve to.
+enum PolicyGroupEndedTransition {
+  READ_ONLY
+  FREE
+}
+
+/// BETA LIFECYCLE — one recorded lifecycle / cost-freeze change.
+enum PolicyGroupTransitionKind {
+  PAUSE
+  RESUME
+  END
+  FREEZE
+  UNFREEZE
+}
+
+/// BETA LIFECYCLE — APPEND-ONLY history of every lifecycle and cost-freeze
+/// change of a Policy Group (fm_system holds SELECT + INSERT only). Written in
+/// the same transaction as the PolicyGroup update and its operator-action audit
+/// row. No customer data: the reason, the operator and the before/after state.
+model PolicyGroupTransition {
+  id               String                    @id @default(cuid())
+  groupKey         String
+  group            PolicyGroup               @relation(fields: [groupKey], references: [key], onDelete: Restrict, onUpdate: Restrict)
+  kind             PolicyGroupTransitionKind
+  fromLifecycle    PolicyGroupLifecycle
+  toLifecycle      PolicyGroupLifecycle
+  costFrozenBefore Boolean
+  costFrozenAfter  Boolean
+  reasonCode       String
+  reasonNote       String?
+  /// Soft reference to the operator (no FK: history outlives accounts).
+  operatorId       String?
+  createdAt        DateTime                  @default(now())
+
+  @@index([groupKey, createdAt])
 }
 
 /// POLICY EDITOR — one IMMUTABLE version of a Policy Group: the FULL values

@@ -218,8 +218,14 @@ function main() {
       "app/api/platform/platform-ops/policy-groups/[key]/archive/route.ts",
       "app/api/platform/platform-ops/policy-groups/[key]/default/route.ts",
     ];
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation and policy-group editor routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // BETA LIFECYCLE (owner decisions 2026-10-31) — pause / resume / end /
+    // cost-freeze / unfreeze of a customer Policy Group: ONE deliberate addition,
+    // POST at fresh CONTROL + reason + rate limit, one audited transaction with
+    // the transition row (lib/platform/policies/policy-group-lifecycle-write.ts);
+    // its GET (state + history) stays at READ.
+    const LIFECYCLE_ROUTE = "app/api/platform/platform-ops/policy-groups/[key]/lifecycle/route.ts";
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor and policy-group lifecycle routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     for (const f of POLICY_GROUP_ROUTES) {
       const src = code(f);
@@ -228,6 +234,16 @@ function main() {
         writes === 1 && (src.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 1
           && /reasonOrRefuse\(/.test(src) && /from "@\/lib\/platform\/policies\/policy-groups-write"/.test(src)
           && !/policyGroupVersion|policyGroup\.|auditLog|customerPolicyAssignment/.test(src));
+    }
+    {
+      const src = code(LIFECYCLE_ROUTE);
+      check(`${LIFECYCLE_ROUTE}: the one write verb (POST) is FRESH CONTROL, rate limited, takes a structured reason and delegates to the lifecycle write service; GET stays READ`,
+        (src.match(/export async function (POST|PATCH|PUT|DELETE)/g) ?? []).length === 1
+          && /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)[\s\S]*limitPolicyGroupWrites\(/.test(src)
+          && (src.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 1
+          && /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*export async function POST/.test(src)
+          && /reasonOrRefuse\(/.test(src) && /from "@\/lib\/platform\/policies\/policy-group-lifecycle-write"/.test(src)
+          && !/policyGroupTransition|policyGroup\.|auditLog|customerPolicyAssignment/.test(src));
     }
     check("the group read (GET [key]) stays at READ",
       /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*export async function PATCH/.test(code("app/api/platform/platform-ops/policy-groups/[key]/route.ts")));
