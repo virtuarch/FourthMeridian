@@ -37,6 +37,7 @@ interface LedgerCountClient {
       where: {
         channel: "EMAIL";
         status: "ACCEPTED";
+        mode: "LIVE";
         definitionKey: { in: string[] };
         createdAt: { gte: Date };
         recipientUserId?: string;
@@ -72,6 +73,8 @@ export const countRecentAcceptedEmails: StormCounter = async (q) => {
     where: {
       channel: "EMAIL",
       status: "ACCEPTED",
+      // B2 HARDENING A8 — an operator's TEST send (mode TEST, OPERATOR-class) never counts toward a customer's limit.
+      mode: "LIVE",
       definitionKey: { in: [...q.keys] },
       createdAt: { gte: q.since },
       ...(q.recipientUserId ? { recipientUserId: q.recipientUserId } : { recipientHash: q.recipientHash ?? "" }),

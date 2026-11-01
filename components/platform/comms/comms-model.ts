@@ -18,9 +18,11 @@ import {
   type CatalogItem, type CommsChannel, type ConsentClass, type DaySeries, type DefinitionStatus, type PreviewChannel, type Severity,
 } from "@/lib/notifications/catalog/types";
 import type { StatusTone } from "../platform-surface";
+import type { ActivationBlocker } from "@/lib/notifications/automations/types";
+import type { Viewer } from "@/lib/notifications/content/types";
 import {
-  DELIVERY_STATUSES, SUPPRESSION_REASONS,
-  type Aggregate, type AutomationState, type DeliveryStatus, type StatusCounts, type SuppressionReason,
+  DELIVERY_SERIES_KEYS, DELIVERY_STATUSES, PROVIDER_SERIES_KEYS, SUPPRESSION_REASONS,
+  type Aggregate, type AutomationState, type DeliveryAnalytics, type DeliverySeriesKey, type ProviderSeriesKey, type DeliveryStatus, type StatusCounts, type SuppressionReason,
 } from "@/lib/platform/comms-center/contract-v1-section-4";
 
 const n = (v: number) => v.toLocaleString("en-US");
@@ -233,7 +235,46 @@ export const DELIVERY_STATUS_LABEL: Record<DeliveryStatus, string> = {
   QUEUED: "Queued", SCHEDULED: "Scheduled", SUPPRESSED: "Suppressed", CANCELLED: "Cancelled", CAPTURED: "Captured",
   ACCEPTED: "Accepted by provider", FAILED: "Failed", DEAD: "Dead", DELIVERED: "Delivered", BOUNCED: "Bounced", COMPLAINED: "Complained",
 };
-export const SERIES_LABEL = { accepted: "Accepted", failed: "Failed", dead: "Dead", suppressed: "Suppressed", captured: "Captured", cancelled: "Cancelled" } as const;
+/**
+ * Every day series, fixed and Phase C (exhaustive by type). "Accepted" is always
+ * "accepted by provider" — never delivered; "Delivered" is provider-confirmed.
+ */
+export const SERIES_LABEL = {
+  accepted: "Accepted by provider", failed: "Failed", dead: "Dead", suppressed: "Suppressed", captured: "Captured", cancelled: "Cancelled",
+  delivered: "Delivered (provider-confirmed)", bounced: "Bounced", complained: "Complained",
+} as const satisfies Record<DeliverySeriesKey | ProviderSeriesKey, string>;
+
+/** The series a payload renders: the six fixed ones, plus the Phase C ones only when measured AND present. */
+export function deliverySeriesKeys(d: Pick<DeliveryAnalytics, "measured" | "series">): Array<DeliverySeriesKey | ProviderSeriesKey> {
+  const extra = d.measured.delivered ? PROVIDER_SERIES_KEYS.filter((k) => d.series[k] !== undefined) : [];
+  return [...DELIVERY_SERIES_KEYS, ...extra];
+}
+
+/** The per-message row's statuses, in order, before delivery is measured (the A-2 ledger's written outcomes). */
+export const BYKEY_STATUSES = ["ACCEPTED", "FAILED", "DEAD", "SUPPRESSED", "CAPTURED", "CANCELLED"] as const satisfies readonly DeliveryStatus[];
+/** Once measured (Phase C): the provider-confirmed outcomes follow "accepted by provider". */
+export const BYKEY_STATUSES_MEASURED = ["ACCEPTED", "DELIVERED", "BOUNCED", "COMPLAINED", "FAILED", "DEAD", "SUPPRESSED", "CAPTURED", "CANCELLED"] as const satisfies readonly DeliveryStatus[];
+
+/** One per-message row: every status of the order, zeros included (the existing pattern), operator words only. */
+export function byKeyLine(counts: Partial<StatusCounts>, measuredDelivered: boolean): string {
+  return (measuredDelivered ? BYKEY_STATUSES_MEASURED : BYKEY_STATUSES).map((s) => `${n(counts[s] ?? 0)} ${DELIVERY_STATUS_LABEL[s].toLowerCase()}`).join(" · ");
+}
+
+/** Shown once delivery is measured: what "accepted" and "delivered" each mean. */
+export const DELIVERY_MEASURED_CAPTION =
+  "Delivered, bounced and complained are confirmed by the email provider’s signed events. “Accepted by provider” means the provider took the message; once it confirms delivery, the message counts as Delivered instead. Opens and clicks are never tracked.";
+
+/**
+ * Phase C (#196) — accepted with no provider message id: a subset of "accepted by
+ * provider" that can never be confirmed. Informational, never an error. Shown only
+ * when delivery is measured AND the count is a number > 0; null (not observed),
+ * 0 and an absent key (an older server) show nothing.
+ */
+export function acceptedUncertainLine(d: Pick<DeliveryAnalytics, "measured" | "acceptedUncertain">): string | null {
+  const v = d.acceptedUncertain;
+  if (!d.measured.delivered || typeof v !== "number" || !(v > 0)) return null;
+  return `${n(v)} accepted by provider can’t be confirmed — no provider message id was returned.`;
+}
 /**
  * Operator words for every server SuppressionReason. Exhaustive by type: a
  * reason the server adds without a label here is a compile error, not a
@@ -297,4 +338,36 @@ export function utcStamp(iso: string | null | undefined): string {
   if (!iso) return "—";
   const t = Date.parse(iso);
   return Number.isNaN(t) ? "—" : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+// ── Activation (v1.1 §6.2, §6.3; the B2 hard gate) ──────────────────────────────
+
+/**
+ * Operator words for every activation blocker the server can return. Exhaustive
+ * by type: a blocker the server adds without a label here is a compile error —
+ * a raw code never renders.
+ */
+export const ACTIVATION_BLOCKER_LABEL = {
+  TRIGGER_NOT_AVAILABLE: "The trigger this automation listens to isn’t emitted yet.",
+  DEFINITION_NOT_ACTIVATABLE: "This message can’t be sent by an automation.",
+  PROTECTED: "This message is protected, so no automation may send it.",
+  MARKETING_NOT_IN_V1: "Marketing messages can’t be automated yet.",
+  OWNER_APPROVAL_REQUIRED: "A customer-facing automation needs the owner’s approval of this version first.",
+  DRY_RUN_REQUIRED: "Run a successful dry run of this version first.",
+  STATE: "The automation’s current state doesn’t allow activation.",
+  DEFINITION_CHANGED: "The message definition changed since this automation was checked — edit it to re-check.",
+} as const satisfies Record<ActivationBlocker, string>;
+
+/** Why activation is off for EVERY automation, regardless of permission (the B2 hard gate). */
+export const ACTIVATION_DISABLED_LABEL = {
+  ACTIVATION_DISABLED_PENDING_HARDENING: "Activation is off in this environment. It can only be switched on in Preview, never in Production. Dry runs and owner approval still work.",
+} as const satisfies Record<NonNullable<Viewer["activationDisabledReason"]>, string>;
+
+/** The activation lines for a detail: the hard gate first, then each blocker. Unknown codes are dropped, never shown raw. */
+export function activationLines(d: { activationBlockers?: readonly string[]; viewer?: Pick<Viewer, "activationDisabledReason"> | null }): string[] {
+  const out: string[] = [];
+  const gate = d.viewer?.activationDisabledReason;
+  if (gate && gate in ACTIVATION_DISABLED_LABEL) out.push(ACTIVATION_DISABLED_LABEL[gate]);
+  for (const b of d.activationBlockers ?? []) if (b in ACTIVATION_BLOCKER_LABEL) out.push(ACTIVATION_BLOCKER_LABEL[b as ActivationBlocker]);
+  return out;
 }

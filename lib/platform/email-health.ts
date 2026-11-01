@@ -22,6 +22,12 @@
 
 import { db } from "@/lib/db";
 import { emailEnvironment, parseNonprodAllowlist, type EmailEnvironment } from "@/lib/email/recipient-guard";
+import {
+  ACCEPTED_STALE_HOURS,
+  buildWebhookHealth,
+  webhookConfigured,
+  type ResendWebhookHealth,
+} from "@/lib/notifications/delivery/provider-events";
 
 /**
  * THE DELIVERY VOCABULARY (OBS-003 / UI-011). A notification email moves through
@@ -57,6 +63,13 @@ export interface EmailDeliveryHealth {
   recentErrors: Array<{ id: string; error: string; at: string }>;
   /** OBS-008 — the direct-send legs the ledger does not see, as declared coverage. Optional so older fixtures/readers still type. */
   directSend?: DirectSendCoverage;
+  /**
+   * Comms Center C — the Resend delivery webhook (read-only): configured or
+   * not, the last verified event, counts by type, unmatched events, signature
+   * rejections, ACCEPTED-without-outcome after 72 h. Null when it could not be
+   * read (the rest of the payload still renders). Optional for older readers.
+   */
+  webhook?: ResendWebhookHealth | null;
 }
 
 export async function getEmailDeliveryHealth(windowDays = 7): Promise<EmailDeliveryHealth> {
@@ -88,7 +101,22 @@ export async function getEmailDeliveryHealth(windowDays = 7): Promise<EmailDeliv
     counts: { sent, captured, error, skipped, total: sent + captured + error + skipped },
     recentErrors: errorRows.map((r) => ({ id: r.id, error: r.error ?? "(no detail)", at: r.createdAt.toISOString() })),
     directSend: describeDirectSendCoverage(),
+    webhook: await getResendWebhookHealth(windowDays),
   };
+}
+
+/** Comms Center C — webhook health over the window. Never throws: a read failure is null. */
+export async function getResendWebhookHealth(windowDays = 7, now: Date = new Date()): Promise<ResendWebhookHealth | null> {
+  const configured = webhookConfigured(process.env.RESEND_WEBHOOK_SECRET);
+  try {
+    const { readWebhookHealthRows } = await import("@/lib/notifications/delivery/provider-event-store");
+    const since = new Date(now.getTime() - windowDays * 86_400_000);
+    const staleBefore = configured ? new Date(now.getTime() - ACCEPTED_STALE_HOURS * 3_600_000) : null;
+    return buildWebhookHealth(await readWebhookHealthRows(since, staleBefore), configured, windowDays);
+  } catch (err) {
+    console.warn(`[email-health] webhook health unreadable (non-fatal): ${err instanceof Error ? err.name : "Error"}`);
+    return null;
+  }
 }
 
 // ── OBS-008 — direct sendEmail coverage (declared, not counted) ───────────────

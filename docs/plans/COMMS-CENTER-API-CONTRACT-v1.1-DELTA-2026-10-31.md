@@ -10,6 +10,21 @@
 - **D5:** the two optimistic tokens and the 409 `CONFLICT` body (§0.3).
 - **D6:** test-send eligibility on `viewer`; `divergesFrom` on `CatalogDetail`; publish returns `revision` (§1.1, §2.1, §3.4, §6.9).
 
+**v1.1.1 (2026-10-31, additive; requested by Session 2's UI).** Nothing existing changes shape or meaning.
+1. **`CODE_DEFAULT_VERSION_ID = "code-default"`** is exported from the client-safe `lib/notifications/content/types.ts`. It is the sentinel `[id]` for "the code default" (§3.5 rollback, `restoredFromVersionId`). The server's `CODE_DEFAULT_ID` is this same constant.
+2. **Per-block limits on `limits`** (§3.2): `heading`, `greeting`, `infoTitle`, `infoItems` (count) and `infoItem` (characters), next to the existing five. Values are the §2.2 numbers (EMAIL 120 / 120 / 120 / 8 / 200); **`null` on IN_APP**, where hero and info blocks are not allowed (as `preheader`). They are the same numbers `validateContent` enforces: a breach is `FIELD_TOO_LONG` located at `{ field: "block", blockIndex, prop: "heading" | "greeting" | "title" | "items", itemIndex? }`, or `TOO_MANY_ITEMS` at `prop: "items"`. `greeting` now has its own limit (it was `heading`'s; the value is unchanged). The fields are optional in the TS type for compatibility, and the server always sends them.
+3. **`viewer.rollbackUnavailableReason?: "NO_PERMISSION" | "NOTHING_TO_RESTORE"`** (§1.1). `canRollback: boolean` is unchanged. The reason is absent when `canRollback` is true. `NO_PERMISSION` means the operator lacks CS CONTROL or the leg is not content-editable (`locked` says which). `NOTHING_TO_RESTORE` means the operator is permitted but the stream has never had a published version. Permission is reported first.
+
+**v1.1.2 (2026-11-01) — OWNER RULING N10 (separation of duties) and Preview-only activation.**
+1. **Ruling (owner, 2026-11-01), verbatim intent:** a single System Admin **MAY** both approve and activate the same automation. This is the intended policy for the current operating model. There is **no** self-approval restriction and **no** two-person requirement. The controls that make this acceptable are all in force and tested:
+   - activation needs CS **CONTROL** (`requireFreshPlatformAccess("CUSTOMER_SUCCESS", "CONTROL")`; a System Admin satisfies it through the SYSTEM_ADMIN authority, which the `DISABLE_SYSTEM_ADMIN` kill switch and pending-TOTP enrolment close);
+   - **fresh authentication**: both the activation guard and the approval guard (`requireFreshSystemAdmin`) re-verify the session against the database on the request (revocation, role and TOTP-setup state), never the 30 s cache;
+   - the owner approval is bound to the **exact** automation version and definition version (any PATCH or code change voids it; activation refuses a stale `expectedVersion`);
+   - activation needs a **documented reason**, audited in the same transaction (`COMMS_AUTOMATION_ACTIVATED`); approval, pause, disable and every change are audited with their reason; an activation refused by the closed gate is audited too (`COMMS_AUTOMATION_ACTIVATION_REFUSED`, result `REFUSED`);
+   - the non-production recipient allowlist, the storm limit and per-definition frequency caps, the global Cost Freeze (fail closed), platform admission, and the error-rate and global circuit breakers all stay enforced.
+2. **Revisit trigger:** revisit separation of duties when Fourth Meridian has **multiple administrative operators**.
+3. **Production automations remain OFF.** Activation is open only on Vercel **Preview** with `COMMS_AUTOMATIONS_PREVIEW_ENABLED="true"` (`automationActivationEnabled`, `lib/notifications/automations/types.ts`). `VERCEL_ENV="production"` is closed whatever any variable says; no flag opens it. The closed-gate code is unchanged: `ACTIVATION_DISABLED_PENDING_HARDENING` (409, `viewer.activationDisabledReason`, job `skipReason`); only its operator text changed.
+
 **What this is.** A **delta** on `docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md` (cited as **v1 §n**), including its v1.0.1–v1.0.3 notes. v1.0.3 was read from `origin/feat/comms-a2b-policy` (PR #177, not yet merged into `develop`). Whatever this delta does not restate, v1 still governs: vocabulary, list and series conventions, the PII rule, the delivery vocabulary, the mutation envelope and the read APIs. Where the two disagree, **this delta wins**, and every such override is listed in §0.2.
 
 **Basis.**
@@ -132,6 +147,7 @@ interface Viewer {
   canEditContent: boolean;      // POST /versions would pass the gate:      CS WRITE   ∧ leg contentEditable
   canPublish: boolean;          // publish:                                  CS CONTROL ∧ leg contentEditable
   canRollback: boolean;         // rollback:                                 CS CONTROL ∧ leg contentEditable ∧ the stream has a SUPERSEDED version or a published one (code-default target)
+  rollbackUnavailableReason?: "NO_PERMISSION" | "NOTHING_TO_RESTORE";   // v1.1.1 — absent ⇔ canRollback
   canAiSuggest: boolean;        // ai-suggest gate:                          CS WRITE   ∧ leg contentEditable   (availability is `ai`, §3.2, not this)
   canTestSend: boolean;         // POST /test-send gate:                     CS WRITE   ∧ definition has an EMAIL or IN_APP leg
   canEditAutomation: boolean;   // POST / PATCH /automations:                CS WRITE   ∧ definition automatable ∧ ¬protected
@@ -403,7 +419,8 @@ interface VersionsResponse extends ListEnvelope<TemplateVersionDTO> {   // newes
   /** The code default as a body (never a row): what "rollback to code default" restores, and the left side of a first diff. */
   codeDefault: ContentBody & { placeholdersUsed: string[] };
   placeholders: Array<Pick<PlaceholderSpec, "name" | "kind" | "allowedIn" | "maxLength" | "fallback" | "sample">>; // no `source`, no pii values
-  limits: { blocks: number; subject: number; preheader: number | null; paragraph: number; ctaLabel: number };
+  limits: { blocks: number; subject: number; preheader: number | null; paragraph: number; ctaLabel: number;
+            heading: number | null; greeting: number | null; infoTitle: number | null; infoItems: number | null; infoItem: number | null };  // v1.1.1 per-block; null = kind not allowed (IN_APP)
   contentEditable: boolean;                  // false ⇒ items empty, and every write → 409 PROTECTED / NOT_EDITABLE
   locked: { reason: "PROTECTED" | "NOT_EDITABLE" } | null;
   viewer: Viewer;                            // §1.1 (D2)
@@ -1153,6 +1170,31 @@ The required ones join `REASON_REQUIRED_ACTIONS` (`lib/audit.ts:221`).
   3. compute `HMAC-SHA256(base64decode(secret without "whsec_"), "${id}.${timestamp}.${rawBody}")` and compare it, in constant time, against each space-separated `v1,<base64>` entry.
 - Unverified bodies → 401. They are never stored and never logged in full.
 - **Replay** → `providerEventId @unique` (the svix id), so a duplicate is acknowledged and ignored.
+
+### 10.2 v1.2 note — Phase C as built (2026-10-31)
+
+- **Route:** `POST /api/webhooks/resend` (`app/api/webhooks/resend/route.ts`; decision in `lib/notifications/delivery/provider-events.ts`, verification in `lib/notifications/delivery/svix.ts`). Listed in `MACHINE_WRITE_PATHS`.
+- **Inert until configured:** with no usable `RESEND_WEBHOOK_SECRET` every request is **503 `UNAVAILABLE`** and nothing is verified, read, stored or counted.
+- **Order:** inert check → per-IP rate limit (600/min) → body cap (64 KB; Content-Length pre-check, then the raw body) → svix verify (401; counted by reason only, under `ApiUsageCounter` provider `RESEND_WEBHOOK`, unit `rejections`) → parse (400) → classify → match → one transaction (event insert + optional ledger append). A duplicate svix id is **200 `{ duplicate: true }`** and writes nothing. A store failure is 500, so Resend retries; the transaction left nothing behind.
+- **Stored types:** `delivered | bounced | complained | delivery_delayed` only. `email.opened` / `email.clicked` (O-13) and every other type are acknowledged and **dropped before any read or write**.
+- **`CommsProviderEvent`** (migration `20261031230000_comms_provider_events`): `providerEventId` (svix id, unique), `type`, `providerMessageId`, `deliveryId` and `messageKey` (soft refs; null = unmatched), `outcome` (`APPLIED | NO_CHANGE | NOTE | UNMATCHED`), `occurredAt`, `receivedAt`. No address, subject, body, bounce text or payload. Grants: fm_system `SELECT, INSERT, DELETE`.
+- **Retention: 90 days** (owner decision 2026-10-31). This supersedes the 30 days in §8.7 and v1 §6.5.
+- **Reconciliation:** by Resend message id (`CommsDelivery.providerMessageId`, which A-2a already stores; now indexed). A status-moving event **appends** a ledger row (same `messageKey` and `attempt`) with `DELIVERED`, `BOUNCED` or `COMPLAINED`. The new nullable `CommsDelivery.deliveredAt` holds the provider's delivery instant. **Forward only**, ranked `ACCEPTED < DELIVERED < BOUNCED < COMPLAINED`: a late `delivered` never overwrites `BOUNCED`/`COMPLAINED`, and a repeat is `NO_CHANGE`. `delivery_delayed` is a `NOTE` and never writes the ledger. An event for an attempt that a later attempt superseded is `NO_CHANGE`. An unknown id is stored `UNMATCHED` and never creates a ledger row.
+- **§4.11 analytics:** the type is now `measured: { delivered: boolean; opens: false; clicks: false }`. `delivered` is **per environment**: it is true only when the secret is configured **and** at least one verified event exists. Only then are the optional `series.delivered`, `series.bounced` and `series.complained` present. The six C4 keys are unchanged. A delivered message counts once, as `DELIVERED`, not also as `ACCEPTED`.
+- **Platform Ops email health** (`GET /api/platform/platform-ops/email-health`) gains a read-only `webhook` block: `configured`, `lastVerifiedEventAt`, `countsByType`, `unmatched`, `signatureFailures {total, byReason}`, and `acceptedWithoutEvent72h` (ACCEPTED with no outcome after 72 h; a flag, never a resend; null until configured).
+- **N-b:** an `UNCERTAIN_ACCEPTANCE` send has no provider message id, so it can never match an event. Its ACCEPTED row is **expected-unmatchable** (`isExpectedUnmatchable`). It is excluded from `acceptedWithoutEvent72h` and reported separately as `acceptedUncertain72h`.
+- **Review fixes (F1–F6, 2026-10-31):**
+  - **F1:** match, decide and write run in one transaction, serialised per message by `pg_advisory_xact_lock(hashtext('comms-msg:<channel>:<messageKey>'))`, with a re-read after the lock. Within an attempt the current status is rank-aware (COMPLAINED > BOUNCED > DELIVERED > other) in the decision, the analytics read and the rollup.
+  - **F2:** an event with no ledger row yet, whose own `created_at` is under 5 min old, gets **409 `RETRY`** and is not stored. Its svix id is not consumed, so svix redelivers it. Older unknown ids are stored UNMATCHED.
+  - **F3:** `measured.delivered` ignores UNMATCHED events.
+  - **F4:** the 64 KB cap is enforced while streaming, with a running byte count, so a chunked body is capped too.
+  - **F5:** unchanged. The per-IP limit is a coarse bound, because svix egress IPs are shared.
+  - **F6:** the route-guard census credits `handleResendWebhook`.
+  - No migration.
+- **§4.11 `acceptedUncertain?: number | null`** (additive, optional; Session 2 request): the final-ACCEPTED provider emails with no provider id (R4 `UNCERTAIN_ACCEPTANCE`, "accepted, can't be confirmed").
+  - It is a subset of `totals.ACCEPTED`, scoped to the same environment, observed window and channel/template filters.
+  - It is 0 under any status filter other than ACCEPTED, and null when nothing is observed.
+- **Follow-ups, not built:** a recipient **suppression list** fed by `BOUNCED`/`COMPLAINED` final statuses (the contract does not specify one); the `notification-retry` move and the remaining B3 folds.
 
 ---
 

@@ -509,7 +509,19 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
       where: { recipientUserId: userId, status: { in: ["SCHEDULED", "SENDING", "FAILED"] } },
       data:  { status: "CANCELLED", reason: "ACCOUNT_RESTRICTED", leaseUntil: null, nextAttemptAt: null },
     });
-    await tx.automationRunItem.updateMany({ where: { recipientUserId: userId }, data: { recipientUserId: null } });
+    // HARDENING A9 — the dedupeKey is filled from a template that MUST name {recipientId} (and may name
+    // other user-id payload fields, e.g. {invitedUserId}), so it is an identifier too: nulled on the
+    // subject's own items, and on ANY item whose key embeds the subject's id (someone else's item about them).
+    await tx.automationRunItem.updateMany({ where: { recipientUserId: userId }, data: { recipientUserId: null, dedupeKey: null } });
+    // PRE-FLIP R6 — ACCEPTED COST: this `contains` is a sequential scan of AutomationRunItem (no index serves
+    // a substring match). It is BOUNDED: the table holds at most AUTOMATION_RETENTION_DAYS (90) of items —
+    // runs and their items are deleted by the retention job — and a purge is a rare, once-per-account
+    // operation. It cannot be narrowed by the recipient column: these are rows whose recipient is SOMEONE
+    // ELSE (the subject's id rides the key through a payload field such as {invitedUserId}); the subject's
+    // own items were already cleared through the [recipientUserId, createdAt] index above. A trigram /
+    // separate subject-id column (a migration) is not worth it at this bound; revisit if the item volume
+    // per 90 days grows past a few hundred thousand rows.
+    await tx.automationRunItem.updateMany({ where: { dedupeKey: { contains: userId } }, data: { dedupeKey: null } });
     const ledgerHash = recipientHash(user.email, process.env);
     if (ledgerHash) {
       await tx.commsDelivery.updateMany({

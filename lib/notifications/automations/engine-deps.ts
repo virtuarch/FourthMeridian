@@ -16,14 +16,17 @@ import { createNotification } from "@/lib/notifications/create";
 import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
 import { defaultLiveContentResolver } from "@/lib/notifications/content/store";
 import { currentJobRun } from "@/lib/jobs/run";
+import { admitAutomationSend } from "./admission";
 import type { EngineDb, EngineDeps } from "./engine";
-import { AUTOMATION_ACTIVATION_ENABLED } from "./types";
+import { automationActivationEnabled } from "./types";
 
 /** The engine's production ports (jobs/comms-automations.ts). */
 export function productionEngineDeps(): EngineDeps {
   return {
     db: systemDb as unknown as EngineDb,
     freeze: () => readGlobalCostFreeze(),
+    // HARDENING A5 — platform admission (COMMS_AUTOMATION_SEND): maintenance stops every pass and every send.
+    admission: () => admitAutomationSend(),
     lifecycle: (ids) => getBetaLifecycleStatesForUsers(ids),
     sendEmail,
     createNotification: (input, ctx) => createNotification(input, ctx),
@@ -37,6 +40,7 @@ export function productionEngineDeps(): EngineDeps {
     appBaseUrl: process.env.NEXT_PUBLIC_APP_URL,
     now: () => new Date(),
     jobRunId: currentJobRun()?.id ?? null,
-    activationEnabled: AUTOMATION_ACTIVATION_ENABLED,
+    // The activation gate, re-read from the env at the start of the pass and before every send (kill switch).
+    activationEnabled: () => automationActivationEnabled(process.env),
   };
 }

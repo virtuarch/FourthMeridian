@@ -36,6 +36,13 @@ export interface EmailMessage {
   text: string;
   /** Optional HTML body, rendered from the same blocks as `text`. */
   html?: string;
+  /**
+   * Comms Center B2 HARDENING A1 — the provider idempotency key (Resend: the `Idempotency-Key`
+   * header). The same key within the provider's window is accepted ONCE: a re-send after a crash
+   * that followed the provider's acceptance returns the original answer and sends nothing.
+   * Never derived from the address, subject or body.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -70,6 +77,14 @@ export interface EmailResult {
    *                            not be read (fail closed).
    */
   reason?: "ENVIRONMENT_GUARD" | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";
+  /**
+   * Comms Center B2 PRE-FLIP R4 — on a "sent" result with no `id`: the provider refused this request
+   * because its Idempotency-Key was already used for a DIFFERENT payload (Resend 409
+   * `invalid_idempotent_request`). Only an idempotent caller (an automation item, whose key is the
+   * item id) can see it, and an earlier attempt under that key was accepted — so it is reported as
+   * sent, flagged uncertain, and must never be re-sent.
+   */
+  uncertain?: "IDEMPOTENCY_CONFLICT";
 }
 
 /**
@@ -109,6 +124,8 @@ export interface EmailSendContext {
   mode?: "LIVE" | "TEST";
   /** Comms Center B2 — the automation claim row this send belongs to (AutomationRunItem.id). */
   automationRunItemId?: string;
+  /** Comms Center B2 HARDENING A1 — forwarded to the provider as its idempotency key (EmailMessage.idempotencyKey). */
+  idempotencyKey?: string;
 }
 
 /**

@@ -78,6 +78,34 @@ export function definitionAutomatable(def: CommsDefinition): null | "PROTECTED" 
   return null;
 }
 
+/** HARDENING A6 — the cap an automation may only tighten: the definition's, or the engine default (1 per 24 h) when it declares none. */
+export const DEFAULT_FREQUENCY_BASE = { max: 1, perHours: 24 } as const;
+export function effectiveFrequencyBase(def: Pick<CommsDefinition, "frequencyCap">): { max: number; perHours: number } {
+  return def.frequencyCap ?? DEFAULT_FREQUENCY_BASE;
+}
+
+/**
+ * HARDENING A6 — true when a CODE producer (an EV-1 handler or a registry call site,
+ * `trigger.sources`) already delivers this definition for its trigger. An automation on it is
+ * an ADDITIONAL send: the owner is shown this before approving, and the in-app leg dedupes
+ * against the handler's bell for the same fact (engine.ts handlerBellExists).
+ */
+export function overlapsExistingDelivery(def: Pick<CommsDefinition, "trigger">): boolean {
+  return def.trigger.kind === "TRIGGER" && def.trigger.sources.length > 0;
+}
+
+/**
+ * HARDENING A4 — may this definition still be SENT by an automation (ingest and send time)?
+ * null = yes; otherwise the engine auto-pauses DEFINITION_CHANGED.
+ */
+export function definitionSendable(def: CommsDefinition | undefined, storedDefinitionVersion: number): null | "MISSING" | "PROTECTED" | "NOT_AUTOMATABLE" | "VERSION_CHANGED" {
+  if (!def) return "MISSING";
+  if (def.protected) return "PROTECTED";
+  if (definitionAutomatable(def) !== null) return "NOT_AUTOMATABLE";
+  if (def.definitionVersion !== storedDefinitionVersion) return "VERSION_CHANGED";
+  return null;
+}
+
 // ── The §6.5 lifecycle matrix (owner rule) ───────────────────────────────────
 
 export type SendOrigin = "AUTOMATION" | "REGISTRY" | "DIRECT";
@@ -348,16 +376,18 @@ export function validateAutomationInput(
     dedupeKeyTemplate = t;
   }
 
-  // The frequency cap may only TIGHTEN the definition's (v1 §5.5).
-  const base = def.frequencyCap;
-  let frequencyCapMax = e?.frequencyCapMax ?? base?.max ?? 1;
-  let frequencyCapHours = e?.frequencyCapHours ?? base?.perHours ?? 24;
+  // The frequency cap may only TIGHTEN the definition's (v1 §5.5) — HARDENING A6: also when the
+  // definition declares none, against the engine default (1 per 24 h), so an automation can never
+  // send a definition more often than its code producer's own cadence implies.
+  const base = effectiveFrequencyBase(def);
+  let frequencyCapMax = e?.frequencyCapMax ?? base.max;
+  let frequencyCapHours = e?.frequencyCapHours ?? base.perHours;
   if (has("frequencyCap")) {
     const f = raw.frequencyCap;
     if (!isObj(f) || Object.keys(f).some((k) => k !== "max" && k !== "perHours") || !isInt(f.max, 1, L.frequencyMaxCeiling) || !isInt(f.perHours, 1, L.frequencyHoursCeiling)) {
       return fail(`frequencyCap must be { max: 1–${L.frequencyMaxCeiling}, perHours: 1–${L.frequencyHoursCeiling} }.`);
     }
-    if (base && (f.max > base.max || f.perHours < base.perHours)) return fail(`frequencyCap may only tighten the definition's (${base.max} per ${base.perHours} h).`);
+    if (f.max > base.max || f.perHours < base.perHours) return fail(`frequencyCap may only tighten the definition's (${base.max} per ${base.perHours} h).`);
     frequencyCapMax = f.max;
     frequencyCapHours = f.perHours;
   }
@@ -421,13 +451,29 @@ export interface ActivationFacts {
   customerFacing: boolean;
   ownerApprovedVersion: number | null;
   ownerApprovedDefinitionVersion: number | null;
-  /** The newest DRY_RUN of this automation (any version). */
-  lastDryRun: { automationVersion: number; status: string; startedAt: Date; wouldExceedMaxRecipients: boolean } | null;
+  /** The newest DRY_RUN of this automation (any version). `window` = a 7d / 30d replay (HARDENING N8), not one triggerRef. */
+  lastDryRun: { automationVersion: number; status: string; startedAt: Date; wouldExceedMaxRecipients: boolean; window: boolean } | null;
 }
 
 /** Is the owner approval CURRENT: this exact automation version against this exact definition version (§6.4)? */
 export function ownerApprovalCurrent(f: Pick<ActivationFacts, "version" | "ownerApprovedVersion" | "ownerApprovedDefinitionVersion">, def: Pick<CommsDefinition, "definitionVersion">): boolean {
   return f.ownerApprovedVersion === f.version && f.ownerApprovedDefinitionVersion === def.definitionVersion;
+}
+
+/**
+ * HARDENING N11 — the approval as PRESENTED. Activation bumps `version` (state transitions do),
+ * so an ACTIVE row's approval would read stale by construction; for an ACTIVE row the approval is
+ * current when it covers the ACTIVATED version against the live definition version. Activation's
+ * own precondition (ownerApprovalCurrent, §6.3 rule 5) is unchanged.
+ */
+export function ownerApprovalCurrentForDisplay(
+  f: Pick<ActivationFacts, "version" | "ownerApprovedVersion" | "ownerApprovedDefinitionVersion"> & { state: string; activatedVersion: number | null },
+  def: Pick<CommsDefinition, "definitionVersion">,
+): boolean {
+  if (f.state === "ACTIVE" && f.activatedVersion !== null) {
+    return f.ownerApprovedVersion === f.activatedVersion && f.ownerApprovedDefinitionVersion === def.definitionVersion;
+  }
+  return ownerApprovalCurrent(f, def);
 }
 
 /** Every §6.3 blocker, in the order the checks run. Empty ⇒ activate would pass. */
@@ -443,7 +489,8 @@ export function activationBlockers(f: ActivationFacts, def: CommsDefinition, now
   // Review M2 — customer-facing comes from the LIVE code definition, never the stored row.
   if (isCustomerFacing(def) && !ownerApprovalCurrent(f, def)) out.push("OWNER_APPROVAL_REQUIRED");
   const d = f.lastDryRun;
-  const fresh = d !== null && d.automationVersion === f.version && d.status === "SUCCEEDED" && !d.wouldExceedMaxRecipients
+  // HARDENING N8 — a WINDOW replay: a single-triggerRef dry run proves nothing about volume.
+  const fresh = d !== null && d.automationVersion === f.version && d.status === "SUCCEEDED" && !d.wouldExceedMaxRecipients && d.window
     && now.getTime() - d.startedAt.getTime() <= L.dryRunFreshDays * 86_400_000;
   if (!fresh) out.push("DRY_RUN_REQUIRED");
   return out;

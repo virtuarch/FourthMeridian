@@ -32,7 +32,7 @@ import { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorReason } from "@/lib/audit";
-import type { ContentBlock, ContentBody, ContentIssue, ContentStreamRef, EditableChannel, TemplateVersionDTO, VersionCreatedByKind, VersionState } from "./types";
+import { CODE_DEFAULT_VERSION_ID, type ContentBlock, type ContentBody, type ContentIssue, type ContentStreamRef, type EditableChannel, type TemplateVersionDTO, type VersionCreatedByKind, type VersionState } from "./types";
 import { legSpec, streamId, type LegSpec } from "./legs";
 import type { LiveVersion, LiveContentResolver } from "./send";
 import { VALIDATOR_VERSION, hasErrors, placeholdersUsed, validateContent, warningsOf } from "./validate";
@@ -363,7 +363,8 @@ export async function publishVersion(input: PublishInput, client: ContentDb = DB
 
 // ── rollbackVersion (§3.5) ───────────────────────────────────────────────────
 
-export const CODE_DEFAULT_ID = "code-default";
+/** The client-safe sentinel (types.ts, v1.1.1), under its server name. */
+export const CODE_DEFAULT_ID = CODE_DEFAULT_VERSION_ID;
 
 export interface RollbackInput {
   key: string;

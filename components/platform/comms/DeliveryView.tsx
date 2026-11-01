@@ -9,9 +9,11 @@
  * 404 / 501, and renders the real payload on 200:
  *
  *   status totals (all eleven, C3; null ⇒ not observed, never 0) · the six
- *   fixed day series incl. captured / dead / cancelled (C4) · suppression
- *   reasons · per-message counts · coverage · "delivery not yet measured"
- *   (measured.delivered === false) · the provider-health link (C6).
+ *   fixed day series incl. captured / dead / cancelled (C4), plus delivered /
+ *   bounced / complained once measured (Phase C, v1.2) · suppression reasons ·
+ *   per-message counts · coverage · "delivery not yet measured"
+ *   (measured.delivered === false) or the provider-confirmed caption · the
+ *   provider-health link (C6). "Accepted" is always "accepted by provider".
  *
  * Owner decisions shown as fact: no open / click tracking ever; 90-day
  * delivery records, then counts only.
@@ -24,12 +26,12 @@ import { Block, Surface } from "@/components/atlas/Surface";
 import { COMMS_CHANNELS, type CommsChannel } from "@/lib/notifications/catalog/types";
 import { DEFAULT_DELIVERY_FILTERS, deliveryUrl, type DeliveryFilters } from "@/lib/platform/comms-center/client";
 import {
-  DELIVERY_SERIES_KEYS, DELIVERY_STATUSES,
-  type DeliveryAnalytics, type DeliveryStatus, type DeliveryWindow,
+  DELIVERY_STATUSES,
+  type DeliveryAnalytics, type DeliverySeriesKey, type ProviderSeriesKey, type DeliveryStatus, type DeliveryWindow,
 } from "@/lib/platform/comms-center/contract-v1-section-4";
 import { Segmented } from "../leads/visual-kit";
 import {
-  CHANNEL_LABEL, COMMS_POLICY, DELIVERY_STATUS_LABEL, SERIES_LABEL, deliveryTiles, retentionText, suppressionRows, utcStamp,
+  CHANNEL_LABEL, COMMS_POLICY, DELIVERY_MEASURED_CAPTION, acceptedUncertainLine, DELIVERY_STATUS_LABEL, SERIES_LABEL, byKeyLine, deliverySeriesKeys, deliveryTiles, retentionText, suppressionRows, utcStamp,
 } from "./comms-model";
 import { DaySeriesBars, DaySeriesLegend, FilterSelect, ListMeta, PolicyNote, ReadState, WideTargets, okData, staleData, useCommsRead, type CommsRead } from "./comms-kit";
 
@@ -41,14 +43,17 @@ export const PROVIDER_HEALTH_HREF = "/dashboard/platform/PLATFORM_OPS?workspace=
 export const DELIVERY_COMING_SOON =
   "Delivery history arrives with the delivery ledger. Until then no send is recorded here — nothing below is a zero, it is simply not measured yet.";
 
-const SERIES_COLOR: Record<(typeof DELIVERY_SERIES_KEYS)[number], string> = {
+const SERIES_COLOR = {
   accepted: "color-mix(in srgb, var(--meridian-400) 75%, transparent)",
   failed: "var(--coral-400)",
   dead: "var(--accent-negative)",
   suppressed: "var(--text-muted)",
   captured: "var(--brass-300)",
   cancelled: "var(--accent-warning)",
-};
+  delivered: "var(--emerald-400)",
+  bounced: "color-mix(in srgb, var(--coral-400) 70%, transparent)",
+  complained: "color-mix(in srgb, var(--accent-warning) 70%, transparent)",
+} as const satisfies Record<DeliverySeriesKey | ProviderSeriesKey, string>;
 
 function Commitments({ href }: { href: string }) {
   return (
@@ -103,9 +108,11 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
               {!d.measured.delivered && (
                 <p className="rounded-[var(--radius-md)] border border-[var(--border-hairline)] px-3 py-2 text-xs text-[var(--text-secondary)]" data-delivery-not-measured>
                   <span className="font-medium text-[var(--text-primary)]">Delivery not yet measured.</span>{" "}
-                  “Accepted” means the email provider took the message — not that it reached the inbox.
+                  “Accepted by provider” means the email provider took the message — not that it reached the inbox.
                 </p>
               )}
+              {d.measured.delivered && <PolicyNote><span data-delivery-measured>{DELIVERY_MEASURED_CAPTION}</span></PolicyNote>}
+              {acceptedUncertainLine(d) && <PolicyNote><span data-accepted-uncertain>{acceptedUncertainLine(d)}</span></PolicyNote>}
               <ul aria-label="Totals by status" className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" data-delivery-totals>
                 {tiles.map((t) => (
                   <li key={t.status} className="flex min-w-0 flex-col gap-0.5 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-2.5" style={{ background: "var(--surface-inset)" }} data-status-tile={t.status}>
@@ -119,7 +126,7 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
               <PolicyNote>
                 {d.coverage.ledgerSince ? `Totals count the observed part of the window (ledger since ${d.coverage.ledgerSince}).` : "Nothing observed yet — the ledger has no rows in this window."}
                 {d.coverage.directSendsCovered ? "" : " Direct sends are not yet covered."}
-                {d.coverage.environment !== "production" ? ` ${d.coverage.environment === "preview" ? "Preview" : "Development"} captures sends instead of delivering them — volume shows under Captured.` : ""}
+                {d.coverage.environment !== "production" ? ` ${d.coverage.environment === "preview" ? "Preview" : "Development"} only delivers to approved test addresses — every other send is captured and shows under Captured.` : ""}
               </PolicyNote>
               <ListMeta checkedAt={d.checkedAt} floor={d.floor} capped={d.capped} extra={`${d.from} → ${d.to} UTC`} />
             </div>
@@ -134,12 +141,15 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
           <Block id="comms-delivery-series" label="Per day, by outcome" className="min-w-0">
             <Surface className="flex min-w-0 flex-col gap-4 p-4 sm:p-5">
               <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3" data-delivery-series>
-                {DELIVERY_SERIES_KEYS.map((k) => (
-                  <div key={k} className="min-w-0" data-series={k}>
-                    <p className="mb-1.5 text-[11px] font-medium text-[var(--text-secondary)]">{SERIES_LABEL[k]}</p>
-                    <DaySeriesBars series={d.series[k]} label={`${SERIES_LABEL[k]} per UTC day`} color={SERIES_COLOR[k]} />
-                  </div>
-                ))}
+                {deliverySeriesKeys(d).map((k) => {
+                  const series = d.series[k];
+                  return series ? (
+                    <div key={k} className="min-w-0" data-series={k}>
+                      <p className="mb-1.5 text-[11px] font-medium text-[var(--text-secondary)]">{SERIES_LABEL[k]}</p>
+                      <DaySeriesBars series={series} label={`${SERIES_LABEL[k]} per UTC day`} color={SERIES_COLOR[k]} />
+                    </div>
+                  ) : null;
+                })}
               </div>
               <DaySeriesLegend />
             </Surface>
@@ -170,7 +180,7 @@ export function DeliverySurface({ read, filters, onFilters }: DeliverySurfacePro
                       <li key={row.key} className="flex min-w-0 flex-col gap-0.5 py-2">
                         <code className="min-w-0 break-all font-mono text-[11px] text-[var(--text-primary)]">{row.key}</code>
                         <span className="text-[11px] tabular-nums text-[var(--text-muted)]">
-                          {(["ACCEPTED", "FAILED", "DEAD", "SUPPRESSED", "CAPTURED", "CANCELLED"] as const).map((s) => `${n(row.counts[s] ?? 0)} ${DELIVERY_STATUS_LABEL[s].toLowerCase()}`).join(" · ")}
+                          {byKeyLine(row.counts, d.measured.delivered)}
                         </span>
                       </li>
                     ))}

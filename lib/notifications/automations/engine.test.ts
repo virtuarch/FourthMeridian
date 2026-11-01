@@ -89,6 +89,7 @@ async function main(): Promise<void> {
     env: { VERCEL: "1", VERCEL_ENV: "production" },
     appBaseUrl: "https://app.test.invalid",
     now: () => clock,
+    admission: async () => ({ admitted: true, reason: null }),
     // These scenarios exercise the post-hardening engine; section 11 pins the hard gate itself.
     activationEnabled: true,
   });
@@ -106,7 +107,14 @@ async function main(): Promise<void> {
   }
   function emailOn(id: string): void { fake.seed("NotificationPreference", { userId: id, category: "SPACES", channel: "EMAIL", enabled: true }); }
   let factN = 0;
+  /** The Space and the target's ACTIVE membership at the new role (the A3 at-send predicate reads them). */
+  function space(spaceId: string): void { if (!fake.one("Space", { id: spaceId })) fake.seed("Space", { id: spaceId, name: `Space ${spaceId}` }); }
+  function member(spaceId: string, userId: string, role = "ADMIN"): void {
+    space(spaceId);
+    if (!fake.one("SpaceMember", { spaceId, userId })) fake.seed("SpaceMember", { spaceId, userId, role, status: "ACTIVE" });
+  }
   function roleChanged(target: string, at: Date, spaceId = "sp_1"): string {
+    member(spaceId, target, "ADMIN");
     const id = `fact_${++factN}`;
     fake.seed("AuditLog", { id, action: "MEMBER_ROLE_CHANGED", userId: ACTOR, spaceId, createdAt: at,
       metadata: { targetUserId: target, targetName: "Real Name Never Copied", oldRole: "MEMBER", newRole: "ADMIN" } });
@@ -303,7 +311,9 @@ async function main(): Promise<void> {
     reset(); user("u1"); automation({ frequencyCapMax: 1, frequencyCapHours: 24, dedupeKeyTemplate: "MEMBER_ROLE_CHANGED:{spaceId}:{recipientId}" });
     roleChanged("u1", new Date(T0.getTime() - 5 * MIN), "sp_1");
     await run();
-    roleChanged("u1", new Date(T0.getTime() - 4 * MIN), "sp_2");
+    // A later fact (after the first scan's bound: facts are read once they are FACT_SETTLE_MS old).
+    roleChanged("u1", new Date(T0.getTime() + 1 * MIN), "sp_2");
+    clock = new Date(T0.getTime() + 3 * MIN);
     await run();
     check("the frequency cap (1 per 24 h, per recipient per definition) suppresses the second message (FREQUENCY_CAP)", items({ reason: "FREQUENCY_CAP" }).length === 1 && bells().length === 1);
   }
@@ -380,10 +390,12 @@ async function main(): Promise<void> {
       !R.validateAutomationInput({ name: "x", recipient: { kind: "PLATFORM_AREA_STAFF", area: "PLATFORM_OPS", includeSystemAdmin: true } }, { def: DEF, trigger: "space.member.role_changed" }).ok
       && !R.validateAutomationInput({ name: "x", recipient: { kind: "OPERATOR_INBOX", env: "PLATFORM_ALERTS_EMAIL" } }, { def: DEF, trigger: "space.member.role_changed" }).ok);
     reset();
-    for (let i = 0; i < 201; i++) fake.seed("CommsDelivery", { messageKey: `x${i}`, definitionKey: "MEMBER_ROLE_CHANGED", definitionVersion: 1, channel: "IN_APP", status: "ACCEPTED", attempt: 1, environment: "production", automationRunItemId: `i${i}`, createdAt: new Date(T0.getTime() - MIN) });
+    // N1 — the breaker counts the engine's OWN SENT items (written inline), not the deferred ledger.
+    const prior = fake.seed("AutomationRun", { automationId: "old", automationVersion: 1, mode: "LIVE", triggerKey: "space.member.role_changed", status: "SUCCEEDED", counts: {} });
+    for (let i = 0; i < 201; i++) fake.seed("AutomationRunItem", { runId: prior.id, automationId: "old", automationVersion: 1, channel: "IN_APP", recipientUserId: `r${i}`, idempotencyKey: `k${i}`, status: "SENT", lastDeliveryStatus: "ACCEPTED", notBefore: T0, attempt: 1, updatedAt: new Date(T0.getTime() - 30 * MIN) });
     const a1 = automation(); const a2 = automation();
     const s2 = await run();
-    check("the GLOBAL breaker (> 200 accepted automation sends / 10 min) auto-pauses EVERY automation (STORM_BREAKER)",
+    check("the GLOBAL breaker (> 200 accepted automation sends / 60 min) auto-pauses EVERY automation (STORM_BREAKER)",
       [a1, a2].every((x) => (fake.one("AutomationDefinition", { id: x }) as any).state === "PAUSED" && (fake.one("AutomationDefinition", { id: x }) as any).autoPausedReason === "STORM_BREAKER") && s2.autoPaused === 2, s2);
   }
 
@@ -481,11 +493,13 @@ async function main(): Promise<void> {
   }
 
   // ── 11. The ACTIVATION HARD GATE blocks the engine ────────────────────────
-  console.log("11. the activation hard gate (AUTOMATION_ACTIVATION_ENABLED = false) blocks the ENGINE");
+  console.log("11. the activation gate (closed: not Preview, or the switch off) blocks the ENGINE");
   {
-    check("AUTOMATION_ACTIVATION_ENABLED is a code constant and is false", T.AUTOMATION_ACTIVATION_ENABLED === false
-      && /export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;/.test(readFileSync("lib/notifications/automations/types.ts", "utf8"))
-      && !/process\.env|PlatformSetting|platformSetting/.test(readFileSync("lib/notifications/automations/types.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "")));
+    check("the gate is the env resolver (Preview + exact \"true\"); Production is closed even with the flag; no PlatformSetting reaches it",
+      T.automationActivationEnabled({ VERCEL_ENV: "production", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === false
+    && T.automationActivationEnabled({ VERCEL_ENV: "preview", COMMS_AUTOMATIONS_PREVIEW_ENABLED: "true" }) === true
+    && !/AUTOMATION_ACTIVATION_ENABLED/.test(readFileSync("lib/notifications/automations/types.ts", "utf8"))
+      && !/PlatformSetting|platformSetting/.test(readFileSync("lib/notifications/automations/types.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "")));
     reset(); user("u1"); user("u2");
     automation({ delayMinutes: 10 });
     roleChanged("u1", new Date(T0.getTime() - 5 * MIN));
@@ -494,6 +508,7 @@ async function main(): Promise<void> {
     clock = new Date(T0.getTime() + 30 * MIN);
     const snapshot = () => JSON.stringify(["AutomationDefinition", "AutomationRun", "AutomationRunItem", "CommsDelivery", "Notification"].map((m) => fake.rows(m)));
     const before = snapshot();
+    // No activationEnabled port ⇒ the resolver over process.env (VERCEL_ENV / the flag unset in tests) ⇒ closed.
     const { activationEnabled: _open, ...closed } = deps();
     void _open;
     const s = await quiet(() => E.runAutomationEngine(closed, BUDGET));
@@ -503,7 +518,8 @@ async function main(): Promise<void> {
     check("…the job reports the same skip (job health: skipped), with no self-continuation", job.outcome === "SKIPPED" && job.skipReason === T.ACTIVATION_DISABLED_REASON && job.deferred === 0 && snapshot() === before);
     reset();
     const idle = await quiet(() => E.runAutomationEngine(closed, BUDGET));
-    check("gate closed and nothing ACTIVE ⇒ a quiet COMPLETE (no skip noise)", idle.outcome === "COMPLETE" && idle.skipReason === undefined);
+    check("gate closed and nothing ACTIVE ⇒ COMPLETE (no skip noise), but the summary SAYS the engine is off (note ACTIVATION_DISABLED)",
+      idle.outcome === "COMPLETE" && idle.skipReason === undefined && idle.note === "ACTIVATION_DISABLED", idle);
   }
 
   console.log(failures === 0 ? "\n✅ comms automations engine: all checks passed" : `\n❌ ${failures} check(s) failed`);

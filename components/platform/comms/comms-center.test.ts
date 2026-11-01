@@ -27,7 +27,7 @@ import { COMMS_CATALOG, EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/de
 import { EMPTY_CATALOG_FILTERS, DEFAULT_DELIVERY_FILTERS } from "@/lib/platform/comms-center/client";
 import type { CommsRead } from "./comms-kit";
 import {
-  COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
+  ACTIVATION_BLOCKER_LABEL, acceptedUncertainLine, BYKEY_STATUSES, BYKEY_STATUSES_MEASURED, DELIVERY_STATUS_LABEL, SERIES_LABEL, byKeyLine, activationLines, COMMS_POLICY, STORM_MAX_PER_HOUR, SUPPRESSION_LABEL, countCell, dayCells, daySummary, daySummaryText, deliveryTiles, envelopeNotes, isInternalPath, previewChannelsFor, protectedNote, retentionText,
   STATUS_LABEL, statusChips, stormNote, suppressionLabel, suppressionRows, totalOf,
 } from "./comms-model";
 import { CatalogDetailBody, LibrarySurface, PreviewRendition, PreviewSurface } from "./LibraryView";
@@ -274,6 +274,20 @@ async function main() {
     const dh = renderToStaticMarkup(createElement(AutomationDetailBody, { read: ok(detail), runs: ok(runs) }));
     check("automation detail is read-only: actions listed as seams, none a button", dh.includes("data-action-seams") && dh.includes("Activate · requires elevated operator permission · not yet available")
       && !/<button[^>]*>(Activate|Pause|Disable|Dry run|Test send)</.test(dh));
+    check("a v1 detail (no activationBlockers / viewer) shows no Activation section", !dh.includes("data-activation-blockers") && !dh.includes("data-activation-ready"));
+    const blockers = ["DEFINITION_CHANGED", "OWNER_APPROVAL_REQUIRED", "DRY_RUN_REQUIRED", "TRIGGER_NOT_AVAILABLE", "DEFINITION_NOT_ACTIVATABLE", "PROTECTED", "MARKETING_NOT_IN_V1", "STATE"];
+    const v11 = { ...detail, activationBlockers: blockers, viewer: { activationDisabledReason: "ACTIVATION_DISABLED_PENDING_HARDENING" } };
+    const dv = renderToStaticMarkup(createElement(AutomationDetailBody, { read: ok(v11 as AutomationDetail), runs: ok(runs) }));
+    check("v1.1 detail: the hard gate and every blocker in plain English", dv.includes("data-activation-blockers") && dv.includes("Activation is off in this environment. It can only be switched on in Preview, never in Production")
+      && dv.includes("The message definition changed since this automation was checked — edit it to re-check.") && blockers.every((b) => dv.includes(ACTIVATION_BLOCKER_LABEL[b as keyof typeof ACTIVATION_BLOCKER_LABEL])));
+    const activationHtml = dv.slice(dv.indexOf('aria-label="Activation"'), dv.indexOf('aria-label="Conditions"'));
+    check("no raw blocker / gate code ever renders", !/[A-Z]{3,}_[A-Z_]{3,}/.test(activationHtml), activationHtml.slice(0, 200));
+    check("an unknown code is dropped, never shown raw", activationLines({ activationBlockers: ["SOMETHING_NEW"], viewer: null }).length === 0);
+    const clear = renderToStaticMarkup(createElement(AutomationDetailBody, { read: ok({ ...detail, activationBlockers: [], viewer: { activationDisabledReason: null } } as AutomationDetail), runs: ok(runs) }));
+    check("no blockers and the gate open ⇒ 'checks pass'", clear.includes("data-activation-ready"));
+    check("the blocker / gate label maps are exhaustive by type (a new code fails to compile)",
+      /ACTIVATION_BLOCKER_LABEL = \{[\s\S]*?\} as const satisfies Record<ActivationBlocker, string>;/.test(strip("components/platform/comms/comms-model.ts"))
+        && /ACTIVATION_DISABLED_LABEL = \{[\s\S]*?\} as const satisfies Record<NonNullable<Viewer\["activationDisabledReason"\]>, string>;/.test(strip("components/platform/comms/comms-model.ts")));
 
     const delSoon = renderToStaticMarkup(createElement(DeliverySurface, { read: soon, filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
     check("delivery 404 ⇒ coming soon; commitments + provider link still shown", delSoon.includes('data-comms-state="coming-soon"') && delSoon.includes("No open or click tracking, ever")
@@ -292,7 +306,47 @@ async function main() {
     check("delivery 200 ⇒ all eleven status tiles", count(dOk, "data-status-tile=") === 11);
     check("delivery 200 ⇒ all six series incl. captured / dead / cancelled", ["accepted", "failed", "dead", "suppressed", "captured", "cancelled"].every((k) => dOk.includes(`data-series="${k}"`)));
     check("measured.delivered false ⇒ explicit 'Delivery not yet measured'", dOk.includes("data-delivery-not-measured") && dOk.includes("Delivery not yet measured."));
-    check("Preview environment explains Captured", /Preview captures sends/.test(dOk));
+
+    // Phase C (v1.2): the per-message row and the series once delivery is measured.
+    const legacyLine = (c: StatusCounts) => (["ACCEPTED", "FAILED", "DEAD", "SUPPRESSED", "CAPTURED", "CANCELLED"] as const).map((st) => `${c[st].toLocaleString("en-US")} ${DELIVERY_STATUS_LABEL[st].toLowerCase()}`).join(" · ");
+    const rowCounts = { ...z, ACCEPTED: 3, DELIVERED: 9, BOUNCED: 2, COMPLAINED: 1, FAILED: 1 };
+    check("measured=false: the per-message row text is exactly today's (accepted … cancelled)", byKeyLine(rowCounts, false) === legacyLine(rowCounts) && !/delivered|bounced|complained/i.test(byKeyLine(rowCounts, false)));
+    check("measured=false: the rendered row is the same text", dOk.includes(legacyLine({ ...z, CAPTURED: 4 })));
+    check("the ordered row statuses are ONE exported constant each", BYKEY_STATUSES.join() === "ACCEPTED,FAILED,DEAD,SUPPRESSED,CAPTURED,CANCELLED"
+      && BYKEY_STATUSES_MEASURED.join() === "ACCEPTED,DELIVERED,BOUNCED,COMPLAINED,FAILED,DEAD,SUPPRESSED,CAPTURED,CANCELLED"
+      && !/\["ACCEPTED", "FAILED"/.test(strip("components/platform/comms/DeliveryView.tsx")));
+    check("measured=true: delivered / bounced / complained follow 'accepted by provider'", byKeyLine(rowCounts, true) === "3 accepted by provider · 9 delivered · 2 bounced · 1 complained · 1 failed · 0 dead · 0 suppressed · 0 captured · 0 cancelled");
+    const measured: DeliveryAnalytics = { ...delivery, measured: { delivered: true, opens: false, clicks: false }, totals: { ...z, ...rowCounts },
+      byKey: [{ key: "SYNC_FAILED", counts: rowCounts }], series: { ...delivery.series, delivered: sz, bounced: sz, complained: sz } };
+    const mOk = renderToStaticMarkup(createElement(DeliverySurface, { read: ok(measured), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    check("measured=true: the row renders delivered, bounced and complained", mOk.includes(byKeyLine(rowCounts, true)));
+    check("measured=true: the three provider series render after the six", ["delivered", "bounced", "complained"].every((k) => mOk.includes(`data-series="${k}"`)) && count(mOk, "data-series=") === 9
+      && mOk.indexOf('data-series="cancelled"') < mOk.indexOf('data-series="delivered"'));
+    check("measured=true: the provider-confirmed caption replaces 'not yet measured'; accepted stays 'accepted by provider'",
+      mOk.includes("data-delivery-measured") && mOk.includes("confirmed by the email provider") && !mOk.includes("data-delivery-not-measured") && mOk.includes("Accepted by provider"));
+    check("no copy equates accepted with delivered", !/accepted\s*(=|means|is)\s*delivered/i.test(mOk + dOk) && SERIES_LABEL.accepted === "Accepted by provider");
+    const partial = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...measured, series: { ...delivery.series, delivered: sz } }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    check("measured but a provider series absent ⇒ that series is not rendered", partial.includes('data-series="delivered"') && !partial.includes('data-series="bounced"'));
+    const unmeasuredWithKeys = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, series: { ...delivery.series, delivered: sz } }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    check("not measured ⇒ provider series never render, even if a key is present", !unmeasuredWithKeys.includes('data-series="delivered"'));
+    const visibleText = (h: string) => h.replace(/<[^>]*>/g, " ");
+    // #196 — accepted with no provider message id (a subset of accepted; never confirmable).
+    const withU = (over: Partial<DeliveryAnalytics>) => renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...measured, ...over }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} }));
+    const u3 = withU({ acceptedUncertain: 3 });
+    check("measured + 3 ⇒ the plain line, plural", u3.includes("data-accepted-uncertain") && u3.includes("3 accepted by provider can’t be confirmed — no provider message id was returned."));
+    check("singular wording reads naturally (1 … can’t be confirmed)", acceptedUncertainLine({ measured: measured.measured, acceptedUncertain: 1 }) === "1 accepted by provider can’t be confirmed — no provider message id was returned."
+      && acceptedUncertainLine({ measured: measured.measured, acceptedUncertain: 1200 })?.startsWith("1,200 accepted by provider") === true);
+    const { acceptedUncertain: _drop, ...noKey } = { ...measured, acceptedUncertain: 3 };
+    check("hidden for measured + 0, measured + null, a missing key (older server), and unmeasured + 3",
+      !withU({ acceptedUncertain: 0 }).includes("data-accepted-uncertain") && !withU({ acceptedUncertain: null }).includes("data-accepted-uncertain")
+        && !renderToStaticMarkup(createElement(DeliverySurface, { read: ok(noKey as DeliveryAnalytics), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} })).includes("data-accepted-uncertain")
+        && !renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, acceptedUncertain: 3 }), filters: DEFAULT_DELIVERY_FILTERS, onFilters: () => {} })).includes("data-accepted-uncertain"));
+    const uLine = u3.slice(u3.indexOf("data-accepted-uncertain"), u3.indexOf("</span>", u3.indexOf("data-accepted-uncertain")));
+    check("informational, not an error: a policy note (no alert role, no error colour) and no raw code", !/role="alert"|coral|UNCERTAIN|ACCEPTED/.test(uLine)
+      && !/role="alert"[^>]*>[^<]*can’t be confirmed/.test(u3) && !/\bUNCERTAIN_ACCEPTANCE\b/.test(visibleText(u3)), uLine);
+    check("no raw status code ever appears in the rendered text (measured or not)",
+      ![...DELIVERY_STATUSES].some((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk) + visibleText(dOk))), DELIVERY_STATUSES.filter((st) => new RegExp(`\\b${st}\\b`).test(visibleText(mOk))));
+    check("Preview environment explains Captured", /Preview only delivers to approved test addresses — every other send is captured/.test(dOk));
     check("by-key rows show keys and counts only (no address)", dOk.includes("PASSWORD_RESET_LINK_SENT") && !/@/.test(dOk.replace(/@v\d/g, "")));
     const inApp = renderToStaticMarkup(createElement(DeliverySurface, { read: ok({ ...delivery, filters: { channel: "IN_APP" as const, status: null, template: null }, suppressedByReason: { ...r0, PREFERENCE_OFF: 3, RATE_LIMITED: 2 } }),
       filters: { ...DEFAULT_DELIVERY_FILTERS, channel: "IN_APP" }, onFilters: () => {} }));

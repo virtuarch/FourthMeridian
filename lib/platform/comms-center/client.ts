@@ -214,8 +214,6 @@ export function previewUrl(key: string, channel: PreviewChannel, variant: string
 
 // ── Content (contract v1.1 §3, Phase B1) ────────────────────────────────────────
 
-/** The reserved rollback target that makes the code default live again (v1.1 §3.5). */
-export const CODE_DEFAULT_VERSION_ID = "code-default";
 /** One versions page: the stream's history, newest first (v1.1 §3.2). */
 export const VERSIONS_PAGE = 50;
 

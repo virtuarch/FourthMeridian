@@ -4,12 +4,12 @@
  * The delivery-ledger vocabulary (contract §3.3) and the shape of one ledger
  * row. Pure types plus closed value lists. No I/O.
  *
- * "ACCEPTED" is the strongest claim the platform makes until Phase C: the
- * provider (Resend) or the in-app inbox (the Notification row) accepted the
- * message. "DELIVERED" / "BOUNCED" / "COMPLAINED" exist in the vocabulary so
- * every status vector has a stable shape, but nothing writes them until a
- * signature-verified provider event exists. Opens and clicks are never
- * measured (owner decision O-13): there is no field for them.
+ * "ACCEPTED" means the provider (Resend) or the in-app inbox (the Notification
+ * row) accepted the message — never that it was delivered. "DELIVERED" /
+ * "BOUNCED" / "COMPLAINED" are written ONLY from a signature-verified provider
+ * event (Phase C, lib/notifications/delivery/provider-events.ts), as an
+ * APPENDED row of the same message. Opens and clicks are never measured (owner
+ * decision O-13): there is no field for them.
  */
 
 import type { CommsChannel, DaySeries } from "@/lib/notifications/catalog/types";
@@ -21,8 +21,11 @@ export const DELIVERY_STATUSES = [
 ] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
-/** The statuses Phase A-2a writes. The rest are reported as 0 until their phase. */
+/** The statuses a send writes (Phase A-2a). */
 export const WRITTEN_STATUSES = ["ACCEPTED", "CAPTURED", "FAILED", "DEAD", "SUPPRESSED"] as const satisfies readonly DeliveryStatus[];
+
+/** Phase C — the statuses ONLY a signature-verified provider event writes (an appended row). */
+export const PROVIDER_EVENT_STATUSES = ["DELIVERED", "BOUNCED", "COMPLAINED"] as const satisfies readonly DeliveryStatus[];
 
 /** §3.3 — why a message was not sent. */
 export const SUPPRESSION_REASONS = [
@@ -88,6 +91,12 @@ export interface CommsDeliveryRow {
   mode?: "LIVE" | "TEST";
   /** Comms Center B2 — the AutomationRunItem this send belongs to (soft ref; = messageKey). */
   automationRunItemId?: string | null;
+  /**
+   * Comms Center C — the provider's delivery instant. Set ONLY on a row
+   * appended from a verified `email.delivered` event (and carried onto a later
+   * COMPLAINED / BOUNCED row of the same message); a send never sets it.
+   */
+  deliveredAt?: Date | null;
 }
 
 /** The single write the ledger performs. Injected so tests never need a database. */
@@ -101,6 +110,8 @@ export type DeliveryWindow = "7d" | "30d" | "90d";
 
 /** C4 — the six fixed series keys. */
 export type SeriesKey = "accepted" | "failed" | "dead" | "suppressed" | "captured" | "cancelled";
+/** Phase C — the optional verified-event series keys (present only when measured.delivered). */
+export type ProviderSeriesKey = "delivered" | "bounced" | "complained";
 
 /** C3 — every DeliveryStatus key, with a number (0 allowed). Counts MESSAGES by final status (v1.0.2). */
 export type StatusCounts = Record<DeliveryStatus, number>;
@@ -118,9 +129,27 @@ export interface DeliveryAnalytics {
   totals: StatusCounts | null;
   suppressedByReason: ReasonCounts | null;
   byKey: Array<{ key: string; counts: StatusCounts }> | null;
-  /** C4 — always all six; each a dense DaySeries (C1/C2: null = not observed; `withheld` never set here). */
-  series: Record<SeriesKey, DaySeries>;
-  measured: { delivered: false; opens: false; clicks: false };
+  /**
+   * C4 — always all six; each a dense DaySeries (C1/C2: null = not observed; `withheld` never set here).
+   * Phase C (v1.2): `delivered` / `bounced` / `complained` are OPTIONAL keys, present only when
+   * `measured.delivered` is true (a verified-event count is meaningless before then).
+   */
+  series: Record<SeriesKey, DaySeries> & Partial<Record<ProviderSeriesKey, DaySeries>>;
+  /**
+   * Phase C (contract v1.2): `delivered` is true only when the webhook secret is
+   * configured AND at least one signature-verified provider event exists — only
+   * then can a DELIVERED count mean anything. Opens and clicks: never (O-13).
+   */
+  measured: { delivered: boolean; opens: false; clicks: false };
+  /**
+   * Phase C (Session 2 request; additive, OPTIONAL) — messages whose final status is ACCEPTED but
+   * that carry NO provider message id: the B2 R4 UNCERTAIN_ACCEPTANCE sends (an idempotency
+   * conflict — accepted earlier, no id returned). No webhook event can ever confirm them, so they
+   * are "accepted, can't be confirmed" — never "awaiting delivery". They are INCLUDED in
+   * totals.ACCEPTED; this is a subset count. Same environment, window (observed range) and
+   * filters as `totals`; null when nothing is observed; absent when the source cannot count it.
+   */
+  acceptedUncertain?: number | null;
   coverage: { ledgerSince: string | null; directSendsCovered: boolean; environment: LedgerEnvironment };
   providerHealth: { href: "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"; source: "GET /api/platform/platform-ops/email-health" };
   floor: boolean;

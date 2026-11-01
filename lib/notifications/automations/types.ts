@@ -66,18 +66,37 @@ export interface AutomationRunCounts {
 }
 
 /**
- * ACTIVATION HARD GATE (review of PR #187, 2026-10-31). A CODE constant — never an
- * env var, never a PlatformSetting — so no deploy-time or operator action can open
- * it. While false:
+ * ACTIVATION GATE (review of PR #187 → hardening #190 → pre-flip #193 → owner approval
+ * 2026-11-01: PREVIEW ONLY). Activation is open ONLY when BOTH hold, read from the env on
+ * EVERY call (never cached, so unsetting the flag is a kill switch without a code change):
+ *   (a) VERCEL_ENV is exactly "preview"   — Production, Development, local and an unset
+ *       VERCEL_ENV are all closed; NO flag can open Production (it is not a parameter);
+ *   (b) COMMS_AUTOMATIONS_PREVIEW_ENABLED is exactly "true" — "TRUE", "1", " true" are closed.
+ * While closed:
  *   · POST /automations/[id]/activate refuses with 409 ACTIVATION_DISABLED_PENDING_HARDENING
- *     before any state write (owner approval and dry run still work);
+ *     before any automation state is read or written (the refusal is audited);
  *   · viewer.canActivate is false with `activationDisabledReason`;
- *   · the ENGINE sends nothing: if an ACTIVE row exists anyway, the executor writes
- *     nothing and reports { outcome: "SKIPPED", skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING" }.
- * It may be flipped ONLY after review items A1–A9 are fixed (the tracked follow-up PR).
+ *   · the ENGINE sends nothing: an ACTIVE row or a pending item is held and the executor reports
+ *     { outcome: "SKIPPED", skipReason: "ACTIVATION_DISABLED_PENDING_HARDENING" }; the gate is
+ *     re-read before EVERY send, so closing it mid-pass stops the pass before the next send.
+ * The reason CODE is unchanged (the UI labels map it). N10 — one System Admin may both approve
+ * and activate: owner ruling 2026-11-01 (docs/plans/COMMS-CENTER-API-CONTRACT-v1.1-DELTA-2026-10-31.md §v1.1.2).
  */
-export const AUTOMATION_ACTIVATION_ENABLED: boolean = false;
+export interface AutomationActivationEnv {
+  VERCEL_ENV?: string;
+  COMMS_AUTOMATIONS_PREVIEW_ENABLED?: string;
+  /** process.env is passed as-is (its other keys are ignored). */
+  [key: string]: string | undefined;
+}
+
+/** THE activation gate. Pure; the only path to true. Callers pass process.env per call. */
+export function automationActivationEnabled(env: AutomationActivationEnv): boolean {
+  return env.VERCEL_ENV === "preview" && env.COMMS_AUTOMATIONS_PREVIEW_ENABLED === "true";
+}
+
 export const ACTIVATION_DISABLED_REASON = "ACTIVATION_DISABLED_PENDING_HARDENING" as const;
+/** The operator-facing text of the closed gate (the code above is unchanged: UI labels map it). */
+export const ACTIVATION_DISABLED_TEXT = "Automation activation is not enabled in this environment (Preview only, when its switch is on; never Production). Owner approval and dry runs still work.";
 
 /** v1.1 §6.2 — why activate would refuse now (empty ⇒ the §6.3 checks pass). */
 export type ActivationBlocker =
@@ -108,8 +127,27 @@ export const AUTOMATION_LIMITS = {
 export const STANDARD_RETRY_DELAYS_MS = [15 * 60_000, 4 * 60 * 60_000] as const;
 /** The send lease (v1.1 §6.6 step 1): an expired lease returns the item to SCHEDULED. */
 export const SEND_LEASE_MS = 5 * 60_000;
-/** v1.1 §6.7 — the global automation breaker: > 200 accepted automation sends per 10 min auto-pauses every automation. */
-export const GLOBAL_BREAKER = { maxAccepted: 200, windowMinutes: 10 } as const;
+/**
+ * v1.1 §6.7 — the global automation breaker: > 200 accepted automation sends in the window auto-pauses every automation.
+ * HARDENING N1 (review of #187): the contract's 10-minute window could never trip — one pass delivers at most
+ * DEFAULT_BUDGET.maxItems (200) and passes are ~15 min apart — so the window is 60 minutes, and the count is the
+ * engine's OWN SENT item rows (written inline) plus the sends of the current pass, checked before EVERY send
+ * (the CommsDelivery rows are written after the response and are blind within a pass, A2).
+ */
+export const GLOBAL_BREAKER = { maxAccepted: 200, windowMinutes: 60 } as const;
+/** v1.1 §8.7 — AutomationRun / AutomationRunItem live 90 days (parity with the ledger, O-9); DEDUPE_OPEN never looks further back (N6). */
+export const AUTOMATION_RETENTION_DAYS = 90;
+/** N2 — facts younger than this are left for the next wake (an AuditLog row that commits late is never skipped by the keyset cursor). */
+export const FACT_SETTLE_MS = 60_000;
+/** N4 — a fact older than this when first read (a backlog after a freeze, maintenance or a long pause) is skipped, never sent. */
+export const MAX_FACT_AGE_MS = 24 * 3_600_000;
+/** N4 — an item more than this past its notBefore when the scanner reaches it is CANCELLED / OBSOLETE. */
+export const MAX_SEND_LATENESS_MS = 24 * 3_600_000;
+/**
+ * A6 — the EV-1 handler's bell for the SAME fact: a Notification of the same type, recipient and Space, with no
+ * auditLogId (EV-1 producers omit it; the engine's own bells carry the fact ref), created in this window around the fact.
+ */
+export const HANDLER_BELL_WINDOW = { beforeMs: 5 * 60_000, afterMs: 30 * 60_000 } as const;
 /** v1.1 §6.7 — ≥ 20 attempts and > 50 % failed in an hour auto-pauses one automation (ERROR_RATE). */
 export const ERROR_RATE_BREAKER = { minAttempts: 20, maxFailedFraction: 0.5, windowMinutes: 60 } as const;
 
@@ -144,6 +182,12 @@ export interface AutomationDetail extends AutomationSummary {
   ownerApproval: { approvedVersion: number; approvedDefinitionVersion: number; approvedAt: string; current: boolean } | null;
   lastDryRun: { runId: string; at: string; automationVersion: number; wouldExceedMaxRecipients: boolean } | null;
   activationBlockers: ActivationBlocker[];
+  /**
+   * HARDENING A6 — the definition already has a CODE producer (an EV-1 handler / registry call site) that delivers it
+   * for this trigger: an automation is an ADDITIONAL send. Its in-app leg dedupes against the handler's bell for the
+   * same fact; its email leg is a second message. Shown to the owner before approval (optional: older fixtures omit it).
+   */
+  overlapsExistingDelivery?: boolean;
   liveContent: Array<{ channel: AutomationChannel; source: "CODE_DEFAULT" | "PUBLISHED"; versionId: string | null }>;
 }
 
@@ -172,6 +216,8 @@ export interface DryRunResult {
   examples: Array<{ variant: string; subject: string | null; inAppTitle: string | null }>;
   wouldExceedMaxRecipients: boolean;
   activationBlockers: ActivationBlocker[];
+  /** HARDENING A6 — see AutomationDetail.overlapsExistingDelivery. */
+  overlapsExistingDelivery?: boolean;
   floor: boolean;
   checkedAt: string;
 }

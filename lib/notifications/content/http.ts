@@ -38,16 +38,16 @@ import { decideRecipient, emailEnvironment, type RecipientGuardEnv } from "@/lib
 import type { PaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import type { GlobalCostFreezeVerdict } from "@/lib/platform/cost-freeze.core";
 import { NOTIFICATION_REGISTRY } from "@/lib/notifications/registry";
-import { ACTIVATION_DISABLED_REASON, AUTOMATION_ACTIVATION_ENABLED } from "@/lib/notifications/automations/types";
+import { ACTIVATION_DISABLED_REASON, automationActivationEnabled } from "@/lib/notifications/automations/types";
 import {
   AI_SUGGEST_MODES, AI_TONES, EDITABLE_CHANNELS,
   type AiAvailability, type AiSuggestMode, type AiSuggestResult, type AiTone, type AiUnavailableReason, type CatalogContentLeg,
-  type ContentBody, type ContentIssue, type ContentStreamRef, type EditableChannel, type TemplateVersionDTO, type Viewer, type VersionsResponse,
+  type ContentBody, type ContentIssue, type ContentLimits, type ContentStreamRef, type EditableChannel, type RollbackUnavailableReason, type TemplateVersionDTO, type Viewer, type VersionsResponse,
 } from "./types";
 import {
   DEFAULT_VARIANT, LIMITS, contentVariants, definitionLock, divergesFrom, editableChannels, legEditability, legSpec, placeholderViews, type LegSpec,
 } from "./legs";
-import { hasErrors, parseContentBody, placeholdersUsed, validateContent } from "./validate";
+import { BLOCK_KINDS_BY_CHANNEL, hasErrors, parseContentBody, placeholdersUsed, validateContent } from "./validate";
 import { iconOf, renderContentEmail, inAppRender, textValues } from "./render";
 import { AI_RESPONSE_SCHEMA, SUGGESTION_TTL_MS, buildAiRequest, checkSuggestion, cleanNotes, diffContent, normaliseSuggestion } from "./ai";
 import { secondsToUtcMidnight, type AuthoringReservation, type AuthoringVerdict } from "./ai-allowance";
@@ -181,20 +181,25 @@ export async function testSendFacts(auth: ContentAuth, svc: Pick<ContentServices
 
 /** PURE — the flags, from the operator's level and the resource facts (§1.1 derivations). */
 export function viewerFor(auth: ContentAuth, def: CommsDefinition, facts: { contentEditable: boolean; hasRollbackTarget: boolean },
-  send: Pick<Viewer, "testSendEligible" | "testSendIneligibleReason">, activationEnabled: boolean = AUTOMATION_ACTIVATION_ENABLED): Viewer {
+  send: Pick<Viewer, "testSendEligible" | "testSendIneligibleReason">, activationEnabled: boolean = automationActivationEnabled(process.env)): Viewer {
   const write = hasLevel(auth, "WRITE");
   const control = hasLevel(auth, "CONTROL");
   const customerFacing = def.audience !== "OPERATOR_INBOX" && def.audience !== "PLATFORM_STAFF";
   const deliverLeg = def.channels.some((c) => c.channel === "EMAIL" || c.channel === "IN_APP");
+  const canRollback = control && facts.contentEditable && facts.hasRollbackTarget;
+  // v1.1.1 — permission (incl. a locked leg) is reported before "nothing to restore".
+  const rollbackUnavailableReason: RollbackUnavailableReason | null = canRollback ? null
+    : !control || !facts.contentEditable ? "NO_PERMISSION" : "NOTHING_TO_RESTORE";
   return {
     canEditContent: write && facts.contentEditable,
     canPublish: control && facts.contentEditable,
-    canRollback: control && facts.contentEditable && facts.hasRollbackTarget,
+    canRollback,
+    ...(rollbackUnavailableReason ? { rollbackUnavailableReason } : {}),
     canAiSuggest: write && facts.contentEditable,
     canTestSend: write && deliverLeg,
     canEditAutomation: write && def.editable && !def.protected,
     canDryRun: write && def.editable,
-    // Comms Center B2 — the activation hard gate (automations/types.ts): false while activation is disabled.
+    // Comms Center B2 — the activation gate (automations/types.ts automationActivationEnabled, read per call).
     canActivate: control && def.editable && activationEnabled,
     activationDisabledReason: activationEnabled ? null : ACTIVATION_DISABLED_REASON,
     canApproveAsOwner: auth.user.role === UserRole.SYSTEM_ADMIN && customerFacing && def.editable,
@@ -256,6 +261,17 @@ function refusal(r: Extract<ContentWriteResult<unknown>, { ok: false }>): Respon
 
 // ── GET /catalog/[key]/versions (§3.2) ───────────────────────────────────────
 
+/** §3.2 `limits` (v1.1.1 per-block) — the very numbers validateContent enforces; null where the block kind is not allowed. */
+export function limitsFor(channel: EditableChannel): ContentLimits {
+  const L = LIMITS[channel];
+  const blockLimit = (kind: "hero" | "info", n: number) => (BLOCK_KINDS_BY_CHANNEL[channel].has(kind) ? n : null);
+  return {
+    blocks: L.blocks, subject: L.subject, preheader: L.preheader, paragraph: L.paragraph, ctaLabel: L.ctaLabel,
+    heading: blockLimit("hero", L.heading), greeting: blockLimit("hero", L.greeting),
+    infoTitle: blockLimit("info", L.infoTitle), infoItems: blockLimit("info", L.infoItems), infoItem: blockLimit("info", L.infoItem),
+  };
+}
+
 function encodeCursor(version: number) { return Buffer.from(JSON.stringify({ v: version }), "utf8").toString("base64url"); }
 function decodeCursor(c: string): number | null {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(c)) return null;
@@ -287,7 +303,6 @@ export async function versionsList(key: string, url: URL, auth: ContentAuth, now
   const spec = leg.editable ? legSpec(key, channel) : undefined;
   if (spec && !spec.variants.includes(variant)) return validation("Unknown variant.");
   const stream: ContentStreamRef = { definitionKey: def.key, channel, variant };
-  const L = LIMITS[channel];
 
   const [head, ai, send] = await Promise.all([
     spec ? svc.readStream(stream) : Promise.resolve(null),
@@ -312,7 +327,7 @@ export async function versionsList(key: string, url: URL, auth: ContentAuth, now
     live: head?.publishedVersionId && liveNumber !== null ? { source: "PUBLISHED", versionId: head.publishedVersionId, version: liveNumber } : { source: "CODE_DEFAULT" },
     codeDefault: { ...codeDefault, placeholdersUsed: spec ? placeholdersUsed(codeDefault, channel) : [] },
     placeholders: spec ? placeholderViews(spec) : [],
-    limits: { blocks: L.blocks, subject: L.subject, preheader: L.preheader, paragraph: L.paragraph, ctaLabel: L.ctaLabel },
+    limits: limitsFor(channel),
     contentEditable: Boolean(spec),
     locked: leg.editable ? null : { reason: leg.reason },
     viewer: viewerFor(auth, def, { contentEditable: Boolean(spec), hasRollbackTarget }, send),

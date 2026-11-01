@@ -10,10 +10,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  AUTOMATION_ACTION_SEAMS, CODE_DEFAULT_VERSION_ID, COMMS_BASE, DEFAULT_DELIVERY_FILTERS, EMPTY_CATALOG_FILTERS,
+  AUTOMATION_ACTION_SEAMS, COMMS_BASE, DEFAULT_DELIVERY_FILTERS, EMPTY_CATALOG_FILTERS,
   aiSuggestUrl, automationRunsUrl, automationUrl, automationsUrl, catalogDetailUrl, catalogTotalsUrl, catalogUrl, classifyCommsResponse, commsRead, commsWrite,
   deliveryUrl, preferencesUrl, previewUrl, publishUrl, queryString, renderUrl, rollbackUrl, saveDraftUrl, triggersUrl, versionUrl, versionsUrl, type FetchLike,
 } from "./client";
+import { CODE_DEFAULT_VERSION_ID } from "@/lib/notifications/content/types";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {

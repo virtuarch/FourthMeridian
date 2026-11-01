@@ -24,7 +24,7 @@
  */
 
 import type {
-  Aggregate, CommsChannel, Count, ListEnvelope, RecipientResolver, SeriesKey, SuppressionReason, TriggerKey,
+  Aggregate, CommsChannel, Count, DeliveryAnalytics as ServerDeliveryAnalytics, ListEnvelope, RecipientResolver, SeriesKey, SuppressionReason, TriggerKey,
 } from "@/lib/notifications/catalog/types";
 import type { NotificationCategory } from "@/lib/notifications/types";
 
@@ -38,6 +38,14 @@ export type {
 /** C4 — the six fixed series (server type SeriesKey), in display order. */
 export const DELIVERY_SERIES_KEYS = ["accepted", "failed", "dead", "suppressed", "captured", "cancelled"] as const satisfies readonly SeriesKey[];
 export type DeliverySeriesKey = SeriesKey;
+
+/**
+ * Phase C (contract v1.2) — the OPTIONAL verified-event series, derived from the
+ * server's own `series` type (so a server key the UI lacks fails to compile),
+ * present only when `measured.delivered` is true. Display order.
+ */
+export type ProviderSeriesKey = Exclude<keyof ServerDeliveryAnalytics["series"], SeriesKey>;
+export const PROVIDER_SERIES_KEYS = ["delivered", "bounced", "complained"] as const satisfies readonly ProviderSeriesKey[];
 
 // ── §3.5 Mutation envelope — LOCAL (the seam; no mutation route exists yet) ─────
 

@@ -83,6 +83,10 @@ const _e = {
   // Comms Center A-2a — the delivery-ledger recipient-hash salt. Read for its
   // PRESENCE only here (never logged); lib/notifications/delivery/record.ts uses it.
   COMMS_RECIPIENT_HASH_SALT: process.env.COMMS_RECIPIENT_HASH_SALT,
+  // Comms Center C — the svix `whsec_…` signing secret of the Resend delivery
+  // webhook (app/api/webhooks/resend). Presence only here; never logged.
+  // UNSET ⇒ the webhook is INERT (503) and "delivered" is never measured.
+  RESEND_WEBHOOK_SECRET: process.env.RESEND_WEBHOOK_SECRET,
   // Comms Center A-2b (O-8) — the salt for the Security Ops anomaly key hash
   // (lib/security/identifier-hash.ts). Presence only here; never logged.
   SECURITY_IDENTIFIER_HASH_SALT: process.env.SECURITY_IDENTIFIER_HASH_SALT,
@@ -448,6 +452,14 @@ export function getEnvReport(): EnvReport {
     _e.COMMS_RECIPIENT_HASH_SALT
       ? { key: "COMMS_RECIPIENT_HASH_SALT", status: "pass", scope: "optional" }
       : { key: "COMMS_RECIPIENT_HASH_SALT", status: "warn", scope: "optional", note: "unset — the delivery ledger stores no recipient hash" },
+  );
+
+  // RESEND_WEBHOOK_SECRET (Comms Center C) — presence only. Unset ⇒ the Resend
+  // delivery webhook is inert (503) and sends stay ACCEPTED. Never a fail.
+  keys.push(
+    _e.RESEND_WEBHOOK_SECRET
+      ? { key: "RESEND_WEBHOOK_SECRET", status: "pass", scope: "optional" }
+      : { key: "RESEND_WEBHOOK_SECRET", status: "warn", scope: "optional", note: "unset — the Resend delivery webhook is inert; sends report ACCEPTED, never delivered" },
   );
 
   // SECURITY_IDENTIFIER_HASH_SALT (Comms Center A-2b, O-8) — presence only.

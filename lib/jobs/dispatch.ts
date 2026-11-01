@@ -169,7 +169,34 @@ export type JobRunner = (
   options: { trigger: JobTrigger; budgetStartedAt?: Date },
 ) => Promise<unknown>;
 
+/**
+ * SINGLE-JOB DISPATCH (Comms Center Preview activation, 2026-11-01) — the ONLY job keys a wake may be
+ * narrowed to with `?only=` on GET /api/jobs/dispatch. Hard-coded: on Preview (no crons) an operator
+ * must be able to wake the automation executor WITHOUT also running the due bank / wallet / FX jobs
+ * (Preview's Plaid Items are legacy sandbox and must never be called). Anything else is refused (400).
+ */
+export const SINGLE_JOB_DISPATCH_ALLOWLIST = ["comms-automations"] as const;
+export type SingleJobDispatchKey = (typeof SINGLE_JOB_DISPATCH_ALLOWLIST)[number];
+
+/**
+ * PURE — the `only` query values → the job to narrow to, none (absent), or a refusal. Exact match against
+ * the allowlist; a repeated or empty `only` is refused, never widened.
+ */
+export function parseSingleJobDispatch(values: readonly string[]): { ok: true; only: SingleJobDispatchKey | null } | { ok: false } {
+  if (values.length === 0) return { ok: true, only: null };
+  if (values.length !== 1) return { ok: false };
+  const v = values[0];
+  return (SINGLE_JOB_DISPATCH_ALLOWLIST as readonly string[]).includes(v) ? { ok: true, only: v as SingleJobDispatchKey } : { ok: false };
+}
+
 export interface DispatchDeps {
+  /**
+   * Narrow the wake to ONE allowlisted job (SINGLE_JOB_DISPATCH_ALLOWLIST). Only that job is considered and
+   * (if due by the same ledger rule) run, through the same runJob claim — the job's own admission / freeze /
+   * lease semantics are untouched. The wake-wide sweeps of OTHER jobs' ledgers are skipped: only this job's
+   * crashed `running` row is finalised. Absent ⇒ the ordinary wake, unchanged.
+   */
+  only?: SingleJobDispatchKey;
   jobs?: readonly ScheduledJob[];
   runner?: JobRunner;
   /** Injected facts/policies (tests). Production reads both. */
@@ -195,6 +222,7 @@ const wakeLabel = (now: Date) =>
  * are returned in the outcome.
  */
 export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<DispatchResult> {
+  if (opts?.only !== undefined) return dispatchSingleJob(now, opts.only, opts);
   const runner: JobRunner = opts?.runner ?? runJob;
   const jobs = opts?.jobs ?? SCHEDULED_JOBS;
   const client = opts?.client ?? (opts?.facts ? null : (systemDb as unknown as JobLedgerClient));
@@ -249,5 +277,41 @@ export async function dispatchDueJobs(now: Date, opts?: DispatchDeps): Promise<D
   }
 
   console.log(`[dispatch] ${slot}: ${dispatched.length} job(s) run, ${failures} failed, ${skipped.length} not due${finalized.length ? `, ${finalized.length} stale run(s) finalised` : ""}`);
+  return { slot, skipped, dispatched, failures, finalized };
+}
+
+/**
+ * The `?only=` wake: ONE allowlisted job, the same due rule, the same runJob claim and trigger. Never runs
+ * any other job and never touches another job's ledger. An unknown key here (a caller bypassing the parser)
+ * runs nothing.
+ */
+async function dispatchSingleJob(now: Date, only: SingleJobDispatchKey, opts: DispatchDeps): Promise<DispatchResult> {
+  const runner: JobRunner = opts.runner ?? runJob;
+  const slot = wakeLabel(now);
+  if (!(SINGLE_JOB_DISPATCH_ALLOWLIST as readonly string[]).includes(only)) return { slot, skipped: [], dispatched: [], failures: 0, finalized: [] };
+  const jobs = (opts.jobs ?? SCHEDULED_JOBS).filter((j) => j.name === only);
+  if (jobs.length === 0) return { slot, skipped: [], dispatched: [], failures: 0, finalized: [] };
+  const client = opts.client ?? (opts.facts ? null : (systemDb as unknown as JobLedgerClient));
+  const finalized = client && (await finalizeStaleRuns(client, now, only)) > 0 ? [only] : [];
+  const loaded = opts.facts ?? await loadJobLedgerFacts(client!, jobs);
+  const f = loaded.get(only);
+  const facts: JobLedgerFacts = finalized.length === 0 ? loaded
+    : new Map([[only, { ...(f ?? { lastStartedAt: null, lastStatus: null }), lastStale: true }]]);
+  const policies = opts.policies ?? await loadJobCadencePolicies(systemDb, jobs);
+  const { due, skipped } = selectDueJobs(now, jobs, facts, policies);
+  const dispatched: DispatchOutcome[] = [];
+  let failures = 0;
+  for (const job of due) {
+    try {
+      await runner(job.name, job.run, { trigger: "cron", budgetStartedAt: now });
+      dispatched.push({ job: job.name, ok: true });
+    } catch (err) {
+      if (err instanceof JobAlreadyRunningError) { skipped.push({ job: job.name, reason: "IN_FLIGHT", nextDueAt: null }); continue; }
+      failures++;
+      dispatched.push({ job: job.name, ok: false, error: summarizeError(err) });
+      console.error(`[dispatch] ${slot} only=${only}: job failed:`, err);
+    }
+  }
+  console.log(`[dispatch] ${slot} only=${only}: ${dispatched.length} run, ${failures} failed${skipped.length ? `, not due (${skipped[0]?.reason})` : ""}`);
   return { slot, skipped, dispatched, failures, finalized };
 }

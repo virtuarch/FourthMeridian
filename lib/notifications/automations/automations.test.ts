@@ -64,8 +64,15 @@ async function main(): Promise<void> {
   const { REASON_REQUIRED_ACTIONS } = await import("@/lib/audit");
   const T = await import("./types");
   const S = await import("./store");
-  /** The routes use the production services: the hard gate is the code constant (false) until a test opens it. */
-  const gate = (open: boolean) => { (automationServices as { activationEnabled: boolean }).activationEnabled = open; };
+  /**
+   * The routes use the PRODUCTION services, whose gate is automationActivationEnabled(process.env) read per
+   * request: a test opens it the only way it can be opened — Preview + the exact flag — and closes it by unsetting.
+   */
+  const gate = (open: boolean) => {
+    if (open) { process.env.VERCEL_ENV = "preview"; process.env.COMMS_AUTOMATIONS_PREVIEW_ENABLED = "true"; }
+    else { delete process.env.VERCEL_ENV; delete process.env.COMMS_AUTOMATIONS_PREVIEW_ENABLED; }
+  };
+  gate(false);
 
   // ── 1. route wiring ────────────────────────────────────────────────────────
   console.log("1. route wiring — gate + bucket per route (contract v1.1 §6.1)");
@@ -123,15 +130,31 @@ async function main(): Promise<void> {
     && !created.body.result.viewer.canActivate && !created.body.result.viewer.canApproveAsOwner);
   const writeActivate = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.write, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
   check("WRITE cannot ACTIVATE (403 — activation is CONTROL, O-1); still DRAFT", writeActivate.status === 403 && fake.one("AutomationDefinition", { id })!.state === "DRAFT", writeActivate.body);
-  // ── the ACTIVATION HARD GATE (code constant, false) ──
-  check("production services carry the code constant (false)", automationServices.activationEnabled === false && T.AUTOMATION_ACTIVATION_ENABLED === false);
+  // ── the ACTIVATION GATE (Preview + flag, read per request) ──
+  check("production services read the resolver per call: closed with the env unset",
+    automationServices.activationEnabled() === false && T.automationActivationEnabled(process.env) === false);
+  gate(true); const openNow = automationServices.activationEnabled(); gate(false);
+  check("…and open the moment the env says Preview + \"true\", closed again when unset (no caching)", openNow === true && automationServices.activationEnabled() === false);
+  check("production wiring (deps.ts, engine-deps.ts) reads the resolver over process.env — no constant, no hard true",
+    /activationEnabled: \(\) => automationActivationEnabled\(process\.env\)/.test(code("lib/notifications/automations/deps.ts"))
+    && /activationEnabled: \(\) => automationActivationEnabled\(process\.env\)/.test(code("lib/notifications/automations/engine-deps.ts")));
   const auditsBefore = fake.rows("AuditLog").length;
   const gated = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
-  check("HARD GATE: CONTROL activate ⇒ 409 ACTIVATION_DISABLED_PENDING_HARDENING (typed), nothing written, nothing audited",
+  const refusedRows = audits("COMMS_AUTOMATION_ACTIVATION_REFUSED");
+  const rm = refusedRows[0]?.metadata as any;
+  check("GATE CLOSED: CONTROL activate ⇒ 409 ACTIVATION_DISABLED_PENDING_HARDENING (typed), nothing written to the automation",
     gated.status === 409 && gated.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING" && fake.one("AutomationDefinition", { id })!.state === "DRAFT"
-    && fake.one("AutomationDefinition", { id })!.version === 1 && fake.rows("AuditLog").length === auditsBefore, gated.body);
+    && fake.one("AutomationDefinition", { id })!.version === 1, gated.body);
+  check("…the refusal is AUDITED: ONE COMMS_AUTOMATION_ACTIVATION_REFUSED row (result REFUSED) with the actor, the reason, the requested + current version and the definitionVersion",
+    fake.rows("AuditLog").length === auditsBefore + 1 && refusedRows.length === 1 && refusedRows[0].performedByAdminId === "op_control" && rm?.result === "REFUSED"
+    && rm?.reason?.code === "DOGFOOD" && rm?.requestedVersion === 1 && rm?.change?.before?.version === 1
+    && rm?.definitionVersion === getCatalogDefinition("MEMBER_ROLE_CHANGED")!.definitionVersion && rm?.target?.id === id, { n: refusedRows.length, rm });
+  check("the refusal audit action is reason-required", REASON_REQUIRED_ACTIONS.has(AuditAction.COMMS_AUTOMATION_ACTIVATION_REFUSED));
   const gatedUnknown = await call(ACTIVATE.POST, `/automations/nope/activate`, C.control, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id: "nope" });
   check("…the gate answers BEFORE any read (an unknown id is the gate refusal, not 404)", gatedUnknown.status === 409 && gatedUnknown.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING");
+  const gatedNoReason = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.control, "POST", { expectedVersion: 1, body: {} }, { id });
+  check("…a request with no reason is still the gate's 409 (the gate comes first), and is not audited (nothing to record a reason for)",
+    gatedNoReason.status === 409 && gatedNoReason.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING" && audits("COMMS_AUTOMATION_ACTIVATION_REFUSED").length === 2);
   const gatedAdmin = await call(ACTIVATE.POST, `/automations/${id}/activate`, C.admin, "POST", { reason: REASON, expectedVersion: 1, body: {} }, { id });
   check("…for SYSTEM_ADMIN too (no break-glass around the gate)", gatedAdmin.status === 409 && gatedAdmin.body.code === "ACTIVATION_DISABLED_PENDING_HARDENING");
   const gatedView = await call(ONE.GET, `/automations/${id}`, C.control, "GET", undefined, { id });
@@ -180,6 +203,10 @@ async function main(): Promise<void> {
     && Object.values(lc).filter((v: any) => v.withheld === true).length === 1 && Object.values(lc).every((v: any) => v.value === 0 || v.value === null)
     && audits("COMMS_AUTOMATION_DRY_RUN").length === 1, dry.body.result);
   check("…and the examples are SYNTHETIC (no real name or Space)", JSON.stringify(dry.body.result.examples).indexOf("cust1") === -1 && dry.body.result.examples.length >= 1);
+  // HARDENING A6 — MEMBER_ROLE_CHANGED already has an EV-1 producer: the dry run, the detail and the owner-approval audit say so.
+  check("HARDENING A6: the dry-run result, the detail and the owner-approval audit carry overlapsExistingDelivery: true (an EV-1 handler already delivers it)",
+    dry.body.result.overlapsExistingDelivery === true && approved.body.result.overlapsExistingDelivery === true
+    && (audits("COMMS_AUTOMATION_OWNER_APPROVED")[0].metadata as any).overlapsExistingDelivery === true, { dry: dry.body.result.overlapsExistingDelivery, det: approved.body.result.overlapsExistingDelivery });
   const one = await call(DRY.POST, `/automations/${id}/dry-run`, C.write, "POST", { reason: REASON, body: { sample: { triggerRef: "nope_ref" } } }, { id });
   check("a single unknown triggerRef ⇒ 404 (nothing recorded)", one.status === 404 && fake.rows("AutomationRun", { mode: "DRY_RUN" }).length === 1);
 
@@ -253,7 +280,7 @@ async function main(): Promise<void> {
     const view = await call(ONE.GET, `/automations/${did}`, C.control, "GET", undefined, { id: did });
     check("customerFacing is read from the LIVE definition (true), not the stored false — so OWNER_APPROVAL_REQUIRED applies",
       view.body.customerFacing === true && view.body.activationBlockers.includes("OWNER_APPROVAL_REQUIRED") && view.body.activationBlockers.includes("DEFINITION_CHANGED"), view.body.activationBlockers);
-    const pure = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: codeV, triggerKey: "space.member.role_changed", customerFacing: false, ownerApprovedVersion: null, ownerApprovedDefinitionVersion: null, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false } },
+    const pure = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: codeV, triggerKey: "space.member.role_changed", customerFacing: false, ownerApprovedVersion: null, ownerApprovedDefinitionVersion: null, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false, window: true } },
       getCatalogDefinition("MEMBER_ROLE_CHANGED")!, new Date());
     check("a stored customerFacing=false never skips the owner-approval gate when the code definition is customer-facing", pure.includes("OWNER_APPROVAL_REQUIRED"), pure);
     const fix = await call(ONE.PATCH, `/automations/${did}`, C.write, "PATCH", { reason: REASON, expectedVersion: 3, body: {} }, { id: did });
@@ -285,6 +312,14 @@ async function main(): Promise<void> {
     paused.status === 200 && fake.one("AutomationDefinition", { id })!.state === "PAUSED" && fake.one("AutomationRunItem", { idempotencyKey: "k1" })!.status === "CANCELLED"
     && fake.one("AutomationRunItem", { idempotencyKey: "k1" })!.reason === "AUTOMATION_PAUSED" && audits("COMMS_AUTOMATION_PAUSED").length === 1
     && (audits("COMMS_AUTOMATION_PAUSED")[0].metadata as any).cancelledItems === 1, paused.body);
+  {
+    const m = audits("COMMS_AUTOMATION_PAUSED")[0].metadata as any;
+    const am = audits("COMMS_AUTOMATION_ACTIVATED")[0].metadata as any;
+    const dv = getCatalogDefinition("MEMBER_ROLE_CHANGED")!.definitionVersion;
+    check("the pause audit carries actor, reason, version and definitionVersion; so does the activation audit",
+      audits("COMMS_AUTOMATION_PAUSED")[0].performedByAdminId === "op_write" && m.reason?.code === "DOGFOOD" && m.change?.before?.version === 2 && m.definitionVersion === dv && m.definitionKey === "MEMBER_ROLE_CHANGED"
+      && audits("COMMS_AUTOMATION_ACTIVATED")[0].performedByAdminId === "op_control" && am.reason?.code === "DOGFOOD" && am.change?.before?.version === 1 && am.definitionVersion === dv, { m, am });
+  }
   {
     const rows: any[] = [];
     const S = await import("./store");
@@ -337,12 +372,12 @@ async function main(): Promise<void> {
   console.log("5. activation preconditions (v1.1 §6.3)");
   const sf = await call(LIST.POST, "/automations", C.write, "POST", { reason: REASON, body: { triggerKey: "plaid.item.sync_failed", definitionKey: "SYNC_FAILED", name: "x", recipient: { kind: "EVENT_SUBJECT_USER" } } });
   check("a trigger with no engine fact source ⇒ TRIGGER_NOT_AVAILABLE among the blockers (draft allowed, activation never)", sf.status === 201 && sf.body.result.activationBlockers.includes("TRIGGER_NOT_AVAILABLE"), sf.body);
-  const mkt = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false } },
+  const mkt = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: false, window: true } },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, consentClass: "MARKETING", definitionVersion: 1 }, new Date());
   check("MARKETING ⇒ MARKETING_NOT_IN_V1 (no marketing in v1)", mkt.includes("MARKETING_NOT_IN_V1"), mkt);
-  const stale = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(Date.now() - 8 * 86_400_000), wouldExceedMaxRecipients: false } },
+  const stale = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(Date.now() - 8 * 86_400_000), wouldExceedMaxRecipients: false, window: true } },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, definitionVersion: 1 }, new Date());
-  const over = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: true } },
+  const over = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: { automationVersion: 1, status: "SUCCEEDED", startedAt: new Date(), wouldExceedMaxRecipients: true, window: true } },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, definitionVersion: 1 }, new Date());
   const codeMoved = R.activationBlockers({ state: "DRAFT", version: 1, definitionVersion: 1, triggerKey: "space.member.role_changed", customerFacing: true, ownerApprovedVersion: 1, ownerApprovedDefinitionVersion: 1, lastDryRun: null },
     { ...getCatalogDefinition("MEMBER_ROLE_CHANGED")!, definitionVersion: 2 }, new Date());
@@ -356,7 +391,8 @@ async function main(): Promise<void> {
   {
     const sql = readFileSync("prisma/migrations/20261031220000_comms_automations/migration.sql", "utf8").replace(/--[^\n]*/g, "");
     const names = readdirSync("prisma/migrations").filter((n) => /^\d{14}_/.test(n)).sort();
-    check("it sorts after 20261031210000 (the B1 migration) and is the newest", names.indexOf("20261031220000_comms_automations") > names.indexOf("20261031210000_comms_template_versions") && names.at(-1) === "20261031220000_comms_automations");
+    // Phase C's 20261031230000_comms_provider_events now follows it; it must still sort after B1.
+    check("it sorts after 20261031210000 (the B1 migration)", names.indexOf("20261031220000_comms_automations") > names.indexOf("20261031210000_comms_template_versions"));
     check("additive only: no DROP, no ALTER COLUMN, no UPDATE / DELETE of rows; CommsDelivery gains two columns", !/\bDROP\b|ALTER\s+COLUMN|^\s*UPDATE\s|^\s*DELETE\s/im.test(sql)
       && /ALTER TABLE "CommsDelivery" ADD COLUMN "mode" TEXT NOT NULL DEFAULT 'LIVE'/.test(sql) && /ALTER TABLE "CommsDelivery" ADD COLUMN "automationRunItemId" TEXT;/.test(sql));
     for (const t of ["AutomationDefinition", "AutomationRun", "AutomationRunItem"]) {
@@ -378,7 +414,11 @@ async function main(): Promise<void> {
   // ── 6. test send ──────────────────────────────────────────────────────────
   console.log("6. test send (v1.1 §6.9): SELF only; outside Production only when allowlisted; typed 422 guards");
   const outbox: EmailMessage[] = [];
-  const provider = { name: "resend", send: async (m: EmailMessage) => { outbox.push(m); return { status: "sent" as const, id: `re_${outbox.length}`, provider: "resend" }; } };
+  let providerFail = false;
+  const provider = { name: "resend", send: async (m: EmailMessage) => {
+    outbox.push(m);
+    return providerFail ? { status: "error" as const, provider: "resend", error: "provider 500" } : { status: "sent" as const, id: `re_${outbox.length}`, provider: "resend" };
+  } };
   const capture = { name: "capture", send: async (m: EmailMessage) => { outbox.push(m); return { status: "captured" as const, provider: "capture" }; } };
   const ledger = async (row: any) => { await (fake.delegate("CommsDelivery") as any).createMany({ data: [row] }); };
   let env: Record<string, string> = { VERCEL: "1", VERCEL_ENV: "production" };
@@ -426,6 +466,21 @@ async function main(): Promise<void> {
     prodSend.status === 200 && prodSend.body.result.status === "ACCEPTED" && last.to === "op_write@example.invalid" && last.subject.startsWith("[TEST] ")
     && fake.rows("CommsDelivery", { messageKey: prodSend.body.result.deliveryId, mode: "TEST" }).length === 1 && stormReads === 0
     && (audits("COMMS_TEST_SEND").at(-1)!.metadata as any).reason.code === "DOGFOOD" && (audits("COMMS_TEST_SEND").at(-1)!.metadata as any).recipient === "SELF", { b: prodSend.body, subject: last.subject });
+  {
+    // HARDENING N11 — the attempt row precedes the send; a second row records the REAL outcome.
+    const rows = audits("COMMS_TEST_SEND").filter((r) => (r.metadata as any).deliveryId === prodSend.body.result.deliveryId);
+    const [attemptRow, outcomeRow] = rows.map((r) => r.metadata as any);
+    check("HARDENING N11: a test send writes the ATTEMPT row first, then an OUTCOME row with the real outcome (ACCEPTED ⇒ SUCCESS), the reason on both",
+      rows.length === 2 && attemptRow.phase === "ATTEMPT" && outcomeRow.phase === "OUTCOME" && outcomeRow.outcome === "ACCEPTED" && outcomeRow.result === "SUCCESS"
+      && outcomeRow.attemptAuditLogId === prodSend.body.auditLogId && outcomeRow.reason.code === "DOGFOOD", rows.map((r) => r.metadata));
+    const failAt = outbox.length;
+    providerFail = true;
+    const failed = await ts(tsBody({}));
+    providerFail = false;
+    const fr = audits("COMMS_TEST_SEND").filter((r) => (r.metadata as any).deliveryId === failed.body.result?.deliveryId).map((r) => r.metadata as any);
+    check("…a provider failure is recorded as result FAILURE / outcome FAILED (never a SUCCESS for a send that did not happen)",
+      failed.status === 200 && failed.body.result.status === "FAILED" && fr.length === 2 && fr[1].result === "FAILURE" && fr[1].outcome === "FAILED" && outbox.length >= failAt, { b: failed.body, fr });
+  }
   const prot2 = await ts({ reason: REASON, body: { key: "PASSWORD_RESET_LINK_SENT", channel: "EMAIL", versionId: "v1" } });
   check("versionId on a PROTECTED key ⇒ 409 PROTECTED", prot2.status === 409 && prot2.body.code === "PROTECTED");
   const protCode = await ts({ reason: REASON, body: { key: "PASSWORD_RESET_LINK_SENT", channel: "EMAIL" } });

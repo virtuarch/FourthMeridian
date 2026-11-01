@@ -17,6 +17,13 @@ export const EDITABLE_CHANNELS = ["EMAIL", "IN_APP"] as const satisfies readonly
 export interface ContentStreamRef { definitionKey: string; channel: EditableChannel; variant: string }
 
 export type VersionState = "DRAFT" | "PUBLISHED" | "SUPERSEDED";
+
+/**
+ * v1.1.1 — the sentinel version id for "the code default" (never a row): the
+ * `[id]` segment of `POST …/versions/code-default/rollback`. Exported here so
+ * the UI does not hard-code it; the server (store.ts) uses this same constant.
+ */
+export const CODE_DEFAULT_VERSION_ID = "code-default" as const;
 export type VersionCreatedByKind = "OPERATOR" | "AI_ASSISTED" | "ROLLBACK";
 
 export type AiSuggestMode = "POLISH" | "CHECK";
@@ -114,10 +121,18 @@ export interface TemplateVersionDTO {
 
 // ── §1.1 The viewer block (D2, D6a) ──────────────────────────────────────────
 
+export type RollbackUnavailableReason = "NO_PERMISSION" | "NOTHING_TO_RESTORE";
+
 export interface Viewer {
   canEditContent: boolean;
   canPublish: boolean;
   canRollback: boolean;
+  /**
+   * v1.1.1 — why canRollback is false; absent when it is true.
+   * NO_PERMISSION: the operator lacks CS CONTROL, or the leg is not content-editable (see `locked`).
+   * NOTHING_TO_RESTORE: permitted, but the stream has never had a published version.
+   */
+  rollbackUnavailableReason?: RollbackUnavailableReason;
   canAiSuggest: boolean;
   canTestSend: boolean;
   canEditAutomation: boolean;
@@ -142,6 +157,33 @@ export interface AiAvailability {
   checkedAt: string;
 }
 
+/**
+ * §3.2 `limits` — the same numbers validateContent enforces (legs.ts LIMITS).
+ * v1.1.1 adds the per-block limits; null = the block kind is not allowed on this
+ * channel (IN_APP has no hero or info block), like `preheader`.
+ * Breaking one is FIELD_TOO_LONG (heading / greeting / title / items[itemIndex])
+ * or TOO_MANY_ITEMS (items), located on the block.
+ * The per-block fields are optional in the TYPE only (additive for existing
+ * consumers); the server always sends them.
+ */
+export interface ContentLimits {
+  blocks: number;
+  subject: number;
+  preheader: number | null;
+  paragraph: number;
+  ctaLabel: number;
+  /** hero.heading, characters. */
+  heading?: number | null;
+  /** hero.greeting, characters. */
+  greeting?: number | null;
+  /** info.title, characters. */
+  infoTitle?: number | null;
+  /** info.items, count. */
+  infoItems?: number | null;
+  /** one info item, characters. */
+  infoItem?: number | null;
+}
+
 export type LiveContent = { source: "CODE_DEFAULT" } | { source: "PUBLISHED"; versionId: string; version: number };
 
 export interface VersionsResponse extends ListEnvelope<TemplateVersionDTO> {
@@ -150,7 +192,7 @@ export interface VersionsResponse extends ListEnvelope<TemplateVersionDTO> {
   live: LiveContent;
   codeDefault: ContentBody & { placeholdersUsed: string[] };
   placeholders: PlaceholderView[];
-  limits: { blocks: number; subject: number; preheader: number | null; paragraph: number; ctaLabel: number };
+  limits: ContentLimits;
   contentEditable: boolean;
   locked: { reason: "PROTECTED" | "NOT_EDITABLE" } | null;
   viewer: Viewer;

@@ -217,6 +217,8 @@ async function send(
     text,
     // HTML is optional (design-system templates); text stays the alternative.
     ...(html ? { html } : {}),
+    // B2 HARDENING A1 — the caller's provider idempotency key (an automation item id).
+    ...(ctx?.idempotencyKey ? { idempotencyKey: ctx.idempotencyKey } : {}),
   };
 
   // Test mode never sends for real, regardless of whether a key is present.

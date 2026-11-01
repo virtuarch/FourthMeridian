@@ -46,10 +46,10 @@ import { testSendFacts, viewerFor, type ContentAuth, type ContentServices } from
 import type { LedgerWriter } from "@/lib/notifications/delivery/types";
 import type { LedgerEnv } from "@/lib/notifications/delivery/record";
 import type { NotificationRenderData } from "@/lib/notifications/types";
-import { activationBlockers, isCustomerFacing, ownerApprovalCurrent, resolveTarget, validateAutomationInput } from "./rules";
+import { activationBlockers, isCustomerFacing, overlapsExistingDelivery, ownerApprovalCurrentForDisplay, resolveTarget, validateAutomationInput } from "./rules";
 import { evaluateDryRun, type DryRunDeps } from "./dry-run";
 import type * as Store from "./store";
-import { ACTIVATION_DISABLED_REASON, AUTOMATION_STATES, type AutomationChannel, type AutomationDetail, type AutomationState, type DryRunResult } from "./types";
+import { ACTIVATION_DISABLED_REASON, ACTIVATION_DISABLED_TEXT, AUTOMATION_STATES, type AutomationChannel, type AutomationDetail, type AutomationState, type DryRunResult } from "./types";
 
 // ── Buckets (v1 §4.1, v1.1 §6.1) ─────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ export const AUTOMATION_BODY_MAX_BYTES = 32 * 1024;
 // ── Services ──────────────────────────────────────────────────────────────────
 
 export interface AutomationServices {
-  store: Pick<typeof Store, "createAutomation" | "updateAutomation" | "recordDryRun" | "ownerApprove" | "activate" | "pause" | "disable"
+  store: Pick<typeof Store, "createAutomation" | "updateAutomation" | "recordDryRun" | "ownerApprove" | "activate" | "recordActivationRefused" | "pause" | "disable"
     | "recordCancellations" | "readAutomation" | "readRun" | "latestRun" | "listAutomationRows" | "listRunRows" | "readHistory" | "factsOf" | "fieldsOf" | "toSummary" | "toRunDTO">;
   dryRun: DryRunDeps;
   /** B1 content services: heads (viewer facts), version reads (test send), self facts. */
@@ -75,8 +75,8 @@ export interface AutomationServices {
     input: { type: NotificationTypeId; userId: string; data?: NotificationRenderData; expiresAt?: Date | null },
     ctx: { inAppOnly: true; ledgerTag: LedgerTag; ledger?: LedgerWriter; content?: LiveContentResolver | null },
   ): Promise<CreateNotificationResult>;
-  /** The ACTIVATION HARD GATE (types.ts AUTOMATION_ACTIVATION_ENABLED); production wires the constant. */
-  activationEnabled: boolean;
+  /** The ACTIVATION GATE (types.ts automationActivationEnabled), called per request; production reads process.env. */
+  activationEnabled(): boolean;
   /** Writes ONE audit row in its own transaction (test send: the audit precedes the send). */
   auditTestSend(row: Parameters<typeof recordOperatorAction>[1]): Promise<string>;
 }
@@ -150,12 +150,14 @@ export async function automationDetail(row: Store.AutomationRow, auth: ContentAu
     // Review M2 — the LIVE code definition decides, not the stored copy.
     customerFacing: def ? isCustomerFacing(def) : row.customerFacing,
     ownerApproval: row.ownerApprovedVersion !== null && row.ownerApprovedDefinitionVersion !== null && row.ownerApprovedAt
-      ? { approvedVersion: row.ownerApprovedVersion, approvedDefinitionVersion: row.ownerApprovedDefinitionVersion, approvedAt: row.ownerApprovedAt.toISOString(), current: def ? ownerApprovalCurrent(row, def) : false }
+      // HARDENING N11 — an ACTIVE row's approval is judged against its ACTIVATED version (activation bumps `version`).
+      ? { approvedVersion: row.ownerApprovedVersion, approvedDefinitionVersion: row.ownerApprovedDefinitionVersion, approvedAt: row.ownerApprovedAt.toISOString(), current: def ? ownerApprovalCurrentForDisplay(row, def) : false }
       : null,
     lastDryRun: dryOk ? { runId: dryOk.id, at: dryOk.startedAt.toISOString(), automationVersion: dryOk.automationVersion, wouldExceedMaxRecipients: dryOk.error === "WOULD_EXCEED_MAX_RECIPIENTS" } : null,
     activationBlockers: def ? activationBlockers(svc.store.factsOf(row, dryOk), def, now) : ["DEFINITION_NOT_ACTIVATABLE" as const],
+    overlapsExistingDelivery: def ? overlapsExistingDelivery(def) : false,
     liveContent: def ? await liveContentOf(svc, def, row.variant, f.channels) : [],
-    viewer: def ? viewerFor(auth, def, { contentEditable: editableChannels(def).length > 0, hasRollbackTarget: heads.some((h) => h.publishedCount > 0) }, send, svc.activationEnabled) : null,
+    viewer: def ? viewerFor(auth, def, { contentEditable: editableChannels(def).length > 0, hasRollbackTarget: heads.some((h) => h.publishedCount > 0) }, send, svc.activationEnabled()) : null,
   } satisfies AutomationDetail & { viewer: unknown };
 }
 
@@ -293,6 +295,7 @@ export async function dryRunHandler(id: string, raw: unknown, auth: ContentAuth,
     examples: evaluation.examples,
     wouldExceedMaxRecipients: evaluation.wouldExceedMaxRecipients,
     activationBlockers: blockers,
+    overlapsExistingDelivery: overlapsExistingDelivery(def),
     floor: evaluation.floor,
     checkedAt: now.toISOString(),
   };
@@ -304,9 +307,18 @@ export async function dryRunHandler(id: string, raw: unknown, auth: ContentAuth,
 type Transition = "ACTIVATE" | "PAUSE" | "DISABLE" | "OWNER_APPROVAL";
 
 export async function transitionHandler(kind: Transition, id: string, raw: unknown, auth: ContentAuth, meta: Meta, now: Date, svc: AutomationServices): Promise<Response> {
-  // The ACTIVATION HARD GATE — a typed refusal before anything is read or written.
-  if (kind === "ACTIVATE" && !svc.activationEnabled) {
-    return json({ error: "Automation activation is disabled until the hardening review items are fixed. Owner approval and dry runs still work.", code: ACTIVATION_DISABLED_REASON }, 409);
+  // The ACTIVATION GATE — decided before any automation state is read or written. The refusal itself is
+  // audited (actor, reason, requested + current version, definitionVersion) when the request carried a
+  // valid envelope; the audit never changes the answer (best-effort, its own transaction).
+  const gate = kind === "ACTIVATE" ? svc.activationEnabled() : true;
+  if (!gate) {
+    const env = envelope(raw, { version: "required" });
+    if (env.ok && ID_RE.test(id)) {
+      try {
+        await svc.store.recordActivationRefused({ id, expectedVersion: env.expectedVersion!, actor: actorOf(auth, meta), reason: env.reason, now });
+      } catch { /* the refusal stands; the audit is best-effort */ }
+    }
+    return json({ error: ACTIVATION_DISABLED_TEXT, code: ACTIVATION_DISABLED_REASON }, 409);
   }
   const row = await svc.store.readAutomation(id);
   if (!row) return notFound();
@@ -318,7 +330,7 @@ export async function transitionHandler(kind: Transition, id: string, raw: unkno
   if (Object.keys(env.body).length > 0) return validation("body must be {}.");
   const input = { id: row.id, expectedVersion: env.expectedVersion!, actor: actorOf(auth, meta), reason: env.reason, now };
   if (kind === "ACTIVATE") {
-    const r = await svc.store.activate({ ...input, activationEnabled: svc.activationEnabled });
+    const r = await svc.store.activate({ ...input, activationEnabled: gate });
     if (!r.ok) return refusal(r);
     return json({ ok: true, result: await automationDetail(r.value, auth, now, svc), auditLogId: r.auditLogId });
   }
@@ -409,15 +421,30 @@ export async function testSendHandler(raw: unknown, auth: ContentAuth, meta: Met
   }
 
   // The audit row is a PRECONDITION of the send (v1.1 §9.2): written first, in its own transaction.
-  const auditLogId = await svc.auditTestSend({
-    actor: { userId: auth.user.id, via: auth.grant ? "PLATFORM_GRANT" : "SYSTEM_ADMIN", area: "CUSTOMER_SUCCESS" },
+  // It records the AUTHORISED attempt (phase ATTEMPT); HARDENING N11 — the real outcome follows in a
+  // second row (phase OUTCOME, result SUCCESS / REFUSED / FAILURE), so the trail never claims a send
+  // that did not happen.
+  const auditBase = {
+    actor: { userId: auth.user.id, via: auth.grant ? "PLATFORM_GRANT" as const : "SYSTEM_ADMIN" as const, area: "CUSTOMER_SUCCESS" },
     action: AuditAction.COMMS_TEST_SEND,
-    target: { kind: "COMMS_TEST_SEND", id: `${def.key}:${channel}` },
+    target: { kind: "COMMS_TEST_SEND" as const, id: `${def.key}:${channel}` },
     reason: env.reason,
-    result: "SUCCESS",
-    detail: { deliveryId, key: def.key, channel, variant: contentVariant, versionId, fixture: fixtureName ?? null, recipient: "SELF" },
     ipAddress: meta.ip ?? null, userAgent: meta.userAgent ?? null,
-  });
+  };
+  const auditDetail = { deliveryId, key: def.key, channel, variant: contentVariant, versionId, fixture: fixtureName ?? null, recipient: "SELF" };
+  const auditLogId = await svc.auditTestSend({ ...auditBase, result: "SUCCESS", detail: { ...auditDetail, phase: "ATTEMPT" } });
+  const auditOutcome = async (status: "ACCEPTED" | "CAPTURED" | "SUPPRESSED" | "FAILED") => {
+    try {
+      await svc.auditTestSend({
+        ...auditBase,
+        result: status === "FAILED" ? "FAILURE" : status === "SUPPRESSED" ? "REFUSED" : "SUCCESS",
+        detail: { ...auditDetail, phase: "OUTCOME", outcome: status, attemptAuditLogId: auditLogId },
+      });
+    } catch {
+      // The send already happened (or did not): the response must still say so. One fixed line.
+      console.error("[comms-test-send] the outcome audit row could not be written (the attempt row stands)");
+    }
+  };
 
   if (plan.kind === "IN_APP") {
     const res = await svc.createNotification(
@@ -425,6 +452,7 @@ export async function testSendHandler(raw: unknown, auth: ContentAuth, meta: Met
       { inAppOnly: true, ledgerTag: { messageKey: deliveryId, mode: "TEST" }, ledger: svc.ledger, content: resolver },
     );
     const status = res.status === "created" ? "ACCEPTED" : res.status === "error" ? "FAILED" : "SUPPRESSED";
+    await auditOutcome(status);
     return json({ ok: true, result: { deliveryId, status, provider: res.status === "created" ? "in-app" : null, contentVersionId: version?.version.id ?? null }, auditLogId });
   }
 
@@ -455,6 +483,7 @@ export async function testSendHandler(raw: unknown, auth: ContentAuth, meta: Met
     key: def.key, recipientUserId: auth.user.id, messageKey: deliveryId, mode: "TEST", ...(contentVersionId ? { contentVersionId } : {}),
   });
   const status = result.status === "sent" ? "ACCEPTED" : result.status === "captured" ? "CAPTURED" : result.status === "skipped" ? "SUPPRESSED" : "FAILED";
+  await auditOutcome(status);
   return json({ ok: true, result: { deliveryId, status, provider: result.provider || null, contentVersionId }, auditLogId });
 }
 
