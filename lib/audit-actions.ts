@@ -213,6 +213,15 @@ export const AuditAction = {
   BRIEF_VIEWED:               "BRIEF_VIEWED",
   TRANSACTIONS_VIEWED:        "TRANSACTIONS_VIEWED",
   MANUAL_ASSET_VALUE_UPDATED: "MANUAL_ASSET_VALUE_UPDATED",
+  // S2-(a) — the connection funnel and AI failures (enum properties only):
+  //   CONNECTION_LINK_STARTED     a Plaid Link token was minted {provider}
+  //   CONNECTION_LINK_EXITED      Plaid Link closed without success {provider, stage, errorCode}
+  //   FIRST_SYNC_SUCCEEDED        the user's first successful refresh, once ever {sourceKind}
+  //   AI_TURN_FAILED              an accepted Conversations turn had no answer {surface, reason}
+  CONNECTION_LINK_STARTED:    "CONNECTION_LINK_STARTED",
+  CONNECTION_LINK_EXITED:     "CONNECTION_LINK_EXITED",
+  FIRST_SYNC_SUCCEEDED:       "FIRST_SYNC_SUCCEEDED",
+  AI_TURN_FAILED:             "AI_TURN_FAILED",
 
   // ── Imports (D2 Step 4D-3) ───────────────────────────────────────────────────
   // Only the rollback action is added in this slice — IMPORT_BATCH_CREATED /
@@ -498,7 +507,8 @@ export const AuditAction = {
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
 
 /**
- * BETA A2 — the product-event vocabulary. EXACTLY these five; the retention job
+ * BETA A2 — the product-event vocabulary. EXACTLY these nine (the five A2
+ * presence/engagement events plus the four S2-(a) funnel / AI-failure events); the retention job
  * (jobs/product-event-retention.ts) deletes rows of these actions after the
  * owner's 13-month window and must never touch anything else, and every feed /
  * security allowlist is pinned disjoint from this set (lib/security-surface.test.ts,
@@ -514,6 +524,10 @@ export const PRODUCT_EVENT_ACTIONS: readonly AuditActionType[] = [
   AuditAction.BRIEF_VIEWED,
   AuditAction.TRANSACTIONS_VIEWED,
   AuditAction.MANUAL_ASSET_VALUE_UPDATED,
+  AuditAction.CONNECTION_LINK_STARTED,
+  AuditAction.CONNECTION_LINK_EXITED,
+  AuditAction.FIRST_SYNC_SUCCEEDED,
+  AuditAction.AI_TURN_FAILED,
 ];
 
 // ── Security-event classification (SEC-1) ─────────────────────────────────────

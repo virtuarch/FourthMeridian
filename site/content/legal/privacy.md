@@ -11,6 +11,7 @@ Our guiding principle is minimalism: we keep no more than we need to run the Ser
 - **What you ask the AI to remember.** Goals, planned expenses, rules and planning figures you state in Conversations, stored per person and per Space (see our [AI Disclosures](/legal/ai)).
 - **Security and audit records.** Sign-ins (including failed attempts), password and two-factor changes, connection changes, data exports and account changes, with the IP address and browser user-agent of the request.
 - **Operational records.** For each AI model call and each connection refresh, technical facts such as which account and Space it was for, timing, token counts, and whether it succeeded or failed — never the content of a conversation or a financial figure.
+- **Product usage.** First-party usage events recorded on our own servers — for example that you viewed a Space, started or left the bank-connection flow, completed a first sync, or that an AI answer failed — limited to identifiers, dates and fixed categories. They never include financial values or conversation content, are not shared with any analytics provider, and are deleted after 13 months.
 
 ## 2. How we use your information
 
