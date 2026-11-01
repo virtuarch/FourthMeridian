@@ -24,6 +24,12 @@
  *   4. EMAIL      after commit, from the trusted env base (never a Host header),
  *                 with PR #157's origin copy. Non-throwing: a failed hand-off is
  *                 recorded, the invitation stands and can be resent.
+ *   2b. LIFECYCLE (BETA_NOT_ACCEPTING) — once the plan says something will be
+ *                 minted (approve, reissue, create), the Beta group's lifecycle
+ *                 must read ACTIVE (lib/entitlements/beta-lifecycle.ts: a FRESH
+ *                 read; PAUSED, ENDED and UNKNOWN refuse). Idempotent outcomes
+ *                 (alreadyApproved / alreadyReissued) mint nothing and are not
+ *                 gated. Extend is gated the same way: it lengthens access.
  *   5. OUTCOME    the hand-off result is appended as BETA_INVITATION_EMAIL_OUTCOME
  *                 { betaRequestId, emailHash, emailStatus } — the shape the
  *                 Growth list and Customer detail read. The audit log stays
@@ -46,9 +52,10 @@ import { buildBetaInviteUrl } from "@/lib/email/beta-invite-url";
 import type { BetaInviteOrigin } from "@/lib/email/templates/beta-invite";
 import { AuditAction, type AuditActionType } from "@/lib/audit-actions";
 import { auditEmailHash, recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
+import { getBetaLifecycleState, type BetaLifecycleState } from "@/lib/entitlements/beta-lifecycle";
 import { readInvitationPolicy } from "./invitation-policy";
 import {
-  expiryFor, normaliseInviteEmail, parseValidityDays, planApprove, planDirect, planExtend, planReissue, refusal,
+  betaAcceptsInvitations, expiryFor, normaliseInviteEmail, parseValidityDays, planApprove, planDirect, planExtend, planReissue, refusal,
   type InviteRowFacts, type IssueKind, type IssuePlan, type IssueRefusal,
 } from "./invitation-issue.core";
 
@@ -87,6 +94,17 @@ export interface IssueInput {
   userAgent?: string | null;
   /** Test seam — the ONE clock read. */
   now?: Date;
+  /** Test seam — the Beta group's lifecycle (default: the fresh read). */
+  betaLifecycle?: () => Promise<BetaLifecycleState>;
+}
+
+/** The lifecycle gate, read now; a throw is UNKNOWN (closed). */
+async function betaAccepting(read: (() => Promise<BetaLifecycleState>) | undefined): Promise<boolean> {
+  try {
+    return betaAcceptsInvitations(await (read ?? (() => getBetaLifecycleState()))());
+  } catch {
+    return false;
+  }
 }
 
 export type IssueResult =
@@ -181,6 +199,9 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     const seen = plan.row.invitedAt?.getTime() ?? null;
     if (seen !== (expectedInvitedAt?.getTime() ?? null)) return { ok: true, outcome: "alreadyReissued", requestId: plan.row.id };
   }
+
+  // 2b. BETA_NOT_ACCEPTING — something is about to be minted: the beta must be ACTIVE.
+  if (!(await betaAccepting(input.betaLifecycle))) return refuse(refusal("BETA_NOT_ACCEPTING"));
 
   // 3. Mint + the conditional write + its audit, in one transaction.
   const rawToken = crypto.randomBytes(32).toString("hex");
@@ -316,6 +337,8 @@ export interface ExtendInput {
   ipAddress?: string | null;
   userAgent?: string | null;
   now?: Date;
+  /** Test seam — the Beta group's lifecycle (default: the fresh read). */
+  betaLifecycle?: () => Promise<BetaLifecycleState>;
 }
 
 export type ExtendResult =
@@ -333,6 +356,7 @@ export async function extendBetaInvitation(input: ExtendInput): Promise<ExtendRe
   const hasAccount = row ? (await client.user.findUnique({ where: { email: row.email }, select: { id: true } })) != null : false;
   const plan = planExtend(row ? { ...row, status: row.status as InviteRowFacts["status"] } : null, hasAccount, expiresAt);
   if (plan.action === "refuse") return { ok: false, ...plan.refusal };
+  if (!(await betaAccepting(input.betaLifecycle))) return { ok: false, ...refusal("BETA_NOT_ACCEPTING") };
   const facts = plan.row;
 
   const won = await client.$transaction(async (tx) => {
