@@ -18,11 +18,30 @@ import { readFileSync } from "node:fs";
 import { runJob, currentBudgetStartedAtMs, type JobRunWriteClient } from "@/lib/jobs/run";
 import { revaluationDeadlineMs } from "@/jobs/sync-crypto";
 import { WAKE_SAFE_MS } from "@/jobs/sol-history-backfill";
+import { revalueHoldersAfterPriceGaps, type RevaluationDeps, type HolderRevaluation } from "@/lib/prices/price-gap";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {
   if (ok) console.log(`  ✓ ${name}`);
   else { failures++; console.error(`  ✗ ${name}`, detail ?? ""); }
+}
+
+/** An owed holder whose rebuild advances a simulated wall clock (1 s per call), from `startMs`. */
+function revaluationWorld(startMs: number) {
+  let t = startMs; const regens: string[] = [];
+  const marks: string[] = [];
+  const deps: RevaluationDeps = {
+    acquireGaps: async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }),
+    owed: async (ids) => ids.map((id): HolderRevaluation => ({ accountId: id, windowFromISO: "2026-10-20", valuedFromISO: "2026-10-20", evidenceKey: `revaluation:v2:${id}:k` })),
+    revaluedAlready: async (ks) => new Set(ks.filter((k) => marks.includes(k))),
+    markRevalued: async (k) => { marks.push(k); },
+    attemptsOf: async () => new Map(),
+    markAttempt: async () => {},
+    markUnavailable: async () => 1,
+    regenerate: async (id, from, to) => { regens.push(`${id}:${from}..${to}`); t += 1_000; },
+    now: () => t,
+  };
+  return { deps, regens };
 }
 
 /** A JobRun ledger that also holds an earlier resume-stale-imports row inside the old 300 s window. */
@@ -51,6 +70,16 @@ async function main() {
   check("the regression shape: anchored to the resume run, the deadline fell BEFORE the job began", revaluationDeadlineMs(jobStart, resume.getTime()) < jobStart);
   check("outside a dispatch (manual / script) the run's own start anchors it", revaluationDeadlineMs(jobStart, null) === jobStart + WAKE_SAFE_MS);
   check("outside any runJob body there is no ambient budget start", currentBudgetStartedAtMs() === null);
+
+  // BEHAVIOURAL — the real revaluation, driven with each anchor's deadline from the job's real start.
+  const fixed = revaluationWorld(jobStart);
+  const rFixed = await revalueHoldersAfterPriceGaps({ accountIds: ["btc", "sol"], deps: fixed.deps, todayISO: "2026-11-01", deadlineMs: deadline });
+  check("an earlier unrelated JobRun no longer blocks it: both owed holders are rebuilt, nothing skipped for wake time",
+    rFixed.revalued === 2 && rFixed.deferred === 0 && !rFixed.skippedForTime && fixed.regens.length > 0, JSON.stringify(rFixed));
+  const regressed = revaluationWorld(jobStart);
+  const rOld = await revalueHoldersAfterPriceGaps({ accountIds: ["btc", "sol"], deps: regressed.deps, todayISO: "2026-11-01", deadlineMs: resume.getTime() + WAKE_SAFE_MS });
+  check("…whereas the old anchor (the resume run) reproduces Production: owed 2, revalued 0, skipped: wake time",
+    rOld.owed === 2 && rOld.revalued === 0 && rOld.skippedForTime && regressed.regens.length === 0, JSON.stringify(rOld));
 
   const SYNC = readFileSync("jobs/sync-crypto.ts", "utf8");
   const SOL = readFileSync("jobs/sol-history-backfill.ts", "utf8");
