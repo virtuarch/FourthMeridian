@@ -181,8 +181,8 @@ async function main(): Promise<void> {
     // unimported ledger.
     // Compare the CALL SITES in the create handler, not the helper's own
     // declaration (which sits near the top of the file).
-    const syncAt    = connect.lastIndexOf("await syncWalletBestEffort(fa.id, chain)");
-    const historyAt = connect.lastIndexOf("await regenWalletWealthHistory(fa.id)");
+    const syncAt    = connect.lastIndexOf("await syncWalletBestEffort(fa.id, chain, billable)");
+    const historyAt = connect.lastIndexOf("await regenWalletWealthHistory(fa.id, billable)");
     check("F. sync runs BEFORE wallet history regeneration on a NEW wallet",
       syncAt !== -1 && historyAt !== -1 && syncAt < historyAt,
       `sync@${syncAt} history@${historyAt}`);

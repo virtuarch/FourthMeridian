@@ -28,6 +28,11 @@
  *              STALE_RUNNING_HOURS counts as a failure in the streak (the
  *              process died before its completion write — S1's documented crash
  *              shape); a RECENT "running" row is in-flight and healthy.
+ *   skipped    (BETA LIFECYCLE L2) the newest run SUCCEEDED as a process but
+ *              its summary says `outcome: "SKIPPED"` — a cost freeze (or an
+ *              unreadable freeze flag) refused the work before any vendor
+ *              call. Not a success: nothing was fetched; `lastSkipReason`
+ *              carries the code (e.g. BILLABLE_COST_FREEZE).
  *   healthy    none of the above.
  *
  * OPS-5 S2 (2026-07-16) — RICH HEALTH. The same read pass now also derives the
@@ -115,7 +120,20 @@ export type JobHealthStatus =
   | "running"
   | "overdue"
   | "dead"
-  | "failing";
+  | "failing"
+  | "skipped";
+
+/**
+ * BETA LIFECYCLE L2 — the summary convention a job uses to say "I ran, and was
+ * refused the work" (sol-history-backfill's `outcome: COMPLETE | PARTIAL` is
+ * the precedent): `{ outcome: "SKIPPED", skipReason: "<code>" }`.
+ */
+export const JOB_OUTCOME_SKIPPED = "SKIPPED" as const;
+export function skippedOutcomeOf(summary: unknown): string | null {
+  if (!summary || typeof summary !== "object") return null;
+  const s = summary as { outcome?: unknown; skipReason?: unknown };
+  return s.outcome === JOB_OUTCOME_SKIPPED ? (typeof s.skipReason === "string" ? s.skipReason : JOB_OUTCOME_SKIPPED) : null;
+}
 
 /** The refresh policy of the SOURCE a job refreshes — beside, never instead of, the job's own expectation. */
 export interface JobSourcePolicy {
@@ -148,12 +166,16 @@ export interface JobHealthReport {
   lastCompletedAt: Date | null;
   /** Leading failed runs (stale-running counts; a recent running breaks it). */
   consecutiveFailures: number;
+  /** BETA LIFECYCLE L2 — the newest run's skip code when it was refused (status "skipped"); null otherwise. */
+  lastSkipReason: string | null;
 
   // ── OPS-5 S2 rich metrics — additive projections of the same window ──────────
   /** Rows considered in the window (capped at HISTORY_EXAMINED). */
   totalRuns: number;
   /** succeeded runs in the window. */
   succeededRuns: number;
+  /** BETA LIFECYCLE L2 — runs that completed but were refused their work (summary outcome SKIPPED). */
+  skippedRuns: number;
   /** failed runs in the window. */
   failedRuns: number;
   /** trigger === "manual" runs in the window (0 until a producer exists). */
@@ -189,6 +211,8 @@ export interface JobRunHealthRow {
   durationMs?: number | null;
   trigger?: string | null;
   errorSummary?: string | null;
+  /** BETA LIFECYCLE L2 — the run's summary (only `outcome` / `skipReason` are read). */
+  summary?: unknown;
 }
 
 export interface JobRunReadClient {
@@ -204,6 +228,7 @@ export interface JobRunReadClient {
         durationMs: true;
         trigger: true;
         errorSummary: true;
+        summary: true;
       };
     }): Promise<JobRunHealthRow[]>;
   };
@@ -279,6 +304,7 @@ export function classifyJobHealth(
 
   // Metrics over the whole provided window — one pass, newest-first order.
   let succeededRuns = 0;
+  let skippedRuns = 0;
   let failedRuns = 0;
   let manualRuns = 0;
   let runtimeSum = 0;
@@ -290,7 +316,10 @@ export function classifyJobHealth(
 
   for (const r of runs) {
     if (r.trigger === "manual") manualRuns++;
-    if (r.status === "succeeded") {
+    if (r.status === "succeeded" && skippedOutcomeOf(r.summary) !== null) {
+      // L2 — a refused run is neither a success nor a failure.
+      skippedRuns++;
+    } else if (r.status === "succeeded") {
       succeededRuns++;
       if (typeof r.durationMs === "number") {
         runtimeSum += r.durationMs;
@@ -311,6 +340,7 @@ export function classifyJobHealth(
   const metrics = {
     totalRuns: runs.length,
     succeededRuns,
+    skippedRuns,
     failedRuns,
     manualRuns,
     lastRuntimeMs,
@@ -325,7 +355,7 @@ export function classifyJobHealth(
   const base = { job: job.name, expectedEveryHours, cadenceOrigin, source, ...metrics };
 
   if (runs.length === 0) {
-    return { ...base, status: "never-ran", lastStartedAt: null, lastRunStatus: null, consecutiveFailures: 0 };
+    return { ...base, status: "never-ran", lastStartedAt: null, lastRunStatus: null, consecutiveFailures: 0, lastSkipReason: null };
   }
 
   const last = runs[0];
@@ -340,6 +370,7 @@ export function classifyJobHealth(
     lastStartedAt: last.startedAt,
     lastRunStatus: last.status,
     consecutiveFailures,
+    lastSkipReason: last.status === "succeeded" ? skippedOutcomeOf(last.summary) : null,
   };
 
   // In-flight right now — a fresh "running" row. Precedes the age-based states
@@ -359,6 +390,7 @@ export function classifyJobHealth(
   if (consecutiveFailures >= FAILURE_STREAK_THRESHOLD) {
     return { ...base, status: "failing", ...detail };
   }
+  if (detail.lastSkipReason !== null) return { ...base, status: "skipped", ...detail };
   return { ...base, status: "healthy", ...detail };
 }
 
@@ -412,6 +444,7 @@ export async function checkScheduledJobHealth(
         durationMs: true,
         trigger: true,
         errorSummary: true,
+        summary: true,
       },
     });
     reports.push(classifyJobHealth(job, runs, now, contextFor(job), cadenceFor(job)));

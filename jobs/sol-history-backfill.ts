@@ -102,11 +102,18 @@ import {
 } from "@/lib/crypto/eth-history-backfill.core";
 import type { EthBackfillStore, EthBackfillDeps, EthBackfillOutcome } from "@/lib/crypto/eth-history-backfill";
 import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps, type Erc20HistoryPassSummary } from "@/lib/crypto/erc20-history-pass";
+import {
+  billableSkipCode, createBillableBatchGate, tallyBillableDenial,
+  type BillableDecision, type BillableDenialTally,
+} from "@/lib/entitlements/billable-gate";
+import type { BillableSkipCode } from "@/lib/entitlements/billable-gate-core";
+import type { GlobalCostFreezeVerdict } from "@/lib/platform/cost-freeze.core";
+import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
 import { erc20HistoryConfig, type Erc20HistoryConfig } from "@/lib/crypto/erc20-history.core";
 import { SPL_PRICE_RUN_SEVERITY, type SplPriceRunStatus } from "@/lib/crypto/spl-history.core";
 import { effectiveDailyUsage, incrementalMeter, meterTotal, type IncrementalMeter, type MeterRecorder } from "@/lib/usage/provider-budget.core";
-import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
-import type { PriceGapRun, RevaluationOwed, RevaluationRun } from "@/lib/prices/price-gap";
+import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS, REVALUATION_RESERVE_MS, REVALUATION_MAX_ATTEMPTS } from "@/lib/prices/price-gap.core";
+import type { PriceGapRun, RevaluationOwed, RevaluationPlan, RevaluationRun } from "@/lib/prices/price-gap";
 import {
   chainOrder, nextRotation, phaseDeadlineFor, PHASE_SETUP_MS, ROTATION_LOOKBACK_RUNS, ROTATION_SLOT_MS,
   type HistoryChain, type HistoryWorkerSchedule,
@@ -155,15 +162,45 @@ export interface SolBackfillJobSummary {
   revaluationsRederived: number;
   /** The all-holder price-gap pass (every licensed crypto holder, every chain), when wired. */
   priceGapSweep?: { holders: number; skippedForTime: boolean };
-  /** Non-Solana holders revalued after a price gap fill (state-derived, once per floor). */
-  holderRevaluation?: { holders: number; owed: number; revalued: number; deferred: number; alreadyRevalued: number; failures: number; skippedForTime: boolean };
+  /** Crypto holders (every chain) revalued (state-derived, once per evidence state; existing rows included). */
+  holderRevaluation?: { holders: number; owed: number; revalued: number; chunksRebuilt: number; deferred: number; alreadyRevalued: number;
+    abandonedBlocks: number; rowsStampedUnavailable: number; rowsStampedPending?: number; failures: number; skippedForTime: boolean;
+    /** Other holders' blocks retired by a covering rebuild (cross-holder credit). */ blocksCredited?: number };
+  /** A revaluation was owed at the start of the run, so its slice of the budget was reserved after the leader. */
+  revaluationReserved?: boolean;
+  /**
+   * Rows stamped `unavailable` (status only, values preserved) for holders OWED a
+   * revaluation — including holders whose rebuild the cost freeze or the
+   * billable gate refused (Session 2 ruling 2026-10-31: stamp, don't rebuild).
+   */
+  revaluationStamped?: number;
+  /**
+   * WHERE the run's stamps happened (Platform Ops: one truth, two places). `atStart`
+   * is the pass's plan stamped before any chain (every holder, refused included);
+   * `inRevaluation` is the rebuild step's own stamping (only newly owed blocks after
+   * a gap fill moved a floor). `revaluationStamped` = atStart + inRevaluation.
+   */
+  revaluationStampedBreakdown?: { atStart: number; inRevaluation: number };
   /** This run's chain rotation and pass order — persisted, read back by the next run. Absent on a NO_WORK run. */
   schedule?: HistoryWorkerSchedule;
   dailyRequestCap: number;
   budgetMs: number;
-  stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "ALL_RUN";
+  stoppedBecause: "DISABLED" | "NO_WORK" | "JOB_BUDGET" | "DAILY_CAP" | "ALL_RUN" | "NOT_ADMITTED" | "COST_FREEZE";
   /** > 0 ⇒ the dispatcher self-continues this job (Solana + Bitcoin). */
   deferred: number;
+  /** BETA LIFECYCLE L2 — the platform admission reason when the run was not admitted (maintenance / ingestion paused). */
+  notAdmitted?: string;
+  /** BETA LIFECYCLE L2 — the billable skip code when the GLOBAL cost freeze (or an unreadable flag) stopped the whole run. */
+  platformSkipped?: BillableSkipCode;
+  /**
+   * BETA LIFECYCLE L2 — wallets (any chain) whose billed owner may not cause
+   * paid work: frozen / paused / ended / unverifiable / deactivated / NO owner.
+   * Skipped before their lock, with their checkpoints untouched (they resume
+   * from them when the restriction lifts); never counted as `deferred`, so
+   * the self-continuation does not spin on them. Reasons in `planRestrictedReasons`.
+   */
+  planRestricted?: number;
+  planRestrictedReasons?: BillableDenialTally;
   /** Bitcoin's pass, when its deps are wired (always in production). */
   btc?: BtcBackfillPassSummary;
   /** Ethereum's pass, when enabled and wired. */
@@ -187,17 +224,26 @@ export interface SolBackfillJobSummary {
    *                       (e.g. "SPL_PRICES_BUDGET_STOPPED: CoinGecko token budget
    *                       reached; …"); empty when COMPLETE. Set on every return.
    */
-  outcome?: "COMPLETE" | "PARTIAL";
+  outcome?: "COMPLETE" | "PARTIAL" | "SKIPPED";
+  /** BETA LIFECYCLE L2 — the skip code when outcome is SKIPPED (job health reads it). */
+  skipReason?: string;
   partialReasons?: string[];
 }
 
 /** PURE (re-review F4) — the job's outcome from its summary: PARTIAL when any token price run stopped short. */
-export function solBackfillJobOutcome(s: Pick<SolBackfillJobSummary, "splPrices" | "ethTokens">): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
+export function solBackfillJobOutcome(s: Pick<SolBackfillJobSummary, "splPrices" | "ethTokens"> & Partial<Pick<SolBackfillJobSummary, "holderRevaluation">>): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
   const reasons: string[] = [];
+  const abandoned = s.holderRevaluation?.abandonedBlocks ?? 0;
+  if (abandoned > 0) reasons.push(revaluationAbandonedReason(abandoned, s.holderRevaluation?.rowsStampedUnavailable ?? 0));
   if (s.splPrices) reasons.push(`SPL_PRICES_${s.splPrices.status}: ${s.splPrices.reason ?? s.splPrices.status}`);
   const erc = s.ethTokens?.prices;
   if (erc && erc.status !== "COMPLETE") reasons.push(`ERC20_PRICES_${erc.status}: ${erc.reason ?? erc.status}`);
   return { outcome: reasons.length > 0 ? "PARTIAL" : "COMPLETE", partialReasons: reasons };
+}
+
+/** The PARTIAL reason for revaluation blocks abandoned at the attempt cap (shared by the worker and sync-crypto). */
+export function revaluationAbandonedReason(blocks: number, rowsStamped: number): string {
+  return `REVALUATION_ABANDONED: ${blocks} block(s) failed ${REVALUATION_MAX_ATTEMPTS} rebuilds; their estimate rows are stamped unavailable (${rowsStamped} this run), never shown as complete`;
 }
 
 export interface EthBackfillPassSummary {
@@ -295,7 +341,36 @@ export interface SolBackfillJobDeps {
   /** Every account holding a licensed CRYPTO balance history (any chain) — the all-holder price-gap pass. */
   cryptoHolders?(): Promise<string[]>;
   /** Revalue these holders where persisted state owes it (lib/prices/price-gap.ts revalueHoldersAfterPriceGaps). */
-  revalueHolders?(accountIds: string[], opts: { deadlineMs: number; attempted: Map<string, string>; maxInstruments: number }): Promise<RevaluationRun>;
+  revalueHolders?(accountIds: string[], opts: { deadlineMs: number; attempted: Map<string, string>; maxInstruments: number;
+    /** The pass's plan — the rebuild never re-plans it (PERF 2026-10-31). */ plan?: RevaluationPlan; alreadyStamped?: boolean }): Promise<RevaluationRun>;
+  /**
+   * THE PASS'S PLAN (lib/prices/price-gap.ts planRevaluation): read ONCE per pass
+   * and handed to the stamp, the reservation check and the rebuild.
+   */
+  planRevaluation?(accountIds: string[]): Promise<RevaluationPlan>;
+  /**
+   * Is any of these holders owed revaluation work under its current evidence
+   * (lib/prices/price-gap.ts revaluationPending)? Reads only. When true the run
+   * RESERVES REVALUATION_RESERVE_MS for it after the leader, so a history
+   * backlog can no longer starve it (live 2026-10-31: BTC took the whole budget).
+   */
+  revaluationPending?(accountIds: string[], plan?: RevaluationPlan): Promise<boolean>;
+  /**
+   * STAMP ONLY (lib/prices/price-gap.ts stampOwedHolders): DB status write for
+   * owed holders — no vendor call, no checkpoint, no usage marker. Runs for every
+   * holder, refused or frozen included; reversed by the rebuild after unfreeze.
+   */
+  stampOwedHolders?(accountIds: string[], plan?: RevaluationPlan): Promise<number>;
+  /**
+   * BETA LIFECYCLE L2 — REQUIRED gates (production wires all three):
+   *   admit           platform admission (maintenance / ingestion pause) — the worker had none;
+   *   costFreeze      the GLOBAL cost freeze, before any vendor call;
+   *   billableAccounts  each account's decision by its billed OWNER (one batch read;
+   *                   an ownerless wallet is NO_OWNER ⇒ refused — owner ruling 2026-10-31).
+   */
+  admit(): Promise<Pick<StampedAdmissionVerdict, "decision" | "reason">>;
+  costFreeze(): Promise<GlobalCostFreezeVerdict>;
+  billableAccounts(accountIds: readonly string[]): Promise<Map<string, BillableDecision>>;
   /** Absent ⇒ the job carries Solana only. */
   btc?: BtcBackfillJobDeps;
   /** Absent ⇒ no Ethereum pass. */
@@ -364,6 +439,35 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   };
   if (!cfg.enabled) return summary;
   const deps = opts.deps ?? await productionDeps();
+
+  // ── BETA LIFECYCLE L2 — PLATFORM GATES, BEFORE ANY READ THAT LEADS TO A VENDOR ──
+  // Platform admission (the worker previously ignored a maintenance / ingestion
+  // pause) and the GLOBAL cost freeze. Either refusal returns with nothing
+  // claimed, no checkpoint touched and `deferred` 0 (no self-continuation spin).
+  const admission = await deps.admit();
+  if (admission.decision === "DENY") {
+    summary.stoppedBecause = "NOT_ADMITTED";
+    summary.notAdmitted = admission.reason ?? "DENIED";
+    console.log(`[${SOL_BACKFILL_JOB}] NOT ADMITTED — ${summary.notAdmitted}; no wallet touched.`);
+    return summary;
+  }
+  const freeze = await deps.costFreeze();
+  if (freeze.frozen) {
+    summary.stoppedBecause = "COST_FREEZE";
+    summary.platformSkipped = billableSkipCode(freeze.reason!);
+    summary.outcome = "SKIPPED"; summary.skipReason = summary.platformSkipped;
+    // The owner valuation ruling outranks the freeze for the STATUS only: owed
+    // holders' rows are stamped `unavailable` (DB-only, values preserved, no
+    // vendor, no checkpoint, no usage marker); the rebuild waits for unfreeze.
+    if (deps.stampOwedHolders && deps.cryptoHolders && deps.regenerationEnabled()) {
+      const all = await deps.cryptoHolders().catch(() => [] as string[]);
+      const plan = deps.planRevaluation ? await deps.planRevaluation(all).catch(() => undefined) : undefined;
+      summary.revaluationStamped = await deps.stampOwedHolders(all, plan).catch(() => 0);
+      summary.revaluationStampedBreakdown = { atStart: summary.revaluationStamped, inRevaluation: 0 };
+    }
+    console.log(`[${SOL_BACKFILL_JOB}] global cost freeze (${freeze.state}) — SKIPPED (${summary.platformSkipped}); no vendor call, no checkpoint moved.`);
+    return summary;
+  }
   // CRASH-SAFE metering: each meter reaches the shared ledger while its pass
   // sends (every METER_FLUSH_EVERY_CALLS calls / _MS), not only at wallet end —
   // a run killed mid-pass leaves at most one flush's worth uncounted.
@@ -384,7 +488,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   // Bitcoin's work is planned first so the two chains can share the budget.
   const btcCfg = opts.btcConfig ?? btcWorkerConfig();
   const btcPlan = deps.btc && btcCfg.enabled ? await planBtc(deps.btc, start, day) : null;
-  const btcHasWork = !!btcPlan && btcPlan.work.length > 0;
+  let btcHasWork = !!btcPlan && btcPlan.work.length > 0;
   const ethCfgIn = opts.ethConfig ?? ethWorkerConfig();
   // A start reserve the job budget can never hold would freeze Ethereum for good:
   // clamp it (a step's probes are sized to its time, so a shorter step is safe) and say so.
@@ -396,13 +500,64 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   // ERC-20 token history is part of Ethereum's phase: it runs after the native pass, on what is left of it.
   const erc20Cfg = opts.erc20Config ?? erc20HistoryConfig();
   const tokenPlan = deps.ethTokens && erc20Cfg.enabled ? await planErc20History(deps.ethTokens, erc20Cfg, day, deps.now()) : null;
-  const ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
+  let ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
   /** The deadline the CURRENT chain's pass plans to (lib/crypto/history-worker-schedule.core.ts). */
   let phaseDeadline = jobDeadline;
 
   const wallets = await deps.wallets();
-  const parsed = wallets.map((w) => ({ ...w, checkpoint: parseCheckpoint(w.cursor, w.accountId, w.address) }));
-  const checkpointCalls = parsed.reduce((a, w) => a + usageOn(w.checkpoint, day), 0);
+  const parsedAll = wallets.map((w) => ({ ...w, checkpoint: parseCheckpoint(w.cursor, w.accountId, w.address) }));
+  // Today's usage counts EVERY wallet's checkpoint, refused or not (the cap is shared).
+  const checkpointCalls = parsedAll.reduce((a, w) => a + usageOn(w.checkpoint, day), 0);
+
+  // ── BETA LIFECYCLE L2 — THE PER-WALLET BILLABLE GATE (every chain, every pass) ──
+  // ONE batch read for every account the run knows (each by its billed OWNER),
+  // re-read at most every BILLABLE_BATCH_MAX_AGE_MS. A refused wallet is dropped
+  // from every plan BEFORE its lock, and re-asked before each lock claim, so a
+  // freeze landing mid-run stops the next wallet. Checkpoints are never written.
+  const accountGate = createBillableBatchGate([
+    ...parsedAll.map((w) => w.accountId),
+    ...(btcPlan?.work.map((x) => x.w.accountId) ?? []),
+    ...(ethPlan?.work.map((x) => x.w.accountId) ?? []),
+    ...(tokenPlan?.work.map((x) => x.w.accountId) ?? []),
+  ], "crypto_backfill", { load: (ids) => deps.billableAccounts(ids), clock: deps.now });
+  const refusedAccounts = new Set<string>();
+  const allows = async (accountId: string): Promise<boolean> => {
+    const d = await accountGate.decide(accountId);
+    if (d.allowed) return true;
+    if (!refusedAccounts.has(accountId)) {
+      refusedAccounts.add(accountId);
+      summary.planRestricted = (summary.planRestricted ?? 0) + 1;
+      tallyBillableDenial((summary.planRestrictedReasons ??= {}), d.reason);
+    }
+    return false;
+  };
+  const allowedOnly = async <T extends { accountId: string }>(xs: readonly T[]): Promise<T[]> => {
+    const out: T[] = [];
+    for (const x of xs) if (await allows(x.accountId)) out.push(x);
+    return out;
+  };
+  const parsed = await allowedOnly(parsedAll);
+  if (btcPlan) { btcPlan.work = (await allowedOnly(btcPlan.work.map((x) => ({ ...x, accountId: x.w.accountId })))); btcHasWork = btcPlan.work.length > 0; }
+  // (ethPlan.parsed stays whole: it only counts today's checkpoint usage, which refused wallets still spent.)
+  if (ethPlan) ethPlan.work = await allowedOnly(ethPlan.work.map((x) => ({ ...x, accountId: x.w.accountId })));
+  if (tokenPlan) tokenPlan.work = await allowedOnly(tokenPlan.work.map((x) => ({ ...x, accountId: x.w.accountId })));
+  ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
+  // Owed holders' rows off `supported`/`none` FIRST — every holder, a billable-refused
+  // one included (stamp, don't rebuild); the rebuild of allowed holders follows.
+  // Gated on the regeneration kill switch (as sync-crypto is): with writes off no
+  // rebuild could ever restore a stamp, so nothing is stamped (review of #183).
+  // PERF (live 2026-10-31): the holder list and the revaluation PLAN are read ONCE
+  // here and reused by the stamp, the reservation and the rebuild (≈ 3× before).
+  let allHolders: string[] | null = null;
+  const holdersOnce = async () => (allHolders ??= deps.cryptoHolders ? await deps.cryptoHolders().catch(() => [] as string[]) : []);
+  let revalPlan: RevaluationPlan | undefined;
+  if (deps.stampOwedHolders && deps.cryptoHolders && deps.regenerationEnabled()) {
+    const all = await holdersOnce();
+    revalPlan = deps.planRevaluation ? await deps.planRevaluation(all).catch(() => undefined) : undefined;
+    const atStart = await deps.stampOwedHolders(all, revalPlan).catch(() => 0);
+    summary.revaluationStamped = atStart;
+    summary.revaluationStampedBreakdown = { atStart, inRevaluation: 0 };
+  }
   const ledger = deps.providerUsageToday ? await deps.providerUsageToday(day).catch(() => null) : null;
   summary.providerRequestsUsedBefore = ledger ? ledger.solana + ledger.other : null;
   summary.dailyRequestsUsedBefore = effectiveDailyUsage({ ledger, checkpointCalls });
@@ -449,7 +604,11 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const priceGapSweep = async (): Promise<boolean> => {
     if (!deps.acquirePriceGaps || !deps.cryptoHolders) return false;
     if (jobDeadline - deps.now() < PRICE_GAP_RESERVE_MS) { summary.priceGapSweep = { holders: 0, skippedForTime: true }; return false; }
-    holderIds = await deps.cryptoHolders().catch(() => [] as string[]);
+    const holders = await holdersOnce();
+    // L2 — a price fetch only for holders whose billed owner may cause one (one batch read).
+    await accountGate.prime(holders);
+    holderIds = [];
+    for (const id of holders) if (await allows(id)) holderIds.push(id);
     const g = holderIds.length > 0 ? await deps.acquirePriceGaps(holderIds, { attempted: priceGapAttempted, maxInstruments: DEFAULT_PRICE_GAP_MAX_INSTRUMENTS }) : null;
     if (g) addPriceGaps(summary, g);
     summary.priceGapSweep = { holders: holderIds.length, skippedForTime: false };
@@ -486,18 +645,36 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     ];
   };
   const solHasWork = solWork().length > 0;
-  /** Revalue the non-Solana holders a price gap fill reached (state-derived, once per floor, wake-bounded). */
+  let revalued = false;
+  /**
+   * Revalue EVERY holder (all chains, Solana included — parity with the
+   * sync-crypto sweep) whose evidence state is not yet revalued, existing rows
+   * included (state-derived, once per evidence state, kill-safe batches,
+   * wake-bounded). A Solana wallet newly linked to a Space with rows is thus
+   * repaired by the worker too, not only when sync-crypto runs. Its own pass may
+   * also rebuild it (a pending flag); the second rebuild recomputes UNCHANGED
+   * days and writes nothing.
+   */
   const revalueOtherHolders = async () => {
-    if (!deps.revalueHolders || holderIds.length === 0) return;
-    const solIds = new Set(parsed.map((w) => w.accountId));
-    const ids = holderIds.filter((id) => !solIds.has(id));
-    if (ids.length === 0) return;
+    if (revalued) return; // once per run (it may run early, when reserved)
+    if (!deps.revalueHolders || holderIds.length === 0 || !deps.regenerationEnabled()) return; // kill switch off ⇒ no stamp, no dry-run "rebuild", no marker
+    const ids = holderIds;
+    revalued = true;
     const r = await deps.revalueHolders(ids, { deadlineMs: jobDeadline, attempted: priceGapAttempted,
-      maxInstruments: Math.max(0, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS - summary.priceGaps.acquired) }).catch(() => null);
+      maxInstruments: Math.max(0, DEFAULT_PRICE_GAP_MAX_INSTRUMENTS - summary.priceGaps.acquired),
+      plan: revalPlan, alreadyStamped: !!revalPlan }).catch(() => null);
     if (!r) return;
+    // ONE stamp truth: pending stamps of newly owed keys AND in-pass abandonment stamps.
+    const inRev = r.rowsStampedPending + r.rowsStampedUnavailable;
+    if (inRev > 0) {
+      const b = summary.revaluationStampedBreakdown ?? { atStart: 0, inRevaluation: 0 };
+      summary.revaluationStampedBreakdown = { atStart: b.atStart, inRevaluation: b.inRevaluation + inRev };
+      summary.revaluationStamped = (summary.revaluationStamped ?? 0) + inRev;
+    }
     if (r.priceGaps) addPriceGaps(summary, r.priceGaps);
-    summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, deferred: r.deferred,
-      alreadyRevalued: r.alreadyRevalued, failures: r.failures, skippedForTime: r.skippedForTime };
+    summary.holderRevaluation = { holders: ids.length, owed: r.owed, revalued: r.revalued, chunksRebuilt: r.chunksRebuilt, deferred: r.deferred,
+      alreadyRevalued: r.alreadyRevalued, abandonedBlocks: r.abandonedBlocks, rowsStampedUnavailable: r.rowsStampedUnavailable, rowsStampedPending: r.rowsStampedPending,
+      failures: r.failures, skippedForTime: r.skippedForTime, blocksCredited: r.blocksCredited };
     summary.deferred += r.deferred; // still owed on disk: the next (self-continued) run takes them
   };
 
@@ -515,6 +692,22 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     if (tokenPlan) summary.ethTokens = { ...tokenPlan.summary, dailyRequestCap: cfg.dailyRequestCap };
     Object.assign(summary, solBackfillJobOutcome(summary));
     return summary;
+  }
+
+  // FAIRNESS (P1 2026-10-31) — when a holder revaluation is owed, reserve its
+  // slice: the leader stops short of it and it runs right after the sweep,
+  // BEFORE the other chains. Asked by state (reads only), so a run with nothing
+  // owed keeps the whole budget for history work, as before.
+  let reserveRevaluation = false;
+  if (deps.revalueHolders && deps.revaluationPending && deps.cryptoHolders && deps.regenerationEnabled()) {
+    const holders = await holdersOnce();
+    // L2 — the revaluation's first step is a paid price-gap fetch: only holders
+    // whose billed owner may cause one (the same batch gate as the sweep).
+    await accountGate.prime(holders);
+    const early: string[] = [];
+    for (const id of holders) if (await allows(id)) early.push(id);
+    reserveRevaluation = early.length > 0 && await deps.revaluationPending(early, revalPlan).catch(() => false);
+    if (reserveRevaluation) { summary.revaluationReserved = true; if (holderIds.length === 0) holderIds = early; }
   }
 
   const take = createRateLimiter(cfg.maxRequestsPerSecond, deps.now, deps.sleep);
@@ -576,6 +769,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += work.length - i; break; }
       const allowance = cfg.dailyRequestCap - summary.dailyRequestsUsedBefore - total() - meterTotal(ethUsage.meter);
       if (kind === "BACKFILL" && allowance <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
+      if (!(await allows(w.accountId))) continue; // L2 — re-asked before the lock (a mid-run freeze)
       let stamp = deps.now();
       if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
       try {
@@ -664,7 +858,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     phaseDeadline = phaseDeadlineFor({ nowMs: deps.now(), jobDeadlineMs: endBy, chainsLeft, needMs: needMs[chain] });
     if (chain === "SOL") await runSolPass();
     else if (chain === "BTC" && btcPlan && deps.btc) {
-      summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: phaseDeadline, regenerateUnderLock });
+      summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: phaseDeadline, regenerateUnderLock, allows });
       summary.deferred += summary.btc.deferred;
     } else if (chain === "ETH") {
       if (ethPlan && deps.eth) {
@@ -672,7 +866,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
         const nativeEnd = tokenNeedMs > 0 ? Math.max(deps.now(), phaseDeadline - tokenNeedMs) : phaseDeadline;
         summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
           jobDeadline: nativeEnd, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
-          usage: ethUsage, regenerateUnderLock,
+          usage: ethUsage, regenerateUnderLock, allows,
         });
         summary.deferred += summary.eth.deferred;
       }
@@ -682,8 +876,16 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   /** ERC-20 token history (one isolated call; the pass owns its listing, budget and regeneration). */
   const runTokenPass = async (endBy: number) => {
     if (!tokenPlan || !deps.ethTokens || summary.ethTokens) return;
+    // L2 — the token pass claims its wallet's lock before each step: a wallet
+    // refused since planning is answered "not claimable" (no lock, no step).
+    const tokenAccountOf = new Map(tokenPlan.work.map((x) => [x.w.connectionId, x.w.accountId] as const));
+    const claimLock = async (connectionId: string, stampMs: number) => {
+      const accountId = tokenAccountOf.get(connectionId);
+      if (accountId !== undefined && !(await allows(accountId))) return false;
+      return deps.claimLock(connectionId, stampMs);
+    };
     summary.ethTokens = await runErc20HistoryPass(tokenPlan, deps.ethTokens, erc20Cfg, {
-      jobDeadline: endBy, day, dailyRequestCap: cfg.dailyRequestCap, now: deps.now, claimLock: deps.claimLock, releaseLock: deps.releaseLock,
+      jobDeadline: endBy, day, dailyRequestCap: cfg.dailyRequestCap, now: deps.now, claimLock, releaseLock: deps.releaseLock,
       providerUsageToday: deps.providerUsageToday, regenerateUnderLock,
     });
     summary.deferred += summary.ethTokens.deferred;
@@ -698,7 +900,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     // backlog (whose leader phase is the whole budget) would skip it every run.
     // Never at the cost of the leader's own need.
     const sweepPending = !swept && !!deps.acquirePriceGaps && !!deps.cryptoHolders;
-    const endBy = sweepPending && jobDeadline - PRICE_GAP_RESERVE_MS - deps.now() >= needMs[leader] ? jobDeadline - PRICE_GAP_RESERVE_MS : jobDeadline;
+    // The leader's own need first; then, as it fits, the revaluation's and the sweep's reserves.
+    const fits = (reserve: number) => reserve > 0 && jobDeadline - reserve - deps.now() >= needMs[leader];
+    const both = (sweepPending ? PRICE_GAP_RESERVE_MS : 0) + (reserveRevaluation ? REVALUATION_RESERVE_MS : 0);
+    const endBy = fits(both) ? jobDeadline - both
+      : sweepPending && fits(PRICE_GAP_RESERVE_MS) ? jobDeadline - PRICE_GAP_RESERVE_MS
+      : jobDeadline;
     await runPhase(leader, queue.length + 1, endBy);
   }
   if (!swept) {
@@ -709,19 +916,20 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       if (!order.includes("SOL") && solWork().length > 0) { queue.push("SOL"); summary.schedule.order.push("SOL"); }
     }
   }
+  if (reserveRevaluation) await revalueOtherHolders(); // its reserved slice, before the other chains
   while (queue.length > 0) {
     const chain = queue.shift()!;
     await runPhase(chain, queue.length + 1);
   }
   // A chain listed but without work still reports its (NO_WORK) pass, as before.
   if (btcPlan && deps.btc && !summary.btc) {
-    summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline, regenerateUnderLock });
+    summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline, regenerateUnderLock, allows });
     summary.deferred += summary.btc.deferred;
   }
   if (ethPlan && deps.eth && !summary.eth) {
     summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
       jobDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
-      usage: ethUsage, regenerateUnderLock,
+      usage: ethUsage, regenerateUnderLock, allows,
     });
     summary.deferred += summary.eth.deferred;
   }
@@ -772,6 +980,8 @@ async function runEthPass(
     /** The run's Ethereum meter (crash-safe; the Solana pass reads it for the shared cap). */
     usage: IncrementalMeter;
     regenerateUnderLock: (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number, withPriceGaps?: boolean) => Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }>;
+    /** BETA LIFECYCLE L2 — the per-wallet billable re-check before each lock. */
+    allows: (accountId: string) => Promise<boolean>;
   },
 ): Promise<EthBackfillPassSummary> {
   const summary: EthBackfillPassSummary = { ...plan.summary, dailyRequestCap: ctx.dailyRequestCap };
@@ -799,6 +1009,7 @@ async function runEthPass(
     // plans only the probes that time proves at the assumed rate.
     const stepDeadline = deps.now() + Math.max(1_000, left - PHASE_SETUP_MS);
     const probeBudget = Math.max(1, stepProbeBudget(allowed, stepDeadline - deps.now(), cfg.probesPerSecond));
+    if (!(await ctx.allows(w.accountId))) continue; // L2 — re-asked before the lock
     let stamp = deps.now();
     if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
     try {
@@ -878,7 +1089,9 @@ async function planBtc(btc: BtcBackfillJobDeps, start: number, day: string) {
 async function runBtcPass(
   deps: SolBackfillJobDeps, btc: BtcBackfillJobDeps, cfg: BtcBackfillWorkerConfig,
   plan: Awaited<ReturnType<typeof planBtc>>,
-  ctx: { start: number; jobDeadline: number; regenerateUnderLock: (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number, withPriceGaps?: boolean) => Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }> },
+  ctx: { start: number; jobDeadline: number; regenerateUnderLock: (w: { accountId: string; connectionId: string }, fromISO: string, lockStamp: number, withPriceGaps?: boolean) => Promise<{ outcome: "DONE" | "DEFERRED"; stamp: number }>;
+    /** BETA LIFECYCLE L2 — the per-wallet billable re-check before each lock. */
+    allows: (accountId: string) => Promise<boolean> },
 ): Promise<BtcBackfillPassSummary> {
   const summary: BtcBackfillPassSummary = { ...plan.summary, dailyRequestCap: cfg.dailyRequestCap };
   const usage = runMeter(btc.recordUsage, deps.now); // crash-safe: flushed while the pass sends
@@ -894,6 +1107,7 @@ async function runBtcPass(
     if (left < Math.max(cfg.startReserveMs, 2_000)) { summary.stoppedBecause = "JOB_BUDGET"; summary.deferred += plan.work.length - i; break; }
     const allowance = cfg.dailyRequestCap - summary.dailyRequestsUsedBefore - total();
     if (kind === "BACKFILL" && allowance <= 0) { summary.stoppedBecause = "DAILY_CAP"; break; } // resumes after UTC midnight, on cadence
+    if (!(await ctx.allows(w.accountId))) continue; // L2 — re-asked before the lock
     let stamp = deps.now();
     if (!(await deps.claimLock(w.connectionId, stamp))) { summary.walletsSkippedLocked++; summary.deferred++; continue; }
     try {
@@ -948,10 +1162,16 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
   const { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled } = await import("@/lib/snapshots/regenerate-history");
   const { WALLET_LOCK_TTL_MS } = await import("@/lib/refresh/wallet-lock");
   const { providerCallsOn, recordProviderMeter, ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK } = await import("@/lib/usage/provider-budget");
-  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed, revalueHoldersAfterPriceGaps, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
+  const { acquireHistoricalPriceGaps, prismaPriceGapDeps, revaluationOwed, revalueHoldersAfterPriceGaps, prismaRevaluationDeps, revaluationPending, stampOwedHolders, planRevaluation } = await import("@/lib/prices/price-gap");
+  const { admitOperationalWork } = await import("@/lib/platform/admission/facts");
+  const { readGlobalCostFreeze } = await import("@/lib/platform/cost-freeze");
+  const { billableForAccounts } = await import("@/lib/platform/policies/billable-subjects");
   return {
     now: Date.now,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    admit: () => admitOperationalWork({ work: "REFRESH_EXECUTION" }),
+    costFreeze: () => readGlobalCostFreeze(),
+    billableAccounts: (accountIds) => billableForAccounts(accountIds, "crypto_backfill"),
     async wakeStartedAt() {
       const r = await systemDb.jobRun.findFirst({ where: { startedAt: { gte: new Date(Date.now() - 300_000) } }, orderBy: { startedAt: "asc" }, select: { startedAt: true } });
       return r ? r.startedAt.getTime() : null;
@@ -1001,12 +1221,15 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
       });
       return rows.map((r) => r.financialAccountId);
     },
-    revalueHolders: (accountIds, { deadlineMs, attempted, maxInstruments }) => {
+    revalueHolders: (accountIds, { deadlineMs, attempted, maxInstruments, plan, alreadyStamped }) => {
       const log = (l: string) => console.log(`[${SOL_BACKFILL_JOB}] ${l}`);
-      return revalueHoldersAfterPriceGaps({ accountIds, deadlineMs, log, deps: { ...prismaRevaluationDeps(systemDb, { log }),
+      return revalueHoldersAfterPriceGaps({ accountIds, deadlineMs, log, plan, alreadyStamped, deps: { ...prismaRevaluationDeps(systemDb, { log }),
         // The run's shared dedup: an instrument this run already acquired is not requested again.
         acquireGaps: (ids) => acquireHistoricalPriceGaps({ accountIds: ids, attempted, maxInstruments, deps: prismaPriceGapDeps(systemDb, { log }), log }) } });
     },
+    planRevaluation: (accountIds) => planRevaluation(prismaRevaluationDeps(systemDb), accountIds),
+    revaluationPending: (accountIds, plan) => revaluationPending(prismaRevaluationDeps(systemDb), accountIds, undefined, plan),
+    stampOwedHolders: (accountIds, plan) => stampOwedHolders(prismaRevaluationDeps(systemDb), accountIds, undefined, plan),
     providerUsageToday: (dayISO) => providerCallsOn(systemDb, ALCHEMY_USAGE_PROVIDER, dayISO),
     revaluationOwed: (accountIds) => revaluationOwed(systemDb, accountIds),
     recordUsage: async (meter, flushed) => { await recordProviderMeter(ALCHEMY_USAGE_PROVIDER, ALCHEMY_USAGE_NETWORK.SOLANA, meter, { flushed }); },

@@ -192,6 +192,7 @@ export async function createPolicyGroup(input: CreatePolicyGroupInput, client: P
     };
     await tx.policyGroup.create({
       data: { key: key.key, label: label.label, description: description.description, isDefault: false, builtIn: false, currentVersion: 1, createdById: input.actor.userId },
+      select: { key: true },
     });
     await tx.policyGroupVersion.create({
       data: {
@@ -231,7 +232,8 @@ interface NewVersionPlan {
 
 /** The shared core of update and rollback: guard the token, append a version, move the pointer, audit. */
 async function appendVersion(tx: Tx, plan: NewVersionPlan, reason: OperatorReason, actor: PolicyGroupActor): Promise<PolicyGroupWriteResult<PolicyGroupWritten>> {
-  const row = await tx.policyGroup.findUnique({ where: { key: plan.key } });
+  // Explicit select (review fix 5): never a column a pre-migration database may lack.
+  const row = await tx.policyGroup.findUnique({ where: { key: plan.key }, select: { archivedAt: true, currentVersion: true, label: true, description: true } });
   if (!row) return refuse("NOT_FOUND", `Policy group "${plan.key.slice(0, 64)}" does not exist.`);
   if (row.archivedAt) return refuse("NOT_EDITABLE", "An archived group cannot be edited.");
   if (row.currentVersion !== plan.expectedVersion) {
@@ -329,7 +331,7 @@ export async function archivePolicyGroup(input: ArchivePolicyGroupInput, client:
     // transaction, so either it commits first (and is counted here) or it waits and
     // then sees archivedAt and refuses. Parameterised tagged template only.
     await tx.$queryRaw`SELECT "key" FROM "PolicyGroup" WHERE "key" = ${input.key} FOR UPDATE`;
-    const row = await tx.policyGroup.findUnique({ where: { key: input.key } });
+    const row = await tx.policyGroup.findUnique({ where: { key: input.key }, select: { archivedAt: true, isDefault: true, builtIn: true, currentVersion: true } });
     if (!row) return refuse("NOT_FOUND", `Policy group "${input.key.slice(0, 64)}" does not exist.`);
     if (row.archivedAt) return refuse("VALIDATION", "The group is already archived.");
     if (row.isDefault) return refuse("NOT_EDITABLE", "The default group cannot be archived — make another group the default first.");
@@ -363,7 +365,7 @@ export interface SetDefaultPolicyGroupInput {
 export async function setDefaultPolicyGroup(input: SetDefaultPolicyGroupInput, client: PolicyGroupWriteClient = systemDb): Promise<PolicyGroupWriteResult<{ key: string; previousDefault: string }>> {
   return run(client, async (tx) => {
     const catalogue = await catalogueIn(tx);
-    const target = await tx.policyGroup.findUnique({ where: { key: input.key } });
+    const target = await tx.policyGroup.findUnique({ where: { key: input.key }, select: { archivedAt: true } });
     if (!target) return refuse("NOT_FOUND", `Policy group "${input.key.slice(0, 64)}" does not exist.`);
     if (target.archivedAt) return refuse("NOT_EDITABLE", "An archived group cannot be the default.");
     if (!catalogue.groups[input.key]?.valid) return refuse("VALIDATION", "The group's stored definition is invalid; it cannot be the default.");

@@ -33,7 +33,8 @@ import type { PlatformAuthPosture } from "@/app/api/platform/security-ops/auth-p
 import type { PlatformAuditResponse } from "@/app/api/platform/security-ops/audit/route";
 import type { OperatorActionsResponse } from "@/app/api/platform/security-ops/operator-actions/route";
 import type { PlatformSessionsResponse } from "@/app/api/platform/security-ops/sessions/route";
-import { anomalyKeyKind, opaqueKeyRef, projectAnomalyTrip } from "@/lib/platform/security/anomalies-core";
+import { anomalyKeyKind, keyRefFromKeyHash, projectAnomalyTrip } from "@/lib/platform/security/anomalies-core";
+import { hashedAnomalyKey } from "@/lib/security/identifier-hash";
 import { SecurityPostureSurface, type SecurityPostureSources } from "./SecurityPostureWidget";
 import { SecAuthPostureWidget } from "./SecAuthPostureWidget";
 import { SecAnomaliesWidget } from "./SecAnomaliesWidget";
@@ -71,13 +72,20 @@ const AGO = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000);
 
 const RAW_ACCOUNT_KEY = "identifier:alice@example.com";
 const RAW_IP_KEY = "ip:203.0.113.42";
+const RAW_RECOVERY_KEY = "recovery:alice@example.com";
+// Comms Center A-2b: rows carry the writers' salted keyHash beside the raw key;
+// keyRef derives from keyHash only (a fixed test salt, never a real one).
+const SALT = { SECURITY_IDENTIFIER_HASH_SALT: "security-posture-test-salt" };
+const KH = (raw: string) => hashedAnomalyKey(raw, SALT);
+/** The ref the surface must show for a raw key: "h" + the first 8 hex of its salted hash. */
+const refOf = (raw: string) => keyRefFromKeyHash(KH(raw));
 
 /** Trips as the ROUTE now projects them — through the core, from rows carrying the raw keys. */
 const trips: AnomalyTrip[] = [
-  projectAnomalyTrip({ id: "trip_1", createdAt: AGO(1), metadata: { key: RAW_ACCOUNT_KEY, type: "failed_login_identifier", count: 7, threshold: 5, windowMinutes: 15 } }, 15),
-  projectAnomalyTrip({ id: "trip_2", createdAt: AGO(3), metadata: { key: RAW_IP_KEY, type: "failed_login_ip", count: 12, threshold: 10, windowMinutes: 15 } }, 15),
-  projectAnomalyTrip({ id: "trip_3", createdAt: AGO(20), metadata: { key: "recovery:alice@example.com", type: "recovery_code_streak", count: 3, threshold: 3, windowMinutes: 15 } }, 15),
-  projectAnomalyTrip({ id: "trip_4", createdAt: AGO(22), metadata: { key: RAW_ACCOUNT_KEY, type: "failed_login_identifier", count: 6, threshold: 5, windowMinutes: 15 } }, 15),
+  projectAnomalyTrip({ id: "trip_1", createdAt: AGO(1), metadata: { key: RAW_ACCOUNT_KEY, keyHash: KH(RAW_ACCOUNT_KEY), type: "failed_login_identifier", count: 7, threshold: 5, windowMinutes: 15 } }, 15),
+  projectAnomalyTrip({ id: "trip_2", createdAt: AGO(3), metadata: { key: RAW_IP_KEY, keyHash: KH(RAW_IP_KEY), type: "failed_login_ip", count: 12, threshold: 10, windowMinutes: 15 } }, 15),
+  projectAnomalyTrip({ id: "trip_3", createdAt: AGO(20), metadata: { key: RAW_RECOVERY_KEY, keyHash: KH(RAW_RECOVERY_KEY), type: "recovery_code_streak", count: 3, threshold: 3, windowMinutes: 15 } }, 15),
+  projectAnomalyTrip({ id: "trip_4", createdAt: AGO(22), metadata: { key: RAW_ACCOUNT_KEY, keyHash: KH(RAW_ACCOUNT_KEY), type: "failed_login_identifier", count: 6, threshold: 5, windowMinutes: 15 } }, 15),
   projectAnomalyTrip({ id: "trip_5", createdAt: AGO(30), metadata: { key: "system_admin_disabled", type: "system_admin_disabled", count: 1 } }, 15), // pre-threshold row
 ];
 const anomalies: AnomaliesResponse = { trips, summary: { failedLoginsWindow: 4, windowMinutes: 15, tripsLast24h: 4 } };
@@ -161,12 +169,15 @@ function main() {
     const { html, text: t } = render(sources());
     for (const h of ["Type", "Key", "Magnitude", "When"]) check(`trip column "${h}"`, t.includes(h));
     check("type words", ["Failed-login burst (account)", "Failed-login burst (IP)", "Invalid recovery-code streak", "Disabled-admin probe"].every((w) => t.includes(w)), t);
-    const accountRef = opaqueKeyRef(RAW_ACCOUNT_KEY);
-    check("an account key renders as 'account …digest'", t.includes(`account ${accountRef}`), accountRef);
-    check("an IP key renders as 'IP …digest'", t.includes(`IP ${opaqueKeyRef(RAW_IP_KEY)}`));
-    check("a recovery key names the kind", t.includes(`recovery on account ${opaqueKeyRef("recovery:alice@example.com")}`));
+    const accountRef = refOf(RAW_ACCOUNT_KEY);
+    check("an account key renders as 'account h<keyHash prefix>'", t.includes(`account ${accountRef}`), accountRef);
+    check("an IP key renders as 'IP h<keyHash prefix>'", t.includes(`IP ${refOf(RAW_IP_KEY)}`));
+    check("a recovery key names the kind", t.includes(`recovery on account ${refOf(RAW_RECOVERY_KEY)}`));
     check("the disabled-admin key needs no digest", t.includes("disabled admin account"));
-    check("the SAME key correlates across two trips (digest appears twice)", (t.match(new RegExp(accountRef.replace("…", "…"), "g")) ?? []).length === 2, String((t.match(new RegExp(accountRef, "g")) ?? []).length));
+    // A-2b: the salted hash covers the VALUE (the kind stays a separate word), so the two
+    // account trips AND the recovery streak on the same account share one ref — three rows.
+    check("the SAME account correlates across its trips, recovery streak included (ref appears 3×)", (t.match(new RegExp(accountRef, "g")) ?? []).length === 3, String((t.match(new RegExp(accountRef, "g")) ?? []).length));
+    check("…and a different key (the IP) has its own ref", (t.match(new RegExp(refOf(RAW_IP_KEY), "g")) ?? []).length === 1);
     check("NEVER the raw identifier, the domain, the IP or the key prefix", !/alice@|example\.com|203\.0\.113|identifier:|ip:203/.test(html), html.match(/alice@|example\.com|203\.0\.113|identifier:/)?.[0]);
     check("magnitude = count against the threshold that tripped", t.includes("7 of ≥5 in 15 m") && t.includes("12 of ≥10 in 15 m"));
     check("a pre-threshold row says the threshold is not recorded, never assumes one", t.includes("1 in 15 m · threshold not recorded"));
@@ -175,13 +186,34 @@ function main() {
     check("trip header hidden below md, cells carry their column word", /class="mb-1 hidden items-center gap-3 border-b px-1 pb-2 md:grid"/.test(html) && /md:hidden">Key</.test(html));
     // The core, directly.
     check("core: key kinds from the detector's prefixes", anomalyKeyKind("identifier:x") === "account" && anomalyKeyKind("ip:1.2.3.4") === "ip" && anomalyKeyKind("recovery:x") === "recovery" && anomalyKeyKind("system_admin_disabled") === "admin" && anomalyKeyKind("weird") === "unknown");
-    check("core: the digest is '…' + 6 hex, stable, distinct per key, empty for no key",
-      /^…[0-9a-f]{6}$/.test(accountRef) && opaqueKeyRef(RAW_ACCOUNT_KEY) === accountRef && opaqueKeyRef(RAW_IP_KEY) !== accountRef && opaqueKeyRef("") === "");
-    check("core: the digest never contains the identifier", !accountRef.includes("alice") && !opaqueKeyRef(RAW_IP_KEY).includes("203"));
+    // Comms Center A-2b: keyRef = "h" + the first 8 hex of the salted keyHash — a literal prefix of the audit row's keyHash.
+    check("core: keyRef is 'h' + 8 hex, a literal prefix of the stored keyHash's hash part, stable, distinct per key",
+      /^h[0-9a-f]{8}$/.test(accountRef) && KH(RAW_ACCOUNT_KEY).startsWith(`identifier:${accountRef}`) && refOf(RAW_ACCOUNT_KEY) === accountRef && refOf(RAW_IP_KEY) !== accountRef && keyRefFromKeyHash(undefined) === "" && keyRefFromKeyHash("") === "");
+    check("core: the ref never contains the identifier", !accountRef.includes("alice") && !refOf(RAW_IP_KEY).includes("203"));
+    check("core: rows with a keyHash are not legacy", trips.slice(0, 4).every((tr) => tr.legacy === false));
     const legacy = projectAnomalyTrip({ id: "x", createdAt: NOW, metadata: { type: "failed_login_ip" } }, 15);
     check("core: a row with no key / count / threshold / window is unknown · 0 · null · default, never invented",
-      legacy.keyKind === "unknown" && legacy.keyRef === "" && legacy.count === 0 && legacy.threshold === null && legacy.windowMinutes === 15);
-    check("view: no key recorded is said", anomalyKeyLabel({ keyKind: "unknown", keyRef: "" }) === "no key recorded" && tripMagnitude({ count: 2, threshold: null, windowMinutes: 15 }).includes("threshold not recorded"));
+      legacy.keyKind === "unknown" && legacy.keyRef === "" && legacy.legacy === true && legacy.count === 0 && legacy.threshold === null && legacy.windowMinutes === 15);
+    const rawOnly = projectAnomalyTrip({ id: "y", createdAt: NOW, metadata: { key: RAW_IP_KEY, type: "failed_login_ip", count: 12 } }, 15);
+    check("core: a LEGACY row (raw key, no keyHash) keeps its kind, gets an EMPTY ref and legacy: true — nothing derived from the raw key",
+      rawOnly.keyKind === "ip" && rawOnly.keyRef === "" && rawOnly.legacy === true && !JSON.stringify(rawOnly).includes("203.0.113"));
+    const fnv = (k: string) => { let h = 0x811c9dc5; for (let i = 0; i < k.length; i++) { h ^= k.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, "0"); };
+    const outputs = JSON.stringify([...trips, rawOnly]);
+    check("core: no unsalted FNV digest of any raw key appears in the projection",
+      [RAW_ACCOUNT_KEY, RAW_IP_KEY, RAW_RECOVERY_KEY].every((k) => !outputs.includes(fnv(k).slice(-6)) && !outputs.includes(fnv(k))));
+    check("core: the projection carries no raw key and no hash of it other than the salted keyHash prefix",
+      !/alice|203\.0\.113|identifier:|recovery:/.test(outputs));
+    check("view: a LEGACY row (no keyHash) reads 'legacy (digest unavailable)', prefixed by its kind when known",
+      anomalyKeyLabel(rawOnly) === "IP · legacy (digest unavailable)" && anomalyKeyLabel(legacy) === "legacy (digest unavailable)");
+    check("view: 'no key recorded' only for a row that is neither legacy nor carries a keyRef",
+      anomalyKeyLabel({ keyKind: "unknown", keyRef: "", legacy: false }) === "no key recorded" && anomalyKeyLabel({ keyKind: "unknown", keyRef: "" }) === "no key recorded"
+        && anomalyKeyLabel({ keyKind: "ip", keyRef: refOf(RAW_IP_KEY), legacy: false }) === `IP ${refOf(RAW_IP_KEY)}`
+        && tripMagnitude({ count: 2, threshold: null, windowMinutes: 15 }).includes("threshold not recorded"));
+    check("view: the value-free admin key stays 'disabled admin account', legacy or not",
+      anomalyKeyLabel({ keyKind: "admin", keyRef: "", legacy: true }) === "disabled admin account" && anomalyKeyLabel({ keyKind: "admin", keyRef: "", legacy: false }) === "disabled admin account");
+    const legacyHtml = render(sources({ anomalies: ok({ trips: [rawOnly], summary: { failedLoginsWindow: 0, windowMinutes: 15, tripsLast24h: 1 } }) }));
+    check("render: a legacy trip shows 'legacy (digest unavailable)', never 'no key recorded' and never the raw IP",
+      legacyHtml.text.includes("IP · legacy (digest unavailable)") && !legacyHtml.text.includes("no key recorded") && !/203\.0\.113/.test(legacyHtml.html));
   }
 
   console.log("5. coverage — the house ratio over route counts; no users ⇒ Unavailable");

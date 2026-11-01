@@ -255,6 +255,11 @@ export const AuditAction = {
   BETA_INVITATION_CREATED:  "BETA_INVITATION_CREATED",
   BETA_INVITATION_RESENT:   "BETA_INVITATION_RESENT",
   BETA_INVITATION_REVOKED:  "BETA_INVITATION_REVOKED",
+  // BETA-REQUEST RISK (2026-10-31) — an operator recorded a review verdict
+  // (UNREVIEWED / LEGITIMATE / SUSPICIOUS) on a request's advisory risk signals.
+  // Appends one BetaAccessRequestReview row in the same transaction; never
+  // changes the request's status or the heuristic evidence. Reason-required.
+  BETA_REQUEST_RISK_REVIEWED: "BETA_REQUEST_RISK_REVIEWED",
   // PR B (2026-10-31) — the one issuance mechanism (lib/platform/growth/invitation-issue.ts).
   //   VALIDITY_CHANGED  the beta_invitation_validity_days setting changed (reason
   //                     required; before/after in the same transaction).
@@ -267,6 +272,12 @@ export const AuditAction = {
   BETA_INVITATION_VALIDITY_CHANGED: "BETA_INVITATION_VALIDITY_CHANGED",
   BETA_INVITATION_EXTENDED:         "BETA_INVITATION_EXTENDED",
   BETA_INVITATION_EMAIL_OUTCOME:    "BETA_INVITATION_EMAIL_OUTCOME",
+  // PR C (2026-10-31) — one operator bulk approval (Growth). ONE row per batch,
+  // written AFTER its per-request approvals (each keeps its own
+  // BETA_ACCESS_APPROVED row): { batchKey, counts, validityDays, requestCount }
+  // and opaque request ids — never an email, a hash of one, or a token.
+  // Reason-optional, as single approve (lib/platform/growth/bulk-approve.ts).
+  BETA_ACCESS_BULK_APPROVED:        "BETA_ACCESS_BULK_APPROVED",
   // PO-3C — the LAUNCH axis (development/beta/live), separate from the signup gate.
   PRODUCT_STATUS_CHANGED:   "PRODUCT_STATUS_CHANGED",
   // PO-4A — Platform Operations per-connection controls. An operator triggered a
@@ -373,6 +384,47 @@ export const AuditAction = {
   POLICY_GROUP_ROLLED_BACK:        "POLICY_GROUP_ROLLED_BACK",
   POLICY_GROUP_ARCHIVED:           "POLICY_GROUP_ARCHIVED",
   POLICY_GROUP_DEFAULT_CHANGED:    "POLICY_GROUP_DEFAULT_CHANGED",
+  // BETA LIFECYCLE (L1, owner decisions 2026-10-31) — a PLATFORM_OPS CONTROL
+  // holder paused, resumed (incl. reopening an ended group — reason note
+  // required), ended, cost-froze or unfroze a customer Policy Group
+  // (lib/platform/policies/policy-group-lifecycle-write.ts). ONE row per
+  // transition, in the same transaction as the PolicyGroupTransition row;
+  // reason-required; target = the POLICY_GROUP; metadata carries the
+  // before/after state and member COUNTS — never a customer id.
+  POLICY_GROUP_PAUSED:             "POLICY_GROUP_PAUSED",
+  POLICY_GROUP_RESUMED:            "POLICY_GROUP_RESUMED",
+  POLICY_GROUP_ENDED:              "POLICY_GROUP_ENDED",
+  POLICY_GROUP_COST_FROZEN:        "POLICY_GROUP_COST_FROZEN",
+  POLICY_GROUP_COST_UNFROZEN:      "POLICY_GROUP_COST_UNFROZEN",
+  // COMMS CENTER B1 (contract v1.1 §9.2) — a Customer Success operator saved a
+  // DRAFT content version, asked the AI for a suggestion, PUBLISHED a version
+  // (CONTROL, reason required) or ROLLED BACK (CONTROL, reason required) a
+  // notification template (lib/notifications/content/store.ts). ONE row per
+  // operation, in the same transaction; target = the COMMS_TEMPLATE stream
+  // "<key>:<channel>:<variant>"; metadata carries ids, versions, content HASHES
+  // and codes — never the text, never customer data.
+  COMMS_TEMPLATE_DRAFT_SAVED:      "COMMS_TEMPLATE_DRAFT_SAVED",
+  COMMS_TEMPLATE_AI_SUGGESTED:     "COMMS_TEMPLATE_AI_SUGGESTED",
+  COMMS_TEMPLATE_PUBLISHED:        "COMMS_TEMPLATE_PUBLISHED",
+  COMMS_TEMPLATE_ROLLED_BACK:      "COMMS_TEMPLATE_ROLLED_BACK",
+  // COMMS CENTER B2 (contract v1 §3.5, v1.1 §6.1, §9.2) — a Customer Success
+  // operator created / edited (WRITE) a DRAFT automation, dry-ran it (WRITE),
+  // ACTIVATED it (CONTROL), paused or disabled it (WRITE); the owner recorded
+  // the OWNER APPROVAL (SYSTEM_ADMIN); an operator test-sent a message to their
+  // own address (WRITE). Every one is reason-required and written in the SAME
+  // transaction as its change (lib/notifications/automations/store.ts); target
+  // COMMS_AUTOMATION <id> / COMMS_TEST_SEND <key>:<channel>; metadata carries
+  // ids, versions, enums and counts — never copy, never customer data.
+  COMMS_AUTOMATION_CREATED:        "COMMS_AUTOMATION_CREATED",
+  COMMS_AUTOMATION_UPDATED:        "COMMS_AUTOMATION_UPDATED",
+  COMMS_AUTOMATION_DRY_RUN:        "COMMS_AUTOMATION_DRY_RUN",
+  COMMS_AUTOMATION_OWNER_APPROVED: "COMMS_AUTOMATION_OWNER_APPROVED",
+  COMMS_AUTOMATION_ACTIVATED:      "COMMS_AUTOMATION_ACTIVATED",
+  // Preview activation (2026-11-01): an activation refused by the closed gate (not Preview / switch off).
+  COMMS_AUTOMATION_ACTIVATION_REFUSED: "COMMS_AUTOMATION_ACTIVATION_REFUSED",
+  COMMS_AUTOMATION_PAUSED:         "COMMS_AUTOMATION_PAUSED",
+  COMMS_AUTOMATION_DISABLED:       "COMMS_AUTOMATION_DISABLED",
+  COMMS_TEST_SEND:                 "COMMS_TEST_SEND",
   JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
   JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
   REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",
@@ -548,8 +600,10 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.BETA_INVITATION_CREATED,
   AuditAction.BETA_INVITATION_RESENT,
   AuditAction.BETA_INVITATION_REVOKED,
+  AuditAction.BETA_REQUEST_RISK_REVIEWED,
   AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
   AuditAction.BETA_INVITATION_EXTENDED,
+  AuditAction.BETA_ACCESS_BULK_APPROVED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
@@ -570,6 +624,12 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.POLICY_GROUP_ROLLED_BACK,
   AuditAction.POLICY_GROUP_ARCHIVED,
   AuditAction.POLICY_GROUP_DEFAULT_CHANGED,
+  // Beta lifecycle — pause / resume / end / cost freeze / unfreeze (counts only).
+  AuditAction.POLICY_GROUP_PAUSED,
+  AuditAction.POLICY_GROUP_RESUMED,
+  AuditAction.POLICY_GROUP_ENDED,
+  AuditAction.POLICY_GROUP_COST_FROZEN,
+  AuditAction.POLICY_GROUP_COST_UNFROZEN,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   AuditAction.OPERATOR_REFRESH_ALL,

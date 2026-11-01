@@ -218,8 +218,33 @@ function main() {
       "app/api/platform/platform-ops/policy-groups/[key]/archive/route.ts",
       "app/api/platform/platform-ops/policy-groups/[key]/default/route.ts",
     ];
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation and policy-group editor routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // BETA LIFECYCLE (owner decisions 2026-10-31) — pause / resume / end /
+    // cost-freeze / unfreeze of a customer Policy Group: ONE deliberate addition,
+    // POST at fresh CONTROL + reason + rate limit, one audited transaction with
+    // the transition row (lib/platform/policies/policy-group-lifecycle-write.ts);
+    // its GET (state + history) stays at READ.
+    const LIFECYCLE_ROUTE = "app/api/platform/platform-ops/policy-groups/[key]/lifecycle/route.ts";
+    // COMMS CENTER B1 (owner requirement 2026-10-31; contract v1.1 §3.4, §3.5) —
+    // publishing or rolling back notification copy changes what customers
+    // receive: fresh CUSTOMER_SUCCESS CONTROL + reason + one audited transaction
+    // (lib/notifications/content/store.ts). Drafts and AI suggestions stay WRITE.
+    const COMMS_CONTENT_CONTROL_ROUTES = [
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/[id]/publish/route.ts",
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/[id]/rollback/route.ts",
+    ];
+    // COMMS CENTER B2 (owner decision O-1; contract v1.1 §6.3) — activating an
+    // automation increases reach: fresh CUSTOMER_SUCCESS CONTROL + reason + one
+    // audited transaction (lib/notifications/automations/store.ts). Its owner
+    // approval is SYSTEM_ADMIN (requireFreshSystemAdmin), not a platform grant.
+    COMMS_CONTENT_CONTROL_ROUTES.push("app/api/platform/customer-success/notifications/automations/[id]/activate/route.ts");
+    for (const f of COMMS_CONTENT_CONTROL_ROUTES) {
+      const src = code(f);
+      check(`${f}: the one write verb is FRESH CUSTOMER_SUCCESS CONTROL`,
+        (src.match(/export async function (POST|PATCH|PUT|DELETE)/g) ?? []).length === 1
+          && (src.match(/requireFreshPlatformAccess\("CUSTOMER_SUCCESS", "CONTROL"\)/g) ?? []).length === 1);
+    }
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE, ...COMMS_CONTENT_CONTROL_ROUTES].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor, policy-group lifecycle, Comms content publish / rollback and Comms automation activate routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     for (const f of POLICY_GROUP_ROUTES) {
       const src = code(f);
@@ -228,6 +253,16 @@ function main() {
         writes === 1 && (src.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 1
           && /reasonOrRefuse\(/.test(src) && /from "@\/lib\/platform\/policies\/policy-groups-write"/.test(src)
           && !/policyGroupVersion|policyGroup\.|auditLog|customerPolicyAssignment/.test(src));
+    }
+    {
+      const src = code(LIFECYCLE_ROUTE);
+      check(`${LIFECYCLE_ROUTE}: the one write verb (POST) is FRESH CONTROL, rate limited, takes a structured reason and delegates to the lifecycle write service; GET stays READ`,
+        (src.match(/export async function (POST|PATCH|PUT|DELETE)/g) ?? []).length === 1
+          && /export async function POST[\s\S]*requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)[\s\S]*limitPolicyGroupWrites\(/.test(src)
+          && (src.match(/requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\)/g) ?? []).length === 1
+          && /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*export async function POST/.test(src)
+          && /reasonOrRefuse\(/.test(src) && /from "@\/lib\/platform\/policies\/policy-group-lifecycle-write"/.test(src)
+          && !/policyGroupTransition|policyGroup\.|auditLog|customerPolicyAssignment/.test(src));
     }
     check("the group read (GET [key]) stays at READ",
       /export async function GET[\s\S]*requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*export async function PATCH/.test(code("app/api/platform/platform-ops/policy-groups/[key]/route.ts")));
@@ -286,10 +321,15 @@ function main() {
       "app/api/platform/growth-revenue/requests/[id]/deny/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/resend/route.ts",
       "app/api/platform/growth-revenue/requests/[id]/revoke/route.ts",
+      // BETA-REQUEST RISK — an operator verdict on a request's advisory signals.
+      "app/api/platform/growth-revenue/requests/[id]/risk-review/route.ts",
       // PR B — the audited extend and the invitation-validity setting, fresh
       // GROWTH_REVENUE WRITE with a required reason (never CONTROL).
       "app/api/platform/growth-revenue/requests/[id]/extend/route.ts",
       "app/api/platform/growth-revenue/invitation-policy/route.ts",
+      // PR C — bulk approval: the same fresh GROWTH_REVENUE WRITE as single
+      // approve (never CONTROL); each row goes through issueBetaInvitation.
+      "app/api/platform/growth-revenue/requests/bulk-approve/route.ts",
       // MERCHANT-OPS AUTHORITY (2026-10-06): merge / dismiss, fresh WRITE on the
       // MERCHANT_OPS area — no longer ordinary Space membership.
       "app/api/merchant-ops/decide/route.ts",
@@ -301,6 +341,18 @@ function main() {
       "app/api/platform/customer-success/customers/[userId]/refresh/route.ts",
       // SEC-PLAT-4 — customer deactivate / reactivate, moved from GROWTH_REVENUE.
       "app/api/platform/customer-success/customers/[userId]/access/route.ts",
+      // COMMS CENTER B1 — save a draft content version and ask for an AI
+      // suggestion: fresh CUSTOMER_SUCCESS WRITE (publish / rollback are CONTROL).
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/route.ts",
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/[id]/ai-suggest/route.ts",
+      // COMMS CENTER B2 — create / edit / dry-run / pause / disable an automation and
+      // test-send to yourself: fresh CUSTOMER_SUCCESS WRITE (activation is CONTROL).
+      "app/api/platform/customer-success/notifications/automations/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/dry-run/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/pause/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/disable/route.ts",
+      "app/api/platform/customer-success/notifications/test-send/route.ts",
     ];
     for (const f of WRITE_GATED) {
       const src = code(f);

@@ -104,6 +104,14 @@ const PRODUCERS = [
   // wallet is provider ingestion: asked before the budget and the lock, a
   // denial is audited REFUSED and nothing is touched.
   { file: "lib/platform/wallet-history-recovery.ts",     migrated: true, note: "operator wallet history resume (one bounded pass)" },
+  // BETA LIFECYCLE L2 (2026-10-31) — the history backfill worker (SOL/BTC/ETH)
+  // called Alchemy / Esplora / CoinGecko every 15 minutes with NO admission at
+  // all: a maintenance or ingestion pause did not stop it.
+  { file: "jobs/sol-history-backfill.ts",                 migrated: true, note: "the history backfill worker (all chains, all passes)" },
+  // COMMS B2 HARDENING A5 (2026-10-31) — NOT refresh work: the COMMS_AUTOMATION_SEND work class.
+  // The one reader the automation engine consults at trigger (before ingest) and at send (before
+  // every lease): maintenance stops operator-configured sends, nothing is sent, the job SKIPS.
+  { file: "lib/notifications/automations/admission.ts",  migrated: true, note: "comms automation gate (COMMS_AUTOMATION_SEND) — maintenance stops automation sends" },
 ] as const;
 
 /**
@@ -255,7 +263,9 @@ function main() {
       PRODUCERS.filter((p) => p.migrated).length === PRODUCERS.length);
     // ARCH-007 (2026-10-22): 12 → 11 — POST /api/plaid/sync was deleted (no consumer).
     // P1 (2026-10-23): 11 → 12 — the paid AI gate (PAID_AI_REQUEST).
-    check("the census holds all thirteen known consumers", (PRODUCERS.length as number) === 13);
+    // BETA LIFECYCLE L2 (2026-10-31): 13 → 14 — the history backfill worker.
+    // COMMS B2 HARDENING A5 (2026-10-31): 14 → 15 — the comms automation gate.
+    check("the census holds all fifteen known consumers", (PRODUCERS.length as number) === 15);
 
     // No producer OUTSIDE the census may consume admission.
     const consumers = [...walk("app"), ...walk("jobs"), ...walk("lib")]
@@ -341,7 +351,10 @@ function main() {
   // never the keys, and nothing else may write a fact.
   console.log("6. exactly one control surface exists");
   {
-    const controlRoutes = [...walk("app/api")].filter((f) => /\/(control|admission|maintenance|pause)\//.test(f));
+    // Comms Center B2: pausing ONE notification automation is a state transition of that
+    // rule (contract v1 §4.9), not a control-plane endpoint — named exactly, never a pattern.
+    const COMMS_AUTOMATION_PAUSE = "app/api/platform/customer-success/notifications/automations/[id]/pause/route.ts";
+    const controlRoutes = [...walk("app/api")].filter((f) => /\/(control|admission|maintenance|pause)\//.test(f) && f !== COMMS_AUTOMATION_PAUSE);
     check("no generic control or admission endpoint exists", controlRoutes.length === 0, controlRoutes.join(", "));
     const operatorRoutes = [...walk("app/api")].filter((f) => /operational-controls/.test(f));
     check("the operational-controls route is the one operator control endpoint", operatorRoutes.join() === OPERATOR_ROUTE, operatorRoutes.join(", "));

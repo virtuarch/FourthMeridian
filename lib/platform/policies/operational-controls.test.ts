@@ -176,10 +176,11 @@ async function main() {
     check("the actions are reason-required in the audit chokepoint", REASON_REQUIRED_ACTIONS.has(AuditAction.PLATFORM_POLICY_CHANGED) && REASON_REQUIRED_ACTIONS.has(AuditAction.PLATFORM_POLICY_RESET));
   }
 
-  console.log("no lockout — maintenance denies exactly its three work classes");
+  console.log("no lockout — maintenance denies exactly its four work classes");
   {
-    check("maintenance denies REFRESH_EXECUTION, CONNECTION_ESTABLISHMENT, PAID_AI_REQUEST — nothing else",
-      [...workDeniedBy("maintenanceMode")].sort().join() === "CONNECTION_ESTABLISHMENT,PAID_AI_REQUEST,REFRESH_EXECUTION");
+    // Comms B2 hardening A5 (2026-10-31): + COMMS_AUTOMATION_SEND (maintenance stops automation sends).
+    check("maintenance denies REFRESH_EXECUTION, CONNECTION_ESTABLISHMENT, PAID_AI_REQUEST, COMMS_AUTOMATION_SEND — nothing else",
+      [...workDeniedBy("maintenanceMode")].sort().join() === "COMMS_AUTOMATION_SEND,CONNECTION_ESTABLISHMENT,PAID_AI_REQUEST,REFRESH_EXECUTION");
     const on = { maintenanceMode: readFactState("maintenance_mode", "true"), ingestionPaused: readFactState("ingestion_paused", null) };
     check("the policy denies paid AI under maintenance", evaluateAdmission({ work: "PAID_AI_REQUEST" }, on).decision === "DENY");
     const strip = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -197,7 +198,11 @@ async function main() {
     check("GET reads at PLATFORM_OPS READ", /export async function GET\(\)[\s\S]*?requirePlatformAccess\("PLATFORM_OPS", "READ"\)[\s\S]*?if \(err\) return err/.test(route));
     check("PATCH mutates only under FRESH CONTROL, error returned first",
       /export async function PATCH[\s\S]*?requireFreshPlatformAccess\("PLATFORM_OPS", "CONTROL"\);\s*if \(err\) return err;/.test(route) && !/requirePlatformAccess\([^)]*"CONTROL"/.test(route));
-    check("PATCH requires a structured reason and is paced on its own bucket", /parseOperatorReason\(/.test(route) && /limitByUser\(auth\.user\.id, "platform-policy-operational-controls"/.test(route));
+    check("PATCH requires a structured reason and is paced on its own bucket", /parseOperatorReason\(/.test(route) && /"platform-policy-operational-controls"/.test(route) && /limitByUser\(auth\.user\.id, bucket,/.test(route));
+    check("the cost freeze toggle is paced on its OWN bucket (follow-up N6)", /body\.control === "COST_FREEZE"\s*\?\s*"platform-policy-cost-freeze"/.test(route));
+    check("a coarse flood limiter runs AFTER the fresh grant check and BEFORE the body is parsed (follow-up P3-5)",
+      route.indexOf('requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL")') < route.indexOf('"platform-policy-operational-controls-any"')
+        && route.indexOf('"platform-policy-operational-controls-any"') < route.indexOf("await req.json()"));
     check("the route never touches PlatformSetting or AuditLog itself", !/platformSetting|auditLog|setSetting/.test(route));
     check("the route exports no other mutating verb", !/export async function (POST|PUT|DELETE)/.test(route));
     check("only CONTROL (or break-glass) passes the mutation gate",

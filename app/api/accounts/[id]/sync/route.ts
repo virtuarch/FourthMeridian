@@ -65,6 +65,11 @@ import { tenantRefreshDeps } from "@/lib/refresh/deps";
 import { finalizeWalletSync } from "@/lib/refresh/wallet-post-sync";
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -126,6 +131,8 @@ export async function POST(
   }
   // FAIL CLOSED (owner ruling, 2026-10-30) — a missing/invalid policy assignment
   // refuses a NEW manual sync (403) before the cooldown, the limiter or the claim.
+  // BETA LIFECYCLE — so does a paused / ended / cost-frozen group or an
+  // unreadable lifecycle (review fix 1): never left to a cooldown that passes.
   const failClosed = refuseIfFailClosed(entitlements, "Manual refresh");
   if (failClosed) return failClosed;
   const connection = account.connections.map((c) => c.connection).find((c): c is NonNullable<typeof c> => c !== null) ?? null;

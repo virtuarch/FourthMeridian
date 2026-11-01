@@ -3351,6 +3351,51 @@ model BetaAccessRequest {
   redeemedUserId  String? // soft ref to the User created from this invite
 
   @@index([status, createdAt]) // the queue view
+
+  /// BETA-REQUEST RISK — operator review verdicts (append-only history).
+  riskReviews BetaAccessRequestReview[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BetaAccessRequestReview  (Beta-request risk, 2026-10-31)
+//
+// An operator's verdict on a request's ADVISORY risk signals
+// (lib/platform/growth/beta-risk-core.ts). APPEND-ONLY: fm_system holds SELECT +
+// INSERT only, so a verdict is changed by appending a newer row — the latest row
+// is the current state, and the heuristic evidence is never stored over (it is
+// recomputed from the event + audit facts at read time).
+//
+// It NEVER changes the request: status, decision fields and the invite token
+// stay with the approve / deny / revoke routes.
+//
+// CASCADES WITH ITS REQUEST, BY DESIGN: deleting a BetaAccessRequest erases its
+// verdicts — the account-deletion purge (lib/account-deletion/purge.ts, by
+// e-mail) and the retention job (jobs/data-retention.ts: DENIED, PENDING and
+// unredeemed APPROVED requests untouched for 180 days; REDEEMED is kept).
+// Accountability survives in the BETA_REQUEST_RISK_REVIEWED AuditLog rows,
+// which name the request by id only. `operatorId` is a soft reference to the
+// acting operator (actor identity on a platform record, like decidedById).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum BetaRiskReviewStatus {
+  UNREVIEWED
+  LEGITIMATE
+  SUSPICIOUS
+}
+
+model BetaAccessRequestReview {
+  id         String               @id @default(cuid())
+  requestId  String
+  request    BetaAccessRequest    @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  status     BetaRiskReviewStatus
+  /// The operator reason CODE (lib/audit.ts OPERATOR_REASON_CODES).
+  reasonCode String
+  /// Optional operator note, scrubbed by assertOperatorNoteSafe (≤ 280, no address / digits / secrets).
+  note       String?
+  operatorId String?
+  createdAt  DateTime             @default(now())
+
+  @@index([requestId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3823,6 +3868,300 @@ model NotificationDelivery {
 
   @@index([notificationId])
   @@index([channel, status, createdAt]) // OPS-5 failure-rate queries
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CommsDelivery (Comms Center A-2a) — THE delivery ledger: one row per send
+// ATTEMPT (retries append rows sharing a messageKey) on any channel (every sendEmail call, every in-app create outcome).
+// Contract docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md §6.1.
+// APPEND-ONLY metadata. NEVER a recipient address, subject, body, link, token
+// or payload value: the recipient is a soft userId, or (only when there is no
+// user) a SALTED HMAC of the address (lib/notifications/delivery/record.ts).
+// No open/click fields, ever (owner decision O-13). "ACCEPTED" = the provider
+// (or the in-app inbox) accepted it — never "delivered" (Phase C webhooks).
+// Retention: 90 days, then rolled into CommsDeliveryDaily and deleted
+// (lib/notifications/delivery/rollup.ts, run by jobs/data-retention.ts).
+// fm_system: SELECT, INSERT, DELETE. fm_app / fm_auth: nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+model CommsDelivery {
+  id                String    @id @default(cuid())
+  // The MESSAGE this attempt belongs to: the Notification id for a registry
+  // email / in-app leg (stable across retries), a generated send id for a
+  // direct send. One message = one (channel, messageKey); its outcome is the
+  // row with the highest `attempt` (contract v1.0.2).
+  messageKey        String
+  definitionKey     String // catalog key (lib/notifications/catalog)
+  definitionVersion Int
+  templateVersion   Int?
+  channel           String // CommsChannel: IN_APP | EMAIL | OPERATOR_EMAIL
+  status            String // QUEUED | ACCEPTED | CAPTURED | FAILED | DEAD | SUPPRESSED | CANCELLED | DELIVERED | BOUNCED | COMPLAINED (Phase C: verified provider events only)
+  reason            String? // SuppressionReason (SUPPRESSED), ENVIRONMENT_GUARD (CAPTURED)
+  provider          String? // "resend" | "none" (guard) | "in-app"
+  providerMessageId String?
+  attempt           Int       @default(1)
+  errorCode         String? // closed set: RENDER | TIMEOUT | NO_TRANSPORT | PROVIDER | STORE | PREFERENCE_READ | RECIPIENT_LOOKUP
+  recipientUserId   String? // soft ref, no FK; nulled by the account purge
+  recipientHash     String? // HMAC-SHA256(salt, address) when no userId; never the address
+  notificationId    String? // soft ref to the IN_APP twin, no FK
+  environment       String // production | preview | development
+  acceptedAt        DateTime?
+  // Comms Center B1 — the operator content version this send rendered
+  // (CommsTemplateVersion.id, soft ref); null = the code default.
+  contentVersionId    String?
+  // Comms Center B2 — LIVE | TEST (a test send to the operator's own address,
+  // excluded from analytics by default), and the automation claim row a send
+  // belongs to (AutomationRunItem.id, soft ref; = messageKey for automation sends).
+  mode                String    @default("LIVE")
+  automationRunItemId String?
+  // Comms Center C — set ONLY on a row appended from a signature-verified
+  // provider `email.delivered` event (the provider's own delivery instant);
+  // carried forward on a later COMPLAINED / BOUNCED row of the same message.
+  // Never set by a send: ACCEPTED is not delivered.
+  deliveredAt         DateTime?
+  createdAt           DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([definitionKey, createdAt])
+  @@index([recipientUserId, createdAt])
+  @@index([recipientHash])
+  @@index([messageKey])
+  @@index([automationRunItemId])
+  @@index([providerMessageId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMS CENTER C — one VERIFIED provider (Resend / svix) delivery event, as
+// received (contract v1 §6.4, v1.1 §8.5 / §10.1, v1.2 note). Written only AFTER
+// the svix signature verified, in the SAME transaction as any ledger row it
+// appends, so a replayed svix-id (providerEventId @unique) is a no-op.
+// Stores NO PII: no address, subject, body, link, bounce message or payload —
+// the svix id, the event type, the provider message id, the instant, and what
+// the receiver matched and decided. Opens and clicks are never stored (O-13).
+// fm_system only (SELECT, INSERT, DELETE); fm_app / fm_auth: nothing.
+// Retention: 90 days from receivedAt (owner decision, jobs/data-retention.ts).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CommsProviderEvent {
+  id                String   @id @default(cuid())
+  provider          String // "resend"
+  providerEventId   String   @unique // svix-id — replay protection
+  type              String // delivered | bounced | complained | delivery_delayed
+  providerMessageId String // Resend data.email_id (= CommsDelivery.providerMessageId)
+  // The ledger row (CommsDelivery.id) the event matched — the message's final
+  // row at receipt — and its messageKey. Soft refs, no FK; null = UNMATCHED.
+  deliveryId        String?
+  messageKey        String?
+  // APPLIED (a ledger row was appended) | NO_CHANGE (matched; status would not
+  // move forward) | NOTE (delivery_delayed: recorded only) | UNMATCHED.
+  outcome           String
+  occurredAt        DateTime // the provider's event instant
+  receivedAt        DateTime @default(now())
+
+  @@index([receivedAt])
+  @@index([providerMessageId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMS CENTER B1 — editable template content (contract v1.1 §2, §3, §8.1, §8.3).
+// One CommsTemplate HEAD per content stream (definitionKey × channel × variant):
+// the live version (null = the code default) and the optimistic token
+// `revision`. CommsTemplateVersion rows are IMMUTABLE (fm_system holds UPDATE on
+// publishedAt / publishAuditLogId only); state is derived, never stored.
+// CommsAiSuggestion is the AI-authoring audit: template text and placeholder
+// NAMES only — never customer data. fm_system only; fm_app / fm_auth: nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CommsTemplate {
+  id                 String                 @id @default(cuid())
+  definitionKey      String
+  channel            String // EMAIL | IN_APP
+  variant            String                 @default("default")
+  publishedVersionId String? // null = the code default is live
+  revision           Int                    @default(0) // optimistic token: +1 on draft save, publish, rollback
+  headVersion        Int                    @default(0) // highest version number issued
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  versions           CommsTemplateVersion[]
+
+  @@unique([definitionKey, channel, variant])
+}
+
+model CommsTemplateVersion {
+  id                     String        @id @default(cuid())
+  templateId             String
+  template               CommsTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  version                Int
+  subject                String
+  preheader              String?
+  blocks                 Json // ContentBlock[] — validated before insert
+  placeholdersUsed       String[]
+  contentHash            String // sha256 of canonical JSON {subject, preheader, blocks}
+  validatorVersion       Int
+  createdByKind          String // OPERATOR | AI_ASSISTED | ROLLBACK
+  actorKind              String // PLATFORM_OPERATOR | SYSTEM_ADMIN
+  createdById            String? // soft ref (as PolicyGroupVersion.createdById)
+  parentVersionId        String?
+  basePublishedVersionId String?
+  restoredFromVersionId  String?
+  sourceSuggestionId     String?
+  aiEditedAfterAccept    Boolean?
+  createdAuditLogId      String
+  publishedAt            DateTime? // set ONCE
+  publishAuditLogId      String?
+  createdAt              DateTime      @default(now())
+
+  @@unique([templateId, version])
+  @@index([templateId, createdAt])
+}
+
+model CommsAiSuggestion {
+  id                String    @id @default(cuid()) // = AiInvocation.correlationId
+  templateId        String // soft ref → CommsTemplate
+  baseVersionId     String
+  mode              String // POLISH | CHECK
+  tone              String?
+  status            String // OFFERED | REJECTED | UNAVAILABLE | ACCEPTED | EXPIRED
+  unavailableReason String? // KILL_SWITCH | COST_FREEZE | ALLOWANCE | PROVIDER
+  unavailableDetail String?
+  rejectionCodes    String[] // ContentIssueCode values (REJECTED)
+  suggestedContent  Json? // ContentBody — OFFERED / ACCEPTED only; template text only
+  suggestedHash     String?
+  notes             Json?
+  model             String?
+  requestedById     String // soft ref, operator
+  requestAuditLogId String
+  acceptedVersionId String?
+  expiresAt         DateTime
+  createdAt         DateTime  @default(now())
+  resolvedAt        DateTime?
+
+  @@index([templateId, createdAt])
+  @@index([status, expiresAt])
+  @@index([requestedById, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMS CENTER B2 — controlled automations (contract v1 §5, §6.3; v1.1 §6, §8.4).
+// AutomationDefinition: an operator-built rule over the CODE trigger catalog —
+// typed trigger, closed predicate set, a resolver, channels and a catalog
+// definition. It carries NO copy (it sends the stream's live content). Kept for
+// good (no DELETE grant: "delete" is the terminal DISABLED state).
+// AutomationRun: one LIVE trigger evaluation or one DRY_RUN replay, counts only.
+// AutomationRunItem: the per-(recipient, channel) CLAIM and SCHEDULE row; its
+// unique idempotencyKey is the claim. fm_system only; fm_app / fm_auth: nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AutomationDefinition {
+  id                             String    @id @default(cuid())
+  name                           String
+  description                    String    @default("")
+  triggerKey                     String // TriggerKey (lib/notifications/catalog/types.ts)
+  definitionKey                  String // catalog key
+  definitionVersion              Int // the definition version it was validated against
+  variant                        String    @default("default")
+  customerFacing                 Boolean // audience ∉ {OPERATOR_INBOX, PLATFORM_STAFF}; re-derived on every write
+  channels                       String[]
+  conditions                     Json // Condition[] — the closed predicate set, validated on every write
+  recipient                      Json // RecipientResolver
+  delayMinutes                   Int?
+  dedupeKeyTemplate              String
+  frequencyCapMax                Int
+  frequencyCapHours              Int
+  retryPolicy                    String    @default("STANDARD") // NONE | STANDARD
+  maxRecipientsPerRun            Int       @default(50)
+  state                          String    @default("DRAFT") // DRAFT | ACTIVE | PAUSED | DISABLED
+  version                        Int       @default(1) // optimistic token: +1 on every write
+  activatedVersion               Int?
+  autoPausedReason               String? // DEFINITION_CHANGED | STORM_BREAKER | ERROR_RATE | TRIGGER_RETIRED
+  ownerApprovedVersion           Int?
+  ownerApprovedDefinitionVersion Int?
+  ownerApprovedAt                DateTime?
+  ownerApprovedById              String? // soft ref, SYSTEM_ADMIN
+  lastDryRunId                   String? // soft ref → AutomationRun
+  // The engine's resumable keyset cursor over the trigger's recorded facts
+  // (AuditLog createdAt, id). Set at activation: nothing before it fires.
+  triggerCursorAt                DateTime?
+  triggerCursorId                String?
+  createdById                    String // soft ref, operator
+  updatedById                    String // soft ref, operator
+  activatedAt                    DateTime?
+  pausedAt                       DateTime?
+  disabledAt                     DateTime?
+  createdAt                      DateTime  @default(now())
+  updatedAt                      DateTime  @updatedAt
+
+  @@index([state, triggerKey])
+  @@index([definitionKey])
+}
+
+model AutomationRun {
+  id                String              @id @default(cuid())
+  automationId      String // soft ref → AutomationDefinition
+  automationVersion Int
+  mode              String // LIVE | DRY_RUN
+  triggerKey        String
+  triggerRef        String? // opaque AuditLog id (LIVE); null for a window replay
+  // LIVE only: sha256(automationId ‖ activatedVersion ‖ triggerRef) — one run per
+  // trigger fact per activation, however many wakes see it. NULL for DRY_RUN.
+  liveKey           String?             @unique
+  status            String // RUNNING | SUCCEEDED | PARTIAL | FAILED | HALTED
+  counts            Json // AutomationRunCounts — counts only
+  haltReason        String? // SuppressionReason (PROVIDER_FREEZE | STORM_BREAKER | AUTOMATION_PAUSED)
+  dedupedCount      Int                 @default(0)
+  windowFrom        DateTime? // DRY_RUN
+  windowTo          DateTime?
+  jobRunId          String? // soft ref (lib/jobs/run.ts currentJobRun)
+  error             String? // a closed code, never a message
+  startedAt         DateTime            @default(now())
+  completedAt       DateTime?
+  items             AutomationRunItem[]
+
+  @@index([automationId, startedAt])
+  @@index([status, startedAt])
+}
+
+model AutomationRunItem {
+  id                 String        @id @default(cuid()) // = CommsDelivery.messageKey of its sends
+  runId              String
+  run                AutomationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  automationId       String
+  automationVersion  Int
+  channel            String // EMAIL | IN_APP
+  recipientUserId    String? // soft ref; the account purge cancels + nulls
+  idempotencyKey     String        @unique // sha256(automationId ‖ activatedVersion ‖ triggerRef ‖ recipientId ‖ channel)
+  dedupeKey          String? // non-PII by construction
+  triggerRef         String? // the AuditLog fact (re-read at send time; never copied)
+  status             String // SCHEDULED | SENDING | SENT | SUPPRESSED | CANCELLED | FAILED | DEAD
+  reason             String? // SuppressionReason
+  notBefore          DateTime
+  attempt            Int           @default(0)
+  nextAttemptAt      DateTime?
+  leaseUntil         DateTime?
+  lastDeliveryStatus String? // the latest DeliveryStatus written to the ledger
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([status, notBefore])
+  @@index([status, nextAttemptAt])
+  @@index([runId])
+  @@index([automationId, dedupeKey])
+  @@index([recipientUserId, createdAt])
+}
+
+// CommsDeliveryDaily (Comms Center A-2a) — counts only, per UTC day × key ×
+// channel × status × reason. Written ONLY by the retention rollup, in the same
+// transaction that deletes the rolled CommsDelivery rows (so a row is counted
+// in exactly one of the two tables). No recipient of any kind.
+// fm_system: SELECT, INSERT, UPDATE (the upsert). fm_app / fm_auth: nothing.
+model CommsDeliveryDaily {
+  day           DateTime @db.Date
+  definitionKey String
+  channel       String
+  status        String
+  reason        String   @default("")
+  count         Int
+
+  @@id([day, definitionKey, channel, status, reason])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4523,6 +4862,68 @@ model PolicyGroup {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
   versions       PolicyGroupVersion[]
+
+  /// BETA LIFECYCLE (L1, owner decisions 2026-10-31) — ACTIVE / PAUSED / ENDED.
+  /// PAUSED: sign-in and reads stay; beta-only capabilities and NEW billable
+  /// operations are suspended; reversible. ENDED: the group grants nothing —
+  /// members resolve READ_ONLY (see `endedTransition`). Changed only by the
+  /// audited CONTROL write (lib/platform/policies/policy-group-lifecycle-write.ts),
+  /// every change recorded as a PolicyGroupTransition row.
+  lifecycle        PolicyGroupLifecycle        @default(ACTIVE)
+  /// COST FREEZE — independent of `lifecycle`: denies every NEW billable / metered
+  /// operation for the group's members, overriding every allowance (Founder
+  /// overlay and per-customer AI override included). Reversible; membership untouched.
+  costFrozen       Boolean                     @default(false)
+  /// What ENDED resolves to. READ_ONLY today; FREE is reserved until a Free
+  /// group is defined (an ENDED group with FREE still resolves READ_ONLY).
+  endedTransition  PolicyGroupEndedTransition?
+  /// Optimistic token for lifecycle writes (bumped by every transition).
+  lifecycleVersion Int                         @default(0)
+  transitions      PolicyGroupTransition[]
+}
+
+/// BETA LIFECYCLE — the policy-group lifecycle state.
+enum PolicyGroupLifecycle {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+/// BETA LIFECYCLE — what an ENDED group's members resolve to.
+enum PolicyGroupEndedTransition {
+  READ_ONLY
+  FREE
+}
+
+/// BETA LIFECYCLE — one recorded lifecycle / cost-freeze change.
+enum PolicyGroupTransitionKind {
+  PAUSE
+  RESUME
+  END
+  FREEZE
+  UNFREEZE
+}
+
+/// BETA LIFECYCLE — APPEND-ONLY history of every lifecycle and cost-freeze
+/// change of a Policy Group (fm_system holds SELECT + INSERT only). Written in
+/// the same transaction as the PolicyGroup update and its operator-action audit
+/// row. No customer data: the reason, the operator and the before/after state.
+model PolicyGroupTransition {
+  id               String                    @id @default(cuid())
+  groupKey         String
+  group            PolicyGroup               @relation(fields: [groupKey], references: [key], onDelete: Restrict, onUpdate: Restrict)
+  kind             PolicyGroupTransitionKind
+  fromLifecycle    PolicyGroupLifecycle
+  toLifecycle      PolicyGroupLifecycle
+  costFrozenBefore Boolean
+  costFrozenAfter  Boolean
+  reasonCode       String
+  reasonNote       String?
+  /// Soft reference to the operator (no FK: history outlives accounts).
+  operatorId       String?
+  createdAt        DateTime                  @default(now())
+
+  @@index([groupKey, createdAt])
 }
 
 /// POLICY EDITOR — one IMMUTABLE version of a Policy Group: the FULL values

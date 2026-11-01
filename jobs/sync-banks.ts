@@ -64,7 +64,12 @@ import { refreshBalancesForItem } from "@/lib/plaid/refresh";
 // manual refresh. runFullRefresh owns the RefreshExecution lifecycle; cron
 // injects its OWN stage pipeline (below) so its provider work is unchanged —
 // only the execution ledger is added.
-import { runFullRefresh } from "@/lib/plaid/refresh-execution";
+import { runFullRefresh, recordAdmissionDenial } from "@/lib/plaid/refresh-execution";
+import { readGlobalCostFreeze, type GlobalCostFreezeReader } from "@/lib/platform/cost-freeze";
+import {
+  billableSkipCode, createBillableBatchGate, tallyBillableDenial,
+  type BillableBatchLoader, type BillableDenialReason, type BillableDenialTally,
+} from "@/lib/entitlements/billable-gate";
 // OPS-2D-4 — canonical admission, resolved once per dispatch (see syncBanks).
 import { admitOperationalWork } from "@/lib/platform/admission/facts";
 import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
@@ -91,6 +96,23 @@ export interface SyncBanksResult {
   fresh: number;
   /** OPS-010 — Items that exceeded SYNC_BANKS_ITEM_DEADLINE_MS. */
   slowItems: number;
+  /**
+   * BETA LIFECYCLE L2 — Items whose connector's plan refused new paid work
+   * (frozen / paused / ended / unverifiable). Each is recorded as a SKIPPED
+   * RefreshExecution with a billable skip code; none is `deferred` (so the
+   * continuation does not spin on them) and none moves lastSyncedAt, a lock,
+   * a cursor or health. Reasons tallied in `planRestrictedReasons`.
+   */
+  planRestricted?: number;
+  planRestrictedReasons?: BillableDenialTally;
+  /**
+   * BETA LIFECYCLE L2 (review P3-2) — under the GLOBAL cost freeze (or an
+   * unreadable flag) the sweep writes ONE job-level finding — this summary
+   * outcome — instead of one SKIPPED execution per Item. Job health shows the
+   * run as `skipped`.
+   */
+  outcome?: "SKIPPED";
+  skipReason?: string;
 }
 
 /** DF-2B — the cron runner's outcome, consumed by syncBanks for counting/logging. */
@@ -185,6 +207,8 @@ export const SYNC_BANKS_RECENT_MS = 2 * 3_600_000;
 
 export interface SyncBanksCandidate {
   id: string;
+  /** BETA LIFECYCLE L2 — the connector (the customer the Item bills to). */
+  userId?: string | null;
   institutionName: string;
   investmentsConsent: PlaidInvestmentsConsent | null;
   encryptedToken: string;
@@ -198,6 +222,12 @@ export interface SyncBanksDeps {
   processItem?: (item: SyncBanksCandidate) => Promise<"succeeded" | "failed" | "skipped">;
   clock?: () => number;
   budgetMs?: number;
+  /** BETA LIFECYCLE L2 — the batch billable decision (default billableAllowedForUsers; ONE read per batch). */
+  billable?: BillableBatchLoader;
+  /** BETA LIFECYCLE L2 — records a refused Item's deferred fact (default: a SKIPPED RefreshExecution). */
+  recordDenial?: (item: SyncBanksCandidate, reason: BillableDenialReason) => Promise<void>;
+  /** BETA LIFECYCLE L2 — the global cost-freeze read (default: the uncached PlatformSetting read). */
+  costFreeze?: GlobalCostFreezeReader;
 }
 
 /**
@@ -215,7 +245,7 @@ export function syncBanksOrder(items: readonly SyncBanksCandidate[], now: number
 async function loadSyncBanksItems(): Promise<SyncBanksCandidate[]> {
   return db.plaidItem.findMany({
     where:  { status: PlaidItemStatus.ACTIVE, user: { deactivatedAt: null } },
-    select: { id: true, institutionName: true, investmentsConsent: true, encryptedToken: true, lastSyncedAt: true },
+    select: { id: true, userId: true, institutionName: true, investmentsConsent: true, encryptedToken: true, lastSyncedAt: true },
   });
 }
 
@@ -239,10 +269,25 @@ export async function syncBanks(deps: SyncBanksDeps = {}): Promise<SyncBanksResu
     return { succeeded: 0, failed: 0, skipped: 0, total: all.length, eventItems: 0, deferred: items.length, fresh, slowItems: 0, notAdmitted: admission.reason! };
   }
 
+  // BETA LIFECYCLE L2 — the GLOBAL cost freeze is ONE platform fact: one
+  // job-level finding, not a SKIPPED row per Item (which would bury the ledger).
+  const freeze = await (deps.costFreeze ?? readGlobalCostFreeze)();
+  if (freeze.frozen) {
+    const code = billableSkipCode(freeze.reason!);
+    console.log(`[sync-banks] ${items.length} item(s) eligible but the global cost freeze is in force (${freeze.state}) — SKIPPED (${code}); nothing marked.`);
+    return { succeeded: 0, failed: 0, skipped: 0, total: all.length, eventItems: 0, deferred: 0, fresh, slowItems: 0, outcome: "SKIPPED", skipReason: code };
+  }
+
   const counters = { succeeded: 0, failed: 0, skipped: 0, eventItems: 0 };
   const processItem = deps.processItem ?? ((item: SyncBanksCandidate) => syncOneBankItem(item, counters));
   let deferred = 0;
   let slowItems = 0;
+  // BETA LIFECYCLE L2 — ONE policy read for the batch's connectors, re-read at
+  // most every BILLABLE_BATCH_MAX_AGE_MS (a freeze mid-sweep lands within 30 s).
+  const gate = createBillableBatchGate(items.map((i) => i.userId), "plaid_sync", deps.billable ? { load: deps.billable } : {});
+  const recordDenial = deps.recordDenial ?? recordSyncBanksDenial;
+  let planRestricted = 0;
+  const planRestrictedReasons: BillableDenialTally = {};
 
   for (let i = 0; i < items.length; i++) {
     // OPS-001 — stop STARTING Items once the remaining budget cannot cover one.
@@ -255,6 +300,17 @@ export async function syncBanks(deps: SyncBanksDeps = {}): Promise<SyncBanksResu
       break;
     }
     const item = items[i];
+    // BETA LIFECYCLE L2 — before the lock, the RefreshExecution, any Plaid call
+    // (transactions, balances, investment events) and the wealth rebuild.
+    const billable = await gate.decide(item.userId);
+    if (!billable.allowed) {
+      planRestricted++;
+      tallyBillableDenial(planRestrictedReasons, billable.reason);
+      await recordDenial(item, billable.reason).catch((e) =>
+        console.warn(`[sync-banks] deferred-fact record failed for PlaidItem ${item.id} (non-fatal):`, e instanceof Error ? e.message : String(e)));
+      console.log(`[sync-banks] ${item.institutionName} (PlaidItem ${item.id}): plan-restricted (${billable.reason}) — skipped, nothing marked`);
+      continue;
+    }
     const t0 = clock();
     const outcome = await processItem(item);
     const ms = clock() - t0;
@@ -266,7 +322,13 @@ export async function syncBanks(deps: SyncBanksDeps = {}): Promise<SyncBanksResu
   }
 
   console.log(`[sync-banks] complete — ${counters.succeeded} succeeded, ${counters.failed} failed, ${counters.skipped} skipped, ${deferred} deferred, ${fresh} fresh, ${all.length} total, ${counters.eventItems} event-ingest`);
-  return { ...counters, total: all.length, deferred, fresh, slowItems };
+  return { ...counters, total: all.length, deferred, fresh, slowItems,
+    ...(planRestricted > 0 ? { planRestricted, planRestrictedReasons } : {}) };
+}
+
+/** BETA LIFECYCLE L2 — the refused Item's evidence: one SKIPPED execution, no stages, the billable skip code. */
+async function recordSyncBanksDenial(item: SyncBanksCandidate, reason: BillableDenialReason): Promise<void> {
+  await recordAdmissionDenial({ itemId: item.id, trigger: "CRON", profile: "FULL_REFRESH", admissionReason: billableSkipCode(reason) });
 }
 
 /** One Item's cron refresh — the pre-OPS-001 loop body, verbatim in behaviour. Never throws. */

@@ -36,6 +36,13 @@ export interface EmailMessage {
   text: string;
   /** Optional HTML body, rendered from the same blocks as `text`. */
   html?: string;
+  /**
+   * Comms Center B2 HARDENING A1 — the provider idempotency key (Resend: the `Idempotency-Key`
+   * header). The same key within the provider's window is accepted ONCE: a re-send after a crash
+   * that followed the provider's acceptance returns the original answer and sends nothing.
+   * Never derived from the address, subject or body.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -43,19 +50,82 @@ export interface EmailMessage {
  * one of these statuses; callers branch on `status` instead of catching.
  *
  *   sent      — handed to the real provider, which accepted it (id present).
- *   captured  — recorded by the dev/test capture transport (not really sent).
+ *   captured  — not sent to any provider: recorded by the dev/test capture
+ *               transport (provider "capture"), or held back by the
+ *               non-production recipient guard (provider "none", reason
+ *               "ENVIRONMENT_GUARD" — lib/email/recipient-guard.ts). A
+ *               non-failure: never retried, never logged as an error.
  *   skipped   — no send performed by design (e.g. email disabled / no creds in
- *               a context that must not fall back to capture).
+ *               a context that must not fall back to capture, or the storm
+ *               limit — then `reason` says which). Never retried.
  *   error     — the transport attempted a send and failed (error present).
  */
 export interface EmailResult {
   status: "sent" | "captured" | "skipped" | "error";
   /** Provider message id when status === "sent". */
   id?: string;
-  /** Which transport produced this result: "resend" | "capture". */
+  /** Which transport produced this result: "resend" | "capture" | "none" (guarded). */
   provider: string;
   /** Human-readable failure reason when status === "error". */
   error?: string;
+  /**
+   * Why a send was not handed to the provider:
+   *   ENVIRONMENT_GUARD      — captured by the non-production guard (contract §O-4);
+   *   RATE_LIMITED           — skipped: the recipient's email storm limit (Comms
+   *                            Center A-2b, O-10) is reached;
+   *   RATE_LIMIT_UNVERIFIED  — skipped: a storm-limited send whose count could
+   *                            not be read (fail closed).
+   */
+  reason?: "ENVIRONMENT_GUARD" | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";
+  /**
+   * Comms Center B2 PRE-FLIP R4 — on a "sent" result with no `id`: the provider refused this request
+   * because its Idempotency-Key was already used for a DIFFERENT payload (Resend 409
+   * `invalid_idempotent_request`). Only an idempotent caller (an automation item, whose key is the
+   * item id) can see it, and an earlier attempt under that key was accepted — so it is reported as
+   * sent, flagged uncertain, and must never be re-sent.
+   */
+  uncertain?: "IDEMPOTENCY_CONFLICT";
+}
+
+/**
+ * Comms Center A-2a — what a caller tells the chokepoint about a send, for the
+ * delivery ledger (lib/notifications/delivery). Metadata only: the ledger row
+ * never carries the address, subject, body or any template data.
+ *
+ *   key              the catalog key this send is a leg of
+ *                    (lib/notifications/catalog/definitions.ts). Every production
+ *                    call site names one (pinned by catalog.test.ts).
+ *   recipientUserId  the account the message is about/to, or null for an
+ *                    operator inbox / an applicant with no account.
+ *   hashRecipient    false = store no recipient hash even when there is no
+ *                    userId (the post-purge goodbye: nothing may link back).
+ *   messageKey       the MESSAGE this attempt belongs to, stable across retries
+ *                    (the Notification id for registry email). Absent ⇒ a new
+ *                    send id is generated (a direct send is one message).
+ *   notificationId   the in-app twin, when there is one.
+ *   attempt          1-based attempt number (the retry job passes its own).
+ *   terminalOnError  this is the last attempt: an error is recorded as DEAD.
+ */
+export interface EmailSendContext {
+  key: string;
+  recipientUserId: string | null;
+  hashRecipient?: boolean;
+  messageKey?: string;
+  notificationId?: string;
+  attempt?: number;
+  terminalOnError?: boolean;
+  /** Comms Center B1 — the published content version this email rendered; absent = the code default. */
+  contentVersionId?: string | null;
+  /**
+   * Comms Center B2 — "TEST": an operator's test send to their OWN address
+   * (contract v1.1 §6.9). The subject is prefixed "[TEST] ", the per-recipient
+   * storm limit does not apply (OPERATOR-class), and the ledger row is mode TEST.
+   */
+  mode?: "LIVE" | "TEST";
+  /** Comms Center B2 — the automation claim row this send belongs to (AutomationRunItem.id). */
+  automationRunItemId?: string;
+  /** Comms Center B2 HARDENING A1 — forwarded to the provider as its idempotency key (EmailMessage.idempotencyKey). */
+  idempotencyKey?: string;
 }
 
 /**
@@ -87,7 +157,9 @@ export type EmailTemplateName =
   | "notification"
   | "beta-invite"
   | "beta-request"
-  | "platform-alert";
+  | "platform-alert"
+  | "welcome"
+  | "digest";
 
 /**
  * A template turns typed `data` into the subject + text of a message. The

@@ -15,11 +15,13 @@
  * until the attempt cap):
  *   RETRY    status "error" AND attempts < MAX_DELIVERY_ATTEMPTS (3 total:
  *            the create-time attempt + up to 2 retries).
- *   NEVER    "sent" / "captured" (delivered) · "skipped" (deliberate) ·
+ *   NEVER    "sent" / "captured" (accepted, or held back by capture / the
+ *            non-production recipient guard — never a failure) · "skipped" (deliberate) ·
  *            "error" at the cap — the terminal, queryable dead-letter state
  *            (no DLQ infrastructure, by the investigation's ruling).
  *   OBSOLETE a delivery whose notification is archived, expired, or already
- *            READ in-app, or whose recipient has no email — re-mailing has
+ *            READ in-app, or whose recipient has no email, or whose type now
+ *            excludes EMAIL (registry `excludedChannels`) — re-mailing has
  *            no value; the row is closed as "skipped" (existing vocabulary:
  *            a skip by design) WITHOUT an attempt increment, and exits the
  *            retry set. Deleted notifications need no handling — deliveries
@@ -54,6 +56,14 @@
 import { db } from "@/lib/db";
 import { IndeterminateWriteError, resolveConditionalWrite } from "@/lib/db/conditional-write";
 import { emailNotificationAdapter } from "@/lib/notifications/channels/email";
+import { recomputeActionLabel } from "@/lib/notifications/action-label";
+import { getNotificationDefinition } from "@/lib/notifications/registry";
+import { isEmailAnchorMetadata } from "@/lib/notifications/email-anchor";
+import { notificationLedgerRow, recordDelivery } from "@/lib/notifications/delivery/record";
+import { writeDeliveryRow } from "@/lib/notifications/delivery/store";
+import type { LedgerWriter } from "@/lib/notifications/delivery/types";
+import { retryEmailParts, type LiveContentResolver } from "@/lib/notifications/content/send";
+import { defaultLiveContentResolver } from "@/lib/notifications/content/store";
 import type {
   ChannelAdapter,
   NotificationCategory,
@@ -71,6 +81,8 @@ const RETRY_BATCH_LIMIT = 100;
 export interface RetryableDeliveryRow {
   id: string;
   attempts: number;
+  /** A-2a: the delivery ledger's messageKey — every retry of this email is the same message. */
+  notificationId?: string;
   notification: {
     userId: string;
     type: string;
@@ -79,9 +91,13 @@ export interface RetryableDeliveryRow {
     title: string;
     body: string | null;
     href: string | null;
+    /** The createNotification input data — read (never written) to recompute the email CTA label. */
+    metadata?: unknown;
     readAt: Date | null;
     archivedAt: Date | null;
     expiresAt: Date | null;
+    /** A-2b: an email anchor still holding its key is an OPEN condition (see the obsolete rule). */
+    dedupeKey?: string | null;
     user: { email: string } | null;
   } | null;
 }
@@ -93,6 +109,7 @@ export interface NotificationRetryClient {
       select: {
         id: true;
         attempts: true;
+        notificationId: true;
         notification: {
           select: {
             userId: true;
@@ -102,9 +119,11 @@ export interface NotificationRetryClient {
             title: true;
             body: true;
             href: true;
+            metadata: true;
             readAt: true;
             archivedAt: true;
             expiresAt: true;
+            dedupeKey: true;
             user: { select: { email: true } };
           };
         };
@@ -164,12 +183,28 @@ export async function retryNotifications(
   client: NotificationRetryClient = db as unknown as NotificationRetryClient,
   adapter: ChannelAdapter = emailNotificationAdapter,
   now: Date = new Date(),
+  /**
+   * A-2a delivery ledger. Default: the production writer when this runs on the
+   * real client, and NOTHING for an injected test client (never a real DB).
+   */
+  ledger?: LedgerWriter | null,
+  /**
+   * Comms Center B1 — the live-content resolver for the EMAIL leg (the retried
+   * email re-renders the EMAIL stream's published version, never the stored
+   * in-app copy). Default: production on the real client, none for a test client.
+   */
+  content?: LiveContentResolver | null,
 ): Promise<RetryNotificationsResult> {
+  const writer: LedgerWriter | null =
+    ledger !== undefined ? ledger : (client === (db as unknown as NotificationRetryClient) ? writeDeliveryRow : null);
+  const resolver: LiveContentResolver | null =
+    content !== undefined ? content : (client === (db as unknown as NotificationRetryClient) ? defaultLiveContentResolver : null);
   const rows = await client.notificationDelivery.findMany({
     where: { channel: "EMAIL", status: "error", attempts: { lt: MAX_DELIVERY_ATTEMPTS } },
     select: {
       id: true,
       attempts: true,
+      notificationId: true,
       notification: {
         select: {
           userId: true,
@@ -179,9 +214,11 @@ export async function retryNotifications(
           title: true,
           body: true,
           href: true,
+          metadata: true,
           readAt: true,
           archivedAt: true,
           expiresAt: true,
+          dedupeKey: true,
           user: { select: { email: true } },
         },
       },
@@ -206,18 +243,41 @@ export async function retryNotifications(
     // Obsolete: close as "skipped" (no attempt increment — nothing was
     // attempted); the row exits the retry set by status. Original error
     // text is left in place for forensics.
+    // Also obsolete: a type whose registry entry now EXCLUDES the EMAIL channel
+    // (SPACE_INVITE_RECEIVED since 2026-10-31 — its email is the dedicated
+    // space-invite email). A legacy failed row must not resurrect the duplicate.
+    // Comms Center A-2b: an EMAIL ANCHOR (written archived because the user's
+    // in-app channel was off; lib/notifications/create.ts) is archived by
+    // design, not resolved — while it still holds its dedupe key the condition
+    // is open and its email is retried under the normal policy (attempt cap,
+    // DEAD). Retirement releases the key, after which it is obsolete as before.
+    const openAnchor =
+      n !== null && n.archivedAt !== null && typeof n.dedupeKey === "string" &&
+      isEmailAnchorMetadata(n.metadata) && getNotificationDefinition(n.type)?.emailIndependentOfInApp === true;
     const obsolete =
       n === null ||
-      n.archivedAt !== null ||
+      (n.archivedAt !== null && !openAnchor) ||
       n.readAt !== null ||
       (n.expiresAt !== null && n.expiresAt <= now) ||
-      !n.user?.email;
+      !n.user?.email ||
+      getNotificationDefinition(n.type)?.excludedChannels?.includes("EMAIL") === true;
     if (obsolete) {
       await client.notificationDelivery.update({
         where: { id: row.id },
         data: { status: "skipped" },
       });
       result.skippedObsolete++;
+      // A-2a (contract v1.0.2): the message's FINAL attempt on the ledger, so final-status
+      // counting closes it as SUPPRESSED instead of leaving its last FAILED standing.
+      // Same messageKey (the Notification id), the next attempt number; no send happened.
+      if (writer && n !== null && row.notificationId) {
+        await recordDelivery(writer, notificationLedgerRow({
+          key: n.type, channel: "EMAIL", status: "SUPPRESSED",
+          reason: !n.user?.email ? "NO_RECIPIENT" : "OBSOLETE",
+          recipientUserId: n.userId, notificationId: row.notificationId,
+          attempt: row.attempts + 1, env: process.env, now,
+        }));
+      }
       continue;
     }
 
@@ -254,15 +314,33 @@ export async function retryNotifications(
     // Re-deliver through the SAME adapter create.ts uses — no second email
     // path. The adapter never throws by contract.
     result.retried++;
+    const actionLabel = recomputeActionLabel(n.type, n.metadata);
+    // Comms Center B1 (review P2): the stored row is the IN-APP render. For a
+    // content-editable type the email re-renders its OWN leg — the registry
+    // render plus the EMAIL stream's published version (contentVersionId on the
+    // ledger) — never the operator's in-app wording. Other types: unchanged.
+    const parts = await retryEmailParts({
+      type: n.type, metadata: n.metadata, stored: { title: n.title, body: n.body, href: n.href },
+      resolver, appBaseUrl: process.env.NEXT_PUBLIC_APP_URL,
+    });
     const outcome = await adapter.deliver({
       userId: n.userId,
       email: n.user!.email,
       type: n.type,
       category: n.category as NotificationCategory,
       priority: n.priority as NotificationPriorityValue,
-      title: n.title,
-      ...(n.body ? { body: n.body } : {}),
-      ...(n.href ? { href: n.href } : {}),
+      title: parts.title,
+      ...(parts.body ? { body: parts.body } : {}),
+      ...(parts.href ? { href: parts.href } : {}),
+      ...(parts.emailContent ? { emailContent: parts.emailContent } : {}),
+      // The CTA label is email-only and never persisted: recompute it from the
+      // persisted type + metadata through the same registry render (SYNC_FAILED
+      // without a derivable state → the conservative "Review connection").
+      ...(n.href && actionLabel ? { actionLabel } : {}),
+      // Delivery ledger (A-2a): this is attempt attempts+1; at the cap an error is DEAD.
+      attempt: row.attempts + 1,
+      ...(row.notificationId ? { notificationId: row.notificationId } : {}),
+      finalAttempt: row.attempts + 1 >= MAX_DELIVERY_ATTEMPTS,
     });
 
     // Outcome write — ChannelResult verbatim, deliveredAt only on "sent"

@@ -115,6 +115,9 @@ async function main() {
       && !JSON.stringify(audit).includes("example.test"));
     const mail = capturedEmails();
     t.check("exactly one verification e-mail, to the normalised address", mail.length === 1 && mail[0].to === "new.person@example.test");
+    // 2026-10-31: the welcome waits for verification — never beside the verification e-mail.
+    t.check("uninvited: NO welcome at registration (no e-mail, no ACCOUNT_WELCOME row)",
+      !mail.some((m) => /Welcome to Fourth Meridian/.test(m.subject)) && fake.rows("Notification", { type: "ACCOUNT_WELCOME" }).length === 0);
     const m = /token=([0-9a-f]{64})/.exec(mail[0]?.text ?? "");
     t.check("the link carries the RAW token whose hash is what was stored", !!m && hashResetToken(m[1]) === u.emailVerificationToken);
     t.check("the raw token is not what was stored", !!m && m[1] !== u.emailVerificationToken);
@@ -169,7 +172,10 @@ async function main() {
     t.check("the invited address registers → 201, verificationRequired: false", ok.status === 201 && ok.body.verificationRequired === false, ok);
     const u = fake.one("User", { id: ok.body.userId })!;
     t.check("invited ⇒ pre-verified, no verification token stored", u.emailVerifiedAt instanceof Date && u.emailVerificationToken === null);
-    t.check("no verification e-mail is sent", capturedEmails().length === 0);
+    // 2026-10-31: the invited account is usable now, so its ONE email is the welcome (never a verification email).
+    t.check("no verification e-mail; exactly one e-mail, the welcome",
+      capturedEmails().length === 1 && capturedEmails()[0].subject === "Welcome to Fourth Meridian" && !/token=/.test(capturedEmails()[0].text),
+      capturedEmails().map((m) => m.subject));
     const req = fake.one("BetaAccessRequest", { id: inv.row.id })!;
     t.check("the invite is REDEEMED to this user and its token hash nulled", req.status === "REDEEMED" && req.redeemedUserId === u.id && req.inviteTokenHash === null);
     t.check("the account joins the invite cohort", fake.rows("CustomerCohort", { userId: u.id, source: "INVITE" }).length === 1);
@@ -201,6 +207,33 @@ async function main() {
       && fake.rows("CustomerCohort").length === 0 && fake.rows("AuditLog").length === 0);
     t.check("the invite is still APPROVED and still redeemable", fake.one("BetaAccessRequest", { id: inv.row.id })!.status === "APPROVED"
       && (await register(form({ inviteToken: inv.raw }))).status === 201);
+  }
+
+  t.section("8b. WELCOME (owner-approved 2026-10-31) — invited: once, at registration, idempotent");
+  {
+    world("invite_only");
+    const inv = invite("new.person@example.test");
+    const ok = await register(form({ inviteToken: inv.raw }));
+    const userId = ok.body.userId as string;
+    const mail = capturedEmails();
+    t.check("201, and exactly one e-mail: the welcome, to the normalised address",
+      ok.status === 201 && mail.length === 1 && mail[0].to === "new.person@example.test" && mail[0].subject === "Welcome to Fourth Meridian");
+    t.check("…greets by first name, ONE action 'Open Fourth Meridian' → /dashboard, with the legal footer",
+      /Welcome, New/.test(mail[0].text) && (mail[0].html ?? "").split("Open Fourth Meridian").length - 1 === 1
+        && /\/dashboard(?![\w/])/.test(mail[0].text) && /Privacy/i.test(mail[0].text) && /Terms/i.test(mail[0].text));
+    const rows = fake.rows("Notification", { userId, type: "ACCOUNT_WELCOME" });
+    t.check("one ACCOUNT_WELCOME in-app row, holding the one-time key",
+      rows.length === 1 && rows[0].dedupeKey === `ACCOUNT_WELCOME:user:${userId}:once`, rows.map((r) => r.dedupeKey));
+    // Ledger keys (ACCOUNT_WELCOME on both legs) are proven in lib/notifications/new-notifications.test.ts:
+    // the production ledger writer records nothing under NODE_ENV=test.
+    const { sendWelcome } = await import("@/lib/notifications/welcome");
+    const again = await sendWelcome({ userId, email: "new.person@example.test", firstName: "New" });
+    t.check("a second welcome for the same account is a duplicate: no e-mail, no row", again === "duplicate"
+      && capturedEmails().length === 1 && fake.rows("Notification", { userId, type: "ACCOUNT_WELCOME" }).length === 1);
+    fake.table("Notification").forEach((r) => { if (r.type === "ACCOUNT_WELCOME") r.archivedAt = new Date(); });
+    const afterDismiss = await sendWelcome({ userId, email: "new.person@example.test", firstName: "New" });
+    t.check("…even after the user dismissed (archived) the welcome: the one-time key is never released",
+      afterDismiss === "duplicate" && capturedEmails().length === 1);
   }
 
   t.section("9. CAPTCHA (configured) — a rejected token stops before any DB work");

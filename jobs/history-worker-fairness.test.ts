@@ -16,7 +16,9 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs jobs/history-worker-fairness.test.ts
  */
 
-import { solHistoryBackfill, WAKE_SAFE_MS, PRICE_GAP_RESERVE_MS, type SolBackfillJobDeps, type SolBackfillJobSummary } from "@/jobs/sol-history-backfill";
+import { readFileSync } from "node:fs";
+import { OPEN_BACKFILL_GATES } from "@/lib/test-support/billable-open";
+import { solHistoryBackfill, solBackfillJobOutcome, WAKE_SAFE_MS, PRICE_GAP_RESERVE_MS, type SolBackfillJobDeps, type SolBackfillJobSummary } from "@/jobs/sol-history-backfill";
 import { workerConfig } from "@/lib/crypto/sol-backfill-worker.core";
 import { btcWorkerConfig } from "@/lib/crypto/btc-backfill-worker.core";
 import { ethWorkerConfig, queuedCheckpoint, serializeCheckpoint as serializeEth } from "@/lib/crypto/eth-history-backfill.core";
@@ -27,8 +29,10 @@ import type { SolBackfillStore } from "@/lib/crypto/sol-history-backfill";
 import { chainOrder, nextRotation, phaseDeadlineFor, HISTORY_CHAINS, type HistoryChain } from "@/lib/crypto/history-worker-schedule.core";
 import { incrementalMeter, meterTotal, METER_FLUSH_EVERY_CALLS, type RequestMeter } from "@/lib/usage/provider-budget.core";
 import {
-  acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, revaluationAttemptKey, valuedFromISO,
-  type PriceGapDeps, type RevaluationDeps, type HolderLicence, type InstrumentPriceFacts, type RevaluationOwed,
+  acquireHistoricalPriceGaps, revalueHoldersAfterPriceGaps, priceGapAttemptKey, valuedFromISO, holderRevaluationFor, revaluationPending, revaluationBlocks,
+  planRevaluation, stampOwedHolders,
+  REVALUATION_RESERVE_MS,
+  type PriceGapDeps, type RevaluationDeps, type HolderLicence, type InstrumentPriceFacts, type RevaluationOwed, type HolderRevaluation,
 } from "@/lib/prices/price-gap";
 
 let failures = 0, passes = 0;
@@ -65,7 +69,7 @@ function world(o: { sol?: number; btc?: number; eth?: number; persist?: boolean;
     for (const [k, v] of Object.entries(meter)) { const d = v - (flushed[k] ?? 0); if (d > 0) { ledger[`${prefix}:${k}`] = (ledger[`${prefix}:${k}`] ?? 0) + d; flushed[k] = v; } }
   };
   const ids = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${i}`);
-  const deps: SolBackfillJobDeps = {
+  const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
     now: () => t, sleep: async (ms) => { t += ms; },
     wakeStartedAt: async () => (o.wakeAgoMs === undefined ? null : t - (typeof o.wakeAgoMs === "function" ? o.wakeAgoMs(runNo) : o.wakeAgoMs)),
     wallets: async () => ids("s", o.sol ?? 0).map((id) => ({ accountId: id, connectionId: `c-${id}`, address: ADDR, cursor: importingSol(id) })),
@@ -262,6 +266,180 @@ async function main() {
     check("ETH_BACKFILL_START_RESERVE_MS above the job budget is clamped: ETH still steps", (s.eth?.walletsRun ?? 0) === 1 && s.eth?.stoppedBecause !== "JOB_BUDGET", JSON.stringify(s.eth));
   }
 
+  console.log("P1 2026-10-31 fairness: a history backlog cannot starve an owed holder revaluation");
+  {
+    for (const chain of ["BTC", "ETH", "SOL"] as const) {
+      const run = async (pending: boolean) => {
+        const w = world({ sol: chain === "SOL" ? 20 : 0, btc: chain === "BTC" ? 20 : 0, eth: chain === "ETH" ? 1 : 0, regen: true });
+        let leftAtStart = -1;
+        w.deps.cryptoHolders = async () => ["h1"];
+        w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+        w.deps.revaluationPending = async () => pending;
+        w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
+          leftAtStart = deadlineMs - w.now();
+          const skipped = leftAtStart < REVALUATION_RESERVE_MS;
+          return { priceGaps: null, owed: 1, revalued: skipped ? 0 : 1, chunksRebuilt: skipped ? 0 : 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, blocksCredited: 0, failures: 0, skippedForTime: skipped };
+        };
+        const s = await w.run();
+        return { s, leftAtStart, stepped: stepped(s, chain) };
+      };
+      const starved = await run(false);
+      // (ETH's fake wallet is one bounded step, so it may leave time over; BTC/SOL backlogs spend every ms.)
+      if (chain !== "ETH") check(`${chain} backlog, nothing reported owed: the revaluation runs last on what is left (the live starvation)`,
+        starved.leftAtStart < REVALUATION_RESERVE_MS && starved.stepped && !starved.s.revaluationReserved, JSON.stringify({ left: starved.leftAtStart }));
+      const fair = await run(true);
+      check(`${chain} backlog, a revaluation owed: its slice is reserved — it starts with ≥ REVALUATION_RESERVE_MS and the chain still steps`,
+        fair.leftAtStart >= REVALUATION_RESERVE_MS && fair.s.revaluationReserved === true && fair.s.holderRevaluation?.revalued === 1 && fair.stepped,
+        JSON.stringify({ left: fair.leftAtStart, h: fair.s.holderRevaluation }));
+    }
+    // Two backlogs: the reserved slice is taken right after the leader, so the FOLLOWER cannot eat it either.
+    {
+      const w = world({ sol: 20, btc: 20, regen: true });
+      let leftAtStart = -1;
+      w.deps.cryptoHolders = async () => ["h1"];
+      w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+      w.deps.revaluationPending = async () => true;
+      w.deps.revalueHolders = async (_ids, { deadlineMs }) => {
+        leftAtStart = deadlineMs - w.now();
+        return { priceGaps: null, owed: 1, revalued: 1, chunksRebuilt: 1, deferred: 0, alreadyRevalued: 0, abandonedBlocks: 0, rowsStampedUnavailable: 0, rowsStampedPending: 0, blocksCredited: 0, failures: 0, skippedForTime: false };
+      };
+      const s = await w.run();
+      check("SOL + BTC backlogs, a revaluation owed: it runs BEFORE the follower chain (≥ REVALUATION_RESERVE_MS left), both chains still step",
+        leftAtStart >= REVALUATION_RESERVE_MS && stepped(s, "SOL") && stepped(s, "BTC"), JSON.stringify({ left: leftAtStart, order: s.schedule?.order }));
+    }
+    // OWNER RULING: abandoned blocks make the run PARTIAL (never silent), in BOTH jobs.
+    const hr = (abandonedBlocks: number) => ({ holders: 1, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: abandonedBlocks * 7, failures: 0, skippedForTime: false });
+    const okOut = solBackfillJobOutcome({ holderRevaluation: hr(0) });
+    const abOut = solBackfillJobOutcome({ holderRevaluation: hr(2) });
+    check("worker: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
+      okOut.outcome === "COMPLETE" && abOut.outcome === "PARTIAL" && abOut.partialReasons.some((x) => x.startsWith("REVALUATION_ABANDONED: 2 block(s)")), JSON.stringify(abOut));
+    const { syncCryptoOutcome } = await import("@/jobs/sync-crypto");
+    const runOf = (abandonedBlocks: number) => ({ priceGaps: null, owed: 0, revalued: 0, chunksRebuilt: 0, deferred: 0, alreadyRevalued: 0, abandonedBlocks, rowsStampedUnavailable: 3, rowsStampedPending: 0, blocksCredited: 0, failures: 0, skippedForTime: false });
+    check("sync-crypto: abandoned revaluation blocks ⇒ outcome PARTIAL, reason REVALUATION_ABANDONED",
+      syncCryptoOutcome(runOf(0)).outcome === "COMPLETE" && syncCryptoOutcome(null).outcome === "COMPLETE"
+        && syncCryptoOutcome(runOf(1)).outcome === "PARTIAL" && syncCryptoOutcome(runOf(1)).partialReasons[0].startsWith("REVALUATION_ABANDONED: 1 block(s)"));
+    {
+      // …and end to end through the worker: the summary carries it.
+      const w = world({ regen: true });
+      w.deps.cryptoHolders = async () => ["h1"];
+      w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+      w.deps.revalueHolders = async () => runOf(1);
+      const s = await w.run();
+      check("worker run with an abandoned block: summary.outcome PARTIAL (REVALUATION_ABANDONED), holderRevaluation.abandonedBlocks 1",
+        s.outcome === "PARTIAL" && !!s.partialReasons?.some((x) => x.startsWith("REVALUATION_ABANDONED")) && s.holderRevaluation?.abandonedBlocks === 1, JSON.stringify({ o: s.outcome, r: s.partialReasons }));
+    }
+    {
+      // L2 × reservation: the early (reserved) holder set passes the SAME billable gate — a refused owner gets no revaluation.
+      const w = world({ btc: 20, regen: true });
+      const seen: string[][] = [];
+      w.deps.cryptoHolders = async () => ["ok1", "frozen1"];
+      w.deps.billableAccounts = async (ids) => new Map(ids.map((id) => [id, id === "frozen1" ? { allowed: false, reason: "COST_FREEZE" } as never : { allowed: true }] as const));
+      w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+      w.deps.revaluationPending = async (ids) => { seen.push([...ids]); return true; };
+      w.deps.revalueHolders = async (ids) => { seen.push([...ids]); return runOf(0); };
+      await w.run();
+      check("cost freeze × reservation: a refused (frozen) owner's holder is in neither the pending read nor the revaluation",
+        seen.length >= 2 && seen.every((x) => !x.includes("frozen1") && x.includes("ok1")), JSON.stringify(seen));
+      const sc = readFileSync("jobs/sync-crypto.ts", "utf8");
+      check("sync-crypto: under the GLOBAL freeze the revaluation's price-gap fetch is replaced by an empty run (DB recompute only)",
+        /if \(platformFrozen\) revalDeps\.acquireGaps = async \(\) => \(\{ decisions: \[\], acquired: 0/.test(sc) && /deps: revalDeps,/.test(sc));
+    }
+    {
+      // Session 2 ruling: STAMP, DON'T REBUILD for frozen / refused holders — then unfreeze clears it.
+      const mkW = (o: { global?: boolean; refuse?: boolean }) => {
+        const w = world({ btc: 1, regen: true });
+        const log: string[] = [];
+        w.deps.costFreeze = async () => (o.global ? { frozen: true, state: "FROZEN", reason: "COST_FREEZE" } as never : { frozen: false, state: "MISSING", reason: null });
+        w.deps.billableAccounts = async (ids) => new Map(ids.map((id) => [id, o.refuse && id === "frozen1" ? { allowed: false, reason: "COST_FREEZE" } as never : { allowed: true }] as const));
+        w.deps.cryptoHolders = async () => ["ok1", "frozen1"];
+        w.deps.stampOwedHolders = async (ids) => { log.push(`stamp:${[...ids].sort().join("+")}`); return 5; };
+        w.deps.acquirePriceGaps = async (ids) => { log.push(`prices:${ids.join("+")}`); return { decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }; };
+        w.deps.revalueHolders = async (ids) => { log.push(`revalue:${[...ids].sort().join("+")}`); return runOf(0); };
+        return { w, log };
+      };
+      const g = mkW({ global: true });
+      const gs = await g.w.run();
+      check("GLOBAL freeze: owed holders are STAMPED (status only), the job reports SKIPPED, and nothing paid runs (no step, no price fetch, no revaluation, no usage)",
+        gs.outcome === "SKIPPED" && gs.revaluationStamped === 5 && g.log.join() === "stamp:frozen1+ok1" && g.w.ran.length === 0 && Object.keys(g.w.ledger).length === 0,
+        JSON.stringify({ o: gs.outcome, l: g.log, ran: g.w.ran, led: g.w.ledger }));
+      const r = mkW({ refuse: true });
+      await r.w.run();
+      check("per-account refusal: the refused holder is stamped with the rest, but never revalued or price-fetched",
+        r.log[0] === "stamp:frozen1+ok1" && r.log.filter((x) => !x.startsWith("stamp:")).every((x) => !x.includes("frozen1")) && r.log.some((x) => x.startsWith("revalue:ok1")), r.log.join(" | "));
+      const u = mkW({});
+      await u.w.run();
+      check("after unfreeze: the holder is revalued (its rebuild clears the stamp — proved in stale-holder-revaluation.test.ts)",
+        u.log.some((x) => x.startsWith("revalue:") && x.includes("frozen1")), u.log.join(" | "));
+    }
+    {
+      // REVIEW #183 (P2): the regeneration KILL SWITCH off ⇒ no stamp, no revaluation, nothing marked; on ⇒ normal.
+      const mkK = (on: boolean) => {
+        const w = world({ btc: 1, regen: on });
+        const log: string[] = [];
+        w.deps.cryptoHolders = async () => ["h1"];
+        w.deps.stampOwedHolders = async (ids) => { log.push(`stamp:${ids.join("+")}`); return 3; };
+        w.deps.revaluationPending = async () => true;
+        w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+        w.deps.revalueHolders = async (ids) => { log.push(`revalue:${ids.join("+")}`); return runOf(0); };
+        return { w, log };
+      };
+      const off = mkK(false); const so = await off.w.run();
+      check("kill switch OFF: nothing stamped, nothing revalued, no reservation", off.log.length === 0 && !so.revaluationStamped && !so.revaluationReserved, off.log.join());
+      const offFrozen = mkK(false);
+      offFrozen.w.deps.costFreeze = async () => ({ frozen: true, state: "FROZEN", reason: "COST_FREEZE" } as never);
+      const sf = await offFrozen.w.run();
+      check("kill switch OFF under the GLOBAL freeze: still SKIPPED, and nothing stamped", sf.outcome === "SKIPPED" && offFrozen.log.length === 0 && !sf.revaluationStamped, offFrozen.log.join());
+      const on = mkK(true); await on.w.run();
+      check("kill switch ON: the normal stamp and revaluation run", on.log[0] === "stamp:h1" && on.log.some((x) => x === "revalue:h1"), on.log.join());
+    }
+    {
+      // PERF 2026-10-31: the revaluation PLAN is read ONCE per pass (stamp + reservation + rebuild share it).
+      const w = world({ btc: 20, regen: true });
+      let owedCalls = 0, stampWrites = 0;
+      const holder: HolderRevaluation = { accountId: "h1", windowFromISO: "2026-09-01", valuedFromISO: "2026-09-01", evidenceKey: "revaluation:v2:h1:k", spaceIds: ["qa"] };
+      const marks = new Set<string>();
+      const rd: RevaluationDeps = {
+        acquireGaps: async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null }),
+        owed: async () => { owedCalls++; return [holder]; },
+        revaluedAlready: async (ks) => new Set(ks.filter((k) => marks.has(k))),
+        markRevalued: async (k) => { marks.add(k); },
+        markUnavailable: async () => { stampWrites++; return 7; },
+        regenerate: async () => { w.deps.sleep(1_000); },
+        now: () => w.now(),
+      };
+      w.deps.cryptoHolders = async () => ["h1"];
+      w.deps.acquirePriceGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
+      w.deps.planRevaluation = (ids) => planRevaluation(rd, ids, DAY);
+      w.deps.stampOwedHolders = (ids, plan) => stampOwedHolders(rd, ids, DAY, plan);
+      w.deps.revaluationPending = (ids, plan) => revaluationPending(rd, ids, DAY, plan);
+      w.deps.revalueHolders = (ids, { deadlineMs, plan, alreadyStamped }) => revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs, todayISO: DAY, plan, alreadyStamped });
+      const s = await w.run();
+      check("TWO planning reads per pass: the job-start plan (stamp + reservation) and ONE fresh re-plan right before the rebuild (was ~3; a stale plan is never rebuilt from)",
+        owedCalls === 2 && s.revaluationReserved === true && (s.holderRevaluation?.chunksRebuilt ?? 0) > 0, JSON.stringify({ owedCalls, hr: s.holderRevaluation }));
+      check("ONE stamp truth: revaluationStamped = atStart + inRevaluation, and the rebuild did not re-stamp the plan",
+        s.revaluationStamped === 7 && s.revaluationStampedBreakdown?.atStart === 7 && s.revaluationStampedBreakdown?.inRevaluation === 0
+          && s.holderRevaluation?.rowsStampedPending === 0 && stampWrites === 1, JSON.stringify({ st: s.revaluationStamped, b: s.revaluationStampedBreakdown, stampWrites }));
+      // A gap fill moved a floor mid-pass ⇒ the rebuild stamps the newly owed blocks: the total says so.
+      const w2 = world({ btc: 20, regen: true });
+      w2.deps.cryptoHolders = async () => ["h1"];
+      w2.deps.acquirePriceGaps = w.deps.acquirePriceGaps;
+      w2.deps.planRevaluation = w.deps.planRevaluation;
+      w2.deps.stampOwedHolders = w.deps.stampOwedHolders;
+      w2.deps.revaluationPending = async () => true;
+      w2.deps.revalueHolders = async () => ({ ...runOf(0), rowsStampedPending: 4, rowsStampedUnavailable: 3 });
+      const s2 = await w2.run();
+      check("…and when the rebuild stamps newly owed blocks AND abandons one, revaluationStamped = atStart + inRevaluation (4 pending + 3 abandoned)",
+        s2.revaluationStampedBreakdown?.inRevaluation === 7 && s2.revaluationStamped === (s2.revaluationStampedBreakdown?.atStart ?? -1) + 7, JSON.stringify({ st: s2.revaluationStamped, b: s2.revaluationStampedBreakdown }));
+    }
+    // revaluationPending is the cheap state read the reservation is decided by.
+    const marks = new Set<string>();
+    const h: HolderRevaluation = { accountId: "b0", windowFromISO: "2026-10-01", valuedFromISO: "2026-10-01", evidenceKey: "revaluation:v2:b0:k" };
+    const rd = { owed: async () => [h], revaluedAlready: async (ks: readonly string[]) => new Set(ks.filter((k) => marks.has(k))) };
+    const before = await revaluationPending(rd, ["b0"], DAY);
+    for (const b of revaluationBlocks(h.evidenceKey, h.windowFromISO, DAY)) marks.add(b.key);
+    check("revaluationPending: owed until its chunks are marked, then not (no reservation on a quiet run)", before === true && (await revaluationPending(rd, ["b0"], DAY)) === false);
+  }
+
   console.log("ERC-20 review N3: a native ETH backlog cannot starve the token pass");
   {
     const erc20Cfg = erc20HistoryConfig({ SOL_BACKFILL_ENABLED: "true", ETH_BACKFILL_ENABLED: "true", ERC20_HISTORY_ENABLED: "true" });
@@ -375,7 +553,15 @@ async function main() {
         const from = valuedFromISO(l.licensedFromISO, facts[l.instrumentId as "SOL"]);
         return from && from < snapshotStart ? [{ accountId: l.financialAccountId, fromISO: from, floorISO: facts[l.instrumentId as "SOL"]!, earliestSnapshotISO: snapshotStart }] : [];
       });
-      const deps: SolBackfillJobDeps = {
+      // The holder revaluation's own view: evidence-keyed, existing rows included (price-gap.core holderRevaluationFor).
+      const holders = async (ids: readonly string[]): Promise<HolderRevaluation[]> => licences.filter((l) => ids.includes(l.financialAccountId)).flatMap((l) => {
+        const lic = new Map([[l.instrumentId, l.licensedFromISO]]);
+        const f = facts[l.instrumentId as "SOL"];
+        const h = holderRevaluationFor({ accountId: l.financialAccountId, nativeLicences: lic, allLicences: lic, floors: new Map(f ? [[l.instrumentId, f]] : []),
+          snapshotMinBySpace: new Map([["sp", snapshotStart]]), spaceIds: ["sp"] });
+        return h ? [h] : [];
+      });
+      const deps: SolBackfillJobDeps = { ...OPEN_BACKFILL_GATES,
         now: () => t, sleep: async (ms) => { t += ms; },
         wakeStartedAt: async () => (o.wakeAgoMs !== undefined ? t - o.wakeAgoMs : null),
         wallets: async () => [{ accountId: "s0", connectionId: "c-s0", address: ADDR, cursor: cursors.s0 }],
@@ -390,10 +576,10 @@ async function main() {
         revalueHolders: (ids, { deadlineMs, attempted, maxInstruments }) => {
           const rd: RevaluationDeps = {
             acquireGaps: (x) => acquireHistoricalPriceGaps({ accountIds: x, attempted, maxInstruments, deps: gapDeps, yesterdayISO: "2026-10-27" }),
-            owed, revaluedAlready: async (keys) => new Set(keys.filter((k) => revalued.has(k))), markRevalued: async (k) => { revalued.add(k); },
+            owed: holders, revaluedAlready: async (keys) => new Set(keys.filter((k) => revalued.has(k))), markRevalued: async (k) => { revalued.add(k); },
             regenerate: async (id, from, to) => { log.push(`revalue:${id}:${from}..${to}`); }, now: () => t,
           };
-          return revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs });
+          return revalueHoldersAfterPriceGaps({ accountIds: ids, deps: rd, deadlineMs, todayISO: DAY });
         },
       };
       return { deps, requests, log, cursors, attempts, revalued, run: () => solHistoryBackfill({ config: { ...solCfg, jobBudgetMs: 240_000 }, deps }) };
@@ -406,9 +592,12 @@ async function main() {
     const cp = parseSol(w.cursors.s0, "s0", ADDR);
     check("…the SOL holder is flagged from its new valued-from and rebuilt under its lock this run",
       s1.revaluationsRederived === 1 && w.log.includes("regen:s0:2025-10-28") && cp?.valuationCheckedFloorISO === "2025-10-28" && !cp?.snapshotPendingFromISO, w.log.join(","));
-    check("…the non-SOL holder is revalued over just the missing days", w.log.includes("revalue:e0:2025-10-28..2026-09-26") && s1.holderRevaluation?.revalued === 1, w.log.join(","));
+    check("…the non-SOL holder is revalued from its new valued-from THROUGH TODAY (existing rows included), newest batch first",
+      w.log.filter((x) => x.startsWith("revalue:e0:"))[0].endsWith(`..${DAY}`) && w.log.some((x) => x.startsWith("revalue:e0:2025-10-28..")), w.log.join(","));
+    check("…SOL parity: the SOL holder is in the worker's revaluation too (not only sync-crypto's)",
+      w.log.some((x) => x.startsWith("revalue:s0:")) && s1.holderRevaluation?.holders === 2 && s1.holderRevaluation?.revalued === 2, JSON.stringify(s1.holderRevaluation));
     check("…observations are shared per instrument: the durable once-a-day markers are set",
-      w.attempts.has(priceGapAttemptKey("COINGECKO", "SOL", "2026-09-27")) && w.revalued.has(revaluationAttemptKey("e0", "2025-10-28")));
+      w.attempts.has(priceGapAttemptKey("COINGECKO", "SOL", "2026-09-27")) && [...w.revalued].some((k) => k.startsWith("revaluation:v2:e0:")));
 
     const before = w.log.length;
     const s2 = await w.run();
@@ -417,7 +606,8 @@ async function main() {
 
     const covered = mk({ earliest: "2021-01-01", snapshotStart: "2021-01-01" });
     const s3 = await covered.run();
-    check("covered archive: no request, nothing owed", covered.requests.length === 0 && s3.priceGaps.acquired === 0 && covered.log.length === 0);
+    check("covered archive: no request, SOL not flagged by the self-heal; both holders' existing rows are revalued ONCE",
+      covered.requests.length === 0 && s3.priceGaps.acquired === 0 && !covered.log.some((x) => x.startsWith("regen:")) && (s3.holderRevaluation?.owed ?? 0) === 2, covered.log.join(","));
 
     const late = mk({ earliest: "2026-09-27", wakeAgoMs: WAKE_SAFE_MS - PRICE_GAP_RESERVE_MS + 1_000 });
     const s4 = await late.run();

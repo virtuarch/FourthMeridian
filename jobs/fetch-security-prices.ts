@@ -31,25 +31,44 @@ import { defaultPriceRegistry } from "@/lib/prices/registry";
 import { selectInstrumentsMissingDate } from "@/lib/prices/backfill-core";
 import { resolvePriceability } from "@/lib/prices/coverage-binding.core";
 import { yesterdayUTCISO } from "@/lib/prices/config";
+import { readGlobalCostFreeze, type GlobalCostFreezeReader } from "@/lib/platform/cost-freeze";
+import { billableSkipCode, type BillableSkipCode } from "@/lib/entitlements/billable-gate-core";
 
 export interface FetchSecurityPricesResult {
   dateISO: string;
-  status: "ok" | "no-provider";
+  status: "ok" | "no-provider" | "skipped";
   instrumentsConsidered: number;
   instrumentsMissing: number;
   /** Instruments a provider returned data for. */
   fetched: number;
   inserted: number;
   failed: number;
+  /** BETA LIFECYCLE L2 — set when the GLOBAL cost freeze (or an unreadable flag) refused the run; nothing fetched or written. */
+  billableRestricted?: BillableSkipCode;
+  /** BETA LIFECYCLE L2 — the JobRun summary convention: "SKIPPED" when refused (job health: `skipped`, not a success). */
+  outcome?: "SKIPPED";
+  skipReason?: BillableSkipCode;
 }
 
-export async function fetchSecurityPrices(now: Date = new Date()): Promise<FetchSecurityPricesResult> {
+export async function fetchSecurityPrices(now: Date = new Date(), deps: { costFreeze?: GlobalCostFreezeReader } = {}): Promise<FetchSecurityPricesResult> {
   const dateISO = yesterdayUTCISO(now);
   const registry = defaultPriceRegistry();
 
   const empty: FetchSecurityPricesResult = {
     dateISO, status: "no-provider", instrumentsConsidered: 0, instrumentsMissing: 0, fetched: 0, inserted: 0, failed: 0,
   };
+
+  // BETA LIFECYCLE L2 — Tiingo is key-metered paid market data: under the
+  // GLOBAL cost freeze (or an unreadable flag) the run stops before any read
+  // or vendor call. This job fetches YESTERDAY only, so a frozen day is NOT
+  // filled by a later run of this job; it is filled by the wealth-history price
+  // backfill (missing-only windows over held instruments) on the next rebuild.
+  const freeze = await (deps.costFreeze ?? readGlobalCostFreeze)();
+  if (freeze.frozen) {
+    const code = billableSkipCode(freeze.reason!);
+    console.log(`[prices-cron] ${dateISO}: global cost freeze (${freeze.state}) — SKIPPED (${code}); no vendor call`);
+    return { ...empty, status: "skipped", billableRestricted: code, outcome: "SKIPPED", skipReason: code };
+  }
 
   // Vendor gate: no adapter ⇒ no-op before any DB work (deferred, not fabricated).
   if (registry.adapters.length === 0) {

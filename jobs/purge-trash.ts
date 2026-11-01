@@ -37,5 +37,5 @@ export interface PurgeTrashResult {
  * scripts and tests.
  */
 export async function purgeTrash(opts: { dryRun?: boolean } = {}): Promise<PurgeTrashResult> {
-  return { purgedGoals: 0, retention: await runDataRetention(undefined, new Date(), { dryRun: !!opts.dryRun }) };
+  return { purgedGoals: 0, retention: await runDataRetention(undefined, new Date(), undefined, { dryRun: !!opts.dryRun }) };
 }

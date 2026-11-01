@@ -699,3 +699,96 @@ export function ledgerRecorderFor(
 export function activeLedger(): LedgerHandle | null {
   return getProviderCallContext()?.ledger ?? null;
 }
+
+// ── The stale-execution reaper (2026-10-31) ──────────────────────────────────
+
+/**
+ * The longest a refresh execution can legitimately run: every route that
+ * opens one exports `maxDuration` ≤ 300 s explicitly, and vercel.json raises
+ * none — both pinned by the census in refresh-execution-reaper.test.ts. A
+ * process the platform kills at that limit never reaches its completion write.
+ */
+export const REFRESH_EXECUTION_MAX_DURATION_MS = 300_000;
+/** Margin past it before an open row is called dead (clock skew, a slow completion write). */
+export const STALE_EXECUTION_MARGIN_MS = 300_000;
+/** The errorSummary a reaped row carries — the JobRun finaliser's vocabulary word, with its reason. */
+export const STALE_EXECUTION_ERROR_SUMMARY =
+  "stale: no completion was recorded within the function's maximum duration (the process ended mid-run)";
+
+/** Rows reaped per sweep at most (the backlog drains over successive wakes). */
+export const STALE_EXECUTION_REAP_LIMIT = 200;
+
+type StaleExecutionGuard = { overallStatus: "RUNNING"; completedAt: null };
+
+/**
+ * The reaper's two statements — and nothing else on this client. No
+ * `updateMany`: this door never issues a conditional bulk write whose zero
+ * count could hide a refusal (refresh-ledger-failure-matrix.test.ts). Each
+ * row is flipped by its PRIMARY KEY, guarded by the stale predicate, so a row
+ * that completed in between is a P2025 miss, never a silent overwrite.
+ */
+export interface StaleExecutionReapClient {
+  refreshExecution: {
+    findMany(args: {
+      where: StaleExecutionGuard & { startedAt: { lt: Date } };
+      orderBy: { startedAt: "asc" };
+      take: number;
+      select: { id: true };
+    }): Promise<Array<{ id: string }>>;
+    update(args: {
+      where: { id: string } & StaleExecutionGuard;
+      data: { overallStatus: "FAILED"; completedAt: Date; errorSummary: string; failureCategory: "UNKNOWN" };
+    }): Promise<unknown>;
+  };
+}
+
+const isNotFound = (e: unknown) => typeof e === "object" && e !== null && (e as { code?: unknown }).code === "P2025";
+
+/**
+ * Flip RefreshExecution rows still `RUNNING` past the maximum function
+ * duration (+ margin) to FAILED, with the reason — the JobRun stale-run
+ * finaliser (lib/jobs/run.ts finalizeStaleRuns) for this ledger. Before it, an
+ * ETH sync killed at Vercel's limit left its execution RUNNING for ever on
+ * Platform Ops.
+ *
+ * Every flip is guarded by the predicate it was found under, so a row that
+ * completes between the read and the write is not touched (P2025, skipped);
+ * and a completion that lands AFTER the reap still overwrites it (update by
+ * id), so the late truth wins. `durationMs` stays null: how long a dead
+ * process ran is not known. The category is UNKNOWN — the process ended
+ * without saying why (the time limit is the likely cause, not a proven one).
+ * Returns the count it flipped and no row. Best-effort and non-throwing:
+ * telemetry never breaks the wake that runs it.
+ */
+export async function reapStaleRefreshExecutions(
+  client: StaleExecutionReapClient,
+  now: Date,
+  staleAfterMs: number = REFRESH_EXECUTION_MAX_DURATION_MS + STALE_EXECUTION_MARGIN_MS,
+): Promise<number> {
+  const guard: StaleExecutionGuard = { overallStatus: "RUNNING", completedAt: null };
+  let ids: Array<{ id: string }>;
+  try {
+    ids = await client.refreshExecution.findMany({
+      where: { ...guard, startedAt: { lt: new Date(now.getTime() - staleAfterMs) } },
+      orderBy: { startedAt: "asc" }, take: STALE_EXECUTION_REAP_LIMIT, select: { id: true },
+    });
+  } catch (err) {
+    console.error(`[refresh-ledger] stale-execution scan failed (non-fatal): ${redactedErrorForLog(err)}`);
+    return 0;
+  }
+  let reaped = 0;
+  for (const { id } of ids) {
+    try {
+      await client.refreshExecution.update({
+        where: { id, ...guard },
+        data: { overallStatus: "FAILED", completedAt: now, errorSummary: STALE_EXECUTION_ERROR_SUMMARY, failureCategory: "UNKNOWN" },
+      });
+      reaped++;
+    } catch (err) {
+      if (isNotFound(err)) continue; // completed in between: its own completion stands
+      console.error(`[refresh-ledger] stale-execution reap failed (non-fatal): ${redactedErrorForLog(err)}`);
+    }
+  }
+  if (reaped > 0) console.warn(`[refresh-ledger] finalised ${reaped} stale RUNNING execution(s) as FAILED/stale`);
+  return reaped;
+}

@@ -26,7 +26,9 @@ import { env } from "@/lib/env";
 import { encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
+import { sendWelcome } from "@/lib/notifications/welcome";
 import { buildVerifyUrl } from "@/lib/email/verify-url";
+import { EMAIL_VERIFICATION_TTL_MS } from "@/lib/email/token-ttl";
 import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
@@ -45,7 +47,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 
 // OPS-1 S2b — email-verification token TTL (mirrors password reset: 1 hour).
-const VERIFICATION_TTL_MS = 60 * 60 * 1000;
+const VERIFICATION_TTL_MS = EMAIL_VERIFICATION_TTL_MS; // shared with the email copy (lib/email/token-ttl.ts)
 
 // PO-5A — the Terms/Privacy policy version recorded on consent. Bump when the
 // legal documents materially change (so re-consent can be required later).
@@ -372,10 +374,20 @@ export async function POST(req: NextRequest) {
     // no token stored) and there is nothing to verify.
     if (!invitedFlow) {
       const verifyUrl = buildVerifyUrl(env.NEXT_PUBLIC_APP_URL, rawVerificationToken);
-      const emailResult = await sendEmail("email-verification", normalizedEmail, { verifyUrl });
+      const emailResult = await sendEmail("email-verification", normalizedEmail, { verifyUrl }, { key: "EMAIL_VERIFICATION_SENT", recipientUserId: user.id });
       if (emailResult.status === "error") {
         console.error("[register] verification email failed to send:", emailResult.error);
       }
+    }
+
+    // ── Welcome (owner-approved 2026-10-31) ───────────────────────────────────
+    // INVITED signups only: the account is pre-verified and usable now, and no
+    // verification email was sent above, so the welcome stands alone. Uninvited
+    // signups are welcomed after their first successful verification instead
+    // (app/api/auth/verify-email/route.ts) — never beside the verification
+    // email. Once per account (lib/notifications/welcome.ts); non-throwing.
+    if (invitedFlow) {
+      await sendWelcome({ userId: user.id, email: normalizedEmail, firstName: firstName.trim() });
     }
 
     // `verificationRequired` mirrors exactly whether a verification email was

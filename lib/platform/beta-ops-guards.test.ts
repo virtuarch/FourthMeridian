@@ -39,6 +39,8 @@ const WRAPPERS: { file: string; action: string; via: string; module: string }[] 
   { file: "app/api/platform/growth-revenue/invitations/route.ts", action: "BETA_INVITATION_CREATED", via: "issueBetaInvitation(", module: ISSUANCE },
   { file: "app/api/platform/growth-revenue/requests/[id]/extend/route.ts", action: "BETA_INVITATION_EXTENDED", via: "extendBetaInvitation(", module: ISSUANCE },
   { file: "app/api/platform/growth-revenue/invitation-policy/route.ts", action: "BETA_INVITATION_VALIDITY_CHANGED", via: "updateInvitationValidity(", module: POLICY },
+  // PR C — bulk approval: per-row approvals go through issuance; the ONE batch row is written by bulk-approve.ts.
+  { file: "app/api/platform/growth-revenue/requests/bulk-approve/route.ts", action: "BETA_ACCESS_BULK_APPROVED", via: "bulkApproveBetaRequests(", module: "lib/platform/growth/bulk-approve.ts" },
 ];
 for (const w of WRAPPERS) {
   const s = src(w.file);
@@ -93,7 +95,8 @@ console.log("operator feed + intake notification wiring");
     OPERATOR_ACTION_FEED_ACTIONS.includes(AuditAction.BETA_INVITATION_RESENT) &&
     OPERATOR_ACTION_FEED_ACTIONS.includes(AuditAction.BETA_INVITATION_REVOKED) &&
     OPERATOR_ACTION_FEED_ACTIONS.includes(AuditAction.BETA_INVITATION_VALIDITY_CHANGED) &&
-    OPERATOR_ACTION_FEED_ACTIONS.includes(AuditAction.BETA_INVITATION_EXTENDED));
+    OPERATOR_ACTION_FEED_ACTIONS.includes(AuditAction.BETA_INVITATION_EXTENDED) &&
+    OPERATOR_ACTION_FEED_ACTIONS.includes(AuditAction.BETA_ACCESS_BULK_APPROVED));
 
   const mode = src("app/api/platform/growth-revenue/registration-mode/route.ts");
   check("mode change validates against REGISTRATION_MODES", mode.includes("REGISTRATION_MODES"));

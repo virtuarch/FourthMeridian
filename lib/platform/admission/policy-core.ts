@@ -44,7 +44,8 @@ const ON_REASON: Record<keyof ControlPlaneFacts, AdmissionReason> = {
  *
  *   maintenance_mode  the platform is not operating. Everything stops, including
  *                     establishing new provider relationships and beginning a
- *                     paid model call (PAID_AI_REQUEST).
+ *                     paid model call (PAID_AI_REQUEST) and operator-configured
+ *                     comms automation sends (COMMS_AUTOMATION_SEND).
  *   ingestion_paused  stop calling providers for DATA. It says nothing about
  *                     whether someone may connect an account — a customer
  *                     finishing a Link flow during a provider incident should
@@ -57,7 +58,7 @@ const ON_REASON: Record<keyof ControlPlaneFacts, AdmissionReason> = {
  * without declaring its scope.
  */
 const APPLIES_TO: Record<keyof ControlPlaneFacts, readonly OperationalWork[]> = {
-  maintenanceMode: ["REFRESH_EXECUTION", "CONNECTION_ESTABLISHMENT", "PAID_AI_REQUEST"],
+  maintenanceMode: ["REFRESH_EXECUTION", "CONNECTION_ESTABLISHMENT", "PAID_AI_REQUEST", "COMMS_AUTOMATION_SEND"],
   ingestionPaused: ["REFRESH_EXECUTION"],
 };
 

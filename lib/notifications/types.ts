@@ -133,6 +133,12 @@ export interface RenderedNotification {
   body?: string;
   /** Optional in-app destination, e.g. "/dashboard/connections". */
   href?: string;
+  /**
+   * Optional email CTA label for `href` (e.g. "Reconnect Chase"). Email-only:
+   * not persisted on the Notification row; the email channel falls back to a
+   * generic label when absent.
+   */
+  actionLabel?: string;
 }
 
 /**
@@ -164,8 +170,32 @@ export interface NotificationTypeDefinition {
   priority: NotificationPriorityValue;
   /** Channels enabled when the user has no override row (default-by-absence, F11). */
   defaultChannels: readonly NotificationChannel[];
-  /** True = the user cannot mute this type's category (ACCOUNT_SECURITY). Uniform per category. */
+  /**
+   * Channels this TYPE never delivers on, whatever the user's category
+   * preference says. For a type whose channel is owned by a dedicated flow —
+   * SPACE_INVITE_RECEIVED's email is the route's own `space-invite` email, so
+   * a SPACES/EMAIL override must not re-enable a second, generic one.
+   * Absent = no exclusion. Enforced in resolveChannelEnabled (create-time) and
+   * by jobs/retry-notifications.ts (legacy rows are closed, never re-sent).
+   */
+  excludedChannels?: readonly NotificationChannel[];
+  /**
+   * True = no preference row can change this TYPE's channels: the registry
+   * defaults are authoritative (resolveChannelEnabled). Every ACCOUNT_SECURITY
+   * type is locked, which makes that whole category locked. A locked type in an
+   * otherwise unlocked category is a PER-TYPE lock, named in
+   * PER_TYPE_LOCKED_TYPES (registry.ts): its category stays switchable for the
+   * other types, but the switch never reaches this one (Comms Center A-2b,
+   * owner decision O-8: SECURITY_ANOMALY_DETECTED).
+   */
   locked: boolean;
+  /**
+   * Comms Center A-2b (owner ruling 2026-10-31, O-7): the EMAIL leg of this
+   * type follows ONLY the EMAIL preference of its category. Turning the
+   * category's IN_APP off hides the in-app notice but no longer drops the
+   * email. Absent = the original F11/S3 coupling (no in-app row ⇒ no email).
+   */
+  emailIndependentOfInApp?: true;
   retention: RetentionPolicy;
   /** May fold into the S6 digest email (declared at birth — F13). */
   digestable: boolean;
@@ -175,6 +205,14 @@ export interface NotificationTypeDefinition {
    * `{placeholders}` name pointerContract keys. Null when dedupe === "none".
    */
   dedupeKeyTemplate: string | null;
+  /**
+   * ONE-TIME condition (ACCOUNT_WELCOME): the dedupe key is never released.
+   * An archived holder still suppresses — dismissing the notice can never make
+   * it fire again — and nothing retires the key. Its template ends ":once"
+   * instead of ":open" (registry.test.ts). Absent = the F3 suppress-while-open
+   * semantics (an archived holder releases its key).
+   */
+  dedupeNeverReleases?: true;
   /** Iconography key (lucide icon name) — UI stays switch-free. */
   icon: NotificationIconKey;
   /**
@@ -242,6 +280,26 @@ export interface ChannelMessage {
   title: string;
   body?: string;
   href?: string;
+  /** Email CTA label for href (RenderedNotification.actionLabel). */
+  actionLabel?: string;
+  /**
+   * Comms Center A-2a — delivery-ledger facts (never rendered): the 1-based
+   * attempt number, and whether this is the LAST attempt (an error is then
+   * recorded as DEAD). The retry job sets both; create-time sends are attempt 1.
+   */
+  attempt?: number;
+  finalAttempt?: boolean;
+  /** The Notification row this email leg belongs to — the ledger's messageKey across retries. */
+  notificationId?: string;
+  /**
+   * Comms Center B1 — the PUBLISHED operator content of this type's EMAIL leg,
+   * already substituted (lib/notifications/content/send.ts). Absent ⇒ the code
+   * rendering from title / body / href / actionLabel, byte for byte.
+   */
+  emailContent?: {
+    versionId: string;
+    content: import("@/lib/email/templates/notification").NotificationEmailContent;
+  };
 }
 
 /**

@@ -16,7 +16,9 @@
  *      window, do nothing (the burst is already surfaced — one row, not one per
  *      attempt). Otherwise write the trip row and fan out THREE ways:
  *        (a) createNotification to every ACTIVE SECURITY_OPS grant holder +
- *            SYSTEM_ADMIN (IN_APP bell; its own suppress dedupe backstops races);
+ *            SYSTEM_ADMIN (IN_APP bell; its own suppress dedupe backstops races).
+ *            The bell carries a SALTED HASH of the key, never the raw
+ *            identifier / IP (Comms Center A-2b, O-8 — anomalyNotificationData);
  *        (b) sendEmail("security-alert", SECURITY_ALERTS_EMAIL, …) — direct;
  *        (c) THE LOCKOUT HYBRID: when the trip is a resolvable-account failed-
  *            login burst, sendEmail("security-alert", <owner's real email>, …)
@@ -43,6 +45,8 @@ import { env } from "@/lib/env";
 import { AuditAction } from "@/lib/audit-actions";
 import { createNotification } from "@/lib/notifications/create";
 import { sendEmail } from "@/lib/email/send";
+import { ownerSignInAnomalyAlert, securityOpsAnomalyAlert } from "@/lib/email/security-alerts";
+import { hashedAnomalyKey, type IdentifierHashEnv } from "@/lib/security/identifier-hash";
 import {
   detectIdentifierAnomalies,
   detectIpAnomaly,
@@ -60,6 +64,37 @@ function reasonsOf(rows: { metadata: unknown }[]): string[] {
     if (typeof reason === "string") out.push(reason);
   }
   return out;
+}
+
+/**
+ * The SECURITY_ANOMALY_DETECTED trip row's metadata (AuditLog). Keeps the RAW
+ * key — the detector's dedupe lock and the operators' forensic record, read
+ * under the audit log's access controls (unchanged by Comms Center A-2b) — and
+ * adds `keyHash`, the exact value the staff bell carries, so a bell can be
+ * matched to its trip row without the bell ever holding the raw value. Pure.
+ */
+export function anomalyAuditMetadata(anomaly: DetectedAnomaly, env: IdentifierHashEnv = process.env) {
+  return {
+    key:           anomaly.key,
+    keyHash:       hashedAnomalyKey(anomaly.key, env),
+    type:          anomaly.type,
+    count:         anomaly.count,
+    threshold:     anomaly.threshold,
+    windowMinutes: anomaly.windowMinutes,
+    title:         anomaly.title,
+    message:       anomaly.message,
+  };
+}
+
+/**
+ * The staff bell's payload (Notification.metadata, and the source of its
+ * dedupeKey). Comms Center A-2b (O-8, AUDIT R-3): `anomalyKey` is the SALTED
+ * HASH of the raw identifier / IP (lib/security/identifier-hash.ts) — never the
+ * plaintext. Same identifier ⇒ same hash, so suppress-while-open still holds.
+ * title / summary are the detector's fixed copy (counts and windows only). Pure.
+ */
+export function anomalyNotificationData(anomaly: DetectedAnomaly, env: IdentifierHashEnv = process.env) {
+  return { anomalyKey: hashedAnomalyKey(anomaly.key, env), title: anomaly.title, summary: anomaly.message };
 }
 
 function windowStart(minutes: number): Date {
@@ -152,15 +187,7 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
       action:    AuditAction.SECURITY_ANOMALY_DETECTED,
       ...(ctx.userId ? { userId: ctx.userId } : {}),
       ipAddress: ctx.ip,
-      metadata: {
-        key:           anomaly.key,
-        type:          anomaly.type,
-        count:         anomaly.count,
-        threshold:     anomaly.threshold,
-        windowMinutes: anomaly.windowMinutes,
-        title:         anomaly.title,
-        message:       anomaly.message,
-      },
+      metadata: anomalyAuditMetadata(anomaly),
     },
   });
 
@@ -175,7 +202,7 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
       await createNotification({
         userId,
         type: "SECURITY_ANOMALY_DETECTED",
-        data: { anomalyKey: anomaly.key, title: anomaly.title, summary: anomaly.message },
+        data: anomalyNotificationData(anomaly),
       });
     }
   } catch (err) {
@@ -184,10 +211,9 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
 
   // (b) Direct security-alert email to the Security Ops inbox.
   try {
-    await sendEmail("security-alert", env.SECURITY_ALERTS_EMAIL, {
-      title:   anomaly.title,
-      message: `${anomaly.message}\n\nSignal: ${anomaly.key} — ${anomaly.count} in the last ${anomaly.windowMinutes} minutes (threshold ${anomaly.threshold}).`,
-    });
+    // The raw identifier / IP is withheld from email (it stays on the audit
+    // row's metadata.key only; the in-app bell carries its salted hash).
+    await sendEmail("security-alert", env.SECURITY_ALERTS_EMAIL, { ...securityOpsAnomalyAlert(anomaly) }, { key: "SECURITY_ANOMALY_INBOX", recipientUserId: null });
   } catch (err) {
     console.warn("[security/anomaly-alerts] security@ email failed (non-fatal):", err);
   }
@@ -195,14 +221,7 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
   // (c) The lockout hybrid — owner-facing email, ONLY for a resolvable account.
   if (anomaly.ownerEmailEligible && ctx.userEmail) {
     try {
-      const resetUrl = `${env.NEXT_PUBLIC_APP_URL}/forgot-password`;
-      await sendEmail("security-alert", ctx.userEmail, {
-        title:   "Unusual sign-in activity on your account",
-        message:
-          `We noticed several failed sign-in attempts on your Fourth Meridian ` +
-          `account. If this was you, no action is needed.\n\n` +
-          `If it wasn't you, reset your password to secure your account:\n${resetUrl}`,
-      });
+      await sendEmail("security-alert", ctx.userEmail, { ...ownerSignInAnomalyAlert(env.NEXT_PUBLIC_APP_URL) }, { key: "SIGN_IN_ANOMALY_OWNER", recipientUserId: ctx.userId ?? null });
     } catch (err) {
       console.warn("[security/anomaly-alerts] owner email failed (non-fatal):", err);
     }

@@ -7,6 +7,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/crypto/wallet-refresh.test.ts
  */
 
+import { allowAllBillable } from "@/lib/test-support/billable-open";
 import { readFileSync } from 'node:fs';
 import { resolveRefreshPolicy } from '@/lib/platform/refresh-policy.core';
 import { refreshScheduledWallets, type ScheduledWalletCandidate, type WalletRefreshDeps } from './wallet-refresh';
@@ -32,7 +33,8 @@ function harness(wallets: ScheduledWalletCandidate[], over: Partial<WalletRefres
   let t = NOW.getTime();
   const calls: string[] = [];
   const deps: WalletRefreshDeps = {
-    listWallets: async () => wallets,
+    listWallets: async () => wallets.map((w) => ({ ownerUserId: 'owner-1', ...w })),
+    billable: allowAllBillable,
     sync: over.sync ?? (async (id, chain) => { t += over.stepMs ?? 1_000; calls.push(`${chain}:${id}`); return ok(id, chain); }),
     policy: over.policy ?? (async () => resolveRefreshPolicy({ sourceKind: 'WALLET' }, null)),
     admit: over.admit ?? (async () => ({ decision: 'ADMIT' as const })),
@@ -157,7 +159,8 @@ async function main() {
     x.lastFailureAt = NOW;                       // the incident the failure recorded
     let contClock = 0;
     const cont = await refreshScheduledWallets({ now: new Date(NOW.getTime() + 30 * 60_000), budgetMs: 30_000, deps: {
-      listWallets: async () => [x, y], policy: async () => resolveRefreshPolicy({ sourceKind: 'WALLET' }, null),
+      listWallets: async () => [x, y].map((w) => ({ ownerUserId: 'owner-1', ...w })), billable: allowAllBillable,
+      policy: async () => resolveRefreshPolicy({ sourceKind: 'WALLET' }, null),
       admit: async () => ({ decision: 'ADMIT' as const }), clock: () => contClock,
       sync: async (id, chain) => { contClock += 40_000; return ok(id, chain); },
     } });

@@ -54,6 +54,15 @@ const RETAINED: Record<string, string> = {
   // versions are immutable history, so the soft reference is kept like an audit actor.
   "PolicyGroup.createdById":              "operator who created a policy group — actor identity on a platform configuration record",
   "PolicyGroupVersion.createdById":       "operator who wrote an immutable policy-group version — actor identity on platform configuration history",
+  // COMMS CENTER B1 — the operator who wrote an immutable notification content version /
+  // asked for an AI suggestion: actor identity on deployment-wide copy history (no customer data).
+  "CommsTemplateVersion.createdById":     "operator who wrote an immutable notification content version — actor identity on platform copy history",
+  "CommsAiSuggestion.requestedById":      "operator who requested an AI authoring suggestion — actor identity on the authoring audit trail",
+  // COMMS CENTER B2 — the operators who created / last edited / owner-approved an
+  // automation: actor identity on a platform rule (no customer data; the rule is kept for audit).
+  "AutomationDefinition.createdById":       "operator who created a comms automation — actor identity on a platform rule",
+  "AutomationDefinition.updatedById":       "operator who last edited a comms automation — actor identity on a platform rule",
+  "AutomationDefinition.ownerApprovedById": "the owner (SYSTEM_ADMIN) who approved a comms automation version — actor identity on a platform rule",
   "AiInvocation.spaceId":             "not a user column: a soft Space reference on a ledger that survives by design (RLS migration §4); the user column is nulled",
 };
 
@@ -137,6 +146,18 @@ check("every RETAINED entry still names a real column (no stale documentation)",
   Object.keys(RETAINED).every((k) => columns.some((c) => `${c.model}.${c.column}` === k)),
   Object.keys(RETAINED).filter((k) => !columns.some((c) => `${c.model}.${c.column}` === k)).join());
 check("every user-keyed column is classified", unclassified.length === 0, unclassified.join(", "));
+
+// COMMS CENTER B2 HARDENING A9 — DERIVED identifier columns. Not user-keyed by NAME (the
+// parser above cannot see them), but filled from a template that must name the recipient's
+// id, so each must be scrubbed EXPLICITLY by the purge (delegate + column named there).
+const DERIVED_USER_COLUMNS: ReadonlyArray<{ model: string; column: string; why: string }> = [
+  { model: "AutomationRunItem", column: "dedupeKey", why: "filled from a dedupe template that must include {recipientId}" },
+];
+for (const d of DERIVED_USER_COLUMNS) {
+  const body = models.find(([, m]) => m === d.model)?.[2] ?? "";
+  check(`${d.model}.${d.column} exists in the schema (derived-identifier census target is real)`, new RegExp(`^\\s*${d.column}\\s+String`, "m").test(body));
+  check(`${d.model}.${d.column} (${d.why}) is scrubbed explicitly by the purge`, explicit({ model: d.model, column: d.column, kind: "SOFT", onDelete: null }));
+}
 
 // PRIV-001 — the purge must name the sole-member SHARED Space predicate and
 // delete Space-owned accounts of dying Spaces (DB-011).

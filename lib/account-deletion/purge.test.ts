@@ -55,6 +55,8 @@ interface World {
   audits: Array<{ userId: string | null; action: string; metadata: Record<string, unknown>; createdAt: Date }>;
   links: Array<{ id: string; addedByUserId: string; status: string }>;
   aiInvocations: Array<{ id: string; userId: string | null }>;
+  ledger: Array<{ id: string; recipientUserId: string | null; recipientHash: string | null }>;
+  runItems: Array<{ id: string; recipientUserId: string | null; status: string; reason: string | null; dedupeKey?: string | null }>;
   betaRequests: Array<{ id: string; email: string }>;
   betaEvents: Array<{ id: string; email: string }>;
   mergeDecisions: Array<{ id: string; decidedByUserId: string | null }>;
@@ -83,6 +85,20 @@ function baseWorld(): World {
     audits: [],
     links: [{ id: "L1", addedByUserId: USER, status: "ACTIVE" }],
     aiInvocations: [{ id: "ai1", userId: USER }, { id: "ai2", userId: OTHER }],
+    ledger: [
+      { id: "cd1", recipientUserId: USER, recipientHash: null },
+      { id: "cd2", recipientUserId: OTHER, recipientHash: null },
+      // A pre-account send to the subject's address (salted HMAC, no userId) — scrubbed only when the salt is set.
+      { id: "cd3", recipientUserId: null, recipientHash: "SUBJECT_HASH" },
+    ],
+    // Comms Center B2 — a pending and a sent automation item for the subject, a pending one for someone else.
+    runItems: [
+      { id: "ri1", recipientUserId: USER, status: "SCHEDULED", reason: null, dedupeKey: `MEMBER_ROLE_CHANGED:sp_1:${USER}` },
+      { id: "ri2", recipientUserId: USER, status: "SENT", reason: null, dedupeKey: `MEMBER_ROLE_CHANGED:sp_1:${USER}` },
+      { id: "ri3", recipientUserId: OTHER, status: "SCHEDULED", reason: null, dedupeKey: `J:${OTHER}` },
+      // Someone ELSE's item whose dedupe key names the subject (e.g. {invitedUserId}) — HARDENING A9.
+      { id: "ri4", recipientUserId: OTHER, status: "SENT", reason: null, dedupeKey: `SPACE_INVITE_ACCEPTED:${USER}:${OTHER}` },
+    ],
     betaRequests: [{ id: "b1", email: "jane@example.com" }, { id: "b2", email: "someone@else.com" }],
     betaEvents: [{ id: "e1", email: "JANE@example.com" }],
     mergeDecisions: [{ id: "m1", decidedByUserId: USER }],
@@ -172,6 +188,32 @@ function makeFake(world: World, hooks: Hooks = {}) {
       let n = 0; W.settings.forEach((r) => { if (r.updatedById === where.updatedById) { r.updatedById = null; n++; } }); return { count: n };
     } },
     investmentEvent: { updateMany: async () => ({ count: 0 }) },
+    commsDelivery: { updateMany: async ({ where, data }: { where: { recipientUserId?: string; recipientHash?: string; OR?: Array<{ recipientUserId?: string; recipientHash?: string }> }; data: { recipientUserId?: null; recipientHash?: null } }) => {
+      const conds = where.OR ?? [{ recipientUserId: where.recipientUserId, recipientHash: where.recipientHash }];
+      let n = 0;
+      W.ledger.forEach((r) => {
+        if (conds.some((c) => (c.recipientUserId !== undefined && r.recipientUserId === c.recipientUserId) || (c.recipientHash !== undefined && r.recipientHash === c.recipientHash))) {
+          if ("recipientUserId" in data) r.recipientUserId = null;
+          if ("recipientHash" in data) r.recipientHash = null;
+          n++;
+        }
+      });
+      return { count: n };
+    } },
+    automationRunItem: { updateMany: async ({ where, data }: { where: { recipientUserId?: string; status?: { in: string[] }; dedupeKey?: { contains: string } }; data: { status?: string; reason?: string; recipientUserId?: null; dedupeKey?: null } }) => {
+      let n = 0;
+      W.runItems.forEach((r) => {
+        if (where.recipientUserId !== undefined && r.recipientUserId !== where.recipientUserId) return;
+        if (where.dedupeKey && !(typeof r.dedupeKey === "string" && r.dedupeKey.includes(where.dedupeKey.contains))) return;
+        if (where.status && !where.status.in.includes(r.status)) return;
+        if (data.status) r.status = data.status;
+        if (data.reason) r.reason = data.reason;
+        if ("recipientUserId" in data) r.recipientUserId = null;
+        if ("dedupeKey" in data) r.dedupeKey = null;
+        n++;
+      });
+      return { count: n };
+    } },
     merchantRule: { deleteMany: async ({ where }: { where: { ownerUserId: string } }) => {
       const b = W.merchantRules.length; W.merchantRules = W.merchantRules.filter((r) => r.ownerUserId !== where.ownerUserId); return { count: b - W.merchantRules.length };
     } },
@@ -286,6 +328,25 @@ async function main() {
     check("still exactly one ACCOUNT_DELETED row and one e-mail", (await countAudit(fake, AuditAction.ACCOUNT_DELETED)) === 1 && calls.emails === 1);
   }
 
+  console.log("\n3b. Comms Center A-2a — with the salt set, pre-account ledger rows (by recipient hash) are scrubbed too");
+  {
+    const { recipientHash } = await import("@/lib/notifications/delivery/record");
+    process.env.COMMS_RECIPIENT_HASH_SALT = "purge-test-salt";
+    try {
+      const world = baseWorld();
+      world.ledger.find((r) => r.id === "cd3")!.recipientHash = recipientHash("Jane@Example.com", process.env)!;
+      world.ledger.push({ id: "cd4", recipientUserId: null, recipientHash: recipientHash("someone@else.com", process.env)! });
+      const fake = makeFake(world);
+      const { deps } = depsFor(fake);
+      await quiet(() => purgeUser(USER, deps));
+      check("userId row and the subject's hash row nulled; another address's hash row untouched",
+        world.ledger.find((r) => r.id === "cd1")!.recipientUserId === null && world.ledger.find((r) => r.id === "cd3")!.recipientHash === null
+        && world.ledger.find((r) => r.id === "cd4")!.recipientHash !== null && world.ledger.length === 4);
+    } finally {
+      delete process.env.COMMS_RECIPIENT_HASH_SALT;
+    }
+  }
+
   console.log("\n4. PRIV-001 / DB-011 — sole-member SHARED Spaces die with their accounts");
   {
     const world = baseWorld();
@@ -311,6 +372,18 @@ async function main() {
     const fake = makeFake(world);
     const { deps } = depsFor(fake);
     await quiet(() => purgeUser(USER, deps));
+    check("CommsDelivery recipient nulled for the subject only (the row and its count stay)",
+      world.ledger.length === 3 && world.ledger.find((r) => r.id === "cd1")!.recipientUserId === null && world.ledger.find((r) => r.id === "cd2")!.recipientUserId === OTHER);
+    check("…by userId even with NO salt configured (the hash row is then untouched: no salt, no derivable hash)",
+      process.env.COMMS_RECIPIENT_HASH_SALT === undefined && world.ledger.find((r) => r.id === "cd3")!.recipientHash === "SUBJECT_HASH");
+    check("Comms B2 — the subject's pending automation item is CANCELLED / ACCOUNT_RESTRICTED, a sent one keeps its status, and both forget who; another user's item is untouched",
+      world.runItems.find((r) => r.id === "ri1")!.status === "CANCELLED" && world.runItems.find((r) => r.id === "ri1")!.reason === "ACCOUNT_RESTRICTED"
+      && world.runItems.find((r) => r.id === "ri2")!.status === "SENT" && world.runItems.filter((r) => r.recipientUserId === USER).length === 0
+      && world.runItems.find((r) => r.id === "ri3")!.status === "SCHEDULED" && world.runItems.find((r) => r.id === "ri3")!.recipientUserId === OTHER);
+    check("HARDENING A9 — the dedupeKey (it embeds the recipient id) is nulled on the subject's items AND on anyone's item whose key names the subject; an unrelated key is untouched",
+      world.runItems.find((r) => r.id === "ri1")!.dedupeKey === null && world.runItems.find((r) => r.id === "ri2")!.dedupeKey === null
+      && world.runItems.find((r) => r.id === "ri4")!.dedupeKey === null && world.runItems.find((r) => r.id === "ri4")!.recipientUserId === OTHER
+      && world.runItems.find((r) => r.id === "ri3")!.dedupeKey === `J:${OTHER}`, JSON.stringify(world.runItems));
     check("AiInvocation.userId nulled for the subject only", world.aiInvocations.find((r) => r.id === "ai1")!.userId === null && world.aiInvocations.find((r) => r.id === "ai2")!.userId === OTHER);
     check("BetaAccessRequest + events for the e-mail deleted (case-insensitive), others kept",
       world.betaRequests.map((r) => r.id).join() === "b2" && world.betaEvents.length === 0);

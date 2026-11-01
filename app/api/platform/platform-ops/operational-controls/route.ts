@@ -7,6 +7,10 @@
  *           pause read-only; the deployment environment.
  *   PATCH   { action: "ENABLE" | "DISABLE" | "RESET", expectedUpdatedAt, reason: { code, note } }
  *           — ONE transaction, one audit row; the result is the reloaded model.
+ *           BETA LIFECYCLE L2 — `control: "COST_FREEZE"` targets the GLOBAL cost
+ *           freeze (`platform_cost_frozen`) instead of maintenance: same rules
+ *           (fresh PLATFORM_OPS CONTROL, reason note required, optimistic version,
+ *           same-transaction audit, read-back). GET carries its state as `costFreeze`.
  *
  * AUTHORIZATION
  *   GET     requirePlatformAccess("PLATFORM_OPS", "READ") — the Policies read rank.
@@ -62,10 +66,19 @@ function respond(result: OperationalControlsMutationResult) {
 export async function PATCH(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
-  const limited = await limitByUser(auth.user.id, "platform-policy-operational-controls", { limit: 20, windowSec: 60 });
+  // Follow-up P3-5 — a coarse limiter BEFORE the body is read or parsed (after
+  // the fresh CONTROL check). It sits above the two per-control buckets below
+  // (40 > 20 + 20 per minute), so it only stops a flood — it can never make one
+  // control's use exhaust the other's way out.
+  const flood = await limitByUser(auth.user.id, "platform-policy-operational-controls-any", { limit: 40, windowSec: 60 });
+  if (flood) return flood;
+  const body = await req.json().catch(() => null) as { reason?: unknown; control?: unknown } | null;
+  // Follow-up N6 — each control is paced on its OWN bucket: toggling the cost
+  // freeze can never exhaust the way out of maintenance, nor the reverse.
+  const bucket = body && typeof body === "object" && body.control === "COST_FREEZE"
+    ? "platform-policy-cost-freeze" : "platform-policy-operational-controls";
+  const limited = await limitByUser(auth.user.id, bucket, { limit: 20, windowSec: 60 });
   if (limited) return limited;
-
-  const body = await req.json().catch(() => null) as { reason?: unknown } | null;
   if (!body || typeof body !== "object") {
     return NextResponse.json({ error: "Body must be { action, expectedUpdatedAt, reason }." }, { status: 400, headers: NO_STORE });
   }

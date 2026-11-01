@@ -86,7 +86,8 @@ async function main(): Promise<void> {
   {
     const ROUTE = code("app", "api", "spaces", "[id]", "wealth", "amend", "route.ts");
     check("the route applies ONLY under body.consent === true; every other call previews",
-      /if \(body\.consent === true\) \{\s*const result = await applyAmendment\(request\);/.test(ROUTE)
+      // (BETA LIFECYCLE L2 — the billable gate sits between the consent check and the apply.)
+      /if \(body\.consent === true\) \{[\s\S]{0,600}?const result = await applyAmendment\(request\);/.test(ROUTE)
         && (ROUTE.match(/applyAmendment\(/g) ?? []).length === 1
         && /const preview = await previewAmendment\(request\);/.test(ROUTE));
     check("the route is OWNER-gated on the Space (requireSpaceRole OWNER)", /requireSpaceRole\(id, SpaceMemberRole\.OWNER\)/.test(ROUTE));

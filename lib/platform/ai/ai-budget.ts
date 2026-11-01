@@ -146,8 +146,9 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
     const todayUsd = today.get(userId) ?? 0;
     // This Economics view resolves WITHOUT the fail-closed option (it projects the plan's allowance, as before);
     // FAIL_CLOSED occurs here only for a group whose stored definition is invalid (POLICY EDITOR — $0, its
-    // value is shown); it is folded with POLICY_DEFAULT to satisfy the frozen union.
-    const source: CustomerBudgetView["allowanceSource"] = dim.source === "POLICY_DEFAULT" || dim.source === "FAIL_CLOSED" ? "POLICY" : dim.source;
+    // value is shown); it is folded with POLICY_DEFAULT to satisfy the frozen union. BETA LIFECYCLE — a
+    // paused / ended / cost-frozen group's $0 (source LIFECYCLE) is the group's policy too, folded the same way.
+    const source: CustomerBudgetView["allowanceSource"] = dim.source === "POLICY_DEFAULT" || dim.source === "FAIL_CLOSED" || dim.source === "LIFECYCLE" ? "POLICY" : dim.source;
     return {
       ref: opaqueUserRef(userId),
       rolling24hUsd, todayUsd, allowanceUsd, allowanceSource: source,

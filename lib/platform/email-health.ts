@@ -21,6 +21,13 @@
  */
 
 import { db } from "@/lib/db";
+import { emailEnvironment, parseNonprodAllowlist, type EmailEnvironment } from "@/lib/email/recipient-guard";
+import {
+  ACCEPTED_STALE_HOURS,
+  buildWebhookHealth,
+  webhookConfigured,
+  type ResendWebhookHealth,
+} from "@/lib/notifications/delivery/provider-events";
 
 /**
  * THE DELIVERY VOCABULARY (OBS-003 / UI-011). A notification email moves through
@@ -31,12 +38,15 @@ import { db } from "@/lib/db";
  * = "sent"` means the provider's API accepted the message (Resend returned an
  * id). No webhook or delivery event is ingested, so DELIVERED is never known and
  * no surface may claim it — the honest word is "accepted by the provider".
- * `captured` is the in-memory transport: NOT attempted against any provider.
+ * `captured` is NOT attempted against any provider: either the in-memory
+ * transport (no key / test) or the non-production recipient guard
+ * (lib/email/recipient-guard.ts — provider "none") holding back a recipient
+ * that is not on EMAIL_NONPROD_ALLOWLIST. It is its own category, never a failure.
  */
 export type EmailDeliveryStage = "accepted" | "captured" | "failed" | "skipped";
 export const EMAIL_STAGE_WORD: Record<EmailDeliveryStage, string> = {
   accepted: "accepted by the provider",
-  captured: "captured in memory (no provider)",
+  captured: "captured — not sent to any provider (no key, or non-production recipient guard)",
   failed:   "failed at the provider",
   skipped:  "skipped (no recipient)",
 };
@@ -45,7 +55,7 @@ export interface EmailDeliveryHealth {
   windowDays: number;
   counts: {
     sent:     number; // ACCEPTED by the provider (handed off; delivery itself is never observed)
-    captured: number; // fell back to capture (e.g. RESEND_API_KEY unset) — NOT attempted against any provider
+    captured: number; // NOT attempted against any provider: capture transport (RESEND_API_KEY unset) or the non-production recipient guard
     error:    number; // FAILED at the provider/adapter
     skipped:  number; // no recipient resolved (by design)
     total:    number;
@@ -53,6 +63,13 @@ export interface EmailDeliveryHealth {
   recentErrors: Array<{ id: string; error: string; at: string }>;
   /** OBS-008 — the direct-send legs the ledger does not see, as declared coverage. Optional so older fixtures/readers still type. */
   directSend?: DirectSendCoverage;
+  /**
+   * Comms Center C — the Resend delivery webhook (read-only): configured or
+   * not, the last verified event, counts by type, unmatched events, signature
+   * rejections, ACCEPTED-without-outcome after 72 h. Null when it could not be
+   * read (the rest of the payload still renders). Optional for older readers.
+   */
+  webhook?: ResendWebhookHealth | null;
 }
 
 export async function getEmailDeliveryHealth(windowDays = 7): Promise<EmailDeliveryHealth> {
@@ -84,7 +101,22 @@ export async function getEmailDeliveryHealth(windowDays = 7): Promise<EmailDeliv
     counts: { sent, captured, error, skipped, total: sent + captured + error + skipped },
     recentErrors: errorRows.map((r) => ({ id: r.id, error: r.error ?? "(no detail)", at: r.createdAt.toISOString() })),
     directSend: describeDirectSendCoverage(),
+    webhook: await getResendWebhookHealth(windowDays),
   };
+}
+
+/** Comms Center C — webhook health over the window. Never throws: a read failure is null. */
+export async function getResendWebhookHealth(windowDays = 7, now: Date = new Date()): Promise<ResendWebhookHealth | null> {
+  const configured = webhookConfigured(process.env.RESEND_WEBHOOK_SECRET);
+  try {
+    const { readWebhookHealthRows } = await import("@/lib/notifications/delivery/provider-event-store");
+    const since = new Date(now.getTime() - windowDays * 86_400_000);
+    const staleBefore = configured ? new Date(now.getTime() - ACCEPTED_STALE_HOURS * 3_600_000) : null;
+    return buildWebhookHealth(await readWebhookHealthRows(since, staleBefore), configured, windowDays);
+  } catch (err) {
+    console.warn(`[email-health] webhook health unreadable (non-fatal): ${err instanceof Error ? err.name : "Error"}`);
+    return null;
+  }
 }
 
 // ── OBS-008 — direct sendEmail coverage (declared, not counted) ───────────────
@@ -100,28 +132,50 @@ export interface DirectSendCoverage {
   templates: readonly string[];
   /**
    * The transport lib/email/send.ts selects RIGHT NOW for those sends, from
-   * configuration alone (mirrors its selectTransport): "resend" when a key is
+   * configuration alone (mirrors its transport selection): "resend" when a key is
    * present, "capture" otherwise. "capture" outside development means every one
    * of those emails reaches nobody.
    */
   transport: "resend" | "capture";
   /** Whether that transport is a real provider in this NODE_ENV. */
   real: boolean;
+  /**
+   * The non-production recipient guard (lib/email/send.ts → recipient-guard.ts).
+   * `active` = this environment is not Production, so a real transport delivers
+   * ONLY to the `allowlistCount` EMAIL_NONPROD_ALLOWLIST addresses and captures
+   * every other recipient. Count only — the addresses are never surfaced.
+   */
+  recipientGuard: { environment: EmailEnvironment; active: boolean; allowlistCount: number };
   note: string;
 }
 
 export function describeDirectSendCoverage(
-  env: { NODE_ENV?: string; RESEND_API_KEY?: string } = process.env,
+  env: {
+    NODE_ENV?: string; RESEND_API_KEY?: string;
+    VERCEL?: string; VERCEL_ENV?: string; EMAIL_NONPROD_ALLOWLIST?: string;
+  } = process.env,
 ): DirectSendCoverage {
   const transport: DirectSendCoverage["transport"] =
     env.NODE_ENV !== "test" && env.RESEND_API_KEY ? "resend" : "capture";
   const real = transport === "resend";
+  const environment = emailEnvironment(env);
+  const recipientGuard = {
+    environment,
+    active: environment !== "production",
+    allowlistCount: parseNonprodAllowlist(env.EMAIL_NONPROD_ALLOWLIST).size,
+  };
+  const guardNote = !real || !recipientGuard.active
+    ? ""
+    : recipientGuard.allowlistCount === 0
+      ? ` Outside Production with an empty EMAIL_NONPROD_ALLOWLIST, every recipient is captured (provider "none") and reaches nobody.`
+      : ` Outside Production only the ${recipientGuard.allowlistCount} EMAIL_NONPROD_ALLOWLIST address(es) are sent; every other recipient is captured (provider "none").`;
   return {
     templates: DIRECT_SEND_TEMPLATES,
     transport,
     real,
-    note: real
+    recipientGuard,
+    note: (real
       ? "These emails are sent directly through the chokepoint and are not counted above; the provider would accept them, but no per-message row exists."
-      : "These emails are sent directly through the chokepoint and are not counted above; with no RESEND_API_KEY they are captured in memory and reach nobody.",
+      : "These emails are sent directly through the chokepoint and are not counted above; with no RESEND_API_KEY they are captured in memory and reach nobody.") + guardNote,
   };
 }

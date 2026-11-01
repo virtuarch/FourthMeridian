@@ -95,7 +95,23 @@ async function run(): Promise<void> {
   const password = NOTIFICATION_REGISTRY.PASSWORD_CHANGED;
 
   check("no rows → registry default (invite in-app ON)", resolveChannelEnabled(invite, "IN_APP", []));
-  check("no rows → registry default (invite email ON — the per-type outlier)", resolveChannelEnabled(invite, "EMAIL", []));
+  // 2026-10-31 — one email per Space invite: the invite's email is the route's
+  // dedicated space-invite email, so this type is IN_APP only and EXCLUDES EMAIL.
+  check("no rows → invite email OFF (IN_APP only; the dedicated space-invite email is the one email)", !resolveChannelEnabled(invite, "EMAIL", []));
+  check(
+    "a SPACES/EMAIL opt-in cannot re-enable the invite's duplicate email (excludedChannels)",
+    !resolveChannelEnabled(invite, "EMAIL", [{ category: "SPACES", channel: "EMAIL", enabled: true }]),
+  );
+  check(
+    "…while the same opt-in still enables EMAIL for the other SPACES types",
+    resolveChannelEnabled(NOTIFICATION_REGISTRY.SPACE_INVITE_ACCEPTED, "EMAIL", [{ category: "SPACES", channel: "EMAIL", enabled: true }]),
+  );
+  check(
+    "per-type check agrees with an opt-in row present (no duplicate)",
+    (await isChannelEnabledForUser("u1", "SPACE_INVITE_RECEIVED", "EMAIL", {
+      client: makeFakeClient([{ userId: "u1", category: "SPACES", channel: "EMAIL", enabled: true }]).client,
+    })) === false,
+  );
   check(
     "no rows → SYNC_COMPLETED IN_APP default-ON (D2 reopened), EMAIL still OFF",
     resolveChannelEnabled(syncCompleted, "IN_APP", []) && !resolveChannelEnabled(syncCompleted, "EMAIL", []),
@@ -106,7 +122,7 @@ async function run(): Promise<void> {
   check("override row wins over the default (disable)", !resolveChannelEnabled(invite, "IN_APP", offSpacesInApp));
   check(
     "override is channel-scoped (email untouched by the in-app row)",
-    resolveChannelEnabled(invite, "EMAIL", offSpacesInApp),
+    resolveChannelEnabled(syncFailed, "EMAIL", [{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]),
   );
   const onFinancialEmail: PreferenceOverride[] = [{ category: "FINANCIAL", channel: "EMAIL", enabled: true }];
   check(
@@ -155,8 +171,8 @@ async function run(): Promise<void> {
     );
     const spaces = matrix.find((r) => r.category === "SPACES");
     check(
-      "matrix: override reflected (SPACES in-app off, email still default-on)",
-      spaces?.channels.IN_APP === false && spaces.channels.EMAIL === true,
+      "matrix: override reflected (SPACES in-app off; SPACES email default-off — no SPACES type defaults to email now)",
+      spaces?.channels.IN_APP === false && spaces.channels.EMAIL === false,
     );
     const platform = matrix.find((r) => r.category === "PLATFORM");
     check(

@@ -60,6 +60,11 @@ interface EnableBody {
 // refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
 // this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
 // must never span a network round trip).
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -67,6 +72,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // Owner ruling (2026-10-30) — a missing / invalid policy assignment fails
   // closed: enabling Investments starts a new paid Plaid product AND a full
   // refresh, so it is refused before the limiter, admission or any provider call.
+  // BETA LIFECYCLE — the same seam refuses it under a paused / ended /
+  // cost-frozen group or an unreadable lifecycle (owner decision 2026-10-31).
   const failClosed = refuseIfFailClosed(await entitlementsForUser(user.id), "Enable Investments");
   if (failClosed) return failClosed;
 

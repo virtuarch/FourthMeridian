@@ -59,6 +59,8 @@ import { createHash } from "node:crypto";
 import { db } from "@/lib/db";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
+import { accountDeletedAlert } from "@/lib/email/security-alerts";
+import { recipientHash } from "@/lib/notifications/delivery/record";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
@@ -137,6 +139,12 @@ export interface PurgeTxClient {
   };
   investmentEvent: {
     updateMany(args: { where: Prisma.InvestmentEventWhereInput; data: Prisma.InvestmentEventUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
+  commsDelivery: {
+    updateMany(args: { where: Prisma.CommsDeliveryWhereInput; data: Prisma.CommsDeliveryUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
+  automationRunItem: {
+    updateMany(args: { where: Prisma.AutomationRunItemWhereInput; data: Prisma.AutomationRunItemUpdateManyMutationInput }): Promise<{ count: number }>;
   };
   auditLog: {
     create(args: { data: Prisma.AuditLogUncheckedCreateInput }): Promise<unknown>;
@@ -483,6 +491,44 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
     await tx.platformSetting.updateMany({ where: { updatedById: userId }, data: { updatedById: null } });
     await tx.merchantRule.deleteMany({ where: { ownerUserId: userId } });
     await tx.investmentEvent.updateMany({ where: { createdByUserId: userId }, data: { createdByUserId: null } });
+    // Comms Center A-2a — the delivery ledger keeps its COUNTS but forgets who:
+    // the soft recipientUserId, and the salted recipient hash of the address
+    // (rows sent before an account existed, e.g. a beta invite), are nulled.
+    // ALWAYS by userId (whether or not a salt is configured), then — when the
+    // salt is set — by the hash of the CURRENT address (rows sent to this
+    // person before they had an account). An address the user changed away
+    // from cannot be re-derived; those rows carry no userId and only an HMAC.
+    await tx.commsDelivery.updateMany({
+      where: { recipientUserId: userId },
+      data:  { recipientUserId: null, recipientHash: null },
+    });
+    // Comms Center B2 (contract v1.1 §8.7) — the subject's pending automation
+    // sends are CANCELLED / ACCOUNT_RESTRICTED (a lease-holder finishes nothing:
+    // its send-time re-check finds no account), then every item forgets who.
+    await tx.automationRunItem.updateMany({
+      where: { recipientUserId: userId, status: { in: ["SCHEDULED", "SENDING", "FAILED"] } },
+      data:  { status: "CANCELLED", reason: "ACCOUNT_RESTRICTED", leaseUntil: null, nextAttemptAt: null },
+    });
+    // HARDENING A9 — the dedupeKey is filled from a template that MUST name {recipientId} (and may name
+    // other user-id payload fields, e.g. {invitedUserId}), so it is an identifier too: nulled on the
+    // subject's own items, and on ANY item whose key embeds the subject's id (someone else's item about them).
+    await tx.automationRunItem.updateMany({ where: { recipientUserId: userId }, data: { recipientUserId: null, dedupeKey: null } });
+    // PRE-FLIP R6 — ACCEPTED COST: this `contains` is a sequential scan of AutomationRunItem (no index serves
+    // a substring match). It is BOUNDED: the table holds at most AUTOMATION_RETENTION_DAYS (90) of items —
+    // runs and their items are deleted by the retention job — and a purge is a rare, once-per-account
+    // operation. It cannot be narrowed by the recipient column: these are rows whose recipient is SOMEONE
+    // ELSE (the subject's id rides the key through a payload field such as {invitedUserId}); the subject's
+    // own items were already cleared through the [recipientUserId, createdAt] index above. A trigram /
+    // separate subject-id column (a migration) is not worth it at this bound; revisit if the item volume
+    // per 90 days grows past a few hundred thousand rows.
+    await tx.automationRunItem.updateMany({ where: { dedupeKey: { contains: userId } }, data: { dedupeKey: null } });
+    const ledgerHash = recipientHash(user.email, process.env);
+    if (ledgerHash) {
+      await tx.commsDelivery.updateMany({
+        where: { recipientHash: ledgerHash },
+        data:  { recipientUserId: null, recipientHash: null },
+      });
+    }
 
     // 7. ACCOUNT_DELETED audit (written BEFORE the delete). userId is set now;
     //    the user delete below SetNulls it, so the row survives anonymized
@@ -516,12 +562,10 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
   // ── 9. Final notice — AFTER commit, exactly once ───────────────────────────
   // Reuses the security-alert template. NON-THROWING: delivery failure never
   // blocks. Only the worker whose transaction committed reaches this line.
-  const emailResult = await email("security-alert", user.email, {
-    title:   "Your account has been deleted",
-    message:
-      `Your Fourth Meridian account and all associated data have been ` +
-      `permanently deleted. This action cannot be undone. If you did not ` +
-      `expect this, contact support.`,
+  const emailResult = await email("security-alert", user.email, { ...accountDeletedAlert() }, {
+    // The account no longer exists: no userId, and no recipient hash either —
+    // nothing on the ledger may link back to the purged person.
+    key: "ACCOUNT_DELETED", recipientUserId: null, hashRecipient: false,
   });
   if (emailResult.status === "error") {
     console.error("[purge] deletion-complete security-alert email failed to send:", redactedErrorForLog(emailResult.error));

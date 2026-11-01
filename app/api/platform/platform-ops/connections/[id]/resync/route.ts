@@ -34,6 +34,14 @@ import { classifyPlaidErrorForHealth } from "@/lib/plaid/errors";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { notifyItemSyncFailed } from "@/lib/plaid/sync-notifications";
 import { checkManualRefreshCooldown, markManualRefreshed } from "@/lib/plaid/refreshCooldown";
+import { billableForPlaidItem } from "@/lib/platform/policies/billable-subjects";
+import { billableSkipCode } from "@/lib/entitlements/billable-gate-core";
+import { billableRefusalResponse } from "@/lib/entitlements/consume";
+
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
 
 export const runtime = "nodejs";
 
@@ -119,6 +127,22 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       },
       { status: 503 },
     );
+  }
+
+  // ── BETA LIFECYCLE L2 — THE CUSTOMER'S PLAN ─────────────────────────────────
+  // The Item bills its connector. An operator resync of a frozen / paused /
+  // ended (or unverifiable) customer is refused — the same answer the CS
+  // operator Refresh All gives — BEFORE the cooldown is consumed, the lock is
+  // claimed or Plaid is called. Ledgered (a SKIPPED execution with the
+  // billable skip code) and audited as REFUSED, never as a sync.
+  const billable = await billableForPlaidItem(item.id, "manual_refresh");
+  if (!billable.allowed) {
+    const { runId } = await recordAdmissionDenial({
+      itemId: item.id, trigger: "OPERATOR", profile: "TRANSACTIONS_ONLY", admissionReason: billableSkipCode(billable.reason),
+    });
+    refreshExecutionId = runId;
+    await auditResync("plan-restricted", "REFUSED", { billableReason: billable.reason, runId });
+    return billableRefusalResponse(billable.reason, "Resyncing this connection");
   }
 
   await markManualRefreshed(item.id);

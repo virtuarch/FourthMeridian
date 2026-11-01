@@ -24,11 +24,13 @@ import { env } from "@/lib/env";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { sendEmail } from "@/lib/email/send";
 import { buildResetUrl } from "@/lib/email/reset-url";
+import { PASSWORD_RESET_TTL_MS } from "@/lib/email/token-ttl";
 import { limitByIp } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
 
-const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+// The reset link lifetime — shared with the email copy (lib/email/token-ttl.ts).
+const TOKEN_TTL_MS = PASSWORD_RESET_TTL_MS; // 1 hour
 
 export async function POST(req: NextRequest) {
   try {
@@ -77,7 +79,7 @@ export async function POST(req: NextRequest) {
     // Deliver via the email seam. Non-throwing: a provider failure yields an
     // error status we record for ops, but never fails the request or reveals
     // account existence to the caller.
-    const emailResult = await sendEmail("password-reset", user.email, { resetUrl });
+    const emailResult = await sendEmail("password-reset", user.email, { resetUrl }, { key: "PASSWORD_RESET_LINK_SENT", recipientUserId: user.id });
     if (emailResult.status === "error") {
       console.error("[forgot-password] reset email failed to send:", emailResult.error);
     }

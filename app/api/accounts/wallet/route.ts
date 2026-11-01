@@ -25,6 +25,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceContext } from "@/lib/space";
 import { AccountType, AccountOwnerType, ShareStatus, VisibilityLevel, DuplicateDetectionSource } from "@prisma/client";
+import { claimReAddSyncWindowAtomic } from "@/lib/connections/re-add-sync-window";
 import { requireUser } from "@/lib/session";
 import { AuditAction } from "@/lib/audit-actions";
 import { mergeArchivedDuplicateIntoCanonical } from "@/lib/accounts/reconcile";
@@ -62,7 +63,9 @@ import { resolveHistoricalWorkWindow } from "@/lib/snapshots/historical-work-win
  * must not depend on a long historical rebuild, and the regenerator already
  * defers/skip-frozens internally.
  */
-async function regenWalletWealthHistory(financialAccountId: string): Promise<void> {
+async function regenWalletWealthHistory(financialAccountId: string, billable: BillableDecision): Promise<void> {
+  // BETA LIFECYCLE L2 — the rebuild reaches the price vendors (CoinGecko history).
+  if (!billable.allowed) return;
   try {
     // A first connection has no measurable "what changed" — there is no prior
     // state to diff against — so no `changedSince` is supplied and the planner
@@ -78,6 +81,34 @@ async function regenWalletWealthHistory(financialAccountId: string): Promise<voi
   }
 }
 /**
+ * BETA LIFECYCLE L2 (review P3-1) — claim this wallet's re-add sync window:
+ * ONE conditional write on the customer's own Connection row (tenant role),
+ * succeeding only when the last manual refresh is older than the customer's
+ * ENTITLED cooldown. True = this request may sync. Anything else — no
+ * Connection, a recent sync, a read or write failure — is false (fail closed).
+ */
+async function claimReAddSyncWindow(userId: string, connectionId: string | null): Promise<boolean> {
+  if (!connectionId) return false;
+  try {
+    const e = await entitlementsForUser(userId);
+    const cooldownMs = cooldownMsFromMinutes(Number(e.dimensions.manualBankRefreshCooldownMinutes.value));
+    const now = new Date();
+    const windowOpensAt = new Date(now.getTime() - cooldownMs);
+    // Follow-up N5 — ONE atomic statement: the window check and the claim are
+    // the same UPDATE … WHERE … RETURNING, so two concurrent re-adds cannot
+    // both pass (no read-then-write gap). On the tenant role under RLS: a row
+    // that is not ours is simply not updated (no row returned ⇒ no sync). Not
+    // a count-returning bulk write: it returns the claimed key, or nothing.
+    // (lib/connections/re-add-sync-window.ts — proven on real Postgres by the
+    // RLS foreground suite, check 72.)
+    return await withTenantDb(userId, (tx) => claimReAddSyncWindowAtomic(tx, { connectionId, userId, now, windowOpensAt }));
+  } catch (e) {
+    console.warn("[POST /api/accounts/wallet] re-add sync window unreadable; no sync (fail closed):", e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
+/**
  * W-M1d — sync a freshly connected/restored wallet through its chain's adapter.
  *
  * BEST-EFFORT AND NON-FATAL, exactly as the BTC call it replaces: connecting a
@@ -92,7 +123,12 @@ async function regenWalletWealthHistory(financialAccountId: string): Promise<voi
 async function syncWalletBestEffort(
   financialAccountId: string,
   chain: string,
+  billable: BillableDecision,
 ): Promise<{ ok: boolean; errorCode?: string; reason?: string }> {
+  // BETA LIFECYCLE L2 — no chain / quote / history call for a restricted owner.
+  // The wallet row (create, reactivate or re-share) still succeeds; it is
+  // honestly unsynced and syncs on the first sweep after the restriction lifts.
+  if (!billable.allowed) return { ok: false, errorCode: "PLAN_RESTRICTED", reason: billable.reason };
   const outcome = await syncWalletByChain(financialAccountId, chain);
   if (!outcome.ok) {
     console.warn(
@@ -114,12 +150,20 @@ import { syncWalletByChain, chainSupportsHistory } from "@/lib/crypto/wallet-syn
 import { isExtendedKey, normalizeExtendedKeyInput } from "@/lib/crypto/btc-address-derivation";
 // BETA C7′ — the connection-count entitlement (maxConnections), new wallets only.
 import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
+import { assertBillableAllowed, type BillableDecision } from "@/lib/entitlements/billable-gate";
+import { entitlementsForUser } from "@/lib/entitlements/consume";
+import { cooldownMsFromMinutes } from "@/lib/plaid/refreshCooldown";
 
 // W-M2c — validation reads the SAME product-surface authority the picker
 // renders. It previously kept its own wider list, so the two could disagree in
 // both directions: BNB was offered and refused, while ADA/XRP/DOT/OTHER were
 // accepted by the API after being removed from the menu. Hiding an option is
 // not a restriction if the endpoint behind it still accepts the value.
+
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const [, err] = await requireUser();
@@ -171,6 +215,15 @@ export async function POST(req: NextRequest) {
       return connectionLimitResponse(cap);
     }
   }
+
+  // ── BETA LIFECYCLE L2 — PAID WORK FOR EVERY BRANCH, INCLUDING A RE-ADD ─────
+  // A re-add of an ACTIVE address bypasses the cap by design (it creates no
+  // connection) but used to run a full, unlimited chain sync, quote refresh and
+  // history rebuild. Every branch now asks the billable gate once, here, and a
+  // refused owner gets the DB outcome without any provider call. The re-add
+  // branch additionally takes ONE sync per wallet per entitled cooldown window
+  // (claimReAddSyncWindow below — fail closed, never counts a new wallet).
+  const billable = await assertBillableAllowed({ userId, operation: "wallet_sync" });
 
   // ── RLS-PREP-C — THE RESOLUTION AND ITS WRITES ARE ONE TENANT PHASE ────────
   // Look up → (re-share | reactivate | create) used to be three lookups and two
@@ -339,7 +392,13 @@ export async function POST(req: NextRequest) {
     // Connection(WALLET) spine and link the AccountConnection +
     // ProviderAccountIdentity to it (also self-heals a wallet created before
     // v1.5). Idempotent, non-fatal.
-    await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+    const activeConnectionId = await alignWalletProviderSpine({ userId, financialAccountId: activeFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+    // BETA LIFECYCLE L2 (review P3-1) — a re-add re-reads the chain at most once
+    // per wallet per the customer's ENTITLED manual-refresh cooldown, claimed
+    // atomically on the Connection (the same column the manual Sync uses). Any
+    // read or claim failure ⇒ no sync (fail closed). New wallets never pass here.
+    const reAddSync: BillableDecision = billable.allowed && !(await claimReAddSyncWindow(userId, activeConnectionId))
+      ? { allowed: false, reason: "NOT_ENTITLED" } : billable;
 
     // walletAddress has no DB-level unique constraint, so an archived row
     // for this same address can exist alongside the active one (e.g. a
@@ -372,7 +431,9 @@ export async function POST(req: NextRequest) {
     // create/reactivate branches). Without this, an already-existing wallet
     // has no automatic sync trigger at all — the reported "re-add does nothing"
     // bug. Runs BEFORE snapshot regen so the snapshot captures the fresh balance.
-    const activeSync = await syncWalletBestEffort(activeFa.id, chain);
+    const activeSync = reAddSync.allowed || !billable.allowed
+      ? await syncWalletBestEffort(activeFa.id, chain, billable)
+      : { ok: false, errorCode: "COOLDOWN", reason: "This wallet was synced recently; the next scheduled refresh will update it." };
 
     // Regenerate SpaceSnapshot now that the share is active in this space —
     // same best-effort/non-fatal pattern as the reactivation branch below.
@@ -381,7 +442,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${activeFa.id} (non-fatal):`, snapshotErr);
     }
-    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(activeFa.id);
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(activeFa.id, reAddSync);
 
     return NextResponse.json({ success: true, accountId: activeFa.id, initialSync: activeSync }, { status: 200 });
   }
@@ -392,14 +453,20 @@ export async function POST(req: NextRequest) {
     // D2 Step 2 — WALLET dual-write (best-effort, non-fatal). Reactivating
     // this user's own archived account — no cross-owner behavior involved.
     // Wallet Provider v1.5 — ensure/link the Connection(WALLET) spine.
-    await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+    const archivedConnectionId = await alignWalletProviderSpine({ userId, financialAccountId: archivedFa.id, address: walletValue, chain, descriptorOnly: isXpub });
+    // Follow-up N4 — delete-then-re-add must not be a way around the window:
+    // a reactivation also takes one sync per wallet per entitled window.
+    const reactivateSync: BillableDecision = billable.allowed && !(await claimReAddSyncWindow(userId, archivedConnectionId))
+      ? { allowed: false, reason: "NOT_ENTITLED" } : billable;
 
     // BTC wallet sync v1 — populate the confirmed balance + USD value on
     // reactivate (best-effort, non-fatal). syncBtcWallet never throws; on
     // explorer/price failure the account stays visible and "pending" and a
     // SyncIssue is recorded (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot
     // regen so the snapshot captures the freshly-synced balance.
-    const archivedSync = await syncWalletBestEffort(archivedFa.id, chain);
+    const archivedSync = reactivateSync.allowed || !billable.allowed
+      ? await syncWalletBestEffort(archivedFa.id, chain, billable)
+      : { ok: false, errorCode: "COOLDOWN", reason: "This wallet was synced recently; the next scheduled refresh will update it." };
 
     // Regenerate SpaceSnapshot now that the share is active again — see
     // docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md. Best-effort/non-fatal.
@@ -408,7 +475,7 @@ export async function POST(req: NextRequest) {
     } catch (snapshotErr) {
       console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${archivedFa.id} (non-fatal):`, snapshotErr);
     }
-    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id);
+    if (chainSupportsHistory(chain)) await regenWalletWealthHistory(archivedFa.id, reactivateSync);
 
     // An AuditLog INSERT is refused loudly or not at all (`fm_app_ins` is
     // WITH CHECK (true)); it is a phase of its own because it follows network work.
@@ -445,7 +512,7 @@ export async function POST(req: NextRequest) {
   // failure the wallet stays visible and "pending" and a SyncIssue is recorded
   // (see lib/crypto/btc-sync.ts). Runs BEFORE snapshot regen so the snapshot
   // captures the freshly-synced balance.
-  const initialSync = await syncWalletBestEffort(fa.id, chain);
+  const initialSync = await syncWalletBestEffort(fa.id, chain, billable);
 
   // Regenerate SpaceSnapshot now that this new wallet is shared in —
   // same best-effort/non-fatal pattern as every other account-create/
@@ -455,7 +522,7 @@ export async function POST(req: NextRequest) {
   } catch (snapshotErr) {
     console.warn(`[POST /api/accounts/wallet] snapshot regen failed for account ${fa.id} (non-fatal):`, snapshotErr);
   }
-  if (chainSupportsHistory(chain)) await regenWalletWealthHistory(fa.id);
+  if (chainSupportsHistory(chain)) await regenWalletWealthHistory(fa.id, billable);
 
   // BETA A7 — ids and kinds only. The wallet ADDRESS used to be written here
   // (and the account name); an audit row that names a public key names its

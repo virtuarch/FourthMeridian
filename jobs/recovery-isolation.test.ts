@@ -24,6 +24,7 @@
  * Run:  npx tsx jobs/recovery-isolation.test.ts
  */
 
+import { allowAllBillable } from "@/lib/test-support/billable-open";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { resumeStaleImports, type StaleImportCandidate } from "./resume-stale-imports";
@@ -59,8 +60,8 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** A fixture population that exists only in this process. */
 const FIXTURE: StaleImportCandidate[] = [
-  { id: "fixture-item-1", institutionName: "Fixture Bank A" },
-  { id: "fixture-item-2", institutionName: "Fixture Bank B" },
+  { id: "fixture-item-1", institutionName: "Fixture Bank A", userId: "owner-1" },
+  { id: "fixture-item-2", institutionName: "Fixture Bank B", userId: "owner-1" },
 ];
 
 function scopedLoader(items: StaleImportCandidate[], total = items.length) {
@@ -122,7 +123,7 @@ async function main() {
   {
     const driven: string[] = [];
     const drive = async (id: string): Promise<WebhookSyncOutcome> => { driven.push(id); return "ran"; };
-    const r = await resumeStaleImports({ loadCandidates: scopedLoader(FIXTURE), drive, admit });
+    const r = await resumeStaleImports({ loadCandidates: scopedLoader(FIXTURE), drive, admit, billable: allowAllBillable });
 
     check("drove exactly the fixture items",
       JSON.stringify(driven) === JSON.stringify(FIXTURE.map((f) => f.id)), driven.join(","));
@@ -138,7 +139,7 @@ async function main() {
     const r = await resumeStaleImports({
       loadCandidates: scopedLoader([], 0),
       drive: async (id) => { driven.push(id); return "ran"; },
-      admit,
+      admit, billable: allowAllBillable,
     });
     // The load-bearing assertion: supplying no candidates must NOT silently fall
     // back to the platform-wide query. If it did, this would drive real records.
@@ -152,7 +153,7 @@ async function main() {
     const r = await resumeStaleImports({
       loadCandidates: scopedLoader(FIXTURE),
       drive: async (id) => (id === "fixture-item-1" ? "skipped-locked" : "ran"),
-      admit,
+      admit, billable: allowAllBillable,
     });
     check("lock contention counted as skipped, not ran", r.skipped === 1 && r.ran === 1);
   }

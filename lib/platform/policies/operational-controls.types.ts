@@ -46,6 +46,14 @@ export interface OperationalControlsReadModel {
     /** The admission work classes maintenance denies — read from the policy, not restated. */
     blocks: readonly string[];
   };
+  /**
+   * BETA LIFECYCLE L2 — the GLOBAL cost freeze (`platform_cost_frozen`): while
+   * ON (or unreadable — INVALID), no operation that can incur a provider charge
+   * starts, for any customer or platform-wide. Writable here (PATCH with
+   * `control: "COST_FREEZE"`), beside maintenance. This is the PLATFORM flag; a
+   * policy group's own freeze is that group's `costFrozen` (Policy Groups).
+   */
+  costFreeze: FlagView;
   /** Read-only neighbours, so the panel can distinguish them. Not writable through this route. */
   related: {
     aiKillSwitch: Pick<FlagView, "key" | "state">;
@@ -57,8 +65,14 @@ export interface OperationalControlsReadModel {
 export type MaintenanceAction = "ENABLE" | "DISABLE" | "RESET";
 export const MAINTENANCE_ACTIONS: readonly MaintenanceAction[] = ["ENABLE", "DISABLE", "RESET"];
 
+/** Which control a PATCH changes. Absent ⇒ MAINTENANCE (the original contract). */
+export type OperationalControlName = "MAINTENANCE" | "COST_FREEZE";
+export const OPERATIONAL_CONTROL_NAMES: readonly OperationalControlName[] = ["MAINTENANCE", "COST_FREEZE"];
+
 /** The PATCH body. `expectedUpdatedAt` is the version the operator read (null ⇒ "I saw no row"). */
 export interface MaintenanceChangeBody {
+  /** BETA LIFECYCLE L2 — "COST_FREEZE" targets the global cost freeze; absent ⇒ maintenance. */
+  control?: OperationalControlName;
   action: MaintenanceAction;
   expectedUpdatedAt: string | null;
   reason: { code: string; note: string };

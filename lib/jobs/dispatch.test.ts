@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     const origin = (n: string) => pol.get(n)?.origin;
     // BETA base (b625d45): + plaid-removal-retry, product-event-retention (daily fixed).
     // + sol-history-backfill (owner decision 2, 2026-10-28).
-    check("registry holds fourteen jobs", SCHEDULED_JOBS.length === 14, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds fifteen jobs (+ comms-automations, Comms Center B2)", SCHEDULED_JOBS.length === 15, `got ${SCHEDULED_JOBS.length}`);
     const sol = SCHEDULED_JOBS.find((j) => j.name === "sol-history-backfill");
     check("sol-history-backfill self-continues, refreshes nothing (no wallet attempt-period effect), and runs second to last (before evaluate-alerts)",
       !!sol?.selfContinues && !sol.refreshes && !sol.continuationOf
@@ -152,12 +152,14 @@ async function main(): Promise<void> {
 
   // ── 5. Execution through the runner, in registry order, trigger "cron" ────
   {
-    const ran: string[] = []; const triggers: string[] = [];
+    const ran: string[] = []; const triggers: string[] = []; const budgets: Array<Date | undefined> = [];
     const jobs = fakeJobs();
     const result = await muteConsole(() => dispatchDueJobs(NOW, {
       jobs, facts: facts({}), policies: policiesFor(jobs),
-      runner: async (name, fn, options) => { ran.push(name); triggers.push(options.trigger); return fn(); },
+      runner: async (name, fn, options) => { ran.push(name); triggers.push(options.trigger); budgets.push(options.budgetStartedAt); return fn(); },
     }));
+    // 2026-10-31: every job of a wake shares ONE function invocation — the inline ETH step sizes its deadline from it.
+    check("every job is handed the WAKE's instant as its budget start", budgets.length === 3 && budgets.every((d) => d === NOW));
     check("every due job executes through the runner (runJob seam)", ran.join() === "a,b,c");
     check("sequencing follows registry order", ran[0] === "a" && ran[1] === "b" && ran[2] === "c");
     check("trigger is \"cron\"", triggers.every((t) => t === "cron"));

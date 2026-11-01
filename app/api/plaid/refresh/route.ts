@@ -53,6 +53,11 @@ interface RefreshBody {
 // refresh pipelines in lib/plaid/ — runs on its own authority and is not part of
 // this conversion (it interleaves Plaid HTTP with its writes, and a tenant phase
 // must never span a network round trip).
+// Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
+// duration must stay below the stale-execution reaper's threshold
+// (lib/plaid/refresh-ledger.ts; census in refresh-execution-reaper.test.ts).
+export const maxDuration = 300;
+
 export const POST = withApiHandler(async (req: NextRequest) => {
   const [user, err] = await requireUser();
   if (err) return err;
@@ -86,6 +91,8 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   // FAIL CLOSED (owner ruling, 2026-10-30) — a manual refresh is a paid provider
   // call; a missing/invalid policy assignment refuses it (403) before any Plaid
   // call. Scheduled platform refresh is not an entitlement and continues.
+  // BETA LIFECYCLE — also refused under a paused / ended / cost-frozen group or
+  // an unreadable lifecycle, whatever the cooldown says (review fix 1).
   const failClosed = refuseIfFailClosed(entitlements, "Manual refresh");
   if (failClosed) return failClosed;
   const cooldownMs = cooldownMsFromMinutes(Number(entitlements.dimensions.manualBankRefreshCooldownMinutes.value));

@@ -13,7 +13,7 @@ import { db } from "@/lib/db";
 import { hashResetToken } from "@/lib/password-reset-token";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
-import { formatDateTime } from "@/lib/format";
+import { passwordResetCompletedAlert } from "@/lib/email/security-alerts";
 import { limitByIp } from "@/lib/rate-limit";
 import { createNotification } from "@/lib/notifications/create";
 import { AuditAction } from "@/lib/audit-actions";
@@ -81,10 +81,7 @@ export async function POST(req: NextRequest) {
 
     // Notify the account's own email that a reset completed. NON-THROWING: a
     // delivery failure is logged and recorded, but never fails the reset.
-    const emailResult = await sendEmail("security-alert", user.email, {
-      title:   "Your password was reset",
-      message: `Your Fourth Meridian password was reset on ${formatDateTime(new Date().toISOString())}.`,
-    });
+    const emailResult = await sendEmail("security-alert", user.email, { ...passwordResetCompletedAlert(new Date()) }, { key: "PASSWORD_RESET", recipientUserId: user.id });
     if (emailResult.status === "error") {
       console.error("[reset-password] security-alert email failed to send:", emailResult.error);
     }

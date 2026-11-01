@@ -13,6 +13,19 @@ import { BUDGET_CUSTOMERS_CAP, loadAiBudgetUtilization, sumPerUser, surfacesOf }
 import { ESTIMATE_NOT_BILLING } from "./cost-controls.types";
 import type { UserSpendGroup } from "./spend-health";
 import type { CostControlsReadClient } from "./cost-controls";
+import { codeFallbackCatalogue, CODE_CATALOGUE } from "@/lib/entitlements/policy-groups";
+
+/**
+ * HERMETIC CATALOGUE. `loadAiBudgetUtilization` defaults to the cached DB
+ * catalogue loader (systemDb); this file never injected it, so it silently read
+ * whatever DATABASE_URL pointed at (CI's unit-test job has none ⇒ a failed read
+ * ⇒ CODE_FALLBACK). Since Beta lifecycle L1 a CODE_FALLBACK catalogue is
+ * POLICY_UNAVAILABLE by design — billable dimensions resolve to $0 (fail
+ * closed) — so the plan allowances below vanished. The code catalogue BY
+ * CONSTRUCTION (every group ACTIVE, not frozen) is injected; the fail-closed
+ * view is asserted explicitly in section 2b.
+ */
+const loadCatalogue = async () => CODE_CATALOGUE;
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -55,7 +68,7 @@ async function main() {
     const windowGroups = [g("usr_aaa111", "chat", 4, "2026-10-14"), g("usr_aaa111", "chat", 2), g("usr_bbb222", "brief", 1), g("usr_ccc333", "chat", 0.4), g(null, "harness", 20), g("usr_ddd444", "chat", 0.1, "2026-10-15", "gpt-99-x")];
     const todayGroups = [g("usr_aaa111", "chat", 2), g("usr_bbb222", "brief", 1), g("usr_ccc333", "chat", 0.4)];
     const m = await loadAiBudgetUtilization({
-      now: NOW,
+      now: NOW, loadCatalogue,
       groups: async (since) => (since.toISOString() === "2026-10-15T00:00:00.000Z" ? todayGroups : windowGroups),
       controls: controls([{ key: "ai_daily_allowance_usd", value: "8" }, { key: "ai_spend_alert_fleet_usd_24h", value: "10" }, { key: "ai_paid_requests_paused", value: "true" }]),
       assignments: { customerPolicyAssignment: { findMany: async () => [
@@ -77,10 +90,27 @@ async function main() {
     check("recentAlerts carry the two spend rules only, newest first", m.recentAlerts.length === 2 && m.recentAlerts[0].dedupeKey.startsWith("ai-spend-fleet-high") && m.recentAlerts.every((r) => !r.dedupeKey.startsWith("job-failing")));
     check("controls summary: enforced (default), platform allowance 8, user alert on at 3, paused", m.controls.allowanceEnforced && m.controls.allowanceDefaultUsd === 8 && m.controls.userAlertEnabled && m.controls.userAlertThresholdUsd === 3 && m.controls.paused);
     check("the governing sentence", m.estimateNote === ESTIMATE_NOT_BILLING);
-    const empty = await loadAiBudgetUtilization({ now: NOW, groups: async () => [], controls: controls(), assignments: { customerPolicyAssignment: { findMany: async () => [] } } });
+    const empty = await loadAiBudgetUtilization({ now: NOW, loadCatalogue, groups: async () => [], controls: controls(), assignments: { customerPolicyAssignment: { findMany: async () => [] } } });
     check("an empty window: null fleet USD, null utilization, no customers, default allowance 5, not paused", empty.fleet.estimatedUsd === null && empty.fleet.utilizationPct === null && empty.customers.length === 0 && empty.controls.allowanceDefaultUsd === 5 && !empty.controls.paused);
-    const many = await loadAiBudgetUtilization({ now: NOW, groups: async () => Array.from({ length: 30 }, (_, i) => g(`usr_${String(i).padStart(6, "0")}`, "chat", 1 + i)), controls: controls(), assignments: { customerPolicyAssignment: { findMany: async () => [] } } });
+    const many = await loadAiBudgetUtilization({ now: NOW, loadCatalogue, groups: async () => Array.from({ length: 30 }, (_, i) => g(`usr_${String(i).padStart(6, "0")}`, "chat", 1 + i)), controls: controls(), assignments: { customerPolicyAssignment: { findMany: async () => [] } } });
     check(`the customer list is capped at ${BUDGET_CUSTOMERS_CAP}, largest first`, many.customers.length === BUDGET_CUSTOMERS_CAP && many.customers[0].rolling24hUsd > many.customers[1].rolling24hUsd);
+  }
+
+  console.log("\n2b. BETA LIFECYCLE — the catalogue read failed (CODE_FALLBACK ⇒ POLICY_UNAVAILABLE)");
+  {
+    // An unverifiable lifecycle fails closed: every customer's effective allowance is $0 — override, overlay
+    // and platform setting are never applied — and the view folds that LIFECYCLE $0 into "POLICY".
+    const m = await loadAiBudgetUtilization({
+      now: NOW, loadCatalogue: async () => codeFallbackCatalogue(),
+      groups: async () => [g("usr_aaa111", "chat", 2), g("usr_bbb222", "brief", 1), g("usr_ccc333", "chat", 0.4)],
+      controls: controls([{ key: "ai_daily_allowance_usd", value: "8" }]),
+      assignments: { customerPolicyAssignment: { findMany: async () => [
+        { userId: "usr_aaa111", policyGroup: "BETA_FULL_ACCESS_V1", overlay: null, assignedAt: NOW, assignedById: null, aiDailyUsdAllowanceOverride: 15 },
+        { userId: "usr_bbb222", policyGroup: "BETA_FULL_ACCESS_V1", overlay: "FOUNDER_INTERNAL_V1", assignedAt: NOW, assignedById: null, aiDailyUsdAllowanceOverride: null },
+      ] } },
+    });
+    check("override 15, overlay 20 and platform 8 all resolve to $0 (source POLICY) — never the plan's figure",
+      m.customers.length === 3 && m.customers.every((c) => c.allowanceUsd === 0 && c.allowanceSource === "POLICY"));
   }
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

@@ -103,7 +103,8 @@ function makeStore(emails: Record<string, string> = { u1: "u1@example.com" }) {
           userId: data.userId,
           type: data.type,
           dedupeKey: data.dedupeKey,
-          archivedAt: null,
+          // A-2b: an email anchor is born archived.
+          archivedAt: data.archivedAt ?? null,
           data: data as unknown as Record<string, unknown>,
         };
         rows.push(row);
@@ -126,13 +127,17 @@ function makeStore(emails: Record<string, string> = { u1: "u1@example.com" }) {
 
   const resolveClient: NotificationResolveClient = {
     notification: {
-      async updateMany({ where, data }) {
+      async updateMany(args) {
+        const { where, data } = args;
+        // Two shapes (A-2b): open holders (archivedAt: null → archive) and
+        // archived holders (archivedAt: { not: null } → release the key only).
+        const wantOpen = where.archivedAt === null;
         const hit = rows.filter(
-          (r) => r.userId === where.userId && r.dedupeKey === where.dedupeKey && r.archivedAt === null,
+          (r) => r.userId === where.userId && r.dedupeKey === where.dedupeKey && (wantOpen ? r.archivedAt === null : r.archivedAt !== null),
         );
         for (const r of hit) {
           r.dedupeKey = data.dedupeKey;
-          r.archivedAt = data.archivedAt;
+          if ("archivedAt" in data) r.archivedAt = data.archivedAt;
         }
         return { count: hit.length };
       },
@@ -431,12 +436,35 @@ async function run(): Promise<void> {
   // ── 1c. Preference enforcement ──────────────────────────────────────────────
   console.log("preference enforcement");
   {
+    // OWNER RULING 2026-10-31 (Comms Center A-2b, O-7) replaces the frozen F11
+    // coupling for SYNC_FAILED: FINANCIAL in-app off hides the bell but the
+    // email follows its own (EMAIL) preference. The in-app half is unchanged:
+    // nothing visible is created. The row written is an archived email anchor.
+    const store = makeStore();
+    const sent: string[] = [];
+    const res = await createNotification(
+      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
+      {
+        client: store.writeClient,
+        prefClient: prefsWith([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]),
+        emailAdapter: { channel: "EMAIL", name: "fake", async deliver(m) { sent.push(m.notificationId ?? ""); return { status: "sent", provider: "fake" }; } },
+      },
+    );
+    check("FINANCIAL in-app override hides the sync bell (only an archived email anchor exists)",
+      res.status === "created" && store.rows.length === 1 && store.rows[0].archivedAt !== null);
+    check("…and the connection-failure email still ships (owner ruling 2026-10-31)", sent.length === 1 && store.deliveries.length === 1);
+  }
+  {
+    // FINANCIAL in-app AND email off → nothing at all (the email preference decides the email).
     const store = makeStore();
     const res = await createNotification(
       { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
-      { client: store.writeClient, prefClient: prefsWith([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]) },
+      { client: store.writeClient, prefClient: prefsWith([
+        { category: "FINANCIAL", channel: "IN_APP", enabled: false },
+        { category: "FINANCIAL", channel: "EMAIL", enabled: false },
+      ]) },
     );
-    check("FINANCIAL in-app override suppresses sync pings", res.status === "skipped" && store.rows.length === 0);
+    check("FINANCIAL in-app + email off suppresses sync pings entirely", res.status === "skipped" && store.rows.length === 0);
   }
   {
     // SYNC_FAILED defaults email ON (actionable) — delivery row via fake adapter.

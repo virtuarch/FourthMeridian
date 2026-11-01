@@ -200,7 +200,14 @@ export type OperatorTargetKind =
   | "USER" | "BETA_REQUEST" | "PLAID_ITEM" | "CONNECTION" | "SPACE" | "PLATFORM_SETTING" | "JOB" | "POLICY_GROUP"
   // SEC-PLAT-2 — a merchant merge candidate, identified by its global pairKey
   // (merchant keys are deployment-wide, not a customer's).
-  | "MERCHANT_PAIR";
+  | "MERCHANT_PAIR"
+  // PR C — one Growth bulk beta approval, identified by its client batchKey (a UUID).
+  | "BETA_BATCH"
+  // Comms Center B1 — one notification content stream, "<key>:<channel>:<variant>" (code facts, no customer).
+  | "COMMS_TEMPLATE"
+  // Comms Center B2 — one automation (its id), and one test send ("<key>:<channel>").
+  | "COMMS_AUTOMATION"
+  | "COMMS_TEST_SEND";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
@@ -233,6 +240,27 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.POLICY_GROUP_ROLLED_BACK,
   AuditAction.POLICY_GROUP_ARCHIVED,
   AuditAction.POLICY_GROUP_DEFAULT_CHANGED,
+  // Beta lifecycle (owner decisions 2026-10-31) — every lifecycle / cost-freeze change.
+  AuditAction.POLICY_GROUP_PAUSED,
+  AuditAction.POLICY_GROUP_RESUMED,
+  AuditAction.POLICY_GROUP_ENDED,
+  AuditAction.POLICY_GROUP_COST_FROZEN,
+  AuditAction.POLICY_GROUP_COST_UNFROZEN,
+  // Comms Center B1 (contract v1.1 §9.2) — publishing or rolling back the copy
+  // customers receive is consequential; drafts and AI suggestions stay optional.
+  AuditAction.COMMS_TEMPLATE_PUBLISHED,
+  AuditAction.COMMS_TEMPLATE_ROLLED_BACK,
+  // Comms Center B2 (contract v1 §3.5, v1.1 §6.1) — every automation write, the
+  // owner approval and a test send carry a reason.
+  AuditAction.COMMS_AUTOMATION_CREATED,
+  AuditAction.COMMS_AUTOMATION_UPDATED,
+  AuditAction.COMMS_AUTOMATION_DRY_RUN,
+  AuditAction.COMMS_AUTOMATION_OWNER_APPROVED,
+  AuditAction.COMMS_AUTOMATION_ACTIVATED,
+  AuditAction.COMMS_AUTOMATION_ACTIVATION_REFUSED,
+  AuditAction.COMMS_AUTOMATION_PAUSED,
+  AuditAction.COMMS_AUTOMATION_DISABLED,
+  AuditAction.COMMS_TEST_SEND,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class
@@ -254,6 +282,8 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.BETA_MODE_CHANGED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.BETA_INVITATION_REVOKED,
+  // BETA-REQUEST RISK — an operator's verdict on a request's advisory signals.
+  AuditAction.BETA_REQUEST_RISK_REVIEWED,
   // PR B — changing the invitation validity policy, and extending an issued
   // invitation without rotating its token, are consequential and carry a reason.
   AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
@@ -352,7 +382,12 @@ export interface OperatorActionWriteClient {
 /**
  * Record one operator action. THROWS on validation (a consequential action must
  * not proceed un-audited) — write it inside the same transaction as the change.
+ * Returns the AuditLog row's id (Comms Center B1, contract v1.1 §9.2) so a
+ * caller can store it on the row it changes in the same transaction; existing
+ * callers ignore it. `id` is "" only when a test fake returned no row.
  */
-export async function recordOperatorAction(client: OperatorActionWriteClient, input: OperatorActionInput): Promise<void> {
-  await client.auditLog.create({ data: buildOperatorActionData(input) });
+export async function recordOperatorAction(client: OperatorActionWriteClient, input: OperatorActionInput): Promise<{ id: string }> {
+  const row = await client.auditLog.create({ data: buildOperatorActionData(input) });
+  const id = (row as { id?: unknown } | null | undefined)?.id;
+  return { id: typeof id === "string" ? id : "" };
 }

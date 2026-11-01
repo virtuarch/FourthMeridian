@@ -78,7 +78,14 @@ export type OperationalWork =
    * which every paid path already consults. Added 2026-10-23 after a Brief made
    * a paid call while maintenance_mode was on.
    */
-  | "PAID_AI_REQUEST";
+  | "PAID_AI_REQUEST"
+  /**
+   * Beginning a Comms Center AUTOMATION pass or one automation SEND (contract v1.1 §6.6 — at
+   * trigger and at send). Consumed once, at lib/notifications/automations/admission.ts, which
+   * the engine asks before ingesting and before every delivery. Added 2026-10-31 (Comms B2
+   * hardening A5): maintenance must stop operator-configured sends.
+   */
+  | "COMMS_AUTOMATION_SEND";
 
 export interface AdmissionRequest {
   work: OperationalWork;

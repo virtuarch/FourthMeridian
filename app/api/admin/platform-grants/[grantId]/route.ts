@@ -19,6 +19,7 @@ import { requireFreshSystemAdmin } from "@/lib/session";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
 import { getClientIp } from "@/lib/api";
+import { notifyPlatformAccessChange } from "@/lib/notifications/platform-access";
 
 export const runtime = "nodejs";
 
@@ -55,7 +56,7 @@ export async function PATCH(
   }
 
   // Step 4 — status flip + audit row in ONE transaction.
-  const [updated] = await db.$transaction([
+  const [updated, auditRow] = await db.$transaction([
     db.platformGrant.update({
       where: { id: grantId },
       data:  { status: "REVOKED", revokedAt: new Date(), revokedById: admin.id },
@@ -81,6 +82,17 @@ export async function PATCH(
       },
     }),
   ]);
+
+  // Owner-approved 2026-10-31 — "your access to X was removed" (in-app +
+  // security-alert email), after the commit. Non-throwing.
+  await notifyPlatformAccessChange({
+    kind: "revoked",
+    userId: grant.userId,
+    email: updated.user?.email ?? null,
+    area: grant.area,
+    level: grant.level,
+    auditLogId: auditRow.id,
+  });
 
   return NextResponse.json({ grant: updated });
 }

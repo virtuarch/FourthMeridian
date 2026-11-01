@@ -100,6 +100,36 @@ async function main() {
       !!audit && !JSON.stringify(audit.metadata).includes("example.test") && typeof (audit.metadata as { emailHash?: unknown }).emailHash === "string");
   }
 
+  t.section("3b. WELCOME (owner-approved 2026-10-31) — uninvited: once, after the FIRST verification");
+  {
+    const w = world();
+    const r = await verify({ token: w.raw });
+    const mail = capturedEmails();
+    t.check("verified → exactly one e-mail: the welcome (the verification e-mail was the registration's)",
+      r.body.status === "verified" && mail.length === 1 && mail[0].to === "pending@example.test" && mail[0].subject === "Welcome to Fourth Meridian",
+      mail.map((m) => m.subject));
+    t.check("…carries no token and links /dashboard", !/token=/.test(mail[0]?.text ?? "") && /\/dashboard(?![\w/])/.test(mail[0]?.text ?? ""));
+    t.check("one ACCOUNT_WELCOME in-app row", fake.rows("Notification", { userId: w.pending.id, type: "ACCOUNT_WELCOME" }).length === 1);
+    const again = await verify({ token: w.raw });
+    t.check("a second click → already_verified, NO second welcome",
+      again.body.status === "already_verified" && capturedEmails().length === 1 && fake.rows("Notification", { type: "ACCOUNT_WELCOME" }).length === 1);
+    const ex = await verify({ token: w.expiredRaw });
+    t.check("an expired token welcomes nobody", ex.body.status === "expired" && capturedEmails().length === 1);
+    const done = await verify({ token: "d".repeat(64) });
+    t.check("an unknown token welcomes nobody", done.body.status === "invalid" && capturedEmails().length === 1);
+  }
+  {
+    // Two concurrent clicks on the same link both pass the read (emailVerifiedAt null):
+    // the one-time dedupe key collapses them to ONE welcome.
+    const w = world();
+    const [a, b] = await Promise.all([verify({ token: w.raw }), verify({ token: w.raw })]);
+    const welcomes = capturedEmails().filter((m) => m.subject === "Welcome to Fourth Meridian");
+    t.check("concurrent double-click: both succeed, ONE welcome e-mail and ONE row",
+      [a.status, b.status].every((s) => s === 200) && welcomes.length === 1
+        && fake.rows("Notification", { userId: w.pending.id, type: "ACCOUNT_WELCOME" }).length === 1,
+      { statuses: [a.body.status, b.body.status], welcomes: welcomes.length });
+  }
+
   t.section("4. resend by identifier — NON-ENUMERATING");
   {
     const w = world();

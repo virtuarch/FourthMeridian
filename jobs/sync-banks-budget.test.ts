@@ -6,6 +6,7 @@
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs jobs/sync-banks-budget.test.ts
  */
 
+import { allowAllBillable, notFrozen } from "@/lib/test-support/billable-open";
 import {
   syncBanks, syncBanksOrder, SYNC_BANKS_BUDGET_MS, SYNC_BANKS_PER_ITEM_RESERVE_MS, SYNC_BANKS_RECENT_MS,
   SYNC_BANKS_ITEM_DEADLINE_MS, type SyncBanksCandidate,
@@ -27,7 +28,7 @@ process.on("unhandledRejection", (err) => {
 const NOW = Date.UTC(2026, 9, 22, 6, 0, 0);
 const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000);
 const item = (id: string, last: Date | null): SyncBanksCandidate =>
-  ({ id, institutionName: `Bank ${id}`, investmentsConsent: null, encryptedToken: "x", lastSyncedAt: last });
+  ({ id, userId: "owner-1", institutionName: `Bank ${id}`, investmentsConsent: null, encryptedToken: "x", lastSyncedAt: last });
 
 function harness(items: SyncBanksCandidate[], stepMs: number | ((id: string) => number)) {
   let t = NOW;
@@ -38,6 +39,7 @@ function harness(items: SyncBanksCandidate[], stepMs: number | ((id: string) => 
     try {
       return await syncBanks({
         loadItems: async () => items,
+        billable: allowAllBillable, costFreeze: notFrozen,
         admit: async () => ({ decision: "ADMIT" as const, reason: null }),
         clock: () => t,
         budgetMs,
@@ -81,7 +83,7 @@ async function main() {
   {
     const h = harness([item("a", null)], 1_000);
     let t = 0;
-    const r = await syncBanks({ loadItems: async () => [item("a", null)], admit: async () => ({ decision: "DENY" as const, reason: "MAINTENANCE_MODE" as const }), clock: () => t++, processItem: async () => { h.order.push("x"); return "succeeded"; } });
+    const r = await syncBanks({ loadItems: async () => [item("a", null)], billable: allowAllBillable, costFreeze: notFrozen, admit: async () => ({ decision: "DENY" as const, reason: "MAINTENANCE_MODE" as const }), clock: () => t++, processItem: async () => { h.order.push("x"); return "succeeded"; } });
     check("not admitted ⇒ nothing started, every candidate deferred", r.notAdmitted === "MAINTENANCE_MODE" && r.deferred === 1 && h.order.length === 0);
   }
 
