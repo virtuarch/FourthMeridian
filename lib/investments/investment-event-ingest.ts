@@ -39,6 +39,9 @@ import { randomUUID } from "node:crypto";
 const PAGE_SIZE = 500;
 
 /** Kill switch — independent of INVESTMENT_OBSERVATIONS_ENABLED. */
+/** PB-1 S1 — the most instrument ids one reconstruction-repair incident names (detail size bound). */
+export const MAX_DETAIL_INSTRUMENT_IDS = 50;
+
 export function investmentEventsEnabled(): boolean {
   return process.env.INVESTMENT_EVENTS_ENABLED === "true";
 }
@@ -424,7 +427,12 @@ async function maybeRepairReconstructions(
         stage: "reconstruction-repair", financialAccountId,
         // PB-1 S1 — the bounded repair's actual subjects, so a resolver can ask
         // for proof about THESE instruments (ids only; sorted for stable detail).
-        attemptId: attemptId ?? null, affectedInstrumentIds: [...a.instrumentIds].sort(), affectedCash: a.cash,
+        // Bounded: a large brokerage account can touch hundreds of instruments on
+        // every occurrence. A truncated set (count > ids.length) is RECOVERING-only
+        // evidence for the S5 resolver, never full proof.
+        attemptId: attemptId ?? null,
+        affectedInstrumentIds: [...a.instrumentIds].sort().slice(0, MAX_DETAIL_INSTRUMENT_IDS),
+        affectedInstrumentCount: a.instrumentIds.size, affectedCash: a.cash,
       } }, client);
     }
   }

@@ -113,7 +113,29 @@ async function main() {
   check("investment ingest mints ONE attempt id and writes it on coverage and on all four incident producers",
     (ING.match(/const attemptId = randomUUID\(\);/g) ?? []).length === 1 && /attemptId: randomUUID\(\),/.test(ING) && /detail, now: params\.now, attemptId,/.test(ING)
     && /stage: "investment-events-fetch", attemptId,/.test(ING) && /stage: "investment-events", attemptId,/.test(ING)
-    && /stage: "investment-events-instrument", attemptId: attemptId \?\? null,/.test(ING) && /attemptId: attemptId \?\? null, affectedInstrumentIds: \[\.\.\.a\.instrumentIds\]\.sort\(\), affectedCash: a\.cash,/.test(ING));
+    && /stage: "investment-events-instrument", attemptId: attemptId \?\? null,/.test(ING) && /attemptId: attemptId \?\? null,\s*affectedInstrumentIds: \[\.\.\.a\.instrumentIds\]\.sort\(\)\.slice\(0, MAX_DETAIL_INSTRUMENT_IDS\),\s*affectedInstrumentCount: a\.instrumentIds\.size, affectedCash: a\.cash,/.test(ING)
+    && /export const MAX_DETAIL_INSTRUMENT_IDS = 50;/.test(ING));
+
+  // END-TO-END REACH (Session 2): the two producers this slice exists for must
+  // actually run inside the envelope that establishes the ambient context — a
+  // refactor that drops it would silently uncorrelate them again.
+  const RUNNER = readFileSync("lib/plaid/refresh-execution.ts", "utf8");
+  check("runFullRefresh establishes the provider-call context around the runner (the ONLY establishing site)",
+    /return ctx \? runWithProviderCallContext\(ctx, execute\) : execute\(\);/.test(RUNNER));
+  const WALLET = readFileSync("lib/crypto/wallet-sync-dispatch.ts", "utf8");
+  check("wallet: the adapter runs inside the runner handed to runFullRefresh",
+    /const runner = async \(\{ recorder \}[\s\S]{0,600}await adapter\.sync\(accountId\)/.test(WALLET)
+    && /runFullRefresh<WalletSyncOutcome>\([\s\S]{0,400}refresh: runner,/.test(WALLET));
+  const REFRESH = readFileSync("lib/plaid/refresh.ts", "utf8");
+  const SYNCINV = readFileSync("lib/plaid/sync-investments.ts", "utf8");
+  check("investments (manual / Refresh All): runFullRefresh → refreshPlaidItem → syncInvestmentsForItem → ingestInvestmentEvents",
+    /runFullRefresh<SyncLockResult<RefreshItemResult>>\([\s\S]{0,300}refresh: async \(\{ recorder, runId \}\) => \{[\s\S]{0,200}refreshItem\(plaidItemDbId,/.test(REFRESH)
+    && /const refreshItem = deps\.refreshItem \?\? refreshPlaidItem;/.test(REFRESH)
+    && /export async function refreshPlaidItem\([\s\S]*?await syncInvestmentsForItem\(\{/.test(REFRESH)
+    && /await ingestInvestmentEvents\(db, \{ accessToken, plaidItemId, now: new Date\(\), coveredFinancialAccountIds \}\);/.test(SYNCINV));
+  const BANKS = readFileSync("jobs/sync-banks.ts", "utf8");
+  check("KNOWN GAP, pinned honestly: the scheduled sync-banks ingest runs OUTSIDE any envelope (no run id; its attemptId still makes the clean-attempt test decidable)",
+    /await ingestInvestmentEvents\(db, \{ accessToken, plaidItemId: item\.id, now: new Date\(\) \}\);/.test(BANKS));
 
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nall checks passed");
