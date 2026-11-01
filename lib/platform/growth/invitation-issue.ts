@@ -30,6 +30,13 @@
  *                 read; PAUSED, ENDED and UNKNOWN refuse). Idempotent outcomes
  *                 (alreadyApproved / alreadyReissued) mint nothing and are not
  *                 gated. Extend is gated the same way: it lengthens access.
+ *   2c. BLOCKLIST (owner P2-1) — the row's address (or the direct address) is
+ *                 looked up in the hashed blocklist before planning (IDENTIFIER_BLOCKED
+ *                 after SUSPECTED_ABUSE, before the rest; BLOCKLIST_UNAVAILABLE when
+ *                 Production cannot consult it), and RE-CHECKED inside the write
+ *                 transaction under the identifier's advisory lock, just before the
+ *                 conditional write — so a block created for an alias mid-plan is
+ *                 seen, or waits for this transaction (beta-blocklist.ts §8).
  *   5. OUTCOME    the hand-off result is appended as BETA_INVITATION_EMAIL_OUTCOME
  *                 { betaRequestId, emailHash, emailStatus } — the shape the
  *                 Growth list and Customer detail read. The audit log stays
@@ -56,12 +63,14 @@ import { getBetaLifecycleState, type BetaLifecycleState } from "@/lib/entitlemen
 import { readInvitationPolicy } from "./invitation-policy";
 import {
   betaAcceptsInvitations, expiryFor, normaliseInviteEmail, parseValidityDays, planApprove, planDirect, planExtend, planReissue, refusal,
-  type InviteRowFacts, type IssueKind, type IssuePlan, type IssueRefusal,
+  type BlockFact, type InviteRowFacts, type IssueKind, type IssuePlan, type IssueRefusal, type IssueRefusalCode,
 } from "./invitation-issue.core";
+import { lockAndLookupIdentifierBlock, lockMailbox, lookupIdentifierBlock, type BlockState } from "./beta-blocklist";
+import type { EnvSource } from "./beta-blocklist-core";
 
 export type IssueClient = Pick<
   PrismaClient,
-  "$transaction" | "betaAccessRequest" | "betaAccessRequestEvent" | "betaAccessRequestReview" | "user" | "auditLog" | "platformSetting"
+  "$transaction" | "betaAccessRequest" | "betaAccessRequestEvent" | "betaAccessRequestReview" | "betaBlockedIdentifier" | "user" | "auditLog" | "platformSetting"
 >;
 
 export type EmailStatus = "sent" | "captured" | "skipped" | "error";
@@ -96,6 +105,8 @@ export interface IssueInput {
   now?: Date;
   /** Test seam — the Beta group's lifecycle (default: the fresh read). */
   betaLifecycle?: () => Promise<BetaLifecycleState>;
+  /** Test seam — the env the blocklist keyring and the Production test read (default: process.env, per call). */
+  env?: EnvSource;
 }
 
 /** The lifecycle gate, read now; a throw is UNKNOWN (closed). */
@@ -146,17 +157,27 @@ export async function latestVerdictIsSuspicious(client: ReviewReader, requestId:
  * judge the same facts.
  */
 export async function loadInviteRowFacts(
-  client: Pick<IssueClient, "betaAccessRequest" | "betaAccessRequestReview">,
+  client: Pick<IssueClient, "betaAccessRequest" | "betaAccessRequestReview" | "betaBlockedIdentifier">,
   where: { id: string } | { email: string },
+  opts: { env?: EnvSource; now?: Date } = {},
 ): Promise<InviteRowFacts | null> {
   const row = await client.betaAccessRequest.findUnique({ where, select: ROW_SELECT });
   if (!row) return null;
   const facts: InviteRowFacts = { ...row, status: row.status as InviteRowFacts["status"] };
   if (facts.status === "DENIED") facts.suspectedAbuse = await latestVerdictIsSuspicious(client, row.id);
+  // The hashed blocklist, on the row's address (an alias of a blocked mailbox included).
+  // Only for a status something could still be issued from; REDEEMED never is.
+  if (facts.status !== "REDEEMED") {
+    const block = blockFactOf(await lookupIdentifierBlock(client, row.email, opts));
+    if (block) facts.block = block;
+  }
   return facts;
 }
 
-const loadRow = loadInviteRowFacts;
+/** BlockState → the fact the pure plans read (SKIPPED / CLEAR ⇒ nothing). */
+export function blockFactOf(s: BlockState): BlockFact | undefined {
+  return s.state === "BLOCKED" ? "BLOCKED" : s.state === "UNAVAILABLE" ? "UNAVAILABLE" : undefined;
+}
 
 async function accountExists(client: IssueClient, email: string): Promise<boolean> {
   return (await client.user.findUnique({ where: { email }, select: { id: true } })) != null;
@@ -181,6 +202,8 @@ async function inviteOrigin(client: IssueClient, id: string, email: string): Pro
 export async function issueBetaInvitation(input: IssueInput): Promise<IssueResult> {
   const { client } = input;
   const now = input.now ?? new Date(); // issuedAt — read ONCE
+  const blockOpts = { ...(input.env ? { env: input.env } : {}), now };
+  const loadRow = (c: IssueClient, where: { id: string } | { email: string }) => loadInviteRowFacts(c, where, blockOpts);
 
   // 1. Validity: the override, bounded server-side, or the one policy.
   let validityDays: number;
@@ -203,7 +226,9 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     const e = normaliseInviteEmail(input.email);
     if (!e) return refuse(refusal("INVALID_EMAIL"));
     email = e;
-    plan = planDirect(await loadRow(client, { email }), await accountExists(client, email), now);
+    // The address itself is looked up even when no row exists yet (a direct create).
+    const addressBlock = blockFactOf(await lookupIdentifierBlock(client, email, blockOpts));
+    plan = planDirect(await loadRow(client, { email }), await accountExists(client, email), now, addressBlock);
   } else {
     const row = input.requestId ? await loadRow(client, { id: input.requestId }) : null;
     email = row?.email ?? "";
@@ -261,13 +286,22 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
       userAgent: input.userAgent ?? null,
     });
 
-  const { requestId, won, locked } = await client.$transaction(async (tx): Promise<{ requestId: string; won: boolean; locked?: boolean }> => {
+  // BLOCKED IDENTIFIER — re-read INSIDE the write transaction under the identifier's
+  // advisory lock (beta-blocklist.ts), immediately before the conditional write.
+  const blockedInTx = async (tx: Prisma.TransactionClient): Promise<IssueRefusalCode | null> => {
+    const s = await lockAndLookupIdentifierBlock(tx, email, blockOpts);
+    return s.state === "BLOCKED" ? "IDENTIFIER_BLOCKED" : s.state === "UNAVAILABLE" ? "BLOCKLIST_UNAVAILABLE" : null;
+  };
+
+  const { requestId, won, refused } = await client.$transaction(async (tx): Promise<{ requestId: string; won: boolean; refused?: IssueRefusalCode }> => {
     if (plan.action === "create") {
       // ON CONFLICT (email) DO NOTHING: a concurrent create for the same
       // address makes this count 0 — never a raised P2002, which in Postgres
       // would abort the transaction. The id is minted here so the audit can
       // name the row without a second read.
       const id = crypto.randomUUID();
+      const blockedCode = await blockedInTx(tx);
+      if (blockedCode) return { requestId: id, won: false, refused: blockedCode };
       const { count } = await tx.betaAccessRequest.createMany({
         data: [{ id, email, status: BetaAccessRequestStatus.APPROVED, ...issued, decidedAt: now, decidedById: input.actor.userId }],
         skipDuplicates: true,
@@ -277,15 +311,19 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
       return { requestId: id, won: true };
     }
     const row = plan.row;
+    // LOCK ORDER (beta-blocklist.ts lockMailbox): the mailbox advisory lock FIRST, then the row.
+    await lockMailbox(tx, email);
     // SUSPECTED-ABUSE LOCK, re-read INSIDE the write transaction for a DENIED row. The
-    // request row is locked FIRST — the same `FOR UPDATE` the risk-review writer takes
+    // request row is locked next — the same `FOR UPDATE` the risk-review writer takes
     // (beta-risk-review.ts) — so a verdict and this approval serialise: a SUSPICIOUS
     // verdict committed before the lock is seen here; one recorded after waits for this
     // transaction (and then lands on a row that was legitimately approved first).
     if (plan.action === "approve" && row.status === "DENIED") {
       await tx.$queryRaw`SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${row.id} FOR UPDATE`;
-      if (await latestVerdictIsSuspicious(tx, row.id)) return { requestId: row.id, won: false, locked: true };
+      if (await latestVerdictIsSuspicious(tx, row.id)) return { requestId: row.id, won: false, refused: "SUSPECTED_ABUSE" };
     }
+    const blockedCode = await blockedInTx(tx);
+    if (blockedCode) return { requestId: row.id, won: false, refused: blockedCode };
     const { count } = plan.action === "approve"
       ? await tx.betaAccessRequest.updateMany({
           // The status ACTUALLY READ (PENDING or DENIED), never "either": a
@@ -310,7 +348,7 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     return { requestId: row.id, won: true };
   });
 
-  if (locked) return refuse(refusal("SUSPECTED_ABUSE"));
+  if (refused) return refuse(refusal(refused));
   if (!won) {
     // Lost the race: say what the winner left behind; nothing was minted or sent.
     if (plan.action === "create") {
@@ -376,6 +414,8 @@ export interface ExtendInput {
   now?: Date;
   /** Test seam — the Beta group's lifecycle (default: the fresh read). */
   betaLifecycle?: () => Promise<BetaLifecycleState>;
+  /** Test seam — the env the blocklist reads (default process.env). */
+  env?: EnvSource;
 }
 
 export type ExtendResult =
@@ -396,7 +436,12 @@ export async function extendBetaInvitation(input: ExtendInput): Promise<ExtendRe
   if (!(await betaAccepting(input.betaLifecycle))) return { ok: false, ...refusal("BETA_NOT_ACCEPTING") };
   const facts = plan.row;
 
-  const won = await client.$transaction(async (tx) => {
+  const won = await client.$transaction(async (tx): Promise<boolean | IssueRefusalCode> => {
+    // Lengthening access is issuance too: the blocklist is re-read here under the mailbox
+    // lock (lock order: advisory first, then the conditional row write below).
+    const block = await lockAndLookupIdentifierBlock(tx, facts.email, { ...(input.env ? { env: input.env } : {}), now });
+    if (block.state === "BLOCKED") return "IDENTIFIER_BLOCKED";
+    if (block.state === "UNAVAILABLE") return "BLOCKLIST_UNAVAILABLE";
     const { count } = await tx.betaAccessRequest.updateMany({
       // Conditional on what was read: still APPROVED, same token, same expiry.
       where: {
@@ -422,6 +467,7 @@ export async function extendBetaInvitation(input: ExtendInput): Promise<ExtendRe
     });
     return true;
   });
+  if (typeof won === "string") return { ok: false, ...refusal(won) };
   if (!won) return { ok: false, ...refusal("CONFLICT") };
   return { ok: true, requestId: facts.id, validityDays: p.days, previousExpiresAt: facts.inviteExpiresAt, expiresAt };
 }

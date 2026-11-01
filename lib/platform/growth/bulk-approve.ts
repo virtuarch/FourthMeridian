@@ -190,7 +190,8 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
       } else if (r.ok) {
         // alreadyApproved — a concurrent submit (or the first click) won this row.
         skipped.push({ id, code: "ALREADY_APPROVED", reason: BULK_REASON.ALREADY_APPROVED });
-      } else if (r.code === "REDEEMED" || r.code === "ACCOUNT_EXISTS" || r.code === "NOT_FOUND" || r.code === "SUSPECTED_ABUSE") {
+      } else if (r.code === "REDEEMED" || r.code === "ACCOUNT_EXISTS" || r.code === "NOT_FOUND" || r.code === "SUSPECTED_ABUSE"
+        || r.code === "IDENTIFIER_BLOCKED" || r.code === "BLOCKLIST_UNAVAILABLE") {
         skipped.push({ id, code: r.code, reason: BULK_REASON[r.code] });
       } else if (r.code === "BETA_NOT_ACCEPTING") {
         // The beta stopped accepting mid-batch: this row and every remaining one are not attempted.

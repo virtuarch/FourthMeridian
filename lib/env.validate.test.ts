@@ -138,6 +138,21 @@ if (process.argv[2] === "child") {
     check("a usable key → no error, and the value never printed", ok.includes("VALIDATE_OK") && !ok.includes("BETA_INTAKE_HASH_KEY") && !ok.includes("k".repeat(32)));
   }
 
+  console.log("4d. Owner P2-1 — beta blocklist HMAC key (never fatal; loud when unusable, and in Production when absent)");
+  {
+    const unset = run({ ...CORE, NODE_ENV: "test" });
+    check("unset outside Production → boots, no blocklist error", unset.includes("VALIDATE_OK") && !/BETA_BLOCKLIST_HMAC_KEY/.test(unset.split("REPORT_")[0]), unset.slice(0, 300));
+    const short = run({ ...CORE, NODE_ENV: "test", BETA_BLOCKLIST_HMAC_KEY_V1: "short" });
+    check("short key → boots, loud", short.includes("VALIDATE_OK") && /BETA_BLOCKLIST_HMAC_KEY_V1 is shorter than 32/.test(short), short.slice(0, 300));
+    const v2missing = run({ ...CORE, NODE_ENV: "test", BETA_BLOCKLIST_HMAC_KEY_VERSION: "v2", BETA_BLOCKLIST_HMAC_KEY_V1: "k".repeat(32) });
+    check("VERSION=v2 without the V2 key → boots, loud", v2missing.includes("VALIDATE_OK") && /BETA_BLOCKLIST_HMAC_KEY_V2 is not set/.test(v2missing), v2missing.slice(0, 300));
+    const prodUnset = run({ ...CORE, ...PROD_EXTRA, NODE_ENV: "production", VERCEL: "1", VERCEL_ENV: "production" });
+    check("Production without the key → boots (never fatal), loud that issuance REFUSES",
+      prodUnset.includes("VALIDATE_OK") && /BETA_BLOCKLIST_HMAC_KEY_V1 is not set[^\n]*Production beta invitation issuance REFUSES/.test(prodUnset), prodUnset.slice(0, 400));
+    const ok = run({ ...CORE, NODE_ENV: "test", BETA_BLOCKLIST_HMAC_KEY_V1: "q".repeat(32) });
+    check("a usable key → no error, and the value never printed", ok.includes("VALIDATE_OK") && !/BETA_BLOCKLIST_HMAC_KEY_V1 is/.test(ok) && !ok.includes("q".repeat(32)));
+  }
+
   // ── V25-FINAL-2 — production Plaid configuration gate ──────────────────────
   const PLAID = { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec" };
 

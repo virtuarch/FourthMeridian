@@ -3399,6 +3399,75 @@ model BetaAccessRequestReview {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BetaBlockedIdentifier + BetaAbuseEvidence  (owner P2-1, 2026-11-01)
+// docs/plans/BETA-BLOCKED-IDENTIFIER-DESIGN-2026-11-01.md
+//
+// A DENIED request whose latest OPERATOR verdict is SUSPICIOUS blocks its
+// conservative canonical mailbox (lib/platform/growth/beta-blocklist-core.ts
+// blocklistMailbox) for BLOCKLIST_RETENTION_DAYS. The row holds an HMAC of that
+// mailbox under a versioned key that lives OUTSIDE the database
+// (BETA_BLOCKLIST_HMAC_KEY_<V>) — never the address. `sourceRequestId` is a
+// SOFT reference (no FK) so the block survives the 180-day deletion of the
+// request it came from; that is the point of the table.
+//
+// At most ONE ACTIVE row per (identifierHmac, keyVersion): a PARTIAL unique
+// index in the migration (`… WHERE status = 'ACTIVE'`), which Prisma cannot
+// express, so it is not declared here. Tests mirror it with fake.partialUnique.
+//
+// BetaAbuseEvidence preserves the earliest verified suspicious application,
+// sealed (lib/plaid/encryption.ts sealWithPurpose, BETA_ABUSE_EVIDENCE) under a
+// subkey of ENCRYPTION_KEY, with an explicit retainUntil (≤ 3 years). One row
+// per source request. Read only by a fresh SYSTEM_ADMIN, every read audited.
+//
+// Neither table names a customer: createdById / removedById / capturedById are
+// operator actor identities (lib/account-deletion/purge-census.test.ts RETAINED).
+// Retention: jobs/data-retention.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum BetaBlockedIdentifierStatus {
+  ACTIVE
+  REMOVED
+}
+
+model BetaBlockedIdentifier {
+  id                String                      @id @default(cuid())
+  /// Hex HMAC-SHA256 of the canonical mailbox — never the address.
+  identifierHmac    String
+  /// The key version the HMAC was computed under ("v1", "v2", …).
+  keyVersion        String
+  status            BetaBlockedIdentifierStatus @default(ACTIVE)
+  /// Soft reference to the BetaAccessRequest that caused the block (no FK).
+  sourceRequestId   String
+  /// The operator reason CODE of the confirming SUSPICIOUS verdict.
+  reasonCode        String
+  createdById       String
+  createdAt         DateTime                    @default(now())
+  expiresAt         DateTime
+  removedAt         DateTime?
+  removedById       String?
+  removalReasonCode String?
+  removalNote       String?
+
+  @@index([status, expiresAt])
+  @@index([sourceRequestId])
+}
+
+model BetaAbuseEvidence {
+  id              String   @id @default(cuid())
+  /// Soft reference to the BetaAccessRequest the evidence was taken from (no FK).
+  sourceRequestId String   @unique
+  /// sealWithPurpose(JSON, BETA_ABUSE_EVIDENCE) — the only form the payload exists in.
+  sealedPayload   String
+  capturedAt      DateTime @default(now())
+  capturedById    String
+  reasonCode      String
+  note            String?
+  retainUntil     DateTime
+
+  @@index([retainUntil])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ApiUsageCounter  (Wave 2 S7 — Platform Ops API usage/cost visibility)
 //
 // Durable daily aggregate counters for external-provider API consumption. NOT

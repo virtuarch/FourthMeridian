@@ -16,6 +16,18 @@
  * one after the other and each audit row's `before` is the verdict that was
  * really current. The lock changes no data.
  *
+ * BLOCKED IDENTIFIERS (owner P2-1, 2026-11-01). Inside the same transaction and
+ * under the same row lock:
+ *   · SUSPICIOUS on a DENIED request blocks its canonical mailbox (one ACTIVE
+ *     block, upserted — beta-blocklist.ts); on a PENDING request it blocks
+ *     nothing (only an operator-confirmed suspicious DENIAL does);
+ *   · LEGITIMATE or UNREVIEWED removes every ACTIVE block this request caused
+ *     (removal reason = this verdict's), audited BETA_IDENTIFIER_UNBLOCKED.
+ * In Production with no usable key a SUSPICIOUS verdict on a DENIED request
+ * cannot record its block, so the verdict rolls back (BlocklistUnavailableError).
+ * Those writes are the blocklist's own table; the request row is still never
+ * written here.
+ *
  * LIFECYCLE. Review rows cascade with their request (FK ON DELETE CASCADE): the
  * account-deletion purge (lib/account-deletion/purge.ts, by e-mail) and the
  * retention job (jobs/data-retention.ts — DENIED, PENDING and unredeemed
@@ -30,6 +42,8 @@ import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { assertOperatorNoteSafe, recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import { operatorLabels, type BetaRiskDb } from "./beta-risk";
+import { removeBlocksForSourceRequest, upsertIdentifierBlock, lockMailbox } from "./beta-blocklist";
+import type { EnvSource } from "./beta-blocklist-core";
 import {
   BETA_RISK_REVIEW_STATUSES,
   type BetaRiskReviewHistoryResponse, type BetaRiskReviewStatusValue,
@@ -54,7 +68,12 @@ export interface RecordBetaRiskReviewInput {
 }
 
 export type RecordBetaRiskReviewResult =
-  | { ok: true; review: { id: string; status: BetaRiskReviewStatusValue; at: string } }
+  | {
+      ok: true;
+      review: { id: string; status: BetaRiskReviewStatusValue; at: string };
+      /** What this verdict did to the hashed blocklist. */
+      blocklist: { blocked: "created" | "alreadyBlocked" | null; removed: number };
+    }
   | { ok: false; code: "NOT_FOUND" };
 
 /**
@@ -63,16 +82,23 @@ export type RecordBetaRiskReviewResult =
  */
 export async function recordBetaRiskReview(
   input: RecordBetaRiskReviewInput,
-  deps: { client?: BetaRiskDb } = {},
+  deps: { client?: BetaRiskDb; env?: EnvSource; now?: Date } = {},
 ): Promise<RecordBetaRiskReviewResult> {
   const client = deps.client ?? systemDb;
   const note = typeof input.note === "string" && input.note.trim() !== "" ? assertOperatorNoteSafe(input.note) : null;
 
   return client.$transaction(async (tx) => {
-    // Row lock: concurrent verdicts on the same request serialise here.
+    // LOCK ORDER (beta-blocklist.ts lockMailbox): the mailbox advisory lock FIRST — the
+    // email is read unlocked (it never changes) — THEN the row lock, where concurrent
+    // verdicts on the same request serialise.
+    const pre = await tx.betaAccessRequest.findUnique({ where: { id: input.requestId }, select: { email: true } });
+    if (!pre) return { ok: false, code: "NOT_FOUND" } as const;
+    await lockMailbox(tx, pre.email);
     const locked = await tx.$queryRaw<{ id: string }[]>`
       SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${input.requestId} FOR UPDATE`;
     if (locked.length === 0) return { ok: false, code: "NOT_FOUND" } as const;
+    const request = await tx.betaAccessRequest.findUnique({ where: { id: input.requestId }, select: { email: true, status: true } });
+    if (!request) return { ok: false, code: "NOT_FOUND" } as const;
 
     const previous = await tx.betaAccessRequestReview.findFirst({
       where: { requestId: input.requestId },
@@ -103,7 +129,30 @@ export async function recordBetaRiskReview(
       userAgent: input.userAgent ?? null,
     });
 
-    return { ok: true, review: { id: row.id, status: row.status as BetaRiskReviewStatusValue, at: row.createdAt.toISOString() } } as const;
+    // The blocklist (header): block on a SUSPICIOUS denial; a clearing verdict removes this request's blocks.
+    const attribution = { actor: input.actor, ipAddress: input.ipAddress ?? null, userAgent: input.userAgent ?? null };
+    let blocked: "created" | "alreadyBlocked" | null = null;
+    let removed = 0;
+    if (input.status === "SUSPICIOUS" && request.status === "DENIED") {
+      // The verdict just appended IS the latest: block with its reason code.
+      const b = await upsertIdentifierBlock(tx, {
+        ...attribution, sourceRequestId: input.requestId, email: request.email, reasonCode: input.reason.code,
+        ...(deps.env ? { env: deps.env } : {}), ...(deps.now ? { now: deps.now } : {}),
+      });
+      blocked = b.outcome !== "skipped" ? b.outcome : null;
+    } else if (input.status === "SUSPICIOUS") {
+      // PENDING / APPROVED + SUSPICIOUS blocks nothing: only a suspicious DENIAL does.
+    } else {
+      removed = (await removeBlocksForSourceRequest(tx, {
+        ...attribution, sourceRequestId: input.requestId, reason: input.reason, ...(deps.now ? { now: deps.now } : {}),
+      })).removed.length;
+    }
+
+    return {
+      ok: true,
+      review: { id: row.id, status: row.status as BetaRiskReviewStatusValue, at: row.createdAt.toISOString() },
+      blocklist: { blocked, removed },
+    } as const;
   });
 }
 

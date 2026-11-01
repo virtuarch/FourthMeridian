@@ -50,6 +50,13 @@ export const EncryptionPurpose = {
    * would be two idioms for one problem.
    */
   AI_RUNTIME_STATE:      "ai_runtime_state",
+  /**
+   * BetaAbuseEvidence.sealedPayload — the preserved earliest verified
+   * suspicious beta application (owner P2-1, 2026-11-01). Sealed with
+   * sealWithPurpose (authenticated, compact); opened only by a fresh
+   * SYSTEM_ADMIN read that is audited (lib/platform/growth/beta-abuse-evidence.ts).
+   */
+  BETA_ABUSE_EVIDENCE:   "beta_abuse_evidence",
 } as const;
 
 export type EncryptionPurpose = typeof EncryptionPurpose[keyof typeof EncryptionPurpose];

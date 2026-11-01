@@ -146,6 +146,17 @@ const _e = {
   BETA_INTAKE_HASH_KEY_VERSION: process.env.BETA_INTAKE_HASH_KEY_VERSION,
   BETA_INTAKE_HASH_KEY_V1:      process.env.BETA_INTAKE_HASH_KEY_V1,
 
+  // OWNER P2-1 — the DEDICATED, VERSIONED HMAC key of the hashed beta blocklist
+  // (lib/platform/growth/beta-blocklist-core.ts resolveBlocklistKeys reads
+  // process.env at CALL time — the single use site — and matches EVERY
+  // configured BETA_BLOCKLIST_HMAC_KEY_V<n>, so a rotation needs no code here).
+  // ≥ 32 characters; never substituted by another secret. REQUIRED IN
+  // PRODUCTION: without it Production invitation issuance refuses
+  // (BLOCKLIST_UNAVAILABLE) and a deny that would block rolls back. Mirrored for
+  // validation + the value-free env report only.
+  BETA_BLOCKLIST_HMAC_KEY_VERSION: process.env.BETA_BLOCKLIST_HMAC_KEY_VERSION,
+  BETA_BLOCKLIST_HMAC_KEY_V1:      process.env.BETA_BLOCKLIST_HMAC_KEY_V1,
+
   CRON_SECRET:          process.env.CRON_SECRET,
   RATE_LIMIT_ENABLED:   process.env.RATE_LIMIT_ENABLED,
   RATE_LIMIT_SHADOW:    process.env.RATE_LIMIT_SHADOW,
@@ -466,6 +477,24 @@ export function getEnvReport(): EnvReport {
     );
   }
 
+  // Owner P2-1 — the beta blocklist HMAC key (presence of the SELECTED version only; never the value).
+  // A "fail" in Production (issuance refuses without it), a "warn" elsewhere (checks skipped).
+  {
+    const v = (_e.BETA_BLOCKLIST_HMAC_KEY_VERSION || "v1").trim().toLowerCase();
+    const ok = /^v[1-9]\d{0,2}$/.test(v);
+    const name = ok ? `BETA_BLOCKLIST_HMAC_KEY_${v.toUpperCase()}` : "BETA_BLOCKLIST_HMAC_KEY_VERSION";
+    const val = ok ? process.env[name] : undefined;
+    const usable = !!val && val.length >= 32;
+    const why = !ok ? "malformed version" : !val ? "unset" : "shorter than 32 characters";
+    keys.push(
+      usable
+        ? { key: name, status: "pass", scope: "production" }
+        : isProd
+          ? { key: name, status: "fail", scope: "production", note: `${why} — Production beta invitation issuance REFUSES (BLOCKLIST_UNAVAILABLE)` }
+          : { key: name, status: "warn", scope: "production", note: `${why} — beta blocklist checks are skipped outside Production` },
+    );
+  }
+
   // Optional price/FX vendor keys — never fatal. Represented in the report so the
   // ops surface shows whether each external integration is configured. Absent is a
   // warn ("integration disabled / graceful degrade"), never a fail. Names only.
@@ -652,6 +681,24 @@ export function validateEnv(): EnvReport {
     }
   }
 
+  // Owner P2-1 — the beta blocklist HMAC key: never fatal (a missing key must not
+  // take the deployment down — issuance fails closed by itself), but loud when
+  // configured-yet-unusable, and loud in Production when absent.
+  {
+    const v = (_e.BETA_BLOCKLIST_HMAC_KEY_VERSION || "v1").trim().toLowerCase();
+    if (!/^v[1-9]\d{0,2}$/.test(v)) {
+      console.error(`[env] BETA_BLOCKLIST_HMAC_KEY_VERSION=${JSON.stringify(_e.BETA_BLOCKLIST_HMAC_KEY_VERSION)} is not v1, v2, … — the beta blocklist has NO write key${isProd ? " (Production invitation issuance REFUSES)" : ""}.`);
+    } else {
+      const name = `BETA_BLOCKLIST_HMAC_KEY_${v.toUpperCase()}`;
+      const val = process.env[name];
+      if (val !== undefined && val !== "" && val.length < 32) {
+        console.error(`[env] ${name} is shorter than 32 characters — the beta blocklist has NO write key${isProd ? " (Production invitation issuance REFUSES)" : ""} (generate with: openssl rand -hex 32).`);
+      } else if (!val && (isProd || _e.BETA_BLOCKLIST_HMAC_KEY_VERSION)) {
+        console.error(`[env] ${name} is not set — the beta blocklist has NO write key${isProd ? ": Production beta invitation issuance REFUSES (BLOCKLIST_UNAVAILABLE)" : " (checks are skipped outside Production)"}.`);
+      }
+    }
+  }
+
   // QUANTITY_AUTHORITY_MODE (REVIEW-3) — a MONEY switch: "adopt" repoints
   // historical quantity replay inside valuation (lib/investments/
   // quantity-authority.ts). Never fatal (the reader treats any unrecognised
@@ -779,6 +826,9 @@ export const env = {
   /** R2 — the selected beta-intake hash-key version ("v1" default). The key itself is
    *  read at its single use site (jobs/data-retention.ts resolveNetworkDigestKey). */
   get BETA_INTAKE_HASH_KEY_VERSION(): string { return (_e.BETA_INTAKE_HASH_KEY_VERSION || "v1").trim().toLowerCase(); },
+  /** Owner P2-1 — the selected beta-blocklist HMAC key version ("v1" default). The keys
+   *  are read at their single use site (lib/platform/growth/beta-blocklist-core.ts). */
+  get BETA_BLOCKLIST_HMAC_KEY_VERSION(): string { return (_e.BETA_BLOCKLIST_HMAC_KEY_VERSION || "v1").trim().toLowerCase(); },
 
   // ── CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥) ────────────────────────────────
   // NOTE: lib/captcha.ts (the single server-side verify site) reads

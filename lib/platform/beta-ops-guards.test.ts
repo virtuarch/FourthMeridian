@@ -80,6 +80,23 @@ for (const m of MUTATIONS) {
   check(`${m.action}: actor derived from the resolved grant (performedByAdminId = operator)`, s.includes(`operatorActorFrom(auth, "GROWTH_REVENUE")`));
 }
 
+console.log("owner P2-1 — deny is ONE transaction: row lock → status → block upsert (if confirmed suspicious) → audit");
+{
+  const deny = src("app/api/platform/growth-revenue/requests/[id]/deny/route.ts");
+  check("deny: fresh GROWTH_REVENUE WRITE gate", /requireFreshPlatformAccess\(\s*["']GROWTH_REVENUE["']\s*,\s*["']WRITE["']\s*\)/.test(deny));
+  const tx = deny.slice(deny.indexOf("$transaction("));
+  const at = (re: RegExp) => { const m = re.exec(tx); return m ? m.index : -1; };
+  const lock = at(/FOR UPDATE/), upd = at(/tx\.betaAccessRequest\.update\(/), blk = at(/blockIfConfirmedSuspicious\(tx,/), aud = at(/recordOperatorAction\(tx,/);
+  check("deny: the lock, the update, the block and the audit all run on `tx`, in that order",
+    deny.includes("db.$transaction(") && lock > -1 && lock < upd && upd < blk && blk < aud && !/recordOperatorAction\(db,/.test(deny) && !/db\.betaAccessRequest\.update/.test(deny));
+  check("deny: a block that cannot be recorded (BlocklistUnavailableError) answers 409, never a partial deny", /BlocklistUnavailableError/.test(deny) && /status: 409/.test(deny));
+  const review = src("lib/platform/growth/beta-risk-review.ts");
+  check("risk review: block upsert / removal inside its transaction, on `tx`", /upsertIdentifierBlock\(tx,/.test(review) && /removeBlocksForSourceRequest\(tx,/.test(review));
+  for (const f of ["lib/platform/growth/bulk-approve.ts", "lib/platform/growth/bulk-approve.core.ts"]) {
+    check(`${f}: no blocklist import of its own (the block fact arrives through the shared loader)`, !/beta-blocklist/.test(src(f)));
+  }
+}
+
 console.log("revoke stays scoped to the invitation (no user deletion / access change)");
 {
   const revoke = src("app/api/platform/growth-revenue/requests/[id]/revoke/route.ts");
