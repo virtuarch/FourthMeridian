@@ -45,9 +45,16 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 /** Which external call failed — carried on the error and into any SyncIssue. */
 export type BtcSyncStage = "balance" | "transactions" | "discovery";
 
+/**
+ * What KIND of failure, for callers that must classify it (the resumable history
+ * backfill maps it onto its failure codes). Optional and additive: every
+ * existing caller reads `stage` and `message` only.
+ */
+export type BtcSyncFailureKind = "THROTTLED" | "TIMEOUT" | "HTTP" | "NETWORK" | "INVALID_DATA";
+
 /** Typed failure so callers can record an honest, staged sync issue. */
 export class BtcSyncError extends Error {
-  constructor(public readonly stage: BtcSyncStage, message: string) {
+  constructor(public readonly stage: BtcSyncStage, message: string, public readonly kind?: BtcSyncFailureKind) {
     super(message);
     this.name = "BtcSyncError";
   }
@@ -191,11 +198,43 @@ export function sleep(ms: number): Promise<void> {
  * uses its own timeout/abort.
  */
 async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Promise<unknown> {
-  const maxRetries = rateLimitRetries();
+  return esploraGetJson(url, stage, fetchImpl);
+}
+
+/**
+ * Options for `esploraGetJson` — all optional; with none it is exactly the
+ * sync's `getJson`. The resumable history backfill (btc-history-backfill.ts)
+ * passes a run DEADLINE (a backoff that would sleep past it gives up as rate
+ * limited instead), an injectable clock/sleep (deterministic tests), a hook
+ * awaited before EVERY attempt (the worker's shared rate limiter) and a hook
+ * counting every attempt (durable request metering).
+ */
+export interface EsploraGetOptions {
+  deadlineMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  beforeRequest?: () => Promise<void>;
+  onAttempt?: () => void;
+  maxRetries?: number;
+  backoffBaseMs?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * The ONE rate-limit-safe Esplora GET (429/503 backoff honouring Retry-After,
+ * per-attempt timeout, host-only error text). `getJson` above is this with no
+ * options, so the sync and the resumable backfill share one transport.
+ */
+export async function esploraGetJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn, opts: EsploraGetOptions = {}): Promise<unknown> {
+  const maxRetries = opts.maxRetries ?? rateLimitRetries();
+  const wait = opts.sleep ?? sleep;
+  const now = opts.now ?? Date.now;
 
   for (let attempt = 0; ; attempt++) {
+    if (opts.beforeRequest) await opts.beforeRequest();
+    opts.onAttempt?.();
     const controller = new AbortController();
-    const budgetMs = timeoutMs();
+    const budgetMs = opts.timeoutMs ?? timeoutMs();
     const timer = setTimeout(() => controller.abort(), budgetMs);
     let retryAfterMs: number | undefined;
     try {
@@ -211,7 +250,7 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
         // The HOST, never the URL: the path carries wallet addresses (up to 50
         // per multiaddr call), and this text reaches SyncIssue rows, the route's
         // 502 body and the Refresh button.
-        throw new BtcSyncError(stage, `HTTP ${res.status} from ${new URL(url).host}`);
+        throw new BtcSyncError(stage, `HTTP ${res.status} from ${new URL(url).host}`, "HTTP");
       } else {
         return await res.json();
       }
@@ -224,23 +263,25 @@ async function getJson(url: string, stage: BtcSyncStage, fetchImpl: FetchFn): Pr
       // upstream outage from an application defect.
       const host = new URL(url).host;
       if (controller.signal.aborted) {
-        throw new BtcSyncError(stage, `${host} did not respond within ${budgetMs} ms`);
+        throw new BtcSyncError(stage, `${host} did not respond within ${budgetMs} ms`, "TIMEOUT");
       }
       // The transport's own text is passed through with the URL (and so any
       // address in it) replaced by the host — undici says "fetch failed", but an
       // injected transport may quote the request.
       const detail = (err instanceof Error ? err.message : String(err)).split(url).join(host);
-      throw new BtcSyncError(stage, `network error reaching ${host}: ${detail}`);
+      throw new BtcSyncError(stage, `network error reaching ${host}: ${detail}`, "NETWORK");
     } finally {
       clearTimeout(timer);
     }
 
     // Reached only when the response was 429/503.
-    if (attempt >= maxRetries) {
-      throw new BtcSyncError(stage, `rate limited by explorer (HTTP 429/503) after ${attempt + 1} attempts`);
+    const delay = Math.min(retryAfterMs ?? (opts.backoffBaseMs ?? rateLimitBackoffMs()) * 2 ** attempt, MAX_BACKOFF_MS);
+    // A backoff that would sleep past the caller's deadline gives up now, as
+    // rate limited — never a run that overstays its budget waiting politely.
+    if (attempt >= maxRetries || (opts.deadlineMs !== undefined && now() + delay >= opts.deadlineMs)) {
+      throw new BtcSyncError(stage, `rate limited by explorer (HTTP 429/503) after ${attempt + 1} attempts`, "THROTTLED");
     }
-    const delay = Math.min(retryAfterMs ?? rateLimitBackoffMs() * 2 ** attempt, MAX_BACKOFF_MS);
-    await sleep(delay);
+    await wait(delay);
   }
 }
 
@@ -343,10 +384,13 @@ export async function fetchAddressStatsBatch(addresses: string[], fetchImpl: Fet
 /** Minimal shape of a mempool.space address transaction — only what normalization needs. */
 export interface RawBtcTx {
   txid: string;
-  vin: { prevout?: { scriptpubkey_address?: string; value?: number } }[];
+  // `prevout` is null on a coinbase input (Esplora). Optional/nullable here so
+  // the movement normalizer and the history proof read the same shape.
+  vin: { prevout?: { scriptpubkey_address?: string; value?: number } | null }[];
   vout: { scriptpubkey_address?: string; value?: number }[];
   fee?: number;
-  status?: { confirmed?: boolean; block_time?: number };
+  /** `block_height` is what the resumable history orders and settles by. */
+  status?: { confirmed?: boolean; block_time?: number; block_height?: number };
 }
 
 export type BtcMovementRole = "PRINCIPAL" | "FEE";
@@ -468,8 +512,9 @@ export function normalizeBtcAddressTxs(rawTxs: RawBtcTx[], myAddresses: string[]
 
 /**
  * Fetch an address's CONFIRMED transactions (newest page). Bounded by design —
- * `/txs/chain` returns the most-recent confirmed page; cursor-based backfill of
- * older history is a later refinement (keeps v3 minimal and volume-safe).
+ * `/txs/chain` returns the most-recent confirmed page. History beyond the page
+ * budget is continued by the resumable, checkpointed backfill
+ * (btc-history-backfill.ts), never silently dropped.
  */
 /**
  * Hard bound on pagination requests per address. A wallet with more confirmed
@@ -514,17 +559,36 @@ function txPageBudget(): number {
  * looks complete is exactly the failure being repaired.
  */
 export async function fetchAddressTxsRaw(address: string, fetchImpl: FetchFn = fetch): Promise<RawBtcTx[]> {
+  return (await fetchAddressTxsRawPaged(address, fetchImpl)).txs;
+}
+
+/**
+ * `fetchAddressTxsRaw`, saying whether it STOPPED AT ITS PAGE BUDGET.
+ *
+ * The budget (`txPageBudget()`, 40 × 25 = 1,000) used to truncate SILENTLY: a
+ * wallet with more confirmed transactions imported its newest 1,000 and nothing
+ * older, on every sync, for ever. `truncated: true` is how the sync now hands
+ * such an address to the resumable history backfill (btc-history-backfill.ts),
+ * which continues it page by page from a durable checkpoint.
+ *
+ * `pageBudget` overrides the budget (the sync uses a short head once the
+ * resumable backfill owns the wallet's history).
+ */
+export async function fetchAddressTxsRawPaged(
+  address: string, fetchImpl: FetchFn = fetch, opts: { pageBudget?: number } = {},
+): Promise<{ txs: RawBtcTx[]; truncated: boolean }> {
   const base = `${btcExplorerBaseUrl()}/api/address/${encodeURIComponent(address)}/txs/chain`;
-  const budget = txPageBudget();
+  const budget = opts.pageBudget && opts.pageBudget > 0 ? opts.pageBudget : txPageBudget();
   const out: RawBtcTx[] = [];
   const seen = new Set<string>();
   let lastSeenTxid: string | null = null;
+  let truncated = false;
 
   for (let page = 0; page < budget; page++) {
     const url = lastSeenTxid ? `${base}/${encodeURIComponent(lastSeenTxid)}` : base;
     const json = await getJson(url, "transactions", fetchImpl);
     if (!Array.isArray(json)) {
-      throw new BtcSyncError("transactions", "unexpected txs response shape (expected array)");
+      throw new BtcSyncError("transactions", "unexpected txs response shape (expected array)", "INVALID_DATA");
     }
     const rows = json as RawBtcTx[];
     if (rows.length === 0) break;
@@ -547,7 +611,9 @@ export async function fetchAddressTxsRaw(address: string, fetchImpl: FetchFn = f
     // one wasted round trip per address per sync (measured: 28 txs ⇒ 3 requests).
     if (shortPage) break;
     lastSeenTxid = next;
+    // A FULL last page within the budget: more history exists beyond it.
+    if (page === budget - 1) truncated = true;
   }
 
-  return out;
+  return { txs: out, truncated };
 }

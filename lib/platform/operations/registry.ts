@@ -213,6 +213,19 @@ export const OPERATION_TARGETS: readonly OperationTarget[] = [
       "Evaluate every live alert rule against the current job-health, connection-health, resource-freshness and AI-failure authorities and deliver any breach not already notified within the re-notify window to PLATFORM_ALERTS_EMAIL. Read-only over product data; writes one JobRun summary (the alert history). Idempotent; never throws.",
     kinds: ["run-now", "dry-run"],
   },
+  {
+    // Owner decision 2 (2026-10-28) — the background Solana history backfill as
+    // a lever, for the same reason as evaluate-alerts: crons fire on Production
+    // only, so on Preview it can run at all only from here. The body is the job
+    // verbatim: OFF unless SOL_BACKFILL_ENABLED=true (a disabled run returns at
+    // once and writes nothing), wake-aware, under each wallet's sync lock, rate-
+    // and daily-cap-limited, checkpointed — a manual run is exactly one more run.
+    targetJob: "sol-history-backfill",
+    label: "Solana History Backfill",
+    description:
+      "Advance resumable Solana and Bitcoin wallet history (oldest-waiting wallets first) within each chain's rate limit, per-wallet budget and daily request cap; each wallet under its sync lock; progress is checkpointed. Does nothing unless SOL_BACKFILL_ENABLED=true (Bitcoin also off with BTC_BACKFILL_ENABLED=false). Idempotent; never-throws per wallet.",
+    kinds: ["run-now", "dry-run"],
+  },
 ];
 
 /**

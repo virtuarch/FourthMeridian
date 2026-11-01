@@ -19,6 +19,7 @@ import type { ReadClient } from "@/lib/db/tenant-context";
 import { ProviderType, ConnectionStatus } from "@prisma/client";
 import { buildWalletSyncStatus, type SyncConnection, type WalletConnectionStateInput } from "@/lib/sync/status";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
+import { isSolBackfillCursor } from "@/lib/crypto/sol-history-backfill.core";
 
 export interface WalletSyncData {
   connections: SyncConnection[];
@@ -43,7 +44,7 @@ export async function loadWalletSyncConnections(client: ReadClient, userId: stri
       cursor:       true,
       accountConnections: {
         where:  { deletedAt: null },
-        select: { financialAccount: { select: { id: true, name: true, type: true, deletedAt: true } } },
+        select: { financialAccount: { select: { id: true, name: true, type: true, deletedAt: true, walletChain: true, walletAddress: true } } },
       },
     },
     orderBy: { createdAt: "asc" },
@@ -60,7 +61,7 @@ export async function loadWalletSyncConnections(client: ReadClient, userId: stri
       const fa = ac.financialAccount;
       if (!fa || fa.deletedAt !== null || seen.has(fa.id)) continue;
       seen.add(fa.id);
-      accounts.push({ id: fa.id, name: fa.name, type: fa.type });
+      accounts.push({ id: fa.id, name: fa.name, type: fa.type, chain: fa.walletChain, publicAddress: fa.walletAddress });
     }
     if (accounts.length === 0) continue; // no active account → no card (e.g. removed wallet)
 
@@ -71,7 +72,8 @@ export async function loadWalletSyncConnections(client: ReadClient, userId: stri
       status:       c.status as WalletConnectionStateInput["status"],
       lastSyncedAt: c.lastSyncedAt,
       errorCode:    c.errorCode,
-      discoveryCursor: c.cursor ?? null,
+      // A SOL history checkpoint shares the column; it is not discovery.
+      discoveryCursor: c.cursor && !isSolBackfillCursor(c.cursor) ? c.cursor : null,
     });
   }
 

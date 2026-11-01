@@ -93,7 +93,7 @@ const MODE_META: Record<Mode, { label: string; detail: string; tone: string }> =
 
 /** UI-001 — the one line a READ holder sees where the write controls would be. */
 export const GROWTH_READ_ONLY_LINE =
-  "Read-only — changing the status or signup mode, inviting, approving, denying, resending and revoking need WRITE access to Growth & Revenue.";
+  "Read-only — changing the status or signup mode, inviting, approving, denying, resending and revoking need WRITE access to Growth.";
 
 export function GrowthBetaRequestsWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
   // UI-001 — descriptive only (the server gate decides); absent ⇒ READ (fail-safe).

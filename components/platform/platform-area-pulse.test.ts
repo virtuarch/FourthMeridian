@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PlatformAreaPulse, PULSE_AREAS, severitySegments } from "./PlatformAreaPulse";
+import { PlatformAreaPulse, PULSE_AREAS, TREND_DAYS, severitySegments, trailingPoints } from "./PlatformAreaPulse";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -28,21 +28,38 @@ console.log("pure segments");
   check("tones come from the severity vocabulary (critical/error bad, warning warn, info muted)",
     segs.map((s) => s.tone).join(",") === "bad,warn,muted");
   check("absent counts ⇒ no segments (never an invented zero bar)", severitySegments(null).length === 0);
+  const days = Array.from({ length: 20 }, (_, i) => ({ day: `2026-10-${String(i + 1).padStart(2, "0")}`, n: i }));
+  const pts = trailingPoints(days, (d) => d.n, "bad");
+  check(`trend = the trailing ${TREND_DAYS} UTC days, ascending, value + tone carried`,
+    pts.length === TREND_DAYS && pts[0].key === "2026-10-07" && pts[TREND_DAYS - 1].key === "2026-10-20" && pts.every((p) => p.tone === "bad") && pts[0].value === 6);
+  check("a short series stays short (no padded days); no series ⇒ no points", trailingPoints(days.slice(0, 3), (d) => d.n).length === 3 && trailingPoints(undefined, () => 0).length === 0);
+  check("a null value stays a GAP, never zero", trailingPoints([{ day: "2026-10-01" }], () => null)[0].value === null);
 }
 
 console.log("one existing route per area, under the area's own grant");
 {
   const urls = [...src.matchAll(/useWidgetFetch<[\s\S]*?>\("([^"]+)"\)/g)].map((m) => m[1]);
-  check("exactly four static reads", urls.length === 4 && (src.match(/useWidgetFetch</g) ?? []).length === 4, urls.join(","));
+  check("exactly seven static reads", urls.length === 7 && (src.match(/useWidgetFetch</g) ?? []).length === 7, urls.join(","));
   const expected: Record<string, string> = {
     "/api/platform/platform-ops/attention": "platform-ops",
+    "/api/platform/platform-ops/refresh/daily": "platform-ops",
     "/api/platform/customer-success/sync-issues": "customer-success",
-    "/api/platform/growth-revenue/signups": "growth-revenue",
+    "/api/platform/growth-revenue/product-analytics": "growth-revenue",
     "/api/platform/security-ops/anomalies": "security-ops",
+    // V2 — the two counts-only day projections.
+    "/api/platform/customer-success/incidents-daily": "customer-success",
+    "/api/platform/security-ops/daily": "security-ops",
   };
-  check("each read is one of the declared existing routes", urls.every((u) => u in expected) && new Set(urls).size === 4);
+  check("each read is one of the declared existing routes", urls.every((u) => u in expected) && new Set(urls).size === 7);
+  // Each pulse component reads only its OWN area's routes.
+  const blocks: Record<string, string> = { OpsPulse: "platform-ops", CustomersPulse: "customer-success", GrowthPulse: "growth-revenue", SecurityPulse: "security-ops" };
+  for (const [fn, area] of Object.entries(blocks)) {
+    const body = src.slice(src.indexOf(`function ${fn}(`), src.indexOf("\nfunction ", src.indexOf(`function ${fn}(`) + 1) > 0 ? src.indexOf("\nfunction ", src.indexOf(`function ${fn}(`) + 1) : undefined);
+    const reads = [...body.matchAll(/useWidgetFetch<[\s\S]*?>\("([^"]+)"\)/g)].map((m) => m[1]);
+    check(`${fn} reads only /api/platform/${area}/*`, reads.length > 0 && reads.every((u) => u.startsWith(`/api/platform/${area}/`)), reads.join(","));
+  }
   check("each declared route exists", Object.keys(expected).every((u) => existsSync(path.join(ROOT, "app", u, "route.ts"))));
-  check("no new cross-area route was introduced", !existsSync(path.join(ROOT, "app/api/platform/overview")) && !existsSync(path.join(ROOT, "app/api/platform/pulse")));
+  check("no new CROSS-area route was introduced (V2 routes live inside their own areas)", !existsSync(path.join(ROOT, "app/api/platform/overview")) && !existsSync(path.join(ROOT, "app/api/platform/pulse")));
   check("pulse areas are the four with a count route", PULSE_AREAS.join(",") === "PLATFORM_OPS,CUSTOMER_SUCCESS,GROWTH_REVENUE,SECURITY_OPS");
 }
 

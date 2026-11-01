@@ -48,6 +48,7 @@ function ymd(d: Date): string {
 // REVIEW-3 B-6 — the seam's default clock is THE clock (lib/time/clock.ts);
 // this module no longer carries a private "today" implementation.
 import { todayUTCISO } from "@/lib/time/clock";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 
 /** The scope of a current-position read. userId/owner scope is intentionally NOT
  *  offered — Personal is itself a Space, and no named consumer reads position
@@ -128,6 +129,14 @@ export async function getCurrentPositions(
       supersededById: null,
       deletedAt:      null,
       date:           { lte: asOfDate },
+      // TOKEN HOLDINGS (PR-A) — wallet tokens are valued ONLY by the wallet path
+      // (lib/crypto/wallet-current-value, contract-addressed quotes); this engine
+      // has no contract price route, and its consumers (Holdings, the AI
+      // holdings context, export) must never surface an unpriced token's
+      // attacker-controlled name. A PRICED token's value is included in its
+      // wallet's balance (Accounts / Net Worth / the AI accounts context), not
+      // listed here. NOT EXISTS ⇒ every non-token row unchanged.
+      instrument:     NOT_TOKEN_INSTRUMENT,
     },
     _max: { date: true },
   });

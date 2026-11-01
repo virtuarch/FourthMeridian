@@ -261,6 +261,14 @@ export const AuditAction = {
   // this deployment's own /api/plaid/webhook (Plaid /item/webhook/update, then
   // read back). Carries the before/after webhook ORIGIN+PATH only — never a token.
   PLAID_ITEM_WEBHOOK_UPDATED:  "PLAID_ITEM_WEBHOOK_UPDATED",
+  // OPS — an operator resumed ONE self-custody wallet's resumable history
+  // (SOL / BTC / ETH) from RECOVERY_REQUIRED or FAILED: one bounded pass under
+  // the wallet's sync lock and the shared provider budget, checkpoints kept
+  // (lib/platform/wallet-history-recovery.ts). Reason REQUIRED. Every outcome
+  // after the reason parses is recorded — SUCCESS, FAILURE, REFUSED — with the
+  // chain, the prior and resulting state, and requests consumed. Never an
+  // address, a balance, or provider text.
+  WALLET_HISTORY_RESUMED:      "WALLET_HISTORY_RESUMED",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
@@ -358,6 +366,16 @@ export const AuditAction = {
   // anomalies widget reads AND the suppress-while-open lock (one row per window,
   // not one per failed attempt).
   SECURITY_ANOMALY_DETECTED:    "SECURITY_ANOMALY_DETECTED",
+
+  // ── First-time onboarding (Connections pass PR 2) ────────────────────────
+  // The welcome view was shown to a first-run user (one row per user, written
+  // by POST /api/onboarding). Its existence is what stops the post-login
+  // redirect from ever firing twice — the Brief is reachable again at once.
+  ONBOARDING_PRESENTED:         "ONBOARDING_PRESENTED",
+  // The user chose "Explore My Space" or dismissed the invitation. Persisted
+  // server-side so it holds across devices. Deliberately NOT a product event
+  // (PRODUCT_EVENT_ACTIONS is purged at 13 months; a dismissal must not expire).
+  ONBOARDING_DISMISSED:         "ONBOARDING_DISMISSED",
 
   // ── AI Context ───────────────────────────────────────────────────────────────
   // ⚠️ NO LIVE WRITER. RLS-AI-S1 deleted `lib/ai/context-builder.ts`, which was
@@ -491,6 +509,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
+  AuditAction.WALLET_HISTORY_RESUMED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.

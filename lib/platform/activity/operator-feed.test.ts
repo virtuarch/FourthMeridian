@@ -47,7 +47,9 @@ async function main() {
     check("no security-only action is admitted", SECURITY_ONLY_ACTIONS.every((a) => !(a in PLATFORM_OPS_FEED_RULES)));
     const expected = ["PLATFORM_OPERATION_EXECUTED", "PLATFORM_OPERATION_DRY_RUN", "JOB_CADENCE_CHANGED", "JOB_CADENCE_RESET",
       "PLATFORM_POLICY_CHANGED", "PLATFORM_POLICY_RESET", "CONNECTION_RESYNC_TRIGGERED", "CONNECTION_REAUTH_REQUESTED",
-      "PLAID_ITEM_WEBHOOK_UPDATED", "PLAID_ITEM_REVOCATION_RETRY_REQUESTED", "OPERATOR_REFRESH_ALL"].sort();
+      "PLAID_ITEM_WEBHOOK_UPDATED", "PLAID_ITEM_REVOCATION_RETRY_REQUESTED", "OPERATOR_REFRESH_ALL",
+      // A connection action (D6): resuming ONE wallet connection's history.
+      "WALLET_HISTORY_RESUMED"].sort();
     check("the admitted set is exactly D6: job, connection, platform-setting, provider cleanup, Refresh All",
       [...PLATFORM_OPS_FEED_ACTIONS].sort().join() === expected.join(), PLATFORM_OPS_FEED_ACTIONS.join());
     check("every rule names a platform workspace doorway", Object.values(PLATFORM_OPS_FEED_RULES).every((r) => /^platform-/.test(r.workspace)));

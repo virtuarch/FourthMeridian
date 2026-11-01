@@ -50,6 +50,7 @@ import type { ConversionContext } from "@/lib/money/types";
 import { convertInvestmentsSpaceData } from "@/lib/investments/display-conversion";
 import { convertPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 import { Surface, Block } from "@/components/atlas/Surface";
+import { PerspectiveEmptyState } from "@/components/space/PerspectiveEmptyState";
 import { DataCard } from "@/components/atlas/DataCard";
 import { useInvestmentsSpaceData } from "./useInvestmentsSpaceData";
 // B-6 — THE today/history switch (one comparison, shared with the server).
@@ -181,6 +182,16 @@ export function InvestmentsWorkspace({
     // picture. No $0 "portfolio value", no "connect a brokerage" — the money is here.
     return <div className="space-y-8 min-w-0">{accountsLedger}</div>;
   }
+  const noHoldings = (
+    <>
+      <TrendingUp size={22} className="mx-auto text-[var(--text-faint)]" />
+      <p className="mt-2 text-sm font-medium text-[var(--text-secondary)]">No holdings for this date</p>
+      <p className="mt-1 text-xs text-[var(--text-muted)]">Connect a brokerage or exchange, or pick a later date, to see your holdings here.</p>
+      <Link href="/dashboard/connections" className="mt-3 inline-block text-sm font-semibold text-[var(--meridian-400)] hover:underline">
+        Connect an investment account →
+      </Link>
+    </>
+  );
   if (isEmpty) {
     return (
       <div className="space-y-8 min-w-0">
@@ -192,12 +203,12 @@ export function InvestmentsWorkspace({
           />
         )}
         <Surface className="px-4 py-8 text-center">
-          <TrendingUp size={22} className="mx-auto text-[var(--text-faint)]" />
-          <p className="mt-2 text-sm font-medium text-[var(--text-secondary)]">No holdings for this date</p>
-          <p className="mt-1 text-xs text-[var(--text-muted)]">Connect a brokerage or exchange, or pick a later date, to see your holdings here.</p>
-          <Link href="/dashboard/connections" className="mt-3 inline-block text-sm font-semibold text-[var(--meridian-400)] hover:underline">
-            Connect an investment account →
-          </Link>
+          {/* Connections pass PR 4 — today's empty Investments says WHY (nothing
+              connected / still importing / a broken connection); a past date,
+              or a read failure, keeps this view's own copy unchanged. */}
+          {historicalMode ? noHoldings : (
+            <PerspectiveEmptyState spaceId={spaceId} perspective="investments" hasContent={false} fallback={noHoldings} />
+          )}
         </Surface>
       </div>
     );

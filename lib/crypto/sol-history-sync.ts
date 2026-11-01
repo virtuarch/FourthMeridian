@@ -252,9 +252,21 @@ export async function reconstructSolHistory(args: SolHistorySyncArgs): Promise<S
   const events = movementsToQuantityEvents(movements, {
     accountId, instrumentId, decimals: SOL_NATIVE.decimals,
   });
+  // THE LICENCE WIDENS THE WINDOW; THE CALLER'S FLOOR MUST NOT NARROW IT (the
+  // ETH-H2 rule, eth-history-sync.ts). Solana stores no Transaction rows, so the
+  // caller's floor (earliest Transaction or PositionObservation) is the day the
+  // wallet was connected — and every later run starts from the DERIVED rows the
+  // previous run wrote, so the collapse was permanent. The replay window is the
+  // UNION: the reconciled licence says how far back the evidence reaches.
+  const licenceFromISO =
+    licensed.kind === "COMPLETE" ? licensed.fromISO
+    : licensed.kind === "PARTIAL" ? licensed.coveredFromISO
+    : null;
+  const replayFromISO =
+    licenceFromISO && licenceFromISO < args.windowFromISO ? licenceFromISO : args.windowFromISO;
   const timeline = replayQuantityTimeline({
     instrumentId, accountId, anchors, events,
-    windowFromISO: args.windowFromISO,
+    windowFromISO: replayFromISO,
     windowToISO:   args.windowToISO,
     eventStream:   toEventStreamCompleteness(licensed),
     // One lamport, from the asset's own descriptor.

@@ -40,7 +40,7 @@ const AREA_COPY: Record<PlatformArea, AreaCopy> = {
     lede: "The security posture of the platform — authentication signals, active sessions, access events, and anomalies.",
   },
   GROWTH_REVENUE: {
-    eyebrow: "Growth & Revenue",
+    eyebrow: "Growth",
     question: "How is the platform growing?",
     lede: "How the platform is adopted — signups, access requests, active users, and the conversion funnel.",
   },

@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     const { db } = makeDb({ runs: [{ jobName: "fetch-fx-rates", startedAt: new Date("2026-10-08T06:00:00.000Z"), status: "succeeded" }] });
     const m = await loadJobCadenceReadModel(db, NOW);
     check("wake cadence stated", m.wakeEveryMinutes === 15);
-    check("thirteen jobs listed (eleven + the two BETA maintenance jobs)", m.jobs.length === 13);
+    check("fourteen jobs listed (eleven + the two BETA maintenance jobs + sol-history-backfill)", m.jobs.length === 14);
     const fx = m.jobs.find((j) => j.job === "fetch-fx-rates")!;
     check("fx: DEFAULT 24h, editable 6–168, no version token", fx.origin === "DEFAULT" && fx.hours === 24 && fx.editable && fx.minHours === 6 && fx.updatedAt === null);
     check("fx: next due = last start + 24h − 5 min", fx.nextDueAt === "2026-10-09T05:55:00.000Z" && fx.lastStartedAt === "2026-10-08T06:00:00.000Z");
@@ -108,7 +108,8 @@ async function main(): Promise<void> {
     check("a FIXED job is NOT_EDITABLE", !fixed.ok && fixed.code === "NOT_EDITABLE");
     const refresh = await updateJobCadence({ job: "sync-banks", hours: 12, expectedUpdatedAt: null, reason: REASON, actor: ACTOR }, db, NOW);
     check("a refresh job is NOT_EDITABLE here (its knob is the refresh policy)", !refresh.ok && refresh.code === "NOT_EDITABLE");
-    check("editableJob names exactly the three", ["fetch-fx-rates", "fetch-security-prices", "evaluate-alerts"].every((j) => editableJob(j) !== null) && editableJob("sync-crypto") === null && editableJob("nope") === null);
+    // 2026-10-28: + sol-history-backfill (hourly default, editable 1–24 h).
+    check("editableJob names exactly the four", ["fetch-fx-rates", "fetch-security-prices", "evaluate-alerts", "sol-history-backfill"].every((j) => editableJob(j) !== null) && editableJob("sync-crypto") === null && editableJob("nope") === null);
   }
 
   console.log("\n3. reason is required by type and by the recorder; audit failure rolls the change back");

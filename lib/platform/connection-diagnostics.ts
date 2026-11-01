@@ -26,6 +26,8 @@ import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wal
 import { deriveConnectionIntelligence, formatAvailableHistory } from "@/lib/connections/intelligence";
 import { deriveConnectionHealthState, staleWindowMs, type HealthState } from "@/lib/connections/health";
 import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
+import { walletHistoryCheckpointStatus } from "@/lib/crypto/history-checkpoint-status";
+import { readHistoryCheckpoints } from "@/lib/crypto/btc-history-checkpoint";
 import { getIngestionEvidence } from "@/lib/platform/refresh/projections";
 
 export interface ConnectionDiagnostic {
@@ -61,6 +63,29 @@ export interface ConnectionDiagnostic {
   freshness: {
     latestSnapshotDate: string | null; // FRESHNESS (snapshot recency), NOT rebuilt intelligence
   };
+  /**
+   * WALLETS with a resumable history checkpoint (Solana's on `cursor`; Bitcoin's
+   * and Ethereum's on `historyCheckpoint`) — the background
+   * backfill as an operator sees it. States, dates, counts and failure CODES
+   * only: no address, no balance, no provider text.
+   */
+  historyBackfill?: {
+    chain: "SOL" | "BTC" | "ETH";
+    state: string;
+    mode: "DIRECT" | "STAGING";
+    provenFromISO: string | null;
+    provenToISO: string | null;
+    headVerified: boolean;
+    failures: number;
+    lastFailureCode: string | null;
+    nextAutomaticRetryISO: string | null;
+    lastProgressAtISO: string | null;
+    signaturesProcessed: number;
+    /** What was processed in the chain's own unit (SOL signatures, BTC transactions, ETH movements). */
+    processed: { count: number; unit: "signatures" | "transactions" | "movements" };
+    requestsToday: number;
+    legacyDiscrepancyDays: number | null;
+  } | null;
 }
 
 const DEFAULT_CAP = 50;
@@ -99,6 +124,8 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
       select:  {
         id: true, externalConnectionId: true, status: true, errorCode: true,
         lastSyncedAt: true, createdAt: true,
+        // The resumable history checkpoint (SOL) — only its STATUS leaves this function.
+        cursor: true,
         user: { select: { id: true } },
         accountConnections: { where: { deletedAt: null }, select: { financialAccountId: true } },
       },
@@ -107,6 +134,9 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
     }),
     loadRefreshPolicies(db),
   ]);
+  // BTC / ETH checkpoints (raw: the column is read with SQL — btc-history-checkpoint.ts).
+  // A read failure shows no backfill (no claim), never a wrong one.
+  const historyCheckpoints = await readHistoryCheckpoints(db, wallets.map((w) => w.id)).catch(() => new Map<string, string>());
   const plaidStaleMs = staleWindowMs(policies.BANK);
   const walletStaleMs = staleWindowMs(policies.WALLET);
 
@@ -291,6 +321,16 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         availableHistory: formatAvailableHistory(intel.availableHistory),
       },
       freshness: { latestSnapshotDate: latestSnapshot(faIds)?.toISOString() ?? null },
+      historyBackfill: (() => {
+        const st = walletHistoryCheckpointStatus(w.cursor, historyCheckpoints.get(w.id) ?? null, now.toISOString().slice(0, 10));
+        return st ? {
+          chain: st.chain, state: st.state, mode: st.mode, provenFromISO: st.historyFromISO, provenToISO: st.historyToISO,
+          headVerified: st.headVerified, failures: st.failures, lastFailureCode: st.lastFailureCode,
+          nextAutomaticRetryISO: st.nextAutomaticRetryISO, lastProgressAtISO: st.lastProgressAtISO,
+          signaturesProcessed: st.signaturesProcessed, processed: st.processed, requestsToday: st.requestsToday,
+          legacyDiscrepancyDays: st.legacyDiscrepancyDays,
+        } : null;
+      })(),
     });
   }
 

@@ -53,35 +53,40 @@ export function PlatformSpaceDirectory({ spaces }: { spaces: readonly PlatformDi
           // zero grants): an honest empty state, never an empty list.
           <p className="text-sm text-[var(--text-muted)]">No Platform Space is granted to this account.</p>
         ) : (
-          <ul className="space-y-2.5">
+          // Redesign §4.1 — a dashboard grid: two columns from lg, one below.
+          <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2 lg:gap-4">
             {spaces.map((p) => (
               <Surface
                 as="li"
                 key={p.id}
-                className="group transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:border-[var(--border-hairline-strong)]"
+                className="group h-full transition-colors duration-[var(--dur-base)] ease-[var(--ease-standard)] hover:border-[var(--border-hairline-strong)]"
               >
                 <Link
                   href={platformAreaHref(p.area)}
                   prefetch={false}
                   aria-label={`Open ${displaySpaceName(p.name)}`}
-                  className="flex w-full items-center gap-4 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)] sm:p-5"
+                  className="flex h-full w-full flex-col gap-4 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--meridian-400)] sm:p-5"
                 >
-                  {/* HQ badge — operator identity, never a financial figure. */}
-                  <span className="grid size-9 shrink-0 place-items-center rounded-full border border-[var(--border-hairline-strong)] text-[9px] font-semibold text-[var(--brass-300)]">
-                    HQ
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <h2 className="break-words font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
-                    <p className="mt-1 break-words text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
-                    <div className="mt-3">
-                      <PlatformAreaPulse area={p.area} />
+                  {/* Card header — identity row. */}
+                  <div className="flex items-center gap-3">
+                    {/* HQ badge — operator identity, never a financial figure. */}
+                    <span className="grid size-9 shrink-0 place-items-center rounded-full border border-[var(--border-hairline-strong)] text-[9px] font-semibold text-[var(--brass-300)]">
+                      HQ
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <h2 className="break-words font-semibold text-[var(--text-primary)]">{displaySpaceName(p.name)}</h2>
+                      <p className="mt-0.5 break-words text-xs text-[var(--text-muted)]">Platform area · {p.access}</p>
                     </div>
+                    <ArrowUpRight
+                      size={15}
+                      aria-hidden
+                      className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
+                    />
                   </div>
-                  <ArrowUpRight
-                    size={15}
-                    aria-hidden
-                    className="shrink-0 text-[var(--text-muted)] transition-[transform,color] duration-[var(--dur-base)] ease-[var(--ease-standard)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-[var(--text-secondary)]"
-                  />
+                  {/* Card body — headline → trend → breakdown (the area's live pulse). */}
+                  <div className="border-t border-[var(--border-hairline)] pt-4">
+                    <PlatformAreaPulse area={p.area} />
+                  </div>
                 </Link>
               </Surface>
             ))}

@@ -28,6 +28,9 @@ const strip = (rel: string) =>
   readFileSync(path.join(ROOT, rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 const READERS = [
+  // Visual pass V2 — the two counts-only day projections.
+  "lib/platform/security/daily.ts",
+  "lib/platform/customer/incidents-daily.ts",
   "lib/platform/ops/overview.ts",
   "lib/platform/ops/overview-core.ts",
   "lib/platform/ai/invocations.ts",

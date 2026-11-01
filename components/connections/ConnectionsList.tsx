@@ -7,7 +7,7 @@
  *
  * Seeded with server-rendered status + grouped accounts so first paint is
  * correct with no flicker. While any connection is "importing" (building), it
- * polls GET /api/sync/status every 4s to drive each ConnectionCard from
+ * polls GET /api/sync/status every 4s to drive each connection row and drawer from
  * importing → ready. Stops when building clears or after a safety cap; pauses
  * while the tab is hidden. On the building→false transition it calls
  * router.refresh() once so the server page repulls now-complete data.
@@ -20,25 +20,47 @@
  * real anti-collision guard (a min-age gate on the item's incomplete marker);
  * these client timings are deliberately conservative so the first attempt only
  * fires well after the 60s connect budget could have completed on its own.
- * Reconnect is still handled inside ConnectionCard via ReconnectAccountButton.
+ * Reconnect is still handled inside the drawer (ConnectionDetail) via ReconnectAccountButton.
+ *
+ * Connections 2.0 — a segmented category bar (All · Banks · Crypto · Real
+ * assets, each with a COUNT — never a money total) filters one list. Banks are
+ * the Plaid institutions; Crypto groups wallets by blockchain; Real assets are
+ * the user's own manual assets (server-read, not polled), each opening the same
+ * drawer with ManualAssetDetail. Categories are pure (lib/connections/real-assets.core).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CONNECTION_REFRESHED_EVENT } from "@/lib/connections/refresh-event";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ConnectionCard, type AccountLite } from "@/components/connections/ConnectionCard";
-import { BuildIntelligencePanel } from "@/components/connections/BuildIntelligencePanel";
+import { ConnectionDetail, type AccountLite } from "@/components/connections/ConnectionCard";
+import { ConnectionRow } from "@/components/connections/ConnectionRow";
+import { ConnectionMenu } from "@/components/connections/ConnectionMenu";
+import { Surface } from "@/components/atlas/Surface";
+import { GlassButton } from "@/components/atlas/GlassButton";
+import { CheckCircle2, ChevronLeft } from "lucide-react";
+import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import type { SyncStatus } from "@/lib/sync/status";
 import {
   isBuildingIntelligence,
   type ConnectionIntelligenceStatus,
 } from "@/lib/connections/intelligence";
 import type { ConnectionsSyncView } from "@/lib/connections/space-data";
+import { takeFirstConnectStarted } from "@/lib/connections/first-connect-handoff";
+import { fmtDay } from "@/lib/connections/connection-detail.core";
+import { SegmentedControl } from "@/components/atlas/SegmentedControl";
+import { ManualAssetRow } from "@/components/connections/ManualAssetRow";
+import { ManualAssetDetail } from "@/components/connections/ManualAssetDetail";
+import { ManualAssetMenu } from "@/components/connections/ManualAssetMenu";
+import {
+  CATEGORY_ORDER, categoryCounts, categoryEmptyState, categoryOptionLabel, connectionsInCategory, groupWalletsByChain,
+  type ConnectionsCategory, type ManualAssetLite,
+} from "@/lib/connections/real-assets.core";
 
 const POLL_INTERVAL_MS = 4000;
 // Must outlast ONE server-side sync budget (maxDuration = 300s) plus margin,
 // or the poller gives up in the middle of a pass that is still running and the
-// card freezes on a stale count. 120 × 4s = ~8 min.
+// row freezes on a stale count. 120 × 4s = ~8 min.
 const MAX_POLLS = 120;
 
 // D2.x resume tuning. Grace is comfortably past the 60s connect/background
@@ -59,13 +81,6 @@ interface ResumeEntry {
   attempts: number;
 }
 
-// Max cards that may mount the Liquid material at once. Each AtlasLiquidCard
-// holds a dedicated WebGL context (browsers cap active contexts ~16); capping
-// keeps a large institution list safe. Importing cards are prioritized, then
-// ready/other cards by order. Cards beyond the cap use the DataCard (Glass)
-// fallback — same card family.
-const LIQUID_CAP = 6;
-
 interface Props {
   initialStatus: SyncStatus;
   /** Per-connection account inventory (NAMES/TYPES only), keyed by
@@ -75,18 +90,31 @@ interface Props {
   /** CONN-2A — per-connection intelligence status, keyed by SyncConnection.id.
    *  Drives the BUILDING_INTELLIGENCE lifecycle + keep-polling-through-build. */
   initialIntelligence?: Record<string, ConnectionIntelligenceStatus>;
+  /** Connections 2.0 — the user's own manual assets (server-rendered, refreshed by router.refresh()). */
+  manualAssets?: ManualAssetLite[];
 }
 
 export function ConnectionsList({
   initialStatus,
   accountsByConnectionId = {},
   initialIntelligence = {},
+  manualAssets = [],
 }: Props) {
   const router = useRouter();
   const [status, setStatus] = useState<SyncStatus>(initialStatus);
   const [intelligence, setIntelligence] =
     useState<Record<string, ConnectionIntelligenceStatus>>(initialIntelligence);
   const [slow, setSlow] = useState(false);
+  // The connection whose drawer is open. Looked up in the LIVE status below, so
+  // an open drawer follows the poller (importing → ready) without reopening.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Connections pass PR 3 — set when work THIS VISIT watched finishes (the
+  // poller's true → false transition), so the "ready" moment is shown once, from
+  // persisted state, never from a timer or a guess.
+  const [justCompleted, setJustCompleted] = useState(false);
+  // Connections 2.0 — the category shown, and the manual asset whose drawer is open.
+  const [category, setCategory] = useState<ConnectionsCategory>("all");
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
 
   // CONN-2 — poll while ACQUIRING (status.building) OR BUILDING intelligence.
   // Intelligence-building runs AFTER syncIncompleteAt clears, so status.building alone
@@ -192,6 +220,8 @@ export function ConnectionsList({
           isBuildingIntelligence(Object.values(next.intelligenceByConnectionId));
         if (prevShouldPollRef.current && !nextShouldPoll) {
           router.refresh();
+          takeFirstConnectStarted(); // the watched transition consumes the handoff
+          setJustCompleted(true);
         }
         prevShouldPollRef.current = nextShouldPoll;
         if (!nextShouldPoll) stop();
@@ -271,9 +301,18 @@ export function ConnectionsList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldPoll]);
 
+  // A manual refresh from a drawer (SyncWalletButton) changes persisted state
+  // while this page is NOT polling (a ready wallet). Pull it once so the open
+  // drawer's Health/History reflect the refresh instead of the pre-refresh state.
+  useEffect(() => {
+    const onRefreshed = () => { void poll(); };
+    window.addEventListener(CONNECTION_REFRESHED_EVENT, onRefreshed);
+    return () => window.removeEventListener(CONNECTION_REFRESHED_EVENT, onRefreshed);
+  }, [poll]);
+
   // CONN-2 — a connection is still "in progress" while acquiring (importing) OR
   // reconstructing intelligence (state ready, but derived intelligence still
-  // building). Both belong in the in-progress queue and are Liquid-prioritized.
+  // building). Both belong in the in-progress queue and sort first.
   const inProgressPhase = (id: string) =>
     intelligence[id]?.phase === "IMPORTING" || intelligence[id]?.phase === "BUILDING_INTELLIGENCE";
   const isInProgress = (c: SyncStatus["connections"][number]) =>
@@ -282,80 +321,261 @@ export function ConnectionsList({
     c.state === "importing" || c.state === "import_paused" || inProgressPhase(c.id);
 
   const anyReady = status.connections.some((c) => intelligence[c.id]?.phase === "READY");
+  // Persisted state only: a wallet whose history import is queued/running, or
+  // whose native history is not yet proven, or whose chart starts later than it.
+  const historyStillArriving = status.connections.some((c) => {
+    const wh = intelligence[c.id]?.walletHistory;
+    if (c.provider !== "WALLET" || !wh?.supported) return false;
+    const st = wh.historyImport?.state;
+    return st === "QUEUED" || st === "IMPORTING" || !wh.licensed
+      || (wh.chart?.fromISO ?? "9999") > (wh.activityFromISO ?? wh.licensedFromISO ?? "0000");
+  });
+  const workerEnabled = Object.values(intelligence).some((i) => i?.facts?.historyWorkerEnabled === true);
 
-  // Cap Liquid usage for WebGL-context safety: in-progress cards first, then the
-  // rest by order, up to LIQUID_CAP. Cards beyond the cap use the DataCard
-  // (Glass) fallback — same card family.
-  const liquidOrder = [...status.connections].sort(
+  // A first connection started from the onboarding view in this tab that was
+  // already READY before the poller ever ran (an empty wallet syncs inside the
+  // add request) still gets its ready moment — once, from persisted READY state.
+  useEffect(() => {
+    if (shouldPoll || !anyReady) return;
+    // One-shot handoff read on a settled, server-reported READY list.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (takeFirstConnectStarted()) setJustCompleted(true);
+  }, [shouldPoll, anyReady]);
+
+  // One list. Work in progress (importing OR reconstructing) sorts first so a
+  // just-added connection is the row the user sees; the rest keep server order.
+  const ordered = [...status.connections].sort(
     (a, b) => (isInProgress(a) ? 0 : 1) - (isInProgress(b) ? 0 : 1),
   );
-  const liquidAllowed = new Set(liquidOrder.slice(0, LIQUID_CAP).map((c) => c.id));
+  // Genuinely running work only — a paused import waits on resume, not on us.
+  const inFlight = ordered.filter((c) => c.state === "importing" || inProgressPhase(c.id));
+  // Wallet history the worker is importing (persisted checkpoint state). Said to
+  // continue in the background ONLY while the worker is enabled — otherwise the
+  // row's own badge ("History queued") is the whole truth.
+  const historyImporting = ordered.filter((c) => {
+    const i = intelligence[c.id];
+    const st = c.provider === "WALLET" ? i?.walletHistory?.historyImport?.state : undefined;
+    return i?.facts?.historyWorkerEnabled === true && (st === "QUEUED" || st === "IMPORTING") && !inFlight.includes(c);
+  });
 
-  // Part-4 / CONN-2 — split the in-progress queue (importing OR reconstructing)
-  // from everything resolved (ready-with-intelligence / needs_reauth / error).
-  // The queue renders as a full-width vertical stack ABOVE the grid.
-  const inProgress = status.connections.filter(isInProgress);
-  const resolved   = status.connections.filter((c) => !isInProgress(c));
+  // "Add another connection" — the page's own actions, not a second copy of them.
+  const focusAddConnection = () => {
+    const first = document.querySelector<HTMLButtonElement>("[data-connections-actions] button");
+    first?.scrollIntoView({ behavior: "smooth", block: "center" });
+    first?.focus();
+  };
 
-  const renderCard = (c: SyncStatus["connections"][number]) => (
-    <ConnectionCard
+  // A disconnected connection leaves the status; its drawer simply closes.
+  const selected = selectedId ? status.connections.find((c) => c.id === selectedId) ?? null : null;
+  // A removed asset leaves the list; its drawer closes the same way.
+  const selectedAsset = selectedAssetId ? manualAssets.find((a) => a.id === selectedAssetId) ?? null : null;
+
+  // Connections 2.0 — counts per category (never a total) and what this one shows.
+  const counts = categoryCounts(status.connections, manualAssets);
+  const shownConnections = connectionsInCategory(ordered, category);
+  const shownAssets = category === "all" || category === "real_assets" ? manualAssets : [];
+  const chainGroups = category === "crypto" ? groupWalletsByChain(shownConnections, accountsByConnectionId) : [];
+  const renderConnectionRow = (c: SyncStatus["connections"][number]) => (
+    <ConnectionRow
       key={c.id}
       connection={c}
-      // One id space for every provider — Plaid and wallet accounts both look up
-      // by connection id (PCS-2). No more institution-string grouping.
-      accounts={accountsByConnectionId[c.id] ?? []}
+      // One id space for every provider — Plaid and wallet accounts both
+      // look up by connection id (PCS-2).
+      accountCount={(accountsByConnectionId[c.id] ?? []).length}
       intelligence={intelligence[c.id]}
-      slow={slow}
-      allowLiquid={liquidAllowed.has(c.id)}
+      onOpen={() => { setSelectedAssetId(null); setSelectedId(c.id); }}
     />
   );
+  const empty = categoryEmptyState(category);
 
   return (
     // Centered flagship column (max-w-[1400px] mx-auto) — same design language
     // as the Daily Brief content area.
     <div className="max-w-[1400px] mx-auto space-y-4">
-      {/* In-progress queue — full-width vertical stack, ABOVE the grid. Only
-          rendered when something is genuinely importing (no empty container /
-          heading otherwise). Each card is the SAME ConnectionCard (same
-          AtlasLiquidCard/DataCard + ImportingContent), just in a stacking flex
-          container instead of a grid cell, so it takes the list's full width.
-          When a card finishes it leaves this stack and appears in the grid
-          below on the next status poll — that cross-container move remounts it
-          (keys are stable within a container, but React can't preserve identity
-          across parents), which here coincides exactly with the card's own
-          importing→ready content switch, so it reads as the intended "snaps
-          down into the grid" transition rather than a gratuitous re-mount. */}
-      {inProgress.length > 0 && (
-        <div className="flex flex-col gap-4">
-          {inProgress.map(renderCard)}
+      {/* Connections pass PR 3 — work in progress is said at the top, in the
+          drawer's own words, with a way in. No percentages: the import has no
+          denominator (see SyncConnection.importedCount). */}
+      {inFlight.length > 0 && (
+        <div role="status" aria-live="polite" data-connections-in-progress
+          className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[rgba(125,168,255,.24)] bg-[rgba(125,168,255,.06)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-[var(--text-secondary)]">
+            <span className="font-medium text-[var(--text-primary)]">
+              {inFlight.length === 1 ? `${inFlight[0].institution} is being set up.` : `${inFlight.length} connections are being set up.`}
+            </span>{" "}
+            {slow
+              ? "This is taking longer than usual — it keeps going on our side."
+              : "This keeps going on our side, even if you leave this page."}
+          </p>
+          <button type="button" onClick={() => { setSelectedAssetId(null); setSelectedId(inFlight[0].id); }}
+            className="shrink-0 self-start rounded-[var(--radius-sm)] px-2 py-1 text-sm font-medium text-[var(--meridian-400)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:self-auto">
+            View progress
+          </button>
         </div>
       )}
 
-      {/* Resolved connections — the existing responsive grid (1/2/3-up).
-          `items-stretch` (grid default) keeps a row visually aligned; card
-          internals already use a min-height + flex-col. Rendered only when
-          there's at least one resolved connection. */}
-      {resolved.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {resolved.map(renderCard)}
-        </div>
-      )}
+      {historyImporting.length > 0 && (() => {
+        const first = historyImporting[0];
+        const proven = intelligence[first.id]?.walletHistory?.historyImport?.provenFromISO ?? null;
+        return (
+          <div role="status" aria-live="polite" data-connections-history-importing
+            className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--border-hairline)] bg-[var(--surface-inset)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-[var(--text-secondary)]">
+              <span className="font-medium text-[var(--text-primary)]">
+                {historyImporting.length === 1 ? `Importing ${first.institution}’s history.` : `Importing history for ${historyImporting.length} wallets.`}
+              </span>{" "}
+              {historyImporting.length === 1 && proven ? `Verified back to ${fmtDay(proven)} so far. ` : ""}
+              Current holdings are already up to date; older history continues in the background.
+            </p>
+            <button type="button" onClick={() => { setSelectedAssetId(null); setSelectedId(first.id); }}
+              className="shrink-0 self-start rounded-[var(--radius-sm)] px-2 py-1 text-sm font-medium text-[var(--meridian-400)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:self-auto">
+              View progress
+            </button>
+          </div>
+        );
+      })()}
 
-      {/* CONN-2B — master multi-account intelligence rebuild. Renders itself only
-          when ≥2 connections have transactions to rebuild from. */}
-      <BuildIntelligencePanel
-        connections={status.connections}
-        intelligence={intelligence}
-        accountsByConnectionId={accountsByConnectionId}
+      {/* Connections 2.0 — categories with counts. Scrolls sideways on a phone. */}
+      <SegmentedControl
+        aria-label="Connection categories"
+        touchOptimized
+        options={CATEGORY_ORDER.map((id) => ({ id, label: categoryOptionLabel(id, counts) }))}
+        value={category}
+        onChange={setCategory}
       />
 
-      {!shouldPoll && anyReady && (
+      {shownConnections.length === 0 && shownAssets.length === 0 ? (
+        <div data-connections-category-empty={category}>
+          <Surface className="px-4 py-6 text-center">
+            <p className="text-sm font-medium text-[var(--text-primary)]">{empty.title}</p>
+            <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-[var(--text-muted)]">{empty.body}</p>
+          </Surface>
+        </div>
+      ) : category === "crypto" ? (
+        // Crypto — one list per blockchain.
+        <div className="space-y-3">
+          {chainGroups.map((g) => (
+            <section key={g.key} aria-label={`${g.label} wallets`} data-chain-group={g.key}>
+              <h3 className="mb-1.5 px-1 text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                {g.label} · {g.connections.length}
+              </h3>
+              <Surface>
+                <ul aria-label={`${g.label} wallets`} className="divide-y divide-[var(--border-hairline)]">
+                  {g.connections.map(renderConnectionRow)}
+                </ul>
+              </Surface>
+            </section>
+          ))}
+        </div>
+      ) : (
+        // No overflow-hidden: it clipped each row's ⋯ menu (Preview 2026-10-28).
+        <Surface>
+          <ul aria-label="Connections" className="divide-y divide-[var(--border-hairline)]">
+            {shownConnections.map(renderConnectionRow)}
+            {/* Real assets — the user's own entries, after the synced sources. */}
+            {shownAssets.map((a) => (
+              <ManualAssetRow key={a.id} asset={a} onOpen={() => { setSelectedId(null); setSelectedAssetId(a.id); }} />
+            ))}
+          </ul>
+        </Surface>
+      )}
+
+      {/* The connection's detail — docked right on desktop, a bottom sheet on
+          mobile (RightPanel). Overview, accounts, health, history coverage, last
+          sync, work in progress and recovery actions, all from the same state. */}
+      <RightPanel open={selected != null} onClose={() => setSelectedId(null)} ariaLabel="Connection detail" size="lg">
+        {selected && (
+          <>
+            <PanelHeader
+              // Phone: the sheet reads as a page — "‹ Connections" dismisses it,
+              // and the close button returns at sm+ where the drawer docks.
+              leading={
+                <button type="button" onClick={() => setSelectedId(null)}
+                  className="-ml-1 mb-2 inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-sm)] px-1 text-sm text-[var(--meridian-400)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:hidden">
+                  <ChevronLeft aria-hidden size={16} /> Connections
+                </button>
+              }
+              closeClassName="hidden sm:inline-flex sm:items-center sm:justify-center"
+              title={selected.institution}
+              actions={selected.state !== "importing" ? <ConnectionMenu connection={selected} /> : undefined}
+            />
+            <PanelContent>
+              <ConnectionDetail
+                connection={selected}
+                accounts={accountsByConnectionId[selected.id] ?? []}
+                intelligence={intelligence[selected.id]}
+                slow={slow}
+              />
+            </PanelContent>
+          </>
+        )}
+      </RightPanel>
+
+      {/* Connections 2.0 — a manual asset's detail, in the same drawer/sheet. */}
+      <RightPanel open={selectedAsset != null} onClose={() => setSelectedAssetId(null)} ariaLabel="Asset detail" size="lg">
+        {selectedAsset && (
+          <>
+            <PanelHeader
+              leading={
+                <button type="button" onClick={() => setSelectedAssetId(null)}
+                  className="-ml-1 mb-2 inline-flex min-h-11 items-center gap-1 rounded-[var(--radius-sm)] px-1 text-sm text-[var(--meridian-400)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] sm:hidden">
+                  <ChevronLeft aria-hidden size={16} /> Connections
+                </button>
+              }
+              closeClassName="hidden sm:inline-flex sm:items-center sm:justify-center"
+              title={selectedAsset.name}
+              actions={<ManualAssetMenu asset={selectedAsset} />}
+            />
+            <PanelContent>
+              <ManualAssetDetail key={selectedAsset.id} asset={selectedAsset} />
+            </PanelContent>
+          </>
+        )}
+      </RightPanel>
+
+      {/* No customer "rebuild" panel: derived history is rebuilt automatically
+          (owner directive 2026-10-28). The route stays for operator recovery. */}
+
+      {/* Connections pass PR 3 — the first usable snapshot. Shown when work this
+          visit watched has finished and at least one connection is READY. */}
+      {!shouldPoll && anyReady && justCompleted && (
+        <Surface className="p-4 sm:p-5">
+          <div role="status" data-connections-ready className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2.5">
+              <CheckCircle2 aria-hidden size={18} className="mt-0.5 shrink-0 text-[var(--accent-positive,#34d399)]" />
+              <div>
+                {/* CURRENT vs HISTORICAL, said separately (owner requirement): a
+                    wallet whose earlier history is still being proven or priced
+                    has a current snapshot, not a complete historical picture. */}
+                <p className="text-sm font-semibold text-[var(--text-primary)]">
+                  {historyStillArriving ? "Your current financial snapshot is ready" : "Your financial snapshot is ready"}
+                </p>
+                <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
+                  {historyStillArriving
+                    ? `Current balances are in your Net Worth now. Earlier history is still being added${workerEnabled ? " automatically" : ""} — you can explore in the meantime.`
+                    : "Your Net Worth is built from what you connected."}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:shrink-0">
+              <Link
+                href="/dashboard"
+                className="inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--meridian-600)] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--meridian-500,#3b82f6)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]"
+              >
+                Explore My Space
+              </Link>
+              <GlassButton tone="neutral" onClick={focusAddConnection}>Add another connection</GlassButton>
+            </div>
+          </div>
+        </Surface>
+      )}
+
+      {!shouldPoll && anyReady && !justCompleted && (
         <div className="pt-1">
           <Link
             href="/dashboard"
             className="inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--meridian-400)] hover:underline"
           >
-            Go to Dashboard →
+            Explore My Space →
           </Link>
         </div>
       )}

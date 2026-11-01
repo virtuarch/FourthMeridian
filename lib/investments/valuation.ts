@@ -64,6 +64,7 @@ import {
   type InstrumentValuationInput,
   type InvestmentValuationView,
 } from "./valuation-core";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -219,6 +220,9 @@ export async function getInvestmentValueAsOf(
         supersededById: null,
         deletedAt: null,
         ...digitalAssetFilter,
+        // TOKEN HOLDINGS (PR-A) — tokens are valued by the wallet path only (see
+        // current-positions.ts); this engine has no contract price route.
+        instrument: NOT_TOKEN_INSTRUMENT,
         // holdConstant needs the EARLIEST observation too (which may be after
         // asOf), so it can hold that quantity backward when nothing covers asOf.
         ...(holdConstant ? {} : { date: { lte: asOfDate } }),
@@ -305,6 +309,7 @@ export async function getInvestmentValueForWindow(
         supersededById: null,
         deletedAt: null,
         ...digitalAssetFilter,
+        instrument: NOT_TOKEN_INSTRUMENT, // TOKEN HOLDINGS (PR-A) — wallet path only
         ...(holdConstant ? {} : { date: { lte: maxDateObj } }),
       },
       select: POSITION_VALUATION_SELECT,

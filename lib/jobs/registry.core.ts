@@ -152,6 +152,24 @@ export const SCHEDULED_JOB_FACTS = declareJobs([
   // subset of AuditLog) older than the 13-month retention window the owner set
   // on 2026-10-15. Security and operator actions are never touched. Daily, fixed.
   { name: "product-event-retention", hourUTC: 7, minuteUTC: 30 },
+  // Owner decision 2 (2026-10-28) — the background Solana history backfill.
+  // Self-continues every ~15 min while wallets remain (summary.deferred), off
+  // unless SOL_BACKFILL_ENABLED=true; budgets and caps in
+  // lib/crypto/sol-backfill-worker.core.ts. Sequenced late — after every job
+  // with a fixed duty, just before evaluate-alerts — so a shared wake gives
+  // them their time first; the job itself plans only within the wake's time
+  // (jobs/sol-history-backfill.ts, WAKE_SAFE_MS).
+  // PROMPT START (2026-10-28): an anchor every hour, so its DEFAULT cadence
+  // derives to 1 h (slotPeriodHours) — a newly connected wallet's history starts
+  // within the hour instead of waiting for a 6-hour slot; a no-op run sends no
+  // provider request — its JobRun plus a few indexed reads (wake start, wallet
+  // list, today's usage, a batched revaluation check). Operator-editable 1–24 h through
+  // job_cadence_hours_sol-history-backfill. Self-continuation (~15 min while
+  // deferred) is unchanged and independent of it.
+  {
+    name: "sol-history-backfill", hourUTC: Array.from({ length: 24 }, (_, h) => h), minuteUTC: 30, selfContinues: true,
+    cadence: { minHours: 1, maxHours: 24 },
+  },
   // OPS-5 S5 — sequenced LAST so it reads the freshest state of each slot.
   // OPERATIONALIZATION P0 (2026-10-07): every :30 slot the dispatcher already
   // fires (vercel.json "0,30 0,6,7,12,18"), not once daily at 07:30 — a breach

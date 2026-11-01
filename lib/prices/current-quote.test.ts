@@ -125,7 +125,10 @@ async function main() {
   const chainByAssetKey = new Map(CHAINS.map((c) => [nativeAssetForChain(c)!.assetKey, c]));
   d.instrumentAlias = { findUnique: async (a: { where: { provider_externalId: { externalId: string } } }) => {
     const c = chainByAssetKey.get(a.where.provider_externalId.externalId);
-    return c ? { instrumentId: inst(c) } : null; } };
+    return c ? { instrumentId: inst(c) } : null; },
+    // TOKEN HOLDINGS (PR-A) — loadWalletCurrentValues now asks which valued
+    // instruments are TOKENS (by alias). These fixtures hold native assets only.
+    findMany: async () => [] };
   d.instrument = {
     findFirst: async (a: { where: { tickerSymbol: string } }) => ({ id: inst(a.where.tickerSymbol) }),
     findMany:  async (a: { where: { id: { in: string[] } } }) => a.where.id.in.map((id) => ({ id, currency: "USD", isCashEquivalent: false })),
@@ -138,6 +141,9 @@ async function main() {
     })),
   };
   d.positionReconstruction = { findMany: async () => [] };
+  // TOKEN HOLDINGS (PR-A, review fix 1) — the native quote now reads the shared
+  // COINGECKO budget before spending; an empty ledger is a full budget.
+  d.apiUsageCounter = { findMany: async () => [] };
   d.priceObservation = {
     findMany: async (a: { where: { instrumentId: { in: string[] }; basis: string; date: Date | { gte: Date; lte: Date } } }) => {
       const w = a.where;

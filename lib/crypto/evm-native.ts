@@ -47,6 +47,8 @@ import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import type { CryptoAsset } from "@/lib/investments/crypto-instrument";
 import type { NativeAsset } from "@/lib/crypto/native-asset";
 import { ledgerNotApplicable, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
+import { syncWalletTokens, type WalletTokenSyncDeps, type WalletTokenSyncOutcome } from "@/lib/crypto/wallet-token-capture";
+import { tokenCaptureSupported } from "@/lib/crypto/token-asset";
 import { alchemyRpcUrl, redactProviderSecrets, type AlchemyNetwork } from "@/lib/crypto/alchemy";
 import {
   parseEthBalanceWei, weiToEth, isEthAddressShape, normalizeEthAddress,
@@ -92,6 +94,11 @@ export interface EvmWalletSyncResult {
   ledger?: LedgerReconciliation;
   stage?: "load" | EthSyncStage;
   reason?: string;
+  /**
+   * TOKEN HOLDINGS (PR-A) — the ERC-20 facet (Ethereum only), captured after a
+   * successful native read and isolated from it. Decides nothing about `ok`.
+   */
+  tokenHoldings?: Promise<WalletTokenSyncOutcome | null>;
 }
 
 export interface EvmSyncDeps {
@@ -100,6 +107,8 @@ export interface EvmSyncDeps {
   balanceFetcher?: (address: string) => Promise<bigint>;
   /** Override the endpoint. `null` forces the DARK path (unconfigured). */
   rpcUrl?: string | null;
+  /** Token capture deps; `false` skips the token facet entirely (tests / tooling). */
+  tokens?: WalletTokenSyncDeps | false;
 }
 
 /**
@@ -305,10 +314,24 @@ export async function syncEvmWallet(
     });
   }
 
+  // TOKEN HOLDINGS — ERC-20, on the networks token capture serves (Ethereum),
+  // after the native facts are durable. Never throws; isolated; decides nothing.
+  //    Re-review fix 2 — STARTED here, NOT awaited: the native result returns
+  //    now, and the dispatcher awaits this beside its other non-gating stages
+  //    (current quote, history refresh). It never throws (caught below), and
+  //    nothing about this sync's outcome reads it.
+  const tokenHoldings: Promise<WalletTokenSyncOutcome | null> | undefined = deps.tokens !== false && tokenCaptureSupported(config.chain)
+    ? syncWalletTokens({ client: db, accountId, chain: config.chain, address, deps: deps.tokens || {} }).catch((e) => {
+        console.warn(`[evm-sync] token capture threw for ${accountId} (contract violation, non-fatal):`, e instanceof Error ? e.message : e);
+        return null;
+      })
+    : undefined;
+
   return {
     accountId, ok: true, chain: config.chain, syncStatus: "synced",
     quantity, weiBalance: wei.toString(), positionCaptured: true,
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     ledger: ledgerNotApplicable(quantity),
+    ...(tokenHoldings ? { tokenHoldings } : {}),
   };
 }

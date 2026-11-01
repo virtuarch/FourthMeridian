@@ -115,6 +115,70 @@ export interface ConnectionIntelligenceStatus {
   /** True when this source's value is derived at READ time rather than stored, so
    *  a "valuation" clock would be meaningless for it (ETH, SOL). */
   valuationIsReadTime:     boolean;
+  /**
+   * WALLETS ONLY — the persisted coverage licence across the connection's
+   * accounts (wallet-history-metadata.ts). `supported` is the chain capability;
+   * `licensed` is whether any interval is proven. Absent for Plaid.
+   */
+  walletHistory?: {
+    supported: boolean;
+    licensed: boolean;
+    licensedFromISO: string | null;
+    licensedToISO: string | null;
+    activityFromISO: string | null;
+    /** Earliest stored daily USD close (RAW_CLOSE) for the wallet's native asset; null when none. */
+    priceFromISO?: string | null;
+    /**
+     * CHART-READY history: days the relevant chart can actually show for this
+     * wallet — the intersection of the licensed balance interval, the stored
+     * daily USD closes and the Space's persisted snapshots. `days` counts real
+     * snapshot dates in [fromISO, toISO]; `continuous` is false when any day in
+     * that span has no snapshot. Null when no such day exists.
+     */
+    chart?: { fromISO: string; toISO: string; days: number; continuous: boolean } | null;
+    /** The resumable history import's persisted state (Solana today); null when the chain has none. */
+    historyImport?: { state: string; provenFromISO: string | null; lastProgressAtISO: string | null; signaturesProcessed: number; lastFailureCode: string | null } | null;
+    /**
+     * TOKEN HOLDINGS (PR-A) — the tokens this wallet currently holds, each its
+     * OWN history facet (lib/crypto/wallet-instrument-history). Identity, price
+     * PRESENCE and history state only — no quantity, no value: a unit count is a
+     * balance, and Connections never reads balances (PCS-2). Undefined when not loaded.
+     */
+    tokens?: Array<{
+      label: string;
+      standard: "SPL" | "ERC20";
+      priceStatus: "MARKET_PRICE" | "NO_MARKET_PRICE" | "THIN_MARKET";
+      historyState: "RECONSTRUCTED" | "NOT_RECONSTRUCTED" | "UNLICENSED";
+      firstObservedISO: string;
+      lastObservedISO: string;
+      /** SPL TOKEN HISTORY — licence start, its kind, and stored caveats (the plain-reason input). Dates only. */
+      licensedFromISO?: string | null;
+      licensedToISO?: string | null;
+      coverageKind?: "COMPLETE" | "PARTIAL" | "UNKNOWN" | null;
+      caveats?: string[];
+    }>;
+    /** The wallet-level answer: native AND every token reconstructed. Never inferred from native alone. */
+    walletComplete?: boolean;
+    /** The wallet's chain token (e.g. "SOL"), for chain-specific token wording. */
+    chain?: string | null;
+  } | null;
+  /**
+   * CONNECTION FACTS (owner requirement "everything should be honest") — each
+   * derived from a persisted authority, never inferred from a job finishing:
+   *   destinations   the Personal Space views that actually consume this
+   *                  connection: balances by THE account classifier; Transactions /
+   *                  Cash Flow / Spending ONLY when its accounts are in the banking
+   *                  population (crypto-owned rows are excluded there by design)
+   *   bankTransactions  banking rows in the Personal Space (count + date range)
+   *   onChain        wallet on-chain transactions processed, with their scope
+   *   historyWorkerEnabled  whether history continues automatically in the background here
+   */
+  facts?: {
+    destinations: string[];
+    bankTransactions: { count: number; fromISO: string | null; toISO: string | null } | null;
+    onChain: { processed: number; scope: string } | null;
+    historyWorkerEnabled: boolean;
+  };
 }
 
 /** Structural input for the pure derivation — gathered by the loader. */

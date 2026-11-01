@@ -244,11 +244,14 @@ export function decideJobDue(
   }
 
   if (!fact?.lastStartedAt) return { due: true, reason: "NEVER_RAN", dueSinceMs: 0 };
+  let continuesAt: number | null = null;
   if (job.selfContinues && fact.lastStatus === "succeeded" && primaryReportedDeferred(fact.lastSummary)) {
     const earliest = fact.lastStartedAt.getTime() + CONTINUATION_DELAY_MS;
     if (now.getTime() >= earliest) return { due: true, reason: "SELF_CONTINUATION", dueSinceMs: now.getTime() - earliest };
+    continuesAt = earliest;
   }
   const at = nextDueAt(fact, policy)!;
   if (now.getTime() >= at.getTime()) return { due: true, reason: "CADENCE_ELAPSED", dueSinceMs: now.getTime() - at.getTime() };
-  return { due: false, reason: "NOT_YET_DUE", nextDueAt: at };
+  // A self-continuing job with deferred work is next due at its continuation, when that comes first.
+  return { due: false, reason: "NOT_YET_DUE", nextDueAt: continuesAt !== null && continuesAt < at.getTime() ? new Date(continuesAt) : at };
 }

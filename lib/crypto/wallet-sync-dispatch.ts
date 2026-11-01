@@ -67,6 +67,7 @@ import { classifyFailureCategory } from "@/lib/plaid/refresh-verdict.core";
 import type { RefreshTrigger, RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
 import { currentJobRun } from "@/lib/jobs/run";
 import { WALLET_CHAIN_FACTS, SYNCABLE_CHAINS, type WalletChainFacts } from "./wallet-sync-dispatch.core";
+import type { WalletTokenSyncOutcome } from "./wallet-token-capture";
 
 /** How far this system can go on a given chain. See the header. */
 export type WalletChainSupport =
@@ -234,6 +235,8 @@ export interface WalletSyncOutcome {
   userMessage?: string;
   /** The adapter's own result, for logging. NEVER branched on by a caller. */
   raw?: unknown;
+  /** TOKEN HOLDINGS (PR-A) — the token facet's outcome (SPL / ERC-20). Decides nothing about `ok`. */
+  tokenHoldings?: WalletTokenSyncOutcome;
   /**
    * W6f — what the post-sync history refresh did, when the chain has one.
    * Absent for a chain with no reconstruction and for a failed sync.
@@ -308,6 +311,8 @@ interface ChainAdapter extends WalletChainFacts {
     transactionImport?: BtcTransactionImportOutcome;
     valuation?: BtcValuationOutcome;
     closeCoverage?: CryptoCloseCoverage;
+    /** TOKEN HOLDINGS (PR-A) — started by the adapter after a successful read; awaited here, non-gating. */
+    tokenHoldings?: Promise<WalletTokenSyncOutcome | null>;
   }>;
 }
 
@@ -434,9 +439,14 @@ export async function syncWalletByChain(
   // branch returns an outcome), so runFullRefresh never rethrows and the
   // never-throw contract of this function is preserved by construction.
   const runner = async ({ recorder }: { recorder: RefreshStageRecorder }): Promise<WalletSyncOutcome> => {
+  // TOKEN HOLDINGS (PR-A) — the adapter's in-flight token capture. Awaited in the
+  // `finally` below too, so a throw anywhere after `adapter.sync` can never
+  // leave it running past this sync (and its lock).
+  let pendingTokens: Promise<unknown> | undefined;
   try {
     recorder.begin("WALLET_SYNC", "PROVIDER");
     const result = await adapter.sync(accountId);
+    pendingTokens = result.tokenHoldings;
     if (result.ok) recorder.succeed("WALLET_SYNC");
     else recorder.fail("WALLET_SYNC", new Error(result.reason ?? `wallet sync failed at ${result.stage ?? "unknown"} stage`));
     // THE HISTORICAL IMPORT IS ITS OWN STAGE. It ran inside the adapter call, so
@@ -530,7 +540,10 @@ export async function syncWalletByChain(
     // `recordMeasured`, which never touches that open slot, so the two cannot
     // interleave in the recorder.
     if (result.ok) recorder.begin("HISTORY_BACKFILL", "DERIVED");
-    const [quote, historyRefresh] = await Promise.all([
+    // TOKEN HOLDINGS (PR-A) — the third non-gating stage, already in flight (the
+    // adapter started it after its native writes). Awaited beside the other two
+    // so token work never lengthens the native path; it cannot change `ok`.
+    const [quote, historyRefresh, tokenHoldings] = await Promise.all([
       result.ok
         ? refreshCurrentQuotesForChains([key]).catch((e) => {
             console.warn(`[wallet-sync] ${key} current-quote threw for ${accountId} (non-fatal):`, e instanceof Error ? e.message : e);
@@ -545,7 +558,12 @@ export async function syncWalletByChain(
             return null;
           })
         : Promise.resolve(null),
+      result.tokenHoldings ? result.tokenHoldings.catch(() => null) : Promise.resolve(null),
     ]);
+    if (tokenHoldings) {
+      console.log(`[wallet-sync] ${key} tokens for ${accountId}: ${tokenHoldings.status}${tokenHoldings.skipReason ? ` (${tokenHoldings.skipReason})` : ""}, ` +
+        `${tokenHoldings.tokens.length} held, ${tokenHoldings.providerCalls} provider call(s)${tokenHoldings.quote ? `, ${tokenHoldings.quote.calls} quote call(s)` : ""}`);
+    }
 
     if (quote) {
       if (quote.status === "NOT_CONFIGURED") recorder.skip("CURRENT_QUOTE", "PROVIDER", "NOT_APPLICABLE");
@@ -626,7 +644,8 @@ export async function syncWalletByChain(
           : quote.status === "UNAVAILABLE" ? { status: "UNAVAILABLE", reason: quote.reason }
           : { status: "NOT_CONFIGURED" })
         : undefined,
-      raw: result,
+      tokenHoldings: tokenHoldings ?? undefined,
+      raw: { ...result, tokenHoldings: undefined },
     };
   } catch (e) {
     // Defensive: every adapter promises not to throw. If one does, the route
@@ -642,6 +661,8 @@ export async function syncWalletByChain(
       valuationModel: adapter.valuationModel,
       userMessage: walletSyncUserMessage("ADAPTER_ERROR", reason, key),
     };
+  } finally {
+    if (pendingTokens) await pendingTokens.catch(() => null);
   }
   };
 

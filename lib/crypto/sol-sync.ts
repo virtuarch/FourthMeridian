@@ -72,7 +72,12 @@
  *   - A provider failure NEVER writes a position. An unreachable RPC and an
  *     empty wallet are opposite facts and must never produce the same row.
  *
- * Out of scope (W-M1c): SPL token accounts, transaction import, stake accounts
+ * TOKEN HOLDINGS (PR-A): SPL and Token-2022 CURRENT holdings are captured
+ * after a successful native read, in lib/crypto/wallet-token-capture.ts, as
+ * their own facet — isolated, budgeted, never able to fail this sync. Token
+ * HISTORY is still not reconstructed.
+ *
+ * Out of scope (W-M1c): SPL token history, transaction import, stake accounts
  * and rent reclamation, program/instruction decoding, associated-token-account
  * enumeration, and any cluster other than mainnet-beta.
  */
@@ -85,6 +90,7 @@ import { captureWalletPosition } from "@/lib/crypto/wallet-position-capture";
 import { SOL_ASSET } from "@/lib/investments/crypto-instrument";
 import { SOL_NATIVE } from "@/lib/crypto/native-asset";
 import { ledgerNotApplicable, type LedgerReconciliation } from "@/lib/crypto/ledger-completeness.core";
+import { syncWalletTokens, type WalletTokenSyncDeps, type WalletTokenSyncOutcome } from "@/lib/crypto/wallet-token-capture";
 import {
   fetchSolLamports,
   lamportsToSol,
@@ -126,6 +132,12 @@ export interface SolWalletSyncResult {
   /** On failure: which step failed and why (also recorded as a SyncIssue). */
   stage?: "load" | SolSyncStage | "capture";
   reason?: string;
+  /**
+   * TOKEN HOLDINGS (PR-A) — the SPL / Token-2022 facet, captured AFTER the
+   * native sync succeeded and isolated from it: nothing above reads this to
+   * decide `ok`, `syncStatus` or any refusal. Absent on a failed native sync.
+   */
+  tokenHoldings?: Promise<WalletTokenSyncOutcome | null>;
 }
 
 export interface SolSyncDeps {
@@ -138,6 +150,8 @@ export interface SolSyncDeps {
    * is how the "no provider is honest, not zero" behaviour is tested.
    */
   rpcUrl?: string | null;
+  /** Token capture deps; `false` skips the token facet entirely (tests / tooling). */
+  tokens?: WalletTokenSyncDeps | false;
 }
 
 /** Best-effort SyncIssue writer — never throws (mirrors btc-sync's). */
@@ -287,6 +301,21 @@ export async function syncSolWallet(
     });
   }
 
+  // 6) TOKEN HOLDINGS — SPL + Token-2022, after the native facts are durable.
+  //    `syncWalletTokens` never throws; the guard is belt and braces, because a
+  //    token defect must not be able to turn a completed native sync into a
+  //    failed one. Its outcome rides along and decides nothing here.
+  //    Re-review fix 2 — STARTED here, NOT awaited: the native result returns
+  //    now, and the dispatcher awaits this beside its other non-gating stages
+  //    (current quote, history refresh). It never throws (caught below), and
+  //    nothing about this sync's outcome reads it.
+  const tokenHoldings: Promise<WalletTokenSyncOutcome | null> | undefined = deps.tokens !== false
+    ? syncWalletTokens({ client: db, accountId, chain: SOL_CHAIN, address, deps: deps.tokens || {} }).catch((e) => {
+        console.warn(`[sol-sync] token capture threw for ${accountId} (contract violation, non-fatal):`, e instanceof Error ? e.message : e);
+        return null;
+      })
+    : undefined;
+
   return {
     accountId,
     ok:                    true,
@@ -297,6 +326,7 @@ export async function syncSolWallet(
     netWorthParticipation: "WITHHELD_PENDING_CONVERGENCE",
     // Explicitly NOT a reconciliation. See ledgerNotApplicable's doc.
     ledger:                ledgerNotApplicable(quantity),
+    ...(tokenHoldings ? { tokenHoldings } : {}),
   };
 }
 
@@ -327,6 +357,7 @@ export async function syncAllSolWallets(deps: SolSyncDeps = {}): Promise<SyncAll
   const syncedAccountIds: string[] = [];
   for (const w of wallets) {
     const r = await syncSolWallet(w.id, deps);
+    if (r.tokenHoldings) await r.tokenHoldings; // never rejects; never outlives this sweep
     if (r.ok) { succeeded++; syncedAccountIds.push(w.id); }
     else failed++;
   }

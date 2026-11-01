@@ -42,7 +42,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { PositionOrigin } from "@prisma/client";
 import { db } from "@/lib/db";
-import { reconcileMovementsAgainstBalance, type ChainCoverage } from "./chain-movement";
+import { reconcileMovementsAgainstBalance, type ChainCoverage, type ChainMovement } from "./chain-movement";
 import { persistPositionCoverage } from "./position-coverage";
 import { ETH_NATIVE } from "./native-asset";
 import {
@@ -77,7 +77,10 @@ export type EthHistoryRefusal =
   /** Movements do not sum to the observed balance. */
   | "LEDGER_DOES_NOT_RECONCILE"
   /** No OBSERVED position to anchor the replay's identity against. */
-  | "NO_OBSERVED_ANCHOR";
+  | "NO_OBSERVED_ANCHOR"
+  /** The incremental path fell back and the history worker carries the FULL
+   *  rebuild (ETH_BACKFILL_ENABLED). Nothing was written. */
+  | "FULL_REBUILD_DEFERRED";
 
 export interface EthHistoryResult {
   accountId: string;
@@ -121,6 +124,12 @@ export async function reconstructEthHistory(args: {
   dryRun?: boolean;
   /** Skip the incremental path: an explicit repair / full rebuild. */
   full?: boolean;
+  /**
+   * The history worker carries the FULL rebuild (eth-history-backfill.ts): on
+   * an incremental fallback return FULL_REBUILD_DEFERRED — writing nothing —
+   * instead of rebuilding inline. Absent/false: exactly the behaviour before.
+   */
+  deferFull?: boolean;
 }): Promise<EthHistoryResult> {
   const client = args.client ?? db;
   const { accountId } = args;
@@ -153,6 +162,11 @@ export async function reconstructEthHistory(args: {
       return { accountId, ok: false, refusal: incremental.refusal, reason: incremental.reason, mode: "INCREMENTAL" };
     }
     fallbackReason = incremental.reason;
+    if (args.deferFull) {
+      console.log(`[eth-history] full rebuild deferred to the history worker for ${accountId}: ${incremental.reason}${incremental.detail ? ` — ${incremental.detail}` : ""}`);
+      return { accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason,
+        reason: `incremental history fell back (${incremental.reason}); the full rebuild is carried by the background worker` };
+    }
     console.log(`[eth-history] full rebuild for ${accountId}: ${incremental.reason}${incremental.detail ? ` — ${incremental.detail}` : ""}`);
   }
 
@@ -174,7 +188,7 @@ export async function reconstructEthHistory(args: {
       reason: `acquisition failed: ${e instanceof Error ? e.message : String(e)}` };
   }
 
-  const { movements, coverage, anchorBalanceWei } = acquisition;
+  const { coverage } = acquisition;
 
   // ── 2. THE PREMISE. `PROOF_PREMISES_UNMET` is the caveat the acquisition
   //    raises for a contract or delegated account: the provider answered
@@ -194,6 +208,40 @@ export async function reconstructEthHistory(args: {
     };
   }
 
+  return persistEthFullHistory({
+    accountId, client, writer: db, movements: acquisition.movements, coverage, anchorBalanceWei: acquisition.anchorBalanceWei,
+    windowFromISO: args.windowFromISO, windowToISO: args.windowToISO, dryRun: args.dryRun, fallbackReason,
+  });
+}
+
+/**
+ * Steps 3–5 of the FULL rebuild — reconcile in exact wei, anchor, replay, and
+ * write the rows with their licence in ONE transaction. Shared by the inline
+ * rebuild above and the history worker's completing step
+ * (eth-history-backfill.ts), which hands in the movements and COMPLETE
+ * coverage its resumable proof accumulated. Refusals write nothing.
+ *
+ * `inTransaction` runs inside the write transaction (the worker's checkpoint
+ * compare-and-swap); a throw there rolls the rows back.
+ */
+export async function persistEthFullHistory(args: {
+  accountId: string;
+  client: Client;
+  writer: PrismaClient;
+  movements: ChainMovement[];
+  coverage: ChainCoverage & { kind: "COMPLETE" };
+  anchorBalanceWei: bigint | null;
+  windowFromISO: string;
+  windowToISO: string;
+  dryRun?: boolean;
+  fallbackReason: EthIncrementalFallback;
+  instrumentId?: string;
+  inTransaction?: (tx: Prisma.TransactionClient) => Promise<void>;
+  /** The worker's larger write (absent: Prisma's default, as before). */
+  txTimeoutMs?: number;
+}): Promise<EthHistoryResult> {
+  const { accountId, client, movements, coverage, anchorBalanceWei, fallbackReason } = args;
+
   // ── 3. RECONCILE, IN EXACT WEI. The acquisition's own anchor balance, read
   //    from the chain — never a whole-unit figure scaled back up.
   if (anchorBalanceWei === null) {
@@ -212,7 +260,7 @@ export async function reconstructEthHistory(args: {
 
   // ── 4. IDENTITY + ANCHOR. The anchor's QUANTITY comes from the chain in wei;
   //    the OBSERVED row supplies only the identity and date the replay needs.
-  const instrumentId = await resolveCryptoInstrumentId(ETH_ASSET);
+  const instrumentId = args.instrumentId ?? await resolveCryptoInstrumentId(ETH_ASSET);
   const anchorRow = await client.positionObservation.findFirst({
     where: {
       financialAccountId: accountId, instrumentId, supersededById: null, deletedAt: null,
@@ -268,7 +316,7 @@ export async function reconstructEthHistory(args: {
   const impactedFromISO = earliestRowDifference(
     existingRows.map((r) => ({ dateISO: r.date.toISOString().slice(0, 10), quantity: r.quantity })), derived);
   if (!args.dryRun) {
-    await db.$transaction(async (tx) => {
+    await args.writer.$transaction(async (tx) => {
       await tx.positionObservation.deleteMany({
         where: {
           financialAccountId: accountId, instrumentId,
@@ -293,7 +341,8 @@ export async function reconstructEthHistory(args: {
       }
       // Rows and the licence that lets them speak for a date, together.
       await persistPositionCoverage(tx, accountId, instrumentId, coverage);
-    });
+      if (args.inTransaction) await args.inTransaction(tx);
+    }, args.txTimeoutMs ? { timeout: args.txTimeoutMs } : undefined);
   }
 
   return {

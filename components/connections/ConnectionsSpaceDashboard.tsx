@@ -17,59 +17,36 @@
  *
  * This host is a THIN wrapper: the data contract (loadConnectionsSpaceData), the
  * ConnectionsList poller, ConnectionCard, ConnectionsActions, wallet sync, and the
- * import wizard are ALL untouched. The PCS-2 ownership boundary holds — this surface
- * reads only { status, accountsByConnectionId } (NAMES ONLY), never balances,
- * valuations, positions, or debt.
+ * import wizard are ALL untouched. The PCS-2 ownership boundary holds for provider
+ * connections — { status, accountsByConnectionId } are NAMES ONLY, never balances,
+ * positions, or debt.
+ *
+ * Connections 2.0 — the user's own manual assets (`manualAssets`) are listed too,
+ * with the user's own estimate (owner-approved carve-out; real-assets.core.ts).
+ * The onboarding view is the empty state only when there is NOTHING at all: a
+ * user whose only entries are real assets sees the list (Real assets category),
+ * not "Connect an account" — those assets are theirs and must stay reachable.
  */
 
 import { useState } from "react";
-import { CheckCircle2 } from "lucide-react";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { ConnectionsList } from "@/components/connections/ConnectionsList";
 import { ConnectionsActions } from "@/components/connections/ConnectionsActions";
+import { ConnectionsOnboarding } from "@/components/connections/ConnectionsOnboarding";
 import { CONNECTIONS_WORKSPACE_ORDER, getConnectionsWorkspace } from "@/lib/connections/workspaces";
 import type { ConnectionsSpaceData } from "@/lib/connections/space-data";
-
-/**
- * CONN-2H — the empty state explains the TRANSFORMATION, not just "connect an
- * account." A first-time user should understand that connecting acquires data
- * AND that Fourth Meridian then builds financial intelligence from it — the L1→L2
- * story the whole reconstruction experience is about. Presentation only.
- */
-function ConnectionsEmptyState({ plaidEnabled = true }: { plaidEnabled?: boolean }) {
-  const steps = [
-    "Import your transactions",
-    "Build your financial timeline",
-    "Generate cash-flow insights",
-    "Create your wealth picture",
-  ];
-  return (
-    <div className="mx-auto max-w-md pt-4 text-center">
-      <h2 className="text-lg font-semibold text-[var(--text-primary)]">Connect your first account</h2>
-      <p className="mt-1.5 text-sm text-[var(--text-secondary)]">
-        Your transactions come in first — then Fourth Meridian builds your financial intelligence from them.
-      </p>
-      <ul className="mx-auto mt-5 mb-6 inline-flex flex-col gap-2 text-left">
-        {steps.map((s) => (
-          <li key={s} className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)]">
-            <CheckCircle2 size={16} className="shrink-0 text-[var(--accent-positive,#34d399)]" />
-            <span>{s}</span>
-          </li>
-        ))}
-      </ul>
-      <p className="mb-5 text-xs text-[var(--text-muted)]">Your first build happens automatically.</p>
-      <ConnectionsActions centered plaidEnabled={plaidEnabled} />
-    </div>
-  );
-}
 
 export function ConnectionsSpaceDashboard({
   status,
   accountsByConnectionId,
   intelligenceByConnectionId,
+  manualAssets = [],
   plaidEnabled = true,
-}: ConnectionsSpaceData & { plaidEnabled?: boolean }) {
-  const hasConnections = status.connections.length > 0;
+  welcome = false,
+  firstName = null,
+}: Omit<ConnectionsSpaceData, "manualAssets"> & { manualAssets?: ConnectionsSpaceData["manualAssets"]; plaidEnabled?: boolean; welcome?: boolean; firstName?: string | null }) {
+  // Anything at all — a provider connection OR a real asset — shows the list.
+  const hasConnections = status.connections.length > 0 || manualAssets.length > 0;
 
   // Identity comes from the registry (no hardcoded rail JSX). Single workspace in
   // Wave 1 → SpaceShell suppresses the rail; activeTab is still tracked for when the
@@ -85,7 +62,7 @@ export function ConnectionsSpaceDashboard({
       mobileOptimized
       variant="utility"
       title="Connections"
-      subtitle="Manage the institutions and providers connected to Fourth Meridian."
+      subtitle="Manage the institutions, wallets and assets you've brought into Fourth Meridian."
       headerActions={hasConnections ? <ConnectionsActions plaidEnabled={plaidEnabled} /> : undefined}
       railOptions={railOptions}
       activeTab={activeTab}
@@ -96,9 +73,12 @@ export function ConnectionsSpaceDashboard({
           initialStatus={status}
           accountsByConnectionId={accountsByConnectionId}
           initialIntelligence={intelligenceByConnectionId}
+          manualAssets={manualAssets}
         />
       ) : (
-        <ConnectionsEmptyState plaidEnabled={plaidEnabled} />
+        // Connections pass PR 2 — the first-time welcome (?welcome=1) and the
+        // empty state are one view: three ways in, and "Explore My Space" out.
+        <ConnectionsOnboarding welcome={welcome} firstName={firstName} plaidEnabled={plaidEnabled} />
       )}
     </SpaceShell>
   );

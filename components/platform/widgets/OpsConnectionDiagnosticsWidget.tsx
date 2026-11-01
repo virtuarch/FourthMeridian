@@ -12,6 +12,12 @@
  * amounts. Backed by GET /api/platform/platform-ops/connection-diagnostics
  * (requirePlatformAccess PLATFORM_OPS READ). Reuses the same pure derivations as
  * the customer surface — no new financial authority.
+ *
+ * HISTORY RECOVERY — for a self-custody wallet with a resumable history
+ * checkpoint, an operator holding the top Platform Operations rank also sees
+ * "Resume history" (WalletHistoryRecoveryPanel): a server-read review, then one
+ * audited, bounded pass. `canControl` decides only whether it is RENDERED; the
+ * route re-checks fresh. Read-only operators see exactly the facts above.
  */
 
 import { useMemo, useState } from "react";
@@ -20,6 +26,8 @@ import { PlatformWidgetCard, WidgetMessage, useWidgetFetch, timeAgo, type Platfo
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import type { ConnectionDiagnosticsResponse } from "@/app/api/platform/platform-ops/connection-diagnostics/route";
 import type { ConnectionDiagnostic } from "@/lib/platform/connection-diagnostics";
+import type { SpaceMountAccess } from "@/lib/space/mount-context";
+import { WalletHistoryRecoveryPanel } from "./WalletHistoryRecoveryPanel";
 
 const HEALTH_LABEL: Record<string, string> = {
   HEALTHY: "Healthy", STALE: "Stale", DEGRADED: "Degraded",
@@ -28,6 +36,11 @@ const HEALTH_LABEL: Record<string, string> = {
 const SYNC_LABEL: Record<string, string> = {
   IMPORTING: "Importing", READY: "Ready", ACTION_REQUIRED: "Action required",
 };
+/** Each chain's history is counted in its own unit — never relabelled as another's. */
+const PROCESSED_LABEL: Record<"signatures" | "transactions" | "movements", string> = {
+  signatures: "Signatures processed", transactions: "Transactions processed", movements: "Movements found",
+};
+
 const INTEL_LABEL: Record<string, string> = {
   READY: "Built", REBUILDING: "Building", NOT_READY: "Not started",
 };
@@ -54,7 +67,8 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-export function OpsConnectionDiagnosticsWidget({ section }: { section: PlatformSection }) {
+export function OpsConnectionDiagnosticsWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
+  const offerRecovery = access?.canControl === true;
   const { data, loading, error } = useWidgetFetch<ConnectionDiagnosticsResponse>(
     "/api/platform/platform-ops/connection-diagnostics",
   );
@@ -121,6 +135,24 @@ export function OpsConnectionDiagnosticsWidget({ section }: { section: PlatformS
                   <Row label="Accounts covered" value={selected.intelligence.accountsCovered} />
                   <Row label="Available history" value={selected.intelligence.availableHistory} />
                 </Group>
+
+                {selected.historyBackfill && (
+                  <Group title="History backfill">
+                    <Row label="State" value={`${selected.historyBackfill.state}${selected.historyBackfill.mode === "STAGING" ? " (legacy history in force)" : ""}`} />
+                    <Row label="Proven" value={selected.historyBackfill.provenFromISO ? `${selected.historyBackfill.provenFromISO} → ${selected.historyBackfill.provenToISO ?? "—"}` : "—"} />
+                    <Row label="Head verified" value={selected.historyBackfill.headVerified ? "Yes" : "No"} />
+                    <Row label={PROCESSED_LABEL[selected.historyBackfill.processed.unit]} value={selected.historyBackfill.processed.count} />
+                    <Row label="Requests today" value={selected.historyBackfill.requestsToday} />
+                    <Row label="Last progress" value={fmt(selected.historyBackfill.lastProgressAtISO)} />
+                    {selected.historyBackfill.lastFailureCode && <Row label="Last failure" value={`${selected.historyBackfill.lastFailureCode} (×${selected.historyBackfill.failures})`} />}
+                    {selected.historyBackfill.nextAutomaticRetryISO && <Row label="Next automatic retry" value={fmt(selected.historyBackfill.nextAutomaticRetryISO)} />}
+                    {selected.historyBackfill.legacyDiscrepancyDays !== null && <Row label="Legacy discrepancy" value={`${selected.historyBackfill.legacyDiscrepancyDays} day(s) corrected`} />}
+                  </Group>
+                )}
+
+                {offerRecovery && selected.provider === "WALLET" && selected.historyBackfill && (
+                  <WalletHistoryRecoveryPanel key={selected.id} connectionId={selected.id} />
+                )}
 
                 <Group title="Current freshness">
                   <Row label="Latest snapshot" value={selected.freshness.latestSnapshotDate ? new Date(selected.freshness.latestSnapshotDate).toLocaleDateString() : "—"} />

@@ -42,6 +42,14 @@
  * SEPARATE bounded context — admin-only, aggregate, no-PII, staleness-aware
  * (STALE/DEGRADED) — and is intentionally NOT merged in here.
  *
+ * CONNECTIONS 2.0 — REAL ASSETS. The user's own manual assets (a home, a car)
+ * join the envelope as `manualAssets` (lib/connections/real-assets.ts), read in
+ * the same tenant phase with the same ownership predicate (`ownerUserId = me`).
+ * They are not connections and never enter `status`. Each carries its VALUE —
+ * the owner-approved carve-out: that figure is the user's own typed estimate,
+ * not a portfolio read, and provider rows stay names-only. They are read for the
+ * page only; the 4 s poller (loadConnectionsSyncStatus) never reads them.
+ *
  * POSITION / HOLDING COUNTS are intentionally OUT OF CONTRACT. Position counts
  * (countCurrentPositionsByAccount) are valuation-derived portfolio data; reading
  * them here would re-make Connections a portfolio consumer, the exact thing PCS-2
@@ -49,6 +57,7 @@
  * no money.
  */
 
+import { isSolBackfillCursor } from "@/lib/crypto/sol-history-backfill.core";
 import type { ReadClient } from "@/lib/db/tenant-context";
 import { accountDisplayName, ACCOUNT_NAME_SELECT } from "@/lib/accounts/display-identity";
 import { PlaidItemStatus, ConnectionStatus } from "@prisma/client";
@@ -71,9 +80,20 @@ import type { SourceHealthInput } from "@/lib/connections/space-data-health.core
 import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refresh-policy";
 import type { AccountLite } from "@/components/connections/ConnectionCard";
 import { loadWalletHistoryMetadata, walletActivityStart } from "@/lib/crypto/wallet-history-metadata";
+import { loadWalletInstrumentHistory } from "@/lib/crypto/wallet-instrument-history";
+import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
+import { chainSupportsHistory } from "@/lib/crypto/wallet-sync-dispatch.core";
+import { chartReadyRange } from "@/lib/connections/connection-detail.core";
+import { getSnapshotDates } from "@/lib/data/snapshots";
+import { transactionAccountPopulation, type AccountPopulationEntry } from "@/lib/data/transaction-population";
+import { walletHistoryCheckpointStatus, historyWorkerEnabledFor } from "@/lib/crypto/history-checkpoint-status";
+import { readHistoryCheckpoints } from "@/lib/crypto/btc-history-checkpoint";
+import { connectionDestinations } from "@/lib/connections/connection-facts";
 // CRYPTO-FRESHNESS-1 — "does this chain STORE a value?" is registry policy, asked
 // here rather than re-decided, so a valuation clock is only claimed where one exists.
 import { usesLegacyColumnForCurrentValue } from "@/lib/crypto/wallet-sync-dispatch";
+import { loadConnectionsManualAssets } from "@/lib/connections/real-assets";
+import type { ManualAssetLite } from "@/lib/connections/real-assets.core";
 
 /**
  * The canonical Connections view model. `status` is the provider-agnostic
@@ -93,6 +113,8 @@ export interface ConnectionsSpaceData {
    * SyncConnection.id, same id space as accountsByConnectionId.
    */
   intelligenceByConnectionId: Record<string, ConnectionIntelligenceStatus>;
+  /** Connections 2.0 — the user's own manual assets (owner-gated), with their estimate. */
+  manualAssets: ManualAssetLite[];
 }
 
 /**
@@ -138,6 +160,8 @@ export interface ConnectionAccountRow {
     officialName: string | null;
     plaidName:    string | null;
     type:         string;
+    mask?:            string | null;
+    providerSubtype?: string | null;
   };
 }
 
@@ -162,6 +186,8 @@ export function groupConnectionAccounts(
       // v2.6-TRUTH-10 — the ONE identity authority.
       name: accountDisplayName(account),
       type: account.type,
+      mask:    account.mask ?? null,
+      subtype: account.providerSubtype ?? null,
     });
   }
   return out;
@@ -189,7 +215,7 @@ async function loadPlaidConnectionAccounts(
     select: {
       plaidItemDbId:    true,
       financialAccount: {
-        select: { id: true, type: true, ...ACCOUNT_NAME_SELECT },
+        select: { id: true, type: true, mask: true, providerSubtype: true, ...ACCOUNT_NAME_SELECT },
       },
     },
   });
@@ -229,7 +255,7 @@ async function loadConnectionIntelligence(
   /** Raw provider fields per connection id, for sourceHealthForConnection. */
   rawByConnId: Map<string, Pick<SourceHealthInput, "plaid" | "wallet">>,
   /** CRYPTO-FRESHNESS-1 — per-facet success clocks (wallet connections). */
-  facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null }>,
+  facetClocksByConnId: Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null; historyCheckpoint?: string | null }>,
   /** Resolved once per page load — the same policies the Brief's data health uses. */
   policies: RefreshPolicies,
   /** Plaid item id → whether ingestion is actually running (getIngestionEvidence). */
@@ -304,6 +330,8 @@ async function loadConnectionIntelligence(
     .map((a) => ({ id: a.id, walletChain: walletChainByAccount.get(a.id) ?? null }))
     .filter((a) => a.walletChain !== null);
   const historyMeta = await loadWalletHistoryMetadata(walletAccounts, { client });
+  // TOKEN HOLDINGS (PR-A) — per-instrument history facets (native + each token).
+  const instrumentHistory = await loadWalletInstrumentHistory(client, walletAccounts);
 
   // CRYPTO-FRESHNESS-1 — CURRENT-POSITION FRESHNESS, from the spine.
   //
@@ -324,6 +352,48 @@ async function loadConnectionIntelligence(
   for (const r of positionRows) {
     if (r.financialAccountId && r._max.date) positionObservedByAccount.set(r.financialAccountId, r._max.date);
   }
+
+  // CHART-READY COVERAGE (owner requirement 2026-10-28) — what the chart can
+  // show, from persisted facts only: each wallet account's native instrument
+  // (its coverage row), that instrument's stored daily USD closes, and the
+  // owner's Personal Space snapshot dates (the series GET /api/spaces/[id]/
+  // snapshots serves). Dates only — no price, no value.
+  const coverageInstrument = walletAccounts.length
+    ? new Map((await client.positionCoverage.findMany({
+        // The NATIVE instrument's coverage row — a token row must not replace it.
+        where: { financialAccountId: { in: walletAccounts.map((a) => a.id) }, instrument: NOT_TOKEN_INSTRUMENT },
+        select: { financialAccountId: true, instrumentId: true },
+      })).map((r) => [r.financialAccountId, r.instrumentId]))
+    : new Map<string, string>();
+  const priceFloors = coverageInstrument.size
+    ? new Map((await client.priceObservation.groupBy({
+        by: ["instrumentId"], where: { instrumentId: { in: [...new Set(coverageInstrument.values())] }, basis: "RAW_CLOSE" },
+        _min: { date: true },
+      })).map((r) => [r.instrumentId, r._min.date ? r._min.date.toISOString().slice(0, 10) : null]))
+    : new Map<string, string | null>();
+  const personalSpace = allAccountIds.length
+    ? await client.spaceMember.findFirst({
+        where: { userId, role: "OWNER", status: "ACTIVE", space: { type: "PERSONAL" } }, select: { spaceId: true },
+      })
+    : null;
+  // The banking population — the ONLY rows Transactions / Cash Flow / Spending
+  // read (bankingTransactionWhere excludes crypto-owned rows by design). An
+  // account in it with rows > 0 genuinely feeds those views; nothing else may
+  // claim to.
+  const bankingRows = personalSpace
+    ? new Map((await transactionAccountPopulation(client, { spaceId: personalSpace.spaceId }))
+        .filter((p) => p.rows > 0).map((p) => [p.accountId, p]))
+    : new Map<string, AccountPopulationEntry>();
+  // Wallet on-chain rows written to the ledger (Bitcoin writes them; Solana and
+  // Ethereum do not — Solana's processed count comes from its checkpoint).
+  const walletTxCounts = walletAccounts.length
+    ? new Map((await client.transaction.groupBy({
+        by: ["financialAccountId"], where: { financialAccountId: { in: walletAccounts.map((a) => a.id) }, deletedAt: null },
+        _count: { _all: true },
+      })).filter((r) => r.financialAccountId).map((r) => [r.financialAccountId as string, r._count._all]))
+    : new Map<string, number>();
+  // Through the snapshot read authority (lib/data/snapshots.ts) — dates only.
+  const snapshotDates: string[] = personalSpace ? await getSnapshotDates(client, personalSpace.spaceId) : [];
 
   const out: Record<string, ConnectionIntelligenceStatus> = {};
   for (const c of connections) {
@@ -392,7 +462,7 @@ async function loadConnectionIntelligence(
     const valuationIsReadTime = c.provider === "WALLET" && chains.length > 0
       && chains.every((ch) => !usesLegacyColumnForCurrentValue(ch));
 
-    out[c.id] = deriveConnectionIntelligence(
+    const derived = deriveConnectionIntelligence(
       {
         provider: c.provider,
         state:    c.state,
@@ -413,6 +483,68 @@ async function loadConnectionIntelligence(
       },
       now,
     );
+    // The coverage licence, as the drawer's History tab states it. Dates only.
+    let walletHistory: ConnectionIntelligenceStatus["walletHistory"] = null;
+    if (c.provider === "WALLET") {
+      const metas = (accountsByConnectionId[c.id] ?? []).map((a) => historyMeta.get(a.id)).filter((m) => m !== undefined);
+      const lic = metas.filter((m) => m.claimsHistory);
+      const minOf = (xs: (string | null)[]) => xs.filter((x): x is string => x !== null).sort()[0] ?? null;
+      const maxOf = (xs: (string | null)[]) => xs.filter((x): x is string => x !== null).sort().at(-1) ?? null;
+      walletHistory = {
+        supported: chains.some((ch) => chainSupportsHistory(ch)),
+        // EVERY account licensed — one unlicensed account leaves the source incomplete.
+        licensed: metas.length > 0 && lic.length === metas.length,
+        licensedFromISO: minOf(lic.map((m) => m.licensedFromISO)),
+        licensedToISO:   maxOf(lic.map((m) => m.licensedToISO)),
+        activityFromISO: minOf(lic.map((m) => m.activityFromISO)),
+      };
+      const instruments = (accountsByConnectionId[c.id] ?? []).map((a) => coverageInstrument.get(a.id)).filter((x): x is string => !!x);
+      // The LATEST floor across the wallet's assets bounds what is valued for all of them.
+      const floors = instruments.map((id) => priceFloors.get(id) ?? null);
+      const priceFromISO = floors.length && floors.every((f) => f !== null) ? maxOf(floors) : null;
+      walletHistory.priceFromISO = priceFromISO;
+      walletHistory.chart = chartReadyRange(walletHistory, priceFromISO, snapshotDates);
+      const perInstrument = (accountsByConnectionId[c.id] ?? []).map((a) => instrumentHistory.get(a.id)).filter((h) => h !== undefined);
+      walletHistory.tokens = perInstrument.flatMap((h) => h.tokens.filter((t) => t.held).map((t) => ({
+        // PCS-2 — identity, price presence and history state only; the quantity stays behind.
+        label: t.label, standard: t.standard, priceStatus: t.priceStatus,
+        historyState: t.state, firstObservedISO: t.firstObservedISO, lastObservedISO: t.lastObservedISO,
+        licensedFromISO: t.licensedFromISO, licensedToISO: t.licensedToISO, coverageKind: t.coverageKind ?? null, caveats: t.caveats ?? [],
+      })));
+      walletHistory.walletComplete = perInstrument.length > 0 && perInstrument.every((h) => h.complete);
+      walletHistory.chain = chains[0] ?? null;
+    }
+    if (walletHistory && c.provider === "WALLET") {
+      // SOL's checkpoint on `cursor`, BTC's / ETH's on `historyCheckpoint` — each
+      // in its own words (history-checkpoint-status.ts); none ⇒ null (no claim).
+      // An ETH checkpoint is the WORKER's alone (SOL and BTC checkpoints are
+      // also advanced by syncs): with the ETH worker off it describes nothing
+      // that is running, so it is not shown.
+      const found = walletHistoryCheckpointStatus(facets?.historyCursor ?? null, facets?.historyCheckpoint ?? null, now.toISOString().slice(0, 10));
+      const st = found && (found.chain !== "ETH" || historyWorkerEnabledFor("ETH")) ? found : null;
+      walletHistory.historyImport = st ? { state: st.state, provenFromISO: st.historyFromISO, lastProgressAtISO: st.lastProgressAtISO,
+        signaturesProcessed: st.signaturesProcessed, lastFailureCode: st.lastFailureCode } : null;
+    }
+    const accts = accountsByConnectionId[c.id] ?? [];
+    const banking = accts.map((a) => bankingRows.get(a.id)).filter((p): p is AccountPopulationEntry => p !== undefined);
+    const earliestBanking = banking.map((p) => earliestByAccount.get(p.accountId)).filter((d): d is Date => !!d).sort((x, y) => x.getTime() - y.getTime())[0] ?? null;
+    const chain = chains[0] ?? null;
+    const walletRows = accts.reduce((n, a) => n + (walletTxCounts.get(a.id) ?? 0), 0);
+    const solProcessed = walletHistory?.historyImport?.signaturesProcessed ?? null;
+    const facts: ConnectionIntelligenceStatus["facts"] = {
+      destinations: connectionDestinations(accts.map((a) => a.type), banking.length > 0),
+      bankTransactions: c.provider === "PLAID" && banking.length > 0 ? {
+        count: banking.reduce((n, p) => n + p.rows, 0),
+        fromISO: earliestBanking ? earliestBanking.toISOString().slice(0, 10) : null,
+        toISO: banking.map((p) => p.lastDate).filter((d): d is string => !!d).sort().at(-1) ?? null,
+      } : null,
+      onChain: c.provider !== "WALLET" ? null
+        : solProcessed !== null && solProcessed > 0 ? { processed: solProcessed, scope: `native ${chain ?? ""}`.trim() }
+        : walletRows > 0 ? { processed: walletRows, scope: `native ${chain ?? ""}`.trim() } : null,
+      // Per connection chain: each chain's worker has its own gate.
+      historyWorkerEnabled: c.provider === "WALLET" && historyWorkerEnabledFor(chain),
+    };
+    out[c.id] = { ...derived, walletHistory, facts };
   }
   return out;
 }
@@ -424,7 +556,7 @@ async function loadConnectionIntelligence(
  * derive state differently.
  */
 export async function loadConnectionsSyncStatus(client: ReadClient, userId: string): Promise<ConnectionsSyncView> {
-  const { status, intelligenceByConnectionId } = await loadConnectionsSpaceData(client, userId);
+  const { status, intelligenceByConnectionId } = await loadProviderConnections(client, userId);
   return { status, intelligenceByConnectionId };
 }
 
@@ -454,6 +586,14 @@ export async function loadConnectionsSyncStatus(client: ReadClient, userId: stri
  * lib/platform/, not a default this module falls into.
  */
 export async function loadConnectionsSpaceData(client: ReadClient, userId: string): Promise<ConnectionsSpaceData> {
+  const providers = await loadProviderConnections(client, userId);
+  // Connections 2.0 — the user's own manual assets, same phase, same owner gate.
+  const manualAssets = await loadConnectionsManualAssets(client, userId);
+  return { ...providers, manualAssets };
+}
+
+/** Provider connections only (Plaid + wallet) — the page and the poller share it. */
+async function loadProviderConnections(client: ReadClient, userId: string): Promise<Omit<ConnectionsSpaceData, "manualAssets">> {
   const [items, wallet] = await Promise.all([
     client.plaidItem.findMany({
       where:   { userId, status: { not: PlaidItemStatus.REVOKED } },
@@ -498,15 +638,19 @@ export async function loadConnectionsSpaceData(client: ReadClient, userId: strin
       syncIncompleteAt: i.syncIncompleteAt, historyBuildStartedAt: i.historyBuildStartedAt } });
   }
   for (const w of walletCreatedRows) {
-    rawByConnId.set(w.id, { wallet: { status: w.status, errorCode: w.errorCode, lastSyncedAt: w.lastSyncedAt, discoveryCursor: !!w.cursor } });
+    rawByConnId.set(w.id, { wallet: { status: w.status, errorCode: w.errorCode, lastSyncedAt: w.lastSyncedAt, discoveryCursor: !!w.cursor && !isSolBackfillCursor(w.cursor) } });
   }
   const connectedAtByConnId = new Map<string, Date>();
   for (const i of items) connectedAtByConnId.set(i.id, i.createdAt);
   for (const w of walletCreatedRows) connectedAtByConnId.set(w.id, w.createdAt);
   // CRYPTO-FRESHNESS-1 — per-facet success clocks, wallet connections only.
-  const facetClocksByConnId = new Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null }>();
+  const facetClocksByConnId = new Map<string, { transactionsSyncedAt: Date | null; historyRebuiltAt: Date | null; historyCursor?: string | null; historyCheckpoint?: string | null }>();
+  // BTC / ETH history checkpoints (raw: btc-history-checkpoint.ts). A read
+  // failure shows no import state (no claim), never a wrong one.
+  const historyCheckpoints = await readHistoryCheckpoints(client, walletCreatedRows.map((w) => w.id)).catch(() => new Map<string, string>());
   for (const w of walletCreatedRows) {
-    facetClocksByConnId.set(w.id, { transactionsSyncedAt: w.transactionsSyncedAt, historyRebuiltAt: w.historyRebuiltAt });
+    facetClocksByConnId.set(w.id, { transactionsSyncedAt: w.transactionsSyncedAt, historyRebuiltAt: w.historyRebuiltAt, historyCursor: w.cursor ?? null,
+      historyCheckpoint: historyCheckpoints.get(w.id) ?? null });
   }
 
   const intelligenceByConnectionId = await loadConnectionIntelligence(
@@ -523,3 +667,4 @@ export async function loadConnectionsSpaceData(client: ReadClient, userId: strin
 
   return { status, accountsByConnectionId, intelligenceByConnectionId };
 }
+

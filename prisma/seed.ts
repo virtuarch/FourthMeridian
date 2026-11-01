@@ -438,7 +438,7 @@ async function main() {
   // DB has the four platform Spaces; grants are issued from /admin/platform-access.
   await ensurePlatformSpaces(prisma);
   await ensurePlatformSections(prisma); // create-only backfill for sections added post-seed
-  console.log("   ✓ Platform Spaces: 4 (Platform Ops, Security Ops, Growth & Revenue, Customer Success)");
+  console.log("   ✓ Platform Spaces: 5 (Platform Ops, Security Ops, Growth, Customer Success, Merchant Ops)");
 
   // ── Spaces (8) ──────────────────────────────────────────────────────────
   //

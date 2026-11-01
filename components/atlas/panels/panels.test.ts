@@ -134,6 +134,16 @@ console.log("5. Shared behavior — modal + panel use ONE implementation");
   check("OverlaySurface uses the shared focus trap", overlay.includes("useFocusTrap("));
 }
 
+{
+  // Connections pass — Preview 2026-10-28: a desktop RightPanel opened with focus
+  // left on the page, because the first selector match was the display:none
+  // mobile resize handle. Auto-focus must skip controls that cannot take focus.
+  const behavior = readFileSync(path.join(process.cwd(), "components/atlas/useOverlayBehavior.ts"), "utf8");
+  const auto = behavior.slice(behavior.indexOf("export function useAutoFocus"), behavior.indexOf("// ── Tab focus trap"));
+  check("auto-focus picks the first VISIBLE focusable (offsetParent !== null)",
+    /querySelectorAll<HTMLElement>\(selector\)\)\.find\(\(el\) => el\.offsetParent !== null\)/.test(auto) && !/querySelector<HTMLElement>\(selector\)/.test(auto));
+}
+
 if (failures > 0) {
   console.error(`\n${failures} panel check(s) failed.`);
   process.exit(1);

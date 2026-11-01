@@ -758,6 +758,10 @@ const COUNTERPARTY_REFERENCES: Readonly<Record<string, CpRole>> = {
   // unmatched outgoing transfer for the Cash ledger's neutral transit line;
   // never writes the FK.
   "lib/liquidity/cash-transit-read.ts": "READ",
+  // Marketing capture harness — sets it on IN-MEMORY synthetic transactions
+  // handed to client components for the website screenshots; no database, no
+  // write path (scripts/marketing-showcase/).
+  "scripts/marketing-showcase/fixture.ts": "DTO",
   // v2.7-P1 — selects the persisted counterparty to read its account TYPE as
   // evidence for the transfer-authority correction; never writes the FK (the
   // correction's updateMany payload is flowType/category/flowAuthority only).

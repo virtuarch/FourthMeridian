@@ -282,6 +282,17 @@ export async function fetchCoinDailyClosesUsd(
   let body: unknown;
   try { body = await res.json(); }
   catch { throw new ProviderFetchError("INVALID_DATA", `coingecko: unparseable response for ${coinId}`); }
+  return parseMarketChartCloses(body, fromISO, toISO);
+}
+
+/**
+ * `market_chart/range` body → one close per UTC day in [fromISO, toISO]: points
+ * bucketed by UTC date, the LAST point of each day is its close. Shared by the
+ * coin-id path and the contract-addressed token path, so a token's daily close
+ * means exactly what a native coin's does. Non-positive / non-finite points are
+ * dropped (never a price of zero).
+ */
+export function parseMarketChartCloses(body: unknown, fromISO: string, toISO: string): CoinDailyClose[] {
   const prices = (body as { prices?: unknown })?.prices;
   if (!Array.isArray(prices)) return [];
 
@@ -400,7 +411,7 @@ export function createCoinGeckoPriceProvider(
  */
 export async function fetchCoinGeckoCurrentQuotes(
   symbols: readonly string[],
-  opts: CoinGeckoOptions & { now?: Date } = {},
+  opts: CoinGeckoOptions & { now?: Date; meter?: Record<string, number> } = {},
 ): Promise<{ quotes: CurrentQuote[]; rejected: QuoteRejection[]; configured: boolean }> {
   const apiKey = opts.apiKey ?? process.env.COINGECKO_API_KEY;
   if (!apiKey) return { quotes: [], rejected: [], configured: false };
@@ -419,6 +430,8 @@ export async function fetchCoinGeckoCurrentQuotes(
   const doFetch: CoinGeckoFetch =
     opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
   const url = `${baseUrl}/simple/price?ids=${encodeURIComponent(ids.join(","))}&vs_currencies=usd&include_last_updated_at=true`;
+  // Review fix 1 — the native quote is metered into the shared COINGECKO budget too.
+  if (opts.meter) opts.meter["simple/price"] = (opts.meter["simple/price"] ?? 0) + 1;
 
   let res: CoinGeckoHttpResponse;
   try {
@@ -436,4 +449,195 @@ export async function fetchCoinGeckoCurrentQuotes(
 
   const parsed = parseSimplePriceQuotes(body, coinIdBySymbol, opts.now ?? new Date());
   return { quotes: parsed.quotes, rejected: [...rejected, ...parsed.rejected], configured: true };
+}
+
+// ── TOKEN current quotes, by CONTRACT (TOKEN HOLDINGS FOUNDATION, PR-A) ───────
+//
+// Tokens are priced by the contract/mint that IS their identity, never by a
+// ticker: `/simple/token_price/{platform}?contract_addresses=…`, the same vendor,
+// key and header as above, with the same instant (`last_updated_at`) and the same
+// pure validation (`parseSimplePriceQuotes`, keyed here by assetKey). A contract
+// the vendor does not list is ABSENT from the response and comes back REJECTED —
+// an unlisted token (spam, airdrop, illiquid) is UNPRICED, never priced at zero.
+//
+// Batch size is configuration (`COINGECKO_TOKEN_PRICE_BATCH`, default 1, clamped
+// 1..50): CoinGecko's public/Demo tier has restricted how many contract
+// addresses one request may carry, and assuming more than the tier allows would
+// turn a whole batch into a refusal. A paid deployment raises it explicitly.
+//
+// HISTORICAL token closes: `/coins/{platform}/contract/{address}/market_chart/range`
+// (Demo: rolling 365 days), routed by the token's ASSET KEY, never a ticker (a
+// token has none — token-instrument.ts). Wired generically — the platform comes
+// from the CAIP-19 key, so SPL and ERC-20 share one path:
+// `fetchCoinGeckoTokenDailyClosesUsd` below, persisted by
+// lib/prices/token-history-prices.ts under the shared COINGECKO budget.
+
+/** Where historical token closes plug in. Documentation constant (kept for the seam's name). */
+export const TOKEN_HISTORICAL_PRICE_SEAM =
+  "coingecko /coins/{platform}/contract/{address}/market_chart/range — wired: fetchCoinGeckoTokenDailyClosesUsd + lib/prices/token-history-prices.ts (assetKey-routed)";
+
+export const COINGECKO_TOKEN_PRICE_BATCH_DEFAULT = 1;
+
+export function resolveTokenPriceBatch(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : COINGECKO_TOKEN_PRICE_BATCH_DEFAULT;
+}
+
+/** Why a token was not quoted: absent from the vendor (unlisted), malformed, or below the sanity floor. */
+export type TokenQuoteMiss = { symbol: string; reason: string; kind: "UNLISTED" | "INVALID" | "THIN" | "UNKNOWN" };
+
+/**
+ * Current USD quotes for token contracts on one CoinGecko platform. Each input
+ * pairs the caller's key (the assetKey) with the contract as the vendor indexes
+ * it. Requests `usd_market_cap` and `usd_24h_vol` too: a quote below EITHER
+ * floor is a THIN market — a price nobody could trade at — and is refused, never
+ * stored, never valued (review fix 7).
+ *
+ * PARTIAL ON FAILURE (review fix 3): a 429 or any failure mid-batch STOPS further
+ * requests and returns what was already fetched, with `stopped` saying why.
+ * Only a failure before the first quote throws. `maxCalls` bounds requests; each
+ * request is paced (`pace`) and metered (`meter`) BEFORE it is sent.
+ * Returns `{configured:false}` without a key (the dark no-op).
+ */
+export async function fetchCoinGeckoTokenQuotes(
+  platform: "solana" | "ethereum",
+  tokens: ReadonlyArray<{ key: string; contract: string }>,
+  opts: CoinGeckoOptions & {
+    now?: Date; batchSize?: number; meter?: Record<string, number>;
+    pace?: () => Promise<void>; maxCalls?: number; deadlineEpochMs?: number;
+    minVolume24hUsd?: number; minMarketCapUsd?: number;
+  } = {},
+): Promise<{ quotes: CurrentQuote[]; rejected: TokenQuoteMiss[]; configured: boolean; stopped?: { code: string; message: string } }> {
+  const apiKey = opts.apiKey ?? process.env.COINGECKO_API_KEY;
+  if (!apiKey) return { quotes: [], rejected: [], configured: false };
+  const baseUrl = opts.baseUrl ?? COINGECKO_BASE_URL;
+  const doFetch: CoinGeckoFetch =
+    opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
+  const batch = opts.batchSize ?? resolveTokenPriceBatch(process.env.COINGECKO_TOKEN_PRICE_BATCH);
+  const minVol = opts.minVolume24hUsd ?? 0;
+  const minCap = opts.minMarketCapUsd ?? 0;
+  // EVM addresses are case-insensitive and the vendor answers lowercase; a Solana
+  // mint is case-SIGNIFICANT base58 and is matched EXACTLY (never lowercased).
+  const norm = (c: string) => (platform === "ethereum" ? c.toLowerCase() : c);
+  const metric = `simple/token_price:${platform}`;
+
+  const quotes: CurrentQuote[] = [];
+  const rejected: TokenQuoteMiss[] = [];
+  let calls = 0;
+  for (let i = 0; i < tokens.length; i += batch) {
+    if (opts.maxCalls !== undefined && calls >= opts.maxCalls) {
+      return { quotes, rejected, configured: true, stopped: { code: "BUDGET", message: `call budget of ${opts.maxCalls} reached` } };
+    }
+    if (opts.deadlineEpochMs !== undefined && Date.now() >= opts.deadlineEpochMs) {
+      return { quotes, rejected, configured: true, stopped: { code: "DEADLINE", message: "token-quote wall-time bound reached; the rest rotate to later syncs" } };
+    }
+    const chunk = tokens.slice(i, i + batch);
+    const url = `${baseUrl}/simple/token_price/${platform}?contract_addresses=${encodeURIComponent(chunk.map((t) => norm(t.contract)).join(","))}` +
+      "&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_last_updated_at=true";
+    if (opts.pace) await opts.pace();
+    if (opts.deadlineEpochMs !== undefined && Date.now() >= opts.deadlineEpochMs) {
+      return { quotes, rejected, configured: true, stopped: { code: "DEADLINE", message: "token-quote wall-time bound reached; the rest rotate to later syncs" } };
+    }
+    calls++;
+    if (opts.meter) opts.meter[metric] = (opts.meter[metric] ?? 0) + 1;
+    let failure: ProviderFetchError | null = null;
+    let body: unknown = null;
+    try {
+      const res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey }, signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS) });
+      if (!res.ok) {
+        failure = new ProviderFetchError(res.status === 429 ? "THROTTLED" : "PROVIDER_ERROR",
+          `coingecko: ${res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`} for token quotes`);
+      } else {
+        try { body = await res.json(); }
+        catch { failure = new ProviderFetchError("INVALID_DATA", "coingecko: unparseable token-quote response"); }
+      }
+    } catch (e) {
+      failure = new ProviderFetchError("PROVIDER_ERROR", `coingecko: network error for token quotes — ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (failure) {
+      // Keep what is already fetched; send nothing more after a refusal.
+      if (quotes.length === 0 && rejected.length === 0) throw failure;
+      return { quotes, rejected, configured: true, stopped: { code: failure.code, message: failure.message } };
+    }
+    const raw = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+    // Re-review fix 5 — an EMPTY answer to a MULTI-contract request says nothing
+    // about which contract was missing: UNKNOWN for the chunk (retried on a later
+    // sync), never a batch of UNLISTED. For a single-contract request (the Demo
+    // default, batch 1) `{}` is the vendor's way of saying "not listed".
+    if (Object.keys(raw).length === 0 && chunk.length > 1) {
+      for (const t of chunk) rejected.push({ symbol: t.key, kind: "UNKNOWN", reason: "empty response" });
+      continue;
+    }
+    const byContract: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(raw)) byContract[norm(k)] = v;
+    const keyMap: Record<string, string> = {};
+    for (const t of chunk) keyMap[t.key] = norm(t.contract);
+    const parsed = parseSimplePriceQuotes(byContract, keyMap, opts.now ?? new Date());
+    for (const r of parsed.rejected) rejected.push({ ...r, kind: r.reason === "absent from response" ? "UNLISTED" : "INVALID" });
+    for (const q of parsed.quotes) {
+      const entry = byContract[keyMap[q.symbol]] as { usd_market_cap?: unknown; usd_24h_vol?: unknown } | undefined;
+      const cap = typeof entry?.usd_market_cap === "number" ? entry.usd_market_cap : null;
+      const vol = typeof entry?.usd_24h_vol === "number" ? entry.usd_24h_vol : null;
+      // Re-review fix 3 — a market cap of 0 (or none) means the vendor does not
+      // know the supply, NOT that the token is worthless: cap is then UNKNOWN and
+      // the decision rests on volume alone. Missing volume is not evidence of
+      // liquidity and is refused when a floor is set.
+      const capKnown = cap !== null && cap > 0;
+      if ((minCap > 0 && capKnown && cap! < minCap) || (minVol > 0 && (vol === null || vol < minVol))) {
+        rejected.push({ symbol: q.symbol, kind: "THIN", reason: `thin market (24h volume ${vol ?? "unknown"}, market cap ${cap ?? "unknown"})` });
+        continue;
+      }
+      quotes.push(q);
+    }
+  }
+  return { quotes, rejected, configured: true };
+}
+
+/**
+ * Daily USD closes for a TOKEN by contract/mint over [fromISO, toISO], one per
+ * UTC day (`parseMarketChartCloses`, the native rule). A Solana mint is
+ * case-significant base58 and sent EXACTLY; an EVM contract is sent lowercase.
+ *
+ * A 404 is the vendor saying it does not list the contract: `{ unlisted: true }`,
+ * no closes — UNPRICED, never zero. Other failures throw ProviderFetchError with
+ * the same classification as the coin-id path. The request is metered BEFORE it
+ * is sent. `{ configured: false }` without a key (the dark no-op).
+ */
+export async function fetchCoinGeckoTokenDailyClosesUsd(
+  platform: "solana" | "ethereum",
+  contract: string,
+  fromISO: string,
+  toISO: string,
+  opts: CoinGeckoOptions & { meter?: Record<string, number> } = {},
+): Promise<{ closes: CoinDailyClose[]; unlisted: boolean; configured: boolean }> {
+  const apiKey = opts.apiKey ?? process.env.COINGECKO_API_KEY;
+  if (!apiKey) return { closes: [], unlisted: false, configured: false };
+  const baseUrl = opts.baseUrl ?? COINGECKO_BASE_URL;
+  const doFetch: CoinGeckoFetch =
+    opts.fetchImpl ?? ((url, init) => fetch(url, init) as unknown as Promise<CoinGeckoHttpResponse>);
+  const address = platform === "ethereum" ? contract.trim().toLowerCase() : contract.trim();
+  const effectiveFromISO = effectiveRequestFromISO(fromISO, opts.deploymentFloorISO);
+  const fromSec = Math.floor(Date.parse(`${effectiveFromISO}T00:00:00Z`) / 1000);
+  const toSec   = Math.floor(Date.parse(`${toISO}T23:59:59Z`) / 1000);
+  const url = `${baseUrl}/coins/${platform}/contract/${encodeURIComponent(address)}/market_chart/range?vs_currency=usd&from=${fromSec}&to=${toSec}`;
+  const metric = `market_chart/range:${platform}`;
+  if (opts.meter) opts.meter[metric] = (opts.meter[metric] ?? 0) + 1;
+
+  let res: CoinGeckoHttpResponse;
+  try {
+    res = await doFetch(url, { headers: { "Content-Type": "application/json", "x-cg-demo-api-key": apiKey }, signal: AbortSignal.timeout(PRICE_PROVIDER_TIMEOUT_MS) });
+  } catch (e) {
+    throw new ProviderFetchError("PROVIDER_ERROR", `coingecko: network error for token history — ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (res.status === 404) return { closes: [], unlisted: true, configured: true };
+  if (!res.ok) {
+    const authFailure = res.status === 401 || res.status === 403;
+    const belowFloor = opts.deploymentFloorISO !== undefined && fromISO < opts.deploymentFloorISO;
+    const code = res.status === 429 ? "THROTTLED" : authFailure && belowFloor ? "PROVIDER_LIMIT" : "PROVIDER_ERROR";
+    throw new ProviderFetchError(code, `coingecko: ${res.status === 429 ? "rate-limited (429)" : `HTTP ${res.status}`} for token history`);
+  }
+  let body: unknown;
+  try { body = await res.json(); }
+  catch { throw new ProviderFetchError("INVALID_DATA", "coingecko: unparseable token-history response"); }
+  return { closes: parseMarketChartCloses(body, fromISO, toISO), unlisted: false, configured: true };
 }

@@ -185,7 +185,9 @@ async function main() {
     check("incremental, NO_CHANGE, nothing historical changed", r?.mode === "NO_CHANGE" && r.impactedFromISO === null, JSON.stringify(outcome).slice(0, 200));
     check("no write at all: the rows and coverage already say this", s.state.applies === 0 && snapshot(s.state.rows) === before);
     check(`bounded RPC work (${stats.requests} requests, ${stats.calls} calls) — vs ${base.stats.requests} for the full rebuild`,
-      stats.requests <= 30 && stats.requests * 10 < base.stats.requests);
+      // ×5, not ×10: since the EARLY ORIGIN the full rebuild itself stops at the
+      // wallet's origin instead of walking to Byzantium, so it is far cheaper.
+      stats.requests <= 30 && stats.requests * 5 < base.stats.requests);
     check("no genesis scan: nothing below the day before the boundary was read", stats.minBlock > HEAD1 - 10_000, String(stats.minBlock));
   }
 
@@ -320,7 +322,8 @@ async function main() {
       /reconstructionVersion: ETH_RECONSTRUCTION_VERSION/.test(sync));
     check("the incremental path writes the same version, in one transaction with the coverage",
       /reconstructionVersion: ETH_RECONSTRUCTION_VERSION/.test(inc) && /\$transaction\(async \(tx\)[\s\S]*persistPositionCoverage\(tx/.test(inc));
-    check("BNB/AVAX are not reconstructed", /key === ETH_NATIVE\.chain \? reconstructEthHistory/.test(readFileSync("lib/crypto/wallet-history-refresh.ts", "utf8"))
+    check("BNB/AVAX are not reconstructed", // (2026-10-28: the ETH arm wraps the call in the provider-budget meter, through reconstructEthHistoryForSync — the ETH history worker's gate.)
+      /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistoryForSync\(/.test(readFileSync("lib/crypto/wallet-history-refresh.ts", "utf8"))
       && !/BNB|AVAX/.test(inc.replace(/\/\*[\s\S]*?\*\//g, "")));
   }
 

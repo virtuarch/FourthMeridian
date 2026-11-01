@@ -29,6 +29,14 @@
  * database now agree about whose name this is. The Brief read beside it enters the
  * same boundary per phase — see lib/ai/brief/view.ts for why it cannot be one
  * transaction.
+ *
+ * ⚠️ FIRST RUN (Connections pass PR 2). The Brief is the post-login landing, so
+ * it is where a brand-new user — no source ever, not a member of anyone else's
+ * Space, welcome neither shown nor dismissed — is sent ONCE to the welcome view
+ * on Connections. Security setup has already run (the layout's TOTP gate). The
+ * read fails open and the welcome records itself as shown, so the Brief is
+ * reachable again at once (back button, direct link) and established users are
+ * never redirected. Only the landing redirects; every other page is untouched.
  */
 
 import { getSpaceContext } from "@/lib/space";
@@ -38,6 +46,9 @@ import { DailyBriefClient } from "@/components/brief/DailyBriefClient";
 import type { BriefResponse } from "@/lib/brief-types";
 import { recordBriefViewed } from "@/lib/analytics/product-events";
 import { isRouterPrefetch } from "@/lib/analytics/request-intent";
+import { redirect } from "next/navigation";
+import { readFirstRun } from "@/lib/onboarding/first-run";
+import { ONBOARDING_HREF } from "@/lib/onboarding/first-run.core";
 
 export const preferredRegion = "sin1";
 export const runtime = "nodejs";
@@ -49,6 +60,8 @@ export const metadata = {
 
 export default async function DailyBriefPage() {
   const ctx = await getSpaceContext();
+
+  if ((await readFirstRun(ctx.userId)).redirect && !(await isRouterPrefetch())) redirect(ONBOARDING_HREF);
 
   const [user, initial] = await Promise.all([
     withTenantDb(ctx.userId, (tx) =>

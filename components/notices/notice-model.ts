@@ -15,12 +15,19 @@
  *                  Dismissing hides it for this browser session (and a
  *                  dismissal made in the old per-browser nudge is honoured).
  *                  Not shown on the AI conversation surface (AI-4, unchanged).
+ *   connect      — "Add your first account" for a user with no live source who
+ *                  has not dismissed it (lib/onboarding). Dismissing hides it at
+ *                  once for this session AND persists server-side, so it never
+ *                  returns. Not shown on Connections itself (that page IS the
+ *                  invitation) or on the AI conversation surface.
  */
 
 /** The one status read: `maintenance` null = could not tell (show nothing). */
 export interface AppNoticeStatus {
   maintenance: boolean | null;
   twoFactorReminder: boolean;
+  /** Connections pass PR 2 — present (true) only when the invitation applies. */
+  connectInvitation?: boolean;
 }
 
 export const NOTICE_STATUS_URL = "/api/status/notices";
@@ -31,10 +38,14 @@ export const TWO_FACTOR_TEXT = "Protect your account with 2FA.";
 export const TWO_FACTOR_ACTION = "Enable";
 /** The existing enrolment flow — unchanged. */
 export const TWO_FACTOR_HREF = "/dashboard/settings/security";
+export const CONNECT_TEXT = "Add your first account to see your full financial picture.";
+export const CONNECT_ACTION = "Get started";
+export const CONNECT_HREF = "/dashboard/connections";
 
 /** Session-scoped dismissal keys (sessionStorage). */
 export const MAINTENANCE_COLLAPSED_KEY = "fm.notice.maintenance.collapsed";
 export const TWO_FACTOR_DISMISSED_KEY = "fm.notice.twoFactor.dismissed";
+export const CONNECT_DISMISSED_KEY = "fm.notice.connect.dismissed";
 /** The retired TotpNudgeBanner's per-browser dismissal (localStorage) — read, honoured, never written. */
 export const LEGACY_TOTP_DISMISS_KEY = "fm.totpNudge.dismissed";
 
@@ -47,18 +58,20 @@ export const NOTICE_FOCUS_THROTTLE_MS = 30_000;
 
 export type NoticeView =
   | { id: "maintenance"; mode: "full" | "collapsed"; title: string; description: string }
-  | { id: "two-factor"; mode: "full"; title: string; actionLabel: string; href: string };
+  | { id: "two-factor"; mode: "full"; title: string; actionLabel: string; href: string }
+  | { id: "connect"; mode: "full"; title: string; actionLabel: string; href: string };
 
 export interface NoticeDismissals {
   maintenanceCollapsed: boolean;
   twoFactorDismissed: boolean;
+  connectDismissed?: boolean;
 }
 
 /** The notices to render, highest priority first. Empty ⇒ the rail renders nothing. */
 export function visibleNotices(
   status: AppNoticeStatus | null,
   dismissals: NoticeDismissals,
-  opts: { conversationSurface: boolean },
+  opts: { conversationSurface: boolean; connectionsSurface?: boolean },
 ): NoticeView[] {
   if (!status) return [];
   const out: NoticeView[] = [];
@@ -70,6 +83,9 @@ export function visibleNotices(
   }
   if (status.twoFactorReminder && !dismissals.twoFactorDismissed && !opts.conversationSurface) {
     out.push({ id: "two-factor", mode: "full", title: TWO_FACTOR_TEXT, actionLabel: TWO_FACTOR_ACTION, href: TWO_FACTOR_HREF });
+  }
+  if (status.connectInvitation === true && !dismissals.connectDismissed && !opts.conversationSurface && !opts.connectionsSurface) {
+    out.push({ id: "connect", mode: "full", title: CONNECT_TEXT, actionLabel: CONNECT_ACTION, href: CONNECT_HREF });
   }
   return out;
 }
@@ -87,5 +103,5 @@ export function readNoticeStatus(body: unknown): AppNoticeStatus | null {
   if (typeof body !== "object" || body === null) return null;
   const b = body as Record<string, unknown>;
   const maintenance = b.maintenance === true ? true : b.maintenance === false ? false : null;
-  return { maintenance, twoFactorReminder: b.twoFactorReminder === true };
+  return { maintenance, twoFactorReminder: b.twoFactorReminder === true, ...(b.connectInvitation === true ? { connectInvitation: true } : {}) };
 }

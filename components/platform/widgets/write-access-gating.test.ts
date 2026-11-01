@@ -96,7 +96,7 @@ console.log("1. Growth & Revenue beta block — write controls only for WRITE");
   }
   check("READ branch renders the explanatory line", /\{!canWrite && \([\s\S]{0,200}\{GROWTH_READ_ONLY_LINE\}/.test(src));
   check("READ holder still sees the current product status as text", /\{!canWrite \? \([\s\S]{0,300}PRODUCT_STATUSES\.find/.test(src));
-  check("line names the area and the level", /WRITE access to Growth & Revenue/.test(GROWTH_READ_ONLY_LINE));
+  check("line names the area and the level", /WRITE access to Growth\b/.test(GROWTH_READ_ONLY_LINE) && !/Revenue/.test(GROWTH_READ_ONLY_LINE));
 }
 
 console.log("2. Customer Success spine — editors only for WRITE; no fabricated reason");
