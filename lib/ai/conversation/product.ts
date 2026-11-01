@@ -31,7 +31,7 @@ import type { ToolDefinition } from './tools';
 export const BROWSER_TRANSCRIPT_TTL_HOURS = 24;
 
 export const PRODUCT_IDENTITY =
-  'Fourth Meridian is an AI-native wealth management platform. It helps people understand their '
+  'Fourth Meridian is a personal finance workspace; the decisions stay yours. It helps people understand their '
   + 'financial position — cash, spending, income, debt, investments and where they are heading — '
   + 'model decisions and scenarios, and turn their financial data into planning insight.';
 

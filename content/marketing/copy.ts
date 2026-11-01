@@ -23,8 +23,8 @@
  * aggregation, user-directed decisions, no trading, no personalized regulated
  * advice), not "financial operating system", not "intelligent financial
  * ecosystem". The model's own self-description (lib/ai/conversation/product.ts
- * PRODUCT_IDENTITY) still says "AI-native wealth management platform" — changing
- * it is an AI-behaviour change, tracked separately. Roadmap concepts (Business/Property/Vehicle/Trip Spaces are
+ * PRODUCT_IDENTITY) now says "a personal finance workspace; the decisions stay
+ * yours" (owner-approved, beta fixes 2026-11-01). Roadmap concepts (Business/Property/Vehicle/Trip Spaces are
  * `comingSoon` in lib/space-templates/registry.ts; Markets is an empty
  * skeleton) are not described as shipped. Limits that shape the promise —
  * three exports a day, a seven-day deletion window — are stated.
