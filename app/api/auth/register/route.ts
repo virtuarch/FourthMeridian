@@ -51,7 +51,7 @@ const VERIFICATION_TTL_MS = EMAIL_VERIFICATION_TTL_MS; // shared with the email 
 
 // PO-5A — the Terms/Privacy policy version recorded on consent. Bump when the
 // legal documents materially change (so re-consent can be required later).
-const TERMS_VERSION = "2026-10-07";
+const TERMS_VERSION = "2026-11-01";
 
 export async function POST(req: NextRequest) {
   try {

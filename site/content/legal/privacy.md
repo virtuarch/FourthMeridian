@@ -1,4 +1,4 @@
-*Effective October 7, 2026.*
+*Effective November 1, 2026.*
 
 This Privacy Policy explains what information Fourth Meridian (the "Service") collects, how we use it, and the choices you have. Fourth Meridian is currently offered as a closed, invite-only beta.
 
