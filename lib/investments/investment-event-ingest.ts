@@ -139,10 +139,12 @@ async function recordCoverage(
     latestReturnedISO: string | null;
     detail: string | null;
     now: Date;
+    /** PB-1 S1 — minted once per ingest, so this attempt's incidents carry the same id. */
+    attemptId: string;
   },
 ): Promise<void> {
   if (!args.plaidItemId || args.financialAccountIds.length === 0) return;
-  const attemptId = randomUUID();
+  const { attemptId } = args;
   try {
     await client.investmentEventCoverage.createMany({
       data: [...args.financialAccountIds].sort().map((financialAccountId) => ({
@@ -211,6 +213,8 @@ export async function recordDisabledInvestmentEventCoverage(client: PrismaClient
     reportedTotal: null, fetchedCount: 0, pagesFetched: 0,
     paginationReconciled: false, earliestReturnedISO: null, latestReturnedISO: null,
     detail: "INVESTMENT_EVENTS_ENABLED is not 'true'", now: args.now,
+    // A deliberate non-attempt records no incident, so its own id is enough.
+    attemptId: randomUUID(),
   });
 }
 
@@ -244,6 +248,10 @@ export async function ingestInvestmentEvents(client: PrismaClient, params: Inges
   const metrics = emptyMetrics("ok");
   const { start, end } = computeIngestWindow(params.now);
   const covered = params.coveredFinancialAccountIds ?? [];
+  // PB-1 S1 — ONE attempt id for this ingest: written on its coverage rows AND
+  // on every incident it records, so "did this attempt record a failure?" (the
+  // clean-attempt test an evidence-based resolver needs) is decidable.
+  const attemptId = randomUUID();
   const coverage = (
     outcome: InvestmentCoverageOutcome, reportedTotal: number | null,
     fetchedCount: number, pagesFetched: number, detail: string | null,
@@ -252,7 +260,7 @@ export async function ingestInvestmentEvents(client: PrismaClient, params: Inges
     plaidItemId: params.plaidItemId, financialAccountIds: covered,
     window: { start, end }, outcome, reportedTotal, fetchedCount, pagesFetched,
     paginationReconciled: reconciled, earliestReturnedISO, latestReturnedISO,
-    detail, now: params.now,
+    detail, now: params.now, attemptId,
   });
 
   // Dynamic import so this module (and its pure helpers/tests) loads without the
@@ -297,7 +305,7 @@ export async function ingestInvestmentEvents(client: PrismaClient, params: Inges
       return emptyMetrics("not_ready");
     }
     console.warn(`[investment-events] fetch failed for item ${params.plaidItemId ?? "?"} (non-fatal): ${plaidErrorSummary(err)}`);
-    await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: params.plaidItemId ?? null, detail: { stage: "investment-events-fetch", error: plaidErrorSummary(err) } }, client);
+    await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: params.plaidItemId ?? null, detail: { stage: "investment-events-fetch", attemptId, error: plaidErrorSummary(err) } }, client);
     await coverage(InvestmentCoverageOutcome.FAILED, null, all.length, pagesFetched, plaidErrorSummary(err));
     return { ...emptyMetrics("error"), failed: 1 };
   }
@@ -334,11 +342,11 @@ export async function ingestInvestmentEvents(client: PrismaClient, params: Inges
       if (!faId) {
         metrics.unmappedAccount++;
         metrics.skipped++;
-        await recordSyncIssue({ kind: "MISSING_ACCOUNT", plaidItemId: params.plaidItemId ?? null, plaidAccountId: txn.account_id, detail: { stage: "investment-events", externalEventId: txn.investment_transaction_id } }, client);
+        await recordSyncIssue({ kind: "MISSING_ACCOUNT", plaidItemId: params.plaidItemId ?? null, plaidAccountId: txn.account_id, detail: { stage: "investment-events", attemptId, externalEventId: txn.investment_transaction_id } }, client);
         continue;
       }
 
-      const instrumentId = await resolveInstrument(client, txn, securitiesById, faId, metrics, params.plaidItemId);
+      const instrumentId = await resolveInstrument(client, txn, securitiesById, faId, metrics, params.plaidItemId, attemptId);
       if (instrumentId && txn.security_id) {
         const sec = securitiesById[txn.security_id];
         if (sec) priceSecurityByInstrument.set(instrumentId, sec);
@@ -367,7 +375,7 @@ export async function ingestInvestmentEvents(client: PrismaClient, params: Inges
   // Late/corrected events that land on an already-reconstructed position rerun
   // that position's walk (bounded to the affected instruments). Flag-gated and
   // best-effort — a repair failure never fails ingestion.
-  await maybeRepairReconstructions(client, affected, params.now, params.plaidItemId);
+  await maybeRepairReconstructions(client, affected, params.now, params.plaidItemId, attemptId);
 
   // ── A8-2 same-day price capture hook ──────────────────────────────────────
   // Persist any defensibly dated close prices carried on this window's securities
@@ -399,6 +407,7 @@ async function maybeRepairReconstructions(
   affected: Map<string, { instrumentIds: Set<string>; cash: boolean }>,
   now: Date,
   plaidItemId?: string,
+  attemptId?: string,
 ): Promise<void> {
   if (!investmentReconstructionEnabled() || affected.size === 0) return;
   for (const [financialAccountId, a] of affected) {
@@ -411,7 +420,12 @@ async function maybeRepairReconstructions(
       });
     } catch (err) {
       console.warn(`[investment-events] reconstruction repair for account ${financialAccountId} failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-      await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: plaidItemId ?? null, detail: { stage: "reconstruction-repair", financialAccountId } }, client);
+      await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: plaidItemId ?? null, detail: {
+        stage: "reconstruction-repair", financialAccountId,
+        // PB-1 S1 — the bounded repair's actual subjects, so a resolver can ask
+        // for proof about THESE instruments (ids only; sorted for stable detail).
+        attemptId: attemptId ?? null, affectedInstrumentIds: [...a.instrumentIds].sort(), affectedCash: a.cash,
+      } }, client);
     }
   }
 }
@@ -440,6 +454,7 @@ async function resolveInstrument(
   faId: string,
   metrics: IngestMetrics,
   plaidItemId?: string,
+  attemptId?: string,
 ): Promise<string | null> {
   if (!txn.security_id) return null; // cash-only row — routes by currency, not an unresolved failure
   const sec = securitiesById[txn.security_id];
@@ -451,7 +466,7 @@ async function resolveInstrument(
   } catch (err) {
     metrics.unresolvedInstrument++;
     console.warn(`[investment-events] instrument resolve failed for security ${txn.security_id} (non-fatal): ${err instanceof Error ? err.message : err}`);
-    await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: plaidItemId ?? null, detail: { stage: "investment-events-instrument", securityId: txn.security_id } }, client);
+    await recordSyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", plaidItemId: plaidItemId ?? null, detail: { stage: "investment-events-instrument", attemptId: attemptId ?? null, securityId: txn.security_id } }, client);
     return null;
   }
 }
