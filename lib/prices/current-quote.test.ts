@@ -141,6 +141,8 @@ async function main() {
     })),
   };
   d.positionReconstruction = { findMany: async () => [] };
+  // ERC-20 HISTORY — the token day loader reads token licences when reconstructed rows exist (none here).
+  d.positionCoverage = { findMany: async () => [] };
   // TOKEN HOLDINGS (PR-A, review fix 1) — the native quote now reads the shared
   // COINGECKO budget before spending; an empty ledger is a full budget.
   d.apiUsageCounter = { findMany: async () => [] };

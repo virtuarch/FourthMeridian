@@ -126,8 +126,10 @@ console.log("D · required reasons + the operator-action envelope");
   check("the beta widget sends a reason with mode / status / revoke, and blocks confirm until one is chosen",
     (beta.match(/reason: reasonPayload\(reason\)/g) ?? []).length === 3 && (beta.match(/confirmDisabled=\{reasonPayload\(reason\) === null\}/g) ?? []).length === 3);
   const list = code("app/merchant-ops/MergeReviewList.tsx");
-  check("the merge review list sends the reason and disables both verdicts without one",
-    /reason: chosen/.test(list) && (list.match(/chosen === null/g) ?? []).length === 2);
+  // Owner review 2026-10-31: both verdicts confirm through ONE dialog that
+  // collects the reason, so the gate is the dialog's confirm (and decide() itself).
+  check("the merge review list sends the reason and refuses to confirm either verdict without one",
+    /reason: chosen/.test(list) && /confirmDisabled=\{chosen === null\}/.test(list) && /if \(!pending \|\| chosen === null\) return;/.test(list));
   check("the client reason-code copy equals OPERATOR_REASON_CODES",
     JSON.stringify(OPERATOR_REASON_FIELD_CODES) === JSON.stringify(OPERATOR_REASON_CODES));
   check("no reason is pre-selected in the shared field", /code: "", note: ""/.test(code("components/platform/widgets/OperatorReasonField.tsx")));

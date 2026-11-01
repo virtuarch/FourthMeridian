@@ -70,6 +70,19 @@ const READERS = [
   "lib/platform/growth/product-analytics-core.ts",
   "lib/platform/activity/activity.ts",
   "lib/platform/growth/growth.ts",
+  // PLATFORM SPACES 2.0 — the Growth acquisition reader + pure core (requesters
+  // are an md5 digest computed in SQL; ids are joins, never output).
+  "lib/platform/growth/acquisition.ts",
+  "lib/platform/growth/acquisition-core.ts",
+  // PLATFORM SPACES 2.0 — the Security analytics reader + core (GROUP BY in SQL: day, code, count).
+  "lib/platform/security/analytics.ts",
+  "lib/platform/security/analytics-core.ts",
+  // PLATFORM SPACES 2.0 — the Customer Success overview reader + core (counts; ids are joins only).
+  "lib/platform/customer/overview.ts",
+  "lib/platform/customer/overview-core.ts",
+  // PLATFORM SPACES 2.0 — the Merchant Operations overview reader + core (deployment-wide counts; no merchant names).
+  "lib/platform/merchant/overview.ts",
+  "lib/platform/merchant/overview-core.ts",
   // PLATFORM OPS PHASE 1 UX — the shared Policy Group catalogue reader (counts only).
   "lib/platform/policy-groups-read.ts",
 ];
@@ -92,6 +105,12 @@ const ROUTES = [
   "app/api/platform/platform-ops/ai-spend/route.ts",
   // BETA A1–A8 — the GROWTH_REVENUE analytics route (its gate is pinned below).
   "app/api/platform/growth-revenue/product-analytics/route.ts",
+  // PLATFORM SPACES 2.0 — the Growth acquisition route (GROWTH_REVENUE READ; gate pinned below).
+  "app/api/platform/growth-revenue/acquisition/route.ts",
+  // PLATFORM SPACES 2.0 — the Security analytics route (SECURITY_OPS READ; gate pinned below).
+  "app/api/platform/security-ops/analytics/route.ts",
+  "app/api/platform/customer-success/overview/route.ts",
+  "app/api/platform/merchant-ops/overview/route.ts",
   // PLATFORM OPS PHASE 1 UX — the Policy Group catalogue, PLATFORM_OPS READ (gate pinned in its route.test.ts).
   "app/api/platform/platform-ops/policy-groups/route.ts",
 ];
@@ -162,6 +181,62 @@ console.log("source · BETA — the product-analytics route is a GROWTH_REVENUE 
   check("the analytics reader selects no user relation (no identity is ever joined)", !/user:\s*\{\s*select/.test(reader));
   const dto = strip("lib/platform/growth/product-analytics-types.ts");
   check("the frozen DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName)\??\s*:/m.test(dto));
+}
+
+console.log("source · PLATFORM SPACES 2.0 — the acquisition route is a GROWTH_REVENUE READ gate; the reader never reads an address");
+{
+  const route = strip("app/api/platform/growth-revenue/acquisition/route.ts");
+  check("the acquisition route requires GROWTH_REVENUE READ and returns the error first",
+    /requirePlatformAccess\(\s*["']GROWTH_REVENUE["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the acquisition route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
+    !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+  const reader = strip("lib/platform/growth/acquisition.ts");
+  check("the acquisition reader reads through fm_system only", /systemDb/.test(reader) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(reader));
+  check("the acquisition reader digests the requester address in SQL and selects no address column",
+    /md5\(lower\(trim\("email"\)\)\)\s+AS\s+k/.test(reader) && !/SELECT[^;]*"email"\s*(,|FROM)/.test(reader));
+  check("the acquisition reader selects no name, username or user relation", !/\b(name|username)\s*:\s*true/.test(reader) && !/user:\s*\{\s*select/.test(reader));
+  const dto = strip("lib/platform/growth/acquisition-types.ts");
+  check("the acquisition DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName|requesterKey)\??\s*:/m.test(dto));
+}
+
+console.log("source · PLATFORM SPACES 2.0 — the Security analytics route is a SECURITY_OPS READ gate; the reader aggregates in SQL");
+{
+  const route = strip("app/api/platform/security-ops/analytics/route.ts");
+  check("the security analytics route requires SECURITY_OPS READ and returns the error first",
+    /requirePlatformAccess\(\s*["']SECURITY_OPS["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the security analytics route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
+    !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+  const reader = strip("lib/platform/security/analytics.ts");
+  check("the security reader reads through fm_system only", /systemDb/.test(reader) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(reader));
+  check("the security reader never reads the identifier, key, IP or user agent", !/"ipAddress"|"userAgent"|ipAddress:\s*true|userAgent:\s*true|->>\s*'?(identifier|key)'?|"identifier"|"key"\)/.test(reader));
+  check("the security reader only extracts reason / type / result codes from metadata", (reader.match(/byDay\([^)]*"(\w+)"/g) ?? []).every((m) => /"(reason|type|result)"/.test(m)));
+  const dto = strip("lib/platform/security/analytics-types.ts");
+  check("the security DTO declares no identity field", !/^\s*(userId|email|username|name|identifier|ipAddress|userAgent)\??\s*:/m.test(dto));
+}
+
+console.log("source · PLATFORM SPACES 2.0 — the Customer Success overview is a CUSTOMER_SUCCESS READ gate with an identity-free DTO");
+{
+  const route = strip("app/api/platform/customer-success/overview/route.ts");
+  check("the CS overview route requires CUSTOMER_SUCCESS READ and returns the error first",
+    /requirePlatformAccess\(\s*["']CUSTOMER_SUCCESS["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the CS overview route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
+    !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+  const reader = strip("lib/platform/customer/overview.ts");
+  check("the CS overview reader selects no name, username, institution or issue detail", !/\b(name|username|institutionName|detail)\s*:\s*true/.test(reader));
+  const dto = strip("lib/platform/customer/overview-types.ts");
+  check("the CS overview DTO declares no identity field", !/^\s*(userId|email|username|name|userIds)\??\s*:/m.test(dto));
+}
+
+console.log("source · PLATFORM SPACES 2.0 — the Merchant overview is a MERCHANT_OPS READ gate; counts only");
+{
+  const route = strip("app/api/platform/merchant-ops/overview/route.ts");
+  check("the merchant overview route requires MERCHANT_OPS READ and returns the error first",
+    /requirePlatformAccess\(\s*["']MERCHANT_OPS["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
+  check("the merchant overview route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
+    !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
+  const reader = strip("lib/platform/merchant/overview.ts");
+  check("the merchant reader selects no merchant name, key, alias text or transaction detail",
+    !/\b(displayName|canonicalKey|alias|name|merchant|amount|description)\s*:\s*true/.test(reader) && !/SELECT[^;]*"(displayName|canonicalKey|alias|amount|description)"/.test(reader));
 }
 
 console.log("runtime · builders emit no customer material even when fed it");

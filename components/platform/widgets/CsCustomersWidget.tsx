@@ -33,8 +33,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Users, RefreshCw, Loader2, ShieldCheck, Layers } from "lucide-react";
-import { PlatformWidgetCard, WidgetMessage, WidgetStat, fmtUtc, timeAgo, type PlatformSection } from "../widget-kit";
+import { RefreshCw, Loader2, ShieldCheck, Layers, Search, ChevronRight } from "lucide-react";
+import { Block, Surface } from "@/components/atlas/Surface";
+import { UtcStamp, WidgetMessage, fmtUtc, timeAgo, type PlatformSection } from "../widget-kit";
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
 import { RightPanel, PanelHeader, PanelContent, PanelFooter } from "@/components/atlas/panels";
 import type { CustomerListResponse } from "@/app/api/platform/customer-success/customers/route";
@@ -97,6 +98,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
   /** ONE instant for the list's relative times, captured at mount (a clock read during render is impure). */
   const [nowMs] = useState(() => Date.now());
+  /** < lg — the list opens on its first rows so the analytics below stay within reach. */
+  const [showAll, setShowAll] = useState(false);
 
   // Assignment forms
   const [policyGroup, setPolicyGroup] = useState<string>("");
@@ -193,47 +196,79 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     json({ action: detail.actions.deactivate.currently === "ACTIVE" ? "deactivate" : "reactivate", reason }));
 
   return (
-    <PlatformWidgetCard label={section.label} icon={Users} checkedAt={loadedAt}>
-      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); void loadList(search); }}>
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
-          className="w-full rounded-[var(--radius-sm)] border bg-transparent px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)]"
-          style={{ borderColor: "var(--border-hairline)" }} />
-        <button type="submit" className="rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
+    <Block id="cs-customer-list" label={section.label} className="min-w-0" hint={<LoadedStamp checkedAt={loadedAt} />}>
+      <Surface className="flex min-w-0 flex-1 flex-col gap-3 p-4 sm:p-5">
+      {/* PLATFORM SPACES 2.0 — compact search; the figures above the list live in the dashboard hero (no duplicate tiles). */}
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setShowAll(false); void loadList(search); }}>
+        <label className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:max-w-sm lg:min-h-8">
+          <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
+          <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
+            className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
+        </label>
+        <button type="submit" className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold lg:min-h-8" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
+        {/* Its own line below sm (it never squeezes the search field or widens the page). */}
+        {list && <span className="min-w-0 text-[11px] tabular-nums text-[var(--text-muted)] max-sm:basis-full sm:ml-auto sm:text-right" data-list-population>{listPopulation(list)}</span>}
       </form>
 
       {loading && <WidgetMessage loading />}
       {error && <WidgetMessage error={error} />}
       {!loading && !error && list && (
         <>
-          <div className="grid grid-cols-3 gap-2">
-            <WidgetStat value={list.total} label="Customers" />
-            <WidgetStat value={list.customers.filter((c) => c.connectionCount > 0).length} label="Connected" />
-            <WidgetStat value={list.customers.filter((c) => c.deactivatedAt).length} label="Deactivated" />
-          </div>
-          <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{ROLLUP_NOTE}</p>
           {list.customers.length === 0 ? <WidgetMessage empty="No customers match." /> : (
-            <ul className="-mx-1 divide-y divide-[var(--border-hairline)]">
-              {list.customers.map((c) => (
-                <li key={c.id}>
-                  <button type="button" onClick={() => select(c.id)}
-                    className="flex w-full items-center justify-between gap-2 px-1 py-2 text-left text-xs transition-colors hover:bg-[var(--surface-hover)]">
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
-                      <span className="truncate text-[11px] text-[var(--text-muted)]">
-                        {c.policyGroup}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"} · {c.cohorts.length ? c.cohorts.join(", ") : "no cohort"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
+            <>
+            <table className="w-full table-fixed text-xs max-lg:hidden" aria-label="Customers">
+              <thead className="border-b border-[var(--border-hairline)]">
+                <tr>
+                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-[30%]">Customer</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Onboarding</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Policy</th>
+                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-24">Connections</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-28">Last active</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-8"><span className="sr-only">Open</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border-hairline)]">
+                {list.customers.map((c) => (
+                  <tr key={c.id} onClick={() => select(c.id)} className="cursor-pointer transition-colors hover:bg-[var(--surface-hover)]">
+                    <td className="px-2 py-2.5 align-middle">
+                      <button type="button" onClick={(e) => { e.stopPropagation(); select(c.id); }} aria-haspopup="dialog" className="block max-w-full truncate text-left font-medium text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)]">{operatorDisplayName(c)}</button>
+                      <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
+                        {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => <span key={cell.key}>{i > 0 ? " · " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>)}
                       </span>
-                      {/* BETA — the per-user roll-up (W3 fields, optional until merged): every column word stays visible, an absent field is a dash. */}
-                      <span className="flex flex-wrap gap-x-2 text-[11px] tabular-nums text-[var(--text-muted)]">
-                        {rollupCells(c as CustomerRow, nowMs).map((cell, i) => (
-                          <span key={cell.key}>{i > 0 ? "· " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>
-                        ))}
+                    </td>
+                    <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
+                    <td className="px-2 py-2.5 align-middle text-[var(--text-secondary)]">
+                      <span className="block truncate" title={c.policyGroup}>{policyGroupName(c.policyGroup)}{c.overlay ? ` + ${c.overlay}` : ""}{c.policyAssigned ? "" : " (default)"}</span>
+                      <span className="block truncate text-[11px] text-[var(--text-muted)]">{c.cohorts.length ? c.cohorts.join(", ") : "no cohort"}</span>
+                    </td>
+                    <td className="px-2 py-2.5 align-middle tabular-nums text-[var(--text-secondary)]">{c.connectionCount}</td>
+                    <td className="px-2 py-2.5 align-middle tabular-nums" style={{ color: c.deactivatedAt ? "var(--text-faint)" : "var(--text-secondary)" }}>{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</td>
+                    <td className="px-2 py-2.5 align-middle text-[var(--text-faint)]"><ChevronRight size={12} aria-hidden /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {/* < lg — a clean two-line row: who, where they are, when last active.
+                Policy, cohorts and usage live in the customer's profile (tap). */}
+            <ul className="-mx-1 divide-y divide-[var(--border-hairline)] lg:hidden" aria-label="Customers">
+              {list.customers.slice(0, showAll ? undefined : MOBILE_ROWS).map((c) => (
+                <li key={c.id}>
+                  <button type="button" onClick={() => select(c.id)} aria-haspopup="dialog"
+                    className="flex min-h-11 w-full items-center justify-between gap-2 px-1 py-2 text-left text-xs transition-colors hover:bg-[var(--surface-hover)]">
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate font-medium text-[var(--text-primary)]">{operatorDisplayName(c)}</span>
+                      <span className="truncate text-[11px] text-[var(--text-muted)]">
+                        {c.funnelStage ?? "—"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
                       </span>
                     </span>
-                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : `active ${ago(c.lastActiveAt)}`}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</span>
                   </button>
                 </li>
               ))}
             </ul>
+            {list.customers.length > MOBILE_ROWS && (
+              <button type="button" onClick={() => setShowAll((v) => !v)} className="inline-flex min-h-11 items-center self-start text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:hidden">
+                {showAll ? "Show fewer" : `Show all ${list.customers.length}`}
+              </button>
+            )}
+            <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{ROLLUP_NOTE}</p>
+            </>
           )}
         </>
       )}
@@ -259,6 +294,15 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     {/* UI-009 — the instant every relative age in this panel is measured from. */}
                     <Row label="Detail checked" value={fmtUtc(detail.checkedAt)} />
                     <Row label="Sessions" value={String(detail.activity.activeSessions)} />
+                  </Section>
+
+                  {/* The list's per-customer roll-up (desktop column) — here for every width,
+                      so a phone keeps a path to it. Same cells, same estimate note. */}
+                  <Section title="Usage · 30 d">
+                    {rollupCells({ ...detail.rollup } as CustomerRollupFields, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell) => (
+                      <Row key={cell.key} label={cell.word} value={cell.value} />
+                    ))}
+                    <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{ROLLUP_NOTE}</p>
                   </Section>
 
                   <Section title="Cohort & policy">
@@ -447,8 +491,14 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
           </>
         )}
       </RightPanel>
-    </PlatformWidgetCard>
+      </Surface>
+    </Block>
   );
+}
+
+/** UI-009 — when the list was last read, in UTC (every refetch moves it). */
+function LoadedStamp({ checkedAt }: { checkedAt: string | null }) {
+  return <UtcStamp iso={checkedAt} label="Read" />;
 }
 
 function inviteEmailLabel(status: string | null): string {
@@ -491,4 +541,29 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="min-w-0 max-w-full break-words text-right text-[var(--text-primary)]">{value}</span>
     </div>
   );
+}
+
+/**
+ * The list's population in words. The list is EVERY account the search
+ * returns (deactivated ones and operators' own accounts included); the
+ * dashboard hero counts ACTIVE role-USER customers — so the line names both
+ * parts instead of one ambiguous "customers" figure.
+ */
+export function listPopulation(list: CustomerListResponse): string {
+  const rows = list.customers;
+  const deactivated = rows.filter((c) => c.deactivatedAt).length;
+  const activeCustomers = rows.filter((c) => !c.deactivatedAt && c.role === "USER").length;
+  const other = rows.length - deactivated - activeCustomers;
+  const parts = [`${activeCustomers} active customer${activeCustomers === 1 ? "" : "s"}`, deactivated ? `${deactivated} deactivated` : null, other ? `${other} admin` : null].filter(Boolean);
+  // Truncated: the breakdown describes the rows SHOWN, never the whole total beside it.
+  if (rows.length < list.total) return `showing ${rows.length} of ${list.total} accounts · of these ${parts.join(" · ")}`;
+  return `${list.total} account${list.total === 1 ? "" : "s"} · ${parts.join(" · ")}`;
+}
+
+/** Rows shown below lg before "Show all". */
+const MOBILE_ROWS = 5;
+
+/** A group's name from the code catalogue when it has one (a DB-only group shows its key). */
+function policyGroupName(key: string): string {
+  return (POLICY_GROUPS as Record<string, { label?: string } | undefined>)[key]?.label ?? key;
 }

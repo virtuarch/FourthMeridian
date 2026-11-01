@@ -121,7 +121,7 @@ function TokensCard({ trend, inv30, nowMs }: { trend: Fetched<AiUsageTrend>; inv
       <Surface className="flex-1 p-4 sm:p-5">
         {src.data ? (
           <>
-            <DayBars days={days} height={160} palette={TOKEN_PALETTE}
+            <DayBars days={days} height={160} palette={TOKEN_PALETTE} segmentLabels={{ succeeded: "prompt", other: "completion", failed: "failed" }}
               ariaLabel={series === "tokens" ? "Prompt and completion tokens per UTC day" : "Returned AI invocations per UTC day"}
               noun={series === "tokens" ? "token" : "invocation"} />
             <Caption>
@@ -186,7 +186,14 @@ export function AiCostsLeadSurface(p: AiCostsLeadSurfaceProps) {
   return (
     <div className="min-w-0 space-y-8 sm:space-y-10 max-lg:space-y-6!" data-ai-dashboard>
       {/* A — AI spend hero. */}
-      <HealthHero model={hero} />
+      <HealthHero model={{ ...hero, actions: {
+        ...(can("budget") ? { budget: { label: "Open budget & controls", onSelect: () => p.onOpenDrawer("budget"), dialog: true } } : {}),
+        ...(can("invocations") ? {
+          calls: { label: "Open the invocation log", onSelect: () => p.onOpenDrawer("invocations"), dialog: true },
+          errors: { label: "Open the invocation log", onSelect: () => p.onOpenDrawer("invocations"), dialog: true },
+        } : {}),
+        ...(can("ledger") ? { "per-call": { label: "Open the usage ledger", onSelect: () => p.onOpenDrawer("ledger"), dialog: true } } : {}),
+      } }} />
 
       {/* B — Daily spend (7) · Cost by surface (5). */}
       <div className="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">

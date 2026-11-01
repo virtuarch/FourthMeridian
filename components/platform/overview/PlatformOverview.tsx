@@ -97,7 +97,7 @@ function SecurityProbe({ report }: { report: Report }) {
   return null;
 }
 
-/** The areas with an Overview probe (MERCHANT_OPS has no summary route: its Space stays a doorway). */
+/** The areas with an Overview probe (MERCHANT_OPS has none here: its Space dashboard holds its figures; on this page it stays a doorway). */
 export const PROBED_AREAS = ["PLATFORM_OPS", "CUSTOMER_SUCCESS", "GROWTH_REVENUE", "SECURITY_OPS"] as const;
 
 /** Every granted, probed area starts LOADING on the first frame (no figure before an answer). */

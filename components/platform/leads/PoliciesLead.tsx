@@ -57,7 +57,7 @@ import type { PlatformAlertsResponse } from "@/app/api/platform/platform-ops/ale
 import type { AiCostControlsReadModel } from "@/lib/platform/ai/cost-controls.types";
 import type { OperationalControlsReadModel } from "@/lib/platform/policies/operational-controls.types";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
-import { Caption, ChartMessage, Doorway, Meter } from "./visual-kit";
+import { Caption, ChartMessage, Doorway, Meter, goToSection } from "./visual-kit";
 import { BetaReconciliationEntry } from "./BetaReconciliationEntry";
 import { GroupEditButtons, NewGroupButton, usePolicyGroupEditor, type PolicyEditActions } from "./PolicyGroupEditor";
 import { PolicyGroupHistory } from "./PolicyGroupHistory";
@@ -327,7 +327,17 @@ export function PoliciesLeadSurface(p: PoliciesLeadSurfaceProps) {
     <div className="min-w-0 space-y-8 sm:space-y-10 max-lg:space-y-6!" data-policies-dashboard>
       {/* A — Customer policies hero (+ the Attention doorway while anyone is exposed). */}
       <div className="min-w-0">
-        <HealthHero model={policiesHeroModel(p.groups)} />
+        <HealthHero model={{ ...policiesHeroModel(p.groups), actions: {
+          groups: { label: "Show the policy groups", onSelect: () => goToSection("policies-groups") },
+          // Only with customers to show: the attention list carries each one.
+          ...(p.groups.data && coverage(p.groups.data).unassigned > 0 ? {
+            unassigned: { label: "Open the affected customers in Attention", onSelect: () => p.onOpenWorkspace(ATTENTION_WORKSPACE) },
+          } : {}),
+          ...(p.groups.data && coverage(p.groups.data).unknown > 0 ? {
+            unknown: { label: "Open the affected customers in Attention", onSelect: () => p.onOpenWorkspace(ATTENTION_WORKSPACE) },
+          } : {}),
+          overlays: { label: "Show each group with its overlays", onSelect: () => goToSection("policies-groups") },
+        } }} />
         {(exposed > 0 || p.reconcileSlot) && (
           <div className="mt-2 flex flex-wrap items-center justify-end gap-x-4 gap-y-2 empty:hidden">
             {p.reconcileSlot}

@@ -101,6 +101,9 @@ import {
   ethWorkerConfig, orderEthCandidates, probeBudgetFor, stepProbeBudget, type EthBackfillCheckpoint, type EthBackfillWorkerConfig,
 } from "@/lib/crypto/eth-history-backfill.core";
 import type { EthBackfillStore, EthBackfillDeps, EthBackfillOutcome } from "@/lib/crypto/eth-history-backfill";
+import { planErc20History, runErc20HistoryPass, type Erc20HistoryPassDeps, type Erc20HistoryPassSummary } from "@/lib/crypto/erc20-history-pass";
+import { erc20HistoryConfig, type Erc20HistoryConfig } from "@/lib/crypto/erc20-history.core";
+import { SPL_PRICE_RUN_SEVERITY, type SplPriceRunStatus } from "@/lib/crypto/spl-history.core";
 import { effectiveDailyUsage, incrementalMeter, meterTotal, type IncrementalMeter, type MeterRecorder } from "@/lib/usage/provider-budget.core";
 import { DEFAULT_PRICE_GAP_MAX_INSTRUMENTS } from "@/lib/prices/price-gap.core";
 import type { PriceGapRun, RevaluationOwed, RevaluationRun } from "@/lib/prices/price-gap";
@@ -165,6 +168,36 @@ export interface SolBackfillJobSummary {
   btc?: BtcBackfillPassSummary;
   /** Ethereum's pass, when enabled and wired. */
   eth?: EthBackfillPassSummary;
+  /** ERC-20 token history's pass (lib/crypto/erc20-history-pass.ts) — part of Ethereum's phase. */
+  ethTokens?: Erc20HistoryPassSummary;
+  /** Re-review F4 — SPL historical price acquisition, when any wallet's stopped short (absent ⇒ none did). */
+  splPrices?: { status: Exclude<SplPriceRunStatus, "COMPLETE">; reason: string | null; mintsSkipped: number; wallets: number };
+  /**
+   * THE JOB'S OWN OUTCOME (re-review F4) — a SUMMARY field, read from
+   * `JobRun.summary.outcome` / `JobRun.summary.partialReasons` (Platform Ops can
+   * surface it later). Deliberately NOT the JobRun status: `lib/jobs/run.ts`
+   * `succeeded | failed` is a shared contract meaning "did the run crash", and a
+   * budget stop is by design, not a failure — the run still SUCCEEDS.
+   *
+   *   outcome "COMPLETE"  every historical token price run asked what it owed;
+   *   outcome "PARTIAL"   a token price run (SPL or ERC-20) stopped short: the
+   *                       CoinGecko token budget, an exhausted probe allowance,
+   *                       or the per-run token limit — the rest resumes later.
+   *   partialReasons      one entry per stop, `<SPL|ERC20>_PRICES_<STATUS>: <why>`
+   *                       (e.g. "SPL_PRICES_BUDGET_STOPPED: CoinGecko token budget
+   *                       reached; …"); empty when COMPLETE. Set on every return.
+   */
+  outcome?: "COMPLETE" | "PARTIAL";
+  partialReasons?: string[];
+}
+
+/** PURE (re-review F4) — the job's outcome from its summary: PARTIAL when any token price run stopped short. */
+export function solBackfillJobOutcome(s: Pick<SolBackfillJobSummary, "splPrices" | "ethTokens">): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
+  const reasons: string[] = [];
+  if (s.splPrices) reasons.push(`SPL_PRICES_${s.splPrices.status}: ${s.splPrices.reason ?? s.splPrices.status}`);
+  const erc = s.ethTokens?.prices;
+  if (erc && erc.status !== "COMPLETE") reasons.push(`ERC20_PRICES_${erc.status}: ${erc.reason ?? erc.status}`);
+  return { outcome: reasons.length > 0 ? "PARTIAL" : "COMPLETE", partialReasons: reasons };
 }
 
 export interface EthBackfillPassSummary {
@@ -267,6 +300,8 @@ export interface SolBackfillJobDeps {
   btc?: BtcBackfillJobDeps;
   /** Absent ⇒ no Ethereum pass. */
   eth?: EthBackfillJobDeps;
+  /** Absent ⇒ no ERC-20 token-history pass. */
+  ethTokens?: Erc20HistoryPassDeps;
 }
 
 /**
@@ -317,7 +352,7 @@ function addPriceGaps(summary: SolBackfillJobSummary, g: PriceGapRun): void {
   summary.priceGaps.deferred += g.decisions.filter((d) => d.kind === "DEFERRED_RUN_CAP").length;
 }
 
-export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; ethConfig?: EthBackfillWorkerConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
+export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfig; btcConfig?: BtcBackfillWorkerConfig; ethConfig?: EthBackfillWorkerConfig; erc20Config?: Erc20HistoryConfig; deps?: SolBackfillJobDeps } = {}): Promise<SolBackfillJobSummary> {
   const cfg = opts.config ?? workerConfig();
   const summary: SolBackfillJobSummary = {
     enabled: cfg.enabled, eligible: 0, walletsRun: 0, walletsSkippedLocked: 0, completed: 0, promoted: 0,
@@ -325,7 +360,7 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     requests: { total: 0 }, estimatedUnits: 0, dailyRequestsUsedBefore: 0, providerRequestsUsedBefore: null,
     dailyRequestCap: cfg.dailyRequestCap, priceGaps: { acquired: 0, inserted: 0, failures: 0, deferred: 0 }, holdersMarkedPending: 0,
     holdersFlagFailed: 0, revaluationsRederived: 0,
-    budgetMs: 0, stoppedBecause: "DISABLED", deferred: 0,
+    budgetMs: 0, stoppedBecause: "DISABLED", deferred: 0, outcome: "COMPLETE", partialReasons: [],
   };
   if (!cfg.enabled) return summary;
   const deps = opts.deps ?? await productionDeps();
@@ -358,7 +393,10 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
       { ...ethCfgIn, startReserveMs: Math.max(2_000, cfg.jobBudgetMs - PHASE_SETUP_MS) })
     : ethCfgIn;
   const ethPlan = deps.eth && ethCfg.enabled ? await planEth(deps.eth, start) : null;
-  const ethHasWork = !!ethPlan && ethPlan.work.length > 0;
+  // ERC-20 token history is part of Ethereum's phase: it runs after the native pass, on what is left of it.
+  const erc20Cfg = opts.erc20Config ?? erc20HistoryConfig();
+  const tokenPlan = deps.ethTokens && erc20Cfg.enabled ? await planErc20History(deps.ethTokens, erc20Cfg, day, deps.now()) : null;
+  const ethHasWork = (!!ethPlan && ethPlan.work.length > 0) || (!!tokenPlan && tokenPlan.work.length > 0);
   /** The deadline the CURRENT chain's pass plans to (lib/crypto/history-worker-schedule.core.ts). */
   let phaseDeadline = jobDeadline;
 
@@ -474,6 +512,8 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     summary.stoppedBecause = "NO_WORK";
     if (btcPlan) summary.btc = { ...btcPlan.summary, stoppedBecause: "NO_WORK" };
     if (ethPlan) summary.eth = { ...ethPlan.summary, dailyRequestCap: cfg.dailyRequestCap, stoppedBecause: "NO_WORK" };
+    if (tokenPlan) summary.ethTokens = { ...tokenPlan.summary, dailyRequestCap: cfg.dailyRequestCap };
+    Object.assign(summary, solBackfillJobOutcome(summary));
     return summary;
   }
 
@@ -546,6 +586,15 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
               beforeRequest: take, meter, requestBudget: allowance, now: deps.now } });
           summary.walletsRun++;
           await flushUsage();
+          // Re-review F4 — an SPL price run the token budget stopped is reported, never silent.
+          const sp = r.tokens?.prices;
+          if (sp && sp.status !== "COMPLETE") {
+            const prev = summary.splPrices;
+            // Worst wins across wallets (STEP_FAILED > BUDGET_STOPPED > ALLOWANCE_EXHAUSTED), as ERC-20's pass.
+            const worse = !prev || SPL_PRICE_RUN_SEVERITY[sp.status] > SPL_PRICE_RUN_SEVERITY[prev.status];
+            summary.splPrices = { status: worse ? sp.status : prev.status, reason: worse ? sp.reason : prev.reason,
+              mintsSkipped: (prev?.mintsSkipped ?? 0) + sp.mintsSkipped, wallets: (prev?.wallets ?? 0) + 1 };
+          }
           const o = r.backfill;
           if (o) {
             summary.signaturesProcessed += o.signaturesProcessed;
@@ -595,13 +644,20 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
   const withWork = new Set<HistoryChain>([...(solWork().length > 0 ? ["SOL" as const] : []), ...(btcHasWork ? ["BTC" as const] : []), ...(ethHasWork ? ["ETH" as const] : [])]);
   const order = chainOrder(rotation, withWork);
   const regenNeed = REGEN_RESERVE_MS + PHASE_SETUP_MS;
+  // N3 — ERC-20 token work rides the ETH phase AFTER the native pass: it gets its
+  // own slice (its start reserve, or a regeneration's when its first item is a
+  // PENDING one) on top of native's need, and native stops short of it — so a
+  // native backlog can no longer starve the token pass.
+  const tokenNeedMs = tokenPlan && tokenPlan.work.length > 0
+    ? Math.max(Math.max(erc20Cfg.startReserveMs, 2_000) + PHASE_SETUP_MS, tokenPlan.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0)
+    : 0;
   const needMs: Record<HistoryChain, number> = {
     SOL: Math.max(Math.max(cfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
       solFirstPending && deps.regenerationEnabled() ? regenNeed + (deps.acquirePriceGaps ? PRICE_GAP_RESERVE_MS : 0) : 0),
     BTC: Math.max(Math.max(btcCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
       btcPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0),
-    ETH: Math.max(Math.max(ethCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
-      ethPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0),
+    ETH: (tokenNeedMs > 0 && !(ethPlan && ethPlan.work.length > 0) ? 0 : Math.max(Math.max(ethCfg.startReserveMs, 2_000) + PHASE_SETUP_MS,
+      ethPlan?.work[0]?.kind === "PENDING" && deps.regenerationEnabled() ? regenNeed : 0)) + tokenNeedMs,
   };
   summary.schedule = { rotation, order: [...order], leaderShort: false };
   const runPhase = async (chain: HistoryChain, chainsLeft: number, endBy = jobDeadline) => {
@@ -610,13 +666,27 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     else if (chain === "BTC" && btcPlan && deps.btc) {
       summary.btc = await runBtcPass(deps, deps.btc, btcCfg, btcPlan, { start, jobDeadline: phaseDeadline, regenerateUnderLock });
       summary.deferred += summary.btc.deferred;
-    } else if (chain === "ETH" && ethPlan && deps.eth) {
-      summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
-        jobDeadline: phaseDeadline, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
-        usage: ethUsage, regenerateUnderLock,
-      });
-      summary.deferred += summary.eth.deferred;
+    } else if (chain === "ETH") {
+      if (ethPlan && deps.eth) {
+        // Native stops short of the token slice (never before now).
+        const nativeEnd = tokenNeedMs > 0 ? Math.max(deps.now(), phaseDeadline - tokenNeedMs) : phaseDeadline;
+        summary.eth = await runEthPass(deps, deps.eth, ethCfg, ethPlan, {
+          jobDeadline: nativeEnd, day, dailyRequestCap: cfg.dailyRequestCap, solCheckpointCalls: checkpointCalls, solRunCalls: total(),
+          usage: ethUsage, regenerateUnderLock,
+        });
+        summary.deferred += summary.eth.deferred;
+      }
+      await runTokenPass(phaseDeadline);
     }
+  };
+  /** ERC-20 token history (one isolated call; the pass owns its listing, budget and regeneration). */
+  const runTokenPass = async (endBy: number) => {
+    if (!tokenPlan || !deps.ethTokens || summary.ethTokens) return;
+    summary.ethTokens = await runErc20HistoryPass(tokenPlan, deps.ethTokens, erc20Cfg, {
+      jobDeadline: endBy, day, dailyRequestCap: cfg.dailyRequestCap, now: deps.now, claimLock: deps.claimLock, releaseLock: deps.releaseLock,
+      providerUsageToday: deps.providerUsageToday, regenerateUnderLock,
+    });
+    summary.deferred += summary.ethTokens.deferred;
   };
   const queue = [...order];
   if (queue.length > 0) {
@@ -655,9 +725,12 @@ export async function solHistoryBackfill(opts: { config?: SolBackfillWorkerConfi
     });
     summary.deferred += summary.eth.deferred;
   }
+  await runTokenPass(jobDeadline);
   summary.requests = { ...meter, total: total() }; // (Solana's pass set the same when it ran)
 
   await revalueOtherHolders();
+  Object.assign(summary, solBackfillJobOutcome(summary));
+  if (summary.outcome === "PARTIAL") console.warn(`[${SOL_BACKFILL_JOB}] PARTIAL — ${summary.partialReasons!.join(" | ")}`);
   return summary;
 }
 
@@ -948,6 +1021,7 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
     },
     btc: await productionBtcDeps(systemDb),
     eth: await productionEthDeps(systemDb),
+    ethTokens: (await import("@/lib/crypto/erc20-history.store")).prismaErc20HistoryPassDeps(systemDb),
   };
 }
 

@@ -9,6 +9,12 @@
  * merchant logic — Merchant Intelligence (getPendingMergeCandidates) owns
  * behaviour; this page only reads and hands the list to a small client component
  * that POSTs verdicts to /api/merchant-ops/decide.
+ *
+ * Layout (owner review, 2026-10-31): Back to Merchant Operations → purpose (what a
+ * candidate is, what Merge / Not the same do) → summary strip (pending count, by
+ * tier, access level) → candidate cards (evidence, Keep vs Absorb) → decisions in
+ * a confirm dialog with the required reason. The page sits outside the app shell,
+ * so its own Back link is the exit path at every width.
  */
 
 import { redirect } from "next/navigation";
@@ -24,6 +30,8 @@ import { OPERATOR_TOTP_ENROLMENT_PATH, isOperatorTotpRefusal, requirePlatformAcc
 import { LEVEL_RANK } from "@/lib/platform/policy";
 import { getPendingMergeCandidates } from "@/lib/transactions/merchant-merge-review";
 import { MergeReviewList } from "./MergeReviewList";
+import { EmptyReview, ReviewHeader, ReviewSummaryStrip } from "./ReviewChrome";
+import { summarize } from "./review-model";
 
 export const dynamic = "force-dynamic";
 
@@ -35,23 +43,14 @@ export default async function MerchantOpsReviewPage() {
   const canDecide = auth.grant === null || LEVEL_RANK[auth.grant.level] >= LEVEL_RANK.WRITE;
 
   const candidates = await getPendingMergeCandidates(db);
+  const summary = summarize(candidates);
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <h1 className="text-lg font-semibold">Merchant Merge Review</h1>
-      <p className="mt-1 text-sm text-gray-500">
-        {candidates.length === 0
-          ? "No pending merge candidates."
-          : `${candidates.length} pending candidate${candidates.length === 1 ? "" : "s"} — every merge is a human decision.`}
-      </p>
-      {!canDecide && (
-        <p className="mt-1 text-xs text-[var(--text-muted)]">
-          Read-only: merging or dismissing requires a Merchant Operations WRITE grant.
-        </p>
-      )}
-      <div className="mt-4">
-        <MergeReviewList candidates={candidates} canDecide={canDecide} />
-      </div>
+    <main className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-5 px-4 py-6 sm:px-6">
+      <ReviewHeader />
+      <ReviewSummaryStrip summary={summary} canDecide={canDecide} />
+      {/* Always mounted, so the outcome line survives the refresh that empties the list. */}
+      <MergeReviewList candidates={candidates} canDecide={canDecide} empty={<EmptyReview />} />
     </main>
   );
 }

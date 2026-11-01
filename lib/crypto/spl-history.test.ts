@@ -151,7 +151,7 @@ interface MemStore extends SplHistoryStore {
   priceCalls: Array<{ mint: string; fromISO: string; toISO: string }>;
   cursor(): string | null;
 }
-function memStore(initial: string | null, priced: ReadonlySet<string> = new Set()): MemStore {
+function memStore(initial: string | null, priced: ReadonlySet<string> = new Set(), priceStatus?: string): MemStore {
   let cursor = initial;
   const rows = new Map<string, Map<string, number>>();
   const coverage = new Map<string, ChainCoverage>();
@@ -175,7 +175,7 @@ function memStore(initial: string | null, priced: ReadonlySet<string> = new Set(
       coverage.set(m.mint, m.coverage);
     },
     async pricedMints(mints) { return new Set(mints.filter((m) => priced.has(m))); },
-    async acquirePrices(m) { priceCalls.push({ mint: m.mint, fromISO: m.fromISO, toISO: m.toISO }); return { inserted: 0, earliestISO: null }; },
+    async acquirePrices(m) { priceCalls.push({ mint: m.mint, fromISO: m.fromISO, toISO: m.toISO }); return { inserted: 0, earliestISO: null, ...(priceStatus ? { status: priceStatus } : {}) }; },
   };
 }
 
@@ -228,6 +228,12 @@ async function main() {
     check("the incoming transfer the owner never signed is in the history (account-indexed, 6.25 on Oct 6)", store.rows.get(USDC)?.get("2026-10-06") === 6.25, String(store.rows.get(USDC)?.get("2026-10-06")));
     check("the outcome reports rows and the earliest impacted day (snapshot regeneration input)", o.rowsWritten === 27 && o.impactedFromISO === "2026-10-02", `${o.rowsWritten} ${o.impactedFromISO}`);
     check("historical prices are requested for the PRICED mint over its licence", store.priceCalls.length === 1 && store.priceCalls[0].fromISO === "2026-10-02");
+    check("re-review F4: a price run that was not stopped reports COMPLETE", o.prices.status === "COMPLETE" && o.prices.reason === null && o.prices.mintsSkipped === 0, JSON.stringify(o.prices));
+    // Re-review F4 (SPL ≡ ERC-20) — the shared path's BUDGET status is never discarded.
+    const budgetStore = memStore(watchedCursor(), new Set([USDC]), "BUDGET");
+    const { o: ob } = await runOnce(c, budgetStore, { freshSource: "NATIVE" });
+    check("re-review F4: the token budget stopping SPL pricing ⇒ prices BUDGET_STOPPED with a reason (not silent)",
+      ob.prices.status === "BUDGET_STOPPED" && /budget/.test(ob.prices.reason ?? "") && ob.prices.mintsSkipped === 1 && ob.stoppedBecause === "DONE", JSON.stringify(ob.prices));
     // Request cost: 2 anchors + per account (1 sig page + 1 head page) + one getTransaction per distinct signature (cache).
     check("request cost is the anchor + one signature page per account + each transaction once", meter.getTokenAccountsByOwner === 2 && meter.getSignaturesForAddress === 2 && meter.getTransaction === 6, JSON.stringify(meter));
     const st = stateOf(store);
@@ -456,7 +462,9 @@ async function main() {
     check("native complete + every token COMPLETE + inventory proven ⇒ complete", walletHistoryComplete({ chain: "SOL", native: nativeDone, tokens: [full], tokenInventoryComplete: true }) === true);
     check("a token verified only from a later start (PARTIAL) ⇒ NOT complete", walletHistoryComplete({ chain: "SOL", native: nativeDone, tokens: [partial], tokenInventoryComplete: true }) === false);
     check("native NOT complete ⇒ never complete, whatever the tokens", walletHistoryComplete({ chain: "SOL", native: { ...nativeDone, ...facetFromCoverage(null) }, tokens: [full], tokenInventoryComplete: true }) === false);
-    check("ETH (no token history wired here) stays incomplete", walletHistoryComplete({ chain: "ETH", native: nativeDone, tokens: [], tokenInventoryComplete: true }) === false);
+    // ERC-20 history (PR #122) wires ETH through the same inventory rule: unproven ⇒ incomplete.
+    check("ETH without a proven token inventory stays incomplete", walletHistoryComplete({ chain: "ETH", native: nativeDone, tokens: [] }) === false
+      && walletHistoryComplete({ chain: "ETH", native: nativeDone, tokens: [], tokenInventoryComplete: false }) === false);
     check("inventory from a cursor: absent / foreign ⇒ false", splInventoryCompleteFromCursor(null) === false && splInventoryCompleteFromCursor('{"kind":"btc"}') === false && splInventoryCompleteFromCursor(nativeCursor()) === false);
   }
 
@@ -929,6 +937,85 @@ async function main() {
     const ph = meta.priceHistory as { toISO: string };
     check("price marker records the last day actually RETURNED, not the day asked", out.inserted === 2 && ph.toISO === "2026-10-10", JSON.stringify(ph));
     check("…and the quote marker written concurrently is preserved (re-read before write)", (meta.quote as { attemptedAt: string }).attemptedAt === "2026-10-28T09:00:00Z");
+  }
+
+  // ══ FIRST-TIME QUOTE PROBE (parity with ERC-20): a SOLD mint reaches the price path ══
+  console.log("first-time quote probe: sold mints");
+  {
+    const c = new Chain();
+    const ata = "AtaBonkSold11111111111111111111111111111111";
+    c.tx("2026-10-02", 9, [OWNER, ata], c.create(ata, BONK, { decimals: 5 }));
+    c.tx("2026-10-03", 9, [OTHER, ata], mv(ata, 10_000_000));
+    c.tx("2026-10-09", 9, [OWNER, ata, OTHER], mv(ata, -10_000_000)); // sold everything: no balance now, no marker from capture
+    const sold = (probe: string, status = "THIN_OR_UNPRICED") => {
+      const st = memStore(watchedCursor(), new Set()); // BONK is NOT in pricedMints
+      st.acquirePrices = async (m) => { st.priceCalls.push({ mint: m.mint, fromISO: m.fromISO, toISO: m.toISO }); return { inserted: 0, earliestISO: null, status, probe }; };
+      return st;
+    };
+    const s1 = sold("PROBED");
+    const { o: o1 } = await runOnce(c, s1, { freshSource: "NATIVE" });
+    check("probe: an UNPRICED licensed (sold) mint is still handed to the price path (the store's probe decides)",
+      s1.priceCalls.length === 1 && s1.priceCalls[0].mint === BONK && o1.prices.status === "COMPLETE" && o1.prices.mintsSkipped === 0, JSON.stringify({ c: s1.priceCalls, p: o1.prices }));
+    const s2 = sold("REFUSED");
+    const { o: o2 } = await runOnce(c, s2, { freshSource: "NATIVE" });
+    check("probe: a REFUSED probe ⇒ prices ALLOWANCE_EXHAUSTED with a reason and the mint counted (never silent)",
+      o2.prices.status === "ALLOWANCE_EXHAUSTED" && /allowance/.test(o2.prices.reason ?? "") && o2.prices.mintsSkipped === 1, JSON.stringify(o2.prices));
+    check("probe: …and it never marks balance history incomplete (the mint commits COMPLETE, rows = truth)",
+      o2.mintsCommitted.some((x) => x.mint === BONK && x.status === "COMPLETE") && s2.coverage.get(BONK)?.kind === "COMPLETE" && rowsMatchTruth(c, s2, BONK, 5).ok && o2.stoppedBecause === "DONE",
+      JSON.stringify({ m: o2.mintsCommitted, cov: s2.coverage.get(BONK) }));
+    const s3 = sold("REFUSED", "BUDGET");
+    const { o: o3 } = await runOnce(c, s3, { freshSource: "NATIVE" });
+    check("probe: a refused probe AND a budget stop ⇒ BUDGET_STOPPED (worst wins), the mint counted once",
+      o3.prices.status === "BUDGET_STOPPED" && o3.prices.mintsSkipped === 1, JSON.stringify(o3.prices));
+    // N1 — a throw inside the price/probe step (alias / held-span read) is swallowed, but REPORTED.
+    const s4 = memStore(watchedCursor(), new Set());
+    s4.acquirePrices = async () => { throw new Error("held-span read failed"); };
+    const { o: o4 } = await runOnce(c, s4, { freshSource: "NATIVE" });
+    check("probe N1: a failed price/probe step ⇒ prices STEP_FAILED with a reason, mint counted — never COMPLETE",
+      o4.prices.status === "STEP_FAILED" && /step failed.*held-span read failed/.test(o4.prices.reason ?? "") && o4.prices.mintsSkipped === 1, JSON.stringify(o4.prices));
+    check("probe N1: …and the run itself does not fail (mint COMPLETE, DONE)",
+      o4.stoppedBecause === "DONE" && o4.failure === null && o4.mintsCommitted.some((x) => x.mint === BONK && x.status === "COMPLETE"), JSON.stringify({ s: o4.stoppedBecause, f: o4.failure }));
+    // Two sold mints: the order of failure and budget stop must not matter, and a budget stop is final for the run.
+    const c2 = new Chain();
+    const a1 = "AtaBonkSold22222222222222222222222222222222", a2 = "AtaUsdcSold22222222222222222222222222222222";
+    c2.tx("2026-10-02", 9, [OWNER, a1], c2.create(a1, BONK, { decimals: 5 }));
+    c2.tx("2026-10-02", 10, [OWNER, a2], c2.create(a2, USDC));
+    c2.tx("2026-10-03", 9, [OTHER, a1], mv(a1, 10_000_000));
+    c2.tx("2026-10-03", 10, [OTHER, a2], mv(a2, 10_000_000));
+    c2.tx("2026-10-09", 9, [OWNER, a1, OTHER], mv(a1, -10_000_000));
+    c2.tx("2026-10-09", 10, [OWNER, a2, OTHER], mv(a2, -10_000_000));
+    const seq = (answers: Array<"THROW" | "BUDGET" | "OK">) => {
+      const st = memStore(watchedCursor(), new Set());
+      let n = 0;
+      st.acquirePrices = async (m) => {
+        st.priceCalls.push({ mint: m.mint, fromISO: m.fromISO, toISO: m.toISO });
+        const a = answers[n++];
+        if (a === "THROW") throw new Error("alias read failed");
+        return { inserted: 0, earliestISO: null, status: a === "BUDGET" ? "BUDGET" : "THIN_OR_UNPRICED", probe: "NOT_NEEDED" };
+      };
+      return st;
+    };
+    const s5 = seq(["BUDGET", "OK"]);
+    const { o: o5 } = await runOnce(c2, s5, { freshSource: "NATIVE" });
+    check("probe N1: after a budget stop the next mint is not asked (counted skipped)",
+      s5.priceCalls.length === 1 && o5.prices.status === "BUDGET_STOPPED" && o5.prices.mintsSkipped === 2, JSON.stringify({ c: s5.priceCalls.length, p: o5.prices }));
+    const s6 = seq(["THROW", "BUDGET"]);
+    const { o: o6 } = await runOnce(c2, s6, { freshSource: "NATIVE" });
+    check("probe N1: a failure then a budget stop ⇒ STEP_FAILED (worst wins), both mints counted",
+      s6.priceCalls.length === 2 && o6.prices.status === "STEP_FAILED" && o6.prices.mintsSkipped === 2, JSON.stringify({ c: s6.priceCalls.length, p: o6.prices }));
+    // A third sold mint: after THROW then BUDGET (status STEP_FAILED), the budget stop must still be final.
+    const a3 = "AtaSpamSold22222222222222222222222222222222";
+    c2.tx("2026-10-02", 11, [OWNER, a3], c2.create(a3, SPAM));
+    c2.tx("2026-10-03", 11, [OTHER, a3], mv(a3, 10_000_000));
+    c2.tx("2026-10-09", 11, [OWNER, a3, OTHER], mv(a3, -10_000_000));
+    const s8 = seq(["THROW", "BUDGET", "OK"]);
+    const { o: o8 } = await runOnce(c2, s8, { freshSource: "NATIVE" });
+    check("probe N1: failure, then budget stop ⇒ the third mint is NOT asked (the stop is a flag, not the status)",
+      s8.priceCalls.length === 2 && o8.prices.status === "STEP_FAILED" && o8.prices.mintsSkipped === 3, JSON.stringify({ c: s8.priceCalls.length, p: o8.prices }));
+    const s7 = seq(["BUDGET", "THROW", "OK"]);
+    const { o: o7 } = await runOnce(c2, s7, { freshSource: "NATIVE" });
+    check("probe N1: a budget stop is final even when the status is worse (no further mint asked)",
+      s7.priceCalls.length === 1 && o7.prices.status === "BUDGET_STOPPED" && o7.prices.mintsSkipped === 3, JSON.stringify({ c: s7.priceCalls.length, p: o7.prices }));
   }
 
   console.log(`\n${passes} passed, ${failures} failed`);
