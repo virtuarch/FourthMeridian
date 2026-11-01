@@ -20,6 +20,8 @@ export const CUSTOMER_LIST_KEY = "cs_customers";
 export const INCIDENTS_WORKSPACE = "platform-incidents";
 
 const n = (v: number) => v.toLocaleString("en-US");
+/** S2 — a count from a capped read is a floor: "≥N" (the active-incident scan's "+" pattern, spelled out). */
+export const atLeast = (v: number, floor: boolean) => `${floor ? "≥" : ""}${n(v)}`;
 const hhmm = (iso: string) => `Checked ${new Date(iso).toISOString().slice(11, 16)} UTC`;
 const reason = (f: Fetched<unknown>, what: string) => (f.loading ? `Reading ${what}…` : `${what} unavailable${f.error ? ` — ${f.error}` : ""}`);
 
@@ -38,7 +40,7 @@ export function csKpis(f: Fetched<CsOverviewResponse>): Kpi[] {
   const connected = connectedCount(o);
   return [
     { key: "customers", label: "Customers", value: n(o.customers.active), sub: `${n(o.customers.deactivated)} deactivated` },
-    { key: "help", label: "Need help", value: n(o.attention.customers), sub: o.customers.active ? `of ${n(o.customers.active)} customers` : "no customers",
+    { key: "help", label: "Need help", value: atLeast(o.attention.customers, o.attention.floor === true), sub: o.customers.active ? `of ${n(o.customers.active)} customers` : "no customers",
       tone: o.attention.customers > 0 ? "warn" : undefined },
     { key: "connected", label: "First connection", value: o.customers.active ? `${Math.round((connected / o.customers.active) * 100)}%` : "—",
       sub: `${n(connected)} of ${n(o.customers.active)} · strict funnel` },
@@ -52,7 +54,7 @@ export function csHero(f: Fetched<CsOverviewResponse>): HeroModel {
     title: "Customer Success",
     dot: false,
     provenance: "MEASURED",
-    verdict: { word: !o ? "—" : o.attention.customers === 0 ? "No one needs help" : `${n(o.attention.customers)} need${o.attention.customers === 1 ? "s" : ""} help`, tone: "muted" },
+    verdict: { word: !o ? "—" : o.attention.customers === 0 ? "No one needs help" : `${atLeast(o.attention.customers, o.attention.floor === true)} need${o.attention.customers === 1 && !o.attention.floor ? "s" : ""} help`, tone: "muted" },
     checked: o ? hhmm(o.checkedAt) : null,
     caption: o ? `of ${n(o.customers.active)} active customers · reasons below, the list beneath` : reason(f, "customer figures"),
     kpis: csKpis(f),

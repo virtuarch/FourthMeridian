@@ -22,11 +22,12 @@
 import { ABANDONMENT_HORIZON_DAYS, FUNNEL_STAGE_ORDER } from "@/lib/platform/growth/product-analytics-core";
 import { funnelThrough, type CohortFunnelFacts } from "@/lib/platform/growth/acquisition-core";
 import type { AttentionFilter, AttentionKey } from "./overview-types";
+import { ATTENTION_KEYS } from "./attention-keys";
+
+// The keys and the one filter parser live in the import-free attention-keys.ts (the client uses them too).
+export { ATTENTION_KEYS, parseAttentionFilter } from "./attention-keys";
 
 const DAY_MS = 86_400_000;
-
-/** Display order of the reasons (the panel's rows and a row's chips). */
-export const ATTENTION_KEYS: readonly AttentionKey[] = ["reconnect", "incident", "policy", "stalled"];
 
 export const ATTENTION_LABELS: Readonly<Record<AttentionKey, string>> = {
   reconnect: "A connection needs reconnecting",
@@ -36,6 +37,12 @@ export const ATTENTION_LABELS: Readonly<Record<AttentionKey, string>> = {
   // names a group which is unknown, has an invalid stored definition, or is
   // retired (archived — no longer offered) is a reason to help.
   policy: "Assigned policy group is unknown, invalid or retired",
+  // S2 ruling (2026-11-02) — an UNASSIGNED customer needs help only while the
+  // fail-closed switch is ENFORCED: then they are restricted right now. A
+  // separate key (not `policy`) because it is a different fix (assign a group
+  // vs. correct a broken one), it has its own label, and it mirrors the Platform
+  // Ops alert's own UNASSIGNED / UNKNOWN_POLICY_GROUP split.
+  unassigned: "No policy group assigned (fail-closed: access restricted)",
   stalled: `Stalled before first connection, ${ABANDONMENT_HORIZON_DAYS}+ days after registering`,
 };
 
@@ -44,15 +51,9 @@ export const ATTENTION_SHORT: Readonly<Record<AttentionKey, string>> = {
   reconnect: "Reconnect",
   incident: "Sync incident",
   policy: "Policy group",
+  unassigned: "No policy group",
   stalled: "Stalled",
 };
-
-/** The query value, parsed: null = absent / empty (no filter); undefined = not a reason (the route refuses it). */
-export function parseAttentionFilter(raw: string | null | undefined): AttentionFilter | null | undefined {
-  if (raw === null || raw === undefined || raw.trim() === "") return null;
-  const v = raw.trim();
-  return v === "any" || (ATTENTION_KEYS as readonly string[]).includes(v) ? (v as AttentionFilter) : undefined;
-}
 
 export interface AttentionFacts {
   /** Active (not deactivated) role-USER accounts — the only population that can need help. */
@@ -64,6 +65,15 @@ export interface AttentionFacts {
   incidentOwners: readonly string[];
   /** Customers whose assignment names an unknown, invalid or retired policy group (never the unassigned default). */
   policyIssueOwners: readonly string[];
+  /**
+   * Customers with NO assignment, and whether the fail-closed switch is ENFORCED
+   * (the resolver's own mode, entitlementLoadOptions().failClosed). They are a
+   * reason only when enforced. Optional so a caller without them flags nobody.
+   */
+  unassignedOwners?: readonly string[];
+  policyFailClosed?: boolean;
+  /** True when a fleet read hit its row cap: every set is then a floor. */
+  floor?: boolean;
 }
 
 export interface AttentionFold {
@@ -71,6 +81,10 @@ export interface AttentionFold {
   sets: Readonly<Record<AttentionKey, ReadonlySet<string>>>;
   /** Active customers with at least one reason. */
   union: ReadonlySet<string>;
+  /** The reasons that apply in this mode, in display order (`unassigned` only while fail-closed is enforced). */
+  keys: readonly AttentionKey[];
+  /** Every count is a floor ("≥N") — a fleet read hit its cap. */
+  floor: boolean;
   /** The funnel restricted to active customers, and its strict fold (the overview's stage distribution reuses both). */
   activeFunnel: CohortFunnelFacts;
   through: ReadonlyMap<string, number>;
@@ -90,16 +104,18 @@ export function foldAttention(facts: AttentionFacts, now: Date): AttentionFold {
     reconnect: only(facts.reconnectOwners),
     incident: only(facts.incidentOwners),
     policy: only(facts.policyIssueOwners),
+    unassigned: facts.policyFailClosed === true ? only(facts.unassignedOwners ?? []) : new Set<string>(),
     stalled: only(stalled),
   };
+  const keys = ATTENTION_KEYS.filter((k) => k !== "unassigned" || facts.policyFailClosed === true);
   const union = new Set<string>();
-  for (const k of ATTENTION_KEYS) for (const id of sets[k]) union.add(id);
-  return { sets, union, activeFunnel, through };
+  for (const k of keys) for (const id of sets[k]) union.add(id);
+  return { sets, union, keys, floor: facts.floor === true, activeFunnel, through };
 }
 
 /** One customer's reasons, in display order ([] = needs no help, or not an active customer). */
 export function attentionOf(fold: AttentionFold, userId: string): AttentionKey[] {
-  return ATTENTION_KEYS.filter((k) => fold.sets[k].has(userId));
+  return fold.keys.filter((k) => fold.sets[k].has(userId));
 }
 
 /** The customers a filter selects: one reason's set, or the union for "any". */

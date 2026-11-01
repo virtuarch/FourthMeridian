@@ -35,6 +35,13 @@
  * (`attention`, from the same fold the dashboard counts with), and a "Needs
  * help" filter asks the route for `attention=<key|any>`. The dashboard's
  * reason rows set the same filter through cs-attention-link.ts.
+ *
+ * S2 ruling — the filter is mirrored into the Space URL as `?attention=` through
+ * the ONE URL seam (useSpaceUrl), REPLACE-written (a filter refines the current
+ * entry, like a customer Space's view change — never a Back/Forward step), so a
+ * filtered list survives a refresh and is linkable. The mount reads it; the
+ * select, "Show all accounts" and the dashboard event all go through
+ * `applyAttention`, the one setter.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -52,7 +59,8 @@ import { OPERATOR_REASON_CODES } from "@/lib/audit";
 import { ROLLUP_NOTE, rollupCells, type CustomerRollupFields } from "./cs-rollup-view";
 import { allowanceEffectiveText, allowanceOverrideBody, validateAllowanceOverrideInput, type AllowanceEffectiveView } from "./ai-cost-controls-view";
 import type { AttentionFilter, AttentionKey } from "@/lib/platform/customer/overview-types";
-import { CS_ATTENTION_FILTER_EVENT, attentionFilterOf } from "../leads/cs-attention-link";
+import { CS_ATTENTION_FILTER_EVENT, attentionFilterOf, attentionFromSearch, attentionUrlUpdate } from "../leads/cs-attention-link";
+import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 
 /**
  * AI COST CONTROLS — the effective allowance as CustomerPolicyView carries it
@@ -91,6 +99,7 @@ export const CS_READ_ONLY_LINE =
 export function CsCustomersWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
   // UI-001 — descriptive only (the server gate decides); absent ⇒ READ (fail-safe).
   const canWrite = access?.canWrite === true;
+  const spaceUrl = useSpaceUrl();
   const [list, setList] = useState<CustomerListResponse | null>(null);
   const [search, setSearch] = useState("");
   /** PB-4 — the "Needs help" filter (null = every account). */
@@ -144,20 +153,40 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     finally { setDetailLoading(false); }
   }, []);
 
-  useEffect(() => { let alive = true; (async () => { if (alive) await loadList("", null); })(); return () => { alive = false; }; }, [loadList]);
-  // PB-4 — the dashboard's "Who needs help, and why" rows: show exactly that population (search cleared,
+  // S2 — the first read honours `?attention=` (a refresh or a shared link opens the filtered list).
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const f = attentionFromSearch(spaceUrl.getSearch());
+      if (!alive) return;
+      setAttention(f);
+      await loadList("", f);
+    })();
+    return () => { alive = false; };
+  }, [loadList, spaceUrl]);
+  /** THE one filter setter: state, the URL mirror (REPLACE — a refinement, never a history step), the read. */
+  const applyAttention = useCallback((f: AttentionFilter | null, q: string) => {
+    setAttention(f); setShowAll(false);
+    spaceUrl.commit(attentionUrlUpdate(f), { history: "replace" });
+    void loadList(q, f);
+  }, [loadList, spaceUrl]);
+  // Back/Forward into an entry with another `?attention=` — rebuild from the URL (the commit then finds it in sync).
+  useEffect(() => spaceUrl.subscribe(() => {
+    const f = attentionFromSearch(spaceUrl.getSearch());
+    setAttention(f); void loadList("", f);
+  }), [loadList, spaceUrl]);
+  // PB-4 — the dashboard's "Who needs help, and why" rows only SET the filter (search cleared,
   // so the list's total is the count the operator clicked).
   useEffect(() => {
     const onFilter = (e: Event) => {
       const f = attentionFilterOf(e);
       if (!f) return;
-      setAttention(f); setSearch(""); setShowAll(false);
-      void loadList("", f);
+      setSearch("");
+      applyAttention(f, "");
     };
     window.addEventListener(CS_ATTENTION_FILTER_EVENT, onFilter);
     return () => window.removeEventListener(CS_ATTENTION_FILTER_EVENT, onFilter);
-  }, [loadList]);
-  const applyAttention = (f: AttentionFilter | null) => { setAttention(f); setShowAll(false); void loadList(search, f); };
+  }, [applyAttention]);
   useEffect(() => {
     if (!selectedId) return;
     let alive = true; (async () => { if (alive) await loadDetail(selectedId); })(); return () => { alive = false; };
@@ -230,7 +259,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
         </label>
         <button type="submit" className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold lg:min-h-8" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
         {/* PB-4 — the "Needs help" filter; the reasons are named by the server (the same ones the dashboard counts). */}
-        <select value={attention ?? ""} onChange={(e) => applyAttention(e.target.value === "" ? null : (e.target.value as AttentionFilter))}
+        <select value={attention ?? ""} onChange={(e) => applyAttention(e.target.value === "" ? null : (e.target.value as AttentionFilter), search)}
           aria-label="Needs help filter" data-attention-filter
           className="min-h-11 min-w-0 max-w-full rounded-[var(--radius-sm)] border bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8" style={{ borderColor: "var(--border-hairline)" }}>
           <option value="">All accounts</option>
@@ -243,8 +272,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
 
       {attention && (
         <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-[var(--text-secondary)]" data-attention-active>
-          <span>{`Showing customers who need help: ${attention === "any" ? "any reason" : (list?.attentionReasons.find((r) => r.key === attention)?.label ?? attention)}`}</span>
-          <button type="button" onClick={() => applyAttention(null)} className="inline-flex min-h-11 items-center font-medium text-[var(--text-primary)] underline-offset-2 hover:underline lg:min-h-6">Show all accounts</button>
+          <span>{`Showing customers who need help: ${attention === "any" ? "any reason" : (list?.attentionReasons.find((r) => r.key === attention)?.label ?? attention)}${list?.attentionFloor ? " · at least these (read cap reached)" : ""}`}</span>
+          <button type="button" onClick={() => applyAttention(null, search)} className="inline-flex min-h-11 items-center font-medium text-[var(--text-primary)] underline-offset-2 hover:underline lg:min-h-6">Show all accounts</button>
         </p>
       )}
       {loading && <WidgetMessage loading />}

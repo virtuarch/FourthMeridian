@@ -33,7 +33,7 @@ import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-c
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
 import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
 import { projectActivity, projectRollup, type CustomerRollup } from "./customer-core";
-import { ATTENTION_KEYS, ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, idsForAttention } from "./attention-core";
+import { ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, idsForAttention, type AttentionFold } from "./attention-core";
 import { loadAttention } from "./attention";
 import type { AttentionFilter, AttentionKey } from "./overview-types";
 
@@ -56,11 +56,13 @@ export interface CustomerList {
   customers: CustomerListRow[];
   /** PB-4 — the filter this page was read with (null = none). */
   attention: AttentionFilter | null;
-  /** PB-4 — the reasons, named by the server (the list's chips and filter options). */
+  /** PB-4 — the reasons that apply now, named by the server (the list's chips and filter options). */
   attentionReasons: { key: AttentionKey; label: string; short: string }[];
+  /** S2 — true when the attention read hit its row cap: the filtered population is a floor ("≥N"). */
+  attentionFloor: boolean;
 }
 
-const ATTENTION_REASONS = ATTENTION_KEYS.map((key) => ({ key, label: ATTENTION_LABELS[key], short: ATTENTION_SHORT[key] }));
+const reasonsOf = (fold: AttentionFold) => fold.keys.map((key) => ({ key, label: ATTENTION_LABELS[key], short: ATTENTION_SHORT[key] }));
 
 /** The id tail of an opaque `user …abc123` reference (or a bare 6+ character token), else null. */
 export function opaqueRefTail(search: string): string | null {
@@ -104,7 +106,7 @@ export async function listCustomers(
     }),
   ]);
   const ids = users.map((u) => u.id);
-  if (ids.length === 0) return { total, customers: [], attention: filter, attentionReasons: ATTENTION_REASONS };
+  if (ids.length === 0) return { total, customers: [], attention: filter, attentionReasons: reasonsOf(att.fold), attentionFloor: att.fold.floor };
 
   const since = new Date(now.getTime() - ROLLUP_WINDOW_DAYS * 86_400_000);
   const [
@@ -157,7 +159,8 @@ export async function listCustomers(
   return {
     total,
     attention: filter,
-    attentionReasons: ATTENTION_REASONS,
+    attentionReasons: reasonsOf(att.fold),
+    attentionFloor: att.fold.floor,
     customers: users.map((u) => {
       const a = assignBy.get(u.id);
       const act = projectActivity({ lastSessionActiveAt: sessBy.get(u.id) ?? null, lastLoginAt: loginBy.get(u.id) ?? null, activeSessions: 0 });

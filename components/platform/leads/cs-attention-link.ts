@@ -15,6 +15,15 @@
  */
 
 import type { AttentionFilter } from "@/lib/platform/customer/overview-types";
+import { parseAttentionFilter } from "@/lib/platform/customer/attention-keys";
+
+/**
+ * S2 ruling — the Customers list mirrors its filter into the Space URL as
+ * `?attention=` (REPLACE: a filter refines the current entry, like a customer
+ * Space's view change — never a Back/Forward step), so a filtered list survives
+ * a refresh and is linkable. The event only SETS that state.
+ */
+export const CS_ATTENTION_PARAM = "attention";
 
 export const CS_ATTENTION_FILTER_EVENT = "fm:cs-attention-filter";
 
@@ -26,6 +35,15 @@ export function requestCustomerAttentionFilter(filter: AttentionFilter): void {
 
 /** The filter a received event carries, or null when it is not one (a stray or malformed event). */
 export function attentionFilterOf(e: Event): AttentionFilter | null {
-  const d = (e as CustomEvent<unknown>).detail;
-  return d === "any" || d === "reconnect" || d === "incident" || d === "policy" || d === "stalled" ? d : null;
+  return parseAttentionFilter((e as CustomEvent<unknown>).detail) ?? null;
+}
+
+/** The filter a `?attention=` value names (the SAME parser the route uses); anything else ⇒ no filter. */
+export function attentionFromSearch(search: string): AttentionFilter | null {
+  return parseAttentionFilter(new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get(CS_ATTENTION_PARAM)) ?? null;
+}
+
+/** The URL update for a filter: null deletes the param (the unfiltered list keeps a clean URL). */
+export function attentionUrlUpdate(filter: AttentionFilter | null): Record<string, string | null> {
+  return { [CS_ATTENTION_PARAM]: filter };
 }

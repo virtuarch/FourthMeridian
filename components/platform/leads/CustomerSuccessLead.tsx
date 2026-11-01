@@ -42,7 +42,7 @@ import { ShareBars } from "../charts/ShareBars";
 import { cohortLayout } from "../charts/heatmap-model";
 import { ONBOARDING_SHORT, cohortCellText, describeCohortCell } from "./growth-model";
 import {
-  CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, attentionBars, csHero, healthItems, incidentBars, stageBars,
+  CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, atLeast, attentionBars, csHero, healthItems, incidentBars, stageBars,
   type CsWindow,
 } from "./customer-success-model";
 import type { ReactNode } from "react";
@@ -104,10 +104,11 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
                   <ShareBars items={attentionBars(o)} ariaLabel="Active customers needing help, by reason" noun="customer"
                     denominator={`of ${n(o.customers.active)} active customers · one customer can have several reasons`}
                     {...(showWho ? { onSelect: (key: string) => showWho(key as AttentionFilter), selectLabel: (b: { label: string; count: number }) => `Show the ${n(b.count)} customer${b.count === 1 ? "" : "s"}: ${b.label}` } : {})} />
+                  {o.attention.floor && <Caption>{"Counts are at least (≥) — a fleet read reached its row cap"}</Caption>}
                   {showWho && o.attention.customers > 0 && (
                     <button type="button" onClick={() => showWho("any")} data-attention-any
                       className="mt-2 inline-flex min-h-11 items-center self-start text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
-                      {`Show all ${n(o.attention.customers)} who need help in the list`}
+                      {`Show all ${atLeast(o.attention.customers, o.attention.floor === true)} who need help in the list`}
                     </button>
                   )}
                 </>
