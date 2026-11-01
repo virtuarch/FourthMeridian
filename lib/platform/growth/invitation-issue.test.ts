@@ -507,7 +507,7 @@ async function main() {
       const e = await extend(live.id as string, { validityDays: 5, reason: REASON });
       t.check(`${lifecycle}: extend → 409, expiry unchanged`, e.status === 409 && e.body.code === "BETA_NOT_ACCEPTING"
         && (row({ id: live.id }).inviteExpiresAt as Date).getTime() === (live.inviteExpiresAt as Date).getTime(), e.body);
-      t.check(`${lifecycle}: no email, no issuance or extension audit`, capturedEmails().filter((m) => m.to.endsWith("example.test") && m.to.includes(lifecycle)).length === 0
+      t.check(`${lifecycle}: no email, no issuance or extension audit`, ["p", "d", "r"].every((k) => capturedEmails().filter((m) => m.to.toLowerCase() === `${k}-${lifecycle}@example.test`.toLowerCase()).length === 0)
         && audits("BETA_ACCESS_APPROVED").length === 0 && audits("BETA_INVITATION_CREATED").length === 0
         && audits("BETA_INVITATION_RESENT").length === 0 && audits("BETA_INVITATION_EXTENDED").length === 0);
     }
@@ -523,7 +523,16 @@ async function main() {
     }
     const u = fake.seed("BetaAccessRequest", { email: "unknown@example.test", status: "PENDING" });
     const ua = await approve(u.id as string);
-    t.check("no Beta group (UNKNOWN) → approve 409 BETA_NOT_ACCEPTING", ua.status === 409 && ua.body.code === "BETA_NOT_ACCEPTING" && untouched(u.id, "PENDING"), ua.body);
+    t.check("no Beta group (UNKNOWN) → approve 409 BETA_NOT_ACCEPTING, no email, no audit", ua.status === 409 && ua.body.code === "BETA_NOT_ACCEPTING" && untouched(u.id, "PENDING")
+      && sentTo("unknown@example.test").length === 0 && audits("BETA_ACCESS_APPROVED").length === 0, ua.body);
+
+    // A DB catalogue with OTHER groups but no Beta row ⇒ UNKNOWN ⇒ closed.
+    fake.seed("PolicyGroup", { key: "SOME_OTHER_GROUP", label: "Other", description: "", isDefault: false, builtIn: false, currentVersion: 1, lifecycle: "ACTIVE", costFrozen: false, endedTransition: null });
+    fake.seed("PolicyGroupVersion", { groupKey: "SOME_OTHER_GROUP", version: 1, values: {}, label: "Other", changeSummary: { kind: "SEEDED", changes: [] }, reasonCode: "POLICY_ROLLOUT" });
+    C.invalidatePolicyGroupCatalogue();
+    const ob = await approve(u.id as string);
+    t.check("other DB groups but no Beta row → approve 409 BETA_NOT_ACCEPTING, no email, no audit", ob.status === 409 && ob.body.code === "BETA_NOT_ACCEPTING"
+      && untouched(u.id, "PENDING") && sentTo("unknown@example.test").length === 0 && audits("BETA_ACCESS_APPROVED").length === 0, ob.body);
 
     // The seam: UNKNOWN and a throwing read are closed; ACTIVE issues.
     await world();
