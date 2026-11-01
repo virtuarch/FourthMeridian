@@ -69,6 +69,8 @@ const REASON_LABEL: Record<string, string> = {
 const SOURCE_TONE: Record<string, string> = {
   POLICY: "var(--text-secondary)", POLICY_DEFAULT: "var(--text-muted)", OVERLAY: "var(--accent-warning)", CEILING: "var(--accent-positive)",
   USER_OVERRIDE: "var(--accent-warning)", PLATFORM_SETTING: "var(--text-secondary)",
+  // FAIL CLOSED (owner ruling, 2026-10-30) — a missing/invalid assignment's restricted value.
+  FAIL_CLOSED: "var(--accent-negative)",
 };
 
 function fmtValue(v: boolean | number): string { return typeof v === "boolean" ? (v ? "on" : "off") : String(v); }
@@ -261,7 +263,11 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
 
                   <Section title="Cohort & policy">
                     <Row label="Cohorts" value={detail.cohorts.length ? detail.cohorts.map((c) => `${c.label} (${c.source.toLowerCase()}, ${ago(c.joinedAt)})`).join("; ") : "none recorded"} />
-                    <Row label="Policy group" value={`${detail.policy.policyGroupLabel}${detail.policy.assigned ? "" : " — default, no assignment recorded"}`} />
+                    <Row label="Policy group" value={`${detail.policy.policyGroupLabel}${detail.policy.assigned || detail.policy.failClosed ? "" : " — default, no assignment recorded"}`} />
+                    {detail.policy.failClosed && <Row label="Fail closed" value={detail.policy.failClosedReason === "UNASSIGNED" ? "No assignment recorded — assign a policy group below to restore the plan."
+                      : detail.policy.failClosedReason === "INVALID_POLICY_GROUP" ? "The assigned group's stored definition is unusable — fix the group in Policies or assign another below."
+                      : detail.policy.failClosedReason === "CATALOGUE_UNAVAILABLE" ? "Policy-group definitions could not be read — restricted until they can (no action needed here)."
+                      : "The assigned key is not a policy group — assign a valid one below to restore the plan."} />}
                     {detail.policy.unknownPolicyGroup && <Row label="Assigned key unknown" value={detail.policy.unknownPolicyGroup} />}
                     <Row label="Overlay" value={detail.policy.overlayLabel ?? "none"} />
                     <ul className="mt-1 flex flex-col gap-1">
@@ -282,7 +288,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Change policy</p>
                       <label className="flex items-center justify-between gap-2"><span className="text-[var(--text-secondary)]">Group</span>
                         <select value={policyGroup} onChange={(e) => setPolicyGroup(e.target.value)} className="rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]" style={{ borderColor: "var(--border-hairline)" }}>
-                          {Object.values(POLICY_GROUPS).map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+                          {/* POLICY EDITOR — the server's assignable list (code + valid, non-archived DB groups); the code catalogue if absent. */}
+                          {(detail.assignablePolicyGroups ?? Object.values(POLICY_GROUPS)).map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
                         </select></label>
                       <label className="flex items-center justify-between gap-2"><span className="text-[var(--text-secondary)]">Overlay</span>
                         <select value={overlay} onChange={(e) => setOverlay(e.target.value)} className="rounded border bg-transparent px-2 py-1 text-xs text-[var(--text-primary)]" style={{ borderColor: "var(--border-hairline)" }}>

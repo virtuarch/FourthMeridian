@@ -24,6 +24,9 @@ import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { detailAccountLabel } from "@/lib/platform/incidents/account-label";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { entitlementLoadOptions } from "@/lib/entitlements/consume";
+import { assignableGroups } from "@/lib/entitlements/policy-groups";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 import { staleWindowMs } from "@/lib/connections/health";
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
@@ -53,6 +56,12 @@ export interface CustomerDetail {
   identity: CustomerIdentity;
   cohorts: CustomerCohortView[];
   policy: CustomerPolicyView;
+  /**
+   * POLICY EDITOR — the groups Customer Success may ASSIGN now (code groups and
+   * DB groups that are valid and not archived), default first. The assignment
+   * write re-checks; this only drives the picker.
+   */
+  assignablePolicyGroups: { key: string; label: string; isDefault: boolean }[];
   lifecycle: LifecycleView;
   spaces: CustomerSpaceView[];
   activity: ActivityView;
@@ -80,7 +89,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   if (!user) return null;
 
   const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, plaid, wallets, policies, manualAssets, lastEngagements, firstAiTurn, firstBriefView] = await Promise.all([
-    loadEffectiveEntitlements(client, userId),
+    loadEffectiveEntitlements(client, userId, entitlementLoadOptions()),
     client.customerCohort.findMany({ where: { userId }, orderBy: { joinedAt: "asc" }, select: { cohort: true, joinedAt: true, source: true } }),
     client.betaAccessRequest.findUnique({ where: { email: user.email },
       select: { id: true, status: true, createdAt: true, decidedAt: true, invitedAt: true, inviteExpiresAt: true, redeemedAt: true } }),
@@ -166,6 +175,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     ...connectionActions.filter((a) => !seen.has(a.id) && actionTouchesItems(a, itemSet)),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, OPERATOR_ACTIONS).map(projectOperatorAction);
 
+  const catalogue = await loadPolicyGroupCatalogue();
   const inviteMeta = (inviteAudit?.metadata ?? null) as { emailStatus?: unknown } | null;
   const connected = firstConnectedAt(plaid, wallets, manualAssets);
   const lastEngagedAt = lastEngagements.reduce<Date | null>((best, r) => (!best || r.at > best ? r.at : best), null);
@@ -173,7 +183,8 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   return {
     identity: projectIdentity(user),
     cohorts: projectCohorts(cohorts),
-    policy: projectPolicy(entitlements),
+    policy: projectPolicy(entitlements, catalogue),
+    assignablePolicyGroups: assignableGroups(catalogue),
     lifecycle: projectLifecycle({
       request, requestCount: events.length,
       firstSource: (events[0]?.source as Record<string, unknown> | null) ?? null,

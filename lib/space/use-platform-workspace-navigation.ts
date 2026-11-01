@@ -4,9 +4,10 @@
  * lib/space/use-platform-workspace-navigation.ts  (UX-P1 Change A)
  *
  * THE PLATFORM SPACE'S NAVIGATION AUTHORITY — the Platform counterpart of
- * use-space-navigation.ts, deliberately smaller: a Platform Space has ONE
- * navigation axis (which workspace is open: Overview · Jobs · Policies …) and no
- * views, lenses or time slice beneath it.
+ * use-space-navigation.ts, deliberately smaller: a Platform Space has the
+ * workspace axis (Operations · Providers · AI & Costs · Policies …) and, since
+ * PLATFORM OPS PHASE 1 UX, an optional VIEW axis beneath it (`?view=<id>`,
+ * Operations › Jobs) — no lenses and no time slice.
  *
  * Before this hook the open workspace was a `useState` cell inside the host:
  * no deep link, no Back/Forward, and a reload reset the operator to Overview.
@@ -31,16 +32,37 @@
  * Validation is the ONE shared validator both sides use
  * (`resolveSelectedWorkspaceKey`, lib/space/mount-context.ts): an unknown id
  * degrades to the area default, never to a workspace that does not exist.
+ *
+ * VIEWS (PLATFORM OPS PHASE 1 UX) follow the same rules on their own param:
+ *   • the DEFAULT (first) view writes `null` — `?view=` appears only for a
+ *     non-default view;
+ *   • a user view change is a PUSH, exactly like a workspace change (owner
+ *     brief: Back/Forward walk views as they walk workspaces). This DELIBERATELY
+ *     differs from a customer Space's views (REPLACE): a Platform view is a
+ *     former workspace (Jobs, Pipeline), so it keeps the history it had;
+ *   • switching workspace resets the view to the destination's view, or the
+ *     default; an unknown view id falls back to the default
+ *     (`resolvePlatformViewId`, shared with the server's first paint);
+ *   • a retired workspace id that became a view (`?workspace=platform-jobs`)
+ *     opens that view and canonicalizes in place.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { buildSpaceUrl, readSpaceParam } from "@/lib/space/space-url";
 import { resolveSelectedWorkspaceKey, type MountWorkspaceSummary } from "@/lib/space/mount-context";
-import { canonicalPlatformWorkspaceId } from "@/lib/platform/workspaces";
+import {
+  canonicalPlatformWorkspaceId,
+  parsePlatformDestination,
+  resolvePlatformViewId,
+  resolveRequestedPlatformView,
+} from "@/lib/platform/workspaces";
 
 /** The Space-scoped param carrying the open Platform workspace. */
 export const PLATFORM_WORKSPACE_PARAM = "workspace";
+
+/** The Space-scoped param carrying the open view of that workspace (non-default only). */
+export const PLATFORM_VIEW_PARAM = "view";
 
 /**
  * The Platform default workspace id. Mirrors the server resolver's default
@@ -57,58 +79,95 @@ const PLATFORM_ROUTE_PREFIX = "/dashboard/platform/";
  * The canonical deep link for a Platform workspace — what the sidebar row's
  * href carries and what the URL writer commits. The default workspace is the
  * bare area URL; every other workspace appends `?workspace=<id>` through the
- * shared serializer.
+ * shared serializer. `viewId` is written as given — callers pass a NON-default
+ * view only (the default view is the bare workspace link).
  */
-export function platformWorkspaceHref(area: string, workspaceId: string): string {
+export function platformWorkspaceHref(area: string, workspaceId: string, viewId?: string | null): string {
   return buildSpaceUrl(`${PLATFORM_ROUTE_PREFIX}${area}`, "", {
     [PLATFORM_WORKSPACE_PARAM]: workspaceId === PLATFORM_DEFAULT_WORKSPACE_ID ? null : workspaceId,
+    [PLATFORM_VIEW_PARAM]: viewId ?? null,
   });
 }
+
+/** Stable "no views anywhere" map (an area without views, e.g. Security). */
+const NO_VIEWS: Readonly<Record<string, readonly string[]>> = {};
 
 export interface PlatformWorkspaceNavigationInput {
   /** The contract's workspace projection (SpaceMountContext.workspaces.available). */
   available: readonly MountWorkspaceSummary[];
   /** The server-resolved first-paint selection (SpaceMountContext.workspaces.selectedKey). */
   selectedKey: string;
+  /** workspaceId → ordered view ids (first = default); workspaces without views
+   *  are absent (lib/platform/workspaces.ts `platformAreaViewIds`). Must be
+   *  referentially stable. Absent ⇒ no workspace has views. */
+  viewIds?: Readonly<Record<string, readonly string[]>>;
+  /** The server-resolved first-paint view (null/absent ⇒ the default view). */
+  selectedView?: string | null;
 }
 
 export interface PlatformWorkspaceNavigation {
   /** The open workspace id — always one of `available` (or the default). */
   activeTab: string;
-  /** USER navigation: rail pill, sidebar row, Overview doorway. Declares PUSH. */
+  /** The open view of that workspace — one of its view ids, or null when it has none. */
+  activeView: string | null;
+  /** USER navigation: rail pill, sidebar row, Overview doorway. Declares PUSH.
+   *  Takes any destination id (workspace, view target, or retired alias); a
+   *  destination without a view opens the workspace's DEFAULT view. */
   setActiveTab: (id: string) => void;
+  /** USER navigation within the open workspace (the view control). Declares PUSH. */
+  setActiveView: (viewId: string) => void;
 }
+
+interface NavState { tab: string; view: string | null }
 
 export function usePlatformWorkspaceNavigation({
   available,
   selectedKey,
+  viewIds = NO_VIEWS,
+  selectedView = null,
 }: PlatformWorkspaceNavigationInput): PlatformWorkspaceNavigation {
   // The ONE serializer + Back/Forward listener (SD-0A).
   const spaceUrl = useSpaceUrl();
 
-  // First paint = the server's resolution of the same URL, so hydration never
-  // diverges; everything after mount is URL-driven.
-  const [activeTab, setActiveTabState] = useState<string>(selectedKey);
-
   // ── HISTORY INTENT — declared by the entry point, never inferred ────────────
   const historyIntent = useRef<"push" | "replace">("replace");
-  const setActiveTab = useCallback((id: string) => {
-    setActiveTabState((prev) => {
-      if (prev !== id) historyIntent.current = "push";
-      return id;
+
+  // First paint = the server's resolution of the same URL, so hydration never
+  // diverges; everything after mount is URL-driven.
+  const [state, setStateRaw] = useState<NavState>(() => ({
+    tab: selectedKey,
+    view: resolvePlatformViewId(viewIds[selectedKey], selectedView),
+  }));
+  /** Set only on a real change, so an in-sync rebuild never re-renders or re-writes. */
+  const setState = useCallback((next: NavState, intent: "push" | "replace") => {
+    setStateRaw((prev) => {
+      if (prev.tab === next.tab && prev.view === next.view) return prev;
+      historyIntent.current = intent;
+      return next;
     });
   }, []);
 
+  const setActiveTab = useCallback((id: string) => {
+    const { workspaceId, viewId } = parsePlatformDestination(id);
+    // Switching workspace RESETS the view: the destination's own view, else the default.
+    setState({ tab: workspaceId, view: resolvePlatformViewId(viewIds[workspaceId], viewId) }, "push");
+  }, [setState, viewIds]);
+  const setActiveView = useCallback((viewId: string) => {
+    setStateRaw((prev) => {
+      const view = resolvePlatformViewId(viewIds[prev.tab], viewId);
+      if (view === prev.view) return prev;
+      historyIntent.current = "push";
+      return { tab: prev.tab, view };
+    });
+  }, [viewIds]);
+
   // The ONE validator the server used (unknown ⇒ default, never a ghost id).
-  const resolveFromUrl = useCallback(
-    () =>
-      resolveSelectedWorkspaceKey(
-        available,
-        canonicalPlatformWorkspaceId(readSpaceParam(spaceUrl.getSearch(), PLATFORM_WORKSPACE_PARAM)),
-        PLATFORM_DEFAULT_WORKSPACE_ID,
-      ),
-    [available, spaceUrl],
-  );
+  const resolveFromUrl = useCallback((): NavState => {
+    const search = spaceUrl.getSearch();
+    const requested = readSpaceParam(search, PLATFORM_WORKSPACE_PARAM);
+    const tab = resolveSelectedWorkspaceKey(available, canonicalPlatformWorkspaceId(requested), PLATFORM_DEFAULT_WORKSPACE_ID);
+    return { tab, view: resolveRequestedPlatformView(viewIds[tab], tab, requested, readSpaceParam(search, PLATFORM_VIEW_PARAM)) };
+  }, [available, spaceUrl, viewIds]);
 
   // ── URL READ: hydration (post-mount, SSR-safe) + Back/Forward ───────────────
   //    The URL is the authority on traversal: state is rebuilt FROM it with the
@@ -116,25 +175,28 @@ export function usePlatformWorkspaceNavigation({
   //    writes nothing — Back/Forward never creates or rewrites an entry.
   useEffect(() => {
     historyIntent.current = "replace";
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setActiveTabState(resolveFromUrl());
+    setState(resolveFromUrl(), "replace");
     return spaceUrl.subscribe(() => {
       historyIntent.current = "replace";
-      setActiveTabState(resolveFromUrl());
+      setState(resolveFromUrl(), "replace");
     });
-  }, [spaceUrl, resolveFromUrl]);
+  }, [spaceUrl, resolveFromUrl, setState]);
 
   // ── THE URL writer — one history write per state change, with the declared
-  //    intent; the default workspace deletes the key (clean canonical URL).
-  //    Unrelated params are preserved by the core.
+  //    intent; the default workspace and the default view delete their keys
+  //    (clean canonical URL). Unrelated params are preserved by the core.
   useEffect(() => {
     const history = historyIntent.current;
     historyIntent.current = "replace";
+    const defaultView = viewIds[state.tab]?.[0] ?? null;
     spaceUrl.commit(
-      { [PLATFORM_WORKSPACE_PARAM]: activeTab === PLATFORM_DEFAULT_WORKSPACE_ID ? null : activeTab },
+      {
+        [PLATFORM_WORKSPACE_PARAM]: state.tab === PLATFORM_DEFAULT_WORKSPACE_ID ? null : state.tab,
+        [PLATFORM_VIEW_PARAM]: state.view && state.view !== defaultView ? state.view : null,
+      },
       { history },
     );
-  }, [activeTab, spaceUrl]);
+  }, [state, spaceUrl, viewIds]);
 
-  return { activeTab, setActiveTab };
+  return { activeTab: state.tab, activeView: state.view, setActiveTab, setActiveView };
 }

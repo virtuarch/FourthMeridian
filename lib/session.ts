@@ -313,7 +313,11 @@ export async function requireFreshUser(
   // P1b — re-judge the enrolment gate on the requirement just read.
   if (totpSetupPending({ ...user, requireTotpSetup: live.facts.requireTotpSetup }, opts)) return [null, forbidden()];
 
-  return [user, null];
+  // PLATFORM-SEC-1 — return the role and enrolment state just re-read, not the
+  // ones served from the 30 s cache: a fresh caller (requireFreshPlatformAccess's
+  // break-glass branch included) must never act on a demoted role. Same rule
+  // requireFreshSystemAdmin already applies.
+  return [{ ...user, role: live.facts.role as SessionUser["role"], requireTotpSetup: live.facts.requireTotpSetup }, null];
 }
 
 // ── requireSystemAdmin ────────────────────────────────────────────────────────

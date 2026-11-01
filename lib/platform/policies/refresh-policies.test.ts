@@ -168,10 +168,12 @@ async function main(): Promise<void> {
     // toggles are buttons; the reason and note come from the shared kit.
     check("the AI Cost Controls panel bounds its threshold input from the read model and adds no select or form of its own",
       (panel.match(/<input/g) ?? []).length === 1 && /min=\{view\.bounds/.test(panel) && /max=\{view\.bounds/.test(panel) && !/<select/.test(panel));
-    check("the Policies surface talks only to the policies, job-cadence, ai-cost-controls and operational-controls routes",
+    // PLATFORM OPS PHASE 1 UX — re-ruled: the "groups" view adds ONE read-only
+    // route, the Policy Group catalogue (PLATFORM_OPS READ, GET only).
+    check("the Policies surface talks only to the policies, job-cadence, ai-cost-controls, operational-controls and policy-groups routes",
       ((widget + panel + kit).match(/\/api\/platform\/platform-ops\/[a-z-]+/g) ?? []).every((u) =>
         u === "/api/platform/platform-ops/policies" || u === "/api/platform/platform-ops/job-cadence" || u === "/api/platform/platform-ops/ai-cost-controls"
-          || u === "/api/platform/platform-ops/operational-controls"));
+          || u === "/api/platform/platform-ops/operational-controls" || u === "/api/platform/platform-ops/policy-groups"));
   }
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

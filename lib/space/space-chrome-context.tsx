@@ -108,6 +108,13 @@ export interface SpaceChromeIdentity {
    *  then rendered as a warning rather than a footnote. */
   freshnessWarn?: boolean;
   shared?: boolean;
+  /**
+   * Platform Ops visual it2 — a platform Space's access level as a chip word
+   * ("Control"). On the platform axis the sidebar's Space block then reads
+   * "Workspaces" + this chip instead of repeating the name and meta line.
+   * Finance Spaces never set it.
+   */
+  accessChip?: string;
 }
 
 /** The identity half of Space mode, published by SpaceDashboard. */

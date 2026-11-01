@@ -52,6 +52,19 @@ export async function hasActivePlatformGrants(userId: string): Promise<boolean> 
 }
 
 /** The Platform Spaces the viewer's ACTIVE grants reach, in registry order. */
+/**
+ * SEC-PLAT-1 — the caller's own second-factor state (their own row; read as the
+ * user). The directory lists only the caller's own areas, but with operator MFA
+ * enforced an un-enrolled operator is sent to enrolment from here too, rather
+ * than to a page whose every card the shared guard would refuse.
+ */
+export async function operatorHasTotp(userId: string): Promise<boolean> {
+  const row = await withTenantDb(userId, (tx) =>
+    tx.user.findUnique({ where: { id: userId }, select: { totpEnabled: true } }),
+  );
+  return row?.totpEnabled === true;
+}
+
 export async function loadPlatformDirectory(userId: string): Promise<PlatformDirectoryRow[]> {
   return withTenantDb(userId, async (tx) => {
     const grants = await tx.platformGrant.findMany({

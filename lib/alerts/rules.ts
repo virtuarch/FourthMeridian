@@ -34,6 +34,8 @@
  *   sync-incident-critical  an ACTIVE critical sync incident — canonical
  *                        financial data unpersisted behind a held cursor —
  *                        one breach per Item (OBS-004, 2026-10-22)          (LIVE)
+ *   policy-assignment-invalid  a customer has a missing or invalid policy-group
+ *                        assignment — one breach per customer (opaque ref)  (LIVE)
  *   quota-low            a provider's remaining API quota is low         (DORMANT)
  *
  * sync-incident-critical (OBS-004, pre-beta audit) exists because no rule read
@@ -70,6 +72,15 @@
  * running. The dedupe keys keep the `<rule>:<fleet|user|unpriced>:<day>` family,
  * so suppress-while-open (20 h) is unchanged.
  *
+ * policy-assignment-invalid (owner ruling, 2026-10-30): "missing or invalid
+ * customer policy-group assignments fail closed" needs an actionable operator
+ * alert identifying the affected assignment. It reads the policy-assignment
+ * authority (lib/platform/policy-assignment-health.ts — the same read as the
+ * Attention item). Critical while POLICY_ASSIGNMENT_FAIL_CLOSED=enforce (the
+ * customer is being refused paid features); warning while the switch is off
+ * (the exposure, before it bites). One breach per customer keyed on the opaque
+ * reference, plus one `:unlisted` breach for any beyond the read's cap.
+ *
  * ── Dormant rules (future-safe, not recreated) ───────────────────────────────
  * `quota-low` is a first-class rule KIND but has NO authority to consume yet:
  * FX provider quota (OXR /usage.json) is owned by a sibling slice (OPS-5 S3,
@@ -95,6 +106,7 @@ export type AlertRuleKind =
   | "ai-spend-fleet"
   | "ai-spend-user"
   | "sync-incident"
+  | "policy-assignment"
   | "quota-low";
 
 /** Two levels only — a solo operator's pager does not need more (alert fatigue
@@ -210,6 +222,16 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     description:
       "An ACTIVE sync incident of critical severity — canonical financial data was not persisted and the provider cursor is held (TRANSACTION_PERSISTENCE_FAILED and its legacy shapes). One breach per Plaid Item (an opaque reference; never an institution or a customer), so a second Item's incident is never silenced by the first. Reads the incident projection (lib/platform/incidents/projections.ts) whose state and severity come from the sync-issue semantic authority; never re-derives either.",
     authority: "sync-incidents",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "policy-assignment-invalid",
+    kind: "policy-assignment",
+    title: "Customer policy assignment missing or invalid",
+    description:
+      "A customer account has no policy-group assignment, or its assignment names a key the catalogue does not define. Raised (critical) only while POLICY_ASSIGNMENT_FAIL_CLOSED=enforce, when the customer fails closed (new AI, manual refresh and new connections are refused); while the switch is off nothing is refused and the exposure shows as a warning in Platform Ops › Attention instead of an alert. One breach per customer, named by an opaque reference only; fix it in Customer Success by assigning a valid policy group — access recovers on the next request. Reads the policy-assignment authority (lib/platform/policy-assignment-health.ts); never writes an assignment.",
+    authority: "policy-assignments",
     live: true,
     defaultEnabled: true,
   },

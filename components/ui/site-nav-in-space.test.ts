@@ -211,8 +211,12 @@ console.log("G. Platform context (UX-P2 Phase B → P-1): granted areas lead, on
   check("directory: the exit is ONE real link to the launcher — the Spaces destination's own route",
     /<nav aria-label="Exit"[^>]*><a [^>]*href="\/dashboard\/spaces"/.test(dir) &&
       (dir.match(/<nav aria-label="Exit"/g) ?? []).length === 1 && text(dir).includes("Personal Spaces"));
-  check("directory: no site destination is offered (P-1) — only the way back to Personal Spaces",
-    hrefs(dir).join() === "/dashboard/spaces", hrefs(dir).join());
+  // R1 — REPLACES "only the way back to Personal Spaces": the Platform context
+  // now leads with its OWN three destinations (Overview · AI · Current Space);
+  // the P-1 rule it protected — no PERSONAL site destination — is kept intact.
+  check("directory: the three Platform destinations, then the way back; no personal site destination (P-1)",
+    hrefs(dir).join() === "/dashboard/platform,/dashboard/platform/ai,/dashboard/platform,/dashboard/spaces" &&
+      SITE_HREFS.filter((h) => h !== "/dashboard/spaces").every((h) => !hrefs(dir).includes(h)), hrefs(dir).join());
   check("directory: no site destination is lit (the directory is none of the five)", activeIn(dir, "Global").length === 0);
   check("directory: the site eyebrow no longer leads the rail", !text(dir).startsWith("Fourth Meridian"));
 
@@ -246,18 +250,21 @@ console.log("G. Platform context (UX-P2 Phase B → P-1): granted areas lead, on
   // 5. Source — the leading position, and the single definitions.
   const rail = code(read("components", "ui", "ContextualNavbar.tsx"));
   const sm = rail.slice(rail.indexOf("export function SpaceMode"));
-  check("SpaceMode source: the Platform list is the FIRST block on the platform axis (before the Space block)",
-    sm.indexOf("<PlatformNav") > -1 && sm.indexOf("<PlatformNav") < sm.indexOf('data-nav-context="space"'));
+  // R1 — the Platform block is now the three-destination PlatformContextNav (same position rules).
+  check("SpaceMode source: the Platform block is the FIRST block on the platform axis (before the Space block)",
+    sm.indexOf("<PlatformContextNav") > -1 && sm.indexOf("<PlatformContextNav") < sm.indexOf('data-nav-context="space"'));
   const gm = rail.slice(rail.indexOf("export function GlobalMode"), rail.indexOf("export function SpaceMode"));
-  check("GlobalMode source: on the platform context the Platform element precedes the exit, and nothing follows it (P-1)",
-    /\{hq\}\s*<PersonalSpacesExit \/>\s*<\/>/.test(gm));
+  check("GlobalMode source: on the platform context the Platform block precedes the exit, and nothing follows it (P-1)",
+    /<PlatformContextNav pathname=\{pathname\} \/>\s*<PersonalSpacesExit \/>\s*<\/>/.test(gm));
   check("the exit row is ONE component, rendered by both modes, linking through primaryHref (no route literal)",
     (rail.match(/<PersonalSpacesExit \/>/g) ?? []).length === 2 && /href=\{primaryHref\("spaces"\)\}/.test(rail));
   check("the Phase B demotion wrapper is gone (P-1)", !/DemotedSiteNav/.test(rail));
   check("the context predicate is the shared navContext (global mode) and isPlatformSpaceRoute (space mode)",
     /navContext\(pathname\) === "platform"/.test(rail) && /onPlatformAxis = isPlatformSpaceRoute\(pathname\)/.test(rail));
-  check("still exactly two PrimaryNav mounts and two PlatformNav mounts — reordered, not duplicated",
-    (rail.match(/<PrimaryNav\b/g) ?? []).length === 2 && (rail.match(/<PlatformNav\b/g) ?? []).length === 2);
+  // R1 — PlatformNav (the personal way in) is mounted once; the Platform context's
+  // block (PlatformContextNav) once per mode — still no duplication per mode.
+  check("still exactly two PrimaryNav mounts; one PlatformNav (personal) + two PlatformContextNav (one per mode)",
+    (rail.match(/<PrimaryNav\b/g) ?? []).length === 2 && (rail.match(/<PlatformNav\b/g) ?? []).length === 1 && (rail.match(/<PlatformContextNav\b/g) ?? []).length === 2);
   check("PRIMARY_NAV is still exactly five", PRIMARY_NAV.length === 5);
 }
 

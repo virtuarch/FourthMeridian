@@ -27,7 +27,7 @@ import { db } from "@/lib/db";
 import { withApiHandler } from "@/lib/api";
 import { limitByUser } from "@/lib/rate-limit";
 import { AuditAction } from "@/lib/audit-actions";
-import { recordOperatorAction } from "@/lib/audit";
+import { recordOperatorAction, parseOperatorReason, OperatorActionValidationError, type OperatorReason } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import {
   requirePlatformAccess,
@@ -132,7 +132,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   });
   if (limited) return limited;
 
-  const body = (await req.json().catch(() => null)) as { commandId?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { commandId?: unknown; reason?: unknown } | null;
   const commandId = typeof body?.commandId === "string" ? body.commandId : null;
   if (!commandId) {
     return NextResponse.json({ error: "commandId is required." }, { status: 400 });
@@ -141,6 +141,42 @@ export const POST = withApiHandler(async (req: NextRequest) => {
   const command = getOperationCommand(commandId);
   if (!command) {
     return NextResponse.json({ error: "Unknown operation command." }, { status: 404 });
+  }
+
+  // PLATFORM-SEC-1 — the command declares what it needs (registry
+  // operationRequirement): a fleet-wide RUN needs CONTROL + a structured reason,
+  // the bar a single-wallet history resume already had. WRITE was checked above
+  // (so an unauthorised caller learns nothing about command ids); CONTROL is
+  // re-checked fresh here and its refusal recorded like any other.
+  if (command.requires.level === "CONTROL") {
+    const [, controlErr] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
+    if (controlErr) return controlErr;
+  }
+  let reason: OperatorReason | undefined;
+  if (command.requires.reason) {
+    try { reason = parseOperatorReason(body?.reason); }
+    catch (e) {
+      return NextResponse.json(
+        { error: e instanceof OperatorActionValidationError ? e.message : "A reason is required for a fleet-wide run." },
+        { status: 400 },
+      );
+    }
+  }
+
+  // PLATFORM-SEC-1 — a fleet-wide run records WHO and WHY before it starts: the
+  // run can outlive this request (function timeout), and the EXECUTED row below
+  // is written only after it returns. If this intent row cannot be written,
+  // nothing runs.
+  if (reason) {
+    await recordOperatorAction(db, {
+      actor: operatorActorFrom(auth, "PLATFORM_OPS"),
+      action: AuditAction.PLATFORM_OPERATION_REQUESTED,
+      target: { kind: "JOB", id: command.targetJob },
+      execution: { commandId: command.id, jobRunId: null },
+      result: "SUCCESS",
+      reason,
+      detail: { kind: command.kind, phase: "requested" },
+    });
   }
 
   const result = await runOperation(command, realOperationDeps(db));
@@ -159,6 +195,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       : AuditAction.PLATFORM_OPERATION_DRY_RUN,
     target: { kind: "JOB", id: command.targetJob },
     execution: { commandId: command.id, jobRunId: result.jobRunId ?? null },
+    ...(reason ? { reason } : {}),
     result: result.outcome === "in-flight" ? "REFUSED" : result.outcome === "failed" ? "FAILURE" : "SUCCESS",
     detail: {
       kind: command.kind,

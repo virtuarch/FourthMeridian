@@ -39,7 +39,7 @@ import {
 import type { PlatformAccessLevel } from "@prisma/client";
 
 type Identity = { id: string; name: string | null; username: string | null };
-type User = Identity & { email: string; role: string };
+type User = Identity & { email: string; role: string; /** From /api/admin/users; absent for rows filled in from the grants feed. */ totpEnabled?: boolean };
 type Grant = {
   id:        string;
   area:      string;
@@ -313,6 +313,10 @@ export default function PlatformAccessPage() {
                           <p className="font-medium text-white leading-tight truncate">{u.name ?? "—"}</p>
                           <p className="text-xs text-gray-500 mt-0.5 truncate">{u.email}</p>
                           {u.username && <p className="text-xs text-blue-400 mt-0.5">@{u.username}</p>}
+                          {/* SEC-PLAT-1 — Platform access is refused until the holder enrols in 2FA. */}
+                          {u.totpEnabled === false && (
+                            <p className="text-[10px] text-[var(--accent-warning)] mt-0.5" title="Platform access is refused until this account enrols in two-factor authentication.">2FA off — Platform access waits for enrolment</p>
+                          )}
                         </div>
                       </div>
                     </td>

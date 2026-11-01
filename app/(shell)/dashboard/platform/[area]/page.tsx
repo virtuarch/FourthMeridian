@@ -82,9 +82,10 @@ import { redirectToLogin } from "@/lib/auth/login-redirect";
 import { db } from "@/lib/db";
 import { PlatformArea } from "@prisma/client";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
-import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { OPERATOR_TOTP_ENROLMENT_PATH, isOperatorTotpRefusal, requirePlatformAccess } from "@/lib/platform/authorize";
 import { PlatformSpaceDashboard } from "@/components/platform/PlatformSpaceDashboard";
 import { platformMountContext } from "@/lib/space/mount-context.server";
+import { platformAreaViewIds, resolveRequestedPlatformView } from "@/lib/platform/workspaces";
 
 export const runtime = "nodejs";
 
@@ -101,8 +102,11 @@ export default async function PlatformSpacePage({
   // shows the deep-linked workspace. A repeated or absent key reads as "none";
   // validation happens ONCE, in platformMountContext's shared resolver (an
   // unknown id degrades to the area default, never to a ghost workspace).
-  const { workspace } = await searchParams;
+  // PLATFORM OPS PHASE 1 UX — `?view=<id>` likewise, resolved by the SAME
+  // shared view rule the client hook uses (resolveRequestedPlatformView).
+  const { workspace, view } = await searchParams;
   const requestedWorkspace = typeof workspace === "string" ? workspace : null;
+  const requestedView = typeof view === "string" ? view : null;
 
   // 1. Known area? (unknown ⇒ redirect, never 404 — no existence disclosure)
   if (!(Object.values(PlatformArea) as string[]).includes(areaParam)) {
@@ -117,6 +121,9 @@ export default async function PlatformSpacePage({
   const [auth, err] = await requirePlatformAccess(area, "READ");
   if (err) {
     if (err.status === 401) return redirectToLogin();
+    // SEC-PLAT-1 — a grant holder without TOTP goes to the existing enrolment
+    // screen (their personal app keeps working; Platform access waits).
+    if (err.status === 403 && isOperatorTotpRefusal(err)) redirect(OPERATOR_TOTP_ENROLMENT_PATH);
     if (err.status === 403) redirect("/dashboard/platform");
     throw new Error("Platform access could not be verified right now.");
   }
@@ -164,11 +171,15 @@ export default async function PlatformSpacePage({
     { selectedKey: requestedWorkspace },
   );
 
+  const selectedKey = mountContext.workspaces.selectedKey;
+  const selectedView = resolveRequestedPlatformView(platformAreaViewIds(area)[selectedKey], selectedKey, requestedWorkspace, requestedView);
+
   return (
     <PlatformSpaceDashboard
       area={area}
       sections={space.dashboardSections}
       mountContext={mountContext}
+      selectedView={selectedView}
     />
   );
 }

@@ -48,6 +48,19 @@
  * (CadenceForm, Notice, mutate, useSettle) moved to policy-editor-kit.tsx so
  * the panel shares it without a circular import; it is re-exported here.
  *
+ * ── VIEWS (PLATFORM OPS PHASE 1 UX) ────────────────────────────────────────────
+ * The Policies workspace renders this ONE section in several views, each a
+ * slice of the same surface (`variant`; no new section key):
+ *   (absent)    today's full render — byte-for-byte the same composition;
+ *   "defaults"  refresh cadence + execution cadence + AI Cost Controls;
+ *   "emergency" maintenance mode + the Plaid webhook repoint;
+ *   "groups"    the read-only Policy Group catalogue (PolicyGroupsPanel).
+ * The AI kill switch ("Pause paid AI requests") stays INSIDE AI Cost Controls,
+ * i.e. in "defaults": it is a card of AiCostControlsPanel sharing that panel's
+ * one read, editor state and confirmation grammar, and rendering it on its own
+ * would mean changing the panel. It is not duplicated into "emergency".
+ * Every affordance keeps exactly its gating, reason, confirmation and copy.
+ *
  * `OpsPoliciesWidget` fetches and publishes; `PoliciesSurface`, `PolicyColumn`,
  * `PolicyEditor`, `JobCadencePanel`, `JobCadenceRow`, `JobCadenceEditor` and
  * `AiCostControlsPanel` render — every state provable by handing them props.
@@ -69,6 +82,9 @@ import { AiCostControlsPanel } from "./AiCostControlsPanel";
 import type { OperationalControlsReadModel } from "@/lib/platform/policies/operational-controls.types";
 import { MaintenanceModePanel } from "./MaintenanceModePanel";
 import { PlaidWebhookPanel } from "./PlaidWebhookPanel";
+import { platformViewTarget } from "@/lib/platform/workspaces";
+import { PolicyGroupsPanel } from "./PolicyGroupsPanel";
+import type { PolicyGroupsResponse } from "@/app/api/platform/platform-ops/policy-groups/route";
 import {
   BTN, BTN_NEUTRAL, BTN_PRIMARY, BTN_QUIET, CadenceForm, FIELD, Notice, formatUtc, mutate, useSettle,
   type OperatorReasonInput, type PolicyNotice,
@@ -90,7 +106,10 @@ const JOB_CADENCE_URL = "/api/platform/platform-ops/job-cadence";
 const COST_CONTROLS_URL = "/api/platform/platform-ops/ai-cost-controls";
 // OPERATIONAL CONTROLS — the same static-url contract; OPERATIONAL_CONTROLS_URL in the types file spells the same path and the panel PATCHes it.
 const OPERATIONAL_URL = "/api/platform/platform-ops/operational-controls";
-const JOBS_WORKSPACE = "platform-jobs";
+// PLATFORM OPS PHASE 1 UX — Jobs is a view of Operations (formerly "platform-jobs").
+// PLATFORM OPS PHASE 1 UX — the read-only Policy Group catalogue (PLATFORM_OPS READ).
+const POLICY_GROUPS_URL = "/api/platform/platform-ops/policy-groups";
+const JOBS_WORKSPACE = platformViewTarget("platform-overview", "jobs");
 
 // ── Shared grammar: legend chips, observation line, doorway ───────────────────
 
@@ -468,10 +487,13 @@ export function JobCadencePanel({ state, canControl, onModel, onOpenWorkspace }:
   );
 }
 
+/** Which slice of the Policies surface a view renders (absent = the full surface). */
+export type PoliciesVariant = "groups" | "defaults" | "emergency";
+
 /** The presentational surface. Prop-driven and fetch-free. */
 export function PoliciesSurface({
   section, state, canControl = false, onModel = () => {}, cadence, onCadenceModel = () => {}, costControls, onCostControlsModel = () => {},
-  operational, onOperationalModel = () => {}, onOpenWorkspace,
+  operational, onOperationalModel = () => {}, onOpenWorkspace, variant,
 }: {
   section: PlatformSection;
   state: SharedFetchState<PlatformPoliciesResponse>;
@@ -487,11 +509,18 @@ export function PoliciesSurface({
   operational?: SharedFetchState<OperationalControlsReadModel>;
   onOperationalModel?: (model: OperationalControlsReadModel) => void;
   onOpenWorkspace?: (workspaceId: string) => void;
+  /** PLATFORM OPS PHASE 1 UX — "defaults" / "emergency" render their slice; absent renders everything (unchanged). */
+  variant?: Exclude<PoliciesVariant, "groups">;
 }) {
   const data = state.error ? null : state.data;
+  // Which parts this view shows. With no variant every flag is true, so the
+  // full surface renders exactly as before.
+  const showCadence = variant !== "emergency";
+  const showCost = variant !== "emergency";
+  const showEmergency = variant !== "defaults";
   return (
     <div className="flex min-w-0 flex-col gap-8">
-      <SectionSurface icon={SlidersHorizontal} title={section.label} footnote={data ? policiesFootnote(data.grace) : undefined}>
+      {showCadence && <SectionSurface icon={SlidersHorizontal} title={section.label} footnote={data ? policiesFootnote(data.grace) : undefined}>
         {state.loading ? (
           <p className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]" role="status">
             <Loader2 size={12} className="animate-spin" aria-hidden /> {LOADING_TEXT}
@@ -514,19 +543,72 @@ export function PoliciesSurface({
             {cadence && <JobCadencePanel state={cadence} canControl={canControl} onModel={onCadenceModel} onOpenWorkspace={onOpenWorkspace} />}
           </div>
         )}
-      </SectionSurface>
+      </SectionSurface>}
       {/* UI-010 — the AI Cost Controls panel (incl. the kill switch) renders from
           ITS OWN fetch state. It used to be gated on the policies read too, so
           a 500/403/slow /policies hid the one control an incident needs. */}
       {/* Maintenance mode renders from ITS OWN fetch state, like the cost controls (UI-010): the way out of maintenance must never depend on another read. */}
-      {operational && <MaintenanceModePanel state={operational} editable={canControl} onModel={onOperationalModel} />}
-      {costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
-      {canControl && <PlaidWebhookPanel />}
+      {showEmergency && operational && <MaintenanceModePanel state={operational} editable={canControl} onModel={onOperationalModel} />}
+      {/* The AI kill switch is a card of this panel, so it renders with "defaults" (see the header). */}
+      {showCost && costControls && <AiCostControlsPanel state={costControls} editable={canControl} onModel={onCostControlsModel} />}
+      {showEmergency && canControl && <PlaidWebhookPanel />}
     </div>
   );
 }
 
-export function OpsPoliciesWidget({ section, access, onOpenWorkspace }: {
+/**
+ * The section widget. `variant` selects the view's slice (PLATFORM OPS PHASE 1
+ * UX); each slice is its own host so a view fetches only the reads it renders.
+ * No variant ⇒ the full host, unchanged.
+ */
+export function OpsPoliciesWidget({ section, access, onOpenWorkspace, variant }: {
+  section: PlatformSection; access?: { canControl: boolean }; onOpenWorkspace?: (workspaceId: string) => void;
+  variant?: PoliciesVariant;
+}) {
+  if (variant === "groups") return <PolicyGroupsHost />;
+  if (variant === "defaults") return <PoliciesDefaultsHost section={section} access={access} onOpenWorkspace={onOpenWorkspace} />;
+  if (variant === "emergency") return <PoliciesEmergencyHost section={section} access={access} />;
+  return <PoliciesFullHost section={section} access={access} onOpenWorkspace={onOpenWorkspace} />;
+}
+
+/** Policies › Policy groups — read-only; it needs (and is given) no access flag. */
+function PolicyGroupsHost() {
+  const groups = useSharedWidgetFetch<PolicyGroupsResponse>(POLICY_GROUPS_URL);
+  return <PolicyGroupsPanel state={groups} />;
+}
+
+/** Policies › Platform defaults — refresh cadence, execution cadence, AI Cost Controls (incl. the kill switch). */
+function PoliciesDefaultsHost({ section, access, onOpenWorkspace }: {
+  section: PlatformSection; access?: { canControl: boolean }; onOpenWorkspace?: (workspaceId: string) => void;
+}) {
+  const state = useSharedWidgetFetch<PlatformPoliciesResponse>(POLICIES_URL);
+  const publish = useSharedWidgetPublish<PlatformPoliciesResponse>(POLICIES_URL);
+  const cadence = useSharedWidgetFetch<JobCadenceResponse>(JOB_CADENCE_URL);
+  const publishCadence = useSharedWidgetPublish<JobCadenceResponse>(JOB_CADENCE_URL);
+  const costControls = useSharedWidgetFetch<AiCostControlsReadModel>(COST_CONTROLS_URL);
+  const publishCostControls = useSharedWidgetPublish<AiCostControlsReadModel>(COST_CONTROLS_URL);
+  return (
+    <PoliciesSurface variant="defaults" section={section} state={state} canControl={access?.canControl ?? false} onModel={publish}
+      cadence={cadence} onCadenceModel={publishCadence} costControls={costControls} onCostControlsModel={publishCostControls}
+      onOpenWorkspace={onOpenWorkspace} />
+  );
+}
+
+/** Policies › Emergency controls — maintenance mode and the Plaid webhook repoint (each keeps its own gating). */
+function PoliciesEmergencyHost({ section, access }: { section: PlatformSection; access?: { canControl: boolean } }) {
+  const operational = useSharedWidgetFetch<OperationalControlsReadModel>(OPERATIONAL_URL);
+  const publishOperational = useSharedWidgetPublish<OperationalControlsReadModel>(OPERATIONAL_URL);
+  // The refresh-policy read is not rendered in this slice; a settled empty
+  // state satisfies the surface's prop without a request.
+  return (
+    <PoliciesSurface variant="emergency" section={section} state={NOT_RENDERED} canControl={access?.canControl ?? false}
+      operational={operational} onOperationalModel={publishOperational} />
+  );
+}
+const NOT_RENDERED: SharedFetchState<PlatformPoliciesResponse> = { data: null, loading: false, error: null };
+
+/** No variant — the full Policies surface, exactly as it rendered before views. */
+function PoliciesFullHost({ section, access, onOpenWorkspace }: {
   section: PlatformSection; access?: { canControl: boolean }; onOpenWorkspace?: (workspaceId: string) => void;
 }) {
   // ONE literal url, one workspace-shared read (OPS-2C-6); mutations publish the

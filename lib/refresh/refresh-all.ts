@@ -119,9 +119,12 @@ export const REFRESH_ALL_WALLET_BUDGET_MS = 90_000;
 const BUDGET_REASON = "BUDGET" as unknown as RefreshSkipReason;
 
 /** Whether the effective entitlements permit a manual refresh at all. One place, so a future
- *  boolean dimension (e.g. `manualRefresh`) is honoured everywhere by editing this alone. */
-export function isManualRefreshEntitled(_e: EffectiveEntitlements): boolean {
-  return true;
+ *  boolean dimension (e.g. `manualRefresh`) is honoured everywhere by editing this alone.
+ *  FAIL CLOSED (owner ruling, 2026-10-30) — a missing/invalid policy assignment under the
+ *  rollout switch refuses every manual refresh (NOT_ENTITLED), customer- or operator-initiated;
+ *  scheduled platform refresh is not an entitlement and continues. */
+export function isManualRefreshEntitled(e: EffectiveEntitlements): boolean {
+  return e.failClosed !== true;
 }
 
 function triggerFor(authority: RefreshAllRequest["authority"]): RefreshTrigger {

@@ -234,8 +234,10 @@ async function main() {
     const dash = strip("components/platform/PlatformSpaceDashboard.tsx");
     check("the workspace body is wrapped in the session provider", /<WorkspaceSessionProvider>/.test(dash));
     check(
+      // PLATFORM OPS PHASE 1 UX — re-ruled: keyed by workspace AND view (a view
+      // is a former workspace), so the session is discarded on either switch.
       "the body is keyed by workspace id (session discarded on switch)",
-      /key=\{active\.workspaceId\}/.test(dash),
+      /key=\{`\$\{active\.workspaceId\}:\$\{activeViewDef\?\.id \?\? ""\}`\}/.test(dash),
     );
     check("the dashboard still fetches nothing itself", !/fetch\(/.test(dash));
   }

@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { PlatformJobHealthResponse, PlatformJobRow } from "@/app/api/platform/platform-ops/job-health/route";
 import type { RefreshDailySeries, RefreshSummary } from "@/lib/platform/refresh/types";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { resolvePlatformDestination } from "@/lib/platform/workspaces";
 import { JOBS_MATRIX_DOORWAY, JobsMatrixBlock, JobsMatrixSurface } from "./overview/JobsMatrixBlock";
 import { REFRESH_ACTIVITY_DOORWAY, RefreshActivityBlock, RefreshActivitySurface } from "./overview/RefreshActivityBlock";
 import {
@@ -226,7 +226,9 @@ function main() {
     check("a zero streak is a real zero", (t.match(/\b0\b/g) ?? []).length >= 1);
     check("the footnote says observed from the ledger and that the tick is unobservable", t.includes("Observed from the JobRun ledger") && t.includes("unobservable"));
     check("observed-at instant in the footnote", t.includes("Observed 14 Oct 10:00 UTC."));
-    check("the doorway opens Jobs", populated.includes(`aria-label="Open ${getPlatformWorkspace(JOBS_MATRIX_DOORWAY)?.label}"`));
+    // PLATFORM OPS PHASE 1 UX — Jobs is a VIEW of Operations; the doorway is labelled by the destination resolver.
+    check("the doorway opens Jobs", populated.includes(`aria-label="Open ${resolvePlatformDestination(JOBS_MATRIX_DOORWAY)?.label}"`)
+      && resolvePlatformDestination(JOBS_MATRIX_DOORWAY)?.workspaceId === "platform-overview" && resolvePlatformDestination(JOBS_MATRIX_DOORWAY)?.viewId === "jobs");
     check("below-md fact labels exist and hide at md", populated.includes("md:hidden") && populated.includes("md:contents"));
     check("the status dot is decorative", /aria-hidden="true"[^>]*class="rounded-full"/.test(populated) || /class="rounded-full"[^>]*aria-hidden/.test(populated));
     check("no expansion control, no toolbar", !populated.includes("aria-expanded") && !populated.includes("Search jobs"));
@@ -254,7 +256,8 @@ function main() {
     check("the settled empty day is a zero", populated.includes("2026-10-11: 0 executions"));
     check("the series caption states the zero rule and the floor", t.includes("true zero") && t.includes("floor"));
     check("the refusals line", t.includes("1 execution refused by admission policy") && t.includes("cannot appear here"));
-    check("the doorway opens Pipeline", populated.includes(`aria-label="Open ${getPlatformWorkspace(REFRESH_ACTIVITY_DOORWAY)?.label}"`));
+    check("the doorway opens Pipeline", populated.includes(`aria-label="Open ${resolvePlatformDestination(REFRESH_ACTIVITY_DOORWAY)?.label}"`)
+      && resolvePlatformDestination(REFRESH_ACTIVITY_DOORWAY)?.workspaceId === "platform-overview" && resolvePlatformDestination(REFRESH_ACTIVITY_DOORWAY)?.viewId === "pipeline");
     check("unobserved summary says so and shows no zeros for it", text(unobserved).includes("not observed") && !text(unobserved).includes("Succeeded 0"));
     check("...while the day series still renders", text(unobserved).includes("Executions per day"));
     check("one read failing does not blank the other", text(halfFailed).includes("Not authorized") && text(halfFailed).includes("Executions per day"));

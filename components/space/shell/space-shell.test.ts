@@ -18,8 +18,9 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { ReactNode } from "react";
-import type { SpaceShellProps, SpaceShellRailOption } from "./SpaceShell";
+import { createElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SpaceShell, type SpaceShellProps, type SpaceShellRailOption } from "./SpaceShell";
 
 // ── TYPE-LEVEL: the SpaceShell slot API (compile-time; tsc is the gate) ──────────
 // Each slot is a host-composed ReactNode — the shell owns only WHERE it mounts,
@@ -66,6 +67,14 @@ type _SlotApiKeys = Expect<Equal<
   | "overlays" | "title" | "subtitle" | "currencyControl" | "onManage"
   | "railOptions" | "activeTab" | "onSelectTab" | "variant" | "headerActions" | "mobileOptimized" | "railVisibility"
   | "onLeave" | "compactRailOptions" | "compactTitleOnly" | "children"
+  // Platform Ops 2.0 R1 — `titleAccessory`: an optional node beside the compact
+  // title (the Platform Space switcher). Customer Spaces never pass it, so their
+  // markup is unchanged (desktop-baseline RENDERED gate).
+  | "titleAccessory"
+  // Platform Ops visual it2 — `titleChip` (the access chip on the ONE-line compact
+  // header, no meta line) and `fillCompactRail` (four equal columns at 375 px).
+  // Platform-only: customer Spaces never pass them (RENDERED baseline unchanged).
+  | "titleChip" | "fillCompactRail"
 >>;
 // v2.7 R1 — `compactViewSelector` moved to PerspectiveShell's controls row and the
 // v2.7 P0 `compactTimeSlot` portal slot is deleted (one TimelineLens, in flow).
@@ -126,6 +135,19 @@ check("host does not import the rail primitives directly",
 check("host owns the URL authority via useSpaceNavigation (SD-8b)", dashCode.includes("useSpaceNavigation("));
 check("host still owns the time authority (SD-0B)", /usePerspectiveShellState\(/.test(dashCode));
 check("host still avoids useSearchParams (no new Suspense boundary)", !dashCode.includes("useSearchParams"));
+
+// ── Platform Ops visual it2 — the one-line compact header + filled rail ──────────
+{
+  const base = { title: "Platform Operations", subtitle: "Platform · Platform Operations · READ", railOptions: [
+    { id: "a", label: "Operations" }, { id: "b", label: "Providers" }, { id: "c", label: "AI & Costs" }, { id: "d", label: "Policies" },
+  ], activeTab: "a", onSelectTab: () => {}, railVisibility: "belowLg" as const, children: null };
+  const plain = renderToStaticMarkup(createElement(SpaceShell, base));
+  const it2 = renderToStaticMarkup(createElement(SpaceShell, { ...base, titleChip: createElement("span", { "data-chip": "" }, "Control"), fillCompactRail: true }));
+  check("it2: titleChip ⇒ ONE compact line (title + chip), no meta line", /data-chip/.test(it2) && !it2.includes("Platform · Platform Operations") && /data-compact-header/.test(it2));
+  check("it2: fillCompactRail ⇒ the belowLg rail fills the row in equal columns", /data-compact-rail-fill/.test(it2) && /\[&amp;_button\]:flex-1|\[&_button\]:flex-1/.test(it2));
+  check("it2: without the new props the header keeps its meta line and centred rail (unchanged)",
+    plain.includes("Platform · Platform Operations") && !/data-compact-rail-fill/.test(plain) && /lg:hidden mb-7 flex justify-center/.test(plain));
+}
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed.`);

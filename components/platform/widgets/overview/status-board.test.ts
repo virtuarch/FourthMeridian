@@ -26,7 +26,7 @@ import { buildOverview, derivePosture, type OverviewInputs } from "@/lib/platfor
 import type { OperationsOverview } from "@/lib/platform/ops/overview";
 import type { PipelineStatus } from "@/lib/platform/refresh/types";
 import { defaultRefreshPolicies } from "@/lib/platform/refresh-policy.core";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { resolvePlatformDestination } from "@/lib/platform/workspaces";
 import { OVERVIEW_FOOTNOTE, STATE_TONE } from "../ops-overview-view";
 import { TONE_COLOR } from "../../platform-surface";
 
@@ -102,8 +102,13 @@ function main() {
     check("figures are the server's", ["0 of 1 failed", "2 stale", "1 failing", "1 generated", "0 failed", "12 billable Items"].every((f) => text.includes(f)), text);
     check("qualifiers render", text.includes("10 never ran") && text.includes("of 4 sources"));
     const openLabels = [...html.matchAll(/aria-label="Open ([^"]+)"/g)].map((m) => m[1]);
+    // PLATFORM OPS PHASE 1 UX — re-ruled: the read model still names the retired
+    // ids "platform-refresh" / "platform-jobs"; they resolve to Operations ›
+    // Pipeline / Jobs, so the doorway labels come from the destination resolver
+    // (the same words, "Pipeline" and "Jobs", the old workspace registry gave).
     check("six doorways labelled from the workspace registry",
-      openLabels.join(",") === ["platform-refresh", "platform-providers", "platform-jobs", "platform-ai", "platform-ai", "platform-ai"].map((id) => getPlatformWorkspace(id)!.label).join(","), openLabels.join(","));
+      openLabels.map((l) => l.replace(/&amp;/g, "&")).join(",") === ["platform-refresh", "platform-providers", "platform-jobs", "platform-ai", "platform-ai", "platform-ai"].map((id) => resolvePlatformDestination(id)!.label).join(",")
+        && openLabels.slice(0, 3).join(",") === "Pipeline,Providers,Jobs", openLabels.join(","));
     check("no KeyRow list on the board", !/items-baseline justify-between gap-4/.test(html));
   }
 
@@ -127,7 +132,10 @@ function main() {
     const unavailableBadge = html.match(/style="color:([^"]+)"><span aria-hidden="true" class="rounded-full" style="[^"]*"><\/span><span class="text-xs font-medium">Unavailable<\/span>/);
     check("Unavailable carries the muted token", unavailableBadge?.[1] === TONE_COLOR.muted);
     const postureDoorways = [...html.matchAll(/aria-label="([^"]+) — open the workspace behind (Alerts|Providers|Freshness|Configuration)"/g)].map((m) => `${m[2]}→${m[1]}`);
-    check("each chip has a doorway labelled from the registry", postureDoorways.join(",") === "Alerts→Controls,Providers→Providers,Freshness→Providers,Configuration→Controls", postureDoorways.join(","));
+    // PLATFORM OPS PHASE 1 UX — re-ruled: Alerts and Configuration open the
+    // Policies VIEW that holds them (Policies › Alerts / Platform defaults), so
+    // the doorway names the view; Providers is unchanged.
+    check("each chip has a doorway labelled from the registry", postureDoorways.join(",") === "Alerts→Alerts,Providers→Providers,Freshness→Providers,Configuration→Platform defaults", postureDoorways.join(","));
   }
 
   console.log("5. basis strings and provenance live only inside Technical details");
@@ -148,7 +156,8 @@ function main() {
     check("footnote is OVERVIEW_FOOTNOTE", text.includes(OVERVIEW_FOOTNOTE));
     check("…and it is one sentence", (OVERVIEW_FOOTNOTE.match(/\.\s/g) ?? []).length === 0 && OVERVIEW_FOOTNOTE.endsWith("."));
     check("the worst word leads the header", /Failed Something has failed checked 12s ago/.test(text), text.slice(0, 200));
-    check("policy strip with a Controls doorway (P-10: Policies → Controls)", text.includes("Banks every 24h (default)") && /aria-label="Controls — open the workspace behind the refresh policy"/.test(html));
+    // PLATFORM OPS PHASE 1 UX — re-ruled: the refresh policy lives in Policies › Platform defaults.
+    check("policy strip with a Platform defaults doorway (Phase 1 UX: Controls → Policies › Platform defaults)", text.includes("Banks every 24h (default)") && /aria-label="Platform defaults — open the workspace behind the refresh policy"/.test(html));
     const unwired = render(overview(), false);
     check("no doorway renders when the host wired no handler", !unwired.html.includes("aria-label=\"Open ") && !unwired.html.includes("behind the refresh policy"));
   }

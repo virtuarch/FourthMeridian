@@ -33,6 +33,7 @@ import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
 import { withPlaidItemSyncLock } from "@/lib/plaid/sync-lock";
 import { checkManualRefreshCooldown, cooldownMsFromMinutes, markManualRefreshed } from "@/lib/plaid/refreshCooldown";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
+import { entitlementLoadOptions, refuseIfFailClosed } from "@/lib/entitlements/consume";
 import { refreshAllForUser } from "@/lib/refresh/refresh-all";
 import { tenantRefreshDeps } from "@/lib/refresh/deps";
 import type { RefreshAllReport } from "@/lib/refresh/outcomes";
@@ -81,7 +82,12 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
 
   // P1 — the manual cooldown is the customer's effective entitlement, not a literal.
-  const entitlements = await withTenantDb(user.id, (tx) => loadEffectiveEntitlements(tx, user.id));
+  const entitlements = await withTenantDb(user.id, (tx) => loadEffectiveEntitlements(tx, user.id, entitlementLoadOptions()));
+  // FAIL CLOSED (owner ruling, 2026-10-30) — a manual refresh is a paid provider
+  // call; a missing/invalid policy assignment refuses it (403) before any Plaid
+  // call. Scheduled platform refresh is not an entitlement and continues.
+  const failClosed = refuseIfFailClosed(entitlements, "Manual refresh");
+  if (failClosed) return failClosed;
   const cooldownMs = cooldownMsFromMinutes(Number(entitlements.dimensions.manualBankRefreshCooldownMinutes.value));
 
   const body = (await req.json().catch(() => ({}))) as RefreshBody;

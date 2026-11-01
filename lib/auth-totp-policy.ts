@@ -48,3 +48,22 @@ export function requiresTotpEnrollment(input: TotpEnrollmentInput): boolean {
   if (input.role === UserRole.SYSTEM_ADMIN) return true;
   return input.requireTotpAllUsers;
 }
+
+/**
+ * SEC-PLAT-1 — owner ruling P-2 (2026-10-27): mandatory TOTP for every ACTIVE
+ * Platform access holder, regardless of level.
+ *
+ * PURE. True when a caller who otherwise holds platform access must be REFUSED
+ * it because they have no second factor. SYSTEM_ADMIN is out of scope here: an
+ * un-enrolled SYSTEM_ADMIN never gets a usable session (requiresTotpEnrollment
+ * above), so their break-glass bypass is already MFA-bound.
+ *
+ * Enforced at the shared platform guard (lib/platform/authorize.ts), which
+ * reads the grant AND `totpEnabled` fresh on every page and route, so it applies
+ * to active sessions on their next request, to a 2FA reset, and to a grant
+ * issued to an un-enrolled account — with no account lockout: the operator's
+ * personal app keeps working; only Platform access waits for enrolment.
+ */
+export function operatorTotpMissing(input: { role: UserRole; totpEnabled: boolean }): boolean {
+  return input.role !== UserRole.SYSTEM_ADMIN && !input.totpEnabled;
+}

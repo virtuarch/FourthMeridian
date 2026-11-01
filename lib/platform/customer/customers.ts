@@ -21,7 +21,7 @@
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
-import { DEFAULT_POLICY_GROUP } from "@/lib/entitlements/catalogue";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
 import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
 import { projectActivity, projectRollup, type CustomerRollup } from "./customer-core";
@@ -40,18 +40,31 @@ export interface CustomerListRow extends CustomerRollup {
 
 export interface CustomerList { total: number; customers: CustomerListRow[] }
 
+/** The id tail of an opaque `user …abc123` reference (or a bare 6+ character token), else null. */
+export function opaqueRefTail(search: string): string | null {
+  const m = /^(?:user\s*)?(?:…|\.\.\.)?\s*([A-Za-z0-9_-]{6,})$/.exec(search.trim());
+  return m ? m[1] : null;
+}
+
 export async function listCustomers(opts: { search?: string; limit?: number; now?: Date } = {}, client = systemDb): Promise<CustomerList> {
   const now = opts.now ?? new Date();
   const search = (opts.search ?? "").trim();
   const limit = Math.min(CUSTOMER_LIST_MAX, Math.max(1, Math.floor(opts.limit ?? 50)));
+  // Owner ruling (2026-10-30) — operator surfaces that minimise identity (Platform
+  // Ops Attention, the alert email) name a customer as `user …abc123`; searching
+  // that reference here (or its bare 6+ character tail) finds the account by its
+  // id suffix, so the policy-assignment alert is actionable in Customer Success.
+  const idTail = opaqueRefTail(search);
   const where = search
     ? { OR: [
         { email: { contains: search, mode: "insensitive" as const } },
         { name: { contains: search, mode: "insensitive" as const } },
         { username: { contains: search, mode: "insensitive" as const } },
+        ...(idTail ? [{ id: { endsWith: idTail } }] : []),
       ] }
     : {};
 
+  const defaultPolicyGroup = (await loadPolicyGroupCatalogue()).defaultKey;
   const [total, users] = await Promise.all([
     client.user.count({ where }),
     client.user.findMany({
@@ -129,7 +142,8 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
         id: u.id, email: u.email, name: u.name, username: u.username, role: u.role,
         createdAt: u.createdAt.toISOString(), deactivatedAt: u.deactivatedAt?.toISOString() ?? null,
         lastActiveAt: act.lastActiveAt, lastActiveSource: act.lastActiveSource,
-        policyGroup: a?.policyGroup ?? DEFAULT_POLICY_GROUP, policyAssigned: a !== undefined, overlay: a?.overlay ?? null,
+        // POLICY EDITOR — an unassigned row names the catalogue DEFAULT (policyAssigned false says so).
+        policyGroup: a?.policyGroup ?? defaultPolicyGroup, policyAssigned: a !== undefined, overlay: a?.overlay ?? null,
         cohorts: cohortsBy.get(u.id) ?? [],
         connectionCount: (plaidBy.get(u.id) ?? 0) + (connBy.get(u.id) ?? 0),
         ...rollup,

@@ -27,7 +27,7 @@ import type { ReactNode } from "react";
 import { ArrowRight, Timer } from "lucide-react";
 import { WidgetMessage, useWidgetFetch } from "../../widget-kit";
 import { SectionSurface, StatusBadge, TONE_COLOR, TwoLine, Unavailable } from "../../platform-surface";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { platformViewTarget, resolvePlatformDestination } from "@/lib/platform/workspaces";
 import type { PlatformJobHealthResponse, PlatformJobRow } from "@/app/api/platform/platform-ops/job-health/route";
 import { cadenceLine, fmtUtc, orderJobs } from "../jobs-view";
 import {
@@ -43,14 +43,15 @@ import {
 import type { OverviewBlockProps } from "./block-contract";
 
 /** The workspace this block opens. */
-export const JOBS_MATRIX_DOORWAY = "platform-jobs";
+// PLATFORM OPS PHASE 1 UX — Jobs is a view of Operations (formerly "platform-jobs").
+export const JOBS_MATRIX_DOORWAY = platformViewTarget("platform-overview", "jobs");
 
 /** One grid definition for the header and every row — the alignment key. */
 const COLS = "minmax(0,1.7fr) 6.5rem minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)";
 const HEADINGS = ["Job", "Health", "Last run", "Next due", "Failures"] as const;
 
 function Doorway({ onOpenWorkspace }: { onOpenWorkspace?: (id: string) => void }) {
-  const def = getPlatformWorkspace(JOBS_MATRIX_DOORWAY);
+  const def = resolvePlatformDestination(JOBS_MATRIX_DOORWAY);
   if (!def || !onOpenWorkspace) return null;
   return (
     <button

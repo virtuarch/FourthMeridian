@@ -36,7 +36,8 @@ import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
 import { validateInvite, redeemBetaInvite, InviteNotConsumedError } from "@/lib/registration-policy";
-import { DEFAULT_POLICY_GROUP, INVITE_COHORT } from "@/lib/entitlements/catalogue";
+import { INVITE_COHORT } from "@/lib/entitlements/catalogue";
+import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { getTemplateForCategory } from "@/lib/space-templates/registry";
 import { planTemplateApplication } from "@/lib/space-templates/apply";
 
@@ -193,6 +194,18 @@ export async function POST(req: NextRequest) {
     const rawVerificationToken = crypto.randomBytes(32).toString("hex");
     const verificationExpiry   = new Date(Date.now() + VERIFICATION_TTL_MS);
 
+    // POLICY EDITOR — the DEFAULT policy group new registrations receive: the
+    // DB default (moved only by an audited Platform Operations CONTROL action),
+    // else the code DEFAULT_POLICY_GROUP (Beta). Read BEFORE the transaction
+    // through the cached, never-throwing loader, so an environment without the
+    // PolicyGroup table (or a failed read) cannot abort registration — it
+    // simply assigns Beta exactly as before. Never Free / Paid / Pro unless an
+    // operator deliberately made such a group the default.
+    // ⚠️ Under the CODE FALLBACK (read failed, no recent good read) this is code
+    // Beta even if an operator had moved the default — accepted (review fix 2):
+    // Beta is the owner-ruled default, and the alternative is refusing signups.
+    const defaultPolicyGroup = (await loadPolicyGroupCatalogue()).defaultKey;
+
     // ── Create user + space atomically ───────────────────────────────────
     const user = await db.$transaction(async (tx) => {
       const newUser = await tx.user.create({
@@ -313,14 +326,15 @@ export async function POST(req: NextRequest) {
       // redeemBetaInvite() raises instead; see lib/registration-policy.ts.
       // P1 HUMAN OPERABILITY — the customer's Policy Group and cohort are set
       // AT BIRTH, in this same transaction. Every new account is placed on the
-      // catalogue default (BETA_FULL_ACCESS_V1); only an account that entered by
+      // default group (BETA_FULL_ACCESS_V1 unless Platform Operations moved the
+      // default — see defaultPolicyGroup above); only an account that entered by
       // redeeming a beta invitation joins the CLOSED_BETA_2026 cohort — an
       // open-mode signup did not come through that door, so it gets no cohort
       // (cohort ≠ policy: the cohort is historical identity, the policy is what
       // they may use). Existing users are never backfilled here: an operator
       // assigns them from Customer Success, which is audited.
       await tx.customerPolicyAssignment.create({
-        data: { userId: newUser.id, policyGroup: DEFAULT_POLICY_GROUP },
+        data: { userId: newUser.id, policyGroup: defaultPolicyGroup },
       });
       if (betaRequestId) {
         await tx.customerCohort.create({

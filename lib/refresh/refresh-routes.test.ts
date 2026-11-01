@@ -19,7 +19,9 @@ console.log("POST /api/refresh/all");
   const s = strip("app/api/refresh/all/route.ts");
   check("requires a session", /requireUser\(\)/.test(s));
   check("per-user backstop", /limitByUser\(user\.id,\s*"refresh-all"/.test(s));
-  check("entitlements are read through a tenant phase", /withTenantDb\(user\.id,\s*\(tx\)\s*=>\s*loadEffectiveEntitlements\(tx,\s*user\.id\)\)/.test(s));
+  // Owner ruling (2026-10-30) — the loader now carries the fail-closed rollout switch as a third
+  // argument (entitlementLoadOptions()); the tenant-phase assertion is unchanged in substance.
+  check("entitlements are read through a tenant phase", /withTenantDb\(user\.id,\s*\(tx\)\s*=>\s*loadEffectiveEntitlements\(tx,\s*user\.id,\s*entitlementLoadOptions\(\)\)\)/.test(s));
   check("runs the orchestrator as the USER authority", /authority:\s*"USER"/.test(s) && /tenantRefreshDeps\(user\.id\)/.test(s));
   check("never imports the migration principal or systemDb", !/from ["']@\/lib\/db["']/.test(s));
   check("audits REFRESH_ALL_REQUESTED with counts only", /AuditAction\.REFRESH_ALL_REQUESTED/.test(s) && /summary:\s*report\.summary/.test(s) && !/institution|label|balance/.test(s));
@@ -45,7 +47,8 @@ console.log("Plaid routes use the entitled cooldown");
 {
   for (const f of ["app/api/plaid/refresh/route.ts"]) {
     const s = strip(f);
-    check(`${f}: loads entitlements through a tenant phase`, /loadEffectiveEntitlements\(tx,\s*user\.id\)/.test(s));
+    // Owner ruling (2026-10-30) — plus the fail-closed switch (entitlementLoadOptions()) as the third argument.
+    check(`${f}: loads entitlements through a tenant phase`, /loadEffectiveEntitlements\(tx,\s*user\.id,\s*entitlementLoadOptions\(\)\)/.test(s));
     check(`${f}: every cooldown check passes the entitled window`, !/checkManualRefreshCooldown\([^,)]*\)/.test(s) && /checkManualRefreshCooldown\([^)]*cooldownMs\)/.test(s));
     check(`${f}: no role exemption`, !/SYSTEM_ADMIN/.test(s));
   }

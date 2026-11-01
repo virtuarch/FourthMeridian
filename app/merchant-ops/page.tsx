@@ -20,7 +20,7 @@ import { redirect } from "next/navigation";
 // MERCHANT_OPS platform grant (requirePlatformAccess), which is where the
 // authorization for that reach lives. Space membership confers nothing here.
 import { systemDb as db } from "@/lib/db";
-import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { OPERATOR_TOTP_ENROLMENT_PATH, isOperatorTotpRefusal, requirePlatformAccess } from "@/lib/platform/authorize";
 import { LEVEL_RANK } from "@/lib/platform/policy";
 import { getPendingMergeCandidates } from "@/lib/transactions/merchant-merge-review";
 import { MergeReviewList } from "./MergeReviewList";
@@ -29,6 +29,7 @@ export const dynamic = "force-dynamic";
 
 export default async function MerchantOpsReviewPage() {
   const [auth, err] = await requirePlatformAccess("MERCHANT_OPS", "READ");
+  if (err && isOperatorTotpRefusal(err)) redirect(OPERATOR_TOTP_ENROLMENT_PATH); // SEC-PLAT-1 — grant held, TOTP missing
   if (err) redirect("/dashboard"); // no MERCHANT_OPS grant → out
   // SYSTEM_ADMIN break-glass carries no grant row; it may decide.
   const canDecide = auth.grant === null || LEVEL_RANK[auth.grant.level] >= LEVEL_RANK.WRITE;

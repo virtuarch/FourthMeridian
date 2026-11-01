@@ -23,7 +23,7 @@
 import { ArrowRight, RefreshCw } from "lucide-react";
 import { WidgetMessage, useWidgetFetch } from "../../widget-kit";
 import { DistributionBar, MiniBars, SectionSurface } from "../../platform-surface";
-import { getPlatformWorkspace } from "@/lib/platform/workspaces";
+import { platformViewTarget, resolvePlatformDestination } from "@/lib/platform/workspaces";
 import type { RefreshDailySeries, RefreshSummary } from "@/lib/platform/refresh/types";
 import { isUnobserved } from "../refresh-format";
 import {
@@ -39,7 +39,8 @@ import {
 import type { OverviewBlockProps } from "./block-contract";
 
 /** The workspace this block opens. */
-export const REFRESH_ACTIVITY_DOORWAY = "platform-refresh";
+// PLATFORM OPS PHASE 1 UX — Pipeline is a view of Operations (formerly "platform-refresh").
+export const REFRESH_ACTIVITY_DOORWAY = platformViewTarget("platform-overview", "pipeline");
 
 export const REFRESH_ACTIVITY_FOOTNOTE =
   "Composition and the day series are read from the refresh execution ledger through its projections; nothing here is re-derived. Open Pipeline for the execution rows, filters and the timeline of any run.";
@@ -53,7 +54,7 @@ export interface Fetched<T> {
 
 /** The doorway renders nothing when the host has not wired the rail (block contract). */
 function Doorway({ onOpenWorkspace }: { onOpenWorkspace?: (id: string) => void }) {
-  const def = getPlatformWorkspace(REFRESH_ACTIVITY_DOORWAY);
+  const def = resolvePlatformDestination(REFRESH_ACTIVITY_DOORWAY);
   if (!def || !onOpenWorkspace) return null;
   return (
     <button
