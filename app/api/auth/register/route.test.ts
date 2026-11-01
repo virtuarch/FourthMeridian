@@ -256,6 +256,26 @@ async function main() {
       t.check("siteverify 502 → 503 'temporarily unavailable' with Retry-After, nothing written",
         down.status === 503 && String(down.body.error).includes("temporarily unavailable") && !!down.headers.get("retry-after")
         && fake.callsTo("User").length === 0, down);
+      // Strict siteverify — success:true for another surface's action is a failed challenge.
+      globalThis.fetch = (async () => { siteverify++; return new Response(JSON.stringify({ success: true, hostname: "localhost", action: "access_request", challenge_ts: new Date().toISOString() }), { status: 200 }); }) as typeof fetch;
+      const origWarn = console.warn; console.warn = () => {};
+      const wrong = await register(form({ captchaToken: "tok" })).finally(() => { console.warn = origWarn; });
+      t.check("success:true with action 'access_request' at registration → 400, no user lookup", wrong.status === 400 && fake.callsTo("User").length === 0, wrong);
+      // Production with the secret MISSING → 503 (fail closed), Cloudflare never consulted.
+      const savedVercelEnv = process.env.VERCEL_ENV;
+      const savedAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+      process.env.VERCEL_ENV = "production";
+      process.env.NEXT_PUBLIC_APP_URL = "https://app.fourthmeridian.com";
+      delete process.env.TURNSTILE_SECRET_KEY;
+      const calls = siteverify;
+      console.error = () => {};
+      const prodMissing = await register(form({ captchaToken: "tok" })).finally(() => {
+        console.error = origErr;
+        if (savedVercelEnv === undefined) delete process.env.VERCEL_ENV; else process.env.VERCEL_ENV = savedVercelEnv;
+        if (savedAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL; else process.env.NEXT_PUBLIC_APP_URL = savedAppUrl;
+      });
+      t.check("Production + no Turnstile keys → 503 with Retry-After, nothing written, Cloudflare not called",
+        prodMissing.status === 503 && !!prodMissing.headers.get("retry-after") && siteverify === calls && fake.callsTo("User").length === 0, prodMissing);
     } finally {
       globalThis.fetch = realFetch;
       delete process.env.TURNSTILE_SECRET_KEY;

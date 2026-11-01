@@ -33,6 +33,12 @@ let POST: typeof import("./route").POST;
 let STATUS: typeof import("@/app/api/user/totp/status/route").GET;
 let SESSIONS: typeof import("@/app/api/user/sessions/route").GET;
 const env = process.env as Record<string, string | undefined>;
+
+/** A complete Turnstile siteverify success reply (strict checks: hostname, action, fresh challenge_ts). */
+function siteverifyOk(action: string, over: Record<string, unknown> = {}): string {
+  const host = (() => { try { return new URL(process.env.NEXT_PUBLIC_APP_URL ?? "").hostname; } catch { return "localhost"; } })();
+  return JSON.stringify({ success: true, hostname: host, action, challenge_ts: new Date().toISOString(), ...over });
+}
 const PW = "the right password";
 let ipSeq = 0;
 const nextIp = () => `198.51.100.${(++ipSeq % 250) + 1}`;
@@ -254,9 +260,28 @@ async function main() {
       t.check("siteverify 500 past the threshold → error=TEMPORARILY_UNAVAILABLE, no cookie", down.error === "TEMPORARILY_UNAVAILABLE" && !down.cookie, down);
       t.check("…counted as no failed-credential attempt: no LOGIN_FAILED row, no user lookup",
         fake.rows("AuditLog", { action: "LOGIN_FAILED" }).length === 3 && fake.callsTo("User", "findFirst").length === 3);
-      globalThis.fetch = (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as typeof fetch;
+      // Strict siteverify — a success for ANOTHER surface's action is a failed challenge.
+      globalThis.fetch = (async () => new Response(siteverifyOk("register"), { status: 200 })) as typeof fetch;
+      const origWarn = console.warn; console.warn = () => {};
+      const wrongAction = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" }).finally(() => { console.warn = origWarn; });
+      t.check("success:true with action 'register' at the login step-up → refused like a failed CAPTCHA", wrongAction.status === 401 && !wrongAction.cookie, wrongAction);
+      // Production with the secret MISSING — the step-up fails CLOSED (unavailable), never passes.
+      const savedVercelEnv = env.VERCEL_ENV;
+      env.VERCEL_ENV = "production";
+      delete env.TURNSTILE_SECRET_KEY;
+      let siteverifyCalls = 0;
+      globalThis.fetch = (async () => { siteverifyCalls++; return new Response(siteverifyOk("login"), { status: 200 }); }) as typeof fetch;
+      const origErr2 = console.error; console.error = () => {};
+      const prodMissing = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" }).finally(() => {
+        console.error = origErr2;
+        if (savedVercelEnv === undefined) delete env.VERCEL_ENV; else env.VERCEL_ENV = savedVercelEnv;
+        env.TURNSTILE_SECRET_KEY = "test-secret";
+      });
+      t.check("Production + TURNSTILE_SECRET_KEY missing, past the threshold → TEMPORARILY_UNAVAILABLE, no cookie, Cloudflare not called",
+        prodMissing.error === "TEMPORARILY_UNAVAILABLE" && !prodMissing.cookie && siteverifyCalls === 0, prodMissing);
+      globalThis.fetch = (async () => new Response(siteverifyOk("login"), { status: 200 })) as typeof fetch;
       const pass = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" });
-      t.check("…and with a passing CAPTCHA it signs in", pass.status === 200, { pass, f: lastFailure() });
+      t.check("…and with a passing CAPTCHA (action 'login') it signs in", pass.status === 200, { pass, f: lastFailure() });
     } finally {
       globalThis.fetch = realFetch;
       delete env.TURNSTILE_SECRET_KEY;

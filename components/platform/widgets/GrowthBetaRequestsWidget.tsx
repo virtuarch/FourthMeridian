@@ -50,6 +50,7 @@ import { InvitationValidityControl, useInvitationPolicy, daysLabel } from "../gr
 import { INVITATION_VALIDITY_MAX_DAYS, INVITATION_VALIDITY_MIN_DAYS } from "@/lib/platform/growth/invitation-issue.core";
 import { BulkApprovePanel } from "../growth/BulkApprovePanel";
 import { disabledReason, headerState, pruneSelection, toggleAllEligible, toggleSelected } from "../growth/bulk-approve-model";
+import { BetaRiskBadge, BetaRiskDetail } from "../growth/BetaRiskBadge";
 
 type Mode = BetaStatusResponse["registrationMode"];
 type ProductStatus = BetaStatusResponse["productStatus"];
@@ -471,8 +472,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                           </th>
                         )}
                         <th className={`${TH} w-[34%]`}>Email</th>
-                        {/* RISK SLOT (risk session) — the advisory column header goes here: <th className={TH}>Review</th> */}
-                        <th className={TH}>Requested</th><th className={TH}>Submissions</th><th className={`${TH} w-[30%]`}>Source</th><th className={`${TH} w-8`}><span className="sr-only">Open</span></th>
+                        {/* Advisory risk cue (beta-risk) — presentation only, never blocks approval. */}
+                        <th className={`${TH} w-[16%]`}>Signals</th>
+                        <th className={TH}>Requested</th><th className={TH}>Submissions</th><th className={`${TH} w-[20%]`}>Source</th><th className={`${TH} w-8`}><span className="sr-only">Open</span></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--border-hairline)]">
@@ -493,7 +495,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                               <span className="block truncate text-[10px] font-normal text-[var(--text-faint)]" data-bulk-ineligible>{disabledReason(r)}</span>
                             ) : null)}
                           </td>
-                          {/* RISK SLOT (risk session) — <td className={TD}><BetaRiskBadge risk={r.risk} /></td> goes here. Not imported yet. */}
+                          <td className={`${TD} truncate`}><BetaRiskBadge risk={r.risk} /></td>
                           <td className={`${TD} tabular-nums text-[var(--text-secondary)]`}>{`${timeAgo(r.createdAt)} ago`}</td>
                           <td className={`${TD} tabular-nums text-[var(--text-secondary)]`}>{r.requestCount > 1 ? `${r.requestCount}×` : "1"}</td>
                           <td className={`${TD} truncate text-[var(--text-muted)]`}>{describeAcquisitionSource(r.acquisition) ?? "—"}</td>
@@ -531,7 +533,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                             <span className="block truncate text-[10px] text-[var(--text-muted)]">
                               {`${timeAgo(r.createdAt)} ago`}{r.requestCount > 1 ? ` · ${r.requestCount}×` : ""}{describeAcquisitionSource(r.acquisition) ? ` · ${describeAcquisitionSource(r.acquisition)}` : ""}
                             </span>
-                            {/* RISK SLOT (risk session) — <BetaRiskBadge risk={r.risk} /> goes here on phones. */}
+                            {r.risk && r.risk.level !== "none" && <span className="mt-0.5 block"><BetaRiskBadge risk={r.risk} /></span>}
                             {canWrite && (disabledReason(r) !== null ? (
                               <span className="block truncate text-[10px] text-[var(--text-faint)]" data-bulk-ineligible>{disabledReason(r)}</span>
                             ) : null)}
@@ -618,6 +620,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                       <Row label="Source" value={describeAcquisitionSource(selectedRequest.acquisition) as string} />
                     )}
                     <Row label="Status" value="Pending" />
+                    <BetaRiskDetail risk={selectedRequest.risk} />
                     {selectedRequest.note && (
                       <div className="flex flex-col gap-1 border-t border-[var(--border-hairline)] pt-3">
                         <span className="text-[var(--text-secondary)]">Note</span>

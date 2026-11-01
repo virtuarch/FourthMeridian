@@ -117,9 +117,12 @@ const _e = {
   // convenience; a missed breach has no such second surface.
   BETA_REQUESTS_EMAIL: process.env.BETA_REQUESTS_EMAIL,
 
-  // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
-  // CAPTCHA is NOT CONFIGURED (captchaMode() "not_configured": verify skips →
-  // true, logged once; widgets don't render). Set BOTH together: with the
+  // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Optional OUTSIDE PRODUCTION —
+  // absent means CAPTCHA is NOT CONFIGURED there (captchaMode() "not_configured":
+  // verify skips → passed, logged once; widgets don't render). In PRODUCTION
+  // (VERCEL_ENV=production) a missing or half-set pair is "misconfigured" and
+  // every gated request is refused as unavailable (lib/captcha.ts, fail
+  // closed). Set BOTH together: with the
   // secret present verification is ENFORCED and FAILS CLOSED (R2), so a secret
   // without the site key refuses every gated request. The secret gates
   // server-side verification (lib/captcha.ts reads
@@ -130,6 +133,9 @@ const _e = {
   // "is it configured?" checks and env reporting.
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY,
   TURNSTILE_SECRET_KEY:           process.env.TURNSTILE_SECRET_KEY,
+  // Extra exact hostnames (comma-separated) a siteverify reply may name, beside
+  // the hosts of NEXT_PUBLIC_APP_URL / NEXT_PUBLIC_SITE_URL (lib/captcha.ts).
+  TURNSTILE_ALLOWED_HOSTNAMES:    process.env.TURNSTILE_ALLOWED_HOSTNAMES,
 
   // R2 — the DEDICATED, VERSIONED secret for the 90-day beta-intake network
   // digest (jobs/data-retention.ts resolveNetworkDigestKey reads process.env
@@ -611,8 +617,10 @@ export function validateEnv(): EnvReport {
 
   // TURNSTILE PAIRING (R2) — the two keys are one setting. Secret without site
   // key: no widget renders, and the fail-closed verifier refuses EVERY access
-  // request, registration and step-up login. Site key without secret: the
-  // widget renders but nothing is verified server-side (CAPTCHA is a no-op).
+  // request, registration and step-up login. Site key without secret: outside
+  // Production the widget renders but nothing is verified server-side (CAPTCHA
+  // is a no-op); in Production lib/captcha.ts refuses every gated request.
+  // (Neither key in Production is also refused there — logged by lib/captcha.ts.)
   // Never fatal (matches the warn-only misconfiguration checks here, and must
   // not take a deploy down) — but loud.
   const tsSecret = !!_e.TURNSTILE_SECRET_KEY;
@@ -623,7 +631,7 @@ export function validateEnv(): EnvReport {
         ? "[env] TURNSTILE_SECRET_KEY is set but NEXT_PUBLIC_TURNSTILE_SITE_KEY is NOT — no CAPTCHA widget can render, " +
           "so every CAPTCHA-gated request (access request, registration, step-up login) will be REFUSED. Set both or neither."
         : "[env] NEXT_PUBLIC_TURNSTILE_SITE_KEY is set but TURNSTILE_SECRET_KEY is NOT — the widget renders but tokens are " +
-          "NOT verified server-side (CAPTCHA is a no-op). Set both or neither."
+          "NOT verified server-side (CAPTCHA is a no-op outside Production; in Production every CAPTCHA-gated request is REFUSED). Set both or neither."
     );
   }
 

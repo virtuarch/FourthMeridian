@@ -393,6 +393,7 @@ function RegisterForm() {
           <TurnstileWidget
             siteKey={TURNSTILE_SITE_KEY}
             onToken={setCaptchaToken}
+            action="register"
             resetNonce={captchaNonce}
             theme="dark"
           />

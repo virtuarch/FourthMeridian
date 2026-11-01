@@ -209,6 +209,7 @@ export function RequestAccessForm() {
         <TurnstileWidget
           siteKey={TURNSTILE_SITE_KEY}
           onToken={setCaptchaToken}
+          action="access_request"
           resetNonce={captchaNonce}
           theme="dark"
         />

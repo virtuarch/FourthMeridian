@@ -33,7 +33,7 @@ import { possessive } from "@/lib/format";
 import { EmploymentStatus, UseCase, SpaceMemberRole, Prisma } from "@prisma/client";
 import { limitByIp } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
-import { verifyCaptchaToken, CAPTCHA_UNAVAILABLE_MESSAGE } from "@/lib/captcha";
+import { verifyCaptchaToken, CAPTCHA_ACTIONS, CAPTCHA_UNAVAILABLE_MESSAGE } from "@/lib/captcha";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
 import { getMinPasswordLength, getRegistrationMode } from "@/lib/platform-settings";
@@ -102,12 +102,13 @@ export async function POST(req: NextRequest) {
 
     // ── CAPTCHA (Wave 2 ⑥) ─────────────────────────────────────────────────────
     // Always verified when configured (registration is a top spam target).
-    // Env-gated: no TURNSTILE_SECRET_KEY ⇒ verifyCaptchaToken returns "passed",
-    // so dev/test and unconfigured deploys register unchanged. Checked before
+    // Env-gated OUTSIDE PRODUCTION: no TURNSTILE_SECRET_KEY ⇒ "passed", so
+    // dev/test/Preview register unchanged; in Production missing or half-set
+    // keys ⇒ "unavailable" (503) — fail closed. Checked before
     // any field validation or DB work so a bot burns nothing past this point.
     // R2 — fail-closed: "unavailable" (Cloudflare unreachable) is an honest 503,
-    // "rejected" the ordinary 400.
-    const captcha = await verifyCaptchaToken(captchaToken, getRequestMeta(req).ip);
+    // "rejected" (incl. wrong hostname / action "register" / stale) the ordinary 400.
+    const captcha = await verifyCaptchaToken(captchaToken, { action: CAPTCHA_ACTIONS.register, ip: getRequestMeta(req).ip });
     if (captcha === "unavailable") {
       return NextResponse.json({ error: CAPTCHA_UNAVAILABLE_MESSAGE }, { status: 503, headers: { "Retry-After": "60" } });
     }

@@ -26,6 +26,11 @@ const HOUR_START = "2026-10-31T12:00:00.000Z";
 let now = FIXED_NOW;
 Date.now = () => now;
 
+/** A complete Turnstile siteverify success reply (strict checks: hostname, action, fresh challenge_ts). */
+function siteverifyOk(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({ success: true, hostname: "fourthmeridian.com", action: "access_request", challenge_ts: new Date().toISOString(), ...over });
+}
+
 async function main() {
   const { FakePrisma, installFakePrisma } = await import("@/lib/test-support/fake-prisma");
   const { invoke, request, makeChecker } = await import("@/lib/test-support/route-harness");
@@ -121,6 +126,7 @@ async function main() {
   {
     process.env.TURNSTILE_SECRET_KEY = "test-secret";
     process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY = "test-site";
+    process.env.TURNSTILE_ALLOWED_HOSTNAMES = "fourthmeridian.com";
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response("down", { status: 500 })) as typeof fetch;
     const before = fake.rows("BetaAccessRequestEvent").length;
@@ -131,14 +137,61 @@ async function main() {
       globalThis.fetch = (async () => new Response(JSON.stringify({ success: false }), { status: 200 })) as typeof fetch;
       const rej = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" }));
       t.check("Cloudflare success:false → 400 CAPTCHA failure", rej.status === 400 && String(rej.body.error).includes("CAPTCHA"), rej);
-      t.check("nothing stored for either", fake.rows("BetaAccessRequestEvent").length === before);
-      globalThis.fetch = (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as typeof fetch;
+      // Strict siteverify: success:true is not enough.
+      globalThis.fetch = (async () => new Response(siteverifyOk({ action: "register" }), { status: 200 })) as typeof fetch;
+      const wrongAction = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" }));
+      t.check("success:true with another surface's action ('register') → 400", wrongAction.status === 400 && String(wrongAction.body.error).includes("CAPTCHA"), wrongAction);
+      globalThis.fetch = (async () => new Response(siteverifyOk({ action: undefined }), { status: 200 })) as typeof fetch;
+      const noAction = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" }));
+      t.check("success:true without an action → 400", noAction.status === 400, noAction);
+      globalThis.fetch = (async () => new Response(siteverifyOk({ hostname: "evil.example" }), { status: 200 })) as typeof fetch;
+      const badHost = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" }));
+      t.check("success:true from a hostname outside the allowlist → 400", badHost.status === 400, badHost);
+      globalThis.fetch = (async () => new Response(siteverifyOk({ challenge_ts: new Date(Date.parse(new Date().toISOString()) - 301_000).toISOString() }), { status: 200 })) as typeof fetch;
+      const stale = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" }));
+      t.check("success:true with a challenge older than 300 s → 400", stale.status === 400, stale);
+      t.check("nothing stored for any strict-check failure", fake.rows("BetaAccessRequestEvent").length === before);
+      globalThis.fetch = (async () => new Response(siteverifyOk(), { status: 200 })) as typeof fetch;
       const ok = await quietWarn(() => submit({ email: "bob@example.test", captchaToken: "tok" })); counted.n++;
-      t.check("…and a confirmed token is admitted", ok.status === 200 && fake.rows("BetaAccessRequestEvent").length === before + 1);
+      t.check("…and a confirmed token (allowed host, action 'access_request', fresh) is admitted", ok.status === 200 && fake.rows("BetaAccessRequestEvent").length === before + 1);
     } finally {
       globalThis.fetch = realFetch;
       delete process.env.TURNSTILE_SECRET_KEY;
       delete process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+      delete process.env.TURNSTILE_ALLOWED_HOSTNAMES;
+    }
+  }
+
+  t.section("5b. CAPTCHA keys missing IN PRODUCTION → 503 (fail closed), never a pass");
+  {
+    const savedVercelEnv = process.env.VERCEL_ENV;
+    const savedAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+    process.env.VERCEL_ENV = "production";
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.fourthmeridian.com";
+    const realFetch = globalThis.fetch;
+    let siteverify = 0;
+    globalThis.fetch = (async () => { siteverify++; return new Response(siteverifyOk(), { status: 200 }); }) as typeof fetch;
+    const before = fake.rows("BetaAccessRequestEvent").length;
+    const origErr = console.error; console.error = () => {};
+    try {
+      const missing = await quietWarn(() => submit({ email: "carol@example.test", captchaToken: "tok" }));
+      t.check("no keys → 503 'temporarily unavailable' with Retry-After", missing.status === 503
+        && String(missing.body.error).includes("temporarily unavailable") && !!missing.headers.get("retry-after"), missing);
+      process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY = "test-site";
+      const siteOnly = await quietWarn(() => submit({ email: "carol@example.test", captchaToken: "tok" }));
+      t.check("site key only (half-configured) → 503", siteOnly.status === 503, siteOnly);
+      delete process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+      process.env.TURNSTILE_SECRET_KEY = "test-secret";
+      const secretOnly = await quietWarn(() => submit({ email: "carol@example.test", captchaToken: "tok" }));
+      t.check("secret only (half-configured) → 503", secretOnly.status === 503, secretOnly);
+      t.check("Cloudflare never consulted, nothing stored", siteverify === 0 && fake.rows("BetaAccessRequestEvent").length === before);
+    } finally {
+      console.error = origErr;
+      globalThis.fetch = realFetch;
+      delete process.env.TURNSTILE_SECRET_KEY;
+      delete process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+      if (savedVercelEnv === undefined) delete process.env.VERCEL_ENV; else process.env.VERCEL_ENV = savedVercelEnv;
+      if (savedAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL; else process.env.NEXT_PUBLIC_APP_URL = savedAppUrl;
     }
   }
 

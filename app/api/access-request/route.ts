@@ -17,11 +17,13 @@
  *   1. per-IP limit, 5 / 15 min (limitByIp, mirroring register). Fail-open on a
  *      store error, like every enforce() limiter.
  *   2. shape validation + PRIV-012 consent (400s, nothing stored).
- *   3. CAPTCHA (lib/captcha.ts verifyCaptchaToken). When TURNSTILE_SECRET_KEY is
- *      configured it is ENFORCED and FAILS CLOSED: "rejected" → 400, and
- *      "unavailable" (Cloudflare error/timeout/non-2xx/malformed) → 503
- *      "temporarily unavailable"; when it is not configured verification is
- *      skipped (logged once) — see captchaMode().
+ *   3. CAPTCHA (lib/captcha.ts verifyCaptchaToken, action "access_request").
+ *      When TURNSTILE_SECRET_KEY is configured it is ENFORCED and FAILS CLOSED:
+ *      "rejected" (failed challenge, or a wrong hostname/action/stale
+ *      challenge) → 400, and "unavailable" (Cloudflare error/timeout/non-2xx/
+ *      malformed, or PRODUCTION with missing/half-set keys) → 503 "temporarily
+ *      unavailable". Outside Production with no secret verification is
+ *      skipped (logged once) — see resolveCaptchaConfig().
  *   4. GLOBAL limit per UTC hour across all callers (limitGlobal) → 429 with
  *      the generic "too many requests" body. The number is the PlatformSetting
  *      beta_intake_global_limit_per_hour (10–1000, default 60; an unreadable
@@ -80,7 +82,7 @@ import { env } from "@/lib/env";
 import { getBetaIntakeGlobalLimitPerHour } from "@/lib/platform-settings";
 import { limitByIp, limitGlobal, limitByKey, consumeThrottle, countInWindow, emailLimitKey, canonicalEmailLimitKey, type RateLimitConfig } from "@/lib/rate-limit";
 import { getRequestMeta } from "@/lib/api";
-import { verifyCaptchaToken, CAPTCHA_UNAVAILABLE_MESSAGE } from "@/lib/captcha";
+import { verifyCaptchaToken, CAPTCHA_ACTIONS, CAPTCHA_UNAVAILABLE_MESSAGE } from "@/lib/captcha";
 import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
@@ -167,10 +169,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Note must be ${NOTE_MAX} characters or fewer.` }, { status: 400 });
     }
 
-    // CAPTCHA — enforced + fail-closed when TURNSTILE_SECRET_KEY is set;
-    // skipped (logged once) when it is not. See lib/captcha.ts.
-    // "unavailable" (Cloudflare unreachable) → honest 503; "rejected" → 400.
-    const captcha = await verifyCaptchaToken(captchaToken, meta.ip);
+    // CAPTCHA — enforced + fail-closed when TURNSTILE_SECRET_KEY is set (and
+    // in Production when it is missing); skipped (logged once) outside
+    // Production without a secret. See lib/captcha.ts.
+    // "unavailable" (Cloudflare unreachable / Production misconfigured) → honest 503; "rejected" → 400.
+    const captcha = await verifyCaptchaToken(captchaToken, { action: CAPTCHA_ACTIONS.accessRequest, ip: meta.ip });
     if (captcha === "unavailable") {
       return NextResponse.json({ error: CAPTCHA_UNAVAILABLE_MESSAGE }, { status: 503, headers: { "Retry-After": "60" } });
     }
