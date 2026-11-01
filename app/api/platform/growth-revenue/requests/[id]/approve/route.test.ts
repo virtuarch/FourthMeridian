@@ -12,6 +12,7 @@
 import "@/lib/test-support/route-env";
 import bcrypt from "bcryptjs";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
+import { seedBetaGroup } from "@/lib/test-support/beta-group";
 import { invoke, request, makeChecker, signIn, freshCache } from "@/lib/test-support/route-harness";
 import { capturedEmails } from "@/lib/email/providers/capture";
 
@@ -23,6 +24,7 @@ let APPROVE: H;
 async function world(status = "PENDING") {
   fake.reset();
   freshCache();
+  await seedBetaGroup(fake);
   const hash = await bcrypt.hash("pw", 4);
   const admin = fake.seed("User", { email: "ops@example.test", username: "ops", passwordHash: hash, emailVerifiedAt: new Date(), role: "SYSTEM_ADMIN", totpEnabled: true, totpSecret: "x" });
   const user  = fake.seed("User", { email: "u@example.test", username: "u", passwordHash: hash, emailVerifiedAt: new Date() });

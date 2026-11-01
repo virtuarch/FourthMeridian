@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import bcrypt from "bcryptjs";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
+import { seedBetaGroup } from "@/lib/test-support/beta-group";
 import { invoke, request, makeChecker, signIn, freshCache } from "@/lib/test-support/route-harness";
 import { captureAdapter, capturedEmails, clearCapturedEmails } from "@/lib/email/providers/capture";
 import { DAY_MS } from "./invitation-issue.core";
@@ -30,6 +31,7 @@ async function world() {
   fake.reset();
   fake.clearHooks();
   freshCache();
+  await seedBetaGroup(fake);
   clearCapturedEmails();
   const hash = await bcrypt.hash("pw", 4);
   const a = fake.seed("User", { email: "ops@example.test", username: "ops", passwordHash: hash, emailVerifiedAt: new Date(), role: "SYSTEM_ADMIN", totpEnabled: true, totpSecret: "x" });
@@ -392,6 +394,36 @@ async function main() {
     const route = readFileSync(path.join(process.cwd(), "app/api/platform/growth-revenue/requests/bulk-approve/route.ts"), "utf8");
     t.check("route declares maxDuration = 300 (the repo's long-route budget) above the 240 s loop budget",
       /export const maxDuration = 300;/.test(route) && /BULK_TIME_BUDGET_MS = 240_000/.test(readFileSync(path.join(process.cwd(), "lib/platform/growth/bulk-approve.ts"), "utf8")));
+  }
+
+  // ── 12. BETA_NOT_ACCEPTING ────────────────────────────────────────────────
+  t.section("12. BETA_NOT_ACCEPTING: a paused/ended/unknown beta refuses the batch; a pause mid-batch stops the rest");
+  {
+    await world();
+    const { db } = await import("@/lib/db");
+    const { bulkApproveBetaRequests } = await import("./bulk-approve");
+    const actor = { userId: admin.id, via: "SYSTEM_ADMIN" as const, area: "GROWTH_REVENUE" };
+    const ids = ["nb1", "nb2", "nb3"].map((n) => pending(`${n}@example.test`));
+    const parse = (dryRun: boolean) => (parseBulkApproveBody({ requestIds: ids, batchKey: randomUUID(), dryRun }) as { ok: true; body: Parameters<typeof bulkApproveBetaRequests>[0]["body"] }).body;
+    for (const state of ["PAUSED", "ENDED", "UNKNOWN"] as const) {
+      for (const dryRun of [true, false]) {
+        const r = await bulkApproveBetaRequests({ client: db, actor, body: parse(dryRun), betaLifecycle: async () => state });
+        t.check(`${state}${dryRun ? " (dry run)" : ""} → 409 BETA_NOT_ACCEPTING, nothing approved`,
+          !r.ok && r.status === 409 && r.code === "BETA_NOT_ACCEPTING" && ids.every((id) => row({ id }).status === "PENDING"), r);
+      }
+    }
+    const thrown = await bulkApproveBetaRequests({ client: db, actor, body: parse(false), betaLifecycle: async () => { throw new Error("db down"); } });
+    t.check("a throwing lifecycle read → 409 (fail closed)", !thrown.ok && thrown.status === 409, thrown);
+    t.check("no invite email and no batch audit for any refused batch", ["nb1", "nb2", "nb3"].every((n) => sentTo(`${n}@example.test`).length === 0) && audits(BULK).length === 0);
+
+    // ACTIVE at the batch check, PAUSED from the 2nd issuance on: row 1 issued, row 2 refused, row 3 not attempted.
+    let reads = 0;
+    const flips = async () => (++reads <= 2 ? "ACTIVE" : "PAUSED") as "ACTIVE" | "PAUSED";
+    const mid = await bulkApproveBetaRequests({ client: db, actor, body: parse(false), betaLifecycle: flips });
+    const ok = mid.ok && !mid.dryRun ? mid : null;
+    t.check("paused mid-batch → first row approved, the next refused, the rest NOT_ATTEMPTED",
+      ok !== null && ok.summary.succeeded === 1 && ok.failed.length === 1 && ok.skipped.filter((x) => x.code === "NOT_ATTEMPTED").length === 1
+      && row({ id: ids[0] }).status === "APPROVED" && row({ id: ids[1] }).status === "PENDING" && row({ id: ids[2] }).status === "PENDING", mid);
   }
 
   t.done();

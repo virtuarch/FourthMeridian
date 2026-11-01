@@ -114,7 +114,9 @@ export type IssueRefusalCode =
   | "INVALID_EMAIL"
   | "CONFLICT"
   | "WOULD_SHORTEN"
-  | "STATUS_CHANGED";
+  | "STATUS_CHANGED"
+  /** The Beta group's lifecycle is not ACTIVE (PAUSED / ENDED) or cannot be verified (UNKNOWN). */
+  | "BETA_NOT_ACCEPTING";
 
 export interface IssueRefusal {
   code: IssueRefusalCode;
@@ -126,7 +128,7 @@ export interface IssueRefusal {
 const STATUS_OF: Record<IssueRefusalCode, IssueRefusal["status"]> = {
   NOT_FOUND: 404, INVALID_VALIDITY: 400, INVALID_EMAIL: 400,
   REDEEMED: 409, ACCOUNT_EXISTS: 409, NOT_APPROVED: 409, DENIED: 409, LIVE_INVITE: 409, CONFLICT: 409, WOULD_SHORTEN: 409,
-  STATUS_CHANGED: 409,
+  STATUS_CHANGED: 409, BETA_NOT_ACCEPTING: 409,
 };
 
 export function refusal(code: IssueRefusalCode, message?: string): IssueRefusal {
@@ -145,7 +147,17 @@ const DEFAULT_MESSAGE: Record<IssueRefusalCode, string> = {
   CONFLICT:         "This invitation changed while your action was being saved. Reload and try again.",
   WOULD_SHORTEN:    "That would shorten this invitation. Extend only lengthens it — use Revoke to end an invitation early.",
   STATUS_CHANGED:   "This request's status changed since it was selected (denied, revoked or re-queued) — not approved.",
+  BETA_NOT_ACCEPTING: "The beta isn't accepting new members right now (paused, ended, or its status couldn't be verified). Nothing was sent.",
 };
+
+/**
+ * PURE — whether the Beta group's lifecycle lets an invitation be minted or lengthened.
+ * Only a verified ACTIVE does: PAUSED, ENDED and UNKNOWN (unreadable, stale, no
+ * lifecycle facts) are closed (lib/entitlements/beta-lifecycle.ts).
+ */
+export function betaAcceptsInvitations(state: string): boolean {
+  return state === "ACTIVE";
+}
 
 /** What the I/O layer must do. `expectedHash` is the optimistic token for a rotation. */
 export type IssuePlan =
