@@ -40,7 +40,7 @@ import {
 
 type Db = typeof systemDb;
 export type BlocklistReader = Pick<Prisma.TransactionClient, "betaBlockedIdentifier">;
-export type BlocklistTx = Pick<Prisma.TransactionClient, "betaBlockedIdentifier" | "betaAccessRequestReview" | "auditLog" | "$executeRaw">;
+export type BlocklistTx = Pick<Prisma.TransactionClient, "betaBlockedIdentifier" | "betaAccessRequest" | "betaAccessRequestReview" | "auditLog" | "$executeRaw">;
 
 /** Thrown inside a transaction when a block must be written but cannot (Production, no usable key): the transaction rolls back. */
 export class BlocklistUnavailableError extends Error {
