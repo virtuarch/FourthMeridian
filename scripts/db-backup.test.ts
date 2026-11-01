@@ -73,6 +73,14 @@ async function main(): Promise<void> {
   check("short table fails", v.mismatches.length === 1 && /Account: 4 rows in the snapshot, 3 in the dump/.test(v.mismatches[0]), JSON.stringify(v));
   v = verifyDumpAgainstSnapshot({ Account: 3, JobRun: 27147, Empty: 0, NeverDumped: 0 }, DUMP);
   check("zero-row tables are skipped (present or not)", v.mismatches.length === 0 && v.checked === 2, JSON.stringify(v));
+  {
+    // Review P1 through the verifier itself: an empty block MID-dump must not swallow the next table's rows.
+    const mid = "-- dump\n" + copyBlock("Account", 3) + copyBlock("Empty", 0) + copyBlock("JobRun", 7);
+    const ok = verifyDumpAgainstSnapshot({ Account: 3, Empty: 0, JobRun: 7 }, mid);
+    check("verify: empty block mid-dump — exact counts pass", ok.mismatches.length === 0 && ok.checked === 2, JSON.stringify(ok));
+    const short = verifyDumpAgainstSnapshot({ Account: 3, Empty: 0, JobRun: 8 }, mid);
+    check("verify: …and a table after it that is one row short still fails", short.mismatches.length === 1 && /JobRun: 8 rows in the snapshot, 7 in the dump/.test(short.mismatches[0]), JSON.stringify(short));
+  }
 
   // ── 2. orchestration ─────────────────────────────────────────────────────
   console.log("orchestration (injected fakes)");
@@ -174,13 +182,14 @@ printf '%s\\n' "$$" > "$FAKE_PSQL_LOG.pid"
 while IFS= read -r line; do
   printf '%s\\n' "$line" >> "$FAKE_PSQL_LOG"
   case "$line" in
-    '\\echo '*) [ -n "$FAKE_PSQL_SILENT" ] || printf '%s\\n' "\${line#\\\\echo }" ;;
+    '\\echo '*) [ -n "$FAKE_PSQL_SILENT" ] || [ "$stall" = 1 ] || printf '%s\\n' "\${line#\\\\echo }" ;;
     'SELECT pg_export_snapshot();')
       if [ -n "$FAKE_PSQL_EXPORT_FAIL" ]; then echo 'ERROR:  cannot export a snapshot from a subtransaction' >&2; exit 3; fi
+      if [ -n "$FAKE_PSQL_EXPORT_MULTI" ]; then echo 'NOTICE-ish line'; fi
       if [ -n "$FAKE_PSQL_BAD_ID" ]; then echo 'not-a-snapshot'; else echo '00000003-0000001B-1'; fi ;;
     select\\ c.relname*) printf 'Account\\nJobRun\\n' ;;
     'select count(*) from "Account";') if [ -n "$FAKE_PSQL_MULTI" ]; then echo 3; echo 4; else echo 3; fi ;;
-    'select count(*) from "JobRun";') echo 27147 ;;
+    'select count(*) from "JobRun";') if [ -n "$FAKE_PSQL_STALL_JOBRUN" ]; then stall=1; else echo 27147; fi ;;
   esac
 done
 exit 0
@@ -260,6 +269,27 @@ exit 0
     await sm.close();
     delete process.env.FAKE_PSQL_MULTI;
     check("a multi-line count(*) reply is refused", /count\(\*\) on Account returned/.test(err), err);
+
+    // Review: a stall DURING a count (not only at open) also times out and kills the child.
+    rmSync(log, { force: true });
+    process.env.FAKE_PSQL_STALL_JOBRUN = "1";
+    err = "";
+    const st = await openPsqlSnapshotSession(URL_OK, fake, 300);
+    const a3 = await st.count("Account");
+    const stalled = await within(st.count("JobRun").then(() => "COUNTED", (e) => { err = (e as Error).message; return "REJECTED"; }), 3000);
+    await st.close();
+    delete process.env.FAKE_PSQL_STALL_JOBRUN;
+    check("a count that stalls mid-session rejects within its own timeout (earlier counts unaffected)", a3 === 3 && stalled === "REJECTED" && /no reply within 0\.3s/.test(err), `${a3} ${stalled} ${err}`);
+    check("…and the psql child is killed", await pidGone());
+
+    // Review: a multi-line export reply whose LAST line is a valid id is still refused (exactly one line).
+    rmSync(log, { force: true });
+    process.env.FAKE_PSQL_EXPORT_MULTI = "1";
+    err = "";
+    try { await openPsqlSnapshotSession(URL_OK, fake); } catch (e) { err = (e as Error).message; }
+    delete process.env.FAKE_PSQL_EXPORT_MULTI;
+    check("a multi-line pg_export_snapshot reply ending in a valid id is refused", /unexpected value/.test(err), err);
+    check("…and the psql child is killed", await pidGone());
 
     // End to end with the real orchestration: export failure ⇒ snapshot-stage failure, no dump.
     process.env.FAKE_PSQL_EXPORT_FAIL = "1";
