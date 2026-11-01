@@ -36,7 +36,7 @@ const USER_MESSAGES: Record<string, string> = {
   SANDBOX_ONLY:
     "This action is only available in the Plaid sandbox environment.",
   INVALID_ENVIRONMENT:
-    "Invalid Plaid environment configuration. Contact support.",
+    "Invalid Plaid environment configuration. Contact support@fourthmeridian.com.",
 };
 
 interface PlaidErrorBody {
@@ -88,11 +88,11 @@ export function parsePlaidError(err: unknown, fallback: string): ParsedError {
   }
 
   if (err instanceof Error && err.message.includes("ENCRYPTION_KEY")) {
-    return { message: "Server configuration error. Contact support.", status: 500 };
+    return { message: "Server configuration error. Contact support@fourthmeridian.com.", status: 500 };
   }
 
   if (err instanceof Error && err.message.includes("Missing env var")) {
-    return { message: "Server configuration error. Contact support.", status: 500 };
+    return { message: "Server configuration error. Contact support@fourthmeridian.com.", status: 500 };
   }
 
   return { message: fallback, status: 500 };

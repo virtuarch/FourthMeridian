@@ -27,6 +27,7 @@ import {
   PlaidLinkOnEvent,
 } from "react-plaid-link";
 import { useRouter } from "next/navigation";
+import { reportPlaidLinkExit } from "@/lib/analytics/link-exit-client";
 
 /**
  * Terminal callbacks for the connection-specific "Enable Investments" flow.
@@ -200,6 +201,9 @@ export function PlaidProvider({ children }: { children: React.ReactNode }) {
     console.log("institution:",     metadata?.institution?.name ?? null,
                                     metadata?.institution?.institution_id ?? null);
     console.groupEnd();
+
+    // S2-(a) — CONNECTION_LINK_EXITED: provider + exit status + error code only.
+    reportPlaidLinkExit(err, metadata);
 
     // ── Investments-consent flow: route terminal state to the card's handler ──
     // Cancel is non-destructive (the Item is untouched); a real error surfaces

@@ -31,6 +31,7 @@ import { authDb as db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
+import { hashSecurityIdentifier } from "@/lib/security/identifier-hash";
 import { auditInsert, buildAuditData } from "@/lib/audit";
 import { requiresTotpEnrollment } from "@/lib/auth-totp-policy";
 import { PlatformSettingKey } from "@/lib/platform-settings";
@@ -69,7 +70,7 @@ const ANOMALY_SUSPICIOUS_REASONS = new Set<string>([
 
 /**
  * Write the LOGIN_FAILED audit row (canonical shape: userId when the account
- * resolved, always ipAddress + userAgent, `{ identifier, reason, role? }`
+ * resolved, always ipAddress + userAgent, `{ identifierHash, reason, role? }`
  * metadata) and, for suspicious reasons, run the inline anomaly detector. The
  * detector is best-effort and non-throwing, so awaiting it here never affects
  * the (already-failed) login outcome — it only adds a cheap bounded count on the
@@ -92,13 +93,19 @@ async function recordLoginFailure(args: {
   // errors: a genuine invalid_password stays invalid even if the DB is
   // struggling. (The write is still attempted; only its failure is contained.)
   try {
+    // IDENTIFIER HYGIENE (beta, 2026-11-01): the typed identifier is attacker-
+    // controlled and is often an email (an unresolved one may be a stranger's), so
+    // the row stores only its keyed hash — the Security Ops salt and helper
+    // (lib/security/identifier-hash.ts), never the raw value. The anomaly
+    // detector groups a burst by this same hash (lib/security/anomaly-alerts.ts).
+    const identifierHash = hashSecurityIdentifier(identifier);
     // fm_auth may INSERT AuditLog but not read it back — never create() (lib/audit.ts auditInsert).
     await auditInsert(db, {
       ...(userId ? { userId } : {}),
       action:    AuditAction.LOGIN_FAILED,
       ipAddress,
       userAgent,
-      metadata:  { identifier, reason, ...(role ? { role } : {}) },
+      metadata:  { identifierHash, reason, ...(role ? { role } : {}) },
     }).write;
     if (ANOMALY_SUSPICIOUS_REASONS.has(reason)) {
       await reportLoginFailureAnomalies({ identifier, ip: ipAddress, reason, userId, userEmail });

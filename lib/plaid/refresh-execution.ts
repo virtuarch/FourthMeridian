@@ -76,6 +76,7 @@ import type {
 } from "@/lib/plaid/refresh-execution-types";
 import { buildVerdict } from "@/lib/plaid/refresh-verdict.core";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
+import { recordFirstSyncSucceeded } from "@/lib/analytics/product-events";
 
 // ── The ledger row shapes ────────────────────────────────────────────────────
 //
@@ -417,6 +418,14 @@ export interface RunFullRefreshDeps<T> {
    * into the refresh: an exception here is swallowed like any ledger failure.
    */
   verdict?: (ctx: { result?: T; error?: unknown; stages: readonly RefreshStageRecord[] }) => ExecutionVerdict | undefined;
+  /**
+   * S2-(a) — FIRST_SYNC_SUCCEEDED. Called once, after the completion write, when
+   * this execution's derived status is SUCCEEDED, with the execution's source.
+   * Production (no injected `client`) defaults to `recordFirstSyncForSource`;
+   * a test that injects a recorder gets no default and passes its own. Awaited,
+   * but an exception here is swallowed: analytics never breaks a refresh.
+   */
+  firstSync?: (source: ExecutionSource) => Promise<unknown>;
 }
 
 /**
@@ -430,6 +439,7 @@ export async function runFullRefresh<T = RefreshItemResult>(
   deps: RunFullRefreshDeps<T> = {},
 ): Promise<T> {
   const recorderClient = deps.client ?? productionLedgerRecorder();
+  const firstSync = deps.firstSync ?? (deps.client ? undefined : recordFirstSyncForSource);
   const runId = randomUUID();
   const startedAt = new Date();
   const t0 = Date.now();
@@ -478,6 +488,10 @@ export async function runFullRefresh<T = RefreshItemResult>(
       const result = await runStages({ recorder, runId });
       await closeExecution(ledger, recorder.records, startedAt, t0, undefined, overrideFor({ result }));
       reportLedgerCompleteness(runId, recorderClient.degradations);
+      if (firstSync && deriveOverallStatus(recorder.records) === "SUCCEEDED") {
+        try { await firstSync(sourceOf(params)); }
+        catch (fsErr) { console.warn(`[refresh-execution] ${runId}: first-sync event not recorded (ignored):`, redactedErrorForLog(fsErr)); }
+      }
       return result;
     } catch (err) {
       recorder.failOpen(err);
@@ -537,6 +551,48 @@ function plaidItemIdOf(params: RunFullRefreshParams): string | null {
   if (params.itemId) return params.itemId;
   if (params.source?.kind === "PLAID_ITEM") return params.source.ref;
   return null;
+}
+
+function sourceOf(params: RunFullRefreshParams): ExecutionSource {
+  return params.source ?? { kind: "PLAID_ITEM", ref: params.itemId ?? "" };
+}
+
+// ── S2-(a) — FIRST_SYNC_SUCCEEDED ─────────────────────────────────────────────
+
+/** Users already recorded by this process — saves the lookup on a warm instance. Bounded. */
+const firstSyncSeen = new Set<string>();
+const FIRST_SYNC_SEEN_CAP = 10_000;
+
+/**
+ * The production first-sync writer: resolve the user who owns the source on the
+ * system authority (the same principal this module already uses for the ledger),
+ * then write the once-per-user product event. The event's own "once" dedupe is
+ * the guarantee; the in-process set only avoids repeating a no-op insert.
+ * Never throws.
+ */
+export async function recordFirstSyncForSource(source: ExecutionSource): Promise<boolean> {
+  try {
+    let userId: string | null | undefined;
+    if (source.kind === "PLAID_ITEM") {
+      if (!source.ref) return false;
+      userId = (await systemDb.plaidItem.findUnique({ where: { id: source.ref }, select: { userId: true } }))?.userId;
+    } else {
+      const acct = await systemDb.financialAccount.findUnique({
+        where: { id: source.ref }, select: { ownerUserId: true, createdByUserId: true },
+      });
+      userId = acct?.ownerUserId ?? acct?.createdByUserId;
+    }
+    if (!userId || firstSyncSeen.has(userId)) return false;
+    const written = await recordFirstSyncSucceeded(systemDb, { userId, sourceKind: source.kind });
+    if (written) {
+      if (firstSyncSeen.size >= FIRST_SYNC_SEEN_CAP) firstSyncSeen.clear();
+      firstSyncSeen.add(userId);
+    }
+    return written;
+  } catch (err) {
+    console.warn("[refresh-execution] first-sync lookup failed (ignored):", redactedErrorForLog(err));
+    return false;
+  }
 }
 
 function startData(

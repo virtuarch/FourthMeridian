@@ -37,6 +37,7 @@ import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
 // BETA C7′ — the connection-count entitlement (maxConnections), fresh links only.
 import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
 import { entitlementsForUser, refuseIfFailClosed } from "@/lib/entitlements/consume";
+import { recordConnectionLinkStarted } from "@/lib/analytics/product-events";
 
 /**
  * The public URL Plaid should POST webhooks to (TRANSACTIONS/SYNC_UPDATES_AVAILABLE).
@@ -274,6 +275,12 @@ export async function GET(req: NextRequest) {
 
     const token = response.data.link_token;
     console.log(`[plaid] link token created for user ${user.id} (env: ${PLAID_ENV})`);
+
+    // S2-(a) — CONNECTION_LINK_STARTED {provider}. After the token exists, in its
+    // own tenant phase; the writer fails soft and the phase is caught, so an
+    // analytics failure can never cost the user their link token.
+    await withTenantDb(user.id, (tx) => recordConnectionLinkStarted(tx, { userId: user.id, provider: "PLAID" }))
+      .catch(() => false);
 
     return NextResponse.json({ link_token: token });
   } catch (err: unknown) {

@@ -43,20 +43,23 @@ const ROOT = process.cwd();
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-const FIVE = ["SESSION_ACTIVE_DAY", "SPACE_VIEWED", "BRIEF_VIEWED", "TRANSACTIONS_VIEWED", "MANUAL_ASSET_VALUE_UPDATED"];
+const FIVE = ["SESSION_ACTIVE_DAY", "SPACE_VIEWED", "BRIEF_VIEWED", "TRANSACTIONS_VIEWED", "MANUAL_ASSET_VALUE_UPDATED",
+  // S2-(a) — the connection funnel and AI failures (product-events-funnel.test.ts).
+  "CONNECTION_LINK_STARTED", "CONNECTION_LINK_EXITED", "FIRST_SYNC_SUCCEEDED", "AI_TURN_FAILED"];
 
 async function main() {
   console.log("1. vocabulary");
   {
-    check("PRODUCT_EVENT_ACTIONS is exactly the five, in order", JSON.stringify([...PRODUCT_EVENT_ACTIONS]) === JSON.stringify(FIVE));
+    check("PRODUCT_EVENT_ACTIONS is exactly the nine (A2 five + S2-(a) four), in order", JSON.stringify([...PRODUCT_EVENT_ACTIONS]) === JSON.stringify(FIVE));
     check("each is a canon constant whose value is its own name",
       FIVE.every((a) => (AuditAction as Record<string, string>)[a] === a));
     check("WALLET_ADD and MANUAL_ASSET_ADD are promoted with their historical values",
       AuditAction.WALLET_ADD === "WALLET_ADD" && AuditAction.MANUAL_ASSET_ADD === "MANUAL_ASSET_ADD");
     check("…and are NOT product events (their own retention and feeds)",
       !PRODUCT_EVENT_ACTIONS.includes(AuditAction.WALLET_ADD) && !PRODUCT_EVENT_ACTIONS.includes(AuditAction.MANUAL_ASSET_ADD));
-    check("the metadata allowlist is the eight keys the design names",
-      JSON.stringify([...PRODUCT_EVENT_METADATA_KEYS]) === JSON.stringify(["day", "spaceType", "briefDay", "cached", "accountId", "connectionId", "chain", "currency"]));
+    check("the metadata allowlist is the eight A2 keys plus the six S2-(a) enum keys",
+      JSON.stringify([...PRODUCT_EVENT_METADATA_KEYS]) === JSON.stringify(["day", "spaceType", "briefDay", "cached", "accountId", "connectionId", "chain", "currency",
+        "provider", "stage", "errorCode", "sourceKind", "surface", "reason"]));
   }
 
   console.log("2. disjointness from every feed and allowlist");
@@ -157,16 +160,19 @@ async function main() {
       "app/api/spaces/[id]/transactions/query/route.ts", "app/api/accounts/wallet/route.ts", "app/api/accounts/manual/route.ts",
       // Coordinator (post-RWA-2A): MANUAL_ASSET_VALUE_UPDATED on the PATCH success path.
       "app/api/accounts/manual/[id]/route.ts",
+      // S2-(a) — link started, link exited (handler module), first sync, AI turn failed.
+      "app/api/plaid/link-token/route.ts", "lib/analytics/link-exit.ts", "lib/plaid/refresh-execution.ts", "app/api/ai/chat/route.ts",
     ];
     check("the call sites are exactly the ones the design names", JSON.stringify([...importers].sort()) === JSON.stringify([...EXPECTED].sort()),
       importers.join(", "));
 
     // Every argument literal handed to a record* helper carries only parameter names, and none of the forbidden words.
     const FORBIDDEN = /\b(email|name|balance|amount|address|description|prompt|value|token|institution)\b/i;
-    const PARAMS = new Set(["userId", "spaceId", "spaceType", "briefDay", "cached", "accountId", "now"]);
+    const PARAMS = new Set(["userId", "spaceId", "spaceType", "briefDay", "cached", "accountId", "now",
+      "provider", "stage", "errorCode", "sourceKind", "surface", "reason"]);
     for (const f of importers) {
       const src = strip(read(f));
-      for (const m of src.matchAll(/record(?:SpaceViewed|BriefViewed|TransactionsViewed|ManualAssetValueUpdated)\(\s*\w+\s*,\s*(\{[^}]*\})/g)) {
+      for (const m of src.matchAll(/record(?:SpaceViewed|BriefViewed|TransactionsViewed|ManualAssetValueUpdated|ConnectionLinkStarted|ConnectionLinkExited|FirstSyncSucceeded|AiTurnFailed)\(\s*\w+\s*,\s*(\{[^}]*\})/g)) {
         const literal = m[1];
         const keys = [...literal.matchAll(/(\w+)\s*:/g)].map((k) => k[1]);
         check(`${f}: call literal carries parameters only (${keys.join(", ")})`, keys.length > 0 && keys.every((k) => PARAMS.has(k)));

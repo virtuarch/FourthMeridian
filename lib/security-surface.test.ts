@@ -144,8 +144,9 @@ console.log("5b. BETA A2 — product events are disjoint from every security sur
     return m ? [...m[1].matchAll(/AuditAction\.([A-Z_]+)/g)].map((x) => x[1]) : [];
   };
   const product = list("PRODUCT_EVENT_ACTIONS");
-  check("PRODUCT_EVENT_ACTIONS is exactly the five presence/engagement events",
-    product.join() === "SESSION_ACTIVE_DAY,SPACE_VIEWED,BRIEF_VIEWED,TRANSACTIONS_VIEWED,MANUAL_ASSET_VALUE_UPDATED", product.join());
+  check("PRODUCT_EVENT_ACTIONS is exactly the five presence/engagement events plus the four S2-(a) funnel / AI-failure events",
+    product.join() === "SESSION_ACTIVE_DAY,SPACE_VIEWED,BRIEF_VIEWED,TRANSACTIONS_VIEWED,MANUAL_ASSET_VALUE_UPDATED,"
+      + "CONNECTION_LINK_STARTED,CONNECTION_LINK_EXITED,FIRST_SYNC_SUCCEEDED,AI_TURN_FAILED", product.join());
   for (const name of ["USER_SECURITY_HISTORY_ACTIONS", "OPERATOR_ACTION_FEED_ACTIONS", "ADMIN_SECURITY_FILTER_ACTIONS"]) {
     const l = list(name);
     check(`${name} (${l.length} actions) admits no product event`, l.length > 3 && !product.some((a) => l.includes(a)));
