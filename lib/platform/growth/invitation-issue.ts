@@ -277,10 +277,14 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
       return { requestId: id, won: true };
     }
     const row = plan.row;
-    // SUSPECTED-ABUSE LOCK, re-read INSIDE the write transaction for a DENIED row: a
-    // SUSPICIOUS verdict recorded after the plan's read still stops the approval.
-    if (plan.action === "approve" && row.status === "DENIED" && await latestVerdictIsSuspicious(tx, row.id)) {
-      return { requestId: row.id, won: false, locked: true };
+    // SUSPECTED-ABUSE LOCK, re-read INSIDE the write transaction for a DENIED row. The
+    // request row is locked FIRST — the same `FOR UPDATE` the risk-review writer takes
+    // (beta-risk-review.ts) — so a verdict and this approval serialise: a SUSPICIOUS
+    // verdict committed before the lock is seen here; one recorded after waits for this
+    // transaction (and then lands on a row that was legitimately approved first).
+    if (plan.action === "approve" && row.status === "DENIED") {
+      await tx.$queryRaw`SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${row.id} FOR UPDATE`;
+      if (await latestVerdictIsSuspicious(tx, row.id)) return { requestId: row.id, won: false, locked: true };
     }
     const { count } = plan.action === "approve"
       ? await tx.betaAccessRequest.updateMany({

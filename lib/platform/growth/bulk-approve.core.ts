@@ -19,8 +19,11 @@
  * and the execution all call this one function, so the preview cannot promise
  * what the execution refuses.
  *
- * RISK-BLIND: an advisory `risk` field may sit on a row elsewhere; nothing here
- * reads it. Eligibility is the issuance rule and nothing else.
+ * BLIND TO THE ADVISORY HEURISTICS: the per-row signals from beta-risk-core may
+ * sit on a row elsewhere; nothing here reads them. Eligibility is the issuance
+ * rule and nothing else — which INCLUDES the suspected-abuse lock (a DENIED row
+ * whose latest operator verdict is SUSPICIOUS), carried in InviteRowFacts by the
+ * shared loader (invitation-issue.ts loadInviteRowFacts).
  */
 
 import { planApprove, type InviteRowFacts, type IssueRefusalCode } from "./invitation-issue.core";

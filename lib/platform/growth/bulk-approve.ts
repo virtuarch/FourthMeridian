@@ -63,8 +63,9 @@
  * two simultaneous first submits may each write one. Per-row uniqueness is the
  * hard guarantee.
  *
- * Risk is ignored (advisory, UI-only). The Beta lifecycle check, when it lands,
- * lands inside issueBetaInvitation and applies here unchanged.
+ * The advisory heuristic signals are ignored (UI-only). The Beta lifecycle gate
+ * (BETA_NOT_ACCEPTING) is checked up front and again inside each issuance; the
+ * suspected-abuse lock arrives through the shared row loader, as for single approve.
  *
  * The client is a PARAMETER: authority follows the caller (RLS-13).
  */

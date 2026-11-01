@@ -12,7 +12,7 @@
 import "@/lib/test-support/route-env";
 import bcrypt from "bcryptjs";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
-import { seedBetaGroup } from "@/lib/test-support/beta-group";
+import { allowRequestRowLock, seedBetaGroup } from "@/lib/test-support/beta-group";
 import { invoke, request, makeChecker, signIn, freshCache } from "@/lib/test-support/route-harness";
 import { capturedEmails } from "@/lib/email/providers/capture";
 import { DAY_MS, expiryFor, parseValidityDays, planDirect } from "./invitation-issue.core";
@@ -40,6 +40,7 @@ async function world() {
   fake.reset();
   freshCache();
   await seedBetaGroup(fake);
+  allowRequestRowLock(fake);
   const hash = await bcrypt.hash("pw", 4);
   const a = fake.seed("User", { email: "ops@example.test", username: "ops", passwordHash: hash, emailVerifiedAt: new Date(), role: "SYSTEM_ADMIN", totpEnabled: true, totpSecret: "x" });
   const s = await signIn(fake, a.id as string);
@@ -603,6 +604,37 @@ async function main() {
     fake.clearHooks();
     t.check("SUSPICIOUS recorded between the plan and the write → 409 SUSPECTED_ABUSE, nothing written",
       rc.status === 409 && rc.body.code === "SUSPECTED_ABUSE" && row({ id: racy.id }).status === "DENIED" && sentTo("racy@example.test").length === 0, rc.body);
+
+    // 5b. The request row is locked (FOR UPDATE) before the in-transaction verdict re-read.
+    const lockedSql: string[] = [];
+    const prevRaw = fake.queryRaw;
+    fake.queryRaw = (sql: string, values: unknown[]) => { lockedSql.push(sql); return prevRaw!(sql, values); };
+    const lk = fake.seed("BetaAccessRequest", { email: "rowlock@example.test", status: "DENIED" });
+    verdict(lk.id, "SUSPICIOUS", new Date(t0 - 60_000));
+    // The plan's read sees no verdict (as if it landed just after) — so the transaction's lock + re-read decide.
+    fake.on("BetaAccessRequestReview", "findFirst", () => null, { once: true });
+    const lkr = await approve(lk.id as string);
+    fake.clearHooks();
+    fake.queryRaw = prevRaw;
+    t.check("a DENIED approve takes the request row lock (FOR UPDATE) inside the transaction, then refuses on the re-read",
+      lkr.status === 409 && lkr.body.code === "SUSPECTED_ABUSE" && lockedSql.some((q) => /FOR UPDATE/.test(q)) && row({ id: lk.id }).status === "DENIED", [lkr.status, lockedSql]);
+
+    // 5c. Scope pin: PENDING + SUSPICIOUS is NOT locked (the ruling covers rejected requests only).
+    const pendSus = fake.seed("BetaAccessRequest", { email: "pending-suspicious@example.test", status: "PENDING" });
+    verdict(pendSus.id, "SUSPICIOUS", new Date(t0 - 60_000));
+    const ps = await approve(pendSus.id as string);
+    t.check("PENDING with a SUSPICIOUS verdict → still approvable (advisory; a deliberate first decision)",
+      ps.status === 200 && row({ id: pendSus.id }).status === "APPROVED", ps.body);
+
+    // 5d. A failed PLAN-time verdict read throws (fail closed) — it is never read as "unlocked".
+    const planThrow = fake.seed("BetaAccessRequest", { email: "plan-throw@example.test", status: "DENIED" });
+    verdict(planThrow.id, "SUSPICIOUS", new Date(t0 - 60_000));
+    fake.on("BetaAccessRequestReview", "findFirst", () => { throw new Error("plan read failed"); }, { once: true });
+    let planThrew = false;
+    try { await issueBetaInvitation({ client: db, actor, kind: "approve", requestId: planThrow.id as string }); } catch { planThrew = true; }
+    fake.clearHooks();
+    t.check("the plan-time verdict read throws → issuance throws (never treated as unlocked), nothing minted",
+      planThrew && row({ id: planThrow.id }).status === "DENIED" && row({ id: planThrow.id }).inviteTokenHash == null);
 
     // 6. A failed verdict read fails closed (nothing minted).
     const broken = fake.seed("BetaAccessRequest", { email: "broken@example.test", status: "DENIED" });

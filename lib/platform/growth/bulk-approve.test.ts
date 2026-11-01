@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import bcrypt from "bcryptjs";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
-import { seedBetaGroup } from "@/lib/test-support/beta-group";
+import { allowRequestRowLock, seedBetaGroup } from "@/lib/test-support/beta-group";
 import { invoke, request, makeChecker, signIn, freshCache } from "@/lib/test-support/route-harness";
 import { captureAdapter, capturedEmails, clearCapturedEmails } from "@/lib/email/providers/capture";
 import { DAY_MS } from "./invitation-issue.core";
@@ -32,6 +32,7 @@ async function world() {
   fake.clearHooks();
   freshCache();
   await seedBetaGroup(fake);
+  allowRequestRowLock(fake);
   clearCapturedEmails();
   const hash = await bcrypt.hash("pw", 4);
   const a = fake.seed("User", { email: "ops@example.test", username: "ops", passwordHash: hash, emailVerifiedAt: new Date(), role: "SYSTEM_ADMIN", totpEnabled: true, totpSecret: "x" });
@@ -295,7 +296,9 @@ async function main() {
     const ROOT = process.cwd();
     for (const f of ["lib/platform/growth/bulk-approve.ts", "lib/platform/growth/bulk-approve.core.ts", "app/api/platform/growth-revenue/requests/bulk-approve/route.ts"]) {
       const code = readFileSync(path.join(ROOT, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-      t.check(`${f}: no code reads risk`, !/risk/i.test(code));
+      // No beta-risk heuristic import and no `risk` field read. (The suspected-abuse LOCK is not a
+      // risk read here: bulk receives it through the shared issuance loader, loadInviteRowFacts.)
+      t.check(`${f}: no beta-risk import and no risk field read`, !/from ["'][^"']*beta-risk[^"']*["']/.test(code) && !/\brisk\b/i.test(code));
     }
   }
 
@@ -436,17 +439,21 @@ async function main() {
     const locked = fake.seed("BetaAccessRequest", { email: "bulk-lock@example.test", status: "DENIED" });
     fake.seed("BetaAccessRequestReview", { requestId: locked.id, status: "SUSPICIOUS", reasonCode: "TESTING", createdAt: new Date(Date.now() - 60_000) });
     const ok = pending("bulk-ok@example.test");
-    const ids = [locked.id as string, ok];
+    // Scope pin: PENDING + SUSPICIOUS stays eligible in a batch (only rejected requests are locked).
+    const pendSus = pending("bulk-pending-suspicious@example.test");
+    fake.seed("BetaAccessRequestReview", { requestId: pendSus, status: "SUSPICIOUS", reasonCode: "TESTING", createdAt: new Date(Date.now() - 60_000) });
+    const ids = [locked.id as string, ok, pendSus];
     const parse = (dryRun: boolean) => (parseBulkApproveBody({ requestIds: ids, batchKey: randomUUID(), dryRun }) as { ok: true; body: Parameters<typeof bulkApproveBetaRequests>[0]["body"] }).body;
     const dry = await bulkApproveBetaRequests({ client: db, actor, body: parse(true) });
     const dryRow = dry.ok && dry.dryRun ? dry.rows.find((r) => r.id === locked.id) : undefined;
     t.check("dry run: the locked row is ineligible with code SUSPECTED_ABUSE; the pending one is eligible",
-      !!dryRow && !dryRow.eligible && dryRow.code === "SUSPECTED_ABUSE" && dry.ok && dry.dryRun && dry.summary.eligible === 1, dry);
+      !!dryRow && !dryRow.eligible && dryRow.code === "SUSPECTED_ABUSE" && dry.ok && dry.dryRun && dry.summary.eligible === 2
+      && dry.rows.find((r) => r.id === pendSus)?.eligible === true, dry);
     const run = await bulkApproveBetaRequests({ client: db, actor, body: parse(false) });
     const skippedLocked = run.ok && !run.dryRun ? run.skipped.find((x) => x.id === locked.id) : undefined;
     t.check("execute: the locked row is skipped SUSPECTED_ABUSE and stays DENIED with no email; the other is approved",
       skippedLocked?.code === "SUSPECTED_ABUSE" && row({ id: locked.id }).status === "DENIED" && sentTo("bulk-lock@example.test").length === 0
-      && row({ id: ok }).status === "APPROVED", run);
+      && row({ id: ok }).status === "APPROVED" && row({ id: pendSus }).status === "APPROVED", run);
   }
 
   t.done();
