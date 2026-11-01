@@ -49,6 +49,21 @@ async function main(): Promise<void> {
   check("empty COPY block counts 0", countDumpCopyRows(DUMP, "Empty") === 0);
   check("missing COPY block is null", countDumpCopyRows(DUMP, "Nope") === null);
   check("a table name that prefixes another does not match it", countDumpCopyRows(DUMP, "Job") === null);
+  {
+    // Review P1: an EMPTY block in the MIDDLE must count 0 — never run on to the next table's terminator.
+    const mid = "-- dump\n" + copyBlock("Account", 3) + copyBlock("Empty", 0) + copyBlock("JobRun", 7);
+    check("an empty COPY block mid-dump counts 0 (and its neighbours are exact)",
+      countDumpCopyRows(mid, "Empty") === 0 && countDumpCopyRows(mid, "JobRun") === 7 && countDumpCopyRows(mid, "Account") === 3);
+    // Review P3: a header-looking line INSIDE row data never opens a block.
+    const fakeHeader = "-- dump\n" + `COPY public."Notes" (id, body) FROM stdin;\nCOPY public."Ghost" (x) FROM stdin;\n2\tb\n\\.\n`;
+    check("a header-shaped line inside a block's row data is just a row", countDumpCopyRows(fakeHeader, "Notes") === 2 && countDumpCopyRows(fakeHeader, "Ghost") === null);
+    // Header must start a line.
+    check("a header not at a line start is ignored", countDumpCopyRows(`-- x COPY public."Account" (id) FROM stdin;\n1\n\\.\n`, "Account") === null);
+    // Review P3: lower-case unquoted names, and quoted names with an embedded quote.
+    check("lower-case unquoted table names are found", countDumpCopyRows("COPY public.audit_log (id) FROM stdin;\n1\n2\n\\.\n", "audit_log") === 2);
+    check("quoted names with a doubled quote unescape", countDumpCopyRows('COPY public."We""ird" (id) FROM stdin;\n1\n\\.\n', 'We"ird') === 1);
+    check("an unterminated block reads as no block", countDumpCopyRows("COPY public.\"Account\" (id) FROM stdin;\n1\n2\n", "Account") === null);
+  }
 
   let v = verifyDumpAgainstSnapshot({ Account: 3, JobRun: 27147 }, DUMP);
   check("exact match passes", v.mismatches.length === 0 && v.checked === 2, JSON.stringify(v));
@@ -119,6 +134,17 @@ async function main(): Promise<void> {
       JSON.stringify(h.events) === JSON.stringify(["export"]) && h.getDumpArgs() === null && h.liveReads() === 0, JSON.stringify(h.events));
   }
   {
+    // Review M12: a count(*) that ERRORS (e.g. row_security off for a role RLS would filter) fails the backup — never read as 0.
+    const h = harness();
+    const throwing = h.deps.openSnapshotSession;
+    h.deps.openSnapshotSession = async (...a: Parameters<typeof throwing>) => {
+      const s = await throwing(...a);
+      return { ...s, async count(t: string) { if (t === "JobRun") throw new Error("ERROR:  query would be affected by row-level security policy"); return s.count(t); } };
+    };
+    const r = await runSnapshotBackup(h.deps, OPTS);
+    check("a count error fails the backup (not counted as 0) and the session is closed", !r.ok && /row-level security/.test(r.message) && h.events.at(-1) === "close", JSON.stringify(r));
+  }
+  {
     const short = "-- dump\n" + copyBlock("Account", 3) + copyBlock("JobRun", 27000);
     const h = harness({ dump: short });
     const r = await runSnapshotBackup(h.deps, OPTS);
@@ -144,15 +170,16 @@ async function main(): Promise<void> {
     const log = path.join(dir, "log");
     writeFileSync(fake, `#!/bin/sh
 printf '%s\\n' "$*" > "$FAKE_PSQL_LOG.argv"
+printf '%s\\n' "$$" > "$FAKE_PSQL_LOG.pid"
 while IFS= read -r line; do
   printf '%s\\n' "$line" >> "$FAKE_PSQL_LOG"
   case "$line" in
     '\\echo '*) [ -n "$FAKE_PSQL_SILENT" ] || printf '%s\\n' "\${line#\\\\echo }" ;;
     'SELECT pg_export_snapshot();')
       if [ -n "$FAKE_PSQL_EXPORT_FAIL" ]; then echo 'ERROR:  cannot export a snapshot from a subtransaction' >&2; exit 3; fi
-      echo '00000003-0000001B-1' ;;
+      if [ -n "$FAKE_PSQL_BAD_ID" ]; then echo 'not-a-snapshot'; else echo '00000003-0000001B-1'; fi ;;
     select\\ c.relname*) printf 'Account\\nJobRun\\n' ;;
-    'select count(*) from "Account";') echo 3 ;;
+    'select count(*) from "Account";') if [ -n "$FAKE_PSQL_MULTI" ]; then echo 3; echo 4; else echo 3; fi ;;
     'select count(*) from "JobRun";') echo 27147 ;;
   esac
 done
@@ -170,13 +197,14 @@ exit 0
     await s.close(); // idempotent
     check("tables and counts come back through the marker protocol", JSON.stringify(tables) === '["Account","JobRun"]' && JSON.stringify(counts) === "[3,27147]", JSON.stringify({ tables, counts }));
     const sent = readFileSync(log, "utf8").split("\n").filter((l) => l && !l.startsWith("\\echo"));
-    check("SQL sent: BEGIN RR READ ONLY → SET LOCAL idle timeout off → export → list → counts → ROLLBACK",
+    check("SQL sent: BEGIN RR READ ONLY → SET LOCAL idle timeout off → SET LOCAL row_security off → export → list → counts → ROLLBACK",
       sent[0] === "BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;" &&
       sent[1] === "SET LOCAL idle_in_transaction_session_timeout = 0;" &&
-      sent[2] === "SELECT pg_export_snapshot();" &&
-      /^select c\.relname .*_prisma_migrations/.test(sent[3]) &&
-      sent[4] === 'select count(*) from "Account";' && sent[5] === 'select count(*) from "JobRun";' &&
-      sent[6] === "ROLLBACK;" && sent.length === 7, JSON.stringify(sent));
+      sent[2] === "SET LOCAL row_security = off;" &&
+      sent[3] === "SELECT pg_export_snapshot();" &&
+      /^select c\.relname .*_prisma_migrations/.test(sent[4]) &&
+      sent[5] === 'select count(*) from "Account";' && sent[6] === 'select count(*) from "JobRun";' &&
+      sent[7] === "ROLLBACK;" && sent.length === 8, JSON.stringify(sent));
     const argv = readFileSync(`${log}.argv`, "utf8");
     check("psql runs with ON_ERROR_STOP and no psqlrc", /ON_ERROR_STOP=1/.test(argv) && /--no-psqlrc/.test(argv) && /-X/.test(argv));
 
@@ -194,13 +222,44 @@ exit 0
     check("a transaction-pooler URL (:6543) is refused before psql is spawned", /6543/.test(err) && !spawned, err);
 
     // A psql that never answers (output not flushed to the pipe, a stalled pooler) must FAIL, not hang.
+    const pidGone = async (): Promise<boolean> => {
+      const pid = Number(readFileSync(`${log}.pid`, "utf8").trim());
+      for (let i = 0; i < 50; i++) {
+        try { process.kill(pid, 0); } catch { return true; }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return false;
+    };
+    const within = <T,>(p: Promise<T>, ms: number): Promise<T | "OUTER_TIMEOUT"> =>
+      Promise.race([p, new Promise<"OUTER_TIMEOUT">((r) => setTimeout(() => r("OUTER_TIMEOUT"), ms))]);
+
+    // Review M7/M14: no reply ⇒ rejects within its OWN timeout (outer 3 s guard), and the psql process is gone.
     rmSync(log, { force: true });
     process.env.FAKE_PSQL_SILENT = "1";
     err = "";
-    const t0 = Date.now();
-    try { await openPsqlSnapshotSession(URL_OK, fake, 300); } catch (e) { err = (e as Error).message; }
+    const outcome = await within(openPsqlSnapshotSession(URL_OK, fake, 300).then(() => "OPENED", (e) => { err = (e as Error).message; return "REJECTED"; }), 3000);
     delete process.env.FAKE_PSQL_SILENT;
-    check("no reply within the request timeout → the open rejects (no hang), session killed", /no reply within 0\.3s/.test(err) && Date.now() - t0 < 5000, err);
+    check("no reply within the request timeout → the open rejects (no hang)", outcome === "REJECTED" && /no reply within 0\.3s/.test(err), `${outcome} ${err}`);
+    check("…and the psql child is killed", await pidGone());
+
+    // Review M15/M17: a malformed snapshot id is refused, and the child is killed.
+    rmSync(log, { force: true });
+    process.env.FAKE_PSQL_BAD_ID = "1";
+    err = "";
+    try { await openPsqlSnapshotSession(URL_OK, fake); } catch (e) { err = (e as Error).message; }
+    delete process.env.FAKE_PSQL_BAD_ID;
+    check("a malformed snapshot id is refused", /unexpected value/.test(err), err);
+    check("…and the psql child is killed after the failed open", await pidGone());
+
+    // Review M16: a count that returns more than one line is an error, never "the last line".
+    rmSync(log, { force: true });
+    process.env.FAKE_PSQL_MULTI = "1";
+    err = "";
+    const sm = await openPsqlSnapshotSession(URL_OK, fake);
+    try { await sm.count("Account"); } catch (e) { err = (e as Error).message; }
+    await sm.close();
+    delete process.env.FAKE_PSQL_MULTI;
+    check("a multi-line count(*) reply is refused", /count\(\*\) on Account returned/.test(err), err);
 
     // End to end with the real orchestration: export failure ⇒ snapshot-stage failure, no dump.
     process.env.FAKE_PSQL_EXPORT_FAIL = "1";

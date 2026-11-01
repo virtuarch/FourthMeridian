@@ -30,20 +30,50 @@ import { randomBytes } from "node:crypto";
 
 // ── pure: the dump side ────────────────────────────────────────────────────
 
-/**
- * Data lines in the dump's COPY block for `public."<table>"`, or null when the
- * dump has no such block. pg_dump writes:
- *   COPY public."Name" (cols) FROM stdin;\n<rows>\n\.
- */
-
 /** One snapshot-session request (BEGIN, export, one count) must answer within this; the dump itself is not a request. */
 export const SNAPSHOT_REQUEST_TIMEOUT_MS = 120_000;
+
+/** `COPY public."Name" (cols) FROM stdin;` or, for a lower-case unquoted name, `COPY public.name (cols) FROM stdin;`. */
+const COPY_HEADER = /^COPY public\.("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*) .*FROM stdin;$/;
+
+/**
+ * ONE pass over the dump, line by line, tracking whether we are inside a COPY block:
+ * `{ table → data lines }` for every block that is properly terminated by `\.`.
+ * A header is recognised ONLY at a line start OUTSIDE a block (text inside row data
+ * can never open a block), an empty block counts 0 wherever it sits, and an
+ * unterminated block is left out (so its table reads as "no COPY block").
+ * COPY text format escapes newlines and backslashes in values, so a data line can
+ * never be `\.` itself.
+ */
+export function parseDumpCopyCounts(dump: string): Map<string, number> {
+  const out = new Map<string, number>();
+  let current: string | null = null;
+  let rows = 0;
+  let pos = 0;
+  while (pos <= dump.length) {
+    const nl = dump.indexOf("\n", pos);
+    const line = (nl === -1 ? dump.slice(pos) : dump.slice(pos, nl)).replace(/\r$/, "");
+    pos = nl === -1 ? dump.length + 1 : nl + 1;
+    if (current === null) {
+      const m = COPY_HEADER.exec(line);
+      if (m) {
+        const raw = m[1];
+        current = raw.startsWith('"') ? raw.slice(1, -1).replace(/""/g, '"') : raw;
+        rows = 0;
+      }
+    } else if (line === "\\.") {
+      out.set(current, rows);
+      current = null;
+    } else {
+      rows++;
+    }
+  }
+  return out;
+}
+
+/** Data lines in the dump's COPY block for `public."<table>"`, or null when there is no (terminated) block. */
 export function countDumpCopyRows(dump: string, table: string): number | null {
-  const start = dump.indexOf(`COPY public."${table}" `);
-  if (start === -1) return null;
-  const from = dump.indexOf("\n", dump.indexOf("FROM stdin;", start)) + 1;
-  const end = dump.indexOf("\n\\.", from);
-  return end <= from ? 0 : dump.slice(from, end).split("\n").length;
+  return parseDumpCopyCounts(dump).get(table) ?? null;
 }
 
 export interface DumpVerification {
@@ -61,10 +91,11 @@ export interface DumpVerification {
 export function verifyDumpAgainstSnapshot(counts: Record<string, number>, dump: string): DumpVerification {
   const mismatches: string[] = [];
   let checked = 0;
+  const inDumpByTable = parseDumpCopyCounts(dump);
   for (const [t, rows] of Object.entries(counts)) {
     if (!Number.isFinite(rows) || rows === 0) continue;
     checked++;
-    const inDump = countDumpCopyRows(dump, t);
+    const inDump = inDumpByTable.get(t) ?? null;
     if (inDump === null) mismatches.push(`${t}: ${rows} rows in the snapshot, NO COPY block in the dump`);
     else if (inDump !== rows) mismatches.push(`${t}: ${rows} rows in the snapshot, ${inDump} in the dump`);
   }
@@ -266,8 +297,12 @@ export async function openPsqlSnapshotSession(cleanUrl: string, psqlBin = "psql"
   try {
     await request("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;");
     await request("SET LOCAL idle_in_transaction_session_timeout = 0;");
+    // A role that RLS would filter must ERROR here, not count a filtered subset: with
+    // row_security off, any table it cannot fully see raises instead of under-counting
+    // (pg_dump sets the same itself, so dump and counts fail or succeed together).
+    await request("SET LOCAL row_security = off;");
     const got = values(await request("SELECT pg_export_snapshot();"));
-    snapshotId = got[got.length - 1] ?? "";
+    snapshotId = got.length === 1 ? got[0] : "";
     if (!SNAPSHOT_ID.test(snapshotId)) throw new Error(`pg_export_snapshot returned an unexpected value: ${JSON.stringify(got)}`);
   } catch (e) {
     child.stdin.end();
