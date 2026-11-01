@@ -87,7 +87,7 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
 
   /** Arrow keys move between the menu's enabled items; Tab leaves (and closes) it. */
   const onMenuKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Tab") { setMenuOpen(false); return; }
+    if (e.key === "Tab") { e.preventDefault(); setMenuOpen(false); trigger.current?.focus(); return; }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
     const items = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not([disabled])") ?? []);
