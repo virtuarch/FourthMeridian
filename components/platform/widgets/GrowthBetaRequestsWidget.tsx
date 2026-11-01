@@ -20,6 +20,12 @@
  * Manages its own fetch/action state (it mutates + refetches), reusing the shared
  * card shell + editorial idiom so it sits flush with the other platform widgets.
  *
+ * PB-6 — an "All requests" tab (BetaRequestBrowser: Pending / Approved / Denied /
+ * Joined / All + Suspicious, server-paged) opens ANY request, and every request
+ * panel carries BetaRequestReviewSection: status, decision time, verdict history,
+ * block state, and — for WRITE — "Deny" (status only, never blocks) vs "Deny and
+ * block", Block address / Clear block, and the three verdicts.
+ *
  * UI-001 — every write control (status / mode toggles, Invite user, Approve /
  * Deny, Resend / Revoke) renders only for a GROWTH_REVENUE WRITE holder
  * (`access.canWrite`). A READ holder sees the same figures, the current status
@@ -27,7 +33,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, X, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2, CalendarClock } from "lucide-react";
+import { Check, Send, Ban, Loader2, ShieldAlert, UserPlus, Rocket, Search, ArrowUpDown, ChevronRight, Settings2, CalendarClock } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
 import {
   UtcStamp,
@@ -51,6 +57,7 @@ import { INVITATION_VALIDITY_MAX_DAYS, INVITATION_VALIDITY_MIN_DAYS } from "@/li
 import { BulkApprovePanel } from "../growth/BulkApprovePanel";
 import { disabledReason, headerState, pruneSelection, toggleAllEligible, toggleSelected } from "../growth/bulk-approve-model";
 import { BetaRiskBadge, BetaRiskDetail } from "../growth/BetaRiskBadge";
+import { BetaRequestBrowser, BetaRequestReviewSection } from "../growth/BetaRequestReview";
 
 type Mode = BetaStatusResponse["registrationMode"];
 type ProductStatus = BetaStatusResponse["productStatus"];
@@ -117,6 +124,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
 
   const [selectedRequestId, setSelectedRequestId]       = useState<string | null>(null);
+  // PB-6 — the row as opened: a Deny takes it out of `pending`, but the panel stays
+  // open on it so the outcome (e.g. "denied, but NOT blocked — Block now") is read.
+  const [requestSnapshot, setRequestSnapshot]           = useState<BetaRequestRow | null>(null);
   const [selectedInvitationId, setSelectedInvitationId] = useState<string | null>(null);
   const [pendingMode, setPendingMode]                   = useState<Mode | null>(null); // mode-change confirm
   const [pendingStatus, setPendingStatus]               = useState<ProductStatus | null>(null); // product-status confirm
@@ -132,7 +142,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const validityMin = policy?.min ?? INVITATION_VALIDITY_MIN_DAYS;
   const validityMax = policy?.max ?? INVITATION_VALIDITY_MAX_DAYS;
   // PLATFORM SPACES 2.0 — the list's own view state (client-side over the rows the route returns).
-  const [tab, setTab]                                   = useState<"pending" | "invited">("pending");
+  const [tab, setTab]                                   = useState<"pending" | "invited" | "all">("pending");
   const [query, setQuery]                               = useState("");
   // Waiting is first-in-first-out (oldest first); Invited reads newest first, as the route orders it.
   const [sort, setSort]                                 = useState<"newest" | "oldest">("oldest");
@@ -214,7 +224,8 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
         body: JSON.stringify({ email: inviteEmail.trim(), ...(inviteDays !== null && inviteDays.trim() !== "" ? { expiresDays: Number(inviteDays) } : {}) }) },
       () => { setInviteOpen(false); setInviteEmail(""); setInviteDays(null); });
 
-  const decide = (id: string, action: "approve" | "deny") =>
+  // PB-6 — Deny / Deny and block live in BetaRequestReviewSection (beta-request-review-model.ts).
+  const decide = (id: string, action: "approve") =>
     run(id, `/api/platform/growth-revenue/requests/${id}/${action}`, { method: "POST" },
       () => setSelectedRequestId(null));
 
@@ -237,11 +248,14 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
 
   // Opening a panel starts from a clean slate: an earlier action's error never
   // appears inside an unrelated request or confirm.
-  const openRequest = (id: string) => { setError(null); setSelectedRequestId(id); };
+  const openRequest = (id: string) => { setError(null); setSelectedRequestId(id); setRequestSnapshot(reqs?.pending.find((r) => r.id === id) ?? null); };
   const openInvitation = (id: string) => { setError(null); setSelectedInvitationId(id); };
 
-  const selectedRequest: BetaRequestRow | null =
+  /** Still waiting (Approve applies) — vs. the snapshot kept after a Deny. */
+  const liveRequest: BetaRequestRow | null =
     selectedRequestId ? reqs?.pending.find((r) => r.id === selectedRequestId) ?? null : null;
+  const selectedRequest: BetaRequestRow | null =
+    liveRequest ?? (selectedRequestId && requestSnapshot?.id === selectedRequestId ? requestSnapshot : null);
   const selectedInvitation: BetaInvitationRow | null =
     selectedInvitationId ? reqs?.invitations.find((r) => r.id === selectedInvitationId) ?? null : null;
 
@@ -256,11 +270,12 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
   const invitationRows = (reqs?.invitations ?? [])
     .filter((r) => !q || r.email.toLowerCase().includes(q))
     .sort((a, b) => byTime(a.invitedAt, b.invitedAt));
-  const rowsShown = tab === "pending" ? pendingRows.length : invitationRows.length;
+  // PB-6 — the All requests tab pages on the server (BetaRequestBrowser), so no client "Show all" / truncation there.
+  const rowsShown = tab === "pending" ? pendingRows.length : tab === "invited" ? invitationRows.length : 0;
   // The route returns at most 100 rows per list — say so when the count is larger (search covers those rows only).
   const loadedRows = tab === "pending" ? reqs?.pending.length ?? 0 : reqs?.invitations.length ?? 0;
   const totalRows = tab === "pending" ? reqs?.counts.pending ?? 0 : reqs?.counts.approved ?? 0;
-  const truncated = totalRows > loadedRows ? `showing ${loadedRows} of ${totalRows} (${tab === "pending" ? "oldest" : "newest"} first)` : null;
+  const truncated = tab !== "all" && totalRows > loadedRows ? `showing ${loadedRows} of ${totalRows} (${tab === "pending" ? "oldest" : "newest"} first)` : null;
   const limit = showAll ? Infinity : LIST_ROWS;
   // PR C — "this page" is the Waiting rows currently shown; select-all takes only the eligible ones.
   const pendingPage = pendingRows.slice(0, limit);
@@ -425,8 +440,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
 
             {/* ── Toolbar: status tabs · search · sort ─────────────────────── */}
             <div className="flex flex-wrap items-center gap-2" data-beta-toolbar>
-              <span role="tablist" aria-label="Request status" className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-0.5">
-                {([["pending", "Waiting", reqs.counts.pending], ["invited", "Invited", reqs.counts.approved]] as const).map(([id, label, count]) => (
+              <span role="tablist" aria-label="Request status" className="inline-flex flex-wrap items-center rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-0.5">
+                {([["pending", "Waiting", reqs.counts.pending], ["invited", "Invited", reqs.counts.approved],
+                   ["all", "All requests", reqs.counts.pending + reqs.counts.approved + reqs.counts.denied + reqs.counts.redeemed]] as const).map(([id, label, count]) => (
                   <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => { setTab(id); setShowAll(false); setSort(id === "pending" ? "oldest" : "newest"); }}
                     className={`min-h-11 rounded-[var(--radius-xs)] px-2.5 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-7 ${
                       tab === id ? "bg-[var(--surface-raised,rgba(255,255,255,.06))] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>
@@ -434,6 +450,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                   </button>
                 ))}
               </span>
+              {tab !== "all" && (<>
               <button type="button" onClick={() => setSort((s) => (s === "newest" ? "oldest" : "newest"))} aria-label={`Sort: ${sort} first`}
                 className="inline-flex min-h-11 sm:order-3 items-center gap-1 rounded-[var(--radius-xs)] px-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
                 <ArrowUpDown size={12} aria-hidden /> {sort === "newest" ? "Newest" : "Oldest"}
@@ -443,6 +460,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                 <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tab === "pending" ? "Search email or source" : "Search email"}
                   aria-label="Search beta signups" className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
               </label>
+              </>)}
             </div>
 
             {/* ── The list: compact table ≥ lg, two-line rows below ────────── */}
@@ -453,7 +471,9 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                 onFinished={async () => { setSelected(new Set()); await load(); }} />
             )}
 
-            {tab === "pending" ? (
+            {tab === "all" ? (
+              <BetaRequestBrowser canWrite={canWrite} onChanged={load} />
+            ) : tab === "pending" ? (
               pendingRows.length === 0 ? (
                 <p className="py-4 text-xs text-[var(--text-secondary)]">{q ? "No waiting request matches." : "No pending requests."}</p>
               ) : (
@@ -619,7 +639,6 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                     {describeAcquisitionSource(selectedRequest.acquisition) && (
                       <Row label="Source" value={describeAcquisitionSource(selectedRequest.acquisition) as string} />
                     )}
-                    <Row label="Status" value="Pending" />
                     <BetaRiskDetail risk={selectedRequest.risk} />
                     {selectedRequest.note && (
                       <div className="flex flex-col gap-1 border-t border-[var(--border-hairline)] pt-3">
@@ -627,19 +646,16 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                         <span className="leading-snug text-[var(--text-primary)]">{selectedRequest.note}</span>
                       </div>
                     )}
-                    <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
+                    {/* PB-6 — status, decision, verdict history, block state; Deny vs Deny and block (WRITE). */}
+                    <BetaRequestReviewSection requestId={selectedRequest.id} canWrite={canWrite} onChanged={load} />
+                    {liveRequest && <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
                       {`Approve mints a single-use, email-bound invite (${validityDays !== null ? `expires after ${daysLabel(validityDays)}` : "configured validity"}) and emails it. Redemption requires registration mode = invite-only.`}
-                    </p>
+                    </p>}
                     {!canWrite && <p className="text-[11px] leading-snug text-[var(--text-muted)]" data-read-only-line>{GROWTH_READ_ONLY_LINE}</p>}
                   </div>
                 </PanelContent>
-                {canWrite && (
+                {canWrite && liveRequest && (
                 <PanelFooter>
-                  <button onClick={() => decide(selectedRequest.id, "deny")} disabled={acting !== null}
-                    className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
-                    style={{ background: "rgba(248,113,113,.1)", color: "var(--danger-400, #f87171)", borderColor: "rgba(248,113,113,.28)" }}>
-                    <X size={13} aria-hidden /> Deny
-                  </button>
                   <button onClick={() => decide(selectedRequest.id, "approve")} disabled={acting !== null}
                     className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
                     style={{ background: "rgba(52,211,153,.12)", color: "var(--success-400, #34d399)", borderColor: "rgba(52,211,153,.3)" }}>

@@ -44,4 +44,35 @@ export interface BetaRiskReviewHistoryResponse {
   reviews: BetaRiskReviewHistoryRow[];
   /** True when the history was cut at BETA_RISK_REVIEW_HISTORY_CAP rows. */
   capped: boolean;
+  /** PB-6 — the request's current lifecycle state (re-read with the history, so a panel is never stale after an action). */
+  request: { status: BetaRequestStatusValue; decidedAt: string | null };
+  /** PB-6 — is this request's mailbox currently blocked BY THIS REQUEST (BetaBlockedIdentifier.sourceRequestId)? */
+  block: BetaRequestBlockState;
+  /** PB-6 — what the blocklist can do in this environment (never a key, an HMAC or an address). */
+  blocklist: BlocklistAvailability;
 }
+
+// ── PB-6 — request lifecycle + block state (client-safe, identity-free) ──────
+
+export const BETA_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "REDEEMED"] as const;
+export type BetaRequestStatusValue = (typeof BETA_REQUEST_STATUSES)[number];
+
+/**
+ * Whether an ACTIVE, unexpired BetaBlockedIdentifier row names this request as
+ * its source. Derived from the soft `sourceRequestId` link only: an instant
+ * and an expiry — no block id, key version, HMAC (or prefix) or address. A
+ * block caused by a DIFFERENT request for an alias of the same mailbox is not
+ * this request's block and reads NOT_BLOCKED here (the Blocked identifiers
+ * console is where every block is listed).
+ */
+export type BetaRequestBlockState =
+  | { state: "BLOCKED"; since: string; expiresAt: string }
+  | { state: "NOT_BLOCKED" };
+
+/**
+ * ENFORCED — a usable key: SUSPICIOUS denials block. NOT_CONFIGURED — outside
+ * Production with no key: verdicts record, blocks are skipped. UNAVAILABLE —
+ * Production with no usable key: a verdict or deny that must block is refused
+ * (409 BLOCKLIST_UNAVAILABLE).
+ */
+export type BlocklistAvailability = "ENFORCED" | "NOT_CONFIGURED" | "UNAVAILABLE";
