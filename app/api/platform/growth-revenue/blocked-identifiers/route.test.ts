@@ -175,6 +175,28 @@ async function main() {
       blocks({ sourceRequestId: dFirst }).length === 1 && audits("BETA_IDENTIFIER_BLOCKED").filter((a) => (a.metadata as { alreadyBlocked?: boolean }).alreadyBlocked).length === 2);
   }
 
+  t.section("1b. a LIVE invitation already sent to an alias is revoked when the block is created");
+  {
+    await world();
+    const c = await cookieOf(ADMIN);
+    const now = Date.now();
+    const live = (email: string, hash: string) => fake.seed("BetaAccessRequest", { email, status: "APPROVED", inviteTokenHash: hash, inviteExpiresAt: new Date(now + 5 * 86_400_000), invitedAt: new Date(now - 60_000) }).id as string;
+    const aliasLive = live("jo.e+old@gmail.com", "h-alias");
+    const unrelated = live("zed@example.com", "h-zed");
+    const otherDomainDots = live("j.oe@example.com", "h-dots");
+    await blockVia(c, "joe@gmail.com");
+    const a = fake.one("BetaAccessRequest", { id: aliasLive })!;
+    t.check("the alias's live invitation is revoked: DENIED, token and expiry nulled", a.status === "DENIED" && a.inviteTokenHash == null && a.inviteExpiresAt == null, a);
+    const rv = audits("BETA_INVITATION_REVOKED");
+    t.check("…with one BETA_INVITATION_REVOKED audit (cause IDENTIFIER_BLOCKED, email hash only)",
+      rv.length === 1 && (rv[0].metadata as { cause?: string }).cause === "IDENTIFIER_BLOCKED"
+      && !JSON.stringify(rv[0].metadata).includes("@"), rv.map((x) => x.metadata));
+    const blocked = audits("BETA_IDENTIFIER_BLOCKED")[0]?.metadata as { revokedAliasInvitations?: number } | undefined;
+    t.check("the block audit counts the revocation", blocked?.revokedAliasInvitations === 1, blocked);
+    t.check("an unrelated live invitation is untouched", fake.one("BetaAccessRequest", { id: unrelated })!.inviteTokenHash === "h-zed");
+    t.check("a dotted address on another domain is NOT an alias and is untouched", fake.one("BetaAccessRequest", { id: otherDomainDots })!.inviteTokenHash === "h-dots");
+  }
+
   t.section("2. deletion: the block outlives the request; reapplication in every alias form is silently dropped");
   {
     await world();

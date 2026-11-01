@@ -208,6 +208,11 @@ export async function upsertIdentifierBlock(tx: BlocklistTx, input: BlockUpsertI
     });
     result = { outcome: "created", blockId: row.id, keyVersion: row.keyVersion, expiresAt: row.expiresAt };
   }
+  // A LIVE invitation already sent to an ALIAS of this mailbox (another row) would
+  // still be redeemable — registration (fm_auth) never consults the blocklist. Revoke
+  // each one here, in the same transaction, exactly as the operator Revoke does.
+  const revokedAliasRequestIds = await revokeAliasInvitations(tx, input, result.blockId, now);
+
   const reason = reasonOf(input.reasonCode);
   await recordOperatorAction(tx, {
     actor: input.actor,
@@ -219,11 +224,50 @@ export async function upsertIdentifierBlock(tx: BlocklistTx, input: BlockUpsertI
       blockId: result.blockId, keyVersion: result.keyVersion, expiresAt: result.expiresAt.toISOString(),
       sourceRequestId: input.sourceRequestId, betaRequestId: input.sourceRequestId,
       hmacPrefix: hmacPrefix(existing?.identifierHmac ?? hmac), alreadyBlocked: result.outcome === "alreadyBlocked",
+      revokedAliasInvitations: revokedAliasRequestIds.length,
     },
     ipAddress: input.ipAddress ?? null,
     userAgent: input.userAgent ?? null,
   });
   return result;
+}
+
+/**
+ * Revoke every LIVE invitation (APPROVED with a token) whose address is an alias of
+ * the blocked mailbox, other than the source request. Same effect as the operator
+ * Revoke (status DENIED, token and expiry nulled), conditional on the token observed
+ * so a concurrent change is never overwritten, one BETA_INVITATION_REVOKED audit row
+ * each (email hash only). APPROVED rows are a small set; the match is in code because
+ * the canonical mailbox is not a column. Returns the revoked request ids.
+ */
+async function revokeAliasInvitations(tx: BlocklistTx, input: BlockUpsertInput, blockId: string, now: Date): Promise<string[]> {
+  const mailbox = blocklistMailbox(input.email);
+  const live = await tx.betaAccessRequest.findMany({
+    where: { status: "APPROVED", inviteTokenHash: { not: null }, id: { not: input.sourceRequestId } },
+    select: { id: true, email: true, inviteTokenHash: true },
+  });
+  const revoked: string[] = [];
+  const reason = reasonOf(input.reasonCode);
+  for (const r of live) {
+    if (blocklistMailbox(r.email) !== mailbox) continue;
+    const { count } = await tx.betaAccessRequest.updateMany({
+      where: { id: r.id, status: "APPROVED", inviteTokenHash: r.inviteTokenHash },
+      data: { status: "DENIED", inviteTokenHash: null, inviteExpiresAt: null, decidedAt: now, decidedById: input.actor.userId },
+    });
+    if (count !== 1) continue;
+    revoked.push(r.id);
+    await recordOperatorAction(tx, {
+      actor: input.actor,
+      action: AuditAction.BETA_INVITATION_REVOKED,
+      target: { kind: "BETA_REQUEST", id: r.id },
+      ...(reason ? { reason } : {}),
+      result: "SUCCESS",
+      detail: { betaRequestId: r.id, emailHash: auditEmailHash(r.email), cause: "IDENTIFIER_BLOCKED", blockId },
+      ipAddress: input.ipAddress ?? null,
+      userAgent: input.userAgent ?? null,
+    });
+  }
+  return revoked;
 }
 
 /**
