@@ -63,8 +63,9 @@
  * two simultaneous first submits may each write one. Per-row uniqueness is the
  * hard guarantee.
  *
- * Risk is ignored (advisory, UI-only). The Beta lifecycle check, when it lands,
- * lands inside issueBetaInvitation and applies here unchanged.
+ * The advisory heuristic signals are ignored (UI-only). The Beta lifecycle gate
+ * (BETA_NOT_ACCEPTING) is checked up front and again inside each issuance; the
+ * suspected-abuse lock arrives through the shared row loader, as for single approve.
  *
  * The client is a PARAMETER: authority follows the caller (RLS-13).
  */
@@ -72,7 +73,7 @@
 import "server-only";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
-import { issueBetaInvitation, type IssueClient } from "./invitation-issue";
+import { issueBetaInvitation, loadInviteRowFacts, type IssueClient } from "./invitation-issue";
 import { readInvitationPolicy } from "./invitation-policy";
 import { betaAcceptsInvitations, expiryFor, parseValidityDays, refusal, type InviteRowFacts } from "./invitation-issue.core";
 import { getBetaLifecycleState, type BetaLifecycleState } from "@/lib/entitlements/beta-lifecycle";
@@ -109,11 +110,9 @@ export type BulkApproveResult =
   | ({ ok: true; dryRun: false; batchKey: string; summary: BulkSummary; repeat: boolean; batchAudited: boolean;
        succeeded: BulkSucceeded[]; emailFailed: BulkEmailFailed[]; skipped: BulkSkipped[]; failed: BulkFailed[]; duplicates: string[] } & BulkValidity);
 
-const ROW_SELECT = { id: true, email: true, status: true, inviteTokenHash: true, inviteExpiresAt: true, invitedAt: true } as const;
-
 async function eligibilityOf(client: IssueClient, id: string): Promise<Eligibility> {
-  const row = await client.betaAccessRequest.findUnique({ where: { id }, select: ROW_SELECT });
-  const facts: InviteRowFacts | null = row ? { ...row, status: row.status as InviteRowFacts["status"] } : null;
+  // The same facts issuance reads, including the suspected-abuse lock.
+  const facts: InviteRowFacts | null = await loadInviteRowFacts(client, { id });
   const hasAccount = facts ? (await client.user.findUnique({ where: { email: facts.email }, select: { id: true } })) != null : false;
   return approvalEligibility(facts, hasAccount);
 }
@@ -191,7 +190,7 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
       } else if (r.ok) {
         // alreadyApproved — a concurrent submit (or the first click) won this row.
         skipped.push({ id, code: "ALREADY_APPROVED", reason: BULK_REASON.ALREADY_APPROVED });
-      } else if (r.code === "REDEEMED" || r.code === "ACCOUNT_EXISTS" || r.code === "NOT_FOUND") {
+      } else if (r.code === "REDEEMED" || r.code === "ACCOUNT_EXISTS" || r.code === "NOT_FOUND" || r.code === "SUSPECTED_ABUSE") {
         skipped.push({ id, code: r.code, reason: BULK_REASON[r.code] });
       } else if (r.code === "BETA_NOT_ACCEPTING") {
         // The beta stopped accepting mid-batch: this row and every remaining one are not attempted.

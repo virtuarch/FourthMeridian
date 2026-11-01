@@ -23,3 +23,18 @@ export async function seedBetaGroup(fake: FakePrisma, lifecycle: PolicyGroupLife
   const C = await import("@/lib/platform/policies/policy-group-catalogue");
   C.invalidatePolicyGroupCatalogue();
 }
+
+/**
+ * The row lock issuance takes before re-reading the suspected-abuse verdict on a
+ * DENIED approve (`SELECT "id" FROM "BetaAccessRequest" WHERE "id" = $1 FOR UPDATE`).
+ * The fake has no locks; this answers that one statement with the row's id and
+ * refuses any other raw query, so nothing else silently passes.
+ */
+export function allowRequestRowLock(fake: FakePrisma): void {
+  fake.queryRaw = (sql: string, values: unknown[]) => {
+    if (/FROM "BetaAccessRequest" WHERE "id" = [\s\S]*FOR UPDATE/.test(sql)) {
+      return fake.rows("BetaAccessRequest", { id: values[0] as string }).map((r) => ({ id: r.id }));
+    }
+    throw new Error(`unexpected $queryRaw in this test: ${sql}`);
+  };
+}

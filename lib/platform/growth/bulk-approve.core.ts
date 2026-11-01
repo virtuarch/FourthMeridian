@@ -19,8 +19,11 @@
  * and the execution all call this one function, so the preview cannot promise
  * what the execution refuses.
  *
- * RISK-BLIND: an advisory `risk` field may sit on a row elsewhere; nothing here
- * reads it. Eligibility is the issuance rule and nothing else.
+ * BLIND TO THE ADVISORY HEURISTICS: the per-row signals from beta-risk-core may
+ * sit on a row elsewhere; nothing here reads them. Eligibility is the issuance
+ * rule and nothing else — which INCLUDES the suspected-abuse lock (a DENIED row
+ * whose latest operator verdict is SUSPICIOUS), carried in InviteRowFacts by the
+ * shared loader (invitation-issue.ts loadInviteRowFacts).
  */
 
 import { planApprove, type InviteRowFacts, type IssueRefusalCode } from "./invitation-issue.core";
@@ -30,7 +33,7 @@ export const BULK_APPROVE_MAX_IDS = 100;
 
 /** Why a request cannot be approved in a batch (an issuance refusal code, or a bulk-only one). */
 export type BulkIneligibleCode =
-  | Extract<IssueRefusalCode, "NOT_FOUND" | "REDEEMED" | "ACCOUNT_EXISTS" | "DENIED">
+  | Extract<IssueRefusalCode, "NOT_FOUND" | "REDEEMED" | "ACCOUNT_EXISTS" | "DENIED" | "SUSPECTED_ABUSE">
   | "ALREADY_APPROVED"
   | "DUPLICATE"
   /** Issuance read a different status than the batch did (denied / revoked / re-queued in between). */
@@ -45,6 +48,7 @@ export const BULK_REASON: Record<BulkIneligibleCode | BulkFailureCode, string> =
   REDEEMED:         "Already redeemed — an account was created from this invitation.",
   ACCOUNT_EXISTS:   "That email already has a Fourth Meridian account.",
   DENIED:           "Denied or revoked since it was selected.",
+  SUSPECTED_ABUSE:  "Denied and marked as suspected abuse — clear that designation first.",
   ALREADY_APPROVED: "Already approved — no new invitation was sent.",
   DUPLICATE:        "Listed more than once in this batch — counted once.",
   STATUS_CHANGED:   "Status changed since it was selected (denied, revoked or re-queued) — not approved, nothing sent.",
@@ -65,7 +69,7 @@ export function approvalEligibility(row: InviteRowFacts | null, accountExists: b
   if (plan.action === "alreadyApproved") return no("ALREADY_APPROVED");
   if (plan.action === "refuse") {
     const code = plan.refusal.code;
-    if (code === "NOT_FOUND" || code === "REDEEMED" || code === "ACCOUNT_EXISTS") return no(code);
+    if (code === "NOT_FOUND" || code === "REDEEMED" || code === "ACCOUNT_EXISTS" || code === "SUSPECTED_ABUSE") return no(code);
     if (code === "STATUS_CHANGED") return no("DENIED"); // only PENDING passes; the one other un-approved status is DENIED
     // planApprove refuses nothing else today; anything new is surfaced, never approved.
     return { approvable: false, code: "NOT_FOUND", reason: plan.refusal.message };

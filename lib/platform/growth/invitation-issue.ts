@@ -61,7 +61,7 @@ import {
 
 export type IssueClient = Pick<
   PrismaClient,
-  "$transaction" | "betaAccessRequest" | "betaAccessRequestEvent" | "user" | "auditLog" | "platformSetting"
+  "$transaction" | "betaAccessRequest" | "betaAccessRequestEvent" | "betaAccessRequestReview" | "user" | "auditLog" | "platformSetting"
 >;
 
 export type EmailStatus = "sent" | "captured" | "skipped" | "error";
@@ -126,10 +126,37 @@ const ROW_SELECT = { id: true, email: true, status: true, inviteTokenHash: true,
 
 const refuse = (r: IssueRefusal): IssueResult => ({ ok: false, ...r });
 
-async function loadRow(client: IssueClient, where: { id: string } | { email: string }): Promise<InviteRowFacts | null> {
-  const row = await client.betaAccessRequest.findUnique({ where, select: ROW_SELECT });
-  return row ? { ...row, status: row.status as InviteRowFacts["status"] } : null;
+type ReviewReader = Pick<IssueClient, "betaAccessRequestReview">;
+
+/**
+ * SUSPECTED-ABUSE LOCK — whether the request's LATEST risk-review verdict is SUSPICIOUS
+ * (newest first; ties broken by id, as the risk-review GET orders them). Throws on a
+ * failed read, so issuance fails closed (nothing minted) rather than assuming "clear".
+ */
+export async function latestVerdictIsSuspicious(client: ReviewReader, requestId: string): Promise<boolean> {
+  const latest = await client.betaAccessRequestReview.findFirst({
+    where: { requestId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { status: true },
+  });
+  return latest?.status === "SUSPICIOUS";
 }
+
+/**
+ * The row facts every issuance plan reads, INCLUDING the suspected-abuse lock for a
+ * DENIED row (the only status the lock applies to). Shared with bulk approve so both
+ * judge the same facts.
+ */
+export async function loadInviteRowFacts(
+  client: Pick<IssueClient, "betaAccessRequest" | "betaAccessRequestReview">,
+  where: { id: string } | { email: string },
+): Promise<InviteRowFacts | null> {
+  const row = await client.betaAccessRequest.findUnique({ where, select: ROW_SELECT });
+  if (!row) return null;
+  const facts: InviteRowFacts = { ...row, status: row.status as InviteRowFacts["status"] };
+  if (facts.status === "DENIED") facts.suspectedAbuse = await latestVerdictIsSuspicious(client, row.id);
+  return facts;
+}
+
+const loadRow = loadInviteRowFacts;
 
 async function accountExists(client: IssueClient, email: string): Promise<boolean> {
   return (await client.user.findUnique({ where: { email }, select: { id: true } })) != null;
@@ -234,7 +261,7 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
       userAgent: input.userAgent ?? null,
     });
 
-  const { requestId, won } = await client.$transaction(async (tx) => {
+  const { requestId, won, locked } = await client.$transaction(async (tx): Promise<{ requestId: string; won: boolean; locked?: boolean }> => {
     if (plan.action === "create") {
       // ON CONFLICT (email) DO NOTHING: a concurrent create for the same
       // address makes this count 0 — never a raised P2002, which in Postgres
@@ -250,6 +277,15 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
       return { requestId: id, won: true };
     }
     const row = plan.row;
+    // SUSPECTED-ABUSE LOCK, re-read INSIDE the write transaction for a DENIED row. The
+    // request row is locked FIRST — the same `FOR UPDATE` the risk-review writer takes
+    // (beta-risk-review.ts) — so a verdict and this approval serialise: a SUSPICIOUS
+    // verdict committed before the lock is seen here; one recorded after waits for this
+    // transaction (and then lands on a row that was legitimately approved first).
+    if (plan.action === "approve" && row.status === "DENIED") {
+      await tx.$queryRaw`SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${row.id} FOR UPDATE`;
+      if (await latestVerdictIsSuspicious(tx, row.id)) return { requestId: row.id, won: false, locked: true };
+    }
     const { count } = plan.action === "approve"
       ? await tx.betaAccessRequest.updateMany({
           // The status ACTUALLY READ (PENDING or DENIED), never "either": a
@@ -274,6 +310,7 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
     return { requestId: row.id, won: true };
   });
 
+  if (locked) return refuse(refusal("SUSPECTED_ABUSE"));
   if (!won) {
     // Lost the race: say what the winner left behind; nothing was minted or sent.
     if (plan.action === "create") {

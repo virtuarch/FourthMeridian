@@ -15,6 +15,12 @@
  * (reason-required) commit in ONE transaction. The request's status, decision
  * fields and invite token are never touched, and the heuristic evidence is
  * never stored over — a verdict is advisory bookkeeping, not a decision.
+ *
+ * ONE ENFORCED EFFECT (owner ruling 2026-11-01, the suspected-abuse lock): on a
+ * DENIED request, a latest verdict of SUSPICIOUS makes the denial final for every
+ * issuance path (single approve, bulk, direct invite) — lib/platform/growth/
+ * invitation-issue.ts. Recording a newer LEGITIMATE or UNREVIEWED verdict here
+ * (fresh GROWTH_REVENUE WRITE, reason required, audited) is the deliberate clear.
  */
 
 import { NextRequest, NextResponse } from "next/server";
