@@ -62,6 +62,7 @@ import { reconcileProviderCapability, type CapabilityWideningPlan } from "@/lib/
 import { BTC_PRICE_SOURCE } from "@/lib/crypto/btc-price";
 import type { RevaluationRun } from "@/lib/prices/price-gap";
 import { WAKE_SAFE_MS, revaluationAbandonedReason } from "@/jobs/sol-history-backfill";
+import { currentBudgetStartedAtMs } from "@/lib/jobs/run";
 import { readGlobalCostFreeze, type GlobalCostFreezeReader } from "@/lib/platform/cost-freeze";
 import { billableSkipCode, type BillableSkipCode } from "@/lib/entitlements/billable-gate-core";
 
@@ -111,6 +112,18 @@ function revaluationSummary(r: RevaluationRun | null): SyncCryptoResult["revalua
 export function syncCryptoOutcome(r: RevaluationRun | null): { outcome: "COMPLETE" | "PARTIAL"; partialReasons: string[] } {
   const reasons = r && r.abandonedBlocks > 0 ? [revaluationAbandonedReason(r.abandonedBlocks, r.rowsStampedUnavailable)] : [];
   return { outcome: reasons.length > 0 ? "PARTIAL" : "COMPLETE", partialReasons: reasons };
+}
+
+/**
+ * The revaluation's deadline: WAKE_SAFE_MS after the enclosing FUNCTION began —
+ * the dispatch wake's own instant (currentBudgetStartedAtMs), else this run's
+ * start. Never "the earliest JobRun of ANY job in the last 300 s": the separate
+ * resume-stale-imports cron (its own function, every 5 min, 20 s before each
+ * dispatch) always fell in that window, so the deadline landed before the job
+ * began and every pass deferred the whole revaluation (B7, 2026-11-01).
+ */
+export function revaluationDeadlineMs(runStartedAtMs: number, budgetStartedAtMs: number | null): number {
+  return (budgetStartedAtMs ?? runStartedAtMs) + WAKE_SAFE_MS;
 }
 
 export async function syncCrypto(options: {
@@ -274,7 +287,6 @@ export async function syncCrypto(options: {
         try {
           const { revalueHoldersAfterPriceGaps, prismaRevaluationDeps } = await import("@/lib/prices/price-gap");
           const log = (l: string) => console.log(`[sync-crypto] ${l}`);
-          const wake = await db.jobRun.findFirst({ where: { startedAt: { gte: new Date(runStartedAt.getTime() - 300_000) } }, orderBy: { startedAt: "asc" }, select: { startedAt: true } });
           // BETA LIFECYCLE L2 — the revaluation itself is DB recompute (no vendor);
           // its price-gap fetch is a platform-wide CoinGecko call, so under the
           // GLOBAL cost freeze it is skipped (an empty gap run, nothing recorded)
@@ -283,7 +295,7 @@ export async function syncCrypto(options: {
           if (platformFrozen) revalDeps.acquireGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
           revaluation = await revalueHoldersAfterPriceGaps({
             accountIds: historyAccountIds, deps: revalDeps, log, plan: revalPlan, alreadyStamped: !!revalPlan,
-            deadlineMs: (wake ? wake.startedAt.getTime() : runStartedAt.getTime()) + WAKE_SAFE_MS,
+            deadlineMs: revaluationDeadlineMs(runStartedAt.getTime(), currentBudgetStartedAtMs()),
           });
           const g = revaluation.priceGaps;
           console.log(`[sync-crypto] price gaps: ${g?.acquired ?? 0} instrument(s), +${g?.inserted ?? 0} row(s); revaluation owed ${revaluation.owed}, ` +
