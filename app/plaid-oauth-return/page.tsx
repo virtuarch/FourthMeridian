@@ -28,6 +28,7 @@
 
 import { useEffect, useRef, useState, startTransition } from "react";
 import { usePlaidLink, PlaidLinkOnSuccess, PlaidLinkOnExit } from "react-plaid-link";
+import { reportPlaidLinkExit } from "@/lib/analytics/link-exit-client";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 
@@ -130,6 +131,9 @@ export default function PlaidOAuthReturn() {
     console.log("status:",          metadata?.status           ?? null);
     console.log("link_session_id:", metadata?.link_session_id ?? null);
     console.groupEnd();
+
+    // S2-(a) — CONNECTION_LINK_EXITED: provider + exit status + error code only.
+    reportPlaidLinkExit(err, metadata);
 
     const investmentsMode = localStorage.getItem("plaid_link_mode") === "investments";
     localStorage.removeItem("plaid_link_token");
