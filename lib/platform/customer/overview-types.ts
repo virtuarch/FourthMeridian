@@ -6,6 +6,10 @@
  * incident trend. Client-safe (types only). COUNTS ONLY — the actionable
  * per-customer list stays the audited Customers list (cs_customers).
  *
+ * PB-4 — each reason row links to that list FILTERED to the reason
+ * (`attention=<key>`); the reasons themselves are defined once, in
+ * attention-core.ts, for both reads, so a count and its filtered list agree.
+ *
  * Not available, so never shown: support tickets (no ticketing system) and
  * customer health scores (no authoritative model).
  */
@@ -41,3 +45,5 @@ export interface CsOverviewResponse {
 }
 
 export type AttentionKey = "reconnect" | "incident" | "policy" | "stalled";
+/** The Customers list's `attention` filter: one reason, or any reason. */
+export type AttentionFilter = AttentionKey | "any";

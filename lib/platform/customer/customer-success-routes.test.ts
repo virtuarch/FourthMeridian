@@ -18,7 +18,9 @@ const READS = ["app/api/platform/customer-success/customers/route.ts", "app/api/
 const WRITES = ["app/api/platform/customer-success/customers/[userId]/policy/route.ts", "app/api/platform/customer-success/customers/[userId]/cohort/route.ts", "app/api/platform/customer-success/customers/[userId]/refresh/route.ts"];
 // Built from pieces so this scan never contains the tokens the platform-surface tripwire scans FOR.
 const CUSTOMER_AXIS = new RegExp(["\\bcan\\(", "require" + "SpaceRole", "require" + "SpaceAction", "SpaceMember" + "Role"].join("|"));
-const READERS = ["lib/platform/customer/customers.ts", "lib/platform/customer/customer-detail.ts", "lib/platform/customer/assign.ts", "lib/platform/customer/customer-core.ts"];
+const READERS = ["lib/platform/customer/customers.ts", "lib/platform/customer/customer-detail.ts", "lib/platform/customer/assign.ts", "lib/platform/customer/customer-core.ts",
+  // PB-4 — the shared "who needs help" reader + core (the list's per-row reasons and filter).
+  "lib/platform/customer/attention.ts", "lib/platform/customer/attention-core.ts"];
 
 console.log("authorization");
 for (const f of READS) {
@@ -45,7 +47,7 @@ for (const f of [...READS, ...WRITES, ...READERS]) {
   check(`${f}: no customer space-authz token`, !CUSTOMER_AXIS.test(s));
 }
 console.log("privacy — allowlisted selects");
-for (const f of ["lib/platform/customer/customers.ts", "lib/platform/customer/customer-detail.ts"]) {
+for (const f of ["lib/platform/customer/customers.ts", "lib/platform/customer/customer-detail.ts", "lib/platform/customer/attention.ts"]) {
   const s = strip(f);
   check(`${f}: selects no token, credential, cursor, balance or amount`, !/\b(encryptedToken|credential|cursor|syncOriginCursor|balance|amount|passwordHash|totpSecret|sessionToken)\s*:\s*true/.test(s));
   check(`${f}: AI selection carries no prompt/answer field`, !/\b(prompt|answer|content|message)\s*:\s*true/.test(s));

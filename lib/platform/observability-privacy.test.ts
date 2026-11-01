@@ -80,6 +80,9 @@ const READERS = [
   // PLATFORM SPACES 2.0 — the Customer Success overview reader + core (counts; ids are joins only).
   "lib/platform/customer/overview.ts",
   "lib/platform/customer/overview-core.ts",
+  // PB-4 — the shared "who needs help" reader + core (ids are joins; the overview emits counts).
+  "lib/platform/customer/attention.ts",
+  "lib/platform/customer/attention-core.ts",
   // PLATFORM SPACES 2.0 — the Merchant Operations overview reader + core (deployment-wide counts; no merchant names).
   "lib/platform/merchant/overview.ts",
   "lib/platform/merchant/overview-core.ts",
@@ -255,7 +258,8 @@ console.log("source · PLATFORM SPACES 2.0 — the Customer Success overview is 
     /requirePlatformAccess\(\s*["']CUSTOMER_SUCCESS["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
   check("the CS overview route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
     !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
-  const reader = strip("lib/platform/customer/overview.ts");
+  // PB-4 — the attention facts moved into attention.ts (shared with the Customers list); both are pinned.
+  const reader = strip("lib/platform/customer/overview.ts") + strip("lib/platform/customer/attention.ts");
   check("the CS overview reader selects no name, username, institution or issue detail", !/\b(name|username|institutionName|detail)\s*:\s*true/.test(reader));
   const dto = strip("lib/platform/customer/overview-types.ts");
   check("the CS overview DTO declares no identity field", !/^\s*(userId|email|username|name|userIds)\??\s*:/m.test(dto));

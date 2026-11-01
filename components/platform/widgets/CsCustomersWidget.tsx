@@ -30,6 +30,11 @@
  * UI-002 — no fabricated audit reason: deactivate / reactivate posts the reason
  * the operator CHOSE and is disabled until one is chosen (the route refuses a
  * missing reason with a 400; the client no longer substitutes SUPPORT_REQUEST).
+ *
+ * PB-4 — WHO NEEDS HELP. Each row shows a "Needs help" chip with its reasons
+ * (`attention`, from the same fold the dashboard counts with), and a "Needs
+ * help" filter asks the route for `attention=<key|any>`. The dashboard's
+ * reason rows set the same filter through cs-attention-link.ts.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -46,6 +51,8 @@ import { COHORTS, OVERLAYS, POLICY_GROUPS } from "@/lib/entitlements/catalogue";
 import { OPERATOR_REASON_CODES } from "@/lib/audit";
 import { ROLLUP_NOTE, rollupCells, type CustomerRollupFields } from "./cs-rollup-view";
 import { allowanceEffectiveText, allowanceOverrideBody, validateAllowanceOverrideInput, type AllowanceEffectiveView } from "./ai-cost-controls-view";
+import type { AttentionFilter, AttentionKey } from "@/lib/platform/customer/overview-types";
+import { CS_ATTENTION_FILTER_EVENT, attentionFilterOf } from "../leads/cs-attention-link";
 
 /**
  * AI COST CONTROLS — the effective allowance as CustomerPolicyView carries it
@@ -86,6 +93,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   const canWrite = access?.canWrite === true;
   const [list, setList] = useState<CustomerListResponse | null>(null);
   const [search, setSearch] = useState("");
+  /** PB-4 — the "Needs help" filter (null = every account). */
+  const [attention, setAttention] = useState<AttentionFilter | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -110,10 +119,11 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   /** AI COST CONTROLS — the override input as typed (raw); nothing posts while typing. */
   const [allowanceInput, setAllowanceInput] = useState<string>("");
 
-  const loadList = useCallback(async (q: string) => {
+  const loadList = useCallback(async (q: string, att: AttentionFilter | null) => {
     setLoading(true); setError(null);
     try {
-      const r = await fetch(`/api/platform/customer-success/customers?search=${encodeURIComponent(q)}&limit=100`, { credentials: "same-origin" });
+      const filter = att ? `&attention=${encodeURIComponent(att)}` : "";
+      const r = await fetch(`/api/platform/customer-success/customers?search=${encodeURIComponent(q)}&limit=100${filter}`, { credentials: "same-origin" });
       if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
       setList((await r.json()) as CustomerListResponse);
       setLoadedAt(new Date().toISOString());
@@ -134,7 +144,20 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     finally { setDetailLoading(false); }
   }, []);
 
-  useEffect(() => { let alive = true; (async () => { if (alive) await loadList(""); })(); return () => { alive = false; }; }, [loadList]);
+  useEffect(() => { let alive = true; (async () => { if (alive) await loadList("", null); })(); return () => { alive = false; }; }, [loadList]);
+  // PB-4 — the dashboard's "Who needs help, and why" rows: show exactly that population (search cleared,
+  // so the list's total is the count the operator clicked).
+  useEffect(() => {
+    const onFilter = (e: Event) => {
+      const f = attentionFilterOf(e);
+      if (!f) return;
+      setAttention(f); setSearch(""); setShowAll(false);
+      void loadList("", f);
+    };
+    window.addEventListener(CS_ATTENTION_FILTER_EVENT, onFilter);
+    return () => window.removeEventListener(CS_ATTENTION_FILTER_EVENT, onFilter);
+  }, [loadList]);
+  const applyAttention = (f: AttentionFilter | null) => { setAttention(f); setShowAll(false); void loadList(search, f); };
   useEffect(() => {
     if (!selectedId) return;
     let alive = true; (async () => { if (alive) await loadDetail(selectedId); })(); return () => { alive = false; };
@@ -164,7 +187,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
       }
       onDone?.(body);
       if (selectedId) await loadDetail(selectedId);
-      await loadList(search);
+      await loadList(search, attention);
     } catch (e) { setActionError(e instanceof Error ? e.message : "Action failed"); }
     finally { setActing(null); }
   }
@@ -199,22 +222,36 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     <Block id="cs-customer-list" label={section.label} className="min-w-0" hint={<LoadedStamp checkedAt={loadedAt} />}>
       <Surface className="flex min-w-0 flex-1 flex-col gap-3 p-4 sm:p-5">
       {/* PLATFORM SPACES 2.0 — compact search; the figures above the list live in the dashboard hero (no duplicate tiles). */}
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setShowAll(false); void loadList(search); }}>
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); setShowAll(false); void loadList(search, attention); }}>
         <label className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] px-2.5 sm:max-w-sm lg:min-h-8">
           <Search size={12} aria-hidden className="shrink-0 text-[var(--text-faint)]" />
           <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by email or name" aria-label="Search customers by email or name"
             className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] focus:outline-none" />
         </label>
         <button type="submit" className="min-h-11 rounded-[var(--radius-sm)] border px-3 text-xs font-semibold lg:min-h-8" style={{ borderColor: "var(--border-hairline)", color: "var(--text-secondary)" }}>Search</button>
+        {/* PB-4 — the "Needs help" filter; the reasons are named by the server (the same ones the dashboard counts). */}
+        <select value={attention ?? ""} onChange={(e) => applyAttention(e.target.value === "" ? null : (e.target.value as AttentionFilter))}
+          aria-label="Needs help filter" data-attention-filter
+          className="min-h-11 min-w-0 max-w-full rounded-[var(--radius-sm)] border bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8" style={{ borderColor: "var(--border-hairline)" }}>
+          <option value="">All accounts</option>
+          <option value="any">Needs help — any reason</option>
+          {(list?.attentionReasons ?? []).map((r) => <option key={r.key} value={r.key}>{`Needs help — ${r.label}`}</option>)}
+        </select>
         {/* Its own line below sm (it never squeezes the search field or widens the page). */}
         {list && <span className="min-w-0 text-[11px] tabular-nums text-[var(--text-muted)] max-sm:basis-full sm:ml-auto sm:text-right" data-list-population>{listPopulation(list)}</span>}
       </form>
 
+      {attention && (
+        <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-[var(--text-secondary)]" data-attention-active>
+          <span>{`Showing customers who need help: ${attention === "any" ? "any reason" : (list?.attentionReasons.find((r) => r.key === attention)?.label ?? attention)}`}</span>
+          <button type="button" onClick={() => applyAttention(null)} className="inline-flex min-h-11 items-center font-medium text-[var(--text-primary)] underline-offset-2 hover:underline lg:min-h-6">Show all accounts</button>
+        </p>
+      )}
       {loading && <WidgetMessage loading />}
       {error && <WidgetMessage error={error} />}
       {!loading && !error && list && (
         <>
-          {list.customers.length === 0 ? <WidgetMessage empty="No customers match." /> : (
+          {list.customers.length === 0 ? <WidgetMessage empty={attention ? "No one needs help for this reason." : "No customers match."} /> : (
             <>
             <table className="w-full table-fixed text-xs max-lg:hidden" aria-label="Customers">
               <thead className="border-b border-[var(--border-hairline)]">
@@ -231,6 +268,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]">
                         {rollupCells(c as CustomerRow, nowMs).filter((cell) => cell.key !== "funnelStage").map((cell, i) => <span key={cell.key}>{i > 0 ? " · " : ""}<span className="text-[var(--text-faint)]">{cell.word}</span> {cell.value}</span>)}
                       </span>
+                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} />
                     </td>
                     <td className="truncate px-2 py-2.5 align-middle text-[var(--text-secondary)]">{c.funnelStage ?? "—"}</td>
                     <td className="px-2 py-2.5 align-middle text-[var(--text-secondary)]">
@@ -256,6 +294,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <span className="truncate text-[11px] text-[var(--text-muted)]">
                         {c.funnelStage ?? "—"} · {c.connectionCount} connection{c.connectionCount === 1 ? "" : "s"}
                       </span>
+                      <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} />
                     </span>
                     <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</span>
                   </button>
@@ -558,6 +597,24 @@ export function listPopulation(list: CustomerListResponse): string {
   // Truncated: the breakdown describes the rows SHOWN, never the whole total beside it.
   if (rows.length < list.total) return `showing ${rows.length} of ${list.total} accounts · of these ${parts.join(" · ")}`;
   return `${list.total} account${list.total === 1 ? "" : "s"} · ${parts.join(" · ")}`;
+}
+
+/**
+ * PB-4 — "Needs help" and the reasons, on a customer's row. Nothing for a
+ * customer with no reason (or a response from a build without the field).
+ */
+export function NeedsHelpChip({ keys, reasons }: { keys: readonly AttentionKey[] | undefined; reasons: CustomerListResponse["attentionReasons"] | undefined }) {
+  if (!keys || keys.length === 0) return null;
+  const named = (k: AttentionKey) => reasons?.find((r) => r.key === k);
+  return (
+    <span data-needs-help={keys.join(" ")} title={keys.map((k) => named(k)?.label ?? k).join(" · ")}
+      className="mt-1 inline-flex max-w-full items-center gap-1 self-start truncate rounded-full border px-1.5 py-px text-[10px] font-medium"
+      style={{ color: "var(--accent-warning)", borderColor: "color-mix(in srgb, var(--accent-warning) 40%, transparent)" }}>
+      <span>Needs help</span>
+      <span aria-hidden>·</span>
+      <span className="truncate">{keys.map((k) => named(k)?.short ?? k).join(", ")}</span>
+    </span>
+  );
 }
 
 /** Rows shown below lg before "Show all". */

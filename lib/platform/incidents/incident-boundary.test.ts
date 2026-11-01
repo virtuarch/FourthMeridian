@@ -193,8 +193,11 @@ function main() {
   console.log("6. active/history is decided centrally");
   {
     const proj = code("lib/platform/incidents/projections.ts");
+    // PB-4 — through episodes-core's ONE row → state call (shared with the CS trend), which delegates to the authority.
+    const episodes = code("lib/platform/incidents/episodes-core.ts");
     check("projections delegate state to the semantics authority",
-      /syncIssueState\(/.test(proj) && !/function syncIssueState/.test(proj));
+      /episodeStateOf\(/.test(proj) && /from "\.\/episodes-core"/.test(proj) && !/function syncIssueState/.test(proj)
+      && /syncIssueState\(/.test(episodes) && !/function syncIssueState/.test(episodes));
   }
 
   // ── 7. Admission separation holds ───────────────────────────────────────────

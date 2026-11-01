@@ -23,7 +23,7 @@ const O: CsOverviewResponse = {
   checkedAt: "2026-11-20T15:00:00.000Z", windowDays: 30, customers: { active: 8, deactivated: 1 },
   stages: [{ key: "registered", label: "Registered", count: 0 }, { key: "verified", label: "Verified", count: 1 }, { key: "firstSession", label: "First session", count: 2 },
     { key: "firstConnection", label: "First connection", count: 3 }, { key: "firstAiTurn", label: "First AI turn", count: 1 }, { key: "firstBriefViewed", label: "First Brief viewed", count: 0 }, { key: "returned", label: "Returned", count: 1 }],
-  attention: { customers: 3, reasons: [{ key: "reconnect", label: "A connection needs reconnecting", count: 1 }, { key: "incident", label: "An unresolved sync issue", count: 1 }, { key: "policy", label: "Policy group missing or invalid", count: 0 }, { key: "stalled", label: "Not connected 7+ days after registering", count: 2 }] },
+  attention: { customers: 3, reasons: [{ key: "reconnect", label: "A connection needs reconnecting", count: 1 }, { key: "incident", label: "An unresolved sync issue", count: 1 }, { key: "policy", label: "Assigned policy group is unknown, invalid or retired", count: 0 }, { key: "stalled", label: "Not connected 7+ days after registering", count: 2 }] },
   connections: { total: 5, counts: zero, retired: { revoked: 2, ownerInactive: 0 } },
   incidents: { days: [{ day: "2026-11-20", opened: 1, resolved: 2 }], floor: false, openByKind: [{ kind: "MISSING_ACCOUNT", label: "Missing account", count: 1 }], open: 1, openFloor: false },
   onboarding: { stages: [{ key: "verified", label: "Verified" }, { key: "firstSession", label: "First session" }, { key: "firstConnection", label: "First connection" }, { key: "firstAiTurn", label: "First AI turn" }, { key: "firstBriefViewed", label: "First Brief viewed" }],
@@ -32,8 +32,8 @@ const O: CsOverviewResponse = {
 };
 const ok = { data: O, loading: false, error: null };
 const failed = { data: null, loading: false, error: "Request failed (500)" };
-const render = (f: typeof ok | typeof failed) => renderToStaticMarkup(createElement(CustomerSuccessLeadSurface, {
-  f, period: "30", onPeriod: () => {}, onOpenWorkspace: () => {}, customerList: createElement("div", null, "CUSTOMER LIST"),
+const render = (f: typeof ok | typeof failed, withList = true) => renderToStaticMarkup(createElement(CustomerSuccessLeadSurface, {
+  f, period: "30", onPeriod: () => {}, onOpenWorkspace: () => {}, customerList: withList ? createElement("div", null, "CUSTOMER LIST") : null,
 }));
 
 console.log("1. order and charts");
@@ -50,6 +50,21 @@ console.log("2. figures and honesty");
   check("reasons are shares of ACTIVE customers (stalled = 2 of 8)", attentionBars(O)[3].share === 2 / 8);
   check("no support tickets or health score invented", !/ticket/i.test(render(ok).replace(/support tickets \(no ticketing system\)/, "")) && !/health score/i.test(strip("components/platform/leads/CustomerSuccessLead.tsx").replace(/health scores\./, "")));
   check("failed read → '—' KPIs and unavailable", csKpis(failed).every((k) => k.value === "—") && render(failed).includes("unavailable — Request failed (500)"));
+}
+console.log("2b. PB-4 — each reason opens the Customers list filtered to it");
+{
+  const html = render(ok);
+  const keys = [...html.matchAll(/data-share-bar-select="(\w+)"/g)].map((m) => m[1]);
+  check("every reason row is a control naming its reason", JSON.stringify(keys) === JSON.stringify(O.attention.reasons.map((r) => r.key)), keys);
+  check("the control says how many customers it shows", html.includes('aria-label="Show the 2 customers: Not connected 7+ days after registering"'));
+  check("and one control shows everyone who needs help", html.includes("data-attention-any") && html.includes("Show all 3 who need help in the list"));
+  const noList = render(ok, false);
+  check("without the hosted list (no Customers READ) the counts render and NO control does",
+    noList.includes('id="cs-attention"') && !noList.includes("data-share-bar-select") && !noList.includes("data-attention-any"));
+  const lead = strip("components/platform/leads/CustomerSuccessLead.tsx");
+  check("the control hands off through cs-attention-link and lands on the list", /requestCustomerAttentionFilter\(filter\); goToSection\("cs-customers"\)/.test(lead) && /const showWho = p\.customerList \?/.test(lead));
+  const types = strip("lib/platform/customer/overview-types.ts");
+  check("the overview DTO stays counts-only (no identity field added)", !/^\s*(userId|email|username|name|userIds|customers\s*:\s*\{[^}]*id)\??\s*:/m.test(types));
 }
 console.log("3. lead source rules");
 {
