@@ -29,8 +29,8 @@ import { STATE_TONE, STATE_WORD, overallWord } from "../widgets/ops-overview-vie
 import { SEVERITY_TONE, SEVERITY_WORD, actionLabel } from "../widgets/overview/attention-view";
 import { resolvePlatformDestination } from "@/lib/platform/workspaces";
 import { describeSource, describeTrigger } from "../widgets/execution-format";
-import { formatDuration, humanizeToken } from "../widgets/refresh-format";
-import { statusTone } from "../widgets/refresh-activity-view";
+import { formatDuration } from "../widgets/refresh-format";
+import { executionDisplayStatus } from "../widgets/refresh-activity-view";
 import { relTime } from "../widgets/job-health-format";
 
 /** A fetched source as the house hooks return it. */
@@ -181,12 +181,14 @@ export function recentExecutions(page: ExecutionPageDTO, nowMs: number, limit = 
   return page.rows.slice(0, limit).map((row: ExecutionRowDTO) => {
     const source = describeSource(row);
     const trigger = describeTrigger(row.trigger);
+    // PB-7 — a reaped execution a later success superseded reads Recovered, not Failed.
+    const shown = executionDisplayStatus(row);
     return {
       id: row.id,
       name: source.label,
-      status: { word: humanizeToken(row.overallStatus), tone: statusTone(row.overallStatus) },
+      status: { word: shown.word, tone: shown.tone },
       summary: `${trigger} · ${relTime(row.startedAt, nowMs)} · ${formatDuration(row.durationMs)}`,
-      eyebrow: `${source.kind} · ${trigger} · ${humanizeToken(row.overallStatus)}`,
+      eyebrow: `${source.kind} · ${trigger} · ${shown.word}`,
     };
   });
 }

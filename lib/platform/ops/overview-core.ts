@@ -137,7 +137,10 @@ const relative = (iso: string | null, now: Date): string => {
 // ── Domain derivations ───────────────────────────────────────────────────────
 
 export function derivePipeline(p: PipelineStatus, windowLabel: string, now: Date): DomainStatus {
-  const failed = (p.byStatus.FAILED ?? 0) + (p.byStatus.PARTIAL ?? 0);
+  // PB-7 — a reaped execution a later success superseded is RECOVERED, not failed
+  // (lib/platform/refresh/recovery-core.ts); it is named in its own fact below.
+  const recovered = p.recovered ?? 0;
+  const failed = Math.max(0, (p.byStatus.FAILED ?? 0) - recovered) + (p.byStatus.PARTIAL ?? 0);
   const succeeded = p.byStatus.SUCCEEDED ?? 0;
   const attempted = failed + succeeded;
   const state: DomainState =
@@ -157,6 +160,7 @@ export function derivePipeline(p: PipelineStatus, windowLabel: string, now: Date
   const facts: DomainFact[] = [
     { label: "Executions", value: String(p.executions) },
     { label: "Failed", value: String(failed), tone: failed > 0 ? "bad" : "ok" },
+    ...(recovered > 0 ? [{ label: "Recovered", value: String(recovered), tone: "warn" as const }] : []),
     { label: "Running now", value: String(p.openExecutions), tone: p.openExecutions > 0 ? "warn" : undefined },
     { label: "Last bank success", value: relative(plaid?.lastSucceededAt ?? null, now), tone: plaid?.lastSucceededAt ? undefined : "muted" },
     { label: "Last wallet success", value: relative(wallet?.lastSucceededAt ?? null, now), tone: wallet?.lastSucceededAt ? undefined : "muted" },

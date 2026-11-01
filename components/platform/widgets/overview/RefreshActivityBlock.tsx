@@ -104,7 +104,7 @@ export function RefreshActivitySurface({
         ) : (
           <div className="flex flex-col gap-4">
             <div className="grid gap-6 md:grid-cols-2">
-              <DistributionBar label="By status" segments={statusSegments(summary.data.byStatus)} />
+              <DistributionBar label="By status" segments={statusSegments(summary.data.byStatus, summary.data.recovered ?? 0)} />
               <DistributionBar label="By trigger" segments={triggerSegments(summary.data.byTrigger)} />
             </div>
             <span className="text-[10px] leading-relaxed text-[var(--text-faint)]">

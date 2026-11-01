@@ -103,6 +103,7 @@ import type {
   RefreshExecutionStartData,
 } from "@/lib/plaid/refresh-execution";
 import type { SyncIssueInput } from "@/lib/plaid/syncIssues";
+import { STALE_EXECUTION_ERROR_SUMMARY } from "@/lib/plaid/stale-execution.core";
 
 // ── The provider-call row ────────────────────────────────────────────────────
 //
@@ -711,9 +712,12 @@ export function activeLedger(): LedgerHandle | null {
 export const REFRESH_EXECUTION_MAX_DURATION_MS = 300_000;
 /** Margin past it before an open row is called dead (clock skew, a slow completion write). */
 export const STALE_EXECUTION_MARGIN_MS = 300_000;
-/** The errorSummary a reaped row carries — the JobRun finaliser's vocabulary word, with its reason. */
-export const STALE_EXECUTION_ERROR_SUMMARY =
-  "stale: no completion was recorded within the function's maximum duration (the process ended mid-run)";
+/**
+ * The errorSummary a reaped row carries — the JobRun finaliser's vocabulary word, with its reason.
+ * PB-7: defined in the pure stale-execution.core.ts so the readers that must
+ * recognise a reaped row (lib/platform/refresh/recovery-core.ts) need not import this door.
+ */
+export { STALE_EXECUTION_ERROR_SUMMARY };
 
 /** Rows reaped per sweep at most (the backlog drains over successive wakes). */
 export const STALE_EXECUTION_REAP_LIMIT = 200;
