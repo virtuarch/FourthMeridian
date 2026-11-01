@@ -100,20 +100,54 @@ export type CleanupVerdict = {
   latestMarkerAt: Date;
   /** PB-5 — the newest marker is a PRE_PROVIDER one (an operator removal opened it; no attempt recorded since). */
   latestIsPreProvider: boolean;
+  /**
+   * PB-5 (S2) — the newest marker said UNCONFIRMED, but it is a PHANTOM: an
+   * earlier CONFIRMED marker exists AND the token is scrubbed, so Plaid had
+   * already confirmed the removal and the later "failure" was a late second
+   * call failing to decrypt "". Read as CONFIRMED (see cleanupVerdicts).
+   */
+  phantomResolved: boolean;
   /** The provider's code on the newest UNCONFIRMED marker, when it gave one. */
   latestErrorCode: string | null;
 };
 
-/** The per-item verdicts, keyed by plaidItemId. Rows must be ascending (see the header). */
-export function cleanupVerdicts(rows: MarkerRow[]): Map<string, CleanupVerdict> {
+/**
+ * The per-item verdicts, keyed by plaidItemId. Rows must be ascending (see the header).
+ *
+ * ══ THE PHANTOM RULE (PB-5, S2) ════════════════════════════════════════════
+ * Before PB-5, a LATE second call to disconnectPlaidItemIfOrphaned — after
+ * Plaid had confirmed the removal and the token had been scrubbed — failed to
+ * decrypt the sentinel, classified that as "retryable", and wrote an
+ * UNCONFIRMED marker. Newest-wins then read a closed obligation as owed,
+ * forever: every retry fails the same decrypt. PB-5 stops new ones at the
+ * source (the sentinel guard in lib/plaid/disconnect.ts); this rule clears any
+ * existing one on deploy, with no data repair.
+ *
+ *   newest marker UNCONFIRMED  AND  an EARLIER CONFIRMED marker exists
+ *   AND the item's token is the scrub sentinel (`scrubbedItemIds`)
+ *   ⇒ CONFIRMED (outcome = the latest CONFIRMED marker's), phantomResolved.
+ *
+ * All three are required. No earlier CONFIRMED ⇒ the removal was never
+ * confirmed: genuinely owed. A token that is NOT the sentinel ⇒ the item holds
+ * a live credential (re-linked, or never confirmed): genuinely owed. It is the
+ * CONFIRMED marker and the sentinel TOGETHER that prove Plaid already said
+ * "gone". `scrubbedItemIds` defaults to empty, so a caller that does not
+ * supply it gets plain newest-wins (the rule can only make an item LESS owed).
+ */
+export function cleanupVerdicts(rows: MarkerRow[], scrubbedItemIds: ReadonlySet<string> = new Set()): Map<string, CleanupVerdict> {
   const out = new Map<string, CleanupVerdict>();
   for (const [id, markers] of groupByItem(rows)) {
     const newest = markers[markers.length - 1];
     // Attempts only: a PRE_PROVIDER marker records an obligation, not an attempt.
     const unconfirmed = markers.filter((m) => m.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED && !isPreProviderMarker(m));
-    const owed = newest.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED;
-    const word = str((newest.metadata as { outcome?: unknown } | null)?.outcome);
+    const confirmedMarkers = markers.filter((m) => m.action === AuditAction.PLAID_ITEM_REVOCATION_CONFIRMED);
+    const newestOwed = newest.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED;
+    const phantom = newestOwed && confirmedMarkers.length > 0 && scrubbedItemIds.has(id);
+    const owed = newestOwed && !phantom;
+    const decisive = phantom ? confirmedMarkers[confirmedMarkers.length - 1] : newest;
+    const word = str((decisive.metadata as { outcome?: unknown } | null)?.outcome);
     out.set(id, {
+      phantomResolved: phantom,
       verdict:         owed ? "OWED" : "CONFIRMED",
       outcome:         owed ? null : word === "REMOVED" || word === "ALREADY_GONE" ? word : null,
       attemptCount:    unconfirmed.length,

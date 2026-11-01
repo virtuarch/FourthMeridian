@@ -135,6 +135,8 @@ export interface AccountLinkFact {
 export interface PlaidItemFact {
   id: string; userId: string; institutionName: string | null; status: string;
   links: AccountLinkFact[];
+  /** PB-5 (S2) — the token is the post-confirmation scrub sentinel (ids-only read; the phantom rule's input). */
+  tokenScrubbed?: boolean;
 }
 export interface WalletFact {
   id: string; userId: string; externalConnectionId: string | null; status: string;
@@ -274,7 +276,8 @@ export function outcomeOf(provider: RemovedProvider, verdict: CleanupVerdict | u
  * it reports are over the whole population.
  */
 export function foldRemovedConnections(input: RemovedConnectionsInputs): RemovedConnectionRow[] {
-  const verdicts = cleanupVerdicts(input.markers);
+  // The SAME phantom rule the cleanup widget's fold applies (provider-cleanup.core.ts).
+  const verdicts = cleanupVerdicts(input.markers, new Set(input.plaidItems.filter((p) => p.tokenScrubbed === true).map((p) => p.id)));
   const now = input.now ?? new Date();
 
   // Earliest marker per item — "when the provider question was first asked".

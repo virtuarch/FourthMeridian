@@ -52,6 +52,7 @@
  */
 
 import { systemDb } from "@/lib/db";
+import { readScrubbedItemIds } from "@/lib/plaid/token-scrub-state";
 
 /**
  * ⚠️ `systemDb` (fm_system), NOT `db`. This is a PLATFORM OPS read: one
@@ -137,11 +138,17 @@ export async function getProviderCleanupStatus(now: Date = new Date()): Promise<
 
   // Which items are owed, so only those rows are fetched.
   const owedIdsForLookup = owedItemIds(rows);
-  const items = owedIdsForLookup.length === 0 ? [] : await systemDb.plaidItem.findMany({
-    where:  { id: { in: owedIdsForLookup } },
-    select: { id: true, status: true, institutionName: true, userId: true },
-  });
-  return foldCleanupStatus(rows, items, now);
+  const [items, scrubbed] = owedIdsForLookup.length === 0
+    ? [[] as OwnerItem[], new Set<string>()]
+    : await Promise.all([
+        systemDb.plaidItem.findMany({
+          where:  { id: { in: owedIdsForLookup } },
+          select: { id: true, status: true, institutionName: true, userId: true },
+        }),
+        // PB-5 (S2) — the phantom rule's one bit, asked in the token's own module (ids only).
+        readScrubbedItemIds(owedIdsForLookup),
+      ]);
+  return foldCleanupStatus(rows, items.map((i) => ({ ...i, tokenScrubbed: scrubbed.has(i.id) })), now);
 }
 
 /** plaidItemId values whose NEWEST marker is UNCONFIRMED. */
@@ -154,7 +161,8 @@ function owedItemIds(rows: MarkerRow[]): string[] {
   return out;
 }
 
-type OwnerItem = { id: string; status: string; institutionName: string | null; userId: string };
+/** `tokenScrubbed` (PB-5): the item's token is the post-confirmation sentinel — the phantom rule's input. */
+type OwnerItem = { id: string; status: string; institutionName: string | null; userId: string; tokenScrubbed?: boolean };
 
 /** The two markers' rows for every item, ascending — the read both readers fold. */
 export async function readCleanupMarkers(client: Pick<typeof systemDb, "auditLog"> = systemDb): Promise<MarkerRow[]> {
@@ -180,7 +188,8 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
   let confirmedCount = 0;
   // NEWEST WINS — decided once, by cleanupVerdicts, which the removed-connections
   // list reads too (PB-5: the two surfaces must count the same verdicts).
-  const verdicts = cleanupVerdicts(rows);
+  // PB-5 (S2) — the phantom rule needs the scrub bit; absent ⇒ plain newest-wins.
+  const verdicts = cleanupVerdicts(rows, new Set(items.filter((i) => i.tokenScrubbed === true).map((i) => i.id)));
   for (const [id, v] of verdicts) {
     if (v.verdict === "OWED") owedIds.push(id);
     else confirmedCount++;

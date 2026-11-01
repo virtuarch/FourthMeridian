@@ -20,6 +20,7 @@ import { PlaidItemStatus, ConnectionStatus, ProviderType } from "@prisma/client"
 import { AuditAction } from "@/lib/audit-actions";
 import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import { readCleanupMarkers } from "@/lib/platform/plaid/provider-cleanup";
+import { readScrubbedItemIds } from "@/lib/plaid/token-scrub-state";
 import {
   foldRemovedConnections,
   queryRemovedConnections,
@@ -77,7 +78,7 @@ export async function loadRemovedConnections(client = systemDb): Promise<Removed
   const ownerIds = [...new Set([...plaidItems.map((p) => p.userId), ...walletRows.map((w) => w.userId)])];
   const plaidIds = plaidItems.map((p) => p.id);
 
-  const [revokedTransitions, customerActs, operatorActs] = await Promise.all([
+  const [revokedTransitions, customerActs, operatorActs, scrubbed] = await Promise.all([
     plaidIds.length === 0 ? Promise.resolve([] as AuditFact[]) : client.auditLog.findMany({
       where:   { action: AuditAction.PLAID_ITEM_STATUS_CHANGED, userId: { in: ownerIds }, metadata: { path: ["to"], equals: "REVOKED" } },
       select:  { action: true, userId: true, createdAt: true, metadata: true },
@@ -96,6 +97,8 @@ export async function loadRemovedConnections(client = systemDb): Promise<Removed
       orderBy: { createdAt: "desc" },
       take:    EVIDENCE_CAP,
     }),
+    // PB-5 (S2) — the phantom rule's one bit, ids only (the token never leaves lib/plaid).
+    readScrubbedItemIds(plaidIds, client),
   ]);
 
   const operatorIds = [...new Set(operatorActs.map((r) => r.performedByAdminId).filter((v): v is string => !!v))];
@@ -106,7 +109,7 @@ export async function loadRemovedConnections(client = systemDb): Promise<Removed
   const label = new Map(operators.map((u) => [u.id, operatorDisplayName(u)] as const));
 
   return foldRemovedConnections({
-    plaidItems: plaidItems.map((p) => ({ id: p.id, userId: p.userId, institutionName: p.institutionName, status: p.status, links: toLinks(p.connections) })),
+    plaidItems: plaidItems.map((p) => ({ id: p.id, userId: p.userId, institutionName: p.institutionName, status: p.status, links: toLinks(p.connections), tokenScrubbed: scrubbed.has(p.id) })),
     wallets: walletRows.map((w) => ({ id: w.id, userId: w.userId, externalConnectionId: w.externalConnectionId, status: w.status, links: toLinks(w.accountConnections) })),
     markers,
     revokedTransitions,
