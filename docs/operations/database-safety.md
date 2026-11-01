@@ -34,7 +34,7 @@ backup  →  migrate  →  verify
 
 | Command | What it does |
 |---|---|
-| `npm run db:backup` | Timestamped `pg_dump` of the **mutation target** (`DIRECT_URL`, which Prisma Migrate uses — see §2a) → `backups/<db>-<iso>.sql` (gitignored). Refuses when `DATABASE_URL`/`DIRECT_URL` are not provably one database. Fails loudly on an empty/partial dump. Restore: see §4. |
+| `npm run db:backup` | Timestamped `pg_dump` of the **mutation target** (`DIRECT_URL`, which Prisma Migrate uses — see §2a) → `backups/<db>-<iso>.sql` (gitignored). Refuses when `DATABASE_URL`/`DIRECT_URL` are not provably one database. Fails loudly on an empty/partial dump (row-for-row, in the dump's own snapshot — see below). Restore: see §4. |
 | `npm run db:migrate:safe` | `db-guard --mode=migrate-deploy` (target identity) → `db:backup` → `prisma migrate deploy` — applies pending migrations **additively** (never resets). This is the normal way to apply a new migration to your dev DB. |
 | `npm run db:migrate` | Routed through `db-guard --mode=migrate-dev` **+ backup** first. **Refuses a non-interactive shell** against a populated (or unreachable) database — on 2026-09-15 a bare `prisma migrate dev` run by an agent session with drift pending reset the dev DB before Prisma's own interactivity refusal printed. From a real terminal it proceeds and Prisma prompts you. |
 | `npm run db:reset` | Routed through `db-guard` **+ backup** first. Refuses unless `ALLOW_DESTRUCTIVE_DB=true`; for a target that is **not a recognised clone** (`fintracker`, `postgres`, anything off the `fintracker_<suffix>` convention) it additionally requires a human at a real terminal to **type the exact `host/database`** — the env flag alone may be left exported from an earlier command. A backup of the same database is taken before the reset. |
@@ -50,6 +50,8 @@ So the *only* way to reset is a conscious, backed-up act:
 npm run db:backup                                  # if you want a manual one first
 ALLOW_DESTRUCTIVE_DB=true npm run db:reset          # backs up the same target, then resets
 ```
+
+**Row-for-row verification is snapshot-consistent (2026-11-01).** `db:backup` holds one `REPEATABLE READ, READ ONLY` transaction for the whole backup, exports its snapshot, runs `pg_dump --snapshot=<id>`, and only then counts each public table inside that same transaction, comparing with the dump's COPY blocks (a missing block or a short table is a hard failure). Counts are therefore taken in the dump's own snapshot: a live database with crons writing verifies exactly, and no cron pause is needed. The held transaction disables `idle_in_transaction_session_timeout` with `SET LOCAL` (fm_backup's role setting is 15 s). It requires a **session-mode** connection (Supabase `:5432` / `DIRECT_URL`); a transaction pooler (`:6543`) or any snapshot export/import failure fails the backup with that instruction — it never falls back to comparing against live counts (the 2026-11-01 B1 failure: JobRun 27147 → 27148 → 27149 live vs the dump). Mechanism: `scripts/lib/db-backup.core.ts`; tests: `scripts/db-backup.test.ts`.
 
 ### 2a. One command, one database (FM-AUDIT-002)
 
