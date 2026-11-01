@@ -85,8 +85,9 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
     };
   }, [menuOpen]);
 
-  /** Arrow keys move between the menu's enabled items. */
+  /** Arrow keys move between the menu's enabled items; Tab leaves (and closes) it. */
   const onMenuKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Tab") { setMenuOpen(false); return; }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
     const items = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not([disabled])") ?? []);
@@ -113,6 +114,11 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
       role="menu"
       aria-label="Connect"
       onKeyDown={onMenuKey}
+      onBlur={(e) => {
+        // Focus leaving for anywhere outside the trigger root and the menu closes it.
+        const to = e.relatedTarget as Node | null;
+        if (to && !root.current?.contains(to) && !menu.current?.contains(to)) setMenuOpen(false);
+      }}
       data-connect-menu
       className={[
         "z-50 p-1.5 shadow-[var(--shadow-e3)]",
@@ -152,8 +158,8 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
 
   return (
     <div data-connections-actions className={centered ? "flex flex-col items-stretch gap-2.5 sm:flex-row sm:justify-center" : "flex flex-col items-stretch gap-2.5 sm:flex-row sm:justify-end"}>
-      <div className="flex flex-row gap-2.5">
-        <div ref={root} className="relative flex-1 sm:flex-none">
+      <div className="flex flex-col gap-2.5 sm:flex-row">
+        <div ref={root} className="relative">
           <GlassButton
             ref={trigger}
             tone="meridian"
@@ -173,7 +179,7 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
           {menuOpen && !sheet && menuPanel}
         </div>
 
-        <GlassButton tone="neutral" fullWidth className="flex-1 sm:w-auto sm:flex-none" onClick={() => setAssetOpen(true)} data-add-manual-asset>
+        <GlassButton tone="neutral" fullWidth className="sm:w-auto" onClick={() => setAssetOpen(true)} data-add-manual-asset>
           <Plus size={16} className="shrink-0" />
           <span className="whitespace-nowrap">Add Manual Asset</span>
         </GlassButton>
