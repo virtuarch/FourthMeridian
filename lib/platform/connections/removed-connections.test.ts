@@ -194,7 +194,7 @@ console.log("4. the Plaid outcome — and the list agrees with the Provider clea
   // Single source, by construction: both folds read cleanupVerdicts; neither re-derives "newest wins".
   const cleanupSrc = code("lib/platform/plaid/provider-cleanup.ts");
   const listSrc = code("lib/platform/connections/removed-connections.core.ts");
-  check("the cleanup widget's fold counts cleanupVerdicts", /for \(const \[id, v\] of cleanupVerdicts\(rows\)\)/.test(cleanupSrc));
+  check("the cleanup widget's fold counts cleanupVerdicts", /const verdicts = cleanupVerdicts\(rows\);\s*for \(const \[id, v\] of verdicts\)/.test(cleanupSrc));
   check("the list's fold labels rows from cleanupVerdicts", /cleanupVerdicts\(input\.markers\)/.test(listSrc));
   check("the list never compares a marker action itself (no second lifecycle)", !/PLAID_ITEM_REVOCATION_(UN)?CONFIRMED/.test(listSrc));
   check("the list never reads status === REVOKED as cleanup evidence", !/status\s*===\s*["']REVOKED["'][\s\S]{0,80}(CONFIRMED|outcome)/.test(listSrc));

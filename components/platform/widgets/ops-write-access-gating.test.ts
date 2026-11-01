@@ -28,7 +28,8 @@ check("unified jobs: a fleet-wide Run renders only with canControl; otherwise th
   /const runAllowed = c\.run && \(!isFleetRun\(c\.run\) \|\| a\.canControl\) \? c\.run : null;/.test(ops) && /note: c\.run && !runAllowed \? NEEDS_CONTROL_LINE : null/.test(ops));
 check("unified jobs: the fleet confirm collects a reason and blocks without one", /OperatorReasonField/.test(ops) && /confirmDisabled=\{confirming\.requires\.reason && reasonPayload\(reason\) === null\}/.test(ops));
 const cleanup = src("OpsProviderCleanupWidget");
-check("Retry cleanup renders only when canWrite", /!o\.itemGone && canWrite && \(/.test(cleanup));
+// PB-5 (S2): also hidden while an operator removal is inside its grace window.
+check("Retry cleanup renders only when canWrite (and not while a removal is in progress)", /!o\.itemGone && !o\.inProgress && canWrite && \(/.test(cleanup));
 // SEC-PLAT-4 — the Growth users widget has no write control at all (deactivate /
 // reactivate moved to Customer Success, gated on CS WRITE with a chosen reason).
 const users = src("OpsUsersWidget");

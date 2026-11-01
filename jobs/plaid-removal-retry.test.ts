@@ -24,7 +24,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 const owedItem = (id: string, over: Partial<ProviderCleanupItem> = {}): ProviderCleanupItem => ({
   plaidItemId: id, institution: "Chase", ownerRef: "abc123", productStatus: "REVOKED", itemGone: false,
   owedSinceISO: "2026-10-01T00:00:00.000Z", owedForHours: 300, attemptCount: 1,
-  lastAttemptAtISO: "2026-10-01T00:00:00.000Z", latestErrorCode: "INTERNAL_SERVER_ERROR", ...over,
+  lastAttemptAtISO: "2026-10-01T00:00:00.000Z", latestErrorCode: "INTERNAL_SERVER_ERROR", inProgress: false, ...over,
 });
 const status = (owed: ProviderCleanupItem[]): ProviderCleanupStatus => ({
   owed, owedCount: owed.length, oldestOwedSinceISO: owed[0]?.owedSinceISO ?? null,

@@ -28,7 +28,12 @@
  *     never the action's return value (it returns void by design).
  *
  * ══ SELECTION ═══════════════════════════════════════════════════════════════
- * Owed AND product status REVOKED AND the row still exists. The status filter
+ * Owed AND not an operator removal still in flight AND product status REVOKED
+ * AND the row still exists. PB-5 (S2): an owed item whose newest marker is a
+ * PRE_PROVIDER marker younger than PRE_PROVIDER_GRACE_MS (`inProgress`) is an
+ * operator removal whose own provider call may be running right now; a second
+ * itemRemove must not be started beside it, so it is SKIPPED (counted in
+ * `skipped.inProgress`) and retried on a later run once the window has passed. The status filter
  * is a SELECTION, not proof of anything: an owed item whose product status is
  * ACTIVE has been relinked since (lifecycle case 5 in provider-cleanup.test.ts)
  * and must not be revoked by a background job — the operator lever remains for
@@ -64,7 +69,7 @@ export interface PlaidRemovalRetryResult {
   /** Of those, items still owed after the run (a fresh UNCONFIRMED marker, or a throw). */
   stillUnconfirmed: number;
   /** Owed items NOT attempted, by reason — reported so a zero attempt is explainable. */
-  skipped: { notRevoked: number; itemGone: number; overLimit: number };
+  skipped: { inProgress: number; notRevoked: number; itemGone: number; overLimit: number };
   /** The owed population before the run, for the ledger. */
   owedBefore: number;
   limit: number;
@@ -85,10 +90,12 @@ export function selectRetryCandidates(
   status: Pick<ProviderCleanupStatus, "owed">,
   limit: number = PLAID_REMOVAL_RETRY_LIMIT,
 ): { candidates: string[]; skipped: PlaidRemovalRetryResult["skipped"] } {
-  const skipped = { notRevoked: 0, itemGone: 0, overLimit: 0 };
+  const skipped = { inProgress: 0, notRevoked: 0, itemGone: 0, overLimit: 0 };
   const eligible: string[] = [];
   // `owed` is already oldest-obligation-first (the reader sorts by owedSinceISO).
   for (const o of status.owed) {
+    // PB-5 (S2) — FIRST: never race an operator removal inside its grace window.
+    if (o.inProgress) { skipped.inProgress++; continue; }
     if (o.itemGone) { skipped.itemGone++; continue; }
     if (o.productStatus !== "REVOKED") { skipped.notRevoked++; continue; }
     eligible.push(o.plaidItemId);

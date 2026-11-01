@@ -46,7 +46,7 @@
  */
 
 import { AuditAction } from "@/lib/audit-actions";
-import { cleanupVerdicts, type CleanupVerdict, type MarkerRow } from "@/lib/platform/plaid/provider-cleanup.core";
+import { cleanupVerdicts, isRemovalInProgress, type CleanupVerdict, type MarkerRow } from "@/lib/platform/plaid/provider-cleanup.core";
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -111,8 +111,12 @@ export interface RemovedConnectionRow {
   removedAtISO: string | null;
   removedBy: RemovedBy;
   outcome: RemovedOutcome;
-  /** Plaid only: UNCONFIRMED attempts ever, and the provider's latest code. */
-  cleanup: { attemptCount: number; latestErrorCode: string | null } | null;
+  /**
+   * Plaid only: UNCONFIRMED attempts ever, the provider's latest code, and
+   * whether an operator removal is still inside its PRE_PROVIDER grace window
+   * (shown "in progress"; still counted as owed, never retryable meanwhile).
+   */
+  cleanup: { attemptCount: number; latestErrorCode: string | null; inProgress: boolean } | null;
   /** True when the PlaidItem row no longer exists (the marker outlives it). */
   itemGone: boolean;
   /** True when a removed Plaid item has since been re-linked (status left REVOKED). */
@@ -159,6 +163,8 @@ export interface RemovedConnectionsInputs {
   operatorActs: AuditFact[];
   /** Operator id → display label (username → name → opaque), null when unresolved. */
   operatorLabel: (userId: string) => string | null;
+  /** The clock for the PRE_PROVIDER grace window. Default: now. */
+  now?: Date;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -269,6 +275,7 @@ export function outcomeOf(provider: RemovedProvider, verdict: CleanupVerdict | u
  */
 export function foldRemovedConnections(input: RemovedConnectionsInputs): RemovedConnectionRow[] {
   const verdicts = cleanupVerdicts(input.markers);
+  const now = input.now ?? new Date();
 
   // Earliest marker per item — "when the provider question was first asked".
   const firstMarkerAt = new Map<string, Date>();
@@ -297,6 +304,7 @@ export function foldRemovedConnections(input: RemovedConnectionsInputs): Removed
     const removedAt = revokedAt.get(p.id) ?? firstMarkerAt.get(p.id) ?? latestDeletedAt(p.links);
     const source = p.institutionName ?? "(unknown institution)";
     const outcome = outcomeOf("PLAID", verdict);
+    const inProgress = isRemovalInProgress(verdict, now);
     rows.push({
       id: p.id, provider: "PLAID", source,
       accountCount: distinctAccounts(p.links),
@@ -308,12 +316,12 @@ export function foldRemovedConnections(input: RemovedConnectionsInputs): Removed
         customerActs: input.customerActs, operatorActs: input.operatorActs, operatorLabel: input.operatorLabel,
       }),
       outcome,
-      cleanup: verdict ? { attemptCount: verdict.attemptCount, latestErrorCode: verdict.latestErrorCode } : null,
+      cleanup: verdict ? { attemptCount: verdict.attemptCount, latestErrorCode: verdict.latestErrorCode, inProgress } : null,
       itemGone: false,
       relinked: !isRevoked,
       // S2 flag 3 — RETRY IS DECIDED BY THE MARKER VERDICT ALONE. `removedBy`
       // (and its INFERRED customer match) is display-only and never feeds this.
-      retryEligible: outcome === "CLEANUP_OWED",
+      retryEligible: outcome === "CLEANUP_OWED" && !inProgress,
     });
   }
 
@@ -333,7 +341,7 @@ export function foldRemovedConnections(input: RemovedConnectionsInputs): Removed
         customerActs: [], operatorActs: input.operatorActs, operatorLabel: input.operatorLabel,
       }),
       outcome,
-      cleanup: { attemptCount: verdict.attemptCount, latestErrorCode: verdict.latestErrorCode },
+      cleanup: { attemptCount: verdict.attemptCount, latestErrorCode: verdict.latestErrorCode, inProgress: isRemovalInProgress(verdict, now) },
       itemGone: true, relinked: false,
       // Nothing left to revoke: the retry route answers ITEM_GONE for it.
       retryEligible: false,

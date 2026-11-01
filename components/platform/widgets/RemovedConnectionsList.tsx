@@ -78,6 +78,7 @@ function Row({ row, owner, canWrite, busy, verdict, onRetry, onOwner }: {
         {reason && <span>reason {reason}</span>}
         {row.relinked && <span>re-linked since</span>}
         {row.cleanup && row.cleanup.attemptCount > 0 && <span>{row.cleanup.attemptCount} unconfirmed attempt{row.cleanup.attemptCount === 1 ? "" : "s"}</span>}
+        {row.cleanup?.inProgress && <span className="text-[var(--text-primary)]" data-in-progress>removal in progress</span>}
         {row.cleanup?.latestErrorCode && <span>last code <span className="text-[var(--text-primary)]">{row.cleanup.latestErrorCode}</span></span>}
       </div>
       {row.retryEligible && (
@@ -120,7 +121,7 @@ export function RemovedConnectionsList({ canWrite, refreshKey = 0 }: { canWrite:
       });
       const body = (await res.json().catch(() => null)) as ProviderCleanupRetryResponse | null;
       // The server's marker re-read is the verdict — never the HTTP status.
-      setVerdict((v) => ({ ...v, [plaidItemId]: body?.confirmed ? "Confirmed" : body?.skipped === "ITEM_GONE" ? "Item gone" : "Still owed" }));
+      setVerdict((v) => ({ ...v, [plaidItemId]: body?.confirmed ? "Confirmed" : body?.skipped === "ITEM_GONE" ? "Item gone" : body?.skipped === "IN_PROGRESS" ? "Removal in progress" : "Still owed" }));
       setNonce((n) => n + 1);
     } catch {
       setVerdict((v) => ({ ...v, [plaidItemId]: "Retry failed" }));

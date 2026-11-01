@@ -73,7 +73,7 @@ import { AuditAction } from "@/lib/audit-actions";
 // PB-5 — the pure lifecycle fold (marker shape, grouping, per-item verdict)
 // lives in provider-cleanup.core.ts so a client component can import the
 // vocabulary built on it without pulling the database client into its bundle.
-import { CLEANUP_MARKERS as MARKERS, cleanupVerdicts, groupByItem, isPreProviderMarker, type MarkerRow } from "./provider-cleanup.core";
+import { CLEANUP_MARKERS as MARKERS, cleanupVerdicts, groupByItem, isPreProviderMarker, isRemovalInProgress, type MarkerRow } from "./provider-cleanup.core";
 export { cleanupVerdicts, type CleanupVerdict, type MarkerRow } from "./provider-cleanup.core";
 
 export type ProviderCleanupItem = {
@@ -102,6 +102,12 @@ export type ProviderCleanupItem = {
   lastAttemptAtISO: string;
   /** The provider's own code on the latest failure, when it gave one. */
   latestErrorCode: string | null;
+  /**
+   * PB-5 (S2) — an operator removal still inside its PRE_PROVIDER grace window
+   * (provider-cleanup.core.ts). Counted as owed, but nothing may start a second
+   * provider call for it: plaid-removal-retry skips it, the Retry POST refuses it.
+   */
+  inProgress: boolean;
 };
 
 export type ProviderCleanupStatus = {
@@ -174,7 +180,8 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
   let confirmedCount = 0;
   // NEWEST WINS — decided once, by cleanupVerdicts, which the removed-connections
   // list reads too (PB-5: the two surfaces must count the same verdicts).
-  for (const [id, v] of cleanupVerdicts(rows)) {
+  const verdicts = cleanupVerdicts(rows);
+  for (const [id, v] of verdicts) {
     if (v.verdict === "OWED") owedIds.push(id);
     else confirmedCount++;
   }
@@ -213,6 +220,7 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
       attemptCount:    attempts.length,
       lastAttemptAtISO: latest.createdAt.toISOString(),
       latestErrorCode: str((latest.metadata as { plaidErrorCode?: unknown } | null)?.plaidErrorCode),
+      inProgress:      isRemovalInProgress(verdicts.get(id), now),
     };
   }).sort((a, b) => a.owedSinceISO.localeCompare(b.owedSinceISO));
 

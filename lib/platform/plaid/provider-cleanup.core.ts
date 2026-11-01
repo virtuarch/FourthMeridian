@@ -31,13 +31,37 @@ const str = (v: unknown): string | null => (typeof v === "string" && v.length > 
  * UNCONFIRMED marker tagged `phase: "PRE_PROVIDER"` BEFORE the call (through
  * disconnectAccounts' beforeProviderRevocation hook). Newest-wins does the
  * rest with no new rule: a completed attempt's own marker supersedes it; a
- * crash leaves it newest, so the item reads OWED and plaid-removal-retry and
- * the Provider cleanup widget pick it up. It is an obligation, not an attempt,
+ * crash leaves it newest, so the item reads OWED: the Provider cleanup widget
+ * and the Removed list show it (after the grace window below) and the operator
+ * Retry works on it; plaid-removal-retry picks it up only once the product
+ * status reached REVOKED (its relinked-item protection skips ACTIVE items). It is an obligation, not an attempt,
  * so it is not counted in `attemptCount` and carries no error code.
  */
 export const PRE_PROVIDER_PHASE = "PRE_PROVIDER" as const;
 export function isPreProviderMarker(m: MarkerRow): boolean {
   return (m.metadata as { phase?: unknown } | null)?.phase === PRE_PROVIDER_PHASE;
+}
+
+/**
+ * PB-5 (S2) — THE GRACE WINDOW. A PRE_PROVIDER marker is newest from the moment
+ * it is written until the attempt's own marker lands — normally seconds. While
+ * it is younger than this, the removal is IN PROGRESS, not crashed: nothing
+ * else may start a second provider call for it (the scheduled
+ * plaid-removal-retry skips it; the operator Retry refuses it with
+ * IN_PROGRESS; the UIs hide Retry and say "removal in progress"). Older than
+ * this with nothing after it, the removal is treated as interrupted and the
+ * obligation is retryable as any other owed item.
+ *
+ * It still COUNTS as owed everywhere (widget and Removed list alike — one
+ * verdict, one count): an in-flight removal is genuinely unconfirmed.
+ * 15 minutes is far above the route's own duration (one request; itemRemove is
+ * a single HTTP call) and far below the daily retry cadence.
+ */
+export const PRE_PROVIDER_GRACE_MS = 15 * 60_000;
+
+/** Is this owed verdict an operator removal still inside its grace window? Pure; `now` is handed in. */
+export function isRemovalInProgress(v: Pick<CleanupVerdict, "verdict" | "latestIsPreProvider" | "latestMarkerAt"> | undefined, now: Date): boolean {
+  return !!v && v.verdict === "OWED" && v.latestIsPreProvider && now.getTime() - v.latestMarkerAt.getTime() < PRE_PROVIDER_GRACE_MS;
 }
 
 /** Markers grouped per plaidItemId, preserving the (ascending) input order. */
@@ -74,6 +98,8 @@ export type CleanupVerdict = {
   attemptCount: number;
   /** The newest marker's time — when the provider question was last answered. */
   latestMarkerAt: Date;
+  /** PB-5 — the newest marker is a PRE_PROVIDER one (an operator removal opened it; no attempt recorded since). */
+  latestIsPreProvider: boolean;
   /** The provider's code on the newest UNCONFIRMED marker, when it gave one. */
   latestErrorCode: string | null;
 };
@@ -92,6 +118,7 @@ export function cleanupVerdicts(rows: MarkerRow[]): Map<string, CleanupVerdict> 
       outcome:         owed ? null : word === "REMOVED" || word === "ALREADY_GONE" ? word : null,
       attemptCount:    unconfirmed.length,
       latestMarkerAt:  newest.createdAt,
+      latestIsPreProvider: isPreProviderMarker(newest),
       latestErrorCode: unconfirmed.length > 0
         ? str((unconfirmed[unconfirmed.length - 1].metadata as { plaidErrorCode?: unknown } | null)?.plaidErrorCode)
         : null,
