@@ -310,6 +310,24 @@ async function main() {
       full.betaIntakeNetwork?.minimised === 1 && rows.length === 1, JSON.stringify(full.betaIntakeNetwork));
   }
 
+  // The comms-delivery rollup always writes (rollups + deletes), so a DRY RUN must not touch it at all.
+  {
+    const touched: string[] = [];
+    const spy = new Proxy({}, {
+      get(_t, prop) {
+        touched.push(String(prop));
+        return () => { throw new Error("rollup client used"); };
+      },
+    }) as unknown as Parameters<typeof runDataRetention>[2];
+    const { client } = makeClient({});
+    const dry = await quiet(() => runDataRetention(client, NOW, spy, { dryRun: true }));
+    check("dryRun with a comms client: the rollup is skipped (no result, client never touched)",
+      dry.commsDelivery == null && touched.length === 0, JSON.stringify({ commsDelivery: dry.commsDelivery, touched }));
+    const live = await quiet(() => runDataRetention(client, NOW, spy));
+    check("…and a live run does call the rollup (control: the spy is wired)", live.commsDelivery != null && touched.length > 0,
+      JSON.stringify({ commsDelivery: live.commsDelivery, touched: touched.slice(0, 3) }));
+  }
+
   if (failures > 0) { console.error(`\n❌ data retention: ${failures} check(s) failed`); process.exit(1); }
   console.log("\n✅ data retention: all checks passed");
 }

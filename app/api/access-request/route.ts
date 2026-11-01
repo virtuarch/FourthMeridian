@@ -100,6 +100,8 @@ const NOTE_MAX = 1000;
 // rows for 24 h past their window START, which is exactly enough).
 const ACCESS_REQUEST_IP_LIMIT:         RateLimitConfig = { limit: 5,  windowSec: 15 * 60 };
 const ACCESS_REQUEST_GLOBAL_WINDOW_SEC = 60 * 60; // the limit itself is a PlatformSetting
+// The limiter uses FIXED windows aligned to the epoch (lib/rate-limit.ts), so "per 24 h" means per UTC
+// day: up to 2× a limit can land across a window boundary (e.g. 3 before and 3 after midnight UTC).
 const ACCESS_REQUEST_EMAIL_LIMIT:      RateLimitConfig = { limit: 3,  windowSec: 24 * 60 * 60 };
 const OPERATOR_NOTIFY_EMAIL_THROTTLE:  RateLimitConfig = { limit: 1,  windowSec: 24 * 60 * 60 };
 const OPERATOR_NOTIFY_GLOBAL_THROTTLE: RateLimitConfig = { limit: 20, windowSec: 60 * 60 };

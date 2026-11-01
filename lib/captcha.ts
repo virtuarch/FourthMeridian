@@ -75,6 +75,8 @@ export const VERIFY_TIMEOUT_MS = 5_000;
 
 /** Oldest accepted challenge (seconds; Turnstile tokens themselves live 300 s). */
 export const CHALLENGE_MAX_AGE_SEC = 300;
+/** A `challenge_ts` further in the future than this (clock skew allowance) is rejected. */
+export const CHALLENGE_MAX_FUTURE_SKEW_SEC = 60;
 
 /** The Turnstile action each surface sets on its widget and requires back. */
 export const CAPTCHA_ACTIONS = {
@@ -212,6 +214,7 @@ export function judgeSiteverifyReply(
   if (!Number.isFinite(ts)) return { verdict: "rejected", reason: "challenge_ts missing or unparseable" };
   const ageSec = ((expect.now ?? new Date()).getTime() - ts) / 1000;
   if (ageSec > CHALLENGE_MAX_AGE_SEC) return { verdict: "rejected", reason: `challenge is ${Math.round(ageSec)}s old` };
+  if (ageSec < -CHALLENGE_MAX_FUTURE_SKEW_SEC) return { verdict: "rejected", reason: `challenge is ${Math.round(-ageSec)}s in the future` };
   return { verdict: "passed" };
 }
 

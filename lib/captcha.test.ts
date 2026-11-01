@@ -14,7 +14,7 @@
 
 import {
   verifyCaptchaToken, captchaMode, resolveCaptchaConfig, captchaAllowedHostnames,
-  judgeSiteverifyReply, CAPTCHA_ACTIONS, CHALLENGE_MAX_AGE_SEC, type CaptchaEnv,
+  judgeSiteverifyReply, CAPTCHA_ACTIONS, CHALLENGE_MAX_AGE_SEC, CHALLENGE_MAX_FUTURE_SKEW_SEC, type CaptchaEnv,
 } from "@/lib/captcha";
 
 let failures = 0;
@@ -171,12 +171,17 @@ async function main(): Promise<void> {
       ["TURNSTILE_ALLOWED_HOSTNAMES extends the list",                   okReply({ hostname: "www.fourthmeridian.com" }), { ...PROD_FULL, TURNSTILE_ALLOWED_HOSTNAMES: "www.fourthmeridian.com" }, "passed"],
       ["foreign hostname → rejected",                                    okReply({ hostname: "evil.example" }), PROD_FULL, "rejected"],
       ["suffix look-alike hostname → rejected",                          okReply({ hostname: "app.fourthmeridian.com.evil.example" }), PROD_FULL, "rejected"],
+      ["prefix look-alike (evil-app.fourthmeridian.com) → rejected",     okReply({ hostname: "evil-app.fourthmeridian.com" }), PROD_FULL, "rejected"],
+      ["glued look-alike (xfourthmeridian.com) → rejected",              okReply({ hostname: "xfourthmeridian.com" }), PROD_FULL, "rejected"],
+      ["subdomain of an allowed host (x.app.fourthmeridian.com) → rejected", okReply({ hostname: "x.app.fourthmeridian.com" }), PROD_FULL, "rejected"],
       ["missing hostname → rejected",                                    okReply({ hostname: undefined }), PROD_FULL, "rejected"],
       ["missing action → rejected",                                      okReply({ action: undefined }), PROD_FULL, "rejected"],
       ["empty action → rejected",                                        okReply({ action: "" }), PROD_FULL, "rejected"],
       ["another surface's action (login token on register) → rejected", okReply({ action: "login" }), PROD_FULL, "rejected"],
       ["challenge_ts older than the max age → rejected",                 okReply({ challenge_ts: new Date(NOW.getTime() - (CHALLENGE_MAX_AGE_SEC + 1) * 1000).toISOString() }), PROD_FULL, "rejected"],
       ["challenge_ts exactly at the max age → passed",                   okReply({ challenge_ts: new Date(NOW.getTime() - CHALLENGE_MAX_AGE_SEC * 1000).toISOString() }), PROD_FULL, "passed"],
+      ["challenge_ts beyond the future skew → rejected",                 okReply({ challenge_ts: new Date(NOW.getTime() + (CHALLENGE_MAX_FUTURE_SKEW_SEC + 1) * 1000).toISOString() }), PROD_FULL, "rejected"],
+      ["challenge_ts within the future skew → passed",                   okReply({ challenge_ts: new Date(NOW.getTime() + CHALLENGE_MAX_FUTURE_SKEW_SEC * 1000).toISOString() }), PROD_FULL, "passed"],
       ["missing challenge_ts → rejected",                                okReply({ challenge_ts: undefined }), PROD_FULL, "rejected"],
       ["unparseable challenge_ts → rejected",                            okReply({ challenge_ts: "yesterday" }), PROD_FULL, "rejected"],
       ["outside Production with an empty allowlist the hostname is not checked", okReply({ hostname: "localhost" }), { VERCEL_ENV: "preview", TURNSTILE_SECRET_KEY: "s", NEXT_PUBLIC_TURNSTILE_SITE_KEY: "k" }, "passed"],
