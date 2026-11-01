@@ -19,7 +19,9 @@
 /**
  * A rendered, ready-to-send message. Producers never build this by hand — it
  * is assembled inside lib/email/send.ts from a template + a resolved sender.
- * Text-first by design: no HTML framework in the OPS-1 floor.
+ * Text is ALWAYS present. Templates built on the design system
+ * (lib/email/design) also supply `html`; the message then goes out as
+ * multipart/alternative with the text as the plain alternative.
  */
 export interface EmailMessage {
   /** Recipient address. */
@@ -30,8 +32,10 @@ export interface EmailMessage {
   replyTo?: string;
   /** Subject line (rendered by the template). */
   subject: string;
-  /** Plain-text body (rendered by the template). */
+  /** Plain-text body (rendered by the template). Always required. */
   text: string;
+  /** Optional HTML body, rendered from the same blocks as `text`. */
+  html?: string;
 }
 
 /**
@@ -39,7 +43,11 @@ export interface EmailMessage {
  * one of these statuses; callers branch on `status` instead of catching.
  *
  *   sent      — handed to the real provider, which accepted it (id present).
- *   captured  — recorded by the dev/test capture transport (not really sent).
+ *   captured  — not sent to any provider: recorded by the dev/test capture
+ *               transport (provider "capture"), or held back by the
+ *               non-production recipient guard (provider "none", reason
+ *               "ENVIRONMENT_GUARD" — lib/email/recipient-guard.ts). A
+ *               non-failure: never retried, never logged as an error.
  *   skipped   — no send performed by design (e.g. email disabled / no creds in
  *               a context that must not fall back to capture).
  *   error     — the transport attempted a send and failed (error present).
@@ -48,10 +56,12 @@ export interface EmailResult {
   status: "sent" | "captured" | "skipped" | "error";
   /** Provider message id when status === "sent". */
   id?: string;
-  /** Which transport produced this result: "resend" | "capture". */
+  /** Which transport produced this result: "resend" | "capture" | "none" (guarded). */
   provider: string;
   /** Human-readable failure reason when status === "error". */
   error?: string;
+  /** Why a send was captured instead of sent (Comms Center contract §O-4). */
+  reason?: "ENVIRONMENT_GUARD";
 }
 
 /**
@@ -94,8 +104,8 @@ export interface EmailTemplate<Data = unknown> {
   name: EmailTemplateName;
   /** Which sender identity this template sends as (see lib/email/senders.ts). */
   sender: SenderPurpose;
-  /** Pure render: data -> { subject, text }. No I/O. */
-  render(data: Data): { subject: string; text: string };
+  /** Pure render: data -> { subject, text, html? }. No I/O. Text is required. */
+  render(data: Data): { subject: string; text: string; html?: string };
 }
 
 /**

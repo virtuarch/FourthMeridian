@@ -206,13 +206,22 @@ export class FakePrisma {
     }
   }
 
-  private sqlOf(s: TemplateStringsArray | string): string { return typeof s === "string" ? s : s.join("?"); }
+  /** A template, a string, or a `Prisma.sql` object (its `.sql` text; values arrive via `valuesOf`). */
+  private sqlOf(s: TemplateStringsArray | string | { sql: string }): string {
+    if (typeof s === "string") return s;
+    if (Array.isArray(s)) return s.join("?");
+    return (s as { sql: string }).sql;
+  }
+  private valuesOf(s: unknown, values: unknown[]): unknown[] {
+    return s && typeof s === "object" && !Array.isArray(s) && Array.isArray((s as { values?: unknown[] }).values) ? (s as { values: unknown[] }).values : values;
+  }
   private execRaw(s: TemplateStringsArray | string, values: unknown[]): LazyPromise<number> {
     return new LazyPromise(async () => { this.raw.push({ sql: this.sqlOf(s), values }); return 1; });
   }
-  private doQueryRaw(s: TemplateStringsArray | string, values: unknown[]): LazyPromise<unknown> {
+  private doQueryRaw(s: TemplateStringsArray | string, rawValues: unknown[]): LazyPromise<unknown> {
     return new LazyPromise(async () => {
       const sql = this.sqlOf(s);
+      const values = this.valuesOf(s, rawValues);
       this.raw.push({ sql, values });
       if (!this.queryRaw) throw new Error(`FakePrisma: $queryRaw not configured (${sql.slice(0, 80)})`);
       return this.queryRaw(sql, values);

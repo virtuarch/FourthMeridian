@@ -75,6 +75,8 @@ function world(t: WalletHistoryTarget | null, opts: {
   enabled?: boolean; admitted?: boolean; ledger?: { solana: number; other: number } | null; cap?: number;
   lockHeld?: boolean; pass?: PassResult | "UNBOUND" | "THROW"; after?: Partial<WalletHistoryTarget>; spend?: number;
   perPass?: number; auditThrowsAfterPass?: boolean; loadThrows?: boolean;
+  /** BETA LIFECYCLE L2 — the owner's billable decision (default allowed). */
+  billable?: import("@/lib/entitlements/billable-gate-core").BillableDecision;
   /** What changes on the connection at the instant the lock is claimed (a racing sync/worker). */
   onClaim?: Partial<WalletHistoryTarget>;
 } = {}) {
@@ -89,6 +91,7 @@ function world(t: WalletHistoryTarget | null, opts: {
       if (opts.loadThrows) throw new Error("db down");
       return current && id === current.connectionId ? { ...current, lockedAt: lockedBy === null ? null : new Date(lockedBy) } : null;
     },
+    billable: async () => (opts.billable ?? { allowed: true }),
     admit: async () => (opts.admitted ?? true) ? { admitted: true } : { admitted: false, reason: "MAINTENANCE_MODE", label: "Maintenance mode is on." },
     limits: (chain) => ({ dailyRequestCap: opts.cap ?? 1_000, perPassRequestCap: opts.perPass ?? 10_000, ...(chain === "ETH" ? { probeBudget: 4_000 } : {}) }),
     probeBudgetFor,
@@ -220,6 +223,17 @@ async function main() {
     const o = await resume(w.deps);
     check("maintenance ⇒ NOT_ADMITTED 503", !o.ok && o.refusal.code === "NOT_ADMITTED" && o.status === 503);
     check("…no lock, no pass; reason code recorded", w.log.claims === 0 && w.log.passes.length === 0 && w.log.audits[0]?.detail?.admissionReason === "MAINTENANCE_MODE");
+  }
+
+  // ── 5b. BETA LIFECYCLE L2 — the wallet owner's plan ─────────────────────────
+  console.log("5b. the owner's plan refuses paid work ⇒ 403 PLAN_RESTRICTED, nothing run");
+  for (const reason of ["COST_FREEZE", "NO_OWNER", "POLICY_UNAVAILABLE"] as const) {
+    const w = world(target(), { billable: { allowed: false, reason } });
+    const o = await resume(w.deps);
+    check(`${reason} ⇒ PLAN_RESTRICTED 403`, !o.ok && o.refusal.code === "PLAN_RESTRICTED" && o.status === 403);
+    check(`…${reason}: no lock, no pass (no provider call), no usage, no regeneration marker; audited REFUSED with the reason`,
+      w.log.claims === 0 && w.log.passes.length === 0 && w.log.usage.length === 0 && w.log.pending.length === 0
+        && w.log.audits[0]?.result === "REFUSED" && w.log.audits[0]?.detail?.billableReason === reason);
   }
 
   // ── 6. Budget ──────────────────────────────────────────────────────────────

@@ -59,6 +59,7 @@ import { deploymentEnvironment } from "@/lib/env";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { recordExchangeAccountCollision } from "@/lib/plaid/exchange-collision";
+import { assertBillableAllowed, type BillableDecision, type BillableDenialReason } from "@/lib/entitlements/billable-gate";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -183,13 +184,45 @@ export class AdmissionDeniedError extends Error {
   }
 }
 
+/**
+ * BETA LIFECYCLE L2 — thrown when the billable gate refuses the exchange BEFORE
+ * any Plaid call: the public token is NOT spent, no Item is created at Plaid
+ * (so no per-Item subscription starts, and no duplicate has to be removed
+ * after the fact), nothing is written. Callers map it to the lifecycle
+ * restriction message (billableRefusalResponse), never "Connection limit
+ * reached". Applies to a NEW Item and to an update-mode repair alike: the
+ * repair's follow-on import is paid work.
+ */
+export class BillableRestrictedError extends Error {
+  constructor(public readonly reason: BillableDenialReason) {
+    super(`Billable operation refused: ${reason}`);
+    this.name = "BillableRestrictedError";
+  }
+}
+
+/** Test seams — production passes none. */
+export interface ExchangeTokenDeps {
+  /** The billable decision for the TARGET customer (default: the billable gate, `plaid_exchange`). */
+  billable?: (userId: string) => Promise<BillableDecision>;
+}
+
 // ── Core exchange + import ────────────────────────────────────────────────────
 
 export async function performPlaidTokenExchange(
   params: ExchangeTokenParams,
+  deps: ExchangeTokenDeps = {},
 ): Promise<ExchangeTokenResult> {
   const { userId, spaceId, public_token, institution_id, institution_name } = params;
   const deferHistorySync = params.deferHistorySync ?? false;
+
+  // ── BETA LIFECYCLE L2 — THE BILLABLE GATE, BEFORE ANY PLAID CALL ────────────
+  // First, before admission and before `itemPublicTokenExchange`: an exchange
+  // creates a billable Item (a subscription per Item and product) and starts a
+  // paid import. The TARGET customer is billed — the session user here, the
+  // institution owner for admin Expand History. A frozen / paused / ended /
+  // unverifiable customer is refused with nothing spent and nothing written.
+  const billable = await (deps.billable ?? ((u) => assertBillableAllowed({ userId: u, operation: "plaid_exchange" })))(userId);
+  if (!billable.allowed) throw new BillableRestrictedError(billable.reason);
 
   // ── 0. OPS-2D-4A — ADMISSION, BEFORE THE TOKEN IS SPENT ─────────────────────
   //

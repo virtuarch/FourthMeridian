@@ -7,6 +7,10 @@
  *           pause read-only; the deployment environment.
  *   PATCH   { action: "ENABLE" | "DISABLE" | "RESET", expectedUpdatedAt, reason: { code, note } }
  *           — ONE transaction, one audit row; the result is the reloaded model.
+ *           BETA LIFECYCLE L2 — `control: "COST_FREEZE"` targets the GLOBAL cost
+ *           freeze (`platform_cost_frozen`) instead of maintenance: same rules
+ *           (fresh PLATFORM_OPS CONTROL, reason note required, optimistic version,
+ *           same-transaction audit, read-back). GET carries its state as `costFreeze`.
  *
  * AUTHORIZATION
  *   GET     requirePlatformAccess("PLATFORM_OPS", "READ") — the Policies read rank.

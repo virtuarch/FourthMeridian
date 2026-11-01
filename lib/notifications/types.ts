@@ -133,6 +133,12 @@ export interface RenderedNotification {
   body?: string;
   /** Optional in-app destination, e.g. "/dashboard/connections". */
   href?: string;
+  /**
+   * Optional email CTA label for `href` (e.g. "Reconnect Chase"). Email-only:
+   * not persisted on the Notification row; the email channel falls back to a
+   * generic label when absent.
+   */
+  actionLabel?: string;
 }
 
 /**
@@ -164,6 +170,15 @@ export interface NotificationTypeDefinition {
   priority: NotificationPriorityValue;
   /** Channels enabled when the user has no override row (default-by-absence, F11). */
   defaultChannels: readonly NotificationChannel[];
+  /**
+   * Channels this TYPE never delivers on, whatever the user's category
+   * preference says. For a type whose channel is owned by a dedicated flow —
+   * SPACE_INVITE_RECEIVED's email is the route's own `space-invite` email, so
+   * a SPACES/EMAIL override must not re-enable a second, generic one.
+   * Absent = no exclusion. Enforced in resolveChannelEnabled (create-time) and
+   * by jobs/retry-notifications.ts (legacy rows are closed, never re-sent).
+   */
+  excludedChannels?: readonly NotificationChannel[];
   /** True = the user cannot mute this type's category (ACCOUNT_SECURITY). Uniform per category. */
   locked: boolean;
   retention: RetentionPolicy;
@@ -242,6 +257,8 @@ export interface ChannelMessage {
   title: string;
   body?: string;
   href?: string;
+  /** Email CTA label for href (RenderedNotification.actionLabel). */
+  actionLabel?: string;
 }
 
 /**

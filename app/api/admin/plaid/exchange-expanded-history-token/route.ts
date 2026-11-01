@@ -44,7 +44,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireFreshSystemAdmin } from "@/lib/session";
 import { db } from "@/lib/db";
 import { resolveSpaceContext } from "@/lib/space";
-import { performPlaidTokenExchange, parsePlaidError, AdmissionDeniedError } from "@/lib/plaid/exchangeToken";
+import { performPlaidTokenExchange, parsePlaidError, AdmissionDeniedError, BillableRestrictedError } from "@/lib/plaid/exchangeToken";
+import { assertBillableAllowed } from "@/lib/entitlements/billable-gate";
+import { billableRefusalResponse } from "@/lib/entitlements/consume";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
@@ -99,6 +101,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // ── BETA LIFECYCLE L2 — the institution owner's plan, before any Plaid call ──
+  // (performPlaidTokenExchange asks again for the same target user; asking here
+  // first refuses before the Space lookup and keeps the operator answer explicit.)
+  const billable = await assertBillableAllowed({ userId: oldItem.userId, operation: "plaid_exchange" });
+  if (!billable.allowed) return billableRefusalResponse(billable.reason, "Expanding this customer's history");
+
   // ── Resolve target user's Personal Space ──────────────────────────────────
   // resolveSpaceContext(userId) looks up SpaceMember rows for the institution
   // owner, not the admin session. This is the critical fix: all downstream
@@ -141,6 +149,9 @@ export async function POST(req: NextRequest) {
     // whole operation up front (see exchangeToken.ts step 0). The denial lands
     // before the public token is spent and before any second PlaidItem is
     // created, so nothing is stranded and the superseded item is untouched.
+    if (exchangeErr instanceof BillableRestrictedError) {
+      return billableRefusalResponse(exchangeErr.reason, "Expanding this customer's history");
+    }
     if (exchangeErr instanceof AdmissionDeniedError) {
       console.warn(`[admin][expand-history] not admitted — ${exchangeErr.reason}`);
       return NextResponse.json(

@@ -3351,6 +3351,51 @@ model BetaAccessRequest {
   redeemedUserId  String? // soft ref to the User created from this invite
 
   @@index([status, createdAt]) // the queue view
+
+  /// BETA-REQUEST RISK — operator review verdicts (append-only history).
+  riskReviews BetaAccessRequestReview[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BetaAccessRequestReview  (Beta-request risk, 2026-10-31)
+//
+// An operator's verdict on a request's ADVISORY risk signals
+// (lib/platform/growth/beta-risk-core.ts). APPEND-ONLY: fm_system holds SELECT +
+// INSERT only, so a verdict is changed by appending a newer row — the latest row
+// is the current state, and the heuristic evidence is never stored over (it is
+// recomputed from the event + audit facts at read time).
+//
+// It NEVER changes the request: status, decision fields and the invite token
+// stay with the approve / deny / revoke routes.
+//
+// CASCADES WITH ITS REQUEST, BY DESIGN: deleting a BetaAccessRequest erases its
+// verdicts — the account-deletion purge (lib/account-deletion/purge.ts, by
+// e-mail) and the retention job (jobs/data-retention.ts: DENIED, PENDING and
+// unredeemed APPROVED requests untouched for 180 days; REDEEMED is kept).
+// Accountability survives in the BETA_REQUEST_RISK_REVIEWED AuditLog rows,
+// which name the request by id only. `operatorId` is a soft reference to the
+// acting operator (actor identity on a platform record, like decidedById).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum BetaRiskReviewStatus {
+  UNREVIEWED
+  LEGITIMATE
+  SUSPICIOUS
+}
+
+model BetaAccessRequestReview {
+  id         String               @id @default(cuid())
+  requestId  String
+  request    BetaAccessRequest    @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  status     BetaRiskReviewStatus
+  /// The operator reason CODE (lib/audit.ts OPERATOR_REASON_CODES).
+  reasonCode String
+  /// Optional operator note, scrubbed by assertOperatorNoteSafe (≤ 280, no address / digits / secrets).
+  note       String?
+  operatorId String?
+  createdAt  DateTime             @default(now())
+
+  @@index([requestId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4523,6 +4568,68 @@ model PolicyGroup {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
   versions       PolicyGroupVersion[]
+
+  /// BETA LIFECYCLE (L1, owner decisions 2026-10-31) — ACTIVE / PAUSED / ENDED.
+  /// PAUSED: sign-in and reads stay; beta-only capabilities and NEW billable
+  /// operations are suspended; reversible. ENDED: the group grants nothing —
+  /// members resolve READ_ONLY (see `endedTransition`). Changed only by the
+  /// audited CONTROL write (lib/platform/policies/policy-group-lifecycle-write.ts),
+  /// every change recorded as a PolicyGroupTransition row.
+  lifecycle        PolicyGroupLifecycle        @default(ACTIVE)
+  /// COST FREEZE — independent of `lifecycle`: denies every NEW billable / metered
+  /// operation for the group's members, overriding every allowance (Founder
+  /// overlay and per-customer AI override included). Reversible; membership untouched.
+  costFrozen       Boolean                     @default(false)
+  /// What ENDED resolves to. READ_ONLY today; FREE is reserved until a Free
+  /// group is defined (an ENDED group with FREE still resolves READ_ONLY).
+  endedTransition  PolicyGroupEndedTransition?
+  /// Optimistic token for lifecycle writes (bumped by every transition).
+  lifecycleVersion Int                         @default(0)
+  transitions      PolicyGroupTransition[]
+}
+
+/// BETA LIFECYCLE — the policy-group lifecycle state.
+enum PolicyGroupLifecycle {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+/// BETA LIFECYCLE — what an ENDED group's members resolve to.
+enum PolicyGroupEndedTransition {
+  READ_ONLY
+  FREE
+}
+
+/// BETA LIFECYCLE — one recorded lifecycle / cost-freeze change.
+enum PolicyGroupTransitionKind {
+  PAUSE
+  RESUME
+  END
+  FREEZE
+  UNFREEZE
+}
+
+/// BETA LIFECYCLE — APPEND-ONLY history of every lifecycle and cost-freeze
+/// change of a Policy Group (fm_system holds SELECT + INSERT only). Written in
+/// the same transaction as the PolicyGroup update and its operator-action audit
+/// row. No customer data: the reason, the operator and the before/after state.
+model PolicyGroupTransition {
+  id               String                    @id @default(cuid())
+  groupKey         String
+  group            PolicyGroup               @relation(fields: [groupKey], references: [key], onDelete: Restrict, onUpdate: Restrict)
+  kind             PolicyGroupTransitionKind
+  fromLifecycle    PolicyGroupLifecycle
+  toLifecycle      PolicyGroupLifecycle
+  costFrozenBefore Boolean
+  costFrozenAfter  Boolean
+  reasonCode       String
+  reasonNote       String?
+  /// Soft reference to the operator (no FK: history outlives accounts).
+  operatorId       String?
+  createdAt        DateTime                  @default(now())
+
+  @@index([groupKey, createdAt])
 }
 
 /// POLICY EDITOR — one IMMUTABLE version of a Policy Group: the FULL values

@@ -69,6 +69,8 @@ import { AuditAction } from "@/lib/audit-actions";
 import { PlaidItemStatus } from "@prisma/client";
 import { EXPAND_HISTORY_BLOCKED_INSTITUTIONS } from "@/lib/admin/provider-lifecycle";
 import { resolvePlaidRedirectUri } from "@/lib/plaid/redirect-uri";
+import { assertBillableAllowed } from "@/lib/entitlements/billable-gate";
+import { billableRefusalResponse } from "@/lib/entitlements/consume";
 
 export async function POST(req: NextRequest) {
   // Capture the acting admin for attribution. The guard returns before the Plaid
@@ -155,6 +157,14 @@ export async function POST(req: NextRequest) {
       { status: 422 },
     );
   }
+
+  // ── BETA LIFECYCLE L2 — the customer's plan, before any Plaid call ─────────
+  // Expand History creates a NEW Item (a new per-Item subscription) and a full
+  // inline import, billed to the institution OWNER. An operator acting on a
+  // frozen / paused / ended (or unverifiable) customer is refused with the
+  // lifecycle wording — the same answer the CS operator Refresh All gives.
+  const billable = await assertBillableAllowed({ userId: item.userId, operation: "plaid_exchange" });
+  if (!billable.allowed) return billableRefusalResponse(billable.reason, "Expanding this customer's history");
 
   // ── Create fresh Plaid Link token ─────────────────────────────────────────
   // IMPORTANT: no access_token — this is a completely fresh link, not update

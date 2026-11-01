@@ -16,6 +16,8 @@
  * through recordOperatorAction).
  */
 
+import { RESTRICTION_KINDS, restrictionMessage, type RestrictionKind } from "@/lib/entitlements/restriction-messages";
+
 /** The kinds of financial authority a customer can have connected today. */
 export type RefreshAuthorityKind = "PLAID_ITEM" | "WALLET";
 
@@ -28,6 +30,7 @@ export type RefreshSkipReason =
   | "NOT_REFRESHABLE" // e.g. a chain with no sync adapter, an Item not ACTIVE
   | "NOT_ADMITTED"    // platform admission (maintenance / ingestion pause) denied work
   | "NOT_ENTITLED"    // the customer's effective entitlement excludes it
+  | "PLAN_RESTRICTED" // BETA LIFECYCLE: the plan's group is paused / ended / cost-frozen, or unreadable
   | "RATE_LIMITED"    // a per-user ceiling (e.g. wallet syncs/hour) is exhausted
   | "BUDGET"          // the sequential wallet pass ran out of wall-clock budget; nothing was dropped
   | "ERROR";          // the refresh ran and failed (decision FAILED)
@@ -46,6 +49,8 @@ export interface RefreshAuthorityOutcome {
   executionId?: string | null;
   /** Which effective entitlement dimension produced NOT_ENTITLED / COOLDOWN, when applicable. */
   entitlement?: string;
+  /** BETA LIFECYCLE — the restriction behind PLAN_RESTRICTED. */
+  restriction?: RestrictionKind;
 }
 
 export interface RefreshAllSummary {
@@ -91,6 +96,7 @@ export interface RefreshOutcomeLike {
   decision?: RefreshDecision;
   reason?: string | null;
   retryAfterSeconds?: number;
+  restriction?: string;
 }
 
 /** secs → " (42m)" (ceil), or "" when unknown. */
@@ -106,6 +112,7 @@ export function describeRefreshOutcomes(outcomes: readonly RefreshOutcomeLike[])
   const rate = outcomes.filter((o) => o.reason === "RATE_LIMITED").length;
   const notRefreshable = outcomes.filter((o) => o.reason === "NOT_REFRESHABLE" || o.reason === "NOT_ENTITLED").length;
   const paused = outcomes.filter((o) => o.reason === "NOT_ADMITTED").length;
+  const onHold = outcomes.filter((o) => o.reason === "PLAN_RESTRICTED").length;
   const budget = outcomes.filter((o) => o.reason === "BUDGET").length;
   const failed = outcomes.filter((o) => o.decision === "FAILED").length;
   const longestWait = cooldown.reduce((m, o) => Math.max(m, o.retryAfterSeconds ?? 0), 0);
@@ -116,6 +123,12 @@ export function describeRefreshOutcomes(outcomes: readonly RefreshOutcomeLike[])
   if (rate) parts.push(`${rate} over the hourly limit`);
   if (notRefreshable) parts.push(`${notRefreshable} not refreshable`);
   if (paused) parts.push(`${paused} paused by the platform`);
+  if (onHold) {
+    // BETA LIFECYCLE — the owner's wording, from the one helper.
+    const kind = outcomes.find((o) => o.reason === "PLAN_RESTRICTED")?.restriction;
+    const why = kind && (RESTRICTION_KINDS as readonly string[]).includes(kind) ? restrictionMessage(kind as RestrictionKind).replace(/\.$/, "") : "paid features are on hold";
+    parts.push(`${onHold} on hold (${why})`);
+  }
   if (budget) parts.push(`${budget} deferred`);
   if (failed) parts.push(`${failed} failed`);
   return parts.length ? parts.join(" · ") : "nothing to refresh";

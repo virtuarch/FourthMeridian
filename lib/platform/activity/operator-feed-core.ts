@@ -71,6 +71,12 @@ export const PLATFORM_OPS_FEED_RULES: Readonly<Record<string, FeedActionRule>> =
   [AuditAction.POLICY_GROUP_ROLLED_BACK]:     { label: "Restored a policy group version", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
   [AuditAction.POLICY_GROUP_ARCHIVED]:        { label: "Archived a policy group",  kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
   [AuditAction.POLICY_GROUP_DEFAULT_CHANGED]: { label: "Changed the default policy group", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  // BETA LIFECYCLE (L1) — group lifecycle / cost freeze, POLICY_GROUP targets, counts only.
+  [AuditAction.POLICY_GROUP_PAUSED]:          { label: "Paused a policy group",    kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_RESUMED]:         { label: "Resumed a policy group",   kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_ENDED]:           { label: "Ended a policy group",     kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_COST_FROZEN]:     { label: "Froze a policy group's costs", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
+  [AuditAction.POLICY_GROUP_COST_UNFROZEN]:   { label: "Unfroze a policy group's costs", kinds: ["POLICY_GROUP"], legacyOk: false, workspace: "platform-policies" },
   [AuditAction.OPERATOR_REFRESH_ALL]:         { label: "Refreshed a customer's authorities", kinds: ["USER"], legacyOk: false, workspace: "platform-refresh" },
 };
 

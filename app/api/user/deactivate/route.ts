@@ -25,7 +25,7 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { requireFreshUser } from "@/lib/session";
 import { revokeAllUserSessions } from "@/lib/sessions";
 import { sendEmail } from "@/lib/email/send";
-import { formatDateTime } from "@/lib/format";
+import { accountDeactivatedAlert } from "@/lib/email/security-alerts";
 import { AuditAction } from "@/lib/audit-actions";
 import { limitByIp } from "@/lib/rate-limit";
 import { UserRole } from "@prisma/client";
@@ -89,13 +89,7 @@ export async function POST(req: NextRequest) {
 
     // Notify. NON-THROWING: a delivery failure is logged and recorded, but
     // never fails the deactivation.
-    const emailResult = await sendEmail("security-alert", dbUser.email, {
-      title:   "Your account was deactivated",
-      message:
-        `Your Fourth Meridian account was deactivated on ` +
-        `${formatDateTime(new Date().toISOString())}. Your data is kept — ` +
-        `sign in again anytime to reactivate your account.`,
-    });
+    const emailResult = await sendEmail("security-alert", dbUser.email, { ...accountDeactivatedAlert(new Date()) });
     if (emailResult.status === "error") {
       console.error("[user/deactivate] security-alert email failed to send:", emailResult.error);
     }

@@ -36,8 +36,9 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { getSpaceContext } from "@/lib/space";
 import { requireUser } from "@/lib/session";
-import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError, AdmissionDeniedError } from "@/lib/plaid/exchangeToken";
+import { performPlaidTokenExchange, parsePlaidError, DuplicateInstitutionError, AdmissionDeniedError, BillableRestrictedError } from "@/lib/plaid/exchangeToken";
 import { syncPlaidItemFromWebhook } from "@/lib/plaid/webhook-sync";
+import { billableRefusalResponse, NOTHING_DISCONNECTED_SENTENCE } from "@/lib/entitlements/consume";
 import { limitByUser } from "@/lib/rate-limit";
 
 // D2.x Slice 1 (fast-path split). This request returns as soon as the fast
@@ -135,6 +136,13 @@ export async function POST(req: NextRequest) {
     // OPS-2D-4A — a platform-wide denial taken BEFORE the public token was
     // spent. 503, not 403: the caller's permissions are fine. The token is
     // unconsumed, so retrying after the pause needs no new Link session.
+    // BETA LIFECYCLE L2 — refused BEFORE any Plaid call (token unspent, no Item
+    // created, nothing written): the lifecycle wording, never "Connection limit reached".
+    if (err instanceof BillableRestrictedError) {
+      // Owner ruling 2026-10-31: a repair (update mode) is refused too while frozen —
+      // its follow-on import is paid work — and NOTHING is disconnected; the copy says so.
+      return billableRefusalResponse(err.reason, "Connecting an institution", { reassurance: NOTHING_DISCONNECTED_SENTENCE });
+    }
     if (err instanceof AdmissionDeniedError) {
       return NextResponse.json(
         { error: "not-admitted", reason: err.reason, message: err.label, evaluatedAt: err.evaluatedAt },

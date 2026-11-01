@@ -2,6 +2,7 @@
  * jobs/resume-backoff.test.ts  (IDEMP-007)
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs jobs/resume-backoff.test.ts
  */
+import { allowAllBillable } from "@/lib/test-support/billable-open";
 import { readFileSync } from "node:fs";
 import { resumeStaleImports, resumeBackoffMs, RESUME_BACKOFF_MS } from "@/jobs/resume-stale-imports";
 import type { StampedAdmissionVerdict } from "@/lib/platform/admission/types";
@@ -33,8 +34,8 @@ async function main() {
       now: () => new Date(t),
       resetCompleted: async () => { if (!item.incomplete) { item.attempts = 0; item.nextAt = null; } },
       loadCandidates: async () => (item.incomplete && (item.nextAt === null || item.nextAt <= t)
-        ? { candidates: 1, items: [{ id: item.id, institutionName: "Blocked Bank" }] } : { candidates: 0, items: [] }),
-      admit: async () => admission,
+        ? { candidates: 1, items: [{ id: item.id, institutionName: "Blocked Bank", userId: "owner-1" }] } : { candidates: 0, items: [] }),
+      admit: async () => admission, billable: allowAllBillable,
       drive: async () => { drives.push(t); return "ran"; },
       recordAttempt: async (_id, now) => { if (item.incomplete) { item.attempts++; item.nextAt = now.getTime() + resumeBackoffMs(item.attempts); } },
     });
@@ -48,7 +49,7 @@ async function main() {
   let recorded = 0;
   console.log = () => {};
   await resumeStaleImports({
-    loadCandidates: async () => ({ candidates: 1, items: [{ id: "x", institutionName: "X" }] }),
+    loadCandidates: async () => ({ candidates: 1, items: [{ id: "x", institutionName: "X", userId: "owner-1" }] }), billable: allowAllBillable,
     admit: async () => admission, drive: async () => "skipped-locked",
     recordAttempt: async () => { recorded++; }, resetCompleted: async () => {},
   });

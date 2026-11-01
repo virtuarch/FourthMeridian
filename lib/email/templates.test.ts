@@ -47,7 +47,7 @@ const VERIFY_URL = "https://app.fourthmeridian.com/verify-email?token=deadbeef";
 const RESET_URL = "https://app.fourthmeridian.com/reset-password?token=deadbeef";
 const SPACE_INVITE_URL = "https://app.fourthmeridian.com/dashboard/spaces";
 
-type Rendered = { subject: string; text: string };
+type Rendered = { subject: string; text: string; html?: string };
 
 // ── Table for the six simple templates ───────────────────────────────────────
 // Universal per-row checks: plain-text (no HTML), subject predicate, sender
@@ -64,12 +64,18 @@ const SIMPLE_TEMPLATES: {
     name: "beta-invite",
     senderKey: betaInviteTemplate.sender,
     expectFrom: "Fourth Meridian Beta <beta@fourthmeridian.com>",
-    rendered: betaInviteTemplate.render({ inviteUrl: BETA_INVITE_URL }),
-    subject: (s) => /invited to fourth meridian/i.test(s),
+    rendered: betaInviteTemplate.render({
+      origin: "request",
+      inviteUrl: BETA_INVITE_URL,
+      issuedAt: new Date("2026-10-31T15:04:00Z"),
+      expiresAt: new Date("2026-11-03T15:04:00Z"),
+    }),
+    subject: (s) => s === "Your Fourth Meridian beta access is approved",
     content: [
       { name: "contains the exact invite URL passed in", ok: (t) => t.includes(BETA_INVITE_URL) },
-      { name: "communicates the 14-day expiry", ok: (t) => /14 days/i.test(t) },
-      { name: "is honest that the invite is email-bound", ok: (t) => /tied to this email/i.test(t) },
+      { name: "communicates the COMPUTED expiry (3 days, not a constant)", ok: (t) => /You have 3 days/.test(t) && !/14 days/.test(t) },
+      { name: "states the absolute expiry with a zone label", ok: (t) => t.includes("Tuesday, November 3, 2026 at 3:04 PM UTC") },
+      { name: "is honest that the invite is email-bound", ok: (t) => /using this email address/i.test(t) },
       { name: "includes a did-not-request safety line", ok: (t) => /didn't request|did not request/i.test(t) },
     ],
   },
@@ -173,15 +179,19 @@ check(
 
 // Full render: title + body + action link + the why-am-I-getting-this line.
 {
-  const { subject, text } = notificationTemplate.render({
-    title: "Chase needs attention",
-    body: "We couldn't sync this institution. Reconnect to resume updates.",
+  const { subject, text, html } = notificationTemplate.render({
+    title: "We couldn't sync Chase",
+    body: "Your existing data is still available.",
     actionUrl: "https://app.fourthmeridian.com/dashboard/connections",
+    category: "FINANCIAL",
+    preferencesUrl: "https://app.fourthmeridian.com/dashboard/settings/notifications",
   });
-  check("subject is the notification title", subject === "Chase needs attention");
-  check("text carries the body", text.includes("We couldn't sync this institution."));
-  check("text carries the action link", text.includes("View in Fourth Meridian: https://app.fourthmeridian.com/dashboard/connections"));
-  check("text explains the preference provenance", text.includes("Settings → Notifications"));
+  check("subject is the notification title", subject === "We couldn't sync Chase");
+  check("text carries the body", text.includes("Your existing data is still available."));
+  check("text carries the action link (default label)", text.includes("View in Fourth Meridian:\nhttps://app.fourthmeridian.com/dashboard/connections"));
+  check("text explains the preference provenance", /connection notification because email is turned on for Financial notifications/.test(text));
+  check("footer links the real notification-settings page", text.includes("Manage notification settings: https://app.fourthmeridian.com/dashboard/settings/notifications"));
+  check("has an HTML part from the same blocks", typeof html === "string" && html.includes("We couldn&#39;t sync Chase"));
 }
 
 // Minimal render: title only — no dangling link line, no empty paragraphs.

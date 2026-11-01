@@ -200,7 +200,9 @@ export type OperatorTargetKind =
   | "USER" | "BETA_REQUEST" | "PLAID_ITEM" | "CONNECTION" | "SPACE" | "PLATFORM_SETTING" | "JOB" | "POLICY_GROUP"
   // SEC-PLAT-2 — a merchant merge candidate, identified by its global pairKey
   // (merchant keys are deployment-wide, not a customer's).
-  | "MERCHANT_PAIR";
+  | "MERCHANT_PAIR"
+  // PR C — one Growth bulk beta approval, identified by its client batchKey (a UUID).
+  | "BETA_BATCH";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
@@ -233,6 +235,12 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.POLICY_GROUP_ROLLED_BACK,
   AuditAction.POLICY_GROUP_ARCHIVED,
   AuditAction.POLICY_GROUP_DEFAULT_CHANGED,
+  // Beta lifecycle (owner decisions 2026-10-31) — every lifecycle / cost-freeze change.
+  AuditAction.POLICY_GROUP_PAUSED,
+  AuditAction.POLICY_GROUP_RESUMED,
+  AuditAction.POLICY_GROUP_ENDED,
+  AuditAction.POLICY_GROUP_COST_FROZEN,
+  AuditAction.POLICY_GROUP_COST_UNFROZEN,
   AuditAction.JOB_CADENCE_CHANGED,
   AuditAction.JOB_CADENCE_RESET,
   // UX-P1 D7 — the financial-refresh cadence (bank / wallet) is the same class
@@ -254,6 +262,12 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.BETA_MODE_CHANGED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.BETA_INVITATION_REVOKED,
+  // BETA-REQUEST RISK — an operator's verdict on a request's advisory signals.
+  AuditAction.BETA_REQUEST_RISK_REVIEWED,
+  // PR B — changing the invitation validity policy, and extending an issued
+  // invitation without rotating its token, are consequential and carry a reason.
+  AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
+  AuditAction.BETA_INVITATION_EXTENDED,
   AuditAction.MERCHANT_MERGE_APPLIED,
   AuditAction.MERCHANT_MERGE_DISMISSED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit
