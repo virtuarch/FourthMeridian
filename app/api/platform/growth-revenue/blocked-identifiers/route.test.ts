@@ -123,6 +123,7 @@ async function main() {
   R.expiry = await import("./[id]/expiry/route") as never;
   R.lookup = await import("./lookup/route") as never;
   R.backfill = await import("./backfill/route") as never;
+  R.extend = await import("../requests/[id]/extend/route") as never;
   R.deny = await import("../requests/[id]/deny/route") as never;
   R.review = await import("../requests/[id]/risk-review/route") as never;
   R.approve = await import("../requests/[id]/approve/route") as never;
@@ -195,6 +196,55 @@ async function main() {
     t.check("the block audit counts the revocation", blocked?.revokedAliasInvitations === 1, blocked);
     t.check("an unrelated live invitation is untouched", fake.one("BetaAccessRequest", { id: unrelated })!.inviteTokenHash === "h-zed");
     t.check("a dotted address on another domain is NOT an alias and is untouched", fake.one("BetaAccessRequest", { id: otherDomainDots })!.inviteTokenHash === "h-dots");
+  }
+
+  t.section("1c. ONE lock order everywhere: the mailbox advisory lock BEFORE any row lock (live PG16 deadlocks S1b/S1d/S4)");
+  {
+    await world();
+    const c = await cookieOf(ADMIN);
+    const order = (label: string) => {
+      const sql = raws();
+      const adv = sql.findIndex((q) => /pg_advisory_xact_lock/.test(q));
+      const row = sql.findIndex((q) => /FOR UPDATE/.test(q));
+      t.check(`${label}: advisory lock taken (${adv}) before the row lock (${row})`, adv !== -1 && (row === -1 || adv < row), sql);
+    };
+    const reset = () => { fake.raw.length = 0; };
+    // deny of a request with a SUSPICIOUS verdict (creates the block)
+    const d = seedRequest("order-deny@example.com");
+    await verdict(c, d, "SUSPICIOUS");
+    reset(); await deny(c, d); order("deny + block");
+    // risk review: SUSPICIOUS on an already-DENIED request
+    const r = seedRequest("order-review@example.com");
+    await deny(c, r);
+    reset(); await verdict(c, r, "SUSPICIOUS"); order("risk review SUSPICIOUS on DENIED");
+    // approve of a plain DENIED row (takes FOR UPDATE for the #204 re-read)
+    const a = seedRequest("order-approve@example.com");
+    await deny(c, a);
+    reset(); await approve(c, a); order("approve of a DENIED row");
+    // approve of PENDING (no FOR UPDATE; the advisory lock must still be taken)
+    const p2 = seedRequest("order-pending@example.com");
+    reset(); await approve(c, p2); order("approve of PENDING");
+    // backfill: a DENIED+SUSPICIOUS request with no block (simulate a pre-B9 denial)
+    const b = seedRequest("order-backfill@example.com");
+    await deny(c, b);
+    fake.seed("BetaAccessRequestReview", { requestId: b, status: "SUSPICIOUS", reasonCode: "ABUSE", createdAt: new Date() });
+    reset();
+    await call(R.backfill.POST, "/api/platform/growth-revenue/blocked-identifiers/backfill", { cookie: c, body: { reason: { code: "INCIDENT" }, dryRun: false } });
+    order("backfill");
+    t.check("…and the backfill blocked it", blocks({ sourceRequestId: b, status: "ACTIVE" }).length === 1);
+  }
+
+  t.section("1d. extend consults the blocklist (lengthening access is issuance)");
+  {
+    await world();
+    const c = await cookieOf(ADMIN);
+    // An APPROVED alias whose token was already nulled cannot be revoked by the block sweep; seed one with a
+    // token AFTER the block exists (as if approved before B9 and missed) to exercise extend's own gate.
+    await blockVia(c, "ext.alias@gmail.com");
+    const alias = fake.seed("BetaAccessRequest", { email: "extalias+x@gmail.com", status: "APPROVED", inviteTokenHash: "h-ext", inviteExpiresAt: new Date(Date.now() + 86_400_000), invitedAt: new Date() }).id as string;
+    const e = await call(R.extend.POST, `/api/platform/growth-revenue/requests/${alias}/extend`, { cookie: c, body: { validityDays: 5, reason: { code: "TESTING" } } }, { id: alias });
+    t.check("extend of a blocked mailbox's APPROVED alias → 409 IDENTIFIER_BLOCKED, expiry unchanged", e.status === 409 && e.body.code === "IDENTIFIER_BLOCKED"
+      && (fake.one("BetaAccessRequest", { id: alias })!.inviteExpiresAt as Date).getTime() < Date.now() + 2 * 86_400_000, e.body);
   }
 
   t.section("2. deletion: the block outlives the request; reapplication in every alias form is silently dropped");

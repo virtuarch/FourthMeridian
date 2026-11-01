@@ -65,7 +65,7 @@ import {
   betaAcceptsInvitations, expiryFor, normaliseInviteEmail, parseValidityDays, planApprove, planDirect, planExtend, planReissue, refusal,
   type BlockFact, type InviteRowFacts, type IssueKind, type IssuePlan, type IssueRefusal, type IssueRefusalCode,
 } from "./invitation-issue.core";
-import { lockAndLookupIdentifierBlock, lookupIdentifierBlock, type BlockState } from "./beta-blocklist";
+import { lockAndLookupIdentifierBlock, lockMailbox, lookupIdentifierBlock, type BlockState } from "./beta-blocklist";
 import type { EnvSource } from "./beta-blocklist-core";
 
 export type IssueClient = Pick<
@@ -311,8 +311,10 @@ export async function issueBetaInvitation(input: IssueInput): Promise<IssueResul
       return { requestId: id, won: true };
     }
     const row = plan.row;
+    // LOCK ORDER (beta-blocklist.ts lockMailbox): the mailbox advisory lock FIRST, then the row.
+    await lockMailbox(tx, email);
     // SUSPECTED-ABUSE LOCK, re-read INSIDE the write transaction for a DENIED row. The
-    // request row is locked FIRST — the same `FOR UPDATE` the risk-review writer takes
+    // request row is locked next — the same `FOR UPDATE` the risk-review writer takes
     // (beta-risk-review.ts) — so a verdict and this approval serialise: a SUSPICIOUS
     // verdict committed before the lock is seen here; one recorded after waits for this
     // transaction (and then lands on a row that was legitimately approved first).
@@ -412,6 +414,8 @@ export interface ExtendInput {
   now?: Date;
   /** Test seam — the Beta group's lifecycle (default: the fresh read). */
   betaLifecycle?: () => Promise<BetaLifecycleState>;
+  /** Test seam — the env the blocklist reads (default process.env). */
+  env?: EnvSource;
 }
 
 export type ExtendResult =
@@ -432,7 +436,12 @@ export async function extendBetaInvitation(input: ExtendInput): Promise<ExtendRe
   if (!(await betaAccepting(input.betaLifecycle))) return { ok: false, ...refusal("BETA_NOT_ACCEPTING") };
   const facts = plan.row;
 
-  const won = await client.$transaction(async (tx) => {
+  const won = await client.$transaction(async (tx): Promise<boolean | IssueRefusalCode> => {
+    // Lengthening access is issuance too: the blocklist is re-read here under the mailbox
+    // lock (lock order: advisory first, then the conditional row write below).
+    const block = await lockAndLookupIdentifierBlock(tx, facts.email, { ...(input.env ? { env: input.env } : {}), now });
+    if (block.state === "BLOCKED") return "IDENTIFIER_BLOCKED";
+    if (block.state === "UNAVAILABLE") return "BLOCKLIST_UNAVAILABLE";
     const { count } = await tx.betaAccessRequest.updateMany({
       // Conditional on what was read: still APPROVED, same token, same expiry.
       where: {
@@ -458,6 +467,7 @@ export async function extendBetaInvitation(input: ExtendInput): Promise<ExtendRe
     });
     return true;
   });
+  if (typeof won === "string") return { ok: false, ...refusal(won) };
   if (!won) return { ok: false, ...refusal("CONFLICT") };
   return { ok: true, requestId: facts.id, validityDays: p.days, previousExpiresAt: facts.inviteExpiresAt, expiresAt };
 }

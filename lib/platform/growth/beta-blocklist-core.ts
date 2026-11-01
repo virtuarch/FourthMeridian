@@ -31,7 +31,7 @@
  * rolls back); elsewhere the check is SKIPPED with a warning.
  */
 
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 const DAY_MS = 86_400_000;
 
@@ -96,7 +96,8 @@ export function blocklistMailbox(email: string): string {
   const at = e.lastIndexOf("@");
   if (at <= 0) return e;
   let local = e.slice(0, at);
-  let domain = e.slice(at + 1);
+  // A fully-qualified trailing dot (`gmail.com.`) names the same domain.
+  let domain = e.slice(at + 1).replace(/\.+$/, "");
   const stripTag = () => { const p = local.indexOf("+"); if (p > 0) local = local.slice(0, p); };
   if (GMAIL_DOMAINS.has(domain)) {
     stripTag();
@@ -193,7 +194,12 @@ export function hmacPrefix(hmac: string): string {
   return hmac.slice(0, 8);
 }
 
-/** The advisory-lock key that serialises block writes and issuance re-checks for one identifier. */
-export function identifierLockKey(currentHmac: string): string {
-  return `beta-blocklist:${currentHmac}`;
+/**
+ * The ADVISORY-LOCK key for a mailbox: `beta-blocklist-lock:<sha256(canonical mailbox)>`.
+ * Deliberately independent of the HMAC key version, so instances mid-rotation (or with
+ * no key at all) still serialise on the same lock. It is never stored or logged — Postgres
+ * keeps only the 64-bit hash in pg_locks.
+ */
+export function mailboxLockKey(email: string): string {
+  return `beta-blocklist-lock:${createHash("sha256").update(blocklistMailbox(email)).digest("hex")}`;
 }

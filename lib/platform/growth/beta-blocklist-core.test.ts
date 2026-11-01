@@ -12,8 +12,7 @@
 import {
   BLOCKLIST_MAX_DAYS, BLOCKLIST_RETENTION_DAYS, EVIDENCE_MAX_RETAIN_DAYS,
   blockExpiryFor, blocklistHmac, blocklistMailbox, blocklistMode, checkCorrectedExpiry, checkRetainUntil, hmacPrefix,
-  identifierPairs, isProductionEnv, resolveBlocklistKeys,
-} from "./beta-blocklist-core";
+  identifierPairs, isProductionEnv, resolveBlocklistKeys, mailboxLockKey } from "./beta-blocklist-core";
 import { planApprove, planDirect, planReissue, type InviteRowFacts } from "./invitation-issue.core";
 import { approvalEligibility } from "./bulk-approve.core";
 
@@ -32,6 +31,10 @@ console.log("1. blocklistMailbox — conservative canonical mailbox");
   const same = (a: string, b: string) => blocklistMailbox(a) === blocklistMailbox(b);
   check("COLLISION: J.O.E+x@googlemail.com ≡ joe@gmail.com (dots + tag folded, domain folded)", same("J.O.E+x@googlemail.com", "joe@gmail.com"), blocklistMailbox("J.O.E+x@googlemail.com"));
   check("COLLISION: j.o.e+x@googlemail.com ≡ joe@gmail.com", same("j.o.e+x@googlemail.com", "joe@gmail.com"));
+  check("the advisory-lock key is per MAILBOX (aliases share it) and never contains the address",
+    mailboxLockKey("J.O.E+x@googlemail.com") === mailboxLockKey("joe@gmail.com") && mailboxLockKey("joe@gmail.com") !== mailboxLockKey("joe1@gmail.com")
+    && !mailboxLockKey("joe@gmail.com").includes("joe"));
+  check("COLLISION: a fully-qualified trailing dot (joe@gmail.com.) is the same mailbox", same("joe@gmail.com.", "joe@gmail.com") && same("a+b@outlook.com.", "a@outlook.com"));
   check("COLLISION: a+b@outlook.com ≡ a@outlook.com (listed provider: tag folded)", same("a+b@outlook.com", "a@outlook.com"));
   for (const d of ["hotmail.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "fastmail.com", "proton.me", "protonmail.com", "pm.me"]) {
     check(`COLLISION: tag folded on ${d}`, same(`x+tag@${d}`, `x@${d}`));

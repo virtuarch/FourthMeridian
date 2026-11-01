@@ -32,7 +32,7 @@ import { auditEmailHash, recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
 import { BetaAccessRequestStatus } from "@prisma/client";
-import { BlocklistUnavailableError, blockIfConfirmedSuspicious } from "@/lib/platform/growth/beta-blocklist";
+import { BlocklistUnavailableError, blockIfConfirmedSuspicious, lockMailbox } from "@/lib/platform/growth/beta-blocklist";
 
 export const runtime = "nodejs";
 
@@ -53,7 +53,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   let outcome: Outcome;
   try {
     outcome = await db.$transaction(async (tx): Promise<Outcome> => {
-      // Row lock FIRST (risk-review and approval take the same one).
+      // LOCK ORDER (lib/platform/growth/beta-blocklist.ts lockMailbox): the mailbox advisory
+      // lock FIRST — read the email unlocked (it never changes) — THEN the row lock.
+      const pre = await tx.betaAccessRequest.findUnique({ where: { id }, select: { email: true } });
+      if (!pre) return { kind: "notFound" };
+      await lockMailbox(tx, pre.email);
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${id} FOR UPDATE`;
       if (locked.length === 0) return { kind: "notFound" };
       const request = await tx.betaAccessRequest.findUnique({ where: { id }, select: { id: true, email: true, status: true } });

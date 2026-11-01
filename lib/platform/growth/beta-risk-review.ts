@@ -42,7 +42,7 @@ import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { assertOperatorNoteSafe, recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import { operatorLabels, type BetaRiskDb } from "./beta-risk";
-import { removeBlocksForSourceRequest, upsertIdentifierBlock } from "./beta-blocklist";
+import { removeBlocksForSourceRequest, upsertIdentifierBlock, lockMailbox } from "./beta-blocklist";
 import type { EnvSource } from "./beta-blocklist-core";
 import {
   BETA_RISK_REVIEW_STATUSES,
@@ -88,7 +88,12 @@ export async function recordBetaRiskReview(
   const note = typeof input.note === "string" && input.note.trim() !== "" ? assertOperatorNoteSafe(input.note) : null;
 
   return client.$transaction(async (tx) => {
-    // Row lock: concurrent verdicts on the same request serialise here.
+    // LOCK ORDER (beta-blocklist.ts lockMailbox): the mailbox advisory lock FIRST — the
+    // email is read unlocked (it never changes) — THEN the row lock, where concurrent
+    // verdicts on the same request serialise.
+    const pre = await tx.betaAccessRequest.findUnique({ where: { id: input.requestId }, select: { email: true } });
+    if (!pre) return { ok: false, code: "NOT_FOUND" } as const;
+    await lockMailbox(tx, pre.email);
     const locked = await tx.$queryRaw<{ id: string }[]>`
       SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${input.requestId} FOR UPDATE`;
     if (locked.length === 0) return { ok: false, code: "NOT_FOUND" } as const;

@@ -34,7 +34,7 @@ import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash, isOperatorReasonCode, recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import {
-  blockExpiryFor, blocklistMailbox, blocklistHmac, blocklistMode, checkCorrectedExpiry, hmacPrefix, identifierLockKey, identifierPairs,
+  blockExpiryFor, blocklistMailbox, blocklistHmac, blocklistMode, checkCorrectedExpiry, hmacPrefix, mailboxLockKey, identifierPairs,
   type BlocklistKey, type EnvSource,
 } from "./beta-blocklist-core";
 
@@ -116,10 +116,20 @@ export async function intakeMailboxBlocked(email: string, opts: BlocklistOpts & 
   return s.state === "BLOCKED";
 }
 
+/**
+ * THE LOCK ORDER (every blocklist-aware writer): this mailbox advisory lock FIRST, then
+ * any row lock (`SELECT … FOR UPDATE` on BetaAccessRequest, or a row UPDATE). Deny,
+ * risk review, backfill, approve, resend and direct all follow it, so no two of them can
+ * wait on each other in opposite orders (live PG16 review: S1b, S1d, S4 deadlocks).
+ * Re-entrant within a transaction (taking it twice is a no-op wait).
+ */
+export async function lockMailbox(tx: Pick<Prisma.TransactionClient, "$executeRaw">, email: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${mailboxLockKey(email)}, 0))`;
+}
+
 async function lockIdentifier(tx: Pick<Prisma.TransactionClient, "$executeRaw">, current: BlocklistKey, email: string): Promise<string> {
-  const hmac = blocklistHmac(blocklistMailbox(email), current.key);
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${identifierLockKey(hmac)}, 0))`;
-  return hmac;
+  await lockMailbox(tx, email);
+  return blocklistHmac(blocklistMailbox(email), current.key);
 }
 
 /**
@@ -130,10 +140,11 @@ async function lockIdentifier(tx: Pick<Prisma.TransactionClient, "$executeRaw">,
 export async function lockAndLookupIdentifierBlock(
   tx: Pick<Prisma.TransactionClient, "betaBlockedIdentifier" | "$executeRaw">, email: string, opts: BlocklistOpts = {},
 ): Promise<BlockState> {
+  // The mailbox lock is taken whatever the key state, so the lock order holds everywhere.
+  await lockMailbox(tx, email);
   const mode = blocklistMode(opts.env);
   if (mode.mode === "SKIP") { warnOnce("skip", mode.problem); return { state: "SKIPPED" }; }
   if (mode.mode === "UNAVAILABLE") { warnOnce("unavailable", mode.problem); return { state: "UNAVAILABLE" }; }
-  await lockIdentifier(tx, mode.keys.current, email);
   const hit = await findActive(tx, email, mode.keys.all, opts.now ?? new Date());
   return hit ? { state: "BLOCKED", blockId: hit.id, keyVersion: hit.keyVersion, expiresAt: hit.expiresAt } : { state: "CLEAR" };
 }
@@ -514,6 +525,8 @@ export async function backfillIdentifierBlocks(
     }
     try {
       const outcome = await client.$transaction(async (tx): Promise<BackfillOutcome> => {
+        // Lock order: the mailbox advisory lock FIRST (email is immutable), then the row.
+        await lockMailbox(tx, c.email);
         const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "BetaAccessRequest" WHERE "id" = ${c.id} FOR UPDATE`;
         if (locked.length === 0) return "notDenied";
         const row = await tx.betaAccessRequest.findUnique({ where: { id: c.id }, select: { email: true, status: true } });
