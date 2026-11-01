@@ -388,6 +388,33 @@ export const AuditAction = {
   POLICY_GROUP_ENDED:              "POLICY_GROUP_ENDED",
   POLICY_GROUP_COST_FROZEN:        "POLICY_GROUP_COST_FROZEN",
   POLICY_GROUP_COST_UNFROZEN:      "POLICY_GROUP_COST_UNFROZEN",
+  // COMMS CENTER B1 (contract v1.1 §9.2) — a Customer Success operator saved a
+  // DRAFT content version, asked the AI for a suggestion, PUBLISHED a version
+  // (CONTROL, reason required) or ROLLED BACK (CONTROL, reason required) a
+  // notification template (lib/notifications/content/store.ts). ONE row per
+  // operation, in the same transaction; target = the COMMS_TEMPLATE stream
+  // "<key>:<channel>:<variant>"; metadata carries ids, versions, content HASHES
+  // and codes — never the text, never customer data.
+  COMMS_TEMPLATE_DRAFT_SAVED:      "COMMS_TEMPLATE_DRAFT_SAVED",
+  COMMS_TEMPLATE_AI_SUGGESTED:     "COMMS_TEMPLATE_AI_SUGGESTED",
+  COMMS_TEMPLATE_PUBLISHED:        "COMMS_TEMPLATE_PUBLISHED",
+  COMMS_TEMPLATE_ROLLED_BACK:      "COMMS_TEMPLATE_ROLLED_BACK",
+  // COMMS CENTER B2 (contract v1 §3.5, v1.1 §6.1, §9.2) — a Customer Success
+  // operator created / edited (WRITE) a DRAFT automation, dry-ran it (WRITE),
+  // ACTIVATED it (CONTROL), paused or disabled it (WRITE); the owner recorded
+  // the OWNER APPROVAL (SYSTEM_ADMIN); an operator test-sent a message to their
+  // own address (WRITE). Every one is reason-required and written in the SAME
+  // transaction as its change (lib/notifications/automations/store.ts); target
+  // COMMS_AUTOMATION <id> / COMMS_TEST_SEND <key>:<channel>; metadata carries
+  // ids, versions, enums and counts — never copy, never customer data.
+  COMMS_AUTOMATION_CREATED:        "COMMS_AUTOMATION_CREATED",
+  COMMS_AUTOMATION_UPDATED:        "COMMS_AUTOMATION_UPDATED",
+  COMMS_AUTOMATION_DRY_RUN:        "COMMS_AUTOMATION_DRY_RUN",
+  COMMS_AUTOMATION_OWNER_APPROVED: "COMMS_AUTOMATION_OWNER_APPROVED",
+  COMMS_AUTOMATION_ACTIVATED:      "COMMS_AUTOMATION_ACTIVATED",
+  COMMS_AUTOMATION_PAUSED:         "COMMS_AUTOMATION_PAUSED",
+  COMMS_AUTOMATION_DISABLED:       "COMMS_AUTOMATION_DISABLED",
+  COMMS_TEST_SEND:                 "COMMS_TEST_SEND",
   JOB_CADENCE_CHANGED:             "JOB_CADENCE_CHANGED",
   JOB_CADENCE_RESET:               "JOB_CADENCE_RESET",
   REFRESH_ALL_REQUESTED:           "REFRESH_ALL_REQUESTED",

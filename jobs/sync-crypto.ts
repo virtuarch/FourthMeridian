@@ -233,6 +233,16 @@ export async function syncCrypto(options: {
       // CoinGecko history): re-asked per triggering account's billed owner, so
       // a freeze that landed during the sweep is honoured before the price step.
       const historyCandidates = chains.filter((a) => chainSupportsHistory(a.walletChain)).map((a) => a.id);
+      // Owed holders' rows off `supported`/`none` first — refused/frozen owners
+      // included (a DB status write; values preserved; the rebuild below is gated).
+      // PERF: planned ONCE (planRevaluation) and reused by the revaluation below.
+      let revalPlan: import("@/lib/prices/price-gap").RevaluationPlan | undefined;
+      if (historyCandidates.length > 0) {
+        const { stampOwedHolders, prismaRevaluationDeps, planRevaluation } = await import("@/lib/prices/price-gap");
+        const pd = prismaRevaluationDeps(db);
+        revalPlan = await planRevaluation(pd, historyCandidates).catch(() => undefined);
+        await stampOwedHolders(pd, historyCandidates, undefined, revalPlan).catch(() => 0);
+      }
       const { billableAccountIds } = await import("@/lib/platform/policies/billable-subjects");
       const historyAccountIds = historyCandidates.length > 0 ? (await billableAccountIds(historyCandidates, "price_history")).allowed : [];
       if (historyAccountIds.length > 0) {
@@ -272,7 +282,7 @@ export async function syncCrypto(options: {
           const revalDeps = prismaRevaluationDeps(db, { log });
           if (platformFrozen) revalDeps.acquireGaps = async () => ({ decisions: [], acquired: 0, inserted: 0, failures: 0, instruments: [], newlyPricedFromISO: null });
           revaluation = await revalueHoldersAfterPriceGaps({
-            accountIds: historyAccountIds, deps: revalDeps, log,
+            accountIds: historyAccountIds, deps: revalDeps, log, plan: revalPlan, alreadyStamped: !!revalPlan,
             deadlineMs: (wake ? wake.startedAt.getTime() : runStartedAt.getTime()) + WAKE_SAFE_MS,
           });
           const g = revaluation.priceGaps;

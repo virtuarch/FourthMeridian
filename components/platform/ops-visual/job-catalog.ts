@@ -29,6 +29,7 @@ export const JOB_LABELS: Readonly<Record<ScheduledJobName, string>> = {
   "plaid-removal-retry": "Plaid removal retry",
   "product-event-retention": "Product event retention",
   "sol-history-backfill": "Wallet history backfill",
+  "comms-automations": "Notification automations",
   "evaluate-alerts": "Alert evaluation",
 };
 
@@ -55,6 +56,7 @@ export const JOB_MANUAL: Readonly<Record<ScheduledJobName, ManualAvailability>> 
   "notification-cleanup": { kind: "automatic", reason: "Automatic only" },
   "notification-retry": { kind: "automatic", reason: "Automatic only" },
   "rate-limit-sweep": { kind: "automatic", reason: "Automatic only" },
+  "comms-automations": { kind: "automatic", reason: "Automatic only — sends customer messages" },
   "plaid-removal-retry": { kind: "unavailable", reason: NOT_AVAILABLE_FOR_MANUAL_RUN },
   "product-event-retention": { kind: "unavailable", reason: NOT_AVAILABLE_FOR_MANUAL_RUN },
   "sync-crypto-continuation": { kind: "unavailable", reason: NOT_AVAILABLE_FOR_MANUAL_RUN },

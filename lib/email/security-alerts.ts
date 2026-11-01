@@ -165,3 +165,45 @@ export function securityOpsAnomalyAlert(anomaly: SecurityOpsAnomaly): SecurityAl
       `(threshold ${anomaly.threshold}). The identifier is withheld from email; see Security Ops for details.`,
   };
 }
+
+/** Display copy for a Platform access change (resolved by the caller from lib/platform/policy.ts). */
+export interface PlatformAccessChange {
+  /** PlatformArea enum value, e.g. "SECURITY_OPS" (path segment of the area's page). */
+  area: string;
+  /** The area's display name, e.g. "Security Operations". */
+  areaLabel: string;
+  /** The access level's display phrase, e.g. "read-only". */
+  levelLabel: string;
+}
+
+/**
+ * admin platform-grants: access to a Platform area was granted, reinstated or
+ * changed. Names the grantor by ROLE only — every grant mutation is
+ * SYSTEM_ADMIN-only — never by name or address.
+ */
+export function platformAccessGrantedAlert(
+  change: PlatformAccessChange & { kind: "granted" | "reinstated" | "level_changed" },
+  at: Date,
+  appBaseUrl: string,
+): SecurityAlertData {
+  const verb = change.kind === "level_changed" ? "changed your access to" : "gave you access to";
+  return {
+    title:    change.kind === "level_changed" ? `Your ${change.areaLabel} access changed` : `You were given access to ${change.areaLabel}`,
+    message:
+      `A Fourth Meridian system administrator ${verb} ${change.areaLabel} on ${formatUtcDateTimeLabelled(at)}. ` +
+      `Your access level is now ${change.levelLabel}.`,
+    guidance: "If you weren't expecting this change, contact support.",
+    action:   { label: `Open ${change.areaLabel}`, url: buildAppLink(appBaseUrl, `/dashboard/platform/${change.area}`) },
+  };
+}
+
+/** admin platform-grants/[grantId]: access to a Platform area was removed. No link: the area is closed to them now. */
+export function platformAccessRemovedAlert(change: PlatformAccessChange, at: Date): SecurityAlertData {
+  return {
+    title:    `Your access to ${change.areaLabel} was removed`,
+    message:
+      `A Fourth Meridian system administrator removed your ${change.levelLabel} access to ${change.areaLabel} on ` +
+      `${formatUtcDateTimeLabelled(at)}.`,
+    guidance: "If you weren't expecting this change, contact support.",
+  };
+}

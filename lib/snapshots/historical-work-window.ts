@@ -202,6 +202,45 @@ export async function resolveEvidenceFloor(client: typeof db, financialAccountId
 }
 
 /**
+ * resolveEvidenceFloor PER ACCOUNT, for many accounts in one batch: the SAME five
+ * sources and filters, read with one groupBy each (5 queries total instead of 5
+ * per account — the holder revaluation's planning read, PERF 2026-10-31). Each
+ * account's value equals resolveEvidenceFloor(client, [thatAccount]).
+ */
+export async function resolveEvidenceFloorsByAccount(client: typeof db, financialAccountIds: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>(financialAccountIds.map((id) => [id, null]));
+  if (financialAccountIds.length === 0) return out;
+  const scope = { financialAccountId: { in: financialAccountIds } };
+  const [tx, event, coverage, position, tokenLicence] = await Promise.all([
+    client.transaction.groupBy({ by: ["financialAccountId"], where: { ...scope, deletedAt: null }, _min: { date: true } }),
+    client.investmentEvent.groupBy({ by: ["financialAccountId"], where: { ...scope, deletedAt: null, supersededById: null }, _min: { date: true } }),
+    client.investmentEventCoverage.groupBy({
+      by: ["financialAccountId"],
+      where: { ...scope, outcome: InvestmentCoverageOutcome.COMPLETE, paginationReconciled: true, earliestReturnedDate: { not: null } },
+      _min: { earliestReturnedDate: true },
+    }),
+    client.positionObservation.groupBy({ by: ["financialAccountId"], where: { ...scope, deletedAt: null, supersededById: null }, _min: { date: true } }),
+    client.positionCoverage.groupBy({
+      by: ["financialAccountId"],
+      where: { ...scope, kind: { in: ["COMPLETE", "PARTIAL"] }, coveredFromDate: { not: null }, instrument: IS_TOKEN_INSTRUMENT },
+      _min: { coveredFromDate: true },
+    }),
+  ]);
+  const fold = (id: string, d: Date | null | undefined) => {
+    if (!d) return;
+    const iso = d.toISOString().slice(0, 10);
+    const cur = out.get(id) ?? null;
+    if (cur === null || iso < cur) out.set(id, iso);
+  };
+  for (const r of tx) fold(r.financialAccountId, r._min.date);
+  for (const r of event) fold(r.financialAccountId, r._min.date);
+  for (const r of coverage) fold(r.financialAccountId, r._min.earliestReturnedDate);
+  for (const r of position) fold(r.financialAccountId, r._min.date);
+  for (const r of tokenLicence) fold(r.financialAccountId, r._min.coveredFromDate);
+  return out;
+}
+
+/**
  * Resolve the historical work window for an account set.
  *
  * Reads only floors; writes nothing. Safe to call on a dry run.

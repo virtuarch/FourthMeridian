@@ -259,6 +259,10 @@ export const EXCLUDED_TARGETS: Record<string, string> = {
   "notification-cleanup": "Low operator value; no reason to expose (investigation §5 ➖).",
   "notification-retry": "Low operator value; the daily cadence is the retry mechanism (investigation §5 ➖).",
   "rate-limit-sweep": "Low operator value; automatic-only (investigation §5 ➖).",
+  // Comms Center B2 — the automation executor SENDS customer messages; an operator
+  // lever over it would be a send button. Activation (CONTROL + owner approval) is
+  // the only way an automation reaches customers; the wake is its only executor.
+  "comms-automations": "Sends customer messages for ACTIVE automations; automatic-only — activation (CONTROL + owner approval) is the operator lever.",
 };
 
 // ── Materialized commands (kind × target) ─────────────────────────────────────

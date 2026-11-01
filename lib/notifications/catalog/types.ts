@@ -52,7 +52,19 @@ export const CATALOG_CATEGORIES = [
 ] as const satisfies readonly CatalogCategory[];
 
 export type SupportedAction =
-  | "PREVIEW" | "TEST_SEND" | "VIEW_DELIVERY" | "AUTOMATE" | "PAUSE_AUTOMATION" | "ACTIVATE_AUTOMATION" | "LINK_OUT";
+  | "PREVIEW" | "TEST_SEND" | "VIEW_DELIVERY" | "AUTOMATE" | "PAUSE_AUTOMATION" | "ACTIVATE_AUTOMATION" | "LINK_OUT"
+  /* v1.1 (Comms Center B1): a content-editable leg exists; advertised on the DTO only. */
+  | "EDIT_CONTENT" | "AI_SUGGEST";
+
+/**
+ * Comms Center A-2b (owner decision O-10) — the per-recipient email STORM
+ * LIMIT: at most `maxPerRecipient` ACCEPTED customer emails of the limited
+ * classes per recipient per rolling `windowMinutes`. Enforced in
+ * lib/email/send.ts (lib/notifications/delivery/storm.ts). Defined HERE, in the
+ * client-safe vocabulary module, so the UI shows the server's number (Session 2
+ * request, contract v1.1); lib/notifications/catalog/definitions.ts re-exports it.
+ */
+export const EMAIL_STORM_LIMIT = { maxPerRecipient: 5, windowMinutes: 60 } as const;
 
 export type OwnerArea = "PLATFORM_OPS" | "GROWTH_REVENUE" | "SECURITY_OPS" | "CUSTOMER_SUCCESS";
 
@@ -62,12 +74,13 @@ export const TRIGGER_KEYS = [
   "space.member.invited", "space.member.joined", "space.member.removed", "space.member.role_changed",
   "plaid.item.sync_failed", "plaid.item.history_ready",
   "import.batch.completed",
-  // BUILD (owner-approved; emitter to be added — Phase B)
+  // Owner-approved BUILD keys, emitters added 2026-10-31
   "plaid.item.webhook_needs_reauth", "plaid.item.webhook_revoked",
   "wallet.sync.failed",
   "account.registered",
-  "platform.grant.created", "platform.grant.reinstated",
+  "platform.grant.created", "platform.grant.reinstated", "platform.grant.level_changed", "platform.grant.revoked",
   // PROPOSED (no emitter; listed so the vocabulary is stable)
+  "plaid.item.webhook_pending_expiration",
   "beta.invitation.expiring", "beta.program.status_changed",
   "wallet.import.completed", "platform.maintenance.scheduled", "provider.incident.opened",
   "schedule.daily",
@@ -145,6 +158,8 @@ export interface CommsDefinition {
   trigger: {
     kind: "TRIGGER" | "CALL_SITE";
     triggerKey: TriggerKey | null;
+    /** Further controlled triggers that produce the SAME definition (e.g. a grant's reinstate / level change). */
+    additionalTriggerKeys?: readonly TriggerKey[];
     /** Repo-relative producer file(s). Paths, not line numbers: lines drift with every edit. */
     sources: readonly string[];
   };

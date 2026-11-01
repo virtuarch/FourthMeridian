@@ -29,7 +29,7 @@
 
 import { db } from "@/lib/db";
 import { createNotification } from "@/lib/notifications/create";
-import { retireOpenNotification } from "@/lib/notifications/resolve";
+import { refreshOpenNotification, retireOpenNotification } from "@/lib/notifications/resolve";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { connectionStateFromItemStatus } from "@/lib/notifications/connection-attention";
 
@@ -139,6 +139,7 @@ export async function notifyItemSyncFailed(
   ctx?: {
     itemClient?: PlaidItemReadClient;
     createFn?: typeof createNotification;
+    refreshFn?: typeof refreshOpenNotification;
   },
 ): Promise<void> {
   try {
@@ -159,18 +160,31 @@ export async function notifyItemSyncFailed(
       return;
     }
 
-    await (ctx?.createFn ?? createNotification)({
-      type: "SYNC_FAILED",
-      userId: item.userId,
-      data: {
-        plaidItemId,
-        institutionName: item.institutionName ?? "",
-        // Derived from the status every call site writes BEFORE calling this
-        // (setPlaidItemHealth). Only changes the copy — not when this fires,
-        // the dedupe key, channels or preferences.
-        connectionState,
-      },
-    });
+    const data = {
+      plaidItemId,
+      institutionName: item.institutionName ?? "",
+      // Derived from the status every call site writes BEFORE calling this
+      // (setPlaidItemHealth). Only changes the copy — not when this fires,
+      // the dedupe key, channels or preferences.
+      connectionState,
+    };
+    const res = await (ctx?.createFn ?? createNotification)({ type: "SYNC_FAILED", userId: item.userId, data });
+
+    // ESCALATION (review fix 2026-10-31). The shared open key collapses every
+    // observation of one outage into ONE notice — so when the item escalates to
+    // REVOKED (the Plaid webhook's USER_PERMISSION_REVOKED) while a "sign in
+    // again" / "couldn't sync" notice is still open, the create above is
+    // suppressed and the bell would keep the weaker, now-wrong copy. The open
+    // notice is re-rendered in place to "disconnected". DECISION: no second
+    // email. The email leg ships only when a row is CREATED (create.ts); an
+    // escalation email would need a new delivery path, and the user already
+    // has one email for this outage pointing at the same Connections page,
+    // where the reconnect action is the same. Only ever upward: a REVOKED item
+    // never leaves REVOKED (health-transitions.ts), so nothing downgrades it.
+    // The removal rule above already returned for a connection the user removed.
+    if (res?.status === "suppressed" && connectionState === "disconnected") {
+      await (ctx?.refreshFn ?? refreshOpenNotification)(item.userId, "SYNC_FAILED", data);
+    }
   } catch (err) {
     console.warn(`[notifyItemSyncFailed] non-fatal failure for item ${plaidItemId}:`, redactedErrorForLog(err));
   }

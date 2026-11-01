@@ -42,6 +42,7 @@ import type {
   RetentionPolicy,
 } from "@/lib/notifications/types";
 import { connectionAttentionCopy } from "@/lib/notifications/connection-attention";
+import { walletAttentionCopy } from "@/lib/notifications/wallet-attention";
 
 // ── Shared policy values ──────────────────────────────────────────────────────
 
@@ -52,6 +53,11 @@ export const DEFAULT_RETENTION: RetentionPolicy = { autoArchiveDays: 30, deleteD
 function str(data: NotificationRenderData, key: string, fallback: string): string {
   const v = data[key];
   return typeof v === "string" && v.length > 0 ? v : fallback;
+}
+
+/** In-app link to a Platform area, only for a well-formed PlatformArea value (render data is untrusted). */
+function platformAreaHref(area: unknown): string {
+  return typeof area === "string" && /^[A-Z][A-Z_]{1,40}$/.test(area) ? `/dashboard/platform/${area}` : "/dashboard/platform";
 }
 
 /**
@@ -298,6 +304,45 @@ export const NOTIFICATION_REGISTRY = {
       href: "/dashboard/settings/security",
     }),
   },
+  // Platform access changes (owner-approved 2026-10-31). A privilege change is
+  // SECURITY-relevant: the grantee must know, so these are locked like every
+  // ACCOUNT_SECURITY type, and their EMAIL is the direct security-alert email
+  // (lib/notifications/platform-access.ts) — never this system's EMAIL channel
+  // (the registry's no-double-email doctrine). Producer: the SYSTEM_ADMIN grant
+  // routes (app/api/admin/platform-grants). dedupe none: each audited grant
+  // mutation is a distinct fact; the route's own no-op (same area, same level,
+  // already ACTIVE) writes no audit row and notifies nobody.
+  PLATFORM_ACCESS_GRANTED: {
+    ...SECURITY,
+    status: "WIRED" as const, // app/api/admin/platform-grants (POST: create / reinstate / level change)
+    id: "PLATFORM_ACCESS_GRANTED",
+    icon: "shield-check",
+    // area: PlatformArea enum value; areaLabel/levelLabel: display copy;
+    // change: "granted" | "reinstated" | "level_changed". No grantor identity —
+    // only the grantor's ROLE is ever shown (a system administrator).
+    pointerContract: ["area", "areaLabel", "level", "levelLabel", "change"],
+    render: (d) => {
+      const area = str(d, "areaLabel", "a Platform area");
+      const level = str(d, "levelLabel", "a new");
+      return {
+        title: d["change"] === "level_changed" ? `Your ${area} access changed` : `You were given access to ${area}`,
+        body: `A system administrator gave you ${level} access to ${area}. If you weren't expecting this, contact support.`,
+        href: platformAreaHref(d["area"]),
+      };
+    },
+  },
+  PLATFORM_ACCESS_REVOKED: {
+    ...SECURITY,
+    status: "WIRED" as const, // app/api/admin/platform-grants/[grantId] (PATCH revoke)
+    id: "PLATFORM_ACCESS_REVOKED",
+    icon: "shield-off",
+    pointerContract: ["area", "areaLabel", "level", "levelLabel"],
+    render: (d) => ({
+      title: `Your access to ${str(d, "areaLabel", "a Platform area")} was removed`,
+      body: "A system administrator removed this access. If you weren't expecting this, contact support.",
+      href: "/dashboard/settings/security",
+    }),
+  },
 
   // ══ SPACES — NORMAL · mutable · producers: S1 (invite) then S5 Wave 2
   //    (EV-1 handlers on MemberInvited / MemberJoined / MemberRemoved /
@@ -439,6 +484,39 @@ export const NOTIFICATION_REGISTRY = {
       body: "Full transaction history and 30-day balance history are ready.",
       href: "/dashboard/connections",
     }),
+  },
+  // WIRED (owner-approved 2026-10-31): a crypto wallet that has been failing
+  // to sync for a SUSTAINED period (≥ 24 h since the outage's first failure,
+  // observed again now) — never one transient blip. Produced by
+  // lib/crypto/wallet-sync-notifications.ts from syncWalletByChain's outcome;
+  // retired by the next clean successful sync. walletState
+  // (lib/notifications/wallet-attention.ts) is "temporary" (provider could not
+  // be read — still connected, retrying) or "needs-attention" (invalid
+  // address); never "disconnected". Platform-side codes and removed wallets do
+  // not notify; a Cost Freeze skip never reaches the producer.
+  WALLET_SYNC_FAILED: {
+    ...FINANCIAL,
+    status: "WIRED" as const,
+    id: "WALLET_SYNC_FAILED",
+    priority: "HIGH" as const,
+    // In-app by default. Email is OPT-IN (the FINANCIAL email preference): a
+    // provider outage hits every wallet on that chain at once, so a default-on
+    // email would mass-mail for something the user cannot act on.
+    defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
+    // Owner ruling O-7 (A-2b), as for SYNC_FAILED: an opted-in email follows
+    // ONLY the FINANCIAL email preference; FINANCIAL in-app off hides the bell
+    // but does not drop that email.
+    emailIndependentOfInApp: true as const,
+    dedupe: "suppress" as const,
+    dedupeKeyTemplate: "WALLET_SYNC_FAILED:account:{financialAccountId}:open",
+    icon: "triangle-alert",
+    // walletName / network are display payload (the account's own label and the
+    // chain's name) — never the address.
+    pointerContract: ["financialAccountId", "walletName", "network", "walletState"],
+    render: (d) => {
+      const copy = walletAttentionCopy(d.walletState, str(d, "walletName", "Your wallet"), str(d, "network", "its network"));
+      return { title: copy.title, body: copy.body, href: "/dashboard/connections", actionLabel: copy.actionLabel };
+    },
   },
   // VOCABULARY by Wave-3 investigation ruling (repository drift from the
   // original inventory): the ONLY DuplicateAccountCandidate writer today is
@@ -616,6 +694,35 @@ export const NOTIFICATION_REGISTRY = {
       title: `${str(d, "policyName", "A policy")} was updated`,
     }),
   },
+  // WIRED (owner-approved 2026-10-31): the one-time welcome. In-app notice plus
+  // the dedicated `welcome` email (lib/notifications/welcome.ts), sent ONCE per
+  // account: at registration for an invited (pre-verified) account, after the
+  // first successful email verification for an uninvited one — never beside the
+  // verification email. Classification: consent SERVICE — not ceremony (holding
+  // it back breaks no flow the user started) and not marketing. LOCKED PER TYPE
+  // (PER_TYPE_LOCKED_TYPES): no preference can suppress a one-time welcome, but
+  // its email is storm-limited like every SERVICE email (lib/email/send.ts).
+  // The in-app row is the idempotency anchor: its ":once" key is never released
+  // (dedupeNeverReleases), and the email ships only when the row was CREATED.
+  ACCOUNT_WELCOME: {
+    ...PLATFORM,
+    status: "WIRED" as const,
+    locked: true,
+    id: "ACCOUNT_WELCOME",
+    priority: "LOW" as const,
+    defaultChannels: ["IN_APP"] as const satisfies readonly NotificationChannel[],
+    digestable: false,
+    dedupe: "suppress" as const,
+    dedupeKeyTemplate: "ACCOUNT_WELCOME:user:{userId}:once",
+    dedupeNeverReleases: true as const,
+    icon: "sparkles",
+    pointerContract: [],
+    render: () => ({
+      title: "Welcome to Fourth Meridian",
+      body: "Start by connecting your accounts from Connections. Your Space fills in as they sync.",
+      href: "/dashboard/connections",
+    }),
+  },
   // WIRED (Wave 3 ⑧): the Security Ops in-app bell for a detected auth anomaly,
   // fanned out to every ACTIVE SECURITY_OPS grant holder + SYSTEM_ADMIN from
   // lib/security/anomaly-alerts.ts. Reuses the existing PLATFORM category (this
@@ -680,7 +787,7 @@ export const NOTIFICATION_REGISTRY = {
  * registry.test.ts pins that every locked type outside ACCOUNT_SECURITY is
  * named here, so a per-type lock is always a deliberate, reviewed decision.
  */
-export const PER_TYPE_LOCKED_TYPES = ["SECURITY_ANOMALY_DETECTED"] as const;
+export const PER_TYPE_LOCKED_TYPES = ["SECURITY_ANOMALY_DETECTED", "ACCOUNT_WELCOME"] as const;
 
 /** The registry-derived id union — compile-time exhaustiveness everywhere. */
 export type NotificationTypeId = keyof typeof NOTIFICATION_REGISTRY;

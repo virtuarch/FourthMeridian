@@ -33,6 +33,7 @@ import { hashResetToken } from "@/lib/password-reset-token";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
 import { limitByIp } from "@/lib/rate-limit";
+import { sendWelcome } from "@/lib/notifications/welcome";
 
 export async function POST(req: NextRequest) {
   try {
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
     // already-verified and expired cases apart.
     const user = await db.user.findFirst({
       where:  { emailVerificationToken: hashResetToken(token) },
-      select: { id: true, email: true, emailVerifiedAt: true, emailVerificationExpiry: true },
+      select: { id: true, email: true, firstName: true, emailVerifiedAt: true, emailVerificationExpiry: true },
     });
 
     // Unknown token → invalid (distinct from expired: different user action).
@@ -82,6 +83,13 @@ export async function POST(req: NextRequest) {
         metadata: { emailHash: auditEmailHash(user.email) },
       },
     });
+
+    // Welcome (owner-approved 2026-10-31): an uninvited account is usable from
+    // its FIRST verification, so it is welcomed here — after the verification
+    // email, never beside it. A repeat click returned "already_verified" above;
+    // a concurrent double-click is collapsed by the welcome's one-time dedupe
+    // key (lib/notifications/welcome.ts). Non-throwing.
+    await sendWelcome({ userId: user.id, email: user.email, firstName: user.firstName });
 
     return NextResponse.json({ success: true, status: "verified" });
   } catch (err) {

@@ -116,7 +116,7 @@ function main(): void {
   const models = [...readFileSync(join(process.cwd(), "prisma", "schema.prisma"), "utf8").matchAll(/^model (\w+) \{/gm)].map((m) => m[1]);
   const unreplayed = models.filter((m) => !state.tables.has(m));
   check("every schema model is a table the replay knows (the parser misses nothing)", unreplayed.length === 0, unreplayed.join(", "));
-  for (const t of ["CommsDelivery", "CommsDeliveryDaily", "BetaAccessRequestReview", "RateLimit"]) {
+  for (const t of ["CommsDelivery", "CommsDeliveryDaily", "BetaAccessRequestReview", "RateLimit", "AutomationDefinition", "AutomationRun", "AutomationRunItem"]) {
     check(`${t}: enabled + forced`, state.enabled.has(t) && state.forced.has(t));
   }
 
@@ -133,6 +133,10 @@ function main(): void {
   const commsMig = files[names.indexOf("20261031200000_comms_delivery_ledger")] ?? "";
   const withoutRls = files.map((f) => (f === commsMig ? f.replace(/ALTER TABLE public\."CommsDelivery" ENABLE ROW LEVEL SECURITY;/, "") : f));
   check("dropping CommsDelivery's ENABLE from its migration is caught", commsMig !== "" && !census(withoutRls).enabled.has("CommsDelivery"));
+  // Comms Center B2 — the same mutation on the automation claim table.
+  const autoMig = files[names.indexOf("20261031220000_comms_automations")] ?? "";
+  const withoutForce = files.map((f) => (f === autoMig ? f.replace(/ALTER TABLE public\."AutomationRunItem" FORCE ROW LEVEL SECURITY;/, "") : f));
+  check("dropping AutomationRunItem's FORCE from its migration is caught", autoMig !== "" && !census(withoutForce).forced.has("AutomationRunItem"));
   check("a renamed table keeps its RLS; a dropped one leaves the census",
     (() => { const s = census([`CREATE TABLE "Old" (x int); ALTER TABLE "Old" ENABLE ROW LEVEL SECURITY; ALTER TABLE "Old" RENAME TO "New"; CREATE TABLE "Gone" (x int); DROP TABLE "Gone";`]); return s.enabled.has("New") && !s.tables.has("Gone") && s.tables.has("New"); })());
   check("comments are ignored (a commented-out ENABLE does not count)",

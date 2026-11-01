@@ -11,11 +11,14 @@
  *
  * A row opens the detail drawer: description, trigger + producer files, payload
  * field NAMES with PII flags (never values), eligibility, dedupe, frequency cap,
- * retention, the recent day series (null = not observed, withheld = small cell),
- * supported actions, the owner-surface link and the synthetic preview.
+ * retention, the recent day series (null = not observed; delivery counts are never withheld),
+ * supported actions, the owner-surface link, the content editor (contract v1.1,
+ * ContentEditor.tsx) and the synthetic preview.
  *
- * Read-only. Nothing here sends: previews render server-side from synthetic
- * fixtures and the email HTML is shown in a script-less sandboxed iframe.
+ * Nothing here sends a message: previews render server-side from synthetic
+ * fixtures and the email HTML is shown in a script-less sandboxed iframe. The
+ * only writes are the content editor's (drafts, publish, restore), through the
+ * typed client.
  */
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -28,6 +31,10 @@ import {
   type CatalogFilters,
 } from "@/lib/platform/comms-center/client";
 import { DetailDrawer } from "../ui";
+import type { CatalogDetailV11Additions } from "@/lib/notifications/content/types";
+import { ContentPanel } from "./ContentEditor";
+import { writeRefusalText } from "./content-model";
+import { confirmLeaveCommsContent, setUnsavedCommsContent } from "./unsaved-content";
 import { ToneBadge } from "../platform-surface";
 import { Segmented } from "../leads/visual-kit";
 import {
@@ -35,9 +42,13 @@ import {
   automationsLine, humanize, previewChannelsFor, statusChips, stormNote, totalOf,
 } from "./comms-model";
 import {
-  Chip, DaySeriesBars, DaySeriesLegend, DrawerSection, FactList, FilterSelect, ListMeta, PolicyNote, ProtectedBadge, ReadState, WideTargets, okData, staleData, useCommsRead,
+  Chip, DaySeriesBars, DaySeriesLegend, DrawerSection, FactList, FilterSelect, ListMeta, PolicyNote, PreviewRendition, ProtectedBadge, ReadState, WideTargets, okData, staleData,
+  useCommsRead, useLastGoodRead,
   type CommsRead,
 } from "./comms-kit";
+
+/** Moved to comms-kit (no LibraryView ⇄ ContentEditor cycle); re-exported for existing importers. */
+export { PreviewRendition };
 
 const n = (v: number) => v.toLocaleString("en-US");
 const CHIP_BTN = "inline-flex min-h-11 items-center gap-1.5 rounded-full border px-3 text-[11px] font-medium tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-7";
@@ -159,7 +170,7 @@ function CatalogRow({ item, onOpen }: { item: CatalogItem; onOpen: (key: string)
         <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <span className="min-w-0 truncate text-sm font-medium text-[var(--text-primary)]">{item.displayName}</span>
           <ToneBadge word={STATUS_LABEL[item.status]} tone={STATUS_TONE[item.status]} />
-          {item.protected && <ProtectedBadge consentClass={item.consentClass} />}
+          {item.protected && <ProtectedBadge item={item} />}
         </span>
         <code className="min-w-0 truncate font-mono text-[11px] text-[var(--text-muted)]">{item.key}</code>
         <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -217,7 +228,7 @@ function TriggerRow({ t }: { t: TriggerItem }) {
 
 // ── Detail ──────────────────────────────────────────────────────────────────────
 
-export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDetail>; preview: ReactNode }) {
+export function CatalogDetailBody({ read, preview, content }: { read: CommsRead<CatalogDetail>; preview: ReactNode; content?: ReactNode }) {
   const d = okData(read);
   if (!d) return <ReadState read={read} what="this definition" />;
   const storm = stormNote(d);
@@ -227,9 +238,9 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         <p className="text-xs leading-relaxed text-[var(--text-secondary)]">{d.description}</p>
         <div className="flex flex-wrap items-center gap-1.5">
           <ToneBadge word={STATUS_LABEL[d.status]} tone={STATUS_TONE[d.status]} />
-          {d.protected && <ProtectedBadge consentClass={d.consentClass} />}
+          {d.protected && <ProtectedBadge item={d} />}
         </div>
-        {d.protected && <PolicyNote>{protectedNote(d.consentClass)}</PolicyNote>}
+        {d.protected && <PolicyNote>{protectedNote(d)}</PolicyNote>}
         <FactList rows={[
           ["Key", <code key="k" className="break-all font-mono text-[11px]">{d.key}</code>],
           ["Definition version", `v${d.definitionVersion}`],
@@ -247,6 +258,11 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         <FactList rows={[
           ["Kind", d.trigger.kind === "TRIGGER" ? "Controlled trigger" : "Code call site"],
           ["Trigger key", d.trigger.triggerKey ? <code key="t" className="break-all font-mono text-[11px]">{d.trigger.triggerKey}</code> : "—"],
+          ...(d.trigger.additionalTriggerKeys && d.trigger.additionalTriggerKeys.length > 0
+            ? [["Also triggered by", <span key="at" className="flex min-w-0 flex-col gap-0.5" data-additional-triggers>
+                {d.trigger.additionalTriggerKeys.map((k) => <code key={k} className="break-all font-mono text-[11px]">{k}</code>)}
+              </span>] as const]
+            : []),
         ]} />
         {d.trigger.sources.length > 0 && (
           <ul aria-label="Producer source files" className="flex flex-col gap-1">
@@ -307,6 +323,8 @@ export function CatalogDetailBody({ read, preview }: { read: CommsRead<CatalogDe
         )}
       </DrawerSection>
 
+      {content && <DrawerSection title="Content">{content}</DrawerSection>}
+
       {d.supportedActions.includes("PREVIEW") && <DrawerSection title="Preview">{preview}</DrawerSection>}
     </div>
   );
@@ -348,36 +366,6 @@ export function PreviewSurface({ channels, channel, onChannel, variant, onVarian
   );
 }
 
-export function PreviewRendition({ p }: { p: PreviewResponse }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-3" data-preview-rendition={p.channel}>
-      <p className="rounded-[var(--radius-sm)] border border-dashed px-2.5 py-1.5 text-[11px] font-medium" style={{ borderColor: "var(--accent-warning)", color: "var(--accent-warning)" }} data-preview-banner>
-        {COMMS_POLICY.previewBanner}
-      </p>
-      {p.subject !== null && <p className="text-xs text-[var(--text-primary)]"><span className="text-[var(--text-muted)]">Subject </span>{p.subject}</p>}
-      {p.html !== null && (
-        // sandbox="" (no allow-scripts, no allow-same-origin): the template renders as inert markup.
-        <iframe title={`${PREVIEW_LABEL[p.channel]} preview (synthetic)`} sandbox="" srcDoc={p.html} referrerPolicy="no-referrer"
-          className="h-[28rem] w-full min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)]" style={{ background: "var(--surface-inset)" }} data-preview-frame />
-      )}
-      {p.inApp && (
-        <div className="flex min-w-0 flex-col gap-1 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-3" style={{ background: "var(--surface-inset)" }} data-preview-inapp>
-          <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">In-app · icon {p.inApp.icon}</span>
-          <span className="text-sm font-medium text-[var(--text-primary)]">{p.inApp.title}</span>
-          {p.inApp.body && <span className="text-xs text-[var(--text-secondary)]">{p.inApp.body}</span>}
-          {p.inApp.href && <code className="break-all font-mono text-[11px] text-[var(--text-muted)]">{p.inApp.href}</code>}
-        </div>
-      )}
-      {p.text !== null && !p.inApp && (
-        <pre className="max-h-72 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3 font-mono text-[11px] text-[var(--text-secondary)]" data-preview-text>{p.text}</pre>
-      )}
-      <span className="text-[11px] tabular-nums text-[var(--text-muted)]">
-        Definition v{p.definitionVersion}{p.templateVersion !== null ? ` · template v${p.templateVersion}` : ""} · synthetic data
-      </span>
-    </div>
-  );
-}
-
 function PreviewPanel({ item }: { item: CatalogDetail }) {
   const channels = previewChannelsFor(item.channels);
   const [channel, setChannel] = useState<PreviewChannel>(channels[0] ?? "in-app");
@@ -387,10 +375,17 @@ function PreviewPanel({ item }: { item: CatalogDetail }) {
   return <PreviewSurface channels={channels} channel={channel} onChannel={(c) => { setChannel(c); setVariant(null); }} variant={variant} onVariant={setVariant} read={read} />;
 }
 
-function DetailDrawerBody({ itemKey }: { itemKey: string }) {
-  const read = useCommsRead<CatalogDetail>(catalogDetailUrl(itemKey));
-  const d = okData(read);
-  return <CatalogDetailBody read={read} preview={d ? <PreviewPanel key={d.key} item={d} /> : null} />;
+function DetailDrawerBody({ itemKey, onDirty }: { itemKey: string; onDirty: (dirty: boolean) => void }) {
+  // The last good detail stays on screen through a refresh (a publish / restore
+  // re-reads it), so the content editor below is never unmounted with its draft.
+  const { read, data: d, failure } = useLastGoodRead<CatalogDetail>(catalogDetailUrl(itemKey));
+  const [liveNonce, setLiveNonce] = useState(0);
+  const shown: CommsRead<CatalogDetail> = d ? { loading: false, result: { kind: "ok", data: d } } : read;
+  const onLiveChanged = () => { read.retry?.(); setLiveNonce((x) => x + 1); };
+  // v1.1 servers add `content` / `viewer` to the detail; an older payload has no Content section.
+  return <CatalogDetailBody read={shown} preview={d ? <PreviewPanel key={`${d.key}|${liveNonce}`} item={d} /> : null}
+    content={d && "content" in d ? <ContentPanel key={d.key} detail={d as CatalogDetail & Partial<CatalogDetailV11Additions>} onDirty={onDirty} onLiveChanged={onLiveChanged}
+      detailRefreshFailed={failure && !failure.loading ? writeRefusalText(failure.result) : null} onRetryDetail={() => read.retry?.()} /> : null} />;
 }
 
 // ── The lead ────────────────────────────────────────────────────────────────────
@@ -398,7 +393,14 @@ function DetailDrawerBody({ itemKey }: { itemKey: string }) {
 export function CommsLibraryLead() {
   const [filters, setFilters] = useState<CatalogFilters>(EMPTY_CATALOG_FILTERS);
   const [draftQ, setDraftQ] = useState("");
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpenRaw] = useState<string | null>(null);
+  const setOpen = (next: string | null) => {
+    if (next === open) return;
+    if (!confirmLeaveCommsContent()) return;
+    setOpenRaw(next);
+  };
+  // Leaving the Library (another Comms view / workspace) has been confirmed by the switcher: drop the flag.
+  useEffect(() => () => setUnsavedCommsContent(false), []);
   const url = catalogUrl(filters);
   const read = useCommsRead<CatalogResponse>(url);
   // The server's `totals` count the result AFTER the status filter; with a
@@ -435,7 +437,7 @@ export function CommsLibraryLead() {
       <LibrarySurface read={read} more={activeMore} filters={filters} draftQ={draftQ} onDraftQ={setDraftQ}
         onFilters={(f) => { setFilters(f); if (f.q !== draftQ) setDraftQ(f.q); }} onOpen={setOpen} onMore={loadMore} triggers={triggers} chipTotals={chipTotals} />
       <DetailDrawer open={open !== null} onClose={() => setOpen(null)} eyebrow="Notification library" title={openItem?.displayName ?? open ?? ""} size="xl">
-        {open && <DetailDrawerBody key={open} itemKey={open} />}
+        {open && <DetailDrawerBody key={open} itemKey={open} onDirty={setUnsavedCommsContent} />}
       </DetailDrawer>
     </>
   );

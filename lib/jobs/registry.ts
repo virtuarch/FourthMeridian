@@ -114,6 +114,8 @@ const JOB_BODIES: { readonly [N in ScheduledJobName]: ScheduledJob["run"] } = {
   // anticipated for this cron path).
   "sync-crypto": async () => (await import("@/jobs/sync-crypto")).syncCrypto(),
   "sol-history-backfill": async () => (await import("@/jobs/sol-history-backfill")).solHistoryBackfill(),
+  // Comms Center B2 — the automation executor; sends nothing while no automation is ACTIVE.
+  "comms-automations": async () => (await import("@/jobs/comms-automations")).commsAutomations(),
   // The continuation runs the SAME body; the sweep skips wallets not yet due,
   // so with nothing deferred this run is one query.
   "sync-crypto-continuation": async () => (await import("@/jobs/sync-crypto")).syncCrypto({ continuation: true }),

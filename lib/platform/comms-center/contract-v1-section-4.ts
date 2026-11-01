@@ -1,54 +1,45 @@
 /**
  * lib/platform/comms-center/contract-v1-section-4.ts  (Comms Center UI — Session 2)
  *
- * LOCAL transcription of the Comms Center contract sections whose server code
- * is NOT merged yet:
- *   docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md
- *     §3.3   delivery status + suppression reason vocabulary
- *     §3.5   mutation envelope (the seam for activate / pause / disable / test-send)
- *     §4.6   GET /automations, /automations/[id], /automations/[id]/runs
- *     §4.11  GET /delivery
- *     §4.12  GET /preferences
+ * THE one import path the Communications views use for contract §3.3, §3.5,
+ * §4.6, §4.11 and §4.12 (docs/plans/COMMS-CENTER-API-CONTRACT-v1-2026-10-31.md).
  *
- * The Library types (§2.1, §3.1, §4.2–§4.5) are NOT here: they are merged
- * (lib/notifications/catalog/types.ts, PR #168) and are imported from there.
+ * Re-exported from the server (merged):
+ *   §3.3   DeliveryStatus / SuppressionReason + their value lists   (#170, #177)
+ *   §3.1   Aggregate (C1 scalar)                                     (#168)
+ *   §4.11  DeliveryAnalytics / DeliveryWindow / StatusCounts / ReasonCounts / SeriesKey  (#170)
+ * all through lib/notifications/catalog/types.ts, the server's stable,
+ * type-only export path.
  *
- * TODO(comms-center): when Session 1 merges the Phase A delivery / preferences
- * reads and the Phase B automation engine, delete each block below and import
- * the server's own types instead (expected under lib/notifications/** or
- * lib/comms/**). Every consumer imports from THIS file only, so the switch is
- * one import line per block.
+ * Still LOCAL (the server exports no type for these yet):
+ *   §3.5   mutation envelope (the seam for activate / pause / disable / test-send)
+ *   §4.6   GET /automations, /automations/[id], /automations/[id]/runs
+ *   §4.12  GET /preferences
+ * TODO(comms-center): when Session 1 merges the preferences read and the
+ * Phase B automation engine, delete each local block below and re-export the
+ * server's own types instead. Every consumer imports from THIS file only, so
+ * the switch is one line per block.
  *
  * Pure types plus closed value lists. No I/O, client-safe.
  */
 
-import type { CommsChannel, Count, DaySeries, ListEnvelope, RecipientResolver, TriggerKey } from "@/lib/notifications/catalog/types";
+import type {
+  Aggregate, CommsChannel, Count, ListEnvelope, RecipientResolver, SeriesKey, SuppressionReason, TriggerKey,
+} from "@/lib/notifications/catalog/types";
 import type { NotificationCategory } from "@/lib/notifications/types";
 
-// ── §3.3 Delivery status vocabulary ─────────────────────────────────────────────
+// ── §3.3 + §4.11 (server) ───────────────────────────────────────────────────────
 
-export const DELIVERY_STATUSES = [
-  "QUEUED", "SCHEDULED", "SUPPRESSED", "CANCELLED", "CAPTURED", "ACCEPTED", "FAILED", "DEAD", "DELIVERED", "BOUNCED", "COMPLAINED",
-] as const;
-export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+export { DELIVERY_STATUSES, SUPPRESSION_REASONS } from "@/lib/notifications/catalog/types";
+export type {
+  Aggregate, DeliveryAnalytics, DeliveryStatus, DeliveryWindow, ReasonCounts, StatusCounts, SuppressionReason,
+} from "@/lib/notifications/catalog/types";
 
-export const SUPPRESSION_REASONS = [
-  "PREFERENCE_OFF", "NO_RECIPIENT", "OBSOLETE",
-  "DEDUPE_OPEN", "FREQUENCY_CAP", "ELIGIBILITY_FAILED",
-  "ADMISSION_REFUSED",
-  "ACCOUNT_RESTRICTED",
-  "BETA_LIFECYCLE", "ENTITLEMENT", "PROVIDER_FREEZE",
-  "ENVIRONMENT_GUARD",
-  "AUTOMATION_PAUSED", "STORM_BREAKER",
-] as const;
-export type SuppressionReason = (typeof SUPPRESSION_REASONS)[number];
+/** C4 — the six fixed series (server type SeriesKey), in display order. */
+export const DELIVERY_SERIES_KEYS = ["accepted", "failed", "dead", "suppressed", "captured", "cancelled"] as const satisfies readonly SeriesKey[];
+export type DeliverySeriesKey = SeriesKey;
 
-// ── §3.1 (C1) scalar aggregate — not yet exported by the merged catalog types ──
-
-/** `withheld: true` = observed but a small cell (1–4); `value` is then null. `withheld: false` + null = not observed. */
-export type Aggregate = { value: number | null; withheld: boolean };
-
-// ── §3.5 Mutation envelope (the seam; no mutation route exists yet) ─────────────
+// ── §3.5 Mutation envelope — LOCAL (the seam; no mutation route exists yet) ─────
 
 /** lib/audit.ts OperatorReasonCode — kept as string here so this file stays free of server imports. */
 export interface MutationRequest<B> {
@@ -58,7 +49,7 @@ export interface MutationRequest<B> {
 }
 export interface MutationResult<T> { ok: true; result: T; auditLogId: string }
 
-// ── §4.6 Automations ────────────────────────────────────────────────────────────
+// ── §4.6 Automations — LOCAL (TODO(comms-center): Phase B engine types) ──────────────────────────────────────────────────────────
 
 export const AUTOMATION_STATES = ["DRAFT", "ACTIVE", "PAUSED", "DISABLED"] as const;
 export type AutomationState = (typeof AUTOMATION_STATES)[number];
@@ -124,35 +115,7 @@ export interface AutomationRunItem {
 export type AutomationsResponse = ListEnvelope<AutomationSummary>;
 export type RunsResponse = ListEnvelope<AutomationRunItem>;
 
-// ── §4.11 Delivery analytics ────────────────────────────────────────────────────
-
-export type StatusCounts = Record<DeliveryStatus, number>;
-export type ReasonCounts = Record<SuppressionReason, number>;
-
-/** C4 — the six fixed series, always all present. */
-export const DELIVERY_SERIES_KEYS = ["accepted", "failed", "dead", "suppressed", "captured", "cancelled"] as const;
-export type DeliverySeriesKey = (typeof DELIVERY_SERIES_KEYS)[number];
-
-export type DeliveryWindow = "7d" | "30d" | "90d";
-
-export interface DeliveryAnalytics {
-  window: DeliveryWindow;
-  from: string;
-  to: string;
-  filters: { channel: CommsChannel | null; status: DeliveryStatus | null; template: string | null };
-  totals: StatusCounts | null;
-  suppressedByReason: ReasonCounts | null;
-  byKey: Array<{ key: string; counts: StatusCounts }> | null;
-  series: Record<DeliverySeriesKey, DaySeries>;
-  measured: { delivered: false; opens: false; clicks: false };
-  coverage: { ledgerSince: string | null; directSendsCovered: boolean; environment: "production" | "preview" | "development" };
-  providerHealth: { href: "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"; source: "GET /api/platform/platform-ops/email-health" };
-  floor: boolean;
-  capped: boolean;
-  checkedAt: string;
-}
-
-// ── §4.12 Preference aggregate ──────────────────────────────────────────────────
+// ── §4.12 Preference aggregate — LOCAL (TODO(comms-center): preferences read) ───────────────────────────────────────────────
 
 export interface PreferenceCell {
   default: boolean;

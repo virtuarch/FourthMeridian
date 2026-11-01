@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     const origin = (n: string) => pol.get(n)?.origin;
     // BETA base (b625d45): + plaid-removal-retry, product-event-retention (daily fixed).
     // + sol-history-backfill (owner decision 2, 2026-10-28).
-    check("registry holds fourteen jobs", SCHEDULED_JOBS.length === 14, `got ${SCHEDULED_JOBS.length}`);
+    check("registry holds fifteen jobs (+ comms-automations, Comms Center B2)", SCHEDULED_JOBS.length === 15, `got ${SCHEDULED_JOBS.length}`);
     const sol = SCHEDULED_JOBS.find((j) => j.name === "sol-history-backfill");
     check("sol-history-backfill self-continues, refreshes nothing (no wallet attempt-period effect), and runs second to last (before evaluate-alerts)",
       !!sol?.selfContinues && !sol.refreshes && !sol.continuationOf

@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     const { db } = makeDb({ runs: [{ jobName: "fetch-fx-rates", startedAt: new Date("2026-10-08T06:00:00.000Z"), status: "succeeded" }] });
     const m = await loadJobCadenceReadModel(db, NOW);
     check("wake cadence stated", m.wakeEveryMinutes === 15);
-    check("fourteen jobs listed (eleven + the two BETA maintenance jobs + sol-history-backfill)", m.jobs.length === 14);
+    check("fifteen jobs listed (eleven + the two BETA maintenance jobs + sol-history-backfill + comms-automations)", m.jobs.length === 15);
     const fx = m.jobs.find((j) => j.job === "fetch-fx-rates")!;
     check("fx: DEFAULT 24h, editable 6–168, no version token", fx.origin === "DEFAULT" && fx.hours === 24 && fx.editable && fx.minHours === 6 && fx.updatedAt === null);
     check("fx: next due = last start + 24h − 5 min", fx.nextDueAt === "2026-10-09T05:55:00.000Z" && fx.lastStartedAt === "2026-10-08T06:00:00.000Z");

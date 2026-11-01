@@ -54,6 +54,15 @@ const RETAINED: Record<string, string> = {
   // versions are immutable history, so the soft reference is kept like an audit actor.
   "PolicyGroup.createdById":              "operator who created a policy group — actor identity on a platform configuration record",
   "PolicyGroupVersion.createdById":       "operator who wrote an immutable policy-group version — actor identity on platform configuration history",
+  // COMMS CENTER B1 — the operator who wrote an immutable notification content version /
+  // asked for an AI suggestion: actor identity on deployment-wide copy history (no customer data).
+  "CommsTemplateVersion.createdById":     "operator who wrote an immutable notification content version — actor identity on platform copy history",
+  "CommsAiSuggestion.requestedById":      "operator who requested an AI authoring suggestion — actor identity on the authoring audit trail",
+  // COMMS CENTER B2 — the operators who created / last edited / owner-approved an
+  // automation: actor identity on a platform rule (no customer data; the rule is kept for audit).
+  "AutomationDefinition.createdById":       "operator who created a comms automation — actor identity on a platform rule",
+  "AutomationDefinition.updatedById":       "operator who last edited a comms automation — actor identity on a platform rule",
+  "AutomationDefinition.ownerApprovedById": "the owner (SYSTEM_ADMIN) who approved a comms automation version — actor identity on a platform rule",
   "AiInvocation.spaceId":             "not a user column: a soft Space reference on a ledger that survives by design (RLS migration §4); the user column is nulled",
 };
 

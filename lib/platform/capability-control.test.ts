@@ -224,8 +224,27 @@ function main() {
     // the transition row (lib/platform/policies/policy-group-lifecycle-write.ts);
     // its GET (state + history) stays at READ.
     const LIFECYCLE_ROUTE = "app/api/platform/platform-ops/policy-groups/[key]/lifecycle/route.ts";
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor and policy-group lifecycle routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // COMMS CENTER B1 (owner requirement 2026-10-31; contract v1.1 §3.4, §3.5) —
+    // publishing or rolling back notification copy changes what customers
+    // receive: fresh CUSTOMER_SUCCESS CONTROL + reason + one audited transaction
+    // (lib/notifications/content/store.ts). Drafts and AI suggestions stay WRITE.
+    const COMMS_CONTENT_CONTROL_ROUTES = [
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/[id]/publish/route.ts",
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/[id]/rollback/route.ts",
+    ];
+    // COMMS CENTER B2 (owner decision O-1; contract v1.1 §6.3) — activating an
+    // automation increases reach: fresh CUSTOMER_SUCCESS CONTROL + reason + one
+    // audited transaction (lib/notifications/automations/store.ts). Its owner
+    // approval is SYSTEM_ADMIN (requireFreshSystemAdmin), not a platform grant.
+    COMMS_CONTENT_CONTROL_ROUTES.push("app/api/platform/customer-success/notifications/automations/[id]/activate/route.ts");
+    for (const f of COMMS_CONTENT_CONTROL_ROUTES) {
+      const src = code(f);
+      check(`${f}: the one write verb is FRESH CUSTOMER_SUCCESS CONTROL`,
+        (src.match(/export async function (POST|PATCH|PUT|DELETE)/g) ?? []).length === 1
+          && (src.match(/requireFreshPlatformAccess\("CUSTOMER_SUCCESS", "CONTROL"\)/g) ?? []).length === 1);
+    }
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE, ...COMMS_CONTENT_CONTROL_ROUTES].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor, policy-group lifecycle, Comms content publish / rollback and Comms automation activate routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     for (const f of POLICY_GROUP_ROUTES) {
       const src = code(f);
@@ -322,6 +341,18 @@ function main() {
       "app/api/platform/customer-success/customers/[userId]/refresh/route.ts",
       // SEC-PLAT-4 — customer deactivate / reactivate, moved from GROWTH_REVENUE.
       "app/api/platform/customer-success/customers/[userId]/access/route.ts",
+      // COMMS CENTER B1 — save a draft content version and ask for an AI
+      // suggestion: fresh CUSTOMER_SUCCESS WRITE (publish / rollback are CONTROL).
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/route.ts",
+      "app/api/platform/customer-success/notifications/catalog/[key]/versions/[id]/ai-suggest/route.ts",
+      // COMMS CENTER B2 — create / edit / dry-run / pause / disable an automation and
+      // test-send to yourself: fresh CUSTOMER_SUCCESS WRITE (activation is CONTROL).
+      "app/api/platform/customer-success/notifications/automations/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/dry-run/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/pause/route.ts",
+      "app/api/platform/customer-success/notifications/automations/[id]/disable/route.ts",
+      "app/api/platform/customer-success/notifications/test-send/route.ts",
     ];
     for (const f of WRITE_GATED) {
       const src = code(f);

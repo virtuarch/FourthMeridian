@@ -967,7 +967,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
    * V26-CRYPTO-STATUS-1 — days that are NOT rewritten but whose crypto verdict
    * must still be recorded. Applied as single-column updates (see below).
    */
-  const metadataOnlyStamps: Array<{ date: Date; status: NonNullable<DayRegenResult["cryptoValuationStatus"]> }> = [];
+  const metadataOnlyStamps: Array<{ date: Date; status: NonNullable<DayRegenResult["cryptoValuationStatus"]> | null }> = [];
 
   /**
    * Days where SOME component was supported and some was not. Each carries the
@@ -1319,6 +1319,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // a correct value as `legacy-unrecorded` forever. Stamping is what makes the
     // repair reach every day the regeneration actually classified.
     if (applyWrites && plan.stamp !== null) metadataOnlyStamps.push({ date: d, status: plan.stamp });
+    // …and a real recompute with no material crypto CLEARS a stale stamp (a pending `unavailable`).
+    else if (applyWrites && plan.clearStamp) metadataOnlyStamps.push({ date: d, status: null });
   }
 
   // Only UPDATED days are written. `writes` is already filtered to them.
@@ -1709,18 +1711,35 @@ export async function regenerateWealthHistoryForAccounts(
    */
   onProgress?: (daysDone: number, daysTotal: number) => void | Promise<void>,
 ): Promise<string[]> {
-  if (financialAccountIds.length === 0) return [];
+  return (await regenerateWealthHistoryForAccountsDetailed(financialAccountIds, window, onProgress)).attempted;
+}
+
+/**
+ * The same rebuild, REPORTING per Space whether it succeeded (review of #185,
+ * P3): `rebuilt` holds only Spaces whose regeneration returned. A failure is
+ * still non-fatal and logged — but a caller that marks work done or credits
+ * other holders reads `rebuilt`, never `attempted`.
+ */
+export async function regenerateWealthHistoryForAccountsDetailed(
+  financialAccountIds: string[],
+  window: { fromDate: string; toDate: string; now?: Date },
+  onProgress?: (daysDone: number, daysTotal: number) => void | Promise<void>,
+): Promise<{ attempted: string[]; rebuilt: string[]; failed: string[] }> {
+  if (financialAccountIds.length === 0) return { attempted: [], rebuilt: [], failed: [] };
   const links = await db.spaceAccountLink.findMany({
     where:  { financialAccountId: { in: financialAccountIds }, status: ShareStatus.ACTIVE },
     select: { spaceId: true },
   });
   const spaceIds = [...new Set(links.map((l) => l.spaceId))];
+  const rebuilt: string[] = [], failed: string[] = [];
   for (const spaceId of spaceIds) {
     try {
       await regenerateWealthHistory({ spaceId, fromDate: window.fromDate, toDate: window.toDate, now: window.now, onProgress });
+      rebuilt.push(spaceId);
     } catch (err) {
+      failed.push(spaceId);
       console.warn(`[wealth-regen] space ${spaceId} regeneration failed (non-fatal): ${err instanceof Error ? err.message : err}`);
     }
   }
-  return spaceIds;
+  return { attempted: spaceIds, rebuilt, failed };
 }

@@ -143,6 +143,9 @@ export interface PurgeTxClient {
   commsDelivery: {
     updateMany(args: { where: Prisma.CommsDeliveryWhereInput; data: Prisma.CommsDeliveryUpdateManyMutationInput }): Promise<{ count: number }>;
   };
+  automationRunItem: {
+    updateMany(args: { where: Prisma.AutomationRunItemWhereInput; data: Prisma.AutomationRunItemUpdateManyMutationInput }): Promise<{ count: number }>;
+  };
   auditLog: {
     create(args: { data: Prisma.AuditLogUncheckedCreateInput }): Promise<unknown>;
   };
@@ -499,6 +502,14 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
       where: { recipientUserId: userId },
       data:  { recipientUserId: null, recipientHash: null },
     });
+    // Comms Center B2 (contract v1.1 §8.7) — the subject's pending automation
+    // sends are CANCELLED / ACCOUNT_RESTRICTED (a lease-holder finishes nothing:
+    // its send-time re-check finds no account), then every item forgets who.
+    await tx.automationRunItem.updateMany({
+      where: { recipientUserId: userId, status: { in: ["SCHEDULED", "SENDING", "FAILED"] } },
+      data:  { status: "CANCELLED", reason: "ACCOUNT_RESTRICTED", leaseUntil: null, nextAttemptAt: null },
+    });
+    await tx.automationRunItem.updateMany({ where: { recipientUserId: userId }, data: { recipientUserId: null } });
     const ledgerHash = recipientHash(user.email, process.env);
     if (ledgerHash) {
       await tx.commsDelivery.updateMany({

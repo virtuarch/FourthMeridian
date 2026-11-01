@@ -72,6 +72,8 @@ export const EMAIL_TEMPLATE_VERSIONS: Record<EmailTemplateName, number> = {
   "beta-invite": 1,
   "beta-request": 1,
   "platform-alert": 1,
+  welcome: 1,
+  digest: 1,
 };
 /** The registry render is the IN_APP template; one version for all of them at v1. */
 export const IN_APP_TEMPLATE_VERSION = 1;
@@ -131,7 +133,7 @@ export const KNOWN_PII_DEDUPE_KEYS: Readonly<Record<string, string>> = {};
  * A send whose key is not a catalog entry (tooling: the smoke template) is not
  * customer email either. Production call sites are pinned to name a key.
  */
-export const EMAIL_STORM_LIMIT = { maxPerRecipient: 5, windowMinutes: 60 } as const;
+export { EMAIL_STORM_LIMIT } from "@/lib/notifications/catalog/types";
 export const EMAIL_STORM_LIMITED_CLASSES: readonly ConsentClass[] = ["SERVICE", "AWARENESS", "MARKETING"];
 
 /**
@@ -214,7 +216,7 @@ interface RegistryCatalogMeta {
   status?: DefinitionStatus;
   /** Typed payload, keyed by the registry pointerContract (catalog.test.ts asserts the key sets match). */
   payload: Record<string, FieldSpec>;
-  trigger: { kind: "TRIGGER" | "CALL_SITE"; triggerKey: TriggerKey | null; sources: readonly string[] };
+  trigger: { kind: "TRIGGER" | "CALL_SITE"; triggerKey: TriggerKey | null; additionalTriggerKeys?: readonly TriggerKey[]; sources: readonly string[] };
   /** Direct email legs that accompany this type today (security-alert, the duplicate Space invite). */
   directLegs?: readonly ChannelLeg[];
   /** Preview slugs (lib/email/preview.ts) for the registry EMAIL leg, when one exists. */
@@ -315,6 +317,27 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     payload: {}, trigger: site("app/api/user/export/route.ts"),
     directLegs: [securityEmail("dataExportedAlert", "data-exported")],
   },
+  PLATFORM_ACCESS_GRANTED: {
+    ...ACCT, displayName: "Platform access granted",
+    description:
+      "Sent to an operator when a system administrator grants, reinstates or changes their access to a Platform area: " +
+      "an in-app notice plus a security-alert email naming the area, the level and the grantor's role (never their identity). " +
+      "Once per audited grant change; a repeated grant at the same level sends nothing.",
+    payload: { area: disp(), areaLabel: disp(), level: disp(), levelLabel: disp(), change: disp() },
+    trigger: {
+      ...event("platform.grant.created", "lib/notifications/platform-access.ts", "app/api/admin/platform-grants/route.ts"),
+      additionalTriggerKeys: ["platform.grant.reinstated", "platform.grant.level_changed"],
+    },
+    directLegs: [{ ...securityEmail("platformAccessGrantedAlert", "platform-access-granted"),
+      previewSlugs: ["security-alert--platform-access-granted", "security-alert--platform-access-changed"] }],
+  },
+  PLATFORM_ACCESS_REVOKED: {
+    ...ACCT, displayName: "Platform access removed",
+    description: "Sent to an operator when a system administrator revokes their access to a Platform area: an in-app notice plus a security-alert email.",
+    payload: { area: disp(), areaLabel: disp(), level: disp(), levelLabel: disp() },
+    trigger: event("platform.grant.revoked", "lib/notifications/platform-access.ts", "app/api/admin/platform-grants/[grantId]/route.ts"),
+    directLegs: [securityEmail("platformAccessRemovedAlert", "platform-access-removed")],
+  },
 
   // ══ SPACES — unlocked; the user's SPACES × channel preference applies to the registry legs.
   SPACE_INVITE_RECEIVED: {
@@ -354,11 +377,15 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
   SYNC_FAILED: {
     audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", displayName: "Institution needs attention",
     description:
-      "Sent when a bank sync fails with a health-classified error: in-app plus email, one live notice per item until it " +
-      "recovers. Suppressed when the user removed the connection themselves. The email follows only the FINANCIAL email " +
+      "Sent when a bank sync fails with a health-classified error, or when the Plaid webhook reports that the bank needs the " +
+      "user to sign in again (NEEDS_REAUTH) or that access was revoked: in-app plus email, one live notice per item until it " +
+      "recovers, shared by the webhook and every sync path. If the item is revoked while the notice is open, that notice is " +
+      "updated in place to \"disconnected\" (no second email). Suppressed when the user removed the connection themselves. The email follows only the FINANCIAL email " +
       "preference: turning FINANCIAL in-app off hides the notice but does not stop the email (owner ruling 2026-10-31).",
     payload: { plaidItemId: ptr(), institutionName: disp(), connectionState: disp() },
-    trigger: event("plaid.item.sync_failed", "lib/plaid/sync-notifications.ts"),
+    // lib/plaid/webhook-health.ts: the Plaid webhook's NEEDS_REAUTH / REVOKED transition (owner-approved
+    // 2026-10-31) produces this same type, on the same open key — one notice per outage.
+    trigger: event("plaid.item.sync_failed", "lib/plaid/sync-notifications.ts", "lib/plaid/webhook-health.ts"),
     eligibility: ["connection.removed_by_user"],
     registryEmailPreviewSlugs: [
       "notification--connection-sync-failed",
@@ -372,6 +399,18 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     description: "In-app notice when the full deferred history pipeline finishes for a connection.",
     payload: { plaidItemId: ptr(), institutionName: disp() },
     trigger: event("plaid.item.history_ready", "lib/plaid/sync-notifications.ts"),
+  },
+  WALLET_SYNC_FAILED: {
+    audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", displayName: "Wallet sync failed",
+    description:
+      "Sent when a crypto wallet's sync attempts have failed without a break for at least 24 hours (from the first failed " +
+      "attempt; any successful attempt resets it): in-app, plus email for users who turned FINANCIAL email on. Says either that the provider could not be read " +
+      "(still connected, retrying) or that the address needs attention; never \"disconnected\". One live notice per wallet " +
+      "until a clean sync. Not sent for a wallet the user removed, for platform-side causes, or under the Cost Freeze.",
+    payload: { financialAccountId: ptr(), walletName: disp("string", true), network: disp(), walletState: disp() },
+    trigger: event("wallet.sync.failed", "lib/crypto/wallet-sync-notifications.ts"),
+    eligibility: ["connection.removed_by_user"],
+    registryEmailPreviewSlugs: ["notification--wallet-temporary", "notification--wallet-needs-attention"],
   },
   DUPLICATE_DETECTED: {
     audience: "ACCOUNT_HOLDER", consentClass: "AWARENESS", displayName: "Possible duplicate accounts",
@@ -423,6 +462,18 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     audience: "ACCOUNT_HOLDER", consentClass: "AWARENESS", displayName: "Policy updated",
     description: "Declared only: no broadcast producer exists.", payload: { policyName: disp() }, trigger: VOCAB_TRIGGER,
   },
+  ACCOUNT_WELCOME: {
+    audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", displayName: "Welcome",
+    description:
+      "Sent once per account when it becomes usable: at registration for an invited (pre-verified) account, after the first " +
+      "successful email verification otherwise, never beside the verification email. An in-app notice plus the welcome email. " +
+      "Not preference-suppressible (locked per type); the email is storm-limited like every SERVICE email. " +
+      "ONE-SHOT by design: if the in-app row cannot be written, or the storm limit holds the email, the welcome is not " +
+      "retried — it is lost rather than ever sent twice.",
+    payload: {},
+    trigger: event("account.registered", "lib/notifications/welcome.ts", "app/api/auth/register/route.ts", "app/api/auth/verify-email/route.ts"),
+    directLegs: [directEmail("welcome", ["welcome--named", "welcome--unnamed"])],
+  },
   SECURITY_ANOMALY_DETECTED: {
     audience: "PLATFORM_STAFF", consentClass: "OPERATOR", displayName: "Security anomaly (staff bell)",
     description:
@@ -438,9 +489,12 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
   // ══ DIGEST
   DIGEST_SENT: {
     audience: "ACCOUNT_HOLDER", consentClass: "AWARENESS", status: "BUILD_OFF", displayName: "Notification digest",
-    description: "To be built but shipped disabled, pending the owner's digest proposal (O-14). No producer today.",
+    description:
+      "Built and shipped disabled, pending the owner's digest proposal (O-14): a template and a producer exist, but the " +
+      "producer is gated by DIGEST_ENABLED = false and nothing schedules it, so it sends nothing.",
     payload: { notificationIds: ptr("string[]"), periodStart: disp("iso-date"), periodEnd: disp("iso-date") },
-    trigger: { kind: "TRIGGER", triggerKey: "schedule.daily", sources: [] },
+    trigger: { kind: "TRIGGER", triggerKey: "schedule.daily", sources: ["lib/notifications/digest.ts"] },
+    directLegs: [directEmail("digest", ["digest"])],
   },
 };
 
@@ -458,7 +512,9 @@ export const STANDALONE_KEYS = [
   // Banners (read-only)
   "MAINTENANCE_NOTICE", "TWO_FACTOR_REMINDER", "CONNECT_INVITATION",
   // BUILD (owner-approved, not wired)
-  "PLAID_ITEM_REAUTH_REQUIRED", "PLAID_ITEM_REVOKED", "WALLET_SYNC_FAILED", "ACCOUNT_WELCOME", "PLATFORM_ACCESS_GRANTED",
+  "PLAID_ITEM_PENDING_EXPIRATION",
+  // RETIRED (built under SYNC_FAILED instead, 2026-10-31; keys never reused)
+  "PLAID_ITEM_REAUTH_REQUIRED", "PLAID_ITEM_REVOKED",
   // PROPOSED (never send)
   "BETA_INVITATION_EXPIRING", "BETA_PROGRAM_STATUS_CHANGED", "WALLET_IMPORT_COMPLETED", "PROVIDER_INCIDENT_NOTICE",
   // NONE_BY_DESIGN
@@ -612,55 +668,37 @@ export const STANDALONE_CATALOG: Record<StandaloneKey, StandaloneSpec> = {
   },
 
   // ── BUILD: owner-approved, not wired. Nothing sends these.
-  PLAID_ITEM_REAUTH_REQUIRED: {
-    displayName: "Institution needs sign-in (webhook)", status: "BUILD", category: "FINANCIAL", audience: "ACCOUNT_HOLDER",
-    consentClass: "SERVICE", severity: "warning",
-    description: "Planned: notify when the Plaid webhook moves an item to NEEDS_REAUTH. Shares the SYNC_FAILED open key so the cron and the webhook never double-notify.",
+  PLAID_ITEM_PENDING_EXPIRATION: {
+    displayName: "Institution access expiring (webhook)", status: "BUILD", category: "FINANCIAL", audience: "ACCOUNT_HOLDER",
+    consentClass: "SERVICE", severity: "notice",
+    description:
+      "Approved, not built: tell the user when the Plaid webhook reports PENDING_EXPIRATION / PENDING_DISCONNECT. Not built " +
+      "with the 2026-10-31 webhook notice because these move no health state (the item keeps syncing until the date), so the " +
+      "SYNC_FAILED open key would be retired by the next successful sync. Needs its own condition key, retired on relink.",
     channels: [planned("IN_APP"), planned("EMAIL")],
     payload: { plaidItemId: ptr(), institutionName: disp() },
-    trigger: { kind: "TRIGGER", triggerKey: "plaid.item.webhook_needs_reauth", sources: [] },
+    trigger: { kind: "TRIGGER", triggerKey: "plaid.item.webhook_pending_expiration", sources: [] },
     eligibility: ["connection.removed_by_user"],
     preference: { category: "FINANCIAL", userSuppressible: true, suppressibleChannels: ["EMAIL"] },
-    dedupe: { strategy: "suppress", keyTemplate: "SYNC_FAILED:item:{plaidItemId}:open", windowMinutes: null },
+    dedupe: { strategy: "suppress", keyTemplate: "PLAID_ITEM_PENDING_EXPIRATION:item:{plaidItemId}:open", windowMinutes: null },
+  },
+
+  // ── RETIRED: built as SYNC_FAILED (owner-approved 2026-10-31, "via the existing connection-attention path").
+  //    The webhook's NEEDS_REAUTH / REVOKED transition produces SYNC_FAILED from lib/plaid/webhook-health.ts and
+  //    records under that key. Tombstones: the keys are never reused.
+  PLAID_ITEM_REAUTH_REQUIRED: {
+    displayName: "Institution needs sign-in (webhook)", status: "RETIRED", category: "FINANCIAL", audience: "ACCOUNT_HOLDER",
+    consentClass: "SERVICE", severity: "warning",
+    description: "Retired before it shipped: the webhook's NEEDS_REAUTH notice is delivered as SYNC_FAILED (state reauth-required), on the shared SYNC_FAILED open key.",
+    channels: [], payload: {},
+    trigger: { kind: "TRIGGER", triggerKey: "plaid.item.webhook_needs_reauth", sources: [] },
   },
   PLAID_ITEM_REVOKED: {
-    displayName: "Institution disconnected (webhook)", status: "BUILD", category: "FINANCIAL", audience: "ACCOUNT_HOLDER",
+    displayName: "Institution disconnected (webhook)", status: "RETIRED", category: "FINANCIAL", audience: "ACCOUNT_HOLDER",
     consentClass: "SERVICE", severity: "warning",
-    description: "Planned: notify when the Plaid webhook reports a provider-side revocation. Honours the removed-by-user suppression.",
-    channels: [planned("IN_APP"), planned("EMAIL")],
-    payload: { plaidItemId: ptr(), institutionName: disp() },
+    description: "Retired before it shipped: the webhook's provider-side revocation is delivered as SYNC_FAILED (state disconnected), with the removed-by-user suppression.",
+    channels: [], payload: {},
     trigger: { kind: "TRIGGER", triggerKey: "plaid.item.webhook_revoked", sources: [] },
-    eligibility: ["connection.removed_by_user"],
-    preference: { category: "FINANCIAL", userSuppressible: true, suppressibleChannels: ["EMAIL"] },
-    dedupe: { strategy: "suppress", keyTemplate: "PLAID_ITEM_REVOKED:item:{plaidItemId}:open", windowMinutes: null },
-  },
-  WALLET_SYNC_FAILED: {
-    displayName: "Wallet sync failed", status: "BUILD", category: "FINANCIAL", audience: "ACCOUNT_HOLDER",
-    consentClass: "SERVICE", severity: "warning",
-    description: "Planned: notify when a wallet sync fails (today only a SyncIssue row is written). Email per O-7.",
-    channels: [planned("IN_APP"), planned("EMAIL", false)],
-    payload: { financialAccountId: ptr(), network: disp() },
-    trigger: { kind: "TRIGGER", triggerKey: "wallet.sync.failed", sources: [] },
-    preference: { category: "FINANCIAL", userSuppressible: true, suppressibleChannels: ["EMAIL"] },
-    dedupe: { strategy: "suppress", keyTemplate: "WALLET_SYNC_FAILED:account:{financialAccountId}:open", windowMinutes: null },
-  },
-  ACCOUNT_WELCOME: {
-    displayName: "Welcome email", status: "BUILD", category: "PLATFORM", audience: "ACCOUNT_HOLDER",
-    consentClass: "AWARENESS", severity: "info",
-    description: "Planned: a one-time welcome email after registration (consent class pending O-5).",
-    channels: [planned("EMAIL")],
-    payload: {},
-    trigger: { kind: "TRIGGER", triggerKey: "account.registered", sources: [] },
-    preference: { category: "PLATFORM", userSuppressible: true, suppressibleChannels: ["EMAIL"] },
-    dedupe: { strategy: "suppress", keyTemplate: "ACCOUNT_WELCOME:user:{userId}", windowMinutes: null },
-  },
-  PLATFORM_ACCESS_GRANTED: {
-    displayName: "Platform access granted", status: "BUILD", category: "ACCOUNT_SECURITY", audience: "ACCOUNT_HOLDER",
-    consentClass: "SECURITY_CRITICAL", severity: "critical",
-    description: "Planned: tell the grantee when a Platform grant is created or reinstated (a privilege change).",
-    channels: [planned("IN_APP"), planned("EMAIL")],
-    payload: { area: disp(), level: disp() },
-    trigger: { kind: "TRIGGER", triggerKey: "platform.grant.created", sources: [] },
   },
 
   // ── PROPOSED: candidates; not approved; never send.

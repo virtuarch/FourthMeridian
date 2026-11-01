@@ -12,17 +12,20 @@
  *                  deployed) · unavailable (503, never an empty list) · denied · error
  *   ListMeta       checkedAt + the floor / capped notes every list carries
  *   DaySeriesBars  a dense day series where null = not observed (hatched, never 0)
- *                  and withheld = observed small cell (a distinct outlined marker)
+ *                  (delivery counts are never withheld, §4.11)
  *   CountText      one small-cell-aware count
+ *   useLastGoodRead  useCommsRead that KEEPS the last good answer through a failed
+ *                  or in-flight re-read of the same url (an editor stays mounted)
+ *   PreviewRendition the synthetic preview (sandboxed iframe, [PREVIEW] banner)
  *   FilterSelect / Chip / FactList — ≥ 44 px controls below lg, tokens only
  */
 
 import { useEffect, useState, type ReactNode } from "react";
 import { AlertTriangle, Clock, Loader2, Lock } from "lucide-react";
 import { commsRead, type CommsReadResult } from "@/lib/platform/comms-center/client";
-import type { ConsentClass, DaySeries } from "@/lib/notifications/catalog/types";
+import type { CatalogItem, DaySeries, PreviewResponse } from "@/lib/notifications/catalog/types";
 import { TONE_COLOR, type StatusTone } from "../platform-surface";
-import { countCell, dayCells, daySummary, daySummaryText, envelopeNotes, protectedNote, utcStamp, type CountCell } from "./comms-model";
+import { COMMS_POLICY, PREVIEW_LABEL, countCell, dayCells, daySummary, daySummaryText, envelopeNotes, protectedNote, utcStamp, type CountCell } from "./comms-model";
 
 // ── Reads ───────────────────────────────────────────────────────────────────────
 
@@ -65,6 +68,31 @@ export function okData<T>(r: CommsRead<T>): T | null {
 /** The PREVIOUS answer's data while a new url loads (render dimmed + aria-busy), else null. */
 export function staleData<T>(r: CommsRead<T>): T | null {
   return r.loading && r.previous?.kind === "ok" ? r.previous.data : null;
+}
+
+/**
+ * A read that keeps its LAST GOOD answer for the same url: a retry that is in
+ * flight or fails (503 / 429 / 401 / network) still returns that data, with the
+ * failure beside it. `loads` counts successful answers for the url (a consumer
+ * can tell a successful reload from a failed one). A new url starts empty.
+ */
+export function useLastGoodRead<T>(url: string | null): { read: CommsRead<T>; data: T | null; failure: CommsRead<T> | null; loads: number } {
+  const read = useCommsRead<T>(url);
+  const current = okData(read);
+  const [good, setGood] = useState<{ url: string; data: T; n: number } | null>(null);
+  // Adjust state while rendering when the read's answer changes (React's sanctioned
+  // "store info from previous renders" pattern — no effect, no extra commit): a NEW
+  // good answer for this url is kept and counted; anything else leaves `good` alone.
+  if (current !== null && url !== null && !(good && good.url === url && good.data === current)) {
+    setGood({ url, data: current, n: (good && good.url === url ? good.n : 0) + 1 });
+  }
+  const kept = good && good.url === url ? good : null;
+  return {
+    read,
+    data: current ?? kept?.data ?? null,
+    failure: !read.loading && read.result.kind !== "ok" ? read : null,
+    loads: kept?.n ?? 0,
+  };
 }
 
 function RetryButton({ onRetry }: { onRetry?: () => void }) {
@@ -155,8 +183,8 @@ const shortDay = (d: string) => new Date(`${d}T00:00:00.000Z`).toLocaleDateStrin
 
 /**
  * A dense day series as bars. Not observed = a hatched slot (no bar, never 0);
- * withheld = an outlined marker at the baseline (observed, fewer than 5);
- * observed 0 = an empty slot over the hairline baseline.
+ * observed 0 = an empty slot over the hairline baseline. Delivery counts are
+ * never withheld (§4.11), so there is no withheld state here.
  */
 export function DaySeriesBars({ series, label, color = "color-mix(in srgb, var(--meridian-400) 75%, transparent)", noun = "send", height = 72 }: {
   series: DaySeries;
@@ -176,13 +204,6 @@ export function DaySeriesBars({ series, label, color = "color-mix(in srgb, var(-
             return (
               <span key={c.day} title={`${shortDay(c.day)}: not observed`} data-day-state="not-observed" className="h-full min-w-0 flex-1"
                 style={{ backgroundImage: "repeating-linear-gradient(45deg, color-mix(in srgb, var(--text-muted) 22%, transparent) 0 1px, transparent 1px 5px)" }} />
-            );
-          }
-          if (c.state === "withheld") {
-            return (
-              <span key={c.day} title={`${shortDay(c.day)}: withheld — fewer than 5`} data-day-state="withheld" className="flex h-full min-w-0 flex-1 items-end">
-                <span className="block w-full rounded-[1px] border border-dashed" style={{ height: 8, borderColor: "var(--accent-warning)" }} />
-              </span>
             );
           }
           const h = s.max > 0 ? Math.max(c.count! > 0 ? 2 : 0, Math.round((c.count! / s.max) * (height - 4))) : 0;
@@ -208,7 +229,6 @@ export function DaySeriesLegend() {
   return (
     <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[var(--text-muted)]" aria-label="Day series legend">
       <li className="flex items-center gap-1.5"><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-[2px]" style={{ background: "color-mix(in srgb, var(--meridian-400) 75%, transparent)" }} />Observed</li>
-      <li className="flex items-center gap-1.5"><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-[2px] border border-dashed" style={{ borderColor: "var(--accent-warning)" }} />Withheld (fewer than 5)</li>
       <li className="flex items-center gap-1.5"><span aria-hidden className="inline-block h-2.5 w-2.5 rounded-[2px]" style={{ backgroundImage: "repeating-linear-gradient(45deg, color-mix(in srgb, var(--text-muted) 40%, transparent) 0 1px, transparent 1px 3px)" }} />Not observed</li>
     </ul>
   );
@@ -228,12 +248,14 @@ export const countOf = (value: number | null, withheld: boolean) => <CountText c
 
 // ── Controls ────────────────────────────────────────────────────────────────────
 
-export function FilterSelect({ label, value, options, onChange, anyLabel = "Any" }: {
+export function FilterSelect({ label, value, options, onChange, anyLabel = "Any", includeAny = true }: {
   label: string;
   value: string | null;
   options: ReadonlyArray<{ value: string; label: string }>;
   onChange: (v: string | null) => void;
   anyLabel?: string;
+  /** false ⇒ a required choice: no empty "Any" entry. */
+  includeAny?: boolean;
 }) {
   return (
     <label className="flex min-w-0 flex-col gap-1 text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
@@ -243,7 +265,7 @@ export function FilterSelect({ label, value, options, onChange, anyLabel = "Any"
         onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
         className="min-h-11 w-full min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] bg-transparent px-2 text-xs normal-case tracking-normal text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--meridian-400)] lg:min-h-8"
       >
-        <option value="">{anyLabel}</option>
+        {includeAny && <option value="">{anyLabel}</option>}
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </label>
@@ -259,9 +281,9 @@ export function Chip({ children, tone = "muted", title }: { children: ReactNode;
   );
 }
 
-export function ProtectedBadge({ consentClass }: { consentClass: ConsentClass }) {
+export function ProtectedBadge({ item }: { item: Pick<CatalogItem, "consentClass" | "userSuppressible" | "channels"> }) {
   return (
-    <Chip tone="warn" title={protectedNote(consentClass)}>
+    <Chip tone="warn" title={protectedNote(item)}>
       <Lock size={10} aria-hidden /> Protected
     </Chip>
   );
@@ -296,4 +318,37 @@ export function DrawerSection({ title, children }: { title: string; children: Re
 
 export function PolicyNote({ children }: { children: ReactNode }) {
   return <p className="text-[11px] leading-relaxed text-[var(--text-muted)]" data-policy-note>{children}</p>;
+}
+
+// ── Preview ─────────────────────────────────────────────────────────────────────
+
+/** The synthetic rendition. sandbox="" iframe fed by srcDoc only; the [PREVIEW] banner always shows. */
+export function PreviewRendition({ p }: { p: PreviewResponse }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-3" data-preview-rendition={p.channel}>
+      <p className="rounded-[var(--radius-sm)] border border-dashed px-2.5 py-1.5 text-[11px] font-medium" style={{ borderColor: "var(--accent-warning)", color: "var(--accent-warning)" }} data-preview-banner>
+        {COMMS_POLICY.previewBanner}
+      </p>
+      {p.subject !== null && <p className="text-xs text-[var(--text-primary)]"><span className="text-[var(--text-muted)]">Subject </span>{p.subject}</p>}
+      {p.html !== null && (
+        // sandbox="" (no allow-scripts, no allow-same-origin): the template renders as inert markup.
+        <iframe title={`${PREVIEW_LABEL[p.channel]} preview (synthetic)`} sandbox="" srcDoc={p.html} referrerPolicy="no-referrer"
+          className="h-[28rem] w-full min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)]" style={{ background: "var(--surface-inset)" }} data-preview-frame />
+      )}
+      {p.inApp && (
+        <div className="flex min-w-0 flex-col gap-1 rounded-[var(--radius-md)] border border-[var(--border-hairline)] p-3" style={{ background: "var(--surface-inset)" }} data-preview-inapp>
+          <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">In-app · icon {p.inApp.icon}</span>
+          <span className="text-sm font-medium text-[var(--text-primary)]">{p.inApp.title}</span>
+          {p.inApp.body && <span className="text-xs text-[var(--text-secondary)]">{p.inApp.body}</span>}
+          {p.inApp.href && <code className="break-all font-mono text-[11px] text-[var(--text-muted)]">{p.inApp.href}</code>}
+        </div>
+      )}
+      {p.text !== null && !p.inApp && (
+        <pre className="max-h-72 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-sm)] border border-[var(--border-hairline)] p-3 font-mono text-[11px] text-[var(--text-secondary)]" data-preview-text>{p.text}</pre>
+      )}
+      <span className="text-[11px] tabular-nums text-[var(--text-muted)]">
+        Definition v{p.definitionVersion}{p.templateVersion !== null ? ` · template v${p.templateVersion}` : ""} · synthetic data
+      </span>
+    </div>
+  );
 }
