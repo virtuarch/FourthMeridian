@@ -43,6 +43,7 @@ import type {
 } from "@/lib/notifications/types";
 import { connectionAttentionCopy } from "@/lib/notifications/connection-attention";
 import { walletAttentionCopy } from "@/lib/notifications/wallet-attention";
+import { CONNECTION_REMOVED_EMAIL_ENABLED } from "@/lib/notifications/connection-removed-switch";
 
 // ── Shared policy values ──────────────────────────────────────────────────────
 
@@ -534,6 +535,11 @@ export const NOTIFICATION_REGISTRY = {
     id: "CONNECTION_REMOVED_BY_SUPPORT",
     priority: "HIGH" as const,
     defaultChannels: ["IN_APP", "EMAIL"] as const satisfies readonly NotificationChannel[],
+    // OWNER DECISION 2026-11-02 — the email is BUILT, SHIPPED OFF (the digest's
+    // code-constant idiom): while CONNECTION_REMOVED_EMAIL_ENABLED is false the
+    // chokepoint records the EMAIL leg SUPPRESSED / SHIPPED_OFF and sends
+    // nothing, in every environment. The in-app notice still ships.
+    emailShippedOff: !CONNECTION_REMOVED_EMAIL_ENABLED,
     dedupe: "none" as const,
     dedupeKeyTemplate: null,
     icon: "life-buoy",

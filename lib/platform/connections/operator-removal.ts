@@ -28,21 +28,45 @@
  * .revokedByUserId records the owner, as on the customer path; the operator is
  * on the audit row, not on the link.)
  *
- * ══ ORDER ══════════════════════════════════════════════════════════════════
+ * ══ ORDER — every step leaves a trace before the next can fail ═════════════
  *   1. resolve the connection, its owner and the owner's live accounts on it
- *   2. disconnectAccounts (the primitive)
- *   3. RE-READ the provider outcome off the marker (never PlaidItem.status)
- *   4. the operator-action row (reason required), success or failure
- *   5. the customer notification, through createNotification — after the audit
- *      row, which it references; non-throwing, so a notification problem can
- *      never fail or undo a completed removal
+ *      (none live ⇒ ALREADY_REMOVED: nothing is called, written or sent — a
+ *      second click can never reach a second itemRemove)
+ *   2. the INTENT operator action (CONNECTION_REMOVAL_REQUESTED, reason
+ *      required) — BEFORE anything changes; if it cannot be written, nothing runs
+ *   3. disconnectAccounts (the primitive), with ONE additive hook: after its
+ *      soft-deletes commit and BEFORE its first Plaid call, an UNCONFIRMED
+ *      marker tagged phase PRE_PROVIDER is written for the item. Why: the
+ *      primitive's own marker is written only after Plaid answered —
+ *      lib/plaid/disconnect.ts calls `plaid.itemRemove` at line 106 and writes
+ *      the CONFIRMED / UNCONFIRMED marker at line 155 (setHealth REVOKED at
+ *      127 in between). A crash between 106 and 155 used to leave no marker, so
+ *      the owed-cleanup reader (newest marker wins) could not see it. With the
+ *      PRE_PROVIDER marker newest, it reads OWED until the attempt's own marker
+ *      supersedes it — no schema change, no new lifecycle rule
+ *   4. RE-READ the provider outcome off the marker (never PlaidItem.status)
+ *   5. the OUTCOME operator action (CONNECTION_REMOVED_BY_OPERATOR), success or
+ *      failure, naming the intent row
+ *   6. the CUSTOMER-FACING row (CONNECTION_REMOVED_BY_SUPPORT, userId = owner)
+ *      for their Security History — no operator identity on it
+ *   7. the customer notification, through createNotification — after the audit
+ *      rows, which it references; non-throwing, so a notification problem can
+ *      never fail or undo a completed removal. Its EMAIL leg is SHIPPED OFF
+ *      (lib/notifications/connection-removed-switch.ts): the chokepoint records
+ *      it SUPPRESSED / SHIPPED_OFF and sends nothing.
  *
  * ══ THE NOTIFICATION IS NEVER SENT AROUND A GATE ═══════════════════════════
  * createNotification is the single chokepoint: the registry type, the user's
- * FINANCIAL preferences, the EMAIL channel adapter → sendEmail with its
- * non-production recipient guard and storm limit, and the delivery ledger.
- * This module imports none of sendEmail, the channel adapter or a provider, and
- * passes no option that skips a leg (pinned by operator-removal.test.ts).
+ * FINANCIAL preferences, the shipped-off switch, the EMAIL channel adapter →
+ * sendEmail with its non-production recipient guard and storm limit, and the
+ * delivery ledger. This module imports none of sendEmail, the channel adapter
+ * or a provider, and passes no option that skips a leg (pinned by
+ * operator-removal.test.ts).
+ *
+ * ══ ATTRIBUTION THAT IS INFERRED NEVER ACTS ════════════════════════════════
+ * This module never reads the Removed list or its "removed by" derivation:
+ * what it removes, retries or notifies is decided only by the connection row,
+ * the live accounts and the markers — never by an inferred customer match.
  */
 
 import "server-only";
@@ -53,6 +77,7 @@ import { recordOperatorAction, type OperatorActionInput } from "@/lib/audit";
 import { disconnectAccounts } from "@/lib/accounts/disconnect";
 import { createNotification } from "@/lib/notifications/create";
 import { readCleanupMarkers, cleanupVerdicts } from "@/lib/platform/plaid/provider-cleanup";
+import { PRE_PROVIDER_PHASE } from "@/lib/platform/plaid/provider-cleanup.core";
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { outcomeOf, walletLabel, type RemovedOutcome, type RemovedProvider } from "./removed-connections.core";
 import { REMOVAL_REASON_ENVELOPE_CODE, type RemovalRequest } from "./removal-reasons";
@@ -63,8 +88,9 @@ export { parseRemovalRequest, REMOVAL_REASONS, type RemovalReason, type RemovalR
 
 export type RemovalOutcome =
   | { kind: "not_found" }
-  | { kind: "nothing_live" }
-  | { kind: "failed"; auditId: string }
+  /** Nothing live on the connection: already removed. Nothing was called, written or sent. */
+  | { kind: "already_removed" }
+  | { kind: "failed"; auditId: string; intentAuditId: string }
   | {
       kind: "removed";
       connectionId: string;
@@ -73,6 +99,7 @@ export type RemovalOutcome =
       accountCount: number;
       /** The provider question as the marker answers it after the attempt. */
       outcome: RemovedOutcome;
+      intentAuditId: string;
       auditId: string;
       notification: "created" | "suppressed" | "skipped" | "error";
     };
@@ -125,8 +152,9 @@ export async function removeConnectionAsOperator(input: OperatorRemovalInput, de
     select: { financialAccountId: true },
   });
   const faIds = [...new Set(links.map((l) => l.financialAccountId))];
-  // Already removed (or never had an account): nothing to do, nothing recorded.
-  if (faIds.length === 0) return { kind: "nothing_live" };
+  // IDEMPOTENT: already removed (or never had an account) — nothing is called,
+  // recorded or sent, so a repeat can never reach a second itemRemove.
+  if (faIds.length === 0) return { kind: "already_removed" };
 
   const target = { kind: item ? "PLAID_ITEM" as const : "CONNECTION" as const, id };
   const reason = { code: REMOVAL_REASON_ENVELOPE_CODE[input.request.reason], ...(input.request.note ? { note: input.request.note } : {}) };
@@ -134,37 +162,64 @@ export async function removeConnectionAsOperator(input: OperatorRemovalInput, de
     connectionId: id, provider, institution, ownerUserId,
     requestedAccountCount: faIds.length, removalReason: input.request.reason,
   };
+  const meta = { ipAddress: input.ipAddress ?? null, userAgent: input.userAgent ?? null };
 
-  // 2. THE PRIMITIVE.
+  // 2. INTENT — before anything changes. A throw here stops the removal.
+  const { id: intentAuditId } = await record(database, {
+    actor: input.actor, action: AuditAction.CONNECTION_REMOVAL_REQUESTED, target, reason, result: "SUCCESS",
+    detail: { ...baseDetail, phase: "requested" }, ...meta,
+  });
+
+  // 3. THE PRIMITIVE, with the pre-provider marker (see the header, step 3).
   let disconnected: number;
   try {
-    const result = await disconnect(faIds, ownerUserId);
+    const result = await disconnect(faIds, ownerUserId, {
+      beforeProviderRevocation: async (plaidItemDbIds) => {
+        for (const plaidItemId of plaidItemDbIds) {
+          await database.auditLog.create({
+            data: {
+              userId: ownerUserId,
+              action: AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED,
+              metadata: { provider: "PLAID", plaidItemId, phase: PRE_PROVIDER_PHASE, intentAuditId: intentAuditId || null },
+            },
+          });
+        }
+      },
+    });
     disconnected = result.disconnectedAccountIds.length;
   } catch (e) {
     console.error(`[platform-ops] operator removal failed for connection ${id}:`, redactedErrorForLog(e));
     const { id: auditId } = await record(database, {
       actor: input.actor, action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR, target, reason, result: "FAILURE",
-      detail: { ...baseDetail, outcome: "DISCONNECT_FAILED" },
-      ipAddress: input.ipAddress ?? null, userAgent: input.userAgent ?? null,
+      detail: { ...baseDetail, intentAuditId, outcome: "DISCONNECT_FAILED" }, ...meta,
     });
-    return { kind: "failed", auditId };
+    return { kind: "failed", auditId, intentAuditId };
   }
 
-  // 3. RE-READ the provider outcome off the durable marker — the same verdict
+  // 4. RE-READ the provider outcome off the durable marker — the same verdict
   //    the Provider cleanup widget counts. Never PlaidItem.status, which the
   //    primitive writes REVOKED whatever Plaid answered.
   const outcome = provider === "PLAID"
     ? outcomeOf("PLAID", cleanupVerdicts(await readMarkers(database)).get(id))
     : outcomeOf("WALLET", undefined);
 
-  // 4. THE OPERATOR-ACTION ROW.
+  // 5. OUTCOME.
   const { id: auditId } = await record(database, {
     actor: input.actor, action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR, target, reason, result: "SUCCESS",
-    detail: { ...baseDetail, accountCount: disconnected, outcome },
-    ipAddress: input.ipAddress ?? null, userAgent: input.userAgent ?? null,
+    detail: { ...baseDetail, intentAuditId, accountCount: disconnected, outcome }, ...meta,
   });
 
-  // 5. THE CUSTOMER — through the chokepoint, every gate intact.
+  // 6. THE CUSTOMER'S OWN HISTORY — the owner's row, no operator identity
+  //    (no performedByAdminId, no IP, no user agent; metadata names no operator).
+  await database.auditLog.create({
+    data: {
+      userId: ownerUserId,
+      action: AuditAction.CONNECTION_REMOVED_BY_SUPPORT,
+      metadata: { connectionId: id, provider, institution, reasonCategory: input.request.reason },
+    },
+  });
+
+  // 7. THE CUSTOMER — through the chokepoint, every gate intact.
   const sent = await notify({
     type: "CONNECTION_REMOVED_BY_SUPPORT",
     userId: ownerUserId,
@@ -175,5 +230,5 @@ export async function removeConnectionAsOperator(input: OperatorRemovalInput, de
     return { status: "error" as const };
   });
 
-  return { kind: "removed", connectionId: id, provider, institution, accountCount: disconnected, outcome, auditId, notification: sent.status };
+  return { kind: "removed", connectionId: id, provider, institution, accountCount: disconnected, outcome, intentAuditId, auditId, notification: sent.status };
 }

@@ -73,7 +73,7 @@ import { AuditAction } from "@/lib/audit-actions";
 // PB-5 — the pure lifecycle fold (marker shape, grouping, per-item verdict)
 // lives in provider-cleanup.core.ts so a client component can import the
 // vocabulary built on it without pulling the database client into its bundle.
-import { CLEANUP_MARKERS as MARKERS, cleanupVerdicts, groupByItem, type MarkerRow } from "./provider-cleanup.core";
+import { CLEANUP_MARKERS as MARKERS, cleanupVerdicts, groupByItem, isPreProviderMarker, type MarkerRow } from "./provider-cleanup.core";
 export { cleanupVerdicts, type CleanupVerdict, type MarkerRow } from "./provider-cleanup.core";
 
 export type ProviderCleanupItem = {
@@ -188,6 +188,9 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
   const owed: ProviderCleanupItem[] = owedIds.map((id) => {
     const markers = byItem.get(id)!;
     const unconfirmed = markers.filter((m) => m.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED);
+    // PB-5 — a PRE_PROVIDER marker opens the obligation (owedSince) but is not
+    // an attempt; the count and the "last code" are over real attempts only.
+    const attempts = unconfirmed.filter((m) => !isPreProviderMarker(m));
     // ⚠️ THE AGE IS MEASURED FROM THE FIRST UNCONFIRMED MARKER AFTER THE LAST
     // CONFIRMED ONE — i.e. how long THIS obligation has stood, not how long the
     // item has existed and not the age of the newest retry. A retry every hour
@@ -197,7 +200,7 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
       .map((m) => m.createdAt.getTime())
       .reduce((a, b) => Math.max(a, b), 0);
     const owedSince = unconfirmed.find((m) => m.createdAt.getTime() > lastConfirmedAt) ?? unconfirmed[0];
-    const latest = unconfirmed[unconfirmed.length - 1];
+    const latest = attempts[attempts.length - 1] ?? unconfirmed[unconfirmed.length - 1];
     const row = itemById.get(id);
     return {
       plaidItemId:     id,
@@ -207,7 +210,7 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
       itemGone:        row === undefined,
       owedSinceISO:    owedSince.createdAt.toISOString(),
       owedForHours:    hoursSince(owedSince.createdAt, now),
-      attemptCount:    unconfirmed.length,
+      attemptCount:    attempts.length,
       lastAttemptAtISO: latest.createdAt.toISOString(),
       latestErrorCode: str((latest.metadata as { plaidErrorCode?: unknown } | null)?.plaidErrorCode),
     };

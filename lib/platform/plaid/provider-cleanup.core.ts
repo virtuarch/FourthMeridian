@@ -24,6 +24,22 @@ export type MarkerRow = {
 
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
 
+/**
+ * PB-5 — the PRE-PROVIDER marker. lib/plaid/disconnect.ts writes its verdict
+ * marker only AFTER Plaid answered, so a process that dies between itemRemove
+ * and that write left no trace. The operator removal therefore writes an
+ * UNCONFIRMED marker tagged `phase: "PRE_PROVIDER"` BEFORE the call (through
+ * disconnectAccounts' beforeProviderRevocation hook). Newest-wins does the
+ * rest with no new rule: a completed attempt's own marker supersedes it; a
+ * crash leaves it newest, so the item reads OWED and plaid-removal-retry and
+ * the Provider cleanup widget pick it up. It is an obligation, not an attempt,
+ * so it is not counted in `attemptCount` and carries no error code.
+ */
+export const PRE_PROVIDER_PHASE = "PRE_PROVIDER" as const;
+export function isPreProviderMarker(m: MarkerRow): boolean {
+  return (m.metadata as { phase?: unknown } | null)?.phase === PRE_PROVIDER_PHASE;
+}
+
 /** Markers grouped per plaidItemId, preserving the (ascending) input order. */
 export function groupByItem(rows: MarkerRow[]): Map<string, MarkerRow[]> {
   const byItem = new Map<string, MarkerRow[]>();
@@ -67,7 +83,8 @@ export function cleanupVerdicts(rows: MarkerRow[]): Map<string, CleanupVerdict> 
   const out = new Map<string, CleanupVerdict>();
   for (const [id, markers] of groupByItem(rows)) {
     const newest = markers[markers.length - 1];
-    const unconfirmed = markers.filter((m) => m.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED);
+    // Attempts only: a PRE_PROVIDER marker records an obligation, not an attempt.
+    const unconfirmed = markers.filter((m) => m.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED && !isPreProviderMarker(m));
     const owed = newest.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED;
     const word = str((newest.metadata as { outcome?: unknown } | null)?.outcome);
     out.set(id, {

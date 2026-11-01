@@ -85,6 +85,27 @@ export function ownerLookupRows(rows: readonly RemovedConnectionRow[]): { source
 }
 
 /**
+ * S2 flag 1 — the one-line consequence statement, shown above the typed
+ * confirmation. Plaid's wording is the reviewer's, verbatim.
+ */
+export function removeConsequenceLine(provider: RemovedProvider): string {
+  return provider === "PLAID"
+    ? "Removes the bank link at Plaid; the customer must reconnect; history is kept."
+    : "Stops tracking this wallet; the customer must add it again; history is kept.";
+}
+
+/**
+ * S2 flag 1 — Confirm enables only when the operator has TYPED the institution
+ * name (trimmed, case-insensitive, whitespace-collapsed) AND picked a reason.
+ * The server does not trust this: it keeps the SYSTEM_ADMIN + live re-check
+ * gate and refuses a missing reason itself.
+ */
+export function canConfirmRemoval(input: { typed: string; source: string; reason: string }): boolean {
+  const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+  return input.reason !== "" && norm(input.source) !== "" && norm(input.typed) === norm(input.source);
+}
+
+/**
  * The confirm dialog's message — the customer and the institution by name, so
  * an operator cannot remove the wrong one by misreading a row. `owner` is the
  * Customer Success label when resolved, else the opaque reference.

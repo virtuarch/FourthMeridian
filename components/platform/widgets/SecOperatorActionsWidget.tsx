@@ -58,6 +58,7 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   PRODUCT_STATUS_CHANGED:       "Changed product status",
   CONNECTION_RESYNC_TRIGGERED:  "Resynced a connection",
   CONNECTION_REAUTH_REQUESTED:  "Requested reauthorization",
+  CONNECTION_REMOVAL_REQUESTED: "Started removing a connection",
   CONNECTION_REMOVED_BY_OPERATOR: "Removed a connection",
   WALLET_HISTORY_RESUMED:       "Resumed wallet history",
   ACCOUNT_DEACTIVATED:          "Deactivated an account",

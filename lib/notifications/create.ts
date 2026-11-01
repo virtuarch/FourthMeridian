@@ -470,7 +470,12 @@ export async function createNotification(
       };
     }
   }
-  const emailEnabled = ctx?.inAppOnly ? false : resolveChannelEnabled(def, "EMAIL", overrides);
+  // PB-5 — a type whose email is SHIPPED OFF in code (registry emailShippedOff)
+  // never sends it: the leg that the preferences would have sent is recorded
+  // SUPPRESSED / SHIPPED_OFF below instead of being silently dropped.
+  const emailWanted = ctx?.inAppOnly ? false : resolveChannelEnabled(def, "EMAIL", overrides);
+  const emailShippedOff = emailWanted && def.emailShippedOff === true;
+  const emailEnabled = emailWanted && !emailShippedOff;
   const inAppEnabled = resolveChannelEnabled(def, "IN_APP", overrides);
   /** A-2b: in-app is off but this type's email follows its own preference, which is on. */
   const emailAnchorOnly = !inAppEnabled && def.emailIndependentOfInApp === true && emailEnabled;
@@ -538,8 +543,11 @@ export async function createNotification(
         // The row is an email anchor only: the in-app leg was not delivered.
         ? { channel: "IN_APP", status: "SUPPRESSED", reason: "PREFERENCE_OFF", notificationId: id }
         : { channel: "IN_APP", status: "ACCEPTED", notificationId: id, ...(inAppContentVersionId ? { contentVersionId: inAppContentVersionId } : {}) },
-      ...(emailOffByPreference(def, emailEnabled)
+      ...(emailOffByPreference(def, emailEnabled) && !emailShippedOff
         ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "PREFERENCE_OFF" as const, notificationId: id }]
+        : []),
+      ...(emailShippedOff
+        ? [{ channel: "EMAIL" as const, status: "SUPPRESSED" as const, reason: "SHIPPED_OFF" as const, notificationId: id }]
         : []),
     );
     if (emailEnabled) {

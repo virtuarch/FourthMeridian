@@ -95,6 +95,24 @@ export class UnauthorizedDisconnectError extends Error {
 }
 
 /**
+ * PB-5 — optional, additive hooks. Every existing caller passes none and is
+ * byte-identical.
+ *
+ * `beforeProviderRevocation` runs in phase 3 AFTER phases 1–2 committed (the
+ * accounts and connections are soft-deleted, the links revoked) and BEFORE the
+ * first `disconnectPlaidItemIfOrphaned` — i.e. before any Plaid call. The
+ * operator Remove connection uses it to write a durable "owed" marker first, so
+ * a crash between itemRemove and the outcome marker (lib/plaid/disconnect.ts
+ * writes its marker only AFTER the provider answered) still leaves the item
+ * visible to the owed-cleanup reader and the plaid-removal-retry job. It is
+ * awaited and may throw: a removal whose crash trace cannot be written does
+ * not proceed to the irreversible call.
+ */
+export interface DisconnectAccountsOptions {
+  beforeProviderRevocation?: (plaidItemDbIds: readonly string[]) => Promise<void>;
+}
+
+/**
  * Soft-disconnect the given FinancialAccounts together. Idempotent-safe: accounts
  * already soft-deleted are skipped by the `deletedAt: null` filters.
  *
@@ -107,6 +125,7 @@ export class UnauthorizedDisconnectError extends Error {
 export async function disconnectAccounts(
   financialAccountIds: string[],
   actorUserId: string,
+  opts: DisconnectAccountsOptions = {},
 ): Promise<DisconnectAccountsResult> {
   if (financialAccountIds.length === 0) {
     return { disconnectedAccountIds: [], affectedSpaceIds: [], plaidItemDbIds: [] };
@@ -194,6 +213,11 @@ export async function disconnectAccounts(
     } catch (e) {
       console.warn(`[disconnectAccounts] snapshot regen failed for space ${spaceId} (non-fatal):`, e);
     }
+  }
+
+  // PB-5 — the caller's pre-provider hook (see DisconnectAccountsOptions).
+  if (opts.beforeProviderRevocation && plaidItemDbIds.length > 0) {
+    await opts.beforeProviderRevocation(plaidItemDbIds);
   }
 
   // Revoke provider access when the item is now fully orphaned (best-effort).

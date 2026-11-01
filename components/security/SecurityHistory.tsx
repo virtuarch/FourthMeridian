@@ -26,6 +26,8 @@ type SecurityEvent = {
   ipAddress: string | null;
   parsed:    ParsedUA;
   reason:    string | null;
+  /** PB-5 — e.g. the institution of a connection support removed; null otherwise. */
+  detail?:   string | null;
 };
 
 const FAILURE_ACTIONS = new Set(["LOGIN_FAILED", "PASSWORD_CHANGE_FAILED"]);
@@ -48,6 +50,7 @@ function EventRow({ e }: { e: SecurityEvent }) {
         <p className={`text-xs font-medium ${isFailure ? "text-red-400" : "text-gray-200"}`}>
           {e.label}
         </p>
+        {e.detail && <p className="text-xs text-gray-400">{e.detail}</p>}
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-xs text-gray-600">{formatDevice(e.parsed)}</span>
           {e.ipAddress && (

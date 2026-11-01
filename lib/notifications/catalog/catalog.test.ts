@@ -293,10 +293,14 @@ function main(): void {
         !d.editable && d.supportedActions.every((a) => a === "PREVIEW" || a === "VIEW_DELIVERY" || a === "LINK_OUT"), d.supportedActions);
     }
     check("editable ⇔ AUTOMATE advertised", defs.every((d) => d.editable === d.supportedActions.includes("AUTOMATE")));
+    // PB-5: a registry EMAIL leg SHIPPED OFF in code (emailShippedOff) is not on by default — that IS its behaviour.
     check("ENABLED registry legs keep the registry defaults (no behaviour drift)",
       NOTIFICATION_TYPE_IDS.filter((id) => COMMS_CATALOG[id].status === "ENABLED").every((id) =>
         COMMS_CATALOG[id].channels.filter((c) => c.path === "REGISTRY").every((c) =>
-          c.defaultOn === (NOTIFICATION_REGISTRY[id].defaultChannels as readonly string[]).includes(c.channel))));
+          c.defaultOn === ((NOTIFICATION_REGISTRY[id].defaultChannels as readonly string[]).includes(c.channel)
+            && !(c.channel === "EMAIL" && (NOTIFICATION_REGISTRY[id] as { emailShippedOff?: boolean }).emailShippedOff === true)))));
+    check("PB-5: the shipped-off email leg reads default-OFF, its in-app leg default-on",
+      COMMS_CATALOG.CONNECTION_REMOVED_BY_SUPPORT.channels.map((c) => `${c.channel}:${c.defaultOn}`).join() === "IN_APP:true,EMAIL:false");
     check("no MARKETING definition exists in v1 (O-12)", defs.every((d) => d.consentClass !== "MARKETING"));
     const protectedEntries = defs.filter((d) => d.protected).map((d) => d.key);
     check("every ACCOUNT_SECURITY / ceremony / operator entry is protected",

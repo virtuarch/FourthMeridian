@@ -50,7 +50,43 @@ const SECURITY_HISTORY_LABELS: Record<string, string> = {
   RECOVERY_CODES_GENERATED:   "Recovery codes generated",
   RECOVERY_CODES_REGENERATED: "Recovery codes regenerated",
   SESSION_REVOKED:            "Session revoked",
+  // PB-5 — the reason category is appended per row by securityHistoryEventLabel.
+  CONNECTION_REMOVED_BY_SUPPORT: "Removed by Fourth Meridian support",
 };
+
+/**
+ * PB-5 (owner decision 2026-11-02) — the customer's view of the reason an
+ * operator removed one of their connections: the CATEGORY only (the fixed
+ * PB-5 enum). Never the operator's note, never the operator.
+ */
+const SUPPORT_REMOVAL_REASON_LABEL: Record<string, string> = {
+  customer_request: "Customer request",
+  abuse:            "Abuse",
+  cost:             "Cost",
+  account_closure:  "Account closure",
+  other:            "Other",
+};
+
+/**
+ * The label one row renders with. For an operator removal it is
+ * "Removed by Fourth Meridian support · <reason category>" — and nothing in
+ * it, or in `securityHistoryEventDetail`, can carry an operator's name or id:
+ * both read only `reasonCategory` / `institution` from the row's metadata.
+ */
+export function securityHistoryEventLabel(action: string, metadata: unknown): string {
+  const base = securityHistoryLabel(action);
+  if (action !== "CONNECTION_REMOVED_BY_SUPPORT") return base;
+  const cat = (metadata as { reasonCategory?: unknown } | null)?.reasonCategory;
+  const label = typeof cat === "string" ? SUPPORT_REMOVAL_REASON_LABEL[cat] : undefined;
+  return label ? `${base} · ${label}` : base;
+}
+
+/** A safe one-line detail (the connection's institution label) for an operator removal; null otherwise. */
+export function securityHistoryEventDetail(action: string, metadata: unknown): string | null {
+  if (action !== "CONNECTION_REMOVED_BY_SUPPORT") return null;
+  const inst = (metadata as { institution?: unknown } | null)?.institution;
+  return typeof inst === "string" && inst.length > 0 && inst.length <= 120 ? inst : null;
+}
 
 /**
  * The allowlist — the exact set of AuditLog.action values the Security History

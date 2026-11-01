@@ -21,7 +21,7 @@ import {
   REMOVAL_MATCH_WINDOW_MS, type RemovedConnectionsInputs, type RemovedConnectionRow, type AuditFact,
 } from "./removed-connections.core";
 import { __foldForTest as foldCleanupStatus } from "@/lib/platform/plaid/provider-cleanup";
-import { ownerTokenOf, removedByLabel, removedConnectionsUrl, removeConfirmMessage, EMPTY_FILTERS, PROVIDER_CLEANUP_RETRY_ROUTE } from "@/components/platform/widgets/removed-connections-view";
+import { ownerTokenOf, removedByLabel, removedConnectionsUrl, removeConfirmMessage, EMPTY_FILTERS, PROVIDER_CLEANUP_RETRY_ROUTE, canConfirmRemoval, removeConsequenceLine } from "@/components/platform/widgets/removed-connections-view";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -157,6 +157,13 @@ console.log("3. removed BY");
   check("a row that names ANOTHER connection never attributes", deriveRemovedBy({ ...base, customerActs: [legacy(0, { connectionId: "other" })] }).kind === "UNKNOWN");
   check("an ACCOUNT_REMOVE by the owner inside the window → CUSTOMER (INFERRED)",
     deriveRemovedBy({ ...base, customerActs: [{ action: AuditAction.ACCOUNT_REMOVE, userId: OWNER_A, createdAt: at(10), metadata: {} }] }).kind === "CUSTOMER");
+  const intent = (id: string, extra: Record<string, unknown> = {}): AuditFact => ({ id, action: AuditAction.CONNECTION_REMOVAL_REQUESTED, userId: null, createdAt: at(10), performedByAdminId: OPERATOR,
+    metadata: { result: "SUCCESS", target: { kind: "PLAID_ITEM", id: "x" }, removalReason: "cost", ...extra } });
+  check("an INTENT with no outcome (interrupted mid-flight) is still the operator's removal",
+    JSON.stringify(deriveRemovedBy({ ...base, customerActs: [], operatorActs: [intent("i1")], operatorLabel: (id) => (id === OPERATOR ? "opsadmin" : null) }))
+      === JSON.stringify({ kind: "OPERATOR", operator: "opsadmin", reason: "cost" }));
+  check("an INTENT whose outcome FAILED is not a removal", deriveRemovedBy({ ...base, customerActs: [], operatorActs: [intent("i1"),
+    { action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR, userId: null, createdAt: at(9), performedByAdminId: OPERATOR, metadata: { result: "FAILURE", target: { id: "x" }, intentAuditId: "i1" } }] }).kind === "UNKNOWN");
   check("an unresolved operator label falls back to the opaque form, never an email",
     deriveRemovedBy({ ...base, customerActs: [], operatorActs: [{ action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR, userId: null, createdAt: at(10), performedByAdminId: "user_xyz123456", metadata: { result: "SUCCESS", target: { id: "x" } } }] })
       .kind === "OPERATOR");
@@ -214,6 +221,40 @@ console.log("5. filters, paging, parsing");
   check("ownerTokenOf: only the opaque form yields a token", ownerTokenOf("user …aaaaaa") === "aaaaaa" && ownerTokenOf("—") === null && ownerTokenOf("alice") === null);
   check("confirm copy names the customer AND the institution",
     /Chase/.test(removeConfirmMessage({ owner: "alice", source: "Chase", provider: "PLAID" })) && /alice's account/.test(removeConfirmMessage({ owner: "alice", source: "Chase", provider: "PLAID" })));
+}
+
+console.log("6a. inferred attribution is display-only (S2 flag 3)");
+{
+  // Same rows, same markers — flip one row's attribution to INFERRED and back: nothing actionable moves.
+  const recorded = foldRemovedConnections(fixture());
+  const noCustomerEvidence = foldRemovedConnections({ ...fixture(), customerActs: [] });
+  const strip = (rs: RemovedConnectionRow[]) => rs.map((r) => `${r.id}:${r.outcome}:${r.retryEligible}`).join();
+  check("removing every customer act (so INFERRED / RECORDED disappear) changes NO outcome and NO retry eligibility",
+    strip(recorded) === strip(noCustomerEvidence) && byId(recorded, "p-legacy")!.removedBy.kind === "CUSTOMER" && byId(noCustomerEvidence, "p-legacy")!.removedBy.kind !== "CUSTOMER");
+  const core = code("lib/platform/connections/removed-connections.core.ts");
+  const retryLines = core.split("\n").filter((l) => /retryEligible:/.test(l));
+  check("source pin: every retryEligible assignment is a function of the outcome / item only, never removedBy",
+    retryLines.length === 4 && retryLines.every((l) => !/removedBy|attribution|INFERRED|CUSTOMER/.test(l)), retryLines);
+  check("source pin: the only things that ACT (retry POST, remove route, operator removal, retry job) never import the removed-by derivation",
+    ["app/api/platform/platform-ops/provider-cleanup/route.ts", "app/api/platform/platform-ops/connections/[id]/remove/route.ts",
+      "lib/platform/connections/operator-removal.ts", "jobs/plaid-removal-retry.ts", "lib/notifications/create.ts"]
+      .every((f) => !/deriveRemovedBy|removed-connections"|foldRemovedConnections|loadRemovedConnections/.test(code(f))));
+  check("the UI's Retry button is gated on retryEligible alone", /\{row\.retryEligible && \(/.test(code("components/platform/widgets/RemovedConnectionsList.tsx")));
+}
+
+console.log("6b. the Remove confirmation (S2 flag 1)");
+{
+  check("Confirm needs the TYPED institution AND a reason", !canConfirmRemoval({ typed: "", source: "Chase", reason: "abuse" })
+    && !canConfirmRemoval({ typed: "Chase", source: "Chase", reason: "" })
+    && !canConfirmRemoval({ typed: "Chas", source: "Chase", reason: "abuse" })
+    && canConfirmRemoval({ typed: "  chase ", source: "Chase", reason: "abuse" }));
+  check("whitespace is collapsed, not ignored", canConfirmRemoval({ typed: "Bank  of   America", source: "Bank of America", reason: "cost" })
+    && !canConfirmRemoval({ typed: "BankofAmerica", source: "Bank of America", reason: "cost" }));
+  check("an empty source can never be confirmed by typing nothing", !canConfirmRemoval({ typed: "", source: "", reason: "abuse" }));
+  check("the Plaid consequence line, verbatim", removeConsequenceLine("PLAID") === "Removes the bank link at Plaid; the customer must reconnect; history is kept.");
+  const ui = code("components/platform/widgets/RemoveConnectionAction.tsx");
+  check("the dialog wires Confirm to canConfirmRemoval and renders the consequence line",
+    /confirmDisabled=\{!ready\}/.test(ui) && /canConfirmRemoval\(\{ typed, source: connection\.source, reason \}\)/.test(ui) && /removeConsequenceLine\(connection\.provider\)/.test(ui));
 }
 
 console.log("6. Retry reuses the existing path; the boundary holds");

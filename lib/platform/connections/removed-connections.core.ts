@@ -137,6 +137,8 @@ export interface WalletFact {
   links: AccountLinkFact[];
 }
 export interface AuditFact {
+  /** The AuditLog row id (read for operator rows: an outcome names its intent by it). */
+  id?: string;
   action: string;
   userId: string | null;
   createdAt: Date;
@@ -153,7 +155,7 @@ export interface RemovedConnectionsInputs {
   revokedTransitions: AuditFact[];
   /** CONNECTION_DISCONNECTED / ACCOUNT_REMOVE rows by the owners in scope. */
   customerActs: AuditFact[];
-  /** CONNECTION_REMOVED_BY_OPERATOR operator actions. */
+  /** CONNECTION_REMOVED_BY_OPERATOR outcomes and CONNECTION_REMOVAL_REQUESTED intents. */
   operatorActs: AuditFact[];
   /** Operator id → display label (username → name → opaque), null when unresolved. */
   operatorLabel: (userId: string) => string | null;
@@ -208,9 +210,16 @@ export function deriveRemovedBy(input: {
   operatorActs: readonly AuditFact[];
   operatorLabel: (userId: string) => string | null;
 }): RemovedBy {
-  const op = input.operatorActs
-    .filter((r) => operatorTargetId(r) === input.connectionId && meta(r).result !== "FAILURE" && meta(r).result !== "REFUSED")
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  // A successful OUTCOME row first; failing that, an INTENT row whose outcome was
+  // never written (a removal interrupted mid-flight is still the operator's) —
+  // unless a FAILURE outcome names that intent (it was attempted and refused).
+  const mine = input.operatorActs.filter((r) => operatorTargetId(r) === input.connectionId);
+  const failedIntents = new Set(mine
+    .filter((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_OPERATOR && meta(r).result !== "SUCCESS")
+    .map((r) => str(meta(r).intentAuditId)).filter((v): v is string => v !== null));
+  const newest = (rows: AuditFact[]) => rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  const op = newest(mine.filter((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_OPERATOR && meta(r).result === "SUCCESS"))
+    ?? newest(mine.filter((r) => r.action === AuditAction.CONNECTION_REMOVAL_REQUESTED && !(r.id && failedIntents.has(r.id))));
   if (op) {
     const id = op.performedByAdminId ?? null;
     const reason = str(meta(op).removalReason);
@@ -302,6 +311,8 @@ export function foldRemovedConnections(input: RemovedConnectionsInputs): Removed
       cleanup: verdict ? { attemptCount: verdict.attemptCount, latestErrorCode: verdict.latestErrorCode } : null,
       itemGone: false,
       relinked: !isRevoked,
+      // S2 flag 3 — RETRY IS DECIDED BY THE MARKER VERDICT ALONE. `removedBy`
+      // (and its INFERRED customer match) is display-only and never feeds this.
       retryEligible: outcome === "CLEANUP_OWED",
     });
   }

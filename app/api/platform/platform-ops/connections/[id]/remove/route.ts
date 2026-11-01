@@ -27,12 +27,16 @@
  * customer — the request-reauth bound, SEC-PLAT-2 G), the reason (400 when
  * missing or invalid — BEFORE anything is read or changed), and
  * removeConnectionAsOperator, which runs the customer's own disconnect engine,
- * records CONNECTION_REMOVED_BY_OPERATOR through the operator-action envelope
- * and notifies the owner through the notification chokepoint. See
+ * records an INTENT row (CONNECTION_REMOVAL_REQUESTED) before anything changes
+ * and the outcome (CONNECTION_REMOVED_BY_OPERATOR) after, writes a
+ * pre-provider owed marker before the Plaid call, adds the removal to the
+ * customer's own Security History, and notifies the owner through the
+ * notification chokepoint (email SHIPPED OFF). See
  * lib/platform/connections/operator-removal.ts.
  *
  *   200 removed   { ok, outcome, accountCount, notification }
- *   400 bad body · 401 / 403 auth · 404 unknown · 409 nothing live · 429 limited
+ *   400 bad body · 401 / 403 auth · 404 unknown · 429 limited
+ *   409 { code: "ALREADY_REMOVED" } — nothing live: idempotent, never a second itemRemove
  *   500 the disconnect failed (recorded as a FAILURE operator action)
  *
  * PRIVACY — the response and the audit row carry ids, the institution label,
@@ -85,7 +89,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   switch (result.kind) {
     case "not_found":    return NextResponse.json({ error: "Connection not found." }, { status: 404 });
-    case "nothing_live": return NextResponse.json({ error: "This connection has no live accounts — it is already removed." }, { status: 409 });
+    // IDEMPOTENT: a second call finds nothing live and never reaches Plaid again.
+    case "already_removed": return NextResponse.json({ error: "This connection is already removed.", code: "ALREADY_REMOVED" }, { status: 409 });
     case "failed":       return NextResponse.json({ error: "The removal did not complete. It was recorded; nothing was reported to the customer." }, { status: 500 });
     case "removed":
       return NextResponse.json({

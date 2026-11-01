@@ -100,7 +100,9 @@ async function main() {
     t.check("unknown id → 404", r.status === 404, r);
     const item = fake.seed("PlaidItem", { userId: OWNER, institutionId: "ins_1", institutionName: "Chase", encryptedToken: "", status: "REVOKED" });
     const r2 = await call(c, item.id as string, { reason: "customer_request" });
-    t.check("a connection with no live accounts → 409", r2.status === 409, r2);
+    t.check("a connection with no live accounts → 409 ALREADY_REMOVED", r2.status === 409 && (r2.body as { code?: string })?.code === "ALREADY_REMOVED", r2);
+    const r3 = await call(c, item.id as string, { reason: "customer_request" });
+    t.check("…and a second call is the same 409 (idempotent)", r3.status === 409 && (r3.body as { code?: string })?.code === "ALREADY_REMOVED", r3);
     t.check("…and no operator action or notification was written", fake.rows("AuditLog").length === 0 && fake.rows("Notification").length === 0);
   }
 

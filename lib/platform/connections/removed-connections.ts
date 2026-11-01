@@ -91,8 +91,8 @@ export async function loadRemovedConnections(client = systemDb): Promise<Removed
       take:    EVIDENCE_CAP,
     }),
     client.auditLog.findMany({
-      where:   { action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR },
-      select:  { action: true, userId: true, createdAt: true, performedByAdminId: true, metadata: true },
+      where:   { action: { in: [AuditAction.CONNECTION_REMOVED_BY_OPERATOR, AuditAction.CONNECTION_REMOVAL_REQUESTED] } },
+      select:  { id: true, action: true, userId: true, createdAt: true, performedByAdminId: true, metadata: true },
       orderBy: { createdAt: "desc" },
       take:    EVIDENCE_CAP,
     }),

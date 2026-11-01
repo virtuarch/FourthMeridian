@@ -305,6 +305,7 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.MERCHANT_MERGE_DISMISSED,
   // PB-5 — removing a customer's connection is irreversible at the provider.
   AuditAction.CONNECTION_REMOVED_BY_OPERATOR,
+  AuditAction.CONNECTION_REMOVAL_REQUESTED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit
   // shape in P1; adding a reason there is P2 (the surface is SYSTEM_ADMIN-only).
 ]);

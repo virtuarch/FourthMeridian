@@ -416,8 +416,10 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", displayName: "Connection removed by support",
     description:
       "Sent to the connection's owner when a system administrator removes one of their connections from Platform Ops " +
-      "(reason-required, audited). In-app plus email, through the notification chokepoint: the FINANCIAL preferences, the " +
-      "non-production recipient guard and the storm limit apply. Names the institution only — never the operator or the reason note. " +
+      "(reason-required, audited). In-app notice now; the EMAIL is built but SHIPPED OFF (CONNECTION_REMOVED_EMAIL_ENABLED = false, " +
+      "owner decision 2026-11-02): the chokepoint records it SUPPRESSED / SHIPPED_OFF and sends nothing. When turned on it goes through " +
+      "the notification chokepoint: the FINANCIAL preferences, the non-production recipient guard and the storm limit apply. " +
+      "Names the institution only — never the operator or the reason note. " +
       "One per removal; nothing is sent when the customer removes a connection themselves.",
     payload: { connectionId: ptr(), institutionName: disp(), provider: disp() },
     trigger: event("connection.removed_by_operator", "lib/platform/connections/operator-removal.ts"),
@@ -817,7 +819,8 @@ function registryLegs(def: NotificationTypeDefinition, emailPreviewSlugs: readon
   }
   if (!excluded.includes("EMAIL") && (defaults.includes("EMAIL") || optable)) {
     legs.push({
-      channel: "EMAIL", defaultOn: defaults.includes("EMAIL"),
+      // PB-5 — a leg shipped OFF in code is not on by default, whatever the registry default says.
+      channel: "EMAIL", defaultOn: defaults.includes("EMAIL") && def.emailShippedOff !== true,
       template: { id: "notification", version: EMAIL_TEMPLATE_VERSIONS.notification }, path: "REGISTRY",
       email: { template: "notification" },
       ...(emailPreviewSlugs ? { previewSlugs: emailPreviewSlugs } : {}),

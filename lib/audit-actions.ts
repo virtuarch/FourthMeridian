@@ -338,6 +338,18 @@ export const AuditAction = {
   // provider outcome as the marker reads it — never financial content. Distinct
   // from CONNECTION_DISCONNECTED (the customer's own act, in their history).
   CONNECTION_REMOVED_BY_OPERATOR: "CONNECTION_REMOVED_BY_OPERATOR",
+  // PB-5 (S2 flag) — the INTENT row of that removal, written BEFORE anything
+  // changes (the PLATFORM_OPERATION_REQUESTED idiom): who, why, which
+  // connection. A crash before the outcome row leaves this as the trace; the
+  // outcome row names it in `detail.intentAuditId`. Reason REQUIRED.
+  CONNECTION_REMOVAL_REQUESTED: "CONNECTION_REMOVAL_REQUESTED",
+  // PB-5 (owner decision 2026-11-02) — the CUSTOMER-FACING fact of an operator
+  // removal, on the owner's own row (userId = owner) so it shows in their
+  // Security History as "Removed by Fourth Meridian support · <reason>".
+  // Deliberately carries NO operator identity: no performedByAdminId, no IP,
+  // no user agent; metadata = connectionId, provider, institution,
+  // reasonCategory. The operator lives on CONNECTION_REMOVED_BY_OPERATOR.
+  CONNECTION_REMOVED_BY_SUPPORT: "CONNECTION_REMOVED_BY_SUPPORT",
   // Release 2 (domain split) — an operator repointed ONE Plaid Item's webhook to
   // this deployment's own /api/plaid/webhook (Plaid /item/webhook/update, then
   // read back). Carries the before/after webhook ORIGIN+PATH only — never a token.
@@ -627,6 +639,8 @@ export const USER_SECURITY_HISTORY_ACTIONS: AuditActionType[] = [
   AuditAction.RECOVERY_CODES_GENERATED,
   AuditAction.RECOVERY_CODES_REGENERATED,
   AuditAction.SESSION_REVOKED,
+  // PB-5 — support removed one of the user's connections (no operator identity on the row).
+  AuditAction.CONNECTION_REMOVED_BY_SUPPORT,
 ];
 
 /**
@@ -671,6 +685,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
+  AuditAction.CONNECTION_REMOVAL_REQUESTED,
   AuditAction.CONNECTION_REMOVED_BY_OPERATOR,
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
   AuditAction.WALLET_HISTORY_RESUMED,
