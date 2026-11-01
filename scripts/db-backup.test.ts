@@ -147,7 +147,7 @@ printf '%s\\n' "$*" > "$FAKE_PSQL_LOG.argv"
 while IFS= read -r line; do
   printf '%s\\n' "$line" >> "$FAKE_PSQL_LOG"
   case "$line" in
-    '\\echo '*) printf '%s\\n' "\${line#\\\\echo }" ;;
+    '\\echo '*) [ -n "$FAKE_PSQL_SILENT" ] || printf '%s\\n' "\${line#\\\\echo }" ;;
     'SELECT pg_export_snapshot();')
       if [ -n "$FAKE_PSQL_EXPORT_FAIL" ]; then echo 'ERROR:  cannot export a snapshot from a subtransaction' >&2; exit 3; fi
       echo '00000003-0000001B-1' ;;
@@ -192,6 +192,15 @@ exit 0
     try { await openPsqlSnapshotSession("postgresql://postgres.ref:pw@aws-0-x.pooler.supabase.com:6543/postgres", fake); } catch (e) { err = (e as Error).message; }
     let spawned = true; try { readFileSync(log); } catch { spawned = false; }
     check("a transaction-pooler URL (:6543) is refused before psql is spawned", /6543/.test(err) && !spawned, err);
+
+    // A psql that never answers (output not flushed to the pipe, a stalled pooler) must FAIL, not hang.
+    rmSync(log, { force: true });
+    process.env.FAKE_PSQL_SILENT = "1";
+    err = "";
+    const t0 = Date.now();
+    try { await openPsqlSnapshotSession(URL_OK, fake, 300); } catch (e) { err = (e as Error).message; }
+    delete process.env.FAKE_PSQL_SILENT;
+    check("no reply within the request timeout → the open rejects (no hang), session killed", /no reply within 0\.3s/.test(err) && Date.now() - t0 < 5000, err);
 
     // End to end with the real orchestration: export failure ⇒ snapshot-stage failure, no dump.
     process.env.FAKE_PSQL_EXPORT_FAIL = "1";

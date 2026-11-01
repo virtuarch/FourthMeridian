@@ -35,6 +35,9 @@ import { randomBytes } from "node:crypto";
  * dump has no such block. pg_dump writes:
  *   COPY public."Name" (cols) FROM stdin;\n<rows>\n\.
  */
+
+/** One snapshot-session request (BEGIN, export, one count) must answer within this; the dump itself is not a request. */
+export const SNAPSHOT_REQUEST_TIMEOUT_MS = 120_000;
 export function countDumpCopyRows(dump: string, table: string): number | null {
   const start = dump.indexOf(`COPY public."${table}" `);
   if (start === -1) return null;
@@ -195,7 +198,7 @@ const SNAPSHOT_ID = /^[0-9A-Fa-f]+-[0-9A-Fa-f]+(-\d+)?$/;
  * idle while pg_dump runs, and fm_backup's role setting (15 s) would otherwise
  * end it, and the snapshot with it, mid-backup.
  */
-export async function openPsqlSnapshotSession(cleanUrl: string, psqlBin = "psql"): Promise<SnapshotSession> {
+export async function openPsqlSnapshotSession(cleanUrl: string, psqlBin = "psql", timeoutMs = SNAPSHOT_REQUEST_TIMEOUT_MS): Promise<SnapshotSession> {
   if (isTransactionPoolerUrl(cleanUrl)) {
     throw new Error("the target URL is a transaction pooler (port 6543); an exported snapshot cannot be shared from it.");
   }
@@ -242,8 +245,18 @@ export async function openPsqlSnapshotSession(cleanUrl: string, psqlBin = "psql"
     if (dead) return Promise.reject(dead);
     if (pending) return Promise.reject(new Error("snapshot session: concurrent request"));
     const marker = `__FM_BACKUP_${tag}_${++seq}__`;
-    return new Promise((resolve, reject) => {
-      pending = { marker, resolve, reject };
+    return new Promise<string[]>((resolve, reject) => {
+      // A reply that never arrives (psql not flushing to the pipe, a stalled pooler) must FAIL
+      // loudly, never hang: the session is killed and the backup reports itself unverified.
+      const timer = setTimeout(() => {
+        die(`snapshot session: no reply within ${timeoutMs / 1000}s`);
+        child.kill("SIGTERM");
+      }, timeoutMs);
+      pending = {
+        marker,
+        resolve: (v: string[]) => { clearTimeout(timer); resolve(v); },
+        reject: (e: Error) => { clearTimeout(timer); reject(e); },
+      };
       child.stdin.write(`${sql}\n\\echo ${marker}\n`);
     });
   };
