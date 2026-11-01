@@ -59,7 +59,9 @@ import { OPERATOR_REASON_CODES } from "@/lib/audit";
 import { ROLLUP_NOTE, rollupCells, type CustomerRollupFields } from "./cs-rollup-view";
 import { allowanceEffectiveText, allowanceOverrideBody, validateAllowanceOverrideInput, type AllowanceEffectiveView } from "./ai-cost-controls-view";
 import type { AttentionFilter, AttentionKey } from "@/lib/platform/customer/overview-types";
-import { CS_ATTENTION_FILTER_EVENT, attentionFilterOf, attentionFromSearch, attentionUrlUpdate } from "../leads/cs-attention-link";
+import {
+  CS_ATTENTION_FILTER_EVENT, UNKNOWN_FILTER_NOTICE, attentionFilterOf, attentionUrlUpdate, inapplicableNotice, readAttentionParam,
+} from "../leads/cs-attention-link";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 
 /**
@@ -104,6 +106,8 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   const [search, setSearch] = useState("");
   /** PB-4 — the "Needs help" filter (null = every account). */
   const [attention, setAttention] = useState<AttentionFilter | null>(null);
+  /** S2 — the one-line notice when a URL filter was dropped (unknown, or not applicable in this mode). */
+  const [urlNotice, setUrlNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -128,15 +132,17 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
   /** AI COST CONTROLS — the override input as typed (raw); nothing posts while typing. */
   const [allowanceInput, setAllowanceInput] = useState<string>("");
 
-  const loadList = useCallback(async (q: string, att: AttentionFilter | null) => {
+  const loadList = useCallback(async (q: string, att: AttentionFilter | null): Promise<CustomerListResponse | null> => {
     setLoading(true); setError(null);
     try {
       const filter = att ? `&attention=${encodeURIComponent(att)}` : "";
       const r = await fetch(`/api/platform/customer-success/customers?search=${encodeURIComponent(q)}&limit=100${filter}`, { credentials: "same-origin" });
       if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
-      setList((await r.json()) as CustomerListResponse);
+      const body = (await r.json()) as CustomerListResponse;
+      setList(body);
       setLoadedAt(new Date().toISOString());
-    } catch (e) { setError(e instanceof Error ? e.message : "Failed to load"); }
+      return body;
+    } catch (e) { setError(e instanceof Error ? e.message : "Failed to load"); return null; }
     finally { setLoading(false); }
   }, []);
 
@@ -153,28 +159,39 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     finally { setDetailLoading(false); }
   }, []);
 
-  // S2 — the first read honours `?attention=` (a refresh or a shared link opens the filtered list).
+  /**
+   * S2 — open the list the URL names (first read, Back/Forward). A filter that
+   * names no reason, or one that does not apply in this mode (`unassigned`
+   * while fail-closed is not enforced — the server leaves it out of
+   * attentionReasons), is DROPPED from the URL (REPLACE) and the FULL list is
+   * shown with a one-line notice — never an empty list.
+   */
+  const openFromUrl = useCallback(async (alive: () => boolean = () => true) => {
+    const { filter, unknown } = readAttentionParam(spaceUrl.getSearch());
+    if (unknown) spaceUrl.commit(attentionUrlUpdate(null), { history: "replace" });
+    setUrlNotice(unknown ? UNKNOWN_FILTER_NOTICE : null);
+    setAttention(filter);
+    const loaded = await loadList("", filter);
+    if (!alive() || !filter || !loaded) return;
+    const notice = inapplicableNotice(filter, loaded.attentionReasons ?? []);
+    if (!notice) return;
+    spaceUrl.commit(attentionUrlUpdate(null), { history: "replace" });
+    setUrlNotice(notice); setAttention(null);
+    await loadList("", null);
+  }, [loadList, spaceUrl]);
   useEffect(() => {
     let alive = true;
-    (async () => {
-      const f = attentionFromSearch(spaceUrl.getSearch());
-      if (!alive) return;
-      setAttention(f);
-      await loadList("", f);
-    })();
+    (async () => { if (alive) await openFromUrl(() => alive); })();
     return () => { alive = false; };
-  }, [loadList, spaceUrl]);
+  }, [openFromUrl]);
   /** THE one filter setter: state, the URL mirror (REPLACE — a refinement, never a history step), the read. */
   const applyAttention = useCallback((f: AttentionFilter | null, q: string) => {
-    setAttention(f); setShowAll(false);
+    setAttention(f); setShowAll(false); setUrlNotice(null);
     spaceUrl.commit(attentionUrlUpdate(f), { history: "replace" });
     void loadList(q, f);
   }, [loadList, spaceUrl]);
   // Back/Forward into an entry with another `?attention=` — rebuild from the URL (the commit then finds it in sync).
-  useEffect(() => spaceUrl.subscribe(() => {
-    const f = attentionFromSearch(spaceUrl.getSearch());
-    setAttention(f); void loadList("", f);
-  }), [loadList, spaceUrl]);
+  useEffect(() => spaceUrl.subscribe(() => { void openFromUrl(); }), [openFromUrl, spaceUrl]);
   // PB-4 — the dashboard's "Who needs help, and why" rows only SET the filter (search cleared,
   // so the list's total is the count the operator clicked).
   useEffect(() => {
@@ -270,6 +287,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
         {list && <span className="min-w-0 text-[11px] tabular-nums text-[var(--text-muted)] max-sm:basis-full sm:ml-auto sm:text-right" data-list-population>{listPopulation(list)}</span>}
       </form>
 
+      {urlNotice && <p className="text-[11px] text-[var(--text-muted)]" role="status" data-attention-notice>{urlNotice}</p>}
       {attention && (
         <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-[var(--text-secondary)]" data-attention-active>
           <span>{`Showing customers who need help: ${attention === "any" ? "any reason" : (list?.attentionReasons.find((r) => r.key === attention)?.label ?? attention)}${list?.attentionFloor ? " · at least these (read cap reached)" : ""}`}</span>

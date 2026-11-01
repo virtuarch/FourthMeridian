@@ -38,9 +38,35 @@ export function attentionFilterOf(e: Event): AttentionFilter | null {
   return parseAttentionFilter((e as CustomEvent<unknown>).detail) ?? null;
 }
 
-/** The filter a `?attention=` value names (the SAME parser the route uses); anything else ⇒ no filter. */
+/**
+ * The `?attention=` value, read with the SAME parser the route uses. `unknown`
+ * = the param is present but names no reason (the list drops it and opens
+ * unfiltered — S2 ruling; a DIRECT API call with it still gets the route's 400).
+ */
+export function readAttentionParam(search: string): { filter: AttentionFilter | null; unknown: boolean } {
+  const parsed = parseAttentionFilter(new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get(CS_ATTENTION_PARAM));
+  return parsed === undefined ? { filter: null, unknown: true } : { filter: parsed, unknown: false };
+}
+
+/** The filter a `?attention=` value names; anything else ⇒ no filter. */
 export function attentionFromSearch(search: string): AttentionFilter | null {
-  return parseAttentionFilter(new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get(CS_ATTENTION_PARAM)) ?? null;
+  return readAttentionParam(search).filter;
+}
+
+/** S2 — the one-line notices when a URL filter is dropped (never an empty list in its place). */
+export const UNKNOWN_FILTER_NOTICE = "That filter link isn't recognised — showing all accounts.";
+export const NOT_ENFORCED_NOTICE = "That filter only applies when policy assignment is enforced — showing all accounts.";
+export const INAPPLICABLE_FILTER_NOTICE = "That filter doesn't apply right now — showing all accounts.";
+
+/**
+ * Whether a filter applies in the mode the server reported (`reasons` = the
+ * list response's attentionReasons — `unassigned` is absent unless fail-closed
+ * is enforced). Null = it applies (or there is no filter); else the notice to
+ * show while the list drops it and opens unfiltered.
+ */
+export function inapplicableNotice(filter: AttentionFilter | null, reasons: readonly { key: string }[]): string | null {
+  if (filter === null || filter === "any" || reasons.some((r) => r.key === filter)) return null;
+  return filter === "unassigned" ? NOT_ENFORCED_NOTICE : INAPPLICABLE_FILTER_NOTICE;
 }
 
 /** The URL update for a filter: null deletes the param (the unfiltered list keeps a clean URL). */

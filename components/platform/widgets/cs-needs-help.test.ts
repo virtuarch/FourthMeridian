@@ -8,7 +8,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { NeedsHelpChip } from "./CsCustomersWidget";
-import { attentionFilterOf, attentionFromSearch, attentionUrlUpdate, CS_ATTENTION_FILTER_EVENT, CS_ATTENTION_PARAM } from "../leads/cs-attention-link";
+import {
+  attentionFilterOf, attentionFromSearch, attentionUrlUpdate, inapplicableNotice, readAttentionParam,
+  CS_ATTENTION_FILTER_EVENT, CS_ATTENTION_PARAM, INAPPLICABLE_FILTER_NOTICE, NOT_ENFORCED_NOTICE, UNKNOWN_FILTER_NOTICE,
+} from "../leads/cs-attention-link";
 import { applySpaceUrlUpdate, SPACE_URL_PARAMS } from "@/lib/space/space-url";
 
 let failures = 0;
@@ -62,10 +65,32 @@ console.log("4. S2 — the filter lives in the URL (?attention=, REPLACE)");
   const src = strip("components/platform/widgets/CsCustomersWidget.tsx");
   check("written through the ONE URL seam with REPLACE, never PUSH", /spaceUrl\.commit\(attentionUrlUpdate\(f\), \{ history: "replace" \}\)/.test(src)
     && !/history: "push"/.test(src) && !/window\.history|pushState|replaceState/.test(src));
-  check("the first read honours ?attention= (refresh / link)", /const f = attentionFromSearch\(spaceUrl\.getSearch\(\)\);[\s\S]*?await loadList\("", f\)/.test(src));
-  check("Back/Forward rebuilds from the URL through the seam's one listener", /spaceUrl\.subscribe\(/.test(src) && !/addEventListener\("popstate"/.test(src));
+  check("the first read honours ?attention= (refresh / link)", /const \{ filter, unknown \} = readAttentionParam\(spaceUrl\.getSearch\(\)\);[\s\S]*?await loadList\("", filter\)/.test(src)
+    && /await openFromUrl\(\(\) => alive\)/.test(src));
+  check("Back/Forward rebuilds from the URL through the seam's one listener", /spaceUrl\.subscribe\(\(\) => \{ void openFromUrl\(\); \}\)/.test(src) && !/addEventListener\("popstate"/.test(src));
   check("the dashboard event only SETS the state (through the one setter that mirrors the URL)", /const onFilter = \(e: Event\) => \{[\s\S]*?applyAttention\(f, ""\);[\s\S]*?\};/.test(src));
   check("the select and 'Show all accounts' go through the same setter", /applyAttention\(e\.target\.value === "" \? null/.test(src) && /applyAttention\(null, search\)/.test(src));
+}
+console.log("5. S2 — an inapplicable URL filter never renders an empty list");
+{
+  const ENFORCED = [{ key: "reconnect" }, { key: "incident" }, { key: "policy" }, { key: "unassigned" }, { key: "stalled" }];
+  const OFF = ENFORCED.filter((r) => r.key !== "unassigned");
+  check("an unknown key is flagged unknown and opens unfiltered", JSON.stringify(readAttentionParam("?workspace=x&attention=everyone")) === JSON.stringify({ filter: null, unknown: true }));
+  check("absent / empty is not unknown", !readAttentionParam("workspace=x").unknown && !readAttentionParam("attention=").unknown);
+  check("?attention=unassigned while NOT enforced ⇒ the enforcement notice", inapplicableNotice("unassigned", OFF) === NOT_ENFORCED_NOTICE
+    && NOT_ENFORCED_NOTICE.startsWith("That filter only applies when policy assignment is enforced"));
+  check("…and applies (no notice) while enforced", inapplicableNotice("unassigned", ENFORCED) === null);
+  check("any other key the server did not name ⇒ the generic notice", inapplicableNotice("stalled", [{ key: "reconnect" }]) === INAPPLICABLE_FILTER_NOTICE);
+  check("no filter / any / a listed reason ⇒ applies", inapplicableNotice(null, OFF) === null && inapplicableNotice("any", OFF) === null && inapplicableNotice("policy", OFF) === null);
+  check("notices are one line", [UNKNOWN_FILTER_NOTICE, NOT_ENFORCED_NOTICE, INAPPLICABLE_FILTER_NOTICE].every((t) => !t.includes("\n") && t.length < 100));
+  const src = strip("components/platform/widgets/CsCustomersWidget.tsx");
+  check("unknown key: the param is DROPPED with REPLACE and the notice shown",
+    /if \(unknown\) spaceUrl\.commit\(attentionUrlUpdate\(null\), \{ history: "replace" \}\);/.test(src) && /setUrlNotice\(unknown \? UNKNOWN_FILTER_NOTICE : null\)/.test(src));
+  check("inapplicable (e.g. unassigned while not enforced): dropped with REPLACE, notice shown, the FULL list re-read",
+    /const notice = inapplicableNotice\(filter, loaded\.attentionReasons \?\? \[\]\);[\s\S]*?spaceUrl\.commit\(attentionUrlUpdate\(null\), \{ history: "replace" \}\);\s*setUrlNotice\(notice\); setAttention\(null\);\s*await loadList\("", null\);/.test(src));
+  check("the notice is one status line", /\{urlNotice && <p className="[^"]*" role="status" data-attention-notice>\{urlNotice\}<\/p>\}/.test(src));
+  const route = strip("app/api/platform/customer-success/customers/route.ts");
+  check("the API's 400 stays for direct calls", /if \(attention === undefined\) \{\s*return NextResponse\.json\(\{ error:[^}]*\}, \{ status: 400 \}\);/.test(route));
 }
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall checks passed");
