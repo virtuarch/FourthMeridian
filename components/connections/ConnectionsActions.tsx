@@ -85,9 +85,11 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
     };
   }, [menuOpen]);
 
-  /** Arrow keys move between the menu's enabled items; Tab leaves (and closes) it. */
+  /** Arrow keys move between the menu's enabled items. Tab / Shift+Tab close it and let
+   *  focus continue NATURALLY to the next / previous element — no trap, no refocus
+   *  (returning focus to the trigger is Escape's job). */
   const onMenuKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Tab") { e.preventDefault(); setMenuOpen(false); trigger.current?.focus(); return; }
+    if (e.key === "Tab") { setMenuOpen(false); return; }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
     const items = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not([disabled])") ?? []);
@@ -115,7 +117,10 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
       aria-label="Connect"
       onKeyDown={onMenuKey}
       onBlur={(e) => {
-        // Focus leaving for anywhere outside the trigger root and the menu closes it.
+        // Focus moving to another focusable outside the trigger root and the menu closes it.
+        // A null relatedTarget is deliberately NOT a close: Safari does not focus buttons on
+        // click, so tapping a menu item blurs to null BEFORE its click lands — closing here
+        // would swallow the selection. Click-away is the document mousedown handler's job.
         const to = e.relatedTarget as Node | null;
         if (to && !root.current?.contains(to) && !menu.current?.contains(to)) setMenuOpen(false);
       }}

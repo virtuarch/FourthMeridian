@@ -48,9 +48,11 @@ check("below sm: a bottom sheet portalled to <body>, with a backdrop that closes
 check("sm+: an anchored popover under the trigger", /\{menuOpen && !sheet && menuPanel\}/.test(SRC) && /sm:absolute[^"]*sm:top-full/.test(SRC));
 check("outside click closes (trigger root or the portalled menu count as inside)", /!root\.current\?\.contains\(t\) && !menu\.current\?\.contains\(t\)/.test(SRC));
 check("Escape closes and returns focus to the trigger", /e\.key === "Escape"[\s\S]{0,80}setMenuOpen\(false\);\s*trigger\.current\?\.focus\(\);/.test(SRC));
-check("Tab or focus moving outside root/menu closes the menu (no orphaned open popover)",
-  /if \(e\.key === "Tab"\) \{ e\.preventDefault\(\); setMenuOpen\(false\); trigger\.current\?\.focus\(\); return; \}/.test(SRC)
-  && /onBlur=\{\(e\) => \{[\s\S]{0,200}if \(to && !root\.current\?\.contains\(to\) && !menu\.current\?\.contains\(to\)\) setMenuOpen\(false\);/.test(SRC));
+check("Tab / Shift+Tab close the menu WITHOUT trapping: no preventDefault, no refocus (Escape owns refocus)",
+  /if \(e\.key === "Tab"\) \{ setMenuOpen\(false\); return; \}/.test(SRC)
+  && !/e\.key === "Tab"[^\n]*preventDefault/.test(SRC) && !/e\.key === "Tab"[^\n]*trigger\.current\?\.focus/.test(SRC));
+check("focus moving to a focusable outside root/menu closes it; a null relatedTarget does not (Safari tap-to-select)",
+  /onBlur=\{\(e\) => \{[\s\S]{0,600}if \(to && !root\.current\?\.contains\(to\) && !menu\.current\?\.contains\(to\)\) setMenuOpen\(false\);/.test(SRC));
 check("below sm the two actions stack full-width so labels never truncate; inline on sm+",
   /<div className="flex flex-col gap-2\.5 sm:flex-row">/.test(SRC) && (SRC.match(/fullWidth\s+className="sm:w-auto"/g) ?? []).length === 2);
 check("opening focuses the first enabled item; arrows move between items", /\[role=menuitem\]:not\(\[disabled\]\)"\)\?\.focus\(\)/.test(SRC) && /ArrowDown/.test(SRC) && /ArrowUp/.test(SRC));
