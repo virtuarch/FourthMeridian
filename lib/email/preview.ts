@@ -150,6 +150,11 @@ export function previewCases(): PreviewCase[] {
     }));
   }
 
+  // PB-5 — a connection removed by support (synthetic id + institution; never the operator or reason).
+  cases.push(notificationCase("notification--connection-removed-by-support", "CONNECTION_REMOVED_BY_SUPPORT", {
+    connectionId: "preview-item", institutionName: "Example Bank", provider: "PLAID",
+  }));
+
   // Welcome (one-time): with and without a first name. The link carries no token.
   const dashboardUrl = `${PREVIEW_APP_BASE}/dashboard`;
   cases.push(pc("welcome--named", "welcome", { firstName: "Alex", dashboardUrl }));

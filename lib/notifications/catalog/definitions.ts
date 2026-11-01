@@ -412,6 +412,17 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     eligibility: ["connection.removed_by_user"],
     registryEmailPreviewSlugs: ["notification--wallet-temporary", "notification--wallet-needs-attention"],
   },
+  CONNECTION_REMOVED_BY_SUPPORT: {
+    audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", displayName: "Connection removed by support",
+    description:
+      "Sent to the connection's owner when a system administrator removes one of their connections from Platform Ops " +
+      "(reason-required, audited). In-app plus email, through the notification chokepoint: the FINANCIAL preferences, the " +
+      "non-production recipient guard and the storm limit apply. Names the institution only — never the operator or the reason note. " +
+      "One per removal; nothing is sent when the customer removes a connection themselves.",
+    payload: { connectionId: ptr(), institutionName: disp(), provider: disp() },
+    trigger: event("connection.removed_by_operator", "lib/platform/connections/operator-removal.ts"),
+    registryEmailPreviewSlugs: ["notification--connection-removed-by-support"],
+  },
   DUPLICATE_DETECTED: {
     audience: "ACCOUNT_HOLDER", consentClass: "AWARENESS", displayName: "Possible duplicate accounts",
     description: "Declared only: no human-review duplicate flow exists, so nothing produces it.",

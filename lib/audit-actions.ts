@@ -329,6 +329,15 @@ export const AuditAction = {
   // institution, outcome) — never financial content.
   CONNECTION_RESYNC_TRIGGERED: "CONNECTION_RESYNC_TRIGGERED",
   CONNECTION_REAUTH_REQUESTED: "CONNECTION_REAUTH_REQUESTED",
+  // PB-5 — a SYSTEM_ADMIN removed ONE customer connection from Platform Ops
+  // (app/api/platform/platform-ops/connections/[id]/remove). The SAME engine as
+  // the customer's own disconnect (lib/accounts/disconnect.ts disconnectAccounts:
+  // soft-delete, link revoke, orphan-gated itemRemove, token scrub, cleanup
+  // marker). Reason REQUIRED. Target = the PLAID_ITEM / CONNECTION; detail
+  // carries the owner's user id, the account count, the removal reason and the
+  // provider outcome as the marker reads it — never financial content. Distinct
+  // from CONNECTION_DISCONNECTED (the customer's own act, in their history).
+  CONNECTION_REMOVED_BY_OPERATOR: "CONNECTION_REMOVED_BY_OPERATOR",
   // Release 2 (domain split) — an operator repointed ONE Plaid Item's webhook to
   // this deployment's own /api/plaid/webhook (Plaid /item/webhook/update, then
   // read back). Carries the before/after webhook ORIGIN+PATH only — never a token.
@@ -662,6 +671,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,
+  AuditAction.CONNECTION_REMOVED_BY_OPERATOR,
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
   AuditAction.WALLET_HISTORY_RESUMED,
   AuditAction.ACCOUNT_DEACTIVATED,

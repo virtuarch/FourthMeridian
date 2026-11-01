@@ -518,6 +518,35 @@ export const NOTIFICATION_REGISTRY = {
       return { title: copy.title, body: copy.body, href: "/dashboard/connections", actionLabel: copy.actionLabel };
     },
   },
+  // WIRED (PB-5, owner-approved 2026-11-01): a SYSTEM_ADMIN removed one of the
+  // user's connections from Platform Ops. Produced ONLY by
+  // lib/platform/connections/operator-removal.ts, after the removal ran through
+  // the same disconnect engine the user's own Disconnect uses. In-app + email
+  // by default (the user did not do this, so they must hear about it), through
+  // this chokepoint like every other notification: the FINANCIAL preferences,
+  // the non-production recipient guard and the storm limit all apply, and
+  // nothing here sends around them. dedupe none: each removal is its own fact.
+  // The operator's identity and reason note never reach the customer — the
+  // copy says "our support team".
+  CONNECTION_REMOVED_BY_SUPPORT: {
+    ...FINANCIAL,
+    status: "WIRED" as const,
+    id: "CONNECTION_REMOVED_BY_SUPPORT",
+    priority: "HIGH" as const,
+    defaultChannels: ["IN_APP", "EMAIL"] as const satisfies readonly NotificationChannel[],
+    dedupe: "none" as const,
+    dedupeKeyTemplate: null,
+    icon: "life-buoy",
+    // connectionId: PlaidItem.id / Connection.id; institutionName: display
+    // label (a wallet's is its opaque label, never the address); provider: PLAID | WALLET.
+    pointerContract: ["connectionId", "institutionName", "provider"],
+    render: (d) => ({
+      title: "A connection was removed by support",
+      body: `${str(d, "institutionName", "One of your connections")} was disconnected from your Fourth Meridian account by our support team. ` +
+        "Your history is kept. You can reconnect it from Connections, or reply to support if you have questions.",
+      href: "/dashboard/connections",
+    }),
+  },
   // VOCABULARY by Wave-3 investigation ruling (repository drift from the
   // original inventory): the ONLY DuplicateAccountCandidate writer today is
   // the automatic-merge path, which creates CONFIRMED_DUPLICATE rows with

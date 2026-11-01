@@ -124,7 +124,8 @@ function main(): void {
   {
     // 58 at v1 (contract §4.2 C7c); 2026-10-31: +PLATFORM_ACCESS_REVOKED (the approved revoke notice) and
     // +PLAID_ITEM_PENDING_EXPIRATION (approved, not built). Every other new notification reused its v1 key.
-    check("the catalog has 60 entries", defs.length === 60, defs.length);
+    // PB-5 (2026-11-01): +CONNECTION_REMOVED_BY_SUPPORT (the operator Remove connection notice).
+    check("the catalog has 61 entries", defs.length === 61, defs.length);
     check("catalog size ≤ 100, so limit=100 returns it in one page", defs.length <= 100);
     check("every key is unique and equals its definition key", new Set(CATALOG_KEYS).size === defs.length && defs.every((d, i) => d.key === CATALOG_KEYS[i]));
     check("keys follow the F2 grammar (SCREAMING_SNAKE, ≥ 2 segments)", defs.every((d) => /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/.test(d.key)));
@@ -239,7 +240,7 @@ function main(): void {
         (COMMS_CATALOG as Record<string, CommsDefinition>)[k]?.status === "ENABLED" && (COMMS_CATALOG as Record<string, CommsDefinition>)[k]?.notificationTypeId === k));
     check("SYNC_FAILED lists the webhook producer", COMMS_CATALOG.SYNC_FAILED.trigger.sources.includes("lib/plaid/webhook-health.ts"));
     check("BUILD_OFF = DIGEST_SENT; NONE_BY_DESIGN = BETA_REQUEST_DENIED", byStatus("BUILD_OFF") === "DIGEST_SENT" && byStatus("NONE_BY_DESIGN") === "BETA_REQUEST_DENIED");
-    check("ENABLED = 25 WIRED registry types + 13 direct/banner keys", defs.filter((d) => d.status === "ENABLED").length === 38,
+    check("ENABLED = 26 WIRED registry types + 13 direct/banner keys", defs.filter((d) => d.status === "ENABLED").length === 39,
       defs.filter((d) => d.status === "ENABLED").length);
     // BUILD_OFF is BUILT (a real producer + template behind an OFF constant), so its DIRECT leg exists, default off.
     check("NONE_BY_DESIGN has no channel; non-ENABLED definitions claim no DIRECT leg (BUILD_OFF aside)",
