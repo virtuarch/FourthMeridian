@@ -25,6 +25,7 @@ import { generateSecret, generateTOTP } from "@/lib/totp";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { capturedEmails, clearCapturedEmails } from "@/lib/email/providers/capture";
 import { LOGIN_ID_LIMIT } from "@/lib/login-limits";
+import { hashSecurityIdentifier } from "@/lib/security/identifier-hash";
 
 const t = makeChecker("NextAuth credentials sign-in / sign-out (TEST-004)");
 const fake = new FakePrisma();
@@ -280,6 +281,31 @@ async function main() {
     t.check("the UserSession row is revoked", fake.rows("UserSession", { userId: u.ok.id, revokedAt: null }).length === 0);
     t.check("a LOGOUT audit row is written", fake.rows("AuditLog", { action: "LOGOUT", userId: u.ok.id }).length === 1);
     t.check("REPLAYING the old cookie is refused (401) — revocation is server-side, not just a cleared cookie", await status(a.cookie) === 401);
+  }
+
+  t.section("11. LOGIN_FAILED stores only the identifier's keyed hash — never the typed identifier");
+  {
+    await world();
+    const STRANGER = "Ghost.Person@Example.test";
+    await signIn({ identifier: STRANGER, password: PW });
+    await signIn({ identifier: "ok@example.test", password: "nope" });
+    const rows = fake.rows("AuditLog", { action: "LOGIN_FAILED" });
+    const metas = rows.map((r) => r.metadata as Record<string, unknown>);
+    t.check("control: both refusals were audited", rows.length === 2 && metas[0]?.reason === "user_not_found" && metas[1]?.reason === "invalid_password", metas);
+    t.check("no row carries an `identifier` field", metas.every((m) => !("identifier" in m)), metas);
+    t.check("each row carries the Security Ops keyed hash of the normalised identifier",
+      metas[0]?.identifierHash === hashSecurityIdentifier("ghost.person@example.test")
+      && metas[1]?.identifierHash === hashSecurityIdentifier("ok@example.test")
+      && metas.every((m) => /^[0-9a-f]{32}$/.test(String(m.identifierHash))), metas);
+    const blob = JSON.stringify(rows).toLowerCase();
+    t.check("the raw identifier appears nowhere in any LOGIN_FAILED row (any column)",
+      !blob.includes("ghost.person") && !blob.includes("ok@example.test"), blob);
+
+    // The anomaly detector groups a burst by the SAME hash, so it still trips.
+    for (let i = 0; i < 4; i++) await signIn({ identifier: "ok@example.test", password: "nope" });
+    const trips = fake.rows("AuditLog", { action: "SECURITY_ANOMALY_DETECTED" })
+      .filter((r) => (r.metadata as Record<string, unknown>)?.type === "failed_login_identifier");
+    t.check("5 wrong passwords on one identifier still trip the per-identifier burst (exactly one trip row)", trips.length === 1, trips);
   }
 
   t.done();
