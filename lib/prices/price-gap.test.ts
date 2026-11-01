@@ -528,7 +528,8 @@ async function main() {
     // REVIEW FIX 2: AFTER — a gap fill must never widen the sweep's measured window for every account.
     check("the sweep runs the gap pass AFTER its ordinary regeneration, bounded by the wake",
       sweep.indexOf("revalueHoldersAfterPriceGaps(") > sweep.indexOf("await regenerateWealthHistoryForAccounts(") && sweep.indexOf("await regenerateWealthHistoryForAccounts(") > 0
-        && /deadlineMs: \(wake \? wake\.startedAt\.getTime\(\) : runStartedAt\.getTime\(\)\) \+ WAKE_SAFE_MS/.test(sweep) && !/acquireHistoricalPriceGaps\(/.test(sweep));
+        // …the WAKE is the dispatcher's own instant, never another cron's JobRun (jobs/wake-deadline-anchor.test.ts).
+        && /deadlineMs: revaluationDeadlineMs\(runStartedAt\.getTime\(\), currentBudgetStartedAtMs\(\)\)/.test(sweep) && !/acquireHistoricalPriceGaps\(/.test(sweep));
   }
 
   console.log("token licences never block native revaluation (#120 review)");

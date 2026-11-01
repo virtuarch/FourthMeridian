@@ -15,8 +15,9 @@
  *   - OFF unless SOL_BACKFILL_ENABLED=true. Turning it off is the rollback: the
  *     next wake returns at once; every checkpoint stays valid for re-enabling.
  *   - WAKE-AWARE: the dispatcher runs a wake's jobs in one 300 s invocation.
- *     The job reads when this wake started (the earliest JobRun of the last
- *     300 s) and never plans past WAKE_SAFE_MS of it, so it cannot get the
+ *     The job reads when this wake started (the dispatcher's own instant,
+ *     currentBudgetStartedAtMs — never another cron's JobRun) and never plans
+ *     past WAKE_SAFE_MS of it, so it cannot get the
  *     invocation killed or starve the jobs after it.
  *   - DAILY CAP from DURABLE usage: every wallet checkpoint records the
  *     requests its backfill sent today — from this worker AND from wallet
@@ -1172,9 +1173,11 @@ async function productionDeps(): Promise<SolBackfillJobDeps> {
     admit: () => admitOperationalWork({ work: "REFRESH_EXECUTION" }),
     costFreeze: () => readGlobalCostFreeze(),
     billableAccounts: (accountIds) => billableForAccounts(accountIds, "crypto_backfill"),
+    // The enclosing function's start (the dispatch wake's instant), never the
+    // earliest JobRun of any job — a separate cron's run is a different function.
     async wakeStartedAt() {
-      const r = await systemDb.jobRun.findFirst({ where: { startedAt: { gte: new Date(Date.now() - 300_000) } }, orderBy: { startedAt: "asc" }, select: { startedAt: true } });
-      return r ? r.startedAt.getTime() : null;
+      const { currentBudgetStartedAtMs } = await import("@/lib/jobs/run");
+      return currentBudgetStartedAtMs();
     },
     async wallets() {
       const links = await systemDb.accountConnection.findMany({
