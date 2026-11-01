@@ -6,7 +6,7 @@
  */
 
 import {
-  IMPORT_STATUSES, tallyImportStatuses,
+  IMPORT_MEASUREMENT_NOTE, IMPORT_STATUSES, tallyImportStatuses,
   type ImportReasonCategory, type ImportStatus, type ImportVerdict,
 } from "@/lib/platform/onboarding/import-status-core";
 
@@ -41,6 +41,7 @@ export function buildNewConnectionImports(
     checkedAt: opts.checkedAt.toISOString(),
     notes: [
       `Plaid connections linked by active customers in the last ${opts.windowDays} days (UTC, rolling). Wallets and manual assets have no first-import ledger and are not counted.`,
+      IMPORT_MEASUREMENT_NOTE,
       `Statuses partition "started": ${IMPORT_STATUSES.join(" · ").replace(/_/g, " ")}.`,
       "Recovered = the first pass was interrupted (a failed or mid-run-ended attempt, or finished by the resume backstop) and a later run completed it.",
       "Failed = needs re-authentication or provider error while incomplete, or no completion 24 h after the import began.",

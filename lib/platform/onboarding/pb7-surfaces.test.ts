@@ -57,6 +57,12 @@ console.log("identity rules");
   check("ITEM_SELECT carries no owner", !/userId/.test(facts.slice(facts.indexOf("const ITEM_SELECT"), facts.indexOf("} as const"))));
 }
 
+console.log("measurement note is rendered");
+{
+  const tile = strip("components/platform/leads/NewConnectionImportsTile.tsx");
+  check("the Ops tile renders the population + measurement notes", /data\.notes\.slice\(0,\s*2\)/.test(tile) && tile.includes("data-import-measurement"));
+}
+
 console.log("privacy — allowlisted selects");
 for (const f of ["lib/platform/onboarding/import-facts.ts", "lib/platform/customer/recently-joined.ts", "lib/platform/refresh/projections.ts", "lib/platform/customer/customer-detail.ts"]) {
   const s = strip(f);

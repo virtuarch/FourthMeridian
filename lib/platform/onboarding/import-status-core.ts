@@ -44,6 +44,14 @@ export const IMPORT_WINDOW_MS = 48 * 3_600_000;
 /** An import still incomplete this long after its marker is a failure, not "in progress". */
 export const STALL_AFTER_MS = 24 * 3_600_000;
 
+/**
+ * The measurement windows in words — shown in the Platform Ops tile's "how
+ * measured" note. PINNED (import-status-core.test.ts): the test also checks the
+ * 48 h / 24 h figures still match IMPORT_WINDOW_MS / STALL_AFTER_MS.
+ */
+export const IMPORT_MEASUREMENT_NOTE =
+  "An import counts runs in the first 48 h after linking; it reads Failed if still incomplete 24 h after it began; a run reaped as stale reads Recovered when a later run for the same connection succeeded.";
+
 export const IMPORT_STATUSES = ["in_progress", "complete", "recovered", "failed", "removed"] as const;
 export type ImportStatus = (typeof IMPORT_STATUSES)[number];
 

@@ -9,7 +9,7 @@
  */
 
 import {
-  IMPORT_STATUSES, STALL_AFTER_MS, deriveImportStatus, importExecutionFact, importHealthDot, tallyImportStatuses,
+  IMPORT_MEASUREMENT_NOTE, IMPORT_STATUSES, IMPORT_WINDOW_MS, STALL_AFTER_MS, deriveImportStatus, importExecutionFact, importHealthDot, tallyImportStatuses,
   type ImportEvidence, type ImportItemFacts, type ImportedItem,
 } from "./import-status-core";
 import { STALE_EXECUTION_ERROR_SUMMARY } from "@/lib/plaid/stale-execution.core";
@@ -72,6 +72,12 @@ function main() {
     const later = deriveImportStatus(item(), { executions: [B, { ...A, startedAt: D("2026-11-05T00:00:00Z") }], firstWealthRegenAt: null }, NOW);
     check("executions outside the 48 h import window are ignored", later.executions === 1);
   }
+
+  console.log("measurement note (pinned)");
+  check("exact wording", IMPORT_MEASUREMENT_NOTE === "An import counts runs in the first 48 h after linking; it reads Failed if still incomplete 24 h after it began; a run reaped as stale reads Recovered when a later run for the same connection succeeded.");
+  check("its figures match the constants", IMPORT_WINDOW_MS === 48 * 3_600_000 && STALL_AFTER_MS === 24 * 3_600_000);
+  check("the Ops tile's notes carry it, right after the population line",
+    buildNewConnectionImports([], { windowDays: 7, floor: false, checkedAt: NOW }).notes[1] === IMPORT_MEASUREMENT_NOTE);
 
   console.log("dot + tally");
   check("red > amber > green; none without a live bank", importHealthDot([{ status: "complete" }, { status: "failed" }]) === "red"

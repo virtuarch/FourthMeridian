@@ -39,7 +39,12 @@ export function NewConnectionImportsSurface({ data, loading, error }: { data: Ne
             provenance={figures ? <ProvenanceChip kind="MEASURED" asOf={data!.checkedAt} /> : undefined} />
         ))}
       </div>
-      {data && <p className="mt-2 text-[11px] text-[var(--text-muted)]">{data.notes[0]}</p>}
+      {/* How measured — the population, then the pinned measurement windows (IMPORT_MEASUREMENT_NOTE). */}
+      {data && (
+        <ul className="mt-2 flex flex-col gap-0.5 text-[11px] text-[var(--text-muted)]" aria-label="How these figures are measured" data-import-measurement>
+          {data.notes.slice(0, 2).map((t) => <li key={t}>{t}</li>)}
+        </ul>
+      )}
     </LeadSection>
   );
 }
