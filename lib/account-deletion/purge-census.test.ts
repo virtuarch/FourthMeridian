@@ -63,6 +63,12 @@ const RETAINED: Record<string, string> = {
   "AutomationDefinition.createdById":       "operator who created a comms automation — actor identity on a platform rule",
   "AutomationDefinition.updatedById":       "operator who last edited a comms automation — actor identity on a platform rule",
   "AutomationDefinition.ownerApprovedById": "the owner (SYSTEM_ADMIN) who approved a comms automation version — actor identity on a platform rule",
+  // OWNER P2-1 — the hashed beta blocklist and preserved abuse evidence: operator actor
+  // identities on platform records that name NO customer (an HMAC, a sealed payload);
+  // they live by their own retention (jobs/data-retention.ts), not the customer purge.
+  "BetaBlockedIdentifier.createdById":  "operator whose deny / verdict / backfill created a blocklist row — actor identity on a platform record (no customer column)",
+  "BetaBlockedIdentifier.removedById":  "operator who removed a block — actor identity on a platform record",
+  "BetaAbuseEvidence.capturedById":     "SYSTEM_ADMIN who preserved sealed abuse evidence — actor identity on a platform record",
   "AiInvocation.spaceId":             "not a user column: a soft Space reference on a ledger that survives by design (RLS migration §4); the user column is nulled",
 };
 

@@ -43,6 +43,17 @@
  * plain 90-day rule on receivedAt (owner decision 2026-10-31; fm_system holds
  * DELETE — migration 20261031230000).
  *
+ * OWNER P2-1 (2026-11-01) — the hashed beta blocklist and its sealed evidence
+ * (docs/plans/BETA-BLOCKED-IDENTIFIER-DESIGN-2026-11-01.md §6):
+ *   · BetaBlockedIdentifier: a block is deleted once its `expiresAt` has passed
+ *     (BLOCKLIST_RETENTION_DAYS = 730 from creation, correctable up to 1095), and
+ *     a REMOVED block 90 days after `removedAt` (so the audit trail can still
+ *     resolve a recent removal). ACTIVE, unexpired blocks are never touched. A
+ *     block deliberately OUTLIVES its source request (180 days, above).
+ *   · BetaAbuseEvidence: deleted once its explicit `retainUntil` has passed —
+ *     never extended automatically (extending is a new capture decision).
+ *   Neither names a user, so account-deletion purge does not touch them.
+ *
  * NOT here, by decision: AuditLog DELETION (security evidence; product events
  * already have their own 13-month job), Notification (lib/notifications/
  * cleanup.ts), RateLimit (sweep-rate-limits), financial data of any kind.
@@ -69,6 +80,7 @@
 
 import { createHmac } from "node:crypto";
 import { AUTOMATION_RETENTION_DAYS } from "@/lib/notifications/automations/types";
+import { BLOCKLIST_REMOVED_GRACE_DAYS } from "@/lib/platform/growth/beta-blocklist-core";
 import { rollupClientFrom, runCommsDeliveryRollup, type CommsRollupResult, type PrismaRollupLike, type RollupClient } from "@/lib/notifications/delivery/rollup";
 
 const DAY_MS = 86_400_000;
@@ -78,15 +90,19 @@ export const RETENTION_MAX_BATCHES = 20;
 export type RetentionTable =
   | "userSession" | "aiInvocation" | "jobRun" | "refreshExecution" | "providerCall"
   | "plaidWebhookEvent" | "syncIssue" | "apiUsageCounter" | "betaAccessRequest"
-  | "betaAccessRequestEvent" | "dailyBrief" | "automationRun" | "commsProviderEvent";
+  | "betaAccessRequestEvent" | "dailyBrief" | "automationRun" | "commsProviderEvent"
+  | "betaBlockedIdentifier" | "betaAbuseEvidence";
 
 export interface RetentionRule {
   table: RetentionTable;
   /** Human-readable schedule line (the docs table is generated from these). */
   what: string;
   days: number;
-  /** The predicate for rows past their window, given the cutoff instant. */
-  where: (cutoff: Date) => Record<string, unknown>;
+  /**
+   * The predicate for rows past their window, given the cutoff instant (now −
+   * days) and `now` itself (for rules keyed on a stored deadline, not an age).
+   */
+  where: (cutoff: Date, now: Date) => Record<string, unknown>;
   /** The column the oldest-first batch order uses. */
   orderBy: string;
 }
@@ -125,6 +141,16 @@ export const RETENTION_RULES: readonly RetentionRule[] = [
   // The ledger rows they appended follow CommsDelivery's own 90-day rollup.
   { table: "commsProviderEvent", what: "CommsProviderEvent (verified Resend delivery events) received more than 90 days ago", days: 90,
     where: (c) => ({ receivedAt: { lt: c } }), orderBy: "receivedAt" },
+  // Owner P2-1 — the hashed beta blocklist: past its own expiresAt (2 years from creation, ≤ 3 by
+  // correction), or REMOVED more than 90 days ago. `days` is the REMOVED grace; expiry is a stored deadline.
+  { table: "betaBlockedIdentifier", what: "BetaBlockedIdentifier past its expiresAt (2 years from creation by default, at most 3), or REMOVED more than 90 days ago", days: BLOCKLIST_REMOVED_GRACE_DAYS,
+    where: (c, now) => ({ OR: [
+      { expiresAt: { lt: now } },
+      { status: "REMOVED", removedAt: { lt: c } },
+    ] }), orderBy: "createdAt" },
+  // Owner P2-1 — sealed abuse evidence: deleted once its explicit retainUntil (≤ 3 years from capture) has passed.
+  { table: "betaAbuseEvidence", what: "BetaAbuseEvidence past its explicit retainUntil (at most 3 years from capture; never extended automatically)", days: 0,
+    where: (_c, now) => ({ retainUntil: { lt: now } }), orderBy: "retainUntil" },
 ];
 
 export interface RetentionDelegate {
@@ -356,7 +382,7 @@ export async function runDataRetention(
   const out = { totalDeleted: 0, dryRun, commsDelivery: null } as DataRetentionResult;
   for (const rule of RETENTION_RULES) {
     const cutoff = retentionCutoffFor(rule, now);
-    const where = rule.where(cutoff);
+    const where = rule.where(cutoff, now);
     const res: RetentionTableResult = { deleted: 0, batches: 0, exhausted: false, cutoff: cutoff.toISOString() };
     try {
       if (dryRun) {

@@ -203,6 +203,9 @@ export type OperatorTargetKind =
   | "MERCHANT_PAIR"
   // PR C — one Growth bulk beta approval, identified by its client batchKey (a UUID).
   | "BETA_BATCH"
+  // Owner P2-1 — one blocked-identifier row (its id), one sealed evidence row (its id).
+  | "BETA_BLOCKED_IDENTIFIER"
+  | "BETA_ABUSE_EVIDENCE"
   // Comms Center B1 — one notification content stream, "<key>:<channel>:<variant>" (code facts, no customer).
   | "COMMS_TEMPLATE"
   // Comms Center B2 — one automation (its id), and one test send ("<key>:<channel>").
@@ -288,6 +291,16 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   // invitation without rotating its token, are consequential and carry a reason.
   AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
   AuditAction.BETA_INVITATION_EXTENDED,
+  // Owner P2-1 — removing / correcting a block, looking up an address, the
+  // backfill, and preserving / deleting sealed abuse evidence are consequential
+  // operator decisions. Creating a block (BETA_IDENTIFIER_BLOCKED) is not listed:
+  // it rides on a deny (reason-optional) or a verdict that already carries one.
+  AuditAction.BETA_IDENTIFIER_UNBLOCKED,
+  AuditAction.BETA_IDENTIFIER_BLOCK_CORRECTED,
+  AuditAction.BETA_IDENTIFIER_LOOKUP,
+  AuditAction.BETA_IDENTIFIER_BACKFILL,
+  AuditAction.BETA_ABUSE_EVIDENCE_PRESERVED,
+  AuditAction.BETA_ABUSE_EVIDENCE_DELETED,
   AuditAction.MERCHANT_MERGE_APPLIED,
   AuditAction.MERCHANT_MERGE_DISMISSED,
   // Break-glass /admin actions (grants, 2FA reset) stay on their existing audit

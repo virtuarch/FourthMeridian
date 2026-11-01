@@ -21,6 +21,12 @@
  * issuance path (single approve, bulk, direct invite) — lib/platform/growth/
  * invitation-issue.ts. Recording a newer LEGITIMATE or UNREVIEWED verdict here
  * (fresh GROWTH_REVENUE WRITE, reason required, audited) is the deliberate clear.
+ *
+ * BLOCKED IDENTIFIERS (owner P2-1): in the same transaction, SUSPICIOUS on a
+ * DENIED request blocks its hashed canonical mailbox, and LEGITIMATE /
+ * UNREVIEWED removes the blocks this request caused (beta-risk-review.ts). In
+ * Production with no usable blocklist key a verdict that would block rolls back:
+ * 409 BLOCKLIST_UNAVAILABLE.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -30,6 +36,7 @@ import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
 import { limitByUser } from "@/lib/rate-limit";
 import { isBetaRiskReviewStatus, loadBetaRiskReviewHistory, recordBetaRiskReview } from "@/lib/platform/growth/beta-risk-review";
+import { BlocklistUnavailableError } from "@/lib/platform/growth/beta-blocklist";
 import { BETA_RISK_REVIEW_STATUSES, type BetaRiskReviewHistoryResponse } from "@/lib/platform/growth/beta-risk-types";
 
 export const runtime = "nodejs";
@@ -76,9 +83,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       userAgent: req.headers.get("user-agent"),
     });
     if (!outcome.ok) return NextResponse.json({ error: "Request not found." }, { status: 404, headers: NO_STORE });
-    return NextResponse.json({ success: true, review: outcome.review }, { headers: NO_STORE });
+    return NextResponse.json({ success: true, review: outcome.review, blocklist: outcome.blocklist }, { headers: NO_STORE });
   } catch (e) {
     if (e instanceof OperatorActionValidationError) return NextResponse.json({ error: e.message }, { status: 400, headers: NO_STORE });
+    if (e instanceof BlocklistUnavailableError) return NextResponse.json({ error: e.message, code: e.code }, { status: 409, headers: NO_STORE });
     throw e;
   }
 }

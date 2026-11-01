@@ -127,6 +127,32 @@ async function main() {
     check("every table reports exhausted", RETENTION_RULES.every((rule) => r[rule.table].exhausted));
   }
 
+  console.log("\nowner P2-1 — the hashed beta blocklist and its sealed evidence (stored deadlines, not ages)");
+  {
+    const ahead = (d: number) => new Date(NOW.getTime() + d * 86_400_000);
+    const { client, data } = makeClient({
+      betaBlockedIdentifier: [
+        { id: "blk-active", status: "ACTIVE", expiresAt: ahead(400), removedAt: null, createdAt: daysAgo(330) },
+        { id: "blk-expired", status: "ACTIVE", expiresAt: daysAgo(1), removedAt: null, createdAt: daysAgo(731) },
+        { id: "blk-removed-old", status: "REMOVED", expiresAt: ahead(300), removedAt: daysAgo(91), createdAt: daysAgo(200) },
+        { id: "blk-removed-new", status: "REMOVED", expiresAt: ahead(300), removedAt: daysAgo(89), createdAt: daysAgo(200) },
+        // A block outlives its 180-day source request by design: a 500-day-old ACTIVE, unexpired block stays.
+        { id: "blk-corrected-long", status: "ACTIVE", expiresAt: ahead(500), removedAt: null, createdAt: daysAgo(500) },
+      ],
+      betaAbuseEvidence: [
+        { id: "ev-past", retainUntil: daysAgo(1) },
+        { id: "ev-kept", retainUntil: ahead(1) },
+      ],
+    });
+    const r = await quiet(() => runDataRetention(client, NOW));
+    const left = (tb: RetentionTable) => data[tb].map((x) => x.id).sort().join();
+    check("blocks: past expiresAt and REMOVED > 90 d deleted; ACTIVE-unexpired (any age) and recently REMOVED kept",
+      left("betaBlockedIdentifier") === "blk-active,blk-corrected-long,blk-removed-new" && r.betaBlockedIdentifier.deleted === 2, left("betaBlockedIdentifier"));
+    check("evidence: past its explicit retainUntil deleted, within it kept (never extended)", left("betaAbuseEvidence") === "ev-kept" && r.betaAbuseEvidence.deleted === 1);
+    const rule = RETENTION_RULES.find((x) => x.table === "betaBlockedIdentifier")!;
+    check("the REMOVED grace is 90 days", rule.days === 90);
+  }
+
   console.log("\nautomation runs: never one that is RUNNING or holds an item that can still send (PRE-FLIP R5)");
   {
     const run = (id: string, age: number, status: string, itemStatuses: string[]) => ({ id, startedAt: daysAgo(age), status, items: itemStatuses.map((st, i) => ({ id: `${id}-i${i}`, status: st })) });
@@ -145,7 +171,7 @@ async function main() {
     check("finished runs > 90 d whose items are all terminal are deleted; RUNNING, SCHEDULED / SENDING / FAILED holders and a recent run are kept",
       left === "ar-failed,ar-new,ar-running,ar-scheduled,ar-sending" && r.automationRun.deleted === 3, `${left} deleted=${r.automationRun.deleted}`);
     const rule = RETENTION_RULES.find((x) => x.table === "automationRun")!;
-    const w = rule.where(daysAgo(90)) as { status?: { not?: string }; items?: { none?: { status?: { in?: string[] } } } };
+    const w = rule.where(daysAgo(90), NOW) as { status?: { not?: string }; items?: { none?: { status?: { in?: string[] } } } };
     check("the where(cutoff) itself excludes RUNNING runs and runs with SCHEDULED, SENDING or FAILED items",
       w.status?.not === "RUNNING" && [...(w.items?.none?.status?.in ?? [])].sort().join() === "FAILED,SCHEDULED,SENDING", JSON.stringify(w));
   }

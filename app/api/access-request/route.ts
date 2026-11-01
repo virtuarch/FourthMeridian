@@ -43,6 +43,18 @@
  *      is recorded ONCE as BETA_INTAKE_DUPLICATE_DROPPED { hourWindow, limit },
  *      counts only — no address, no hash): a 429 here would tell a prober that the address was
  *      recently submitted, i.e. an existence oracle.
+ *   4b. BLOCKED MAILBOX (owner P2-1, 2026-11-01) — a submission whose
+ *      conservative canonical mailbox (lib/platform/growth/beta-blocklist-core.ts
+ *      blocklistMailbox: gmail dots/+tag, the listed providers' +tag; every
+ *      other domain exact) carries an ACTIVE operator-confirmed block is
+ *      DROPPED SILENTLY with the identical 200 — no waitlist row, no event row,
+ *      no per-submission audit row, no e-mail — and each hour with such drops
+ *      is recorded ONCE as BETA_INTAKE_BLOCKED_DROPPED { hourWindow } (counts
+ *      only; the per-hour count is the RateLimit counter). Checked before the
+ *      per-address limit so a blocked mailbox never spends that bucket. When
+ *      the blocklist cannot be consulted (no key, a failed read) the request is
+ *      STORED as before: it is only a waitlist row, and issuance re-checks and
+ *      fails closed in Production (logged once, never the address).
  *   6. operator-notification throttle (consumeThrottle): at most 1 e-mail per
  *      CANONICAL address (canonicalEmailLimitKey — variants folded, which can
  *      only reduce operator mail, never block an applicant) per 24 h and 20 per hour overall. A throttled
@@ -87,6 +99,7 @@ import { sendEmail } from "@/lib/email/send";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
 import { boundAcquisitionSource, withCountry } from "@/lib/marketing/acquisition";
+import { intakeMailboxBlocked } from "@/lib/platform/growth/beta-blocklist";
 import { ACCESS_REQUEST_NOTICE_VERSION, CONSENT_REQUIRED_ERROR } from "@/components/marketing/access-request-consent";
 
 export const runtime = "nodejs";
@@ -121,14 +134,14 @@ const IDENTICAL_OK = {
  * one row per request.
  */
 async function recordHourlyIntakeSignal(
-  action: typeof AuditAction.BETA_INTAKE_THROTTLED | typeof AuditAction.BETA_INTAKE_DUPLICATE_DROPPED,
-  limit: number,
+  action: typeof AuditAction.BETA_INTAKE_THROTTLED | typeof AuditAction.BETA_INTAKE_DUPLICATE_DROPPED | typeof AuditAction.BETA_INTAKE_BLOCKED_DROPPED,
+  limit: number | null,
 ): Promise<void> {
   try {
     const tick = await countInWindow(`beta-intake:${action}`, 60 * 60);
     if (tick?.count !== 1) return;
     await db.auditLog.create({
-      data: { action, metadata: { hourWindow: new Date(tick.windowStartMs).toISOString(), limit } },
+      data: { action, metadata: { hourWindow: new Date(tick.windowStartMs).toISOString(), ...(limit !== null ? { limit } : {}) } },
     });
   } catch (err) {
     console.error(`[access-request] could not record ${action}:`, err instanceof Error ? err.message : err);
@@ -194,6 +207,13 @@ export async function POST(req: NextRequest) {
     const normalizedEmail = email.toLowerCase().trim();
     const trimmedNote = typeof note === "string" ? note.trim() : "";
     const emailKey = emailLimitKey(normalizedEmail);
+
+    // BLOCKED MAILBOX — DROP SILENTLY with the identical 200 (header 4b). Nothing
+    // is stored, audited per submission or e-mailed; never the address in a log.
+    if (await intakeMailboxBlocked(normalizedEmail)) {
+      await recordHourlyIntakeSignal(AuditAction.BETA_INTAKE_BLOCKED_DROPPED, null);
+      return NextResponse.json(IDENTICAL_OK);
+    }
 
     // Per-address ceiling — over it, DROP SILENTLY with the identical 200 (a
     // 429 would disclose that the address was recently submitted). Nothing is
