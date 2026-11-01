@@ -368,7 +368,7 @@ export async function POST(req: NextRequest) {
     // no token stored) and there is nothing to verify.
     if (!invitedFlow) {
       const verifyUrl = buildVerifyUrl(env.NEXT_PUBLIC_APP_URL, rawVerificationToken);
-      const emailResult = await sendEmail("email-verification", normalizedEmail, { verifyUrl });
+      const emailResult = await sendEmail("email-verification", normalizedEmail, { verifyUrl }, { key: "EMAIL_VERIFICATION_SENT", recipientUserId: user.id });
       if (emailResult.status === "error") {
         console.error("[register] verification email failed to send:", emailResult.error);
       }

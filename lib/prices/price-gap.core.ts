@@ -186,3 +186,172 @@ export function revaluationOwedFromISO(args: {
   }
   return from !== null && floor !== null && from < args.earliestSnapshotISO ? { fromISO: from, floorISO: floor } : null;
 }
+
+// ── Holder revaluation over EXISTING rows (2026-10-31, P1) ──────────────────
+//
+// THE DEFECT (live on Preview, QA Space, 2026-10-31): 31 stored rows
+// (2026-09-27..2026-10-27) were written on 10-28 05:16, before the BTC wallet
+// was linked (12:55). They hold SOL only (~$76) and are stamped "supported".
+// The revaluation above is owed only while valued-from precedes the EARLIEST
+// snapshot, and rebuilds only [valued-from, earliest snapshot − 1] — so once the
+// prefix was filled the stale interior rows were never revisited, and the chart
+// fell from $27,888 to $91 (10-27 stored $76.04; correct $26,793.01).
+//
+// THE RULE NOW: a holder's revaluation is owed whenever its EVIDENCE changes —
+// the licences it holds (native AND token), the price floors serving them, or
+// the Spaces it belongs to — and it covers EVERY existing row of those Spaces
+// from the earlier of valued-from and the earliest stored row, through today.
+// Days that recompute identically are UNCHANGED and not rewritten
+// (planDayPersistence), so a re-run churns nothing; days the holder existed on
+// but cannot be valued become `unavailable`, never `supported`, never $0.
+// Bounded and kill-safe: the window is cut into epoch-anchored blocks, rebuilt
+// NEWEST first (the visible cliff first) in batches sized to the time left; a
+// block is marked done only AFTER its rebuild returns (a killed run leaves it
+// owed), with an attempt cap so a poison block cannot loop. A large window
+// progresses across runs.
+//
+// What this does NOT do: change the evidence key only when it matters. Any
+// evidence change (e.g. a lowered floor) re-owes the WHOLE window once; the
+// unchanged days recompute UNCHANGED (no writes), so the cost is compute, not
+// churn. Narrowing the re-owed range per kind of change is a follow-up.
+
+/** Do not start a price-gap pass or a revaluation batch with less than this left of the wake. */
+export const REVALUATION_RESERVE_MS = 60_000;
+/**
+ * Days per revaluation BLOCK — the unit of the durable "done" marker. Blocks are
+ * anchored to a fixed epoch (Mondays from 1970-01-05), so a block's key does not
+ * depend on where a holder's window starts or ends. A rebuild covers a BATCH of
+ * contiguous blocks sized to the time left (planRevaluationBatch).
+ */
+export const REVALUATION_BLOCK_DAYS = 7;
+/** A block that has failed this many rebuilds is abandoned until the evidence changes (no poison loop). */
+export const REVALUATION_MAX_ATTEMPTS = 3;
+/** First-batch cost estimate before this run has measured one (conservative: live R1c ≈ 2.8 s/day locally, 3–5× Vercel). */
+export const REVALUATION_DEFAULT_MS_PER_DAY = 1_500;
+/** Time kept back from a batch's budget: the batch is sized to end this long BEFORE the deadline. */
+export const REVALUATION_BATCH_MARGIN_MS = 20_000;
+/** Version of the evidence fingerprint; bumping it re-owes every holder once. */
+export const REVALUATION_EVIDENCE_VERSION = "v2";
+
+/** One holder whose evidence state owes a revaluation of its Spaces' rows. */
+export interface HolderRevaluation {
+  accountId: string;
+  /** First day to rebuild: min(valued-from, earliest stored row of its Spaces). */
+  windowFromISO: string;
+  /** max(licence start, price floor) across its native instruments; null when one is unpriced. */
+  valuedFromISO: string | null;
+  /** The durable key of this evidence state (block keys extend it). */
+  evidenceKey: string;
+}
+
+/** FNV-1a 32-bit, hex — a stable short digest (pure; no node:crypto in a core). */
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * The evidence fingerprint of one holder: every licence it holds (native and
+ * token: instrument → licence start), the price floor of each (or "none"), and
+ * the Spaces it belongs to. Any change — a licence widening, a new price
+ * coverage, a token licence, a new Space link — is a new key, i.e. a new owed
+ * revaluation. The same state is the same key, so a re-run owes nothing.
+ */
+export function revaluationEvidenceKey(args: {
+  accountId: string;
+  licences: ReadonlyMap<string, string>;
+  floors: ReadonlyMap<string, string>;
+  spaceIds: readonly string[];
+}): string {
+  const parts = [...args.licences.keys()].sort().map((id) => `${id}=${args.licences.get(id)}/${args.floors.get(id) ?? "none"}`);
+  const spaces = [...new Set(args.spaceIds)].sort().join(",");
+  return `revaluation:${REVALUATION_EVIDENCE_VERSION}:${args.accountId}:${fnv1a(`${parts.join(";")}|${spaces}`)}`;
+}
+
+/**
+ * Does this holder's persisted state call for a revaluation of its Spaces'
+ * existing rows, and from when? Null when it holds no licence or its Spaces hold
+ * no row yet (the initial build is the normal path's). An unpriced native
+ * instrument does NOT excuse it: its existing rows must still be re-decided, and
+ * the day rule refuses them (`unavailable`) rather than leave them "supported".
+ */
+export function holderRevaluationFor(args: {
+  accountId: string;
+  /** Native price-blocking licences (instrument → start): valued-from. */
+  nativeLicences: ReadonlyMap<string, string>;
+  /** Every licence (native + token): the fingerprint. */
+  allLicences: ReadonlyMap<string, string>;
+  floors: ReadonlyMap<string, string>;
+  /** Earliest stored row per Space the holder is ACTIVE in (absent ⇒ no rows). */
+  snapshotMinBySpace: ReadonlyMap<string, string>;
+  spaceIds: readonly string[];
+}): HolderRevaluation | null {
+  if (args.allLicences.size === 0) return null;
+  const mins = args.spaceIds.map((s) => args.snapshotMinBySpace.get(s)).filter((d): d is string => !!d);
+  if (mins.length === 0) return null;
+  const earliestRow = mins.reduce((m, d) => (d < m ? d : m));
+  let valued: string | null = null;
+  let unpriced = false;
+  for (const [id, lic] of args.nativeLicences) {
+    const v = valuedFromISO(lic, args.floors.get(id) ?? null);
+    if (v === null) { unpriced = true; continue; }
+    if (valued === null || v > valued) valued = v;
+  }
+  if (unpriced) valued = null;
+  const windowFromISO = valued !== null && valued < earliestRow ? valued : earliestRow;
+  return {
+    accountId: args.accountId, windowFromISO, valuedFromISO: valued,
+    evidenceKey: revaluationEvidenceKey({ accountId: args.accountId, licences: args.allLicences, floors: args.floors, spaceIds: args.spaceIds }),
+  };
+}
+
+/** One epoch-anchored block of a holder's revaluation window (clipped to the window). */
+export interface RevaluationBlock { fromISO: string; toISO: string; key: string }
+
+const EPOCH_MONDAY_MS = Date.UTC(1970, 0, 5);
+const DAY_MS = 86_400_000;
+const dayIndex = (iso: string) => Math.round((Date.parse(`${iso}T00:00:00Z`) - EPOCH_MONDAY_MS) / DAY_MS);
+const isoOfIndex = (i: number) => new Date(EPOCH_MONDAY_MS + i * DAY_MS).toISOString().slice(0, 10);
+
+/**
+ * [fromISO, toISO] as REVALUATION_BLOCK_DAYS blocks on the fixed epoch grid,
+ * NEWEST first (the rows a reader sees first). The key names the block's GRID
+ * start, so it is stable however the window's own start or end moves.
+ */
+export function revaluationBlocks(evidenceKey: string, fromISO: string, toISO: string, blockDays = REVALUATION_BLOCK_DAYS): RevaluationBlock[] {
+  if (fromISO > toISO) return [];
+  const size = Math.max(1, Math.floor(blockDays));
+  const first = dayIndex(fromISO), last = dayIndex(toISO);
+  const out: RevaluationBlock[] = [];
+  for (let start = Math.floor(first / size) * size; start <= last; start += size) {
+    const lo = Math.max(start, first), hi = Math.min(start + size - 1, last);
+    out.push({ fromISO: isoOfIndex(lo), toISO: isoOfIndex(hi), key: `${evidenceKey}:${isoOfIndex(start)}` });
+  }
+  return out.reverse();
+}
+
+/**
+ * The next rebuild: from the NEWEST owed block, the contiguous run of owed
+ * blocks (newest first) whose day count fits `maxDays` — always at least one
+ * block, so progress is guaranteed. Null when nothing is owed.
+ *
+ * `isolate(b)` — a block that must be rebuilt ALONE (it was in a batch that did
+ * not complete): it is never joined to a batch, so a failure is charged to it
+ * and only it — one bad day never burns its neighbours' attempts.
+ */
+export function planRevaluationBatch(
+  owedNewestFirst: readonly RevaluationBlock[], maxDays: number, isolate: (b: RevaluationBlock) => boolean = () => false,
+): { fromISO: string; toISO: string; blocks: RevaluationBlock[] } | null {
+  if (owedNewestFirst.length === 0) return null;
+  const blocks = [owedNewestFirst[0]];
+  let days = dayIndex(blocks[0].toISO) - dayIndex(blocks[0].fromISO) + 1;
+  for (let i = 1; i < owedNewestFirst.length && !isolate(blocks[0]); i++) {
+    const b = owedNewestFirst[i];
+    if (isolate(b)) break;
+    const n = dayIndex(b.toISO) - dayIndex(b.fromISO) + 1;
+    if (dayIndex(b.toISO) !== dayIndex(blocks[blocks.length - 1].fromISO) - 1 || days + n > maxDays) break;
+    blocks.push(b); days += n;
+  }
+  return { fromISO: blocks[blocks.length - 1].fromISO, toISO: blocks[0].toISO, blocks };
+}

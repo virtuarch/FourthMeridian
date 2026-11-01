@@ -49,7 +49,8 @@ export interface EmailMessage {
  *               "ENVIRONMENT_GUARD" — lib/email/recipient-guard.ts). A
  *               non-failure: never retried, never logged as an error.
  *   skipped   — no send performed by design (e.g. email disabled / no creds in
- *               a context that must not fall back to capture).
+ *               a context that must not fall back to capture, or the storm
+ *               limit — then `reason` says which). Never retried.
  *   error     — the transport attempted a send and failed (error present).
  */
 export interface EmailResult {
@@ -60,8 +61,44 @@ export interface EmailResult {
   provider: string;
   /** Human-readable failure reason when status === "error". */
   error?: string;
-  /** Why a send was captured instead of sent (Comms Center contract §O-4). */
-  reason?: "ENVIRONMENT_GUARD";
+  /**
+   * Why a send was not handed to the provider:
+   *   ENVIRONMENT_GUARD      — captured by the non-production guard (contract §O-4);
+   *   RATE_LIMITED           — skipped: the recipient's email storm limit (Comms
+   *                            Center A-2b, O-10) is reached;
+   *   RATE_LIMIT_UNVERIFIED  — skipped: a storm-limited send whose count could
+   *                            not be read (fail closed).
+   */
+  reason?: "ENVIRONMENT_GUARD" | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";
+}
+
+/**
+ * Comms Center A-2a — what a caller tells the chokepoint about a send, for the
+ * delivery ledger (lib/notifications/delivery). Metadata only: the ledger row
+ * never carries the address, subject, body or any template data.
+ *
+ *   key              the catalog key this send is a leg of
+ *                    (lib/notifications/catalog/definitions.ts). Every production
+ *                    call site names one (pinned by catalog.test.ts).
+ *   recipientUserId  the account the message is about/to, or null for an
+ *                    operator inbox / an applicant with no account.
+ *   hashRecipient    false = store no recipient hash even when there is no
+ *                    userId (the post-purge goodbye: nothing may link back).
+ *   messageKey       the MESSAGE this attempt belongs to, stable across retries
+ *                    (the Notification id for registry email). Absent ⇒ a new
+ *                    send id is generated (a direct send is one message).
+ *   notificationId   the in-app twin, when there is one.
+ *   attempt          1-based attempt number (the retry job passes its own).
+ *   terminalOnError  this is the last attempt: an error is recorded as DEAD.
+ */
+export interface EmailSendContext {
+  key: string;
+  recipientUserId: string | null;
+  hashRecipient?: boolean;
+  messageKey?: string;
+  notificationId?: string;
+  attempt?: number;
+  terminalOnError?: boolean;
 }
 
 /**

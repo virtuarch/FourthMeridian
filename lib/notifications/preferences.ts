@@ -48,11 +48,15 @@ export const PREFERENCE_CATEGORIES: NotificationCategory[] = [
   ...new Set(Object.values(NOTIFICATION_REGISTRY).map((e) => e.category)),
 ].filter((c) => c !== "DIGEST");
 
-/** True when the category is locked (uniform per category — registry-tested). */
+/**
+ * True when the CATEGORY is locked: every type in it is locked (ACCOUNT_SECURITY).
+ * A category with only a per-type lock (PLATFORM, whose SECURITY_ANOMALY_DETECTED
+ * is locked — Comms Center A-2b, O-8) stays switchable: its row governs the
+ * category's other types, and resolveChannelEnabled ignores it for the locked one.
+ */
 export function isLockedCategory(category: string): boolean {
-  return Object.values(NOTIFICATION_REGISTRY).some(
-    (e) => e.category === category && e.locked,
-  );
+  const types = Object.values(NOTIFICATION_REGISTRY).filter((e) => e.category === category);
+  return types.length > 0 && types.every((e) => e.locked);
 }
 
 /**

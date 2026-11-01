@@ -38,6 +38,15 @@ export const emailNotificationAdapter: ChannelAdapter = {
         "notification",
         message.email,
         { ...buildNotificationEmailData(message, process.env.NEXT_PUBLIC_APP_URL) },
+        // Delivery ledger (A-2a): the registry type id IS the catalog key.
+        {
+          key: message.type,
+          recipientUserId: message.userId,
+          // One message across retries: the Notification row it belongs to.
+          ...(message.notificationId ? { messageKey: message.notificationId, notificationId: message.notificationId } : {}),
+          ...(message.attempt ? { attempt: message.attempt } : {}),
+          ...(message.finalAttempt ? { terminalOnError: true } : {}),
+        },
       );
       // EmailResult → ChannelResult, field-for-field (frozen: verbatim).
       return {

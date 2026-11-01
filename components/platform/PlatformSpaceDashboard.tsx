@@ -76,6 +76,10 @@ import { GrowthLead } from "./leads/GrowthLead";
 import { SecurityLead } from "./leads/SecurityLead";
 import { CustomerSuccessLead } from "./leads/CustomerSuccessLead";
 import { MerchantLead } from "./leads/MerchantLead";
+import { CommsLibraryLead } from "./comms/LibraryView";
+import { CommsAutomationsLead } from "./comms/AutomationsView";
+import { CommsDeliveryLead } from "./comms/DeliveryView";
+import { CommsPreferencesLead } from "./comms/PreferencesView";
 import { PoliciesLead } from "./leads/PoliciesLead";
 import { PlatformAreaHero } from "./PlatformAreaHero";
 import { PlatformSpaceSwitcher } from "./PlatformSpaceSwitcher";
@@ -220,6 +224,11 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   security:   SecurityLead,
   "customer-success": CustomerSuccessLead,
   merchant:   MerchantLead,
+  // Customer Success › Communications Center (components/platform/comms/*).
+  "comms-library":     CommsLibraryLead,
+  "comms-automations": CommsAutomationsLead,
+  "comms-delivery":    CommsDeliveryLead,
+  "comms-preferences": CommsPreferencesLead,
 };
 
 /**

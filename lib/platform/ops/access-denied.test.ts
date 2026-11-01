@@ -67,7 +67,10 @@ console.log("3. the row — canon action, anomaly-trip shape, no PII");
   check("no email, no username, no session token in the row", !/@|username|sessionToken/.test(JSON.stringify(row)));
   // The Security Ops route projects the key to an opaque digest: the id never leaves the server.
   const trip = projectAnomalyTrip({ id: "r1", createdAt: new Date(T0), metadata: row.metadata }, 15);
-  check("projects as a trip of the new type with an opaque key ref", trip.type === ACCESS_DENIED_ANOMALY_TYPE && trip.keyRef.startsWith("…") && !trip.keyRef.includes("ckuser"));
+  // Comms Center A-2b: the row carries the salted keyHash; keyRef is its 8-hex prefix — never derived from the raw id.
+  check("the row carries a salted keyHash, never the raw user id in it", typeof m.keyHash === "string" && /^platform-denied:h[0-9a-f]{32}$/.test(m.keyHash as string) && !(m.keyHash as string).includes("ckuser"));
+  check("projects as a trip of the new type whose keyRef is the keyHash prefix", trip.type === ACCESS_DENIED_ANOMALY_TYPE && trip.legacy === false
+    && /^h[0-9a-f]{8}$/.test(trip.keyRef) && (m.keyHash as string).startsWith(`platform-denied:${trip.keyRef}`) && !trip.keyRef.includes("ckuser"));
 }
 
 console.log("4. the writer — fire-and-forget, never throws into the caller, honours the throttle");

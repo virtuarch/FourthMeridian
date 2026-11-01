@@ -12,6 +12,8 @@
  *       dedupeKey → null   (frees the unique slot: a recurrence re-notifies)
  *       archivedAt → now   (a resolved condition leaves the feed; read state
  *                           is preserved — timestamps compose, F9)
+ *   - and (Comms Center A-2b) releases an ARCHIVED holder's key, archive time
+ *     kept: the email anchor create.ts writes when in-app is off.
  *
  * Best-effort by contract: returns the number of rows retired (0 = nothing
  * open — the common case) and never throws into a sync/import flow.
@@ -31,10 +33,15 @@ import type { NotificationRenderData } from "@/lib/notifications/types";
 /** Exactly the one operation retirement performs (injection seam for tests). */
 export interface NotificationResolveClient {
   notification: {
-    updateMany(args: {
-      where: { userId: string; dedupeKey: string; archivedAt: null };
-      data: { dedupeKey: null; archivedAt: Date };
-    }): Promise<{ count: number }>;
+    updateMany(args:
+      | {
+          where: { userId: string; dedupeKey: string; archivedAt: null };
+          data: { dedupeKey: null; archivedAt: Date };
+        }
+      | {
+          where: { userId: string; dedupeKey: string; archivedAt: { not: null } };
+          data: { dedupeKey: null };
+        }): Promise<{ count: number }>;
   };
 }
 
@@ -66,7 +73,16 @@ export async function retireOpenNotification(
       where: { userId, dedupeKey, archivedAt: null },
       data: { dedupeKey: null, archivedAt: ctx?.now ?? new Date() },
     });
-    return res.count;
+    // Comms Center A-2b: an ARCHIVED holder can still hold the key — the email
+    // anchor written while the user's in-app channel was off (create.ts), or a
+    // bell dismissed before in-app was turned off. Release it too (its archive
+    // time is kept), so the NEXT outage notifies again. At most one row holds a
+    // key ((userId, dedupeKey) is unique), so the two statements never overlap.
+    const archived = await client.notification.updateMany({
+      where: { userId, dedupeKey, archivedAt: { not: null } },
+      data: { dedupeKey: null },
+    });
+    return res.count + archived.count;
   } catch (err) {
     console.warn("[retireOpenNotification] retirement failed (non-fatal):", err);
     return 0;

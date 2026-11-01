@@ -73,7 +73,7 @@ export async function rotateAndSendVerification(
   });
 
   const verifyUrl = buildVerifyUrl(env.NEXT_PUBLIC_APP_URL, rawToken);
-  const result = await sendEmail("email-verification", user.email, { verifyUrl });
+  const result = await sendEmail("email-verification", user.email, { verifyUrl }, { key: "EMAIL_VERIFICATION_SENT", recipientUserId: user.id });
 
   if (result.status === "error") {
     console.error("[verify-email/resend] verification email failed to send:", result.error);

@@ -126,9 +126,16 @@ const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
     /finalizedBlockNumber\(/.test(SYNC),
     "a reorg-able block is not evidence to anchor a licence against");
 
-  // The interpreted index stays out of the truth model.
-  check("no transfer index is consulted anywhere in the reconstruction",
-    !/getAssetTransfers/i.test(SYNC) && !/getAssetTransfers/i.test(code(read("lib", "crypto", "eth-history.ts"))),
+  // The interpreted index stays out of the truth model. Since the FAST PATH
+  // (2026-10-31) it may NOMINATE probe blocks — an accelerator — and nothing
+  // more: one method constant in the provider layer, read only as block numbers
+  // (parseAssetTransfersPage → { blocks, pageKey }); never in the sync layer.
+  // The behaviour (wrong values ignored, missed credits found by the predicate)
+  // is pinned in eth-history-fast.test.ts.
+  const HIST = code(read("lib", "crypto", "eth-history.ts"));
+  check("the transfer index is an accelerator only: one method constant, read as block numbers, never in the sync",
+    !/getAssetTransfers/i.test(SYNC) && (HIST.match(/getAssetTransfers/g) ?? []).length === 1
+      && /return \{ blocks, pageKey: /.test(HIST) && !/\.value\b/.test(HIST.slice(HIST.indexOf("function parseAssetTransfersPage"), HIST.indexOf("function fastProbePoints"))),
     "measured empirically incomplete: 0 transfers reported while an address "
     + "gained 1.008975659 ETH in validator withdrawals");
 }
@@ -139,9 +146,10 @@ const SYNC = code(read("lib", "crypto", "eth-history-sync.ts"));
   check("ETH is dispatched by the production sync refresh",
     // 2026-10-28: the ETH arm wraps the call in the shared provider-budget meter,
     // and (ETH history worker) goes through reconstructEthHistoryForSync, which
-    // with the worker off makes exactly the reconstructEthHistory call of before.
+    // runs reconstructEthHistory's incremental path (2026-10-31: a fallback is
+    // then one bounded worker step, never an inline full rebuild).
     /key === ETH_NATIVE\.chain \? [^\n]*reconstructEthHistoryForSync\(/.test(refresh)
-      && /const r = await impl\.reconstruct\(\{ accountId, windowFromISO, windowToISO, deps \}\)/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts")))
+      && /const r = await impl\.reconstruct\(\{ accountId, windowFromISO, windowToISO, deps, deferFull: true \}\)/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts")))
       && /reconstruct: reconstructEthHistory,/.test(code(read("lib", "crypto", "eth-history-backfill.store.ts"))),
     "a third reconstruction with no caller is the W6f defect repeated");
   check("…alongside BTC and SOL, by chain identity rather than a literal",

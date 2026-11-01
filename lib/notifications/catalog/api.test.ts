@@ -127,14 +127,15 @@ async function gating(): Promise<void> {
   check("read-deps: the cs-comms-read bucket is applied per operator, and carries no gate",
     /limitByUser\(userId, CS_COMMS_READ_BUCKET, CS_COMMS_READ_LIMIT\)/.test(deps) && !/requirePlatformAccess|requireFresh/.test(deps));
   const base = "app/api/platform/customer-success/notifications";
-  for (const f of [`${base}/catalog/route.ts`, `${base}/catalog/[key]/route.ts`, `${base}/catalog/[key]/preview/route.ts`, `${base}/triggers/route.ts`]) {
+  for (const f of [`${base}/catalog/route.ts`, `${base}/catalog/[key]/route.ts`, `${base}/catalog/[key]/preview/route.ts`, `${base}/triggers/route.ts`, `${base}/delivery/route.ts`]) {
     const src = code(f);
     check(`${f}: GET only`, /export async function GET\(/.test(src) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(src));
     check(`${f}: gated by exactly requirePlatformAccess("CUSTOMER_SUCCESS", "READ") through runRead, with the cs-comms-read bucket`,
       (src.match(/requirePlatformAccess\(/g) ?? []).length === 1 &&
       /runRead\(\{ guard: \(\) => requirePlatformAccess\("CUSTOMER_SUCCESS", "READ"\), rateLimit: csCommsReadLimit \},/.test(src) &&
       !/requireFreshPlatformAccess|"WRITE"|"CONTROL"/.test(src));
-    check(`${f}: no DB, no send`, !/@\/lib\/db|@\/lib\/email\/send/.test(src));
+    // The ledger reads (delivery, catalog detail `recent`) go through the read-store module, never the DB client directly.
+    check(`${f}: no direct DB client, no send`, !/@\/lib\/db|@\/lib\/email\/send/.test(src));
   }
 }
 
@@ -204,14 +205,14 @@ async function list(): Promise<void> {
 async function detail(): Promise<void> {
   console.log("3. GET /catalog/[key]");
   for (const key of CATALOG_KEYS) {
-    const r = await capture(catalogDetail(key, NOW));
+    const r = await capture(await catalogDetail(key, NOW));
     const recent = r.json.recent as { days: Array<{ count: unknown; day: string }>; window: string; from: string; to: string };
     if (r.status !== 200 || recent.days.length !== 30 || !recent.days.every((d) => d.count === null) || recent.to !== "2026-10-31" || recent.from !== "2026-10-02") {
       check(`${key}: detail 200 with a dense 30-day all-null series`, false, { status: r.status });
     }
   }
   check("every key: detail 200 with a dense 30-day all-null (not observed) series ending today UTC", true);
-  const sf = await capture(catalogDetail("SYNC_FAILED", NOW));
+  const sf = await capture(await catalogDetail("SYNC_FAILED", NOW));
   check("detail carries trigger, typed payload, eligibility, dedupe, retention",
     (sf.json.trigger as { triggerKey: string }).triggerKey === "plaid.item.sync_failed" &&
     (sf.json.payload as Array<{ name: string }>).map((p) => p.name).join() === "plaidItemId,institutionName,connectionState" &&
@@ -219,11 +220,11 @@ async function detail(): Promise<void> {
     (sf.json.dedupe as { keyTemplate: string }).keyTemplate === "SYNC_FAILED:item:{plaidItemId}:open" &&
     (sf.json.retention as { inAppArchiveDays: number; deliveryDays: number }).inAppArchiveDays === 30);
   for (const key of ["NOPE", "sync_failed", "", "../../etc", "SYNC_FAILED%00"]) {
-    const r = await capture(catalogDetail(key, NOW));
+    const r = await capture(await catalogDetail(key, NOW));
     check(`unknown key ${JSON.stringify(key)} → 404 NOT_FOUND`, r.status === 404 && r.json.code === "NOT_FOUND");
   }
   check("prototype keys are not definitions (__proto__, constructor → 404)",
-    catalogDetail("__proto__", NOW).status === 404 && catalogDetail("constructor", NOW).status === 404);
+    (await catalogDetail("__proto__", NOW)).status === 404 && (await catalogDetail("constructor", NOW)).status === 404);
 }
 
 async function preview(): Promise<void> {

@@ -50,11 +50,13 @@ import {
   type EthHistoryMode,
 } from "./eth-history-rows";
 import {
-  prismaEthHistoryStore, runIncrementalEthHistory, type EthIncrementalFallback,
+  prismaEthHistoryStore, runIncrementalEthHistory, type EthIncrementalFallback, type EthIncrementalOutcome, type EthHistoryStore,
 } from "./eth-history-incremental";
 import {
   acquireEthHistory, finalizedBlockNumber, EARLIEST_PROVABLE_BLOCK, type EthHistoryDeps,
 } from "./eth-history";
+import { boundedEthDeps, ethInlineStepMs, INCREMENTAL_FULL_WINDOW_SLACK_MS } from "./eth-history-backfill.core";
+import { currentBudgetStartedAtMs } from "@/lib/jobs/run";
 import { resolveCryptoInstrumentId, ETH_ASSET } from "@/lib/investments/crypto-instrument";
 import {
   PERMITTED_ANCHOR_ORIGINS, type QuantityAnchor, type QuantityTimeline,
@@ -80,7 +82,11 @@ export type EthHistoryRefusal =
   | "NO_OBSERVED_ANCHOR"
   /** The incremental path fell back and the history worker carries the FULL
    *  rebuild (ETH_BACKFILL_ENABLED). Nothing was written. */
-  | "FULL_REBUILD_DEFERRED";
+  | "FULL_REBUILD_DEFERRED"
+  /** Worker off: this sync advanced the resumable checkpoint by one bounded
+   *  step (or could not start one) and the proof is not closed yet. No rows
+   *  were written; the proven boundary was committed (eth-history-backfill.ts). */
+  | "FULL_REBUILD_IN_PROGRESS";
 
 export interface EthHistoryResult {
   accountId: string;
@@ -124,6 +130,9 @@ export async function reconstructEthHistory(args: {
   dryRun?: boolean;
   /** Skip the incremental path: an explicit repair / full rebuild. */
   full?: boolean;
+  /** Test seams: the incremental path's store and instrument (production: Prisma on `db`, resolved). */
+  incrementalStore?: EthHistoryStore;
+  instrumentId?: string;
   /**
    * The history worker carries the FULL rebuild (eth-history-backfill.ts): on
    * an incremental fallback return FULL_REBUILD_DEFERRED — writing nothing —
@@ -133,6 +142,12 @@ export async function reconstructEthHistory(args: {
 }): Promise<EthHistoryResult> {
   const client = args.client ?? db;
   const { accountId } = args;
+  // BOUNDED (2026-10-31): every acquisition below — the incremental suffix and
+  // an explicit full rebuild — runs under a FINITE deadline (the caller's, else
+  // the inline step's), never the acquisition's +∞ default. A walk the clock
+  // stops refuses (COVERAGE_UNLICENSED, nothing written) instead of being
+  // killed by the function's time limit with nothing to show for it.
+  const deps = boundedEthDeps(args.deps, { stepMs: ethInlineStepMs(), budgetStartedAtMs: currentBudgetStartedAtMs() });
 
   const account = await client.financialAccount.findUnique({
     where:  { id: accountId },
@@ -154,19 +169,14 @@ export async function reconstructEthHistory(args: {
   let fallbackReason: EthIncrementalFallback = "EXPLICIT_FULL";
   if (!args.full) {
     const incremental = await runIncrementalEthHistory({
-      accountId, walletAddress: account.walletAddress, instrumentId: await resolveCryptoInstrumentId(ETH_ASSET),
-      todayISO: args.windowToISO, store: prismaEthHistoryStore(db), deps: args.deps, dryRun: args.dryRun,
+      accountId, walletAddress: account.walletAddress, instrumentId: args.instrumentId ?? await resolveCryptoInstrumentId(ETH_ASSET),
+      todayISO: args.windowToISO, store: args.incrementalStore ?? prismaEthHistoryStore(db), deps, dryRun: args.dryRun,
+      budgetStopFallsBack: incrementalWindowIsStructural(deps),
     });
-    if (incremental.kind === "DONE") return incremental.result;
-    if (incremental.kind === "REFUSED") {
-      return { accountId, ok: false, refusal: incremental.refusal, reason: incremental.reason, mode: "INCREMENTAL" };
-    }
+    // DONE / REFUSED, or (deferFull) a fallback handed to the resumable
+    // checkpoint: returned before ANY full-rebuild work below.
+    if (incremental.kind !== "FALLBACK" || args.deferFull) return incrementalResultForSync(accountId, incremental, args.deferFull === true)!;
     fallbackReason = incremental.reason;
-    if (args.deferFull) {
-      console.log(`[eth-history] full rebuild deferred to the history worker for ${accountId}: ${incremental.reason}${incremental.detail ? ` — ${incremental.detail}` : ""}`);
-      return { accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason,
-        reason: `incremental history fell back (${incremental.reason}); the full rebuild is carried by the background worker` };
-    }
     console.log(`[eth-history] full rebuild for ${accountId}: ${incremental.reason}${incremental.detail ? ` — ${incremental.detail}` : ""}`);
   }
 
@@ -178,10 +188,10 @@ export async function reconstructEthHistory(args: {
     // The upper bound is the FINALIZED head, never `latest`: a reorg-able block
     // is not evidence, and the anchor the reconciliation closes against must not
     // be able to change underneath the coverage it licenses.
-    const toBlock = await finalizedBlockNumber(args.deps);
+    const toBlock = await finalizedBlockNumber(deps);
     acquisition = await acquireEthHistory(
       { ownerAddress: account.walletAddress, fromBlock: EARLIEST_PROVABLE_BLOCK, toBlock },
-      args.deps ?? {},
+      deps,
     );
   } catch (e) {
     return { accountId, ok: false, refusal: "COVERAGE_UNLICENSED",
@@ -212,6 +222,32 @@ export async function reconstructEthHistory(args: {
     accountId, client, writer: db, movements: acquisition.movements, coverage, anchorBalanceWei: acquisition.anchorBalanceWei,
     windowFromISO: args.windowFromISO, windowToISO: args.windowToISO, dryRun: args.dryRun, fallbackReason,
   });
+}
+
+/**
+ * Did this run have the step's FULL cap (not a late wake's remainder), so
+ * that a clock-stopped incremental suffix counts toward a re-proof
+ * (SUFFIX_STOPS_BEFORE_REBUILD, counted on the checkpoint)?
+ */
+export function incrementalWindowIsStructural(deps: EthHistoryDeps & { deadlineMs: number }, stepMs: number = ethInlineStepMs()): boolean {
+  return deps.deadlineMs - (deps.now ?? Date.now)() >= stepMs - INCREMENTAL_FULL_WINDOW_SLACK_MS;
+}
+
+/**
+ * What the sync makes of an incremental outcome: DONE ⇒ its result; REFUSED ⇒
+ * a refusal (nothing written); FALLBACK ⇒ FULL_REBUILD_DEFERRED when the full
+ * rebuild is carried by the resumable checkpoint (`deferFull`) — the caller
+ * then enqueues it — else null (the explicit inline full rebuild continues).
+ */
+export function incrementalResultForSync(accountId: string, incremental: EthIncrementalOutcome, deferFull: boolean): EthHistoryResult | null {
+  if (incremental.kind === "DONE") return incremental.result;
+  if (incremental.kind === "REFUSED") {
+    return { accountId, ok: false, refusal: incremental.refusal, reason: incremental.reason, mode: "INCREMENTAL" };
+  }
+  if (!deferFull) return null;
+  console.log(`[eth-history] full rebuild handed to the resumable checkpoint for ${accountId}: ${incremental.reason}${incremental.detail ? ` — ${incremental.detail}` : ""}`);
+  return { accountId, ok: false, refusal: "FULL_REBUILD_DEFERRED", mode: "INCREMENTAL", fallbackReason: incremental.reason,
+    reason: `incremental history fell back (${incremental.reason}); the full rebuild is carried by the resumable checkpoint` };
 }
 
 /**

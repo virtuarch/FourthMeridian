@@ -1,8 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
+{ set +x +v; } 2>/dev/null   # FIRST: never trace (bash -x / SHELLOPTS=xtrace) — the password passes through this script
 # scripts/db-readonly-psql.sh — read-only psql for diagnosing a POOLED database
-# (Supabase/Supavisor), safe by construction.
+# (Supabase/Supavisor), FAIL CLOSED. The owner uses it for masked, read-only
+# investigations against PRODUCTION.
 #
-#   DIAG_DATABASE_URL='postgresql://…' scripts/db-readonly-psql.sh -c "select …" [-c "select …"]
+#   DIAG_DATABASE_URL='postgresql://user:pass@host:port/db' [DIAG_REQUIRE_ROLE=fm_diag_ro] \
+#     scripts/db-readonly-psql.sh -f FILE | -c "select …" [-c …] [-A] [-t] [-q] [-x] [-F X] [-P X]
 #
 # ⚠️ WHY THIS EXISTS (docs/operations/database-safety.md §4b). On 2026-10-25 a
 # credential check ran `SET default_transaction_read_only=on` as a standalone
@@ -11,38 +14,573 @@
 # hands that connection to the application: the next write transaction on it
 # failed with 25006 and Preview's AI allowance gate returned 503s.
 #
-# So, here:
-#   - every command runs in ONE transaction (`psql -1`) that begins
-#     `SET TRANSACTION READ ONLY; SET LOCAL statement_timeout` — transaction-
-#     scoped, gone at COMMIT, impossible to leak;
-#   - any argument containing a session-level SET, RESET, or set_config(…, false)
-#     is REFUSED before connecting;
-#   - the URL comes from DIAG_DATABASE_URL only (never printed), and Prisma's
-#     `pgbouncer=true` parameter (which psql rejects) is removed.
+# Run it as scripts/db-readonly-psql.sh: the `#!/bin/bash -p` shebang (privileged
+# mode) ignores BASH_ENV/ENV, SHELLOPTS and functions imported from the caller.
+#
+# Guarantees (each proved by scripts/db-session-set-guard.test.ts and, against a
+# throwaway container, scripts/db-readonly-psql-container.test.ts):
+#   - THE REAL BARRIERS are database-side: every command runs inside ONE explicit
+#     transaction that starts `BEGIN; SET TRANSACTION READ ONLY; SET LOCAL
+#     statement_timeout …` (first row: read_only_guard) and ENDS WITH ROLLBACK —
+#     never COMMIT (no `psql -1`) — so even a session-level setting is reverted;
+#     and, for every remote run, the mandatory DIAG_REQUIRE_ROLE guard below.
+#     The input scan is BEST-EFFORT defence in depth on top of those;
+#   - arguments: only exact `-c TEXT` / `-f FILE` and the output flags -A -t -q -x
+#     -F X -P X. Everything else (-d/--dbname, -h, -p, -U, -v, -1, -o, -fFILE,
+#     --file=…) is REFUSED, so nothing can override the URL, ON_ERROR_STOP or -1;
+#   - every -c text and every -f file is copied once into a private directory;
+#     the copy is what is checked and what psql runs. Refused before connecting:
+#     CR (it ends a -- comment in PostgreSQL and psql; convert CRLF files to
+#     LF), NUL or any other control byte except TAB/LF, invalid UTF-8, non-ASCII outside
+#     quotes and comments, any backslash meta-command except \echo \qecho \pset
+#     (never with `pager`), backticks, `:` followed by anything that can start a
+#     psql variable (so also `::type` casts — write CAST(x AS type)), dollar
+#     quoting or any '$' outside an identifier, U&'…' / U&"…" / UESCAPE, more
+#     END words than CASE words, any statement whose first word is not SELECT,
+#     WITH, VALUES, TABLE, SHOW, EXPLAIN (not ANALYZE), SET LOCAL or SET
+#     TRANSACTION, transaction control, DDL/DML and side-effect statements and
+#     functions, SQL-in-a-string executors (query_to_xml & co, ts_stat,
+#     ts_rewrite, xpath*, crosstab, connectby, dblink*, EXECUTE), server-file
+#     readers, timeouts, session-level SET / RESET and set_config in any form.
+#     The checks are deliberately coarse: they fail closed;
+#   - the URL comes from DIAG_DATABASE_URL only and is NEVER printed. It is
+#     trimmed of quotes / whitespace / a NAME= prefix, must be
+#     postgres(ql)://user:password@host[:port][/db][?params] with ONE plain
+#     host name and no '@' / '#' after the authority (percent-encode them in
+#     the password), and is refused when it points at a local/loopback host
+#     (localhost, *.localhost, 127/8, 0/8, numeric shorthands, IPv6 literals,
+#     socket paths, or a NAME that resolves to loopback, e.g. localtest.me or
+#     *.nip.io — the host is resolved once, by absolute-path system resolver,
+#     bounded to 5 s; unresolvable ⇒ refused; the checked address is then
+#     PINNED with hostaddr= so libpq cannot re-resolve) or carries host= / hostaddr= / service= / options= or any
+#     unknown parameter. sslmode=require is added (disable/allow/prefer are
+#     refused; sslrootcert=<file>|system only with sslmode=verify-full), require_auth=
+#     scram-sha-256 is ALWAYS added, channel_binding=require is optional, and
+#     Prisma's pgbouncer= / connection_limit= / pool_timeout= are dropped;
+#   - the password is split out of the URL and percent-decoded HERE (a malformed
+#     escape is refused without echoing it). It never appears in an argv (`ps`),
+#     a trace, an error or psql's environment: it is written to a 0600 pgpass
+#     file inside a private 0700 directory that is removed on exit (after a
+#     SIGKILL, remove it by hand: rm -rf "${TMPDIR:-/tmp}"/db-readonly-psql.*),
+#     and DIAG_DATABASE_URL is unexported right after it is read. (While the
+#     helper runs, its OWN initial environment — /proc/<pid>/environ on Linux,
+#     readable by the same user and root — still holds the URL as the caller
+#     passed it; use the prompt-based zsh flow so it exists only for that one
+#     command.) The checker's own tools run from a fixed system PATH. psql runs
+#     under `env -i` with only PATH, HOME, LANG, TERM, PGCONNECT_TIMEOUT and
+#     PGPASSFILE. The resolved psql path is printed before connecting;
+#   - DIAG_REQUIRE_ROLE=<role> (MANDATORY for a non-local host) makes the DATABASE verify, before anything else
+#     runs, that the session is exactly that role and that neither it nor any
+#     role it can become (pg_has_role MEMBER) is superuser / BYPASSRLS /
+#     CREATEROLE / CREATEDB / REPLICATION, a member of pg_write_all_data,
+#     pg_execute_server_program, pg_write_server_files, pg_signal_backend,
+#     pg_checkpoint, pg_maintain, pg_create_subscription, pg_read_all_data or
+#     pg_read_server_files, owns any object, can USE a foreign server, has a user
+#     mapping (or PUBLIC has one), can EXECUTE any dblink* function,
+#     holds INSERT/UPDATE/DELETE/TRUNCATE on any table or column, USAGE/UPDATE on
+#     any sequence, UPDATE on any large object, CREATE on any schema or the
+#     database, or can EXECUTE any user-created (oid >= 16384, pg_catalog
+#     included) SECURITY DEFINER function in a schema it can use
+#     (except the two allowlisted STABLE read-only functions
+#     public.fm_visible_space_ids() and public.fm_may_join_space(text)). The
+#     guard schema-qualifies every catalog reference and pins search_path to
+#     pg_catalog while it runs. Success prints read_only_role_guard = verified;
+#     anything else aborts the whole run with "role guard refused: …".
+#
+# TEST-ONLY: DIAG_ALLOW_LOCAL=1 accepts a local/loopback host and (for that
+# local host only) sslmode=disable, for the throwaway-container tests in
+# scripts/db-readonly-psql-container.test.ts. It prints a loud warning. Never
+# set it for Production or Preview.
+unset SHELLOPTS 2>/dev/null || true   # readonly in bash; harmless if it cannot be unset
+unset BASH_ENV ENV PS4 2>/dev/null || true
 set -euo pipefail
 
-if [[ -z "${DIAG_DATABASE_URL:-}" ]]; then
-  echo "db-readonly-psql: REFUSED — set DIAG_DATABASE_URL (it is never printed)." >&2
-  exit 2
+# psql is located with the CALLER's PATH (its path is printed before connecting);
+# everything else — tr, grep, awk, sed, iconv, the resolvers — runs from a FIXED
+# system PATH, so a planted getent/grep/awk earlier in PATH cannot vouch for input.
+psql_bin="$(type -P psql || true)"
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+refuse() { printf 'db-readonly-psql: REFUSED — %s\n' "$1" >&2; exit 2; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+
+allow_local=0
+if [[ "${DIAG_ALLOW_LOCAL:-}" == "1" ]]; then
+  allow_local=1
+  printf '%s\n' "db-readonly-psql: ⚠️  WARNING — DIAG_ALLOW_LOCAL=1 is a TEST-ONLY override (local/loopback host and sslmode=disable accepted). NEVER set it for Production or Preview." >&2
 fi
 
-for arg in "$@"; do
-  upper=$(printf '%s' "$arg" | tr '[:lower:]' '[:upper:]')
-  # A SET that is not SET LOCAL / SET TRANSACTION / SET CONSTRAINTS is session-scoped.
-  if printf '%s' "$upper" | grep -Eq '(^|[^A-Z_])SET[[:space:]]+(SESSION[[:space:]]+)?([A-Z_."]+)' \
-     && ! printf '%s' "$upper" | grep -Eq '(^|[^A-Z_])SET[[:space:]]+(LOCAL|TRANSACTION|CONSTRAINTS)[[:space:]]' ; then
-    echo "db-readonly-psql: REFUSED — session-level SET through a pooler leaks to the application (use SET LOCAL)." >&2
-    exit 2
+# ── Connection URL: normalised and validated, NEVER printed. ─────────────────
+# A pasted value commonly carries surrounding quotes, whitespace or a
+# `DATABASE_URL=` prefix (copied from a .env file / Vercel). psql does not treat
+# such a string as a URL: it falls back to a LOCAL socket — the failure the
+# owner hit. So: strip those, then parse strictly or refuse before psql runs.
+raw="${DIAG_DATABASE_URL:-}"
+export -n DIAG_DATABASE_URL 2>/dev/null || true; unset DIAG_DATABASE_URL   # no child process (tr, grep, awk, psql …) ever sees it
+raw="${raw#"${raw%%[![:space:]]*}"}"; raw="${raw%"${raw##*[![:space:]]}"}"   # trim
+for _ in 1 2; do                                                              # 'NAME="value"' / NAME='value'
+  raw="${raw#\"}"; raw="${raw%\"}"; raw="${raw#\'}"; raw="${raw%\'}"        # quotes
+  if [[ "$raw" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then raw="${raw#*=}"; fi        # NAME=value
+done
+[[ -n "$raw" ]] || refuse "DIAG_DATABASE_URL is empty (it is never printed)."
+NOT_URL="DIAG_DATABASE_URL is not a postgres://user:password@host/... URL (value not shown)."
+case "$raw" in postgres://*|postgresql://*) ;; *) refuse "$NOT_URL" ;; esac
+rest="${raw#*://}"
+[[ "$rest" != *'#'* ]] || refuse "the URL contains '#' (percent-encode it as %23 in the password; value not shown)."
+# RFC 3986: the authority ends at the first '/' or '?'. A password containing '@', '/' or '?'
+# must be percent-encoded (%40, %2F, %3F); an '@' after the authority is refused.
+authority="${rest%%[/?]*}"
+after="${rest:${#authority}}"
+[[ "$after" != *@* ]] || refuse "the URL has an '@' after the host (percent-encode @ / ? # in the password as %40 %2F %3F %23; value not shown)."
+[[ "$authority" == *@* ]] || refuse "$NOT_URL"
+userinfo="${authority%@*}"
+[[ "$userinfo" != *@* ]] || refuse "the URL's user:password contains a raw '@' (percent-encode it as %40; value not shown)."
+hostpart="${authority##*@}${after}"
+[[ "$userinfo" == *:* ]] || refuse "the URL has no password (value not shown)."
+db_user="${userinfo%%:*}"
+pw_enc="${userinfo#*:}"
+[[ "$db_user" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || refuse "the URL's user name must be plain letters, digits, '_', '.', '-' (value not shown)."
+[[ -n "$pw_enc" ]] || refuse "the URL has an empty password (value not shown)."
+
+query=""
+if [[ "$hostpart" == *\?* ]]; then query="${hostpart#*\?}"; hostpart="${hostpart%%\?*}"; fi
+db_name=""
+if [[ "$hostpart" == */* ]]; then db_name="${hostpart#*/}"; hostpart="${hostpart%%/*}"; fi
+[[ "$hostpart" != *,* ]] || refuse "multi-host URLs are refused (one host only)."
+[[ "$hostpart" != *\[* ]] || refuse "IPv6 literal hosts are refused; use the host name."
+db_port=""
+if [[ "$hostpart" == *:* ]]; then db_port="${hostpart##*:}"; hostpart="${hostpart%:*}"; fi
+host="$(lower "$hostpart")"
+[[ -n "$host" ]] || refuse "the URL has no host (a local-socket fallback is refused)."
+[[ "$host" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.?$ ]] \
+  || refuse "the URL's host must be one plain host name (no socket paths, percent-escapes or lists)."
+[[ -z "$db_port" || "$db_port" =~ ^[0-9]{1,5}$ ]] || refuse "the URL's port must be digits."
+[[ "$db_name" =~ ^[A-Za-z0-9_.-]*$ ]] || refuse "the URL's database name must be plain letters, digits, '_', '.', '-'."
+
+is_local=0
+octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+h="${host%.}"
+if [[ "$h" == localhost || "$h" == *.localhost ]]; then is_local=1; fi
+if [[ "$h" =~ ^(0x[0-9a-f]*|[0-9]+)(\.(0x[0-9a-f]*|[0-9]+))*$ ]]; then
+  # A numeric host: only a canonical dotted quad is accepted (127.1, 2130706433,
+  # 0x7f000001 and 0177.0.0.1 all resolve to loopback).
+    [[ "$h" =~ ^$octet\.$octet\.$octet\.$octet$ ]] || refuse "non-canonical numeric host (refused: it may resolve to loopback)."
+  case "${h%%.*}" in 127|0) is_local=1 ;; esac
+fi
+if (( is_local )) && (( ! allow_local )); then
+  refuse "URL points at a local/loopback host; this helper is for remote databases."
+fi
+
+sslmode=""; extra=""; sslrootcert=""
+if [[ -n "$query" ]]; then
+  IFS='&' read -r -a params <<< "$query"
+  for p in "${params[@]}"; do
+    [[ -n "$p" ]] || continue
+    k="$(lower "${p%%=*}")"; v=""; [[ "$p" == *=* ]] && v="${p#*=}"
+    case "$k" in
+      sslmode)          sslmode="$(lower "$v")" ;;
+      pgbouncer|connection_limit|pool_timeout) ;;   # Prisma-only; psql rejects them
+      connect_timeout)  [[ "$v" =~ ^[0-9]{1,3}$ ]] || refuse "connect_timeout must be digits."; extra+="&connect_timeout=$v" ;;
+      application_name) [[ "$v" =~ ^[A-Za-z0-9_.-]{1,63}$ ]] || refuse "application_name must be plain."; extra+="&application_name=$v" ;;
+      channel_binding)  [[ "$(lower "$v")" == require ]] || refuse "channel_binding accepts only 'require'."; extra+="&channel_binding=require" ;;
+      sslrootcert)      if [[ "$v" == system ]]; then sslrootcert=system
+                        else
+                          [[ "$v" =~ ^[A-Za-z0-9_./~-]{1,255}$ && -f "${v/#\~/${HOME:-}}" && -r "${v/#\~/${HOME:-}}" ]] \
+                            || refuse "sslrootcert must be 'system' or a plain path to a readable file."
+                          sslrootcert="${v/#\~/${HOME:-}}"
+                        fi ;;
+      host|hostaddr|service|options)
+        refuse "the URL carries a '$k=' parameter, which can redirect the connection or change session settings." ;;
+      *) if [[ "$k" =~ ^[a-z_]{1,40}$ ]]; then refuse "unsupported URL parameter '$k'."; else refuse "unsupported URL parameter (not shown)."; fi ;;
+    esac
+  done
+fi
+case "$sslmode" in
+  "") sslmode=require ;;   # remote connections require TLS
+  require|verify-ca|verify-full) ;;
+  disable|allow|prefer)
+    (( is_local && allow_local )) || refuse "sslmode=$sslmode is refused (TLS is required for a remote database)." ;;
+  *) refuse "invalid sslmode." ;;
+esac
+if [[ -n "$sslrootcert" ]]; then
+  [[ "$sslmode" == verify-full ]] || refuse "sslrootcert is accepted only together with sslmode=verify-full."
+  extra+="&sslrootcert=$sslrootcert"
+fi
+extra+="&require_auth=scram-sha-256"   # never send the password in clear / to a non-SCRAM server
+
+# A NAME can still resolve to loopback (localtest.me, 127.0.0.1.nip.io, *.sslip.io, a
+# hosts-file entry). Resolve it once with the system resolver (absolute paths, 5 s
+# bound), refuse loopback / unspecified addresses (unresolvable ⇒ refused), and PIN
+# the checked address: psql gets hostaddr=<that address> next to host=<name>, so
+# libpq connects to exactly what was checked and never re-resolves (DNS rebinding);
+# host= is still used for TLS verification.
+bounded() {   # run "$@" for at most 5 s; stdout passes through
+  "$@" 2> /dev/null &
+  local p=$!
+  ( sleep 5; kill -9 "$p" 2> /dev/null ) > /dev/null 2>&1 &
+  local w=$!
+  wait "$p" 2> /dev/null || true
+  kill "$w" 2> /dev/null || true
+}
+resolve_addrs() {
+  if [[ -x /usr/bin/getent ]]; then
+    bounded /usr/bin/getent ahosts "$1" | awk '{ print $1 }'
+  elif [[ -x /usr/bin/dscacheutil ]]; then
+    bounded /usr/bin/dscacheutil -q host -a name "$1" | awk '/^ipv?6?_?address:/ { print $2 }'
+  elif [[ -x /usr/bin/python3 ]]; then
+    bounded /usr/bin/python3 -I -c 'import socket,sys
+for a in socket.getaddrinfo(sys.argv[1], None): print(a[4][0])' "$1"
   fi
-  if printf '%s' "$upper" | grep -Eq '(^|[^A-Z_])RESET[[:space:]]|SET_CONFIG\([^)]*,[[:space:]]*FALSE[[:space:]]*\)'; then
-    echo "db-readonly-psql: REFUSED — RESET / set_config(…, false) is session-scoped." >&2
-    exit 2
+}
+pin_addr=""
+if (( ! is_local )); then
+  if [[ "$h" =~ ^$octet\.$octet\.$octet\.$octet$ ]]; then
+    addrs="$h"
+  else
+    addrs="$(resolve_addrs "$h" || true)"
   fi
+  [[ -n "$addrs" ]] || refuse "the host name could not be resolved within 5 s (needed to prove it is not loopback; host not shown)."
+  if grep -Eqi '^(127\.|0\.|::1$|::$|::ffff:(127|0)\.|0:0:0:0:0:0:0:[01]$)' <<< "$addrs"; then
+    (( allow_local )) || refuse "the host name resolves to a loopback/unspecified address; this helper is for remote databases."
+    is_local=1
+  else
+    pin_addr="$(head -n 1 <<< "$addrs")"
+    [[ "$pin_addr" =~ ^[0-9A-Fa-f:.]{2,45}$ ]] || refuse "the resolved address is not a plain IP address."
+  fi
+fi
+
+# A remote run must name the read-only role the database has to verify.
+if (( ! is_local )) && [[ -z "${DIAG_REQUIRE_ROLE:-}" ]]; then
+  refuse "DIAG_REQUIRE_ROLE is required for a remote database (the database-side read-only role guard)."
+fi
+
+
+
+# Password: validate every percent-escape BEFORE anything else sees it (psql
+# echoes a bad escape — and the password with it — in its error), then decode,
+# and build its pgpass form (\ and : escaped).
+decode_password() {
+  local LC_ALL=C s="$1" out="" ch esc=""
+  while [[ -n "$s" ]]; do
+    if [[ "${s:0:1}" == "%" ]]; then
+      [[ "${s:1:2}" =~ ^[0-9A-Fa-f]{2}$ ]] || refuse "the password contains a malformed percent-escape (value not shown; write a literal % as %25)."
+      printf -v ch "\\x${s:1:2}"; s="${s:3}"
+    else
+      ch="${s:0:1}"; s="${s:1}"
+    fi
+    [[ ! "$ch" =~ [[:cntrl:]] && -n "$ch" ]] || refuse "the password contains a control character (value not shown)."
+    out+="$ch"
+    case "$ch" in '\') esc+='\\' ;; ':') esc+='\:' ;; *) esc+="$ch" ;; esac
+  done
+  printf -v PGPASS_LINE '*:*:*:*:%s' "$esc"
+}
+PGPASS_LINE=""
+decode_password "$pw_enc"
+unset pw_enc userinfo rest raw authority after
+
+timeout="${PGCONNECT_TIMEOUT:-10}"
+[[ "$timeout" =~ ^[0-9]{1,3}$ ]] || timeout=10
+
+workdir="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/db-readonly-psql.XXXXXX")"
+cleanup() { rm -rf -- "$workdir"; }
+trap cleanup EXIT
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+passfile="$workdir/pgpass"
+(umask 077; printf '%s\n' "$PGPASS_LINE" > "$passfile")
+unset PGPASS_LINE
+
+# ── Arguments: exact forms only. Each text is copied once; the copy is checked
+#    and the copy (or the identical -c string) is what psql runs. ─────────────
+psql_args=(); copies=(); n=0
+while (( $# )); do
+  case "$1" in
+    -c) (( $# >= 2 )) || refuse "-c needs a value."
+        n=$((n + 1)); copy="$workdir/input-$n.sql"
+        (umask 077; printf '%s' "$2" > "$copy")
+        copies+=("$copy"); psql_args+=(-c "$2"); shift 2 ;;
+    -f) (( $# >= 2 )) || refuse "-f needs a value."
+        [[ -f "$2" && -r "$2" ]] || refuse "-f needs a readable regular file (not a pipe or <(…))."
+        n=$((n + 1)); copy="$workdir/input-$n.sql"
+        (umask 077; cat -- "$2" > "$copy")
+        copies+=("$copy"); psql_args+=(-f "$copy"); shift 2 ;;
+    -A|-t|-q|-x) psql_args+=("$1"); shift ;;
+    -F) (( $# >= 2 )) && [[ "$2" =~ ^[^[:cntrl:]]{1,8}$ ]] || refuse "-F needs a short separator."
+        psql_args+=(-F "$2"); shift 2 ;;
+    -P) (( $# >= 2 )) || refuse "-P needs a value."
+        [[ "$2" =~ ^(format|border|footer|tuples_only|null|expanded|title|fieldsep|recordsep|numericlocale|linestyle|columns|csv_fieldsep|xheader_width)(=[^[:cntrl:]]*)?$ ]] \
+          && [[ "$(lower "$2")" != *pager* ]] || refuse "-P accepts only output-format options (never pager)."
+        psql_args+=(-P "$2"); shift 2 ;;
+    *) refuse "argument not allowed (only exact '-c TEXT', '-f FILE' and -A -t -q -x -F X -P X; -d/--dbname, -h, -p, -U, -v, -1, -o, joined forms like -fFILE or --file=… are refused)." ;;
+  esac
 done
 
-url="${DIAG_DATABASE_URL//\?pgbouncer=true&/?}"
-url="${url//\?pgbouncer=true/}"
-url="${url//&pgbouncer=true/}"
+# Lexer (PostgreSQL rules: '…', "…", -- …, nested /* */; a backslash starts a
+# psql meta-command that runs to end of line). It reports:
+#   - CASE words outside quotes/comments (END words are counted EVERYWHERE, so
+#     a lexer mistake can only over-count END: it fails closed);
+#   - the FIRST word of every statement, which must be SELECT, WITH, VALUES,
+#     TABLE, SHOW, EXPLAIN (not ANALYZE) or SET LOCAL / SET TRANSACTION;
+#   - any '$' that does not continue an identifier (dollar quoting, $1, $q1$);
+#   - any non-ASCII byte outside quotes and comments.
+IFS= read -r -d '' COUNT_AWK <<'AWK' || true
+BEGIN { pr = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+        ok["SELECT"] = 1; ok["WITH"] = 1; ok["VALUES"] = 1; ok["TABLE"] = 1; ok["SHOW"] = 1; ok["EXPLAIN"] = 1; ok["SET"] = 1 }
+{ t = t $0 "\n" }
+END {
+  n = length(t); i = 1; cases = 0; ends = 0; bad = ""; first = 1; after = ""
+  while (i <= n) {
+    c = substr(t, i, 1); d = substr(t, i + 1, 1)
+    if (c == "-" && d == "-") {   # a -- comment ends at LF OR CR (PostgreSQL and psql both end it at CR)
+      while (i <= n && substr(t, i, 1) != "\n" && substr(t, i, 1) != "\r") i++
+      continue
+    }
+    if (c == "\\")            { j = index(substr(t, i), "\n"); i = (j ? i + j : n + 1); continue }
+    if (c == "/" && d == "*") {
+      depth = 1; i += 2
+      while (i <= n && depth > 0) {
+        c = substr(t, i, 1); d = substr(t, i + 1, 1)
+        if (c == "/" && d == "*") { depth++; i += 2 } else if (c == "*" && d == "/") { depth--; i += 2 } else i++
+      }
+      continue
+    }
+    if (c == "'" || c == "\"") {
+      if (first && bad == "") bad = "stmt"
+      j = index(substr(t, i + 1), c); i = (j ? i + j + 1 : n + 1); continue
+    }
+    if (c == "$") { if (bad == "") bad = "dollar"; i++; continue }
+    if (c ~ /[A-Za-z0-9_]/) {
+      w = ""
+      while (i <= n && substr(t, i, 1) ~ /[A-Za-z0-9_$]/) { w = w substr(t, i, 1); i++ }
+      W = toupper(w)
+      if (W == "CASE") cases++
+      if (after == "SET")     { if (W != "LOCAL" && W != "TRANSACTION" && bad == "") bad = "stmt"; after = "" }
+      else if (after == "EXPLAIN") { if ((W == "ANALYZE" || W == "ANALYSE") && bad == "") bad = "stmt"; after = "" }
+      if (first) { if (!(W in ok) && bad == "") bad = "stmt"; first = 0; if (W == "SET" || W == "EXPLAIN") after = W }
+      continue
+    }
+    if (c == ";") { first = 1; after = ""; i++; continue }
+    if (c == "\n" || c == "\t" || c == "\r" || c == " ") { i++; continue }
+    if (index(pr, c) > 0) { if (first && bad == "") bad = "stmt"; if (after == "SET" && bad == "") bad = "stmt"; i++; continue }
+    if (bad == "") bad = "ascii"; i++
+  }
+  m = split(toupper(t), ws, /[^A-Z0-9_$]+/)
+  for (k = 1; k <= m; k++) if (ws[k] == "END") ends++
+  print cases, ends, (bad == "" ? "none" : bad)
+}
+AWK
 
-exec psql "$url" -X -q -1 -v ON_ERROR_STOP=1 -P pager=off \
-  -c "SET TRANSACTION READ ONLY; SET LOCAL statement_timeout = '60s'" "$@"
+IFS= read -r -d '' NORM_AWK <<'AWK' || true
+{ t = t $0 "\n" }
+END {
+  n = length(t); i = 1; o = ""
+  while (i <= n) {
+    c = substr(t, i, 1); d = substr(t, i + 1, 1)
+    if (c == "-" && d == "-") { while (i <= n && substr(t, i, 1) != "\n" && substr(t, i, 1) != "\r") i++; o = o " "; continue }
+    if (c == "/" && d == "*") {
+      depth = 1; i += 2
+      while (i <= n && depth > 0) {
+        c = substr(t, i, 1); d = substr(t, i + 1, 1)
+        if (c == "/" && d == "*") { depth++; i += 2 } else if (c == "*" && d == "/") { depth--; i += 2 } else i++
+      }
+      o = o " "; continue
+    }
+    if (c == "'" || c == "\"") { j = index(substr(t, i + 1), c); k = (j ? j + 1 : n - i + 1); o = o substr(t, i, k); i += k; continue }
+    o = o ((c == "\n" || c == "\t") ? " " : c); i++   # one line: two-word patterns cannot hide behind a newline
+  }
+  printf "%s", o
+}
+AWK
+KW='COMMIT|ROLLBACK|BEGIN|ABORT|SAVEPOINT|RELEASE|START[[:space:]]+TRANSACTION|READ[[:space:]]+WRITE|SESSION[[:space:]]+CHARACTERISTICS|PREPARE|COPY|DO|CALL|LISTEN|UNLISTEN|NOTIFY|PG_NOTIFY|DISCARD|LOAD|INSERT|UPDATE|DELETE|MERGE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|LOCK|VACUUM|ANALYZE|ANALYSE|CLUSTER|REINDEX|REFRESH|COMMENT|SECURITY[[:space:]]+LABEL|IMPORT|REASSIGN|CHECKPOINT|INTO|DECLARE|DBLINK[A-Z_]*|LO_[A-Z_]+|PG_(TERMINATE|CANCEL)_BACKEND|PG_RELOAD_CONF|PG_ROTATE_LOGFILE|PG_(TRY_)?ADVISORY[A-Z_]*|PG_LOGICAL_EMIT_MESSAGE|TXID_CURRENT[A-Z_]*|PG_CURRENT_XACT_ID[A-Z_]*|PG_SLEEP[A-Z_]*|[A-Z_]*TIMEOUT|QUERY_TO_XML[A-Z_]*|TABLE_TO_XML[A-Z_]*|CURSOR_TO_XML[A-Z_]*|DATABASE_TO_XML[A-Z_]*|SCHEMA_TO_XML[A-Z_]*|TS_STAT|TS_REWRITE|XPATH[A-Z_]*|XMLTABLE|CROSSTAB[0-9A-Z_]*|CONNECTBY|PG_READ_FILE|PG_READ_BINARY_FILE|PG_LS_[A-Z_]+|PG_STAT_FILE|EXECUTE'
+for copy in ${copies[@]+"${copies[@]}"}; do
+  # Bytes first: bash $(…) silently drops NUL, so check the FILE, byte-wise.
+  ctl="$(LC_ALL=C tr -d '\t\n\040-\176\200-\377' < "$copy" | LC_ALL=C wc -c | tr -d '[:space:]')"
+  [[ "$ctl" == "0" ]] || refuse "input contains a CR, NUL or other control byte (only TAB and LF are allowed; convert CRLF files to LF)."
+  iconv -f UTF-8 -t UTF-8 < "$copy" > /dev/null 2>&1 || refuse "input is not valid UTF-8."
+  text="$(cat -- "$copy")"
+  u="$(upper "$text")"
+  # psql meta-commands: only \echo, \qecho and \pset — and never `pager`.
+  if grep -q '\\' <<< "$text"; then
+    while IFS= read -r tok; do
+      case "$tok" in '\echo'|'\qecho'|'\pset') ;; *) refuse "psql meta-command not allowed (only \\echo, \\qecho, \\pset)." ;; esac
+    done < <(grep -oE '\\[^[:space:]A-Za-z]?[A-Za-z_]*' <<< "$text")
+    grep -Eqi '\\pset.*pager' <<< "$text" && refuse "\\pset pager is not allowed."
+  fi
+  [[ "$text" != *'`'* ]] || refuse "backticks are not allowed (psql runs them as shell commands)."
+  LC_ALL=C grep -Eq ':[^[:space:]=),;:-]' <<< "$text" \
+    && refuse "':' followed by a name, quote or brace is not allowed (psql variable interpolation); write casts as CAST(x AS type)."
+  LC_ALL=C grep -Eq '\$[A-Za-z_]*\$' <<< "$text" && refuse "dollar quoting is not allowed."
+  grep -Eq "U&[[:space:]]*['\"]|(^|[^A-Z0-9_])UESCAPE([^A-Z0-9_]|\$)" <<< "$u" && refuse "U&'…' / U&\"…\" / UESCAPE are not allowed."
+  grep -Eq '(^|[^A-Z0-9_])SET_CONFIG([^A-Z0-9_]|$)' <<< "$u" \
+    && refuse "set_config is not allowed (use SET LOCAL inside the helper's transaction)."
+  # Keywords are matched on the raw text AND on a copy whose comments are replaced
+  # by one space and newlines flattened (READ/**/WRITE, START--x<LF>TRANSACTION …).
+  un="$(upper "$(LC_ALL=C awk "$NORM_AWK" < "$copy")")"
+  if grep -Eq "(^|[^A-Z0-9_])($KW)([^A-Z0-9_]|\$)" <<< "$u" || grep -Eq "(^|[^A-Z0-9_])($KW)([^A-Z0-9_]|\$)" <<< "$un"; then
+    refuse "transaction control / write / side-effect command or function in input."
+  fi
+  read -r n_case n_end n_bad < <(LC_ALL=C awk "$COUNT_AWK" < "$copy")
+  case "$n_bad" in
+    none) ;;
+    stmt)   refuse "every statement must start with SELECT, WITH, VALUES, TABLE, SHOW, EXPLAIN (not ANALYZE), SET LOCAL or SET TRANSACTION." ;;
+    dollar) refuse "'\$' is allowed only inside an identifier (no dollar quoting, no \$1 parameters)." ;;
+    ascii)  refuse "non-ASCII characters are allowed only inside quotes and comments." ;;
+    *)      refuse "input could not be checked." ;;
+  esac
+  (( n_end <= n_case )) || refuse "an END that does not close a CASE is refused (END commits the transaction)."
+  # A SET that is not SET LOCAL / SET TRANSACTION / SET CONSTRAINTS is session-scoped:
+  # remove the allowed forms, then ANY remaining SET is refused.
+  rest_u="$(sed -E 's/(^|[^A-Z0-9_])SET[[:space:]]+(LOCAL|TRANSACTION|CONSTRAINTS)([^A-Z0-9_]|$)/\1\3/g' <<< "$u")"
+  grep -Eq '(^|[^A-Z0-9_])SET([^A-Z0-9_]|$)' <<< "$rest_u" \
+    && refuse "session-level SET through a pooler leaks to the application (use SET LOCAL)."
+  grep -Eq '(^|[^A-Z0-9_])RESET([^A-Z0-9_]|$)' <<< "$u" && refuse "RESET is session-scoped."
+  true
+done
+
+# ── Optional database-side role guard. ───────────────────────────────────────
+# A plpgsql DO block (cannot be constant-folded away) RAISEs "role guard
+# refused: …" — aborting the whole run under ON_ERROR_STOP — unless the session
+# is exactly DIAG_REQUIRE_ROLE and neither it nor any role it can become
+# (pg_has_role MEMBER: inherited OR via SET ROLE) can write, run server
+# programs, signal backends, own objects or run an unexpected SECURITY DEFINER
+# function. Every catalog reference is pg_catalog-qualified and search_path is
+# pinned to pg_catalog while it runs (restored before the investigation).
+role_guard=""
+if [[ -n "${DIAG_REQUIRE_ROLE:-}" ]]; then
+  [[ "$DIAG_REQUIRE_ROLE" =~ ^[a-z_][a-z0-9_]*$ ]] || refuse "invalid DIAG_REQUIRE_ROLE."
+  IFS= read -r -d '' role_guard <<'SQL' || true
+DO $fm_role_guard$
+DECLARE
+  expected CONSTANT pg_catalog.name := '__ROLE__';
+  saved_path CONSTANT pg_catalog.text := pg_catalog.current_setting('search_path');
+  m record;
+  found pg_catalog.text;
+BEGIN
+  PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+  IF current_user OPERATOR(pg_catalog.<>) expected OR session_user OPERATOR(pg_catalog.<>) expected THEN
+    RAISE EXCEPTION 'role guard refused: connected as %, expected %', session_user, expected;
+  END IF;
+  IF pg_catalog.current_setting('lo_compat_privileges') OPERATOR(pg_catalog.=) 'on' THEN
+    RAISE EXCEPTION 'role guard refused: lo_compat_privileges is on (anyone can write large objects)';
+  END IF;
+  FOR m IN SELECT r.oid, r.rolname, r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, r.rolreplication
+             FROM pg_catalog.pg_roles r WHERE pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER')
+            ORDER BY (r.rolname OPERATOR(pg_catalog.=) current_user) DESC, r.rolname LOOP
+    IF m.rolsuper THEN
+      RAISE EXCEPTION 'role guard refused: % is superuser (via %)', expected, m.rolname;
+    END IF;
+    IF m.rolbypassrls THEN
+      RAISE EXCEPTION 'role guard refused: % can bypass row-level security (BYPASSRLS via %)', expected, m.rolname;
+    END IF;
+    IF m.rolcreaterole OR m.rolcreatedb OR m.rolreplication THEN
+      RAISE EXCEPTION 'role guard refused: % holds CREATEROLE/CREATEDB/REPLICATION (via %)', expected, m.rolname;
+    END IF;
+    IF m.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['pg_write_all_data', 'pg_execute_server_program', 'pg_write_server_files',
+                     'pg_signal_backend', 'pg_checkpoint', 'pg_maintain', 'pg_create_subscription',
+                     'pg_read_all_data', 'pg_read_server_files']::pg_catalog.name[]) THEN
+      RAISE EXCEPTION 'role guard refused: % is a member of %', expected, m.rolname;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_shdepend d
+                WHERE d.refclassid OPERATOR(pg_catalog.=) 'pg_catalog.pg_authid'::pg_catalog.regclass
+                  AND d.refobjid OPERATOR(pg_catalog.=) m.oid AND d.deptype OPERATOR(pg_catalog.=) 'o'
+                  AND (d.dbid OPERATOR(pg_catalog.=) 0::pg_catalog.oid
+                       OR d.dbid OPERATOR(pg_catalog.=) (SELECT db.oid FROM pg_catalog.pg_database db
+                                                          WHERE db.datname OPERATOR(pg_catalog.=) pg_catalog.current_database())))
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c     WHERE c.relowner OPERATOR(pg_catalog.=) m.oid)
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p      WHERE p.proowner OPERATOR(pg_catalog.=) m.oid)
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_type t      WHERE t.typowner OPERATOR(pg_catalog.=) m.oid)
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspowner OPERATOR(pg_catalog.=) m.oid) THEN
+      RAISE EXCEPTION 'role guard refused: % owns database objects (via %)', expected, m.rolname;
+    END IF;
+    SELECT pg_catalog.string_agg(x.t, ', ') INTO found FROM (
+      SELECT pg_catalog.quote_ident(n.nspname) OPERATOR(pg_catalog.||) '.' OPERATOR(pg_catalog.||) pg_catalog.quote_ident(c.relname) AS t
+        FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+       WHERE n.nspname OPERATOR(pg_catalog.<>) ALL (ARRAY['pg_catalog', 'information_schema']::pg_catalog.name[])
+         AND n.nspname OPERATOR(pg_catalog.!~) '^pg_(toast|temp_)'
+         AND ((c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r', 'p', 'v', 'm', 'f']::pg_catalog."char"[])
+               AND (pg_catalog.has_table_privilege(m.oid, c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE')
+                    OR pg_catalog.has_any_column_privilege(m.oid, c.oid, 'INSERT,UPDATE')))
+           OR (c.relkind OPERATOR(pg_catalog.=) 'S' AND pg_catalog.has_sequence_privilege(m.oid, c.oid, 'USAGE,UPDATE')))
+       ORDER BY 1 LIMIT 5) x;
+    IF found IS NOT NULL THEN
+      RAISE EXCEPTION 'role guard refused: % can write (INSERT/UPDATE/DELETE/TRUNCATE or sequence USAGE/UPDATE, via %) on: %', expected, m.rolname, found;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_largeobject_metadata l
+                WHERE l.lomowner OPERATOR(pg_catalog.=) m.oid
+                   OR EXISTS (SELECT 1 FROM pg_catalog.aclexplode(l.lomacl) a
+                               WHERE a.grantee OPERATOR(pg_catalog.=) ANY (ARRAY[m.oid, 0::pg_catalog.oid])
+                                 AND a.privilege_type OPERATOR(pg_catalog.=) 'UPDATE')) THEN
+      RAISE EXCEPTION 'role guard refused: % can write a large object (via %)', expected, m.rolname;
+    END IF;
+    SELECT pg_catalog.string_agg(pg_catalog.quote_ident(n.nspname), ', ') INTO found
+      FROM pg_catalog.pg_namespace n
+     WHERE n.nspname OPERATOR(pg_catalog.<>) ALL (ARRAY['pg_catalog', 'information_schema']::pg_catalog.name[])
+       AND n.nspname OPERATOR(pg_catalog.!~) '^pg_(toast|temp_)'
+       AND pg_catalog.has_schema_privilege(m.oid, n.oid, 'CREATE');
+    IF found IS NOT NULL THEN
+      RAISE EXCEPTION 'role guard refused: % has CREATE (via %) on schema: %', expected, m.rolname, found;
+    END IF;
+    IF pg_catalog.has_database_privilege(m.oid, pg_catalog.current_database(), 'CREATE') THEN
+      RAISE EXCEPTION 'role guard refused: % has CREATE on database % (via %)', expected, pg_catalog.current_database(), m.rolname;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_foreign_server fs WHERE pg_catalog.has_server_privilege(m.oid, fs.oid, 'USAGE')) THEN
+      RAISE EXCEPTION 'role guard refused: % can use a foreign server (via %)', expected, m.rolname;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_user_mappings um WHERE um.umuser OPERATOR(pg_catalog.=) ANY (ARRAY[m.oid, 0::pg_catalog.oid])) THEN
+      RAISE EXCEPTION 'role guard refused: a user mapping exists for % or PUBLIC (via %)', expected, m.rolname;
+    END IF;
+    SELECT pg_catalog.string_agg(DISTINCT p.proname::pg_catalog.text, ', ') INTO found FROM pg_catalog.pg_proc p
+     WHERE p.proname OPERATOR(pg_catalog.~~) 'dblink%' AND pg_catalog.has_function_privilege(m.oid, p.oid, 'EXECUTE');
+    IF found IS NOT NULL THEN
+      RAISE EXCEPTION 'role guard refused: % can execute dblink function(s) (via %): %', expected, m.rolname, found;
+    END IF;
+    -- SECURITY DEFINER functions this role can reach run with their OWNER's rights.
+    -- Every user-created function counts (oid >= 16384), pg_catalog included.
+    -- Allowlisted: the two Production RLS helpers, by schema, name, argument types,
+    -- and only while they are STABLE/IMMUTABLE (read-only by declaration).
+    SELECT pg_catalog.string_agg(pg_catalog.quote_ident(n.nspname) OPERATOR(pg_catalog.||) '.' OPERATOR(pg_catalog.||) pg_catalog.quote_ident(p.proname)
+             OPERATOR(pg_catalog.||) '(' OPERATOR(pg_catalog.||) pg_catalog.oidvectortypes(p.proargtypes) OPERATOR(pg_catalog.||) ')', ', ') INTO found
+      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+     WHERE p.prosecdef
+       AND p.oid OPERATOR(pg_catalog.>=) 16384::pg_catalog.oid
+       AND pg_catalog.has_schema_privilege(m.oid, n.oid, 'USAGE')
+       AND pg_catalog.has_function_privilege(m.oid, p.oid, 'EXECUTE')
+       AND NOT (n.nspname OPERATOR(pg_catalog.=) 'public'
+                AND p.provolatile OPERATOR(pg_catalog.=) ANY (ARRAY['s', 'i']::pg_catalog."char"[])
+                AND ((p.proname OPERATOR(pg_catalog.=) 'fm_visible_space_ids' AND pg_catalog.oidvectortypes(p.proargtypes) OPERATOR(pg_catalog.=) '')
+                  OR (p.proname OPERATOR(pg_catalog.=) 'fm_may_join_space' AND pg_catalog.oidvectortypes(p.proargtypes) OPERATOR(pg_catalog.=) 'text')));
+    IF found IS NOT NULL THEN
+      RAISE EXCEPTION 'role guard refused: % can execute SECURITY DEFINER function(s) (via %): %', expected, m.rolname, found;
+    END IF;
+  END LOOP;
+  PERFORM pg_catalog.set_config('search_path', saved_path, true);
+END
+$fm_role_guard$;
+SELECT 'verified'::pg_catalog.text AS read_only_role_guard;
+SQL
+  role_guard="${role_guard//__ROLE__/$DIAG_REQUIRE_ROLE}"
+fi
+
+# ── psql: resolved path printed; clean environment (env -i + allowlist). ─────
+[[ "$psql_bin" == /* ]] || refuse "psql was not found on PATH."
+printf 'db-readonly-psql: using psql at %s\n' "$psql_bin" >&2
+psql_env=(PATH="$PATH:${psql_bin%/*}" PGCONNECT_TIMEOUT="$timeout" PGPASSFILE="$passfile")
+[[ -n "${HOME:-}" ]] && psql_env+=(HOME="$HOME")
+[[ -n "${LANG:-}" ]] && psql_env+=(LANG="$LANG")
+[[ -n "${TERM:-}" ]] && psql_env+=(TERM="$TERM")
+
+url="postgresql://${db_user}@${host}${db_port:+:$db_port}/${db_name}?sslmode=${sslmode}${extra}${pin_addr:+&hostaddr=$pin_addr}"
+
+set +e
+# No `-1` (its COMMIT is exactly what must never happen): the first command opens
+# the transaction read-only, the LAST command is ROLLBACK, and any error stops psql
+# (ON_ERROR_STOP) so the server aborts the transaction when the connection closes.
+env -i "${psql_env[@]}" "$psql_bin" "$url" -X -w -q -v ON_ERROR_STOP=1 -P pager=off \
+  -c "BEGIN; SET TRANSACTION READ ONLY; SET LOCAL statement_timeout = '60s'; SET LOCAL idle_in_transaction_session_timeout = '60s'; SELECT pg_catalog.current_setting('transaction_read_only') AS read_only_guard" \
+  ${role_guard:+-c "$role_guard"} ${psql_args[@]+"${psql_args[@]}"} \
+  -c "ROLLBACK"
+rc=$?
+exit "$rc"

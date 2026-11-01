@@ -103,23 +103,54 @@ export const NON_CATALOG_TEMPLATES: Partial<Record<EmailTemplateName, string>> =
 
 /**
  * Known gaps between the contract's consent rules and today's behaviour.
- * Reported, NOT fixed (Phase A-1 changes no behaviour). Tests pin this list
- * so it can only shrink.
- *   SECURITY_ANOMALY_DETECTED — AUDIT R-2 / OWNER DECISION O-8: the Security Ops
- *     bell sits in the UNLOCKED PLATFORM category, so a staff recipient can turn
- *     it off (PLATFORM IN_APP off ⇒ createNotification returns skipped).
+ * Tests pin this list so it can only shrink. EMPTY since Comms Center A-2b:
+ *   SECURITY_ANOMALY_DETECTED (AUDIT R-2 / O-8) was the one entry — the
+ *   Security Ops bell sat in the unlocked PLATFORM category. It is now locked
+ *   per type (registry PER_TYPE_LOCKED_TYPES): no preference can mute it.
  */
-export const KNOWN_SUPPRESSIBILITY_GAPS: Readonly<Record<string, string>> = {
-  SECURITY_ANOMALY_DETECTED: "AUDIT R-2 / O-8: unlocked PLATFORM category; staff can mute the security bell",
-};
+export const KNOWN_SUPPRESSIBILITY_GAPS: Readonly<Record<string, string>> = {};
 
 /**
  * Known dedupe templates that embed a PII payload field (contract §2
- * invariant; AUDIT R-3 / O-8). Pinned so no NEW definition can add one.
+ * invariant). Pinned so no NEW definition can add one. EMPTY since Comms
+ * Center A-2b: SECURITY_ANOMALY_DETECTED's anomalyKey (AUDIT R-3 / O-8) is now a
+ * salted hash of the identifier / IP (lib/security/identifier-hash.ts).
  */
-export const KNOWN_PII_DEDUPE_KEYS: Readonly<Record<string, string>> = {
-  SECURITY_ANOMALY_DETECTED: "AUDIT R-3 / O-8: anomalyKey carries the raw login identifier or IP",
-};
+export const KNOWN_PII_DEDUPE_KEYS: Readonly<Record<string, string>> = {};
+
+/**
+ * Comms Center A-2b (owner decision O-10) — the per-recipient email STORM
+ * LIMIT, enforced in lib/email/send.ts after the recipient guard: at most
+ * EMAIL_STORM_LIMIT.maxPerRecipient ACCEPTED emails of the LIMITED classes per
+ * recipient per rolling EMAIL_STORM_LIMIT.windowMinutes. Over it the send is
+ * SUPPRESSED / RATE_LIMITED; when the count cannot be read, SUPPRESSED /
+ * RATE_LIMIT_UNVERIFIED (fail closed). Exempt, and never counted:
+ *   SECURITY_CRITICAL and CEREMONY (password reset, verification, email change,
+ *   beta invitation) — always send, even when the count is unreadable;
+ *   OPERATOR — staff inboxes and bells are not customer email.
+ * A send whose key is not a catalog entry (tooling: the smoke template) is not
+ * customer email either. Production call sites are pinned to name a key.
+ */
+export const EMAIL_STORM_LIMIT = { maxPerRecipient: 5, windowMinutes: 60 } as const;
+export const EMAIL_STORM_LIMITED_CLASSES: readonly ConsentClass[] = ["SERVICE", "AWARENESS", "MARKETING"];
+
+/**
+ * TODO(O-10, owner): a GLOBAL platform email cap, sized under the Resend plan
+ * quota — which is UNKNOWN. OFF (null) until the owner supplies it; nothing
+ * reads a non-null value yet. Kept here so the decision has one home.
+ */
+export const GLOBAL_EMAIL_CAP_PER_HOUR: number | null = null;
+
+/** True when a send under this catalog key counts toward, and is held by, the storm limit. */
+export function isStormLimitedKey(key: string): boolean {
+  const def = getCatalogDefinition(key);
+  return def !== undefined && EMAIL_STORM_LIMITED_CLASSES.includes(def.consentClass);
+}
+
+/** Every catalog key the storm limit counts (the ledger count's definitionKey filter). */
+export function stormLimitedKeys(): string[] {
+  return CATALOG_KEYS.filter(isStormLimitedKey);
+}
 
 // ── Owner surfaces ────────────────────────────────────────────────────────────
 
@@ -324,7 +355,8 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     audience: "ACCOUNT_HOLDER", consentClass: "SERVICE", displayName: "Institution needs attention",
     description:
       "Sent when a bank sync fails with a health-classified error: in-app plus email, one live notice per item until it " +
-      "recovers. Suppressed when the user removed the connection themselves.",
+      "recovers. Suppressed when the user removed the connection themselves. The email follows only the FINANCIAL email " +
+      "preference: turning FINANCIAL in-app off hides the notice but does not stop the email (owner ruling 2026-10-31).",
     payload: { plaidItemId: ptr(), institutionName: disp(), connectionState: disp() },
     trigger: event("plaid.item.sync_failed", "lib/plaid/sync-notifications.ts"),
     eligibility: ["connection.removed_by_user"],
@@ -395,8 +427,10 @@ export const REGISTRY_CATALOG: { readonly [K in NotificationTypeId]: RegistryCat
     audience: "PLATFORM_STAFF", consentClass: "OPERATOR", displayName: "Security anomaly (staff bell)",
     description:
       "In-app bell to every ACTIVE Security Ops grant holder and SYSTEM_ADMIN when an authentication anomaly is detected. " +
-      "Today it sits in the unlocked PLATFORM category, so a recipient can mute it (AUDIT R-2, O-8).",
-    payload: { anomalyKey: ptr("string", true), title: disp(), summary: disp() },
+      "Locked: no preference can mute it (O-8). Its anomaly key is a salted hash of the login identifier or IP; the raw " +
+      "value stays on the audit trip row, which carries the same hash as keyHash.",
+    // A salted HMAC of the identifier / IP (lib/security/identifier-hash.ts), not the value itself.
+    payload: { anomalyKey: ptr("string", false), title: disp(), summary: disp() },
     trigger: site("lib/security/anomaly-alerts.ts"),
     ownerSurface: OWNER.securityOps,
   },

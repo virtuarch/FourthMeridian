@@ -33,6 +33,43 @@
 
   The comms routes wrap the shared gate and limiter rather than changing them. `Retry-After` and the operator-TOTP denial header are kept.
 
+**v1.0.2 clarifications (2026-10-31, from the review of the Phase A-2a PR #170):**
+- **The ledger is one row per ATTEMPT; reads count MESSAGES** (§6.1, §4.11). This replaces §6.1's "one row per message, `attempts` incremented in place". `CommsDelivery` is append-only:
+  - every attempt is its own row with an `attempt` number (1-based);
+  - a stable `messageKey` groups the attempts of one message. It is the Notification id for registry legs (IN_APP and its EMAIL leg, distinguished by `channel`) and a generated send id for a direct send;
+  - a message is `(channel, messageKey)`. Its outcome is the row with the highest `attempt` (ties: latest `createdAt`, then `id`), on that row's UTC day.
+- **`totals`, `byKey` and every `series` count each message once, by its final status.** A retried-then-accepted email is 1 `ACCEPTED`, not a `FAILED`; an email that dies after its retries is 1 `DEAD`. The `status` filter applies to the final status. The daily rollup counts messages the same way: an expired attempt that a later attempt supersedes is deleted uncounted.
+- **Per-delivery rows (§4.13, later):** `attempts` = the highest `attempt` of the message; `lastAttemptAt` = that row's `createdAt`.
+- **Retention is 90 days** (owner decision, O-9). After that, only the daily counts are kept.
+- **Error codes** (no provider text is stored): `RENDER | TIMEOUT | NO_TRANSPORT | PROVIDER | STORE | PREFERENCE_READ | RECIPIENT_LOOKUP`. Resend does not expose an HTTP class, so 4xx and 5xx are one `PROVIDER` code.
+- **Recipient:** `recipientUserId`, or (only when there is no user) `HMAC-SHA256(COMMS_RECIPIENT_HASH_SALT, address)`. With no salt, no hash is stored. There is no `audience`, `mode`, `dedupeKey`, `idempotencyKey` or automation column yet; those arrive with Phase B.
+
+**v1.0.3 — Phase A-2b owner decisions (2026-10-31):**
+- **O-8 / AUDIT R-2 — the Security Ops bell cannot be muted.** `SECURITY_ANOMALY_DETECTED` is **locked per type** (`PER_TYPE_LOCKED_TYPES`, `lib/notifications/registry.ts`). It stays in PLATFORM; the PLATFORM row still governs the customer bells, but `resolveChannelEnabled` ignores it for this type. A category counts as locked only when every type in it is locked. The catalog reports `protected: true, userSuppressible: false`, and `KNOWN_SUPPRESSIBILITY_GAPS` is empty. Every other security-class type was audited: all ACCOUNT_SECURITY types are locked, and every direct security or operator send reads no preference.
+- **O-8 / AUDIT R-3 — hashed anomaly identifiers.**
+  - The bell's `metadata.anomalyKey`, and the `dedupeKey` built from it, hold `<kind>:h<first 128 bits of HMAC-SHA256(SECURITY_IDENTIFIER_HASH_SALT, trimmed lower-cased value)>` (`lib/security/identifier-hash.ts`). The salt is a **new** env var: `COMMS_RECIPIENT_HASH_SALT` keys recipient addresses for the ledger and purge, which is a different purpose, so it is not reused.
+  - Unset ⇒ a **stable, domain-separated** fallback salt, `HMAC-SHA256(NEXTAUTH_SECRET, "fm:sec-id-hash:v1")`: never plaintext, and the same on every instance, so dedupe holds across instances. The env report is a **fail** in Production while the dedicated salt is unset (a warn elsewhere). Nothing on the login path throws over it.
+  - The AuditLog trip row keeps the raw `metadata.key` (unchanged) and gains `metadata.keyHash`, which equals the bell's `anomalyKey`.
+  - **Where operators look:** the Security Ops posture surface. It shows the kind plus `keyRef` = `h` + the first 8 hex of the row's salted `keyHash`, a literal prefix of both the audit row's `keyHash` and the bell's `anomalyKey`. For the raw identifier or IP, they find the `SECURITY_ANOMALY_DETECTED` audit row by `metadata.keyHash`. `KNOWN_PII_DEDUPE_KEYS` is empty.
+  - The old unsalted 24-bit FNV `keyRef` of the raw key is removed. A legacy trip row with no `keyHash` projects `keyRef: ""` and `legacy: true`; nothing is derived from its raw key. Platform access-denied trip rows carry `keyHash` too.
+- **O-7 (owner ruling) — connection-failure email is independent of in-app.**
+  - Applies to types flagged `emailIndependentOfInApp` (only `SYNC_FAILED`). Their EMAIL leg follows only the category's EMAIL preference.
+  - IN_APP off + EMAIL on: the Notification row is written **archived at birth** (an email anchor, invisible in-app) and the email ships from it. Ledger: `IN_APP SUPPRESSED PREFERENCE_OFF` plus the email's own row.
+  - The anchor carries a chokepoint-owned metadata marker (`_commsEmailAnchor`; a producer-supplied value is stripped). While it holds the suppress-while-open key the outage is open, **whatever the user's in-app setting is now**. Turning in-app back on mid-outage does not re-email it. So there is one email per outage, and retirement (which now also releases archived holders) re-arms it.
+  - **Re-enabling in-app mid-outage shows no bell until the next outage.** The anchor keeps the dedupe key for the outage it already emailed about (owner ruling), so later syncs of that outage are suppressed and nothing new is created. The next outage, after retirement, produces a visible bell and an email as usual.
+  - EMAIL off: `EMAIL SUPPRESSED PREFERENCE_OFF`.
+  - Every other type keeps the F11/S3 coupling.
+  - The retry job retries a failed anchor email under the normal policy (attempt cap, DEAD on the last attempt) while the anchor still holds its key. After retirement it is closed OBSOLETE as before.
+- **O-10 — per-recipient storm limit.**
+  - At most **5 ACCEPTED emails per recipient per rolling 60 min** (`EMAIL_STORM_LIMIT`), across every SERVICE / AWARENESS / MARKETING catalog key.
+  - Counted from `CommsDelivery` by `recipientUserId`, or by `recipientHash` when there is no user, **plus** an in-process reservation for every admitted send whose ledger row is not written yet. The ledger write is deferred until after the response, so this is what holds a burst inside one cron run or route invocation. The reservation check-and-take is atomic, released on a non-accepted send or once the row is written, kept until it ages out if the write failed, and bounded (window-pruned, ≤ limit per recipient, ≤ 5,000 recipients).
+  - Enforced in `sendEmail` after the recipient guard and before the provider.
+  - Over the limit ⇒ `skipped` / ledger `SUPPRESSED` with reason **`RATE_LIMITED`**. A count that cannot be read (error, 1.5 s timeout, or no recipient identity) ⇒ **`RATE_LIMIT_UNVERIFIED`** (fail closed).
+  - SECURITY_CRITICAL, CEREMONY and OPERATOR mail is exempt, never counted, and always sends.
+  - Both reasons are added to `SuppressionReason` (§3.3).
+  - A **RATE_LIMITED `SYNC_FAILED` email is not re-sent during the same outage** (owner storm policy). Its delivery is closed as `skipped` (never retried), and the Notification row (bell or email anchor) holds the outage's dedupe key, so later syncs of the same broken item are suppressed. The next outage, after retirement, emails again.
+  - The global platform cap (`GLOBAL_EMAIL_CAP_PER_HOUR`) is a documented TODO, `null` (OFF), until the Resend plan quota is known.
+
 ---
 
 ## 0. Agreed constraints (from Session 2) and how this contract meets them
@@ -311,7 +348,8 @@ type SuppressionReason =
   | "ACCOUNT_RESTRICTED"                                       // deactivated / deletion pending (schema.prisma:396-401)
   | "BETA_LIFECYCLE" | "ENTITLEMENT" | "PROVIDER_FREEZE"
   | "ENVIRONMENT_GUARD"                                        // Preview/allowlist guard (O-4)
-  | "AUTOMATION_PAUSED" | "STORM_BREAKER";
+  | "AUTOMATION_PAUSED" | "STORM_BREAKER"
+  | "RATE_LIMITED" | "RATE_LIMIT_UNVERIFIED";                // v1.0.3: per-recipient email storm limit (O-10)
 ```
 
 **Mapping of today's values** (`NotificationDelivery.status`, `prisma/schema.prisma:3816`):
