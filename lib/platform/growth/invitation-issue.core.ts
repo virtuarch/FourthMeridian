@@ -99,6 +99,19 @@ export interface InviteRowFacts {
   inviteExpiresAt: Date | null;
   /** When the current token was last sent (the reissue double-click token). */
   invitedAt?: Date | null;
+  /**
+   * SUSPECTED-ABUSE LOCK (owner ruling 2026-11-01): the request's LATEST risk-review
+   * verdict is SUSPICIOUS. On a DENIED row this makes the denial final for every
+   * issuance path until an operator deliberately records a newer verdict
+   * (LEGITIMATE or UNREVIEWED) through the audited, reason-required risk-review
+   * action. Read only for DENIED rows; absent ⇒ not locked.
+   */
+  suspectedAbuse?: boolean;
+}
+
+/** PURE — a DENIED request whose latest verdict is SUSPICIOUS can never be (re)issued until the verdict is cleared. */
+export function isSuspectedAbuseLocked(row: Pick<InviteRowFacts, "status" | "suspectedAbuse"> | null): boolean {
+  return !!row && row.status === "DENIED" && row.suspectedAbuse === true;
 }
 
 export type IssueKind = "approve" | "reissue" | "direct";
@@ -116,7 +129,9 @@ export type IssueRefusalCode =
   | "WOULD_SHORTEN"
   | "STATUS_CHANGED"
   /** The Beta group's lifecycle is not ACTIVE (PAUSED / ENDED) or cannot be verified (UNKNOWN). */
-  | "BETA_NOT_ACCEPTING";
+  | "BETA_NOT_ACCEPTING"
+  /** DENIED + latest risk verdict SUSPICIOUS: no issuance path may revive it until the verdict is cleared. */
+  | "SUSPECTED_ABUSE";
 
 export interface IssueRefusal {
   code: IssueRefusalCode;
@@ -128,7 +143,7 @@ export interface IssueRefusal {
 const STATUS_OF: Record<IssueRefusalCode, IssueRefusal["status"]> = {
   NOT_FOUND: 404, INVALID_VALIDITY: 400, INVALID_EMAIL: 400,
   REDEEMED: 409, ACCOUNT_EXISTS: 409, NOT_APPROVED: 409, DENIED: 409, LIVE_INVITE: 409, CONFLICT: 409, WOULD_SHORTEN: 409,
-  STATUS_CHANGED: 409, BETA_NOT_ACCEPTING: 409,
+  STATUS_CHANGED: 409, BETA_NOT_ACCEPTING: 409, SUSPECTED_ABUSE: 409,
 };
 
 export function refusal(code: IssueRefusalCode, message?: string): IssueRefusal {
@@ -147,6 +162,7 @@ const DEFAULT_MESSAGE: Record<IssueRefusalCode, string> = {
   CONFLICT:         "This invitation changed while your action was being saved. Reload and try again.",
   WOULD_SHORTEN:    "That would shorten this invitation. Extend only lengthens it — use Revoke to end an invitation early.",
   STATUS_CHANGED:   "This request's status changed since it was selected (denied, revoked or re-queued) — not approved.",
+  SUSPECTED_ABUSE:  "This request was denied and marked as suspected abuse, so it can't be approved or invited. To reconsider it, record a new risk verdict (Legitimate or Unreviewed) with a reason first.",
   BETA_NOT_ACCEPTING: "The beta isn't accepting new members right now (paused, ended, or its status couldn't be verified). Nothing was sent.",
 };
 
@@ -178,6 +194,8 @@ export function planApprove(row: InviteRowFacts | null, accountExists: boolean, 
   if (row.status === "REDEEMED") return { action: "refuse", refusal: refusal("REDEEMED") };
   // I4 — a repeat or a concurrent second click on an APPROVED row sends nothing.
   if (row.status === "APPROVED") return { action: "alreadyApproved", row };
+  // The suspected-abuse lock outranks every other reason (bulk included), so the operator sees why.
+  if (isSuspectedAbuseLocked(row)) return { action: "refuse", refusal: refusal("SUSPECTED_ABUSE") };
   if (expectedStatus !== undefined && row.status !== expectedStatus) return { action: "refuse", refusal: refusal("STATUS_CHANGED") };
   // E-6 — an invite for an address that already has an account can never be redeemed.
   if (accountExists) return { action: "refuse", refusal: refusal("ACCOUNT_EXISTS") };
@@ -196,7 +214,7 @@ export function planDirect(row: InviteRowFacts | null, accountExists: boolean, n
   if (!row) return { action: "create" };
   switch (row.status) {
     case "PENDING":  return { action: "approve", row };
-    case "DENIED":   return { action: "refuse", refusal: refusal("DENIED") };
+    case "DENIED":   return { action: "refuse", refusal: refusal(isSuspectedAbuseLocked(row) ? "SUSPECTED_ABUSE" : "DENIED") };
     case "REDEEMED": return { action: "refuse", refusal: refusal("REDEEMED") };
     case "APPROVED":
       if (isLive(row, now)) return { action: "refuse", refusal: refusal("LIVE_INVITE") };

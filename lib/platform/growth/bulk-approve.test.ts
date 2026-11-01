@@ -426,6 +426,29 @@ async function main() {
       && row({ id: ids[0] }).status === "APPROVED" && row({ id: ids[1] }).status === "PENDING" && row({ id: ids[2] }).status === "PENDING", mid);
   }
 
+  // ── 13. SUSPECTED-ABUSE LOCK ──────────────────────────────────────────────
+  t.section("13. suspected-abuse lock: a DENIED + SUSPICIOUS row is ineligible in a batch (dry run and execute)");
+  {
+    await world();
+    const { db } = await import("@/lib/db");
+    const { bulkApproveBetaRequests } = await import("./bulk-approve");
+    const actor = { userId: admin.id, via: "SYSTEM_ADMIN" as const, area: "GROWTH_REVENUE" };
+    const locked = fake.seed("BetaAccessRequest", { email: "bulk-lock@example.test", status: "DENIED" });
+    fake.seed("BetaAccessRequestReview", { requestId: locked.id, status: "SUSPICIOUS", reasonCode: "TESTING", createdAt: new Date(Date.now() - 60_000) });
+    const ok = pending("bulk-ok@example.test");
+    const ids = [locked.id as string, ok];
+    const parse = (dryRun: boolean) => (parseBulkApproveBody({ requestIds: ids, batchKey: randomUUID(), dryRun }) as { ok: true; body: Parameters<typeof bulkApproveBetaRequests>[0]["body"] }).body;
+    const dry = await bulkApproveBetaRequests({ client: db, actor, body: parse(true) });
+    const dryRow = dry.ok && dry.dryRun ? dry.rows.find((r) => r.id === locked.id) : undefined;
+    t.check("dry run: the locked row is ineligible with code SUSPECTED_ABUSE; the pending one is eligible",
+      !!dryRow && !dryRow.eligible && dryRow.code === "SUSPECTED_ABUSE" && dry.ok && dry.dryRun && dry.summary.eligible === 1, dry);
+    const run = await bulkApproveBetaRequests({ client: db, actor, body: parse(false) });
+    const skippedLocked = run.ok && !run.dryRun ? run.skipped.find((x) => x.id === locked.id) : undefined;
+    t.check("execute: the locked row is skipped SUSPECTED_ABUSE and stays DENIED with no email; the other is approved",
+      skippedLocked?.code === "SUSPECTED_ABUSE" && row({ id: locked.id }).status === "DENIED" && sentTo("bulk-lock@example.test").length === 0
+      && row({ id: ok }).status === "APPROVED", run);
+  }
+
   t.done();
 }
 

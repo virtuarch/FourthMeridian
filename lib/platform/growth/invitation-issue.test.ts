@@ -548,6 +548,74 @@ async function main() {
     t.check("PAUSED but already APPROVED → alreadyApproved (idempotent, nothing minted, not gated)", again.ok && again.outcome === "alreadyApproved", again);
   }
 
+  t.section("SUSPECTED-ABUSE LOCK. a DENIED request whose latest verdict is SUSPICIOUS cannot be revived by any path");
+  {
+    const verdict = (requestId: unknown, status: string, at: Date) =>
+      fake.seed("BetaAccessRequestReview", { requestId, status, reasonCode: "TESTING", createdAt: at });
+    const t0 = Date.now();
+    await world();
+    const actor = { userId: admin.id, via: "SYSTEM_ADMIN" as const, area: "GROWTH_REVENUE" };
+
+    // 1. Locked: DENIED + latest SUSPICIOUS.
+    const locked = fake.seed("BetaAccessRequest", { email: "lock@example.test", status: "DENIED" });
+    verdict(locked.id, "SUSPICIOUS", new Date(t0 - 60_000));
+    const ap = await approve(locked.id as string);
+    t.check("single approve → 409 SUSPECTED_ABUSE", ap.status === 409 && ap.body.code === "SUSPECTED_ABUSE", ap.body);
+    const dr = await direct({ email: "lock@example.test" });
+    t.check("direct invite to the same address → 409 SUSPECTED_ABUSE", dr.status === 409 && dr.body.code === "SUSPECTED_ABUSE", dr.body);
+    const rs = await resend(locked.id as string);
+    t.check("resend → refused (not approved), nothing rotated", rs.status === 409 && rs.body.code === "NOT_APPROVED", rs.body);
+    const ex = await extend(locked.id as string, { validityDays: 5, reason: REASON });
+    t.check("extend → refused (not approved)", ex.status === 409 && ex.body.code === "NOT_APPROVED", ex.body);
+    const viaFn = await issueBetaInvitation({ client: db, actor, kind: "approve", requestId: locked.id as string });
+    t.check("issueBetaInvitation approve (no expectedStatus) → SUSPECTED_ABUSE", !viaFn.ok && viaFn.code === "SUSPECTED_ABUSE", viaFn);
+    t.check("…the row is still DENIED with no token; no email; no approval or creation audit",
+      row({ id: locked.id }).status === "DENIED" && row({ id: locked.id }).inviteTokenHash == null
+      && sentTo("lock@example.test").length === 0 && audits("BETA_ACCESS_APPROVED").length === 0 && audits("BETA_INVITATION_CREATED").length === 0);
+
+    // 2. An OLDER suspicious verdict superseded by a newer clearing verdict ⇒ unlocked (the deliberate clear).
+    for (const clear of ["LEGITIMATE", "UNREVIEWED"]) {
+      const r = fake.seed("BetaAccessRequest", { email: `cleared-${clear.toLowerCase()}@example.test`, status: "DENIED" });
+      verdict(r.id, "SUSPICIOUS", new Date(t0 - 120_000));
+      verdict(r.id, clear, new Date(t0 - 60_000));
+      const ok = await approve(r.id as string);
+      t.check(`SUSPICIOUS then ${clear} (newer) → the lock is cleared: approve 200, invitation sent`,
+        ok.status === 200 && row({ id: r.id }).status === "APPROVED" && sentTo(`cleared-${clear.toLowerCase()}@example.test`).length === 1, ok.body);
+    }
+
+    // 3. A clearing verdict OLDER than a later SUSPICIOUS one does not clear it.
+    const relock = fake.seed("BetaAccessRequest", { email: "relock@example.test", status: "DENIED" });
+    verdict(relock.id, "LEGITIMATE", new Date(t0 - 120_000));
+    verdict(relock.id, "SUSPICIOUS", new Date(t0 - 60_000));
+    const rl = await approve(relock.id as string);
+    t.check("LEGITIMATE then SUSPICIOUS (newer) → still locked", rl.status === 409 && rl.body.code === "SUSPECTED_ABUSE" && row({ id: relock.id }).status === "DENIED", rl.body);
+
+    // 4. Scope: the lock is for REJECTED requests. A plain DENIED (no verdict) behaves as before.
+    const plain = fake.seed("BetaAccessRequest", { email: "plain-denied@example.test", status: "DENIED" });
+    const pd = await approve(plain.id as string);
+    t.check("DENIED with no verdict → single approve still reverses the denial (unchanged)", pd.status === 200 && row({ id: plain.id }).status === "APPROVED", pd.body);
+
+    // 5. A verdict recorded AFTER the plan's read is caught by the in-transaction re-read.
+    const racy = fake.seed("BetaAccessRequest", { email: "racy@example.test", status: "DENIED" });
+    let reads = 0;
+    fake.on("BetaAccessRequestReview", "findFirst", () => (++reads === 1 ? null : { status: "SUSPICIOUS" }));
+    const rc = await approve(racy.id as string);
+    fake.clearHooks();
+    t.check("SUSPICIOUS recorded between the plan and the write → 409 SUSPECTED_ABUSE, nothing written",
+      rc.status === 409 && rc.body.code === "SUSPECTED_ABUSE" && row({ id: racy.id }).status === "DENIED" && sentTo("racy@example.test").length === 0, rc.body);
+
+    // 6. A failed verdict read fails closed (nothing minted).
+    const broken = fake.seed("BetaAccessRequest", { email: "broken@example.test", status: "DENIED" });
+    fake.on("BetaAccessRequestReview", "findFirst", () => { throw new Error("review read failed"); });
+    const origErr = console.error; console.error = () => {};
+    // The route lets the error escape (Next answers 500); either way nothing may be minted.
+    let failedClosed = false;
+    try { failedClosed = (await approve(broken.id as string)).status >= 500; } catch { failedClosed = true; } finally { console.error = origErr; }
+    fake.clearHooks();
+    t.check("verdict read throws → not approved (fail closed), no email", failedClosed && row({ id: broken.id }).status === "DENIED" && row({ id: broken.id }).inviteTokenHash == null
+      && sentTo("broken@example.test").length === 0);
+  }
+
   t.done();
 }
 
