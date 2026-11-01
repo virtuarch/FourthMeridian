@@ -102,7 +102,7 @@ console.log("operator feed + intake notification wiring");
   check("mode change validates against REGISTRATION_MODES", mode.includes("REGISTRATION_MODES"));
 
   const intake = src("app/api/access-request/route.ts");
-  check("intake notification is honest-skip (guarded on BETA_REQUESTS_EMAIL)", /if\s*\(\s*env\.BETA_REQUESTS_EMAIL\s*\)/.test(intake));
+  check("intake notification is honest-skip (guarded on BETA_REQUESTS_EMAIL; R2 adds the throttle beside it)", /if\s*\(\s*env\.BETA_REQUESTS_EMAIL\s*(\)|&&)/.test(intake));
   check("intake notification uses the beta-request template", intake.includes('"beta-request"'));
   check("intake still 200s regardless (notification is non-throwing)", intake.includes("success: true"));
 }

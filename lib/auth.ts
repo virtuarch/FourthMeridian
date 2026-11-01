@@ -49,7 +49,7 @@ import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { SESSION_INDETERMINATE_FLAG } from "@/lib/auth/session-outcome";
 import { AUTH_UNAVAILABLE_TOKEN } from "@/lib/auth/login-outcome";
-import { verifyCaptchaToken } from "@/lib/captcha";
+import { verifyCaptchaToken, CAPTCHA_ACTIONS } from "@/lib/captcha";
 import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
 import { reportLoginFailureAnomalies } from "@/lib/security/anomaly-alerts";
 import { authCookiesSecure, authCookieOverrides } from "@/lib/auth/session-cookie";
@@ -252,10 +252,26 @@ export const authOptions: NextAuthOptions = {
         // Authoritative check (the pre-login `captchaRequired` hint is advisory).
         // A missing/invalid token is denied like any other failed login
         // (non-enumerating, no audit write — same posture as the limited path).
-        // No-ops when CAPTCHA is unconfigured: verifyCaptchaToken returns true.
+        // No-ops when CAPTCHA is unconfigured OUTSIDE PRODUCTION ("passed").
+        // R2 — FAIL CLOSED, honestly: "unavailable" (Cloudflare unreachable, or
+        // PRODUCTION with missing / half-set Turnstile keys) is
+        // the authority-unavailable sentinel, like the rate-limit store above —
+        // NOT return null, which the client would show as wrong credentials.
+        // Thrown before the user lookup, so it writes no LOGIN_FAILED row and
+        // never touches the account's failed-credential state.
+        // CONSEQUENCE while Production lacks keys: an identifier with ≥
+        // LOGIN_CAPTCHA_THRESHOLD failed attempts in the current fixed
+        // LOGIN_ID_WINDOW_SEC window is refused as "temporarily unavailable"
+        // until that window rolls over (≤ 15 min) — even with the right
+        // password. Accepted (owner rule: fail closed); below the threshold
+        // login never reaches this and is unaffected.
         if (priorAttempts >= LOGIN_CAPTCHA_THRESHOLD) {
-          const captchaOk = await verifyCaptchaToken(credentials.captchaToken || null, ipAddress ?? undefined);
-          if (!captchaOk) return null;
+          const captcha = await verifyCaptchaToken(credentials.captchaToken || null, { action: CAPTCHA_ACTIONS.login, ip: ipAddress ?? undefined });
+          if (captcha === "unavailable") {
+            captureAuthInfraFailure("captcha", new Error("authorize CAPTCHA siteverify unavailable"));
+            throw new Error(AUTH_UNAVAILABLE_TOKEN);
+          }
+          if (captcha !== "passed") return null;
         }
 
         // ── Kill switch: disable SYSTEM_ADMIN login via env flag ──────────────
