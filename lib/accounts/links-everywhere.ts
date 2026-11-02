@@ -24,7 +24,7 @@
  * product semantics are unchanged — disconnect revoked everywhere before this
  * module existed and revokes everywhere after it.
  *
- * Full reasoning: docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide.
+ * Full reasoning: docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md.
  *
  * ── THE THREE CONSTRAINTS, SO fm_system DOES NOT BECOME AN ESCAPE HATCH ───────
  *
