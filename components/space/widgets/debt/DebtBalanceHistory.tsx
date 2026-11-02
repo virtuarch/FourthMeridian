@@ -19,6 +19,9 @@
 import { useMemo } from "react";
 import type { DebtHistorySlice } from "@/lib/debt-space-data";
 import { TrendChart, type TrendPoint } from "@/components/space/widgets/charts/TrendChart";
+import { useSpaceIdContext } from "@/components/space/space-id-context";
+import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
+import { debtTrendPoints } from "./debt-trend-points";
 
 export function DebtBalanceHistory({
   history,
@@ -35,9 +38,11 @@ export function DebtBalanceHistory({
 }) {
   // Already clipped by the contract; project to the chart's point shape (totalDebt is
   // the value; a backfilled row is reconstructed).
+  // PB-8 — days before a liability's balance-history floor are drawn PARTIAL.
+  const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
   const trendPoints: TrendPoint[] = useMemo(
-    () => (history?.points ?? []).map((p) => ({ date: p.date, value: p.totalDebt, estimated: p.isEstimated })),
-    [history],
+    () => debtTrendPoints(history, balanceCoverage),
+    [history, balanceCoverage],
   );
 
 

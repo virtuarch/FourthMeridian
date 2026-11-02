@@ -28,8 +28,9 @@ import { classifyPerspectiveEmpty, EMPTY_COPY, type PerspectiveKey } from "@/lib
 import type { DataSourceView } from "@/lib/connections/space-data-health.core";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import type { ValuationCoverage } from "@/lib/connections/valuation-coverage.core";
+import type { BalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
-type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: ValuationCoverage | null };
+type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: ValuationCoverage | null; balanceCoverage: BalanceCoverage | null };
 const cache = new Map<string, Promise<DataHealthPayload | null>>();
 
 function loadPayload(spaceId: string): Promise<DataHealthPayload | null> {
@@ -38,8 +39,8 @@ function loadPayload(spaceId: string): Promise<DataHealthPayload | null> {
     p = fetch(`/api/spaces/${encodeURIComponent(spaceId)}/data-health`, { cache: "no-store", credentials: "same-origin" })
       .then(async (r) => {
         if (!r.ok) return null;
-        const j = (await r.json()) as { sources?: DataSourceView[]; valuationCoverage?: ValuationCoverage | null };
-        return { sources: j.sources ?? null, valuationCoverage: j.valuationCoverage ?? null };
+        const j = (await r.json()) as { sources?: DataSourceView[]; valuationCoverage?: ValuationCoverage | null; balanceCoverage?: BalanceCoverage | null };
+        return { sources: j.sources ?? null, valuationCoverage: j.valuationCoverage ?? null, balanceCoverage: j.balanceCoverage ?? null };
       })
       .catch(() => null);
     cache.set(spaceId, p);
@@ -67,6 +68,11 @@ export function useSpaceSources(spaceId: string | null | undefined): DataSourceV
 /** Why the Net Worth history starts where it does when prices bound it — the same one read. */
 export function useSpaceValuationCoverage(spaceId: string | null | undefined): ValuationCoverage | null {
   return useDataHealth(spaceId)?.valuationCoverage ?? null;
+}
+
+/** PB-8 — before which date debt / cash history is partial (balance floors) — the same one read. */
+export function useSpaceBalanceCoverage(spaceId: string | null | undefined): BalanceCoverage | null {
+  return useDataHealth(spaceId)?.balanceCoverage ?? null;
 }
 
 const NOTE_COPY = {

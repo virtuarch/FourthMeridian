@@ -24,6 +24,8 @@ import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import type { PortfolioValuePoint } from "@/lib/investments/portfolio-series";
 import { TrendChart } from "@/components/space/widgets/charts/TrendChart";
 import { projectWealthTrendPoints } from "./wealth-trend-points";
+import { useSpaceIdContext } from "@/components/space/space-id-context";
+import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
 
 export type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 
@@ -57,7 +59,10 @@ export function WealthTrendChart({
   onSelectPoint?:  (dateISO: string) => void;
 }) {
   const title = WEALTH_SERIES_TITLE[metric];
-  const points = projectWealthTrendPoints(result, metric, investedSeries);
+  // PB-8 — days before an account's balance-history floor are drawn PARTIAL
+  // (the Space's one data-health read; nothing changes while it loads).
+  const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
+  const points = projectWealthTrendPoints(result, metric, investedSeries, balanceCoverage);
 
 
   return (

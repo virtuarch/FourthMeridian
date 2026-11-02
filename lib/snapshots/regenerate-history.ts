@@ -71,7 +71,7 @@ import { nativeAssetForChain, ledgerEpsilonFor, type NativeAsset } from "@/lib/c
 import { amountOwed } from "@/lib/debt/balance-semantics";
 import { getAccountBalancesOverWindow } from "@/lib/data/accounts-asof-window";
 import {
-  aggregateIdentityViolations, SERIES_IDENTITY_TOLERANCE,
+  aggregateIdentityViolations, auditDebtReplay,
 } from "@/lib/snapshots/series-integrity.core";
 import { licenseConstantQuantityCarry } from "@/lib/crypto/quantity-carry.core";
 import { feedsLegacyWealthHistory } from "@/lib/crypto/wallet-sync-dispatch";
@@ -195,7 +195,11 @@ export interface RegenerateWealthHistoryResult {
    * now report success only after the resulting component series agrees with the
    * evidence behind it. Null when nothing was written (nothing to verify).
    */
-  integrity: { checked: number; healthy: boolean; violations: string[] } | null;
+  /**
+   * PB-8 — `unverifiableAccountIds`: debt accounts the ladder cannot walk (held
+   * flat). Reported apart, never compared against a replayed 0.
+   */
+  integrity: { checked: number; healthy: boolean; violations: string[]; unverifiableAccountIds: string[] } | null;
   skippedFrozen:      number; // observed rows left untouched
   skippedUnsupported: number; // no A8 evidence — flat estimate preserved, not fabricated
   // 2026-07-15 — days left untouched because an account was removed from the
@@ -1418,14 +1422,14 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
  */
 async function verifyLiabilitySeries(
   client: Client, spaceId: string, fromDate: string, toDate: string,
-): Promise<{ checked: number; healthy: boolean; violations: string[] }> {
+): Promise<{ checked: number; healthy: boolean; violations: string[]; unverifiableAccountIds: string[] }> {
   const rows = await client.spaceSnapshot.findMany({
     where: { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
     select: { date: true, debt: true, isEstimated: true, stocks: true, crypto: true, total: true,
               cash: true, savings: true, netWorth: true, totalAssets: true, netLiquid: true },
     orderBy: { date: "asc" },
   });
-  if (rows.length === 0) return { checked: 0, healthy: true, violations: [] };
+  if (rows.length === 0) return { checked: 0, healthy: true, violations: [], unverifiableAccountIds: [] };
 
   const violations: string[] = [];
 
@@ -1439,15 +1443,27 @@ async function verifyLiabilitySeries(
   const { accounts, byDate } = await getAccountBalancesOverWindow(client, {
     spaceId, fromISO: fromDate, toISO: toDate, types: [AccountType.debt],
   });
+  // PB-8 — WALKED vs UNVERIFIABLE, per account (auditDebtReplay). A liability
+  // the ladder cannot walk is held flat by the writer and reported as 0 before
+  // its connection floor by the resolver; it is never compared against that 0.
+  // Only genuine mismatches among walked accounts (beyond what some held-flat
+  // subset explains) are violations.
+  let unverifiableAccountIds: string[] = [];
   if (accounts.length > 0) {
-    const ids = accounts.map((a) => a.id);
-    for (const r of rows) {
-      if (!r.isEstimated) continue; // an observation was never walked
-      const dISO = isoDate(r.date);
-      const owed = ids.reduce((n, id) => n + amountOwed(byDate.get(dISO)?.get(id)?.balance ?? 0), 0);
-      if (Math.abs(owed - r.debt) > SERIES_IDENTITY_TOLERANCE) {
-        violations.push(`${dISO} debt: stored ${r.debt.toFixed(2)} != replay ${owed.toFixed(2)}`);
-      }
+    const report = auditDebtReplay(
+      rows.map((r) => ({ dateISO: isoDate(r.date), debt: r.debt, isEstimated: r.isEstimated })),
+      accounts.map((a) => ({ id: a.id, walked: isReconstructableCard(a), heldFlatOwed: amountOwed(a.balance) })),
+      (dISO, id) => amountOwed(byDate.get(dISO)?.get(id)?.balance ?? 0),
+    );
+    violations.push(...report.violations);
+    unverifiableAccountIds = report.unverifiableAccountIds;
+    if (unverifiableAccountIds.length > 0) {
+      // Counts and ids only — never a balance.
+      console.log(
+        `[wealth-regen] ${spaceId}: integrity probe — ${unverifiableAccountIds.length} debt account(s) ` +
+        `unverifiable (held flat, no walk): ${unverifiableAccountIds.join(",")}; ` +
+        `${report.rowsRestingOnUnverifiable} of ${report.checked} estimated row(s) rest on them`,
+      );
     }
   }
 
@@ -1457,6 +1473,7 @@ async function verifyLiabilitySeries(
     // Bounded: a systemic defect produces hundreds of identical lines and the
     // count already conveys the scale.
     violations: violations.slice(0, 10),
+    unverifiableAccountIds,
   };
 }
 
