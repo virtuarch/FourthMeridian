@@ -17,7 +17,8 @@
  *   1. `cf-connecting-ip` — ONLY when CLIENT_IP_TRUST_CLOUDFLARE=true declares
  *      that Cloudflare fronts every request (Cloudflare overwrites it; without
  *      Cloudflare it is a plain client header). Off by default: Production is
- *      Vercel-direct today (03-SECURITY.md open question), so trusting it would
+ *      Vercel-direct today (open question in
+ *      docs/archive/evidence/security/03-SECURITY.md), so trusting it would
  *      be trusting the client.
  *   2. `x-vercel-forwarded-for` — set by Vercel's edge from the connecting
  *      socket; a client-supplied value is replaced. Platform-trusted on Vercel.

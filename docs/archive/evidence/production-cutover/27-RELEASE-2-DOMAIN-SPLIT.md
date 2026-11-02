@@ -175,14 +175,14 @@ Step log (private): `~/fm-rehearsal-private/prod-cutover/release.log`.
 
 ### 7.2 C4 webhook repoints
 
-- **Items:** Chase, American Express, Charles Schwab, Robinhood. There were 4, not 3: the earlier NEEDS_REAUTH Item was reconnected at 14:32.
+- **Items:** Institution A, Institution B, Institution C, Institution D. There were 4, not 3: the earlier NEEDS_REAUTH Item was reconnected at 14:32.
 - **Per Item:**
   - `PLAID_ITEM_WEBHOOK_UPDATED` SUCCESS, before `https://fourthmeridian.com/api/plaid/webhook` → after `https://app.fourthmeridian.com/api/plaid/webhook`, actor the owner via a Platform Ops grant;
   - Plaid read-back passed;
   - `ITEM/WEBHOOK_UPDATE_ACKNOWLEDGED` recorded (17:32:52, 17:35:30, 17:35:51, 17:36:15).
 - **Host evidence:**
   - the request log shows all 4 acknowledgement POSTs (200) on host `app.`;
-  - Robinhood's (17:36:15) appeared on host `app.` once Vercel finished ingesting it (it was absent at first);
+  - Institution D's (17:36:15) appeared on host `app.` once Vercel finished ingesting it (it was absent at first);
   - there were no apex webhook POSTs.
 
 ### 7.3 C5 apex move

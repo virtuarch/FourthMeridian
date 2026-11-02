@@ -23,7 +23,7 @@
 
 `ListAgents` shows a peer interactive session (`fourthmeridian-1b`, started ~47 min before this report) operating in the **same working directory**. During this investigation it:
 
-- created commit `6fbb601` (docs-only: `docs/plans/CRYPTO-REFRESH-INCIDENT-2026-10-01.md`), and
+- created commit `6fbb601` (docs-only: `docs/plans/CRYPTO-REFRESH-INCIDENT-2026-10-01.md`, since moved to `docs/archive/evidence/incidents/`), and
 - left these **uncommitted implementation changes** in the working tree:
 
 ```
