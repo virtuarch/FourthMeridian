@@ -67,8 +67,16 @@ shasum -a 256 -c "backups/<env>-<STAMP>.sql.sha256"
 grep -v '^SET transaction_timeout' "backups/<env>-<STAMP>.sql" | psql "$SCRATCH" -v ON_ERROR_STOP=1 -q
 T_RESTORED=$(date -u +%s)
 
-# 3. Roles + grants + policies come from the migration history, not the dump:
-#    the ledger is already at head (it was dumped), so this is a no-op that PROVES it.
+# 3. What the dump does and does not restore (see database-safety §4c):
+#    - Policies, RLS flags and the _prisma_migrations ledger ARE in the dump (restored above).
+#    - Roles are cluster-level and are NEVER in a dump: the four roles must exist on the
+#      scratch BEFORE the restore, or the policy statements fail.
+#    - GRANTs are NOT in the dump (--no-privileges). Because the ledger is at head, replaying
+#      migrations does NOT re-grant: the runtime roles fail closed ("permission denied") until
+#      grants are re-established. GAP (DECIDED BUT NOT IMPLEMENTED): there is no automated
+#      re-grant step yet; until there is, a restore is not usable by the app roles, and the
+#      rehearsal must record that explicitly.
+#    The drift check below proves only that the ledger is at head:
 export DATABASE_URL="$SCRATCH?schema=public" DIRECT_URL="$DATABASE_URL" FM_DB_GUARD=clone-only
 npm run db:drift                      # expect: 0 pending, 0 unknown
 #    If the target predates the RLS migrations (Production today), apply them here:
