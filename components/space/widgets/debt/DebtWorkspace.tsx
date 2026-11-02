@@ -58,6 +58,7 @@ import { DebtHero, debtCompactKpiItems, debtHeroNotes, type DebtWindowChange } f
 import { HeroNotes } from "@/components/space/hero/HeroParts";
 import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { DebtBalanceHistory } from "./DebtBalanceHistory";
+import { BalanceCoverageNote } from "@/components/space/widgets/shared/BalanceCoverageNote";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import { LiabilitiesLedger } from "./LiabilitiesLedger";
 import { DebtCompositionCard } from "./DebtCompositionCard";
@@ -353,6 +354,9 @@ export function DebtWorkspace({
           compareTo={compareTo}
           onSelectPoint={handleSelectPoint}
         />
+        {/* PB-8 — before a liability's balance-history floor the debt history is
+            partial: said under the chart, never read as $0 owed. */}
+        <BalanceCoverageNote from={history?.points[0]?.date ?? null} metric="totalLiabilities" />
         {/* v2.7 header parity — the headline's qualifying disclosures live UNDER
             THE CHART (every width), never in / below the header. */}
         <HeroNotes notes={debtHeroNotes({ historical, asOf, redactions })} />

@@ -34,9 +34,10 @@ import { db } from "@/lib/db";
 import { AccountType } from "@prisma/client";
 import { getAccountBalancesOverWindow } from "@/lib/data/accounts-asof-window";
 import { amountOwed } from "@/lib/debt/balance-semantics";
+import { isReconstructableCard } from "@/lib/snapshots/backfill-core";
 import {
-  auditLiabilitySeries, aggregateIdentityViolations, round2,
-  SERIES_IDENTITY_TOLERANCE, type SeriesPoint,
+  auditLiabilitySeries, aggregateIdentityViolations, auditDebtReplay, round2,
+  type SeriesPoint,
 } from "@/lib/snapshots/series-integrity.core";
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -91,20 +92,24 @@ async function main() {
     const { accounts, byDate } = await getAccountBalancesOverWindow(db, {
       spaceId: sp.id, fromISO: from, toISO: to, types: [AccountType.debt],
     });
-    let healthy = 0, repair = 0, frozenSkipped = 0;
+    let healthy = 0, repair = 0, frozenSkipped = 0, unverifiable = 0;
 
     if (accounts.length > 0) {
       const ids = accounts.map((a) => a.id);
-      const owedOn = (dISO: string) =>
-        ids.reduce((n, id) => n + amountOwed(byDate.get(dISO)?.get(id)?.balance ?? 0), 0);
+      // PB-8 — the write-time probe's own split: a held-flat (unwalkable)
+      // liability is UNVERIFIABLE, never compared against a replayed 0.
+      const probeAccounts = accounts.map((a) => ({ id: a.id, walked: isReconstructableCard(a), heldFlatOwed: amountOwed(a.balance) }));
+      const walkedOwedOn = (dISO: string, id: string) => amountOwed(byDate.get(dISO)?.get(id)?.balance ?? 0);
+      const walkedIds = probeAccounts.filter((a) => a.walked).map((a) => a.id);
+      unverifiable = ids.length - walkedIds.length;
 
       for (const r of rows) {
         const dISO = iso(r.date);
         if (!r.isEstimated) { frozenSkipped++; continue; }
-        const delta = round2(owedOn(dISO) - r.debt);
-        if (Math.abs(delta) <= SERIES_IDENTITY_TOLERANCE) { healthy++; continue; }
+        const report = auditDebtReplay([{ dateISO: dISO, debt: r.debt, isEstimated: true }], probeAccounts, walkedOwedOn);
+        if (report.violations.length === 0) { healthy++; continue; }
         repair++;
-        bump(repairable, `${sp.name}|debt`, delta, dISO);
+        bump(repairable, `${sp.name}|debt`, round2(walkedIds.reduce((n, id) => n + walkedOwedOn(dISO, id), 0) - r.debt), dISO);
       }
 
       // Secondary probe — WHERE the series first diverges.
@@ -128,7 +133,8 @@ async function main() {
 
     console.log(
       `${sp.name.padEnd(22)} rows=${String(rows.length).padStart(4)} frozen=${String(frozen).padStart(4)} ` +
-      `debt: HEALTHY=${String(healthy).padStart(4)} REPAIRABLE=${String(repair).padStart(4)} FROZEN=${String(frozenSkipped).padStart(4)}`);
+      `debt: HEALTHY=${String(healthy).padStart(4)} REPAIRABLE=${String(repair).padStart(4)} FROZEN=${String(frozenSkipped).padStart(4)}` +
+      (unverifiable > 0 ? ` UNVERIFIABLE-ACCOUNTS=${unverifiable}` : ""));
   }
 
   console.log(`\n══ TOTALS  rows=${totalRows}  frozen=${frozenRows}  rows with contradictory aggregates=${contradictoryRows}`);

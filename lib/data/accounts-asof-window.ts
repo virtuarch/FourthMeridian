@@ -98,7 +98,7 @@ export async function getAccountBalancesOverWindow(
       financialAccount: {
         select: {
           id: true, name: true, type: true, balance: true, institution: true,
-          createdAt: true, debtSubtype: true, creditLimit: true,
+          createdAt: true, debtSubtype: true, creditLimit: true, providerSubtype: true,
           nativeBalance: true, lastUpdated: true, walletChain: true,
         },
       },
@@ -112,6 +112,7 @@ export async function getAccountBalancesOverWindow(
       type: l.financialAccount.type as string,
       debtSubtype: l.financialAccount.debtSubtype,
       creditLimit: l.financialAccount.creditLimit,
+      providerSubtype: l.financialAccount.providerSubtype,
     }),
     connectionFloorISO: isoDate(maxDate(truncDateUTC(l.financialAccount.createdAt), truncDateUTC(l.createdAt))),
     nativeBalance: l.financialAccount.nativeBalance,
@@ -148,6 +149,7 @@ export async function getAccountBalancesOverWindow(
       balance:     canonicalBalance.get(l.financialAccount.id) ?? l.financialAccount.balance,
       debtSubtype: l.financialAccount.debtSubtype,
       creditLimit: l.financialAccount.creditLimit,
+      providerSubtype: l.financialAccount.providerSubtype,
       nativeBalance: l.financialAccount.nativeBalance,
       walletChain:   l.financialAccount.walletChain,
       lastUpdated:   l.financialAccount.lastUpdated,

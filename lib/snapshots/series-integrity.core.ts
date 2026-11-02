@@ -182,3 +182,137 @@ export type ComponentHealth =
 export function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
+
+// ── PB-8 — the debt replay, with an UNVERIFIABLE state ───────────────────────
+//
+// The write-time probe used to replay every debt account through the as-of
+// resolver and demand `stored debt === Σ amountOwed(replayed balance ?? 0)`.
+// That is only a test for a liability the canonical ladder WALKS (a
+// reconstructable revolving card). A liability the ladder cannot walk — an
+// installment loan, a mortgage, a card Plaid sent without a credit limit — has
+// no replay at all: the writer HOLDS IT FLAT at its current balance (REG-2, and
+// the flat fallback for non-walkable debt), while the resolver reports it as
+// `before-coverage` (0) before its connection floor. Comparing the two flagged
+// the more accurate side as broken (Production 2026-11-01: a held-flat mortgage
+// and a held-flat card, "stored X != replay Y" on every day between the
+// writer's floor and the connection floor).
+//
+// So the probe now distinguishes, per account:
+//
+//   WALKED        replayed through the ledger; the stored series must agree.
+//   UNVERIFIABLE  held flat / no walk. Nothing can confirm or refute its value
+//                 on a past day, so it is never compared against 0. On a given
+//                 day the writer either held it flat at its current owed or the
+//                 account was not yet in the series — so the stored residual over
+//                 the walked replay must equal SOME subset of the unverifiable
+//                 accounts' held owed. Anything else is a genuine mismatch.
+//
+// The aggregate identities (aggregateIdentityViolations) are unaffected.
+
+/** One debt account as the probe sees it. Ids only — no names. */
+export interface DebtReplayAccount {
+  id: string;
+  /** True ⇔ the canonical ladder walks this liability (isReconstructableCard). */
+  walked: boolean;
+  /** amountOwed(current balance): what a held-flat writer holds it at. Ignored when walked. */
+  heldFlatOwed: number;
+}
+
+export interface DebtReplayRow {
+  dateISO: string;
+  debt: number;
+  isEstimated: boolean;
+}
+
+export interface DebtReplayReport {
+  /** Estimated rows compared (observations were never walked). */
+  checked: number;
+  /** Genuine mismatches only — unbounded here; the caller bounds what it logs. */
+  violations: string[];
+  walkedAccountIds: string[];
+  unverifiableAccountIds: string[];
+  /** Estimated rows whose stored debt rests in part on an unverifiable account. */
+  rowsRestingOnUnverifiable: number;
+  /**
+   * Of those, rows that matched only as SOME held-flat subset, not the writer's
+   * own floors — a row an earlier run wrote before an account was linked. Never
+   * a violation (the account is unverifiable either way); counted so it shows.
+   */
+  rowsOffWriterFloor: number;
+}
+
+/**
+ * Above this many unverifiable accounts the exact subset test (2^n sums) gives
+ * way to its bound: 0 ≤ residual ≤ Σ held owed. No real Space comes close.
+ */
+const MAX_EXACT_UNVERIFIABLE = 12;
+
+/** Every achievable Σ of a subset of `values` (round2), including the empty subset's 0. */
+function subsetSums(values: readonly number[]): number[] {
+  let sums = [0];
+  for (const v of values) sums = [...sums, ...sums.map((s) => round2(s + v))];
+  return sums;
+}
+
+/**
+ * Audit stored debt against the walked replay. `walkedOwedOn(dateISO, id)` is
+ * Σ-ready: amountOwed of the replayed balance for a WALKED account on that day
+ * (0 before its floor). It is never asked about an unverifiable account.
+ */
+export function auditDebtReplay(
+  rows: readonly DebtReplayRow[],
+  accounts: readonly DebtReplayAccount[],
+  walkedOwedOn: (dateISO: string, accountId: string) => number,
+  /**
+   * PB-8 — THE WRITER'S floors (computeAccountFloors), accountId → YYYY-MM-DD.
+   * When given, an account contributes nothing before its writer floor (walked:
+   * 0; unverifiable: absent) and its held owed from it — the probe and the
+   * writer agree on WHEN an account is in the series. Absent (the operator
+   * audit, which has no writer run) ⇒ the subset rule alone.
+   */
+  writerFloorISOById?: ReadonlyMap<string, string>,
+): DebtReplayReport {
+  const walked = accounts.filter((a) => a.walked);
+  const unverifiable = accounts.filter((a) => !a.walked);
+  const held = unverifiable.map((a) => Math.max(0, a.heldFlatOwed));
+  const exact = held.length <= MAX_EXACT_UNVERIFIABLE ? subsetSums(held) : null;
+  const heldTotal = held.reduce((n, v) => n + v, 0);
+
+  const violations: string[] = [];
+  let checked = 0;
+  let resting = 0;
+  let offFloor = 0;
+  const present = (id: string, dateISO: string) => {
+    const f = writerFloorISOById?.get(id);
+    return f === undefined || dateISO >= f;
+  };
+  for (const r of rows) {
+    if (!r.isEstimated) continue; // an observation was never walked
+    checked++;
+    const replay = walked.reduce((n, a) => n + (present(a.id, r.dateISO) ? walkedOwedOn(r.dateISO, a.id) : 0), 0);
+    const residual = r.debt - replay;
+    if (Math.abs(residual) <= SERIES_IDENTITY_TOLERANCE) continue;
+    // The writer's own expectation for the unverifiable part, when its floors are known.
+    if (writerFloorISOById) {
+      const expectedHeld = unverifiable.reduce((n, a, i) => n + (present(a.id, r.dateISO) ? held[i] : 0), 0);
+      if (Math.abs(residual - expectedHeld) <= SERIES_IDENTITY_TOLERANCE) { if (expectedHeld > 0) resting++; continue; }
+    }
+    const explained = unverifiable.length > 0 && (exact
+      ? exact.some((s) => Math.abs(residual - s) <= SERIES_IDENTITY_TOLERANCE)
+      : residual >= -SERIES_IDENTITY_TOLERANCE && residual <= heldTotal + SERIES_IDENTITY_TOLERANCE);
+    if (explained) { resting++; if (writerFloorISOById) offFloor++; continue; }
+    violations.push(unverifiable.length === 0
+      ? `${r.dateISO} debt: stored ${r.debt.toFixed(2)} != replay ${replay.toFixed(2)}`
+      : `${r.dateISO} debt: stored ${r.debt.toFixed(2)} != walked replay ${replay.toFixed(2)} ` +
+        `(no held-flat subset of ${unverifiable.length} unverifiable account(s) explains ${round2(residual).toFixed(2)})`);
+  }
+
+  return {
+    checked,
+    violations,
+    walkedAccountIds: walked.map((a) => a.id),
+    unverifiableAccountIds: unverifiable.map((a) => a.id),
+    rowsRestingOnUnverifiable: resting,
+    rowsOffWriterFloor: offFloor,
+  };
+}

@@ -71,7 +71,8 @@ console.log("copy and route");
   check("route: any ACTIVE member, GET only, the Brief's own loader, no-store",
     /requireSpaceAction\(spaceId, "perspective:read"\)/.test(route) && /loadSpaceDataHealth\(tx/.test(route) && /no-store/.test(route) && !/export (const|async function) (POST|PUT|PATCH|DELETE)/.test(route));
   // 2026-10-28: + valuationCoverage (dates and asset symbols only — valuation-coverage.core.ts).
-  check("route returns sources + valuationCoverage only (no accounts, balances or ids)", /NextResponse\.json\(\{ sources: health\.sources, valuationCoverage \}/.test(route));
+  // PB-8: + balanceCoverage (balance floors, dates only — balance-coverage.core.ts).
+  check("route returns sources + balanceCoverage + valuationCoverage only (no accounts, balances or ids)", /NextResponse\.json\(\{ sources: health\.sources, balanceCoverage, valuationCoverage \}/.test(route));
 }
 
 if (failures > 0) { console.error(`\nperspective-empty-state: ${failures} failed.`); process.exit(1); }
