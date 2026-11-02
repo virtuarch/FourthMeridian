@@ -54,12 +54,12 @@ function adj(balance: number, a: { reachable: number | null; unexplained?: numbe
 // The brief's fixture: total 62,589 · accessible 55,560 · restricted 6,009 · not reported 1,000 · held 20
 // (two $10 HOLDS — the sandbox evidence; no pending, so adjusted = reported).
 const FIXTURE: CashLedgerAccount[] = [
-  acct("cm",  { name: "Cash Mgmt",    institution: "Wealthfront", providerSubtype: "cash management", balance: 12060, currentState: cs(12060) }),
-  acct("hsa", { name: "HSA",          institution: "Fidelity",    providerSubtype: "hsa",             balance: 6009,  currentState: cs(6009) }),
-  acct("chk", { name: "Checking",     institution: "Chase",       providerSubtype: "checking",        balance: 110,   currentState: cs(100, 10) }),
-  acct("mm",  { name: "Money Market", institution: "Fidelity",    type: "savings", providerSubtype: "money market", balance: 43200, currentState: cs(43200) }),
-  acct("cd",  { name: "12-mo CD",     institution: "Chase",       type: "savings", providerSubtype: "cd",           balance: 1000,  currentState: cs(null) }),
-  acct("sav", { name: "Savings",      institution: "Chase",       type: "savings", providerSubtype: "savings",      balance: 210,   currentState: cs(200, 10) }),
+  acct("cm",  { name: "Cash Mgmt",    institution: "Bank A", providerSubtype: "cash management", balance: 12060, currentState: cs(12060) }),
+  acct("hsa", { name: "HSA",          institution: "Bank B",    providerSubtype: "hsa",             balance: 6009,  currentState: cs(6009) }),
+  acct("chk", { name: "Checking",     institution: "Bank C",       providerSubtype: "checking",        balance: 110,   currentState: cs(100, 10) }),
+  acct("mm",  { name: "Money Market", institution: "Bank B",    type: "savings", providerSubtype: "money market", balance: 43200, currentState: cs(43200) }),
+  acct("cd",  { name: "12-mo CD",     institution: "Bank C",       type: "savings", providerSubtype: "cd",           balance: 1000,  currentState: cs(null) }),
+  acct("sav", { name: "Savings",      institution: "Bank C",       type: "savings", providerSubtype: "savings",      balance: 210,   currentState: cs(200, 10) }),
   // Not cash — must never appear.
   acct("inv", { name: "Brokerage", type: "investment", providerSubtype: "brokerage", balance: 90000 }),
   acct("btc", { name: "Wallet",    type: "crypto",     balance: 5000 }),
@@ -159,9 +159,9 @@ console.log("\n4. grouping — institution · account · type (provider subtype 
 {
   const s = buildCashAccounts(FIXTURE);
   const inst = groupCashAccounts(s, "institution");
-  check("by institution: Fidelity = MM + HSA (49,209), 2 accounts",
-    inst.find((g) => g.label === "Fidelity")?.value === 49209 && inst.find((g) => g.label === "Fidelity")?.count === 2);
-  check("by institution: Chase = 1,320 (3 accounts)", inst.find((g) => g.label === "Chase")?.value === 1320 && inst.find((g) => g.label === "Chase")?.count === 3);
+  check("by institution: Bank B = MM + HSA (49,209), 2 accounts",
+    inst.find((g) => g.label === "Bank B")?.value === 49209 && inst.find((g) => g.label === "Bank B")?.count === 2);
+  check("by institution: Bank C = 1,320 (3 accounts)", inst.find((g) => g.label === "Bank C")?.value === 1320 && inst.find((g) => g.label === "Bank C")?.count === 3);
   check("by account: one group per account", groupCashAccounts(s, "account").length === 6);
   const types = groupCashAccounts(s, "type").map((g) => g.label).sort().join();
   check("by type: Plaid subtype labels", types === "CD,Cash management,Checking,HSA,Money market,Savings", types);
@@ -256,7 +256,7 @@ console.log("\n8. markup — desktop table vs compact rows; a11y; detail navigat
   check("donut: default grouping is By account (labelled group with the total)", donut.includes('aria-label="Total cash by account: $62,589.00"'));
   check("donut: each account is a legend row with balance and %", donut.includes("Money Market") && donut.includes("$43,200.00") && donut.includes("69.0%"));
   const byInst = renderToStaticMarkup(createElement(CashDistribution, { summary: s, currency: "USD", grouping: "institution" }));
-  check("donut: controlled grouping By institution groups by institution", byInst.includes('aria-label="Total cash by institution: $62,589.00"') && byInst.includes("Fidelity") && byInst.includes("$49,209.00") && byInst.includes("78.6%"));
+  check("donut: controlled grouping By institution groups by institution", byInst.includes('aria-label="Total cash by institution: $62,589.00"') && byInst.includes("Bank B") && byInst.includes("$49,209.00") && byInst.includes("78.6%"));
   check("grouping options in menu order: By account · By institution · By account type; default By account",
     CASH_GROUPINGS.map((g) => g.label).join(" · ") === "By account · By institution · By account type" && DEFAULT_CASH_GROUPING === "account" && CASH_GROUPINGS[0].id === DEFAULT_CASH_GROUPING);
   const dd = renderToStaticMarkup(createElement(Dropdown, { options: CASH_GROUPINGS, value: DEFAULT_CASH_GROUPING, onChange: () => {}, ariaLabel: "Cash distribution grouping" }));
