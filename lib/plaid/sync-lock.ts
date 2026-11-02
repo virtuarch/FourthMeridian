@@ -179,6 +179,26 @@ export interface SyncLockReleaseResult { pendingSignal: boolean }
  * released either way. A loser can only stamp while the lease is held, and the
  * lease is held until the second statement below, so no stamp falls between
  * the two writes.
+ *
+ * ── CLOCK DOMAINS — ACCEPTED SKEW (P3, 2026-11-02) ──────────────────────────
+ * `claimedAt` and a loser's syncIncompleteAt stamp are both `new Date()` on an
+ * APP server, possibly two different serverless instances. They are compared
+ * as if one clock wrote both. Deliberately NOT moved to the database clock:
+ * the claim would have to return a DB-stamped token (raw `UPDATE … RETURNING`
+ * through PlaidItemSyncLockClient, re-deriving RLS-C-S6a's visibility
+ * resolution and every fake), and the OTHER marker writers (exchangeToken's
+ * connect stamp, runDeferredHistorySync's failure marker) would still stamp
+ * app time — so the comparison would stay mixed-domain for every pre-claim
+ * marker anyway. The skew is bounded by instance NTP (milliseconds) and both
+ * directions are safe:
+ *   · loser's clock BEHIND the holder's by δ — a skip landing within δ after
+ *     the claim reads as pre-claim and is cleared: today's pre-P2 behaviour,
+ *     and only for a skip that lands before the holder has issued any
+ *     provider call (the claim precedes the first /transactions/sync by far
+ *     more than δ), so the holder's own pull still sees what it announced;
+ *   · loser's clock AHEAD — a pre-claim marker can read as post-claim and is
+ *     kept: one harmless extra pull (the follow-up / a resume pass).
+ * Pinned by lib/plaid/webhook-skip-signal.test.ts §6.
  */
 export async function releasePlaidItemSyncLock(
   plaidItemId: string,
@@ -228,6 +248,42 @@ export async function releasePlaidItemSyncLock(
     return { pendingSignal: true };
   }
   return { pendingSignal: false };
+}
+
+/**
+ * P2 follow-up — how the TRANSACTIONS ENGINE settles syncIncompleteAt at the end
+ * of a completed sync (syncTransactionsForItem's final write), fenced the same
+ * way as the release above.
+ *
+ * Before: the engine wrote `syncIncompleteAt = settled` (null, or the value it
+ * read at start for a first-run hold) inside its final health update. A skip
+ * stamped between the engine's start read and that write — e.g. a webhook that
+ * lands while the last /transactions/sync page is in flight — was overwritten,
+ * and the holder's (fenced) release then saw no pending signal.
+ *
+ * Now, when the engine runs under a held lock (`anchor` = the syncLockedAt it
+ * read at start — the holder's fencing token), it never overwrites a marker
+ * at/after the anchor:
+ *   · "keep"           — first-run hold: the marker the engine read stays (or a
+ *                        newer skip stamp does); the column is not written.
+ *   · "clear-if-older" — the run is settled: clear ONLY a marker older than the
+ *                        anchor, in a separate conditional write.
+ *   · "inline"         — no lock held (unguarded callers: a script, the
+ *                        exchangeToken inline sync): exactly the prior write.
+ */
+export type IncompleteMarkerSettle =
+  | { mode: "inline"; value: Date | null }
+  | { mode: "keep" }
+  | { mode: "clear-if-older"; anchor: Date };
+
+export function settleIncompleteMarker(
+  item: { syncIncompleteAt: Date | null; syncLockedAt?: Date | null },
+  nextCompletedSyncCount: number,
+): IncompleteMarkerSettle {
+  const stillFirstRun = item.syncIncompleteAt !== null && nextCompletedSyncCount < 2;
+  const anchor = item.syncLockedAt ?? null;
+  if (!anchor) return { mode: "inline", value: stillFirstRun ? item.syncIncompleteAt : null };
+  return stillFirstRun ? { mode: "keep" } : { mode: "clear-if-older", anchor };
 }
 
 export type SyncLockResult<T> = { ok: true; result: T } | { ok: false; reason: "in-flight" };
