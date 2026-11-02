@@ -101,27 +101,27 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@noble/hashes": "^2.2.0",
+    "@noble/hashes": "^2.4.0",
     "@prisma/client": "^5.22.0",
-    "@scure/bip32": "^2.2.0",
+    "@scure/bip32": "^2.4.0",
     "@sentry/core": "10.76.2",
     "@sentry/nextjs": "10.76.2",
     "bcryptjs": "^3.0.3",
     "exceljs": "^4.4.0",
-    "jszip": "^3.10.1",
-    "lucide-react": "^1.17.0",
-    "next": "16.4.2",
+    "jszip": "^3.10.2",
+    "lucide-react": "^1.64.0",
+    "next": "16.4.3",
     "next-auth": "^4.24.15",
     "openai": "^6.45.0",
-    "papaparse": "^5.5.4",
+    "papaparse": "^5.7.0",
     "plaid": "^42.2.0",
     "qrcode": "^1.5.4",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "react-markdown": "^8.0.7",
     "react-plaid-link": "^4.1.1",
     "remark-gfm": "^3.0.1",
-    "resend": "^6.17.1"
+    "resend": "^6.35.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -131,12 +131,12 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "dotenv-cli": "^11.0.0",
+    "dotenv-cli": "^11.1.0",
     "eslint": "^9",
-    "eslint-config-next": "16.4.2",
+    "eslint-config-next": "16.4.3",
     "prisma": "^5.22.0",
     "tailwindcss": "^4",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }
