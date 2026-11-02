@@ -37,7 +37,7 @@ const INDEX = path.join(PLANS, "INDEX.md");
  * outside docs/plans/). Remove an entry when its file goes. Never ADD to this
  * list: a new plan goes into INDEX.md with a header.
  */
-const LEGACY_UNINDEXED: readonly string[
+const LEGACY_UNINDEXED: readonly string[] = [
   "AI-ACTIVITY-FRAME-PERIOD-DECISION.md",
   "AI-BETA-COST-ECONOMICS-INVESTIGATION.md",
   "AI-BETA-REASONING-MEMORY-INVESTIGATION.md",
