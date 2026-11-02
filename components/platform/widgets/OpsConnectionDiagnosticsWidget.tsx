@@ -18,6 +18,13 @@
  * "Resume history" (WalletHistoryRecoveryPanel): a server-read review, then one
  * audited, bounded pass. `canControl` decides only whether it is RENDERED; the
  * route re-checks fresh. Read-only operators see exactly the facts above.
+ *
+ * PB-5 — two tabs. "Live" is the diagnostics list above. "Removed"
+ * (RemovedConnectionsList) lists removed Plaid items and wallets with owner,
+ * removed at, removed by and the Plaid outcome — the same verdicts the Provider
+ * cleanup widget counts. A SYSTEM_ADMIN (`viewer.canRemove`, descriptive) also
+ * sees "Remove connection" in a live connection's panel (RemoveConnectionAction);
+ * after a removal the live list is re-read and the Removed tab opens.
  */
 
 import { useMemo, useState } from "react";
@@ -28,6 +35,8 @@ import type { ConnectionDiagnosticsResponse } from "@/app/api/platform/platform-
 import type { ConnectionDiagnostic } from "@/lib/platform/connection-diagnostics";
 import type { SpaceMountAccess } from "@/lib/space/mount-context";
 import { WalletHistoryRecoveryPanel } from "./WalletHistoryRecoveryPanel";
+import { RemovedConnectionsList } from "./RemovedConnectionsList";
+import { RemoveConnectionAction } from "./RemoveConnectionAction";
 
 const HEALTH_LABEL: Record<string, string> = {
   HEALTHY: "Healthy", STALE: "Stale", DEGRADED: "Degraded",
@@ -69,10 +78,24 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 
 export function OpsConnectionDiagnosticsWidget({ section, access }: { section: PlatformSection; access?: SpaceMountAccess }) {
   const offerRecovery = access?.canControl === true;
-  const { data, loading, error } = useWidgetFetch<ConnectionDiagnosticsResponse>(
+  const { data: initial, loading, error } = useWidgetFetch<ConnectionDiagnosticsResponse>(
     "/api/platform/platform-ops/connection-diagnostics",
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tab, setTab] = useState<"live" | "removed">("live");
+  /** PB-5 — the post-removal RE-READ (useWidgetFetch is load-once by contract; see OpsProviderCleanupWidget). */
+  const [reread, setReread] = useState<ConnectionDiagnosticsResponse | null>(null);
+  const [removedKey, setRemovedKey] = useState(0);
+  const data = reread ?? initial;
+  const canRemove = data?.viewer?.canRemove === true;
+
+  async function afterRemoval() {
+    setSelectedId(null);
+    setRemovedKey((k) => k + 1);
+    setTab("removed");
+    const res = await fetch("/api/platform/platform-ops/connection-diagnostics", { credentials: "same-origin" });
+    if (res.ok) setReread((await res.json()) as ConnectionDiagnosticsResponse);
+  }
 
   const connections = useMemo(() => data?.connections ?? [], [data]);
   const selected = useMemo<ConnectionDiagnostic | null>(
@@ -82,7 +105,23 @@ export function OpsConnectionDiagnosticsWidget({ section, access }: { section: P
 
   return (
     <PlatformWidgetCard label={section.label} icon={Stethoscope}>
-      {loading || error || !data ? (
+      <div role="tablist" aria-label="Connections" className="mb-2 flex gap-1 text-[11px]">
+        {(["live", "removed"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={`rounded-md border px-2 py-1 ${tab === t ? "border-[var(--meridian-400)] text-[var(--text-primary)]" : "border-[var(--border-hairline)] text-[var(--text-muted)]"}`}
+          >
+            {t === "live" ? "Live" : "Removed"}
+          </button>
+        ))}
+      </div>
+      {tab === "removed" ? (
+        <RemovedConnectionsList canWrite={access?.canWrite === true} refreshKey={removedKey} />
+      ) : loading || error || !data ? (
         <WidgetMessage loading={loading} error={error} />
       ) : connections.length === 0 ? (
         <p className="text-xs text-[var(--text-secondary)]">No connections to diagnose.</p>
@@ -148,6 +187,14 @@ export function OpsConnectionDiagnosticsWidget({ section, access }: { section: P
                     {selected.historyBackfill.nextAutomaticRetryISO && <Row label="Next automatic retry" value={fmt(selected.historyBackfill.nextAutomaticRetryISO)} />}
                     {selected.historyBackfill.legacyDiscrepancyDays !== null && <Row label="Legacy discrepancy" value={`${selected.historyBackfill.legacyDiscrepancyDays} day(s) corrected`} />}
                   </Group>
+                )}
+
+                {canRemove && (
+                  <RemoveConnectionAction
+                    key={`remove:${selected.id}`}
+                    connection={{ id: selected.id, source: selected.source, provider: selected.provider, ownerRef: selected.ownerRef }}
+                    onRemoved={afterRemoval}
+                  />
                 )}
 
                 {offerRecovery && selected.provider === "WALLET" && selected.historyBackfill && (

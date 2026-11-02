@@ -68,6 +68,12 @@ export const TRIGGER_CATALOG: Record<TriggerKey, Spec> = {
     resolvers: [SUBJECT],
   },
   // ── Owner-approved BUILD triggers, emitted since 2026-10-31
+  "connection.removed_by_operator": {
+    displayName: "Connection removed by an operator", source: "LIFECYCLE", status: "AVAILABLE",
+    description: "A system administrator removed one customer connection from Platform Ops, through the customer's own disconnect engine (lib/platform/connections/operator-removal.ts, after the removal and its audit row).",
+    payload: [f("connectionId", "string"), f("provider", "string")],
+    resolvers: [SUBJECT],
+  },
   "plaid.item.webhook_needs_reauth": {
     displayName: "Plaid webhook: sign-in required", source: "HEALTH_TRANSITION", status: "AVAILABLE",
     description: "The Plaid webhook moved an item to NEEDS_REAUTH (ITEM/ERROR ITEM_LOGIN_REQUIRED | INVALID_ACCESS_TOKEN); lib/plaid/webhook-health.ts notifies through notifyItemSyncFailed (SYNC_FAILED).",

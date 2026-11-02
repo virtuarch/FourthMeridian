@@ -74,6 +74,7 @@ export const IN_APP_FIXTURES: { readonly [K in NotificationTypeId]: Readonly<Rec
   SYNC_COMPLETED: { [D]: { plaidItemId: "preview-item", institutionName: "Example Bank" } },
   WALLET_SYNC_FAILED: Object.fromEntries(WALLET_ATTENTION_STATES.map((walletState) =>
     [walletState, { financialAccountId: "preview-account", walletName: "Example BTC Wallet", network: "Bitcoin", walletState }])),
+  CONNECTION_REMOVED_BY_SUPPORT: { [D]: { connectionId: "preview-item", institutionName: "Example Bank", provider: "PLAID" } },
   DUPLICATE_DETECTED: { [D]: { candidateIds: ["preview-candidate"], count: 1 } },
   IMPORT_COMPLETED: { [D]: { batchId: "preview-batch", rowCount: 42 } },
   IMPORT_COMPLETED_WITH_ERRORS: { [D]: { batchId: "preview-batch", errorCount: 3 } },

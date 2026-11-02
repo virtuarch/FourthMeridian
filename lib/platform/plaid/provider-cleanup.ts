@@ -52,6 +52,7 @@
  */
 
 import { systemDb } from "@/lib/db";
+import { readScrubbedItemIds } from "@/lib/plaid/token-scrub-state";
 
 /**
  * ⚠️ `systemDb` (fm_system), NOT `db`. This is a PLATFORM OPS read: one
@@ -70,11 +71,11 @@ import { systemDb } from "@/lib/db";
  */
 import { AuditAction } from "@/lib/audit-actions";
 
-/** The two markers that constitute the provider-cleanup lifecycle. */
-const MARKERS = [
-  AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED,
-  AuditAction.PLAID_ITEM_REVOCATION_CONFIRMED,
-] as const;
+// PB-5 — the pure lifecycle fold (marker shape, grouping, per-item verdict)
+// lives in provider-cleanup.core.ts so a client component can import the
+// vocabulary built on it without pulling the database client into its bundle.
+import { CLEANUP_MARKERS as MARKERS, cleanupVerdicts, groupByItem, isPreProviderMarker, isRemovalInProgress, type MarkerRow } from "./provider-cleanup.core";
+export { cleanupVerdicts, type CleanupVerdict, type MarkerRow } from "./provider-cleanup.core";
 
 export type ProviderCleanupItem = {
   /** The operator handle — the same PlaidItem.id resync/request-reauth take. */
@@ -102,6 +103,12 @@ export type ProviderCleanupItem = {
   lastAttemptAtISO: string;
   /** The provider's own code on the latest failure, when it gave one. */
   latestErrorCode: string | null;
+  /**
+   * PB-5 (S2) — an operator removal still inside its PRE_PROVIDER grace window
+   * (provider-cleanup.core.ts). Counted as owed, but nothing may start a second
+   * provider call for it: plaid-removal-retry skips it, the Retry POST refuses it.
+   */
+  inProgress: boolean;
 };
 
 export type ProviderCleanupStatus = {
@@ -117,12 +124,6 @@ export type ProviderCleanupStatus = {
   markersRead: number;
 };
 
-type MarkerRow = {
-  action: string;
-  createdAt: Date;
-  metadata: unknown;
-};
-
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
 const hoursSince = (d: Date, now: Date) => Math.floor((now.getTime() - d.getTime()) / 3_600_000);
 
@@ -133,19 +134,21 @@ const hoursSince = (d: Date, now: Date) => Math.floor((now.getTime() - d.getTime
  * global clock — the same reason the forecast engine takes its `asOf`.
  */
 export async function getProviderCleanupStatus(now: Date = new Date()): Promise<ProviderCleanupStatus> {
-  const rows = await systemDb.auditLog.findMany({
-    where:   { action: { in: [...MARKERS] } },
-    orderBy: { createdAt: "asc" },
-    select:  { action: true, createdAt: true, metadata: true },
-  });
+  const rows = await readCleanupMarkers();
 
   // Which items are owed, so only those rows are fetched.
   const owedIdsForLookup = owedItemIds(rows);
-  const items = owedIdsForLookup.length === 0 ? [] : await systemDb.plaidItem.findMany({
-    where:  { id: { in: owedIdsForLookup } },
-    select: { id: true, status: true, institutionName: true, userId: true },
-  });
-  return foldCleanupStatus(rows, items, now);
+  const [items, scrubbed] = owedIdsForLookup.length === 0
+    ? [[] as OwnerItem[], new Set<string>()]
+    : await Promise.all([
+        systemDb.plaidItem.findMany({
+          where:  { id: { in: owedIdsForLookup } },
+          select: { id: true, status: true, institutionName: true, userId: true },
+        }),
+        // PB-5 (S2) — the phantom rule's one bit, asked in the token's own module (ids only).
+        readScrubbedItemIds(owedIdsForLookup),
+      ]);
+  return foldCleanupStatus(rows, items.map((i) => ({ ...i, tokenScrubbed: scrubbed.has(i.id) })), now);
 }
 
 /** plaidItemId values whose NEWEST marker is UNCONFIRMED. */
@@ -158,19 +161,17 @@ function owedItemIds(rows: MarkerRow[]): string[] {
   return out;
 }
 
-function groupByItem(rows: MarkerRow[]): Map<string, MarkerRow[]> {
-  const byItem = new Map<string, MarkerRow[]>();
-  for (const r of rows) {
-    const id = str((r.metadata as { plaidItemId?: unknown } | null)?.plaidItemId);
-    if (!id) continue;
-    const list = byItem.get(id);
-    if (list) list.push(r);
-    else byItem.set(id, [r]);
-  }
-  return byItem;
-}
+/** `tokenScrubbed` (PB-5): the item's token is the post-confirmation sentinel — the phantom rule's input. */
+type OwnerItem = { id: string; status: string; institutionName: string | null; userId: string; tokenScrubbed?: boolean };
 
-type OwnerItem = { id: string; status: string; institutionName: string | null; userId: string };
+/** The two markers' rows for every item, ascending — the read both readers fold. */
+export async function readCleanupMarkers(client: Pick<typeof systemDb, "auditLog"> = systemDb): Promise<MarkerRow[]> {
+  return client.auditLog.findMany({
+    where:   { action: { in: [...MARKERS] } },
+    orderBy: { createdAt: "asc" },
+    select:  { action: true, createdAt: true, metadata: true },
+  });
+}
 
 /**
  * THE PURE FOLD. Separated from the two reads on purpose: the marker lifecycle
@@ -185,9 +186,12 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
   const byItem = groupByItem(rows);
   const owedIds: string[] = [];
   let confirmedCount = 0;
-  for (const [id, markers] of byItem) {
-    // NEWEST WINS. `rows` is ascending, so the last element is the verdict.
-    if (markers[markers.length - 1].action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED) owedIds.push(id);
+  // NEWEST WINS — decided once, by cleanupVerdicts, which the removed-connections
+  // list reads too (PB-5: the two surfaces must count the same verdicts).
+  // PB-5 (S2) — the phantom rule needs the scrub bit; absent ⇒ plain newest-wins.
+  const verdicts = cleanupVerdicts(rows, new Set(items.filter((i) => i.tokenScrubbed === true).map((i) => i.id)));
+  for (const [id, v] of verdicts) {
+    if (v.verdict === "OWED") owedIds.push(id);
     else confirmedCount++;
   }
 
@@ -200,6 +204,9 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
   const owed: ProviderCleanupItem[] = owedIds.map((id) => {
     const markers = byItem.get(id)!;
     const unconfirmed = markers.filter((m) => m.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED);
+    // PB-5 — a PRE_PROVIDER marker opens the obligation (owedSince) but is not
+    // an attempt; the count and the "last code" are over real attempts only.
+    const attempts = unconfirmed.filter((m) => !isPreProviderMarker(m));
     // ⚠️ THE AGE IS MEASURED FROM THE FIRST UNCONFIRMED MARKER AFTER THE LAST
     // CONFIRMED ONE — i.e. how long THIS obligation has stood, not how long the
     // item has existed and not the age of the newest retry. A retry every hour
@@ -209,7 +216,7 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
       .map((m) => m.createdAt.getTime())
       .reduce((a, b) => Math.max(a, b), 0);
     const owedSince = unconfirmed.find((m) => m.createdAt.getTime() > lastConfirmedAt) ?? unconfirmed[0];
-    const latest = unconfirmed[unconfirmed.length - 1];
+    const latest = attempts[attempts.length - 1] ?? unconfirmed[unconfirmed.length - 1];
     const row = itemById.get(id);
     return {
       plaidItemId:     id,
@@ -219,9 +226,10 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
       itemGone:        row === undefined,
       owedSinceISO:    owedSince.createdAt.toISOString(),
       owedForHours:    hoursSince(owedSince.createdAt, now),
-      attemptCount:    unconfirmed.length,
+      attemptCount:    attempts.length,
       lastAttemptAtISO: latest.createdAt.toISOString(),
       latestErrorCode: str((latest.metadata as { plaidErrorCode?: unknown } | null)?.plaidErrorCode),
+      inProgress:      isRemovalInProgress(verdicts.get(id), now),
     };
   }).sort((a, b) => a.owedSinceISO.localeCompare(b.owedSinceISO));
 

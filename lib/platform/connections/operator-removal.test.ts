@@ -1,0 +1,419 @@
+/**
+ * lib/platform/connections/operator-removal.test.ts  (PB-5)
+ *
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/connections/operator-removal.test.ts
+ *
+ * The operator Remove connection, below the route (the route's gate is
+ * app/api/platform/platform-ops/connections/[id]/remove/route.test.ts):
+ *   1. the reason: fixed enum, optional capped note, scrubbed
+ *   2. it USES disconnectAccounts — with the owner's live accounts on that one
+ *      connection and the OWNER as the proved actor (injected spy + source pin)
+ *   3. the operator-action audit: actor, reason, target, owner, outcome — built
+ *      by the real envelope (buildOperatorActionData), success AND failure
+ *   4. the notification: enqueued through createNotification (the registry
+ *      chokepoint) with the registry type; never around it
+ *   5. the gates hold for that type: its EMAIL is SHIPPED OFF by a code
+ *      constant (owner decision) and is recorded SUPPRESSED / SHIPPED_OFF
+ *      through the chokepoint, never sent; FINANCIAL email off ⇒ PREFERENCE_OFF;
+ *      outside Production the recipient guard captures
+ *   6. ordering (S2 flag 2): INTENT row → pre-provider owed marker → Plaid →
+ *      outcome; a crash mid-flight reads OWED to the cleanup reader
+ *   7. the customer's own Security History row carries no operator identity
+ *   8. idempotency: a second call reaches nothing (no second itemRemove)
+ */
+
+import { readFileSync } from "node:fs";
+import { AuditAction } from "@/lib/audit-actions";
+import { buildOperatorActionData, type OperatorActionInput } from "@/lib/audit";
+import { createNotification, type NotificationWriteClient } from "@/lib/notifications/create";
+import { NOTIFICATION_REGISTRY } from "@/lib/notifications/registry";
+import type { ChannelAdapter, ChannelMessage } from "@/lib/notifications/types";
+import type { PreferenceClient, PreferenceOverride } from "@/lib/notifications/preferences";
+import { decideRecipient } from "@/lib/email/recipient-guard";
+import { CONNECTION_REMOVED_EMAIL_ENABLED } from "@/lib/notifications/connection-removed-switch";
+import { cleanupVerdicts, PRE_PROVIDER_PHASE } from "@/lib/platform/plaid/provider-cleanup.core";
+import { __foldForTest as foldCleanupStatus } from "@/lib/platform/plaid/provider-cleanup";
+import { securityHistoryEventLabel, securityHistoryEventDetail, isSecurityHistoryAction } from "@/lib/security-history";
+import type { DisconnectAccountsOptions } from "@/lib/accounts/disconnect";
+import { parseRemovalRequest, removeConnectionAsOperator, REMOVAL_REASONS, type OperatorRemovalDeps } from "./operator-removal";
+
+let failures = 0;
+function check(name: string, cond: boolean, detail?: unknown): void {
+  if (cond) console.log(`  ✓ ${name}`);
+  else { failures++; console.error(`  ✗ ${name}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ""}`); }
+}
+const code = (rel: string) => readFileSync(rel, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+const OWNER = "user_owner_aaaaaa";
+const ADMIN = "user_admin_000001";
+
+/** A fake of the four fm_system reads the action performs. */
+function fakeDb(opts: { item?: { id: string; userId: string; institutionName: string } | null; wallet?: { id: string; userId: string; externalConnectionId: string | null } | null; liveFa?: string[]; remainingAfter?: Record<string, number> }) {
+  const seen: { accountConnection: unknown[]; auditLog: Array<Record<string, unknown>> } = { accountConnection: [], auditLog: [] };
+  return {
+    seen,
+    db: {
+      auditLog: { create: async (args: { data: Record<string, unknown> }) => { seen.auditLog.push(args.data); return { id: `row${seen.auditLog.length}` }; } },
+      plaidItem: { findUnique: async () => opts.item ?? null },
+      connection: { findFirst: async () => opts.wallet ?? null },
+      accountConnection: {
+        findMany: async (args: unknown) => { seen.accountConnection.push(args); return (opts.liveFa ?? []).map((financialAccountId) => ({ financialAccountId })); },
+        // The orphan predicate the hook asks after phases 1–2: live links still on the item.
+        count: async (args: { where: { plaidItemDbId: string } }) => opts.remainingAfter?.[args.where.plaidItemDbId] ?? 0,
+      },
+    } as unknown as NonNullable<OperatorRemovalDeps["db"]>,
+  };
+}
+
+function harness(over: { item?: Parameters<typeof fakeDb>[0]["item"]; wallet?: Parameters<typeof fakeDb>[0]["wallet"]; liveFa?: string[]; disconnectThrows?: boolean; markerConfirmed?: boolean | null; extraItems?: string[]; remainingAfter?: Record<string, number> } = {}) {
+  const f = fakeDb({ item: over.item, wallet: over.wallet, liveFa: over.liveFa, remainingAfter: over.remainingAfter });
+  const calls = { disconnect: [] as Array<[string[], string]>, audits: [] as ReturnType<typeof buildOperatorActionData>[], notify: [] as unknown[], order: [] as string[] };
+  const deps: OperatorRemovalDeps = {
+    db: f.db,
+    // Emulates the primitive's phase order: soft-deletes, then the caller's
+    // pre-provider hook, then the provider call ("itemRemove") — never inside.
+    disconnect: (async (ids: string[], actor: string, opts?: DisconnectAccountsOptions) => {
+      calls.disconnect.push([ids, actor]);
+      calls.order.push("disconnect:phase1-2");
+      if (over.disconnectThrows) throw new Error("phase 2 shortfall");
+      const items = over.item ? [over.item.id, ...(over.extraItems ?? [])] : [];
+      if (items.length > 0) {
+        await opts?.beforeProviderRevocation?.(items);
+        calls.order.push(`marker-rows:${f.seen.auditLog.length}`);
+        calls.order.push("itemRemove");
+      }
+      return { disconnectedAccountIds: ids, affectedSpaceIds: ["s1"], plaidItemDbIds: items, newlyDisconnectedCount: ids.length };
+    }) as NonNullable<OperatorRemovalDeps["disconnect"]>,
+    // The REAL envelope builder, so the row asserted is the row that would be written.
+    record: (async (_c: unknown, input: OperatorActionInput) => { calls.audits.push(buildOperatorActionData(input)); calls.order.push(`audit:${input.action}`); return { id: `audit${calls.audits.length}` }; }) as NonNullable<OperatorRemovalDeps["record"]>,
+    notify: (async (input: unknown) => { calls.notify.push(input); return { status: "created" as const, id: "n1" }; }) as NonNullable<OperatorRemovalDeps["notify"]>,
+    readMarkers: async () => over.markerConfirmed === null || over.markerConfirmed === undefined ? [] : [{
+      action: over.markerConfirmed ? AuditAction.PLAID_ITEM_REVOCATION_CONFIRMED : AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED,
+      createdAt: new Date(), metadata: { plaidItemId: "p1", ...(over.markerConfirmed ? { outcome: "REMOVED" } : {}) },
+    }],
+  };
+  return { deps, calls, seen: f.seen };
+}
+
+const actor = { userId: ADMIN, via: "SYSTEM_ADMIN" as const, area: "PLATFORM_OPS" };
+const req = { reason: "customer_request" as const, note: "Ticket asked us to remove it" };
+
+async function main() {
+  console.log("1. the reason");
+  {
+    check("the fixed enum is exactly the owner-approved five", REMOVAL_REASONS.join() === "customer_request,abuse,cost,account_closure,other");
+    check("missing body / missing reason / unknown reason → error", ["error" in parseRemovalRequest(null), "error" in parseRemovalRequest({}), "error" in parseRemovalRequest({ reason: "fraud" })].every(Boolean));
+    check("reason only → accepted, note null", JSON.stringify(parseRemovalRequest({ reason: "cost" })) === JSON.stringify({ request: { reason: "cost", note: null } }));
+    check("note is trimmed", (parseRemovalRequest({ reason: "other", note: "  why  " }) as { request: { note: string } }).request.note === "why");
+    check("note over 280 characters → error", "error" in parseRemovalRequest({ reason: "other", note: "x".repeat(281) }));
+    check("note with an email / long digits / credential words → error",
+      ["a@b.co", "acct 123456", "the password is"].every((n) => "error" in parseRemovalRequest({ reason: "other", note: n })));
+    check("a non-string note → error", "error" in parseRemovalRequest({ reason: "other", note: 5 }));
+  }
+
+  console.log("2. the SAME disconnect primitive");
+  {
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1", "fa2", "fa1"], markerConfirmed: true });
+    const r = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
+    check("removed", r.kind === "removed", r);
+    check("disconnectAccounts called ONCE with the owner's live accounts (deduped) and the OWNER as actor",
+      h.calls.disconnect.length === 1 && h.calls.disconnect[0][0].join() === "fa1,fa2" && h.calls.disconnect[0][1] === OWNER, h.calls.disconnect);
+    const where = (h.seen.accountConnection[0] as { where: Record<string, unknown> }).where;
+    check("the account read is THIS connection's live links on the owner's live accounts",
+      where.deletedAt === null && where.plaidItemDbId === "p1" && JSON.stringify(where.financialAccount) === JSON.stringify({ deletedAt: null, ownerUserId: OWNER }), where);
+    check("the outcome is RE-READ off the marker (CONFIRMED → Confirmed removed)", r.kind === "removed" && r.outcome === "CONFIRMED_REMOVED");
+
+    const owed = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: false });
+    const r2 = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, owed.deps);
+    check("an UNCONFIRMED marker → Cleanup owed (the obligation lands where the cleanup widget reads it)", r2.kind === "removed" && r2.outcome === "CLEANUP_OWED");
+
+    const w = harness({ wallet: { id: "w1", userId: OWNER, externalConnectionId: "bc1qexampleaddr123456" }, liveFa: ["fa9"] });
+    const r3 = await removeConnectionAsOperator({ connectionId: "w1", actor, request: req }, w.deps);
+    const wWhere = (w.seen.accountConnection[0] as { where: Record<string, unknown> }).where;
+    check("a wallet: keyed by connectionId, outcome Not applicable, opaque label",
+      r3.kind === "removed" && wWhere.connectionId === "w1" && r3.outcome === "NOT_APPLICABLE" && r3.institution === "Self-custody wallet …123456", r3);
+
+    const none = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: [] });
+    const r4 = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, none.deps);
+    check("nothing live → already_removed; nothing disconnected, audited, marked or sent",
+      r4.kind === "already_removed" && none.calls.disconnect.length === 0 && none.calls.audits.length === 0 && none.calls.notify.length === 0 && none.seen.auditLog.length === 0);
+
+    const missing = harness({});
+    check("unknown id → not_found", (await removeConnectionAsOperator({ connectionId: "nope", actor, request: req }, missing.deps)).kind === "not_found");
+
+    const src = code("lib/platform/connections/operator-removal.ts");
+    check("source pin: imports disconnectAccounts from the ONE primitive and calls it", /from "@\/lib\/accounts\/disconnect"/.test(src) && /await disconnect\(faIds, ownerUserId, \{/.test(src) && /deps\.disconnect \?\? disconnectAccounts/.test(src));
+    check("source pin: no second engine — no Plaid call, no status / token write, no soft-delete of its own",
+      !/itemRemove|plaidClient|disconnectPlaidItemIfOrphaned|setPlaidItemHealth|encryptedToken|updateMany|deletedAt:\s*new Date|status:\s*PlaidItemStatus/.test(src));
+    const route = code("app/api/platform/platform-ops/connections/[id]/remove/route.ts");
+    check("route delegates to removeConnectionAsOperator (no logic of its own)", /removeConnectionAsOperator\(/.test(route) && !/disconnectAccounts|itemRemove|auditLog\./.test(route));
+  }
+
+  console.log("3. the operator-action audit");
+  {
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1", "fa2"], markerConfirmed: true });
+    await removeConnectionAsOperator({ connectionId: "p1", actor, request: req, ipAddress: "203.0.113.9", userAgent: "UA" }, h.deps);
+    const intent = h.calls.audits[0];
+    const a = h.calls.audits[1];
+    type Meta = Record<string, unknown> & { actor: { via: string; area: string }; target: { kind: string; id: string }; reason: { code: string; note?: string } };
+    const m = a.metadata as unknown as Meta;
+    check("TWO operator rows: the INTENT (CONNECTION_REMOVAL_REQUESTED) then the OUTCOME (CONNECTION_REMOVED_BY_OPERATOR), both by the operator",
+      h.calls.audits.length === 2 && intent.action === AuditAction.CONNECTION_REMOVAL_REQUESTED && a.action === AuditAction.CONNECTION_REMOVED_BY_OPERATOR
+        && intent.performedByAdminId === ADMIN && a.performedByAdminId === ADMIN);
+    check("the intent carries the reason; the outcome names the intent", (intent.metadata as { reason?: { code?: string } }).reason?.code === "SUPPORT_REQUEST"
+      && (a.metadata as Record<string, unknown>).intentAuditId === "audit1");
+    check("the intent is reason-REQUIRED in the envelope", (() => { try { buildOperatorActionData({ actor, action: AuditAction.CONNECTION_REMOVAL_REQUESTED, target: { kind: "PLAID_ITEM", id: "p1" }, result: "SUCCESS" }); return false; } catch { return true; } })());
+    check("actor: SYSTEM_ADMIN via the role, PLATFORM_OPS area", m.actorType === "SYSTEM_ADMIN" && m.actor.via === "SYSTEM_ADMIN" && m.actor.area === "PLATFORM_OPS");
+    check("target: the PLAID_ITEM", m.target.kind === "PLAID_ITEM" && m.target.id === "p1");
+    check("reason: envelope code + scrubbed note, and the exact PB-5 reason in detail",
+      m.reason.code === "SUPPORT_REQUEST" && m.reason.note === req.note && m.removalReason === "customer_request", m);
+    check("owner + outcome + counts recorded", m.ownerUserId === OWNER && m.outcome === "CONFIRMED_REMOVED" && m.accountCount === 2 && m.institution === "Chase" && m.result === "SUCCESS");
+    check("no userId subject on the row (a connection action has no USER target)", a.userId === undefined);
+    check("ip / user agent carried", a.ipAddress === "203.0.113.9" && a.userAgent === "UA");
+    check("the action is reason-REQUIRED in the envelope", (() => { try { buildOperatorActionData({ actor, action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR, target: { kind: "PLAID_ITEM", id: "p1" }, result: "SUCCESS" }); return false; } catch { return true; } })());
+
+    const f = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], disconnectThrows: true });
+    const origError = console.error; console.error = () => {};
+    const rf = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, f.deps);
+    console.error = origError;
+    const fm = f.calls.audits[1]?.metadata as Record<string, unknown> | undefined;
+    check("a failed disconnect: intent, then a FAILURE outcome naming it; no customer row, no notification",
+      rf.kind === "failed" && f.calls.audits[0].action === AuditAction.CONNECTION_REMOVAL_REQUESTED && fm?.result === "FAILURE"
+        && fm?.outcome === "DISCONNECT_FAILED" && fm?.intentAuditId === "audit1" && f.calls.notify.length === 0
+        && !f.seen.auditLog.some((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_SUPPORT), { rf, fm });
+  }
+
+  console.log("4. the notification goes through the registry chokepoint");
+  {
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    const r = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
+    const n = h.calls.notify[0] as { type: string; userId: string; data: Record<string, unknown>; auditLogId: string };
+    check("enqueued once, to the OWNER, as CONNECTION_REMOVED_BY_SUPPORT, anchored to the audit row",
+      h.calls.notify.length === 1 && n.type === "CONNECTION_REMOVED_BY_SUPPORT" && n.userId === OWNER && n.auditLogId === "audit2", n);
+    check("payload = the registry pointerContract exactly (no operator, no reason note)",
+      Object.keys(n.data).sort().join() === [...NOTIFICATION_REGISTRY.CONNECTION_REMOVED_BY_SUPPORT.pointerContract].sort().join()
+        && !JSON.stringify(n.data).includes(req.note) && !JSON.stringify(n.data).includes(ADMIN));
+    check("the result reports the chokepoint's own status", r.kind === "removed" && r.notification === "created");
+
+    const src = code("lib/platform/connections/operator-removal.ts");
+    check("source pin: createNotification is the default notifier", /deps\.notify \?\? createNotification/.test(src) && /from "@\/lib\/notifications\/create"/.test(src));
+    check("source pin: never sends around the chokepoint (no sendEmail / channel adapter / provider / inAppOnly)",
+      !/sendEmail|emailNotificationAdapter|lib\/email\/|resend|inAppOnly|notification\.create/.test(src));
+    check("the audit row is written BEFORE the notification", src.indexOf("CONNECTION_REMOVED_BY_OPERATOR, target, reason, result: \"SUCCESS\"") < src.indexOf("type: \"CONNECTION_REMOVED_BY_SUPPORT\""));
+  }
+
+  console.log("5. the email is SHIPPED OFF; the existing gates apply");
+  {
+    const def = NOTIFICATION_REGISTRY.CONNECTION_REMOVED_BY_SUPPORT;
+    check("THE DEFAULT: CONNECTION_REMOVED_EMAIL_ENABLED is false", CONNECTION_REMOVED_EMAIL_ENABLED === false);
+    check("…as a code constant (the DIGEST_ENABLED idiom), not an env var or setting",
+      /export const CONNECTION_REMOVED_EMAIL_ENABLED = false as boolean;/.test(code("lib/notifications/connection-removed-switch.ts"))
+        && !/process\.env|platformSetting|PlatformSetting/.test(code("lib/notifications/connection-removed-switch.ts")));
+    check("the registry entry is shipped off by that constant", def.emailShippedOff === true
+      && /emailShippedOff: !CONNECTION_REMOVED_EMAIL_ENABLED/.test(code("lib/notifications/registry.ts")));
+    check("a registered, WIRED, FINANCIAL, unlocked type whose design default is IN_APP + EMAIL",
+      def.status === "WIRED" && def.category === "FINANCIAL" && (def.defaultChannels as readonly string[]).includes("EMAIL") && def.locked === false);
+    check("copy says support removed it, names the institution, links to Connections",
+      (() => { const r = def.render({ institutionName: "Chase" }); return r.title === "A connection was removed by support" && /Chase/.test(r.body ?? "") && r.href === "/dashboard/connections"; })());
+
+    // The REAL chokepoint over an in-memory client (the create.test.ts pattern).
+    const run = async (prefs: PreferenceOverride[], type: "CONNECTION_REMOVED_BY_SUPPORT" | "SYNC_FAILED" = "CONNECTION_REMOVED_BY_SUPPORT") => {
+      const rows: unknown[] = [];
+      const ledger: Array<{ channel: string; status: string; reason: string | null }> = [];
+      const client = {
+        user: { findUnique: async () => ({ email: "owner@example.com" }) },
+        notificationDelivery: { create: async () => ({ id: "d1" }) },
+        notification: {
+          create: async ({ data }: { data: unknown }) => { rows.push(data); return { id: `n${rows.length}` }; },
+          findUnique: async () => null,
+          update: async () => ({ id: "n1" }),
+        },
+      } as unknown as NotificationWriteClient;
+      const prefClient: PreferenceClient = { notificationPreference: { findMany: async () => prefs, upsert: async () => { throw new Error("unused"); } } } as unknown as PreferenceClient;
+      const messages: ChannelMessage[] = [];
+      const emailAdapter: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver(m) { messages.push(m); return { status: "sent", id: "m1", provider: "resend" }; } };
+      const data = type === "SYNC_FAILED" ? { plaidItemId: "p1", institutionName: "Chase" } : { connectionId: "p1", institutionName: "Chase", provider: "PLAID" };
+      const res = await createNotification(
+        { type, userId: OWNER, data },
+        { client, prefClient, emailAdapter, ledger: async (row) => { ledger.push(row as never); }, content: null },
+      );
+      return { res, rows, messages, ledger };
+    };
+    const on = await run([]);
+    check("defaults: the in-app notice IS written (the removal is still told in-app)", on.res.status === "created" && on.rows.length === 1, on.res);
+    check("…and the email is NEVER handed to the channel adapter (nothing reaches sendEmail)", on.messages.length === 0);
+    check("…and the EMAIL leg is RECORDED, not dropped: one ledger row SUPPRESSED / SHIPPED_OFF",
+      on.ledger.filter((l) => l.channel === "EMAIL").length === 1 && on.ledger.some((l) => l.channel === "EMAIL" && l.status === "SUPPRESSED" && l.reason === "SHIPPED_OFF"), on.ledger);
+    const optIn = await run([{ category: "FINANCIAL", channel: "EMAIL", enabled: true }]);
+    check("a FINANCIAL email opt-in cannot turn it on (the switch beats preferences)",
+      optIn.messages.length === 0 && optIn.ledger.some((l) => l.channel === "EMAIL" && l.reason === "SHIPPED_OFF"));
+    const off = await run([{ category: "FINANCIAL", channel: "EMAIL", enabled: false }]);
+    check("FINANCIAL email OFF by the customer: recorded PREFERENCE_OFF (their choice is the reason), never sent",
+      off.res.status === "created" && off.messages.length === 0 && off.ledger.some((l) => l.channel === "EMAIL" && l.reason === "PREFERENCE_OFF") && !off.ledger.some((l) => l.reason === "SHIPPED_OFF"));
+    const control = await run([], "SYNC_FAILED");
+    check("CONTROL: a type without the switch still sends (the switch is per type, not global)", control.messages.length === 1 && !control.ledger.some((l) => l.reason === "SHIPPED_OFF"));
+    check("outside Production the recipient guard CAPTURES (for when the switch is turned on)",
+      decideRecipient("owner@example.com", { VERCEL: "1", VERCEL_ENV: "preview" }).deliver === false
+        && decideRecipient("owner@example.com", {}).deliver === false);
+  }
+
+  console.log("6. ordering — a crash mid-flight leaves a trace the owed-cleanup reader sees");
+  {
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
+    const o = h.calls.order;
+    check("INTENT row → primitive (phase 1–2) → pre-provider marker → itemRemove → OUTCOME row",
+      o.indexOf(`audit:${AuditAction.CONNECTION_REMOVAL_REQUESTED}`) === 0
+        && o.indexOf("disconnect:phase1-2") === 1
+        && o.indexOf("marker-rows:1") === 2 && o.indexOf("itemRemove") === 3
+        && o.indexOf(`audit:${AuditAction.CONNECTION_REMOVED_BY_OPERATOR}`) === 4, o);
+    const marker = h.seen.auditLog[0] as { action: string; userId: string; metadata: Record<string, unknown> };
+    check("the pre-provider marker: UNCONFIRMED, phase PRE_PROVIDER, the item, the owner, naming the intent",
+      marker.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED && marker.metadata.phase === PRE_PROVIDER_PHASE
+        && marker.metadata.plaidItemId === "p1" && marker.userId === OWNER && marker.metadata.intentAuditId === "audit1", marker);
+
+    // The crash: the pre-provider marker is the newest (nothing after it).
+    const t0 = new Date("2026-11-02T10:00:00Z");
+    const pre = { action: AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED, createdAt: t0, metadata: { provider: "PLAID", plaidItemId: "p1", phase: PRE_PROVIDER_PHASE } };
+    const crashed = foldCleanupStatus([pre], [{ id: "p1", status: "ACTIVE", institutionName: "Chase", userId: OWNER }], new Date("2026-11-02T12:00:00Z"));
+    check("CRASH: the cleanup widget reads it OWED (and so does plaid-removal-retry, which selects owed items)",
+      crashed.owedCount === 1 && crashed.owed[0].plaidItemId === "p1" && crashed.owed[0].owedSinceISO === t0.toISOString(), crashed);
+    check("…counted as an obligation, NOT as an attempt (0 attempts, no code)", crashed.owed[0].attemptCount === 0 && crashed.owed[0].latestErrorCode === null);
+    check("the Removed list's verdict agrees (OWED)", cleanupVerdicts([pre]).get("p1")?.verdict === "OWED" && cleanupVerdicts([pre]).get("p1")?.attemptCount === 0);
+    const done = { action: AuditAction.PLAID_ITEM_REVOCATION_CONFIRMED, createdAt: new Date(t0.getTime() + 1000), metadata: { provider: "PLAID", plaidItemId: "p1", outcome: "REMOVED" } };
+    check("NO CRASH: the attempt's own CONFIRMED marker supersedes it (newest wins) — nothing owed",
+      foldCleanupStatus([pre, done], [], new Date()).owedCount === 0 && cleanupVerdicts([pre, done]).get("p1")?.verdict === "CONFIRMED");
+    const failed = { action: AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED, createdAt: new Date(t0.getTime() + 1000), metadata: { provider: "PLAID", plaidItemId: "p1", plaidErrorCode: "INTERNAL_SERVER_ERROR" } };
+    const f2 = foldCleanupStatus([pre, failed], [], new Date("2026-11-02T12:00:00Z"));
+    check("A REFUSED attempt: owed since the INTENT, 1 attempt, the provider's code", f2.owed[0]?.attemptCount === 1 && f2.owed[0]?.latestErrorCode === "INTERNAL_SERVER_ERROR" && f2.owed[0]?.owedSinceISO === t0.toISOString(), f2);
+    const prim = code("lib/accounts/disconnect.ts");
+    check("the primitive runs the hook AFTER phases 1–2 and BEFORE the first disconnectPlaidItemIfOrphaned",
+      prim.indexOf("revokeAccountLinksEverywhere(provenIds") < prim.indexOf("opts.beforeProviderRevocation(plaidItemDbIds)")
+        && prim.indexOf("opts.beforeProviderRevocation(plaidItemDbIds)") < prim.indexOf("await disconnectPlaidItemIfOrphaned(plaidItemDbId)"));
+    const plaid = code("lib/plaid/disconnect.ts");
+    check("WHY: lib/plaid/disconnect.ts writes its own marker only AFTER itemRemove (unchanged)",
+      plaid.indexOf("plaid.itemRemove(") < plaid.indexOf("database.auditLog.create("));
+    const w = harness({ wallet: { id: "w1", userId: OWNER, externalConnectionId: null }, liveFa: ["fa9"] });
+    await removeConnectionAsOperator({ connectionId: "w1", actor, request: req }, w.deps);
+    check("a wallet has no provider call, so no marker", !w.seen.auditLog.some((r) => r.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED));
+  }
+
+  console.log("7. the customer's own Security History — no operator identity");
+  {
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    await removeConnectionAsOperator({ connectionId: "p1", actor, request: { reason: "abuse", note: "Internal note for ops" }, ipAddress: "203.0.113.9", userAgent: "OperatorUA" }, h.deps);
+    const row = h.seen.auditLog.find((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_SUPPORT) as Record<string, unknown> | undefined;
+    check("ONE customer-facing row on the OWNER", !!row && row.userId === OWNER && h.seen.auditLog.filter((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_SUPPORT).length === 1, row);
+    check("it carries no operator: no performedByAdminId, no IP, no user agent",
+      !!row && row.performedByAdminId === undefined && row.ipAddress === undefined && row.userAgent === undefined);
+    const json = JSON.stringify(row);
+    check("…and its metadata names no operator id, no operator note", !json.includes(ADMIN) && !json.includes("Internal note") && !json.includes("OperatorUA") && !json.includes("203.0.113.9"), json);
+    check("it is on the user-facing Security History allowlist", isSecurityHistoryAction(AuditAction.CONNECTION_REMOVED_BY_SUPPORT));
+    check("label: \"Removed by Fourth Meridian support · Abuse\"", securityHistoryEventLabel(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, row?.metadata) === "Removed by Fourth Meridian support · Abuse");
+    check("detail: the institution", securityHistoryEventDetail(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, row?.metadata) === "Chase");
+    // A hostile row (an operator field smuggled into metadata) still renders nothing operator-shaped.
+    const hostile = { reasonCategory: "cost", institution: "Chase", operator: "opsadmin", performedByAdminId: ADMIN, note: "secret" };
+    const dto = securityHistoryEventLabel(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, hostile) + securityHistoryEventDetail(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, hostile);
+    check("the label/detail functions read ONLY reasonCategory + institution (a smuggled operator field never surfaces)", !/opsadmin|user_admin|secret/.test(dto), dto);
+    check("written whether or not the email sends (the email is shipped off; the row is still written)", CONNECTION_REMOVED_EMAIL_ENABLED === false && !!row);
+    const routeSrc = code("app/api/user/security-history/route.ts");
+    check("the customer route still selects no performedByAdminId and returns no raw metadata",
+      !/performedByAdminId/.test(routeSrc) && !/metadata:\s*r\.metadata/.test(routeSrc) && /securityHistoryEventLabel\(r\.action, r\.metadata\)/.test(routeSrc));
+    check("the customer row is written AFTER the outcome row and BEFORE the notification",
+      (() => { const s = code("lib/platform/connections/operator-removal.ts"); const a = s.indexOf("action: AuditAction.CONNECTION_REMOVED_BY_SUPPORT"); return a > s.indexOf("result: \"SUCCESS\",\n    detail: { ...baseDetail, intentAuditId, accountCount") && a < s.indexOf("type: \"CONNECTION_REMOVED_BY_SUPPORT\""); })());
+  }
+
+  console.log("8. idempotent — a second call never reaches Plaid again");
+  {
+    // First call: one live account. Second: the same connection, now nothing live.
+    let live = ["fa1"];
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: live, markerConfirmed: true });
+    const db = h.deps.db as unknown as { accountConnection: { findMany: () => Promise<Array<{ financialAccountId: string }>> } };
+    db.accountConnection.findMany = async () => live.map((financialAccountId) => ({ financialAccountId }));
+    const first = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
+    live = [];
+    const second = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
+    check("first removes; second is already_removed", first.kind === "removed" && second.kind === "already_removed");
+    check("ONE disconnect, ONE itemRemove, ONE intent + outcome, ONE notification across both calls",
+      h.calls.disconnect.length === 1 && h.calls.order.filter((x) => x === "itemRemove").length === 1 && h.calls.audits.length === 2 && h.calls.notify.length === 1, h.calls.order);
+  }
+
+  console.log("8b. CONCURRENT double-submit — two INTERLEAVED calls (S2 P2)");
+  {
+    // A shared world: both requests pass the pre-check before either reaches
+    // the primitive; the primitive's conditional writes let exactly one soft-
+    // delete (the real one: updateMany where deletedAt null), the other writes 0.
+    let live = true;
+    let itemRemoves = 0;
+    let arrived = 0;
+    let release!: () => void;
+    const bothPastPrecheck = new Promise<void>((r) => { release = r; });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    const db = h.deps.db as unknown as { accountConnection: { findMany: () => Promise<Array<{ financialAccountId: string }>> } };
+    db.accountConnection.findMany = async () => {
+      const rows = live ? [{ financialAccountId: "fa1" }] : [];
+      if (++arrived === 2) release();
+      return rows;
+    };
+    h.deps.disconnect = (async (ids: string[], actor: string, opts?: DisconnectAccountsOptions) => {
+      await bothPastPrecheck;          // INTERLEAVE: neither proceeds until both passed the pre-check
+      h.calls.disconnect.push([ids, actor]);
+      const won = live;                // the conditional write: only one sees the row live
+      live = false;
+      if (!won) return { disconnectedAccountIds: ids, affectedSpaceIds: [], plaidItemDbIds: [], newlyDisconnectedCount: 0 };
+      await opts?.beforeProviderRevocation?.(["p1"]);
+      itemRemoves++;
+      return { disconnectedAccountIds: ids, affectedSpaceIds: ["s1"], plaidItemDbIds: ["p1"], newlyDisconnectedCount: 1 };
+    }) as NonNullable<OperatorRemovalDeps["disconnect"]>;
+
+    const [a, b] = await Promise.all([
+      removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps),
+      removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps),
+    ]);
+    const kinds = [a.kind, b.kind].sort().join();
+    const loser = [a, b].find((r) => r.kind === "already_removed") as { kind: "already_removed"; concurrent?: true } | undefined;
+    check("both passed the pre-check (the race is real), then ONE removed and ONE is already_removed (concurrent)",
+      arrived === 2 && h.calls.disconnect.length === 2 && kinds === "already_removed,removed" && loser?.concurrent === true, { kinds });
+    const history = h.seen.auditLog.filter((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_SUPPORT);
+    check("exactly ONE customer Security History row", history.length === 1, history.length);
+    check("exactly ONE notification", h.calls.notify.length === 1, h.calls.notify.length);
+    check("exactly ONE itemRemove", itemRemoves === 1);
+    const outcomes = h.calls.audits.filter((x) => x.action === AuditAction.CONNECTION_REMOVED_BY_OPERATOR).map((x) => `${(x.metadata as Record<string, unknown>).result}:${(x.metadata as Record<string, unknown>).outcome}`).sort();
+    check("the feed shows ONE SUCCESS; the loser is REFUSED / ALREADY_REMOVED_CONCURRENT",
+      outcomes.join() === "REFUSED:ALREADY_REMOVED_CONCURRENT,SUCCESS:CONFIRMED_REMOVED", outcomes);
+    check("exactly ONE pre-provider marker (the loser's primitive returned no item)",
+      h.seen.auditLog.filter((r) => r.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED).length === 1);
+    const prim = code("lib/accounts/disconnect.ts");
+    check("source pin: the primitive reports THIS call's write count (softDeleted.count)", /newlyDisconnectedCount: softDeleted\.count/.test(prim));
+    check("source pin: the guard runs after disconnect and before the outcome/customer rows/notification",
+      (() => { const s = code("lib/platform/connections/operator-removal.ts"); const g = s.indexOf("if (result.newlyDisconnectedCount === 0)");
+        return g > s.indexOf("await disconnect(faIds") && g < s.indexOf("action: AuditAction.CONNECTION_REMOVED_BY_SUPPORT") && g < s.indexOf("await notify("); })());
+  }
+
+  console.log("8c. the PRE_PROVIDER marker only for items the primitive will call Plaid for");
+  {
+    // An account that also hangs off a SECOND item (e.g. after an Expand History
+    // relink): the primitive returns both items; p2 is still referenced by
+    // another live link, so disconnectPlaidItemIfOrphaned will not call Plaid for it.
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true, extraItems: ["p2"], remainingAfter: { p1: 0, p2: 3 } });
+    await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
+    const markers = h.seen.auditLog.filter((r) => r.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED).map((r) => (r.metadata as Record<string, unknown>).plaidItemId);
+    check("the orphaned item gets the marker; the still-referenced item does NOT (no call ⇒ no owed marker)", markers.join() === "p1", markers);
+    const s = code("lib/platform/connections/operator-removal.ts");
+    const plaid = code("lib/plaid/disconnect.ts");
+    check("source pin: the hook asks the SAME orphan predicate disconnectPlaidItemIfOrphaned gates on",
+      /accountConnection\.count\(\{ where: \{ plaidItemDbId: plaidItemId, deletedAt: null \} \}\);\s*if \(remaining !== 0\) continue;/.test(s)
+        && /accountConnection\.count\(\{\s*where: \{\s*plaidItemDbId,\s*deletedAt: null,\s*\},\s*\}\);\s*if \(remaining !== 0\) return;/.test(plaid));
+  }
+
+  console.log("9. inferred attribution is display-only (S2 flag 3)");
+  {
+    const src = code("lib/platform/connections/operator-removal.ts");
+    check("the removal never reads the Removed list or its removed-by derivation", !/deriveRemovedBy|foldRemovedConnections|loadRemovedConnections|removedBy|INFERRED/.test(src));
+  }
+
+  console.log(failures === 0 ? "\n✅ operator removal: one engine, audited with a reason, the customer told through the gated chokepoint." : `\n❌ ${failures} failure(s)`);
+  if (failures > 0) process.exit(1);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });

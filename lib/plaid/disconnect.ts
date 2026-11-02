@@ -83,6 +83,17 @@ export async function disconnectPlaidItemIfOrphaned(
   const item = await database.plaidItem.findUnique({ where: { id: plaidItemDbId } });
   if (!item) return;
 
+  // PB-5 (S2) — A REMOVAL ALREADY CONFIRMED IS NOT ATTEMPTED AGAIN. The token
+  // is scrubbed to the sentinel ONLY after Plaid confirmed the Item gone (see
+  // the PRIV-004 block below), so a sentinel token is proof the provider
+  // question is closed. A later call — a retry that read "owed" before the
+  // confirmation landed, a second operator click — would otherwise fail to
+  // decrypt "" (no provider code ⇒ "retryable") and write a spurious
+  // UNCONFIRMED marker: a closed obligation reopened, which no retry could ever
+  // close again (every retry would fail the same decrypt). Nothing to call,
+  // nothing to record. A re-linked item carries a fresh token and is unaffected.
+  if (item.encryptedToken === REVOKED_TOKEN_SENTINEL) return;
+
   // ── THE PROVIDER ATTEMPT, AND WHAT ITS OUTCOME IS ALLOWED TO MEAN ─────────
   // Previously: catch → log → fall through, so a transport failure and a
   // confirmed removal were indistinguishable afterwards. Now the outcome is

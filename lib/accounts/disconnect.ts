@@ -69,6 +69,13 @@ export interface DisconnectAccountsResult {
   disconnectedAccountIds: string[];
   affectedSpaceIds:       string[];
   plaidItemDbIds:         string[];
+  /**
+   * PB-5 (S2) — how many accounts THIS call soft-deleted (phase 1's write
+   * count). `disconnectedAccountIds` is the proved set and stays non-empty on a
+   * repeat (a repeat is a no-op by design), so it cannot tell "I removed it"
+   * from "someone already had". Zero here means another call got there first.
+   */
+  newlyDisconnectedCount: number;
 }
 
 /**
@@ -95,6 +102,24 @@ export class UnauthorizedDisconnectError extends Error {
 }
 
 /**
+ * PB-5 — optional, additive hooks. Every existing caller passes none and is
+ * byte-identical.
+ *
+ * `beforeProviderRevocation` runs in phase 3 AFTER phases 1–2 committed (the
+ * accounts and connections are soft-deleted, the links revoked) and BEFORE the
+ * first `disconnectPlaidItemIfOrphaned` — i.e. before any Plaid call. The
+ * operator Remove connection uses it to write a durable "owed" marker first, so
+ * a crash between itemRemove and the outcome marker (lib/plaid/disconnect.ts
+ * writes its marker only AFTER the provider answered) still leaves the item
+ * visible to the owed-cleanup reader and the plaid-removal-retry job. It is
+ * awaited and may throw: a removal whose crash trace cannot be written does
+ * not proceed to the irreversible call.
+ */
+export interface DisconnectAccountsOptions {
+  beforeProviderRevocation?: (plaidItemDbIds: readonly string[]) => Promise<void>;
+}
+
+/**
  * Soft-disconnect the given FinancialAccounts together. Idempotent-safe: accounts
  * already soft-deleted are skipped by the `deletedAt: null` filters.
  *
@@ -107,14 +132,15 @@ export class UnauthorizedDisconnectError extends Error {
 export async function disconnectAccounts(
   financialAccountIds: string[],
   actorUserId: string,
+  opts: DisconnectAccountsOptions = {},
 ): Promise<DisconnectAccountsResult> {
   if (financialAccountIds.length === 0) {
-    return { disconnectedAccountIds: [], affectedSpaceIds: [], plaidItemDbIds: [] };
+    return { disconnectedAccountIds: [], affectedSpaceIds: [], plaidItemDbIds: [], newlyDisconnectedCount: 0 };
   }
   const now = new Date();
 
   // ── PHASE 1 — THE TENANT PHASE ────────────────────────────────────────────
-  const { provenIds, plaidItemDbIds } = await withTenantDb(actorUserId, async (tx) => {
+  const { provenIds, plaidItemDbIds, newlyDisconnectedCount } = await withTenantDb(actorUserId, async (tx) => {
     // THE PROOF. `FinancialAccount.fm_app_sel` admits `ownerUserId = me OR
     // fm_account_visible(id)`; the second arm would admit an account the actor
     // can merely SEE through a shared Space, so ownership is required on top.
@@ -166,7 +192,7 @@ export async function disconnectAccounts(
       closed.count,
     );
 
-    return { provenIds, plaidItemDbIds };
+    return { provenIds, plaidItemDbIds, newlyDisconnectedCount: softDeleted.count };
   });
 
   // ── PHASE 2 — THE DEPLOYMENT-WIDE REVOKE ──────────────────────────────────
@@ -196,10 +222,15 @@ export async function disconnectAccounts(
     }
   }
 
+  // PB-5 — the caller's pre-provider hook (see DisconnectAccountsOptions).
+  if (opts.beforeProviderRevocation && plaidItemDbIds.length > 0) {
+    await opts.beforeProviderRevocation(plaidItemDbIds);
+  }
+
   // Revoke provider access when the item is now fully orphaned (best-effort).
   for (const plaidItemDbId of plaidItemDbIds) {
     await disconnectPlaidItemIfOrphaned(plaidItemDbId);
   }
 
-  return { disconnectedAccountIds: provenIds, affectedSpaceIds, plaidItemDbIds };
+  return { disconnectedAccountIds: provenIds, affectedSpaceIds, plaidItemDbIds, newlyDisconnectedCount };
 }

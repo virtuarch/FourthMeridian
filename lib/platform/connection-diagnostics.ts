@@ -29,6 +29,7 @@ import { loadRefreshPolicies } from "@/lib/platform/refresh-policy";
 import { walletHistoryCheckpointStatus } from "@/lib/crypto/history-checkpoint-status";
 import { readHistoryCheckpoints } from "@/lib/crypto/btc-history-checkpoint";
 import { getIngestionEvidence } from "@/lib/platform/refresh/projections";
+import { walletLabel } from "@/lib/platform/connections/removed-connections.core";
 
 export interface ConnectionDiagnostic {
   id:          string;   // the operator handle (already used by resync/reauth)
@@ -95,10 +96,8 @@ function ownerRefOf(userId: string | null | undefined): string {
   return userId ? `user …${userId.slice(-6)}` : "—";
 }
 
-function walletLabel(externalConnectionId: string | null): string {
-  if (!externalConnectionId) return "Self-custody wallet";
-  return `Self-custody wallet …${externalConnectionId.slice(-6)}`;
-}
+// PB-5 — the wallet label lives with the removed-connections fold so the live
+// list and the Removed list name a wallet identically.
 
 export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<ConnectionDiagnostic[]> {
   const now = new Date();
@@ -106,7 +105,7 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
 
   // 1. Connections across all owners (operator view) + owner email + account links,
   //    and the refresh policy that decides what "stale" means for each kind.
-  const [plaidItems, wallets, policies] = await Promise.all([
+  const [plaidItems, walletRows, policies] = await Promise.all([
     db.plaidItem.findMany({
       where:   { status: { not: PlaidItemStatus.REVOKED } },
       select:  {
@@ -128,12 +127,19 @@ export async function getConnectionDiagnostics(cap = DEFAULT_CAP): Promise<Conne
         cursor: true,
         user: { select: { id: true } },
         accountConnections: { where: { deletedAt: null }, select: { financialAccountId: true } },
+        // PB-5 — ALL links (deleted too), counted only: a wallet whose every
+        // link is soft-deleted is a REMOVED wallet (the customer hub's own rule,
+        // lib/sync/wallet-connections.ts) and belongs to the Removed list, not here.
+        _count: { select: { accountConnections: true } },
       },
       orderBy: { createdAt: "desc" },
       take:    cap,
     }),
     loadRefreshPolicies(db),
   ]);
+  // A wallet that never had a link (mid-discovery) is live; one whose links are
+  // all gone was removed.
+  const wallets = walletRows.filter((w) => !(w._count.accountConnections > 0 && w.accountConnections.length === 0));
   // BTC / ETH checkpoints (raw: the column is read with SQL — btc-history-checkpoint.ts).
   // A read failure shows no backfill (no claim), never a wrong one.
   const historyCheckpoints = await readHistoryCheckpoints(db, wallets.map((w) => w.id)).catch(() => new Map<string, string>());
