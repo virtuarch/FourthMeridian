@@ -37,6 +37,9 @@ import {
   type ActivityView, type AiUsageView, type CustomerConnectionView, type CustomerCohortView, type CustomerIdentity,
   type CustomerPolicyView, type CustomerRollup, type CustomerSpaceView, type IncidentsView, type LifecycleView, type OperatorActionView,
 } from "./customer-core";
+// PB-7 — the Onboarding timeline (same audited profile, same gate).
+import { buildOnboardingTimeline, type OnboardingTimeline } from "./onboarding-core";
+import { loadImportsForOwners } from "@/lib/platform/onboarding/import-facts";
 
 export const AI_WINDOW_DAYS = 30;
 const RECENT_EXECUTIONS = 20;
@@ -70,6 +73,8 @@ export interface CustomerDetail {
   ai: AiUsageView;
   /** BETA — the same five fields the list row carries (design §8). */
   rollup: CustomerRollup;
+  /** PB-7 — registration → first session → per-connection import → first AI turn / Brief. Counts, kinds, timestamps only. */
+  onboarding: OnboardingTimeline;
   operatorActions: OperatorActionView[];
   actions: CustomerActionsView;
   checkedAt: string;
@@ -137,7 +142,8 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     client.refreshExecution.findMany({
       where: { OR: [{ plaidItemId: { in: itemIds } }, { sourceRef: { in: accountIds } }] },
       orderBy: { startedAt: "desc" }, take: RECENT_EXECUTIONS,
-      select: { id: true, sourceKind: true, plaidItemId: true, sourceRef: true, trigger: true, profile: true, overallStatus: true, startedAt: true, durationMs: true, failureCategory: true },
+      // PB-7 — errorSummary is read only to recognise a reaped row (recovery-core); it is never projected.
+      select: { id: true, sourceKind: true, plaidItemId: true, sourceRef: true, trigger: true, profile: true, overallStatus: true, startedAt: true, durationMs: true, failureCategory: true, errorSummary: true },
     }),
     client.plaidWebhookEvent.findMany({
       where: { plaidItemId: { in: itemIds } }, orderBy: { receivedAt: "desc" }, take: RECENT_WEBHOOKS,
@@ -178,7 +184,10 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
     ...connectionActions.filter((a) => !seen.has(a.id) && actionTouchesItems(a, itemSet)),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, OPERATOR_ACTIONS).map(projectOperatorAction);
 
-  const catalogue = await loadPolicyGroupCatalogue();
+  const [catalogue, imports] = await Promise.all([
+    loadPolicyGroupCatalogue(),
+    loadImportsForOwners([userId], now, client),
+  ]);
   const inviteMeta = (inviteAudit?.metadata ?? null) as { emailStatus?: unknown } | null;
   const connected = firstConnectedAt(plaid, wallets, manualAssets);
   const lastEngagedAt = lastEngagements.reduce<Date | null>((best, r) => (!best || r.at > best ? r.at : best), null);
@@ -208,6 +217,12 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
         firstSession: sessions._min.createdAt, firstConnection: connected,
         firstAiTurn: firstAiTurn?.occurredAt ?? null, firstBriefView: firstBriefView?.createdAt ?? null,
       },
+    }),
+    onboarding: buildOnboardingTimeline({
+      user: { createdAt: user.createdAt, emailVerifiedAt: user.emailVerifiedAt },
+      request: request ? { invitedAt: request.invitedAt, redeemedAt: request.redeemedAt } : null,
+      firstSessionAt: sessions._min.createdAt, firstAiTurnAt: firstAiTurn?.occurredAt ?? null, firstBriefAt: firstBriefView?.createdAt ?? null,
+      banks: imports.items, wallets: wallets.map((w) => ({ id: w.id, provider: String(w.provider), createdAt: w.createdAt })), floor: imports.floor,
     }),
     operatorActions,
     actions: {

@@ -24,6 +24,7 @@ import { describeTrigger } from "./execution-format";
 import { describeWindow, humanizeToken } from "./refresh-format";
 import { fmtUtc } from "./jobs-view";
 import type { ProjectionEnvelope, RefreshDailySeries, RefreshDayBucket } from "@/lib/platform/refresh/types";
+import { unrecoveredFailed } from "@/lib/platform/refresh/recovery-core";
 
 /** Structural twin of platform-surface's `DistributionSegment` (this file stays React-free). */
 export interface Segment {
@@ -54,6 +55,17 @@ export const EXECUTION_STATUS_TONE: Record<(typeof EXECUTION_STATUS_ORDER)[numbe
   RUNNING: "info",
 };
 
+/**
+ * PB-7 — the status a ROW should show: "RECOVERED" (warn) for a reaped (stale)
+ * execution that a later success for the same source superseded — the seam's
+ * `recoveredByExecutionId` (lib/platform/refresh/recovery-core.ts) — and the
+ * ledger's own status otherwise. Presentation only; the ledger row is untouched.
+ */
+export function executionDisplayStatus(row: { overallStatus: string; recoveredByExecutionId?: string | null }): { key: string; word: string; tone: StatusTone } {
+  if (row.recoveredByExecutionId) return { key: "RECOVERED", word: "Recovered", tone: "warn" };
+  return { key: row.overallStatus, word: humanizeToken(row.overallStatus), tone: statusTone(row.overallStatus) };
+}
+
 /** Tone for any status string: the vocabulary's own, or muted for one it does not know. */
 export function statusTone(status: string): StatusTone {
   return (EXECUTION_STATUS_TONE as Record<string, StatusTone>)[status] ?? "muted";
@@ -65,12 +77,14 @@ export function statusTone(status: string): StatusTone {
  * status the vocabulary does not know is appended, sorted, in the muted ramp
  * rather than dropped.
  */
-export function statusSegments(byStatus: Readonly<Record<string, number>>): Segment[] {
+export function statusSegments(byStatus: Readonly<Record<string, number>>, recovered = 0): Segment[] {
+  // PB-7 — reaped executions a later success superseded leave "Failed" for their own "Recovered" segment.
   const known: Segment[] = EXECUTION_STATUS_ORDER.map((s) => ({
     word: humanizeToken(s),
-    count: byStatus[s] ?? 0,
+    count: s === "FAILED" ? Math.max(0, (byStatus[s] ?? 0) - recovered) : byStatus[s] ?? 0,
     tone: EXECUTION_STATUS_TONE[s],
   }));
+  if (recovered > 0) known.push({ word: "Recovered", count: recovered, tone: "warn" });
   const unknown = Object.keys(byStatus)
     .filter((k) => !(EXECUTION_STATUS_ORDER as readonly string[]).includes(k))
     .sort()
@@ -126,11 +140,12 @@ export function failurePoints(series: RefreshDailySeries): Point[] {
   return windowDays(series.envelope.window.from, series.envelope.window.to).map((day) => {
     const d = days.get(day);
     if (!d) return { key: day, value: null, title: `${day}: ${DAY_NOT_LOADED}` };
+    const failed = unrecoveredFailed(d); // PB-7 — recovered executions are not failures
     return {
       key: day,
-      value: d.byStatus.FAILED,
+      value: failed,
       tone: "bad",
-      title: `${day}: ${plural(d.byStatus.FAILED, "failed execution")}${d.settled ? "" : " so far (not settled)"}`,
+      title: `${day}: ${plural(failed, "failed execution")}${d.recovered ? ` (+${d.recovered} recovered)` : ""}${d.settled ? "" : " so far (not settled)"}`,
     };
   });
 }

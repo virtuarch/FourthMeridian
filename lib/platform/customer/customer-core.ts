@@ -25,6 +25,7 @@ import { explainEntitlement, type EffectiveEntitlements, type FailClosedReason }
 import type { PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { deriveConnectionHealthState, type HealthState } from "@/lib/connections/health";
 import { priceAiUsage, type UsageRowLike } from "@/lib/usage/pricing";
+import { recoveredExecutionIds } from "@/lib/platform/refresh/recovery-core";
 import {
   ENGAGEMENT_AI_SURFACES, FUNNEL_STAGE_LABELS, furthestStage, stageReachedAt,
 } from "@/lib/platform/growth/product-analytics-core";
@@ -244,14 +245,18 @@ export function firstConnectedAt(
 // ── Incidents ─────────────────────────────────────────────────────────────────
 
 export interface SyncIssueFacts { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: Date | null; lastOccurredAt: Date | null; createdAt: Date; resolved: boolean }
-export interface ExecutionFacts { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: Date; durationMs: number | null; failureCategory: string | null }
+export interface ExecutionFacts { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: Date; durationMs: number | null; failureCategory: string | null;
+  /** PB-7 — read ONLY to recognise a reaped (stale) row; never projected. */
+  errorSummary?: string | null }
 export interface WebhookFacts { receivedAt: Date; webhookType: string; webhookCode: string; handling: string; plaidItemId: string | null; errorCode: string | null }
 
 export interface IncidentsView {
   open: { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: string | null; lastOccurredAt: string | null;
     /** SEC-PLAT-3 — the affected account, named in full (audited profile only); null when the incident has no account or it is unresolved. */
     account: string | null }[];
-  recentExecutions: { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: string; durationMs: number | null; failureCategory: string | null }[];
+  recentExecutions: { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: string; durationMs: number | null; failureCategory: string | null;
+    /** PB-7 — a reaped (stale) execution a later success for the same source superseded: show "recovered", not "failed". */
+    recovered: boolean }[];
   recentWebhooks: { receivedAt: string; webhookType: string; webhookCode: string; handling: string; plaidItemId: string | null; errorCode: string | null }[];
 }
 
@@ -259,6 +264,8 @@ export function projectIncidents(
   issues: readonly SyncIssueFacts[], executions: readonly ExecutionFacts[], webhooks: readonly WebhookFacts[],
   accountLabels: ReadonlyMap<string, string> = new Map(),
 ): IncidentsView {
+  // PB-7 — judged over the loaded rows (newest first, so a superseding success is in the set).
+  const recovered = recoveredExecutionIds(executions.map((e) => ({ ...e, errorSummary: e.errorSummary ?? null })));
   return {
     open: issues.filter((i) => !i.resolved).map((i) => ({
       id: i.id, provider: i.provider, kind: i.kind, plaidItemId: i.plaidItemId, financialAccountId: i.financialAccountId,
@@ -268,6 +275,7 @@ export function projectIncidents(
     recentExecutions: executions.map((e) => ({
       id: e.id, sourceKind: e.sourceKind, plaidItemId: e.plaidItemId, sourceRef: e.sourceRef, trigger: e.trigger, profile: e.profile,
       overallStatus: e.overallStatus, startedAt: e.startedAt.toISOString(), durationMs: e.durationMs, failureCategory: e.failureCategory,
+      recovered: recovered.has(e.id),
     })),
     recentWebhooks: webhooks.map((w) => ({
       receivedAt: w.receivedAt.toISOString(), webhookType: w.webhookType, webhookCode: w.webhookCode, handling: w.handling,

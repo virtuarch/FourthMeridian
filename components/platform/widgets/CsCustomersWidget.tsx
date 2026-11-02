@@ -63,6 +63,8 @@ import {
   CS_ATTENTION_FILTER_EVENT, UNKNOWN_FILTER_NOTICE, attentionFilterOf, attentionUrlUpdate, inapplicableNotice, readAttentionParam,
 } from "../leads/cs-attention-link";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
+import { CsOnboardingTimeline } from "./CsOnboardingTimeline";
+import { CS_OPEN_CUSTOMER_EVENT, openCustomerIdOf } from "../leads/cs-open-customer";
 
 /**
  * AI COST CONTROLS — the effective allowance as CustomerPolicyView carries it
@@ -211,6 +213,17 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
 
   /** Selection is the one place the detail state changes hands (no setState in an effect). */
   const select = (id: string | null) => { setSelectedId(id); setDetail(null); setRefreshReport(null); setActionError(null); setCohort(""); setReasonCode(""); setReasonNote(""); };
+
+  // PB-7 — the dashboard's "Recently joined" rows open a profile here (cs-open-customer.ts); the read is the audited detail route.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const id = openCustomerIdOf(e);
+      if (!id) return;
+      setSelectedId(id); setDetail(null); setRefreshReport(null); setActionError(null); setCohort(""); setReasonCode(""); setReasonNote("");
+    };
+    window.addEventListener(CS_OPEN_CUSTOMER_EVENT, onOpen);
+    return () => window.removeEventListener(CS_OPEN_CUSTOMER_EVENT, onOpen);
+  }, []);
 
   const reason = useMemo(() => (reasonCode ? { code: reasonCode, ...(reasonNote.trim() ? { note: reasonNote.trim() } : {}) } : null), [reasonCode, reasonNote]);
 
@@ -382,6 +395,9 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     <Row label="Sessions" value={String(detail.activity.activeSessions)} />
                   </Section>
 
+                  {/* PB-7 — how onboarding went: registration → connections + imports → first AI turn / Brief. */}
+                  <CsOnboardingTimeline onboarding={detail.onboarding} />
+
                   {/* The list's per-customer roll-up (desktop column) — here for every width,
                       so a phone keeps a path to it. Same cells, same estimate note. */}
                   <Section title="Usage · 30 d">
@@ -505,7 +521,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                   <Section title="Incidents">
                     <Row label="Open incidents" value={String(detail.incidents.open.length)} />
                     {detail.incidents.open.slice(0, 5).map((i) => <Row key={i.id} label={i.kind.toLowerCase().replace(/_/g, " ")} value={i.account ? `${i.account} · last ${ago(i.lastOccurredAt)}` : `last ${ago(i.lastOccurredAt)}`} />)}
-                    <Row label="Recent refreshes" value={detail.incidents.recentExecutions.slice(0, 5).map((e) => `${e.trigger.toLowerCase()} ${e.overallStatus.toLowerCase()} ${timeAgo(e.startedAt)}`).join(", ") || "none"} />
+                    <Row label="Recent refreshes" value={detail.incidents.recentExecutions.slice(0, 5).map((e) => `${e.trigger.toLowerCase()} ${e.recovered ? "recovered" : e.overallStatus.toLowerCase()} ${timeAgo(e.startedAt)}`).join(", ") || "none"} />
                     <Row label="Recent webhooks" value={detail.incidents.recentWebhooks.slice(0, 5).map((w) => `${w.webhookCode} → ${w.handling.toLowerCase()}`).join(", ") || "none"} />
                   </Section>
 

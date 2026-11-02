@@ -148,6 +148,13 @@ export interface ExecutionRowDTO {
   failureStage: string | null;
   failureCategory: string | null;
   outcome: string | null;
+  /**
+   * PB-7 — set ONLY on a reaped (stale) execution that a later SUCCEEDED
+   * execution for the same source superseded: that successor's id. A reader
+   * renders such a row RECOVERED, not failed (lib/platform/refresh/recovery-core.ts).
+   * Null on every other row — including when the seam was not asked to resolve it.
+   */
+  recoveredByExecutionId?: string | null;
 }
 
 export interface EndpointRowDTO {
@@ -212,6 +219,7 @@ export const EXECUTION_ROW_KEYS: readonly string[] = [
   "id", "runId", "plaidItemId", "sourceKind", "sourceRef", "network", "trigger", "profile",
   "startedAt", "completedAt", "durationMs", "overallStatus", "parentJobRunId", "hasError",
   "errorSummary", "deploymentSha", "admissionReason", "failureStage", "failureCategory", "outcome",
+  "recoveredByExecutionId",
 ];
 export const ENDPOINT_ROW_KEYS: readonly string[] = [
   "endpoint", "stageKind", "status", "skipReason", "startedAt", "completedAt",
@@ -244,6 +252,8 @@ export function projectExecutionRow(
     outcome: string | null;
   },
   audience: SeamAudience,
+  /** PB-7 — the superseding success's id when this row is a recovered reaped execution. */
+  recoveredByExecutionId: string | null = null,
 ): ExecutionRowDTO {
   return {
     id: row.id,
@@ -268,6 +278,7 @@ export function projectExecutionRow(
     failureStage: row.failureStage,
     failureCategory: row.failureCategory,
     outcome: row.outcome,
+    recoveredByExecutionId,
   };
 }
 

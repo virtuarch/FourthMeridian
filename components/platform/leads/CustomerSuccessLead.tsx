@@ -48,6 +48,7 @@ import {
 import type { ReactNode } from "react";
 import type { AttentionFilter } from "@/lib/platform/customer/overview-types";
 import { requestCustomerAttentionFilter } from "./cs-attention-link";
+import { CsRecentlyJoinedPanel } from "./CsRecentlyJoinedPanel";
 
 const n = (v: number) => v.toLocaleString("en-US");
 type Group = "onboarding" | "issues";
@@ -65,6 +66,8 @@ export interface CsLeadSurfaceProps {
   onOpenWorkspace: (id: string) => void;
   group?: Group;
   onGroup?: (g: Group) => void;
+  /** PB-7 — the "Recently joined (14 d)" panel; present only when the audited list is hosted. */
+  recentlyJoined?: ReactNode;
 }
 
 export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
@@ -136,6 +139,9 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
       {p.customerList && (
         <section id="cs-customers" aria-label="Customers" className="min-w-0 scroll-mt-20" data-customer-list-slot>{p.customerList}</section>
       )}
+
+      {/* PB-7 — recently joined (identities come from the CS READ route, never the overview DTO). */}
+      {p.recentlyJoined}
 
       {/* < lg — one group at a time. */}
       <div className="flex justify-center lg:hidden">
@@ -217,6 +223,7 @@ export function CustomerSuccessLead({ renderHosted, hasHosted, onOpenWorkspace }
   const f = useSharedWidgetFetch<CsOverviewResponse>(`/api/platform/customer-success/overview?window=${period}`);
   return (
     <CustomerSuccessLeadSurface f={f} period={period} onPeriod={setPeriod} onOpenWorkspace={onOpenWorkspace} group={group} onGroup={setGroup}
-      customerList={hasHosted(CUSTOMER_LIST_KEY) ? renderHosted(CUSTOMER_LIST_KEY, onOpenWorkspace) : null} />
+      customerList={hasHosted(CUSTOMER_LIST_KEY) ? renderHosted(CUSTOMER_LIST_KEY, onOpenWorkspace) : null}
+      recentlyJoined={hasHosted(CUSTOMER_LIST_KEY) ? <CsRecentlyJoinedPanel /> : null} />
   );
 }

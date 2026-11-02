@@ -516,6 +516,9 @@ function refreshImpactRows(r: NonNullable<UserImpactInputs["refresh"]>): UserImp
   for (const row of r.rows) {
     const kind: UserImpactKind | null = row.overallStatus === "FAILED" ? "refresh-failed" : row.overallStatus === "PARTIAL" ? "refresh-partial" : null;
     if (!kind) continue; // the seam was asked for FAILED/PARTIAL; anything else is not a user impact
+    // PB-7 — a reaped (stale) execution a later success for the same source
+    // superseded is RECOVERED: the customer's data landed (recovery-core.ts).
+    if (row.recoveredByExecutionId) continue;
     const source = row.sourceKind === "PLAID_ITEM" ? "Plaid item" : `${row.network ?? "wallet"} wallet`;
     const category = row.failureCategory ?? row.failureStage ?? null;
     out.push({
@@ -619,6 +622,8 @@ export function buildUserImpact(inputs: UserImpactInputs, now: Date, windowHours
     checked.push("refresh-executions");
     rows.push(...refreshImpactRows(inputs.refresh));
     if (inputs.refresh.more) floors.push(`Refresh: ${inputs.refresh.rows.length} FAILED/PARTIAL executions shown — the seam had a further page (a floor, not a total).`);
+    const recovered = inputs.refresh.rows.filter((r) => r.recoveredByExecutionId).length;
+    if (recovered > 0) floors.push(`Refresh: ${recovered} interrupted execution${recovered === 1 ? "" : "s"} (process ended mid-run) not listed — a later run for the same source succeeded (recovered).`);
   } else failed.push("refresh-executions");
 
   if (inputs.ai) { checked.push("ai-failures"); rows.push(...aiImpactRows(inputs.ai)); } else failed.push("ai-failures");
