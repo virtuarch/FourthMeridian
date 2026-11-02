@@ -108,6 +108,12 @@ export interface SpaceShellProps {
    * financial controls row (PerspectiveShell) follows the rail.
    */
   compactTitleOnly?: boolean;
+  /**
+   * PB-3 (owner addendum 2026-11-01) — render no rail when there is only one
+   * destination: a single-pill "Overview" switcher switches nothing. Platform
+   * Spaces set it; a customer Space frame keeps its rail unconditionally.
+   */
+  hideLoneRail?: boolean;
   railVisibility?: "always" | "belowLg";
   /**
    * Platform Operations 2.0 R1 — a control rendered BESIDE the mobile (<lg)
@@ -149,16 +155,16 @@ export function SpaceShell({
   onLeave,
   compactRailOptions,
   compactTitleOnly = false,
+  hideLoneRail = false,
   titleAccessory,
   titleChip,
   fillCompactRail = false,
   children,
 }: SpaceShellProps) {
   const isUtility = variant === "utility";
-  // A lone utility destination needs no switcher; a Space/Platform frame always
-  // renders its rail (a single-Overview Platform area keeps its one pill — the
-  // shipped behavior this must not change).
-  const showRail = isUtility ? railOptions.length > 1 : true;
+  // A lone utility destination needs no switcher, nor (PB-3) a lone Platform
+  // workspace (hideLoneRail); a customer Space frame always renders its rail.
+  const showRail = isUtility || hideLoneRail ? railOptions.length > 1 : true;
   // The Space-level rail control — the ONE fixed Spaces rail (lib/space-nav.ts),
   // TEXT-ONLY labels (the prototype's rail language), every label always visible.
   const railFor = (options: SpaceShellRailOption[]) => (
