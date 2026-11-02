@@ -27,8 +27,8 @@ try {
   const dragged = await page.getByRole('dialog').boundingBox();
   assert(Math.abs(expanded.height - dragged.height - 50) < 3, 'drag pixels and sheet height share coordinates');
   await page.mouse.up();
-  fs.mkdirSync(path.join(process.cwd(), (process.env.FM_UI_EVIDENCE_DIR||'tmp/ui-hardening-evidence')), { recursive: true });
-  fs.writeFileSync(path.join(process.cwd(), (process.env.FM_UI_EVIDENCE_DIR||'tmp/ui-hardening-evidence'), 'visual-viewport-results.json'), JSON.stringify({ scope: 'Simulated 440px visual viewport within 844px layout viewport; no real keyboard', compactSnap: 'pass', expandedSnap: 'pass', pointerTracking: 'pass', realDeviceKeyboard: 'unverified' }, null, 2));
+  fs.mkdirSync(path.resolve(process.cwd(), process.env.FM_UI_EVIDENCE_DIR||'tmp/ui-hardening-evidence'), { recursive: true });
+  fs.writeFileSync(path.join(path.resolve(process.cwd(), process.env.FM_UI_EVIDENCE_DIR||'tmp/ui-hardening-evidence'), 'visual-viewport-results.json'), JSON.stringify({ scope: 'Simulated 440px visual viewport within 844px layout viewport; no real keyboard', compactSnap: 'pass', expandedSnap: 'pass', pointerTracking: 'pass', realDeviceKeyboard: 'unverified' }, null, 2));
   console.log('PASS visible viewport snap and drag coordinate consistency');
 } finally {
   await browser.close();
