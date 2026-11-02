@@ -22,7 +22,7 @@
  */
 
 import {
-  IMPORT_REASON_LABELS, type ImportHealthDot, type ImportReasonCategory, type ImportStatus, type ImportedItem, importHealthDot,
+  IMPORT_REASON_LABELS, recoveredPhrase, type ImportHealthDot, type ImportReasonCategory, type ImportStatus, type ImportedItem, importHealthDot,
 } from "@/lib/platform/onboarding/import-status-core";
 
 export interface OnboardingConnection {
@@ -93,21 +93,20 @@ const n = (v: number) => v.toLocaleString("en-US");
 export const IMPORT_STATUS_WORDS: Readonly<Record<ImportStatus, string>> = {
   in_progress: "import in progress",
   complete: "import complete",
-  recovered: "import recovered after interruption",
+  recovered: "import recovered after an interruption",
   failed: "import failed",
   removed: "connection removed",
 };
 
 function importEvent(c: OnboardingConnection): OnboardingEvent | null {
   if (c.importStatus === null) return null;
-  const why = c.reasonLabel ? ` — ${c.reasonLabel}` : "";
   const tx = c.transactions !== null ? ` · ${n(c.transactions)} transaction${c.transactions === 1 ? "" : "s"}` : "";
   switch (c.importStatus) {
     case "complete":
       return c.importCompletedAt ? { at: c.importCompletedAt, kind: "import", label: `${c.label}: import complete${tx}`, tone: "ok", connectionId: c.id } : null;
     case "recovered":
       return c.importCompletedAt
-        ? { at: c.importCompletedAt, kind: "import", label: `${c.label}: import recovered after interruption${tx}${why}`, tone: "warn", connectionId: c.id }
+        ? { at: c.importCompletedAt, kind: "import", label: `${c.label}: ${recoveredPhrase(c.reason)}${tx}`, tone: "warn", connectionId: c.id }
         : null;
     default:
       return null; // in progress / failed / removed are states, not timestamped events — shown on the connection row
