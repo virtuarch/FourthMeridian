@@ -205,7 +205,7 @@ void (async () => {
       && route.indexOf("parseBetaRequestListQuery(params)") < route.indexOf("listBetaRequests(parsed.query)"));
 
     const widget = code("components/platform/widgets/GrowthBetaRequestsWidget.tsx");
-    check("widget: the pending panel mounts the review section", /<BetaRequestReviewSection requestId=\{selectedRequest\.id\} canWrite=\{canWrite\} onChanged=\{load\} \/>/.test(widget));
+    check("widget: the pending panel mounts the review section", /<BetaRequestReviewSection requestId=\{selectedRequest\.id\} canWrite=\{canWrite\} onChanged=\{load\} key=\{selectedRequest\.id\} \/>/.test(widget));
     check("widget: the All requests tab mounts the status view", /tab === "all" \? \(\s*<BetaRequestBrowser canWrite=\{canWrite\} onChanged=\{load\} \/>/.test(widget) && /\["all", "All requests"/.test(widget));
     check("widget: no ad-hoc deny call is left (Deny lives in the review section)", !/"deny"/.test(widget) && !/\/deny\b/.test(widget));
     check("widget: Approve renders only while the request is still waiting", /\{canWrite && liveRequest && \(\s*<PanelFooter>/.test(widget));

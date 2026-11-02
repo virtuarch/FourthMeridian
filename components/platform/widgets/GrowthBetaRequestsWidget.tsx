@@ -647,7 +647,7 @@ export function GrowthBetaRequestsWidget({ section, access }: { section: Platfor
                       </div>
                     )}
                     {/* PB-6 — status, decision, verdict history, block state; Deny vs Deny and block (WRITE). */}
-                    <BetaRequestReviewSection requestId={selectedRequest.id} canWrite={canWrite} onChanged={load} />
+                    <BetaRequestReviewSection requestId={selectedRequest.id} canWrite={canWrite} onChanged={load} key={selectedRequest.id} />
                     {liveRequest && <p className="border-t border-[var(--border-hairline)] pt-3 text-[11px] leading-snug text-[var(--text-muted)]">
                       {`Approve mints a single-use, email-bound invite (${validityDays !== null ? `expires after ${daysLabel(validityDays)}` : "configured validity"}) and emails it. Redemption requires registration mode = invite-only.`}
                     </p>}

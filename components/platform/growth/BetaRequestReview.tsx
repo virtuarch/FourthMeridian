@@ -98,7 +98,12 @@ export function BetaRequestReviewSection({ requestId, canWrite, onChanged }: {
     }
   }, [requestId]);
 
-  useEffect(() => { setHist(null); setOutcome(null); void load(); }, [load]);
+  // Hosts mount this with `key={requestId}`, so a different request starts from a clean state.
+  useEffect(() => {
+    let alive = true;
+    (async () => { if (alive) await load(); })();
+    return () => { alive = false; };
+  }, [load]);
 
   const close = () => { setDialog(null); setReason(EMPTY_OPERATOR_REASON); setClearTo("LEGITIMATE"); };
 
@@ -304,7 +309,11 @@ export function BetaRequestBrowser({ canWrite, onChanged }: { canWrite: boolean;
     }
   }, [view, suspicious, page]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let alive = true;
+    (async () => { if (alive) await load(); })();
+    return () => { alive = false; };
+  }, [load]);
 
   const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
   const from = data && data.total > 0 ? (data.page - 1) * data.pageSize + 1 : 0;
@@ -387,7 +396,7 @@ export function BetaRequestBrowser({ canWrite, onChanged }: { canWrite: boolean;
                   </div>
                 )}
                 <BetaRequestReviewSection requestId={selected.id} canWrite={canWrite}
-                  onChanged={async () => { await load(); await onChanged?.(); }} />
+                  onChanged={async () => { await load(); await onChanged?.(); }} key={selected.id} />
               </div>
             </PanelContent>
           </>
