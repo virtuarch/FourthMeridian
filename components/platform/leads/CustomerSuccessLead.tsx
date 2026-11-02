@@ -17,6 +17,12 @@
  *   < lg
  *     hero → KPIs → needs help → the list → ONE group (Onboarding · Sync issues).
  *
+ * PB-4 — WHO, NOT JUST HOW MANY. Each "Who needs help, and why" row is a
+ * control: it asks the hosted Customers list to filter to that reason
+ * (cs-attention-link.ts) and scrolls to it, so the operator sees WHICH
+ * customers, with their reasons, in the audited list. The overview stays
+ * counts-only. Offered only when the list is hosted for this viewer.
+ *
  * Not shown, because no authority exists: support tickets, health scores.
  */
 
@@ -36,10 +42,12 @@ import { ShareBars } from "../charts/ShareBars";
 import { cohortLayout } from "../charts/heatmap-model";
 import { ONBOARDING_SHORT, cohortCellText, describeCohortCell } from "./growth-model";
 import {
-  CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, attentionBars, csHero, healthItems, incidentBars, stageBars,
+  CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, atLeast, attentionBars, csHero, healthItems, incidentBars, stageBars,
   type CsWindow,
 } from "./customer-success-model";
 import type { ReactNode } from "react";
+import type { AttentionFilter } from "@/lib/platform/customer/overview-types";
+import { requestCustomerAttentionFilter } from "./cs-attention-link";
 
 const n = (v: number) => v.toLocaleString("en-US");
 type Group = "onboarding" | "issues";
@@ -65,6 +73,8 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
   const only = (g: Group) => (group === g ? "" : "max-lg:hidden");
   const health = o ? healthItems(o) : [];
   const cohorts = o ? cohortLayout(o.onboarding.rows, o.onboarding.stages.map((s) => ({ key: s.key, label: ONBOARDING_SHORT[s.key] ?? s.label, shown: true }))) : null;
+  // PB-4 — reasons link to the list only when the list is hosted here (its READ decides).
+  const showWho = p.customerList ? (filter: AttentionFilter) => { requestCustomerAttentionFilter(filter); goToSection("cs-customers"); } : null;
   const totals = o ? o.incidents.days.reduce((a, d) => ({ opened: a.opened + d.opened, resolved: a.resolved + d.resolved }), { opened: 0, resolved: 0 }) : null;
 
   return (
@@ -90,8 +100,18 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
           <Surface className="flex flex-1 flex-col justify-center p-4 sm:p-5">
             {o ? (
               o.customers.active === 0 ? <ChartMessage>No active customers</ChartMessage> : (
-                <ShareBars items={attentionBars(o)} ariaLabel="Active customers needing help, by reason" noun="customer"
-                  denominator={`of ${n(o.customers.active)} active customers · one customer can have several reasons`} />
+                <>
+                  <ShareBars items={attentionBars(o)} ariaLabel="Active customers needing help, by reason" noun="customer"
+                    denominator={`of ${n(o.customers.active)} active customers · one customer can have several reasons`}
+                    {...(showWho ? { onSelect: (key: string) => showWho(key as AttentionFilter), selectLabel: (b: { label: string; count: number }) => `Show the ${n(b.count)} customer${b.count === 1 ? "" : "s"}: ${b.label}` } : {})} />
+                  {o.attention.floor && <Caption>{"Counts are at least (≥) — a fleet read reached its row cap"}</Caption>}
+                  {showWho && o.attention.customers > 0 && (
+                    <button type="button" onClick={() => showWho("any")} data-attention-any
+                      className="mt-2 inline-flex min-h-11 items-center self-start text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
+                      {`Show all ${atLeast(o.attention.customers, o.attention.floor === true)} who need help in the list`}
+                    </button>
+                  )}
+                </>
               )
             ) : <Loading f={p.f} what="who needs help" />}
           </Surface>

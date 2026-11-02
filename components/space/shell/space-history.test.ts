@@ -460,6 +460,23 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
   await open(PLATFORM_DEFAULT_WORKSPACE_ID);
   check("    …and survive the default's key deletion", cur().search === "?foo=1", cur().search);
 
+  // ── PB-4 (S2 ruling) — a workspace-scoped filter (?attention=) is cleared by the SWITCH, in the same write ──
+  {
+    const { PLATFORM_WORKSPACE_SCOPED_PARAMS } = await import("@/lib/space/use-platform-workspace-navigation");
+    const { CS_ATTENTION_PARAM } = await import("@/components/platform/leads/cs-attention-link");
+    check("P13. ?attention= is declared workspace-scoped", PLATFORM_WORKSPACE_SCOPED_PARAMS.includes(CS_ATTENTION_PARAM));
+    await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-providers&attention=reconnect");
+    check("    hydration keeps it (a refresh / shared link opens the filtered list): no write", cur().searchParams.get("attention") === "reconnect" && writes.length === 0, writes.join(" | "));
+    await open("platform-ai");
+    check("    a USER workspace switch deletes it in the SAME single write that sets ?workspace=",
+      writes.length === 1 && writes[0] === "push /dashboard/platform/PLATFORM_OPS?workspace=platform-ai" && cur().searchParams.get("attention") === null, writes.join(" | "));
+    await open("platform-providers");
+    check("    …so returning to the workspace later does NOT silently re-apply the filter", cur().search === "?workspace=platform-providers", cur().search);
+    await back(); await back();
+    check("    Back to the original entry restores it as it was (Back/Forward never rewrites an entry)",
+      cur().searchParams.get("attention") === "reconnect" && !writes.some((w) => w.startsWith("replace")), `${cur().search} ${writes.join(" | ")}`);
+  }
+
   // ── V. PLATFORM OPS PHASE 1 UX — the VIEW axis (?view=) beneath the workspace ──
   console.log("V. Platform views — ?view= beside ?workspace=");
   const vw = () => cur().searchParams.get("view");
