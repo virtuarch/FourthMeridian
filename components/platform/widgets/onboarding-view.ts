@@ -6,7 +6,7 @@
  * "New-connection imports" tile. React-free so the words are testable.
  */
 
-import type { ImportHealthDot, ImportStatus } from "@/lib/platform/onboarding/import-status-core";
+import { recoveredPhrase, type ImportHealthDot, type ImportStatus } from "@/lib/platform/onboarding/import-status-core";
 import type { OnboardingConnection } from "@/lib/platform/customer/onboarding-core";
 import type { StatusTone } from "./job-health-format";
 
@@ -35,6 +35,20 @@ export const DOT_WORD: Readonly<Record<ImportHealthDot, string>> = {
   none: "no bank connection yet",
 };
 
+/**
+ * PB-7 Preview nit (c) — the dot's words for one customer: "none" with a wallet
+ * linked is not "no connection yet" (wallet imports are not tracked by the dot).
+ */
+export function dotWord(dot: ImportHealthDot, opts: { wallets: number }): string {
+  return dot === "none" && opts.wallets > 0 ? "no bank connection (wallet linked)" : DOT_WORD[dot];
+}
+
+/** PB-7 Preview nit (a) — the status words on a timeline connection row ("Recovered after an interruption (earlier attempt: …)" for a recovery). */
+export function connectionStatusWord(c: Pick<OnboardingConnection, "importStatus" | "reason">): string {
+  if (c.importStatus === null) return "";
+  return c.importStatus === "recovered" ? recoveredPhrase(c.reason) : IMPORT_STATUS_LABEL[c.importStatus];
+}
+
 const n = (v: number) => v.toLocaleString("en-US");
 
 /** The detail after a timeline connection row's status word ("" when there is nothing to add). */
@@ -44,7 +58,7 @@ export function connectionImportDetail(c: OnboardingConnection): string {
   const attempts = c.attempts > 1 ? `${c.attempts} attempts${c.interruptedAttempts ? `, ${c.interruptedAttempts} ended mid-run` : ""}` : null;
   const parts: (string | null)[] =
     c.importStatus === "complete" ? [tx, attempts]
-    : c.importStatus === "recovered" ? ["after an interruption", tx, c.reasonLabel, attempts]
+    : c.importStatus === "recovered" ? [tx, attempts] // the reason rides the status word (connectionStatusWord)
     : c.importStatus === "in_progress" ? [tx ? `${tx} so far` : null, c.interrupted ? "last attempt interrupted — resume pending" : null]
     : c.importStatus === "failed" ? [c.reasonLabel ?? "reason not recorded", tx ? `${tx} before it stopped` : null]
     : ["by the customer"];

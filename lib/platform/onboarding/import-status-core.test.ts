@@ -123,7 +123,10 @@ function main() {
     });
     check("invited; ordered registered → verified → session → linked → import → wealth", t.invited
       && t.events.map((e) => e.kind).join(",") === "registered,email_verified,first_session,linked,import,wealth_regen");
-    check("the import event says recovered with 1,388 transactions", t.events.some((e) => e.kind === "import" && /recovered after interruption · 1,388 transactions/.test(e.label)));
+    // PB-7 Preview nit (a) — pinned wording: the reason is the EARLIER ATTEMPT's, never the import's.
+    check("the import event reads 'Recovered after an interruption (earlier attempt: …)' with 1,388 transactions",
+      t.events.some((e) => e.kind === "import" && e.label === "Wells Fargo: Recovered after an interruption (earlier attempt: process ended mid-run) · 1,388 transactions"),
+      t.events.find((e) => e.kind === "import")?.label);
     check("pending names the steps not reached", t.pending.includes("No AI conversation yet") && t.pending.includes("No Brief viewed yet"));
     const json = JSON.stringify(t);
     check("no token, cursor, amount, merchant or transaction content field", !/encryptedToken|cursor|amount|merchant|description|accessToken|"name"/i.test(json));

@@ -5,7 +5,7 @@
  *
  * The audited Customer Success profile's "Onboarding" section: registration
  * (invited or not) → email verified → first session → per connection: linked →
- * history import (complete with N transactions · recovered after interruption ·
+ * history import (complete with N transactions · recovered after an interruption ·
  * in progress · failed + reason) → first wealth-history build → first AI turn →
  * first Brief. Renders `detail.onboarding` (lib/platform/customer/onboarding-core.ts)
  * as given — counts, kinds and timestamps only. Mounted by CsCustomersWidget
@@ -16,7 +16,7 @@
 import type { OnboardingTimeline } from "@/lib/platform/customer/onboarding-core";
 import { TONE_COLOR } from "../platform-surface";
 import { fmtUtc } from "../widget-kit";
-import { IMPORT_STATUS_LABEL, IMPORT_STATUS_TONE, connectionImportDetail } from "./onboarding-view";
+import { IMPORT_STATUS_TONE, connectionImportDetail, connectionStatusWord } from "./onboarding-view";
 
 const EVENT_TONE = { ok: TONE_COLOR.ok, warn: TONE_COLOR.warn, bad: TONE_COLOR.bad, neutral: TONE_COLOR.muted } as const;
 
@@ -34,7 +34,7 @@ export function CsOnboardingTimeline({ onboarding }: { onboarding: OnboardingTim
               <li key={c.id} className="flex min-w-0 flex-wrap items-start justify-between gap-2">
                 <span className="min-w-0 break-words text-[var(--text-secondary)]">{c.label}</span>
                 <span className="min-w-0 max-w-full break-words text-right" style={{ color: tone }}>
-                  <span className="font-medium">{IMPORT_STATUS_LABEL[c.importStatus!]}</span>
+                  <span className="font-medium">{connectionStatusWord(c)}</span>
                   {connectionImportDetail(c) && <span className="text-[var(--text-primary)]">{` · ${connectionImportDetail(c)}`}</span>}
                 </span>
               </li>

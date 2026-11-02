@@ -17,7 +17,9 @@ import { useSharedWidgetFetch } from "../workspace-session";
 import type { RecentlyJoinedResponse } from "@/app/api/platform/customer-success/recently-joined/route";
 import { TONE_COLOR } from "../platform-surface";
 import { timeAgo } from "../widget-kit";
-import { DOT_TONE, DOT_WORD } from "../widgets/onboarding-view";
+import { DOT_TONE, dotWord } from "../widgets/onboarding-view";
+// PB-7 Preview nit (b) — the Customers list's display-identity rule (username → name → opaque ref), never the raw email.
+import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
 import { ChartMessage, goToSection } from "./visual-kit";
 import { requestOpenCustomer } from "./cs-open-customer";
 
@@ -42,12 +44,12 @@ export function CsRecentlyJoinedSurface({ data, loading, error }: { data: Recent
           <ul className="flex flex-col" aria-label="Customers who registered recently" data-recently-joined>
             {data.rows.map((r) => (
               <li key={r.id} className="border-t border-[var(--border-hairline)] first:border-t-0">
-                <button type="button" onClick={() => open(r.id)} aria-label={`Open the profile of ${r.email}`}
+                <button type="button" onClick={() => open(r.id)} aria-label={`Open the profile of ${operatorDisplayName(r)}`}
                   className="flex min-h-11 w-full items-center gap-3 text-left text-xs hover:bg-[var(--surface-hover)] lg:min-h-9">
-                  <span aria-hidden className="shrink-0 rounded-full" title={DOT_WORD[r.importHealth]}
+                  <span aria-hidden className="shrink-0 rounded-full" title={dotWord(r.importHealth, r)}
                     style={{ width: 8, height: 8, background: TONE_COLOR[DOT_TONE[r.importHealth]] }} />
-                  <span className="sr-only">{DOT_WORD[r.importHealth]}</span>
-                  <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{r.name ?? r.username ?? r.email}</span>
+                  <span className="sr-only">{dotWord(r.importHealth, r)}</span>
+                  <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{operatorDisplayName(r)}</span>
                   <span className="hidden shrink-0 text-[var(--text-secondary)] sm:inline">{r.stage ?? "—"}</span>
                   <span className="shrink-0 tabular-nums text-[var(--text-muted)]">{`${timeAgo(r.joinedAt)} ago${r.invited ? "" : " · uninvited"}`}</span>
                 </button>
