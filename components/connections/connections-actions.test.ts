@@ -54,7 +54,8 @@ check("Tab / Shift+Tab close the menu WITHOUT trapping: no preventDefault, no re
 check("focus moving to a focusable outside root/menu closes it; a null relatedTarget does not (Safari tap-to-select)",
   /onBlur=\{\(e\) => \{[\s\S]{0,600}if \(to && !root\.current\?\.contains\(to\) && !menu\.current\?\.contains\(to\)\) setMenuOpen\(false\);/.test(SRC));
 check("below sm the two actions stack full-width so labels never truncate; inline on sm+",
-  /<div className="flex flex-col gap-2\.5 sm:flex-row">/.test(SRC) && (SRC.match(/fullWidth\s+className="sm:w-auto"/g) ?? []).length === 2);
+  /<div className="flex flex-col gap-2\.5 sm:flex-row">/.test(SRC) && (SRC.match(/fullWidth\s+className="max-sm:min-h-11 sm:w-auto"/g) ?? []).length === 2);
+check("below sm both stacked actions meet the 44 px touch-target floor (min-h-11)", (SRC.match(/max-sm:min-h-11/g) ?? []).length === 2);
 check("opening focuses the first enabled item; arrows move between items", /\[role=menuitem\]:not\(\[disabled\]\)"\)\?\.focus\(\)/.test(SRC) && /ArrowDown/.test(SRC) && /ArrowUp/.test(SRC));
 check("the page host is unchanged: header actions only when connections exist",
   /headerActions=\{hasConnections \? <ConnectionsActions plaidEnabled=\{plaidEnabled\} \/> : undefined\}/.test(code("components/connections/ConnectionsSpaceDashboard.tsx")));

@@ -43,5 +43,13 @@ check("the in-workspace view switcher is untouched (views are not workspaces)", 
 check("the deep-link hrefs are still built for every workspace", /href: platformWorkspaceHref\(area, w\.key\)/.test(DASH));
 check("the section anchors (what's inside) still publish regardless", /publishSections\(chromeSections\);/.test(DASH));
 
+// Session 2 Preview nit — the sidebar must not show an orphaned "Workspaces · <access>"
+// heading when a single-workspace area publishes no nav; the name stays accessible.
+const NAVBAR = code("components/ui/ContextualNavbar.tsx");
+check("sidebar: a lone platform area renders no visible Workspaces heading (sr-only name only)",
+  /const hasWorkspaceNav = !!workspaceNav && workspaceNav\.items\.length > 0;/.test(NAVBAR)
+  && /\{onPlatformAxis && !hasWorkspaceNav \? \(\s*<h1 className="sr-only" data-lone-workspace-heading>\{identity\.name\}<\/h1>/.test(NAVBAR));
+check("sidebar: the workspace list itself still renders only when nav items exist", /\{hasWorkspaceNav && \(\s*<div className=\{onPlatformAxis \? "mt-2" : "mt-4"\}>\s*<SpaceWorkspaceNav nav=\{workspaceNav\} \/>/.test(NAVBAR));
+
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall checks passed");

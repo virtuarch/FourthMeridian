@@ -169,7 +169,7 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
             ref={trigger}
             tone="meridian"
             fullWidth
-            className="sm:w-auto"
+            className="max-sm:min-h-11 sm:w-auto"
             onClick={() => setMenuOpen((v) => !v)}
             disabled={isLoading}
             aria-haspopup="menu"
@@ -184,7 +184,7 @@ export function ConnectionsActions({ centered = false, plaidEnabled = true }: Pr
           {menuOpen && !sheet && menuPanel}
         </div>
 
-        <GlassButton tone="neutral" fullWidth className="sm:w-auto" onClick={() => setAssetOpen(true)} data-add-manual-asset>
+        <GlassButton tone="neutral" fullWidth className="max-sm:min-h-11 sm:w-auto" onClick={() => setAssetOpen(true)} data-add-manual-asset>
           <Plus size={16} className="shrink-0" />
           <span className="whitespace-nowrap">Add Manual Asset</span>
         </GlassButton>
