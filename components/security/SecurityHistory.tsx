@@ -50,7 +50,7 @@ function EventRow({ e }: { e: SecurityEvent }) {
         <p className={`text-xs font-medium ${isFailure ? "text-red-400" : "text-gray-200"}`}>
           {e.label}
         </p>
-        {e.detail && <p className="text-xs text-gray-400">{e.detail}</p>}
+        {e.detail && <p className="text-xs text-[var(--text-secondary)]">{e.detail}</p>}
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-xs text-gray-600">{formatDevice(e.parsed)}</span>
           {e.ipAddress && (
