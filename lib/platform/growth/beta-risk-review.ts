@@ -42,11 +42,11 @@ import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { assertOperatorNoteSafe, recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import { operatorLabels, type BetaRiskDb } from "./beta-risk";
-import { removeBlocksForSourceRequest, upsertIdentifierBlock, lockMailbox } from "./beta-blocklist";
+import { blocklistAvailability, loadSourceRequestBlocks, removeBlocksForSourceRequest, upsertIdentifierBlock, lockMailbox } from "./beta-blocklist";
 import type { EnvSource } from "./beta-blocklist-core";
 import {
   BETA_RISK_REVIEW_STATUSES,
-  type BetaRiskReviewHistoryResponse, type BetaRiskReviewStatusValue,
+  type BetaRequestStatusValue, type BetaRiskReviewHistoryResponse, type BetaRiskReviewStatusValue,
 } from "./beta-risk-types";
 
 /** Newest-first history rows returned per request. */
@@ -156,14 +156,19 @@ export async function recordBetaRiskReview(
   });
 }
 
-/** A request's verdict history, newest first, or null when the request does not exist. */
+/**
+ * A request's verdict history, newest first, or null when the request does not
+ * exist. PB-6: with the request's current status / decision instant and whether
+ * it currently causes a block (loadSourceRequestBlocks — identity-free).
+ */
 export async function loadBetaRiskReviewHistory(
   requestId: string,
-  deps: { client?: BetaRiskDb } = {},
+  deps: { client?: BetaRiskDb; env?: EnvSource; now?: Date } = {},
 ): Promise<BetaRiskReviewHistoryResponse | null> {
   const client = deps.client ?? systemDb;
-  const request = await client.betaAccessRequest.findUnique({ where: { id: requestId }, select: { id: true } });
+  const request = await client.betaAccessRequest.findUnique({ where: { id: requestId }, select: { id: true, status: true, decidedAt: true } });
   if (!request) return null;
+  const blocks = await loadSourceRequestBlocks(client, [requestId], deps.now ? { now: deps.now } : {});
   const rows = await client.betaAccessRequestReview.findMany({
     where: { requestId },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -175,6 +180,12 @@ export async function loadBetaRiskReviewHistory(
   const labels = await operatorLabels(client, kept.map((r) => r.operatorId));
   return {
     requestId,
+    request: {
+      status: request.status as BetaRequestStatusValue, // the Prisma enum IS BETA_REQUEST_STATUSES
+      decidedAt: request.decidedAt?.toISOString() ?? null,
+    },
+    block: blocks.get(requestId) ?? { state: "NOT_BLOCKED" },
+    blocklist: blocklistAvailability(deps.env),
     capped,
     reviews: kept.filter((r) => isBetaRiskReviewStatus(r.status)).map((r) => ({
       id: r.id,

@@ -37,6 +37,7 @@ import {
   blockExpiryFor, blocklistMailbox, blocklistHmac, blocklistMode, checkCorrectedExpiry, hmacPrefix, mailboxLockKey, identifierPairs,
   type BlocklistKey, type EnvSource,
 } from "./beta-blocklist-core";
+import type { BetaRequestBlockState, BlocklistAvailability } from "./beta-risk-types";
 
 type Db = typeof systemDb;
 export type BlocklistReader = Pick<Prisma.TransactionClient, "betaBlockedIdentifier">;
@@ -102,6 +103,39 @@ export async function lookupIdentifierBlock(client: BlocklistReader, email: stri
     warnOnce("read", err instanceof Error ? err.name : "error");
     return { state: "UNAVAILABLE" };
   }
+}
+
+/**
+ * PB-6 — what the blocklist can do in this environment, as a word the operator
+ * UI can show. Derived from the key MODE only — never a key, a version or a problem string.
+ */
+export function blocklistAvailability(env?: EnvSource): BlocklistAvailability {
+  const mode = blocklistMode(env).mode;
+  return mode === "ENFORCE" ? "ENFORCED" : mode === "SKIP" ? "NOT_CONFIGURED" : "UNAVAILABLE";
+}
+
+/**
+ * PB-6 — which of these requests currently CAUSE an enforced block: an ACTIVE,
+ * unexpired row whose soft `sourceRequestId` is the request. Selects the link,
+ * the creation instant and the expiry only — the HMAC, its key version and the
+ * block id never leave this read. The earliest block per request wins.
+ */
+export async function loadSourceRequestBlocks(
+  client: BlocklistReader, requestIds: readonly string[], opts: { now?: Date } = {},
+): Promise<Map<string, BetaRequestBlockState>> {
+  const ids = [...new Set(requestIds)];
+  const out = new Map<string, BetaRequestBlockState>();
+  if (ids.length === 0) return out;
+  const rows = await client.betaBlockedIdentifier.findMany({
+    where: { sourceRequestId: { in: ids }, status: "ACTIVE", expiresAt: { gt: opts.now ?? new Date() } },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { sourceRequestId: true, createdAt: true, expiresAt: true },
+  });
+  for (const r of rows) {
+    if (out.has(r.sourceRequestId)) continue;
+    out.set(r.sourceRequestId, { state: "BLOCKED", since: r.createdAt.toISOString(), expiresAt: r.expiresAt.toISOString() });
+  }
+  return out;
 }
 
 /**
