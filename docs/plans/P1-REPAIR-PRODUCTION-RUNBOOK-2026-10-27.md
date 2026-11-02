@@ -1,5 +1,8 @@
 # P1 runbook: historical transfer repair in Production (2026-10-27)
 
+> **Owner:** Session 1 · **Status:** BLOCKED · **Updated:** 2026-11-02 · **PRs:** —
+> Current state (2026-11-02): never executed. It is pending owner decision D11 (approve dry run `--expect=16`, then apply). It moves to `docs/operations/runbooks/` in a later PR.
+
 **Status: READY, NOT AUTHORIZED.** This runbook describes a write to Production. Do not run any `--apply` step until the owner has given separate, written authorization for this specific run (see §1). Nothing in this document has been run against Production.
 
 **Script:** `scripts/repair-transfer-debt-payment.ts`, which uses:

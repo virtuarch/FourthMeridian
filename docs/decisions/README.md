@@ -25,6 +25,7 @@ decision, write a new ADR that supersedes the old one (note it at the top of bot
 | [ADR-004](./ADR-004-time-doctrine.md) | `asOf` is a persistent anchor; presets are backward windows; one time authority | [TIME_MODEL](../architecture/TIME_MODEL.md) |
 | [ADR-005](./ADR-005-numeric-precision.md) | Money representation audit + Float→Decimal migration roadmap | — |
 | [ADR-006](./ADR-006-provider-abstraction-timing.md) | Introduce a provider-neutral abstraction from the *second* provider, not the first | [FINANCIAL_TRUTH_SPINE §12](../architecture/FINANCIAL_TRUTH_SPINE.md) |
+| [ADR-008](./ADR-008-documentation-lifecycle.md) | Documentation is update-first, indexed (`plans/INDEX.md`) and archived at release; evidence is never deleted | [docs/README.md](../README.md#documentation-lifecycle) |
 
 Beyond the ADRs, the immutable **[PHASE_2_DECISION_MATRIX.md](./PHASE_2_DECISION_MATRIX.md)**
 records the D1–D14 Phase-2 decisions (duplicate-candidate handling, Connection

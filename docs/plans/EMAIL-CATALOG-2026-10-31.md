@@ -1,5 +1,8 @@
 # Email catalog — 2026-10-31
 
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-02 · **PRs:** #187
+> Living reference: keep it current with every email path change.
+
 This catalog lists every email-sending path in the repository, as of PR D ("Email: migrate all transactional emails to the branded design system + catalog").
 
 ## How the inventory was built
