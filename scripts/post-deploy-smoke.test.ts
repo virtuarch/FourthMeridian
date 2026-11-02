@@ -14,7 +14,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { bypassFor, classifyProbe, isVercelProtection, mayCarryBypass, targetFor, VERDICT } from "./post-deploy-smoke.mjs";
+import { bypassFor, classifyProbe, isProduction, isVercelProtection, mayCarryBypass, PRODUCTION_PUBLIC_BASE, probeBaseFor, targetFor, VERDICT } from "./post-deploy-smoke.mjs";
 
 let failures = 0, passes = 0;
 function check(name: string, ok: boolean, detail?: string): void {
@@ -103,6 +103,34 @@ console.log("workflow gate: only Vercel's deployments are probed");
   const wf = readFileSync(path.join(process.cwd(), ".github/workflows/post-deploy-smoke.yml"), "utf8");
   check("job if: requires creator vercel[bot] (GitHub's vercel-probe deployment is not probed)",
     /if:\s*github\.event\.deployment_status\.state == 'success' && github\.event\.deployment\.creator\.login == 'vercel\[bot\]'/.test(wf));
+}
+
+console.log("CI-COST W2: Production is probed at its PUBLIC domain, never the protected deployment URL");
+{
+  const DEP = "https://fintracker1-4ksody9l4-virtuarchs-projects.vercel.app";
+  check("Production app ⇒ app.fourthmeridian.com", probeBaseFor("Production – fintracker1", DEP) === "https://app.fourthmeridian.com");
+  check("Production site ⇒ the apex", probeBaseFor("Production – fourth-meridian-site", "https://fourth-meridian-site-x.vercel.app") === "https://fourthmeridian.com");
+  check("Preview ⇒ the deployment URL (trailing slash trimmed)", probeBaseFor("Preview – fintracker1", DEP + "/") === DEP);
+  check("isProduction: Vercel's Production environments only",
+    isProduction("Production – fintracker1") && isProduction("Production – fourth-meridian-site")
+      && !isProduction("Preview – fintracker1") && !isProduction("vercel-probe") && !isProduction("") && !isProduction(undefined));
+  check("the public bases are https and never *.vercel.app",
+    Object.values(PRODUCTION_PUBLIC_BASE).every((u) => u.startsWith("https://") && !/vercel\.app/.test(u)));
+  const APP = `${PRODUCTION_PUBLIC_BASE.app}/api/health`;
+  const okApp = classifyProbe({ kind: "app", ...health({ status: "ok", db: "ok", scheduler: {} }), deployedSha: SHA, url: APP });
+  check("public domain, 200 status ok ⇒ HEALTHY", okApp.verdict === VERDICT.HEALTHY, JSON.stringify(okApp));
+  check("…and the reason is honest that an alias cannot prove build identity", /identity NOT verified/.test(okApp.reason));
+  check("public domain, db degraded ⇒ UNHEALTHY", classifyProbe({ kind: "app", ...health({ status: "degraded", db: "error" }), deployedSha: SHA, url: APP }).verdict === VERDICT.UNHEALTHY);
+  check("public domain answered by Vercel protection (401 + SSO markers) ⇒ UNVERIFIED (red: protection in front of users)",
+    classifyProbe({ kind: "app", ...SSO_401, deployedSha: SHA, url: APP }).verdict === VERDICT.UNVERIFIED);
+  check("public domain, 302 to vercel.com/sso-api ⇒ UNVERIFIED (red)", classifyProbe({ kind: "app", ...SSO_302, deployedSha: SHA, url: APP }).verdict === VERDICT.UNVERIFIED);
+  check("public domain, bare 401 ⇒ UNHEALTHY (red)", classifyProbe({ kind: "app", status: 401, headers: {}, body: "", url: APP }).verdict === VERDICT.UNHEALTHY);
+  check("public domain, 307 to /login ⇒ UNHEALTHY (red)", classifyProbe({ kind: "app", status: 307, headers: { location: "https://app.fourthmeridian.com/login" }, body: "", url: APP }).verdict === VERDICT.UNHEALTHY);
+  check("public domain, 503 ⇒ UNHEALTHY (red)", classifyProbe({ kind: "app", status: 503, headers: {}, body: "", url: APP }).verdict === VERDICT.UNHEALTHY);
+  check("public site, 200 text/html ⇒ HEALTHY", classifyProbe({ kind: "site", status: 200, headers: { "content-type": "text/html; charset=utf-8" }, body: "<html>", url: PRODUCTION_PUBLIC_BASE.site + "/" }).verdict === VERDICT.HEALTHY);
+  const wf = readFileSync(path.join(process.cwd(), ".github/workflows/post-deploy-smoke.yml"), "utf8");
+  check("workflow: the job runs for Production deployments only",
+    /&& startsWith\(github\.event\.deployment\.environment, 'Production'\)/.test(wf));
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);

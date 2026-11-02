@@ -77,7 +77,9 @@ Vercel only accepts a branch-scoped record for a branch that already exists ("Br
 | `.github/workflows/status-drift-guard.yml` | `pull_request` + `push: branches: ["develop", "v2.6"]` |
 | `scripts/ci-local.test.ts` | Pins the trusted-health trigger text exactly. Change both together. |
 | `.github/dependabot.yml` | `target-branch: develop` on all three ecosystems. `main` stays the default branch. |
-| `ci.yml`, `post-deploy-smoke.yml` | Branch-agnostic |
+| `ci.yml` | `push: branches: ["develop", "v2.6"]` + `pull_request` + `workflow_dispatch` (CI-COST W1/W3, 2026-11-02). Feature, release and promotion branches are tested by their PR run. `main` is covered by its strict ruleset (promotion PR tested the exact tree); see the release checklist's CI-evidence item |
+| `post-deploy-smoke.yml` | `deployment_status`, **Production deployments only**; probes `app.fourthmeridian.com/api/health` and `fourthmeridian.com/` (CI-COST W2). Preview health = `trusted-deployment-health.yml` |
+| `scripts/ci-local.test.ts` | Also pins the `ci.yml` trigger block (push develop/v2.6 + pull_request + workflow_dispatch; no `paths:`). Change both together |
 
 Feature PRs **target `develop`**: `gh pr create --base develop`. GitHub's default base is `main`, because `main` is the default branch, so always pass `--base`. A PR into `main` is a **promotion** (from `develop` or a `release/*`) or a **hotfix**, and needs the owner's approval.
 
