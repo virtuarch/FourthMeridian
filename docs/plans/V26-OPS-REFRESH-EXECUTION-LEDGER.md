@@ -146,7 +146,7 @@ the local dev database and made real Plaid calls, by design.
 | **Status** | **locally verified** — a real all-items manual refresh was executed and observed. **NOT** `production behavior verified`; production remains unobserved. |
 | **When** | 2026-08-01T00:15:09Z (cutoff) → 00:16:22Z |
 | **Path exercised** | The actual topbar `RefreshButton` in Chrome on `localhost:3000` → `useManualRefresh` → `POST /api/plaid/refresh` **with no body** — Branch B, the exact path that previously produced no ledger record. Not a synthetic POST. |
-| **Scope** | User `chr.hogan1997@gmail.com`; 4 ACTIVE items (American Express, Chase, Charles Schwab, Robinhood), all eligible. Real Plaid calls, real local writes. |
+| **Scope** | the owner's local user; 4 ACTIVE items (institutions redacted), all eligible. Real Plaid calls, real local writes. |
 
 ### Before → after
 
