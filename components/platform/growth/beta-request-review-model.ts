@@ -19,8 +19,9 @@
  */
 
 import type { OperatorReasonFieldCode } from "../widgets/OperatorReasonField";
-import type {
-  BetaRequestBlockState, BetaRequestStatusValue, BetaRiskReviewStatusValue, BlocklistAvailability,
+import {
+  BLOCK_STATUS_UNAVAILABLE_NOTE,
+  type BetaRequestBlockState, type BetaRequestStatusValue, type BetaRiskReviewStatusValue, type BlocklistAvailability,
 } from "@/lib/platform/growth/beta-risk-types";
 
 export const REQUESTS_URL = "/api/platform/growth-revenue/requests";
@@ -172,12 +173,18 @@ export function plainDenyEffect(latest: BetaRiskReviewStatusValue | null | undef
 export function verdictEffect(status: BetaRiskReviewStatusValue, requestStatus: BetaRequestStatusValue, block: BetaRequestBlockState): string {
   if (status === "SUSPICIOUS") {
     if (requestStatus === "DENIED") {
+      if (block.state === "UNKNOWN") {
+        return "The current block status could not be read. If this address is not already blocked, this blocks it: future requests from it are silently dropped, and the denial becomes final for every invitation path.";
+      }
       return block.state === "BLOCKED"
         ? "The address is already blocked; the block stands. The denial stays final for every invitation path."
         : "Blocks this address: future requests from it are silently dropped, and the denial becomes final for every invitation path.";
     }
     if (requestStatus === "REDEEMED") return "Advisory only — a joined request is never blocked by a verdict.";
     return "Blocks nothing now. If this request is later denied (Deny — a Revoke does not block), the deny will block the address.";
+  }
+  if (block.state === "UNKNOWN") {
+    return "The current block status could not be read. If this request caused a block, this clears it — the address can request access again — and lifts the final denial.";
   }
   return block.state === "BLOCKED"
     ? "Clears the block this request caused — the address can request access again — and lifts the final denial."
@@ -187,6 +194,8 @@ export function verdictEffect(status: BetaRiskReviewStatusValue, requestStatus: 
 /** The block line in the detail panel. Never an HMAC or an address — the state and two instants. */
 export function blockStateText(block: BetaRequestBlockState, availability: BlocklistAvailability): string {
   if (block.state === "BLOCKED") return `Blocked by this request — expires ${block.expiresAt.slice(0, 10)}`;
+  // Unknown is never "not blocked".
+  if (block.state === "UNKNOWN") return BLOCK_STATUS_UNAVAILABLE_NOTE;
   if (availability === "NOT_CONFIGURED") return "Not blocked — the blocklist is not configured in this environment";
   if (availability === "UNAVAILABLE") return "Not blocked — the blocklist is unavailable (no usable key)";
   return "Not blocked by this request";
@@ -199,14 +208,19 @@ export type ReviewAction =
 /**
  * UI-001 — the write actions a request offers. A READ holder gets NONE (they
  * see the state as text, never a button that 403s). PENDING: the two labelled
- * denies. DENIED: Block address, or Clear block when it is blocked. Every
- * status: the three verdicts.
+ * denies. DENIED: Block address, or Clear block when it is blocked — and BOTH
+ * when the block state is UNKNOWN (each verdict is safe either way: SUSPICIOUS
+ * keeps an existing block, a clearing verdict removes only this request's
+ * blocks; the confirm says the state is unknown). Every status: the three verdicts.
  */
 export function reviewActions(canWrite: boolean, status: BetaRequestStatusValue, block: BetaRequestBlockState): ReviewAction[] {
   if (!canWrite) return [];
   const out: ReviewAction[] = [];
   if (status === "PENDING") out.push("deny", "denyAndBlock");
-  if (status === "DENIED") out.push(block.state === "BLOCKED" ? "clearBlock" : "blockAddress");
+  if (status === "DENIED") {
+    if (block.state === "UNKNOWN") out.push("blockAddress", "clearBlock");
+    else out.push(block.state === "BLOCKED" ? "clearBlock" : "blockAddress");
+  }
   out.push("markLegitimate", "markSuspicious", "markUnreviewed");
   return out;
 }

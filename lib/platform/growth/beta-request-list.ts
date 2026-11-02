@@ -16,17 +16,18 @@
  *     capped read is reported as a note, never hidden.
  *   · each row's `block` is loadSourceRequestBlocks (beta-blocklist.ts): an
  *     ACTIVE, unexpired block whose sourceRequestId is the request — no HMAC,
- *     key version or block id.
+ *     key version or block id. A failed blocklist read never fails the list:
+ *     every row reads UNKNOWN (never NOT_BLOCKED) with BLOCK_STATUS_UNAVAILABLE_NOTE.
  * The route's READ gate (requirePlatformAccess("GROWTH_REVENUE","READ")) runs first.
  */
 
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { BETA_RISK_REVIEW_READ_CAP, loadLatestReviews, type BetaRiskDb } from "./beta-risk";
-import { blocklistAvailability, loadSourceRequestBlocks } from "./beta-blocklist";
+import { blocklistAvailability, loadSourceRequestBlockStates } from "./beta-blocklist";
 import type { EnvSource } from "./beta-blocklist-core";
 import type { BetaRequestListQuery, BetaRequestListResponse, BetaRequestStatusValue } from "./beta-request-list-types";
-import type { BetaRiskReviewSummary } from "./beta-risk-types";
+import { BLOCK_STATUS_UNAVAILABLE_NOTE, type BetaRiskReviewSummary } from "./beta-risk-types";
 
 /** The request ids whose latest verdict is SUSPICIOUS (newest-first read; the first row per request is its state). */
 async function latestSuspiciousIds(client: BetaRiskDb): Promise<{ ids: string[]; capped: boolean }> {
@@ -77,7 +78,8 @@ export async function listBetaRequests(
     console.error("[beta-request-list] verdicts unavailable:", (e as Error).message);
     notes.push("Verdicts are unavailable right now.");
   }
-  const blocks = await loadSourceRequestBlocks(client, ids, deps.now ? { now: deps.now } : {});
+  const blocks = await loadSourceRequestBlockStates(client, ids, deps.now ? { now: deps.now } : {});
+  if (!blocks.available) notes.push(BLOCK_STATUS_UNAVAILABLE_NOTE);
 
   return {
     view: q.view,
@@ -95,7 +97,7 @@ export async function listBetaRequests(
       invitedAt: r.invitedAt?.toISOString() ?? null,
       redeemedAt: r.redeemedAt?.toISOString() ?? null,
       review: reviews.get(r.id) ?? null,
-      block: blocks.get(r.id) ?? { state: "NOT_BLOCKED" },
+      block: blocks.byId.get(r.id) ?? { state: "UNKNOWN" },
     })),
     blocklist: blocklistAvailability(deps.env),
     ...(notes.length > 0 ? { notes } : {}),
