@@ -31,7 +31,7 @@
  * FinancialAccount BALANCES and writes no connection spine, so it is not a
  * second producer of this write. A mode with zero producers would be the
  * speculative abstraction PROV explicitly defers. See the provider-orchestration
- * notes in docs/plans/prov-provider-orchestration-refactor.md.
+ * notes in docs/systems/connections.md ("Provider orchestration (PROV) status").
  */
 
 import { db } from "@/lib/db";

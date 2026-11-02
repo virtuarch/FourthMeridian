@@ -14,7 +14,7 @@ Status vocabulary (a slice may hold several; the last one reached is its real st
 ## 0 · Arc status
 
 **OPS-REFRESH-1 (investigation)** — complete, read-only.
-`docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md`. Five drifts found.
+Durable findings now in [connections.md → Refresh paths and execution traceability](../systems/connections.md#refresh-paths-and-execution-traceability) (the investigation itself is in git history). Five drifts found.
 
 **OPS-REFRESH-1A** — **committed · locally verified against a live refresh**.
 DRIFT-1 closed and observed closed. See §OPS-REFRESH-1A-V.
@@ -34,7 +34,7 @@ the local dev database and made real Plaid calls, by design.
 | | |
 |---|---|
 | **Status** | **investigated** — read-only; no code, schema, route, job, or ledger touched |
-| **Artifact** | `docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md` |
+| **Artifact** | extracted into `docs/systems/connections.md` (original in git history) |
 | **Presenting symptom** | One confirmed user-initiated manual refresh wrote 25 `Transaction`, 49 `PositionObservation` (incl. `origin: DERIVED` / `source: "reconstruction"`), 9 `InvestmentEvent`, 1 `SpaceSnapshot` — with **no** `RefreshExecution` and **no** `JobRun` |
 | **Root cause** | `POST /api/plaid/refresh` forks on `body.plaidItemId`. The per-connection branch runs under `runFullRefresh` (DF-2A). The **no-body branch** — the global topbar Refresh button and sidebar "Refresh Data", via `components/plaid/useManualRefresh.ts` — calls `refreshAllActiveItemsForUser`, which called `refreshPlaidItem(id, { deferSnapshot: true })` with **no recorder, no runId, no envelope**. |
 | **Verdict** | **Implementation drift**, not an intended exemption. Doctrine §C requires one execution per attempt; §J exempts only the reconnect *inline* fast slice, a different function in a different file. |

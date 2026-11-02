@@ -5,7 +5,7 @@
  *
  * ONE answer to "what kind of movement was this row, and did it reduce debt?" for
  * every consumer that NARRATES or FILTERS a row (Daily Brief, AI tools, AI prose).
- * Contract document: docs/plans/RESOLVED-TRANSACTION-NATURE-CONTRACT-2026-10-27.md.
+ * Contract document: docs/systems/transactions.md ("Resolved transaction nature").
  *
  * ── The rule this exists to enforce ─────────────────────────────────────────
  *
