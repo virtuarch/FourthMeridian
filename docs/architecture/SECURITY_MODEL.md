@@ -431,6 +431,14 @@ and every connection hanging off it belong to the single user who connected it.
 
 ### Residual risks — PROPOSED follow-ups
 
+- Client IP for rate limits, audit and login is IMPLEMENTED in one extractor
+  (`lib/security/client-ip.ts`). `CLIENT_IP_TRUST_CLOUDFLARE` is registered (`lib/env.ts`) and
+  defaults off, so `cf-connecting-ip` is ignored. Turn it on only if Cloudflare fronts every
+  Production request; the Production edge topology is an owner check, not yet recorded.
+- Privacy items PRIV-007 / 008 / 009 / 016 (deletion with unconfirmed Plaid revocation, breach
+  and global-revoke procedure, plaintext wallet descriptors, terms re-consent) are tracked with
+  status in `docs/audits/pre-beta-2026-10/11-PRIVACY-COMPLIANCE.md`; counsel reviews
+  (PRIV-010 / 011 / 012 / 013) in `docs/audits/pre-beta-2026-10/remediation/01-FINDINGS-REGISTER.md`.
 - RLS protects rows, not JSON interiors: `SyncIssue*.detail`, `MerchantAlias.sample`,
   `InvestmentEvent.importedRaw`, `ImportBatch` error/decision payloads,
   `Notification` bodies, `AuditLog.metadata` can carry tenant content in operator
