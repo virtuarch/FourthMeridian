@@ -48,6 +48,9 @@ without a documentation system that has to be cleaned up again?
    financial reconciliation, billing evidence, important owner decisions, unresolved
    defects or obligations, records with a real retention requirement) and for material
    with demonstrated long-term value. Evidence is never deleted to reduce file count.
+   Evidence kept in `docs/archive/` must be public-safe (sanitised); originals with
+   personal, billing, credential or Production-access detail go to the owner's private
+   store.
 6. **The repository is public.** Personal, billing, credential or Production-access
    detail lives in the owner's private store, never in `docs/`. Public copies of real
    financial data are sanitised.
@@ -81,3 +84,5 @@ without a documentation system that has to be cleaned up again?
 - Closing an initiative carries a small cost: extract into the canonical doc, then
   delete the plan. That cost is intended.
 - Old text is recovered with `git log -- <path>` / `git show`, not by browsing an archive.
+- Git history is now load-bearing. Any history rewrite must target only the specific
+  files approved for removal and must preserve all other documentation history.
