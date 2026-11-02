@@ -34,24 +34,62 @@
  * is restated here.
  */
 
-import type { CoverageClass } from "@/lib/data/account-coverage.core";
+import type { AccountHistoricalCoverage, CoverageClass } from "@/lib/data/account-coverage.core";
 
 export type BalanceCoverageSide = "asset" | "liability";
 
 export interface BalanceCoverageAccountInput {
   side:           BalanceCoverageSide;
   coverageClass:  CoverageClass;
-  /** account-coverage `displayFromISO` (YYYY-MM-DD). */
-  displayFromISO: string;
+  /**
+   * The day the account enters the stored series (YYYY-MM-DD), aligned with the
+   * writer's floor (`writerAlignedFloorISO`).
+   */
+  floorISO:       string;
   /** Current balance — read only to drop a zero-balance held-flat account. Never returned. */
   balance:        number;
 }
 
 export interface BalanceCoverage {
-  /** One display floor per counted debt account, ascending. Dates only. */
+  /** One floor per counted debt account, ascending. Dates only. */
   liabilityFloors: string[];
-  /** One display floor per counted checking / savings account, ascending. */
+  /** One floor per counted checking / savings account, ascending. */
   assetFloors:     string[];
+  /**
+   * PB-8 — the floors of the counted debt accounts that are HELD FLAT (no walk:
+   * a mortgage, a loan). On a historical day on/after such a floor the debt
+   * includes an ESTIMATE (today's balance, no history), not a reconstruction.
+   */
+  estimatedLiabilityFloors: string[];
+}
+
+/**
+ * ── The four states, on the existing vocabulary (owner rule 2026-11-02) ──────
+ *   VERIFIED       observed            the live row (isEstimated=false)
+ *   RECONSTRUCTED  derived             walked from posted tx back from the anchor
+ *   ESTIMATED      estimated           held flat at today's balance inside its floor
+ *   UNKNOWN        incomplete          before the floor — never $0, said as partial
+ * The per-account resolver (accounts-asof.core resolveOne) already speaks these
+ * tiers; this module carries the last two to the AGGREGATE chart points, where a
+ * stored row has no per-account split: UNKNOWN ⇒ basis `unreliable` + "Partial"
+ * line; ESTIMATED ⇒ basis `carried` ("latest estimate, carried forward") +
+ * "Estimated" line. VERIFIED / RECONSTRUCTED points are untouched.
+ */
+
+/**
+ * The day an account enters the stored series, from the coverage authority's
+ * facts, aligned with the writer (computeAccountFloors):
+ *   · a WALKED account (BALANCE_WALK) — its replay/display floor (posted ledger);
+ *   · a HELD-FLAT account — its earliest posted transaction when that precedes
+ *     connection, else its connection (PB-8: a held-flat liability is never
+ *     floored at the epoch);
+ *   · in a SHARED Space, never before the account was linked in.
+ */
+export function writerAlignedFloorISO(
+  cov: AccountHistoricalCoverage, coverageClass: CoverageClass, connectionFloorISO: string, linkISO: string, isShared: boolean,
+): string {
+  const base = coverageClass === "HELD_FLAT" ? (cov.existenceFromISO ?? connectionFloorISO) : cov.displayFromISO;
+  return isShared && linkISO > base ? linkISO : base;
 }
 
 /** The account types each side counts. Every other type is out of scope (see header). */
@@ -64,8 +102,12 @@ export function balanceCoverageSideOf(type: string): BalanceCoverageSide | null 
 export function deriveBalanceCoverage(inputs: readonly BalanceCoverageAccountInput[]): BalanceCoverage | null {
   const counted = inputs.filter((i) => !(i.coverageClass === "HELD_FLAT" && i.balance === 0));
   if (!counted.length) return null;
-  const floors = (side: BalanceCoverageSide) => counted.filter((i) => i.side === side).map((i) => i.displayFromISO).sort();
-  return { liabilityFloors: floors("liability"), assetFloors: floors("asset") };
+  const floors = (side: BalanceCoverageSide) => counted.filter((i) => i.side === side).map((i) => i.floorISO).sort();
+  return {
+    liabilityFloors: floors("liability"),
+    assetFloors: floors("asset"),
+    estimatedLiabilityFloors: counted.filter((i) => i.side === "liability" && i.coverageClass === "HELD_FLAT").map((i) => i.floorISO).sort(),
+  };
 }
 
 /** The Net Worth page's series (WealthMetricKey) → which sides its value is composed from. */
@@ -112,23 +154,40 @@ export function partialCoverageLabel(cov: BalanceCoverage | null, sides: readonl
   return `Partial: ${missing} of ${all.length} ${noun(sides, cov, all.length)} ${missing === 1 ? "has" : "have"} no balance history this far back`;
 }
 
+/** "Estimated: 1 of 4 debts held at today’s balance (no history)" — or null. */
+export function estimatedCoverageLabel(cov: BalanceCoverage | null, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
+  if (!cov || !sides.includes("liability")) return null;
+  const n = cov.estimatedLiabilityFloors.filter((f) => f <= dateISO).length;
+  if (n === 0) return null;
+  const total = cov.liabilityFloors.length;
+  return `Estimated: ${n} of ${total} ${total === 1 ? "debt" : "debts"} held at today’s balance (no history)`;
+}
+
 /**
- * Mark every point before the coverage floor PARTIAL, with the existing partial
- * idiom: basis `unreliable` (TrendChart draws it dotted, unfilled, "low
- * confidence") plus the per-day coverage line — the same pair the Investments
- * slice uses for "N of M positions valued". The VALUE is never changed: a gap
- * we cannot fill is said, not filled. Points on/after the floor are untouched.
+ * Carry UNKNOWN and ESTIMATED to the aggregate points, with the existing idioms:
+ *   · before the coverage floor (some account not yet in the series): basis
+ *     `unreliable` (dotted, unfilled, "low confidence") + the "Partial" line —
+ *     the same pair the Investments slice uses for "N of M positions valued";
+ *   · on/after it, a RECONSTRUCTED point that includes a held-flat liability:
+ *     basis `carried` ("latest estimate, carried forward") + the "Estimated" line.
+ * The VALUE is never changed: a gap we cannot fill is said, not filled. An
+ * observed point (the live row) is the verified balance and is never relabelled
+ * estimated; an explicit caller basis (e.g. RWA `modeled`) is kept, its line added.
  */
-export function markPartialBalanceCoverage<P extends { date: string; basis?: "unreliable" | (string & {}); coverageLabel?: string | null }>(
+export function markPartialBalanceCoverage<P extends { date: string; estimated?: boolean; basis?: "unreliable" | "carried" | (string & {}); coverageLabel?: string | null }>(
   points: readonly P[],
   cov: BalanceCoverage | null,
   sides: readonly BalanceCoverageSide[],
 ): P[] {
   const from = balanceCoveredFromISO(cov, sides);
   if (!from) return points.slice();
-  return points.map((p) => (p.date < from
-    ? ({ ...p, basis: "unreliable", coverageLabel: partialCoverageLabel(cov, sides, p.date) } as P)
-    : p));
+  return points.map((p) => {
+    if (p.date < from) return { ...p, basis: "unreliable", coverageLabel: partialCoverageLabel(cov, sides, p.date) } as P;
+    if (p.estimated !== true) return p;
+    const est = estimatedCoverageLabel(cov, sides, p.date);
+    if (!est) return p;
+    return { ...p, ...(p.basis === undefined || p.basis === "reconstructed" ? { basis: "carried" } : {}), coverageLabel: est } as P;
+  });
 }
 
 function fmtDay(iso: string): string {

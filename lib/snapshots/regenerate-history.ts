@@ -281,7 +281,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     where:  { spaceId, status: ShareStatus.ACTIVE, financialAccount: { deletedAt: null } },
     select: {
       createdAt: true,
-      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, nativeBalance: true, lastUpdated: true, walletChain: true, syncStatus: true } },
+      financialAccount: { select: { id: true, name: true, type: true, balance: true, currency: true, createdAt: true, debtSubtype: true, creditLimit: true, providerSubtype: true, nativeBalance: true, lastUpdated: true, walletChain: true, syncStatus: true } },
     },
   });
   if (linkRows.length === 0) return zero;
@@ -297,6 +297,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     currency: l.financialAccount.currency,
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
+    // PB-8 — Plaid's subtype: a "credit card" without a limit still walks.
+    providerSubtype: l.financialAccount.providerSubtype,
     nativeBalance: l.financialAccount.nativeBalance, // native quantity for crypto accounts
     lastUpdated: l.financialAccount.lastUpdated,     // when nativeBalance was observed
     // W-M0 — the column that says WHAT nativeBalance counts. Without it the
@@ -822,7 +824,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // (HIST-2A), shared byte-for-byte with backfill.ts so M2 and M3 can never drift
   // on "from when can this account be reconstructed". (M3 never sets ignoreFloors.)
   const floorByAccount = computeAccountFloors(
-    linkRows.map((l) => ({ id: l.financialAccount.id, linkCreatedAt: l.createdAt })),
+    linkRows.map((l) => ({ id: l.financialAccount.id, linkCreatedAt: l.createdAt, type: l.financialAccount.type, accountCreatedAt: l.financialAccount.createdAt })),
     earliestTxByAccount, heldFlatIds, isSharedSpace, today,
   );
 
@@ -837,6 +839,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // Cash + revolving-card transaction deltas over (effectiveStart, today].
   const cashAccounts: CashAccountBalance[] = accounts.filter((a) => a.type === "checking" || a.type === "savings").map((a) => ({ id: a.id, balance: a.balance }));
   const cardAccounts: CashAccountBalance[] = accounts.filter(isReconstructableCard).map((a) => ({ id: a.id, balance: a.balance }));
+  const walkedCardIds = new Set(cardAccounts.map((a) => a.id));
 
   // SAME-BASIS INVARIANT — BOTH walks are posted-only. buildDeltas is
   // unconditionally posted-only (no pending-inclusive variant, by construction),
@@ -1004,7 +1007,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     const dayAccounts = accounts
       .filter((a) => floorByAccount.get(a.id)!.getTime() <= d.getTime())
       .flatMap((a) => {
-        if (heldFlatIds.has(a.id)) dayHasHeldFlat = true;
+        // PB-8 — a non-walkable LIABILITY with transactions (a loan with
+        // payments) takes the flat fallback below too: an ESTIMATE, said so.
+        if (heldFlatIds.has(a.id) || (a.type === "debt" && !walkedCardIds.has(a.id))) dayHasHeldFlat = true;
         if (cashMap.has(a.id)) return [{ type: a.type, balance: cashMap.get(a.id)!, currency: a.currency }];
         if (cardMap?.has(a.id)) return [{ type: a.type, balance: cardMap.get(a.id)!, currency: a.currency }];
         // RWA-2B — a manual asset answers from its ledger: the resolver's value
@@ -1399,7 +1404,11 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     // applies — with the ledger identity as a secondary locator for WHERE a
     // series first diverges.
     if (writes.length + patches.length > 0) {
-      result.integrity = await verifyLiabilitySeries(client, spaceId, fromDate, toDate);
+      result.integrity = await verifyLiabilitySeries(
+        client, spaceId, fromDate, toDate,
+        // PB-8 — the probe judges with the WRITER's floors, not the resolver's.
+        new Map([...floorByAccount].map(([id, d]) => [id, isoDate(d)] as const)),
+      );
       if (!result.integrity.healthy) {
         console.warn(
           `[wealth-regen] ${spaceId}: INTEGRITY PROBE FAILED after writing — ` +
@@ -1422,6 +1431,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
  */
 async function verifyLiabilitySeries(
   client: Client, spaceId: string, fromDate: string, toDate: string,
+  writerFloorISOById: ReadonlyMap<string, string>,
 ): Promise<{ checked: number; healthy: boolean; violations: string[]; unverifiableAccountIds: string[] }> {
   const rows = await client.spaceSnapshot.findMany({
     where: { spaceId, date: { gte: fromISO(fromDate), lte: fromISO(toDate) } },
@@ -1454,6 +1464,7 @@ async function verifyLiabilitySeries(
       rows.map((r) => ({ dateISO: isoDate(r.date), debt: r.debt, isEstimated: r.isEstimated })),
       accounts.map((a) => ({ id: a.id, walked: isReconstructableCard(a), heldFlatOwed: amountOwed(a.balance) })),
       (dISO, id) => amountOwed(byDate.get(dISO)?.get(id)?.balance ?? 0),
+      writerFloorISOById,
     );
     violations.push(...report.violations);
     unverifiableAccountIds = report.unverifiableAccountIds;
@@ -1462,7 +1473,8 @@ async function verifyLiabilitySeries(
       console.log(
         `[wealth-regen] ${spaceId}: integrity probe — ${unverifiableAccountIds.length} debt account(s) ` +
         `unverifiable (held flat, no walk): ${unverifiableAccountIds.join(",")}; ` +
-        `${report.rowsRestingOnUnverifiable} of ${report.checked} estimated row(s) rest on them`,
+        `${report.rowsRestingOnUnverifiable} of ${report.checked} estimated row(s) rest on them` +
+        (report.rowsOffWriterFloor > 0 ? ` (${report.rowsOffWriterFloor} written by an earlier run, before a link)` : ""),
       );
     }
   }

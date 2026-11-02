@@ -108,6 +108,8 @@ export async function backfillSpaceSnapshots(
           currency: true,
           // Slice 4B — used only to gate credit-card reconstruction.
           debtSubtype: true, creditLimit: true,
+          // PB-8 — Plaid's subtype: a "credit card" without a limit still walks.
+          providerSubtype: true,
         },
       },
     },
@@ -121,6 +123,7 @@ export async function backfillSpaceSnapshots(
     currency:    l.financialAccount.currency, // MC1 P3 Slice 3 — conversion input
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
+    providerSubtype: l.financialAccount.providerSubtype,
   }));
 
   const today = todayUTC();
@@ -170,7 +173,7 @@ export async function backfillSpaceSnapshots(
   // collapses every floor to the epoch. SINGLE authority in backfill-core
   // (HIST-2A), shared byte-for-byte with regenerate-history.ts.
   const floorByAccount = computeAccountFloors(
-    linkRows.map((l) => ({ id: l.financialAccount.id, linkCreatedAt: l.createdAt })),
+    linkRows.map((l) => ({ id: l.financialAccount.id, linkCreatedAt: l.createdAt, type: l.financialAccount.type, accountCreatedAt: l.financialAccount.createdAt })),
     earliestTxByAccount, heldFlatIds, isSharedSpace, today, opts?.ignoreFloors,
   );
 

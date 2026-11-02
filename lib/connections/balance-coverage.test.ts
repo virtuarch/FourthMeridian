@@ -29,7 +29,7 @@ import { resolveAccountCoverage, coverageClassFor, type AccountCoverageInput } f
 import { isReconstructableCard } from "@/lib/snapshots/backfill-core";
 import {
   deriveBalanceCoverage, balanceCoverageSideOf, balanceCoverageSidesFor, balanceCoveredFromISO,
-  balanceCoverageNote, partialCoverageLabel, type BalanceCoverageAccountInput,
+  balanceCoverageNote, partialCoverageLabel, writerAlignedFloorISO, type BalanceCoverageAccountInput,
 } from "./balance-coverage.core";
 
 const checks: string[] = [];
@@ -86,13 +86,17 @@ for (const a of ACCOUNTS) {
     accountId: a.id, coverageClass: cls, connectionFloorISO: a.connection, earliestPostedTxISO: a.earliestPosted,
     earliestPositionObservationISO: null, earliestReconstructionAnchorISO: null, earliestInvestmentEventISO: null,
   };
-  inputs.push({ side, coverageClass: cls, displayFromISO: resolveAccountCoverage(covIn).displayFromISO, balance: a.balance });
+  inputs.push({ side, coverageClass: cls, floorISO: writerAlignedFloorISO(resolveAccountCoverage(covIn), cls, a.connection, a.connection, false), balance: a.balance });
 }
 const cov = deriveBalanceCoverage(inputs)!;
 {
-  // card walked from its ledger; capone + mortgage unwalkable ⇒ connection; the
-  // zero-balance held-flat debt and the brokerage are not counted.
-  assert.deepEqual(cov, { liabilityFloors: ["2026-07-01", "2026-10-30", "2026-10-30"], assetFloors: ["2026-07-01"] });
+  // card walked from its ledger; capone (unwalkable, here WITHOUT a provider
+  // subtype) floors at its first transaction like the writer; the mortgage at its
+  // connection; the zero-balance held-flat debt and the brokerage are not counted.
+  assert.deepEqual(cov, {
+    liabilityFloors: ["2026-07-01", "2026-08-04", "2026-10-30"], assetFloors: ["2026-07-01"],
+    estimatedLiabilityFloors: ["2026-08-04", "2026-10-30"],
+  });
   assert.equal(balanceCoveredFromISO(cov, ["liability"]), "2026-10-30");
   assert.equal(balanceCoveredFromISO(cov, ["asset"]), "2026-07-01");
   assert.equal(balanceCoveredFromISO(cov, []), null);
@@ -111,9 +115,15 @@ const cov = deriveBalanceCoverage(inputs)!;
   for (const p of debt) {
     if (p.date < "2026-10-30") {
       assert.equal(p.basis, "unreliable", `${p.date} partial`);
-      assert.equal(p.coverageLabel, "Partial: 2 of 3 debts have no balance history this far back");
+      assert.equal(p.coverageLabel, p.date < "2026-08-04"
+        ? "Partial: 2 of 3 debts have no balance history this far back"
+        : "Partial: 1 of 3 debts has no balance history this far back");
+    } else if (p.estimated) {
+      // On/after the floor, a historical day that includes held-flat debt is ESTIMATED.
+      assert.equal(p.basis, "carried", `${p.date} estimated`);
+      assert.equal(p.coverageLabel, "Estimated: 2 of 3 debts held at today’s balance (no history)");
     } else {
-      assert.equal(p.basis, undefined, `${p.date} covered`);
+      assert.equal(p.basis, undefined, `${p.date} observed`);
       assert.equal(p.coverageLabel, undefined);
     }
   }
@@ -121,8 +131,9 @@ const cov = deriveBalanceCoverage(inputs)!;
 
   const nw = projectWealthTrendPoints(result, "netWorth", null, cov);
   assert.equal(nw.find((p) => p.date === "2026-10-29")!.basis, "unreliable");
-  assert.equal(nw.find((p) => p.date === "2026-10-29")!.coverageLabel, "Partial: 2 of 4 accounts have no balance history this far back");
-  assert.equal(nw.find((p) => p.date === "2026-10-30")!.basis, undefined);
+  assert.equal(nw.find((p) => p.date === "2026-10-29")!.coverageLabel, "Partial: 1 of 4 accounts has no balance history this far back");
+  assert.equal(nw.find((p) => p.date === "2026-10-30")!.basis, "carried", "net worth carries the estimate too");
+  assert.equal(nw.find((p) => p.date === "2026-11-01")!.basis, undefined, "the live row is verified, never relabelled");
   // Assets/cash: the checking account's floor (Jul 1) precedes the window ⇒ untouched.
   assert.ok(projectWealthTrendPoints(result, "totalAssets", null, cov).every((p) => p.basis === undefined));
   assert.ok(projectWealthTrendPoints(result, "cash", null, cov).every((p) => p.basis === undefined));

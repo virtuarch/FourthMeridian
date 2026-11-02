@@ -233,6 +233,12 @@ export interface DebtReplayReport {
   unverifiableAccountIds: string[];
   /** Estimated rows whose stored debt rests in part on an unverifiable account. */
   rowsRestingOnUnverifiable: number;
+  /**
+   * Of those, rows that matched only as SOME held-flat subset, not the writer's
+   * own floors — a row an earlier run wrote before an account was linked. Never
+   * a violation (the account is unverifiable either way); counted so it shows.
+   */
+  rowsOffWriterFloor: number;
 }
 
 /**
@@ -257,6 +263,14 @@ export function auditDebtReplay(
   rows: readonly DebtReplayRow[],
   accounts: readonly DebtReplayAccount[],
   walkedOwedOn: (dateISO: string, accountId: string) => number,
+  /**
+   * PB-8 — THE WRITER'S floors (computeAccountFloors), accountId → YYYY-MM-DD.
+   * When given, an account contributes nothing before its writer floor (walked:
+   * 0; unverifiable: absent) and its held owed from it — the probe and the
+   * writer agree on WHEN an account is in the series. Absent (the operator
+   * audit, which has no writer run) ⇒ the subset rule alone.
+   */
+  writerFloorISOById?: ReadonlyMap<string, string>,
 ): DebtReplayReport {
   const walked = accounts.filter((a) => a.walked);
   const unverifiable = accounts.filter((a) => !a.walked);
@@ -267,16 +281,26 @@ export function auditDebtReplay(
   const violations: string[] = [];
   let checked = 0;
   let resting = 0;
+  let offFloor = 0;
+  const present = (id: string, dateISO: string) => {
+    const f = writerFloorISOById?.get(id);
+    return f === undefined || dateISO >= f;
+  };
   for (const r of rows) {
     if (!r.isEstimated) continue; // an observation was never walked
     checked++;
-    const replay = walked.reduce((n, a) => n + walkedOwedOn(r.dateISO, a.id), 0);
+    const replay = walked.reduce((n, a) => n + (present(a.id, r.dateISO) ? walkedOwedOn(r.dateISO, a.id) : 0), 0);
     const residual = r.debt - replay;
     if (Math.abs(residual) <= SERIES_IDENTITY_TOLERANCE) continue;
+    // The writer's own expectation for the unverifiable part, when its floors are known.
+    if (writerFloorISOById) {
+      const expectedHeld = unverifiable.reduce((n, a, i) => n + (present(a.id, r.dateISO) ? held[i] : 0), 0);
+      if (Math.abs(residual - expectedHeld) <= SERIES_IDENTITY_TOLERANCE) { if (expectedHeld > 0) resting++; continue; }
+    }
     const explained = unverifiable.length > 0 && (exact
       ? exact.some((s) => Math.abs(residual - s) <= SERIES_IDENTITY_TOLERANCE)
       : residual >= -SERIES_IDENTITY_TOLERANCE && residual <= heldTotal + SERIES_IDENTITY_TOLERANCE);
-    if (explained) { resting++; continue; }
+    if (explained) { resting++; if (writerFloorISOById) offFloor++; continue; }
     violations.push(unverifiable.length === 0
       ? `${r.dateISO} debt: stored ${r.debt.toFixed(2)} != replay ${replay.toFixed(2)}`
       : `${r.dateISO} debt: stored ${r.debt.toFixed(2)} != walked replay ${replay.toFixed(2)} ` +
@@ -289,5 +313,6 @@ export function auditDebtReplay(
     walkedAccountIds: walked.map((a) => a.id),
     unverifiableAccountIds: unverifiable.map((a) => a.id),
     rowsRestingOnUnverifiable: resting,
+    rowsOffWriterFloor: offFloor,
   };
 }
