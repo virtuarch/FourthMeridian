@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-22 23:56 → 2026-10-23 00:30 UTC.
 
-**Production:** `qirf…`, PG 17.6. **Read-only throughout.** The final check, after all work, matched the starting fingerprint (88 migrations, md5 `9ea5829f99dc879274eb8af4cf17c8e6`, 2 users, 5,135 transactions).
+**Production:** `<redacted: Production project ref>`, PG 17.6. **Read-only throughout.** The final check, after all work, matched the starting fingerprint (88 migrations, md5 `9ea5829f99dc879274eb8af4cf17c8e6`, 2 users, 5,135 transactions).
 
 **Not done:** no merge of PR #10, no v2.6 deployment, no Production setting change.
 
@@ -10,7 +10,7 @@
 
 | Control | Evidence |
 |---|---|
-| Connection | Supabase **session pooler** (IPv4) `aws-1-ap-southeast-1.pooler.supabase.com:5432`, user `postgres.qirf…`, db `postgres`, read from the dashboard Connect panel. The direct host is IPv6-only |
+| Connection | Supabase **session pooler** (IPv4) `<redacted: pooler host>:5432`, user `postgres.<redacted: Production project ref>`, db `postgres`, read from the dashboard Connect panel. The direct host is IPv6-only |
 | Credential | Owner-created libpq `PGPASSFILE` in `~/fm-rehearsal-private/prod/` (directory 700, file 600, one line). The password was never in chat, command arguments, environment variables, shell history or the repository. The verifier refuses on wrong mode, owner or field match, or when FileVault is off. **Deleted with `rm -P` after use** |
 | Read-only | `pg_dump` reads in its own snapshot. Every other Production query ran inside `BEGIN TRANSACTION READ ONLY` (verified `read_only=on`). The dump was refused unless the identity and migration fingerprint matched |
 | At rest | FileVault **On**. No Time Machine destination. Evidence directory 700, files 600 |
@@ -81,8 +81,8 @@ The migrations add event identity, economic date and flow ownership but **popula
 |---|---|
 | `npm run audit:ci` on the migrated, converged clone | **27/28 REQUIRED pass**. The 28th, `audit-schema-drift`, needs a superuser (known); run as the container superuser it is **clean (0 drift statements)** |
 | `rls:accept` (`RLS_TARGET_URL`, a template copy of the converged clone) | **37/37**, incl. "missing `app.user_id` fails closed". The other 5 suites seed their own DBs (pass in CI on v2.6) |
-| **Old app** (Production code `9ea5881` build) on the migrated, converged clone, as `postgres` | health ok; login 401/200; dashboard 200; **4,538** transactions in the busiest Production Space (Σ first 200 = $41,169.49); malformed Bearer 307; 0 server errors ⇒ **migrate-then-deploy is safe** |
-| **v2.6 in Production mode** (`VERCEL_ENV=production`, `FM_RLS_STRICT=true`, 3 role URLs) on the clone | Boots (strict); health ok with the `scheduler` block (real Production last-dispatch); login; dashboard 200; **4,513** transactions, **all with event identity + economic date**. Difference vs old = **25 crypto-wallet rows, Σ $0.22** (excluded from banking reads by design; Σ first 200 = $41,169.27 = old − $0.22); 0 server errors |
+| **Old app** (Production code `9ea5881` build) on the migrated, converged clone, as `postgres` | health ok; login 401/200; dashboard 200; **4,538** transactions in the busiest Production Space (Σ first 200 = <redacted: owner's private record>); malformed Bearer 307; 0 server errors ⇒ **migrate-then-deploy is safe** |
+| **v2.6 in Production mode** (`VERCEL_ENV=production`, `FM_RLS_STRICT=true`, 3 role URLs) on the clone | Boots (strict); health ok with the `scheduler` block (real Production last-dispatch); login; dashboard 200; **4,513** transactions, **all with event identity + economic date**. Difference vs old = **25 crypto-wallet rows, Σ <redacted: owner's private record>** (excluded from banking reads by design; Σ first 200 = <redacted: owner's private record> = old − the crypto-row sum); 0 server errors |
 
 ## 7. Failure and recovery drill (fresh restore)
 

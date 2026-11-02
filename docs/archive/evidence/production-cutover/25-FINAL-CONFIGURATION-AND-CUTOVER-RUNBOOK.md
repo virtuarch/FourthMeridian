@@ -23,7 +23,7 @@
 
 | File | Purpose |
 |---|---|
-| `roles.secret.json` | **Owner recovery copy.** For `fm_app`, `fm_auth`, `fm_system`: a 256-bit password (`crypto.randomBytes(32)`), its SCRAM-SHA-256 verifier, and the pooler URL `postgresql://<role>.qirf…@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true` |
+| `roles.secret.json` | **Owner recovery copy.** For `fm_app`, `fm_auth`, `fm_system`: a 256-bit password (`crypto.randomBytes(32)`), its SCRAM-SHA-256 verifier, and the pooler URL `postgresql://<role>.<redacted: Production project ref>@<redacted: pooler host>:6543/postgres?pgbouncer=true` |
 | `c4-set-role-passwords.sql` | `ALTER ROLE … PASSWORD '<SCRAM verifier>'` ×3 in one transaction. **The plaintext never reaches the database or any log.** Run as `postgres` **after** the 47 migrations (they create the roles) |
 | `c4-verify-roles.mjs` | Connects through each pooler URL (password only in the child's `PGPASSWORD`). In a READ ONLY transaction asserts `current_user`, `rolbypassrls=false`, `statement_timeout` 15s/5s/60s. Writes the `c4-passed` marker |
 | `c5-add-vercel-env.mjs` | `vercel env add <NAME> production --sensitive --yes`, value on **stdin** (never argv). Adds the 3 URLs + `FM_RLS_STRICT=true`, then lists them. **Refuses** without `--i-am-at-c5` **and** the `c4-passed` marker (both refusals tested, exit 2) |
@@ -40,21 +40,21 @@
 
 On the restored Production clone, `repair-liability-income-credits --include-deleted --apply` reclassified **50** rows.
 
-**10 live, $2,451.33:**
+**10 live, <redacted: owner's private record>:**
 
 | Destination | Rows | Amount |
 |---|---|---|
-| Travel/REFUND | 7 | $2,000.77 |
-| Other/UNKNOWN | 2 | $432.18 |
-| Dining/REFUND | 1 | $18.38 |
+| Travel/REFUND | 7 | <redacted: owner's private record> |
+| Other/UNKNOWN | 2 | <redacted: owner's private record> |
+| Dining/REFUND | 1 | <redacted: owner's private record> |
 
-**40 tombstoned rows, $2,612.55:** 39 → Travel/REFUND, 1 → Other/UNKNOWN.
+**40 tombstoned rows, <redacted: owner's private record>:** 39 → Travel/REFUND, 1 → Other/UNKNOWN.
 
 | Check | Result |
 |---|---|
 | Balance fingerprints (FinancialAccount balances, SpaceSnapshot, Holding, Transaction id/amount/date/account/deleted) | **Identical before and after** |
 | Income totals | **Unchanged.** The income view already excluded these as ISSUER_CREDIT |
-| Spending | Refunds now net against category spend: Travel/Dining **−$2,019.15** (correct refund economics) |
+| Spending | Refunds now net against category spend: Travel/Dining **−<redacted: owner's private record>** (correct refund economics) |
 | PII | The evidence holds only masked `md5(id)` prefixes, months, amounts and categories |
 
 **Cutover gate:** `c3b-check-candidates.sql` (read-only) must return exactly the 50 rows in `c3b-expected-candidates.txt`. **Any difference ⇒ STOP** (do not apply; the owner decides).
@@ -77,7 +77,7 @@ On the restored Production clone, `repair-liability-income-credits --include-del
 **If the owner wants it anyway:**
 - Enable 7-day PITR with the Small resize **≥ 1 hour before** C1. The restart happens **before** the window.
 - Keep it for about a week, then disable it and downgrade.
-- Approximate cost: ~$23 PITR + the Micro→Small compute delta for the period, plus tax.
+- Approximate cost: ~<redacted: account billing> PITR + the Micro→Small compute delta for the period, plus tax.
 - **Needs explicit cost approval; not done.**
 
 **Regardless of PITR:**
@@ -110,10 +110,10 @@ Visibility unchanged (public).
 | Item | State |
 |---|---|
 | Organization spend limit | **$100/mo, shown as "Limit not enforced"** (notification-only). Alerts at $80 and $100 |
-| Prepaid auto-reload | Reloads to $15 when the balance hits $5, **monthly auto-reload limit $75** (org-wide, shared by every project) |
-| Project `fourth-meridian-prod` (`proj_ENcU…`) | **No spend limit set.** Month-to-date $0 |
+| Prepaid auto-reload | Reloads at <redacted: account billing>, **monthly auto-reload limit $75** (org-wide, shared by every project) |
+| Project `fourth-meridian-prod` (`<redacted: OpenAI project id>`) | **No spend limit set.** Month-to-date <redacted: account billing> |
 | Project keys | `fm-prod-backend` and `fourth-meridian-prod-server`: **never used** |
-| Other projects, month to date | Default $13.69; preview $0.28; dev $0.38 |
+| Other projects, month to date | <redacted: account billing> |
 | Legacy key | `FourthMeridianKey` (2026-07-01), last used 2026-10-16 |
 
 **Conclusions:**
@@ -127,7 +127,7 @@ Visibility unchanged (public).
    - a fleet alert at $10/24h and a per-user alert at $3/24h;
    - the kill switch `ai_paid_requests_paused`, which refuses all paid AI.
    - Worst case at the default allowance: 2 users × $5 × 31 ≈ **$310/mo**. So the app alone does not hold a $25 month.
-3. **$25/month is realistic** for current usage: two users; Preview month-to-date $0.28 across the whole A7 programme; the Brief costs about $0.003.
+3. **$25/month is realistic** for current usage: two users; Preview month-to-date spend was negligible (<redacted: account billing>) across the whole A7 programme; the Brief costs about $0.003.
 4. **Prod-key alignment is unverified.** The Production Vercel values are Sensitive and unreadable. The Production project has no usage, so the current Production app (main) is **not** using the prod project's keys. v2.6 pins `OPENAI_PROJECT_ID` and guards on `OPENAI_EXPECTED_ENVIRONMENT=production`; a key from another project with that pin is rejected by OpenAI.
 
 **Recommendation (needs owner approval; none of it affects the running app):**
@@ -170,7 +170,7 @@ Visibility unchanged (public).
 | **C4** | `psql -f c4-set-role-passwords.sql` (as `postgres`) → `node c4-verify-roles.mjs` | 3/3 connect, no BYPASSRLS, timeouts 15/5/60 s; marker written | Re-run the SQL; never weaken grants |
 | **C5** | `node c5-add-vercel-env.mjs --i-am-at-c5` | 4 Sensitive Production vars listed | Remove the vars; the old deployment is unaffected |
 | **C6** | Mark PR #10 ready → merge (normal checks, no bypass) → the Production deploy builds | Deploy READY | Build fail ⇒ the old deployment keeps serving |
-| **C7** | Verify: `/api/health` ok (strict, scheduler); owner login + TOTP; dashboard; transaction counts (old 4,538 vs new 4,513 = −25 crypto rows, Σ $0.22, by design); RLS fails closed; OpenAI O5; 0 server errors in `vercel logs` | All pass | **R1** (§7.3) |
+| **C7** | Verify: `/api/health` ok (strict, scheduler); owner login + TOTP; dashboard; transaction counts (old 4,538 vs new 4,513 = −25 crypto rows, Σ <redacted: owner's private record>, by design); RLS fails closed; OpenAI O5; 0 server errors in `vercel logs` | All pass | **R1** (§7.3) |
 | **C8** | `maintenance_mode` off; the owner smoke-tests a refresh; 30-min log watch | Refresh succeeds; no 5xx | R1 or R2 |
 | **C9** | Add `Architecture audits` + `Public site` to `main`'s required checks; apply O1–O3; delete private evidence after 7 days | — | — |
 
@@ -188,7 +188,7 @@ Visibility unchanged (public).
 ## 8. Owner decisions still required
 
 1. **Cutover window:** date and UTC slot (§7.1), and both users signed out.
-2. **PITR:** recommended **no** (§4). If yes, approve ~$23 + the Small compute delta and the extra restarts.
+2. **PITR:** recommended **no** (§4). If yes, approve ~<redacted: account billing> + the Small compute delta and the extra restarts.
 3. **OpenAI O1–O3** (§6): the $25 project limit with $10/$20 alerts; the $1/day allowance; the $2 fleet alert.
 4. **OpenAI key alignment:** confirm that Vercel Production `OPENAI_API_KEY` / `OPENAI_PROJECT_ID` are the `fourth-meridian-prod` project's key/id, and `OPENAI_EXPECTED_ENVIRONMENT=production`. O5 verifies it at C7.
 5. **GO to execute C0–C9.** It covers the already-approved C3b correction, C4 roles and C5 env, plus the PR #10 merge and v2.6 deploy, which remain unapproved.

@@ -42,7 +42,7 @@
 
 | Item | Value | Source |
 |---|---|---|
-| Project | `fourth-meridian-production` (`qirf…`), VirtuArch Pro, Micro | Supabase dashboard |
+| Project | `fourth-meridian-production` (`<redacted: Production project ref>`), <redacted: billing plan and compute tier> | Supabase dashboard |
 | PostgreSQL | 17.6 | SQL (read-only) |
 | Size | 51 MB (`pg_database_size` 50,957,459 B); 2 users; 5,135 transactions; 27,563 JobRun rows | SQL |
 | Backups | **8 daily PHYSICAL**, 15 → 22 Oct, newest 22 Oct 16:16:30 UTC, all COMPLETED | dashboard |
@@ -157,7 +157,7 @@
    - the rulesets decision (D2);
    - OpenAI Production spend limit (G5a);
    - optionally PITR for the cutover week;
-   - acknowledgement that the cutover **reclassifies 50 historical credits** (refund economics; 10 live rows, Σ live $2,451.33 per doc 24) and stamps ownership on all rows.
+   - acknowledgement that the cutover **reclassifies 50 historical credits** (refund economics; 10 live rows, Σ live <redacted: owner's private record> per doc 24) and stamps ownership on all rows.
 5. **Cutover approval** (merging PR #10 deploys Production).
 
 ## 8. GO / NO-GO
