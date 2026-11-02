@@ -245,9 +245,12 @@ All seven controls live under **Platform Operations → Policies → AI Cost Con
 - A subscription is charged even when no call is made, or when calls fail because the Item is in
   an error state. Billing continues while a valid `access_token` exists and ends on `/item/remove`
   (or end-user revocation).
-- Adding Investments consent or calling holdings adds the Holdings subscription; calling
-  investments transactions adds Transactions + Holdings. The same subscription is not added twice
-  to one Item.
+- Investments consent alone adds no subscription (Plaid update-mode docs: billing starts "only
+  when those endpoints are called"). The first `/investments/holdings/get` adds Holdings; the first
+  `/investments/transactions/get` adds Investments Transactions (+ Holdings). The same
+  subscription is not added twice to one Item. (Consistent with October 2026: every fresh link
+  requests Investments as an additional consented product, yet far fewer Items were billed for
+  Holdings than for Transactions.)
 - `/transactions/refresh`, `/investments/refresh`, `/accounts/balance/get` and the one-time
   products (Auth, Identity, Income, Assets, Statements…) are separately billed. **Fourth Meridian
   calls none of them.**
