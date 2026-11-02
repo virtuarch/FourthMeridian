@@ -169,7 +169,10 @@ export function deriveImportStatus(item: ImportItemFacts, evidence: ImportEviden
   const succeededAfterFailure = firstFailure ? execs.find((e) => e.overallStatus === "SUCCEEDED" && e.startedAt > firstFailure.startedAt) : undefined;
   const resumed = execs.find((e) => e.overallStatus === "SUCCEEDED" && e.trigger === "RESUME");
   const lastSuccess = [...execs].reverse().find((e) => e.overallStatus === "SUCCEEDED");
-  const newest = execs[execs.length - 1];
+  // A SKIPPED run (lock held by another sync, or a policy refusal) did no work, so it
+  // neither progresses nor clears an interruption: "newest" is the newest run that RAN
+  // (the 2026-11-01 Production read has a SKIPPED resume between the reaped run and the real one).
+  const newest = [...execs].reverse().find((e) => e.overallStatus !== "SKIPPED");
   const latestFailure = [...execs].reverse().find(isFail);
 
   if (item.status === "REVOKED") {

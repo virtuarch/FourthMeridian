@@ -83,6 +83,37 @@ async function main() {
     ]).has("exec-A"));
   }
 
+  console.log("PRODUCTION READ (2026-11-01, one item, exact rows)");
+  {
+    const P = (id: string, trigger: string, status: string, start: string, end: string, extra: Partial<ExecutionFact> = {}) =>
+      exec({ id, runId: `run-${id}`, trigger, profile: trigger === "RESUME" ? "IMPORT_RECOVERY" : "RECONNECT", overallStatus: status,
+        startedAt: D(start), completedAt: D(end), ...extra });
+    const PROD_ROWS: ExecutionFact[] = [
+      P("p-reaped", "RECONNECT", "FAILED", "2026-11-01T20:44:05.574Z", "2026-11-01T21:00:29.584Z", { errorSummary: STALE_EXECUTION_ERROR_SUMMARY, failureCategory: "UNKNOWN" }),
+      P("p-wh1", "WEBHOOK", "SKIPPED", "2026-11-01T20:44:07.219Z", "2026-11-01T20:44:07.271Z"),
+      P("p-wh2", "WEBHOOK", "SKIPPED", "2026-11-01T20:44:22.063Z", "2026-11-01T20:44:22.137Z"),
+      P("p-wh3", "WEBHOOK", "SKIPPED", "2026-11-01T20:44:22.178Z", "2026-11-01T20:44:22.234Z"),
+      P("p-rs-skip", "RESUME", "SKIPPED", "2026-11-01T20:49:59.623Z", "2026-11-01T20:49:59.665Z"),
+      P("p-rs-ok", "RESUME", "SUCCEEDED", "2026-11-01T20:55:49.730Z", "2026-11-01T20:59:46.635Z"),
+      P("p-manual", "MANUAL", "SUCCEEDED", "2026-11-01T21:17:08.804Z", "2026-11-01T21:17:10.864Z"),
+    ];
+    const reaped = PROD_ROWS[0];
+    check("the reaped row is recognised", isReapedStaleExecution(reaped));
+    const m = findRecoveredExecutions(PROD_ROWS);
+    check("Recovered, superseded by the 20:55 RESUME (the FIRST later-started SUCCEEDED, not the 21:17 MANUAL)", m.get("p-reaped") === "p-rs-ok", m.get("p-reaped"));
+    check("…which started while the reaped row was still RUNNING (before the 21:00:29 reap)", PROD_ROWS[5].startedAt < reaped.completedAt!);
+    check("order-independent", findRecoveredExecutions([...PROD_ROWS].reverse()).get("p-reaped") === "p-rs-ok");
+    check("only the reaped row is in the map", m.size === 1);
+    const noSuccess = PROD_ROWS.filter((r) => r.overallStatus !== "SUCCEEDED");
+    check("SKIPPED rows never count as successors — without the SUCCEEDED rows it stays Failed", !recoveredExecutionIds(noSuccess).has("p-reaped"));
+    check("the pipeline domain then still reads FAILED for this window", derivePipeline({
+      window: { from: "2026-11-01", to: "2026-11-01" }, deterministic: true, indeterminacyReason: null, checkedAt: "2026-11-02T00:00:00Z",
+      ...buildPipelineStatus(noSuccess, {}),
+    } as PipelineStatus, "24 h", D("2026-11-02T00:00:00Z")).state === "FAILED");
+    const pipe = buildPipelineStatus(PROD_ROWS, {});
+    check("with the real rows: no latest failure, 1 recovered", pipe.latestFailures.length === 0 && pipe.recovered === 1);
+  }
+
   console.log("projections (Pipeline KPIs, pipeline domain, latest failures, day series)");
   {
     const summary = buildRefreshSummary(SEQUENCE, []);

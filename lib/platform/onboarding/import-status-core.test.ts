@@ -54,6 +54,33 @@ function main() {
     check("20:58 — complete via a RESUME already reads recovered (before the reap)", at2058.status === "recovered");
   }
 
+  console.log("PRODUCTION READ (2026-11-01, exact rows)");
+  {
+    const R = (id: string, trigger: string, status: string, start: string, end: string, summary: string | null = null) =>
+      importExecutionFact({ id, trigger, profile: trigger === "RESUME" ? "IMPORT_RECOVERY" : "RECONNECT", startedAt: D(start), completedAt: D(end),
+        overallStatus: status, failureCategory: summary ? "UNKNOWN" : null, errorSummary: summary });
+    const rows = [
+      R("p-reaped", "RECONNECT", "FAILED", "2026-11-01T20:44:05.574Z", "2026-11-01T21:00:29.584Z", STALE_EXECUTION_ERROR_SUMMARY),
+      R("p-wh1", "WEBHOOK", "SKIPPED", "2026-11-01T20:44:07.219Z", "2026-11-01T20:44:07.271Z"),
+      R("p-wh2", "WEBHOOK", "SKIPPED", "2026-11-01T20:44:22.063Z", "2026-11-01T20:44:22.137Z"),
+      R("p-wh3", "WEBHOOK", "SKIPPED", "2026-11-01T20:44:22.178Z", "2026-11-01T20:44:22.234Z"),
+      R("p-rs-skip", "RESUME", "SKIPPED", "2026-11-01T20:49:59.623Z", "2026-11-01T20:49:59.665Z"),
+      R("p-rs-ok", "RESUME", "SUCCEEDED", "2026-11-01T20:55:49.730Z", "2026-11-01T20:59:46.635Z"),
+      R("p-manual", "MANUAL", "SUCCEEDED", "2026-11-01T21:17:08.804Z", "2026-11-01T21:17:10.864Z"),
+    ];
+    const linked = item({ createdAt: D("2026-11-01T20:44:00.000Z") });
+    const v = deriveImportStatus(linked, { executions: rows, firstWealthRegenAt: null }, NOW);
+    check("complete import with these rows reads Recovered (interrupted)", v.status === "recovered" && v.reason === "INTERRUPTED", `${v.status}/${v.reason}`);
+    check("completedAt is the newest success (21:17 MANUAL); 7 runs, 1 reaped", v.completedAt?.toISOString() === "2026-11-01T21:17:10.864Z" && v.executions === 7 && v.reapedExecutions === 1);
+    const pending = deriveImportStatus(item({ createdAt: D("2026-11-01T20:44:00.000Z"), syncIncompleteAt: D("2026-11-01T20:44:00.000Z"), completedSyncCount: 0 }),
+      { executions: rows.filter((r) => r.overallStatus !== "SUCCEEDED"), firstWealthRegenAt: null }, D("2026-11-01T21:05:00Z"));
+    check("SKIPPED rows are not progress or failure: without the successes it is in progress, interrupted by the reaped row",
+      pending.status === "in_progress" && pending.reason === "INTERRUPTED");
+    const stuck = deriveImportStatus(item({ createdAt: D("2026-11-01T20:44:00.000Z"), syncIncompleteAt: D("2026-11-01T20:44:00.000Z"), completedSyncCount: 0 }),
+      { executions: rows.filter((r) => r.overallStatus !== "SUCCEEDED"), firstWealthRegenAt: null }, D("2026-11-03T00:00:00Z"));
+    check("…and Failed (interrupted) once past the 24 h stall", stuck.status === "failed" && stuck.reason === "INTERRUPTED");
+  }
+
   console.log("the other statuses");
   {
     const clean = deriveImportStatus(item(), { executions: [{ ...B, trigger: "RECONNECT", profile: "RECONNECT" }], firstWealthRegenAt: null }, NOW);
