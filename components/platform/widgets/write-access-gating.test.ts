@@ -145,7 +145,11 @@ console.log("1c. Bulk approval (PR C) — checkboxes, select-all and the bulk pa
     && (widget.match(/aria-label=\{`Select \$\{r\.email\} for bulk approval`\}/g) ?? []).length === 2);
   check("ineligible rows are disabled with the server's reason", (widget.match(/disabled=\{disabledReason\(r\) !== null\}/g) ?? []).length === 2);
   check("the panel gets the configured validity (the Access panel's data source)", /validityDefault=\{validityDays\}/.test(widget) && widget.includes("useInvitationPolicy().data"));
-  check("the risk slot is marked, not imported", /RISK SLOT/.test(readFileSync(path.join(ROOT, "components/platform/widgets/GrowthBetaRequestsWidget.tsx"), "utf8")) && !/BetaRiskBadge/.test(widget));
+  // The advisory risk cue is READ information: rendered for READ and WRITE holders alike (never inside a canWrite range).
+  check("the risk cue renders on both row layouts and in the request panel, ungated (advisory, read-only)",
+    (widget.match(/<BetaRiskBadge risk=\{r\.risk\} \/>/g) ?? []).length === 2 && /<BetaRiskDetail risk=\{selectedRequest\.risk\} \/>/.test(widget)
+    && !/RISK SLOT/.test(readFileSync(path.join(ROOT, "components/platform/widgets/GrowthBetaRequestsWidget.tsx"), "utf8"))
+    && allGated(widget, /<BetaRiskBadge /g, wr).ungated === 2);
   const panel = code("components/platform/growth/BulkApprovePanel.tsx");
   const pr = writeRanges(panel);
   for (const [label, re] of [

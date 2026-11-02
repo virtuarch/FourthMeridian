@@ -17,8 +17,8 @@
  * seam enforced by lib/marketing-boundary.test.ts. Keep the two in sync.
  *
  * CLIENT FAIL-OPEN: if the script fails to load, we signal a null token and move
- * on — the server still verifies (and itself fails open on a Cloudflare outage),
- * so a script-load blip never hard-blocks a legitimate user in the browser.
+ * on — the server is the authority (lib/captcha.ts, which FAILS CLOSED when
+ * enforced: a missing token is rejected, a Cloudflare outage is "unavailable").
  */
 
 import { useEffect, useRef } from "react";
@@ -78,7 +78,9 @@ interface TurnstileWidgetProps {
   /** Called with the solved token, or null on expiry/error/load-failure. */
   onToken: (token: string | null) => void;
   theme?: "auto" | "light" | "dark";
-  action?: string;
+  /** REQUIRED Turnstile action — the server (lib/captcha.ts) rejects a token
+   *  whose siteverify `action` is missing or not the surface's own. */
+  action: string;
   /** Bump to force a fresh challenge (Turnstile tokens are single-use). */
   resetNonce?: number;
   className?: string;

@@ -117,9 +117,15 @@ const _e = {
   // convenience; a missed breach has no such second surface.
   BETA_REQUESTS_EMAIL: process.env.BETA_REQUESTS_EMAIL,
 
-  // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Both optional — absent means
-  // CAPTCHA is DISABLED (verifyCaptchaToken skips → true; widgets don't
-  // render). The secret gates server-side verification (lib/captcha.ts reads
+  // CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥). Optional OUTSIDE PRODUCTION —
+  // absent means CAPTCHA is NOT CONFIGURED there (captchaMode() "not_configured":
+  // verify skips → passed, logged once; widgets don't render). In PRODUCTION
+  // (VERCEL_ENV=production) a missing or half-set pair is "misconfigured" and
+  // every gated request is refused as unavailable (lib/captcha.ts, fail
+  // closed). Set BOTH together: with the
+  // secret present verification is ENFORCED and FAILS CLOSED (R2), so a secret
+  // without the site key refuses every gated request. The secret gates
+  // server-side verification (lib/captcha.ts reads
   // process.env.TURNSTILE_SECRET_KEY directly — the single verify site); the
   // NEXT_PUBLIC site key is inlined into client bundles by Next, so client
   // widgets read process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY directly (they
@@ -127,6 +133,29 @@ const _e = {
   // "is it configured?" checks and env reporting.
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY,
   TURNSTILE_SECRET_KEY:           process.env.TURNSTILE_SECRET_KEY,
+  // Extra exact hostnames (comma-separated) a siteverify reply may name, beside
+  // the hosts of NEXT_PUBLIC_APP_URL / NEXT_PUBLIC_SITE_URL (lib/captcha.ts).
+  TURNSTILE_ALLOWED_HOSTNAMES:    process.env.TURNSTILE_ALLOWED_HOSTNAMES,
+
+  // R2 — the DEDICATED, VERSIONED secret for the 90-day beta-intake network
+  // digest (jobs/data-retention.ts resolveNetworkDigestKey reads process.env
+  // directly — the single use site — so a rotation to V2 needs no code here).
+  // Optional: unset ⇒ the raw IP/UA are still nulled at 90 days, just with no
+  // digest. Never substituted by NEXTAUTH_SECRET. Mirrored for validation +
+  // the value-free env report only.
+  BETA_INTAKE_HASH_KEY_VERSION: process.env.BETA_INTAKE_HASH_KEY_VERSION,
+  BETA_INTAKE_HASH_KEY_V1:      process.env.BETA_INTAKE_HASH_KEY_V1,
+
+  // OWNER P2-1 — the DEDICATED, VERSIONED HMAC key of the hashed beta blocklist
+  // (lib/platform/growth/beta-blocklist-core.ts resolveBlocklistKeys reads
+  // process.env at CALL time — the single use site — and matches EVERY
+  // configured BETA_BLOCKLIST_HMAC_KEY_V<n>, so a rotation needs no code here).
+  // ≥ 32 characters; never substituted by another secret. REQUIRED IN
+  // PRODUCTION: without it Production invitation issuance refuses
+  // (BLOCKLIST_UNAVAILABLE) and a deny that would block rolls back. Mirrored for
+  // validation + the value-free env report only.
+  BETA_BLOCKLIST_HMAC_KEY_VERSION: process.env.BETA_BLOCKLIST_HMAC_KEY_VERSION,
+  BETA_BLOCKLIST_HMAC_KEY_V1:      process.env.BETA_BLOCKLIST_HMAC_KEY_V1,
 
   CRON_SECRET:          process.env.CRON_SECRET,
   RATE_LIMIT_ENABLED:   process.env.RATE_LIMIT_ENABLED,
@@ -434,6 +463,38 @@ export function getEnvReport(): EnvReport {
     keys.push({ key: "QUANTITY_AUTHORITY_MODE", status: "warn", scope: "optional", note: "unrecognised value — treated as off" });
   }
 
+  // R2 — beta-intake hash key (presence of the SELECTED version only; never the value).
+  {
+    const v = (_e.BETA_INTAKE_HASH_KEY_VERSION || "v1").trim().toLowerCase();
+    const name = `BETA_INTAKE_HASH_KEY_${v.toUpperCase()}`;
+    const val = /^v[1-9]\d{0,2}$/.test(v) ? process.env[name] : undefined;
+    keys.push(
+      !/^v[1-9]\d{0,2}$/.test(v)
+        ? { key: "BETA_INTAKE_HASH_KEY_VERSION", status: "warn", scope: "optional", note: "malformed version — no digest is stored" }
+        : val && val.length >= 32
+          ? { key: name, status: "pass", scope: "optional" }
+          : { key: name, status: "warn", scope: "optional", note: val ? "shorter than 32 characters — no digest is stored" : "unset — beta-intake IPs are nulled at 90 days without a digest" },
+    );
+  }
+
+  // Owner P2-1 — the beta blocklist HMAC key (presence of the SELECTED version only; never the value).
+  // A "fail" in Production (issuance refuses without it), a "warn" elsewhere (checks skipped).
+  {
+    const v = (_e.BETA_BLOCKLIST_HMAC_KEY_VERSION || "v1").trim().toLowerCase();
+    const ok = /^v[1-9]\d{0,2}$/.test(v);
+    const name = ok ? `BETA_BLOCKLIST_HMAC_KEY_${v.toUpperCase()}` : "BETA_BLOCKLIST_HMAC_KEY_VERSION";
+    const val = ok ? process.env[name] : undefined;
+    const usable = !!val && val.length >= 32;
+    const why = !ok ? "malformed version" : !val ? "unset" : "shorter than 32 characters";
+    keys.push(
+      usable
+        ? { key: name, status: "pass", scope: "production" }
+        : isProd
+          ? { key: name, status: "fail", scope: "production", note: `${why} — Production beta invitation issuance REFUSES (BLOCKLIST_UNAVAILABLE)` }
+          : { key: name, status: "warn", scope: "production", note: `${why} — beta blocklist checks are skipped outside Production` },
+    );
+  }
+
   // Optional price/FX vendor keys — never fatal. Represented in the report so the
   // ops surface shows whether each external integration is configured. Absent is a
   // warn ("integration disabled / graceful degrade"), never a fail. Names only.
@@ -583,6 +644,61 @@ export function validateEnv(): EnvReport {
     );
   }
 
+  // TURNSTILE PAIRING (R2) — the two keys are one setting. Secret without site
+  // key: no widget renders, and the fail-closed verifier refuses EVERY access
+  // request, registration and step-up login. Site key without secret: outside
+  // Production the widget renders but nothing is verified server-side (CAPTCHA
+  // is a no-op); in Production lib/captcha.ts refuses every gated request.
+  // (Neither key in Production is also refused there — logged by lib/captcha.ts.)
+  // Never fatal (matches the warn-only misconfiguration checks here, and must
+  // not take a deploy down) — but loud.
+  const tsSecret = !!_e.TURNSTILE_SECRET_KEY;
+  const tsSite   = !!_e.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+  if (tsSecret !== tsSite) {
+    console.error(
+      tsSecret
+        ? "[env] TURNSTILE_SECRET_KEY is set but NEXT_PUBLIC_TURNSTILE_SITE_KEY is NOT — no CAPTCHA widget can render, " +
+          "so every CAPTCHA-gated request (access request, registration, step-up login) will be REFUSED. Set both or neither."
+        : "[env] NEXT_PUBLIC_TURNSTILE_SITE_KEY is set but TURNSTILE_SECRET_KEY is NOT — the widget renders but tokens are " +
+          "NOT verified server-side (CAPTCHA is a no-op outside Production; in Production every CAPTCHA-gated request is REFUSED). Set both or neither."
+    );
+  }
+
+  // R2 — beta-intake hash key: never fatal (unset is a supported mode: no
+  // digest), but a configured-yet-unusable value is loud.
+  {
+    const v = (_e.BETA_INTAKE_HASH_KEY_VERSION || "v1").trim().toLowerCase();
+    if (!/^v[1-9]\d{0,2}$/.test(v)) {
+      console.error(`[env] BETA_INTAKE_HASH_KEY_VERSION=${JSON.stringify(_e.BETA_INTAKE_HASH_KEY_VERSION)} is not v1, v2, … — beta-intake network digests are DISABLED.`);
+    } else {
+      const name = `BETA_INTAKE_HASH_KEY_${v.toUpperCase()}`;
+      const val = process.env[name];
+      if (val !== undefined && val !== "" && val.length < 32) {
+        console.error(`[env] ${name} is shorter than 32 characters — beta-intake network digests are DISABLED (generate with: openssl rand -hex 32).`);
+      } else if (_e.BETA_INTAKE_HASH_KEY_VERSION && !val) {
+        console.error(`[env] BETA_INTAKE_HASH_KEY_VERSION=${v} but ${name} is not set — beta-intake network digests are DISABLED.`);
+      }
+    }
+  }
+
+  // Owner P2-1 — the beta blocklist HMAC key: never fatal (a missing key must not
+  // take the deployment down — issuance fails closed by itself), but loud when
+  // configured-yet-unusable, and loud in Production when absent.
+  {
+    const v = (_e.BETA_BLOCKLIST_HMAC_KEY_VERSION || "v1").trim().toLowerCase();
+    if (!/^v[1-9]\d{0,2}$/.test(v)) {
+      console.error(`[env] BETA_BLOCKLIST_HMAC_KEY_VERSION=${JSON.stringify(_e.BETA_BLOCKLIST_HMAC_KEY_VERSION)} is not v1, v2, … — the beta blocklist has NO write key${isProd ? " (Production invitation issuance REFUSES)" : ""}.`);
+    } else {
+      const name = `BETA_BLOCKLIST_HMAC_KEY_${v.toUpperCase()}`;
+      const val = process.env[name];
+      if (val !== undefined && val !== "" && val.length < 32) {
+        console.error(`[env] ${name} is shorter than 32 characters — the beta blocklist has NO write key${isProd ? " (Production invitation issuance REFUSES)" : ""} (generate with: openssl rand -hex 32).`);
+      } else if (!val && (isProd || _e.BETA_BLOCKLIST_HMAC_KEY_VERSION)) {
+        console.error(`[env] ${name} is not set — the beta blocklist has NO write key${isProd ? ": Production beta invitation issuance REFUSES (BLOCKLIST_UNAVAILABLE)" : " (checks are skipped outside Production)"}.`);
+      }
+    }
+  }
+
   // QUANTITY_AUTHORITY_MODE (REVIEW-3) — a MONEY switch: "adopt" repoints
   // historical quantity replay inside valuation (lib/investments/
   // quantity-authority.ts). Never fatal (the reader treats any unrecognised
@@ -707,6 +823,12 @@ export const env = {
    *  notification is sent (honest skip); the operator sets this to be alerted of
    *  new beta requests. Never a hardcoded personal address. */
   get BETA_REQUESTS_EMAIL(): string | null { return _e.BETA_REQUESTS_EMAIL ?? null; },
+  /** R2 — the selected beta-intake hash-key version ("v1" default). The key itself is
+   *  read at its single use site (jobs/data-retention.ts resolveNetworkDigestKey). */
+  get BETA_INTAKE_HASH_KEY_VERSION(): string { return (_e.BETA_INTAKE_HASH_KEY_VERSION || "v1").trim().toLowerCase(); },
+  /** Owner P2-1 — the selected beta-blocklist HMAC key version ("v1" default). The keys
+   *  are read at their single use site (lib/platform/growth/beta-blocklist-core.ts). */
+  get BETA_BLOCKLIST_HMAC_KEY_VERSION(): string { return (_e.BETA_BLOCKLIST_HMAC_KEY_VERSION || "v1").trim().toLowerCase(); },
 
   // ── CAPTCHA (Cloudflare Turnstile, Wave 2 ⑥) ────────────────────────────────
   // NOTE: lib/captcha.ts (the single server-side verify site) reads

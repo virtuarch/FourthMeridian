@@ -99,6 +99,37 @@ export interface InviteRowFacts {
   inviteExpiresAt: Date | null;
   /** When the current token was last sent (the reissue double-click token). */
   invitedAt?: Date | null;
+  /**
+   * SUSPECTED-ABUSE LOCK (owner ruling 2026-11-01): the request's LATEST risk-review
+   * verdict is SUSPICIOUS. On a DENIED row this makes the denial final for every
+   * issuance path until an operator deliberately records a newer verdict
+   * (LEGITIMATE or UNREVIEWED) through the audited, reason-required risk-review
+   * action. Read only for DENIED rows; absent ⇒ not locked.
+   */
+  suspectedAbuse?: boolean;
+  /**
+   * BLOCKED IDENTIFIER (owner P2-1, 2026-11-01): the row's address's canonical
+   * mailbox has an ACTIVE operator-confirmed block (BLOCKED), or the blocklist
+   * could not be consulted where it must be (UNAVAILABLE — Production with no
+   * usable key, or a failed read). Absent ⇒ clear (or not checked outside
+   * Production). lib/platform/growth/beta-blocklist.ts.
+   */
+  block?: BlockFact;
+}
+
+/** What the blocklist said about an address (absent / CLEAR ⇒ nothing to refuse). */
+export type BlockFact = "BLOCKED" | "UNAVAILABLE" | "CLEAR";
+
+/** PURE — the refusal a block fact implies, or null. */
+export function blockRefusal(block: BlockFact | undefined): IssueRefusal | null {
+  if (block === "BLOCKED") return refusal("IDENTIFIER_BLOCKED");
+  if (block === "UNAVAILABLE") return refusal("BLOCKLIST_UNAVAILABLE");
+  return null;
+}
+
+/** PURE — a DENIED request whose latest verdict is SUSPICIOUS can never be (re)issued until the verdict is cleared. */
+export function isSuspectedAbuseLocked(row: Pick<InviteRowFacts, "status" | "suspectedAbuse"> | null): boolean {
+  return !!row && row.status === "DENIED" && row.suspectedAbuse === true;
 }
 
 export type IssueKind = "approve" | "reissue" | "direct";
@@ -114,7 +145,15 @@ export type IssueRefusalCode =
   | "INVALID_EMAIL"
   | "CONFLICT"
   | "WOULD_SHORTEN"
-  | "STATUS_CHANGED";
+  | "STATUS_CHANGED"
+  /** The Beta group's lifecycle is not ACTIVE (PAUSED / ENDED) or cannot be verified (UNKNOWN). */
+  | "BETA_NOT_ACCEPTING"
+  /** DENIED + latest risk verdict SUSPICIOUS: no issuance path may revive it until the verdict is cleared. */
+  | "SUSPECTED_ABUSE"
+  /** The address's canonical mailbox is blocked (an operator-confirmed SUSPICIOUS denial). */
+  | "IDENTIFIER_BLOCKED"
+  /** Production cannot consult the blocklist (no usable key, or the read failed): fail closed. */
+  | "BLOCKLIST_UNAVAILABLE";
 
 export interface IssueRefusal {
   code: IssueRefusalCode;
@@ -126,7 +165,7 @@ export interface IssueRefusal {
 const STATUS_OF: Record<IssueRefusalCode, IssueRefusal["status"]> = {
   NOT_FOUND: 404, INVALID_VALIDITY: 400, INVALID_EMAIL: 400,
   REDEEMED: 409, ACCOUNT_EXISTS: 409, NOT_APPROVED: 409, DENIED: 409, LIVE_INVITE: 409, CONFLICT: 409, WOULD_SHORTEN: 409,
-  STATUS_CHANGED: 409,
+  STATUS_CHANGED: 409, BETA_NOT_ACCEPTING: 409, SUSPECTED_ABUSE: 409, IDENTIFIER_BLOCKED: 409, BLOCKLIST_UNAVAILABLE: 409,
 };
 
 export function refusal(code: IssueRefusalCode, message?: string): IssueRefusal {
@@ -145,7 +184,20 @@ const DEFAULT_MESSAGE: Record<IssueRefusalCode, string> = {
   CONFLICT:         "This invitation changed while your action was being saved. Reload and try again.",
   WOULD_SHORTEN:    "That would shorten this invitation. Extend only lengthens it — use Revoke to end an invitation early.",
   STATUS_CHANGED:   "This request's status changed since it was selected (denied, revoked or re-queued) — not approved.",
+  SUSPECTED_ABUSE:  "This request was denied and marked as suspected abuse, so it can't be approved or invited. To reconsider it, record a new risk verdict (Legitimate or Unreviewed) with a reason first.",
+  BETA_NOT_ACCEPTING: "The beta isn't accepting new members right now (paused, ended, or its status couldn't be verified). Nothing was sent.",
+  IDENTIFIER_BLOCKED: "This address is blocked: an application from the same mailbox was denied as suspected abuse. To reconsider, clear that verdict or remove the block (Growth → Blocked identifiers) with a reason first.",
+  BLOCKLIST_UNAVAILABLE: "The blocklist couldn't be checked (its key isn't configured or it couldn't be read), so nothing was issued. Nothing was sent.",
 };
+
+/**
+ * PURE — whether the Beta group's lifecycle lets an invitation be minted or lengthened.
+ * Only a verified ACTIVE does: PAUSED, ENDED and UNKNOWN (unreadable, stale, no
+ * lifecycle facts) are closed (lib/entitlements/beta-lifecycle.ts).
+ */
+export function betaAcceptsInvitations(state: string): boolean {
+  return state === "ACTIVE";
+}
 
 /** What the I/O layer must do. `expectedHash` is the optimistic token for a rotation. */
 export type IssuePlan =
@@ -166,6 +218,11 @@ export function planApprove(row: InviteRowFacts | null, accountExists: boolean, 
   if (row.status === "REDEEMED") return { action: "refuse", refusal: refusal("REDEEMED") };
   // I4 — a repeat or a concurrent second click on an APPROVED row sends nothing.
   if (row.status === "APPROVED") return { action: "alreadyApproved", row };
+  // The suspected-abuse lock outranks every other reason (bulk included), so the operator sees why.
+  if (isSuspectedAbuseLocked(row)) return { action: "refuse", refusal: refusal("SUSPECTED_ABUSE") };
+  // Then the blocked identifier (an alias of a suspected-abuse denial), then the rest.
+  const blocked = blockRefusal(row.block);
+  if (blocked) return { action: "refuse", refusal: blocked };
   if (expectedStatus !== undefined && row.status !== expectedStatus) return { action: "refuse", refusal: refusal("STATUS_CHANGED") };
   // E-6 — an invite for an address that already has an account can never be redeemed.
   if (accountExists) return { action: "refuse", refusal: refusal("ACCOUNT_EXISTS") };
@@ -175,16 +232,22 @@ export function planApprove(row: InviteRowFacts | null, accountExists: boolean, 
 export function planReissue(row: InviteRowFacts | null, accountExists: boolean): IssuePlan {
   if (!row) return { action: "refuse", refusal: refusal("NOT_FOUND") };
   if (row.status !== "APPROVED") return { action: "refuse", refusal: refusal("NOT_APPROVED") };
+  // A reissue mints a new token: an approved alias of a blocked mailbox gets none.
+  const blocked = blockRefusal(row.block);
+  if (blocked) return { action: "refuse", refusal: blocked };
   if (accountExists) return { action: "refuse", refusal: refusal("ACCOUNT_EXISTS") };
   return { action: "reissue", row, expectedHash: row.inviteTokenHash };
 }
 
-export function planDirect(row: InviteRowFacts | null, accountExists: boolean, now: Date): IssuePlan {
+export function planDirect(row: InviteRowFacts | null, accountExists: boolean, now: Date, block?: BlockFact): IssuePlan {
   if (accountExists) return { action: "refuse", refusal: refusal("ACCOUNT_EXISTS") };
+  // The address itself (`block`, for a direct address with or without a row) or the row's.
+  const blocked = row && isSuspectedAbuseLocked(row) ? null : blockRefusal(block ?? row?.block);
+  if (blocked) return { action: "refuse", refusal: blocked };
   if (!row) return { action: "create" };
   switch (row.status) {
     case "PENDING":  return { action: "approve", row };
-    case "DENIED":   return { action: "refuse", refusal: refusal("DENIED") };
+    case "DENIED":   return { action: "refuse", refusal: refusal(isSuspectedAbuseLocked(row) ? "SUSPECTED_ABUSE" : "DENIED") };
     case "REDEEMED": return { action: "refuse", refusal: refusal("REDEEMED") };
     case "APPROVED":
       if (isLive(row, now)) return { action: "refuse", refusal: refusal("LIVE_INVITE") };

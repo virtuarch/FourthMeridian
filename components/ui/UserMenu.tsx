@@ -16,13 +16,17 @@
  * /dashboard/settings/account — exactly where /dashboard/settings redirects — so
  * it duplicated Settings and was removed. Settings is also this menu's only
  * route to settings on mobile, where the bottom bar no longer carries it.)
+ * Help & support (beta, 2026-11-01) is a mailto: to the published support
+ * address (SUPPORT_EMAIL — the same one the footer, Terms and Privacy carry), so
+ * every signed-in page has a reachable defect-report path.
  */
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { clearAllTranscripts } from "@/components/ai/transcript-cache";
-import { ChevronDown, LogOut, Settings } from "lucide-react";
+import { SUPPORT_EMAIL } from "@/content/marketing/copy";
+import { ChevronDown, LifeBuoy, LogOut, Settings } from "lucide-react";
 
 export function UserMenu() {
   const { data: session } = useSession();
@@ -109,6 +113,15 @@ export function UserMenu() {
               <span className="flex-1 text-[13px] text-[var(--text-secondary)]">Settings</span>
               <span className="text-[11px] text-[var(--text-muted)]">⌘,</span>
             </Link>
+            <a
+              href={`mailto:${SUPPORT_EMAIL}`}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-left transition-colors duration-[var(--dur-fast)] ease-[var(--ease-standard)] hover:bg-[var(--surface-hover)]"
+            >
+              <LifeBuoy size={13} strokeWidth={1.75} className="shrink-0 text-[var(--text-muted)]" />
+              <span className="flex-1 text-[13px] text-[var(--text-secondary)]">Help &amp; support</span>
+            </a>
           </div>
 
           <div className="border-t border-[var(--border-hairline)] pt-1">

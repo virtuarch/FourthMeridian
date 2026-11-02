@@ -9,6 +9,8 @@
 import { readFileSync } from "node:fs";
 import {
   runDataRetention, retentionCutoffFor, RETENTION_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES,
+  uaFamily, networkDigest, resolveNetworkDigestKey, canonicalIp, minimiseAuditNetwork, runBetaIntakeNetworkMinimisation,
+  BETA_INTAKE_AUDIT_ACTION, MINIMISE_BATCH, MINIMISE_MAX_BATCHES,
   type RetentionClient, type RetentionTable,
 } from "@/jobs/data-retention";
 
@@ -125,6 +127,32 @@ async function main() {
     check("every table reports exhausted", RETENTION_RULES.every((rule) => r[rule.table].exhausted));
   }
 
+  console.log("\nowner P2-1 — the hashed beta blocklist and its sealed evidence (stored deadlines, not ages)");
+  {
+    const ahead = (d: number) => new Date(NOW.getTime() + d * 86_400_000);
+    const { client, data } = makeClient({
+      betaBlockedIdentifier: [
+        { id: "blk-active", status: "ACTIVE", expiresAt: ahead(400), removedAt: null, createdAt: daysAgo(330) },
+        { id: "blk-expired", status: "ACTIVE", expiresAt: daysAgo(1), removedAt: null, createdAt: daysAgo(731) },
+        { id: "blk-removed-old", status: "REMOVED", expiresAt: ahead(300), removedAt: daysAgo(91), createdAt: daysAgo(200) },
+        { id: "blk-removed-new", status: "REMOVED", expiresAt: ahead(300), removedAt: daysAgo(89), createdAt: daysAgo(200) },
+        // A block outlives its 180-day source request by design: a 500-day-old ACTIVE, unexpired block stays.
+        { id: "blk-corrected-long", status: "ACTIVE", expiresAt: ahead(500), removedAt: null, createdAt: daysAgo(500) },
+      ],
+      betaAbuseEvidence: [
+        { id: "ev-past", retainUntil: daysAgo(1) },
+        { id: "ev-kept", retainUntil: ahead(1) },
+      ],
+    });
+    const r = await quiet(() => runDataRetention(client, NOW));
+    const left = (tb: RetentionTable) => data[tb].map((x) => x.id).sort().join();
+    check("blocks: past expiresAt and REMOVED > 90 d deleted; ACTIVE-unexpired (any age) and recently REMOVED kept",
+      left("betaBlockedIdentifier") === "blk-active,blk-corrected-long,blk-removed-new" && r.betaBlockedIdentifier.deleted === 2, left("betaBlockedIdentifier"));
+    check("evidence: past its explicit retainUntil deleted, within it kept (never extended)", left("betaAbuseEvidence") === "ev-kept" && r.betaAbuseEvidence.deleted === 1);
+    const rule = RETENTION_RULES.find((x) => x.table === "betaBlockedIdentifier")!;
+    check("the REMOVED grace is 90 days", rule.days === 90);
+  }
+
   console.log("\nautomation runs: never one that is RUNNING or holds an item that can still send (PRE-FLIP R5)");
   {
     const run = (id: string, age: number, status: string, itemStatuses: string[]) => ({ id, startedAt: daysAgo(age), status, items: itemStatuses.map((st, i) => ({ id: `${id}-i${i}`, status: st })) });
@@ -143,7 +171,7 @@ async function main() {
     check("finished runs > 90 d whose items are all terminal are deleted; RUNNING, SCHEDULED / SENDING / FAILED holders and a recent run are kept",
       left === "ar-failed,ar-new,ar-running,ar-scheduled,ar-sending" && r.automationRun.deleted === 3, `${left} deleted=${r.automationRun.deleted}`);
     const rule = RETENTION_RULES.find((x) => x.table === "automationRun")!;
-    const w = rule.where(daysAgo(90)) as { status?: { not?: string }; items?: { none?: { status?: { in?: string[] } } } };
+    const w = rule.where(daysAgo(90), NOW) as { status?: { not?: string }; items?: { none?: { status?: { in?: string[] } } } };
     check("the where(cutoff) itself excludes RUNNING runs and runs with SCHEDULED, SENDING or FAILED items",
       w.status?.not === "RUNNING" && [...(w.items?.none?.status?.in ?? [])].sort().join() === "FAILED,SCHEDULED,SENDING", JSON.stringify(w));
   }
@@ -165,12 +193,165 @@ async function main() {
     check("one table failing does not stop the others", !!r.aiInvocation.error && data.jobRun.length === 0 && data.aiInvocation.length === 1);
   }
 
+  {
+    const { client, data, calls } = makeClient({ plaidWebhookEvent: [{ id: "w1", receivedAt: daysAgo(40) }, { id: "w2", receivedAt: daysAgo(10) }] });
+    const r = await quiet(() => runDataRetention(client, NOW, undefined, { dryRun: true }));
+    check("dryRun: delete rules report would-delete counts and delete nothing",
+      r.dryRun === true && r.plaidWebhookEvent.deleted === 1 && r.totalDeleted === 1 && data.plaidWebhookEvent.length === 2
+      && !calls.some((c) => c.op === "delete"));
+  }
+
   console.log("\nwiring");
   {
     const strip = (p: string) => readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    check("the registered purge-trash body runs the retention schedule", /runDataRetention\(\)/.test(strip("jobs/purge-trash.ts")));
+    check("the registered purge-trash body runs the retention schedule", /runDataRetention\(/.test(strip("jobs/purge-trash.ts")));
     check("retention defaults to the system principal", /\.systemDb as unknown as RetentionClient/.test(strip("jobs/data-retention.ts")));
     check("no financial table is in the schedule", !RETENTION_RULES.some((r) => /transaction|financialAccount|snapshot|holding|position/i.test(r.table)));
+  }
+
+  console.log("\nR2 — uaFamily (pure)");
+  {
+    const cases: Array<[string | null, string]> = [
+      [null, "empty"], ["   ", "empty"],
+      ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15", "browser"],
+      ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36", "browser"],
+      ["Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0", "browser"],
+      ["Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/129.0 Safari/537.36", "headless"],
+      ["curl/8.4.0", "script"], ["python-requests/2.31.0", "script"], ["Go-http-client/2.0", "script"], ["node", "script"],
+      ["Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", "script"],
+      ["SomethingElse/1.0", "other"],
+    ];
+    for (const [ua, want] of cases) check(`uaFamily(${JSON.stringify(ua)?.slice(0, 40)}) = ${want}`, uaFamily(ua) === want, uaFamily(ua));
+  }
+
+  console.log("\nR2 — minimiseAuditNetwork (pure)");
+  {
+    const K1 = "k".repeat(32), K2 = "z".repeat(40);
+    const key = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_V1: K1 })!;
+    const row = { id: "a1", ipAddress: "203.0.113.9", userAgent: "curl/8.4.0", metadata: { emailHash: "h", consentNoticeVersion: "v1" } };
+    const m = minimiseAuditNetwork(row, key, NOW);
+    check("raw ipAddress + userAgent nulled", m.ipAddress === null && m.userAgent === null);
+    check("existing metadata kept", m.metadata.emailHash === "h" && m.metadata.consentNoticeVersion === "v1");
+    check("uaFamily recorded", m.metadata.uaFamily === "script");
+    check("networkDigest = HMAC-SHA256 hex, never the IP", typeof m.metadata.networkDigest === "string"
+      && /^[0-9a-f]{64}$/.test(m.metadata.networkDigest as string) && !JSON.stringify(m).includes("203.0.113.9"));
+    check("digest is keyed: same IP, same key → same digest; other key → different",
+      networkDigest("203.0.113.9", key.key) === m.metadata.networkDigest
+      && networkDigest("203.0.113.9", Buffer.from(K2)) !== m.metadata.networkDigest);
+    check("networkDigestKeyVersion stored beside the digest (default v1) + minimisation instant",
+      m.metadata.networkDigestKeyVersion === "v1" && m.metadata.networkMinimisedAt === NOW.toISOString() && !("networkDigestKeyId" in m.metadata));
+    const noKey = minimiseAuditNetwork(row, null, NOW);
+    check("no secret → NO digest at all (no unkeyed fingerprint), fields still nulled",
+      !("networkDigest" in noKey.metadata) && noKey.ipAddress === null && noKey.metadata.uaFamily === "script");
+    const origWarn = console.warn; let warns = 0; console.warn = () => { warns++; };
+    const unset = resolveNetworkDigestKey({ NEXTAUTH_SECRET: "x".repeat(64) });
+    const unset2 = resolveNetworkDigestKey({ NEXTAUTH_SECRET: "x".repeat(64) });
+    const short = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_V1: "short" });
+    const badVer = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_VERSION: "latest", BETA_INTAKE_HASH_KEY_V1: K1 });
+    const v2Missing = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_VERSION: "v2", BETA_INTAKE_HASH_KEY_V1: K1 });
+    console.warn = origWarn;
+    check("key unset → null, and NEVER falls back to NEXTAUTH_SECRET", unset === null && unset2 === null);
+    check("unset is logged once (repeat calls do not re-log the same reason)", warns === 4, `warns=${warns}`);
+    check("short key, malformed version, or the selected version's key missing → null", short === null && badVer === null && v2Missing === null);
+    const rot = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_VERSION: "v2", BETA_INTAKE_HASH_KEY_V1: K1, BETA_INTAKE_HASH_KEY_V2: K2 })!;
+    check("rotation: VERSION=v2 selects BETA_INTAKE_HASH_KEY_V2", rot.version === "v2" && rot.key.equals(Buffer.from(K2)));
+    const old = minimiseAuditNetwork({ id: "a1", ipAddress: null, userAgent: null, metadata: m.metadata }, rot, NOW);
+    check("rotation: a row minimised under v1 keeps its v1 digest and label", old.metadata.networkDigest === m.metadata.networkDigest && old.metadata.networkDigestKeyVersion === "v1");
+    const fresh = minimiseAuditNetwork(row, rot, NOW);
+    check("rotation: new minimisations carry v2 digests labelled v2", fresh.metadata.networkDigestKeyVersion === "v2" && fresh.metadata.networkDigest !== m.metadata.networkDigest);
+    const again = minimiseAuditNetwork({ id: "a1", ipAddress: null, userAgent: null, metadata: m.metadata }, key, new Date(NOW.getTime() + 86_400_000));
+    check("idempotent: re-minimising keeps digest, family and first instant", again.metadata.networkDigest === m.metadata.networkDigest
+      && again.metadata.uaFamily === "script" && again.metadata.networkMinimisedAt === NOW.toISOString());
+    check("canonicalIp: IPv4-mapped IPv6 → IPv4 (text and hex forms)",
+      canonicalIp("::ffff:203.0.113.9") === "203.0.113.9" && canonicalIp("::FFFF:203.0.113.9") === "203.0.113.9"
+      && canonicalIp("0:0:0:0:0:ffff:203.0.113.9") === "203.0.113.9" && canonicalIp("::ffff:cb00:7109") === "203.0.113.9",
+      canonicalIp("::ffff:cb00:7109"));
+    check("canonicalIp: IPv6 lowercased + compressed", canonicalIp(" 2001:DB8:0:0:0:0:0:1 ") === "2001:db8::1" && canonicalIp("[2001:db8::1]") === "2001:db8::1");
+    check("canonicalIp: IPv4 and junk pass through trimmed", canonicalIp(" 198.51.100.7 ") === "198.51.100.7" && canonicalIp("Unknown") === "unknown");
+    check("digest: one address, one digest across spellings",
+      networkDigest("::ffff:203.0.113.9", key.key) === networkDigest("203.0.113.9", key.key)
+      && networkDigest("2001:DB8::0001", key.key) === networkDigest("2001:db8::1", key.key));
+    check("null metadata → object", minimiseAuditNetwork({ ...row, metadata: null }, key, NOW).metadata.uaFamily === "script");
+  }
+
+  console.log("\nR2 — runBetaIntakeNetworkMinimisation (batch selection)");
+  {
+    const mk = (id: string, age: number, over: Record<string, unknown> = {}) =>
+      ({ id, action: BETA_INTAKE_AUDIT_ACTION, createdAt: daysAgo(age), ipAddress: "198.51.100.1", userAgent: "curl/8", metadata: { emailHash: id }, ...over });
+    const rows: Row[] = [
+      mk("old", 91), mk("young", 89),
+      mk("other-action", 200, { action: "LOGIN" }),
+      mk("done", 120, { ipAddress: null, userAgent: null }),
+      mk("ua-only", 100, { ipAddress: null }),
+    ];
+    const calls: string[] = [];
+    const auditLog = {
+      async findMany({ where, take }: { where: Record<string, unknown>; take: number }) {
+        calls.push("find");
+        return rows.filter((r) => matches(r, where))
+          .sort((a, b) => (a.createdAt as Date).getTime() - (b.createdAt as Date).getTime())
+          .slice(0, take).map((r) => ({ id: r.id, ipAddress: r.ipAddress as string | null, userAgent: r.userAgent as string | null, metadata: r.metadata }));
+      },
+      async updateMany({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) {
+        calls.push("update");
+        let n = 0;
+        for (const r of rows) if (matches(r, where)) { Object.assign(r, data); n++; }
+        return { count: n };
+      },
+      async count({ where }: { where: Record<string, unknown> }) { calls.push("count"); return rows.filter((r) => matches(r, where)).length; },
+      async deleteMany() { calls.push("DELETE"); return { count: 0 }; },
+    };
+    const key = resolveNetworkDigestKey({ BETA_INTAKE_HASH_KEY_V1: "k".repeat(32) });
+
+    const dry = await quiet(() => runBetaIntakeNetworkMinimisation({ auditLog }, NOW, { dryRun: true, key }));
+    check("dry run counts the 2 due rows and writes nothing", dry.dryRun && dry.minimised === 2 && !calls.includes("update")
+      && rows.find((r) => r.id === "old")!.ipAddress === "198.51.100.1", JSON.stringify(dry));
+
+    const r1 = await quiet(() => runBetaIntakeNetworkMinimisation({ auditLog }, NOW, { key }));
+    const by = (id: string) => rows.find((r) => r.id === id)!;
+    check("selects only BETA_ACCESS_REQUESTED, >90 days, with a raw field left", r1.minimised === 2 && r1.exhausted, JSON.stringify(r1));
+    check("the 91-day row is minimised with a digest", by("old").ipAddress === null && by("old").userAgent === null
+      && typeof (by("old").metadata as Record<string, unknown>).networkDigest === "string");
+    check("the UA-only row is minimised without a digest", by("ua-only").userAgent === null && !("networkDigest" in (by("ua-only").metadata as object)));
+    check("the 89-day row and the other action are untouched", by("young").ipAddress === "198.51.100.1" && by("other-action").ipAddress === "198.51.100.1");
+    check("never deletes", rows.length === 5 && !calls.includes("DELETE"));
+    const r2 = await quiet(() => runBetaIntakeNetworkMinimisation({ auditLog }, NOW, { key }));
+    check("idempotent: a second run finds nothing", r2.minimised === 0 && r2.exhausted);
+
+    const many: Row[] = Array.from({ length: MINIMISE_BATCH * MINIMISE_MAX_BATCHES + 3 }, (_, i) => mk(`m${i}`, 95));
+    rows.length = 0; rows.push(...many);
+    const r3 = await quiet(() => runBetaIntakeNetworkMinimisation({ auditLog }, NOW, { key }));
+    check("bounded: at most BATCH × MAX_BATCHES per run, remainder reported", r3.minimised === MINIMISE_BATCH * MINIMISE_MAX_BATCHES
+      && r3.exhausted === false && rows.filter((r) => r.ipAddress !== null).length === 3, JSON.stringify(r3));
+
+    // runDataRetention wires it in when the client has auditLog
+    const { client } = makeClient({});
+    rows.length = 0; rows.push(mk("w", 100));
+    const dryFull = await quiet(() => runDataRetention(Object.assign(client, { auditLog }), NOW, undefined, { dryRun: true }));
+    check("runDataRetention dryRun passes through: would-minimise counted, nothing written",
+      dryFull.dryRun === true && dryFull.betaIntakeNetwork?.dryRun === true && dryFull.betaIntakeNetwork.minimised === 1
+      && rows[0].ipAddress === "198.51.100.1", JSON.stringify(dryFull.betaIntakeNetwork));
+    const full = await quiet(() => runDataRetention(Object.assign(client, { auditLog }), NOW));
+    check("runDataRetention runs the minimisation (and still deletes nothing from AuditLog)",
+      full.betaIntakeNetwork?.minimised === 1 && rows.length === 1, JSON.stringify(full.betaIntakeNetwork));
+  }
+
+  // The comms-delivery rollup always writes (rollups + deletes), so a DRY RUN must not touch it at all.
+  {
+    const touched: string[] = [];
+    const spy = new Proxy({}, {
+      get(_t, prop) {
+        touched.push(String(prop));
+        return () => { throw new Error("rollup client used"); };
+      },
+    }) as unknown as Parameters<typeof runDataRetention>[2];
+    const { client } = makeClient({});
+    const dry = await quiet(() => runDataRetention(client, NOW, spy, { dryRun: true }));
+    check("dryRun with a comms client: the rollup is skipped (no result, client never touched)",
+      dry.commsDelivery == null && touched.length === 0, JSON.stringify({ commsDelivery: dry.commsDelivery, touched }));
+    const live = await quiet(() => runDataRetention(client, NOW, spy));
+    check("…and a live run does call the rollup (control: the spy is wired)", live.commsDelivery != null && touched.length > 0,
+      JSON.stringify({ commsDelivery: live.commsDelivery, touched: touched.slice(0, 3) }));
   }
 
   if (failures > 0) { console.error(`\n❌ data retention: ${failures} check(s) failed`); process.exit(1); }

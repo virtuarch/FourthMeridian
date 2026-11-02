@@ -5,10 +5,11 @@
  * grows unboundedly by construction — one row per (key, windowStart) bucket,
  * never deleted anywhere (the gap named in the OPS-4 investigation §4.6).
  *
- * CUTOFF: 24 hours. The largest window any call site uses is 900s (KD-3
- * inventory), so every row older than 24h is long expired for every
- * endpoint — the sweep can never delete a bucket that could still be
- * consulted. Registered in lib/jobs/registry.ts (07:30 UTC slot), executed
+ * CUTOFF: 24 hours. The largest window any call site uses is 24 h (R2: the
+ * access-request per-address limit and operator-notification throttle; most
+ * endpoints use ≤ 1 h). A bucket whose windowStart is older than 24 h has
+ * therefore ended for every caller — the sweep can never delete a bucket that
+ * could still be consulted. A window longer than 24 h would need this raised. Registered in lib/jobs/registry.ts (07:30 UTC slot), executed
  * through the dispatcher + runJob().
  *
  * IDEMPOTENT by construction: a WHERE-guarded deleteMany against an absolute

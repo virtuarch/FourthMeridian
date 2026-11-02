@@ -243,8 +243,30 @@ function main() {
         (src.match(/export async function (POST|PATCH|PUT|DELETE)/g) ?? []).length === 1
           && (src.match(/requireFreshPlatformAccess\("CUSTOMER_SUCCESS", "CONTROL"\)/g) ?? []).length === 1);
     }
-    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE, ...COMMS_CONTENT_CONTROL_ROUTES].sort();
-    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor, policy-group lifecycle, Comms content publish / rollback and Comms automation activate routes are the only routes requiring CONTROL (scanned ${routes.length})`,
+    // OWNER P2-1 (2026-11-01) — the hashed beta blocklist: lifting, correcting,
+    // looking up and backfilling a block are fresh GROWTH_REVENUE CONTROL (owner
+    // decision: CONTROL, not WRITE — WRITE approves and denies; it cannot undo a
+    // suspected-abuse block). Each POST-only, reason required, audited. The list
+    // (GET blocked-identifiers) stays READ.
+    const BLOCKLIST_CONTROL_ROUTES = [
+      "app/api/platform/growth-revenue/blocked-identifiers/[id]/remove/route.ts",
+      "app/api/platform/growth-revenue/blocked-identifiers/[id]/expiry/route.ts",
+      "app/api/platform/growth-revenue/blocked-identifiers/lookup/route.ts",
+      "app/api/platform/growth-revenue/blocked-identifiers/backfill/route.ts",
+    ];
+    for (const f of BLOCKLIST_CONTROL_ROUTES) {
+      const src = code(f);
+      check(`${f}: the one write verb is FRESH GROWTH_REVENUE CONTROL, rate limited, reason required, delegating to the blocklist module`,
+        (src.match(/export async function (POST|PATCH|PUT|DELETE|GET)/g) ?? []).length === 1 && /export async function POST/.test(src)
+          && (src.match(/requireFreshPlatformAccess\("GROWTH_REVENUE", "CONTROL"\)/g) ?? []).length === 1
+          && /limitByUser\(/.test(src) && /parseRequiredReason\(/.test(src)
+          && /from "@\/lib\/platform\/growth\/beta-blocklist"/.test(src) && !/@\/lib\/db|auditLog|betaBlockedIdentifier/.test(src));
+    }
+    check("the blocklist list (GET) stays at GROWTH_REVENUE READ",
+      /export async function GET[\s\S]*requirePlatformAccess\("GROWTH_REVENUE", "READ"\)/.test(code("app/api/platform/growth-revenue/blocked-identifiers/route.ts"))
+        && !/"CONTROL"|"WRITE"/.test(code("app/api/platform/growth-revenue/blocked-identifiers/route.ts")));
+    const CONTROL_ROUTES = [CONTROL_ROUTE, "app/api/platform/platform-ops/job-cadence/route.ts", "app/api/platform/platform-ops/ai-cost-controls/route.ts", WEBHOOK_ROUTE, WEBHOOK_ROSTER_ROUTE, OPERATIONAL_ROUTE, HISTORY_RESUME_ROUTE, OPERATIONS_ROUTE, RECONCILE_ROUTE, ...POLICY_GROUP_ROUTES, LIFECYCLE_ROUTE, ...COMMS_CONTENT_CONTROL_ROUTES, ...BLOCKLIST_CONTROL_ROUTES].sort();
+    check(`the policies, job-cadence, ai-cost-controls, operational-controls, Plaid-webhook, history-resume, manual-operations (fleet runs), beta-reconciliation, policy-group editor, policy-group lifecycle, Comms content publish / rollback, Comms automation activate and beta blocklist routes are the only routes requiring CONTROL (scanned ${routes.length})`,
       requiring.slice().sort().join() === CONTROL_ROUTES.join(), requiring.join(", "));
     for (const f of POLICY_GROUP_ROUTES) {
       const src = code(f);

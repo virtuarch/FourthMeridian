@@ -213,6 +213,15 @@ export const AuditAction = {
   BRIEF_VIEWED:               "BRIEF_VIEWED",
   TRANSACTIONS_VIEWED:        "TRANSACTIONS_VIEWED",
   MANUAL_ASSET_VALUE_UPDATED: "MANUAL_ASSET_VALUE_UPDATED",
+  // S2-(a) — the connection funnel and AI failures (enum properties only):
+  //   CONNECTION_LINK_STARTED     a Plaid Link token was minted {provider}
+  //   CONNECTION_LINK_EXITED      Plaid Link closed without success {provider, stage, errorCode}
+  //   FIRST_SYNC_SUCCEEDED        the user's first successful refresh, once ever {sourceKind}
+  //   AI_TURN_FAILED              an accepted Conversations turn had no answer {surface, reason}
+  CONNECTION_LINK_STARTED:    "CONNECTION_LINK_STARTED",
+  CONNECTION_LINK_EXITED:     "CONNECTION_LINK_EXITED",
+  FIRST_SYNC_SUCCEEDED:       "FIRST_SYNC_SUCCEEDED",
+  AI_TURN_FAILED:             "AI_TURN_FAILED",
 
   // ── Imports (D2 Step 4D-3) ───────────────────────────────────────────────────
   // Only the rollback action is added in this slice — IMPORT_BATCH_CREATED /
@@ -235,6 +244,14 @@ export const AuditAction = {
   BETA_ACCESS_APPROVED:     "BETA_ACCESS_APPROVED",
   BETA_ACCESS_DENIED:       "BETA_ACCESS_DENIED",
   BETA_ACCESS_REDEEMED:     "BETA_ACCESS_REDEEMED",
+  // R2 (2026-10-31) — intake MONITORING rows, written by POST /api/access-request
+  // with no userId and no address/hash: at most ONE row per fixed UTC hour each
+  // (the first event of the hour writes it; the per-hour count lives in the
+  // RateLimit counter store). Metadata: { hourWindow, limit }.
+  //   THROTTLED          the global per-hour ceiling refused a submission (429).
+  //   DUPLICATE_DROPPED  the per-address ceiling silently dropped a submission.
+  BETA_INTAKE_THROTTLED:         "BETA_INTAKE_THROTTLED",
+  BETA_INTAKE_DUPLICATE_DROPPED: "BETA_INTAKE_DUPLICATE_DROPPED",
   // PO-3B — beta operations write controls. Distinct operator mutations on the
   // same BetaAccessRequest lifecycle: the platform registration-mode switch, and
   // resend/revoke on an already-issued invitation (revoke nulls the token and
@@ -270,6 +287,38 @@ export const AuditAction = {
   // and opaque request ids — never an email, a hash of one, or a token.
   // Reason-optional, as single approve (lib/platform/growth/bulk-approve.ts).
   BETA_ACCESS_BULK_APPROVED:        "BETA_ACCESS_BULK_APPROVED",
+  // OWNER P2-1 (2026-11-01) — hashed blocked identifiers + preserved abuse evidence
+  // (docs/plans/BETA-BLOCKED-IDENTIFIER-DESIGN-2026-11-01.md). NEVER an address and
+  // never a full HMAC in any of these rows: ids, key version, an 8-hex prefix at
+  // most, and (lookup only) the usual auditEmailHash.
+  //   IDENTIFIER_BLOCKED        a DENIED request whose latest operator verdict is
+  //                             SUSPICIOUS blocked its canonical mailbox (deny or
+  //                             risk-review transaction, or the backfill). Also
+  //                             written with alreadyBlocked: true when an ACTIVE
+  //                             block already stood (nothing created or extended).
+  //   IDENTIFIER_UNBLOCKED      a block was removed — by a newer LEGITIMATE /
+  //                             UNREVIEWED verdict on its source request, or the
+  //                             manual remove route (reason required).
+  //   IDENTIFIER_BLOCK_CORRECTED  a block's expiry was corrected (before/after; reason required).
+  //   IDENTIFIER_LOOKUP         an operator asked whether an address is blocked
+  //                             (emailHash + result; reason required).
+  //   IDENTIFIER_BACKFILL       one counts-only row per backfill run (reason required).
+  //   ABUSE_EVIDENCE_PRESERVED  a SYSTEM_ADMIN sealed a request's evidence (reason required).
+  //   ABUSE_EVIDENCE_ACCESSED   EVERY read of a sealed payload.
+  //   ABUSE_EVIDENCE_DELETED    an explicit delete before retainUntil (reason required).
+  //   INTAKE_BLOCKED_DROPPED    the public intake silently dropped a blocked
+  //                             mailbox: AT MOST ONE row per UTC hour, { hourWindow }
+  //                             only (the per-hour count lives in the RateLimit
+  //                             counter) — the #160 per-address drop pattern.
+  BETA_IDENTIFIER_BLOCKED:          "BETA_IDENTIFIER_BLOCKED",
+  BETA_IDENTIFIER_UNBLOCKED:        "BETA_IDENTIFIER_UNBLOCKED",
+  BETA_IDENTIFIER_BLOCK_CORRECTED:  "BETA_IDENTIFIER_BLOCK_CORRECTED",
+  BETA_IDENTIFIER_LOOKUP:           "BETA_IDENTIFIER_LOOKUP",
+  BETA_IDENTIFIER_BACKFILL:         "BETA_IDENTIFIER_BACKFILL",
+  BETA_ABUSE_EVIDENCE_PRESERVED:    "BETA_ABUSE_EVIDENCE_PRESERVED",
+  BETA_ABUSE_EVIDENCE_ACCESSED:     "BETA_ABUSE_EVIDENCE_ACCESSED",
+  BETA_ABUSE_EVIDENCE_DELETED:      "BETA_ABUSE_EVIDENCE_DELETED",
+  BETA_INTAKE_BLOCKED_DROPPED:      "BETA_INTAKE_BLOCKED_DROPPED",
   // PO-3C — the LAUNCH axis (development/beta/live), separate from the signup gate.
   PRODUCT_STATUS_CHANGED:   "PRODUCT_STATUS_CHANGED",
   // PO-4A — Platform Operations per-connection controls. An operator triggered a
@@ -498,7 +547,8 @@ export const AuditAction = {
 export type AuditActionType = typeof AuditAction[keyof typeof AuditAction];
 
 /**
- * BETA A2 — the product-event vocabulary. EXACTLY these five; the retention job
+ * BETA A2 — the product-event vocabulary. EXACTLY these nine (the five A2
+ * presence/engagement events plus the four S2-(a) funnel / AI-failure events); the retention job
  * (jobs/product-event-retention.ts) deletes rows of these actions after the
  * owner's 13-month window and must never touch anything else, and every feed /
  * security allowlist is pinned disjoint from this set (lib/security-surface.test.ts,
@@ -514,6 +564,10 @@ export const PRODUCT_EVENT_ACTIONS: readonly AuditActionType[] = [
   AuditAction.BRIEF_VIEWED,
   AuditAction.TRANSACTIONS_VIEWED,
   AuditAction.MANUAL_ASSET_VALUE_UPDATED,
+  AuditAction.CONNECTION_LINK_STARTED,
+  AuditAction.CONNECTION_LINK_EXITED,
+  AuditAction.FIRST_SYNC_SUCCEEDED,
+  AuditAction.AI_TURN_FAILED,
 ];
 
 // ── Security-event classification (SEC-1) ─────────────────────────────────────
@@ -596,6 +650,15 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.BETA_INVITATION_VALIDITY_CHANGED,
   AuditAction.BETA_INVITATION_EXTENDED,
   AuditAction.BETA_ACCESS_BULK_APPROVED,
+  // Owner P2-1 — blocked identifiers and preserved abuse evidence.
+  AuditAction.BETA_IDENTIFIER_BLOCKED,
+  AuditAction.BETA_IDENTIFIER_UNBLOCKED,
+  AuditAction.BETA_IDENTIFIER_BLOCK_CORRECTED,
+  AuditAction.BETA_IDENTIFIER_LOOKUP,
+  AuditAction.BETA_IDENTIFIER_BACKFILL,
+  AuditAction.BETA_ABUSE_EVIDENCE_PRESERVED,
+  AuditAction.BETA_ABUSE_EVIDENCE_ACCESSED,
+  AuditAction.BETA_ABUSE_EVIDENCE_DELETED,
   AuditAction.PRODUCT_STATUS_CHANGED,
   AuditAction.CONNECTION_RESYNC_TRIGGERED,
   AuditAction.CONNECTION_REAUTH_REQUESTED,

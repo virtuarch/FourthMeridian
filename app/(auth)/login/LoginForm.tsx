@@ -425,6 +425,7 @@ export function LoginForm({ returnTo }: { returnTo: string }) {
               <TurnstileWidget
                 siteKey={TURNSTILE_SITE_KEY}
                 onToken={setCaptchaToken}
+                action="login"
                 resetNonce={captchaNonce}
                 theme="dark"
               />

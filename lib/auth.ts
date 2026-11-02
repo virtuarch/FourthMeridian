@@ -31,6 +31,7 @@ import { authDb as db } from "@/lib/db";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { verifyRecoveryCode } from "@/lib/recovery-codes";
 import { AuditAction } from "@/lib/audit-actions";
+import { hashSecurityIdentifier } from "@/lib/security/identifier-hash";
 import { auditInsert, buildAuditData } from "@/lib/audit";
 import { requiresTotpEnrollment } from "@/lib/auth-totp-policy";
 import { PlatformSettingKey } from "@/lib/platform-settings";
@@ -48,7 +49,7 @@ import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { SESSION_INDETERMINATE_FLAG } from "@/lib/auth/session-outcome";
 import { AUTH_UNAVAILABLE_TOKEN } from "@/lib/auth/login-outcome";
-import { verifyCaptchaToken } from "@/lib/captcha";
+import { verifyCaptchaToken, CAPTCHA_ACTIONS } from "@/lib/captcha";
 import { LOGIN_ID_WINDOW_SEC, LOGIN_ID_LIMIT, LOGIN_CAPTCHA_THRESHOLD } from "@/lib/login-limits";
 import { reportLoginFailureAnomalies } from "@/lib/security/anomaly-alerts";
 import { authCookiesSecure, authCookieOverrides } from "@/lib/auth/session-cookie";
@@ -69,7 +70,7 @@ const ANOMALY_SUSPICIOUS_REASONS = new Set<string>([
 
 /**
  * Write the LOGIN_FAILED audit row (canonical shape: userId when the account
- * resolved, always ipAddress + userAgent, `{ identifier, reason, role? }`
+ * resolved, always ipAddress + userAgent, `{ identifierHash, reason, role? }`
  * metadata) and, for suspicious reasons, run the inline anomaly detector. The
  * detector is best-effort and non-throwing, so awaiting it here never affects
  * the (already-failed) login outcome — it only adds a cheap bounded count on the
@@ -92,13 +93,19 @@ async function recordLoginFailure(args: {
   // errors: a genuine invalid_password stays invalid even if the DB is
   // struggling. (The write is still attempted; only its failure is contained.)
   try {
+    // IDENTIFIER HYGIENE (beta, 2026-11-01): the typed identifier is attacker-
+    // controlled and is often an email (an unresolved one may be a stranger's), so
+    // the row stores only its keyed hash — the Security Ops salt and helper
+    // (lib/security/identifier-hash.ts), never the raw value. The anomaly
+    // detector groups a burst by this same hash (lib/security/anomaly-alerts.ts).
+    const identifierHash = hashSecurityIdentifier(identifier);
     // fm_auth may INSERT AuditLog but not read it back — never create() (lib/audit.ts auditInsert).
     await auditInsert(db, {
       ...(userId ? { userId } : {}),
       action:    AuditAction.LOGIN_FAILED,
       ipAddress,
       userAgent,
-      metadata:  { identifier, reason, ...(role ? { role } : {}) },
+      metadata:  { identifierHash, reason, ...(role ? { role } : {}) },
     }).write;
     if (ANOMALY_SUSPICIOUS_REASONS.has(reason)) {
       await reportLoginFailureAnomalies({ identifier, ip: ipAddress, reason, userId, userEmail });
@@ -245,10 +252,26 @@ export const authOptions: NextAuthOptions = {
         // Authoritative check (the pre-login `captchaRequired` hint is advisory).
         // A missing/invalid token is denied like any other failed login
         // (non-enumerating, no audit write — same posture as the limited path).
-        // No-ops when CAPTCHA is unconfigured: verifyCaptchaToken returns true.
+        // No-ops when CAPTCHA is unconfigured OUTSIDE PRODUCTION ("passed").
+        // R2 — FAIL CLOSED, honestly: "unavailable" (Cloudflare unreachable, or
+        // PRODUCTION with missing / half-set Turnstile keys) is
+        // the authority-unavailable sentinel, like the rate-limit store above —
+        // NOT return null, which the client would show as wrong credentials.
+        // Thrown before the user lookup, so it writes no LOGIN_FAILED row and
+        // never touches the account's failed-credential state.
+        // CONSEQUENCE while Production lacks keys: an identifier with ≥
+        // LOGIN_CAPTCHA_THRESHOLD failed attempts in the current fixed
+        // LOGIN_ID_WINDOW_SEC window is refused as "temporarily unavailable"
+        // until that window rolls over (≤ 15 min) — even with the right
+        // password. Accepted (owner rule: fail closed); below the threshold
+        // login never reaches this and is unaffected.
         if (priorAttempts >= LOGIN_CAPTCHA_THRESHOLD) {
-          const captchaOk = await verifyCaptchaToken(credentials.captchaToken || null, ipAddress ?? undefined);
-          if (!captchaOk) return null;
+          const captcha = await verifyCaptchaToken(credentials.captchaToken || null, { action: CAPTCHA_ACTIONS.login, ip: ipAddress ?? undefined });
+          if (captcha === "unavailable") {
+            captureAuthInfraFailure("captcha", new Error("authorize CAPTCHA siteverify unavailable"));
+            throw new Error(AUTH_UNAVAILABLE_TOKEN);
+          }
+          if (captcha !== "passed") return null;
         }
 
         // ── Kill switch: disable SYSTEM_ADMIN login via env flag ──────────────

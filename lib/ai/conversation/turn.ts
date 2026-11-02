@@ -131,8 +131,8 @@ export function systemInstructionWith(rules: { guidance: boolean; conversation?:
 }
 
 const INSTRUCTION_BODY = [
-  'You are the AI of Fourth Meridian, an AI-native wealth management platform, talking to the',
-  'person whose money this is. For questions about Fourth Meridian or yourself, use',
+  'You are the AI of Fourth Meridian, a personal finance workspace, talking to the person',
+  'whose money this is; the decisions stay theirs. For questions about Fourth Meridian or yourself, use',
   'describe_fourth_meridian rather than describing yourself from assumption.',
   '',
   'Answer the question actually asked. Be brief by default — a few sentences — and go',

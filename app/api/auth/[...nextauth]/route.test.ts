@@ -25,6 +25,7 @@ import { generateSecret, generateTOTP } from "@/lib/totp";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { capturedEmails, clearCapturedEmails } from "@/lib/email/providers/capture";
 import { LOGIN_ID_LIMIT } from "@/lib/login-limits";
+import { hashSecurityIdentifier } from "@/lib/security/identifier-hash";
 
 const t = makeChecker("NextAuth credentials sign-in / sign-out (TEST-004)");
 const fake = new FakePrisma();
@@ -33,6 +34,12 @@ let POST: typeof import("./route").POST;
 let STATUS: typeof import("@/app/api/user/totp/status/route").GET;
 let SESSIONS: typeof import("@/app/api/user/sessions/route").GET;
 const env = process.env as Record<string, string | undefined>;
+
+/** A complete Turnstile siteverify success reply (strict checks: hostname, action, fresh challenge_ts). */
+function siteverifyOk(action: string, over: Record<string, unknown> = {}): string {
+  const host = (() => { try { return new URL(process.env.NEXT_PUBLIC_APP_URL ?? "").hostname; } catch { return "localhost"; } })();
+  return JSON.stringify({ success: true, hostname: host, action, challenge_ts: new Date().toISOString(), ...over });
+}
 const PW = "the right password";
 let ipSeq = 0;
 const nextIp = () => `198.51.100.${(++ipSeq % 250) + 1}`;
@@ -247,9 +254,35 @@ async function main() {
       const r = await signIn({ identifier: "cap", password: PW });
       t.check("once over the threshold, the right password WITHOUT a passing CAPTCHA is refused — before the user lookup",
         r.status === 401 && !r.cookie && fake.callsTo("User", "findFirst").length === 3);
-      globalThis.fetch = (async () => new Response(JSON.stringify({ success: true }), { status: 200 })) as typeof fetch;
+      // R2 — Cloudflare unreachable is an honest "temporarily unavailable", not a bad password.
+      globalThis.fetch = (async () => new Response("upstream down", { status: 500 })) as typeof fetch;
+      const origErr = console.error; console.error = () => {};
+      const down = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" }).finally(() => { console.error = origErr; });
+      t.check("siteverify 500 past the threshold → error=TEMPORARILY_UNAVAILABLE, no cookie", down.error === "TEMPORARILY_UNAVAILABLE" && !down.cookie, down);
+      t.check("…counted as no failed-credential attempt: no LOGIN_FAILED row, no user lookup",
+        fake.rows("AuditLog", { action: "LOGIN_FAILED" }).length === 3 && fake.callsTo("User", "findFirst").length === 3);
+      // Strict siteverify — a success for ANOTHER surface's action is a failed challenge.
+      globalThis.fetch = (async () => new Response(siteverifyOk("register"), { status: 200 })) as typeof fetch;
+      const origWarn = console.warn; console.warn = () => {};
+      const wrongAction = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" }).finally(() => { console.warn = origWarn; });
+      t.check("success:true with action 'register' at the login step-up → refused like a failed CAPTCHA", wrongAction.status === 401 && !wrongAction.cookie, wrongAction);
+      // Production with the secret MISSING — the step-up fails CLOSED (unavailable), never passes.
+      const savedVercelEnv = env.VERCEL_ENV;
+      env.VERCEL_ENV = "production";
+      delete env.TURNSTILE_SECRET_KEY;
+      let siteverifyCalls = 0;
+      globalThis.fetch = (async () => { siteverifyCalls++; return new Response(siteverifyOk("login"), { status: 200 }); }) as typeof fetch;
+      const origErr2 = console.error; console.error = () => {};
+      const prodMissing = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" }).finally(() => {
+        console.error = origErr2;
+        if (savedVercelEnv === undefined) delete env.VERCEL_ENV; else env.VERCEL_ENV = savedVercelEnv;
+        env.TURNSTILE_SECRET_KEY = "test-secret";
+      });
+      t.check("Production + TURNSTILE_SECRET_KEY missing, past the threshold → TEMPORARILY_UNAVAILABLE, no cookie, Cloudflare not called",
+        prodMissing.error === "TEMPORARILY_UNAVAILABLE" && !prodMissing.cookie && siteverifyCalls === 0, prodMissing);
+      globalThis.fetch = (async () => new Response(siteverifyOk("login"), { status: 200 })) as typeof fetch;
       const pass = await signIn({ identifier: "cap", password: PW, captchaToken: "tok" });
-      t.check("…and with a passing CAPTCHA it signs in", pass.status === 200, { pass, f: lastFailure() });
+      t.check("…and with a passing CAPTCHA (action 'login') it signs in", pass.status === 200, { pass, f: lastFailure() });
     } finally {
       globalThis.fetch = realFetch;
       delete env.TURNSTILE_SECRET_KEY;
@@ -280,6 +313,31 @@ async function main() {
     t.check("the UserSession row is revoked", fake.rows("UserSession", { userId: u.ok.id, revokedAt: null }).length === 0);
     t.check("a LOGOUT audit row is written", fake.rows("AuditLog", { action: "LOGOUT", userId: u.ok.id }).length === 1);
     t.check("REPLAYING the old cookie is refused (401) — revocation is server-side, not just a cleared cookie", await status(a.cookie) === 401);
+  }
+
+  t.section("11. LOGIN_FAILED stores only the identifier's keyed hash — never the typed identifier");
+  {
+    await world();
+    const STRANGER = "Ghost.Person@Example.test";
+    await signIn({ identifier: STRANGER, password: PW });
+    await signIn({ identifier: "ok@example.test", password: "nope" });
+    const rows = fake.rows("AuditLog", { action: "LOGIN_FAILED" });
+    const metas = rows.map((r) => r.metadata as Record<string, unknown>);
+    t.check("control: both refusals were audited", rows.length === 2 && metas[0]?.reason === "user_not_found" && metas[1]?.reason === "invalid_password", metas);
+    t.check("no row carries an `identifier` field", metas.every((m) => !("identifier" in m)), metas);
+    t.check("each row carries the Security Ops keyed hash of the normalised identifier",
+      metas[0]?.identifierHash === hashSecurityIdentifier("ghost.person@example.test")
+      && metas[1]?.identifierHash === hashSecurityIdentifier("ok@example.test")
+      && metas.every((m) => /^[0-9a-f]{32}$/.test(String(m.identifierHash))), metas);
+    const blob = JSON.stringify(rows).toLowerCase();
+    t.check("the raw identifier appears nowhere in any LOGIN_FAILED row (any column)",
+      !blob.includes("ghost.person") && !blob.includes("ok@example.test"), blob);
+
+    // The anomaly detector groups a burst by the SAME hash, so it still trips.
+    for (let i = 0; i < 4; i++) await signIn({ identifier: "ok@example.test", password: "nope" });
+    const trips = fake.rows("AuditLog", { action: "SECURITY_ANOMALY_DETECTED" })
+      .filter((r) => (r.metadata as Record<string, unknown>)?.type === "failed_login_identifier");
+    t.check("5 wrong passwords on one identifier still trip the per-identifier burst (exactly one trip row)", trips.length === 1, trips);
   }
 
   t.done();

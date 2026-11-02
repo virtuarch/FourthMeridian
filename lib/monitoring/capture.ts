@@ -37,7 +37,7 @@ import * as Sentry from "@sentry/core";
  * The authentication stage an infrastructure failure occurred in. Kept coarse
  * and non-secret — enough to route an alert, nothing that identifies a user.
  */
-export type AuthInfraStage = "rate-limit" | "user-lookup" | "totp-config" | "session";
+export type AuthInfraStage = "rate-limit" | "user-lookup" | "totp-config" | "session" | "captcha";
 
 /**
  * Capture an infrastructure failure that occurred while authenticating. Records

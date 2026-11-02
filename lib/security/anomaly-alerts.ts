@@ -46,7 +46,7 @@ import { AuditAction } from "@/lib/audit-actions";
 import { createNotification } from "@/lib/notifications/create";
 import { sendEmail } from "@/lib/email/send";
 import { ownerSignInAnomalyAlert, securityOpsAnomalyAlert } from "@/lib/email/security-alerts";
-import { hashedAnomalyKey, type IdentifierHashEnv } from "@/lib/security/identifier-hash";
+import { hashSecurityIdentifier, hashedAnomalyKey, type IdentifierHashEnv } from "@/lib/security/identifier-hash";
 import {
   detectIdentifierAnomalies,
   detectIpAnomaly,
@@ -119,11 +119,13 @@ export async function reportLoginFailureAnomalies(ctx: LoginFailureAnomalyContex
     const anomalies: DetectedAnomaly[] = [];
 
     // Identifier-scoped signals (failed-login burst + recovery-code streak).
+    // LOGIN_FAILED rows carry only the identifier's keyed hash (lib/auth.ts
+    // recordLoginFailure), so the burst is grouped by that same hash.
     const idRows = await db.auditLog.findMany({
       where: {
         action:    AuditAction.LOGIN_FAILED,
         createdAt: { gte: windowStart(ANOMALY_THRESHOLDS.identifierFailedLogin.windowMinutes) },
-        metadata:  { path: ["identifier"], equals: ctx.identifier },
+        metadata:  { path: ["identifierHash"], equals: hashSecurityIdentifier(ctx.identifier) },
       },
       select: { metadata: true },
     });

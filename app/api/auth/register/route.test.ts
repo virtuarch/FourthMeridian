@@ -249,6 +249,44 @@ async function main() {
       t.check("siteverify was consulted once, and no user lookup happened", siteverify === 1 && fake.callsTo("User").length === 0);
       t.check("a missing token with CAPTCHA configured → 400 without a network call",
         (await register(form())).status === 400 && siteverify === 1);
+      // R2 — Cloudflare unreachable → honest 503 (fail-closed), never a pass.
+      globalThis.fetch = (async () => { siteverify++; return new Response("down", { status: 502 }); }) as typeof fetch;
+      const origErr = console.error; console.error = () => {};
+      const down = await register(form({ captchaToken: "tok" })).finally(() => { console.error = origErr; });
+      t.check("siteverify 502 → 503 'temporarily unavailable' with Retry-After, nothing written",
+        down.status === 503 && String(down.body.error).includes("temporarily unavailable") && !!down.headers.get("retry-after")
+        && fake.callsTo("User").length === 0, down);
+      // Strict siteverify — success:true for another surface's action is a failed challenge. The
+      // hostname is the test env's own app host (route-env NEXT_PUBLIC_APP_URL), so ONLY the action differs.
+      globalThis.fetch = (async () => { siteverify++; return new Response(JSON.stringify({ success: true, hostname: "app.test.invalid", action: "access_request", challenge_ts: new Date().toISOString() }), { status: 200 }); }) as typeof fetch;
+      const origWarn = console.warn; console.warn = () => {};
+      const wrong = await register(form({ captchaToken: "tok" })).finally(() => { console.warn = origWarn; });
+      t.check("success:true with action 'access_request' at registration → 400, no user lookup", wrong.status === 400 && fake.callsTo("User").length === 0, wrong);
+      // The route's OWN action is pinned: a 'login' token is refused, a 'register' token passes the CAPTCHA step.
+      globalThis.fetch = (async () => { siteverify++; return new Response(JSON.stringify({ success: true, hostname: "app.test.invalid", action: "login", challenge_ts: new Date().toISOString() }), { status: 200 }); }) as typeof fetch;
+      console.warn = () => {};
+      const loginTok = await register(form({ captchaToken: "tok" })).finally(() => { console.warn = origWarn; });
+      t.check("success:true with action 'login' at registration → 400, no user lookup", loginTok.status === 400 && String(loginTok.body.error).includes("CAPTCHA") && fake.callsTo("User").length === 0, loginTok);
+      globalThis.fetch = (async () => { siteverify++; return new Response(JSON.stringify({ success: true, hostname: "app.test.invalid", action: "register", challenge_ts: new Date().toISOString() }), { status: 200 }); }) as typeof fetch;
+      const rightTok = await register(form({ captchaToken: "tok" }));
+      t.check("success:true with action 'register' → past the CAPTCHA step (not a CAPTCHA 400; the user lookup runs)",
+        !String(rightTok.body.error ?? "").includes("CAPTCHA") && rightTok.status !== 503 && fake.callsTo("User").length > 0, rightTok);
+      // Production with the secret MISSING → 503 (fail closed), Cloudflare never consulted.
+      const savedVercelEnv = process.env.VERCEL_ENV;
+      const savedAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+      process.env.VERCEL_ENV = "production";
+      process.env.NEXT_PUBLIC_APP_URL = "https://app.fourthmeridian.com";
+      delete process.env.TURNSTILE_SECRET_KEY;
+      const calls = siteverify;
+      const userCalls = fake.callsTo("User").length; // the 'register' pass above legitimately looked users up
+      console.error = () => {};
+      const prodMissing = await register(form({ captchaToken: "tok" })).finally(() => {
+        console.error = origErr;
+        if (savedVercelEnv === undefined) delete process.env.VERCEL_ENV; else process.env.VERCEL_ENV = savedVercelEnv;
+        if (savedAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL; else process.env.NEXT_PUBLIC_APP_URL = savedAppUrl;
+      });
+      t.check("Production + no Turnstile keys → 503 with Retry-After, nothing written, Cloudflare not called",
+        prodMissing.status === 503 && !!prodMissing.headers.get("retry-after") && siteverify === calls && fake.callsTo("User").length === userCalls, prodMissing);
     } finally {
       globalThis.fetch = realFetch;
       delete process.env.TURNSTILE_SECRET_KEY;

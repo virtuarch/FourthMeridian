@@ -58,6 +58,8 @@ import { todayUTCISO }               from '@/lib/time/clock';
 import '@/lib/ai/assemblers';
 import { runStatelessTurn } from '@/lib/ai/conversation/engine';
 import { readChatRequest, type ChatRequestRefusal } from '@/lib/ai/conversation/request';
+import { withTenantDb }              from '@/lib/db/tenant-context';
+import { recordAiTurnFailed, type AiTurnFailureReason } from '@/lib/analytics/product-events';
 import type { AiChatResponse } from '@/types';
 import {
   sealRuntimeStateWithReport, openRuntimeState, conversationTail, RUNTIME_STATE_TTL_MS,
@@ -163,6 +165,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // (the answer hops and the guidance label) carries its signal; no retry is
   // taken past it; it is released in the `finally` with the reservation.
   const deadline = openTurnDeadline({ budgetMs: CHAT_TURN_BUDGET_MS - (Date.now() - arrivedAt) });
+  // S2-(a) — AI_TURN_FAILED {surface, reason}: an accepted turn that ended
+  // without an answer. The typed reason only — never the prompt, the reply, the
+  // model or the Space. Fails soft: the writer resolves false and the tenant
+  // phase is caught, so the user's refusal sentence is unchanged either way.
+  const turnFailed = (reason: AiTurnFailureReason): Promise<unknown> =>
+    withTenantDb(user.id, (tx) => recordAiTurnFailed(tx, { userId: user.id, surface: 'chat', reason })).catch(() => false);
   try {
     // ── The request ────────────────────────────────────────────────────────────
     let body: unknown;
@@ -190,6 +198,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     try {
       spaceCtx = await resolveSpaceContext(user.id, parsed.spaceId);
     } catch {
+      await turnFailed('failed');
       return refuse(SAY.failed, 503);
     }
     if (parsed.spaceId !== null && spaceCtx.spaceId !== parsed.spaceId) {
@@ -285,6 +294,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // written by the chokepoint, attributed to this conversation.
         if (isUnpricedModelFailure(turn.record.error)) {
           console.error('[ai/chat] turn refused (unpriceable model) —', turn.record.error);
+          await turnFailed('unpriced');
           return refuse(SAY.unpriced, 503);
         }
         // AI COST CONTROLS — the kill switch landed mid-turn (the route judged it
@@ -292,6 +302,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // the route's own refusal.
         if (isAiPausedFailure(turn.record.error)) {
           console.error('[ai/chat] turn refused (paid AI requests paused) —', turn.record.error);
+          await turnFailed('paused');
           return paidRequestsPausedResponse();
         }
         // SEC-AI-003 — the turn ran out of its budget. The provider was abandoned
@@ -299,11 +310,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // released below; the user is told to narrow the question.
         if (isTurnTimeoutFailure(turn.record.error)) {
           console.error('[ai/chat] turn abandoned at its deadline —', turn.record.error);
+          await turnFailed('timedOut');
           return refuse(SAY.timedOut, 504);
         }
         // The turn record holds why (budget exhausted, finish_reason, round-trip
         // ceiling). That reason is for the server's log; the user gets a sentence.
         console.error('[ai/chat] turn produced no text:', turn.record.error);
+        await turnFailed('silent');
         return refuse(SAY.silent, 502);
       }
 
@@ -354,8 +367,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       console.error('[ai/chat] turn failed:', err);
       // BETA C7 — a chokepoint refusal thrown OUTSIDE the turn loop (the loop
       // itself records one as the turn's error — handled above). Same sentence.
-      if (err instanceof UnpricedModelError) return refuse(SAY.unpriced, 503);
-      if (err instanceof AiPausedError) return paidRequestsPausedResponse();
+      if (err instanceof UnpricedModelError) { await turnFailed('unpriced'); return refuse(SAY.unpriced, 503); }
+      if (err instanceof AiPausedError) { await turnFailed('paused'); return paidRequestsPausedResponse(); }
+      await turnFailed('failed');
       return refuse(SAY.failed, 503);
     }
   } finally {

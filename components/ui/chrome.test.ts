@@ -69,6 +69,8 @@ console.log('account menu: Settings stays, the duplicate Profile goes');
   check('Settings already lands where Profile pointed', /redirect\("\/dashboard\/settings\/account"\)/.test(settingsIndex));
   check('Sign out unchanged', /signOut\(\{ redirect: false \}\)/.test(menu) && />Sign out</.test(menu) && menu.includes('window.location.href = "/login"'));
   check('identity block unchanged', menu.includes('{user?.name ?? "—"}') && menu.includes('{username}'));
+  check('Help & support mails the published support address', /href=\{`mailto:\$\{SUPPORT_EMAIL\}`\}/.test(menu)
+    && />Help &amp; support</.test(menu) && /import \{ SUPPORT_EMAIL \} from "@\/content\/marketing\/copy"/.test(menu));
 }
 
 console.log('one primary nav, two presentations: rail and bar read the SAME model');

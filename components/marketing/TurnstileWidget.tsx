@@ -74,7 +74,9 @@ interface TurnstileWidgetProps {
   /** Called with the solved token, or null on expiry/error/load-failure. */
   onToken: (token: string | null) => void;
   theme?: "auto" | "light" | "dark";
-  action?: string;
+  /** REQUIRED Turnstile action — the server (lib/captcha.ts) rejects a token
+   *  whose siteverify `action` is missing or not the surface's own. */
+  action: string;
   /** Bump to force a fresh challenge (Turnstile tokens are single-use). */
   resetNonce?: number;
   className?: string;

@@ -63,8 +63,9 @@
  * two simultaneous first submits may each write one. Per-row uniqueness is the
  * hard guarantee.
  *
- * Risk is ignored (advisory, UI-only). The Beta lifecycle check, when it lands,
- * lands inside issueBetaInvitation and applies here unchanged.
+ * The advisory heuristic signals are ignored (UI-only). The Beta lifecycle gate
+ * (BETA_NOT_ACCEPTING) is checked up front and again inside each issuance; the
+ * suspected-abuse lock arrives through the shared row loader, as for single approve.
  *
  * The client is a PARAMETER: authority follows the caller (RLS-13).
  */
@@ -72,9 +73,10 @@
 import "server-only";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
-import { issueBetaInvitation, type IssueClient } from "./invitation-issue";
+import { issueBetaInvitation, loadInviteRowFacts, type IssueClient } from "./invitation-issue";
 import { readInvitationPolicy } from "./invitation-policy";
-import { expiryFor, parseValidityDays, type InviteRowFacts } from "./invitation-issue.core";
+import { betaAcceptsInvitations, expiryFor, parseValidityDays, refusal, type InviteRowFacts } from "./invitation-issue.core";
+import { getBetaLifecycleState, type BetaLifecycleState } from "@/lib/entitlements/beta-lifecycle";
 import {
   approvalEligibility, BULK_EXPECTED_STATUS, BULK_REASON, EMAIL_FAILED_REASON, summarise,
   type BulkApproveBody, type BulkDryRunRow, type BulkEmailFailed, type BulkFailed, type BulkSkipped, type BulkSucceeded, type BulkSummary,
@@ -94,23 +96,23 @@ export interface BulkApproveInput {
   clockMs?: () => number;
   /** Test seam — the time budget (default BULK_TIME_BUDGET_MS). */
   budgetMs?: number;
+  /** Test seam — the Beta group's lifecycle (default: the fresh read); also passed to each issuance. */
+  betaLifecycle?: () => Promise<BetaLifecycleState>;
 }
 
 /** Stop STARTING rows after this long (route maxDuration is 300 s; see TIME BUDGET). */
 export const BULK_TIME_BUDGET_MS = 240_000;
 
 export type BulkApproveResult =
-  | { ok: false; status: 400; error: string; code?: string }
+  | { ok: false; status: 400 | 409; error: string; code?: string }
   | ({ ok: true; dryRun: true; batchKey: string; rows: BulkDryRunRow[]; duplicates: string[];
        summary: { requested: number; unique: number; duplicates: number; eligible: number; ineligible: number } } & BulkValidity)
   | ({ ok: true; dryRun: false; batchKey: string; summary: BulkSummary; repeat: boolean; batchAudited: boolean;
        succeeded: BulkSucceeded[]; emailFailed: BulkEmailFailed[]; skipped: BulkSkipped[]; failed: BulkFailed[]; duplicates: string[] } & BulkValidity);
 
-const ROW_SELECT = { id: true, email: true, status: true, inviteTokenHash: true, inviteExpiresAt: true, invitedAt: true } as const;
-
 async function eligibilityOf(client: IssueClient, id: string): Promise<Eligibility> {
-  const row = await client.betaAccessRequest.findUnique({ where: { id }, select: ROW_SELECT });
-  const facts: InviteRowFacts | null = row ? { ...row, status: row.status as InviteRowFacts["status"] } : null;
+  // The same facts issuance reads, including the suspected-abuse lock.
+  const facts: InviteRowFacts | null = await loadInviteRowFacts(client, { id });
   const hasAccount = facts ? (await client.user.findUnique({ where: { email: facts.email }, select: { id: true } })) != null : false;
   return approvalEligibility(facts, hasAccount);
 }
@@ -129,6 +131,15 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
   const { client, body } = input;
   const validity = await resolveValidity(client, body.validityDays, input.now ?? new Date());
   if ("error" in validity) return { ok: false, status: 400, error: validity.error, code: "INVALID_VALIDITY" };
+
+  // BETA_NOT_ACCEPTING — refuse the whole batch (dry run included) up front while the beta is
+  // PAUSED, ENDED or UNKNOWN. Each row's issuance re-checks, so a pause mid-batch stops the rest.
+  let lifecycle: BetaLifecycleState;
+  try { lifecycle = await (input.betaLifecycle ?? (() => getBetaLifecycleState()))(); } catch { lifecycle = "UNKNOWN"; }
+  if (!betaAcceptsInvitations(lifecycle)) {
+    const r = refusal("BETA_NOT_ACCEPTING");
+    return { ok: false, status: 409, error: r.message, code: r.code };
+  }
 
   if (body.dryRun) {
     const rows: BulkDryRunRow[] = [];
@@ -167,6 +178,7 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
         client, actor: input.actor, kind: "approve", requestId: id, validityDays,
         // The status this batch just read: anything else at issuance ⇒ STATUS_CHANGED, never approved.
         expectedStatus: BULK_EXPECTED_STATUS,
+        ...(input.betaLifecycle ? { betaLifecycle: input.betaLifecycle } : {}),
         ...(input.reason ? { reason: input.reason } : {}),
         ipAddress: input.ipAddress ?? null, userAgent: input.userAgent ?? null,
         ...(input.now ? { now: input.now } : {}),
@@ -178,8 +190,14 @@ export async function bulkApproveBetaRequests(input: BulkApproveInput): Promise<
       } else if (r.ok) {
         // alreadyApproved — a concurrent submit (or the first click) won this row.
         skipped.push({ id, code: "ALREADY_APPROVED", reason: BULK_REASON.ALREADY_APPROVED });
-      } else if (r.code === "REDEEMED" || r.code === "ACCOUNT_EXISTS" || r.code === "NOT_FOUND") {
+      } else if (r.code === "REDEEMED" || r.code === "ACCOUNT_EXISTS" || r.code === "NOT_FOUND" || r.code === "SUSPECTED_ABUSE"
+        || r.code === "IDENTIFIER_BLOCKED" || r.code === "BLOCKLIST_UNAVAILABLE") {
         skipped.push({ id, code: r.code, reason: BULK_REASON[r.code] });
+      } else if (r.code === "BETA_NOT_ACCEPTING") {
+        // The beta stopped accepting mid-batch: this row and every remaining one are not attempted.
+        failed.push({ id, code: "REFUSED", reason: r.message });
+        for (const rest of body.ids.slice(body.ids.indexOf(id) + 1)) skipped.push({ id: rest, code: "NOT_ATTEMPTED", reason: BULK_REASON.NOT_ATTEMPTED });
+        break;
       } else if (r.code === "STATUS_CHANGED" || r.code === "CONFLICT") {
         // Issuance read (STATUS_CHANGED) or lost the conditional write to (CONFLICT) a
         // status other than the PENDING this batch read. Nothing was minted or sent.

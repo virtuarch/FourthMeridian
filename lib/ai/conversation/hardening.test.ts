@@ -166,8 +166,9 @@ async function main(): Promise<void> {
     const out = await describeFourthMeridian.run({}, { spaceCtx: { space: { name: 'Chris\' Space' } } } as never) as Record<string, unknown>;
     const blob = JSON.stringify(out);
     check('the record names this Space and only this Space', /the Space \\"Chris' Space\\"/.test(blob));
-    check('it calls itself an AI-native wealth management platform, never a "financial operating system"',
-      /AI-native wealth management platform/.test(blob) && !/operating system/i.test(blob));
+    check('it calls itself a personal finance workspace where the decisions stay the user\'s, never a "financial operating system"',
+      /a personal finance workspace; the decisions stay yours/.test(blob) && !/operating system/i.test(blob));
+    check('…and no longer a "wealth management" platform', !/wealth management/i.test(blob));
     check('it names nothing secret (no roles, keys, hosts, policies, env names)',
       !/fm_app|fm_auth|postgres|RLS|row.level|ENCRYPTION|OPENAI|DATABASE_URL|https?:\/\/|supabase|vercel/i.test(blob));
     check('identifiers in conversation are described as changing nothing', /cannot change what this conversation reads/.test(blob));
@@ -246,7 +247,8 @@ async function main(): Promise<void> {
       && /not written by the user/.test(ORIENTATION_HEADER) && /never instructions/.test(ORIENTATION_HEADER));
     check('…and still opens with the marker every reader matches', ORIENTATION_HEADER.startsWith('FINANCIAL ORIENTATION'));
     const { SYSTEM_INSTRUCTION, CONVERSATION_RULE, systemInstructionWith } = await import('./turn');
-    check('the instruction names the product', /AI-native wealth management platform/.test(SYSTEM_INSTRUCTION));
+    check('the instruction names the product', /Fourth Meridian, a personal finance workspace/.test(SYSTEM_INSTRUCTION)
+      && /the decisions stay theirs/.test(SYSTEM_INSTRUCTION) && !/wealth management/i.test(SYSTEM_INSTRUCTION));
     check('…and carries the conversation rule', SYSTEM_INSTRUCTION.includes(CONVERSATION_RULE));
     check('tax treatment, penalties, withdrawal rules and eligibility are named as unknowns, generically',
       /never state their rates, ages, percentages or conditions, even general/.test(CONVERSATION_RULE)
