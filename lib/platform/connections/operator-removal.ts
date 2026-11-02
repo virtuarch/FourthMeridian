@@ -88,8 +88,13 @@ export { parseRemovalRequest, REMOVAL_REASONS, type RemovalReason, type RemovalR
 
 export type RemovalOutcome =
   | { kind: "not_found" }
-  /** Nothing live on the connection: already removed. Nothing was called, written or sent. */
-  | { kind: "already_removed" }
+  /**
+   * Nothing live on the connection: already removed. Nothing was called,
+   * written or sent. `concurrent`: this request passed the pre-check but a
+   * simultaneous request removed it first — recorded as ALREADY_REMOVED_CONCURRENT
+   * (REFUSED), with no customer history row and no notification.
+   */
+  | { kind: "already_removed"; concurrent?: true }
   | { kind: "failed"; auditId: string; intentAuditId: string }
   | {
       kind: "removed";
@@ -176,6 +181,16 @@ export async function removeConnectionAsOperator(input: OperatorRemovalInput, de
     const result = await disconnect(faIds, ownerUserId, {
       beforeProviderRevocation: async (plaidItemDbIds) => {
         for (const plaidItemId of plaidItemDbIds) {
+          // S2 — ONLY an item the primitive is about to call Plaid for. That
+          // call happens only when the item is fully orphaned, by exactly this
+          // predicate (lib/plaid/disconnect.ts: accountConnection.count where
+          // { plaidItemDbId, deletedAt: null } === 0), evaluated here AFTER the
+          // soft-deletes committed. An item still referenced by another live
+          // link — e.g. an account that also hangs off a second item after an
+          // Expand History relink — gets no call, so it must get no marker: an
+          // "owed" marker with no attempt would read as interrupted in 15 min.
+          const remaining = await database.accountConnection.count({ where: { plaidItemDbId: plaidItemId, deletedAt: null } });
+          if (remaining !== 0) continue;
           await database.auditLog.create({
             data: {
               userId: ownerUserId,
@@ -187,6 +202,18 @@ export async function removeConnectionAsOperator(input: OperatorRemovalInput, de
       },
     });
     disconnected = result.disconnectedAccountIds.length;
+    // S2 (P2) — CONCURRENT DOUBLE-SUBMIT. Two near-simultaneous requests can
+    // both pass the pre-check above; the primitive's own conditional writes let
+    // exactly one soft-delete the accounts. The one that wrote nothing did not
+    // remove anything: it records that (REFUSED, ALREADY_REMOVED_CONCURRENT)
+    // and stops — no customer history row, no notification, no SUCCESS row.
+    if (result.newlyDisconnectedCount === 0) {
+      await record(database, {
+        actor: input.actor, action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR, target, reason, result: "REFUSED",
+        detail: { ...baseDetail, intentAuditId, outcome: "ALREADY_REMOVED_CONCURRENT" }, ...meta,
+      });
+      return { kind: "already_removed", concurrent: true };
+    }
   } catch (e) {
     console.error(`[platform-ops] operator removal failed for connection ${id}:`, redactedErrorForLog(e));
     const { id: auditId } = await record(database, {

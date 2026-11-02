@@ -48,7 +48,7 @@ const OWNER = "user_owner_aaaaaa";
 const ADMIN = "user_admin_000001";
 
 /** A fake of the four fm_system reads the action performs. */
-function fakeDb(opts: { item?: { id: string; userId: string; institutionName: string } | null; wallet?: { id: string; userId: string; externalConnectionId: string | null } | null; liveFa?: string[] }) {
+function fakeDb(opts: { item?: { id: string; userId: string; institutionName: string } | null; wallet?: { id: string; userId: string; externalConnectionId: string | null } | null; liveFa?: string[]; remainingAfter?: Record<string, number> }) {
   const seen: { accountConnection: unknown[]; auditLog: Array<Record<string, unknown>> } = { accountConnection: [], auditLog: [] };
   return {
     seen,
@@ -58,13 +58,15 @@ function fakeDb(opts: { item?: { id: string; userId: string; institutionName: st
       connection: { findFirst: async () => opts.wallet ?? null },
       accountConnection: {
         findMany: async (args: unknown) => { seen.accountConnection.push(args); return (opts.liveFa ?? []).map((financialAccountId) => ({ financialAccountId })); },
+        // The orphan predicate the hook asks after phases 1–2: live links still on the item.
+        count: async (args: { where: { plaidItemDbId: string } }) => opts.remainingAfter?.[args.where.plaidItemDbId] ?? 0,
       },
     } as unknown as NonNullable<OperatorRemovalDeps["db"]>,
   };
 }
 
-function harness(over: { item?: Parameters<typeof fakeDb>[0]["item"]; wallet?: Parameters<typeof fakeDb>[0]["wallet"]; liveFa?: string[]; disconnectThrows?: boolean; markerConfirmed?: boolean | null } = {}) {
-  const f = fakeDb({ item: over.item, wallet: over.wallet, liveFa: over.liveFa });
+function harness(over: { item?: Parameters<typeof fakeDb>[0]["item"]; wallet?: Parameters<typeof fakeDb>[0]["wallet"]; liveFa?: string[]; disconnectThrows?: boolean; markerConfirmed?: boolean | null; extraItems?: string[]; remainingAfter?: Record<string, number> } = {}) {
+  const f = fakeDb({ item: over.item, wallet: over.wallet, liveFa: over.liveFa, remainingAfter: over.remainingAfter });
   const calls = { disconnect: [] as Array<[string[], string]>, audits: [] as ReturnType<typeof buildOperatorActionData>[], notify: [] as unknown[], order: [] as string[] };
   const deps: OperatorRemovalDeps = {
     db: f.db,
@@ -74,13 +76,13 @@ function harness(over: { item?: Parameters<typeof fakeDb>[0]["item"]; wallet?: P
       calls.disconnect.push([ids, actor]);
       calls.order.push("disconnect:phase1-2");
       if (over.disconnectThrows) throw new Error("phase 2 shortfall");
-      const items = over.item ? [over.item.id] : [];
+      const items = over.item ? [over.item.id, ...(over.extraItems ?? [])] : [];
       if (items.length > 0) {
         await opts?.beforeProviderRevocation?.(items);
         calls.order.push(`marker-rows:${f.seen.auditLog.length}`);
         calls.order.push("itemRemove");
       }
-      return { disconnectedAccountIds: ids, affectedSpaceIds: ["s1"], plaidItemDbIds: items };
+      return { disconnectedAccountIds: ids, affectedSpaceIds: ["s1"], plaidItemDbIds: items, newlyDisconnectedCount: ids.length };
     }) as NonNullable<OperatorRemovalDeps["disconnect"]>,
     // The REAL envelope builder, so the row asserted is the row that would be written.
     record: (async (_c: unknown, input: OperatorActionInput) => { calls.audits.push(buildOperatorActionData(input)); calls.order.push(`audit:${input.action}`); return { id: `audit${calls.audits.length}` }; }) as NonNullable<OperatorRemovalDeps["record"]>,
@@ -334,6 +336,74 @@ async function main() {
     check("first removes; second is already_removed", first.kind === "removed" && second.kind === "already_removed");
     check("ONE disconnect, ONE itemRemove, ONE intent + outcome, ONE notification across both calls",
       h.calls.disconnect.length === 1 && h.calls.order.filter((x) => x === "itemRemove").length === 1 && h.calls.audits.length === 2 && h.calls.notify.length === 1, h.calls.order);
+  }
+
+  console.log("8b. CONCURRENT double-submit — two INTERLEAVED calls (S2 P2)");
+  {
+    // A shared world: both requests pass the pre-check before either reaches
+    // the primitive; the primitive's conditional writes let exactly one soft-
+    // delete (the real one: updateMany where deletedAt null), the other writes 0.
+    let live = true;
+    let itemRemoves = 0;
+    let arrived = 0;
+    let release!: () => void;
+    const bothPastPrecheck = new Promise<void>((r) => { release = r; });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    const db = h.deps.db as unknown as { accountConnection: { findMany: () => Promise<Array<{ financialAccountId: string }>> } };
+    db.accountConnection.findMany = async () => {
+      const rows = live ? [{ financialAccountId: "fa1" }] : [];
+      if (++arrived === 2) release();
+      return rows;
+    };
+    h.deps.disconnect = (async (ids: string[], actor: string, opts?: DisconnectAccountsOptions) => {
+      await bothPastPrecheck;          // INTERLEAVE: neither proceeds until both passed the pre-check
+      h.calls.disconnect.push([ids, actor]);
+      const won = live;                // the conditional write: only one sees the row live
+      live = false;
+      if (!won) return { disconnectedAccountIds: ids, affectedSpaceIds: [], plaidItemDbIds: [], newlyDisconnectedCount: 0 };
+      await opts?.beforeProviderRevocation?.(["p1"]);
+      itemRemoves++;
+      return { disconnectedAccountIds: ids, affectedSpaceIds: ["s1"], plaidItemDbIds: ["p1"], newlyDisconnectedCount: 1 };
+    }) as NonNullable<OperatorRemovalDeps["disconnect"]>;
+
+    const [a, b] = await Promise.all([
+      removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps),
+      removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps),
+    ]);
+    const kinds = [a.kind, b.kind].sort().join();
+    const loser = [a, b].find((r) => r.kind === "already_removed") as { kind: "already_removed"; concurrent?: true } | undefined;
+    check("both passed the pre-check (the race is real), then ONE removed and ONE is already_removed (concurrent)",
+      arrived === 2 && h.calls.disconnect.length === 2 && kinds === "already_removed,removed" && loser?.concurrent === true, { kinds });
+    const history = h.seen.auditLog.filter((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_SUPPORT);
+    check("exactly ONE customer Security History row", history.length === 1, history.length);
+    check("exactly ONE notification", h.calls.notify.length === 1, h.calls.notify.length);
+    check("exactly ONE itemRemove", itemRemoves === 1);
+    const outcomes = h.calls.audits.filter((x) => x.action === AuditAction.CONNECTION_REMOVED_BY_OPERATOR).map((x) => `${(x.metadata as Record<string, unknown>).result}:${(x.metadata as Record<string, unknown>).outcome}`).sort();
+    check("the feed shows ONE SUCCESS; the loser is REFUSED / ALREADY_REMOVED_CONCURRENT",
+      outcomes.join() === "REFUSED:ALREADY_REMOVED_CONCURRENT,SUCCESS:CONFIRMED_REMOVED", outcomes);
+    check("exactly ONE pre-provider marker (the loser's primitive returned no item)",
+      h.seen.auditLog.filter((r) => r.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED).length === 1);
+    const prim = code("lib/accounts/disconnect.ts");
+    check("source pin: the primitive reports THIS call's write count (softDeleted.count)", /newlyDisconnectedCount: softDeleted\.count/.test(prim));
+    check("source pin: the guard runs after disconnect and before the outcome/customer rows/notification",
+      (() => { const s = code("lib/platform/connections/operator-removal.ts"); const g = s.indexOf("if (result.newlyDisconnectedCount === 0)");
+        return g > s.indexOf("await disconnect(faIds") && g < s.indexOf("action: AuditAction.CONNECTION_REMOVED_BY_SUPPORT") && g < s.indexOf("await notify("); })());
+  }
+
+  console.log("8c. the PRE_PROVIDER marker only for items the primitive will call Plaid for");
+  {
+    // An account that also hangs off a SECOND item (e.g. after an Expand History
+    // relink): the primitive returns both items; p2 is still referenced by
+    // another live link, so disconnectPlaidItemIfOrphaned will not call Plaid for it.
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true, extraItems: ["p2"], remainingAfter: { p1: 0, p2: 3 } });
+    await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
+    const markers = h.seen.auditLog.filter((r) => r.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED).map((r) => (r.metadata as Record<string, unknown>).plaidItemId);
+    check("the orphaned item gets the marker; the still-referenced item does NOT (no call ⇒ no owed marker)", markers.join() === "p1", markers);
+    const s = code("lib/platform/connections/operator-removal.ts");
+    const plaid = code("lib/plaid/disconnect.ts");
+    check("source pin: the hook asks the SAME orphan predicate disconnectPlaidItemIfOrphaned gates on",
+      /accountConnection\.count\(\{ where: \{ plaidItemDbId: plaidItemId, deletedAt: null \} \}\);\s*if \(remaining !== 0\) continue;/.test(s)
+        && /accountConnection\.count\(\{\s*where: \{\s*plaidItemDbId,\s*deletedAt: null,\s*\},\s*\}\);\s*if \(remaining !== 0\) return;/.test(plaid));
   }
 
   console.log("9. inferred attribution is display-only (S2 flag 3)");

@@ -69,6 +69,13 @@ export interface DisconnectAccountsResult {
   disconnectedAccountIds: string[];
   affectedSpaceIds:       string[];
   plaidItemDbIds:         string[];
+  /**
+   * PB-5 (S2) — how many accounts THIS call soft-deleted (phase 1's write
+   * count). `disconnectedAccountIds` is the proved set and stays non-empty on a
+   * repeat (a repeat is a no-op by design), so it cannot tell "I removed it"
+   * from "someone already had". Zero here means another call got there first.
+   */
+  newlyDisconnectedCount: number;
 }
 
 /**
@@ -128,12 +135,12 @@ export async function disconnectAccounts(
   opts: DisconnectAccountsOptions = {},
 ): Promise<DisconnectAccountsResult> {
   if (financialAccountIds.length === 0) {
-    return { disconnectedAccountIds: [], affectedSpaceIds: [], plaidItemDbIds: [] };
+    return { disconnectedAccountIds: [], affectedSpaceIds: [], plaidItemDbIds: [], newlyDisconnectedCount: 0 };
   }
   const now = new Date();
 
   // ── PHASE 1 — THE TENANT PHASE ────────────────────────────────────────────
-  const { provenIds, plaidItemDbIds } = await withTenantDb(actorUserId, async (tx) => {
+  const { provenIds, plaidItemDbIds, newlyDisconnectedCount } = await withTenantDb(actorUserId, async (tx) => {
     // THE PROOF. `FinancialAccount.fm_app_sel` admits `ownerUserId = me OR
     // fm_account_visible(id)`; the second arm would admit an account the actor
     // can merely SEE through a shared Space, so ownership is required on top.
@@ -185,7 +192,7 @@ export async function disconnectAccounts(
       closed.count,
     );
 
-    return { provenIds, plaidItemDbIds };
+    return { provenIds, plaidItemDbIds, newlyDisconnectedCount: softDeleted.count };
   });
 
   // ── PHASE 2 — THE DEPLOYMENT-WIDE REVOKE ──────────────────────────────────
@@ -225,5 +232,5 @@ export async function disconnectAccounts(
     await disconnectPlaidItemIfOrphaned(plaidItemDbId);
   }
 
-  return { disconnectedAccountIds: provenIds, affectedSpaceIds, plaidItemDbIds };
+  return { disconnectedAccountIds: provenIds, affectedSpaceIds, plaidItemDbIds, newlyDisconnectedCount };
 }
