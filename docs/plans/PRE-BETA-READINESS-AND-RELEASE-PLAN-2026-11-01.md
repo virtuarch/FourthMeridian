@@ -434,12 +434,12 @@ Read-only throughout: no code, data, settings or deployments were changed. I rea
 6. Coinbase: wait for Plaid, or fall back to direct read-only Coinbase API keys.
 
 Key files:
-- `/Users/chrstn/dev/FourthMeridian/docs/plans/P0-CASH-ADJUSTED-BALANCE-CONTRACT-2026-10-27.md` (its header is out of date)
-- `/Users/chrstn/dev/FourthMeridian/docs/plans/P1-PRODUCTION-REPAIR-CANDIDATES-2026-10-27.md`
+- a local path (not committed) (its header is out of date)
+- a local path (not committed)
 - `docs/plans/CONNECTIONS-CRYPTO-HISTORY-CLOSEOUT-2026-10-30.md` and `docs/plans/OVERNIGHT-2026-10-31-CONSOLIDATED-REPORT.md` (on develop)
-- `/Users/chrstn/dev/FourthMeridian/docs/audits/pre-beta-2026-10/remediation/01-FINDINGS-REGISTER.md`
+- a local path (not committed)
 
-The only file I created is the read-only query helper `/private/tmp/claude-501/-Users-chrstn-dev-FourthMeridian/4945e35a-1c27-44f6-a1a3-b060cda74b0f/scratchpad/q.sh`.
+The only file I created is the read-only query helper a local scratchpad (not committed).
 
 ---
 
@@ -538,7 +538,7 @@ Promoting develop needs 9 migrations, including 4 comms tables, plus 2–3 Produ
 | External dead-man monitor on `/api/health` | **No evidence it exists.** The runbook assumes one | `docs/operations/runbooks/alerting-dead-evaluator.md:4`; gate G3 still open |
 | Sentry | `NEXT_PUBLIC_SENTRY_DSN` set on Production and Preview; Production boot requires it. **Event delivery never verified** | Vercel env; `instrumentation.ts` |
 | Production backups | One logical cutover dump (`prod-20261023T034601Z`, sha 7c9a01b3…), restored locally (doc 26 C1). A daily physical backup was observed 10-27 16:16Z. **PITR status unknown for Production** (Preview: Pro plan, 7 daily backups, PITR DISABLED as of 10-22). **The restore-rehearsal table in §6 of `backup-restore-verification.md` reads "_none yet_"**, so no RPO/RTO is recorded | doc 26 §C1; memory (prod release); remediation doc 11 G0c |
-| Preview backups | `db:migrate:safe` dumps verified per migration on 10-31 (consolidated report §3). 8+ plaintext dumps sit in `/Users/chrstn/dev/FM-migrate1/backups/` and 31 in `backups/`, so the local-dump policy (DB-007 §7) is unenforced | filesystem |
+| Preview backups | `db:migrate:safe` dumps verified per migration on 10-31 (consolidated report §3). 8+ plaintext dumps sit in a local path (not committed) and 31 in `backups/`, so the local-dump policy (DB-007 §7) is unenforced | filesystem |
 | Purge correctness | Census test fails the build on any unclassified user column. Comms ledger and automation rows are anonymised (`purge.ts:494-531`). `BetaAccessRequest` and its events are deleted by email | `purge-census.test.ts`, `purge.test.ts` (+73 lines on develop) |
 | Deletion and retention jobs | `process-deletions`; retention runs inside `purge-trash` via `runDataRetention` (90-day comms, AI and JobRun rows; 180-day beta events). **Never run on Preview** (crons are off). One Preview account has been scheduled for deletion since 10-29 and was never purged | Preview `User.deletionScheduledAt`; JobRun has no rows for these jobs |
 | Production deletion | Main's purge lacks the comms steps, but it does not need them because main has no comms tables. **No evidence that a Production purge has ever run** | no Production DB access |
@@ -721,7 +721,7 @@ Cut points are develop first-parent merge SHAs. That works only from `296516c` (
   - `/dashboard/brief` is not opened.
 - **Rollback:** Vercel rollback to `dpl_GvqxKYoYfxwxS2VGhf5ddmd8zx3t` (`4dda8dc`); fallback `dpl_DySEgBLcpbzzRPYZQm1xaDrVWKdq`. Leave the DB in place. Reverse migration 1 with the UPDATE in its file only if the owner wants; the `historyCheckpoint` column stays.
 
-The Vercel helper and fetched HTML are in `/private/tmp/claude-501/-Users-chrstn-dev-FourthMeridian/4945e35a-1c27-44f6-a1a3-b060cda74b0f/scratchpad` (no secrets).
+The Vercel helper and fetched HTML are in a local scratchpad (not committed) (no secrets).
 ---
 
 ## Addendum: B9 progress (2026-11-01)
@@ -749,7 +749,7 @@ The Vercel helper and fetched HTML are in `/private/tmp/claude-501/-Users-chrstn
 
 | Step | Result |
 |---|---|
-| prod.env | Present, permissions 600, gitignored. Target ref `qirfzvvaeddukjiphims` = `fourth-meridian-production`. Both URLs use the session pooler on 5432 as `postgres` |
+| prod.env | Present, permissions 600, gitignored. Target ref (ref omitted) = `fourth-meridian-production`. Both URLs use the session pooler on 5432 as the database owner role |
 | Pre-checks | PG 17.6. All 4 app tables owned by postgres. All existing policies PERMISSIVE. Schema ACL recorded. No leftover role |
 | Grant | Applied as approved, in one transaction, run via local psql with the owner-supplied credentials (same SQL as the approved file) |
 | Q1 | 20 PENDING; 0 decided, invited or redeemed; 0 created since 10-31 08Z |
@@ -768,7 +768,7 @@ The Vercel helper and fetched HTML are in `/private/tmp/claude-501/-Users-chrstn
 | Original config | crons enabled, enabledAt 1792764879692, disabledAt null, 2 definitions, deployment dpl_GvqxKYoY |
 | Pause | Disabled 01:46Z via project Cron Jobs settings. API shows disabledAt set. 0 running. **The 01:50 slot produced no JobRun** (27151 rows; last 01:45:49) |
 | Backup | **PASS:** strict row-for-row check across 54 non-empty tables, 18.0 MB |
-| Encryption | AES-256-CBC, PBKDF2 600k iterations. Key generated randomly and stored only in the owner's login Keychain as "FourthMeridian prod backup B1". File `~/FourthMeridian-prod-backups/fm-prod-preB1-2026-11-01T0151Z.sql.enc` (dir 700, file 600). Plaintext sha256 `c32a125d6b94881486e5e5c892ce81fe98db6544016bb6500eca38ff7a02cb6e`; ciphertext sha256 `67c7c8335a00aa3d40a1e4e784242aa0c78ef9f4ee25792419c9fe89acf04f11`. **Round-trip decrypt with the key read back from the Keychain matched.** Plaintext removed with `rm -P`. Retain until 2026-12-01 |
+| Encryption | AES-256-CBC, PBKDF2 600k iterations. Key generated randomly and stored only in the owner's login Keychain. File a local encrypted file (dir 700, file 600). Plaintext sha256 `c32a125d6b94881486e5e5c892ce81fe98db6544016bb6500eca38ff7a02cb6e`; ciphertext sha256 `67c7c8335a00aa3d40a1e4e784242aa0c78ef9f4ee25792419c9fe89acf04f11`. **Round-trip decrypt with the key read back from the Keychain matched.** Plaintext removed with `rm -P`. Retain until 2026-12-01 |
 | Migrations | `db:migrate:safe`: db-guard, then its own strict backup (PASS, removed with `rm -P`), then deploy. Applied growth_rename and connection_history_checkpoint. `migrate status` up to date (137). Growth Space renamed; `Connection.historyCheckpoint` exists (nullable text) |
 | Env | `WALLET_TOKEN_CAPTURE_ENABLED=false` set on Production. No `*_BACKFILL_ENABLED`, `SPL_HISTORY_ENABLED` or `ERC20_HISTORY_ENABLED` in Production |
 | Promotion PR | #206 `release/batch-1` @ 296516c → main |
@@ -855,9 +855,9 @@ Independent re-check:
 **Backup procedure (CHANGE vs B1; owner approval needed)**
 - B2's own `db:migrate:safe` at 3849ab6 still runs the **old** live-count verifier, which failed under cron writes in B1.
 - **Proposed:**
-  1. Owner re-supplies `tmp/prod-release/prod.env` (it was removed after B1).
+  1. Owner re-supplies a local credentials file (not committed) (it was removed after B1).
   2. Take the backup with **develop's snapshot-consistent `db:backup`** (#205 + #209). Its first real run on Preview at 02:51Z **passed**: 67 tables matched in the dump's own snapshot, 284 s, no race.
-  3. Encrypt with the B1 Keychain plan, as "FourthMeridian prod backup B2".
+  3. Encrypt with the B1 Keychain plan, in the owner's Keychain.
   4. In a clean B2 worktree, run `db-guard --mode=migrate-deploy`, then `prisma migrate deploy`, then `migrate status`. This is the same guard and deploy as `db:migrate:safe`; only the backup step uses the newer verifier.
 - **No cron pause needed.**
 - **Alternative:** repeat B1's cron pause and use B2's own `db:migrate:safe` unchanged.
@@ -878,7 +878,7 @@ What Session 2 verified:
 - The seed JSON is pinned to `catalogue.ts BETA_FULL_ACCESS_V1` by `policy-group-migration.test.ts`, and **no Beta values change**, so customers' effective entitlements are byte-identical.
 - 0 assignments is safe: unassigned users resolve to the seeded isDefault group, and the code catalogue remains the fallback.
 - No seeds or config are needed (`policy.ts` is unchanged; the operations registry change is code-only).
-- No lockout risk: the owner operates as USER `chrstn` with CONTROL grants, not the System Admin bypass.
+- No lockout risk: the owner's everyday (non-admin) account.
 
 Conditions on the split backup/migrate procedure:
 - **C1:** the backup and the guard+deploy load the same env file; record each step's printed target identity and abort if they differ.
@@ -896,9 +896,9 @@ Checklist additions:
 |---|---|
 | Release commit | `79a5fb3` = 3849ab6 + `cherry-pick -x 25bf587`. Diff vs 3849ab6 is exactly `package-lock.json \| 6 +++---` (owner-approved B2 tree rule) |
 | CI #210 | test ×2 PASS, including the dependency audit; audits and drift guard PASS |
-| Preflight | prod.env 600 / gitignored / ref qirfzvvaeddukjiphims; 137 applied, 1 pending |
-| Backup (snapshot-consistent, develop tool, **no cron pause**) | Verified across 54 non-empty tables in the dump's own snapshot `0000002D-0000AF8C-1`. AES-256, Keychain "FourthMeridian prod backup B2". Plaintext sha256 `19920b96d05c53feead6b12e00442864e6fcc0098e8c585c1dd27f746bcebb49`; ciphertext `e68228e75b9d6b0f43f41ca09c49e9b62b84e2b9201bf0fbff6770761e98e85a`. File `~/FourthMeridian-prod-backups/fm-prod-preB2-2026-11-01T0329Z.sql.enc`. Round trip OK; plaintext removed with `rm -P`; retain to 2026-12-01 |
-| C1 same target | backup = guard = `aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres` |
+| Preflight | prod.env 600 / gitignored / ref (ref omitted); 137 applied, 1 pending |
+| Backup (snapshot-consistent, develop tool, **no cron pause**) | Verified across 54 non-empty tables in the dump's own snapshot `0000002D-0000AF8C-1`. AES-256, owner's Keychain. Plaintext sha256 `19920b96d05c53feead6b12e00442864e6fcc0098e8c585c1dd27f746bcebb49`; ciphertext `e68228e75b9d6b0f43f41ca09c49e9b62b84e2b9201bf0fbff6770761e98e85a`. File a local encrypted file. Round trip OK; plaintext removed with `rm -P`; retain to 2026-12-01 |
+| C1 same target | backup = guard = the session pooler |
 | Migration | `20261030120000_policy_group_editor` applied. 138, up to date |
 | Seed check | PolicyGroup BETA_FULL_ACCESS_V1: isDefault, builtIn, v1. Values identical to the code catalogue. RLS enabled and forced on both tables. 0 CustomerPolicyAssignment rows |
 | Merge | #210 → main **0ec380c**; main tree = reviewed `8738a7c2…` |
@@ -1016,7 +1016,7 @@ Checklist additions:
 |---|---|
 | Release | #212 @ bc2e8ae (exact tree), merged as **1866f4c**. Main CI and Trusted health success |
 | Migrations | 4 and 5 applied, **140 verified BEFORE merge**. Beta lifecycle ACTIVE, costFrozen false, no `platform_cost_frozen` row |
-| Backup | Snapshot-verified (56 tables), AES-256 Keychain "FourthMeridian prod backup B4-5", plaintext sha256 `420b02dd55b20af7923d4b19e9659d1fe04f845c82ac3ad254036c222a5b301a`, ciphertext `d421038b3771ea268e9d8b1d4c74b45719b9d25814e336d559dc8d85d8615586`, `fm-prod-preB45-2026-11-01T0443Z.sql.enc` |
+| Backup | Snapshot-verified (56 tables), AES-256 owner's Keychain, plaintext sha256 `420b02dd55b20af7923d4b19e9659d1fe04f845c82ac3ad254036c222a5b301a`, ciphertext `d421038b3771ea268e9d8b1d4c74b45719b9d25814e336d559dc8d85d8615586`, a local encrypted file |
 | Deployment | **dpl_2fiFDhEP86zUd4umPtGJiU7NbGiw**, crons bound |
 | Independent verification | **Session 2 PASS.** 0 5xx and 0 freeze/paused log lines. The live gate read shows lifecycle ACTIVE, globalCostFrozen false, effectiveRestriction null, billablePolicyReadable true. The catalogue source is DB. The beta queue renders. **Pending:** the sync-banks (~05:40Z) and sync-crypto (~08:10Z) billable proofs |
 | **Cluster action** (owner-approved, run by Session 1 in the owner's Production session) | Pre-check asserted **exactly 13** suffix matches out of 20 pending, all PENDING, every createdAt hour matching the masked evidence. Each got POST risk-review `{SUSPICIOUS, ABUSE}` (200), then POST deny (200), **13/13**, no stop. **DB verify:** 13 DENIED (all cluster), 0 DENIED outside it, 7 PENDING untouched, 13 SUSPICIOUS verdicts, 13 BETA_REQUEST_RISK_REVIEWED + 13 BETA_ACCESS_DENIED audit rows, 0 invite tokens. **No emails** (deny is silent). hzupno will be captured via preserve-evidence after B9; blocklist backfill runs after B9 (before 2027-04-30) |
@@ -1059,7 +1059,7 @@ Checklist additions:
 |---|---|
 | Release | #213 @ ff6176e (exact tree), merged as **e01d20f**. Main CI and Trusted health success |
 | Env | `SECURITY_IDENTIFIER_HASH_SALT` and `COMMS_RECIPIENT_HASH_SALT` installed in Production. Sensitive, CSPRNG 256-bit, never printed; names only recorded |
-| Backup | Snapshot-verified (57 tables), Keychain "FourthMeridian prod backup B6". Plaintext sha256 `4ab5ed018e4da2fd48d2761fb4e75e3166b1ce9758e415145069f8418e6489be`; ciphertext `39b2eb16d03c19c88634101ca1bdebbb52f482c6e176769c399b45a8a4048000`. File `fm-prod-preB6-2026-11-01T0553Z.sql.enc` |
+| Backup | Snapshot-verified (57 tables), owner's Keychain. Plaintext sha256 `4ab5ed018e4da2fd48d2761fb4e75e3166b1ce9758e415145069f8418e6489be`; ciphertext `39b2eb16d03c19c88634101ca1bdebbb52f482c6e176769c399b45a8a4048000`. File a local encrypted file |
 | Migration | `comms_delivery_ledger` applied, **141**. RLS forced on CommsDelivery and CommsDeliveryDaily. fm_system D/I/S, fm_backup S |
 | Deployment | **dpl_HFaXu7RKroLspcC5h1yzVZjUG3Jh**, crons bound |
 | Independent verification | **Session 2 PASS (complete).** 0 5xx; 0 RATE_LIMIT_UNVERIFIED, freeze or provider-spike lines. **Env report pass 19 / warn 0 / fail 0, with both salts pass.** Platform Ops and Connections render. sol-history-backfill confirmed inert at the 06:30 run (stoppedBecause DISABLED, 0 provider lines) |
@@ -1082,7 +1082,7 @@ Checklist additions:
 | Item | Result |
 |---|---|
 | Release | #214 @ ec54c25 (exact tree), merged as **3b35d09**. Main CI and Trusted health success |
-| Backup | Snapshot-verified (57 tables), Keychain "FourthMeridian prod backup B7". Plaintext sha256 `a434d451c1698a17b5b8ed361cba010295a74634af07ccceb5403bca900d4633`; ciphertext `b0cac0e31bd7ce3c9efff46410944544c1872b54181fe82c2a6513a8f5ddb2ca`. File `fm-prod-preB7-2026-11-01T0611Z.sql.enc` |
+| Backup | Snapshot-verified (57 tables), owner's Keychain. Plaintext sha256 `a434d451c1698a17b5b8ed361cba010295a74634af07ccceb5403bca900d4633`; ciphertext `b0cac0e31bd7ce3c9efff46410944544c1872b54181fe82c2a6513a8f5ddb2ca`. File a local encrypted file |
 | Migrations | 7 and 8 applied, **143**. RLS forced on all 6 new tables. CommsDelivery.mode NOT NULL DEFAULT 'LIVE' |
 | Deployment | **dpl_9PhMLSiKmGXMwmL7rnJbEjH12Sem**, crons bound |
 | Independent verification | **Session 2 PASS (observable).** 0 5xx; **0 email-send log lines**. Dispatch considers 15 jobs (comms-automations registered). comms-automations succeeded as a no-op. CS → Communications renders (Automations read-only, none) |
@@ -1145,7 +1145,7 @@ Checklist additions:
 | Item | Result |
 |---|---|
 | CI #215 @ 0f59435 | test ×2 PASS (dependency audit success in both); audits, drift guard and Trusted health PASS |
-| Backup | Snapshot-verified (57 tables), Keychain "FourthMeridian prod backup B8". Plaintext sha256 `8c08417aa7c9ff7f4591375cfa26b677a175272475e3bad857c5c342ff075205`; ciphertext `fd39edab7c1a9eecda79991fe1da67b0a0cc80279950cdb8d891d4c6fb620180`. File `fm-prod-preB8-2026-11-01T0630Z.sql.enc` |
+| Backup | Snapshot-verified (57 tables), owner's Keychain. Plaintext sha256 `8c08417aa7c9ff7f4591375cfa26b677a175272475e3bad857c5c342ff075205`; ciphertext `fd39edab7c1a9eecda79991fe1da67b0a0cc80279950cdb8d891d4c6fb620180`. File a local encrypted file |
 | Migration | `comms_provider_events` applied, **144**. RLS forced on CommsProviderEvent; `CommsDelivery.deliveredAt` nullable |
 | Merge | ~~Held, B7 STOP~~ → resumed 20:24Z after the B7 PASS. **Revalidated against final main:** release/batch-8 = 0f59435 + `--no-ff` merge of 503bbdf → **95ff61b**. `0f59435..95ff61b` = only the 4 hotfix files, byte-identical (cmp) to `3b35d09..503bbdf`. `503bbdf..95ff61b` = B8's own 81 files (+4757/−287), the same as the reviewed cut. Local wake-deadline-anchor, price-gap and tsc all exit 0. Session 2 re-APPROVED 95ff61b (merge only `--match-head-commit 95ff61b`; migration not rerun; ledger already 144) |
 | CI #215 @ 95ff61b | test ×2 (Typecheck + Dependency audit high+ success), Architecture audits REQUIRED ×2, Public site ×2, drift guard, both Vercel builds green. Preview Deployment-health = the known 401 (app not reached) |
@@ -1186,7 +1186,7 @@ Checklist additions:
 |---|---|
 | Gates | Preview complete (Turnstile fail-closed + valid path; blocklist retest PASS); S2 APPROVED re-cut 9b78674 and the Prod SQL/runner (amended grant + RLS checks); clock ≥ 00:00Z Nov 2 (effective date) |
 | Preflight 00:01:09Z | Tree 145 / ledger 144; tree−ledger = exactly `20261101120000_beta_blocked_identifiers`; ledger−tree = ∅. #216 CI on 9b78674 green (Typecheck, Dependency audit, REQUIRED audits); Deployment health = Preview 401 only |
-| Backup | Verified across 60 non-empty tables in the dump's own snapshot `0000001E-0000D583-1`. Plaintext sha256 `8ffccf7cc7b124541eb114db4dabdcd02ba71cbb48e5596f56f371f4c547efcc` = decrypted (round trip OK, Keychain "FourthMeridian prod backup B9"); ciphertext `8389ea525c3cd58cdb68e9244e3ac93ae3b585f4c2df1a7c75cf7de56f1c1a74`; file `~/FourthMeridian-prod-backups/fm-prod-preB9-2026-11-02T0012Z.sql.enc`; plaintext removed with `rm -P`; retain to 2026-12-01 |
+| Backup | Verified across 60 non-empty tables in the dump's own snapshot `0000001E-0000D583-1`. Plaintext sha256 `8ffccf7cc7b124541eb114db4dabdcd02ba71cbb48e5596f56f371f4c547efcc` = decrypted (round trip OK, owner's Keychain); ciphertext `8389ea525c3cd58cdb68e9244e3ac93ae3b585f4c2df1a7c75cf7de56f1c1a74`; file a local encrypted file; plaintext removed with `rm -P`; retain to 2026-12-01 |
 | Migration | Guard target = backup target. `20261101120000_beta_blocked_identifiers` applied → ledger **145**, 0 rolled back. RLS enabled + forced on both tables, 1 policy each (`fm_system_all`, {fm_system}, ALL). Grants fm_system + fm_backup SELECT + owner only; **no anon / authenticated / PUBLIC / service_role**. 0 / 0 rows |
 | Merge | `--match-head-commit 9b78674` → main **dc76711** (parents f759c82, 9b78674); tree `f759b2e9…` = 9b78674^{tree} (exact) |
 | Deploy | **dpl_GE3DzKwyfXLgiWDUe84H6bPav8nR** READY ~00:13Z Nov 2, app.fourthmeridian.com; crons bound; health ok, overdueJobs 0. Main CI success 41365983422; Trusted health success 41365983470; post-deploy smoke = raw-URL 401 only (app + site). Rollback dpl_9rDG2puR (B8; the schema change is additive, so code rollback is safe) |
@@ -1203,5 +1203,5 @@ Checklist additions:
 | Bot blocklist precheck | denied_suspicious 13, unblocked 13, pending 7, active blocks 0, evidence 0; exactly 1 hzupno id |
 | Backfill (owner's Prod console, fresh GROWTH_REVENUE CONTROL) | Dry run: wouldCreate 13 / candidates 13. Execute: **created 13**, failed 0, batch `e246c93f-8621-40be-adb5-adee677e9073` (13 distinct canonical mailboxes). No emails; 7 pending untouched |
 | Post-check | denied_suspicious 13, **unblocked 0**, pending 7, **active blocks 13**, evidence 0 |
-| hzupno evidence | First attempt as `chrstn` → 403 (role USER; the route requires SYSTEM_ADMIN by design). Owner re-ran it signed in as `sysadmin`: **200**, evidence `…6roeb`, captured 01:19:29Z, reason ABUSE, retainUntil **2029-11-01**. DISABLE_SYSTEM_ADMIN not touched |
+| hzupno evidence | First attempt from the owner's everyday account → 403 (the route requires SYSTEM_ADMIN by design). Owner re-ran it from the separate System Admin account: **200**, evidence `…6roeb`, captured 01:19:29Z, reason ABUSE, retainUntil **2029-11-01**. DISABLE_SYSTEM_ADMIN not touched |
 | Final post-check | denied_suspicious 13, unblocked 0, pending 7, active blocks 13, **evidence 1**. Directive item 6 complete |
