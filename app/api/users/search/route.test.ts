@@ -10,7 +10,7 @@
  * without `&exclude=<victimSpaceId>` and a result that disappears proves that
  * user is an ACTIVE member of a Space the caller has no relationship to. This
  * was the one confirmed live cross-tenant disclosure in
- * docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 1.
+ * docs/architecture/SECURITY_MODEL.md §Policy model (SpaceMember).
  *
  * The door is now `requireSpaceAction(spaceId, "member:invite")` — ADMIN+ and
  * ACTIVE in the named Space, which is exactly the authority the endpoint serves

@@ -288,7 +288,7 @@ export async function transactionCorpusSpan(
    * whether the Space is observable at all; `absence` says which of the two empties
    * this is, and `unavailableReason` is worded to match. A caller may therefore
    * pass a tenant client without the span becoming a false statement about the
-   * Space. See lib/ai/absence.ts and docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 2.
+   * Space. See lib/ai/absence.ts and docs/architecture/SECURITY_MODEL.md §The silent-refusal hazard (Reads).
    */
   client: ReadClient,
   args: {

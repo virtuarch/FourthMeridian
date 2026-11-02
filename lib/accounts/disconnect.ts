@@ -198,7 +198,7 @@ export async function disconnectAccounts(
   // ── PHASE 2 — THE DEPLOYMENT-WIDE REVOKE ──────────────────────────────────
   // Revoke-don't-delete: ShareStatus.REVOKED, in every Space, including the ones
   // the actor cannot see. See lib/accounts/links-everywhere.ts for why this is
-  // the only honest authority for it, and docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md
+  // the only honest authority for it, and docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide
   // for the decision. A shortfall is NOT contention and NOT idempotence: the
   // links were observed eligible one statement earlier, under this very
   // authority, so fewer writes than observations is a defect and raises.

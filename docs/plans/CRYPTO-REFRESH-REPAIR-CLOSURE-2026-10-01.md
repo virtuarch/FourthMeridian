@@ -38,7 +38,7 @@ pushed  e750055..317a30c  v2.6 -> v2.6
 `scripts/audit-registry.ts` · plus two docs.
 
 **Untouched, as instructed** — the five `docs/audits/status-drift/*` files, and
-`docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md` (peer work that appeared
+`docs/architecture/SECURITY_MODEL.md` (§Database-level tenant isolation; the RLS investigation) (peer work that appeared
 mid-session). Every commit used explicit paths. No stash, reset, clean or checkout.
 
 ## 4. The exact RAW_CLOSE latch repair

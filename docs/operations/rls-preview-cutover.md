@@ -10,7 +10,7 @@ What the evidence does **not** show, and this document does not claim: a per-row
 
 *Original header, kept for the record:* prepared, **not executed**. Every step that touches Preview is an OWNER action. Nothing in this document has been run against Preview or Production.
 **Revised:** 2026-10-06 (Preview preflight read; owner-verified Plaid provenance; pool decision). Previously 2026-10-04, RLS-PREP (strict-mode pooler identity, deployed authority verification, foreground owner-path conversion). Supersedes the RLS-5 version, whose migration counts, role-URL instructions and verification step were no longer true.
-**Authority:** `docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md` · the ten migrations in §1 · `lib/db/strict-mode.ts` · `lib/platform/db-authority.ts`.
+**Authority:** [`docs/architecture/SECURITY_MODEL.md` §Database-level tenant isolation](../architecture/SECURITY_MODEL.md#database-level-tenant-isolation-row-level-security) · the ten migrations in §1 · `lib/db/strict-mode.ts` · `lib/platform/db-authority.ts`.
 
 **No secret appears in this document, and none should ever be pasted into a chat, a commit, or an issue.** The flow is arranged so that the only place a role password exists is your terminal and the two systems that need it.
 

@@ -24,7 +24,7 @@
  * The project's boundary is fixed and recorded:
  *
  *     RLS = TENANCY ISOLATION.  APPLICATION = PRODUCT VISIBILITY / PERMISSIONS.
- *     (docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §38 Q1)
+ *     (docs/architecture/SECURITY_MODEL.md §Threat model and the rule — RLS enforces tenancy only)
  *
  * Both accounts are legitimately inside the actor's tenancy — that is what a
  * shared Space MEANS. Teaching `fm_account_visible()` about `visibilityLevel`
