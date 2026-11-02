@@ -29,6 +29,8 @@ export interface RecentlyJoinedRow {
   imports: Record<ImportStatus, number>;
   /** Live connections: non-removed bank items + non-revoked wallets. */
   connections: number;
+  /** Non-revoked wallets (the dot tracks banks only; a wallet-only customer reads "wallet linked"). */
+  wallets: number;
 }
 
 export interface RecentlyJoined {
@@ -81,6 +83,7 @@ export function buildRecentlyJoinedRows(args: {
       importHealth: importHealthDot(verdicts),
       imports: tallyImportStatuses(verdicts),
       connections: verdicts.filter((v) => v.status !== "removed").length + (args.facts.walletCount.get(u.id) ?? 0),
+      wallets: args.facts.walletCount.get(u.id) ?? 0,
     };
   });
 
