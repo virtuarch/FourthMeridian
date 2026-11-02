@@ -61,9 +61,28 @@ name: CI
 # for six hours. Action tags stay on their current majors (v4/v4); Dependabot
 # (.github/dependabot.yml) proposes the bumps.
 
+# ── triggers (CI-COST W1/W3, 2026-11-02) ─────────────────────────────────────
+# `push` runs only on the non-strict integration branches. A feature or
+# release branch is tested by its `pull_request` run, which tests the merge
+# ref and reports every required check on the PR head SHA. With `push` on
+# every branch too, each push to a PR branch ran this whole gate twice: the
+# two runs use different refs (refs/heads/x vs refs/pull/N/merge), so the
+# concurrency group below never cancelled one for the other. That was 465
+# duplicate runs and 4,558 billed minutes over Oct 3 – Nov 2.
+#   develop / v2.6: rulesets do NOT require an up-to-date branch, so the
+#                   post-merge push run is the only test of the real merge
+#                   result. Kept.
+#   main:           the ruleset requires an up-to-date branch, so the
+#                   promotion PR's run already tested the exact tree that
+#                   lands. Release evidence is "PR CI green at the merged
+#                   head + main^{tree} == PR head^{tree}", plus Trusted
+#                   deployment health on the main push
+#                   (docs/operations/release-checklist.md).
+# A branch with no PR gets no automatic run: open a (draft) PR, or start one
+# by hand (workflow_dispatch, kept below).
 on:
   push:
-    branches: ["**"]
+    branches: ["develop", "v2.6"]  # v2.6: soak fallback, kept until the owner retires it
   pull_request:
   # Manual re-run. GitHub dropped the push event for 4e55f3b entirely — the
   # commit landed on the branch, Vercel's check ran, and no CI run was ever

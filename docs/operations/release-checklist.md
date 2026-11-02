@@ -124,7 +124,7 @@ Verify:
 Priority: High · Status: ⚠️ Needs work · Owner: OPS-owner
 Verify:
 - `npx prisma migrate status` shows no drift; schema.prisma matches the latest migration.
-- **Read-only drift check against the target, before promotion (OWNER step, TEST-006).** A deploy ships code, never schema (`build` = `prisma generate && next build`), so the owner runs `npm run db:drift` (`scripts/check-schema-drift.ts`: one `SELECT` on `_prisma_migrations`, writes nothing, exit 1 on any pending / unfinished / unknown migration) with the environment file pointed at the **target** database — Preview before a Preview check, Production before `vercel promote` / the `main` push — and records the output line in the release ticket. Red here means the schema is behind the candidate: apply with `npm run db:migrate:safe` (guard → backup → `migrate deploy`) first, never promote over it. After promotion the `post-deploy-smoke` workflow ("Deployment health") probes `/api/health` on the per-deployment URL for status (identity by that immutable URL; the route publishes no commit since OPS-014) and fails as UNVERIFIED when Vercel Deployment Protection answers instead of the app; it does not check schema, which is why this step is manual and precedes it.
+- **Read-only drift check against the target, before promotion (OWNER step, TEST-006).** A deploy ships code, never schema (`build` = `prisma generate && next build`), so the owner runs `npm run db:drift` (`scripts/check-schema-drift.ts`: one `SELECT` on `_prisma_migrations`, writes nothing, exit 1 on any pending / unfinished / unknown migration) with the environment file pointed at the **target** database — Preview before a Preview check, Production before `vercel promote` / the `main` push — and records the output line in the release ticket. Red here means the schema is behind the candidate: apply with `npm run db:migrate:safe` (guard → backup → `migrate deploy`) first, never promote over it. After promotion, the `post-deploy-smoke` workflow ("Deployment health") runs for the **Production** deployment only. It probes the public domains (`https://app.fourthmeridian.com/api/health` and `https://fourthmeridian.com/`), because the per-deployment URL is behind Deployment Protection. It fails as UNVERIFIED if protection answers on a public domain, and as UNHEALTHY on anything but a healthy 200. An alias can't prove build identity (the route publishes no commit since OPS-014), so identity comes from the CI evidence below. It doesn't check schema, which is why this step is manual and comes first.
 
 ### □ No orphaned relations
 Priority: High · Status: ⚠️ Needs work · Owner: OPS-owner
@@ -154,6 +154,17 @@ Verify:
 Priority: High · Status: ⚠️ Needs work · Owner: OPS-owner
 Verify:
 - `npm run lint` (eslint) exits 0; no new suppressions.
+
+### □ CI evidence for a promotion to `main` (CI-COST W1/W3, 2026-11-02)
+
+CI no longer runs on a push to `main`. The `main` ruleset requires an up-to-date branch, so the promotion PR's `pull_request` run already tested the exact tree that lands. Record, for every promotion:
+
+- **PR CI green at the exact merged head:** `gh pr checks <PR>` shows `test`, `Architecture audits`, `Public site (zero-authority boundary)` and `status-drift-guard` passing on the head SHA that was merged (merge with `--match-head-commit <sha>`). Each job appears **once**: the duplicate push run on the release branch is gone.
+- **Tree equality:** `git rev-parse origin/main^{tree}` equals `git rev-parse <PR head>^{tree}` (merge commit vs PR head; the merge adds no content).
+- **Trusted deployment health** on the `main` push is green (unchanged), plus the Production **Deployment health** smoke on the public domains.
+- A re-run of CI on `main` is still possible by hand: Actions → CI → *Run workflow* (`workflow_dispatch`).
+
+`develop` and `v2.6` still run CI on every push, because their rulesets don't require an up-to-date branch, so the post-merge run is the only test of the real merge result.
 
 ### □ Unit tests passing
 Priority: Critical · Status: ⚠️ Needs work · Owner: OPS-owner

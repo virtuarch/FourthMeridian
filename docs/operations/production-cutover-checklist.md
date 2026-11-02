@@ -56,7 +56,7 @@ Candidate SHA: `________________` (filled at freeze) · Freeze declared: `______
 | E2 | Plaid Sandbox provider acceptance on Preview on the candidate (cutover §8.1): link, sync, refresh, webhook, disconnect | `plaid-sandbox-lane-2026-10-06.md` re-run record on the candidate SHA | OWNER | ☐ |
 | E3 | **External monitor** polling `/api/health` on the apex with `lastEvaluatedAt`, alerting on non-200 / `degraded` (G3) | monitor dashboard record (provider, interval, contact) | OWNER | ☐ |
 | E4 | **Alert delivery verified**: a forced `evaluate-alerts` Run Now on Production delivers `sent` to `PLATFORM_ALERTS_EMAIL` (G3) | the delivered mail + the alert ledger row | OWNER | ☐ |
-| E5 | Post-deploy smoke workflow present and its last run on a Preview deployment read (TEST-006) | `gh run list --workflow post-deploy-smoke.yml` | ENG | ☐ |
+| E5 | Post-deploy smoke workflow present; it runs for **Production** deployments only and probes the public domains (CI-COST W2, 2026-11-02). Read its last Production run. Preview health = Trusted deployment health on develop (TEST-006) | `gh run list --workflow post-deploy-smoke.yml` · `gh run list --workflow trusted-deployment-health.yml --branch develop` | ENG | ☐ |
 | E6 | Sentry receiving from Preview on the candidate (one deliberate capture) | event id attached | ENG/OWNER | ☐ |
 
 ## F. People

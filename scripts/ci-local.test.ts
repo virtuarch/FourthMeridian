@@ -68,6 +68,15 @@ console.log("CI hygiene (TEST-007 / TEST-012): least privilege, no runaway jobs,
   const uses = [...config.matchAll(/uses:\s*([^\s@]+)@([^\s]+)/g)].map((m) => `${m[1]}@${m[2]}`);
   check("every action is pinned to a major tag (v4 today), none floating on a branch",
     uses.length > 0 && uses.every((u) => /@v\d+$/.test(u)), JSON.stringify(uses));
+  // CI-COST W1/W3 (2026-11-02): push only on the non-strict integration
+  // branches; every PR (feature, release, promotion) is tested by its
+  // pull_request run; a manual run stays available.
+  const onCi = config.slice(config.indexOf("\non:"), config.indexOf("\npermissions:"));
+  check("ci.yml: push ONLY to develop/v2.6, plus pull_request and workflow_dispatch",
+    /push:\n\s+branches: \["develop", "v2\.6"\]/.test(onCi) && /\n  pull_request:/.test(onCi)
+      && /\n  workflow_dispatch:/.test(onCi) && !/"\*\*"|\bmain\b/.test(onCi), onCi);
+  check("ci.yml: no workflow-level paths filter (a required check must never sit pending)",
+    !/paths(-ignore)?:/.test(onCi), onCi);
   const drift = readFileSync(".github/workflows/status-drift-guard.yml", "utf8");
   check("status-drift-guard: timeout-minutes and contents: read", /timeout-minutes:\s*\d+/.test(drift) && /permissions:\n  contents: read/.test(drift));
   const smoke = readFileSync(".github/workflows/post-deploy-smoke.yml", "utf8");

@@ -90,6 +90,37 @@ export function classifyProbe({ kind, status, headers = {}, body = "", deployedS
   };
 }
 
+/**
+ * CI-COST W2 (2026-11-02). The workflow now runs for Production deployments
+ * only (Preview health is verified through protection by
+ * trusted-deployment-health.yml on develop/main). A Production deployment's
+ * own *.vercel.app URL sits behind Vercel Deployment Protection too: every
+ * B8/B9 run answered 401 → UNVERIFIED, so the check was red on every release
+ * and taught everyone to ignore it. Production is probed at its PUBLIC
+ * custom domain instead, i.e. what users reach. The verdict rules are
+ * unchanged: protection answering on a public domain is UNVERIFIED (red), and
+ * anything but a healthy 200 is UNHEALTHY (red).
+ */
+export const PRODUCTION_PUBLIC_BASE = Object.freeze({
+  app: "https://app.fourthmeridian.com",
+  site: "https://fourthmeridian.com",
+});
+
+/** True for Vercel's Production environments ("Production – fintracker1", …). */
+export function isProduction(environment) {
+  return /^Production\b/.test(environment ?? "");
+}
+
+/**
+ * The base URL to probe: the public custom domain for Production, otherwise
+ * the deployment's own URL (local verification of a Preview, with a bypass).
+ */
+export function probeBaseFor(environment, deploymentUrl) {
+  return isProduction(environment)
+    ? PRODUCTION_PUBLIC_BASE[targetFor(environment).kind]
+    : (deploymentUrl ?? "").replace(/\/$/, "");
+}
+
 /** The bypass secret for this deployment's project, or "" when none is configured. */
 export function bypassFor(environment, env) {
   const name = targetFor(environment).kind === "site"
@@ -139,8 +170,8 @@ export async function probeDeployment({ base, environment, deployedSha, bypass, 
 }
 
 async function main() {
-  const base = (process.env.DEPLOYMENT_URL ?? "").replace(/\/$/, "");
   const environment = process.env.ENVIRONMENT ?? "";
+  const base = probeBaseFor(environment, process.env.DEPLOYMENT_URL);
   const deployedSha = process.env.DEPLOYED_SHA ?? "";
   // This entry point is the deployment_status workflow, which holds NO secret:
   // it runs the workflow file from the deployed commit (any branch can edit it)
@@ -151,6 +182,7 @@ async function main() {
   // the variables when a caller supplies them (local verification).
   const bypass = bypassFor(environment, process.env);
   if (!base) { console.log("::error::deployment_status carried no environment_url/target_url — nothing to probe"); return 1; }
+  if (isProduction(environment)) console.log(`production: probing the public domain ${base} (the deployment URL ${process.env.DEPLOYMENT_URL ?? ""} is behind protection)`);
   const result = await probeDeployment({ base, environment, deployedSha, bypass });
   const url = result.url;
 

@@ -30,8 +30,9 @@ name: Post-deploy smoke
 # Secrets: NONE. deployment_status runs the workflow file from the deployed
 # commit, so a repository secret here would be readable by any branch that
 # edits this file; and Vercel creates each GitHub Deployment with ref = the
-# commit SHA, so its branch is GitHub's inference rather than ours to rely on. Protected Previews are therefore UNVERIFIED (red) in
-# this workflow by design; Production is public and is verified for real.
+# commit SHA, so its branch is GitHub's inference rather than ours to rely on.
+# It therefore runs for Production only, probing the public custom domain
+# (the per-deployment URL is protected for Production too).
 # Trusted verification through protection: trusted-deployment-health.yml
 # (push to develop/main, `vercel-probe` environment).
 
@@ -58,7 +59,15 @@ jobs:
     # `environment: vercel-probe`, so GitHub records a deployment of its own
     # whose status URL is the Actions run page; probing that answered 404 and
     # read as UNHEALTHY on the first v2.6 push (2026-10-22, run 39846621920).
-    if: github.event.deployment_status.state == 'success' && github.event.deployment.creator.login == 'vercel[bot]'
+    #
+    # Production only (CI-COST W2, 2026-11-02). Preview deployments are behind
+    # Deployment Protection and this workflow holds no secret, so every Preview
+    # run was UNVERIFIED (red) by design: 1,942 runs and ~980 billed minutes over
+    # Oct 3 – Nov 2, with 125 of 126 executed runs red. Preview health is
+    # verified through protection by trusted-deployment-health.yml on every
+    # develop/main push. Production probes its public domain
+    # (scripts/post-deploy-smoke.mjs → PRODUCTION_PUBLIC_BASE).
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.creator.login == 'vercel[bot]' && startsWith(github.event.deployment.environment, 'Production')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
