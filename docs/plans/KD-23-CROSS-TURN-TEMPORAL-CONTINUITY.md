@@ -1,5 +1,7 @@
 # KD-23 — Cross-turn temporal continuity
 
+> **Owner:** Owner (ticket only) · writer: Session 1 · **Status:** DRAFT · **Updated:** 2026-11-02 · **PRs:** —
+
 **Status:** OPEN — NOT STARTED. Ticket only, by owner ruling (2026-10-14): *create the ticket, do not implement.*
 **Successor to:** KD-16 (SUPERSEDED 2026-10-14; see [`/STATUS.md`](../../STATUS.md) §10 for the history).
 **Surface:** `POST /api/ai/chat` — the conversation runtime under `lib/ai/conversation/`.

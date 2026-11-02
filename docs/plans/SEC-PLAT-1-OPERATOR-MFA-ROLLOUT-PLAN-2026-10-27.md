@@ -1,5 +1,8 @@
 # SEC-PLAT-1: mandatory operator TOTP, rollout and recovery plan
 
+> **Owner:** Session 1 · **Status:** BLOCKED · **Updated:** 2026-11-02 · **PRs:** #78
+> Current state (2026-11-02): prepared. Operator TOTP is enforced on Preview only (owner ruling); Production activation awaits the owner.
+
 **Status:** PREPARED, NOT ACTIVATED (owner, 2026-10-27: request-level enforcement approved; #78 merge/activation NOT yet authorized). The branch `sec/platform-operator-mfa` will be a draft PR. Merging it to `develop` activates the policy on Preview, and promotion activates it on Production. **Both need explicit owner rollout approval.**
 **Date:** 2026-10-27 · **Author:** Claude 2 · **Ruling:** P-2. Every ACTIVE Platform access holder must have TOTP, regardless of level.
 
