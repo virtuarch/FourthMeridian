@@ -43,7 +43,7 @@
 performed during implementation, because the repair authorization restricted live
 DB access to READ ONLY. Both needed explicit go-ahead — given and executed above.**
 
-Authority: `docs/plans/CRYPTO-REFRESH-INCIDENT-2026-10-01.md`
+Authority: `docs/archive/evidence/incidents/CRYPTO-REFRESH-INCIDENT-2026-10-01.md`
 Code: the `CRYPTO-LATCH-*` / `CRYPTO-FRESHNESS-1` / `CRYPTO-COPY-1` /
 `CRYPTO-PARALLEL-1` commits on `v2.6`.
 

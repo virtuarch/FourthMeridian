@@ -645,7 +645,7 @@ All four lines come from one server-built object, `ConnectionIntelligenceStatus`
 | **"Hasn't updated since Sep 21"** | `sourceHealth.lastUpdatedAt` = **`minDate([oldest FinancialAccount.lastUpdated, Connection.lastSyncedAt])`** — `space-data-health.core.ts:212`; state from `walletState` `:172-180`; overdue vs the WALLET 6 h cadence (`refresh-policy.core.ts:56,180`) | both below | **Correct, for a surprising reason.** It is the **OLDER** of the two clocks. `Connection.lastSyncedAt` moved to today; `FinancialAccount.lastUpdated` is still Sep 21; `min` = Sep 21 ⇒ `OUT_OF_DATE`. |
 | **"Transactions: Updated today"** | `intelligence.lastSyncedAt` (`ConnectionCard.tsx:492`) ← `SyncConnection.lastSyncedAt` ← **`Connection.lastSyncedAt`** (`lib/sync/wallet-connections.ts:39,72`) | `setWalletConnectionHealth(ok:true)` → `{status:ACTIVE, errorCode:null, lastSyncedAt:new Date()}` — `health-transitions.ts:164-166`, reached from `btc-sync.ts:992` | **WRONG — defect D.** `btc-sync.ts:980-1000` stamps the connection *after* the import at `:952` and **never reads `transactionImport.status`**. The field means "a balance sync succeeded" but is labelled `Transactions`. Its own doc (`intelligence.ts:72`) says "last successful transaction acquisition" — true for Plaid, false for a wallet. |
 | **"Financial profile: Built today"** | `intelligence.lastReconstructedAt` ← `historySyncedAt` ← for a WALLET with no audit anchor, **`Connection.lastSyncedAt` again** (`space-data.ts:315-321`) | same writer | **WRONG — same root cause.** Nothing was rebuilt: `outcomeRevalued` was false, so the route skipped snapshot *and* wealth-history regen (`route.ts:96-149`). For a ready wallet, "Financial profile: Built" and "Transactions: Updated" are **literally the same timestamp**. |
-| **"Balances: Updated on Sep 21"** | `intelligence.balancesUpdatedAt` = **oldest `FinancialAccount.lastUpdated`** (`space-data.ts:270-279, 303-313`) | `btc-sync.ts:924-946` | **Correct-by-design — defect B.** `:938` writes the pair *and the clock* only when `balanceUsd !== null`. Verified live: `Cold Wallet BTC.lastUpdated = 2026-09-21 15:39:29`, `nativeBalance = 0.24060252` unchanged. The fresh quantity went to the spine (`PositionObservation` dated 2026-10-01). |
+| **"Balances: Updated on Sep 21"** | `intelligence.balancesUpdatedAt` = **oldest `FinancialAccount.lastUpdated`** (`space-data.ts:270-279, 303-313`) | `btc-sync.ts:924-946` | **Correct-by-design — defect B.** `:938` writes the pair *and the clock* only when `balanceUsd !== null`. Verified live: `Cold Wallet BTC.lastUpdated = 2026-09-21 15:39:29`, `nativeBalance = <redacted>` unchanged. The fresh quantity went to the spine (`PositionObservation` dated 2026-10-01). |
 
 **So the brief's options resolve as: A + C + D simultaneously, plus B.**
 
@@ -756,7 +756,7 @@ Live state fingerprint (read-only, taken before any conclusion):
 FinancialAccount (wallets, not deleted)
   cmrrkzh0l006  BTC  Jane BTC Wallet   0.02        synced  2026-06-09 10:05:00
   cmrrkzh3j00n  BTC  John BTC Wallet   0.038       synced  2026-06-09 10:10:00
-  cmrrmyclf09t  BTC  Cold Wallet BTC   0.24060252  synced  2026-09-21 15:39:29.053  ← frozen
+  cmrrmyclf09t  BTC  Cold Wallet BTC   <redacted>  synced  2026-09-21 15:39:29.053  ← frozen
   cmu2z54c2000  ETH  Ethereum wallet   0           synced  2026-10-01 17:18:34.168
   cmtafnm9w005  SOL  Solana Wallet     0           synced  2026-10-01 17:17:04.078
 
