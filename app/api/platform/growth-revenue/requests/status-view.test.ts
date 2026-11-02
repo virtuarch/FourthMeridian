@@ -275,6 +275,25 @@ async function main() {
     setEnv({});
   }
 
+  t.section("8. PB-6b — a failed blocklist read never fails the list or the history: state UNKNOWN + a note");
+  {
+    await world();
+    const p = seedReq("pending@example.test", "PENDING", 3);
+    const d = seedReq("denied@example.test", "DENIED", 2);
+    // The table missing (Preview before its migration) or a transient error.
+    fake.on("BetaBlockedIdentifier", "findMany", () => { throw Object.assign(new Error('relation "BetaBlockedIdentifier" does not exist'), { name: "PrismaClientKnownRequestError" }); });
+    const c = await cookie(READER);
+    const pend = await list(c, "view=PENDING");
+    t.check("the Pending view still answers 200 with its rows", pend.status === 200 && ids(pend.body).join() === p, pend.status);
+    const all = await list(c, "view=ALL");
+    const rows = (all.body.rows ?? []) as { block: { state: string } }[];
+    t.check("every row's block state is UNKNOWN — never NOT_BLOCKED", all.status === 200 && rows.length === 2 && rows.every((r) => r.block.state === "UNKNOWN"), rows);
+    t.check("…with the note 'Block status is unavailable right now.'", Array.isArray(all.body.notes) && (all.body.notes as string[]).includes("Block status is unavailable right now."), all.body.notes);
+    const h = await history(c, d);
+    t.check("the history GET still answers 200, block UNKNOWN", h.status === 200 && (h.body.block as { state?: string })?.state === "UNKNOWN", h.status);
+    t.check("the failure leaks no driver message into the response", !JSON.stringify(all.body).includes("does not exist") && !JSON.stringify(h.body).includes("does not exist"));
+  }
+
   t.done();
 }
 

@@ -139,6 +139,25 @@ export async function loadSourceRequestBlocks(
 }
 
 /**
+ * PB-6b — loadSourceRequestBlocks that NEVER throws: a failed read (the table
+ * missing before its migration, a transient error) marks every requested id
+ * UNKNOWN — never NOT_BLOCKED — and reports `available: false`, so a reader
+ * page still answers. Logs the error class only.
+ */
+export async function loadSourceRequestBlockStates(
+  client: BlocklistReader, requestIds: readonly string[], opts: { now?: Date } = {},
+): Promise<{ byId: Map<string, BetaRequestBlockState>; available: boolean }> {
+  try {
+    const found = await loadSourceRequestBlocks(client, requestIds, opts);
+    const byId = new Map<string, BetaRequestBlockState>(requestIds.map((id) => [id, found.get(id) ?? { state: "NOT_BLOCKED" }]));
+    return { byId, available: true };
+  } catch (err) {
+    console.error("[beta-blocklist] block state read failed:", err instanceof Error ? err.name : "error");
+    return { byId: new Map(requestIds.map((id) => [id, { state: "UNKNOWN" }] as const)), available: false };
+  }
+}
+
+/**
  * The public intake's question (app/api/access-request): is this mailbox
  * blocked? Read on fm_system (the intake's own role holds nothing on the
  * table). Only a positive BLOCKED drops the submission: SKIPPED / UNAVAILABLE /

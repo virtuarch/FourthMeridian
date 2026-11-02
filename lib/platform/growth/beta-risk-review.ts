@@ -42,7 +42,7 @@ import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { assertOperatorNoteSafe, recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import { operatorLabels, type BetaRiskDb } from "./beta-risk";
-import { blocklistAvailability, loadSourceRequestBlocks, removeBlocksForSourceRequest, upsertIdentifierBlock, lockMailbox } from "./beta-blocklist";
+import { blocklistAvailability, loadSourceRequestBlockStates, removeBlocksForSourceRequest, upsertIdentifierBlock, lockMailbox } from "./beta-blocklist";
 import type { EnvSource } from "./beta-blocklist-core";
 import {
   BETA_RISK_REVIEW_STATUSES,
@@ -159,7 +159,8 @@ export async function recordBetaRiskReview(
 /**
  * A request's verdict history, newest first, or null when the request does not
  * exist. PB-6: with the request's current status / decision instant and whether
- * it currently causes a block (loadSourceRequestBlocks — identity-free).
+ * it currently causes a block (loadSourceRequestBlockStates — identity-free; a
+ * failed blocklist read is UNKNOWN, never NOT_BLOCKED, and never fails the history).
  */
 export async function loadBetaRiskReviewHistory(
   requestId: string,
@@ -168,7 +169,7 @@ export async function loadBetaRiskReviewHistory(
   const client = deps.client ?? systemDb;
   const request = await client.betaAccessRequest.findUnique({ where: { id: requestId }, select: { id: true, status: true, decidedAt: true } });
   if (!request) return null;
-  const blocks = await loadSourceRequestBlocks(client, [requestId], deps.now ? { now: deps.now } : {});
+  const blocks = await loadSourceRequestBlockStates(client, [requestId], deps.now ? { now: deps.now } : {});
   const rows = await client.betaAccessRequestReview.findMany({
     where: { requestId },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -184,7 +185,7 @@ export async function loadBetaRiskReviewHistory(
       status: request.status as BetaRequestStatusValue, // the Prisma enum IS BETA_REQUEST_STATUSES
       decidedAt: request.decidedAt?.toISOString() ?? null,
     },
-    block: blocks.get(requestId) ?? { state: "NOT_BLOCKED" },
+    block: blocks.byId.get(requestId) ?? { state: "UNKNOWN" },
     blocklist: blocklistAvailability(deps.env),
     capped,
     reviews: kept.filter((r) => isBetaRiskReviewStatus(r.status)).map((r) => ({

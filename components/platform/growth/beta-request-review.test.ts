@@ -126,6 +126,13 @@ void (async () => {
     check("DENIED, not blocked: Block address", reviewActions(true, "DENIED", NB).includes("blockAddress") && !reviewActions(true, "DENIED", NB).includes("clearBlock"));
     check("DENIED, blocked: Clear block", reviewActions(true, "DENIED", B).includes("clearBlock") && !reviewActions(true, "DENIED", B).includes("blockAddress"));
     check("no Deny outside PENDING", !reviewActions(true, "APPROVED", NB).includes("deny") && !reviewActions(true, "DENIED", NB).includes("denyAndBlock"));
+    const U = { state: "UNKNOWN" } as const;
+    check("PB-6b: UNKNOWN reads 'Block status is unavailable right now.' — never 'Not blocked'",
+      (["ENFORCED", "NOT_CONFIGURED", "UNAVAILABLE"] as const).every((a) => blockStateText(U, a) === "Block status is unavailable right now." && !/not blocked/i.test(blockStateText(U, a))));
+    check("PB-6b: DENIED + UNKNOWN offers BOTH Block address and Clear block", reviewActions(true, "DENIED", U).includes("blockAddress") && reviewActions(true, "DENIED", U).includes("clearBlock"));
+    check("PB-6b: READ holder still gets nothing when UNKNOWN", reviewActions(false, "DENIED", U).length === 0);
+    check("PB-6b: verdict effects say the state could not be read, never 'no active block' / 'The address is already blocked'",
+      (["SUSPICIOUS", "LEGITIMATE", "UNREVIEWED"] as const).every((v) => { const e = verdictEffect(v, "DENIED", U); return /could not be read/.test(e) && !/no active block|The address is already blocked/.test(e); }));
     check("blocked state text (no HMAC / address)", blockStateText(B, "ENFORCED") === "Blocked by this request — expires 2028-11-01"
       && /not configured/.test(blockStateText(NB, "NOT_CONFIGURED")) && /unavailable/.test(blockStateText(NB, "UNAVAILABLE")) && blockStateText(NB, "ENFORCED") === "Not blocked by this request");
     check("Deny copy says it does not block; Deny and block copy says future requests are silently dropped",

@@ -64,10 +64,18 @@ export type BetaRequestStatusValue = (typeof BETA_REQUEST_STATUSES)[number];
  * block caused by a DIFFERENT request for an alias of the same mailbox is not
  * this request's block and reads NOT_BLOCKED here (the Blocked identifiers
  * console is where every block is listed).
+ *
+ * UNKNOWN — the blocklist read failed (the table missing before its migration,
+ * a transient error). Never shown as "not blocked": the page still answers,
+ * with BLOCK_STATUS_UNAVAILABLE_NOTE.
  */
 export type BetaRequestBlockState =
   | { state: "BLOCKED"; since: string; expiresAt: string }
-  | { state: "NOT_BLOCKED" };
+  | { state: "NOT_BLOCKED" }
+  | { state: "UNKNOWN" };
+
+/** The note (list) / line (panel) when the block state could not be read. */
+export const BLOCK_STATUS_UNAVAILABLE_NOTE = "Block status is unavailable right now.";
 
 /**
  * ENFORCED — a usable key: SUSPICIOUS denials block. NOT_CONFIGURED — outside

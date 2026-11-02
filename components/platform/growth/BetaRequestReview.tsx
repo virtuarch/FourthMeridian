@@ -265,7 +265,7 @@ export function BetaRequestReviewSection({ requestId, canWrite, onChanged }: {
           busy={busy} confirmDisabled={chosen === null} onConfirm={confirm} onClose={close} />
       )}
       {dialog?.kind === "clearBlock" && (
-        <ConfirmDialog icon={ShieldOff} title="Clear this block?"
+        <ConfirmDialog icon={ShieldOff} title={hist.block.state === "UNKNOWN" ? "Clear any block this request caused?" : "Clear this block?"}
           message={<>{verdictEffect(clearTo, status, hist.block)} The request stays denied.
             <span className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Clear as">
               {(["LEGITIMATE", "UNREVIEWED"] as const).map((s) => (
@@ -360,6 +360,7 @@ export function BetaRequestBrowser({ canWrite, onChanged }: { canWrite: boolean;
                 <span className="flex shrink-0 items-center gap-2">
                   {r.review && <ToneBadge word={VERDICT_LABEL[r.review.status]} tone={VERDICT_TONE[r.review.status]} />}
                   {r.block.state === "BLOCKED" && <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--accent-negative)]" data-row-blocked>Blocked</span>}
+                  {r.block.state === "UNKNOWN" && <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]" title="Block status is unavailable right now." data-row-block-unknown>Block ?</span>}
                   <ChevronRight size={12} aria-hidden className="text-[var(--text-faint)]" />
                 </span>
               </button>
