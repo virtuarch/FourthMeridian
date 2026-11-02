@@ -62,7 +62,7 @@
  "lib/investments/instrument-resolver-import.ts": "0d2629dda9134349ddc5c13e24801dbd8782bd4f529a54bfddadb7a6d374f74d",
  "lib/investments/instrument-resolver.ts": "948408d14ef37afe33fc2cf189f51602be5db00982da190c446de9c8317d7c9a",
  "lib/investments/investment-accounts.ts": "dc9eec0a417aba7784772f14f8fc6d245f67a9a7c483710859ded4353508102b",
- "lib/investments/investment-event-ingest.ts": "c5cb4f5e49ae0015025d20979e309e529b002d3e0db7eb219171f9bf478bf6a6",
+ "lib/investments/investment-event-ingest.ts": "3fabd51bd6ccf6fd88ae68ee65d2584c16e68d276a03aa25a93f53e51bce3fe0",
  "lib/investments/investment-flows-core.ts": "82e8c40e5ad44df56120e0f1a4543f738c907091b795df46f8f88f22d3d6cfca",
  "lib/investments/investment-import-commit.ts": "e8f6480df9e294e392300c123288ddf779d560ba2996972f53a84bf33f66a201",
  "lib/investments/investment-import-history.ts": "7408186be323d3bc273d20085acf30c93e6b0f65d17585881d044c9390f64a3f",

@@ -30,6 +30,17 @@ import { systemDb } from "@/lib/db";
 import type { LedgerWriteObserver } from "@/lib/monitoring/capture";
 import type { SyncIssueKind, Prisma } from "@prisma/client";
 import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
+import { getProviderCallContext } from "@/lib/plaid/provider-call-context";
+
+/**
+ * PB-1 S1 — the run id of the refresh execution in flight on this async stack,
+ * or null: outside any execution, when the door has no run id (a test fake), or
+ * once its completion write has begun (closed).
+ */
+export function ambientRunId(): string | null {
+  const ledger = getProviderCallContext()?.ledger;
+  return ledger && ledger.closed !== true && typeof ledger.runId === "string" ? ledger.runId : null;
+}
 
 export interface SyncIssueInput {
   kind:                SyncIssueKind;
@@ -181,7 +192,19 @@ export async function recordSyncIssue(
   // `detail.runId` is forwarded as a CORRELATOR, not a relation — the authority
   // looks it up and stores an FK only when a matching execution exists.
   const detailObj = (input.detail ?? {}) as Record<string, unknown>;
-  const runId = typeof detailObj.runId === "string" ? detailObj.runId : null;
+  // PB-1 S1 — AMBIENT CORRELATION. A producer deep in a refresh (investment
+  // ingest, wallet sync) calls this facade without a run id, so its incident
+  // never named the operation that failed. When none is given, adopt the
+  // execution in flight on THIS async stack — only while it is still open, so a
+  // late fire-and-forget observation can never stamp a finished execution, and
+  // never another stack's (AsyncLocalStorage is per stack). An explicit
+  // `detail.runId` (the ledger door's own path) always wins, so this cannot
+  // recurse through `ledger.recordIncident`.
+  const explicitRunId = typeof detailObj.runId === "string" ? detailObj.runId : null;
+  const runId = explicitRunId ?? ambientRunId();
+  const detail = runId && !explicitRunId
+    ? ({ ...detailObj, runId } as Prisma.InputJsonValue)
+    : input.detail;
   await recordIncidentObservation(
     {
       kind:               input.kind,
@@ -191,7 +214,7 @@ export async function recordSyncIssue(
       plaidTransactionId: input.plaidTransactionId ?? null,
       plaidAccountId:     input.plaidAccountId ?? null,
       runId,
-      detail:             input.detail,
+      detail,
     },
     client,
     deps.getExecutionIdByRunId,

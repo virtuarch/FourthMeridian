@@ -75,6 +75,9 @@ type _SlotApiKeys = Expect<Equal<
   // header, no meta line) and `fillCompactRail` (four equal columns at 375 px).
   // Platform-only: customer Spaces never pass them (RENDERED baseline unchanged).
   | "titleChip" | "fillCompactRail"
+  // PB-3 — `hideLoneRail`: a Platform Space renders no single-destination rail.
+  // Opt-in; customer Spaces never pass it, so their rail is unchanged.
+  | "hideLoneRail"
 >>;
 // v2.7 R1 — `compactViewSelector` moved to PerspectiveShell's controls row and the
 // v2.7 P0 `compactTimeSlot` portal slot is deleted (one TimelineLens, in flow).

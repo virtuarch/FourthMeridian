@@ -57,6 +57,23 @@ console.log("identity rules");
   check("ITEM_SELECT carries no owner", !/userId/.test(facts.slice(facts.indexOf("const ITEM_SELECT"), facts.indexOf("} as const"))));
 }
 
+console.log("CustomEvent hand-offs do not collide (PB-4 filter vs PB-7 open-profile)");
+{
+  const open = strip("components/platform/leads/cs-open-customer.ts");
+  const filter = strip("components/platform/leads/cs-attention-link.ts");
+  const openName = /CS_OPEN_CUSTOMER_EVENT\s*=\s*"([^"]+)"/.exec(open)?.[1];
+  const filterName = /CS_ATTENTION_FILTER_EVENT\s*=\s*"([^"]+)"/.exec(filter)?.[1];
+  check("two distinct event names", !!openName && !!filterName && openName !== filterName, `${openName} / ${filterName}`);
+  const w = strip("components/platform/widgets/CsCustomersWidget.tsx");
+  check("the list listens to BOTH, each with its own add/remove pair",
+    /addEventListener\(CS_ATTENTION_FILTER_EVENT,/.test(w) && /removeEventListener\(CS_ATTENTION_FILTER_EVENT,/.test(w)
+    && /addEventListener\(CS_OPEN_CUSTOMER_EVENT,/.test(w) && /removeEventListener\(CS_OPEN_CUSTOMER_EVENT,/.test(w));
+  check("the open-profile handler does not touch the attention filter or the URL", (() => {
+    const i = w.indexOf("const onOpen"); const body = w.slice(i, w.indexOf("};", i));
+    return i > 0 && !/applyAttention|setAttention|spaceUrl/.test(body);
+  })());
+}
+
 console.log("measurement note is rendered");
 {
   const tile = strip("components/platform/leads/NewConnectionImportsTile.tsx");

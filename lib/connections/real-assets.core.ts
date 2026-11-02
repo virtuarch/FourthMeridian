@@ -84,10 +84,10 @@ export function connectionsInCategory<T extends Pick<SyncConnection, "provider">
 /** Honest empty state per category — what is missing and the way to add it. */
 export function categoryEmptyState(cat: ConnectionsCategory): { title: string; body: string } {
   switch (cat) {
-    case "banks":       return { title: "No banks or brokerages connected", body: "Use Connect institution above to bring in checking, savings, cards, loans and investments." };
-    case "crypto":      return { title: "No crypto wallets yet", body: "Use Add wallet above with a public address. Watch-only — never a seed phrase or private key." };
-    case "real_assets": return { title: "No real assets yet", body: "Use Add asset above for a home, vehicle or anything else you value yourself." };
-    case "all":         return { title: "Nothing here yet", body: "Connect an institution, add a wallet or add an asset to get started." };
+    case "banks":       return { title: "No banks or brokerages connected", body: "Use + Connect → Bank or brokerage above to bring in checking, savings, cards, loans and investments." };
+    case "crypto":      return { title: "No crypto wallets yet", body: "Use + Connect → Crypto wallet above with a public address. Watch-only — never a seed phrase or private key." };
+    case "real_assets": return { title: "No real assets yet", body: "Use + Add Manual Asset above for a home, vehicle or anything else you value yourself." };
+    case "all":         return { title: "Nothing here yet", body: "Use + Connect or + Add Manual Asset to get started." };
   }
 }
 
