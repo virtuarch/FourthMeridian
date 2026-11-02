@@ -171,9 +171,10 @@ export interface ResumeStaleImportsResult {
 
 /**
  * THE canonical, platform-wide candidate query. The scheduled path always uses
- * this; only tests replace it.
+ * this; only tests replace it. Exported so a test can evaluate a fake row against
+ * the real predicate (P2 — a skip marker kept by the lock holder is a candidate).
  */
-function staleWhere(cutoff: Date, excludeUserIds: readonly string[] = []) {
+export function staleWhere(cutoff: Date, excludeUserIds: readonly string[] = []) {
   return {
     status:           PlaidItemStatus.ACTIVE,
     syncIncompleteAt: { lt: cutoff },
