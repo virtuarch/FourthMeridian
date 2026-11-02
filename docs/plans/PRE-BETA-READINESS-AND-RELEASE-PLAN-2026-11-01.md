@@ -1,5 +1,7 @@
 # Fourth Meridian: final pre-beta readiness and Production release plan (2026-11-01)
 
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-02 · **PRs:** #206–#219, #223
+
 **Authors.** Session 1 (coordinator) and Session 2. Each session independently cross-reviewed the other's conclusions, and the disagreements are reconciled in §8.
 
 **Scope.** This document answers two owner directives of 2026-11-01:
