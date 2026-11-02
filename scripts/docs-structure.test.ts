@@ -202,8 +202,21 @@ const LEGACY_UNINDEXED: readonly string[] = [
   "V26-SEMANTICS-CONSUMER-CONVERGENCE.md",
 ];
 
+/**
+ * Hard cap on LEGACY_UNINDEXED. Each archive PR that moves files LOWERS this
+ * constant to the new length, so growing the list needs a visible bump a
+ * reviewer will see. Never raise it.
+ */
+const LEGACY_MAX = 164;
+
 export const HEADER_RE =
   /^> \*\*Owner:\*\* .+ · \*\*Status:\*\* (DRAFT|ACTIVE|BLOCKED|DONE|SUPERSEDED-BY \S+)\b.* · \*\*Updated:\*\* \d{4}-\d{2}-\d{2} · \*\*PRs:\*\* .+$/;
+
+/** The bare status keyword of a header or INDEX cell, qualifiers dropped. */
+export function statusKeyword(s: string): string {
+  const m = /(DRAFT|ACTIVE|BLOCKED|DONE|SUPERSEDED-BY)/.exec(s);
+  return m ? m[1] : "";
+}
 
 /** The header must sit directly under the H1, after at most one blank line. */
 export function headerOf(text: string): string | null {
@@ -222,6 +235,8 @@ console.log("header parser");
   check("rejects an unknown status", headerOf(good.replace("ACTIVE", "IN-PROGRESS")) === null);
   check("rejects a missing Updated date", headerOf(good.replace("2026-11-02", "today")) === null);
   check("rejects a header buried in the body", headerOf("# T\n\nintro\n" + good.split("\n")[2]) === null);
+  check("status keyword drops qualifiers", statusKeyword("ACTIVE (B10 paused)") === "ACTIVE" && statusKeyword(" BLOCKED ") === "BLOCKED");
+  check("status keyword of SUPERSEDED-BY <path>", statusKeyword("SUPERSEDED-BY docs/x.md") === "SUPERSEDED-BY");
 }
 
 console.log("docs/plans/INDEX.md is the authoritative active list");
@@ -229,10 +244,25 @@ const indexText = existsSync(INDEX) ? readFileSync(INDEX, "utf8") : "";
 check("INDEX.md exists", indexText.length > 0);
 const indexed = [...new Set([...indexText.matchAll(/\]\(([A-Za-z0-9._-]+\.md)\)/g)].map((m) => m[1]))];
 check("INDEX.md lists at least one plan", indexed.length > 0, String(indexed.length));
+/** INDEX table rows: | [name](file.md) | owner | STATUS | open | */
+const indexRows = new Map<string, string>();
+for (const line of indexText.split("\n")) {
+  const m = /^\|\s*\[[^\]]+\]\(([A-Za-z0-9._-]+\.md)\)\s*\|[^|]*\|\s*([^|]+?)\s*\|/.exec(line);
+  if (m) indexRows.set(m[1], m[2]);
+}
+check("every indexed plan has a table row with a Status column", indexed.every((n) => indexRows.has(n)),
+  indexed.filter((n) => !indexRows.has(n)).join(", "));
 for (const name of indexed) {
   const file = path.join(PLANS, name);
   if (!existsSync(file)) { check(`indexed plan exists: ${name}`, false); continue; }
-  check(`${name}: header under the title`, headerOf(readFileSync(file, "utf8")) !== null);
+  const header = headerOf(readFileSync(file, "utf8"));
+  check(`${name}: header under the title`, header !== null);
+  if (header) {
+    const fromHeader = statusKeyword(header.split("**Status:**")[1] ?? "");
+    const fromIndex = statusKeyword(indexRows.get(name) ?? "");
+    check(`${name}: INDEX status (${fromIndex || "none"}) equals header status (${fromHeader})`,
+      fromIndex !== "" && fromIndex === fromHeader);
+  }
 }
 
 console.log("every top-level plan is indexed or on the shrinking legacy list");
@@ -240,6 +270,7 @@ const topLevel = readdirSync(PLANS).filter((f) => f.endsWith(".md") && f !== "IN
 const legacy = new Set(LEGACY_UNINDEXED);
 const unaccounted = topLevel.filter((f) => !indexed.includes(f) && !legacy.has(f));
 check("no unindexed plan outside the legacy list (update-before-create)", unaccounted.length === 0, unaccounted.join(", "));
+check(`legacy list never grows (${LEGACY_UNINDEXED.length} ≤ LEGACY_MAX ${LEGACY_MAX})`, LEGACY_UNINDEXED.length <= LEGACY_MAX);
 const gone = LEGACY_UNINDEXED.filter((f) => !existsSync(path.join(PLANS, f)));
 check("legacy list has no stale entries (delete an entry when its file moves)", gone.length === 0, gone.join(", "));
 const both = LEGACY_UNINDEXED.filter((f) => indexed.includes(f));
