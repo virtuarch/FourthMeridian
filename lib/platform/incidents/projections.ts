@@ -98,7 +98,7 @@ const SELECT = {
  */
 type ReferentRow = Pick<Row, "id" | "financialAccountId" | "plaidItemId">;
 
-async function referentExistence(rows: readonly ReferentRow[], client: typeof db = db): Promise<Map<string, boolean>> {
+async function referentExistence(rows: readonly ReferentRow[], client: typeof db): Promise<Map<string, boolean>> {
   const accountIds = [...new Set(rows.map((r) => r.financialAccountId).filter((x): x is string => !!x))];
   const itemIds = [...new Set(rows.map((r) => r.plaidItemId).filter((x): x is string => !!x))];
   const [accounts, items] = await Promise.all([
@@ -157,7 +157,7 @@ function toView(r: Row, referentExists: boolean, correlated: number): IncidentVi
 }
 
 async function build(rows: Row[]): Promise<IncidentView[]> {
-  const [referents, correlated] = await Promise.all([referentExistence(rows), correlatedCounts(rows)]);
+  const [referents, correlated] = await Promise.all([referentExistence(rows, db), correlatedCounts(rows)]);
   return rows.map((r) => toView(r, referents.get(r.id) ?? true, correlated.get(r.id) ?? 0));
 }
 
@@ -207,7 +207,7 @@ export async function getActiveIncidentPage(
 export async function getIncidentEpisodeTimeline(
   since: Date,
   cap: number,
-  client: typeof db = db,
+  client: typeof db,
 ): Promise<{ episodes: EpisodeInstant[]; scanTruncated: boolean }> {
   const rows = await client.syncIssue.findMany({
     where: { OR: [{ createdAt: { gte: since } }, { firstOccurredAt: { gte: since } }, { resolvedAt: { gte: since } }] },

@@ -13,7 +13,13 @@
  * count is shown as "≥N" — the same pattern as the active-incident scan
  * (ACTIVE_INCIDENT_SCAN → `scanTruncated` → `openFloor`). Reaching it is the
  * signal to move this to SQL aggregation / a per-page read. (The funnel facts
- * are Growth's shared loader and are not capped here.) Ids are selected ONLY as join keys;
+ * are Growth's shared loader and are not capped here.)
+ *
+ * WHO DROPS OUT AT THE CAP: the fleet `customers` read is `createdAt desc` +
+ * `take: cap`, so once capped the OLDEST active customers fall out of the
+ * active set — and therefore out of EVERY reason, not just one. That is why any
+ * capped read sets the single `floor` flag: the UI then says "≥N" for all
+ * counts rather than presenting a partial population as the whole. Ids are selected ONLY as join keys;
  * no email, name, institution or detail is selected here. Read-only, on
  * fm_system (`systemDb`).
  */
@@ -33,7 +39,8 @@ const BROKEN = ["NEEDS_REAUTH", "ERROR"] as const;
 export const ACTIVE_INCIDENT_SCAN = 1000;
 /** Rows each fleet read below may return; a read that reaches it makes every count a floor. */
 export const ATTENTION_SCAN_CAP = 5000;
-const NON_WALLET = ["PLAID", "MANUAL", "CSV"] as const;
+/** Providers that are NOT a live wallet/exchange Connection (Plaid has its own Item; MANUAL / CSV never reconnect). */
+const NOT_LIVE_PROVIDER = ["PLAID", "MANUAL", "CSV"] as const;
 
 export interface AttentionRead {
   facts: AttentionFacts;
@@ -60,7 +67,7 @@ export async function loadAttention(
     client.user.findMany({ where: { role: "USER", deactivatedAt: null }, select: { id: true }, orderBy: { createdAt: "desc" }, take: cap }),
     loadFunnelFacts(client),
     client.plaidItem.findMany({ where: { status: { in: [...BROKEN] } }, select: { userId: true }, take: cap }),
-    client.connection.findMany({ where: { status: { in: [...BROKEN] }, provider: { notIn: [...NON_WALLET] } }, select: { userId: true }, take: cap }),
+    client.connection.findMany({ where: { status: { in: [...BROKEN] }, provider: { notIn: [...NOT_LIVE_PROVIDER] } }, select: { userId: true }, take: cap }),
     // The canonical ACTIVE incidents (derived state: orphaned, superseded and event rows excluded) —
     // the same read the Incidents workspace uses, so both say the same number.
     getActiveIncidentPage(ACTIVE_INCIDENT_SCAN),
