@@ -134,7 +134,7 @@ export async function runInteractive(args: InteractiveArgs): Promise<void> {
   console.log(`  Transcript ${artifactPath.replace(`${process.cwd()}/`, '')}`);
   console.log('');
   console.log('  ⚠️  Experimental. Known failures are NOT fixed — see');
-  console.log('     docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md §14.');
+  console.log('     docs/systems/ai-foundation.md §8 and §10.');
   console.log('');
   console.log('  /tools   what the last turn called      /cost   tokens so far');
   console.log('  /exit    end the session (Ctrl-C also saves)');

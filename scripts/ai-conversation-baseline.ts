@@ -6,7 +6,7 @@
  * The experiment from docs/plans/AI-CONVERSATION-INVESTIGATION.md §12: how LITTLE
  * architecture does Fourth Meridian need to produce the conversations in
  * docs/plans/AI-CONVERSATION-GOLDENS.md? Full contract:
- * docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md.
+ * docs/systems/ai-foundation.md §8 (conversation harness).
  *
  *   npm run ai:chat                                 # interactive operator mode
  *   npm run ai:baseline -- --list

@@ -32,7 +32,7 @@ PROJECTION, and no committed document naming a single module.
 > production calls either today; the capability is preserved and pinned by
 > `lib/ai/forecast/assemble.test.ts` for whatever conversation layer comes next.
 >
-> See [`docs/plans/AI-CONVERSATION-RESET.md`](../plans/AI-CONVERSATION-RESET.md).
+> See [AI foundation §9 — the conversation reset](./ai-foundation.md#9-history-the-2026-09-07-conversation-reset--deprecated-machinery).
 
 ---
 
@@ -204,7 +204,7 @@ true total, and carrying full f64 precision to a single display edge does not.
 The V26-REASONING Slice 0 acceptance table that stood here measured a **language
 model** against the forecast guard across 35 scenarios, and both the model path
 and the guard are gone. It is preserved in git and summarised in
-[`docs/plans/AI-CONVERSATION-RESET.md`](../plans/AI-CONVERSATION-RESET.md), whose
+[AI foundation §9](./ai-foundation.md#9-history-the-2026-09-07-conversation-reset--deprecated-machinery); the
 short version is the one worth carrying forward: under the non-enforcing default
 **eight raw arithmetic failures per run reached the user**, and three of them were
 the `$5,000 × 3` multiplication in its purest form — the user asks for arithmetic

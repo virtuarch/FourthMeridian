@@ -534,72 +534,72 @@ export const AUDITS: readonly AuditEntry[] = [
   {
     name: "audit-retrieval-plan", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "CF-8 — reported the difference between the retrieval plan and what production assembled",
-    retiredBecause: "the retrieval planner was deleted with the conversation layer; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the retrieval planner was deleted with the conversation layer; the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "audit-temporal-framing", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "CF-2 — ran a temporal ask corpus through the real production prompt and reported the four authorities as rendered",
-    retiredBecause: "there is no production prompt to render; the temporal AUTHORITIES survive and are pinned by lib/ai/temporal-scope.test.ts. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "there is no production prompt to render; the temporal AUTHORITIES survive and are pinned by lib/ai/temporal-scope.test.ts. the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "audit-bounded-disclosure", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "CF-1 — rendered the real system prompt per Space and reported what every bounded list disclosed",
-    retiredBecause: "the system prompt was deleted; boundedSelection survives and is pinned by lib/ai/bounded-selection.test.ts. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the system prompt was deleted; boundedSelection survives and is pinned by lib/ai/bounded-selection.test.ts. the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-evidence-awareness", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "CF-5 — asked a live model what evidence exists and graded five failure modes",
-    retiredBecause: "the prompt path it exercised is gone; the coverage envelope survives and is pinned by lib/ai/coverage-envelope.test.ts. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the prompt path it exercised is gone; the coverage envelope survives and is pinned by lib/ai/coverage-envelope.test.ts. the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-conversation-scope", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "CF-4 — held live multi-turn conversations and failed on temporal drift or robotic restatement",
-    retiredBecause: "conversation scope was conversation machinery and went with it; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "conversation scope was conversation machinery and went with it; the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-temporal-conformance", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "CF-2 — graded a live model for temporal overreach and over-hedging against the real prompt",
-    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-bounded-superlatives", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "CF-1 — graded a live model's superlative claims against the rendered bounded list",
-    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-conformance-scenarios", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "A4.2 — the multi-turn and cross-Space half of the assessment conformance harness",
-    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-assessment-conformance", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "A4 — measured whether the model followed the deterministic assessment and the A3 precedence contract",
-    retiredBecause: "the assessment SURVIVES (lib/ai/intelligence) and is pinned by its own unit tests; what was measured here was the model's obedience to a prompt that no longer exists. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the assessment SURVIVES (lib/ai/intelligence) and is pinned by its own unit tests; what was measured here was the model's obedience to a prompt that no longer exists. the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-forecast-conformance", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "FORECAST-11 — measured whether the model narrated the deterministic forecast block or computed its own",
-    retiredBecause: "the forecast ENGINE survives (lib/forecast, lib/ai/forecast) with its own unit suite; the narration it graded does not. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the forecast ENGINE survives (lib/forecast, lib/ai/forecast) with its own unit suite; the narration it graded does not. the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-forecast-multiturn", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "FORECAST-12 — forecast acceptance across a conversation rather than a turn",
-    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-answer-boundary", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "V26-REASONING Slice 1 — measured the typed answer boundary end to end on seven adversarial cases",
-    retiredBecause: "the typed answer boundary was deleted; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the typed answer boundary was deleted; the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "check-conversation-gate", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "V26-REASONING Slice 4 — one seven-turn conversation asking whether the product worked",
-    retiredBecause: "the scenario lifecycle it drove was deleted; the QUESTION it asked is the right one and should shape the exemplar conversations the next layer is designed from. the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "the scenario lifecycle it drove was deleted; the QUESTION it asked is the right one and should shape the exemplar conversations the next layer is designed from. the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
   {
     name: "compare-plans", tier: "RETIRED", tombstone: true, needsDb: false,
     what: "V26-REASONING Slice 5 — ran the typed planner and the legacy routing over 112 real questions and reported agreement per class",
-    retiredBecause: "it shipped with a deletion condition and both planners are now gone; the AI conversation reset removed the architecture it measured (docs/plans/AI-CONVERSATION-RESET.md)",
+    retiredBecause: "it shipped with a deletion condition and both planners are now gone; the AI conversation reset removed the architecture it measured (docs/systems/ai-foundation.md §9)",
   },
 ];
 

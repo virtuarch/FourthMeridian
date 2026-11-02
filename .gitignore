@@ -108,5 +108,5 @@ _v26pre_bundle/
 # Experiment artifacts (model-first conversation baseline). These contain REAL
 # balances, merchant names and transaction detail from a live Space, plus full
 # model transcripts. Research output for local human review — never committed.
-# See docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md.
+# See docs/systems/ai-foundation.md §8 (conversation harness).
 tmp/

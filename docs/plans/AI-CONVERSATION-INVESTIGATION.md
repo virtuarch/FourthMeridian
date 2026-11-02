@@ -1,6 +1,6 @@
 # AI conversation — investigation
 
-**Date:** 2026-09-07 · **HEAD:** `95512bb` (the [AI conversation reset](AI-CONVERSATION-RESET.md))
+**Date:** 2026-09-07 · **HEAD:** `95512bb` (the [AI conversation reset](../systems/ai-foundation.md#9-history-the-2026-09-07-conversation-reset--deprecated-machinery))
 **Status:** investigation. **No architecture is proposed here, and none should be chosen
 from this document alone.** Its job is to say what we must *test* before choosing one.
 
