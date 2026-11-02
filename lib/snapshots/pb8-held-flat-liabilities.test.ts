@@ -52,6 +52,7 @@ import { debtTrendPoints } from "@/components/space/widgets/debt/debt-trend-poin
 import { TrendChart } from "@/components/space/widgets/charts/TrendChart";
 import { BalanceCoverageNote } from "@/components/space/widgets/shared/BalanceCoverageNote";
 import type { Snapshot } from "@/types";
+import { wealthWindowFromEarliest } from "./regenerate-history";
 
 const checks: string[] = [];
 const ok = (label: string) => checks.push(label);
@@ -200,6 +201,14 @@ const byDate = resolveAccountsOverWindow(RESOLVER_INPUT, new Map(), postedDeltas
   // A held-flat CASH account keeps REG-2's EPOCH floor (out of PB-8 scope) — unchanged.
   const cash = computeAccountFloors([{ id: "c", linkCreatedAt: LINKED, type: "savings", accountCreatedAt: LINKED }], new Map(), new Set(["c"]), false, TODAY);
   assert.equal(cash.get("c")!.getTime(), 0);
+  // RUN SCOPE (Session 2 #7): a zero-transaction link triggers only the 30-day
+  // window (CONN-2 falls back when there is no earliest transaction). Harmless
+  // under the floor rule: the window starts BEFORE the link, and everything
+  // before the link is UNKNOWN regardless of which run covered it. (An account
+  // with transactions gets [earliest tx, yesterday], its whole floor.)
+  const w = wealthWindowFromEarliest(null, new Date("2026-11-01T12:00:00Z"));
+  assert.ok(w.fromDate < isoDate(writerFloors.get("mortgage")!), "the 30-day window reaches before the mortgage's floor");
+  assert.equal(wealthWindowFromEarliest(fromISO("2026-08-04"), new Date("2026-11-01T12:00:00Z")).fromDate, "2026-08-04", "card C's link builds from its first tx");
   // Unknown is never $0: the chart marks it (test 4), the resolver says incomplete, the writer omits it.
   ok("3 · mortgage: ESTIMATED from 2026-11-01 (its link), UNKNOWN before; never back-filled, never the epoch");
 }
