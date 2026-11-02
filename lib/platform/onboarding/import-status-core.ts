@@ -78,6 +78,31 @@ export const IMPORT_REASON_LABELS: Readonly<Record<ImportReasonCategory, string>
   UNKNOWN: "an unclassified failure",
 };
 
+/**
+ * PB-7 Preview nit (a) — the reason as a short noun phrase, for the RECOVERED
+ * wording: an import that completed is not "an unclassified failure"; its
+ * EARLIER ATTEMPT was. Pinned in import-status-core.test.ts.
+ */
+export const IMPORT_REASON_SHORT: Readonly<Record<ImportReasonCategory, string>> = {
+  REAUTH_REQUIRED: "bank sign-in required",
+  PROVIDER_ERROR: "provider error",
+  INTERRUPTED: "process ended mid-run",
+  STALLED: "no progress for over 24 h",
+  PROVIDER_TIMEOUT: "provider timeout",
+  PROVIDER_RATE_LIMITED: "provider rate limit",
+  PROVIDER_AUTH: "provider authentication failure",
+  CONFIGURATION: "configuration problem",
+  INPUT: "request rejected by the provider",
+  UNSUPPORTED: "not supported by the institution",
+  INTERNAL: "internal error",
+  UNKNOWN: "unclassified failure",
+};
+
+/** "Recovered after an interruption (earlier attempt: <reason>)" — the one wording every surface uses for a recovered import. */
+export function recoveredPhrase(reason: ImportReasonCategory | null): string {
+  return reason ? `Recovered after an interruption (earlier attempt: ${IMPORT_REASON_SHORT[reason]})` : "Recovered after an interruption";
+}
+
 /** The PlaidItem facts the rule reads — no token, no cursor, no owner. */
 export interface ImportItemFacts {
   id: string;
