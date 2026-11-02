@@ -128,9 +128,9 @@ export type PlaidBillableProduct = 'transactions' | 'investments';
  */
 export const PLAID_RATES: readonly PlaidRate[] = [
   { provider: 'PLAID', product: 'transactions', effectiveFrom: '2026-07-01', usdPerItemMonth: 0.30,
-    source: 'invoice S-J7Y5657ZK0-2607 (Jul 2026): $12.00 Transactions / 40 Item-months; cross-checked against the recorded 9-orphan estimate of ~$2.70/mo' },
+    source: 'Plaid invoice, Jul 2026 cycle: unit price evidenced per Transactions Item-month (invoice detail in the owner\'s private record)' },
   { provider: 'PLAID', product: 'investments', effectiveFrom: '2026-07-01', usdPerItemMonth: 0.35,
-    source: 'invoice S-J7Y5657ZK0-2607 (Jul 2026): ($13.40 total − $12.00 Transactions) / 4 Investments Item-months — derived by subtraction, not quoted' },
+    source: 'Plaid invoice, Jul 2026 cycle: Investments unit price derived by subtraction, not quoted (invoice detail in the owner\'s private record)' },
 ];
 
 /**
