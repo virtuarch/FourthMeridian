@@ -1,69 +1,83 @@
-# ADR-008 — Documentation is update-first, indexed, and archived at release
+# ADR-008 — Documentation lifecycle: preserve knowledge, not paperwork
 
 **Status:** accepted (owner, 2026-11-02) · **Contract:** [docs/README.md](../README.md#documentation-lifecycle)
 
 ## Context
 
-`docs/plans/` was meant to hold *active* plans ([docs/README.md](../README.md)), and
-completed slices were supposed to promote their conclusions and delete the working
-artifact. In practice, between July and November 2026 it grew to 176 files (4.6 MB).
-Every investigation, closure, overnight report and readiness check became a new dated
-file (`TOPIC-YYYY-MM-DD.md`), often in parallel copies by different agent sessions. By
-November about 90% of `plans/` was completed history. Several docs still said
-"awaiting review" or "nothing implemented" after their work had shipped, and STATUS.md
-had grown to 84 KB and drifted from Production. The driver was an agent rule: one new
-dated report per investigation.
+`docs/plans/` was meant to hold *active* plans. Between July and November 2026 it grew
+to 176 files (4.6 MB). Every investigation, closure, overnight report and readiness
+check became a new dated file (`TOPIC-YYYY-MM-DD.md`), often in parallel copies by
+different agent sessions. By November only a handful governed unfinished work. Several
+said "awaiting review" or "nothing implemented" after their work had shipped, and
+STATUS.md had grown to 84 KB and drifted from Production. The driver was an agent rule:
+one new dated report per investigation.
 
 ## Problem
 
-How do we keep durable knowledge (decisions, invariants, evidence) without the plans
-tree turning into a log that agents and engineers can't navigate, and without
-losing security, incident, migration, rollback or billing evidence?
+How do we keep the knowledge (decisions, invariants, constraints, operational
+procedures, unresolved requirements, evidence) without keeping the paperwork, and
+without a documentation system that has to be cleaned up again?
 
 ## Decision
 
-1. **Update before create.** A finding goes into the canonical doc
-   (`architecture/`, `systems/`, `operations/`, `decisions/`) or the active plan that
-   owns the topic. A new plan exists only for a distinct, substantial initiative (its
-   own PR series or batch id) or an explicit owner request. Its name has no date.
-2. **An index of active plans.** `docs/plans/INDEX.md` lists every active plan, one
-   line each. Every active plan carries a header: **Owner · Status** (`DRAFT` ·
-   `ACTIVE` · `BLOCKED` · `DONE` · `SUPERSEDED-BY <doc>`) **· Updated · PRs**.
-3. **One writer per canonical doc** (ownership matrix in docs/README.md). Other
-   sessions add review notes or dated sections, never a competing copy.
-4. **Release closeout.** When an initiative finishes, its plan becomes `DONE`, durable
-   conclusions are promoted into the canonical tree (each statement marked
-   **IMPLEMENTED** (PR #) · **PROPOSED** · **DECIDED-NOT-BUILT**), and at the release
-   the plan moves to `docs/archive/<release>/` with citations updated in the same PR.
-5. **Evidence is never deleted.** Security, incident, migration/cutover, rollback and
-   billing records move only to `docs/archive/evidence/` (public-safe) or to the
-   owner's private store (personal, billing, credential or Production-access detail;
-   the repository is public). Public copies of real financial data are sanitised;
-   originals are kept privately.
-6. **Destructive doc changes need owner approval**: deleting a doc, or merging that
-   drops text.
-7. **A unit test guards the structure** (`scripts/docs-structure.test.ts`): no
-   network, no new workflow. Every top-level `plans/*.md` is either indexed with a
-   valid header or on a shrinking legacy list, and every compatibility stub resolves.
+**The lifecycle:**
+
+> Investigation → active plan (only when necessary) → implementation → update the
+> canonical documentation → close the initiative → **delete the redundant working
+> document.**
+
+1. **One authoritative document per subject**, in the canonical tree:
+   `architecture/` · `systems/` · `operations/` · `decisions/`. Every material claim is
+   marked **IMPLEMENTED** (with a PR or code reference) · **DECIDED BUT NOT IMPLEMENTED**
+   · **PROPOSED** · **DEPRECATED**. A historical proposal is never presented as shipped,
+   and investigations are not copied wholesale.
+2. **Update before create.** A finding goes into the canonical doc or the active plan
+   that owns the topic. A new plan exists only for a distinct, substantial initiative
+   (its own PR series or batch id) or an explicit owner request. Its name has no date.
+3. **Active plans are indexed.** `docs/plans/INDEX.md` lists each one, and each carries
+   a header: **Owner · Status** (`DRAFT` · `ACTIVE` · `BLOCKED` · `DONE` ·
+   `SUPERSEDED-BY <doc>`) **· Updated · PRs**. A plan is active only if it governs
+   unfinished work, with an owner and a next action.
+4. **Closeout deletes, it does not archive.** When an initiative closes, its durable
+   content is extracted into the canonical doc and the working plan is **deleted**.
+   Git history is the archive for ordinary completed plans. Deleting tracked
+   documentation needs the owner's approval, and a short disposition manifest is
+   recorded in the PR.
+5. **A dedicated archive is only for protected evidence** (security incidents and
+   remediation, database migration and rollback evidence, Production cutover records,
+   financial reconciliation, billing evidence, important owner decisions, unresolved
+   defects or obligations, records with a real retention requirement) and for material
+   with demonstrated long-term value. Evidence is never deleted to reduce file count.
+6. **The repository is public.** Personal, billing, credential or Production-access
+   detail lives in the owner's private store, never in `docs/`. Public copies of real
+   financial data are sanitised.
+7. **One writer per canonical document** (ownership matrix in docs/README.md). Other
+   sessions add review notes or sections, never a competing copy.
+8. **A unit test guards the structure** (`scripts/docs-structure.test.ts`): no network,
+   no new workflow. It checks:
+   * every indexed plan carries a valid header, and INDEX's status equals the header's;
+   * every other top-level plan is on a legacy allowlist that can only shrink (capped);
+   * any `# Moved` pointer resolves.
+
+   It never forces an obsolete plan to stay. Deleting a legacy plan just removes its
+   allowlist entry.
 
 ## Alternatives considered
 
-- **Delete completed plans outright** ("git keeps history"). Rejected: plans hold
-  unique decisions and evidence that nobody would find in git history, and evidence
-  must stay browsable.
-- **Topic-based archive folders.** Rejected in favour of release buckets
-  (`v2.6`, `v2.7`, `beta-b1-b9`, …). A release is the natural closeout moment, and
-  topic knowledge belongs in the canonical `systems/` docs, not in an archive's shape.
-- **A CI workflow or external docs linter.** Rejected: an extra workflow costs runner
-  minutes and adds a dependency. The existing unit suite already runs on every PR.
+- **Move every completed plan into release-based archive folders.** Rejected (owner,
+  2026-11-02). It relocates the paperwork instead of removing it, creates hundreds of
+  pointer stubs to maintain, and keeps duplicated and superseded text browsable as if
+  it still mattered. Git history already preserves it.
+- **Delete without extraction** ("it's old"). Rejected: plans can hold the only record
+  of a decision, an invariant or an unresolved requirement. Extraction comes first, and
+  protected evidence is kept.
+- **A CI workflow or external docs linter.** Rejected: runner cost and a dependency for
+  checks the existing unit suite can do.
 
 ## Consequences
 
-- Agents orient from STATUS.md, then `plans/INDEX.md`, then the canonical doc,
-  instead of scanning hundreds of dated reports.
-- A new unindexed plan fails the unit suite, so authors must index it or update an
-  existing doc instead.
-- Moving a code-cited doc leaves a short compatibility stub at the old path until the
-  citations are rewritten.
-- Writing a plan now carries a small cost: header, index line, closeout. That cost is
-  intended.
+- Agents orient from STATUS.md, then `plans/INDEX.md`, then one canonical doc.
+- `docs/plans/` stays small: only plans with unfinished work and a named owner.
+- Closing an initiative carries a small cost: extract into the canonical doc, then
+  delete the plan. That cost is intended.
+- Old text is recovered with `git log -- <path>` / `git show`, not by browsing an archive.

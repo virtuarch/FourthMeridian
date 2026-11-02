@@ -10,8 +10,9 @@
  *  3. Every top-level docs/plans/*.md is either indexed or on LEGACY_UNINDEXED.
  *     A NEW unindexed plan fails here: index it or update an existing doc
  *     instead (update-before-create).
- *  4. LEGACY_UNINDEXED only shrinks: an entry whose file has moved to the
- *     archive must be deleted from the list (the list ends empty).
+ *  4. LEGACY_UNINDEXED only shrinks (hard cap LEGACY_MAX): when a legacy plan is
+ *     deleted (after extraction) or kept as evidence elsewhere, its entry is
+ *     removed. The test never requires a legacy plan to stay.
  *  5. Every compatibility stub (first line "# Moved") links to a file that exists.
  *
  * Run: npx tsx scripts/docs-structure.test.ts
@@ -31,8 +32,9 @@ const PLANS = path.join(ROOT, "docs/plans");
 const INDEX = path.join(PLANS, "INDEX.md");
 
 /**
- * Plans that predate ADR-008 and are being moved to docs/archive/ by the
- * archive PRs (D2–D5). Delete an entry when its file moves. Never ADD to this
+ * Plans that predate ADR-008, under review: durable content is extracted into
+ * the canonical docs, then the file is deleted (protected evidence is kept
+ * outside docs/plans/). Remove an entry when its file goes. Never ADD to this
  * list: a new plan goes into INDEX.md with a header.
  */
 const LEGACY_UNINDEXED: readonly string[] = [
@@ -203,9 +205,9 @@ const LEGACY_UNINDEXED: readonly string[] = [
 ];
 
 /**
- * Hard cap on LEGACY_UNINDEXED. Each archive PR that moves files LOWERS this
- * constant to the new length, so growing the list needs a visible bump a
- * reviewer will see. Never raise it.
+ * Hard cap on LEGACY_UNINDEXED. Each cleanup PR that removes legacy plans
+ * LOWERS this constant to the new length, so growing the list needs a visible
+ * bump a reviewer will see. Never raise it.
  */
 const LEGACY_MAX = 164;
 
@@ -272,7 +274,7 @@ const unaccounted = topLevel.filter((f) => !indexed.includes(f) && !legacy.has(f
 check("no unindexed plan outside the legacy list (update-before-create)", unaccounted.length === 0, unaccounted.join(", "));
 check(`legacy list never grows (${LEGACY_UNINDEXED.length} ≤ LEGACY_MAX ${LEGACY_MAX})`, LEGACY_UNINDEXED.length <= LEGACY_MAX);
 const gone = LEGACY_UNINDEXED.filter((f) => !existsSync(path.join(PLANS, f)));
-check("legacy list has no stale entries (delete an entry when its file moves)", gone.length === 0, gone.join(", "));
+check("legacy list has no stale entries (remove an entry when its file goes)", gone.length === 0, gone.join(", "));
 const both = LEGACY_UNINDEXED.filter((f) => indexed.includes(f));
 check("no plan is both indexed and legacy", both.length === 0, both.join(", "));
 

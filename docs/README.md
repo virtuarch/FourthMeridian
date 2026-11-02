@@ -35,10 +35,10 @@ guide that ties everything together).
 | [`decisions/`](decisions/) | **ADRs** — decisions already made, alternatives rejected. Do not revisit a decision here without a new ADR. Includes the immutable Phase-2 decision matrix. |
 | [`operations/`](operations/) | Runbooks, deployment, incident response, admin operations, key rotation, environment separation (incl. [one OpenAI project per environment](operations/openai-environment-separation.md)), and the living production-readiness doc + checklists. |
 | [`design-system/`](design-system/) | The Atlas design authority (glass/liquid material, modal doctrine, material classification) + the product language guide. |
-| [`plans/`](plans/) | **Active work only.** [`plans/INDEX.md`](plans/INDEX.md) is the authoritative list (owner, status, what is open). A file not listed there is historical and is moving to `archive/`. |
+| [`plans/`](plans/) | **Active work only.** [`plans/INDEX.md`](plans/INDEX.md) is the authoritative list (owner, status, what is open). A file not listed there is legacy and is being reviewed: its durable content is extracted into the canonical docs, then it is deleted (protected evidence excepted). |
 | [`releases/`](releases/) | Honest per-version release notes. |
-| [`archive/`](archive/README.md) | **Historical context, not current truth.** `completed-plans/` (the July archive), release buckets (`v2.6/`, `v2.7/`, `beta-b1-b9/`) for plans closed at each release, and `evidence/` (security, migrations/cutover, incidents, reviews), which is **never deleted**. |
-| [`audits/`](audits/) | Being retired (owner, 2026-11-02): the pre-S1 audit stops being the live defect register. Its independently verified open findings are carried forward, then it moves to `archive/evidence/`. The pre-beta audit set moves to the archive. |
+| [`archive/`](archive/README.md) | **Protected evidence only, not current truth:** security incidents, migration/rollback and Production cutover records, financial reconciliation, important owner decisions, unresolved obligations, plus the July `completed-plans/`. Completed plans are **not** archived: git history is their record. |
+| [`audits/`](audits/) | Being retired (owner, 2026-11-02): the pre-S1 audit stops being the live defect register. Its independently verified open findings are carried forward, then it is kept as evidence. The pre-beta audit set is reviewed the same way as plans (evidence kept, the rest extracted or deleted). |
 | [`design-studies/`](design-studies/) | Dated visual design studies for the Platform Spaces (Customer Success, Growth & Revenue, Platform refresh, Security Operations); the reference shape for Platform UI work. |
 | [`initiatives/`](initiatives/) | Implementation checklists for named initiatives (currently KD-15). |
 | [`bugfixes/`](bugfixes/) | A few closed bug writeups kept for operational reference. |
@@ -54,42 +54,48 @@ guide that ties everything together).
   irreversible-decision context* — never implementation logs. "What changed in July"
   lives in git history, not here.
 - **When a slice completes**, its durable conclusions are promoted into `architecture/`,
-  `systems/`, or `decisions/` and a release note is updated. The working plan is marked
-  `DONE` and moves to `archive/<release>/` at release closeout (see below).
+  `systems/`, or `decisions/`, a release note is updated, and the working plan is
+  deleted (git history keeps it). See below.
 
 ## Documentation lifecycle
 
-[ADR-008](decisions/ADR-008-documentation-lifecycle.md) holds the decision and its
-rationale. In short:
+**Preserve knowledge, not paperwork.** [ADR-008](decisions/ADR-008-documentation-lifecycle.md)
+holds the decision and its rationale.
 
-1. **Update before create.** Put a finding into the canonical doc or the active plan
-   that owns the topic. A new plan is only for a distinct, substantial initiative (its
-   own PR series or batch id) or an explicit owner request. Name it without a date and
-   list it in [`plans/INDEX.md`](plans/INDEX.md) in the same PR.
-2. **Every active plan has a header** directly under its title:
-   `> **Owner:** … · **Status:** DRAFT|ACTIVE|BLOCKED|DONE|SUPERSEDED-BY <path> · **Updated:** YYYY-MM-DD · **PRs:** …`
-3. **Implemented vs proposed.** Canonical docs mark statements **IMPLEMENTED** (PR #) ·
-   **PROPOSED** · **DECIDED-NOT-BUILT**. A design is never presented as shipped.
-4. **Release closeout.** `DONE` plans move to `archive/<release>/`, and citations in code,
-   tests, scripts and READMEs are updated in the same PR. A code-cited doc leaves a
-   `# Moved` stub at its old path until every citation is rewritten.
-5. **Evidence is never deleted.** Security, incident, migration/cutover, rollback and
-   billing records go to `archive/evidence/`.
+> Investigation → active plan (only when necessary) → implementation → update the
+> canonical doc → close the initiative → delete the redundant working document.
+
+1. **One authoritative document per subject** in `architecture/` · `systems/` ·
+   `operations/` · `decisions/`. Mark every material claim **IMPLEMENTED** (PR/code
+   reference) · **DECIDED BUT NOT IMPLEMENTED** · **PROPOSED** · **DEPRECATED**. Extract
+   decisions, invariants, constraints and procedures; don't copy investigations wholesale.
+2. **Update before create.** A new plan is only for a distinct, substantial initiative
+   (its own PR series or batch id) or an explicit owner request. Name it without a date
+   and list it in [`plans/INDEX.md`](plans/INDEX.md) in the same PR.
+3. **Every active plan has a header** directly under its title:
+   `> **Owner:** … · **Status:** DRAFT|ACTIVE|BLOCKED|DONE|SUPERSEDED-BY <path> · **Updated:** YYYY-MM-DD · **PRs:** …`.
+   A plan is active only if it governs unfinished work, with an owner and a next action.
+4. **Closeout deletes.** Extract the durable content into the canonical doc, update the
+   references in code, tests, scripts and READMEs directly (avoid pointer stubs), then
+   delete the plan. Git history is the record. Deleting tracked documentation needs the
+   owner's approval and a short disposition manifest in the PR.
+5. **Protected evidence is kept** in `archive/evidence/` (or the owner's private store):
+   security incidents and remediation, migration and rollback evidence, Production
+   cutover records, financial reconciliation, billing evidence, important owner
+   decisions, unresolved obligations. It is never deleted to reduce file count.
 6. **The repository is public.** Personal, billing, credential or Production-access
-   detail never enters `docs/`; it belongs in the owner's private store. Public copies of
-   real financial figures are sanitised.
-7. **Destructive changes** (deleting a doc, or merging that drops text) need the owner's
-   approval.
-8. `scripts/docs-structure.test.ts` (part of the unit suite; no network, no extra
-   workflow) enforces the index, the headers and the stubs.
+   detail never enters `docs/`. Public copies of real financial figures are sanitised.
+7. `scripts/docs-structure.test.ts` (unit suite; no network, no extra workflow)
+   enforces the index, the headers and the shrinking legacy allowlist. It never forces
+   an obsolete plan to stay.
 
 ## Who writes what (one writer per canonical document)
 
 | Writer | Documents |
 |---|---|
-| Session 1 (release owner) | `STATUS.md`, `releases/`, `operations/release-checklist.md`, `operations/branching-and-protection.md`, the PRE-BETA release plan |
-| Session 2 (independent reviewer) | `architecture/SECURITY_MODEL.md`, `operations/database-safety.md`, RLS documentation |
-| Session 3 (workspace maintenance) | this file, `plans/INDEX.md`, `archive/`, the documentation lifecycle |
+| Session 1 (release owner) | `STATUS.md`, release plans and release documentation (`releases/`, `operations/release-checklist.md`, `operations/branching-and-protection.md`), Production cutover evidence |
+| Session 2 (independent reviewer) | Security, database and RLS documentation; technical-correctness and sanitisation review |
+| Session 3 (workspace maintenance) | this file, `plans/INDEX.md`, documentation consolidation, archive and deletion coordination, the lifecycle |
 | The initiative's owner | Its `systems/` document, at closeout |
 
 Others contribute through review notes or dated sections, never a competing copy.
