@@ -208,7 +208,7 @@ with no customer subject is kept.
 
 ## Presence, session and engagement (PB-10)
 
-**IMPLEMENTED: #274 (`ae85c16`) + follow-ups #276 (`c62e824`), develop / Preview.** "Last active"
+**IMPLEMENTED: #274 (`ae85c16`) + follow-ups #276 (`c62e824`), develop / Preview. Follow-ups F3/F4 IN PROGRESS (#278).** "Last active"
 used to be `UserSession.lastActiveAt`, which any authenticated request bumps, so an idle open
 tab looked active. PB-10 defines six facts once, in `lib/presence/definitions.ts`; every
 threshold lives in its exported `PRESENCE_CONFIG`:
@@ -228,6 +228,8 @@ threshold lives in its exported `PRESENCE_CONFIG`:
   token digest, and reads or stores no IP, user agent or page path.
 - **Client:** `components/presence/PresenceHeartbeat.tsx` (dashboard layout). It beats only
   while the tab is visible, and stops on 401/403.
+- **IN PROGRESS (#278):** F3: background polls and the session focus refetch stop extending
+  the SEC-010 idle window. F4: a visibility change no longer counts as an interaction.
 - **Schema:** migration `20261103130000_pb10_session_presence` adds two nullable columns to
   `UserSession` (last value only, no history). They go with the session row through the
   reaper, account purge and data export. Applied on Preview; **Production follows the
