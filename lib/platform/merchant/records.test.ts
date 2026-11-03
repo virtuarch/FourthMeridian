@@ -32,7 +32,7 @@ import { RECONSIDER_READ_ONLY, RecordsBody, populationLine } from "@/components/
 import { MerchantLeadSurface } from "@/components/platform/leads/MerchantLead";
 import { SPACE_URL_PARAMS, applySpaceUrlUpdate } from "@/lib/space/space-url";
 import { PLATFORM_WORKSPACE_SCOPED_PARAMS } from "@/lib/space/use-platform-workspace-navigation";
-import { reconsiderDismissedPair, ReconsiderIneligibleError } from "@/lib/transactions/merchant-merge-reconsider";
+import { reconsiderDismissedPair, ReconsiderIneligibleError } from "@/lib/platform/merchant/reconsider";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {

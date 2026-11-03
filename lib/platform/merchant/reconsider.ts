@@ -1,5 +1,5 @@
 /**
- * lib/transactions/merchant-merge-reconsider.ts  (PB-9 — reconsider a dismissed merge candidate)
+ * lib/platform/merchant/reconsider.ts  (PB-9 — reconsider a dismissed merge candidate)
  *
  * A dismissal ("not the same") suppresses a pair from every later suggestion
  * (merchant-merge-decisions.ts filters decided pairs). Reconsidering REMOVES

@@ -18,7 +18,7 @@ import { NextRequest, NextResponse } from "next/server";
 // and the decision is deployment-wide. Gated by the MERCHANT_OPS grant below.
 import { systemDb as db } from "@/lib/db";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
-import { reconsiderDismissedPair, ReconsiderIneligibleError } from "@/lib/transactions/merchant-merge-reconsider";
+import { reconsiderDismissedPair, ReconsiderIneligibleError } from "@/lib/platform/merchant/reconsider";
 import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
