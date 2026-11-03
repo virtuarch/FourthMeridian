@@ -1232,11 +1232,14 @@ Checklist additions:
 | #284 | PRIV-ref: the opaque customer reference is a keyed digest | No schema or env change (reuses an existing required server secret). The reference format changes, see B10.3. **Dependency:** #284 edits removed-connections files that #225 introduced, so promoting it without #225 needs a rebuilt cherry-pick |
 | #238 | Test fixtures: real cash figures replaced with synthetic data | Test-only |
 | #239 | UI-hardening output goes to `tmp/`, not `docs/plans` | Local tooling only |
+| #291 | Deactivated or deletion-scheduled account proves no session (P1 security; merged after `f0405e1`) | No migration or schema change: the session proof also reads the user's existing `deactivatedAt` / `deletionScheduledAt`, so a lockout refuses even if the revoke failed. **Dependency check** (its diff applied to the B10a cut `5642bb5`): every runtime file applies cleanly; the only failure is a fixture hunk in `lib/auth/presence-scope.test.ts`, a test file added by PB-10 (#274). If PB-10 ships, nothing to do; if PB-10 is excluded, drop that test hunk |
+| #295 | FM-AUDIT-023 exchange half: a null Plaid current balance keeps the prior balance and clock (merged after `f0405e1`) | No migration or schema change. **Dependency check:** its diff applies cleanly to the B10a cut, and the helpers its test imports are either already at the cut (`planBalanceWrite`) or added by #295 itself. PB-8 (#232) also touched `lib/plaid/refresh.ts`, but #295 does not depend on that change |
 
 **GATED.** Each of these needs an owner precondition or decision before Production.
 
 | PR | Title | Gate |
 |---|---|---|
+| #298 | DB-010: AuditLog append-only at the database for `fm_system` | **Migration** `20261103140000_db010_auditlog_append_only` (B10.2): owner approval required for Production. OPEN at the time of writing; S2 approved; Preview apply pending. Include it only once it is merged and applied on Preview |
 | #255 | PB-1 Phase 1: incident data model, removed-connection closure, archive + purge | **PB-1 migration.** It needs `20261103120000_pb1_s2_incident_lifecycle_schema` applied first, because its writers fill new columns at observation time (B10.2) |
 | #259 | test(RLS): PB-1 incident tables are operator-only | Test-only, but it tests #255's schema; it travels with #255 |
 | #263 | test(PB-1 §13): Phase-2 parity harness scaffold | Test-only; it is the gate for the PB-1 reader cutovers |
@@ -1257,20 +1260,21 @@ Checklist additions:
 
 **Docs-only** (they ship with whichever tree is promoted and need no gate): #236, #237 (also adds the docs-structure test), #241, #242, #243, #244, #245, #246 (also ignores `docs/invoices/`), #247, #248, #249, #250, #251, #253, #257, #260, #261, #273, #279.
 
-**Counts:** 14 safe, 16 gated, 19 docs-only (49 PRs), plus #288 (gated, PB-1) expected before the cut.
+**Counts:** 14 safe, 16 gated, 19 docs-only (49 PRs), plus #288 (gated, PB-1) expected before the cut. Added 2026-11-03: #291 and #295 (safe; merged) and #298 (gated; DB-010 migration).
 
 **Recommended release tree (S2's advice).** The simplest reviewable tree is **develop at the B10 cut, with BOTH migrations applied first** (B10.2). That promotes everything above, except #225 if its live removal test has not run, and it requires the owner's PB-8 decision because PB-8 is in that tree. Any subset (excluding PB-8, PB-1, PB-10 or #225) means a release branch with reverts, and S2 reviews that exact tree before promotion. Develop is linear and the gated PRs are interleaved with the safe ones, so no subset is a clean cut.
 
 ### B10.2 Migration order
 
-Two Prisma migrations are on develop and not on main (`git diff --name-only origin/main origin/develop -- prisma/migrations`). Prisma applies them in name order:
+Two Prisma migrations are on develop and not on main (`git diff --name-only origin/main origin/develop -- prisma/migrations`), and a third (DB-010, #298) is expected. Prisma applies them in name order:
 
 | # | Migration | PR | Must it precede the deploy? |
 |---|---|---|---|
 | 1 | `20261103120000_pb1_s2_incident_lifecycle_schema` | #255 | **Yes**, if #255 is in the tree. The new observation writer sets `subjectUserId` and `openedBy` on every new incident and writes `SyncIssueEvent`. Without the columns and tables, incident writes fail. They fail closed (swallowed and reported on the observer), but Production would stop recording incidents. The migration is additive: the new columns are nullable, except one with a constant default (no table rewrite); the CHECKs are vacuous on existing rows; there is no backfill; and the three new tables are fm_system-only with forced RLS. B9 code ignores all of it |
 | 2 | `20261103130000_pb10_session_presence` | #274 | **Yes, and sign-in critical; never optional.** The Customer Success list and detail queries select `UserSession.lastPresenceAt` / `lastInteractionAt`, and the heartbeat writes them. The login path creates a `UserSession` without a `select`; Prisma's `create` returns every scalar column, so a session create against a database without these columns fails, and **sign-in would break** (Session 1 confirmed this reading). The migration adds two nullable columns with no default, no backfill and no grant change (catalog-only). B9 code ignores them |
+| 3 | `20261103140000_db010_auditlog_append_only` | #298 | **Not required by the code, but in the same guarded run, after 1 and 2.** Grants and policies only (no table or column change): `fm_system` loses table-level UPDATE/DELETE on `AuditLog` and the single `FOR ALL` policy, and keeps SELECT and INSERT. Only the two retention jobs can still change rows: beta-intake network minimisation (a column-limited UPDATE of aged rows) and product-event retention (DELETE of rows past the retention window). `fm_backup`, `fm_app` and `fm_auth` are unchanged. **Gated:** owner approval for Production. **Rollback:** the one-block SQL in the migration folder's README, then mark it rolled back through the guarded tooling |
 
-**Process:** apply both in one guarded run before the deploy, the same way as B1–B9: `npm run db:migrate:safe` (guard → backup → `prisma migrate deploy`), per [database-safety.md](../operations/database-safety.md). Preflight: tree − ledger = exactly these two; ledger − tree = ∅. **Owner approval is required.** **Preview:** both migrations are applied and finished on Preview (Session 1, read-only `_prisma_migrations` check, 2026-11-03).
+**Process:** apply all three (DB-010 once #298 is merged and Preview-applied) in one guarded run before the deploy, the same way as B1–B9: `npm run db:migrate:safe` (guard → backup → `prisma migrate deploy`), per [database-safety.md](../operations/database-safety.md). Preflight: tree − ledger = exactly these migrations; ledger − tree = ∅. **Owner approval is required.** **Preview:** the PB-1 and PB-10 migrations are applied and finished on Preview (Session 1, read-only `_prisma_migrations` check, 2026-11-03); DB-010's Preview apply is pending.
 
 ### B10.3 Owner-visible release notes
 
@@ -1285,7 +1289,7 @@ Each note was checked against its PR description and the develop code.
   - Every tile now shows the rule and the counts behind its word.
 - **Preview only: jobs read "Not scheduled in this environment" (#282).** Crons don't run on Preview, so jobs there read neutral instead of Failed; a job whose newest run failed still reads failing. Production output is unchanged.
 - **Customer Success presence labels (PB-10, #274/#276).** Customer Success now shows **Active now / Online, idle / Offline / Unknown**, a coarse last-active bucket (for example "within 5 min" or "active today"), last login, and signed-in sessions. It no longer reads the "session last used" clock. The new columns have no backfill, so every customer reads **Unknown** until their first heartbeat after the deploy. Growth "returning" and active-in-7-days now count meaningful engagement only, so those figures may drop.
-- **Other visible changes:** single-use TOTP codes at login (#256); Merchant Identity KPI drilldowns (#262); AI & Costs budget tiles agree and drill into their calls (#281/#283); investments show "unavailable" rather than mixed currencies on a rate miss (#275/#277; ships only with PB-8). If gated groups ship: the PB-8 partial-history wording ("Change unavailable: history is partial before …") and the removed-connections list (#225).
+- **Other visible changes:** a deactivated or deletion-scheduled account is signed out of every session even if a revoke failed (#291); single-use TOTP codes at login (#256); Merchant Identity KPI drilldowns (#262); AI & Costs budget tiles agree and drill into their calls (#281/#283); investments show "unavailable" rather than mixed currencies on a rate miss (#275/#277; ships only with PB-8). If gated groups ship: the PB-8 partial-history wording ("Change unavailable: history is partial before …") and the removed-connections list (#225).
 
 ### B10.4 Rollback notes
 
@@ -1299,6 +1303,9 @@ Each note was checked against its PR description and the develop code.
 | PB-8 (#232/#266/#267/#272) | The code rolls back, but **history rows rewritten by regenerations that ran under PB-8 are not reverted**. They change back only when the previous code's own regeneration next rewrites that window, or by a backup restore (the same class as the B3/B6 re-stamp) | **Not trivial** |
 | #225 PB-5 (if promoted) | The list and button disappear. **Removals an operator made in the meantime are not undone**: the provider-side revocation is external and permanent | **Not trivial** for any removal made |
 | #256 TOTP | The replay window reopens. Claim rows in `RateLimit` are harmless | Yes |
+| #291 deactivated-session lockout | A rollback reopens the P1: a deactivated or deletion-scheduled account whose session revoke failed could keep using that session | Yes, but it reopens a P1 security gap |
+| #295 exchange null balance | A rollback restores `?? 0` with a fresh clock at connect/reconnect; no data change | Yes |
+| DB-010 migration (#298) | Run the README rollback block (restores table-level UPDATE/DELETE and the single `FOR ALL` policy), then `prisma migrate resolve --rolled-back` through the guarded tooling. An app rollback alone leaves it in place, which is harmless: the migration's review notes name the two retention jobs as the only runtime UPDATE/DELETE writers of `AuditLog` | Yes (SQL block) |
 | #233/#234 | The skipped-webhook defect returns; no data change | Yes |
 | Verdict and label changes (#282/#285/#286, #281/#283, #262/#265, presence labels); #275/#277 roll back with PB-8's code | Presentation-only; old wording returns. Attention items that depend on provider trust revert with it | Yes |
 | #258, #238, #239, docs | No runtime effect | Yes |
