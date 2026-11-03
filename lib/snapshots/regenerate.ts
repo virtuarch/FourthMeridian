@@ -58,6 +58,13 @@ import { computeSnapshotFields } from "@/lib/snapshots/backfill-core";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import { ShareStatus, type Prisma } from "@prisma/client";
+import { worstTier } from "@/lib/perspective-engine/completeness";
+import { CRYPTO_MATERIALITY_EPSILON } from "@/lib/snapshots/crypto-valuation-status.core";
+import {
+  BANK_BALANCE_TYPES,
+  staleMaterialBankAccountIds,
+  type BankFreshnessRow,
+} from "@/lib/snapshots/stale-bank-balance.core";
 
 function todayUTC(): Date {
   const d = new Date();
@@ -83,10 +90,18 @@ function todayUTC(): Date {
  */
 export interface SpaceSnapshotClient extends SnapshotAccountsClient {
   financialAccount: {
+    /**
+     * Two reads share this one signature: the consent gate (select { id }) and,
+     * FM-AUDIT-021, the bank-balance freshness evidence (BANK_FRESHNESS_SELECT).
+     * The extra select keys are optional rather than an overload because
+     * Prisma's generic findMany cannot satisfy an overloaded target; the
+     * returned fields are Partial accordingly, and a missing one degrades to
+     * "no evidence", never to an invented freshness.
+     */
     findMany(args: {
       where:  Prisma.FinancialAccountWhereInput;
-      select: { id: true };
-    }): Promise<Array<{ id: string }>>;
+      select: { id: true; type?: true; syncStatus?: true; lastUpdated?: true; balanceLastUpdatedAt?: true };
+    }): Promise<Array<{ id: string } & Partial<Omit<BankFreshnessRow, "id">>>>;
   };
   space: {
     findUnique(args: {
@@ -97,6 +112,44 @@ export interface SpaceSnapshotClient extends SnapshotAccountsClient {
   spaceSnapshot: {
     upsert(args: Prisma.SpaceSnapshotUpsertArgs): Promise<unknown>;
   };
+}
+
+/** FM-AUDIT-021 — exactly the fields the stale-bank rule reads. */
+const BANK_FRESHNESS_SELECT = {
+  id: true, type: true, syncStatus: true, lastUpdated: true, balanceLastUpdatedAt: true,
+} as const;
+
+/**
+ * FM-AUDIT-021 — the ids of the MATERIAL, STALE, provider-fed bank accounts
+ * this snapshot is about to total (lib/snapshots/stale-bank-balance.core.ts is
+ * the rule; this is only its read). No bank-typed account ⇒ no query, so a
+ * wallet-only Space makes exactly the queries it always did.
+ *
+ * The magnitude weighed for materiality is the COUNTED balance — the adjusted
+ * depository figure where classifyAccounts totals it, else the balance.
+ */
+async function staleBankAccountIdsForSnapshot(
+  client: SpaceSnapshotClient,
+  eligible: Array<{ id: string; type: string; balance: number; adjustedBalance?: number }>,
+  now: Date,
+): Promise<string[]> {
+  const bankIds = eligible.filter((a) => BANK_BALANCE_TYPES.includes(a.type)).map((a) => a.id);
+  if (bankIds.length === 0) return [];
+  const freshness = await client.financialAccount.findMany({
+    where:  { id: { in: bankIds } },
+    select: BANK_FRESHNESS_SELECT,
+  });
+  return staleMaterialBankAccountIds(
+    eligible.map((a) => ({ id: a.id, absValue: Math.abs(a.adjustedBalance ?? a.balance) })),
+    freshness.map((r) => ({
+      id:                   r.id,
+      type:                 r.type ?? "",
+      syncStatus:           r.syncStatus ?? null,
+      lastUpdated:          r.lastUpdated ?? null,
+      balanceLastUpdatedAt: r.balanceLastUpdatedAt ?? null,
+    })),
+    now,
+  );
 }
 
 /**
@@ -117,6 +170,8 @@ export async function regenerateSpaceSnapshot(
   spaceId: string,
   date: Date = todayUTC(),
   client: SpaceSnapshotClient = systemDb,
+  /** FM-AUDIT-021 — the freshness clock. Injected by tests; defaults to now. */
+  now: Date = new Date(),
 ): Promise<void> {
   const accounts = await readSpaceAccountsForSnapshot(spaceId, client);
 
@@ -276,6 +331,46 @@ export async function regenerateSpaceSnapshot(
     cryptoValuationStatus: accounts.some((a) => a.cryptoStale === true) ? "stale" as const : null,
   };
 
+  // FM-AUDIT-021 — A STALE BANK BALANCE IS NOT AN OBSERVATION OF TODAY.
+  //
+  // Every caller reaches this one function (the crypto sweep and the price job
+  // included, via regenerateSnapshotsForAccounts), so the rule lives HERE, once,
+  // not per caller. When a material provider-fed bank account's balance is past
+  // the freshness horizon (stale-bank-balance.core.ts), the row is written with
+  // the SAME numbers but as an ESTIMATE:
+  //
+  //   isEstimated: true   — the frozen-row guard in regenerate-history.core.ts
+  //                         freezes only `isEstimated === false`, so once real
+  //                         balances arrive (reconnect) history may replace this
+  //                         day instead of keeping the stale step forever.
+  //   completenessTier    — "estimated" (worst with the FX `incomplete` above),
+  //                         recorded so the resolver reads it as a labelled
+  //                         estimate, not an unrecorded legacy row.
+  //   cryptoValuationStatus — the W6b `stale` stamp is kept as-is. Otherwise a
+  //                         material crypto figure valued from a current reading
+  //                         is recorded `supported`, so leaving the observation
+  //                         class (isEstimated=true) does not demote crypto that
+  //                         was assertable to `legacy-unrecorded`.
+  //
+  // Not a skip (W6b precedent: a stale reading is still the best number there
+  // is). A FRESH write is byte-identical to before: the payload below is the
+  // same object, and isEstimated is neither created nor updated — so this never
+  // newly freezes a row a reconstruction wrote as an estimate. The cost of that
+  // identity: a same-day fresh rewrite after a stale write leaves the row
+  // estimated (with the tier cleared, as before) until regeneration revisits it
+  // — conservative, never a false observation.
+  const staleBankIds = await staleBankAccountIdsForSnapshot(client, eligible, now);
+  const written = staleBankIds.length === 0 ? composition : {
+    ...composition,
+    isEstimated: true,
+    completenessTier: worstTier([composition.completenessTier ?? "observed", "estimated"]),
+    cryptoValuationStatus: composition.cryptoValuationStatus
+      ?? (Math.abs(crypto) > CRYPTO_MATERIALITY_EPSILON ? "supported" as const : null),
+  };
+  if (staleBankIds.length > 0) {
+    console.log(`[snapshot] space ${spaceId}: ${staleBankIds.length} material bank balance(s) past the freshness horizon — today's row written as an estimate (FM-AUDIT-021).`);
+  }
+
   await client.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
@@ -283,13 +378,13 @@ export async function regenerateSpaceSnapshot(
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
       reportingCurrency,
-      ...composition,
+      ...written,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
       reportingCurrency,
-      ...composition,
+      ...written,
     },
   });
 }
