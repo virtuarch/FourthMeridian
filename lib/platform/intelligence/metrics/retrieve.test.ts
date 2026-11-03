@@ -433,9 +433,12 @@ console.log("\n8. static — no mint path, literal surfaces, no side effects, bo
     nonLiteral(src("lib/platform/intelligence/metrics/retrieve.ts")).join() === "surface" && nonLiteral(src("lib/platform/intelligence/metrics/retrieve-core.ts")).join() === "surface");
 
   const importers = files.filter((f) => /intelligence\/metrics\/retrieve(-core)?["']/.test(readFileSync(path.join(ROOT, f), "utf8")));
+  // The navigation registry imports only pure tiering helpers (access.ts: tokenTierOnSurface / TIER_RANK;
+  // registry.ts: SURFACE_TIER) — pinned in navigation/registry.test.ts.
   const strayImp = importers.filter((f) => f !== "lib/platform/intelligence/metrics/retrieve.ts"
+    && f !== "lib/platform/intelligence/navigation/access.ts" && f !== "lib/platform/intelligence/navigation/registry.ts"
     && !(f.startsWith("app/api/") && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8"))));
-  check("the contract is imported only by retrieve.ts, tests, or guarded API routes (none in this slice)", strayImp.length === 0, strayImp.join(", "));
+  check("the contract is imported only by retrieve.ts, the navigation registry (tiering only), tests, or guarded API routes (none in this slice)", strayImp.length === 0, strayImp.join(", "));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

@@ -352,7 +352,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
 
 // ── Tiering ──────────────────────────────────────────────────────────────────
 
-const TIER_RANK: Readonly<Record<IdentityTier, number>> = { OPS: 0, CUSTOMER_SUCCESS: 1 };
+export const TIER_RANK: Readonly<Record<IdentityTier, number>> = { OPS: 0, CUSTOMER_SUCCESS: 1 };
 const minTier = (...t: IdentityTier[]): IdentityTier => t.reduce((a, b) => (TIER_RANK[b] < TIER_RANK[a] ? b : a));
 
 /** The most identity a surface can ever show: only the Customer Success surface shows customers. */
@@ -377,10 +377,19 @@ export function atSurface(surface: MetricSurface, token: MetricAccessToken, metr
   // describeMetric keeps only the entries the token satisfies; the one for this surface decides.
   const entry = definition?.permission.find((p) => p.area === surface) ?? null;
   if (!definition || !entry) return null;
-  // The token's own tier on this surface: a grant (or break-glass) on the surface area,
-  // carrying at most that area's identity — CUSTOMER_SUCCESS only on CUSTOMER_SUCCESS.
+  return { definition, entry, surface, tier: minTier(tokenTierOnSurface(surface, token), entry.identityTier) };
+}
+
+/**
+ * DOWNGRADE ONLY. The most identity `token` may carry on `surface`: min(token
+ * tier, surface tier), where the token's own tier is the surface area's tier
+ * only when it holds a grant (or break-glass) on that area — CUSTOMER_SUCCESS
+ * only on CUSTOMER_SUCCESS. Shared by atSurface and the navigation registry
+ * (lib/platform/intelligence/navigation/access.ts), so both tier one way.
+ */
+export function tokenTierOnSurface(surface: MetricSurface, token: MetricAccessToken): IdentityTier {
   const tokenTier: IdentityTier = token.grants.some((g) => g.area === surface) ? SURFACE_TIER(surface) : "OPS";
-  return { definition, entry, surface, tier: minTier(tokenTier, SURFACE_TIER(surface), entry.identityTier) };
+  return minTier(tokenTier, SURFACE_TIER(surface));
 }
 
 /** The incident token at the effective tier, or null when the context's token cannot serve it. */
