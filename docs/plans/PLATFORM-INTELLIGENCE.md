@@ -26,7 +26,7 @@
 | AI | `AiInvocation` (90 d) by surface | none | A Platform-AI category (needs only a new `surface` value) |
 | Jobs and infrastructure | `JobRun` (90 d), `RefreshExecution` (60 d) with trigger, which separates user actions from background work | none | **Deployment and release history** (a SHA stamp is the only trace) |
 | Incidents | `SyncIssue`/occurrences; PB-1 Phase 1 model (#255) | Six competing readers (PB-1 §13, D1–D8) | Searchable history UI (Phase 2B) |
-| Security | Login outcomes, 2FA, grant and role changes, anomalies, operator actions | none | **Authorization denials and rate-limit blocks are not recorded.** No in-app dependency or vulnerability findings. Non-product audit rows (including login IPs) have no retention rule. |
+| Security | Login outcomes, 2FA, grant and role changes, anomalies, operator actions. Platform access refusals are recorded as a bounded `SECURITY_ANOMALY_DETECTED` row per user, area and window (`lib/platform/ops/access-denied.ts`), visible in Security Ops Detections | Platform access refusals reuse the generic anomaly action instead of a dedicated `PLATFORM_ACCESS_DENIED` | **Tenant-route authorization refusals (403s on customer APIs) and rate-limit blocks are not recorded.** No in-app dependency or vulnerability findings. Only `BETA_ACCESS_REQUESTED` rows are minimised at 90 days; LOGIN, LOGIN_FAILED and other security audit rows keep raw IP and user agent indefinitely, because audit deletion is excluded by decision. |
 | Merchants | `Merchant`, aliases, rules, merge decisions, user category overrides | none | Drilldown records (PB-9) |
 | Privacy | Deletion/purge and export jobs and audits | none | Deletion and export service-level readers |
 | Docs and code | `docs/architecture`, `systems`, `decisions` | none | No in-app docs or code inspection; `/dashboard/platform/ai` is a placeholder |
@@ -52,11 +52,11 @@
 4. **`AiInvocation.surface = platform_ai`**, counted as overhead.
 5. **Minimal new instrumentation, each item needing owner approval:**
    - a deployment-event row;
-   - an authorization-denial and rate-limit audit row (area and code only);
+   - an audit row for tenant-route authorization refusals and rate-limit blocks (area and code only), and promotion of platform refusals to a dedicated `PLATFORM_ACCESS_DENIED` action (a one-line canon change);
    - daily rollups so history outlives the 60/90-day windows.
 
 ## Open owner decisions
 
 - Billing and revenue data has no source. Unit economics stay estimate-only until a billing system exists.
 - Whether to record country at registration (two-letter code only).
-- A retention rule for non-product audit rows, which today include raw login IPs.
+- Minimising identifiers in security audit rows. Session 2 proposes: after 90 days, null the IP and user agent on all auth and security audit rows and keep a keyed digest (the `BETA_INTAKE_HASH_KEY` pattern, with its own versioned key). The rows themselves are kept as security evidence.
