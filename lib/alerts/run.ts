@@ -387,6 +387,7 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
         identity: id, ruleId: f.ruleId, kind: f.kind, dedupeKey: f.dedupeKey, recoveryKey: key,
         firstFiredAtISO: f.flappingSinceISO!, clearedAtISO: f.cleanSinceISO ?? deliveredAtISO, recoveredAtISO: deliveredAtISO,
         durationMs: Math.max(0, Date.parse(f.cleanSinceISO ?? deliveredAtISO) - Date.parse(f.flappingSinceISO!)),
+        peakSeverity: f.flappingSeverity ?? "warning",
       });
       flapById.delete(id); // a fresh start: the next fire is a new episode
     }
@@ -499,6 +500,8 @@ function stableEmailData(f: AlertFlapRecord, nowISO: string, rules: readonly Ale
       clearedAtISO,
       durationLabel: durationLabel(Math.max(0, Date.parse(clearedAtISO) - Date.parse(f.flappingSinceISO!))),
       variant: "stable",
+      // The highest severity reached during the flap (an escalation raises it); legacy rows read "warning".
+      peakSeverity: f.flappingSeverity ?? "warning",
     },
   };
 }

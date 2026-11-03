@@ -377,6 +377,37 @@ async function main() {
     check("continued CRITICAL (and warning) flapping after that is suppressed", t.mail.length === after, String(t.mail.length - after));
   }
 
+  console.log("\n13. 'stable again' states the PEAK severity of the flap");
+  {
+    const ai = (kind: "warn" | "crit" | "ok") => ({
+      aiFailures: {
+        windowHours: 24, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: at(0).toISOString(),
+        ...(kind === "warn" ? { returned: 10, failed: 3, timeouts: 0 } : kind === "crit" ? { returned: 0, failed: 5, timeouts: 0 } : { returned: 10, failed: 0, timeouts: 0 }),
+      },
+    });
+    const run = async (seq: readonly ("warn" | "crit" | "ok")[]) => {
+      const t = harness(); let i = 0;
+      for (const k of seq) await t.cycle((i++) * 0.25, healthy, { extra: ai(k) });
+      return t;
+    };
+    const flapToWarn = ["warn", "ok", "ok", "warn", "ok", "ok"] as const;
+    const stableTail = Array.from({ length: FLAP_STABLE_EVALUATIONS }, () => "ok" as const);
+    const t = await run([...flapToWarn, "crit", ...stableTail]);
+    const stable = t.mail.filter((m) => m.data.resolved?.variant === "stable");
+    check("fixture: one 'stable again' email after a warning flap that escalated to critical", stable.length === 1);
+    const r = stable[0].data.resolved!;
+    check("its data carries peakSeverity = critical", r.peakSeverity === "critical");
+    const rendered = renderPlatformAlert(stable[0].data);
+    check("the body says 'Flapped up to CRITICAL between … and …'", /Flapped up to CRITICAL between .+ and .+/.test(rendered.text), rendered.text);
+    const rec = collectRecentRecoveries(t.runs).find((x) => x.peakSeverity);
+    check("the recovered record (the widget's source) carries the peak", rec?.peakSeverity === "critical");
+    const w = await run([...flapToWarn, ...stableTail]);
+    const ws = w.mail.filter((m) => m.data.resolved?.variant === "stable");
+    check("a flap that never escalated says 'Flapped up to WARNING'", ws.length === 1 && /Flapped up to WARNING between/.test(renderPlatformAlert(ws[0].data).text));
+    const plain = t.mail.find((m) => m.data.resolved && !m.data.resolved.variant)!;
+    check("an ordinary recovery email has no peak line", !/Flapped up to/.test(renderPlatformAlert(plain.data).text));
+  }
+
   console.log(failures === 0 ? "\nAll alert-recovery checks passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -119,6 +119,8 @@ export interface AlertRecoveredRecord {
   /** When the recovery email was delivered. */
   recoveredAtISO: string;
   durationMs: number;
+  /** A "stable again" record only: the HIGHEST severity reached during the flap (`flappingSeverity`). */
+  peakSeverity?: AlertSeverity;
 }
 
 /** The episode identity: the dedupe key with its UTC-day and severity segments normalised. */
@@ -379,4 +381,9 @@ export function escalatesFlap(f: Pick<AlertFlapRecord, "flappingSeverity">, seve
 /** The escalation's own dedupe key (one per severity per flapping period). */
 export function escalationKeyOf(identity: string, severity: AlertSeverity, flappingSinceISO: string): string {
   return `${identity}:escalated:${severity}:${flappingSinceISO}`;
+}
+
+/** "Flapped up to CRITICAL between <since> and <cleared>" — the stable-again line (dates pre-formatted by the caller). */
+export function flapPeakLine(peak: AlertSeverity, sinceLabel: string, clearedLabel: string): string {
+  return `Flapped up to ${peak.toUpperCase()} between ${sinceLabel} and ${clearedLabel}`;
 }

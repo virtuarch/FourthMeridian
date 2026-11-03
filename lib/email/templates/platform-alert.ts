@@ -19,6 +19,7 @@ import type { AlertEmailData } from "@/lib/alerts/evaluate";
 import { renderEmail, type RenderedEmail } from "@/lib/email/design/render";
 import type { EmailBrandConfig } from "@/lib/email/design/config";
 import { formatUtcDateTimeLabelled } from "@/lib/email/design/datetime";
+import { flapPeakLine } from "@/lib/alerts/recovery";
 
 /** "Saturday, … UTC" for a valid ISO instant; the raw string otherwise (never throw on a label). */
 function evaluatedLabel(iso: string): string {
@@ -83,6 +84,9 @@ function renderResolved(
         kind: "info",
         items: [
           `Rule: ${r.ruleTitle} (${r.ruleId})`,
+          ...(stable && r.peakSeverity
+            ? [flapPeakLine(r.peakSeverity, evaluatedLabel(r.firstFiredAtISO), evaluatedLabel(r.clearedAtISO))]
+            : []),
           `${stable ? "Flapping since" : "First fired"}: ${evaluatedLabel(r.firstFiredAtISO)}`,
           `Cleared: ${evaluatedLabel(r.clearedAtISO)}`,
           `Duration: ${r.durationLabel}`,
