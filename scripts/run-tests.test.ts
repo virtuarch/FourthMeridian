@@ -11,6 +11,7 @@
  * spawning `node -e`.
  */
 import { readFileSync } from "node:fs";
+import { failedCheckLines } from "./lib/failed-check-lines";
 import { runChild } from "./lib/test-child";
 
 let failures = 0, passes = 0;
@@ -75,6 +76,30 @@ async function main(): Promise<void> {
     check("default deadline is 180_000 ms, overridable by TEST_FILE_TIMEOUT_MS", /DEFAULT_FILE_TIMEOUT_MS = 180_000/.test(src) && /TEST_FILE_TIMEOUT_MS/.test(src));
     check("no direct spawn remains in the runner", !/\bspawn\(/.test(src));
     check("a timed-out file is marked in the progress line", /timed out/.test(src));
+  }
+
+  console.log("a failed file's report names every failed check, however long the output");
+  {
+    const filler = Array.from({ length: 80 }, (_, i) => `  ✓ passing check ${i}`).join("\n");
+    const output = [
+      "1. first section", "  ✓ fine",
+      "2. the racy section", "  ✗ the invite is single-use — got 2 redemptions",
+      "3. a long tail section", filler,
+      "[log] a log line, not a section", "71 passed, 1 failed",
+    ].join("\n");
+    const lines = failedCheckLines(output);
+    check("the failed check is reported with its section header, in order",
+      lines.length === 2 && lines[0] === "2. the racy section" && lines[1] === "  ✗ the invite is single-use — got 2 redemptions", JSON.stringify(lines));
+    check("it would have been lost to the 30-line tail", !output.split("\n").slice(-30).join("\n").includes("✗ the invite"));
+    check("no failed check ⇒ nothing extra", failedCheckLines("1. s\n  ✓ ok\n2 passed, 0 failed").length === 0);
+    const two = failedCheckLines("1. a\n  ✗ x\n  ✗ y\n2. b\n  ✗ z");
+    check("a section header is printed once, before its first failure", JSON.stringify(two) === JSON.stringify(["1. a", "  ✗ x", "  ✗ y", "2. b", "  ✗ z"]), JSON.stringify(two));
+    const many = Array.from({ length: 120 }, (_, i) => `  ✗ failure ${i}`).join("\n");
+    const capped = failedCheckLines(`1. mass\n${many}`);
+    check("a mass failure is capped at 50 checks plus a '+N more' line",
+      capped.filter((l) => l.startsWith("  ✗")).length === 50 && capped[capped.length - 1] === "  … +70 more failed check(s) not shown", capped.slice(-2).join(" | "));
+    const src = readFileSync("scripts/run-tests.ts", "utf8");
+    check("run-tests prints the failed checks before the tail", /failedCheckLines\(output\)[\s\S]*slice\(-30\)/.test(src));
   }
 
   console.log(`\n${passes} passed, ${failures} failed`);
