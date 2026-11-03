@@ -8,11 +8,13 @@
  * window is the last COMPLETE day (yesterday, UTC) and the baseline is the 7
  * days before it: a partial "today" would always read low.
  *
- * A day with no rows is IDLE (nothing recorded). Read-only.
+ * A day with no rows is IDLE (nothing recorded). Read-only, as fm_system.
  */
 
 import "server-only";
-import { db } from "@/lib/db";
+// fm_system, not the migration principal: this is a background read inside the
+// alert job (no tenant), and fm_system already writes this ledger (lib/usage/record.ts).
+import { systemDb } from "@/lib/db";
 import { ANOMALY_DEFINITION, type AnomalyWindow } from "@/lib/alerts/anomaly";
 import type { PlaidCallAnomalyFacts } from "@/lib/alerts/authorities";
 
@@ -56,7 +58,7 @@ export function buildPlaidCallAnomalyFacts(
 
 export async function getPlaidCallAnomalyFacts(deps: { now?: Date; client?: PlaidCallUsageClient } = {}): Promise<PlaidCallAnomalyFacts> {
   const now = deps.now ?? new Date();
-  const client = deps.client ?? (db as unknown as PlaidCallUsageClient);
+  const client = deps.client ?? (systemDb as unknown as PlaidCallUsageClient);
   const today = utcDay(now);
   const since = new Date(today.getTime() - (ANOMALY_DEFINITION.baselineWindows + 1) * DAY_MS);
   const rows = await client.apiUsageCounter.findMany({
