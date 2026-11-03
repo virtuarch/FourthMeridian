@@ -184,7 +184,9 @@ function partOneStructural(): void {
   // canonical completeness vocabulary rather than storing partial-as-complete.
   check(
     "FX-partial sums are disclosed at the write site (unconverted → 'incomplete' tier)",
-    /completenessTier:\s*c\.unconverted\s*\?\s*\(?["']incomplete["']/.test(regenCode),
+    // FM-AUDIT-022 re-pin: the same stamp now also covers unvalued wallets
+    // (`|| c.unvaluedCount > 0`); the FX clause is still required, verbatim.
+    /completenessTier:\s*c\.unconverted\s*\|\|\s*c\.unvaluedCount\s*>\s*0\s*\?\s*\(?["']incomplete["']/.test(regenCode),
   );
 }
 
@@ -278,7 +280,19 @@ async function partTwoBehavioural(): Promise<void> {
 
   // Every query went through the injected client — nothing silently reached for
   // module-level `db` (the recordSyncIssue mistake this repo has already made).
-  check("all four queries used the injected client", fake.calls.length === 4, `saw: ${fake.calls.join(", ")}`);
+  //
+  // FM-AUDIT-021 re-pin (4 → 5): the live writer now also reads the bank-balance
+  // freshness evidence (a second financialAccount.findMany) before it upserts.
+  // Pinned as the EXACT sequence rather than a bare count, so a query that
+  // bypassed the seam — or one silently dropped — still fails here.
+  check(
+    "all five queries used the injected client, in order",
+    fake.calls.join(",") === [
+      "spaceAccountLink.findMany", "financialAccount.findMany", "space.findUnique",
+      "financialAccount.findMany", "spaceSnapshot.upsert",
+    ].join(","),
+    `saw: ${fake.calls.join(", ")}`,
+  );
 
   const up = fake.upserted as UpsertArgs | null;
   if (!up) {
