@@ -14,9 +14,7 @@
  * a fabricated zero.
  */
 
-import { useMemo } from "react";
-import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
-import { computeAllocation } from "@/lib/investments/investments-allocation-core";
+import type { AllocationResult } from "@/lib/investments/investments-allocation-core";
 import type { ConcentrationClassification } from "@/lib/investments/concentration";
 import { DataCard } from "@/components/atlas/DataCard";
 
@@ -44,16 +42,17 @@ function Row({ label, value, valueNode }: { label: string; value?: string; value
 }
 
 export function HoldingsConcentration({
-  holdings,
-  accounts,
+  allocation,
 }: {
-  holdings: ValuedHoldingRow[];
-  accounts: { id: string; name: string }[];
+  /**
+   * PB-11 M7 — THE server-computed allocation (`CurrentPortfolio.allocation` /
+   * `HistoricalPortfolio.allocation`, lib/investments/space-data-core). Never
+   * re-reduced here, so this card and the Allocation panel cannot diverge.
+   */
+  allocation: AllocationResult | null;
 }) {
-  const { concentration, bySector, valuedTotal } = useMemo(() => {
-    const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
-    return computeAllocation(holdings, accountNames);
-  }, [holdings, accounts]);
+  if (!allocation) return null;
+  const { concentration, bySector, valuedTotal } = allocation;
 
   // Nothing analyzable — render nothing rather than a fabricated zero.
   if (concentration.classification === "INSUFFICIENT_DATA" || valuedTotal <= 0) return null;

@@ -109,6 +109,14 @@ export interface InvestmentsSpaceData {
    * balance, with holdings as optional enrichment. Present for a Space read.
    */
   accounts?: InvestmentAccountsSlice;
+  /**
+   * PB-11 M7 — the allocation of the HISTORICAL (as-of) holdings, from the same
+   * single computation site as `current.allocation` (`assembleInvestmentsSpaceData`
+   * below). A sibling of `historical`, which stays the A10 result verbatim. The
+   * Allocation and Concentration views read this / `current.allocation` and never
+   * re-reduce holdings, so they cannot diverge. Present exactly when `historical` is.
+   */
+  historicalAllocation?: AllocationResult;
 }
 
 /**
@@ -142,12 +150,16 @@ export function assembleCurrentPortfolio(
 export function assembleInvestmentsSpaceData(args: {
   current:     CurrentPortfolio;
   historical?: HistoricalPortfolio | null;
+  /** accountId → name for the historical allocation's by-account axis (as for current). */
+  accountNames?: Record<string, string>;
 }): InvestmentsSpaceData {
   const { current, historical } = args;
   if (!historical) return { current };
   return {
     current,
     historical,
+    // PB-11 M7 — the historical allocation, through the SAME shared reduce.
+    historicalAllocation: computeAllocation(historical.holdings, args.accountNames ?? {}),
     // `flows` is null when there is no comparison window — omit rather than carry null.
     ...(historical.flows ? { activity: historical.flows } : {}),
     trust: buildInvestmentsTrustSummary(historical),

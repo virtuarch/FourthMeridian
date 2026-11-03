@@ -27,7 +27,8 @@ import { Figure } from "@/components/atlas/Surface";
 import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { HeroEyebrow } from "@/components/space/hero/HeroParts";
 import { DeltaBadge } from "@/components/space/widgets/wealth/wealth-ui";
-import { heroComparison, type PeriodAttribution } from "@/lib/investments/period-attribution.core";
+import { heroComparison, reconciliationComparison, type PeriodAttribution } from "@/lib/investments/period-attribution.core";
+import { ESTIMATED_CHANGE_SUFFIX } from "@/lib/connections/balance-coverage.core";
 
 export function InvestmentsHero({
   portfolio,
@@ -60,13 +61,19 @@ export function InvestmentsHero({
   // same verdict the period card reads. Previously this divided totalChange by
   // openingValue with no reference to whether either endpoint was defensible,
   // which is how a reconstructed $516.43 opening became "3857.0%".
-  const gate = attribution ? heroComparison(attribution) : null;
-  const change = gate ? (gate.showChange ? gate.changeAmount : null) : (reconciliation?.totalChange ?? null);
-  const opening = gate ? attribution!.openingValue : (reconciliation?.openingValue ?? null);
-  const pct = gate
-    ? (gate.showPercentage ? gate.percentage : null)
-    : (change != null && opening != null && opening !== 0 ? (change / opening) * 100 : null);
+  //
+  // PB-11 M5 — and when there is NO verdict (a payload without `attribution`) the
+  // hero no longer falls back to dividing by the reconciliation's opening. The
+  // fallback reads the reconciliation's OWN evidence through the one rule
+  // (`reconciliationComparison`, beside `heroComparison`): a partial / unpriced
+  // opening withholds the change with its reason; a percentage only for a
+  // like-for-like, flow-free, fully observed period; an estimated basis keeps
+  // the value change, labelled estimated (PB-8b's suffix).
+  const gate = attribution ? heroComparison(attribution) : reconciliation ? reconciliationComparison(reconciliation) : null;
+  const change = gate ? (gate.showChange ? gate.changeAmount : null) : null;
+  const pct = gate?.showPercentage ? gate.percentage : null;
   const suppressedReason = gate?.suppressedReason ?? null;
+  const estimated = gate != null && "estimated" in gate && gate.estimated === true;
 
   return (
     // Bare hero — no card, no border. The most important figure doesn't need a
@@ -89,7 +96,7 @@ export function InvestmentsHero({
             pct={pct}
             currency={ccy}
             goodDirection="up"
-            compareLabel={reconciliation?.from}
+            compareLabel={reconciliation?.from && estimated ? `${reconciliation.from}${ESTIMATED_CHANGE_SUFFIX}` : reconciliation?.from}
             className="!text-xs"
           />
         ) : suppressedReason ? (
