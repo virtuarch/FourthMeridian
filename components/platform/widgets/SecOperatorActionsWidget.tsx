@@ -88,6 +88,7 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   PLATFORM_POLICY_RESET:           "Reset a platform control",
   MERCHANT_MERGE_APPLIED:          "Merged two merchants",
   MERCHANT_MERGE_DISMISSED:        "Dismissed a merchant merge",
+  MERCHANT_MERGE_RECONSIDERED:     "Reconsidered a dismissed merchant pair",
   PLATFORM_CONTROL_REFUSED:        "A control change was refused",
   PLAID_ITEM_WEBHOOK_DRY_RUN:      "Dry-ran a webhook repoint",
   PLAID_ITEM_WEBHOOK_UPDATED:      "Repointed a provider webhook",

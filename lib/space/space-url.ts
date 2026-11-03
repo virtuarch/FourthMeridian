@@ -39,6 +39,15 @@ export const SPACE_URL_PARAMS = [
   "fperiod",
   // PB-4 — the Customer Success Customers list's "Needs help" filter (REPLACE-written).
   "attention",
+  // PB-9 — Merchant Identity: the period and the open KPI records table
+  // (components/platform/leads/merchant-records-url.ts; all REPLACE-written).
+  "period",
+  "records",
+  "rq",
+  "rsort",
+  "rpage",
+  "rfilter",
+  "rid",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
 

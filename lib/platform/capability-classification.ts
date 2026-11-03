@@ -130,7 +130,7 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
   },
   {
     key: "merchant-identity-decisions",
-    label: "Merchant merge review — merge or dismiss a detector-proposed duplicate pair",
+    label: "Merchant merge review — merge or dismiss a detector-proposed duplicate pair, or reconsider a dismissal",
     status: "SHIPPED",
     capability: "WRITE",
     rationale:
@@ -140,8 +140,10 @@ export const MUTATION_FAMILIES: readonly MutationFamily[] = [
       "rewrites merchant identity for every tenant, so it carries compensating controls: " +
       "a FRESH grant check, eligibility against the detector, and the decision plus an " +
       "AuditLog record (full report + recovery snapshot) written in the merge transaction. " +
-      "Before 2026-10-06 this was gated by ordinary Space membership.",
-    routes: ["app/api/merchant-ops/decide/route.ts"],
+      "Before 2026-10-06 this was gated by ordinary Space membership. PB-9 — reconsidering a " +
+      "dismissal removes that pair's suppression (the decision row, snapshotted into its audit " +
+      "record in the same transaction); it merges nothing, so it is the same WRITE family.",
+    routes: ["app/api/merchant-ops/decide/route.ts", "app/api/merchant-ops/reconsider/route.ts"],
   },
   {
     key: "beta-access-decisions",
