@@ -157,3 +157,59 @@ export function reshapeStoredEvidence(stored: unknown): ResolutionEvidence | nul
     return null;
   }
 }
+
+// ── PB-1 Phase 2 — the read-side DIGEST (codes and counts only) ─────────────
+//
+// The stored evidence is raw JSONB (≤ 4 KB) and NEVER crosses into an
+// audience-scoped output. The incident-intelligence module reads it only as
+// this digest, which this builder derives: a registry rule code, counts, one
+// timestamp and a removed-subject STATE. No execution id, no subject id, no
+// skip reason, no free text.
+//
+// The intelligence loader selects the column by spreading
+// EVIDENCE_DIGEST_SELECT and hands the row back to `evidenceDigestOf`, so the
+// raw column is named only here (pinned in incident-boundary.test.ts §8).
+
+export interface ResolutionEvidenceDigest {
+  /** The resolver rule, a registry-shaped code. */
+  rule: string;
+  /** SUCCEEDED facts — the only proof. */
+  proofCount: number;
+  /** Recorded non-proof facts (SKIPPED / NOT_ATTEMPTED / FAILED / PROVIDER_LIMITED). */
+  nonProofCount: number;
+  /** `mayAdvanceRecovery` over the stored proof. */
+  mayAdvance: boolean;
+  /** The newest SUCCEEDED proof's completion instant, when recorded. */
+  lastProofAt: string | null;
+  /** §5 — the removed subject's STATE on a SUBJECT_REMOVED closure (never its id). */
+  removedSubjectState: RemovedSubjectState | null;
+  /** §12 P2.2 — per-subject bases recorded (count only), and whether the list was capped. */
+  subjectCount: number;
+  subjectsTruncated: boolean;
+}
+
+/** Spread into a SyncIssue `select` to read the stored evidence for digesting. */
+export const EVIDENCE_DIGEST_SELECT = { resolutionEvidence: true } as const;
+
+/** Digest one stored value. Non-conforming input ⇒ null (re-shaped through the typed builder first). */
+export function digestStoredEvidence(stored: unknown): ResolutionEvidenceDigest | null {
+  const e = reshapeStoredEvidence(stored);
+  if (!e) return null;
+  const proofTimes = e.proof.map((f) => f.completedAt).filter((t): t is string => typeof t === "string" && Number.isFinite(Date.parse(t)));
+  const lastProofAt = proofTimes.length ? new Date(Math.max(...proofTimes.map((t) => Date.parse(t)))).toISOString() : null;
+  return {
+    rule: e.rule,
+    proofCount: e.proofCount,
+    nonProofCount: e.nonProof.length,
+    mayAdvance: mayAdvanceRecovery(e),
+    lastProofAt,
+    removedSubjectState: e.subject?.state ?? null,
+    subjectCount: e.subjects?.length ?? 0,
+    subjectsTruncated: e.subjectsTruncated === true,
+  };
+}
+
+/** Digest the evidence column of a row selected with EVIDENCE_DIGEST_SELECT. */
+export function evidenceDigestOf(row: { [K in keyof typeof EVIDENCE_DIGEST_SELECT]?: unknown }): ResolutionEvidenceDigest | null {
+  return digestStoredEvidence(row.resolutionEvidence);
+}
