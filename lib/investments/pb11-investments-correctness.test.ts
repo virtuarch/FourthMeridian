@@ -23,7 +23,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ConversionContext } from "@/lib/money/types";
 import { convertInvestmentsSpaceData } from "./display-conversion";
-import { assessPeriodAttribution, heroComparison, reconciliationComparison, REFUSAL_COPY } from "./period-attribution.core";
+import { assessPeriodAttribution, reconciliationComparison, REFUSAL_COPY } from "./period-attribution.core";
 import { assembleInvestmentsSpaceData, type InvestmentsSpaceData } from "./space-data-core";
 import { computeAllocation } from "./investments-allocation-core";
 import { InvestmentsHero } from "@/components/space/widgets/investments/InvestmentsHero";
@@ -75,7 +75,7 @@ const DATA = assembleInvestmentsSpaceData({ current: current as never, historica
 
 // ── M4 — attribution converts with the totals ────────────────────────────────
 {
-  const out = convertInvestmentsSpaceData(DATA, ctx(true), "2026-11-03");
+  const out = convertInvestmentsSpaceData(DATA, ctx(true), "2026-11-03")!;
   const a = out.historical!.attribution!;
   assert.equal(a.reportingCurrency, "EUR");
   assert.ok(near(a.closingValue, 12_000) && near(a.openingValue, 9_600) && near(a.moneyIn, 720) && near(a.moneyOut, -120)
@@ -93,14 +93,8 @@ const DATA = assembleInvestmentsSpaceData({ current: current as never, historica
   assert.ok(/€12,000\.00/.test(html) && /€2,400/.test(html), html);
   assert.ok(!/£/.test(html) && !/[↑↓]\s*.?2,000\.00/.test(html), "no reporting-currency figure beside the converted total");
 
-  // A rate miss: honest-unavailable, never an unconverted figure.
-  const miss = convertInvestmentsSpaceData(DATA, ctx(false), "2026-11-03").historical!.attribution!;
-  assert.equal(miss.kind, "NOT_ATTRIBUTABLE");
-  assert.ok(miss.openingValue === null && miss.moneyIn === null && miss.moneyOut === null && miss.portfolioChange === null && miss.unattributedChange === null);
-  assert.equal(miss.mayShowReturnPercentage, false);
-  assert.equal(miss.refusals[0].code, "DISPLAY_RATE_UNAVAILABLE");
-  assert.equal(heroComparison(miss).showChange, false);
-  assert.equal(heroComparison(miss).suppressedReason, REFUSAL_COPY.DISPLAY_RATE_UNAVAILABLE);
+  // A rate miss (PB-11b): the whole contract fails closed — see pb11b test.
+  assert.equal(convertInvestmentsSpaceData(DATA, ctx(false), "2026-11-03"), null);
   // Identity (reporting === display) stays byte-identical.
   const gbp: ConversionContext = { target: "GBP", resolve: (f, d) => ({ kind: "miss", quote: f, requestedDateISO: d }) };
   assert.equal(convertInvestmentsSpaceData(DATA, gbp, "2026-11-03"), DATA);
@@ -142,7 +136,7 @@ const DATA = assembleInvestmentsSpaceData({ current: current as never, historica
 {
   assert.deepEqual(DATA.historicalAllocation, computeAllocation(HOLDINGS as never, NAMES), "historical allocation computed at assembly");
   assert.equal(assembleInvestmentsSpaceData({ current: current as never }).historicalAllocation, undefined, "absent without historical");
-  const conv = convertInvestmentsSpaceData(DATA, ctx(true), "2026-11-03");
+  const conv = convertInvestmentsSpaceData(DATA, ctx(true), "2026-11-03")!;
   assert.ok(near(conv.historicalAllocation!.valuedTotal, 12_000) && near(conv.historicalAllocation!.byAssetClass[0].value, 10_800), "converted like current's");
   assert.deepEqual(conv.historicalAllocation!.concentration, DATA.historicalAllocation!.concentration, "weights scale-invariant");
 

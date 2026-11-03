@@ -82,7 +82,7 @@ const data = {
 
 // ── Convert USD → EUR at 0.5 ─────────────────────────────────────────────────────
 {
-  const out = convertInvestmentsSpaceData(data, ctxEUR, "2026-07-14");
+  const out = convertInvestmentsSpaceData(data, ctxEUR, "2026-07-14")!;
 
   console.log("1. Every reporting-currency money field scaled by 0.5");
   check("current.portfolio.valuedSubtotal 200→100", near(out.current.portfolio.valuedSubtotal, 100));

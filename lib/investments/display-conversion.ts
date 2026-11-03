@@ -16,8 +16,9 @@
  * (`nativePrice`, `nativeValue`, `currency`) and the native-denominated `costBasis`
  * stay native — they are intentionally instrument-level and are never relabeled.
  *
- * Honesty (the money contract, D-3): a missing rate passes the native amount through
- * flagged `estimated` — `convertMoney` owns that; we never fabricate a rate. When the
+ * Honesty (PB-11b): a missing rate FAILS CLOSED — the conversion returns null and
+ * the view says the portfolio is unavailable in the display currency; no source
+ * figure is ever relabelled. We never fabricate a rate. When the
  * reporting currency already IS the target, the whole transform is identity (no
  * allocation, no relabel), so the all-USD path is byte-unchanged.
  *
@@ -47,18 +48,46 @@ import { REFUSAL_COPY, type PeriodAttribution } from "./period-attribution.core"
 /** A converter bound to one (source reporting currency, rate date, context). */
 type Conv = (amount: number) => number;
 
-function makeConv(from: string, dateISO: string, ctx: ConversionContext): Conv {
+/** Thrown inside a conversion when a figure has no display-currency value. */
+class DisplayRateMiss extends Error {}
+
+/**
+ * PB-11b — FAIL CLOSED. Returns null when there is no `from → target` rate at
+ * `dateISO`: the contract cannot be shown in the display currency at all.
+ *
+ * It used to return `c.amount ?? amount` — on a miss, every total (current,
+ * allocation, historical holdings / portfolio, reconciliation, flows, trust
+ * residual, accounts) kept its SOURCE-currency magnitude under the display
+ * label (the defensive edge V25-FINAL-1 described: £10,000 shown as €10,000).
+ * A missing rate is now said, never relabelled. One rate applies to the whole
+ * single-reporting-currency contract (one `from`, one `dateISO`), so the probe
+ * decides; should any single figure still come back without a value, the
+ * converter throws and the whole conversion is refused (never a partial mix).
+ */
+function makeConv(from: string, dateISO: string, ctx: ConversionContext): Conv | null {
+  if (convertMoney({ amount: 1, currency: from }, dateISO, ctx).amount === null) return null;
   return (amount: number) => {
     const c = convertMoney({ amount, currency: from }, dateISO, ctx);
-    // V25-FINAL-1 — this is the "view as" DISPLAY re-conversion of an already-
-    // computed reporting-currency aggregate. The whole-context reversion
-    // (server-context) guarantees a currency is only offered when its conversion
-    // is satisfiable, so a miss here is a defensive edge (unprefetched pair): keep
-    // the source figure rather than emit a fake 0. The PRIMARY valuation path
-    // (valuation-core) already represents FX-unavailable positions as
-    // reportingValue null + overallTier "unknown" — that is where portfolio
-    // incompleteness is derived, not here.
-    return c.amount ?? amount;
+    if (c.amount === null) throw new DisplayRateMiss();
+    return c.amount;
+  };
+}
+
+/**
+ * PB-11b — why a contract could not be converted, for the view's
+ * "unavailable in <ccy>" state. Currency codes and the date only.
+ */
+export interface InvestmentsDisplayUnavailable {
+  currency: string;
+  from:     string;
+  dateISO:  string;
+  reason:   string;
+}
+
+export function investmentsDisplayUnavailable(from: string, target: string, dateISO: string): InvestmentsDisplayUnavailable {
+  return {
+    currency: target, from, dateISO,
+    reason: `${REFUSAL_COPY.DISPLAY_RATE_UNAVAILABLE} (no ${from}→${target} rate for ${dateISO}).`,
   };
 }
 
@@ -151,31 +180,12 @@ function convTrust(t: InvestmentsTrustSummary, c: Conv): InvestmentsTrustSummary
  * same `dateISO`) as the reconciliation and portfolio totals it sits beside.
  * It used to ride through `...h` untouched, so a converted Space showed its
  * opening / money in / money out / change in the reporting currency next to
- * display-currency totals.
- *
- * ⚠️ A RATE MISS IS NEVER SHOWN UNCONVERTED HERE. The totals' converter keeps
- * the source figure on a miss (a defensive edge, see makeConv); a period claim
- * instead follows the honest-unavailable idiom: every figure the verdict states
- * is withheld (null), the percentage is refused, and the refusal says why. Only
- * `closingValue` stays — it IS the portfolio total the headline already shows,
- * converted by the very same converter, so it can never disagree with it.
+ * display-currency totals. PB-11b — a rate miss never reaches here: the whole
+ * contract is refused (makeConv), so no period figure — closing value included
+ * — is ever shown in a currency it was not converted to.
  */
-function convAttribution(a: PeriodAttribution, c: Conv, target: string, rateMissing: boolean): PeriodAttribution {
+function convAttribution(a: PeriodAttribution, c: Conv, target: string): PeriodAttribution {
   const n = (v: number | null) => (v == null ? v : c(v));
-  if (rateMissing) {
-    return {
-      ...a,
-      kind: "NOT_ATTRIBUTABLE",
-      reportingCurrency: target,
-      closingValue: c(a.closingValue),
-      openingValue: null, moneyIn: null, moneyOut: null,
-      portfolioChange: null, unattributedChange: null,
-      mayShowReturnPercentage: false,
-      refusals: [{ code: "DISPLAY_RATE_UNAVAILABLE", copy: REFUSAL_COPY.DISPLAY_RATE_UNAVAILABLE,
-        detail: `no ${a.reportingCurrency}→${target} rate` }, ...a.refusals],
-      headline: "This period cannot be shown in the display currency.",
-    };
-  }
   return {
     ...a,
     reportingCurrency:  target,
@@ -188,10 +198,10 @@ function convAttribution(a: PeriodAttribution, c: Conv, target: string, rateMiss
   };
 }
 
-function convHistorical(h: InvestmentsTimeMachineResult, c: Conv, target: string, rateMissing: boolean): InvestmentsTimeMachineResult {
+function convHistorical(h: InvestmentsTimeMachineResult, c: Conv, target: string): InvestmentsTimeMachineResult {
   return {
     ...h,
-    ...(h.attribution ? { attribution: convAttribution(h.attribution, c, target, rateMissing) } : {}),
+    ...(h.attribution ? { attribution: convAttribution(h.attribution, c, target) } : {}),
     holdings:       h.holdings.map((r) => convRow(r, c, target)),
     portfolio:      convPortfolio(h.portfolio, c, target),
     flows:          h.flows ? convFlows(h.flows, c, target) : h.flows,
@@ -224,16 +234,26 @@ export function convertInvestmentsSpaceData(
   data:    InvestmentsSpaceData,
   ctx:     ConversionContext,
   dateISO: string,
-): InvestmentsSpaceData {
+): InvestmentsSpaceData | null {
   const from = data.current.reportingCurrency;
   if (from === ctx.target) return data; // identity fast-path — no conversion, no relabel
+  // PB-11b — no rate ⇒ null: the caller renders "unavailable in <ccy>"
+  // (investmentsDisplayUnavailable), never a source-currency figure.
   const c = makeConv(from, dateISO, ctx);
-  // PB-11 M4 — one rate for the whole contract: does it exist at all?
-  const rateMissing = convertMoney({ amount: 1, currency: from }, dateISO, ctx).amount === null;
+  if (!c) return null;
+  try {
+    return convertWith(data, c, ctx.target);
+  } catch (e) {
+    if (e instanceof DisplayRateMiss) return null;
+    throw e;
+  }
+}
 
+function convertWith(data: InvestmentsSpaceData, c: Conv, target: string): InvestmentsSpaceData {
+  const ctx = { target };
   return {
     current:    convCurrent(data.current, c, ctx.target),
-    ...(data.historical ? { historical: convHistorical(data.historical, c, ctx.target, rateMissing) } : {}),
+    ...(data.historical ? { historical: convHistorical(data.historical, c, ctx.target) } : {}),
     // `activity` IS `historical.flows` re-surfaced — convert it identically so the two
     // can never disagree.
     ...(data.activity ? { activity: convFlows(data.activity, c, ctx.target) } : {}),
