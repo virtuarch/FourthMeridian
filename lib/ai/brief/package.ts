@@ -36,6 +36,10 @@ import type {
 } from '@/lib/ai/types';
 import type { ClassificationReason, FinancialAssessment } from '@/lib/ai/intelligence';
 import { claimEvidence, claimsReachedBy } from './claim-evidence';
+// PB-8c — the SAME floors and rule as the heroes (PB-8b) and the AI snapshot.
+import {
+  balanceCoverageSidesFor, gateWindowChange, type BalanceCoverage,
+} from '@/lib/connections/balance-coverage.core';
 import type {
   BriefChangeWindow, BriefClassification, BriefDelta, BriefPackage, BriefRecentActivity,
 } from './types';
@@ -63,6 +67,13 @@ export interface BriefInputs {
    * established and it gets no evidence entry.
    */
   bankingPopulationKnown?: boolean;
+  /**
+   * PB-8c — the Space's balance-history floors. A change opening before them is
+   * withheld with its reason; null / absent ⇒ every change as before (fail-open).
+   */
+  balanceCoverage?: BalanceCoverage | null;
+  /** PB-8c — the snapshot days that are reconstructions (row `isEstimated`), for the estimated mark. */
+  snapshotEstimatedDates?: readonly string[];
 }
 
 const MAX_GOALS = 3;
@@ -86,6 +97,35 @@ const METRICS: Record<Metric, (p: SnapshotDataPoint) => number | null> = {
   digitalAssets: (p) => p.digitalAssets,
   debt:          (p) => p.liabilities,
 };
+
+/**
+ * PB-8c — each metric's series in the vocabulary `balanceCoverageSidesFor` maps
+ * to balance sides. investments / digitalAssets are composed of neither and are
+ * never gated here (their own coverage disclosures apply).
+ */
+const METRIC_SERIES: Record<Metric, string> = {
+  netWorth: 'netWorth', liquid: 'cash', debt: 'totalLiabilities',
+  investments: 'invested', digitalAssets: 'invested',
+};
+
+/**
+ * PB-8c — put one measured delta through `gateWindowChange` (`changeComparability`):
+ * withheld ⇒ the delta is dropped and its reason recorded on the window;
+ * estimated ⇒ the delta is marked. `estimated` is per-date row reconstruction.
+ */
+function gatedInto(
+  out: BriefChangeWindow, m: Metric, d: BriefDelta, openingISO: string, closingISO: string,
+  cov: BalanceCoverage | null, estimated: ReadonlyMap<string, boolean>,
+): void {
+  const g = gateWindowChange({ fromDate: openingISO, toDate: closingISO }, cov, balanceCoverageSidesFor(METRIC_SERIES[m]), {
+    fromEstimated: estimated.get(openingISO), toEstimated: estimated.get(closingISO),
+  });
+  if (g.withheld) {
+    out.unavailable = { ...out.unavailable, [m]: g.withheld.message };
+    return;
+  }
+  out[m] = g.change?.estimated ? { ...d, estimated: true } : d;
+}
 
 function seriesOf(history: readonly SnapshotDataPoint[], metric: Metric): SeriesPoint[] {
   const pick = METRICS[metric];
@@ -126,13 +166,18 @@ const classified = (
  */
 function presetWindow(
   history: readonly SnapshotDataPoint[], preset: 'PAST_WEEK' | 'PAST_MONTH',
+  cov: BalanceCoverage | null = null, estimated: ReadonlyMap<string, boolean> = new Map(),
 ): BriefChangeWindow | undefined {
   const anchor = canonicalWindowChange(seriesOf(history, 'liquid'), preset, NARRATED);
   if (!anchor) return undefined;
   const out: BriefChangeWindow = { from: anchor.fromDate, to: anchor.toDate };
   for (const m of Object.keys(METRICS) as Metric[]) {
-    const c = canonicalWindowChange(seriesOf(history, m), preset, NARRATED);
-    if (c && c.fromDate === anchor.fromDate && c.toDate === anchor.toDate) out[m] = delta(c);
+    const s = seriesOf(history, m);
+    const c = canonicalWindowChange(s, preset, NARRATED);
+    if (!c || c.fromDate !== anchor.fromDate || c.toDate !== anchor.toDate) continue;
+    // PB-8c — the observation the change actually opened on (at or before fromDate).
+    const opening = s.filter((p) => p.date.toISOString().slice(0, 10) <= c.fromDate).at(-1)!;
+    gatedInto(out, m, delta(c), opening.date.toISOString().slice(0, 10), c.toDate, cov, estimated);
   }
   return out;
 }
@@ -144,7 +189,10 @@ function presetWindow(
  * movement is real but it is not "yesterday", and calling it that would be the
  * accidental-window error in miniature.
  */
-function sincePreviousDay(history: readonly SnapshotDataPoint[]): BriefChangeWindow | undefined {
+function sincePreviousDay(
+  history: readonly SnapshotDataPoint[],
+  cov: BalanceCoverage | null = null, estimated: ReadonlyMap<string, boolean> = new Map(),
+): BriefChangeWindow | undefined {
   if (history.length < 2) return undefined;
   const last = history[history.length - 1];
   const prev = history[history.length - 2];
@@ -157,7 +205,7 @@ function sincePreviousDay(history: readonly SnapshotDataPoint[]): BriefChangeWin
   };
   for (const m of Object.keys(METRICS) as Metric[]) {
     const c = observedChange(at(prev, m), at(last, m), NARRATED);
-    if (c) out[m] = delta(c);
+    if (c) gatedInto(out, m, delta(c), prev.date, last.date, cov, estimated);
   }
   return out;
 }
@@ -259,9 +307,12 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
     : undefined;
 
   // ── Recent change ──
-  const d1 = sincePreviousDay(history);
-  const w1 = presetWindow(history, 'PAST_WEEK');
-  const m1 = presetWindow(history, 'PAST_MONTH');
+  // PB-8c — no window is measured across the balance-history floor.
+  const cov = i.balanceCoverage ?? null;
+  const estimatedOn = new Map(i.snapshotEstimatedDates?.map((d) => [d, true]) ?? []);
+  const d1 = sincePreviousDay(history, cov, estimatedOn);
+  const w1 = presetWindow(history, 'PAST_WEEK', cov, estimatedOn);
+  const m1 = presetWindow(history, 'PAST_MONTH', cov, estimatedOn);
   const recentChanges: BriefPackage['recentChanges'] = {
     ...(d1 ? { d1 } : {}), ...(w1 ? { w1 } : {}), ...(m1 ? { m1 } : {}),
   };

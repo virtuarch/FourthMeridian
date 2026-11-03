@@ -269,3 +269,69 @@ export function changeComparability(
   if (est(e.fromISO, e.fromEstimated) || est(e.toISO, e.toEstimated)) return { state: "estimated" };
   return { state: "comparable" };
 }
+
+// ── PB-8c — the SAME rule, carried by the server-side change claims ──────────
+//
+// PB-8b gated the client heroes; the launcher card's 1M change, the AI
+// snapshot changes (`canonicalChange` / `liabilitiesChange`, the AI history
+// tool's `change` block) and the Daily Brief's `recentChanges` still subtracted
+// across the floor. They now pass through `gateWindowChange`, which is
+// `changeComparability` and nothing else: a withheld change becomes null plus a
+// typed reason the consumer renders or discloses (the AI receives the reason
+// string instead of the number); an estimated one keeps its figure, marked.
+
+/** The typed reason a server-side change claim was withheld. Dates only. */
+export interface WithheldChange {
+  reason:      "PARTIAL_BALANCE_HISTORY";
+  /** YYYY-MM-DD — the coverage floor the comparison crossed. */
+  coveredFrom: string;
+  /** The one wording (`changeUnavailableMessage`). */
+  message:     string;
+}
+
+export function withheldChangeOf(g: ChangeComparability): WithheldChange | null {
+  return g.state === "withheld"
+    ? { reason: "PARTIAL_BALANCE_HISTORY", coveredFrom: g.coveredFromISO, message: g.message }
+    : null;
+}
+
+export interface GatedWindowChange<C> {
+  /** The change, or null when withheld; `estimated: true` when an endpoint is estimated. */
+  change:   (C & { estimated?: true }) | null;
+  withheld: WithheldChange | null;
+}
+
+/**
+ * Gate one already-computed window change. `openingISO` is the date of the
+ * observation the change actually opened on (it may precede `fromDate` when the
+ * series has a gap) — the earlier of the two is the one compared to the floor.
+ * No coverage ⇒ the change unchanged (fail-open, as `changeComparability`).
+ */
+export function gateWindowChange<C extends { fromDate: string; toDate: string }>(
+  change: C | null,
+  cov: BalanceCoverage | null,
+  sides: readonly BalanceCoverageSide[],
+  e: { openingISO?: string | null; fromEstimated?: boolean; toEstimated?: boolean } = {},
+): GatedWindowChange<C> {
+  if (!change) return { change: null, withheld: null };
+  const fromISO = e.openingISO && e.openingISO < change.fromDate ? e.openingISO : change.fromDate;
+  const g = changeComparability(cov, sides, {
+    fromISO, toISO: change.toDate, fromEstimated: e.fromEstimated, toEstimated: e.toEstimated,
+  });
+  if (g.state === "withheld") return { change: null, withheld: withheldChangeOf(g) };
+  if (g.state === "estimated") return { change: { ...change, estimated: true as const }, withheld: null };
+  return { change, withheld: null };
+}
+
+/** Where a coverage read failed — named in the counts-only log line. */
+export type BalanceCoverageSurface =
+  | "ai-snapshot" | "ai-history-tool" | "space-launcher" | "daily-brief" | "client-data-health";
+
+/**
+ * The counts-only line logged when a coverage read FAILS and the change claims
+ * fall open to comparable (no ids, no amounts, no error text — an error message
+ * can carry a query's values). Frequent failures would otherwise be silent.
+ */
+export function balanceCoverageLoadFailureLine(surface: BalanceCoverageSurface, failed: number, of: number): string {
+  return `[balance-coverage] load failed surface=${surface} failed=${failed} of=${of}; change claims fall open to comparable`;
+}

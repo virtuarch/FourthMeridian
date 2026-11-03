@@ -25,6 +25,11 @@ import {
   round2, isoDay, SNAPSHOT_READ_ROWS, MAX_DAILY_POINTS, clampToCeiling, daysAgoISO,
 } from './shared/values';
 import { absentIn } from './shared/reads';
+// PB-8c — the change block obeys the same partial-history floor as the heroes.
+import { loadBalanceCoverageFailOpen } from '@/lib/connections/balance-coverage';
+import {
+  balanceCoverageSidesFor, changeComparability, withheldChangeOf, type BalanceCoverage,
+} from '@/lib/connections/balance-coverage.core';
 
 // ── 6. Net-worth history ─────────────────────────────────────────────────────
 
@@ -76,7 +81,16 @@ export const getNetWorthHistory: ToolDefinition = {
     // row was reported as a fact and the model told the user he had negative net
     // worth in early 2025.
     const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
-    const section = projectSnapshotSection(rows as Snapshot[], 'full');
+    // PB-8c — the floors come from the transcript's own coverage phase
+    // (ctx.balanceCoverage), never from this call's transaction. Only a context
+    // with NO phase runner — whose client holds no transaction to abort — reads
+    // them here; with a phase and no provider the gate falls open.
+    const balanceCoverage = rows.length === 0 ? null
+      : ctx.balanceCoverage ? await ctx.balanceCoverage()
+      : !ctx.phase ? await loadBalanceCoverageFailOpen(ctx.readClient, ctx.spaceId, 'ai-history-tool')
+      : null;
+    const section = projectSnapshotSection(rows as Snapshot[], 'full', balanceCoverage);
+    const estimatedOn = new Map((rows as Snapshot[]).map((r) => [r.date.slice(0, 10), r.isEstimated === true]));
     if (!section) {
       return absentIn(ctx, 'no usable snapshot history for this Space', 'any usable snapshot history');
     }
@@ -175,6 +189,9 @@ export const getNetWorthHistory: ToolDefinition = {
             + 'component could not be valued for that date. Do not state them as amounts, '
             + 'and do not treat a series containing them as a complete trend.'
           : null,
+        // PB-8c — before this date some accounts have no balance history, so a
+        // point there is partial and no change may be measured across it.
+        ...(section.partialHistory ? { partialHistory: section.partialHistory } : {}),
         historyAvailableFrom: section.oldestDate,
         historyAvailableTo:   section.newestDate,
         ...(clamped ? { maxPointsClamped: MAX_DAILY_POINTS } : {}),
@@ -195,7 +212,7 @@ export const getNetWorthHistory: ToolDefinition = {
       // not income received, and debt falling is a debt fact whose effect on net
       // worth is the reader's to state. A metric that could not be established at
       // either end is absent rather than zero.
-      change: changeBlock(pt(inRange[0]), pt(inRange[inRange.length - 1])),
+      change: changeBlock(pt(inRange[0]), pt(inRange[inRange.length - 1]), balanceCoverage, estimatedOn),
       series: picked.map(pt),
     };
   },
@@ -403,20 +420,51 @@ interface ChangeableSnapshotPoint {
 }
 type ChangeMetric = Exclude<keyof ChangeableSnapshotPoint, 'date'>;
 
-function changeBlock(first: ChangeableSnapshotPoint, last: ChangeableSnapshotPoint) {
+/**
+ * PB-8c — each metric's series, in the Wealth vocabulary `balanceCoverageSidesFor`
+ * maps to the balance sides it is composed from (investments / crypto: neither).
+ */
+const CHANGE_METRIC_SERIES: Record<ChangeMetric, string> = {
+  netWorth: 'netWorth', liquid: 'cash', checking: 'cash',
+  investments: 'invested', digitalAssets: 'invested', debt: 'totalLiabilities',
+};
+
+export function changeBlock(
+  first: ChangeableSnapshotPoint, last: ChangeableSnapshotPoint,
+  balanceCoverage: BalanceCoverage | null = null,
+  estimatedOn: ReadonlyMap<string, boolean> = new Map(),
+) {
   const metrics: ChangeMetric[] =
     ['netWorth', 'liquid', 'checking', 'investments', 'digitalAssets', 'debt'];
   const at = (p: ChangeableSnapshotPoint, k: ChangeMetric) =>
     (typeof p[k] === 'number' ? { date: new Date(`${p.date}T00:00:00.000Z`), value: p[k] } : null);
   const out: Record<string, unknown> = {};
+  const unavailable: Record<string, string> = {};
+  let coveredFrom: string | null = null;
   for (const m of metrics) {
     const c = observedChange(at(first, m), at(last, m));
-    if (c) out[m] = { from: c.fromValue, to: c.toValue, abs: round2(c.abs), pct: c.pct };
+    // PB-8c — the same rule as the heroes: across the balance-history floor the
+    // figure is withheld and its REASON takes its place; estimated ⇒ marked.
+    const g = c ? changeComparability(balanceCoverage, balanceCoverageSidesFor(CHANGE_METRIC_SERIES[m]), {
+      fromISO: first.date, toISO: last.date,
+      fromEstimated: estimatedOn.get(first.date), toEstimated: estimatedOn.get(last.date),
+    }) : null;
+    const withheld = g ? withheldChangeOf(g) : null;
+    if (withheld) { unavailable[m] = withheld.message; coveredFrom = withheld.coveredFrom; continue; }
+    if (c) out[m] = { from: c.fromValue, to: c.toValue, abs: round2(c.abs), pct: c.pct,
+      ...(g?.state === 'estimated' ? { estimated: true } : {}) };
   }
-  if (Object.keys(out).length === 0) return null;
+  if (Object.keys(out).length === 0 && Object.keys(unavailable).length === 0) return null;
   return {
     between: { from: first.date, to: last.date },
     ...out,
+    ...(Object.keys(unavailable).length > 0 ? {
+      unavailable,
+      unavailableMeaning: `These changes are NOT measured: on ${first.date} some accounts had no `
+        + `balance history yet (history is partial before ${coveredFrom}), so the difference would be `
+        + 'those accounts arriving, not a change. Say that history is partial before that date; '
+        + 'never state, estimate or recompute a figure for them from the points.',
+    } : {}),
     meaning: 'Each figure is the closing observation minus the opening one for that metric, '
       + 'in the metric\'s own direction — `debt` negative means debt fell. These are MEASURED '
       + 'movements, not causes: an investments rise is not necessarily a market gain, a cash '

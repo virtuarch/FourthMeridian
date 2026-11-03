@@ -26,7 +26,7 @@
 import { emptyPlan, type PendingPlan } from './pending-plan';
 import type { ContinuityLoss } from './runtime-state';
 import {
-  assembleFullContext, buildEvidence, ARM_USES_TOOLS, type Arm, type EvidencePack,
+  assembleFullContext, buildEvidence, readBalanceCoverage, ARM_USES_TOOLS, type Arm, type EvidencePack,
 } from './evidence';
 import { openAiToolSchemas, type ToolContext } from './tools';
 import type { ReadClient } from '@/lib/db/tenant-context';
@@ -176,7 +176,10 @@ export async function openTranscript(args: {
   const memoryRead: MemoryPhasedRead = args.phase
     ? phasedMemoryRead(args.phase)
     : ((fn) => fn(args.memoryClient as never));
-  const ctx = await assembleFullContext(read, spaceCtx, agentId);
+  // PB-8c — the balance-history floors, ONE read per transcript in a phase of its
+  // own (fail-open), shared by the prologue's snapshot domain and the tools.
+  const balanceCoverage = readBalanceCoverage(read, spaceCtx.spaceId);
+  const ctx = await assembleFullContext(read, spaceCtx, agentId, balanceCoverage);
   const evidence = await buildEvidence(read, memoryRead, arm, ctx, spaceCtx);
 
   const usesTools = ARM_USES_TOOLS[arm] && supportsTools(model);
@@ -190,6 +193,7 @@ export async function openTranscript(args: {
   const toolCtx: ToolContext = { spaceCtx, spaceId: spaceCtx.spaceId, asOfISO,
     memoryClient: args.memoryClient, readClient: args.readClient,
     ...(args.phase ? { phase: args.phase } : {}),
+    balanceCoverage: () => balanceCoverage,
     ...(args.memoryWrites === true ? { memoryWrites: true } : {}) };
 
   const messages: unknown[] = [

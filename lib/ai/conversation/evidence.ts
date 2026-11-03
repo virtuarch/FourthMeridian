@@ -45,6 +45,8 @@ import { recallMemories, MemoryKind, type MemoryClient } from './memory-store';
 import { composeMemoryLine, MEMORY_LINE_RULES } from './memory-model';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
 import type { PhasedRead, MemoryPhasedRead } from '@/lib/ai/tenant-phase';
+import { loadBalanceCoverage } from '@/lib/connections/balance-coverage';
+import { balanceCoverageLoadFailureLine, type BalanceCoverage } from '@/lib/connections/balance-coverage.core';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
   resolveActivityWindow, projectActivityFrame, type ActivityFrame,
@@ -126,8 +128,29 @@ export const MEMORY_LINE_DOMAIN = 'memory';
  * opens its own short phase and they run concurrently again, which is also exactly
  * the consistency the prologue has always had. See `PhasedRead`.
  */
+/**
+ * PB-8c — the Space's balance-history floors, in a prologue phase of their OWN.
+ *
+ * ⚠️ NEVER ON ANOTHER READ'S CLIENT. Inside a tenant transaction a failed
+ * statement aborts it ("current transaction is aborted"), so a coverage hiccup
+ * sharing the snapshot domain's phase would take that domain — and the turn's
+ * evidence — down with it. Its own phase isolates it; a failure falls OPEN to
+ * null (every change comparable, as PB-8) with one counts-only log line, and is
+ * never named in `unreadableDomains` (nothing the model reads went missing).
+ * Without a phase runner (`onClient`, the migration-principal harnesses) the read
+ * runs on a client that holds no transaction, so it cannot abort anything either.
+ */
+export function readBalanceCoverage(read: PhasedRead, spaceId: string): Promise<BalanceCoverage | null> {
+  return read('balance_coverage', (c) => loadBalanceCoverage(c, spaceId)).catch(() => {
+    console.warn(balanceCoverageLoadFailureLine('ai-snapshot', 1, 1));
+    return null;
+  });
+}
+
 export async function assembleFullContext(
   read: PhasedRead, spaceCtx: SpaceContext, agentId: string,
+  /** PB-8c — the floors, already in flight (engine.ts shares them with the tools). */
+  balanceCoverage: Promise<BalanceCoverage | null> = readBalanceCoverage(read, spaceCtx.spaceId),
 ): Promise<SpaceContext_AI> {
   const domains: Record<string, ContextDomainSection> = {};
   // RLS-AI-S0 — WHICH AUTHORITIES BROKE, not merely that something did.
@@ -136,8 +159,11 @@ export async function assembleFullContext(
     const a = getAssembler(d);
     if (!a) return;
     try {
+      // PB-8c — awaited OUTSIDE the snapshot domain's phase, then handed to it.
+      const coverage = d === FinanceDomains.SNAPSHOT_HISTORY ? await balanceCoverage : undefined;
       const section = await read(d, (c) =>
-        a(c, spaceCtx, { scopeHint: 'full', positionClass: 'ALL' }));
+        a(c, spaceCtx, { scopeHint: 'full', positionClass: 'ALL',
+          ...(coverage !== undefined ? { balanceCoverage: coverage } : {}) }));
       if (section) domains[d] = section;
     } catch (err) {
       // ⚠️ STILL NON-FATAL, AND STILL THE LESSER EVIL — a broken holdings
@@ -251,7 +277,7 @@ const tok = (s: string) => Math.ceil(s.length / 4);
  * Deliberately excludes: per-account rows, the snapshot series, category and
  * merchant rollups, position detail. Those are what the tools are for.
  */
-function thinCore(
+export function thinCore(
   ctx: SpaceContext_AI,
   /**
    * The trailing-six-month measured frame, or null when it must not exist.
@@ -305,6 +331,11 @@ function thinCore(
     netWorthHistory: snap?.latest ? {
       latest: snap.latest.date, pointsInContext: snap.snapshotCount,
       earliest: snap.oldestDate, changeThisMonth: snap.canonicalChange,
+      // PB-8c — a withheld change arrives as its REASON, never as a number: the
+      // month crosses the balance-history floor, so say that history is partial.
+      ...(snap.canonicalChangeUnavailable
+        ? { changeThisMonthUnavailable: snap.canonicalChangeUnavailable.message } : {}),
+      ...(snap.partialHistory ? { partialHistory: snap.partialHistory.note } : {}),
     } : null,
     signals: ctx.signals.map((s) => `${s.severity}: ${s.title}`),
     // ⚠️ M1 — THE PROHIBITION SITS ON THE EVIDENCE THAT GETS DIVIDED. A tool
