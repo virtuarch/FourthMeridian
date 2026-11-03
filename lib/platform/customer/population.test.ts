@@ -148,7 +148,12 @@ console.log("\n5. copy — the ENGINEERING renames");
     ["components/platform/leads/GrowthLead.tsx", '{ id: "present", label: "Present" }', 'label: "Signed in"'],
     ["components/platform/widgets/CsCustomersWidget.tsx", '<Row label="Live sessions"', "Signed-in sessions"],
     ["components/platform/widgets/security-posture-view.ts", 'label: "Live sessions"', '"Active sessions"'],
-    ["components/platform/widgets/OpsUsersWidget.tsx", 'label="Live sessions"', "With a live session"],
+    ["components/platform/widgets/OpsUsersWidget.tsx", 'label="Accounts with a live session"', 'label="Live sessions"'],
+    ["components/platform/widgets/OpsUsersWidget.tsx", 'label="Accounts with a live session"', 'label="With a live session"'],
+    ["components/admin/AdminSecurityConsole.tsx", ">Live sessions</p>", ">Active sessions</p>"],
+    ["components/platform/leads/GrowthLead.tsx", "in 7 d · ${n(p.active.monthly.engaged)} in 30 d (UTC days)", "this week"],
+    ["components/platform/leads/GrowthLead.tsx", "in 7 d · ${n(p.active.monthly.present)} in 30 d (UTC days)", "this week"],
+    ["lib/presence/definitions.ts", 'label: "today"', "active today"],
     ["components/platform/widgets/GrowthSignupsWidget.tsx", "engaged · 7 d", "active this week"],
     ["lib/platform/economics/snapshot-core.ts", 'label: "Engaged customers · this cycle"', "Active customers · this cycle"],
     ["lib/platform/economics/snapshot-core.ts", 'label: "Cost per engaged customer"', "Cost per active customer"],
@@ -159,6 +164,20 @@ console.log("\n5. copy — the ENGINEERING renames");
     ["components/platform/widgets/CsCustomersWidget.tsx", '<Row label="Last interaction"', '"Last active"'],
   ];
   for (const [f, now, was] of COPY) check(`${path.basename(f)}: "${now}" (was "${was}")`, has(f, now) && !code(read(f)).includes(was));
+}
+
+console.log("\n6. live sessions vs accounts; the auth lockout is not the population rule");
+{
+  const reg = read("lib/platform/intelligence/metrics/registry.ts");
+  const entry = (id: string) => reg.slice(reg.indexOf(`id: "${id}"`), reg.indexOf("\n  },\n", reg.indexOf(`id: "${id}"`)));
+  const live = entry("live-sessions"), accts = entry("accounts-with-live-session");
+  check("live-sessions@1 is explicitly the SESSION count and no longer claims the Growth account tile",
+    /A SESSION count \(UserSession rows, never accounts\)/.test(live) && !/OpsUsersWidget/.test(live) && !/growth-revenue\/users/.test(live));
+  check("accounts-with-live-session@1 is the ACCOUNT count behind Growth's tile",
+    /An ACCOUNT count/.test(accts) && /OpsUsersWidget\.tsx", reads: "data\.withLiveSession"/.test(accts) && /growth-revenue\/users\/route\.ts/.test(accts));
+  check("session-proof says its deletionScheduledAt lock is the AUTH rule (#291), not the population rule",
+    /\/\/ AUTH lockout \(#291\)[^\n]*NOT the Open-account population rule[^\n]*\n\s*user:\s+\{ is: \{ [^\n]*deactivatedAt: null, deletionScheduledAt: null/.test(read("lib/auth/session-proof.ts")));
+  check("population.ts says the same from its side", /Population rule only: a session's lockout is the separate AUTH rule \(#291, liveSessionWhere\)/.test(read("lib/platform/customer/population.ts")));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

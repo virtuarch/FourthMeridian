@@ -109,7 +109,10 @@ function onlyUndecided(policy: { readonly status: "UNDECIDED" }): void {
 
 // ── Open account ─────────────────────────────────────────────────────────────
 
-/** THE open-account `where` (UserWhereInput fragment): not deactivated, which covers pending deletion. */
+/**
+ * THE open-account `where` (UserWhereInput fragment): not deactivated, which covers pending deletion.
+ * Population rule only: a session's lockout is the separate AUTH rule (#291, liveSessionWhere), which also checks deletionScheduledAt — keep them distinct.
+ */
 export const OPEN_ACCOUNT_WHERE = { deactivatedAt: null };
 
 /** Its complement: deactivated, or pending deletion (which also stamps deactivatedAt). */

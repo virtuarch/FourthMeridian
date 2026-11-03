@@ -179,6 +179,7 @@ export function liveSessionWhere<U extends object = Record<never, never>>(
     revokedAt:    null,
     createdAt:    { gte: createdAfter },
     lastActiveAt: { gte: activeAfter },
+    // AUTH lockout (#291), deliberately both stamps — a session rule, NOT the Open-account population rule (lib/platform/customer/population.ts).
     user:         { is: { ...(extra.userWhere ?? ({} as U)), deactivatedAt: null, deletionScheduledAt: null } },
   };
 }
