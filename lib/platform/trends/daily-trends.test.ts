@@ -44,9 +44,11 @@ console.log("Security reader — counts only, no identity, no metadata load");
 console.log("Customer Success reader — counts only, no subject, no detail");
 {
   const s = code("lib/platform/customer/incidents-daily.ts");
-  check("selects exactly three timestamps", /select: \{ createdAt: true, firstOccurredAt: true, resolvedAt: true \}/.test(s));
+  // PB-4 — the series reads the CANONICAL episodes through the incident projection (no direct SyncIssue read,
+  // no select of its own); the projection returns ids, states and instants only.
+  check("reads no SyncIssue row itself (no findMany / select here)", !/syncIssue\.findMany|select:/.test(s));
   check("never touches detail, account, item, kind or subject", !/detail|financialAccount|plaidItem|kind|subject|incidentKey/.test(s.replace(/import[^;]+;/g, "")));
-  check("fm_system reader with a row cap and a floor flag", /systemDb\.syncIssue\.findMany/.test(s) && /take: INCIDENTS_DAILY_ROW_CAP/.test(s) && /floor:/.test(s));
+  check("fm_system reader with a row cap and a floor flag", /getIncidentEpisodeTimeline\(since, INCIDENTS_DAILY_ROW_CAP, systemDb\)/.test(s) && /floor: scanTruncated/.test(s));
   const r = code("app/api/platform/customer-success/incidents-daily/route.ts");
   check("route: CUSTOMER_SUCCESS READ, GET only, no-store", /requirePlatformAccess\("CUSTOMER_SUCCESS", "READ"\)/.test(r) && !/export async function (POST|PUT|PATCH|DELETE)/.test(r) && /no-store/.test(r));
 }

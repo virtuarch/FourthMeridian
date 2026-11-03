@@ -19,10 +19,10 @@ import "server-only";
 import { db } from "@/lib/db";
 import {
   classifySyncIssue,
-  syncIssueState,
   type SyncIssueState,
   type SyncIssueClassification,
 } from "@/lib/platform/sync-issue-semantics";
+import { episodeStateOf, incidentEpisodes, type EpisodeInstant } from "./episodes-core";
 
 export interface IncidentOccurrenceView {
   id: string;
@@ -96,12 +96,14 @@ const SELECT = {
  * longer exists describes nothing and is `orphaned` — which is also how the
  * known test-pollution rows are handled, WITHOUT mutating them.
  */
-async function referentExistence(rows: Row[]): Promise<Map<string, boolean>> {
+type ReferentRow = Pick<Row, "id" | "financialAccountId" | "plaidItemId">;
+
+async function referentExistence(rows: readonly ReferentRow[], client: typeof db): Promise<Map<string, boolean>> {
   const accountIds = [...new Set(rows.map((r) => r.financialAccountId).filter((x): x is string => !!x))];
   const itemIds = [...new Set(rows.map((r) => r.plaidItemId).filter((x): x is string => !!x))];
   const [accounts, items] = await Promise.all([
-    accountIds.length ? db.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true } }) : [],
-    itemIds.length ? db.plaidItem.findMany({ where: { id: { in: itemIds } }, select: { id: true } }) : [],
+    accountIds.length ? client.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true } }) : [],
+    itemIds.length ? client.plaidItem.findMany({ where: { id: { in: itemIds } }, select: { id: true } }) : [],
   ]);
   const liveAccounts = new Set(accounts.map((a) => a.id));
   const liveItems = new Set(items.map((i) => i.id));
@@ -139,7 +141,8 @@ function toView(r: Row, referentExists: boolean, correlated: number): IncidentVi
     id: r.id, kind: r.kind, provider: r.provider,
     plaidItemId: r.plaidItemId, financialAccountId: r.financialAccountId,
     incidentKey: r.incidentKey,
-    state: syncIssueState(classifiable, { referentExists, resolved: r.resolved }),
+    // PB-4 — the ONE row → state call (episodes-core.ts), shared with the CS trend.
+    state: episodeStateOf(r, referentExists),
     classification: classifySyncIssue(classifiable),
     firstOccurredAt: (r.firstOccurredAt ?? r.createdAt).toISOString(),
     lastOccurredAt: (r.lastOccurredAt ?? r.createdAt).toISOString(),
@@ -154,7 +157,7 @@ function toView(r: Row, referentExists: boolean, correlated: number): IncidentVi
 }
 
 async function build(rows: Row[]): Promise<IncidentView[]> {
-  const [referents, correlated] = await Promise.all([referentExistence(rows), correlatedCounts(rows)]);
+  const [referents, correlated] = await Promise.all([referentExistence(rows, db), correlatedCounts(rows)]);
   return rows.map((r) => toView(r, referents.get(r.id) ?? true, correlated.get(r.id) ?? 0));
 }
 
@@ -189,6 +192,36 @@ export async function getActiveIncidentPage(
   });
   const incidents = (await build(rows as Row[])).filter((v) => v.state === "active");
   return { incidents, scanTruncated: rows.length === limit };
+}
+
+/**
+ * PB-4 — the canonical incident EPISODES touching a window, for an opened /
+ * resolved trend (lib/platform/customer/incidents-daily.ts).
+ *
+ * The same state derivation as getActiveIncidentPage (`episodeStateOf`, the
+ * same referent check), so the trend's still-open episodes are exactly the
+ * active incidents above and an EVENT row (a REMOVED_TOMBSTONE, say) is never
+ * "opened". Returns only ids, states and instants — `detail` is read to
+ * classify and never leaves this function.
+ */
+export async function getIncidentEpisodeTimeline(
+  since: Date,
+  cap: number,
+  client: typeof db,
+): Promise<{ episodes: EpisodeInstant[]; scanTruncated: boolean }> {
+  const rows = await client.syncIssue.findMany({
+    where: { OR: [{ createdAt: { gte: since } }, { firstOccurredAt: { gte: since } }, { resolvedAt: { gte: since } }] },
+    select: {
+      id: true, kind: true, provider: true, plaidItemId: true, financialAccountId: true, plaidTransactionId: true,
+      detail: true, resolved: true, firstOccurredAt: true, resolvedAt: true, createdAt: true,
+    },
+    take: cap,
+  });
+  const referents = await referentExistence(rows, client);
+  return {
+    episodes: incidentEpisodes(rows.map((r) => ({ ...r, kind: String(r.kind), provider: String(r.provider) })), (id) => referents.get(id) ?? true),
+    scanTruncated: rows.length >= cap,
+  };
 }
 
 /** Everything that is no longer active — resolved conditions and evidence alike. */

@@ -25,6 +25,7 @@ import type { MiniBarPoint, StatusTone } from "@/components/platform/platform-su
 import type { ProvenanceKind } from "@/components/platform/ui/ProvenanceChip";
 import { platformAreaHref } from "@/lib/platform/directory";
 import { platformWorkspaceHref } from "@/lib/space/use-platform-workspace-navigation";
+import { unrecoveredFailed } from "@/lib/platform/refresh/recovery-core";
 
 /** How many trailing UTC days a tile's trend shows. */
 export const TREND_DAYS = 14;
@@ -461,7 +462,7 @@ export function spaceTiles(signals: OverviewSignals, spaces: readonly OverviewSp
     if (space.area === "PLATFORM_OPS" && signals.PLATFORM_OPS) {
       const ops = signals.PLATFORM_OPS;
       tiles.push(tileFrom(base("ops-refresh-failures", `Refresh failures · ${TREND_DAYS} d`, "count", "MEASURED", platformWorkspaceHref("PLATFORM_OPS", "platform-overview", "pipeline")), ops.refreshDaily, (d) => {
-        const points = trailingPoints(d.days, (x) => x.byStatus.FAILED ?? 0, "bad");
+        const points = trailingPoints(d.days, (x) => unrecoveredFailed(x), "bad"); // PB-7 — recovered ≠ failed
         const total = sumObserved(points);
         return { value: total === null ? null : count(total), points, caption: `UTC days · last ${points.length} · refresh ledger`, note: d.floor ? "floor — older days not loaded" : undefined, asOf: d.envelope?.checkedAt ?? null };
       }));

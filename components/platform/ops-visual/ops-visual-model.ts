@@ -31,6 +31,7 @@ import type { RefreshDailySeries } from "@/lib/platform/refresh/types";
 import type { OperationCommand } from "@/lib/platform/operations/registry";
 import { SCHEDULED_JOB_NAMES, continuationOf, jobLabel, manualAvailability } from "./job-catalog";
 import { skipLabel, skipReasonText } from "@/lib/jobs/skip-label";
+import { unrecoveredFailed } from "@/lib/platform/refresh/recovery-core";
 
 /** A fetched source as the house hooks return it. */
 export interface Fetched<T> { data: T | null; loading: boolean; error: string | null }
@@ -486,7 +487,7 @@ export function refreshDays(series: RefreshDailySeries, nowMs: number, days: num
   return Array.from({ length: days }, (_, i) => addDays(end, i - (days - 1))).map((day) => {
     const d = by.get(day);
     if (!d || day < from) return { day, succeeded: 0, failed: 0, other: 0, observed: false };
-    const failed = d.byStatus.FAILED ?? 0;
+    const failed = unrecoveredFailed(d); // PB-7 — a recovered execution is not a failure (it counts as "other")
     const succeeded = d.byStatus.SUCCEEDED ?? 0;
     return { day, succeeded, failed, other: Math.max(0, d.total - failed - succeeded), observed: true };
   });

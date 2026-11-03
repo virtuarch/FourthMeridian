@@ -29,6 +29,7 @@ import { trailingPoints } from "../overview/overview-model";
 import type { PlatformViewLeadProps } from "./lead-contract";
 import { LeadSection } from "./lead-kit";
 import type { Fetched } from "./operations-model";
+import { NewConnectionImportsTile } from "./NewConnectionImportsTile";
 
 export type PipelineDrawer = "endpoints" | "connections" | "coverage";
 
@@ -52,7 +53,9 @@ export function pipelineKpis(summary: Fetched<RefreshSummary>): PipelineKpi[] {
   const r = s && !observed ? "no executions in the window" : reason;
   return [
     { key: "executions", label: "Executions", value: s ? n(s.executions) : null, unavailableReason: reason, note: s ? `${s.window.from.slice(0, 10)} → ${s.window.to.slice(0, 10)}` : undefined },
-    { key: "failed", label: "Failed", value: v(s?.byStatus.FAILED), unavailableReason: r },
+    // PB-7 — reaped executions a later success superseded are RECOVERED, not failed.
+    { key: "failed", label: "Failed", value: v(Math.max(0, (s?.byStatus.FAILED ?? 0) - (s?.recovered ?? 0))), unavailableReason: r,
+      note: s && (s.recovered ?? 0) > 0 ? `${n(s.recovered ?? 0)} interrupted, then recovered` : undefined },
     { key: "partial", label: "Partial", value: v(s?.byStatus.PARTIAL), unavailableReason: r },
     { key: "running", label: "Running", value: s ? n(s.openExecutions) : null, unavailableReason: reason },
   ];
@@ -67,7 +70,7 @@ export function PipelineLeadSurface({ summary, daily, overview, hasHosted, onOpe
   onSelectExecution: (s: { id: string; eyebrow: string; title: string }) => void;
 }) {
   const kpis = pipelineKpis(summary);
-  const failedPoints = trailingPoints(daily.data?.days, (d) => d.byStatus.FAILED ?? 0, "bad");
+  const failedPoints = trailingPoints(daily.data?.days, (d) => Math.max(0, (d.byStatus.FAILED ?? 0) - (d.recovered ?? 0)), "bad");
   const totalPoints = trailingPoints(daily.data?.days, (d) => d.total);
   const failures = (overview.data?.latestFailures ?? []).slice(0, 5);
   const drawers = DRAWERS.filter((d) => hasHosted(d.key));
@@ -132,6 +135,8 @@ export function PipelineLead({ renderHosted, hasHosted, onOpenWorkspace }: Platf
   return (
     <>
       <PipelineLeadSurface summary={summary} daily={daily} overview={overview} hasHosted={hasHosted} onOpenDrawer={setDrawer} onSelectExecution={setExecution} />
+      {/* PB-7 — how new customers' first imports went (counts only). */}
+      <div className="mt-4 md:mt-6"><NewConnectionImportsTile /></div>
       <DetailDrawer open={open != null} onClose={() => setDrawer(null)} eyebrow="Pipeline" title={open?.name ?? ""} size="xl">
         {open ? renderHosted(open.key, go) : null}
       </DetailDrawer>
