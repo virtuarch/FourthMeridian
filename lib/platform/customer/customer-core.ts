@@ -27,6 +27,10 @@ import { deriveConnectionHealthState, type HealthState } from "@/lib/connections
 import { priceAiUsage, type UsageRowLike } from "@/lib/usage/pricing";
 import { recoveredExecutionIds } from "@/lib/platform/refresh/recovery-core";
 import {
+  PRESENCE_LABELS, derivePresenceState, lastActiveBucket,
+  type LastActiveBucket, type PresenceClocks, type PresenceState,
+} from "@/lib/presence/definitions";
+import {
   ENGAGEMENT_AI_SURFACES, FUNNEL_STAGE_LABELS, furthestStage, stageReachedAt,
 } from "@/lib/platform/growth/product-analytics-core";
 
@@ -176,19 +180,34 @@ export function projectSpaces(rows: readonly MembershipRow[]): CustomerSpaceView
 
 // ── Activity ──────────────────────────────────────────────────────────────────
 
+/**
+ * PB-10 — the customer's activity, as the SIX separate facts of
+ * lib/presence/definitions.ts (never one conflated clock):
+ *   presence      Active now / Online, idle / Offline / Unknown — from the
+ *                 visible-tab heartbeat clocks (lastPresenceAt, lastInteractionAt)
+ *   lastActive    a COARSE bucket of the newest reported interaction — never the
+ *                 raw beat timestamp (operators see "within 5 min", "active today")
+ *   lastLoginAt   the newest LOGIN audit row (a real sign-in time is fine to show)
+ *   activeSessions valid sessions — NOT proof any browser is open
+ * UserSession.lastActiveAt (session last USED — background polls and focus
+ * refetches included) is deliberately NOT an input: it is SEC-010's clock.
+ * lastInteractionAt is client-asserted (low trust): presence + this display only.
+ */
 export interface ActivityView {
-  lastActiveAt: string | null;
-  /** Which authority answered: the throttled session clock, the LOGIN audit row, or nothing. */
-  lastActiveSource: "SESSION" | "LOGIN" | "NONE";
+  presence: PresenceState;
+  presenceLabel: string;
+  lastActive: { bucket: LastActiveBucket; label: string };
   lastLoginAt: string | null;
   activeSessions: number;
 }
 
-export function projectActivity(args: { lastSessionActiveAt: Date | null; lastLoginAt: Date | null; activeSessions: number }): ActivityView {
-  const session = args.lastSessionActiveAt; const login = args.lastLoginAt;
-  const best = session && (!login || session >= login) ? { at: session, src: "SESSION" as const }
-    : login ? { at: login, src: "LOGIN" as const } : null;
-  return { lastActiveAt: iso(best?.at ?? null), lastActiveSource: best?.src ?? "NONE", lastLoginAt: iso(login), activeSessions: args.activeSessions };
+export function projectActivity(args: { presence: PresenceClocks; lastLoginAt: Date | null; activeSessions: number; now: Date }): ActivityView {
+  const presence = derivePresenceState(args.presence, args.now);
+  return {
+    presence, presenceLabel: PRESENCE_LABELS[presence],
+    lastActive: lastActiveBucket(args.presence.lastInteractionAt, args.now),
+    lastLoginAt: iso(args.lastLoginAt), activeSessions: args.activeSessions,
+  };
 }
 
 // ── Connections & health ──────────────────────────────────────────────────────

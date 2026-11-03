@@ -45,6 +45,7 @@ import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT, SESS
 import { clientTokenPatch } from "@/lib/auth/token-update";
 import { getClientIp, UNKNOWN_CLIENT_IP } from "@/lib/security/client-ip";
 import { touchSessionActivity } from "@/lib/auth/session-activity";
+import { isSessionTouchSuppressed } from "@/lib/auth/presence-scope";
 import { checkKeyLimitStrict, peekKey } from "@/lib/rate-limit";
 import { captureAuthInfraFailure, captureSessionRevocationFailure } from "@/lib/monitoring/capture";
 import { SESSION_INDETERMINATE_FLAG } from "@/lib/auth/session-outcome";
@@ -738,7 +739,12 @@ export const authOptions: NextAuthOptions = {
       // BETA A2 — the same statement writes the SESSION_ACTIVE_DAY presence
       // row on the day's first touch (fm_auth INSERT, no read-back); nothing
       // else about this call changed.
-      if (outcome.disposition === "LIVE") {
+      // PB-10 — EXCEPT inside the presence heartbeat's own request scope
+      // (lib/auth/presence-scope.ts): a heartbeat is not session USE, and
+      // letting it touch would keep an open tab's lastActiveAt fresh forever,
+      // defeating the SEC-010 idle cut-off. Only the touch is skipped; every
+      // check above ran exactly as on any other request.
+      if (outcome.disposition === "LIVE" && !isSessionTouchSuppressed()) {
         await touchSessionActivity(db, sessionToken, verdict.userId).then(undefined, () => 0);
       }
 

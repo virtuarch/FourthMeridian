@@ -14,6 +14,8 @@ import { PLATFORM_SPACE_COOKIE, resolveCurrentPlatformSpace, type PlatformSpaceO
 import { displaySpaceName } from "@/lib/format";
 import { readAppNoticeStatus } from "@/lib/platform/notices/app-notice-status";
 import { ReactNode } from "react";
+// PB-10 — the visible-tab presence heartbeat (renders nothing; lib/presence/definitions.ts).
+import { PresenceHeartbeat } from "@/components/presence/PresenceHeartbeat";
 
 // Applies to every page nested under this layout (all /dashboard/* tabs) —
 // kept explicit per-page too since route-segment config inheritance for
@@ -113,6 +115,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   return (
     <DisplayCurrencyProvider currency={displayCurrency}>
+      <PresenceHeartbeat />
       <DashboardChrome hasPlatformGrants={hasPlatformGrants} platformSpaces={platformSpaces} platformArea={platformArea} noticeStatus={noticeStatus}>{children}</DashboardChrome>
     </DisplayCurrencyProvider>
   );
