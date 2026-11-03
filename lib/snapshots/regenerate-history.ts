@@ -201,7 +201,7 @@ export interface RegenerateWealthHistoryResult {
   // 2026-07-15 — days left untouched because an account was removed from the
   // Space after that date. See regenerate-history.core.ts's
   // "MEMBERSHIP CHANGED" guard and
-  // docs/plans/CONNECTIONS-CRYPTO-HISTORY-CLOSEOUT-2026-10-30.md §3.1 (the §9 membership guard).
+  // docs/systems/historical-data.md "Regeneration membership guard".
   skippedMembershipChanged: number;
   /**
    * 2026-10-30 — operator diagnostic for the per-link membership guard: every

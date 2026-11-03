@@ -21,7 +21,7 @@
 | `v2.6` (local = origin) | `cde8fa0`, untouched |
 | A5 previously performed? | **No.** Preview had 126 applied, 0 of `202610220%` (§2). |
 | Shell | Node 24.21.0; `pg_dump`/`psql` 18.4; no exported `DATABASE_URL`/`DIRECT_URL`/`SHADOW_DATABASE_URL`/`FM_DB_GUARD` |
-| Credentials | A fresh mode-600 copy of the Preview migration-principal file (project ref `lqag…`), in `~/fm-rehearsal-private/` (700). Loaded into one subshell at a time. **Deleted** (`rm -P`) after the checks. No value printed or committed. |
+| Credentials | A fresh mode-600 copy of the Preview migration-principal file (project ref `<redacted: Preview project ref>`), in `~/fm-rehearsal-private/` (700). Loaded into one subshell at a time. **Deleted** (`rm -P`) after the checks. No value printed or committed. |
 
 ## 1. Target identity (read-only, `BEGIN TRANSACTION READ ONLY`, 19:19:21 UTC)
 
@@ -30,13 +30,13 @@
 | `transaction_read_only` | on | on |
 | `server_version` | 17.6 | 17.6 |
 | database / user | postgres / postgres | postgres / postgres (non-superuser, BYPASSRLS, CREATEROLE) |
-| Host | Preview pooler | `aws-1-ap-southeast-1.pooler.supabase.com:5432`, user `postgres.lqag…` |
+| Host | Preview pooler | `<redacted: pooler host>:5432`, user `postgres.<redacted: Preview project ref>` |
 | Applied / unfinished-or-rolled-back | 126 / 0 | 126 / 0 |
 | Newest | `20261016000000_customer_ai_allowance_override` | same |
 | `JobRun` fingerprint | 1 @ 2026-10-07 19:09:08.654 | **1 @ 2026-10-07 19:09:08.654** (Preview, not Production) |
 | Users / Spaces / accounts / transactions | 5 / 14 / 67 / 1,258 (doc 17 §0) | 5 / 14 / 67 / 1,258 |
 | User-id hash | `44fc14c1…` | `44fc14c1` |
-| `db-guard --mode=migrate-deploy` (identity only, no connection) | pass | `target aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres via DIRECT_URL (LIVE)` |
+| `db-guard --mode=migrate-deploy` (identity only, no connection) | pass | `target <redacted: pooler host>:5432/postgres via DIRECT_URL (LIVE)` |
 
 ## 2. Migration set and checksums
 
@@ -126,7 +126,7 @@ npm run db:migrate:safe
 | Step | Output |
 |---|---|
 | Command start | 2026-10-22 19:24:53 UTC |
-| `db-guard` | `target …pooler.supabase.com:5432/postgres via DIRECT_URL (LIVE)` |
+| `db-guard` | `target <redacted: pooler host>:5432/postgres via DIRECT_URL (LIVE)` |
 | `db:backup` | `verified row-for-row across 52 non-empty table(s)` (4229.4 KB) |
 | `prisma migrate deploy` | `135 migrations found`; nine `Applying migration …` lines in order; `All migrations have been successfully applied.` Exit 0. **No DB-006 NOTICE.** |
 | Migration window (`_prisma_migrations`) | `…000000` 19:28:53.275 → `…001000` finished 19:29:06.657. Each `applied_steps_count=1`, no logs. |

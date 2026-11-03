@@ -83,11 +83,11 @@
  *
  * ── Expected Production candidate set (documentation only) ──────────────────
  *
- * The 2026-10-27 audit (docs/plans/P1-AMEX-TRANSFER-CLASSIFICATION-AUDIT-2026-10-27.md)
- * and the read-only reconstruction (docs/plans/P1-PRODUCTION-REPAIR-CANDIDATES-2026-10-27.md)
- * measured 16 Chase-checking legs, −$24,372.67, 2025-09-11 → 2026-10-26: 13 posted
- * (−22,000.00) and 3 pending (−2,372.67); 14 paired to the Amex HYSA, 1 to Amex
- * checking, 1 unpaired (→ the 0.2 unresolved signature, needsClassification). A
+ * The 2026-10-27 read-only audit and reconstruction (owner's private record;
+ * amounts and account details are deliberately not reproduced in this public
+ * repository) measured 16 checking-account legs: 13 posted and 3 pending; 14
+ * paired to a savings account, 1 to another checking account, 1 unpaired
+ * (→ the 0.2 unresolved signature, needsClassification). A
  * fresh dry run immediately before any apply is still required: syncs change the
  * set. Money totals do not move: an unattested DEBT_PAYMENT cash leg and a
  * TRANSFER leg resolve identically on the liquidity axis.

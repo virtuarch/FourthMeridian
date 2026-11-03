@@ -120,8 +120,8 @@ export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
  * History — debt-semantics-1: recent-activity rows carry the resolved `nature`;
  * an internal transfer between the user's own accounts is "moved between your
  * accounts", never a payment or a debt reduction; an unclassified movement is
- * described only as money that moved (docs/plans/RESOLVED-TRANSACTION-NATURE-
- * CONTRACT-2026-10-27.md).
+ * described only as money that moved (docs/systems/transactions.md, "Resolved
+ * transaction nature").
  */
 export const BRIEF_PROMPT_REVISION = 'debt-semantics-2';
 

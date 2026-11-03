@@ -357,7 +357,7 @@ Conversation transcript untouched. The model can always re-fetch.
 | `scripts/ai-conversation-baseline.ts` | +~8 / −2 · validate the model choice |
 | `scripts/ai-baseline/tools.ts` | +~140 / −40 · clips 2–5 |
 | `scripts/ai-baseline/baseline.test.ts` | +~60 · below |
-| `docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md` | update §6, §12, §14 |
+| `docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md` (since folded into `docs/systems/ai-foundation.md` §8) | update §6, §12, §14 |
 
 **No `lib/` financial authority changes. No production route change. No new subsystem.**
 `projectSnapshotSection`, `projectCash`, `queryTransactions` and the exploration tree are all

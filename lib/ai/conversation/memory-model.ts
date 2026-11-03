@@ -930,7 +930,7 @@ export type RuleRendering = 'clause' | 'sentence';
  * fields ARE the arguments, so "run my remembered strategy" is a copy rather
  * than a parse — but a literal clause on every request could prime the model to
  * apply it unasked. Which one ships is decided by measurement, recorded in
- * docs/plans/AI-FINANCIAL-MEMORY-V2-DESIGN.md (ruling R6), not by preference.
+ * docs/systems/ai-foundation.md §5.3 (ruling R6), not by preference.
  */
 export const MEMORY_LINE_RULES: RuleRendering = 'clause';
 

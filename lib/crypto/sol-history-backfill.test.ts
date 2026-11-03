@@ -2,7 +2,7 @@
  * lib/crypto/sol-history-backfill.test.ts  (Connections pass PR 5 — Solana history RCA)
  *
  * The two defects that kept a newly connected Solana wallet from ever getting
- * history (docs/plans/SOLANA-HISTORY-RCA-2026-10-28.md):
+ * history (docs/archive/evidence/incidents/SOLANA-HISTORY-RCA-2026-10-28.md):
  *   1. a v0 transaction using Address Lookup Tables threw in the parser, so the
  *      whole reconstruction was refused as PROVIDER_FAILED;
  *   2. the replay window was the caller's evidence floor — for Solana, which

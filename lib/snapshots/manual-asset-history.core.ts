@@ -19,7 +19,7 @@
  *   TIER    what a day valued from the resolver does to the row's trust;
  *   VALUE   the resolver's answer for the day, or "contribute nothing".
  *
- * ── Owner decisions this encodes (docs/plans/RWA-2-ASSET-VALUATION-HISTORY.md §5)
+ * ── Owner decisions this encodes (docs/systems/wealth.md, "Manual real-world asset valuation history")
  *   · Nothing before ownership. The floor is the FIRST ANCHOR — the acquisition
  *     date when the purchase price was opted in as a starting value, else the
  *     first recorded valuation. A day after acquisition but before the first

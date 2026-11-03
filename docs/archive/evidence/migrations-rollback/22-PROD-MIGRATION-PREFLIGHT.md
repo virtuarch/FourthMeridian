@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23. **Method:** read-only. Sources were the 47 `prisma/migrations/<name>/migration.sql` files on `origin/v2.6` (`27c3ca2`), the first 88 migrations concatenated and `prisma/schema.prisma` at `87e4df7` (55 models + `_prisma_migrations` = 56 tables), and old-app code read with `git show 9ea5881:<path>`. `9ea5881` differs from `87e4df7` only in `package.json` / `package-lock.json` (`git diff --stat`), so the old-app reading applies to both. No database, Vercel, Supabase or network connection was made. No build or test was run. The combined SQL below has **not been executed anywhere**. Its syntax was checked by reading only, so run it once in the SQL editor before relying on it.
 
-**Inputs taken as given (from the brief):** Production runs Supabase PG 17.6. It has applied exactly the first 88 migrations (newest `20260727_v26pre_b4_btc_identity_backstop`). `postgres` is non-superuser with BYPASSRLS and CREATEROLE. There are no `fm_*` roles, and RLS is enabled nowhere. The pending list is `/Users/chrstn/fm-rehearsal-private/prod-pending-migrations.txt` (47 names, identical to directories 89–135).
+**Inputs taken as given (from the brief):** Production runs Supabase PG 17.6. It has applied exactly the first 88 migrations (newest `20260727_v26pre_b4_btc_identity_backstop`). `postgres` is non-superuser with BYPASSRLS and CREATEROLE. There are no `fm_*` roles, and RLS is enabled nowhere. The pending list is `<redacted: owner's private path>/prod-pending-migrations.txt` (47 names, identical to directories 89–135).
 
 ## 0. Verdict in one paragraph
 
