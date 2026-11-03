@@ -20,6 +20,7 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
+import { listSubjectStageAttempts } from "@/lib/platform/refresh/execution-query";
 import { EVIDENCE_DIGEST_SELECT, evidenceDigestOf } from "../evidence";
 import { loadOccurrenceAccounts, loadSubjectFacts } from "../subjects";
 import { assertAudienceToken, type CsToken, type OpsToken, type SystemToken } from "./audience";
@@ -51,9 +52,10 @@ export type IncidentFactsReader = {
   syncIssueOccurrence: Pick<Db["syncIssueOccurrence"], "findMany" | "groupBy">;
   syncIssueArchive: Pick<Db["syncIssueArchive"], "findMany">;
   syncIssueRelation: Pick<Db["syncIssueRelation"], "findMany">;
-  refreshEndpointResult: Pick<Db["refreshEndpointResult"], "findMany">;
   financialAccount: Pick<Db["financialAccount"], "findMany">;
   plaidItem: Pick<Db["plaidItem"], "findMany">;
+  /** Stage attempts on subjects — the refresh ledger's ROW SEAM (never the ledger directly). */
+  stageAttempts: typeof listSubjectStageAttempts;
 };
 
 const ROW_SELECT = {
@@ -89,7 +91,7 @@ export interface LoadOptions {
  */
 export async function loadAttemptEvidence(
   rows: readonly IncidentRowFacts[],
-  client: Pick<IncidentFactsReader, "refreshEndpointResult">,
+  client: Pick<IncidentFactsReader, "stageAttempts">,
   now: Date,
 ): Promise<Map<string, AttemptEvidence>> {
   const out = new Map<string, AttemptEvidence>();
@@ -118,23 +120,9 @@ export async function loadAttemptEvidence(
   const accountIds = [...new Set(scoped.map((n) => n.subject!.account).filter((x): x is string => !!x))];
   const endpoints = [...new Set(scoped.flatMap((n) => n.endpoints))];
   const minSince = new Date(Math.min(...scoped.map((n) => n.since.getTime())));
-  let results: { endpoint: string; status: string; startedAt: Date; execution: { plaidItemId: string | null; sourceRef: string | null } }[];
+  let results: Awaited<ReturnType<typeof listSubjectStageAttempts>>;
   try {
-    results = await client.refreshEndpointResult.findMany({
-      where: {
-        endpoint: { in: endpoints },
-        startedAt: { gt: minSince },
-        execution: {
-          OR: [
-            ...(itemIds.length ? [{ plaidItemId: { in: itemIds } }] : []),
-            ...(accountIds.length ? [{ sourceRef: { in: accountIds } }] : []),
-          ],
-        },
-      },
-      select: { endpoint: true, status: true, startedAt: true, execution: { select: { plaidItemId: true, sourceRef: true } } },
-      orderBy: { startedAt: "desc" },
-      take: ATTEMPT_SCAN_CAP,
-    });
+    results = await client.stageAttempts({ plaidItemIds: itemIds, sourceRefs: accountIds, endpoints, after: minSince, take: ATTEMPT_SCAN_CAP });
   } catch {
     for (const n of scoped) out.set(n.id, UNKNOWN_EVIDENCE);
     return out;
@@ -147,7 +135,7 @@ export async function loadAttemptEvidence(
     let lastAttemptAt: Date | null = null;
     let lastSkipAt: Date | null = null;
     for (const x of results) {
-      const onSubject = n.subject!.item ? x.execution.plaidItemId === n.subject!.item : x.execution.sourceRef === n.subject!.account;
+      const onSubject = n.subject!.item ? x.plaidItemId === n.subject!.item : x.sourceRef === n.subject!.account;
       if (!onSubject || !n.endpoints.includes(x.endpoint) || x.startedAt.getTime() <= n.since.getTime()) continue;
       if (x.status === "SKIPPED") { if (!lastSkipAt || x.startedAt > lastSkipAt) lastSkipAt = x.startedAt; }
       else if (!lastAttemptAt || x.startedAt > lastAttemptAt) lastAttemptAt = x.startedAt;
@@ -294,4 +282,12 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
 }
 
 /** The production accessors (fm_system, the operator-console authority). */
-export const incidentAccessors: IncidentAccessors = createIncidentAccessors(systemDb);
+export const incidentAccessors: IncidentAccessors = createIncidentAccessors({
+  syncIssue: systemDb.syncIssue,
+  syncIssueOccurrence: systemDb.syncIssueOccurrence,
+  syncIssueArchive: systemDb.syncIssueArchive,
+  syncIssueRelation: systemDb.syncIssueRelation,
+  financialAccount: systemDb.financialAccount,
+  plaidItem: systemDb.plaidItem,
+  stageAttempts: listSubjectStageAttempts,
+});
