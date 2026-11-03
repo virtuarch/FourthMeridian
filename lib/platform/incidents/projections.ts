@@ -22,7 +22,7 @@ import {
   type SyncIssueState,
   type SyncIssueClassification,
 } from "@/lib/platform/sync-issue-semantics";
-import { episodeStateOf, incidentEpisodes, type EpisodeInstant } from "./episodes-core";
+import { episodeStateOf } from "./episodes-core";
 import { incidentAccessors, type CsToken, type OpsToken } from "./intelligence";
 import type { IncidentVerdict } from "./intelligence/types";
 import { loadSubjectFacts } from "./subjects";
@@ -136,7 +136,8 @@ function toView(r: Row, referentExists: boolean, correlated: number): IncidentVi
     id: r.id, kind: r.kind, provider: r.provider,
     plaidItemId: r.plaidItemId, financialAccountId: r.financialAccountId,
     incidentKey: r.incidentKey,
-    // PB-4 — the ONE row → state call (episodes-core.ts), shared with the CS trend.
+    // PB-4 — the ONE row → state call (episodes-core.ts). PB-1 Phase 3: only getIncidentDetail's view
+    // still derives it, and its one consumer ignores the state (execution evidence only).
     state: episodeStateOf(r, referentExists),
     classification: classifySyncIssue(classifiable),
     firstOccurredAt: (r.firstOccurredAt ?? r.createdAt).toISOString(),
@@ -211,36 +212,6 @@ export async function getActiveIncidentPage(
 ): Promise<{ incidents: IncidentView[]; scanTruncated: boolean }> {
   const page = await incidentAccessors.brokenNow(token, { limit });
   return { incidents: page.items.map(incidentViewOf), scanTruncated: page.truncated };
-}
-
-/**
- * PB-4 — the canonical incident EPISODES touching a window, for an opened /
- * resolved trend (lib/platform/customer/incidents-daily.ts).
- *
- * The same state derivation as getActiveIncidentPage (`episodeStateOf`, the
- * same referent check), so the trend's still-open episodes are exactly the
- * active incidents above and an EVENT row (a REMOVED_TOMBSTONE, say) is never
- * "opened". Returns only ids, states and instants — `detail` is read to
- * classify and never leaves this function.
- */
-export async function getIncidentEpisodeTimeline(
-  since: Date,
-  cap: number,
-  client: typeof db,
-): Promise<{ episodes: EpisodeInstant[]; scanTruncated: boolean }> {
-  const rows = await client.syncIssue.findMany({
-    where: { OR: [{ createdAt: { gte: since } }, { firstOccurredAt: { gte: since } }, { resolvedAt: { gte: since } }] },
-    select: {
-      id: true, kind: true, provider: true, plaidItemId: true, financialAccountId: true, plaidTransactionId: true,
-      detail: true, resolved: true, firstOccurredAt: true, resolvedAt: true, createdAt: true,
-    },
-    take: cap,
-  });
-  const referents = await referentExistence(rows, client);
-  return {
-    episodes: incidentEpisodes(rows.map((r) => ({ ...r, kind: String(r.kind), provider: String(r.provider) })), (id) => referents.get(id) ?? true),
-    scanTruncated: rows.length >= cap,
-  };
 }
 
 /** One episode with its occurrences, for drill-down into execution evidence. */

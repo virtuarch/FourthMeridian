@@ -26,7 +26,7 @@ export async function getCsOverview(windowDays: 30 | 90, incidentToken: CsToken,
     loadAttention(incidentToken, now, client),
     client.user.count({ where: { role: "USER", deactivatedAt: { not: null } } }),
     getConnectionHealth(0),
-    getIncidentsDailySeries(now, windowDays),
+    getIncidentsDailySeries(incidentToken, now, windowDays),
   ]);
 
   const byKind = new Map<string, number>();
