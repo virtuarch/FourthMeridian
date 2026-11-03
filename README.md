@@ -198,7 +198,7 @@ where GitHub would fail. It gates commits: uncommitted edits are not included.
 
 ## Roadmap
 
-See [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md) for the current roadmap with phase exit criteria, and [`STATUS.md`](STATUS.md) for what's active right now.
+See `ROADMAP.md` (removed; see git history) (removed; see git history) for the current roadmap with phase exit criteria, and [`STATUS.md`](STATUS.md) for what's active right now.
 
 ---
 

@@ -3,7 +3,7 @@
 *Architecture investigation. **No implementation.** A UI-convergence slice: move the production AI
 surface toward the prototype's grounded-conversation experience and the Fourth Meridian visual
 language, with **zero AI-backend changes**. Extends the
-[UI Convergence Roadmap](./UI_CONVERGENCE_ROADMAP.md); reuses the Wave-1 Atlas primitives
+UI Convergence Roadmap (removed; see git history); reuses the Wave-1 Atlas primitives
 (`Field`/`Toast`/`InlineBanner`).*
 
 Grounded in a read-only audit of the production AI UI (`AnalyzeClient`), the `/api/ai/chat`
