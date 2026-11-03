@@ -128,10 +128,13 @@ async function main() {
     && /runFullRefresh<WalletSyncOutcome>\([\s\S]{0,400}refresh: runner,/.test(WALLET));
   const REFRESH = readFileSync("lib/plaid/refresh.ts", "utf8");
   const SYNCINV = readFileSync("lib/plaid/sync-investments.ts", "utf8");
-  check("investments (manual / Refresh All): runFullRefresh → refreshPlaidItem → syncInvestmentsForItem → ingestInvestmentEvents",
+  // FIN-006 — the holdings stage was extracted (runHoldingsStage) so the cron and
+  // webhook pipelines run the SAME code; the chain gains that one named hop.
+  check("investments (manual / Refresh All): runFullRefresh → refreshPlaidItem → runHoldingsStage → syncInvestmentsForItem → ingestInvestmentEvents",
     /runFullRefresh<SyncLockResult<RefreshItemResult>>\([\s\S]{0,300}refresh: async \(\{ recorder, runId \}\) => \{[\s\S]{0,200}refreshItem\(plaidItemDbId,/.test(REFRESH)
     && /const refreshItem = deps\.refreshItem \?\? refreshPlaidItem;/.test(REFRESH)
-    && /export async function refreshPlaidItem\([\s\S]*?await syncInvestmentsForItem\(\{/.test(REFRESH)
+    && /export async function refreshPlaidItem\([\s\S]*?await runHoldingsStage\(\{ item, accessToken, plaidAccounts, itemData \}, recorder\);/.test(REFRESH)
+    && /export async function runHoldingsStage\([^)]*\)[^{]*\{(?:(?!\nexport )[\s\S])*?await syncInvestmentsForItem\(\{/.test(REFRESH)
     && /await ingestInvestmentEvents\(db, \{ accessToken, plaidItemId, now: new Date\(\), coveredFinancialAccountIds \}\);/.test(SYNCINV));
   const BANKS = readFileSync("jobs/sync-banks.ts", "utf8");
   check("KNOWN GAP, pinned honestly: the scheduled sync-banks ingest runs OUTSIDE any envelope (no run id; its attemptId still makes the clean-attempt test decidable)",
