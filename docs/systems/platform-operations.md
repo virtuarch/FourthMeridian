@@ -32,7 +32,7 @@ authorities, an alert engine and the sync-incident lifecycle.
 | Provider health | `lib/platform/provider-health.ts` | IMPLEMENTED |
 | Alerts | `lib/alerts/evaluate.ts`, `lib/alerts/run.ts` | IMPLEMENTED |
 | Incident lifecycle (the only writer) | `lib/platform/incidents/lifecycle.ts` plus the classifier `lib/platform/sync-issue-semantics.ts` | IMPLEMENTED |
-| Incident intelligence (shared reader) | `lib/platform/incidents/intelligence/*` (PRs #264, #287); parity gate `lib/platform/incidents/parity/*` (PR #263). R1/R2 (CS incidents panel + CS detail loader) cut over, PR #288; R3–R6b pending | IMPLEMENTED (module, R1/R2); cutover R3–R6b PLANNED |
+| Incident intelligence (shared reader) | `lib/platform/incidents/intelligence/*` (PRs #264, #287); parity gate `lib/platform/incidents/parity/*` (PR #263). R1/R2 (CS incidents panel + CS detail loader) cut over, PR #288; R3 (convergence) PR #310; R4 (projection) with R5 (alerts feed) PR #325; R6–R6b pending | IMPLEMENTED (module, R1–R5); cutover R6–R6b PLANNED |
 | Scheduler presence (env-aware verdicts) | `lib/jobs/scheduler-presence.ts`, `scheduler-presence.core.ts` (PR #282) | IMPLEMENTED |
 | Provider verdict rules | `provider-outcome@1` `lib/platform/verdicts/provider-outcome.ts` (PR #282); `provider-connection@1` `lib/platform/verdicts/provider-connection.ts` (PRs #285, #286) | IMPLEMENTED |
 | Fleet AI spend status | `fleetSpendStatus` (`lib/platform/ai/fleet-spend-status.ts`, PR #281) | IMPLEMENTED |
@@ -373,11 +373,13 @@ Module and R1/R2 cutover IMPLEMENTED; remaining reader cutovers and the rest PLA
   must actually hold. This is the cutover gate.
 - **IMPLEMENTED: R1/R2 reader cutover** (PR #288): the CS incidents panel and the CS detail
   loader read the module's verdicts.
-- **PLANNED: reader cutover R3–R6b.** The other readers still compete over incident state; each cutover is its own PR, after the parity gate is green
+- **IMPLEMENTED: R3 convergence** (PR #310) and **R4 projection with R5 alerts feed** (PR #325): convergence and the projection read module verdicts; incident alerts fire only on `alertable && critical`. Their visible changes (D2/D2b/D3/D6/D7/D8/D10) are owner decisions for Production (release plan B10.3).
+- **PLANNED: reader cutover R6–R6b.** The remaining readers still compete over incident state; each cutover is its own PR, after the parity gate is green
   for that reader (PB-1 §13.3).
-- **PROPOSED (plan):** one versioned metric-definition registry in code, modelled on
-  `lib/usage/pricing.ts`. The Platform UI, alerts and any future AI all read the same
-  definitions and permissioned readers. There is no AI-only pipeline and no second alert
+- **IMPLEMENTED, step 1 (PR #317):** a versioned metric-definition registry in code
+  (`lib/platform/intelligence/metrics/*`, modelled on `lib/usage/pricing.ts`), definitions
+  only; no surface reads it yet. **PROPOSED (plan), the rest:** the Platform UI, alerts and
+  any future AI all read the same definitions and permissioned readers. There is no AI-only pipeline and no second alert
   engine. Permissions are enforced where the data is read. The layer is read-only first
   (observe, then navigate). Acting needs separate authorization, confirmation and audit.
   It also proposes a navigation registry derived from the workspace registry and
@@ -507,7 +509,7 @@ All verified on develop.
   stores, and the `quota-low` alert rule is dormant.
 - **Two currently stale Production incidents stay as they are** until the Phase-2 shared
   reader is cut over and shows them as stale, and an owner-approved closure runs (PR #255
-  description). The module exists (PR #264); R1/R2 are cut over (PR #288), R3–R6b pending.
+  description). The module exists (PR #264); R1–R5 are cut over (PRs #288, #310, #325), R6–R6b pending.
 - **Opaque references are 32 bits** and the CS reverse lookup scans only the newest
   5,000 accounts; collisions are listed, not hidden, and a capped miss says so.
 
