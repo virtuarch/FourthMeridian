@@ -92,7 +92,10 @@ export type ParsedQuery = { ok: true; query: MerchantRecordsQuery } | { ok: fals
 /** Clamp + clean a search term: letters, spaces and a little punctuation; no digits. */
 export function cleanSearch(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  const s = raw.normalize("NFKC").replace(/[^\p{L}\s&'.\-*]/gu, " ").replace(/\s+/g, " ").trim().slice(0, MERCHANT_RECORDS_QUERY_MAX);
+  // Letters-only by construction: digits and symbols become spaces, and a token
+  // left with no letter (the "." of "$1,234.56") is dropped — `q` travels in a
+  // GET query string (request logs), so no amount, number or reference survives.
+  const s = raw.normalize("NFKC").replace(/[^\p{L}\s&'.\-*]/gu, " ").split(/\s+/).filter((t) => /\p{L}/u.test(t)).join(" ").slice(0, MERCHANT_RECORDS_QUERY_MAX).trim();
   return s.length >= 2 ? s : null;
 }
 

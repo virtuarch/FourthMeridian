@@ -11,6 +11,13 @@
  * own fresh-WRITE routes under /api/merchant-ops.
  *
  * AUTHORIZATION: requirePlatformAccess("MERCHANT_OPS", "READ") first. Never cached.
+ *
+ * ⚠️ `q` TRAVELS IN THE QUERY STRING — so it lands in request logs (Vercel,
+ * proxies, browser history). It must stay LETTERS-ONLY (cleanSearch strips
+ * digits and symbols before it reaches a query), and amount / digit search
+ * must NEVER be added to this GET: a searched amount, account number or
+ * reference would be written to the logs in clear. Anything like that belongs
+ * in a POST body, behind its own review. Pinned in records.test.ts.
  */
 
 import { NextResponse } from "next/server";

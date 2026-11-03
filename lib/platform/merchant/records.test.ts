@@ -392,7 +392,28 @@ async function main() {
       check(`${f}: MERCHANT_OPS READ first, error returned`, /requirePlatformAccess\(\s*"MERCHANT_OPS"\s*,\s*"READ"\s*\)/.test(s) && /if \(err\) return err;/.test(s) && s.indexOf("requirePlatformAccess(") < s.indexOf("await ctx.params") + (f.includes("[id]") ? 0 : 1e9));
       check(`${f}: no WRITE/CONTROL, no mutating verb, no db import, no-store`, !/"(WRITE|CONTROL)"/.test(s) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(s) && !/@\/lib\/db/.test(s) && /no-store/.test(s));
     }
+    const rcRaw = readFileSync(path.join(ROOT, "app/api/merchant-ops/reconsider/route.ts"), "utf8");
     const rc = code("app/api/merchant-ops/reconsider/route.ts");
+    check("reconsider: per-operator rate limit on its OWN bucket, right after the fresh grant and before the body",
+      /const RECONSIDER_BUCKET = "merchant-ops-reconsider";/.test(rcRaw) && /RECONSIDER_PER_OPERATOR_PER_MINUTE = 30;/.test(rcRaw)
+        && /limitByUser\(auth\.user\.id, RECONSIDER_BUCKET, \{ limit: RECONSIDER_PER_OPERATOR_PER_MINUTE, windowSec: 60 \}\)/.test(rc)
+        && /if \(limited\) return limited;/.test(rc)
+        && rc.indexOf('requireFreshPlatformAccess("MERCHANT_OPS", "WRITE")') < rc.indexOf("limitByUser(") && rc.indexOf("limitByUser(") < rc.indexOf("req.json()"));
+    {
+      // UI-021 — the bucket is not shared with any other route.
+      const { readdirSync, statSync } = await import("node:fs");
+      const walk = (d: string): string[] => readdirSync(path.join(ROOT, d)).flatMap((e) => {
+        const rel = path.join(d, e);
+        return statSync(path.join(ROOT, rel)).isDirectory() ? walk(rel) : /\.tsx?$/.test(e) && !/\.test\.tsx?$/.test(e) ? [rel] : [];
+      });
+      const users = walk("app").filter((f) => readFileSync(path.join(ROOT, f), "utf8").includes('"merchant-ops-reconsider"'));
+      check("the merchant-ops-reconsider bucket is used by the reconsider route alone", users.length === 1 && users[0] === path.join("app", "api", "merchant-ops", "reconsider", "route.ts"), users);
+    }
+    const recordsRaw = readFileSync(path.join(ROOT, "app/api/platform/merchant-ops/records/route.ts"), "utf8");
+    check("the records GET documents that q travels in the query string (logs) and must stay letters-only, never amount/digit search",
+      /`q` TRAVELS IN THE QUERY STRING/.test(recordsRaw) && /LETTERS-ONLY/.test(recordsRaw) && /amount \/ digit search\s*\n?\s*\*?\s*must NEVER be added to this GET/.test(recordsRaw));
+    check("…and the parser it uses keeps q letters-only (digits, symbols, amounts stripped)",
+      cleanSearch("$1,234.56 Coffee 4111") === "Coffee" && cleanSearch("12345") === null && cleanSearch("acct#9876 Bistro") === "acct Bistro");
     check("reconsider: FRESH MERCHANT_OPS WRITE before the body, reason before the act",
       rc.indexOf('requireFreshPlatformAccess("MERCHANT_OPS", "WRITE")') > -1 && rc.indexOf('requireFreshPlatformAccess("MERCHANT_OPS", "WRITE")') < rc.indexOf("req.json()")
         && rc.indexOf("parseOperatorReason(") < rc.indexOf("reconsiderDismissedPair("));
