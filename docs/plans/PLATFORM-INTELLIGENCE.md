@@ -116,6 +116,10 @@
        - metric links: ids exist, tile homes are real, and every metric drill page resolves through this registry to the same href;
        - no mint path, literal surfaces, and bounded importers.
      - **Metric ↔ target links:** all 13 registered metrics link to at least one target. One tile module (`customer-core.ts`, a server reader) is declared unhomed, with its reason.
+     - **Follow-up (`refactor/workspace-href-single-source`):**
+       - **One link builder:** `platformWorkspaceHref` now lives in the server-safe `lib/platform/workspace-href.ts`. The client navigation hook re-exports it and the registry calls the same function, pinned by identity rather than an equality test.
+       - **One param list:** `econ`/`econuntil` join `SPACE_URL_PARAMS`, and `PLATFORM_WORKSPACE_SCOPED_PARAMS` moves into `space-url.ts`, typed as a subset of it. The hook and the registry's param groups both take their keys from that one list.
+       - **Per-surface drills:** a metric's `drill` may be keyed by surface (`{ bySurface }`). `incident-broken-now` drills on PLATFORM_OPS to the Ops incidents route and the Incidents workspace, and on CUSTOMER_SUCCESS to the CS incidents route and the CS "Broken now" view. Its Incidents-lead tile links it to the "Broken now" view on both tiers. `retrieveMetric` keeps its null-drill rule: a drill is given only where the surface's link is gated by that surface.
 4. **`AiInvocation.surface = platform_ai`**, counted as overhead.
 5. **Minimal new instrumentation, each item needing owner approval:**
    - a deployment-event row;

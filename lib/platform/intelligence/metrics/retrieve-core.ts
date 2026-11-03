@@ -71,7 +71,7 @@
 
 import type { PlatformArea } from "@prisma/client";
 import { describeMetric, isMetricAccessToken, type MetricAccessToken } from "./access";
-import { metricKey, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
+import { drillLinkOn, metricKey, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
 import { assertAudienceToken, atOpsTier, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
 import { DEFAULT_SEARCH } from "@/lib/platform/incidents/intelligence/search-core";
 import type { IncidentSearchQuery, IncidentSearchResult } from "@/lib/platform/incidents/intelligence/types";
@@ -475,8 +475,10 @@ function drillOf(scope: SurfaceScope, window: number | null): Pick<MetricEnvelop
   const m = scope.definition;
   const figure = metricKey(m);
   if ("unavailable" in m.drill) return { drill: { figure, unavailable: m.drill.unavailable }, drillReason: null };
-  if (drillRouteArea(m.drill.api) !== scope.surface) return { drill: null, drillReason: NO_DRILL_ON_SURFACE };
-  return { drill: { figure, window, href: m.drill.api, page: m.drill.page }, drillReason: null };
+  // The surface's own link (per-surface drills) or the single link — and still only where its route's gate IS the surface.
+  const link = drillLinkOn(m.drill, scope.surface);
+  if (!link || drillRouteArea(link.api) !== scope.surface) return { drill: null, drillReason: NO_DRILL_ON_SURFACE };
+  return { drill: { figure, window, href: link.api, page: link.page }, drillReason: null };
 }
 
 function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected): MetricEnvelope {
