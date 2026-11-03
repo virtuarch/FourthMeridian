@@ -356,6 +356,8 @@ async function partFiveReview(): Promise<void> {
     check("an unvalued wallet counts nothing", countedReportingMagnitudes([{ id: "w", balance: 5, currency: "USD", valuationUnknown: true }], ctx, D)[0].absValue === 0);
 
     const R = readFileSync(join(process.cwd(), "lib/snapshots/regenerate.ts"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    check("the writer's only spaceSnapshot read selects isEstimated alone (no value read)",
+      (R.match(/spaceSnapshot\.findUnique\(/g) ?? []).length === 1 && /spaceSnapshot\.findUnique\(\{\s*where:\s*\{ spaceId_date: \{ spaceId, date \} \},\s*select: \{ isEstimated: true \},/.test(R));
     check("the writer converts with the SAME ctx and valuation date it built for classifyAccounts",
       /const valuationDateISO = yesterdayUTCISO\(\);/.test(R)
       && /dates:\s*\[valuationDateISO\]/.test(R)
