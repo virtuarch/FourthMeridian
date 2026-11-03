@@ -64,6 +64,8 @@ export interface CustomerList {
   attentionReasons: { key: AttentionKey; label: string; short: string }[];
   /** S2 — true when the attention read hit its row cap: the filtered population is a floor ("≥N"). */
   attentionFloor: boolean;
+  /** PRIV-ref — set when the search was an opaque reference: how it resolved, and the not-found line. */
+  refSearch: CustomerRefSearch | null;
 }
 
 const reasonsOf = (fold: AttentionFold) => fold.keys.map((key) => ({ key, label: ATTENTION_LABELS[key], short: ATTENTION_SHORT[key] }));
@@ -84,17 +86,43 @@ export function opaqueRefSearchToken(search: string): string | null {
 /** How many accounts the reference search digests at most (beta-scale fleet; a bound, not a fleet scan). */
 export const REF_SEARCH_SCAN_CAP = 5000;
 
+/** What a pasted opaque reference resolved to — said on the list, never a silent empty result. */
+export interface CustomerRefSearch {
+  token: string;
+  /** How many accounts matched (all of them — a 32-bit digest can collide). */
+  matches: number;
+  /** How many accounts were digested. */
+  scanned: number;
+  /** True when the scan stopped at REF_SEARCH_SCAN_CAP (older accounts were not checked). */
+  capped: boolean;
+  /** The line the list shows when nothing matched (null when something did). */
+  note: string | null;
+}
+
+export const REF_NOT_FOUND_CAPPED = `Reference not found among the newest ${REF_SEARCH_SCAN_CAP.toLocaleString("en-US")} accounts — it may belong to an older account`;
+export const REF_NOT_FOUND = "No account matches this reference";
+
 /**
- * PRIV-ref — resolve an opaque reference back to an account, for CUSTOMER_SUCCESS
+ * PRIV-ref — resolve an opaque reference back to accounts, for CUSTOMER_SUCCESS
  * only (the area that may resolve identity). The reference is a keyed digest
- * (lib/platform/opaque-user-ref.ts), so it cannot be matched in SQL: the ids are
- * digested here, server-side, bounded by REF_SEARCH_SCAN_CAP. Ids never leave
- * this function except as the matched set the list query already returns.
+ * (lib/platform/opaque-user-ref.ts), so it cannot be matched in SQL: the newest
+ * REF_SEARCH_SCAN_CAP ids are digested here, server-side, and EVERY match is
+ * returned (8 hex = 32 bits; two accounts can share a reference). No new audit row:
+ * a read inside the CS list, nothing written.
  */
-async function idsForOpaqueRef(token: string, client: typeof systemDb): Promise<string[]> {
+export async function resolveOpaqueRef(
+  token: string,
+  client: { user: { findMany(args: { select: { id: true }; orderBy: { createdAt: "desc" }; take: number }): Promise<{ id: string }[]> } },
+  refOf: (userId: string) => string = opaqueUserRef,
+): Promise<{ ids: string[]; search: CustomerRefSearch }> {
   const ref = opaqueRefOfToken(token);
   const rows = await client.user.findMany({ select: { id: true }, orderBy: { createdAt: "desc" }, take: REF_SEARCH_SCAN_CAP });
-  return rows.filter((r) => opaqueUserRef(r.id) === ref).map((r) => r.id);
+  const ids = rows.filter((r) => refOf(r.id) === ref).map((r) => r.id);
+  const capped = rows.length >= REF_SEARCH_SCAN_CAP;
+  return {
+    ids,
+    search: { token, matches: ids.length, scanned: rows.length, capped, note: ids.length > 0 ? null : capped ? REF_NOT_FOUND_CAPPED : REF_NOT_FOUND },
+  };
 }
 
 export async function listCustomers(
@@ -107,12 +135,14 @@ export async function listCustomers(
   // Ops Attention, the alert email) name a customer by an opaque reference;
   // searching that reference here finds the account, so the policy-assignment
   // alert stays actionable in Customer Success. Since PRIV-ref the reference is
-  // a keyed digest (`user #3fa9c21b`, resolved by idsForOpaqueRef); a bare 6+
+  // a keyed digest (`user #3fa9c21b`, resolved by resolveOpaqueRef); a bare 6+
   // character id fragment still matches the id suffix (CS may see ids).
   const idTail = opaqueRefTail(search);
   // PRIV-ref — the operator surfaces now show a keyed digest (`user #3fa9c21b`), not an id tail; a pasted one is resolved here.
   const refToken = opaqueRefSearchToken(search);
-  const refIds = refToken ? await idsForOpaqueRef(refToken, client) : [];
+  const resolved = refToken ? await resolveOpaqueRef(refToken, client) : null;
+  const refIds = resolved?.ids ?? [];
+  const refSearch = resolved?.search ?? null;
   const searchWhere = search
     ? { OR: [
         { email: { contains: search, mode: "insensitive" as const } },
@@ -139,7 +169,7 @@ export async function listCustomers(
     }),
   ]);
   const ids = users.map((u) => u.id);
-  if (ids.length === 0) return { total, customers: [], attention: filter, attentionReasons: reasonsOf(att.fold), attentionFloor: att.fold.floor };
+  if (ids.length === 0) return { total, customers: [], attention: filter, attentionReasons: reasonsOf(att.fold), attentionFloor: att.fold.floor, refSearch };
 
   const since = new Date(now.getTime() - ROLLUP_WINDOW_DAYS * 86_400_000);
   const [
@@ -198,6 +228,7 @@ export async function listCustomers(
     attention: filter,
     attentionReasons: reasonsOf(att.fold),
     attentionFloor: att.fold.floor,
+    refSearch,
     customers: users.map((u) => {
       const a = assignBy.get(u.id);
       const act = projectActivity({

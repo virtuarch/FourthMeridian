@@ -145,7 +145,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
     try {
       const filter = att ? `&attention=${encodeURIComponent(att)}` : "";
       const r = await fetch(`/api/platform/customer-success/customers?search=${encodeURIComponent(q)}&limit=100${filter}`, { credentials: "same-origin" });
-      if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : `Request failed (${r.status})`);
+      if (!r.ok) throw new Error(r.status === 403 ? "Not authorized" : r.status === 429 ? "Too many searches — try again in a minute" : `Request failed (${r.status})`);
       const body = (await r.json()) as CustomerListResponse;
       setList(body);
       setLoadedAt(new Date().toISOString());
@@ -313,6 +313,9 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
           <button type="button" onClick={() => applyAttention(null, search)} className="inline-flex min-h-11 items-center font-medium text-[var(--text-primary)] underline-offset-2 hover:underline lg:min-h-6">Show all accounts</button>
         </p>
       )}
+      {/* PRIV-ref — a pasted reference that resolved to nothing says so (and whether the scan was capped); never a silent empty list. */}
+      {!loading && list?.refSearch?.note && <p className="text-[11px] text-[var(--text-secondary)]" role="status" data-ref-search-note>{list.refSearch.note}</p>}
+      {!loading && list?.refSearch && list.refSearch.matches > 1 && <p className="text-[11px] text-[var(--text-muted)]" role="status" data-ref-search-collision>{`${list.refSearch.matches} accounts share this reference — check each`}</p>}
       {loading && <WidgetMessage loading />}
       {error && <WidgetMessage error={error} />}
       {!loading && !error && list && (

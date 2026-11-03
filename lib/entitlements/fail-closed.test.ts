@@ -30,7 +30,7 @@ import { loadPolicyAssignmentHealth, type PolicyAssignmentReadClient } from "@/l
 import { buildAttention, ATTENTION_AUTHORITIES } from "@/lib/platform/ops/attention-core";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { evaluateAlertRules, evaluatePolicyAssignmentInvalid } from "@/lib/alerts/evaluate";
-import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { opaqueDedupeToken, opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 
 // PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
@@ -301,9 +301,9 @@ async function main(): Promise<void> {
     check("attention: severity warning when the switch is off (exposure before enforcement)", off.items.filter((i) => i.entity.kind === "customer").every((r) => r.severity === "warning")
       && /Beta default today/.test(off.items.find((i) => i.entity.kind === "customer")!.problem));
     check("attention: an unread authority is NAMED as failed (absent ≡ null)", buildAttention(base, now).authorities.failed.includes("policy-assignments"));
-    const clean = buildAttention({ ...base, policyAssignments: buildPolicyAssignmentHealth({ unassignedCount: 0, unassignedRows: [], unknownCount: 0, unknownRows: [], enforced: true, refOf: opaqueUserRef }, now) }, now);
+    const clean = buildAttention({ ...base, policyAssignments: buildPolicyAssignmentHealth({ unassignedCount: 0, unassignedRows: [], unknownCount: 0, unknownRows: [], enforced: true, refOf: opaqueUserRef, dedupeOf: opaqueDedupeToken }, now) }, now);
     check("attention: nothing affected ⇒ checked, no rows, no floor", clean.authorities.checked.includes("policy-assignments") && clean.items.length === 0 && clean.floors.length === 0);
-    check("describe: unassigned wording", /No policy-group assignment recorded/.test(describePolicyAssignmentIssue({ ref: "user #3fa9c21b", reason: "UNASSIGNED", unknownKey: null, since: null }, true)));
+    check("describe: unassigned wording", /No policy-group assignment recorded/.test(describePolicyAssignmentIssue({ ref: "user #3fa9c21b", dedupe: "3fa9c21b", reason: "UNASSIGNED", unknownKey: null, since: null }, true)));
 
     // Alert rule
     const rule = ALERT_RULES.find((r) => r.id === "policy-assignment-invalid");

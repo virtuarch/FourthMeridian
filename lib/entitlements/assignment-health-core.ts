@@ -37,6 +37,8 @@ const UNKNOWN_KEY_MAX = 64;
 export interface PolicyAssignmentIssue {
   /** Opaque `user #3fa9c21b` — never an email, name or whole id. */
   ref: string;
+  /** Keyed dedupe token (opaqueDedupeToken) for alert keys and Attention ids — never the id, never "customer". */
+  dedupe: string;
   reason: FailClosedReason;
   /** The unknown key as stored (cut to 64 chars) for UNKNOWN_POLICY_GROUP; null for UNASSIGNED. */
   unknownKey: string | null;
@@ -67,16 +69,18 @@ export interface PolicyAssignmentFacts {
   enforced: boolean;
   /** THE opaque reference (lib/platform/opaque-user-ref.ts opaqueUserRef), injected by the server reader. */
   refOf: (userId: string) => string;
+  /** THE dedupe token (opaqueDedupeToken) — alert keys and Attention ids; distinct per customer even with no key. */
+  dedupeOf: (userId: string) => string;
 }
 
 export function buildPolicyAssignmentHealth(facts: PolicyAssignmentFacts, now: Date, cap: number = POLICY_ASSIGNMENT_ISSUE_CAP): PolicyAssignmentHealth {
   const issues: PolicyAssignmentIssue[] = [
     ...facts.unknownRows.map((r) => ({
-      ref: facts.refOf(r.userId), reason: "UNKNOWN_POLICY_GROUP" as const,
+      ref: facts.refOf(r.userId), dedupe: facts.dedupeOf(r.userId), reason: "UNKNOWN_POLICY_GROUP" as const,
       unknownKey: r.policyGroup.slice(0, UNKNOWN_KEY_MAX), since: r.assignedAt?.toISOString() ?? null,
     })),
     ...facts.unassignedRows.map((r) => ({
-      ref: facts.refOf(r.userId), reason: "UNASSIGNED" as const, unknownKey: null, since: r.createdAt?.toISOString() ?? null,
+      ref: facts.refOf(r.userId), dedupe: facts.dedupeOf(r.userId), reason: "UNASSIGNED" as const, unknownKey: null, since: r.createdAt?.toISOString() ?? null,
     })),
   ];
   issues.sort((a, b) => {

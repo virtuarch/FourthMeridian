@@ -331,7 +331,7 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
   if (spend.maxUserUsd !== null && spend.maxUserRef && spend.maxUserUsd >= spend.thresholds.userUsd) {
     out.push({
       ruleId: rule.id, kind: rule.kind, severity: spendLevel(spend.maxUserUsd, spend.thresholds.userUsd),
-      dedupeKey: `${rule.id}:user:${day}:${opaqueRefToken(spend.maxUserRef) ?? spend.maxUserRef}`,
+      dedupeKey: `${rule.id}:user:${day}:${spend.maxUserDedupe ?? opaqueRefToken(spend.maxUserRef) ?? "unattributed"}`,
       summary: `One customer (${spend.maxUserRef}) caused an estimated ${usd(spend.maxUserUsd)} of AI spend in the last ${spend.windowHours}h — at or above the per-customer threshold of $${spend.thresholds.userUsd}`
         + (spend.customersAtOrOverThreshold > 1 ? ` (${spend.customersAtOrOverThreshold} customers are at or above it; the largest is named)` : "")
         + ` (estimate, not a bill).${unpricedLine}`,
@@ -359,7 +359,7 @@ export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: Po
     ruleId: rule.id, kind: rule.kind, severity,
     // Severity in the key, so a state change is never suppressed by an older,
     // lower-severity breach inside the re-notify window.
-    dedupeKey: `${rule.id}:${severity}:${opaqueRefToken(i.ref) ?? i.ref}`,
+    dedupeKey: `${rule.id}:${severity}:${i.dedupe}`,
     summary: i.reason === "UNASSIGNED"
       ? `Customer ${i.ref} has no policy-group assignment — ${state}. Assign a valid policy group in Customer Success.`
       : `Customer ${i.ref} is assigned unknown policy group "${i.unknownKey ?? ""}" — ${state}. Assign a valid policy group in Customer Success.`,

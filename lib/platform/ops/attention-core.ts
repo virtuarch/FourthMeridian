@@ -36,7 +36,6 @@
  * PURE: no DB, no clock read (`now` is a parameter), no I/O.
  */
 
-import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@/lib/connections/health";
 import type { JobHealthStatus } from "@/lib/jobs/health";
 import type { ProviderHealthResult, ProviderTrust } from "@/lib/platform/provider-health";
@@ -357,9 +356,9 @@ function incidentItems(i: NonNullable<AttentionInputs["incidents"]>): AttentionI
 
 function policyAssignmentItems(p: PolicyAssignmentHealth): AttentionItem[] {
   const severity = SEVERITY_OF.policyAssignment[p.enforced ? "enforced" : "dormant"];
-  // The row id carries the reference's token; with no key (every ref "customer") the position keeps ids unique.
-  return p.items.map((i, n) => ({
-    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${opaqueRefToken(i.ref) ?? `customer-${n}`}`,
+  // The row id carries the keyed dedupe token (distinct per customer even when every ref reads "customer").
+  return p.items.map((i) => ({
+    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${i.dedupe}`,
     severity,
     entity: { kind: "customer" as const, label: i.ref },
     problem: describePolicyAssignmentIssue(i, p.enforced),

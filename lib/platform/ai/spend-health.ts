@@ -28,7 +28,7 @@ import { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
 import { AI_RATES, type AiRate } from "@/lib/usage/pricing";
 import { CUSTOMER_SURFACES, priceSpendGroup, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
-import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { opaqueDedupeToken, opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { loadAiSpendThresholds, type AiSpendThresholds } from "@/lib/platform/ai/spend-thresholds";
 
 /** One (userId, provider, model, UTC day) group of RETURNED customer-surface rows. */
@@ -45,6 +45,8 @@ export interface AiSpendHealth {
   maxUserUsd: number | null;
   /** Opaque reference to that customer — "user #3fa9c21b" (opaque-user-ref.ts) — never an email, an id or a slice of one. */
   maxUserRef: string | null;
+  /** The alert dedupe token for that customer (opaqueDedupeToken) — distinct per customer even when the ref is "customer". */
+  maxUserDedupe: string | null;
   /** Distinct customers with at least one priced invocation in the window. */
   customers: number;
   /** Of those, how many are at or above the per-customer threshold. The rule names the largest; this says it is not alone. */
@@ -96,6 +98,7 @@ export function buildAiSpendHealth(
     fleetUsd,
     maxUserUsd,
     maxUserRef: maxUserId ? opaqueUserRef(maxUserId) : null,
+    maxUserDedupe: maxUserId ? opaqueDedupeToken(maxUserId) : null,
     customers: perUser.size,
     customersAtOrOverThreshold,
     customerInvocations: invocations,

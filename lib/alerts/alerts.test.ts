@@ -75,7 +75,7 @@ function aiHealth(o: Partial<AiFailureHealth>): AiFailureHealth {
   return { windowHours: 24, returned: 0, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: NOW.toISOString(), ...o };
 }
 function aiSpend(o: Partial<AiSpendHealth>): AiSpendHealth {
-  return { windowHours: 24, fleetUsd: null, maxUserUsd: null, maxUserRef: null, customers: 0, customersAtOrOverThreshold: 0, customerInvocations: 0, unpricedInvocations: 0, unpricedModels: [], thresholds: { fleetUsd: 10, userUsd: 3 }, checkedAt: NOW.toISOString(), ...o };
+  return { windowHours: 24, fleetUsd: null, maxUserUsd: null, maxUserRef: null, maxUserDedupe: null, customers: 0, customersAtOrOverThreshold: 0, customerInvocations: 0, unpricedInvocations: 0, unpricedModels: [], thresholds: { fleetUsd: 10, userUsd: 3 }, checkedAt: NOW.toISOString(), ...o };
 }
 function resource(id: string, state: FreshnessHealthState, trustLevel: "high" | "medium" | "low" | "unknown" = "low"): ResourceFreshnessReport {
   return {
