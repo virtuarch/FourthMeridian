@@ -19,6 +19,15 @@
  *      request, 60 s granularity, lib/auth/session-activity.ts). It feeds the
  *      SEC-010 idle cut-off and the user's own sessions list ONLY. Customer
  *      Operations and Growth must not read it as activity.
+ *      PB-10 F3 (S2 ruling): BACKGROUND reads do NOT touch it — the presence
+ *      heartbeat, the bell's unread-count poll, the notice rail's focus re-read
+ *      and the SessionProvider's GET /api/auth/session refetch run the full
+ *      guard with the touch off (lib/auth/presence-scope.ts allowlist). So a tab
+ *      left open but unused for 30 days signs out (the intended SEC-010 policy);
+ *      the 90-day absolute cut-off is unchanged. Navigations, RSC renders,
+ *      server actions and mutations still touch.
+ *      SESSION_ACTIVE_DAY (written by that same touch) is therefore "a UTC day
+ *      with a HUMAN-INITIATED authenticated request" — presence, not engagement.
  *   3. ONLINE PRESENCE — `UserSession.lastPresenceAt`: a VISIBLE browser tab
  *      holding the session sent a heartbeat (POST /api/user/presence) within
  *      PRESENCE_CONFIG.presenceFreshMs. Server-stamped (database clock). A
@@ -30,11 +39,18 @@
  *   5. LAST ACTIVE — `UserSession.lastInteractionAt`: the server time of the
  *      newest beat whose body said "interacted since the last beat" (coarse
  *      local pointer/key/scroll/visibility events — never keystroke contents,
- *      coordinates or page content). ⚠️ LOW TRUST: the boolean is
+ *      coordinates or page content; NOT visibility — F4: macOS flips it on
+ *      window occlusion / screen lock with nobody at the tab). ⚠️ LOW TRUST: the boolean is
  *      CLIENT-ASSERTED. It may drive ONLY the presence buckets (Active now /
  *      Online, idle / Offline) and the coarse Customer Success "last active ~"
  *      display. It must NEVER feed engagement (DAU/WAU/MAU, "Returned",
  *      Growth returning), SEC-010, or any security decision.
+ *      KNOWN LIMITATION (accepted): the server stamps the interaction at beat
+ *      ARRIVAL, so a real input just before the tab is hidden is credited when
+ *      the next beat lands — up to one interval later, or on return. Capped: a
+ *      pending flag is dropped once the INPUT is more than 2 × clientBeatIntervalMs
+ *      old — including a flag restored after a refused / lost beat
+ *      (lib/presence/heartbeat-client.ts STALE_INTERACTION_MS).
  *   6. MEANINGFUL ENGAGEMENT — actual product use, from SERVER-SIDE events only:
  *      the frozen engagement predicate in
  *      lib/platform/growth/product-analytics-core.ts — ENGAGEMENT_AUDIT_ACTIONS
@@ -42,8 +58,7 @@
  *      TRANSACTIONS_VIEWED, MANUAL_ASSET_VALUE_UPDATED, plus connection adds)
  *      ∪ AiInvocation on ENGAGEMENT_AI_SURFACES with a userId. NEVER background
  *      sync, cron, webhooks, token refresh, polling, prefetch, focus refetch,
- *      heartbeats, or SESSION_ACTIVE_DAY (which is PRESENCE: "a valid session
- *      was in use that UTC day").
+ *      heartbeats, or SESSION_ACTIVE_DAY (which is PRESENCE — see below).
  *
  * ── WINDOWS, TIMEZONE, INCLUSION ─────────────────────────────────────────────
  *   · Every clock is the DATABASE clock (UTC). Client timestamps are never read.

@@ -14,8 +14,8 @@
  *      (same process, interleaved) still touches.
  *   D. SEC-010 unchanged: a heartbeat-only session idles out at the same
  *      deadline — lastPresenceAt / lastInteractionAt are not lifetime inputs.
- *   E. Confinement: only the heartbeat route imports runWithoutSessionTouch,
- *      only lib/auth.ts reads isSessionTouchSuppressed.
+ *   E. Confinement: only the allowlisted background routes (SESSION_TOUCH_EXEMPT_ROUTES)
+ *      import runWithoutSessionTouch, only lib/auth.ts reads isSessionTouchSuppressed.
  *
  *     npx tsx --require ./scripts/lib/server-only-preload.cjs lib/auth/presence-scope.test.ts
  */
@@ -28,7 +28,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { sessionCookieName } from "./session-cookie";
-import { runWithoutSessionTouch, isSessionTouchSuppressed } from "./presence-scope";
+import { runWithoutSessionTouch, isSessionTouchSuppressed, SESSION_TOUCH_EXEMPT_ROUTES } from "./presence-scope";
 import { judgeSessionLifetime, SESSION_IDLE_TIMEOUT_MS } from "./session-proof";
 
 const { AuthHandler } = createRequire(require.resolve("next-auth"))("./core") as {
@@ -212,7 +212,44 @@ async function main() {
     const users = (name: string) => files.filter((f) => f !== "lib/auth/presence-scope.ts" && new RegExp(`\\b${name}\\b`).test(readFileSync(path.join(ROOT, f), "utf8")));
     const run = users("runWithoutSessionTouch");
     const read = users("isSessionTouchSuppressed");
-    check("runWithoutSessionTouch is used ONLY by the heartbeat route", JSON.stringify(run) === '["app/api/user/presence/route.ts"]', JSON.stringify(run));
+    // PB-10 F3 — the server-decided allowlist of BACKGROUND routes (no client opt-out).
+    check("runWithoutSessionTouch is used ONLY by the allowlisted background routes",
+      JSON.stringify([...run].sort()) === JSON.stringify([...SESSION_TOUCH_EXEMPT_ROUTES].sort()), JSON.stringify(run));
+    check("the allowlist is exactly the heartbeat + the three background reads",
+      JSON.stringify([...SESSION_TOUCH_EXEMPT_ROUTES].sort()) === JSON.stringify([
+        "app/api/auth/[...nextauth]/route.ts", "app/api/notifications/unread-count/route.ts",
+        "app/api/status/notices/route.ts", "app/api/user/presence/route.ts"]));
+    for (const f of ["app/api/notifications/unread-count/route.ts", "app/api/status/notices/route.ts"]) {
+      check(`${f} wraps the NORMAL guard (requireUser, no options)`, /runWithoutSessionTouch\(\(\) => requireUser\(\)\)/.test(readFileSync(path.join(ROOT, f), "utf8")));
+    }
+    const na = readFileSync(path.join(ROOT, "app/api/auth/[...nextauth]/route.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    check("NextAuth: the exemption is keyed on the catch-all's OWN action param being exactly [\"session\"]",
+      /nextauth\.length === 1 && nextauth\[0\] === "session"/.test(na)
+      && /const \{ nextauth \} = await ctx\.params;\s*if \(isBackgroundSessionRead\(nextauth\)\) return runWithoutSessionTouch\(\(\) => handler\(req, ctx\)\);\s*return handler\(req, ctx\);/.test(na));
+    check("NextAuth: only the GET export is wrapped; POST (signin/callback/signout/update) is not",
+      /export \{ sessionAwareGet as GET, limitedPost as POST \};/.test(na)
+      && (na.match(/runWithoutSessionTouch\(/g) ?? []).length === 1
+      && na.indexOf("runWithoutSessionTouch(") > na.indexOf("async function sessionAwareGet")
+      && na.indexOf("async function limitedPost") < na.indexOf("async function sessionAwareGet"));
+    // S2 (b)2 — an exempt background READ exports GET only; any mutating export fails this pin.
+    const exportsOf = (f: string) => {
+      const src = readFileSync(path.join(ROOT, f), "utf8");
+      const names = [...src.matchAll(/export\s+(?:async\s+)?(?:function|const)\s+(GET|POST|PUT|PATCH|DELETE)\b/g)].map((m) => m[1]);
+      for (const m of src.matchAll(/export\s*\{([^}]*)\}/g)) for (const part of m[1].split(",")) {
+        const as = /\bas\s+(GET|POST|PUT|PATCH|DELETE)\b/.exec(part) ?? /^\s*(GET|POST|PUT|PATCH|DELETE)\s*$/.exec(part);
+        if (as) names.push(as[1]);
+      }
+      return names.sort();
+    };
+    for (const f of ["app/api/notifications/unread-count/route.ts", "app/api/status/notices/route.ts"]) {
+      check(`${f} exports GET only (no POST/PUT/PATCH/DELETE)`, JSON.stringify(exportsOf(f)) === '["GET"]', JSON.stringify(exportsOf(f)));
+    }
+    check("the heartbeat route exports POST only (the beat itself; writes presence, never the touch)",
+      JSON.stringify(exportsOf("app/api/user/presence/route.ts")) === '["POST"]');
+    check("NextAuth catch-all: the exemption sits on GET; POST is the unwrapped limitedPost",
+      JSON.stringify(exportsOf("app/api/auth/[...nextauth]/route.ts")) === '["GET","POST"]');
+    check("no exemption is keyed on a client-controlled header or query",
+      [...SESSION_TOUCH_EXEMPT_ROUTES].every((f) => !/headers\.get\([^)]*(touch|presence|background)|searchParams\.get\([^)]*(touch|background)/i.test(readFileSync(path.join(ROOT, f), "utf8"))));
     check("isSessionTouchSuppressed is read ONLY by lib/auth.ts", JSON.stringify(read) === '["lib/auth.ts"]', JSON.stringify(read));
     check("nothing re-exports presence-scope (no barrel can widen it)",
       files.filter((f) => /export\s+(\*|\{[^}]*\})\s+from\s+["']@?\/?(lib\/auth\/)?\.?\/?presence-scope["']/.test(readFileSync(path.join(ROOT, f), "utf8"))).length === 0);

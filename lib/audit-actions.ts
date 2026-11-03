@@ -203,7 +203,7 @@ export const AuditAction = {
   // events: PRODUCT_EVENT_ACTIONS below is pinned DISJOINT from every security,
   // operator and member-feed allowlist, so a product event can never surface
   // as "something happened to your account".
-  //   SESSION_ACTIVE_DAY          first live session check of a UTC day (presence)
+  //   SESSION_ACTIVE_DAY          first human-initiated authenticated request of a UTC day (presence; PB-10 F3: background polls excluded)
   //   SPACE_VIEWED                a Space's server page rendered for a member
   //   BRIEF_VIEWED                a Daily Brief was shown to its reader
   //   TRANSACTIONS_VIEWED         the Transactions workspace loaded its first page

@@ -8,9 +8,11 @@
  *
  *   · beats ONLY while the tab is VISIBLE — immediately on mount, every
  *     PRESENCE_CONFIG.clientBeatIntervalMs, and when the tab becomes visible again;
- *   · each beat carries ONE boolean, "interacted since the last beat", set by
- *     coarse local events (pointerdown, keydown, scroll, wheel, touchstart, the
- *     tab becoming visible). The handlers read NOTHING from the event;
+ *   · each beat carries ONE boolean, "interacted since the last beat", set ONLY
+ *     by real input events (pointerdown, keydown, scroll, wheel, touchstart).
+ *     The tab becoming visible is presence, NOT an interaction (F4: macOS flips
+ *     visibility on occlusion / screen lock with no human). The handlers read
+ *     NOTHING from the event;
  *   · a refused (429) or lost beat keeps its interaction for the next one;
  *     401/403 stop the heartbeat;
  *   · no timestamp, count or duration is sent — the server stamps time.

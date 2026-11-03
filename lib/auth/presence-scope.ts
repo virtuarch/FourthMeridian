@@ -20,17 +20,35 @@
  * continuation; a concurrent ordinary request on the same instance has its own
  * (empty) store and still touches (pinned by presence-scope.test.ts).
  *
- * CONFINED. `runWithoutSessionTouch` is imported by app/api/user/presence/route.ts
- * ONLY and `isSessionTouchSuppressed` by lib/auth.ts ONLY (static pin in
- * lib/auth/presence-scope.test.ts), so no other route can silently stop counting
- * session use.
+ * CONFINED. `runWithoutSessionTouch` is imported ONLY by the server-decided
+ * allowlist of BACKGROUND routes below, and `isSessionTouchSuppressed` by
+ * lib/auth.ts ONLY (static pin in lib/auth/presence-scope.test.ts), so no other
+ * route can silently stop counting session use, and no client header can opt a
+ * request out.
+ *
+ * PB-10 F3 — the allowlist. On Preview an untouched tab still moved
+ * lastActiveAt (and wrote SESSION_ACTIVE_DAY) through three background reads;
+ * they now run the full guard with the touch switched off:
+ *   app/api/user/presence/route.ts              the heartbeat
+ *   app/api/notifications/unread-count/route.ts the bell's 60 s poll
+ *   app/api/status/notices/route.ts             the notice rail's focus re-read
+ *   app/api/auth/[...nextauth]/route.ts         GET /api/auth/session only (the
+ *                                               SessionProvider focus refetch)
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const scope = new AsyncLocalStorage<{ readonly suppressTouch: true }>();
 
-/** Run `fn` (the heartbeat's session guard) with the session touch switched off. */
+/** The ONLY modules that may switch the touch off (pinned by presence-scope.test.ts). */
+export const SESSION_TOUCH_EXEMPT_ROUTES = [
+  "app/api/user/presence/route.ts",
+  "app/api/notifications/unread-count/route.ts",
+  "app/api/status/notices/route.ts",
+  "app/api/auth/[...nextauth]/route.ts",
+] as const;
+
+/** Run `fn` (an allowlisted background route's session guard) with the session touch switched off. */
 export function runWithoutSessionTouch<T>(fn: () => Promise<T>): Promise<T> {
   return scope.run({ suppressTouch: true }, fn);
 }

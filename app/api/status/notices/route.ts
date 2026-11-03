@@ -17,6 +17,7 @@
 
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
+import { runWithoutSessionTouch } from "@/lib/auth/presence-scope";
 import { readAppNoticeStatus } from "@/lib/platform/notices/app-notice-status";
 
 export const runtime = "nodejs";
@@ -24,7 +25,9 @@ export const runtime = "nodejs";
 const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 export async function GET() {
-  const [user, err] = await requireUser();
+  // PB-10 F3 — re-read on visibility/focus by the notice rail: BACKGROUND, not
+  // session use. Full guard, no lastActiveAt touch (lib/auth/presence-scope.ts).
+  const [user, err] = await runWithoutSessionTouch(() => requireUser());
   if (err) return err;
   return NextResponse.json(await readAppNoticeStatus(user.id), { headers: NO_STORE });
 }

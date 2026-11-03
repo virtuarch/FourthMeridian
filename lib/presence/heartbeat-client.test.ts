@@ -6,6 +6,8 @@
  *   · F1: a 429 / 5xx / network failure RESTORES the pending interaction, so the
  *     next beat carries it; 401/403 stop the heartbeat
  *   · an interaction only marks the flag; the next interval beat carries it
+ *   · F4: becoming visible is presence only (interacted=false) — macOS flips
+ *     visibility on occlusion / lock; a pending flag older than 2 × interval is dropped
  *   · the body is only ever {"interacted": boolean}
  *
  *     npx tsx lib/presence/heartbeat-client.test.ts
@@ -13,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { createHeartbeatController, type BeatOutcome } from "./heartbeat-client";
+import { createHeartbeatController, STALE_INTERACTION_MS, type BeatOutcome } from "./heartbeat-client";
 import { PRESENCE_CONFIG } from "./definitions";
 
 let failures = 0;
@@ -88,14 +90,92 @@ async function main() {
     await r.c.mount();                       // idle beat refused
     check("a refused IDLE beat does not invent an interaction", r.c.state().interacted === false);
     const t = rig();
+    await t.c.mount(); t.c.interaction();
+    t.advance(10_000);
     t.replies.push({ networkError: true });
     await t.c.visible();
-    check("the tab-became-visible interaction survives a lost beat", t.c.state().interacted === true);
+    check("a REAL pending input survives a lost visible beat", t.c.state().interacted === true && t.carried(1) === true);
     const th = rig();
     const first = th.c.mount();              // in flight, not awaited
     await th.c.tick();
     await first;
     check("no concurrent beat while one is in flight", th.sent.length === 1);
+  }
+
+  console.log("\nF4 — visibility is presence, never an interaction");
+  {
+    const r = rig();
+    await r.c.mount();
+    r.setVisible(false);
+    r.advance(6 * 60_000);                   // occluded / locked, nobody at the tab
+    await r.c.tick();
+    check("hidden: no beat", r.sent.length === 1);
+    r.setVisible(true);
+    await r.c.visible();                     // macOS uncovers the window / unlocks
+    check("visible again ⇒ an immediate presence beat", r.sent.length === 2);
+    check("…carrying interacted=FALSE (no human input)", r.carried(1) === false);
+    r.c.interaction();                       // the human actually clicks
+    r.advance(PRESENCE_CONFIG.clientBeatIntervalMs); await r.c.tick();
+    check("returning shows Active now only after a real input (next beat carries it)", r.carried(2) === true);
+    const src = readFileSync(path.join(process.cwd(), "components/presence/PresenceHeartbeat.tsx"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    check("visibility is not in INTERACTION_EVENTS and the visibility handler only calls visible()",
+      !/visibilitychange|focus/.test(/INTERACTION_EVENTS = \[([^\]]*)\]/.exec(src)?.[1] ?? "x")
+      && /const onVisibility = \(\) => \{ if \(document\.visibilityState === "visible"\) void controller\.visible\(\); \};/.test(src));
+  }
+  {
+    const r = rig();
+    await r.c.mount();
+    r.c.interaction();                       // real input …
+    r.setVisible(false);                     // … then the tab is hidden before the next beat
+    r.advance(STALE_INTERACTION_MS);
+    r.setVisible(true); await r.c.visible();
+    check("a pending input exactly at the cap is still carried", r.carried(1) === true);
+    const q = rig();
+    await q.c.mount();
+    q.c.interaction();
+    q.setVisible(false);
+    q.advance(STALE_INTERACTION_MS + 1);
+    q.setVisible(true); await q.c.visible();
+    check("STALE CAP: a pending input older than 2 × interval (by INPUT time) is dropped", q.carried(1) === false && q.c.state().interacted === false);
+    check("the cap is 2 × the client interval", STALE_INTERACTION_MS === 2 * PRESENCE_CONFIG.clientBeatIntervalMs);
+    const o = rig();
+    await o.c.mount();
+    o.advance(30_000); o.c.interaction();    // real input
+    for (let i = 0; i < 3; i++) { o.replies.push({ networkError: true }); o.advance(PRESENCE_CONFIG.clientBeatIntervalMs); await o.c.tick(); }
+    o.advance(PRESENCE_CONFIG.clientBeatIntervalMs); await o.c.tick();
+    check("an outage cannot carry an old input forward: 3 lost beats later it is dropped (age of the input)",
+      o.carried(1) === true && o.carried(4) === false, JSON.stringify(o.sent));
+    const f = rig();
+    await f.c.mount(); f.c.interaction();
+    f.advance(PRESENCE_CONFIG.clientBeatIntervalMs);
+    f.replies.push({ status: 429 });
+    await f.c.tick();
+    f.advance(PRESENCE_CONFIG.clientBeatIntervalMs); await f.c.tick();
+    check("F1 still holds under the cap: a 429'd input is carried by the next interval beat", f.carried(2) === true);
+  }
+
+  {
+    // S2 — restore, wait > 2 × interval, the next beat sends interacted:false.
+    for (const reply of [{ status: 429 }, { status: 503 }, { networkError: true }] as BeatOutcome[]) {
+      const r = rig();
+      await r.c.mount();
+      r.c.interaction();                     // input at T
+      r.replies.push(reply);
+      await r.c.visible();                   // carried, refused/lost ⇒ restored with age from T
+      check(`${JSON.stringify(reply)}: restored`, r.carried(1) === true && r.c.state().interacted === true);
+      r.advance(STALE_INTERACTION_MS + 1);
+      await r.c.tick();
+      check(`${JSON.stringify(reply)}: > 2 × interval after the INPUT, the next beat sends interacted:false`, r.carried(2) === false, JSON.stringify(r.sent));
+    }
+    // Age is the input's, not the beat's: last beat long ago, input recent ⇒ carried.
+    const a = rig();
+    await a.c.mount();
+    a.setVisible(false);
+    a.advance(10 * 60_000);
+    a.c.interaction();                       // input while hidden (e.g. keyboard focus) just before return
+    a.advance(5_000);
+    a.setVisible(true); await a.c.visible();
+    check("a recent input is carried even when the last beat was long ago (age from the input)", a.carried(1) === true);
   }
 
   console.log("\nstop conditions");
