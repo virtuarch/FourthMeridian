@@ -289,16 +289,24 @@ const section4 = async () => {
 // ── §5 wiring pins + the window-claims audit ─────────────────────────────────
 {
   const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const asm = src("../ai/assemblers/snapshot.ts");
-  assert.ok(/loadBalanceCoverageFailOpen\(client, spaceId, 'ai-snapshot'\)/.test(asm)
-    && /projectSnapshotSection\(rows, scopeHint === 'brief' \? 'brief' : 'full', balanceCoverage\)/.test(asm), "AI assembler reads + passes coverage");
-  // (split so the WINDOW-2 call-site scan does not read this literal as a call)
-  assert.ok(asm.indexOf("getRecentSnapshots" + "(client") < asm.indexOf("loadBalanceCoverageFailOpen(client"), "coverage read LAST on the shared client");
-  const tool = src("../ai/conversation/tools/history.ts");
-  assert.ok(/loadBalanceCoverageFailOpen\(ctx\.readClient, ctx\.spaceId, 'ai-history-tool'\)/.test(tool)
-    && /changeBlock\(pt\(inRange\[0\]\), pt\(inRange\[inRange\.length - 1\]\), balanceCoverage, estimatedOn\)/.test(tool), "history tool gated");
+  assert.ok(/balanceCoverage = null \} = options/.test(asm)
+    && /projectSnapshotSection\(rows, scopeHint === 'brief' \? 'brief' : 'full', balanceCoverage\)/.test(asm), "AI assembler takes coverage from options");
+  assert.ok(!/loadBalanceCoverage/.test(strip(asm)), "…and NEVER reads it on its own (shared) client");
   const ev = src("../ai/conversation/evidence.ts");
+  assert.ok(/read\('balance_coverage', \(c\) => loadBalanceCoverage\(c, spaceId\)\)\.catch\(/.test(ev), "AI coverage read: its OWN prologue phase, fail-open");
+  assert.ok(/const coverage = d === FinanceDomains\.SNAPSHOT_HISTORY \? await balanceCoverage : undefined;\n\s*const section = await read\(d,/.test(ev), "awaited outside the snapshot phase, then handed to it");
   assert.ok(/changeThisMonthUnavailable: snap\.canonicalChangeUnavailable\.message/.test(ev), "orientation carries the reason");
+  const eng = src("../ai/conversation/engine.ts");
+  assert.ok(/const balanceCoverage = readBalanceCoverage\(read, spaceCtx\.spaceId\);/.test(eng)
+    && /assembleFullContext\(read, spaceCtx, agentId, balanceCoverage\)/.test(eng)
+    && /balanceCoverage: \(\) => balanceCoverage,/.test(eng), "engine: one coverage read per transcript, shared with the tools");
+  const tool = src("../ai/conversation/tools/history.ts");
+  assert.ok(/ctx\.balanceCoverage \? await ctx\.balanceCoverage\(\)/.test(tool)
+    && /!ctx\.phase \? await loadBalanceCoverageFailOpen\(ctx\.readClient, ctx\.spaceId, 'ai-history-tool'\)/.test(tool)
+    && /changeBlock\(pt\(inRange\[0\]\), pt\(inRange\[inRange\.length - 1\]\), balanceCoverage, estimatedOn\)/.test(tool),
+    "history tool: coverage from the transcript's own phase; on its call client ONLY when there is no phase (no transaction)");
   const page = src("../../app/(shell)/dashboard/spaces/page.tsx");
   assert.ok(/loadBalanceCoverageBySpace\(tx, mySpaceIds, "space-launcher"\)/.test(page)
     && /getSpaceNetWorthSummaries\(tx, allIds, balanceCoverageBySpace\)/.test(page)
@@ -330,7 +338,71 @@ const section4 = async () => {
   ok("§5 every server path wired through the one rule; window-claims audit extended (not weakened)");
 }
 
-section3().then(section4).then(() => {
+// ── §6 the coverage read never shares a transaction with the AI assembly ─────
+const section6 = async () => {
+  // A fake tenant phase per read, faithful to Postgres: once a statement fails
+  // inside a transaction, every later statement in it fails too.
+  const parts: string[] = [];
+  const rawRows = DAYS.map((d) => ({
+    date: new Date(`${d.date}T00:00:00.000Z`), reportingCurrency: "USD", stocks: 0, crypto: 0, total: 0,
+    cash: CASH, savings: 0, debt: d.debt, netWorth: CASH - d.debt, totalAssets: CASH, netLiquid: CASH - d.debt,
+    cashOnHand: CASH, isEstimated: d.est, cryptoValuationStatus: null, completenessTier: null,
+    contributingComponentCount: null, totalComponentCount: null,
+  }));
+  const phaseClient = (part: string, coverageThrows: boolean) => {
+    let aborted = false;
+    const q = <T>(f: () => T) => async () => {
+      if (aborted) throw new Error("current transaction is aborted, commands ignored until end of transaction block");
+      try { return f(); } catch (e) { aborted = true; throw e; }
+    };
+    const any = new Proxy({}, { get: () => q(() => []) });
+    return new Proxy({
+      spaceSnapshot: { findMany: q(() => rawRows) },
+      space: { findUnique: q(() => { if (coverageThrows && part === "balance_coverage") throw new Error("boom space_A"); return { reportingCurrency: "USD", type: "PERSONAL" }; }) },
+      spaceAccountLink: { findMany: q(() => []) },
+    } as Record<string, unknown>, { get: (t, k: string) => t[k] ?? any });
+  };
+  const runner = (coverageThrows: boolean) => (<T>(part: string, fn: (c: never) => Promise<T>) => {
+    parts.push(part);
+    return fn(phaseClient(part, coverageThrows) as never);
+  });
+  const spaceCtx = {
+    userId: "owner_A", spaceId: "space_A", role: "OWNER", permissions: {},
+    space: { id: "space_A", name: "Household", type: "PERSONAL", category: "OTHER", isPublic: false, reportingCurrency: "USD" },
+  } as unknown as SpaceContext;
+  const { assembleFullContext, readBalanceCoverage } = await import("@/lib/ai/conversation/evidence");
+
+  const warn = console.warn; const lines: string[] = [];
+  console.warn = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+  let ctx; let cov;
+  try {
+    cov = await readBalanceCoverage(runner(true), "space_A");
+    ctx = await assembleFullContext(runner(true), spaceCtx, "t");
+  } finally { console.warn = warn; }
+  assert.equal(cov, null, "a throwing coverage read falls open to null (never rejects)");
+  const snapData = ctx.domains[FinanceDomains.SNAPSHOT_HISTORY]?.data as ReturnType<typeof projectSnapshotSection>;
+  assert.ok(snapData, "the turn still assembles its snapshot domain");
+  assert.ok(!ctx.unreadableDomains?.includes(FinanceDomains.SNAPSHOT_HISTORY), "the snapshot domain is not unreadable");
+  assert.ok(!ctx.unreadableDomains?.includes("balance_coverage"), "a coverage failure is never named as an unreadable domain");
+  const ungated = projectSnapshotSection(ROWS, "full")!.canonicalChange;
+  assert.ok(ungated && snapData!.canonicalChange?.abs === ungated.abs && !("canonicalChangeUnavailable" in snapData!),
+    "the change falls open to comparable");
+  assert.ok(lines.length >= 2 && lines.every((l) => l === balanceCoverageLoadFailureLine("ai-snapshot", 1, 1)),
+    `the counts-only line fires: ${JSON.stringify(lines)}`);
+  assert.ok(parts.includes("balance_coverage") && parts.includes(FinanceDomains.SNAPSHOT_HISTORY), "coverage read in its OWN phase");
+
+  // And with coverage readable in that phase, the same assembly withholds.
+  const covering = <T>(part: string, fn: (c: never) => Promise<T>) => part === "balance_coverage"
+    ? Promise.resolve(COV as unknown as T)
+    : runner(false)(part, fn);
+  const gatedCtx = await assembleFullContext(covering, spaceCtx, "t");
+  const g = gatedCtx.domains[FinanceDomains.SNAPSHOT_HISTORY]?.data as ReturnType<typeof projectSnapshotSection>;
+  assert.equal(g?.canonicalChange, null);
+  assert.equal(g?.canonicalChangeUnavailable?.message, MESSAGE, "the assembled context carries the reason");
+  ok("§6 AI assembly: a throwing coverage read (own phase) leaves the turn assembled, the change comparable, the log line fired");
+};
+
+section3().then(section4).then(section6).then(() => {
   for (const c of checks) console.log("  ✓ " + c);
   console.log(`server-change-claims: ${checks.length} checks passed`);
 }).catch((e) => { console.error(e); process.exit(1); });

@@ -81,9 +81,13 @@ export const getNetWorthHistory: ToolDefinition = {
     // row was reported as a fact and the model told the user he had negative net
     // worth in early 2025.
     const rows = await getRecentSnapshots(ctx.readClient, { rows: SNAPSHOT_READ_ROWS }, { spaceId: ctx.spaceId });
-    // PB-8c — read last on this client, failing open (see loadBalanceCoverageFailOpen).
-    const balanceCoverage = rows.length > 0
-      ? await loadBalanceCoverageFailOpen(ctx.readClient, ctx.spaceId, 'ai-history-tool')
+    // PB-8c — the floors come from the transcript's own coverage phase
+    // (ctx.balanceCoverage), never from this call's transaction. Only a context
+    // with NO phase runner — whose client holds no transaction to abort — reads
+    // them here; with a phase and no provider the gate falls open.
+    const balanceCoverage = rows.length === 0 ? null
+      : ctx.balanceCoverage ? await ctx.balanceCoverage()
+      : !ctx.phase ? await loadBalanceCoverageFailOpen(ctx.readClient, ctx.spaceId, 'ai-history-tool')
       : null;
     const section = projectSnapshotSection(rows as Snapshot[], 'full', balanceCoverage);
     const estimatedOn = new Map((rows as Snapshot[]).map((r) => [r.date.slice(0, 10), r.isEstimated === true]));

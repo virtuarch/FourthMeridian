@@ -26,7 +26,7 @@ import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
 import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
-import type { WithheldChange } from "@/lib/connections/balance-coverage.core";
+import type { BalanceCoverage, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -184,6 +184,13 @@ export interface AssemblerOptions {
     /** Short human label for provenance (e.g. "January 2026 · Other"). */
     label?: string;
   };
+  /**
+   * PB-8c — the Space's balance-history floors, for the snapshot assembler's
+   * change gate. Read by the CALLER in a phase of its own (never on the
+   * assembler's client: a failed statement would abort a shared transaction).
+   * Absent / null ⇒ every change comparable (fail-open, byte-identical payload).
+   */
+  balanceCoverage?: BalanceCoverage | null;
 }
 
 // ---------------------------------------------------------------------------

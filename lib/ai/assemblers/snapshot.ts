@@ -70,7 +70,6 @@ import {
   balanceCoverageNote, balanceCoveredFromISO, balanceCoverageSidesFor, gateWindowChange,
   type BalanceCoverage,
 } from '@/lib/connections/balance-coverage.core';
-import { loadBalanceCoverageFailOpen } from '@/lib/connections/balance-coverage';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -287,16 +286,15 @@ async function assembleSnapshot(
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
   const { spaceId } = spaceCtx;
-  const { scopeHint = 'full' } = options;
+  const { scopeHint = 'full', balanceCoverage = null } = options;
   const assembledAt = new Date().toISOString();
 
   // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
   const rows = await getRecentSnapshots(client, { rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
-  // PB-8c — the balance-history floors, read LAST on this client (a failed
-  // statement would abort a shared transaction) and failing OPEN.
-  const balanceCoverage = rows.length > 0
-    ? await loadBalanceCoverageFailOpen(client, spaceId, 'ai-snapshot')
-    : null;
+  // PB-8c — the balance-history floors arrive on `options`, read by the caller in
+  // a phase of its OWN (readBalanceCoverage, lib/ai/conversation/evidence.ts) —
+  // never on this client, where a failed statement would abort the shared
+  // transaction and take this domain (and a turn) down with it.
 
   const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full', balanceCoverage);
   if (data === null) return null;
