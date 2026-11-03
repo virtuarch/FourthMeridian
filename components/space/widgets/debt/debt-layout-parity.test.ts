@@ -24,6 +24,7 @@ import { debtCompositionItems, type DebtPerspectiveAccount } from "@/components/
 import { computeDebtKpis } from "./debt-kpis";
 import { DebtCompositionCard, DEBT_COMPOSITION_GROUPINGS } from "./DebtCompositionCard";
 import { InvestmentAllocationPanel, ALLOCATION_GROUPINGS } from "@/components/space/widgets/investments/InvestmentAllocationPanel";
+import { computeAllocation } from "@/lib/investments/investments-allocation-core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -108,8 +109,11 @@ console.log("\n4. grouping Dropdown in the Block header (Net Worth idiom)");
   check("ALLOCATION_GROUPINGS = By asset class · By sector · By account · By currency",
     ALLOCATION_GROUPINGS.map((g) => g.label).join(" · ") === "By asset class · By sector · By account · By currency");
   const holdings = [{ key: "h1", symbol: "VTI", name: "VTI", value: 1000, accountId: "a1", assetClass: "EQUITY", currency: "USD" }] as never;
-  const controlled = renderToStaticMarkup(createElement(InvestmentAllocationPanel, { holdings, accounts: [{ id: "a1", name: "Brokerage" }], reportingCurrency: "USD", dimension: "account" }));
-  const own = renderToStaticMarkup(createElement(InvestmentAllocationPanel, { holdings, accounts: [{ id: "a1", name: "Brokerage" }], reportingCurrency: "USD" }));
+  // PB-11 M7 — the panel reads the server-computed allocation (built here the way
+  // space-data-core builds it); it no longer reduces holdings itself.
+  const allocation = computeAllocation(holdings, { a1: "Brokerage" });
+  const controlled = renderToStaticMarkup(createElement(InvestmentAllocationPanel, { allocation, holdings, accounts: [{ id: "a1", name: "Brokerage" }], reportingCurrency: "USD", dimension: "account" }));
+  const own = renderToStaticMarkup(createElement(InvestmentAllocationPanel, { allocation, holdings, accounts: [{ id: "a1", name: "Brokerage" }], reportingCurrency: "USD" }));
   check("controlled panel renders no in-panel <select>", !/<select/.test(controlled));
   check("uncontrolled panel keeps its select (other hosts unchanged)", /<select/.test(own) || /No valued holdings/.test(own));
 }

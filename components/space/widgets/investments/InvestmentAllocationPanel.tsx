@@ -24,8 +24,8 @@ import { formatCurrency } from "@/lib/currency";
 import type { ValuedHoldingRow } from "@/lib/investments/investments-time-machine-core";
 import type { ConcentrationClassification } from "@/lib/investments/concentration";
 import {
-  computeAllocation, holdingsInSlice,
-  type AllocationSlice, type AllocationDimension,
+  holdingsInSlice,
+  type AllocationResult, type AllocationSlice, type AllocationDimension,
 } from "@/lib/investments/investments-allocation-core";
 import { RightPanel, PanelHeader, PanelContent } from "@/components/atlas/panels";
 import { AllocationSliceDetail } from "./AllocationSliceDetail";
@@ -61,12 +61,19 @@ function toBreakdownItems(slices: AllocationSlice[]): BreakdownItem[] {
 }
 
 export function InvestmentAllocationPanel({
+  allocation,
   holdings,
   accounts,
   reportingCurrency,
   showConcentrationInsight = true,
   dimension: controlledDimension,
 }: {
+  /**
+   * PB-11 M7 — THE server-computed allocation (lib/investments/space-data-core),
+   * the same one the Concentration card reads. `holdings` remain only for the
+   * slice drill-down (holdingsInSlice selects through the same key functions).
+   */
+  allocation:        AllocationResult;
   holdings:          ValuedHoldingRow[];
   accounts:          { id: string; name: string }[];
   reportingCurrency: string;
@@ -85,10 +92,6 @@ export function InvestmentAllocationPanel({
   const accountNames = useMemo(
     () => Object.fromEntries(accounts.map((a) => [a.id, a.name])),
     [accounts],
-  );
-  const allocation = useMemo(
-    () => computeAllocation(holdings, accountNames),
-    [holdings, accountNames],
   );
 
   // A key means a different thing on each axis ("EQUITY" vs an accountId), so a
