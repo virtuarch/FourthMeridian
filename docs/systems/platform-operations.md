@@ -48,7 +48,7 @@ IMPLEMENTED in `lib/platform/workspaces.ts` (`PLATFORM_AREA_WORKSPACES`).
 
 | Area (label) | Workspaces → views | Lead component |
 |---|---|---|
-| Platform Operations | **Operations**: Overview · Jobs · Pipeline (drill-down, no second tab row) · **Providers** (one view) · **Economics**: Overview · AI & Costs · **Policies**: Policy groups · Platform defaults · Alerts · Emergency controls (drill-down) · **Incidents** | `OperationsLead`, `PipelineLead`, `ProvidersLead`, `EconomicsOverviewLead`, `AiCostsLead`, `PoliciesLead` |
+| Platform Operations | **Operations**: Overview · Jobs · Pipeline (drill-down, no second tab row) · **Providers** (one view) · **Economics**: Overview · AI & Costs · Providers · Entitlements · **Policies**: Policy groups · Platform defaults · Alerts · Emergency controls (drill-down) · **Incidents** | `OperationsLead`, `PipelineLead`, `ProvidersLead`, `EconomicsOverviewLead`, `AiCostsLead`, `EconomicsProvidersLead`, `EconomicsEntitlementsLead`, `PoliciesLead` |
 | Security Operations | **Security** (posture dashboard) · **Audit** · **Operator actions** | `SecurityLead` |
 | Growth | **Growth** (acquisition dashboard; hosts the beta signup list) | `GrowthLead` |
 | Customer Success | **Customers** · **Incidents** · **Communications**: Library · Automations · Delivery & History · Preferences | `CustomerSuccessLead`, `components/platform/comms/*` |
@@ -433,9 +433,9 @@ threshold lives in its exported `PRESENCE_CONFIG`:
 
 ## Economics
 
-**Overview and the AI & Costs move: IMPLEMENTED (PR A, draft).** Providers (cost
-attribution, quotas) and Entitlements (cost by policy group, read-only scenarios) are
-**PLANNED** as PR B; the distinct Platform AI category is **PLANNED** as PR C.
+**Overview and the AI & Costs move: IMPLEMENTED (PR A, #314).** **Providers** (cost
+view) and **Entitlements** (cost by policy group, HYPOTHETICAL scenarios):
+IMPLEMENTED (PR B, draft). The distinct Platform AI category is **PLANNED** as PR C.
 
 - **Navigation.** `platform-economics` is a Platform Operations workspace in the place
   AI & Costs had (Operations · Providers · Economics · Policies · Incidents), with views
@@ -468,6 +468,26 @@ attribution, quotas) and Entitlements (cost by policy group, read-only scenarios
   value is defined as the sum of its drill rows (a count: the row count), computed from
   the same inputs at the same window end, so a KPI and its list cannot disagree. The open
   drill is in the URL (`?econ=<figure>.<window>&econuntil=`, workspace-scoped, REPLACE).
+- **Plaid Investments is not priced.** Plaid bills Investments per Item-month only once
+  the product is initialized (`billed_products`), not merely consented, and
+  `billed_products` is not stored. Consented Investments Item-months are counted and
+  named in `coverage.missing`; the Plaid figure is PARTIAL (S2 finding, PR B).
+- **Providers** (`GET …/economics/providers`, `providers-core.ts`): OpenAI from the AI
+  ledger, Plaid Item-months × rate, every other provider with recorded calls UNAVAILABLE
+  "not metered". Calls this cycle are MEASURED (ApiUsageCounter). Quota is "cap unknown"
+  for every provider. Each row links to Platform Operations › Providers for health;
+  Economics never shows a health verdict.
+- **Entitlements** (`GET …/economics/entitlements`, `entitlements-core.ts`): each
+  group's cost this cycle is the sum of its customers' attributable cost (customer-surface
+  AI + Plaid Transactions), grouped by current assignment. No row, or a retired group,
+  counts as the default group. Each group drills to its customers as opaque refs. AI
+  overhead, customer-surface calls with no user, and Items with no owner are a separate
+  "not attributed" figure, never spread across groups.
+- **Scenarios** (`GET …/economics/scenario?group=&allowance=`): HYPOTHETICAL and
+  read-only. They re-read the group's recorded customer AI spend with each customer-day
+  capped at the proposed daily allowance. Customers with their own allowance (an override,
+  or an overlay that sets one) are left uncapped. Nothing is written and no policy
+  changes (static pin in `lib/platform/economics/providers-entitlements.test.ts`).
 - **Provider health stays in Platform Operations › Providers.** Configuration stays in
   Policies; Economics reads it and never edits it.
 - All money shown stays an estimate, not a bill. See

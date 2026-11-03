@@ -27,10 +27,11 @@ import type { SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 import { loadEngagedUserIdsSince } from "@/lib/platform/growth/product-analytics";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { buildPlaidUsage, realPlaidUsageReaders, TRANSITIONS_LIMIT, type PlaidUsageReaders } from "@/lib/platform/plaid/usage";
+import type { PlaidItemFact, PlaidItemTransition } from "@/lib/platform/plaid/item-months";
 import { isPricingConfigured, PLAID_RATES, type PlaidRate } from "@/lib/usage/pricing";
 import {
   buildEconomicsDrill, buildEconomicsSnapshot, cycleOf, readSince,
-  type EconomicsDrillQuery, type EconomicsDrillResponse, type EconomicsInputs, type EconomicsSnapshot,
+  type EconomicsDrillQuery, type EconomicsDrillResponse, type EconomicsInputs, type EconomicsSnapshot, type OverviewFigureKey,
 } from "@/lib/platform/economics/snapshot-core";
 
 export interface EconomicsDeps {
@@ -42,8 +43,15 @@ export interface EconomicsDeps {
   ref?: (userId: string) => string;
 }
 
+/** The inputs plus the raw Plaid census they were folded from (PR B attributes Items to customers). */
+export interface EconomicsFacts {
+  inputs: EconomicsInputs;
+  items: PlaidItemFact[];
+  transitions: PlaidItemTransition[];
+}
+
 /** Read every input once, at the window end `untilMs`. */
-export async function loadEconomicsInputs(untilMs: number, deps: EconomicsDeps = {}): Promise<EconomicsInputs> {
+export async function loadEconomicsFacts(untilMs: number, deps: EconomicsDeps = {}): Promise<EconomicsFacts> {
   const until = new Date(untilMs);
   const plaid = deps.plaidReaders ?? realPlaidUsageReaders();
   const rates = deps.plaidRates ?? PLAID_RATES;
@@ -58,21 +66,29 @@ export async function loadEconomicsInputs(untilMs: number, deps: EconomicsDeps =
   const current = usage.cycles.find((c) => c.label === "current") ?? null;
   const ref = deps.ref ?? opaqueUserRef;
   return {
-    nowMs: untilMs,
-    spendGroups: groups,
-    aiPricingConfigured: deps.aiPricingConfigured ?? isPricingConfigured(),
-    plaidCycle: current?.during ?? null,
-    plaidReadingsAgree: current?.agree ?? true,
-    plaidRates: rates,
-    // Opaque references only — one per engaged user id; the id itself never leaves this reader.
-    engagedCustomerRefs: [...engaged].map((id) => ref(id)).sort(),
+    items, transitions,
+    inputs: {
+      nowMs: untilMs,
+      spendGroups: groups,
+      aiPricingConfigured: deps.aiPricingConfigured ?? isPricingConfigured(),
+      plaidCycle: current?.during ?? null,
+      plaidReadingsAgree: current?.agree ?? true,
+      plaidRates: rates,
+      // Opaque references only — one per engaged user id; the id itself never leaves this reader.
+      engagedCustomerRefs: [...engaged].map((id) => ref(id)).sort(),
+    },
   };
+}
+
+export async function loadEconomicsInputs(untilMs: number, deps: EconomicsDeps = {}): Promise<EconomicsInputs> {
+  return (await loadEconomicsFacts(untilMs, deps)).inputs;
 }
 
 export async function getEconomicsSnapshot(nowMs: number = Date.now(), deps: EconomicsDeps = {}): Promise<EconomicsSnapshot> {
   return buildEconomicsSnapshot(await loadEconomicsInputs(nowMs, deps));
 }
 
-export async function getEconomicsDrill(q: EconomicsDrillQuery, deps: EconomicsDeps = {}): Promise<EconomicsDrillResponse> {
+/** The Overview's own figures; PR B figures drill through providers-entitlements.ts getAnyEconomicsDrill. */
+export async function getEconomicsDrill(q: EconomicsDrillQuery & { figure: OverviewFigureKey }, deps: EconomicsDeps = {}): Promise<EconomicsDrillResponse> {
   return buildEconomicsDrill(await loadEconomicsInputs(q.untilMs, deps), q.figure, q.window);
 }

@@ -427,7 +427,8 @@ console.log("Phase 1 UX · views");
     // lead view hosting the same six keys in drawers (no key added or lost).
     // PLATFORM ECONOMICS — re-pinned: Economics = a lead-only Overview, then that
     // AI & Costs view UNCHANGED (same id "ai", same lead, same six hosted keys).
-    "platform-economics[overview:<economics-overview> ai:<ai-costs>{ops_ai_invocations+ops_ai_trend+ops_ai_budget+ops_brief_ops+ops_plaid_usage+ops_cost}]",
+    // PR B — re-pinned: + Providers (cost) and Entitlements, two lead-only views (no section key added).
+    "platform-economics[overview:<economics-overview> ai:<ai-costs>{ops_ai_invocations+ops_ai_trend+ops_ai_budget+ops_brief_ops+ops_plaid_usage+ops_cost} providers:<economics-providers> entitlements:<economics-entitlements>]",
     // VISUAL SPEC §5 — Policies › Policy groups re-ruled from the inline catalogue
     // panel to ONE read-only entitlement lead hosting ops_policies (in its groups /
     // defaults / emergency variants) and ops_alerts in drawers; the other three
@@ -442,7 +443,7 @@ console.log("Phase 1 UX · views");
     ops.map((w) => w.label ?? getPlatformWorkspace(w.workspaceId)?.label).join(" · ") === "Operations · Providers · Economics · Policies · Incidents"
       && getPlatformWorkspace("platform-overview")?.label === "Overview");
   check("view labels", ops.map((w) => (w.views ?? []).map((v) => v.label).join("/")).join(" · ")
-    === "Overview/Jobs/Pipeline · Providers · Overview/AI & Costs · Policy groups/Platform defaults/Alerts/Emergency controls · Broken now/Needs verification/History");
+    === "Overview/Jobs/Pipeline · Providers · Overview/AI & Costs/Providers/Entitlements · Policy groups/Platform defaults/Alerts/Emergency controls · Broken now/Needs verification/History");
 
   for (const w of ops) {
     const views = w.views ?? [];
@@ -542,7 +543,7 @@ console.log("Phase 1 UX · views");
       "platform-providers": ["health"],
       // VISUAL SPEC §5 — one dashboard view; its id stays "ai".
       // PLATFORM ECONOMICS — re-pinned: it is now Economics' second view, after Overview.
-      "platform-economics": ["overview", "ai"],
+      "platform-economics": ["overview", "ai", "providers", "entitlements"], // PR B re-pin: + providers, entitlements
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
       "platform-incidents": ["open", "verify", "history"],
     }));

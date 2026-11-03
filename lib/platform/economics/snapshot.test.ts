@@ -25,7 +25,7 @@ import {
   DRILLABLE, ECONOMICS_FIGURES, REASON_INFRA_NOT_METERED, REASON_NO_AI_CALLS,
   REASON_NO_AI_RATE_CARD, REASON_NO_BILLING, REASON_NO_ENGAGED, REASON_NO_PLAID_RATE, TREND_WINDOWS,
   buildEconomicsDrill, buildEconomicsSnapshot, cycleOf, parseEconomicsDrillQuery, readSince, windowRange,
-  type EconomicsFigureKey, type EconomicsInputs, type EconomicsSnapshot, type EconomicsWindow,
+  type EconomicsFigureKey, type EconomicsInputs, type OverviewFigureKey, type EconomicsSnapshot, type EconomicsWindow,
 } from "@/lib/platform/economics/snapshot-core";
 import { getEconomicsDrill, getEconomicsSnapshot, loadEconomicsInputs, type EconomicsDeps } from "@/lib/platform/economics/snapshot";
 
@@ -93,15 +93,18 @@ async function main() {
   const F = base.figures;
   // AI this cycle: Nov 1 (chat) + Nov 2 (brief) + Nov 3 (harness) = 3 × $1.25.
   check("AI this cycle: ESTIMATED, every surface, Σ priced days", F.ai_cost.status === "ESTIMATED" && near(F.ai_cost.value, 3.75), `${F.ai_cost.status} ${F.ai_cost.value}`);
-  // Plaid Nov: p1 + p2 Transactions (2 × $0.30) + p2 Investments ($0.35); p3 revoked, sandbox excluded.
-  check("Plaid this cycle: Item-months × rate, sandbox + revoked excluded — PARTIAL (other providers not metered)",
-    F.provider_cost.status === "PARTIAL" && near(F.provider_cost.value, 0.95) && F.provider_cost.coverage.missing.some((m) => /not metered/.test(m)), `${F.provider_cost.status} ${F.provider_cost.value} ${F.provider_cost.coverage.missing}`);
+  // Plaid Nov: p1 + p2 Transactions (2 × $0.30); p3 revoked, sandbox excluded.
+  // PR B re-pin (S2): p2's consented Investments Item-month is NOT priced — Plaid bills it only once
+  // initialized (billed_products, not stored) — so it is named as missing instead of adding $0.35.
+  check("Plaid this cycle: Transactions Item-months × rate, sandbox + revoked excluded — PARTIAL (Investments not evidenced, other providers not metered)",
+    F.provider_cost.status === "PARTIAL" && near(F.provider_cost.value, 0.6) && F.provider_cost.coverage.missing.some((m) => /not metered/.test(m))
+      && F.provider_cost.coverage.missing.some((m) => /Investments — 1 consented Item-month — billed only once initialized/.test(m)), `${F.provider_cost.status} ${F.provider_cost.value} ${F.provider_cost.coverage.missing}`);
   check("operating cost: AI + Plaid, PARTIAL (lower bound) — infrastructure and other providers named as missing",
-    F.operating_cost.status === "PARTIAL" && near(F.operating_cost.value, 4.7)
+    F.operating_cost.status === "PARTIAL" && near(F.operating_cost.value, 4.35) /* PR B re-pin: was 4.7 incl. unevidenced Investments */
       && F.operating_cost.coverage.missing.some((m) => m.includes(REASON_INFRA_NOT_METERED)) && /lower bound/.test(F.operating_cost.reason ?? ""), `${F.operating_cost.value} ${F.operating_cost.reason}`);
   check("infrastructure: UNAVAILABLE (not metered), null, no drill", F.infra_cost.status === "UNAVAILABLE" && F.infra_cost.value === null && F.infra_cost.reason === REASON_INFRA_NOT_METERED && F.infra_cost.drill === null);
   check("active customers: MEASURED count of PB-10-engaged customers", F.active_customers.status === "MEASURED" && F.active_customers.value === 3 && F.active_customers.unit === "count");
-  check("cost per active customer: operating cost ÷ engaged, PARTIAL like its numerator", F.cost_per_active_customer.status === "PARTIAL" && near(F.cost_per_active_customer.value, 4.7 / 3), `${F.cost_per_active_customer.value}`);
+  check("cost per active customer: operating cost ÷ engaged, PARTIAL like its numerator", F.cost_per_active_customer.status === "PARTIAL" && near(F.cost_per_active_customer.value, 4.35 / 3) /* PR B re-pin: was 4.7 / 3 */, `${F.cost_per_active_customer.value}`);
   check("trend windows: 7 d ESTIMATED; 30 d includes Oct 20; 90 d includes Sep 10",
     base.trend.windows["7d"].status === "ESTIMATED" && near(base.trend.windows["7d"].value, 3.75) && near(base.trend.windows["30d"].value, 5) && near(base.trend.windows["90d"].value, 6.25),
     TREND_WINDOWS.map((w) => base.trend.windows[w].value).join());
@@ -129,7 +132,7 @@ async function main() {
   const noRate = buildEconomicsSnapshot(await inputsOf({ aiPricingConfigured: false }));
   check("no AI rate card ⇒ AI UNAVAILABLE with its reason and NO drill; operating cost keeps Plaid as a lower bound",
     noRate.figures.ai_cost.value === null && noRate.figures.ai_cost.reason === REASON_NO_AI_RATE_CARD && noRate.figures.ai_cost.drill === null
-      && noRate.figures.operating_cost.status === "PARTIAL" && near(noRate.figures.operating_cost.value, 0.95));
+      && noRate.figures.operating_cost.status === "PARTIAL" && near(noRate.figures.operating_cost.value, 0.6) /* PR B re-pin: was 0.95 */);
   const allUnpriced = buildEconomicsSnapshot(await inputsOf({ groupsList: GROUPS_ALL_UNPRICED }));
   check("only unpriced calls ⇒ AI UNAVAILABLE ('none priced'), the day is observed but its total is null",
     allUnpriced.figures.ai_cost.value === null && allUnpriced.figures.ai_cost.reason !== null
@@ -160,7 +163,8 @@ async function main() {
   for (const [name, o] of [["base", {}], ["partial AI", { groupsList: GROUPS_UNPRICED_PART }], ["empty", { groupsList: [], items: [], transitions: [], users: [] }], ["no AI rate", { aiPricingConfigured: false }], ["no Plaid rate", { plaidRates: [] }]] as [string, Parameters<typeof deps>[0]][]) {
     const inputs = await inputsOf(o);
     const snap = buildEconomicsSnapshot(inputs);
-    for (const key of Object.keys(DRILLABLE) as EconomicsFigureKey[]) {
+    // The Overview's drillable figures (PR B's provider / group figures are pinned in their own tests).
+    for (const key of (Object.keys(DRILLABLE) as EconomicsFigureKey[]).filter((k) => (ECONOMICS_FIGURES as readonly string[]).includes(k)) as OverviewFigureKey[]) {
       for (const w of DRILLABLE[key]!) {
         const d = buildEconomicsDrill(inputs, key, w);
         const kpi = w === "cycle" ? snap.figures[key] : snap.trend.windows[w as "7d"];
