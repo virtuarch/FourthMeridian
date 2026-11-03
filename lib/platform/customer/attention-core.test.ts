@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { buildCsOverview, type CsOverviewFacts } from "./overview-core";
+import { UNASSIGNED_CUSTOMER_WHERE } from "@/lib/platform/policy-assignment-health";
 import {
   ATTENTION_KEYS, ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, foldAttention, idsForAttention, incidentOwnersOf, parseAttentionFilter,
 } from "./attention-core";
@@ -102,7 +103,10 @@ console.log("3. unassigned agrees with the entitlements resolver and the Platfor
   check("unassigned = the alert's predicate (UNASSIGNED_CUSTOMER_WHERE), read only when enforced",
     /failClosed\s*\?\s*client\.user\.findMany\(\{ where: UNASSIGNED_CUSTOMER_WHERE/.test(reader) && !/policyAssignment:\s*\{\s*is:\s*null/.test(reader));
   const health = code("lib/platform/policy-assignment-health.ts");
-  check("the alert read uses the SAME predicate", /export const UNASSIGNED_CUSTOMER_WHERE = \{ role: "USER" as const, deactivatedAt: null, policyAssignment: \{ is: null \} \}/.test(health)
+  // The open-customer half now lives in lib/platform/customer/population.ts (one definition); pin the
+  // source shape AND the value, so the predicate is still exactly role USER ∧ not deactivated ∧ unassigned.
+  check("the alert read uses the SAME predicate", /export const UNASSIGNED_CUSTOMER_WHERE = \{ \.\.\.OPEN_CUSTOMER_WHERE, policyAssignment: \{ is: null \} \}/.test(health)
+    && JSON.stringify(UNASSIGNED_CUSTOMER_WHERE) === JSON.stringify({ role: "USER", deactivatedAt: null, policyAssignment: { is: null } })
     && /const unassignedWhere = UNASSIGNED_CUSTOMER_WHERE;/.test(health));
   const consume = code("lib/entitlements/consume.ts");
   check("both modes come from the ONE getter: the resolver's options and the alert read env.isPolicyAssignmentFailClosed",

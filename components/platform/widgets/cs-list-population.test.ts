@@ -14,11 +14,11 @@ const row = (role: string, deactivated = false) => ({ role, deactivatedAt: deact
 const list = (rows: ReturnType<typeof row>[], total = rows.length) => ({ total, customers: rows }) as unknown as CustomerListResponse;
 
 const full = listPopulation(list([row("USER"), row("USER"), row("USER", true), row("SYSTEM_ADMIN")]));
-check("full list reconciles: accounts = active customers + deactivated + admin", full === "4 accounts · 2 active customers · 1 deactivated · 1 admin", full);
+check("full list reconciles: accounts = open customer accounts + deactivated + admin", full === "4 accounts · 2 open customer accounts · 1 deactivated · 1 admin", full);
 const cut = listPopulation(list([row("USER"), row("USER", true)], 120));
-check("truncated list scopes the breakdown to the rows shown", cut === "showing 2 of 120 accounts · of these 1 active customer · 1 deactivated", cut);
+check("truncated list scopes the breakdown to the rows shown", cut === "showing 2 of 120 accounts · of these 1 open customer account · 1 deactivated", cut);
 const one = listPopulation(list([row("USER")]));
-check("singular words", one === "1 account · 1 active customer", one);
+check("singular words", one === "1 account · 1 open customer account", one);
 {
   // Regression (owner, 390 px): the population line once sat shrink-0 in the search row and widened the page to 446 px.
   const src = readFileSync(path.join(process.cwd(), "components/platform/widgets/CsCustomersWidget.tsx"), "utf8");

@@ -26,6 +26,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { assignableGroups } from "@/lib/entitlements/policy-groups";
 import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { UNASSIGNED_CUSTOMER_WHERE } from "@/lib/platform/policy-assignment-health";
@@ -70,7 +71,7 @@ export async function loadAttention(
   // fail-closed switch is enforced (below).
   const live = assignableGroups(await loadPolicyGroupCatalogue()).map((g) => g.key);
   const [customers, funnel, plaidBroken, connBroken, incidentPage, invalid, unassigned] = await Promise.all([
-    client.user.findMany({ where: { role: "USER", deactivatedAt: null }, select: { id: true }, orderBy: { createdAt: "desc" }, take: cap }),
+    client.user.findMany({ where: OPEN_CUSTOMER_WHERE, select: { id: true }, orderBy: { createdAt: "desc" }, take: cap }),
     loadFunnelFacts(client),
     client.plaidItem.findMany({ where: { status: { in: [...BROKEN] } }, select: { userId: true }, take: cap }),
     client.connection.findMany({ where: { status: { in: [...BROKEN] }, provider: { notIn: [...NOT_LIVE_PROVIDER] } }, select: { userId: true }, take: cap }),

@@ -42,6 +42,9 @@ import { PLATFORM_AI_SURFACES, isCustomerSurface, isPlatformAiSurface, priceSpen
 import type { BillingCycle, PlaidCycleCost } from "@/lib/platform/plaid/item-months";
 import { plaidRateAt, type PlaidBillableProduct, type PlaidRate } from "@/lib/usage/pricing";
 import { POLICY_GROUP_KEY_PATTERN } from "@/lib/entitlements/policy-groups";
+import {
+  DEACTIVATED_IN_WINDOW_POLICY, ECONOMICS_WINDOW_POLICY, OPERATOR_EXCLUSION_POLICY, TEST_ACCOUNT_POLICY, pendingDefinitionNote,
+} from "@/lib/platform/customer/population";
 
 const DAY_MS = 86_400_000;
 
@@ -492,6 +495,12 @@ export function costPerCustomerRows(inputs: EconomicsInputs): EconomicsDrillRow[
   }));
 }
 
+/**
+ * OD-1 / OD-2 / OD-3 / OD-4 — who an "engaged customer" is for unit economics waits on the owner;
+ * the figures say so (shown as the tile's basis tooltip and in the drill) instead of choosing silently.
+ */
+export const ECONOMICS_PENDING_NOTE = pendingDefinitionNote(ECONOMICS_WINDOW_POLICY, OPERATOR_EXCLUSION_POLICY, DEACTIVATED_IN_WINDOW_POLICY, TEST_ACCOUNT_POLICY);
+
 const OPERATING_BASIS = "AI (invocation ledger × rate card) + Plaid (Item-months × invoice-derived rate) this cycle; other providers and infrastructure are not metered";
 
 /** One figure, from the same rows its drill returns. */
@@ -518,11 +527,11 @@ export function economicsFigure(inputs: EconomicsInputs, key: OverviewFigureKey,
       // A COUNT read from the engagement ledgers: zero engaged customers is a measured 0, not missing data.
       const range = windowRange("cycle", now);
       return {
-        key, window: "cycle", label: "Active customers · this cycle", unit: "count",
+        key, window: "cycle", label: "Engaged customers · this cycle", unit: "count",
         value: inputs.engagedCustomerRefs.length, status: "MEASURED", reason: null,
         coverage: { covered: ["engagement facts since the cycle start"], missing: [] },
         freshness: { asOf: checkedAt, from: range.from, to: range.to },
-        basis: "customers with a meaningful engagement fact since the cycle start (PB-10: customer-surface AI calls ∪ engagement audit actions) — never sessions",
+        basis: `customers with a meaningful engagement fact since the cycle start (PB-10: customer-surface AI calls ∪ engagement audit actions) — never sessions. ${ECONOMICS_PENDING_NOTE}`,
         drill: drillRef(key, "cycle", checkedAt),
       };
     }
@@ -530,8 +539,8 @@ export function economicsFigure(inputs: EconomicsInputs, key: OverviewFigureKey,
       const op = economicsFigure(inputs, "operating_cost", "cycle", checkedAt);
       const rows = costPerCustomerRows(inputs);
       return figureFromRows({
-        key, window: "cycle", label: "Cost per active customer", unit: "usd",
-        basis: "operating cost this cycle ÷ customers engaged this cycle (PB-10 engagement)",
+        key, window: "cycle", label: "Cost per engaged customer", unit: "usd",
+        basis: `operating cost this cycle ÷ customers engaged this cycle (PB-10 engagement). ${ECONOMICS_PENDING_NOTE}`,
         covered: op.coverage.covered, absent: plaidCaveats(inputs),
         emptyReason: inputs.engagedCustomerRefs.length === 0 ? REASON_NO_ENGAGED : REASON_NOTHING_PRICED,
       }, rows, now, checkedAt);

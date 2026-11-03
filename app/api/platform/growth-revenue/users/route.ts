@@ -21,9 +21,9 @@
  */
 
 import { NextResponse } from "next/server";
-import { UserRole } from "@prisma/client";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { db } from "@/lib/db";
+import { CLOSED_ACCOUNT_WHERE, CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { AuditAction } from "@/lib/audit-actions";
 
@@ -49,11 +49,11 @@ export async function GET(): Promise<Response> {
   const [, err] = await requirePlatformAccess("GROWTH_REVENUE", "READ");
   if (err) return err;
 
-  const customer = { role: UserRole.USER };
+  const customer = CUSTOMER_WHERE;
   const [total, emailVerified, deactivated, deletionScheduled, liveSessionUsers, signedInUsers] = await Promise.all([
     db.user.count({ where: customer }),
     db.user.count({ where: { ...customer, emailVerifiedAt: { not: null } } }),
-    db.user.count({ where: { ...customer, deactivatedAt: { not: null } } }),
+    db.user.count({ where: { ...customer, ...CLOSED_ACCOUNT_WHERE } }),
     db.user.count({ where: { ...customer, deletionScheduledAt: { not: null } } }),
     db.userSession.groupBy({ by: ["userId"], where: liveSessionWhere(new Date(), { userWhere: customer }), _count: { _all: true } }),
     db.auditLog.groupBy({ by: ["userId"], where: { action: AuditAction.LOGIN, user: { is: customer } }, _count: { _all: true } }),
