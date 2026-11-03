@@ -326,6 +326,13 @@ Add the three routes to the adoption ratchet `lib/platform/operator-action-adopt
 
 Automatic transitions write no AuditLog. They are system facts and are persisted on the row with their evidence. This matches the existing `AUTOMATIC_RECOVERY` behaviour.
 
+**Implemented (P8 #1, 2026-11-03).** `resolveByAutomaticRecovery` now uses the subject-removal shape. In one transaction per call it runs a per-row CAS on the `lifecycleState` it read, sets `lifecycleState=RESOLVED` with `resolved`, and writes a registry `resolutionReasonCode`, the typed `resolutionEvidence` and a SYSTEM `STATE_CHANGED → RESOLVED` event carrying the resolving execution. The CAS is all-or-nothing: a lost CAS rolls back the whole call and is reported. The evidence rules are:
+
+- transactions: `TRANSACTIONS_SYNC_SUCCEEDED_V1`, reason `TRANSACTIONS_SYNC_SUCCEEDED`, proof `RefreshEndpointResult · TRANSACTIONS · SUCCEEDED`;
+- balances: `BALANCE_OBSERVED_V1`, reason `BALANCE_OBSERVED`, proof `BalanceObservation · BALANCES · SUCCEEDED`.
+
+Neither proof carries an amount or a subject id. The fix is forward-only. Automatic recoveries written before it have no event and no evidence, and they are not backfilled.
+
 ---
 
 ## 7. UX — Customer Success incidents workspace

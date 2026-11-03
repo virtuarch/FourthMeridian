@@ -40,7 +40,6 @@ import "server-only";
 // structural accessor set anchored to a real client rather than hand-listed.
 import { systemDb } from "@/lib/db";
 import type { Prisma, SyncIssueKind } from "@prisma/client";
-import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import {
   captureLedgerWriteFailure,
   type LedgerWriteObserver,
@@ -53,7 +52,7 @@ import { buildIncidentKey, INCIDENT_KEY_VERSION, type ConnectionScope } from "./
 import { lifecycleViolation, RESOLUTION_KINDS, type ResolutionKindValue } from "./invariant";
 import { subjectVerdict } from "./subjects-core";
 import { loadOccurrenceAccounts, loadSubjectFacts, ownerOf } from "./subjects";
-import { buildOccurrenceEvidenceSummary, buildResolutionEvidence } from "./evidence";
+import { buildOccurrenceEvidenceSummary, buildResolutionEvidence, mayAdvanceRecovery, type StageFact } from "./evidence";
 import { isRegistryCode, type IncidentEventType, type ResolutionReasonCode } from "./codes";
 import { resolveOperationKey } from "./operation-key";
 // The ledger is reached through the canonical row seam — never directly. The
@@ -70,6 +69,9 @@ import { getExecutionIdByRunId } from "@/lib/platform/refresh/execution-query";
 export const RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY" as const;
 export const RESOLUTION_KIND_OPERATOR = "OPERATOR_RESOLVED" as const;
 export const RESOLUTION_KIND_SUBJECT_REMOVED = "SUBJECT_REMOVED" as const;
+/** AUTOMATIC_RECOVERY evidence rules (`resolutionEvidence.rule`), one per proven domain. */
+export const RECOVERY_RULE_TRANSACTIONS_SYNCED = "TRANSACTIONS_SYNC_SUCCEEDED_V1" as const;
+export const RECOVERY_RULE_BALANCE_OBSERVED = "BALANCE_OBSERVED_V1" as const;
 export { RESOLUTION_KINDS };
 export type ResolutionKind = ResolutionKindValue;
 
@@ -552,12 +554,20 @@ function provenByRecovery(
  * every log line says zero.
  *
  * The count stays the count. The failure now travels on the observer channel,
- * and the ZERO-OR-PARTIAL update is checked against the rows this very call
+ * and each row's compare-and-set is checked against the state this very call
  * observed moments earlier under the same authority — the escape clause of the
  * indeterminate-write rule, used deliberately (lib/db/conditional-write.ts). The
  * `findMany` above is therefore THE GUARD and not an optimisation to be hoisted
  * away: delete it and a refused resolution becomes indistinguishable from a
  * clean item again.
+ *
+ * ── P8 #1 — A RECOVERY IS A TRANSITION, WITH ITS PROOF ───────────────────────
+ * Same shape as resolveBySubjectRemoval, in ONE transaction for the call (so a
+ * shortfall stays all-or-nothing, as the single updateMany was): per row the
+ * CAS (`lifecycleState` as read, `resolved: false`), `lifecycleState: RESOLVED`
+ * with `resolved`, the typed `resolutionEvidence` (the SUCCEEDED transactions
+ * stage, or the observed balance) and a SYSTEM `STATE_CHANGED → RESOLVED`
+ * event. Forward-only: closures written before this change carry neither.
  */
 export async function resolveByAutomaticRecovery(
   scope: AutomaticRecoveryScope,
@@ -579,7 +589,7 @@ export async function resolveByAutomaticRecovery(
       where: scope.domain === "balances"
         ? { financialAccountId: scope.financialAccountId, resolved: false }
         : { plaidItemId: scope.plaidItemId, resolved: false },
-      select: { id: true, kind: true, provider: true, detail: true, plaidTransactionId: true },
+      select: { id: true, kind: true, provider: true, detail: true, plaidTransactionId: true, lifecycleState: true },
     });
 
     // Ask the semantics authority which of these this success actually proves.
@@ -595,15 +605,35 @@ export async function resolveByAutomaticRecovery(
     if (matching.length === 0) return { resolved: 0, resolvingExecutionId };
 
     const now = new Date();
-    const resolution = {
+    // The proof, as a typed stage fact: the operation that just SUCCEEDED for
+    // this subject. Ids, an endpoint and an instant only — no amount, no
+    // provider text. `executionId` is the looked-up correlator or null.
+    const proof: StageFact = scope.domain === "balances"
+      ? { source: "BalanceObservation", executionId: resolvingExecutionId, endpoint: "BALANCES", status: "SUCCEEDED", completedAt: now.toISOString() }
+      : { source: "RefreshEndpointResult", executionId: resolvingExecutionId, endpoint: "TRANSACTIONS", status: "SUCCEEDED", completedAt: now.toISOString() };
+    const evidence = buildResolutionEvidence({
+      rule: scope.domain === "balances" ? RECOVERY_RULE_BALANCE_OBSERVED : RECOVERY_RULE_TRANSACTIONS_SYNCED,
+      facts: [proof],
+    });
+    // §12 P2.1 — the one gate every resolver passes. Always true for the fact
+    // above; asserted so a future edit that records a non-proof cannot close.
+    if (!mayAdvanceRecovery(evidence)) {
+      console.error("[incidents] refusing automatic resolution without SUCCEEDED proof");
+      return { resolved: 0, resolvingExecutionId };
+    }
+    const data = {
       resolved: true, resolvedAt: now,
       resolutionKind: RESOLUTION_KIND_AUTOMATIC as string,
       resolvingExecutionId,
+      lifecycleState: "RESOLVED",
+      // The DB CHECK: a RESOLVED lifecycleState names its reason (registry code).
+      resolutionReasonCode: (scope.domain === "balances" ? "BALANCE_OBSERVED" : "TRANSACTIONS_SYNC_SUCCEEDED") satisfies ResolutionReasonCode,
+      resolutionEvidence: evidence as unknown as Prisma.InputJsonValue,
     };
     // The resolver only ever sees CONDITIONS — events are stored terminal and so
     // never appear in the unresolved set above. Asserted anyway: this is the
     // write that would turn evidence into a fabricated recovery.
-    const bad = lifecycleViolation("condition", { ...resolution, incidentKey: null });
+    const bad = lifecycleViolation("condition", { ...data, incidentKey: null });
     if (bad) {
       console.error(`[incidents] refusing invalid resolution write: ${bad}`);
       // An INVARIANT refusal, deliberately NOT reported as a write failure: the
@@ -611,25 +641,36 @@ export async function resolveByAutomaticRecovery(
       // alerting on it would train an operator to ignore the channel.
       return { resolved: 0, resolvingExecutionId };
     }
-    const { count } = await client.syncIssue.updateMany({
-      where: { id: { in: matching.map((m) => m.id) } },
-      // For a CONDITION these move together — see invariant.ts for why that is
-      // NOT a universal rule about the `resolved` column.
-      data: resolution,
+    // THE SUBJECT-REMOVAL SHAPE (P8 #1), in ONE transaction: for every matching
+    // row a compare-and-set on the state this call READ, then its STATE_CHANGED
+    // event — so the append-only timeline is never silent about the most common
+    // closure. A 0-row CAS THROWS and rolls the WHOLE transaction back, writing
+    // nothing: each row was observed eligible one statement ago under this
+    // authority, so a shortfall is concurrent modification and is REPORTED
+    // (the outer catch), never counted as a plausible partial. The `findMany`
+    // above stays THE GUARD (lib/db/conditional-write.ts doctrine). Rows a
+    // rollback leaves open are still open, and the next success proves them.
+    await client.$transaction(async (tx) => {
+      for (const c of matching) {
+        // The state AS READ, captured before the write: it is both the CAS
+        // expectation and the event's fromState (NULL = legacy, derived ACTIVE).
+        const asRead = c.lifecycleState ?? null;
+        const { count: n } = await tx.syncIssue.updateMany({
+          where: { id: c.id, resolved: false, lifecycleState: asRead },
+          data,
+        });
+        if (n !== 1) throw new IncidentTransitionConflictError(c.id, asRead);
+        await tx.syncIssueEvent.create({
+          data: eventData({
+            incidentId: c.id, type: "STATE_CHANGED", actorKind: "SYSTEM",
+            fromState: asRead ?? "ACTIVE", toState: "RESOLVED", outcomeCode: null,
+            refreshExecutionId: resolvingExecutionId,
+          }),
+          select: { id: true },
+        });
+      }
     });
-    // THE ROWS WERE OBSERVED ONE STATEMENT AGO, UNDER THIS AUTHORITY. So a
-    // shortfall is neither contention nor idempotence — a row already resolved
-    // was never in `matching`, because `matching` came from `resolved: false`.
-    // What is left is a row that WAS eligible and WAS NOT written, and the
-    // caller is not entitled to call that "nothing to do". Raises into the
-    // catch below, which swallows it as the contract requires and now reports
-    // it. On fm_system the policy is USING(true), so a disagreement can only
-    // come from concurrent modification — which is exactly why it is an alarm.
-    assertEveryObservedRowWasWritten(
-      { table: "SyncIssue", operation: "update", scope: `${matching.length} matching active condition(s)` },
-      matching.length,
-      count,
-    );
+    const count = matching.length;
     if (count > 0) {
       console.log(
         `[incidents] ${scope.domain === "balances" ? `account ${scope.financialAccountId}` : `item ${scope.plaidItemId}`} — resolved ${count} ${scope.domain} incident(s) by automatic recovery` +

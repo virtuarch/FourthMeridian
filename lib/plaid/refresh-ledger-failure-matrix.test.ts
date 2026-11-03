@@ -670,18 +670,28 @@ async function main() {
       { id: "i2", kind: "UPSERT_ERROR", provider: "PLAID", plaidTransactionId: "t2",
         detail: { stage: "transaction-persist", cursorBlocking: true }, resolved: false },
     ];
+    // P8 #1 — the resolution is now a per-row CAS + STATE_CHANGED event inside
+    // ONE transaction; the fake runs that transaction on itself.
+    const events: unknown[] = [];
     const refusing = {
       syncIssue: {
         findMany: async () => rows,
-        // THE DEFECT, REPRODUCED: the policy hid one of the two rows, so the
-        // statement matched one. No error. A plausible number.
-        updateMany: async () => { resolved.push("partial"); return { count: 1 }; },
+        // THE DEFECT, REPRODUCED: the policy hid one of the two rows, so its
+        // compare-and-set matched nothing. No error. A plausible number.
+        updateMany: async ({ where }: { where: { id: string } }) => {
+          if (where.id === "i2") { resolved.push("partial"); return { count: 0 }; }
+          return { count: 1 };
+        },
         findFirst: async () => null,
         create: async () => ({ id: "x" }),
         update: async () => ({ id: "x" }),
       },
       syncIssueOccurrence: { create: async () => ({ id: "o1" }) },
-      $transaction: async () => { throw new Error("never"); },
+      syncIssueEvent: { create: async ({ data }: { data: unknown }) => (events.push(data), { id: "e" }) },
+      $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+        const self = refusing as unknown as { syncIssue: unknown; syncIssueEvent: unknown };
+        return fn({ syncIssue: self.syncIssue, syncIssueEvent: self.syncIssueEvent });
+      },
     } as unknown as IncidentClient;
 
     const seen: Array<[string, string]> = [];
@@ -694,6 +704,8 @@ async function main() {
     check("the partial update was attempted (the fixture is not vacuous)", resolved.length === 1);
     check("a 1-of-2 resolution reports ZERO resolved, never a plausible partial",
       out.resolved === 0, String(out.resolved));
+    check("…and the rolled-back transaction leaves NO STATE_CHANGED event behind (the fake has no rollback, so: none was reached for i2)",
+      !events.some((e) => (e as { incidentId?: string }).incidentId === "i2"));
     check("and it is ANNOUNCED as a SyncIssue/resolution failure, not as 'nothing matched'",
       seen.length === 1 && seen[0][0] === "SyncIssue" && seen[0][1] === "resolution",
       JSON.stringify(seen));
@@ -701,12 +713,15 @@ async function main() {
     // THE DENOMINATOR, and the half that makes the case above mean anything: a
     // COMPLETE resolution over the SAME fixture must stay silent.
     const seenOk: Array<[string, string]> = [];
+    const completeIssue = {
+      ...((refusing as unknown as { syncIssue: Record<string, unknown> }).syncIssue),
+      updateMany: async () => ({ count: 1 }),
+    };
     const complete = {
       ...(refusing as unknown as Record<string, unknown>),
-      syncIssue: {
-        ...((refusing as unknown as { syncIssue: Record<string, unknown> }).syncIssue),
-        updateMany: async () => ({ count: 2 }),
-      },
+      syncIssue: completeIssue,
+      $transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ syncIssue: completeIssue, syncIssueEvent: (refusing as unknown as { syncIssueEvent: unknown }).syncIssueEvent }),
     } as unknown as IncidentClient;
     const okOut = await resolveByAutomaticRecovery(
       { plaidItemId: "item-1", domain: "transactions", runId: null },
