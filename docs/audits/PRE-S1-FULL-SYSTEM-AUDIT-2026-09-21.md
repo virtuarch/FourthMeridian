@@ -1199,7 +1199,7 @@ Node 24 is documented consistently.
 - **Remediation:** carry `state` on the DTO, exclude from sums, disclose (`cryptoUnpriced`), stamp the snapshot.
 - **When:** AFTER-S1.
 - **Pin:** force NO_PRICE ⇒ totals exclude it and disclose.
-- **Status (2026-11-03): **PARTIAL:** live totals FIXED (#301); today's-snapshot incomplete stamp IN PROGRESS (#302); history backfill + CSV export IN PROGRESS (FIN-B2). Flips to FIXED once both land.** Every reader resolves a wallet through one helper (`resolveWalletBalance`): an unpriced or never-observed wallet is excluded from totals rather than summed from the stored column, and surfaces disclose how many are not yet valued. Until #302 lands, today's row excludes the wallet but is not stamped partial.
+- **Status (2026-11-03): PARTIAL:** live totals FIXED (#301); today's-snapshot incomplete stamp IN PROGRESS (#302); history backfill + CSV export IN PROGRESS (FIN-B2). Flips to FIXED once both land. Every reader resolves a wallet through one helper (`resolveWalletBalance`): an unpriced or never-observed wallet is excluded from totals rather than summed from the stored column, and surfaces disclose how many are not yet valued. Until #302 lands, today's row excludes the wallet but is not stamped partial.
 
 **FM-AUDIT-023 — Plaid null current balance keeps the old value but stamps it freshly verified; connect-time null → $0**
 - **Sev/Conf:** P2 / HIGH (code), MEDIUM (frequency)
