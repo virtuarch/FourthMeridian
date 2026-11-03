@@ -206,10 +206,10 @@ export interface CustomerBudgetView {
   /** The allowance in force for THIS customer (override / overlay / platform / policy, after the ceiling). */
   allowanceUsd: number;
   allowanceSource: "USER_OVERRIDE" | "OVERLAY" | "PLATFORM_SETTING" | "POLICY" | "CEILING";
-  /** todayUsd / allowanceUsd × 100, capped nowhere (over 100 means over). */
-  allowanceUtilizationPct: number;
-  /** rolling24hUsd / per-customer alert threshold × 100. */
-  alertUtilizationPct: number;
+  /** todayUsd / allowanceUsd × 100, capped nowhere (over 100 means over). Null when the allowance is $0 — no share of nothing. */
+  allowanceUtilizationPct: number | null;
+  /** rolling24hUsd / per-customer alert threshold × 100. Null when no threshold is set ($0). */
+  alertUtilizationPct: number | null;
 }
 
 export interface SurfaceBudgetView {
@@ -227,6 +227,7 @@ export interface AiBudgetUtilization {
   fleet: {
     /** Customer surfaces only (chat + brief); harness and unattributed traffic are overhead, never fleet. */
     estimatedUsd: number | null;
+    /** The fleet alert threshold in force. 0 (or unset) means NO threshold — utilization is then null, never "0% of $0.00". */
     thresholdUsd: number;
     alertEnabled: boolean;
     utilizationPct: number | null;

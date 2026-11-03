@@ -19,6 +19,9 @@
  *   UNAVAILABLE  nothing priced (no calls recorded, or none could be priced):
  *                no dollar figure and no percentage — never $0.
  *
+ * A fleet alert threshold of 0 (or unset) is NO threshold: the spend status is
+ * unchanged, the utilisation is null and every tile says "No threshold set".
+ *
  * Missing telemetry is never $0 (owner rule): an absent figure is UNAVAILABLE
  * with its reason. Pure; no clock, no I/O. Display and derivation only — the
  * alert rule (spend-health.ts) and the allowance are untouched.
@@ -30,12 +33,13 @@ export type SpendStatus = "MEASURED" | "ESTIMATED" | "PARTIAL" | "UNAVAILABLE";
 
 export const FLEET_REASON_NO_CALLS = "no customer invocations in the window";
 export const FLEET_REASON_NONE_PRICED = "no customer invocation in the window could be priced";
+export const NO_THRESHOLD = "No threshold set";
 
 export interface FleetSpendStatus {
   status: Exclude<SpendStatus, "MEASURED">;
   /** Σ priced customer spend in the window; null iff UNAVAILABLE. A lower bound when PARTIAL. */
   pricedUsd: number | null;
-  /** Share of the fleet alert threshold the PRICED spend uses; null iff UNAVAILABLE. A lower bound when PARTIAL. */
+  /** Share of the fleet alert threshold the PRICED spend uses; null when UNAVAILABLE or no threshold is set. A lower bound when PARTIAL. */
   utilisationPct: number | null;
   /** True when the figures are a lower bound (PARTIAL). */
   atLeast: boolean;
@@ -44,6 +48,8 @@ export interface FleetSpendStatus {
   /** Customer calls the rate card could not price — counted, never $0. */
   unpricedInvocations: number;
   thresholdUsd: number;
+  /** False when the fleet alert threshold is 0 or unset: utilisation is then null ("No threshold set"), never "0% of $0.00". */
+  thresholdSet: boolean;
   windowHours: number;
   alertEnabled: boolean;
   /** Why there is no figure (UNAVAILABLE only). */
@@ -64,11 +70,13 @@ function customerUnpriced(b: Pick<AiBudgetUtilization, "bySurface" | "unpriced">
 export function fleetSpendStatus(b: Pick<AiBudgetUtilization, "fleet" | "windowHours" | "bySurface" | "unpriced">): FleetSpendStatus {
   const f = b.fleet;
   const unpricedInvocations = customerUnpriced(b);
-  const base = { invocations: f.invocations, unpricedInvocations, thresholdUsd: f.thresholdUsd, windowHours: b.windowHours, alertEnabled: f.alertEnabled };
+  const thresholdSet = typeof f.thresholdUsd === "number" && Number.isFinite(f.thresholdUsd) && f.thresholdUsd > 0;
+  const base = { invocations: f.invocations, unpricedInvocations, thresholdUsd: thresholdSet ? f.thresholdUsd : 0, thresholdSet, windowHours: b.windowHours, alertEnabled: f.alertEnabled };
   if (f.estimatedUsd === null) {
     return { ...base, status: "UNAVAILABLE", pricedUsd: null, utilisationPct: null, atLeast: false, reason: f.invocations === 0 ? FLEET_REASON_NO_CALLS : FLEET_REASON_NONE_PRICED };
   }
-  const utilisationPct = f.utilizationPct ?? (f.thresholdUsd > 0 ? Math.round((f.estimatedUsd / f.thresholdUsd) * 1000) / 10 : null);
+  // No threshold ⇒ no share of one. Otherwise the reader's percentage (the same pct() the alert view uses).
+  const utilisationPct = !thresholdSet ? null : f.utilizationPct ?? Math.round((f.estimatedUsd / f.thresholdUsd) * 1000) / 10;
   const partial = unpricedInvocations > 0;
   return { ...base, status: partial ? "PARTIAL" : "ESTIMATED", pricedUsd: f.estimatedUsd, utilisationPct, atLeast: partial, reason: null };
 }

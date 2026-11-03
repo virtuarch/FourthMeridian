@@ -92,6 +92,9 @@ const READERS = [
   "lib/platform/merchant/records.ts",
   "lib/platform/merchant/records-query.ts",
   "lib/platform/merchant/records-core.ts",
+  // AI & Costs — the 24 h budget KPI's per-call drilldown (opaque customer ref only; no prompt, conversation or request id).
+  "lib/platform/ai/budget-calls.ts",
+  "lib/platform/ai/budget-calls-core.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -123,6 +126,8 @@ const ROUTES = [
   "app/api/platform/merchant-ops/merchants/[id]/route.ts",
   // PLATFORM OPS PHASE 1 UX — the Policy Group catalogue, PLATFORM_OPS READ (gate pinned in its route.test.ts).
   "app/api/platform/platform-ops/policy-groups/route.ts",
+  // AI & Costs — the budget KPI's per-call drilldown, PLATFORM_OPS READ (gate pinned in lib/platform/ai/budget-calls.test.ts).
+  "app/api/platform/platform-ops/ai-budget/calls/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");

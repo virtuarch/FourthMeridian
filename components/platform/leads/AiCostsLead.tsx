@@ -13,7 +13,10 @@
  *        Cost by surface (5)          BreakdownWidget donut (invocation ledger)
  *     C  Tokens & invocations (6)     DayBars, Tokens / Invocations toggle
  *        Cost by provider (6)         BreakdownWidget bars, this cycle; others Unknown
- *     D  Budget utilisation (6)       fleet meter (rolling 24 h vs threshold)
+ *     D  Budget utilisation (6)       fleet meter (rolling 24 h vs threshold); the
+ *                                     "Budget used" KPI and the card's "Calls" doorway
+ *                                     open the per-call records of that exact window
+ *                                     (AiBudgetCalls; ?aicalls/aiuntil/aipage, REPLACE)
  *        Customers & policy groups (6) top 3 by today's spend vs THEIR allowance
  *     E  Economics (12)               the Phase 3 slot — no numbers
  *     F  AI & Costs detail nav        five drawers hosting the former widgets
@@ -28,7 +31,7 @@
  * Presentation only. Words and figures come from ai-costs-model.ts (pure).
  */
 
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Block, Surface } from "@/components/atlas/Surface";
 import { BreakdownWidget } from "@/components/space/widgets/BreakdownWidget";
 import { TrendChart } from "@/components/space/widgets/charts/TrendChart";
@@ -41,6 +44,9 @@ import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/r
 import type { ApiUsageResponse } from "@/app/api/platform/platform-ops/api-usage/route";
 import type { PlaidUsage } from "@/lib/platform/plaid/usage";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
+import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
+import { AiBudgetCalls } from "./AiBudgetCalls";
+import { CLOSED_CALLS, aiBudgetCallsUrlUpdate, openBudgetCalls, readAiBudgetCallsUrl, type AiBudgetCallsUrlState } from "./ai-budget-calls-url";
 import { Caption, ChartMessage, Doorway, Meter, Segmented } from "./visual-kit";
 import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
 import { DayBars, DayBarsLegend } from "../ops-visual/DayBars";
@@ -73,6 +79,8 @@ export const AI_DRAWERS: readonly { key: AiCostsDrawer; label: string; keys: rea
 ];
 
 export const CUSTOMER_ROWS = 3;
+/** The hero figure is 30 d; the budget KPI and card are the rolling 24 h — said beside the hero, so the two windows are never read as one. */
+export const BUDGET_SCOPE_NOTE = "Budget tiles cover the last 24 h";
 type Window = "7" | "30";
 type Series = "tokens" | "invocations";
 
@@ -153,6 +161,8 @@ export interface AiCostsLeadSurfaceProps {
   nowMs: number;
   hasHosted: (key: string) => boolean;
   onOpenDrawer: (d: AiCostsDrawer) => void;
+  /** Open the budget KPI's per-call records (its exact 24 h window). Absent ⇒ the KPI opens Budget & controls. */
+  onOpenBudgetCalls?: () => void;
 }
 
 export function aiHeroModel(trend: Fetched<AiUsageTrend>, kpis: HeroModel["kpis"]): HeroModel {
@@ -167,6 +177,7 @@ export function aiHeroModel(trend: Fetched<AiUsageTrend>, kpis: HeroModel["kpis"
       ? `${m.partial ? "Partial estimate" : "Estimated"} · tokens × rate card · billed: ${BILLED_UNKNOWN}`
       : `Estimate ${m.reason} · billed: ${BILLED_UNKNOWN}`,
     kpis,
+    scopeNote: BUDGET_SCOPE_NOTE,
     kpiLabels: { first: "AI budget and volume", second: "AI reliability and unit cost", all: "AI spend figures" },
   };
 }
@@ -189,7 +200,9 @@ export function AiCostsLeadSurface(p: AiCostsLeadSurfaceProps) {
     <div className="min-w-0 space-y-8 sm:space-y-10 max-lg:space-y-6!" data-ai-dashboard>
       {/* A — AI spend hero. */}
       <HealthHero model={{ ...hero, actions: {
-        ...(can("budget") ? { budget: { label: "Open budget & controls", onSelect: () => p.onOpenDrawer("budget"), dialog: true } } : {}),
+        ...(p.onOpenBudgetCalls
+          ? { budget: { label: "Open the calls in this 24 h window", onSelect: p.onOpenBudgetCalls, dialog: true } }
+          : can("budget") ? { budget: { label: "Open budget & controls", onSelect: () => p.onOpenDrawer("budget"), dialog: true } } : {}),
         ...(can("invocations") ? {
           calls: { label: "Open the invocation log", onSelect: () => p.onOpenDrawer("invocations"), dialog: true },
           errors: { label: "Open the invocation log", onSelect: () => p.onOpenDrawer("invocations"), dialog: true },
@@ -247,8 +260,13 @@ export function AiCostsLeadSurface(p: AiCostsLeadSurfaceProps) {
       {/* D — Budget utilisation (6) · Customers & policy groups (6). */}
       <div className="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">
         <Block id="ai-budget" label="Budget utilisation" className="min-w-0 max-lg:hidden lg:col-span-6"
-          hint={<ProvenanceChip kind={meter?.spend.kind === "ESTIMATED" ? "ESTIMATED" : "UNKNOWN"} />}
-          action={can("budget") ? <Doorway label="Budget & controls" onSelect={() => p.onOpenDrawer("budget")} dialog /> : undefined}>
+          hint={<ProvenanceChip kind={budgetText ? budgetText.provenance : "UNKNOWN"} />}
+          action={(p.onOpenBudgetCalls || can("budget")) ? (
+            <span className="flex items-center gap-3">
+              {p.onOpenBudgetCalls && <Doorway label="Calls" onSelect={p.onOpenBudgetCalls} dialog />}
+              {can("budget") && <Doorway label="Budget & controls" onSelect={() => p.onOpenDrawer("budget")} dialog />}
+            </span>
+          ) : undefined}>
           <Surface className="flex-1 p-4 sm:p-5">
             {meter && budgetText ? (
               <>
@@ -273,7 +291,10 @@ export function AiCostsLeadSurface(p: AiCostsLeadSurfaceProps) {
                   {customers.map((c) => (
                     <li key={c.ref} className="flex min-h-11 items-center gap-3 border-t border-[var(--border-hairline)] py-2 first:border-t-0">
                       <span className="w-24 shrink-0 truncate font-mono text-[11px] text-[var(--text-secondary)]">{c.ref}</span>
-                      <span className="min-w-0 flex-1"><Meter pct={c.allowanceUtilizationPct} tone={c.allowanceUtilizationPct >= 100 ? "bad" : c.allowanceUtilizationPct >= 80 ? "warn" : "ok"} label={`${c.ref} allowance used today`} /></span>
+                      <span className="min-w-0 flex-1">{c.allowanceUtilizationPct === null
+                        // A $0 allowance has no share (pct() is null) — a dashed track, never a 0% bar.
+                        ? <span className="block h-2 w-full rounded-full border border-dashed border-[var(--border-hairline-strong)]" aria-label={`${c.ref} has no allowance`} role="img" />
+                        : <Meter pct={c.allowanceUtilizationPct} tone={c.allowanceUtilizationPct >= 100 ? "bad" : c.allowanceUtilizationPct >= 80 ? "warn" : "ok"} label={`${c.ref} allowance used today`} />}</span>
                       <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{`${usd(c.todayUsd)} / ${usd(c.allowanceUsd)}`}</span>
                     </li>
                   ))}
@@ -327,15 +348,34 @@ export function AiCostsLead({ renderHosted, hasHosted, onOpenWorkspace }: Platfo
   // A doorway inside a drawer closes it, then moves the rail.
   const go = (id: string) => { setDrawer(null); onOpenWorkspace(id); };
 
+  // The budget KPI's records: open · window end · page live in the URL (ai-budget-calls-url.ts,
+  // the PB-9 idiom). First paint is closed (SSR-safe); the URL is read after mount and on Back/Forward.
+  const spaceUrl = useSpaceUrl();
+  const [calls, setCalls] = useState<AiBudgetCallsUrlState>(CLOSED_CALLS);
+  useEffect(() => {
+    const sync = () => setCalls(readAiBudgetCallsUrl(spaceUrl.getSearch(), Date.now()));
+    sync();
+    return spaceUrl.subscribe(sync);
+  }, [spaceUrl]);
+  /** THE one setter: state + the URL mirror (REPLACE — a refinement of this entry, never a history step). */
+  const applyCalls = useCallback((next: AiBudgetCallsUrlState) => {
+    setCalls(next);
+    spaceUrl.commit(aiBudgetCallsUrlUpdate(next), { history: "replace" });
+  }, [spaceUrl]);
+  const openCalls = () => { setDrawer(null); applyCalls(openBudgetCalls(budget.data?.checkedAt ?? null)); };
+
   const d = drawer ? AI_DRAWERS.find((x) => x.key === drawer) : undefined;
   const body: ReactNode = drawer ? <AiCostsDrawerBody drawer={drawer} renderHosted={renderHosted} onOpenWorkspace={go} /> : null;
 
   return (
     <>
       <AiCostsLeadSurface trend={trend} spend={spend} inv7={inv7} inv30={inv30} budget={budget} plaid={plaid} apiUsage={apiUsage}
-        nowMs={nowMs} hasHosted={hasHosted} onOpenDrawer={setDrawer} />
+        nowMs={nowMs} hasHosted={hasHosted} onOpenDrawer={(k) => { applyCalls(CLOSED_CALLS); setDrawer(k); }} onOpenBudgetCalls={openCalls} />
       <DetailDrawer open={drawer !== null} onClose={() => setDrawer(null)} eyebrow="AI & Costs" title={d?.label ?? ""} size="xl">
         {body}
+      </DetailDrawer>
+      <DetailDrawer open={calls.open} onClose={() => applyCalls(CLOSED_CALLS)} eyebrow="AI & Costs · Budget used" title="Customer AI calls · rolling 24 h" size="xl">
+        {calls.open ? <AiBudgetCalls state={calls} onState={applyCalls} /> : null}
       </DetailDrawer>
     </>
   );

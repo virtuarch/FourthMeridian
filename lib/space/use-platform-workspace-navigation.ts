@@ -79,6 +79,8 @@ export const PLATFORM_WORKSPACE_SCOPED_PARAMS: readonly string[] = [
   "attention",
   // PB-9 — Merchant Identity period + records table (merchant-records-url.ts MERCHANT_URL_PARAMS).
   "period", "records", "rq", "rsort", "rpage", "rfilter", "rid",
+  // AI & Costs — the budget KPI's per-call drilldown (ai-budget-calls-url.ts AI_BUDGET_CALLS_URL_PARAMS).
+  "aicalls", "aiuntil", "aipage",
 ];
 
 /**
