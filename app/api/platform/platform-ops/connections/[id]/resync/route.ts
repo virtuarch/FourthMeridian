@@ -37,6 +37,7 @@ import { checkManualRefreshCooldown, markManualRefreshed } from "@/lib/plaid/ref
 import { billableForPlaidItem } from "@/lib/platform/policies/billable-subjects";
 import { billableSkipCode } from "@/lib/entitlements/billable-gate-core";
 import { billableRefusalResponse } from "@/lib/entitlements/consume";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 // Pinned (2026-10-31): this route syncs wallets / opens RefreshExecutions. Its
 // duration must stay below the stale-execution reaper's threshold
@@ -48,6 +49,8 @@ export const runtime = "nodejs";
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "ops-connection-resync");
+  if (limited) return limited;
 
   const { id } = await ctx.params;
 
