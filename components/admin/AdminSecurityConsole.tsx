@@ -606,7 +606,7 @@ export function AdminSecurityConsole() {
                 )}
               </div>
               <div className="bg-gray-800/40 rounded-xl p-3 space-y-1">
-                <p className="text-xs text-gray-500">Active sessions</p>
+                <p className="text-xs text-gray-500">Live sessions</p>
                 <p className="text-sm font-semibold text-white">{adminStatus.activeSessions}</p>
               </div>
               <div className="bg-gray-800/40 rounded-xl p-3 space-y-1">

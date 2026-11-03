@@ -26,6 +26,10 @@ export const RESOLUTION_REASON_CODES = {
   SUBJECT_REVOKED: "The connection the incident observed was revoked",
   /** §5 — the subject row no longer exists. */
   SUBJECT_MISSING: "The subject the incident observed no longer exists",
+  /** P8 #1 — AUTOMATIC_RECOVERY: a later transactions sync for the connection succeeded (the held page replayed). */
+  TRANSACTIONS_SYNC_SUCCEEDED: "A later transactions sync for the same connection succeeded",
+  /** P8 #1 — AUTOMATIC_RECOVERY: a balance was observed for the account. */
+  BALANCE_OBSERVED: "A balance was observed for the account",
 } as const;
 export type ResolutionReasonCode = keyof typeof RESOLUTION_REASON_CODES;
 
