@@ -3,7 +3,9 @@
  *
  * SEC-1 / KD-6 — Slice 5a. READ-ONLY audit of encryption-at-rest formats.
  *
- * Scans every field encrypted by lib/plaid/encryption.ts and reports, per
+ * Scans every CIPHER-format field of ENCRYPTED_FIELDS (lib/plaid/encrypted-fields.ts),
+ * honouring each field's `scope` (Connection.credential: provider ≠ WALLET, whose
+ * descriptor is clear-text by design), and reports, per
  * table.field, how many stored values are (per-KEY-ID counts and the
  * re-encryption itself: scripts/rotate-encryption-key.ts):
  *
@@ -37,8 +39,17 @@
 
 import { PrismaClient } from "@prisma/client";
 import { detectCiphertextVersion, type CiphertextVersion } from "@/lib/plaid/encryption";
+import { ENCRYPTED_FIELDS, fieldLabel, scopeWhere } from "@/lib/plaid/encrypted-fields";
 
 const db = new PrismaClient({ log: ["error", "warn"] });
+
+type FindManyDelegate = { findMany(args: unknown): Promise<Array<Record<string, unknown>>> };
+/** The Prisma delegate of a registry model (`PlaidItem` → `db.plaidItem`). READ-ONLY use: findMany only. */
+function delegateOf(model: string): FindManyDelegate {
+  const d = (db as unknown as Record<string, FindManyDelegate | undefined>)[model[0].toLowerCase() + model.slice(1)];
+  if (!d) throw new Error(`no Prisma delegate for registry model ${model}`);
+  return d;
+}
 
 const PAGE_SIZE = 1000;
 
@@ -96,72 +107,39 @@ function rjust(s: string, width: number): string {
 async function main(): Promise<void> {
   console.log("");
   console.log("SEC-1 / KD-6 — ciphertext version audit (READ-ONLY, no writes)");
-  console.log("=".repeat(82));
+  console.log("=".repeat(100));
 
   const results = [];
 
-  // ── PlaidItem.encryptedToken (required) — PLAID_ACCESS_TOKEN ────────────────
-  results.push(
-    await scanField("PlaidItem.encryptedToken", async (afterId) => {
-      const rows = await db.plaidItem.findMany({
-        where: afterId ? { id: { gt: afterId } } : undefined,
-        select: { id: true, encryptedToken: true },
-        orderBy: { id: "asc" },
-        take: PAGE_SIZE,
-      });
-      return rows.map((r) => ({ id: r.id, value: r.encryptedToken }));
-    }),
-  );
-
-  // ── User.totpSecret (nullable) — TOTP_SECRET ────────────────────────────────
-  results.push(
-    await scanField("User.totpSecret", async (afterId) => {
-      const rows = await db.user.findMany({
-        where: afterId ? { id: { gt: afterId } } : undefined,
-        select: { id: true, totpSecret: true },
-        orderBy: { id: "asc" },
-        take: PAGE_SIZE,
-      });
-      return rows.map((r) => ({ id: r.id, value: r.totpSecret }));
-    }),
-  );
-
-  // ── User.dateOfBirthEncrypted (nullable) — DATE_OF_BIRTH ─────────────────────
-  results.push(
-    await scanField("User.dateOfBirthEncrypted", async (afterId) => {
-      const rows = await db.user.findMany({
-        where: afterId ? { id: { gt: afterId } } : undefined,
-        select: { id: true, dateOfBirthEncrypted: true },
-        orderBy: { id: "asc" },
-        take: PAGE_SIZE,
-      });
-      return rows.map((r) => ({ id: r.id, value: r.dateOfBirthEncrypted }));
-    }),
-  );
-
-  // ── Connection.credential (nullable) — CONNECTION_CREDENTIAL ─────────────────
-  // Expected v2-only by construction (born with encryptWithPurpose); audited to
-  // prove zero v1.
-  results.push(
-    await scanField("Connection.credential", async (afterId) => {
-      const rows = await db.connection.findMany({
-        where: afterId ? { id: { gt: afterId } } : undefined,
-        select: { id: true, credential: true },
-        orderBy: { id: "asc" },
-        take: PAGE_SIZE,
-      });
-      return rows.map((r) => ({ id: r.id, value: r.credential }));
-    }),
-  );
+  // Every CIPHER-format column of the one registry (lib/plaid/encrypted-fields.ts),
+  // restricted to the rows that hold ciphertext at all: Connection.credential
+  // excludes provider = WALLET, whose public watch-only descriptor is stored in
+  // clear by design and would otherwise be miscounted as "invalid". The sealed
+  // (compact c1.) column is not a hex-segment format; its key coverage is
+  // reported by scripts/rotate-encryption-key.ts (--verify-complete).
+  for (const f of ENCRYPTED_FIELDS.filter((x) => x.format === "cipher")) {
+    const delegate = delegateOf(f.model);
+    results.push(
+      await scanField(fieldLabel(f) + (f.scope ? ` (${f.scope.column}≠${f.scope.notEqual})` : ""), async (afterId) => {
+        const rows = await delegate.findMany({
+          where: { AND: [afterId ? { id: { gt: afterId } } : {}, scopeWhere(f)] },
+          select: { id: true, [f.field]: true },
+          orderBy: { id: "asc" },
+          take: PAGE_SIZE,
+        });
+        return rows.map((r) => ({ id: String(r.id), value: (r[f.field] as string | null) ?? null }));
+      }),
+    );
+  }
 
   // ── Report ──────────────────────────────────────────────────────────────────
-  const LABEL_W = 28;
+  const LABEL_W = 46;
   console.log("");
   console.log(
     pad("table.field", LABEL_W) +
       ["v1", "v2", "v3", "invalid", "null", "total"].map((h) => rjust(h, 9)).join(""),
   );
-  console.log("-".repeat(82));
+  console.log("-".repeat(100));
 
   const grand = emptyCounts();
   for (const { label, counts } of results) {
@@ -182,7 +160,7 @@ async function main(): Promise<void> {
     grand.total += counts.total;
   }
 
-  console.log("-".repeat(82));
+  console.log("-".repeat(100));
   console.log(
     pad("TOTAL", LABEL_W) +
       num(grand.v1, 9) +
