@@ -16,6 +16,7 @@ import { evaluateSyncIncidentCritical } from "@/lib/alerts/evaluate";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { projectVerdictForPlatform } from "@/lib/platform/incidents/platform-projection";
 import { buildAttention } from "@/lib/platform/ops/attention-core";
+import { foldAttention, incidentOwnersOf, type AttentionFacts } from "@/lib/platform/customer/attention-core";
 import { moduleVerdicts } from "./module-adapter";
 import type { World, WorldRow } from "./world";
 
@@ -183,13 +184,26 @@ export function opsAttentionReader(w: World, feed: "brokenNow" | "all" = "broken
   }));
 }
 
-/** R6b — CS attention (customer/attention.ts:84-96): active set; owner via item→user, else account owner ?? createdBy. */
-export function csAttentionReader(w: World): Verdict[] {
-  return projectionReader(w).filter((v) => v.open).map((v) => {
-    const r = w.rows.find((x) => x.id === v.rowId)!;
-    const item = r.plaidItemId ? w.items.find((i) => i.id === r.plaidItemId) : undefined;
-    const acct = !item && r.financialAccountId ? w.accounts.find((a) => a.id === r.financialAccountId && !a.hardDeleted) : undefined;
-    return { ...v, reader: "cs-attention", subjectUserId: item?.userId ?? acct?.ownerUserId ?? acct?.createdByUserId ?? null };
+/**
+ * R6b — CS attention AFTER its cutover: the module's CUSTOMER_SUCCESS-tier
+ * `brokenNow` page (what `incidentAccessors.brokenNow` returns for a CS token),
+ * through the REAL owner rule (incidentOwnersOf — the module's subjectUserId,
+ * D4) and the REAL fold (foldAttention). A row is open when its owner lands in
+ * the fold's `incident` reason. `feed` lets the gate hand the reader a WIDER page.
+ */
+const EMPTY_FUNNEL: AttentionFacts["funnel"] = {
+  users: [], firstSessions: [], firstAiTurns: [], firstBriefViews: [], lastEngagements: [], plaidItems: [], walletConnections: [], manualAssets: [],
+};
+export function csAttentionReader(w: World, feed: "brokenNow" | "all" = "brokenNow"): Verdict[] {
+  const verdicts = (moduleVerdicts(w, "CUSTOMER_SUCCESS") as CsIncidentVerdict[]).filter((v) => feed === "all" || v.brokenNow);
+  const owners = incidentOwnersOf(verdicts);
+  const fold = foldAttention({
+    activeCustomerIds: new Set(w.users), funnel: EMPTY_FUNNEL,
+    reconnectOwners: [], incidentOwners: owners, policyIssueOwners: [],
+  }, w.now);
+  return verdicts.map((v) => {
+    const [owner] = incidentOwnersOf([v]);
+    return { reader: "cs-attention" as const, rowId: v.id, severity: v.severity, subjectUserId: v.subjectUserId, open: !!owner && fold.sets.incident.has(owner) };
   });
 }
 
@@ -199,5 +213,5 @@ export const LEGACY_READERS = {
   convergence: convergenceReader,
   alerts: (w: World) => alertsReader(w),
   "ops-attention": (w: World) => opsAttentionReader(w),
-  "cs-attention": csAttentionReader,
+  "cs-attention": (w: World) => csAttentionReader(w),
 } as const;

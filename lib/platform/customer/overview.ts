@@ -30,7 +30,7 @@ export async function getCsOverview(windowDays: 30 | 90, incidentToken: CsToken,
   ]);
 
   const byKind = new Map<string, number>();
-  for (const i of attention.activePage.incidents) byKind.set(String(i.kind), (byKind.get(String(i.kind)) ?? 0) + 1);
+  for (const i of attention.incidentPage.items) byKind.set(String(i.kind), (byKind.get(String(i.kind)) ?? 0) + 1);
 
   return buildCsOverview({
     ...attention.facts,
@@ -39,6 +39,6 @@ export async function getCsOverview(windowDays: 30 | 90, incidentToken: CsToken,
     incidentDays: daily.days,
     incidentsFloor: daily.floor,
     openByKind: [...byKind.entries()].map(([kind, count]) => ({ kind, count })),
-    openFloor: attention.activePage.scanTruncated,
+    openFloor: attention.incidentPage.truncated,
   }, now, windowDays);
 }

@@ -11,7 +11,7 @@
  * beta-sized (hundreds), not at thousands. Each read this file owns is capped at
  * ATTENTION_SCAN_CAP; a read that reaches it marks the fold `floor` and every
  * count is shown as "≥N" — the same pattern as the active-incident scan
- * (ACTIVE_INCIDENT_SCAN → `scanTruncated` → `openFloor`). Reaching it is the
+ * (ACTIVE_INCIDENT_SCAN → `truncated` → `openFloor`). Reaching it is the
  * signal to move this to SQL aggregation / a per-page read. (The funnel facts
  * are Growth's shared loader and are not capped here.)
  *
@@ -31,12 +31,12 @@ import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { UNASSIGNED_CUSTOMER_WHERE } from "@/lib/platform/policy-assignment-health";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
-import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
-import type { CsToken, OpsToken } from "@/lib/platform/incidents/intelligence";
-import { foldAttention, type AttentionFacts, type AttentionFold } from "./attention-core";
+import { incidentAccessors, type CsToken } from "@/lib/platform/incidents/intelligence";
+import type { CsIncidentVerdict, VerdictList } from "@/lib/platform/incidents/intelligence/types";
+import { foldAttention, incidentOwnersOf, type AttentionFacts, type AttentionFold } from "./attention-core";
 
 const BROKEN = ["NEEDS_REAUTH", "ERROR"] as const;
-/** Unresolved rows scanned for the active-incident projection; a full scan is reported as a floor. */
+/** Open SyncIssue rows the module scans for the broken-now page; a full scan is reported as a floor (`truncated`). */
 export const ACTIVE_INCIDENT_SCAN = 1000;
 /** Rows each fleet read below may return; a read that reaches it makes every count a floor. */
 export const ATTENTION_SCAN_CAP = 5000;
@@ -46,13 +46,16 @@ const NOT_LIVE_PROVIDER = ["PLAID", "MANUAL", "CSV"] as const;
 export interface AttentionRead {
   facts: AttentionFacts;
   fold: AttentionFold;
-  /** The canonical active-incident page the `incident` reason was read from (the overview's open-by-kind reuses it). */
-  activePage: Awaited<ReturnType<typeof getActiveIncidentPage>>;
+  /**
+   * PB-1 R6b — the module's CUSTOMER_SUCCESS-tier broken-now page the `incident` reason was read from
+   * (the overview's open-by-kind reuses it). `truncated` = the module's D5 flag.
+   */
+  incidentPage: VerdictList<CsIncidentVerdict>;
 }
 
 export async function loadAttention(
-  /** PB-1 R4 — the incident token the ROUTE minted from its own guard result. */
-  incidentToken: CsToken | OpsToken,
+  /** PB-1 R4/R6b — the CUSTOMER_SUCCESS token the ROUTE minted from its own guard result (attribution is CS-tier only, D4). */
+  incidentToken: CsToken,
   now: Date = new Date(), client = systemDb,
   /** Test seam only; production reads the resolver's own mode (entitlementLoadOptions). */
   opts: { failClosed?: boolean; cap?: number } = {},
@@ -66,14 +69,14 @@ export async function loadAttention(
   // NOT a `policy` issue; it is its own `unassigned` reason, and only while the
   // fail-closed switch is enforced (below).
   const live = assignableGroups(await loadPolicyGroupCatalogue()).map((g) => g.key);
-  const [customers, funnel, plaidBroken, connBroken, activePage, invalid, unassigned] = await Promise.all([
+  const [customers, funnel, plaidBroken, connBroken, incidentPage, invalid, unassigned] = await Promise.all([
     client.user.findMany({ where: { role: "USER", deactivatedAt: null }, select: { id: true }, orderBy: { createdAt: "desc" }, take: cap }),
     loadFunnelFacts(client),
     client.plaidItem.findMany({ where: { status: { in: [...BROKEN] } }, select: { userId: true }, take: cap }),
     client.connection.findMany({ where: { status: { in: [...BROKEN] }, provider: { notIn: [...NOT_LIVE_PROVIDER] } }, select: { userId: true }, take: cap }),
-    // The canonical ACTIVE incidents (derived state: orphaned, superseded and event rows excluded) —
-    // the same read the Incidents workspace uses, so both say the same number.
-    getActiveIncidentPage(incidentToken, ACTIVE_INCIDENT_SCAN),
+    // PB-1 R6b — the module's BROKEN-NOW incidents at the CUSTOMER_SUCCESS tier (D1/D2/D2b/D10 decided
+    // there; each verdict attributed by the module's ONE rule, D4) — the same set the Incidents workspace reads.
+    incidentAccessors.brokenNow(incidentToken, { limit: ACTIVE_INCIDENT_SCAN }),
     client.customerPolicyAssignment.findMany({ where: { policyGroup: { notIn: live } }, select: { userId: true }, take: cap }),
     // S2 ruling — unassigned customers are a reason only while fail-closed is ENFORCED;
     // the SAME predicate as the Platform Ops policy-assignment alert. Not read otherwise.
@@ -81,26 +84,18 @@ export async function loadAttention(
       ? client.user.findMany({ where: UNASSIGNED_CUSTOMER_WHERE, select: { id: true }, take: cap })
       : Promise.resolve([] as { id: string }[]),
   ]);
-  const floor = [customers, plaidBroken, connBroken, invalid, unassigned].some((rows) => rows.length >= cap) || activePage.scanTruncated;
-
-  const openIssues = activePage.incidents;
-  // Sync-issue owners: through the Item, else through the account's owner / creator.
-  const itemIds = [...new Set(openIssues.flatMap((i) => (i.plaidItemId ? [i.plaidItemId] : [])))];
-  const accountIds = [...new Set(openIssues.flatMap((i) => (!i.plaidItemId && i.financialAccountId ? [i.financialAccountId] : [])))];
-  const [items, accounts] = await Promise.all([
-    itemIds.length ? client.plaidItem.findMany({ where: { id: { in: itemIds } }, select: { userId: true } }) : Promise.resolve([]),
-    accountIds.length ? client.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { ownerUserId: true, createdByUserId: true } }) : Promise.resolve([]),
-  ]);
+  const floor = [customers, plaidBroken, connBroken, invalid, unassigned].some((rows) => rows.length >= cap) || incidentPage.truncated;
 
   const facts: AttentionFacts = {
     activeCustomerIds: new Set(customers.map((c) => c.id)),
     funnel,
     reconnectOwners: [...plaidBroken.map((p) => p.userId), ...connBroken.flatMap((c) => (c.userId ? [c.userId] : []))],
-    incidentOwners: [...items.map((p) => p.userId), ...accounts.flatMap((a) => { const o = a.ownerUserId ?? a.createdByUserId; return o ? [o] : []; })],
+    // PB-1 R6b — the module's attribution (subjectUserId, CS tier) on broken-now verdicts; no owner rule here.
+    incidentOwners: incidentOwnersOf(incidentPage.items),
     policyIssueOwners: invalid.map((a) => a.userId),
     unassignedOwners: unassigned.map((u) => u.id),
     policyFailClosed: failClosed,
     floor,
   };
-  return { facts, fold: foldAttention(facts, now), activePage };
+  return { facts, fold: foldAttention(facts, now), incidentPage };
 }

@@ -55,6 +55,19 @@ console.log("B · operator lists never read the account name");
     check("Platform Ops attention names subjects through that same minimized resolver",
       /import \{ resolveSubjects \} from "@\/lib\/platform\/incidents\/preview";/.test(opsAttention) && /resolveSubjects\(shown\)/.test(opsAttention)
       && !/financialAccount|plaidItem\.|institutionName|minimizedAccount/.test(opsAttention));
+    // S2 (R6a review) — hardening: no customer identity in the Ops reader, and its @/lib imports are
+    // pinned to today's set, so a new data-reading import is a reviewed change, not a drive-by.
+    check("Platform Ops attention never names subjectUserId", !/subjectUserId/.test(opsAttention));
+    const OPS_ATTENTION_IMPORTS = [
+      "@/lib/alerts/evaluate", "@/lib/alerts/rules", "@/lib/alerts/run", "@/lib/connections/health", "@/lib/jobs/health",
+      "@/lib/platform/ai/brief-ops", "@/lib/platform/ai/failures", "@/lib/platform/incidents/intelligence",
+      "@/lib/platform/incidents/platform-projection", "@/lib/platform/incidents/preview", "@/lib/platform/incidents/projections",
+      "@/lib/platform/ops/attention-core", "@/lib/platform/policy-assignment-health", "@/lib/platform/provider-health",
+      "@/lib/platform/refresh/execution-query", "@/lib/platform/resource-freshness",
+    ];
+    const opsImports = [...new Set([...opsAttention.matchAll(/from "(@\/lib\/[^"]+)"/g)].map((m) => m[1]))].sort();
+    check("Platform Ops attention imports exactly the reviewed @/lib set (a new data-reading import is a reviewed change)",
+      JSON.stringify(opsImports) === JSON.stringify([...OPS_ATTENTION_IMPORTS].sort()), opsImports.join(", "));
   }
   check("Customer Success sync issues consume that same minimized preview", /getIncidentPreview\(/.test(code("app/api/platform/customer-success/sync-issues/route.ts")));
 }

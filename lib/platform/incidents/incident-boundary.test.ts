@@ -319,6 +319,56 @@ function main() {
       && /"id", "kind", "resolved", "createdAt", "financialAccountId", "plaidTransactionId"/.test(grants[0]), grants.join(" | "));
   }
 
+  // ── 11. PB-1 Phase 2 FINAL — open/closed is the intelligence module's ──────
+  // Every production file that reads SyncIssue ROWS (a Prisma read on syncIssue) or calls a legacy
+  // row → state helper, outside the module, is CENSUSED here with why it may. An unlisted file fails;
+  // a listed file that no longer matches fails too (the census only shrinks by a reviewed change).
+  // None of the six cut-over readers (R1–R6, PB-1 §13.1) may appear: their open/closed is the module's.
+  console.log("11. no reader outside the intelligence module decides open/closed from SyncIssue rows");
+  {
+    const RAW_READ = /\.syncIssue\.(findMany|findFirst|findUnique|findFirstOrThrow|findUniqueOrThrow|count|groupBy|aggregate)\(|\b(syncIssueState|episodeStateOf|incidentEpisodes)\(/;
+    const CENSUS: Readonly<Record<string, string>> = {
+      // The lifecycle authority and its two DELETE-only steps (§2 LIFECYCLE_INTERNALS): they WRITE open/closed.
+      "lib/platform/incidents/lifecycle.ts": "lifecycle writer",
+      "lib/platform/incidents/purge.ts": "lifecycle internal (account-deletion purge; selects ids to delete)",
+      "lib/platform/incidents/retention.ts": "lifecycle internal (archive-on-prune; copies rows it deletes)",
+      // The semantics authority itself (defines syncIssueState; §1 pins it as the only classifier).
+      "lib/platform/sync-issue-semantics.ts": "semantics authority (definition)",
+      // Copies a customer's rows, `resolved` included as a FACT, into their export; decides nothing.
+      "lib/platform/incidents/subject-export.ts": "subject export (verbatim facts)",
+      // The wallet-sync incident's LAST FAILURE INSTANT (max lastOccurredAt) — a clock, not an open/closed verdict.
+      "lib/crypto/wallet-refresh.ts": "failure clock (no state)",
+      // KNOWN RESIDUALS — not among PB-1 §13.1's six readers; each still derives open/closed from rows.
+      // Listed so they cannot multiply; each is a PB-1 Phase 3 item (Session 1 ruling, PB-1 R6b report).
+      "lib/platform/incidents/projections.ts": "RESIDUAL: getIncidentEpisodeTimeline (CS daily trend) + getIncidentDetail (Ops execution evidence; state unused)",
+      "lib/platform/incidents/episodes-core.ts": "RESIDUAL: the legacy episode fold the CS daily trend uses",
+      "app/api/spaces/[id]/activity/route.ts": "RESIDUAL: member activity feed (resolved=false, bank-transaction rows only)",
+      "lib/plaid/backgroundHistorySync.ts": "RESIDUAL: sync control (MISSING_ACCOUNT blocking count gates recovery)",
+    };
+    const found = [...walk("lib"), ...walk("app"), ...walk("components")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !f.startsWith("lib/platform/incidents/intelligence/") && !f.startsWith("lib/platform/incidents/parity/"))
+      .filter((f) => RAW_READ.test(code(f)))
+      .sort();
+    const unlisted = found.filter((f) => !(f in CENSUS));
+    const stale = Object.keys(CENSUS).filter((f) => !found.includes(f));
+    check("every SyncIssue row reader / legacy state caller outside the module is censused", unlisted.length === 0, unlisted.join(", "));
+    check("…and every census entry still matches (the census only shrinks by a reviewed change)", stale.length === 0, stale.join(", "));
+    const CUT_OVER = [
+      "lib/platform/customer/", // R1 customer-core, R2 customer-detail, R6b attention
+      "lib/platform/convergence/", // R3
+      "lib/alerts/", // R5
+      "lib/platform/ops/", // R6a
+    ];
+    const leaks = found.filter((f) => CUT_OVER.some((d) => f.startsWith(d)));
+    check("none of the cut-over readers (R1–R3, R5, R6a, R6b) reads SyncIssue rows or a legacy state helper", leaks.length === 0, leaks.join(", "));
+    const proj = code("lib/platform/incidents/projections.ts");
+    const page = proj.slice(proj.indexOf("export async function getActiveIncidentPage"));
+    const pageBody = page.slice(0, page.indexOf("\n}\n") + 3);
+    check("R4: getActiveIncidentPage reads the module (brokenNow) and no SyncIssue row",
+      /incidentAccessors\.brokenNow\(token,/.test(pageBody) && !RAW_READ.test(pageBody) && !/resolved/.test(pageBody), pageBody.slice(0, 200));
+  }
+
   if (failures > 0) {
     console.error(`\nincident-boundary.test: ${failures} failure(s).`);
     process.exit(1);
