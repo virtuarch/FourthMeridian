@@ -261,6 +261,7 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
         client.financialAccount.findMany({ where: { OR: [{ ownerUserId: userId }, { ownerUserId: null, createdByUserId: userId }] }, select: { id: true } }),
       ]);
       const where: Prisma.SyncIssueWhereInput = {
+        ...(opts?.openOnly ? { resolved: false } : {}),
         OR: [
           { subjectUserId: userId },
           ...(items.length ? [{ plaidItemId: { in: items.map((i) => i.id) } }] : []),
@@ -284,13 +285,21 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
   };
 }
 
+/** The loader's reader over an fm_system-typed client (the caller's own; stage attempts always ride the row seam). */
+export function incidentReaderFor(client: Db): IncidentFactsReader {
+  return {
+    syncIssue: client.syncIssue,
+    syncIssueOccurrence: client.syncIssueOccurrence,
+    syncIssueArchive: client.syncIssueArchive,
+    syncIssueRelation: client.syncIssueRelation,
+    financialAccount: client.financialAccount,
+    plaidItem: client.plaidItem,
+    stageAttempts: listSubjectStageAttempts,
+  };
+}
+
 /** The production accessors (fm_system, the operator-console authority). */
-export const incidentAccessors: IncidentAccessors = createIncidentAccessors({
-  syncIssue: systemDb.syncIssue,
-  syncIssueOccurrence: systemDb.syncIssueOccurrence,
-  syncIssueArchive: systemDb.syncIssueArchive,
-  syncIssueRelation: systemDb.syncIssueRelation,
-  financialAccount: systemDb.financialAccount,
-  plaidItem: systemDb.plaidItem,
-  stageAttempts: listSubjectStageAttempts,
-});
+export const incidentAccessors: IncidentAccessors = createIncidentAccessors(incidentReaderFor(systemDb));
+
+/** Token TYPES for consumers that receive a minted token (minting stays in ./audience, pinned). */
+export type { CsToken, OpsToken, SystemToken } from "./audience";

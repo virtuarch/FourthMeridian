@@ -3,10 +3,13 @@
  * spine: provenance survives, forbidden material never crosses, authorities are named.
  * Run: npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/customer/customer-core.test.ts
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { resolveEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import {
   actionTouchesItems, firstConnectedAt, projectActivity, projectAiUsage, projectCohorts, projectConnections, projectIdentity,
   projectIncidents, projectLifecycle, projectOperatorAction, projectPolicy, projectRollup, projectSpaces, requestStage, operatorDisplayName,
+  type IncidentVerdictFacts,
 } from "./customer-core";
 
 let failures = 0;
@@ -97,15 +100,35 @@ console.log("connections — health from the shared derivation, no secrets");
   check("…and nothing at all is null", firstConnectedAt([], [], []) === null);
 }
 
-console.log("incidents");
+console.log("incidents — R1 reads module verdicts (brokenNow), never resolved=false");
 {
+  const verdict = (id: string, over: Partial<IncidentVerdictFacts> = {}): IncidentVerdictFacts => ({
+    id, provider: "PLAID", kind: "UPSERT_ERROR", plaidItemId: "p1", financialAccountId: null,
+    firstSeenAt: "2026-10-07T00:00:00.000Z", lastSeenAt: "2026-10-07T00:00:00.000Z",
+    brokenNow: true, state: "active", freshness: "current", ...over,
+  });
   const v = projectIncidents(
-    [{ id: "i1", provider: "PLAID", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "p1", financialAccountId: null, firstOccurredAt: null, lastOccurredAt: null, createdAt: T("2026-10-07T00:00:00Z"), resolved: false },
-     { id: "i2", provider: "PLAID", kind: "UPSERT_ERROR", plaidItemId: "p1", financialAccountId: null, firstOccurredAt: null, lastOccurredAt: null, createdAt: T("2026-10-07T00:00:00Z"), resolved: true }],
+    [verdict("i1", { kind: "TRANSACTION_PERSISTENCE_FAILED" }),
+     verdict("i2", { brokenNow: false, state: "resolved" }),
+     verdict("tomb", { kind: "REMOVED_TOMBSTONE", brokenNow: false, state: "resolved" }),
+     verdict("revoked", { brokenNow: false, state: "resolved" }),
+     verdict("stale", { brokenNow: false, state: "stale-unverified", freshness: "stale" }),
+     verdict("unv", { freshness: "unverified" })],
     [{ id: "e1", sourceKind: "PLAID_ITEM", plaidItemId: "p1", sourceRef: null, trigger: "MANUAL", profile: "FULL_REFRESH", overallStatus: "SUCCEEDED", startedAt: T("2026-10-08T00:00:00Z"), durationMs: 1200, failureCategory: null }],
     [{ receivedAt: T("2026-10-08T01:00:00Z"), webhookType: "TRANSACTIONS", webhookCode: "SYNC_UPDATES_AVAILABLE", handling: "SYNC_SCHEDULED", plaidItemId: "p1", errorCode: null }]);
-  check("only open incidents listed; createdAt backs missing occurrence clocks", v.open.length === 1 && v.open[0].firstOccurredAt === "2026-10-07T00:00:00.000Z");
+  check("only broken-now verdicts are open (D1 / D2b / D10: closed, evidence and stale rows are not)",
+    v.open.map((o) => o.id).join() === "i1,unv", JSON.stringify(v.open.map((o) => o.id)));
+  check("since / recency come from the verdict (D7)", v.open[0].firstOccurredAt === "2026-10-07T00:00:00.000Z" && v.open[0].lastOccurredAt === "2026-10-07T00:00:00.000Z");
+  check("an unverified incident stays open and says so (D10)", v.open.find((o) => o.id === "unv")?.freshness === "unverified");
+  check("truncation is explicit (D5)", v.openTruncated === false
+    && projectIncidents([verdict("x")], [], [], new Map(), { truncated: true }).openTruncated === true);
   check("executions and webhooks projected", v.recentExecutions[0].overallStatus === "SUCCEEDED" && v.recentWebhooks[0].handling === "SYNC_SCHEDULED");
+  const strip = (x: string) => x.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const core = strip(readFileSync(path.join(process.cwd(), "lib/platform/customer/customer-core.ts"), "utf8"));
+  const detail = strip(readFileSync(path.join(process.cwd(), "lib/platform/customer/customer-detail.ts"), "utf8"));
+  check("R1 pin: the panel projection never reads `resolved`", !/\.resolved\b/.test(core));
+  check("R2 pin: the CS detail loader reads no SyncIssue directly — only through the intelligence module",
+    !/\.syncIssue\.|syncIssue\s*\./.test(detail) && /\.forCustomer\(incidentToken, userId/.test(detail));
 }
 
 console.log("AI usage — returned calls priced, failures counted, estimate labelled");
