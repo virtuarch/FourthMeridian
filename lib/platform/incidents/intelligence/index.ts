@@ -27,7 +27,7 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
-import { listSubjectStageAttempts } from "@/lib/platform/refresh/execution-query";
+import { latestStageAttemptsBySubject } from "@/lib/platform/refresh/projections";
 import { EVIDENCE_DIGEST_SELECT, evidenceDigestOf } from "../evidence";
 import { loadOccurrenceAccounts, loadSubjectFacts } from "../subjects";
 import { assertAudienceToken, type CsToken, type OpsToken, type SystemToken } from "./audience";
@@ -66,8 +66,6 @@ import type {
 
 /** Default row cap for one scan (D5 — reported, never silent). */
 export const DEFAULT_SCAN_LIMIT = 200;
-/** Cap on the attempt-evidence scan; hitting it makes EVERY row's evidence UNKNOWN (never hides a row). */
-export const ATTEMPT_SCAN_CAP = 2000;
 
 type Db = typeof systemDb;
 export type IncidentFactsReader = {
@@ -79,8 +77,8 @@ export type IncidentFactsReader = {
   syncIssueEvent: Pick<Db["syncIssueEvent"], "findMany">;
   financialAccount: Pick<Db["financialAccount"], "findMany">;
   plaidItem: Pick<Db["plaidItem"], "findMany">;
-  /** Stage attempts on subjects — the refresh ledger's ROW SEAM (never the ledger directly). */
-  stageAttempts: typeof listSubjectStageAttempts;
+  /** Latest stage attempt / skip per subject — the refresh ledger's PROJECTION SEAM (never the ledger directly). */
+  latestAttempts: typeof latestStageAttemptsBySubject;
 };
 
 const ROW_SELECT = {
@@ -118,57 +116,55 @@ export interface LoadOptions {
  */
 export async function loadAttemptEvidence(
   rows: readonly IncidentRowFacts[],
-  client: Pick<IncidentFactsReader, "stageAttempts">,
+  client: Pick<IncidentFactsReader, "latestAttempts">,
   now: Date,
 ): Promise<Map<string, AttemptEvidence>> {
   const out = new Map<string, AttemptEvidence>();
-  type Need = { id: string; subject: { item?: string; account?: string } | null; endpoints: readonly string[]; since: Date };
+  type Need = { id: string; subject: { item: string } | { account: string }; endpoints: readonly string[]; since: Date };
   const needs: Need[] = [];
   for (const r of rows) {
     if (r.resolved) continue;
     const op = operationOf(r);
     const since = r.lastOccurredAt ?? r.createdAt;
+    // Inside its window: the STALE rule never reads evidence (the core reports "not-needed").
     if (!isPastStaleWindow({ operation: op, provider: r.provider, lastOccurredAt: since, now })) continue;
     const endpoints = attemptEndpointsFor(op, r.provider);
+    // The ledger records no attempt of this operation at all: "neither attempted nor skipped" is literal.
+    if (endpoints.length === 0) { out.set(r.id, { known: true, lastAttemptAt: null, lastSkipAt: null, basis: "read" }); continue; }
+    // Subject keys: a wallet (or any non-Plaid source) is its FinancialAccount (RefreshExecution.sourceRef);
+    // a Plaid incident is its item (RefreshExecution.plaidItemId).
     const subject = r.provider === "WALLET"
       ? (r.financialAccountId ? { account: r.financialAccountId } : null)
       : (r.plaidItemId ? { item: r.plaidItemId } : null);
+    if (!subject) { out.set(r.id, { ...UNKNOWN_EVIDENCE, basis: "unsupported" }); continue; }
     needs.push({ id: r.id, subject, endpoints, since });
   }
-  for (const n of needs) {
-    // The ledger records no attempt of this operation at all: "neither attempted nor skipped" is literal.
-    if (n.endpoints.length === 0) out.set(n.id, { known: true, lastAttemptAt: null, lastSkipAt: null });
-    else if (!n.subject) out.set(n.id, UNKNOWN_EVIDENCE);
-  }
-  const scoped = needs.filter((n) => n.endpoints.length > 0 && n.subject);
-  if (scoped.length === 0) return out;
+  if (needs.length === 0) return out;
 
-  const itemIds = [...new Set(scoped.map((n) => n.subject!.item).filter((x): x is string => !!x))];
-  const accountIds = [...new Set(scoped.map((n) => n.subject!.account).filter((x): x is string => !!x))];
-  const endpoints = [...new Set(scoped.flatMap((n) => n.endpoints))];
-  const minSince = new Date(Math.min(...scoped.map((n) => n.since.getTime())));
-  let results: Awaited<ReturnType<typeof listSubjectStageAttempts>>;
-  try {
-    results = await client.stageAttempts({ plaidItemIds: itemIds, sourceRefs: accountIds, endpoints, after: minSince, take: ATTEMPT_SCAN_CAP });
-  } catch {
-    for (const n of scoped) out.set(n.id, UNKNOWN_EVIDENCE);
-    return out;
+  // One aggregate per endpoint set (a handful), each uncapped (one row per subject).
+  const bySignature = new Map<string, Need[]>();
+  for (const n of needs) {
+    const sig = [...n.endpoints].sort().join(",");
+    bySignature.set(sig, [...(bySignature.get(sig) ?? []), n]);
   }
-  if (results.length >= ATTEMPT_SCAN_CAP) {
-    for (const n of scoped) out.set(n.id, UNKNOWN_EVIDENCE);
-    return out;
-  }
-  for (const n of scoped) {
-    let lastAttemptAt: Date | null = null;
-    let lastSkipAt: Date | null = null;
-    for (const x of results) {
-      const onSubject = n.subject!.item ? x.plaidItemId === n.subject!.item : x.sourceRef === n.subject!.account;
-      if (!onSubject || !n.endpoints.includes(x.endpoint) || x.startedAt.getTime() <= n.since.getTime()) continue;
-      if (x.status === "SKIPPED") { if (!lastSkipAt || x.startedAt > lastSkipAt) lastSkipAt = x.startedAt; }
-      else if (!lastAttemptAt || x.startedAt > lastAttemptAt) lastAttemptAt = x.startedAt;
+  await Promise.all([...bySignature.values()].map(async (group) => {
+    const itemIds = [...new Set(group.flatMap((n) => ("item" in n.subject ? [n.subject.item] : [])))];
+    const accountIds = [...new Set(group.flatMap((n) => ("account" in n.subject ? [n.subject.account] : [])))];
+    const after = new Date(Math.min(...group.map((n) => n.since.getTime())));
+    let latest: Awaited<ReturnType<IncidentFactsReader["latestAttempts"]>>;
+    try {
+      latest = await client.latestAttempts({ plaidItemIds: itemIds, sourceRefs: accountIds, endpoints: group[0].endpoints, after });
+    } catch (e) {
+      // Logged without ids or query text; the rows stay visible (unknown never hides a row).
+      console.warn("[incident-intelligence] attempt evidence unreadable:", e instanceof Error ? e.name : "unknown error");
+      for (const n of group) out.set(n.id, { ...UNKNOWN_EVIDENCE, basis: "unreadable" });
+      return;
     }
-    out.set(n.id, { known: true, lastAttemptAt, lastSkipAt });
-  }
+    for (const n of group) {
+      const hit = latest.find((x) => ("item" in n.subject ? x.plaidItemId === n.subject.item : x.sourceRef === n.subject.account));
+      out.set(n.id, { known: true, lastAttemptAt: hit?.lastAttemptAt ?? null, lastSkipAt: hit?.lastSkipAt ?? null, basis: "read" });
+    }
+  }));
   return out;
 }
 
@@ -444,7 +440,7 @@ export function incidentReaderFor(client: Db): IncidentFactsReader {
     syncIssueEvent: client.syncIssueEvent,
     financialAccount: client.financialAccount,
     plaidItem: client.plaidItem,
-    stageAttempts: listSubjectStageAttempts,
+    latestAttempts: latestStageAttemptsBySubject,
   };
 }
 

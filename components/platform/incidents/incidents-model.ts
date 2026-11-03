@@ -122,8 +122,20 @@ export function whyLines(d: Pick<IncidentDetailDTO, "incident" | "evidence" | "r
   if (e) out.push(`Evidence rule ${e.rule}: ${n(e.proofCount)} proof${e.proofCount === 1 ? "" : "s"}, ${n(e.nonProofCount)} non-proof fact${e.nonProofCount === 1 ? "" : "s"}${e.lastProofAt ? `, last proof ${whenText(e.lastProofAt)}` : ""}.`);
   if (d.resolutionReasonCode) out.push(`Reason: ${codeText(d.resolutionReasonCode)}.`);
   if (r.causeCode) out.push(`Cause (${r.causeStatus === "CONFIRMED" ? "confirmed" : "hypothesis"}): ${codeText(r.causeCode)}.`);
-  if (!r.recovery.evidenceKnown && (r.state === "active" || r.state === "acknowledged" || r.state === "recovering")) out.push("Attempt evidence since the last failure could not be read; the state is not hidden because of it.");
+  const evidenceNote = attemptEvidenceNote(r.recovery.evidenceBasis);
+  if (evidenceNote && (r.state === "active" || r.state === "acknowledged" || r.state === "recovering")) out.push(evidenceNote);
   return out;
+}
+
+/**
+ * PB-1 D10 — operator wording for WHY attempt evidence is missing. Only a read
+ * that failed is "could not be read"; a subject the ledger cannot key on is
+ * "not tracked"; a row inside its window needed no evidence. Never-hide in every case.
+ */
+export function attemptEvidenceNote(basis: "read" | "not-needed" | "unsupported" | "unreadable"): string | null {
+  if (basis === "unreadable") return "Attempt evidence since the last failure could not be read; the state is not hidden because of it.";
+  if (basis === "unsupported") return "Attempt evidence isn't tracked for this provider yet; the state is not hidden because of it.";
+  return null;
 }
 
 const WORDED: Readonly<Record<string, string>> = { ...RESOLUTION_REASON_CODES, ...CAUSE_CODES, ...ACTION_CODES, ...OUTCOME_CODES };

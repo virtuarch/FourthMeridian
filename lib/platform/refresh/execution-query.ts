@@ -464,38 +464,3 @@ export async function listWalletAttemptOutcomes(
     select: { startedAt: true, overallStatus: true },
   });
 }
-
-/**
- * PB-1 Phase 2 — the stage ATTEMPTS on a set of subjects (Plaid items by
- * `plaidItemId`, wallets by `sourceRef`), for the incident STALE rule
- * (lib/platform/incidents/intelligence — design §3.2, §12 P2.1). Rows, not a
- * verdict: endpoint + status + start instant + which subject, newest first,
- * bounded by `after` and `take`. No payload, no error text, no skip reason,
- * no execution id leaves the seam. fm_system. Throws on a failed read — the
- * caller treats that as UNKNOWN evidence (never hides an incident).
- */
-export async function listSubjectStageAttempts(args: {
-  plaidItemIds: readonly string[];
-  sourceRefs: readonly string[];
-  endpoints: readonly string[];
-  after: Date;
-  take: number;
-}): Promise<Array<{ endpoint: string; status: string; startedAt: Date; plaidItemId: string | null; sourceRef: string | null }>> {
-  if (args.endpoints.length === 0 || (args.plaidItemIds.length === 0 && args.sourceRefs.length === 0)) return [];
-  const rows = await systemDb.refreshEndpointResult.findMany({
-    where: {
-      endpoint: { in: [...args.endpoints] },
-      startedAt: { gt: args.after },
-      execution: {
-        OR: [
-          ...(args.plaidItemIds.length ? [{ plaidItemId: { in: [...args.plaidItemIds] } }] : []),
-          ...(args.sourceRefs.length ? [{ sourceRef: { in: [...args.sourceRefs] } }] : []),
-        ],
-      },
-    },
-    select: { endpoint: true, status: true, startedAt: true, execution: { select: { plaidItemId: true, sourceRef: true } } },
-    orderBy: [{ startedAt: "desc" }, { id: "asc" }],
-    take: Math.max(1, Math.min(args.take, 5000)),
-  });
-  return rows.map((r) => ({ endpoint: r.endpoint, status: r.status, startedAt: r.startedAt, plaidItemId: r.execution.plaidItemId, sourceRef: r.execution.sourceRef }));
-}
