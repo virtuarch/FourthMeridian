@@ -208,17 +208,40 @@ with no customer subject is kept.
 
 ## Presence, session and engagement (PB-10)
 
-**PLANNED: no PB-10 PR was found** (searched open and closed PRs and branches on
-2026-11-03). The three terms below are how the shipped analytics foundation and its
-design separate them. PB-10 is expected to make that separation canonical across
-readers. The intelligence plan counts **four competing definitions of "active"** today
-(growth, product analytics, customer detail and a reaped-session count).
+**IMPLEMENTED: #274 (`ae85c16`) + follow-ups #276 (`c62e824`), develop / Preview. Follow-ups F3/F4 IMPLEMENTED (#278).** "Last active"
+used to be `UserSession.lastActiveAt`, which any authenticated request bumps, so an idle open
+tab looked active. PB-10 defines six facts once, in `lib/presence/definitions.ts`; every
+threshold lives in its exported `PRESENCE_CONFIG`:
 
-| Term | Meaning | Source on develop |
+| Fact | Meaning | Source |
 |---|---|---|
-| **Session** | An authenticated login session and its liveness. Recency is touched at most once per 60 seconds. | `UserSession` (`createdAt`, `lastActiveAt`), `lib/auth/session-activity.ts`. IMPLEMENTED |
-| **Presence** | The user had a live session on a UTC day, written once per user per day. It says the user was there, not that they did anything. | `SESSION_ACTIVE_DAY` audit row written with the session touch (`lib/auth/session-activity.ts`). IMPLEMENTED |
-| **Engagement** | The user did something interactive: a server-side product event (`PRODUCT_EVENT_ACTIONS`, `lib/analytics/product-events.ts`), a chat or brief AI call, or adding an account, wallet or asset. Cron, webhook, harness and operator activity never count. | Product events IMPLEMENTED (13-month retention). Present-vs-engaged readers exist in `lib/platform/growth/product-analytics-core.ts` and `lib/platform/activity/activity.ts`; unifying them is PLANNED |
+| **Last login** | Newest LOGIN audit row | `AuditLog` |
+| **Authenticated session** | A valid, unrevoked session row inside the SEC-010 window. It does not prove a browser is open; `lastActiveAt` means *session last used* | `UserSession` |
+| **Online presence** | A visible-tab heartbeat within the presence window, stamped with the server clock | `UserSession.lastPresenceAt` |
+| **Active now** | Fresh presence plus an interaction reported within the interaction window | `lastPresenceAt` + `lastInteractionAt` |
+| **Last active** | The last client-reported interaction. **Low trust** (client-asserted); it drives only the presence buckets and the Customer Success "last active ~" display | `UserSession.lastInteractionAt` |
+| **Meaningful engagement** | The server-side engagement predicate (engagement audit actions plus AI customer surfaces). Heartbeats, polling, cron, webhooks and the daily session marker never count | `loadEngagedUserIdsSince` |
+
+- **Heartbeat:** `POST /api/user/presence` (`app/api/user/presence/route.ts`). The body is
+  `{ "interacted": boolean }` only; anything else returns 400. It runs under the normal user
+  guard without touching session activity, has its own per-session rate limit keyed on a
+  token digest, and reads or stores no IP, user agent or page path.
+- **Client:** `components/presence/PresenceHeartbeat.tsx` (dashboard layout). It beats only
+  while the tab is visible, and stops on 401/403. A 429 or network failure keeps a real
+  interaction for the next beat (F1).
+- **IMPLEMENTED (#278):** F3: background polls and the session focus refetch no longer extend
+  the SEC-010 idle deadline (a server-confined allowlist). F4: visibility is presence, never
+  an interaction. Consequence: a tab left open but unused for 30 days now signs out
+  (intended SEC-010 policy).
+- **Schema:** migration `20261103130000_pb10_session_presence` adds two nullable columns to
+  `UserSession` (last value only, no history). They go with the session row through the
+  reaper, account purge and data export. Applied on Preview; **Production follows the
+  release process.**
+- **Readers:** Customer Success shows Active now / Online, idle / Offline / Unknown, a coarse
+  last-active bucket, Last login and Signed-in sessions. Growth's returning-user and
+  active-7 counts use the engagement predicate.
+- **Still open:** the platform intelligence plan's consolidation of the remaining competing
+  "active" definitions (see [PLATFORM-INTELLIGENCE](../plans/PLATFORM-INTELLIGENCE.md)).
 
 ## Economics restructure
 
