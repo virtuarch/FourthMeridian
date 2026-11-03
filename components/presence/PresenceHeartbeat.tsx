@@ -3,24 +3,22 @@
 /**
  * components/presence/PresenceHeartbeat.tsx  (PB-10 — the client half of presence)
  *
- * Mounted once in the authenticated dashboard shell. Renders nothing.
+ * Mounted once in the authenticated dashboard shell. Renders nothing. Wires the
+ * browser to lib/presence/heartbeat-client.ts, which owns every decision:
  *
- *   · Beats ONLY while the tab is VISIBLE: every PRESENCE_CONFIG.clientBeatIntervalMs,
- *     plus one beat when the tab becomes visible again. A hidden tab, a closed
- *     browser, a suspended phone or a dropped network sends nothing — the server
- *     lets presence EXPIRE (lib/presence/definitions.ts). There is no "going
- *     offline" message to forge or lose.
- *   · Each beat carries ONE boolean: "interacted since the last beat", set by
- *     coarse local events — pointerdown, keydown, scroll, wheel, touchstart, and
- *     the tab becoming visible. The handlers read NOTHING from the event: no key,
- *     no coordinate, no target, no page content. The flag resets per beat.
- *   · No timestamp, count or duration is sent; the server stamps time.
- *   · A 401/403 stops the heartbeat (the session is gone or gated); a 429 or a
- *     network error is ignored — the next interval simply tries again.
+ *   · beats ONLY while the tab is VISIBLE — immediately on mount, every
+ *     PRESENCE_CONFIG.clientBeatIntervalMs, and when the tab becomes visible again;
+ *   · each beat carries ONE boolean, "interacted since the last beat", set by
+ *     coarse local events (pointerdown, keydown, scroll, wheel, touchstart, the
+ *     tab becoming visible). The handlers read NOTHING from the event;
+ *   · a refused (429) or lost beat keeps its interaction for the next one;
+ *     401/403 stop the heartbeat;
+ *   · no timestamp, count or duration is sent — the server stamps time.
  */
 
 import { useEffect } from "react";
 import { PRESENCE_CONFIG } from "@/lib/presence/definitions";
+import { createHeartbeatController, type BeatOutcome } from "@/lib/presence/heartbeat-client";
 
 export const PRESENCE_ENDPOINT = "/api/user/presence";
 /** The coarse events that mean "a human touched this tab". Nothing is read from them. */
@@ -28,36 +26,27 @@ export const INTERACTION_EVENTS = ["pointerdown", "keydown", "scroll", "wheel", 
 
 export function PresenceHeartbeat(): null {
   useEffect(() => {
-    let interacted = false;
-    let stopped = false;
-    const mark = () => { interacted = true; };
-
-    const beat = () => {
-      if (stopped || document.visibilityState !== "visible") return;
-      const body = JSON.stringify({ interacted });
-      interacted = false;
-      fetch(PRESENCE_ENDPOINT, {
+    const controller = createHeartbeatController({
+      now: () => Date.now(),
+      isVisible: () => document.visibilityState === "visible",
+      send: (body) => fetch(PRESENCE_ENDPOINT, {
         method: "POST", body, cache: "no-store", credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-      }).then((res) => {
-        if (res.status === 401 || res.status === 403) stopped = true;
-      }, () => { /* offline / dropped — the next interval retries */ });
-    };
-
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") { interacted = true; beat(); }
-    };
+      }).then((res): BeatOutcome => ({ status: res.status }), (): BeatOutcome => ({ networkError: true })),
+    });
+    const onInteraction = () => { controller.interaction(); };
+    const onVisibility = () => { if (document.visibilityState === "visible") void controller.visible(); };
 
     const opts: AddEventListenerOptions = { passive: true, capture: true };
-    for (const e of INTERACTION_EVENTS) window.addEventListener(e, mark, opts);
+    for (const e of INTERACTION_EVENTS) window.addEventListener(e, onInteraction, opts);
     document.addEventListener("visibilitychange", onVisibility);
-    const timer = window.setInterval(beat, PRESENCE_CONFIG.clientBeatIntervalMs);
-    beat(); // presence on arrival (interacted=false: loading a page is not proof of a human)
+    const timer = window.setInterval(() => { void controller.tick(); }, PRESENCE_CONFIG.clientBeatIntervalMs);
+    void controller.mount();
 
     return () => {
-      stopped = true;
+      controller.stop();
       window.clearInterval(timer);
-      for (const e of INTERACTION_EVENTS) window.removeEventListener(e, mark, opts);
+      for (const e of INTERACTION_EVENTS) window.removeEventListener(e, onInteraction, opts);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);

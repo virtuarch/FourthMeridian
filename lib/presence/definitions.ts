@@ -68,7 +68,17 @@ export const PRESENCE_CONFIG = {
   clientBeatIntervalMs: 60_000,
   /** Server/DB: a session row is not rewritten more often than this. */
   serverThrottleSeconds: 20,
-  /** Endpoint rate limit — its OWN per-session bucket. */
+  /**
+   * Endpoint rate limit — its OWN per-session bucket (shared by every tab of
+   * that session). It is lib/rate-limit.ts's FIXED window, aligned to the
+   * epoch: the bucket is floor(now / 30 s), not a sliding 30 s. So two beats a
+   * few seconds apart that straddle a boundary are BOTH admitted (e.g. :59 and
+   * :01), while two inside one window get a 429 — "at most 1 per aligned 30 s
+   * window", i.e. at most 2 within any 30 s span. That is acceptable here
+   * because the database throttle (serverThrottleSeconds) still bounds row
+   * WRITES, and a refused beat's interaction is carried to the next beat
+   * (lib/presence/heartbeat-client.ts).
+   */
   rateLimit: { limit: 1, windowSec: 30 },
   /** Presence is fresh while the newest beat is at most this old (3 missed-ish beats ⇒ offline). */
   presenceFreshMs: 3 * 60_000,

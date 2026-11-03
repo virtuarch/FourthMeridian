@@ -48,9 +48,12 @@ async function main() {
   const userId = u.id as string;
   const s = await signIn(fake, userId);
   const row = () => fake.rows("UserSession").find((r) => r.sessionToken === s.sessionToken)!;
-  const beat = (body: unknown, cookie: string | null = s.cookie) => {
+  /** A browser fetch with a string body always sends Content-Length; `length` overrides it (null = omit). */
+  const beat = (body: unknown, cookie: string | null = s.cookie, length?: string | null) => {
     freshCache(); // every call is a LIVE revocation check — the case that would touch
-    return invoke(POST, request("/api/user/presence", { method: "POST", cookie, rawBody: typeof body === "string" ? body : JSON.stringify(body) }));
+    const raw = typeof body === "string" ? body : JSON.stringify(body);
+    const cl = length === undefined ? String(Buffer.byteLength(raw)) : length;
+    return invoke(POST, request("/api/user/presence", { method: "POST", cookie, rawBody: raw, headers: cl === null ? {} : { "content-length": cl } }));
   };
   const reset = () => { touches = 0; beats = []; };
 
@@ -88,10 +91,27 @@ async function main() {
     JSON.stringify({ interacted: true, pad: "x".repeat(200) }),
   ]) {
     const r = await beat(bad);
-    t.check(`refused (400) and nothing written: ${typeof bad === "string" ? bad.slice(0, 24) : JSON.stringify(bad).slice(0, 48)}`, r.status === 400 && beats.length === 0, r.status);
+    const oversized = typeof bad === "string" && bad.length > 64; // F2: refused from its header (413)
+    t.check(`refused (${oversized ? 413 : 400}) and nothing written: ${typeof bad === "string" ? bad.slice(0, 24) : JSON.stringify(bad).slice(0, 48)}`, r.status === (oversized ? 413 : 400) && beats.length === 0, r.status);
   }
   t.check("the presence statement takes only the boolean, the token and the user — no time is bound",
     parsePresenceBody('{"interacted":true}')?.interacted === true && parsePresenceBody('{"interacted":true,"at":1}') === null);
+
+  t.section("F2 — the body is sized from Content-Length before it is read");
+  reset();
+  {
+    const r400 = await beat({ interacted: true }, s.cookie, null);
+    t.check("no Content-Length ⇒ 400, nothing written", r400.status === 400 && beats.length === 0, r400.status);
+    const rBad = await beat({ interacted: true }, s.cookie, "abc");
+    t.check("non-numeric Content-Length ⇒ 400, nothing written", rBad.status === 400 && beats.length === 0, rBad.status);
+    const big = JSON.stringify({ interacted: true, pad: "x".repeat(4000) });
+    const r413 = await beat(big, s.cookie, String(Buffer.byteLength(big)));
+    t.check("Content-Length above the 64-byte cap ⇒ 413, nothing written", r413.status === 413 && beats.length === 0, r413.status);
+    const lie = await beat(big, s.cookie, "20");
+    t.check("a header that under-declares the body is still refused by the parsed-length backstop (400)", lie.status === 400 && beats.length === 0, lie.status);
+    const ok = await beat({ interacted: false });
+    t.check("control: an honest small body passes", ok.status === 204 && beats.length === 1, ok.status);
+  }
 
   t.section("rate limit — its own per-session bucket; a 429 writes nothing");
   process.env.RATE_LIMIT_ENABLED = "true";
