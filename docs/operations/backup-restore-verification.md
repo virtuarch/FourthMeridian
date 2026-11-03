@@ -112,7 +112,9 @@ Dashboard → Database → Backups: record the plan's backup cadence, the newest
 
 | Date (UTC) | Env | Dump timestamp | sha256 (first 16) | PG major src→scratch | Restore s | Serving s | **RPO** | **RTO** | Counts equal? | Health/login | Result | Operator |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| _none yet_ | | | | | | | | | | | | |
+| 2026-11-03 05:43–05:47 | preview (ledger 146) | 2026-11-03T05:43:46Z | not recorded (dump `rm -P`'d after the run) | 17 → 17 (local throwaway) | 1 | — (no app boot) | ≈ 0 (fresh read-only snapshot) | ≈ 3 min to a regranted, readable clone: dump 174 s · start PG 2 s · reference migrate 2 s · restore 1 s · `db:regrant` 2 s | dump verified row-for-row by `db:backup`; 89/89 public tables restored | fm_app read OK after regrant; app boot + `/api/health` **not run** | **PARTIAL PASS** — see notes | Session 2 |
+
+**2026-11-03 Preview rehearsal notes (Session 2).** Restore of the `--no-privileges` dump into a vanilla PostgreSQL 17: 3 errors, all Supabase-platform (`supabase_vault` extension, `vault.secrets`), none in `public`. Before regrant the runtime role was refused (`permission denied for table Instrument`), confirming the gap; `db:regrant` dry run reported **680 missing, 0 extra**; `--apply` ran 680 GRANTs in one transaction, re-diff **0 / 0**, and fm_app read the table. `rls:accept` against the restored clone: 36/38 — the two failures (cases 28/38) are an artefact of restoring a *Supabase* dump into a non-Supabase server (the restored `auth` schema is not dumpable by `fm_backup`), not of the regrant. Not yet done: app boot + `/api/health` against the clone (needs a production build in the heavy slot), and a restore into a Supabase-shaped target. Nothing was written to Preview.
 
 The first PASSED row for `production` closes the G0 line item "restore rehearsal record with RPO/RTO".
 
