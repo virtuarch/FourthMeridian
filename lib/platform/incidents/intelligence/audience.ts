@@ -23,6 +23,19 @@
  *       Statically pinned: only lib/alerts/ may import it
  *       (intelligence/audience.test.ts, like db-authority pins systemDb).
  *
+ * GUARD PROVENANCE (static pin, audience.test.ts): `incidentAudienceFor(x)` is
+ * accepted ONLY where `x` is the value destructured from
+ * `await requirePlatformAccess(…)` / `await requireFreshPlatformAccess(…)` in the
+ * same function, and this module is imported nowhere else except those routes,
+ * the accessors (./index.ts) and lib/alerts/ (SYSTEM). A hand-built
+ * `{ user: { role: "SYSTEM_ADMIN" }, grant: null }` therefore cannot reach it.
+ *
+ * ⚠️ ONE MODULE INSTANCE. The WeakSet is module-instance state: if the bundler
+ * ever split this file into two chunks, a token minted in one would not be
+ * recognised in the other (it FAILS CLOSED — a refused read, never a leak).
+ * Mint and use a token within the same request, in the same route module; never
+ * cache, serialise or pass one across a module/worker boundary.
+ *
  * The pure core keeps a plain string audience (it is pure and has no caller
  * outside this module's accessors); the pin is that only the accessors and
  * this minter ever pass "CUSTOMER_SUCCESS" to it.
@@ -56,11 +69,15 @@ function mint<A extends IncidentAudience>(audience: A): AudienceToken<A> {
 export type AudienceAuth = { user: Pick<PlatformAuth["user"], "role">; grant: PlatformAuth["grant"] };
 
 /** The tier the route's EXISTING guard result entitles — never more. */
+/** Grant levels that may read incidents (every PlatformAccessLevel is ≥ READ; an unknown one mints nothing). */
+export const INCIDENT_READ_LEVELS: readonly string[] = ["READ", "WRITE", "CONTROL"];
+
 export function incidentAudienceFor(auth: AudienceAuth): CsToken | OpsToken | null {
   if (auth.grant === null) {
     // Break-glass: authorize.ts returns grant:null ONLY for an allowed SYSTEM_ADMIN.
     return auth.user.role === UserRole.SYSTEM_ADMIN ? mint("CUSTOMER_SUCCESS") : null;
   }
+  if (!INCIDENT_READ_LEVELS.includes(String(auth.grant.level))) return null;
   if (auth.grant.area === "CUSTOMER_SUCCESS") return mint("CUSTOMER_SUCCESS");
   if (auth.grant.area === "PLATFORM_OPS") return mint("PLATFORM_OPS");
   return null;

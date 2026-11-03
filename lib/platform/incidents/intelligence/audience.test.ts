@@ -45,6 +45,11 @@ console.log("1. minting follows the route's guard result, never more");
   check("a non-admin with no grant gets nothing", incidentAudienceFor({ user: { role: UserRole.USER }, grant: null }) === null);
   check("another area's grant gets nothing", incidentAudienceFor({ user: { role: UserRole.USER }, grant: { area: "SECURITY_OPS", level: "CONTROL" } }) === null);
   check("tokens are frozen", Object.isFrozen(ops));
+  check("a level below READ (or unknown) mints nothing",
+    incidentAudienceFor({ user: { role: UserRole.USER }, grant: { area: "CUSTOMER_SUCCESS", level: "NONE" as never } }) === null
+    && incidentAudienceFor({ user: { role: UserRole.USER }, grant: { area: "PLATFORM_OPS", level: "" as never } }) === null);
+  check("every PlatformAccessLevel in the schema is a READ-or-above level",
+    (() => { const m = readFileSync("prisma/schema.prisma", "utf8").match(/enum PlatformAccessLevel \{([^}]*)\}/); return !!m && m[1].split(/\s+/).filter(Boolean).every((l) => ["READ", "WRITE", "CONTROL"].includes(l)); })());
 }
 
 console.log("\n2. the runtime gate refuses anything it did not mint");
@@ -58,7 +63,39 @@ console.log("\n2. the runtime gate refuses anything it did not mint");
   check("a SYSTEM token cannot read a CS-only surface", throws(() => assertAudienceToken(systemIncidentAudience(), ["CUSTOMER_SUCCESS"])));
 }
 
-console.log("\n3. static pins");
+/** Every incidentAudienceFor(x) whose x is not destructured from `await require(Fresh)PlatformAccess(` in the same function. */
+function provenanceViolations(src: string): string[] {
+  const out: string[] = [];
+  for (const m of src.matchAll(/incidentAudienceFor\(([^)]*)\)/g)) {
+    const arg = m[1].trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(arg)) { out.push(`incidentAudienceFor(${arg || "<empty>"}) — not a guard-result identifier`); continue; }
+    const before = src.slice(0, m.index);
+    const fnStart = Math.max(before.lastIndexOf("function "), before.lastIndexOf("=> {"));
+    const body = before.slice(Math.max(0, fnStart));
+    const guard = new RegExp(`const\\s*\\[\\s*${arg}\\s*,[^\\]]*\\]\\s*=\\s*await\\s+require(Fresh)?PlatformAccess\\(`);
+    if (!guard.test(body)) { out.push(`incidentAudienceFor(${arg}) — ${arg} is not destructured from await require(Fresh)PlatformAccess( in this function`); continue; }
+    if (new RegExp(`(^|[^\\w$.])${arg}\\s*=(?!=)`).test(body.replace(guard, ""))) out.push(`incidentAudienceFor(${arg}) — ${arg} is reassigned`);
+  }
+  return out;
+}
+
+console.log("\n3. the provenance scanner itself (fixtures)");
+{
+  const good = `export async function GET() {\n  const [auth, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");\n  if (err) return err;\n  const t = incidentAudienceFor(auth);\n}`;
+  const fresh = `export async function POST() { const [a, e] = await requireFreshPlatformAccess("PLATFORM_OPS", "WRITE"); const t = incidentAudienceFor(a); }`;
+  const forged = `export async function GET() { const t = incidentAudienceFor({ user: { role: "SYSTEM_ADMIN" }, grant: null }); }`;
+  const smuggled = `export async function GET() { const fake = { user: { role: "SYSTEM_ADMIN" }, grant: null }; const t = incidentAudienceFor(fake); }`;
+  const otherFn = `async function a() { const [auth] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ"); }\nasync function b(auth) { return incidentAudienceFor(auth); }`;
+  const reassigned = `export async function GET() { let [auth, err] = await requirePlatformAccess("PLATFORM_OPS", "READ"); auth = { grant: null }; incidentAudienceFor(auth); }`;
+  check("a guard result destructured in the same function passes", provenanceViolations(good).length === 0, provenanceViolations(good).join());
+  check("…including requireFreshPlatformAccess", provenanceViolations(fresh).length === 0);
+  check("a literal object is caught", provenanceViolations(forged).length === 1);
+  check("a hand-built variable is caught", provenanceViolations(smuggled).length === 1);
+  check("a guard result from ANOTHER function is caught", provenanceViolations(otherFn).length === 1);
+  check("a reassigned guard result is caught", provenanceViolations(reassigned.replace("let [", "const [")).length === 1);
+}
+
+console.log("\n4. static pins");
 {
   const files = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")];
   const INTEL = "lib/platform/incidents/intelligence/";
@@ -72,6 +109,16 @@ console.log("\n3. static pins");
     .filter((f) => !/^lib\/platform\/incidents\/intelligence\/(index|audience)\.ts$/.test(f));
   check("only the accessors and the minter tell the core CUSTOMER_SUCCESS",
     csCoreCallers.length === 0, csCoreCallers.join(", "));
+  // GUARD PROVENANCE — every incidentAudienceFor(x) call passes the value destructured
+  // from `await require(Fresh)PlatformAccess(` earlier in the same function body.
+  const mintCallers = files.filter((f) => /incidentAudienceFor\(/.test(code(f)) && !f.startsWith(INTEL));
+  const badMints = mintCallers.flatMap((f) => provenanceViolations(code(f)).map((v) => `${f}: ${v}`));
+  check("incidentAudienceFor is only ever given a guard result destructured in the same function",
+    badMints.length === 0, badMints.join("; "));
+  const importers = files.filter((f) => /from\s+["']@\/lib\/platform\/incidents\/intelligence\/audience["']|from\s+["']\.\/audience["']/.test(code(f)));
+  const strayImporters = importers.filter((f) => !f.startsWith(INTEL) && !f.startsWith("lib/alerts/") && !mintCallers.includes(f));
+  check("the minter is imported only by the accessors, lib/alerts/ and guarded routes that mint",
+    strayImporters.length === 0, strayImporters.join(", "));
   const minters = files.filter((f) => /MINTED\.add\(|function mint\b/.test(code(f)));
   check("tokens are minted in exactly one module", minters.length === 1 && minters[0] === `${INTEL}audience.ts`, minters.join(", "));
 }
