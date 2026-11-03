@@ -531,7 +531,10 @@ console.log("doctrine");
   check("orchestrator consumes the OPS-5 resource-freshness authority", /checkResourceFreshness/.test(runSrc));
   check("orchestrator consumes the AI failure authority (OPERATIONALIZATION P0)", /getAiFailureHealth\(/.test(runSrc));
   check("orchestrator consumes the AI spend authority (BETA C7)", /getAiSpendHealth\(24\)/.test(runSrc));
-  check("orchestrator consumes the incident projection (OBS-004) — never a SyncIssue row", /getActiveIncidentPage\(/.test(runSrc) && !/db\.syncIssue/.test(runSrc) && !/syncIssue/.test(evaluateSrc));
+  // PB-1 R4 — DELIBERATE PIN UPDATE (was: /getActiveIncidentPage\(/). The engine now reads the
+  // intelligence module's alertable set with the SYSTEM token; the "never a SyncIssue row" half is unchanged.
+  check("orchestrator consumes the incident intelligence module's alertable set (OBS-004, PB-1 R4) — never a SyncIssue row",
+    /incidentAccessors\.alertable\(systemIncidentAudience\(\)/.test(runSrc) && /incidentViewOf/.test(runSrc) && !/db\.syncIssue/.test(runSrc) && !/syncIssue/.test(evaluateSrc));
   check("the engine judges against the thresholds the authority carried, never a literal of its own",
     /spend\.thresholds\.fleetUsd/.test(evaluateSrc) && /spend\.thresholds\.userUsd/.test(evaluateSrc) && !/ai_spend_alert/.test(evaluateSrc));
   check("the thresholds are resolved through the platform-settings descriptors (validated, default on missing or invalid)",

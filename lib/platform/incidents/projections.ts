@@ -23,6 +23,10 @@ import {
   type SyncIssueClassification,
 } from "@/lib/platform/sync-issue-semantics";
 import { episodeStateOf, incidentEpisodes, type EpisodeInstant } from "./episodes-core";
+import { incidentAccessors, type CsToken, type OpsToken } from "./intelligence";
+import type { IncidentVerdict } from "./intelligence/types";
+import { loadSubjectFacts } from "./subjects";
+import { isSubjectRemoved, subjectVerdict } from "./subjects-core";
 
 export interface IncidentOccurrenceView {
   id: string;
@@ -99,22 +103,13 @@ const SELECT = {
 type ReferentRow = Pick<Row, "id" | "financialAccountId" | "plaidItemId">;
 
 async function referentExistence(rows: readonly ReferentRow[], client: typeof db): Promise<Map<string, boolean>> {
-  const accountIds = [...new Set(rows.map((r) => r.financialAccountId).filter((x): x is string => !!x))];
-  const itemIds = [...new Set(rows.map((r) => r.plaidItemId).filter((x): x is string => !!x))];
-  const [accounts, items] = await Promise.all([
-    accountIds.length ? client.financialAccount.findMany({ where: { id: { in: accountIds } }, select: { id: true } }) : [],
-    itemIds.length ? client.plaidItem.findMany({ where: { id: { in: itemIds } }, select: { id: true } }) : [],
-  ]);
-  const liveAccounts = new Set(accounts.map((a) => a.id));
-  const liveItems = new Set(items.map((i) => i.id));
+  // PB-1 R4 (D2 / D2b) — THE one referent rule (subjects-core.ts), the same one the
+  // intelligence module applies: a soft-deleted account, a REVOKED item or a missing
+  // row is REMOVED. Replaces the account-else-item existence check, which honoured
+  // neither deletedAt nor REVOKED.
+  const facts = await loadSubjectFacts(rows, client);
   const out = new Map<string, boolean>();
-  for (const r of rows) {
-    const exists =
-      r.financialAccountId ? liveAccounts.has(r.financialAccountId)
-      : r.plaidItemId ? liveItems.has(r.plaidItemId)
-      : true;
-    out.set(r.id, exists);
-  }
+  for (const r of rows) out.set(r.id, !isSubjectRemoved(subjectVerdict(r, facts)));
   return out;
 }
 
@@ -162,36 +157,60 @@ async function build(rows: Row[]): Promise<IncidentView[]> {
 }
 
 /**
- * Incidents an operator should act on now.
- *
- * Filtered by DERIVED state, not by `resolved = false`. That matters: an
- * unresolved EVENT is evidence, and an unresolved row whose account was deleted
- * is orphaned — neither is actionable, and a Boolean filter would show both.
+ * PB-1 R4 — one module verdict → the projection's IncidentView (shape unchanged
+ * for every consumer). Identity-free whatever the tier: no field below carries a
+ * customer id. `state` is "active" for every broken-now verdict (active,
+ * acknowledged, recovering); the projection never returns anything else.
  */
-export async function getActiveIncidents(limit = 200): Promise<IncidentView[]> {
-  return (await getActiveIncidentPage(limit)).incidents;
+export function incidentViewOf(v: IncidentVerdict): IncidentView {
+  const incidentKey = v.episodeKey.startsWith("legacy:") ? null : v.episodeKey;
+  return {
+    id: v.id, kind: v.kind, provider: v.provider,
+    plaidItemId: v.plaidItemId, financialAccountId: v.financialAccountId,
+    incidentKey,
+    state: "active",
+    classification: {
+      domain: v.domain as SyncIssueClassification["domain"], severity: v.severity,
+      nature: v.rowClass === "incident" ? "condition" : "event",
+      customerActionable: v.customerActionable, cursorBlocking: v.cursorBlocking,
+    },
+    firstOccurredAt: v.firstSeenAt, lastOccurredAt: v.lastSeenAt,
+    occurrenceCount: v.occurrenceCount, correlatedOccurrenceCount: v.correlatedOccurrenceCount,
+    resolvedAt: v.resolvedAt, resolutionKind: null, resolvingExecutionId: null,
+    previousIncidentId: v.recurrence.previousIncidentId,
+    legacyUncorrelated: incidentKey === null && v.occurrenceCount === 0,
+  };
 }
 
 /**
- * The same read, plus whether the underlying scan hit its ceiling.
+ * Incidents an operator should act on now — the intelligence module's verdicts,
+ * read through the caller's token (minted from ITS OWN guard result).
+ */
+export async function getActiveIncidents(token: IncidentPageToken, limit = 200): Promise<IncidentView[]> {
+  return (await getActiveIncidentPage(token, limit)).incidents;
+}
+
+/** Which tier may read the page: a CS / Ops token minted by the route from its own guard result. */
+export type IncidentPageToken = CsToken | OpsToken;
+
+/**
+ * PB-1 R4 — the active-incident page, through the ONE intelligence module. No
+ * raw `resolved = false` filter and no referent rule of its own: D1 (derived
+ * state), D2 / D2b (removed subjects closed), D10 (a stale-unverified row is not
+ * broken now) are the module's.
  *
- * `incidents.length` cannot answer that: the scan takes `limit` UNRESOLVED rows
- * and only then filters to derived-active, so a truncated scan routinely yields
- * far fewer than `limit` incidents. A consumer that inferred completeness from
- * the returned length would silently present a floor as a total — so the fact is
- * reported by the module that actually knows it.
+ * Reads `brokenNow` (active + acknowledged + recovering). The alert engine does
+ * NOT read this page: it reads the module's `alertable` set with the SYSTEM
+ * token, from lib/alerts only (pinned), and maps it through incidentViewOf.
+ *
+ * `scanTruncated` is the module's D5 flag: the scan hit its cap, so the page is a floor.
  */
 export async function getActiveIncidentPage(
+  token: IncidentPageToken,
   limit = 200,
 ): Promise<{ incidents: IncidentView[]; scanTruncated: boolean }> {
-  const rows = await db.syncIssue.findMany({
-    where: { resolved: false },
-    orderBy: { lastOccurredAt: "desc" },
-    take: limit,
-    select: SELECT,
-  });
-  const incidents = (await build(rows as Row[])).filter((v) => v.state === "active");
-  return { incidents, scanTruncated: rows.length === limit };
+  const page = await incidentAccessors.brokenNow(token, { limit });
+  return { incidents: page.items.map(incidentViewOf), scanTruncated: page.truncated };
 }
 
 /**

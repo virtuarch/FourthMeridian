@@ -352,7 +352,7 @@ console.log("source · the reader composes EXISTING authorities and owns no data
   check("BETA V1: the core exports a sort for the UI to never re-sort", /export function sortUserImpact/.test(core));
   check("the core never sorts in the UI's place — sortAttention is exported from the core", /export function sortAttention/.test(core));
   check("route: requires PLATFORM_OPS READ", /requirePlatformAccess\(\s*["']PLATFORM_OPS["']\s*,\s*["']READ["']\s*\)/.test(route));
-  check("route: returns the auth error before reading", /if\s*\(\s*err\s*\)\s*return\s+err/.test(route) && route.indexOf("requirePlatformAccess") < route.indexOf("getAttention()"));
+  check("route: returns the auth error before reading", /if\s*\(\s*err\s*\)\s*return\s+err/.test(route) && route.indexOf("requirePlatformAccess") < route.indexOf("getAttention(incidentToken)"));
   check("route: never requests WRITE or CONTROL", !/["'](WRITE|CONTROL)["']/.test(route));
   check("route: exports no mutating verb", !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route));
   // The overview's posture composition follows the same rules.

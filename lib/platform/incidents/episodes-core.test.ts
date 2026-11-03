@@ -81,7 +81,12 @@ console.log("4. one derivation, shared (source pins)");
 {
   const proj = code("lib/platform/incidents/projections.ts");
   check("projections derive state through episodeStateOf, never syncIssueState directly", /state: episodeStateOf\(r, referentExists\)/.test(proj) && !/syncIssueState\(/.test(proj));
-  check("the active page still filters derived state === active", /\.filter\(\(v\) => v\.state === "active"\)/.test(proj));
+  // PB-1 R4 — the active page is the intelligence module's DERIVED broken-now set (never raw resolved=false).
+  {
+    const page = proj.slice(proj.indexOf("export async function getActiveIncidentPage"), proj.indexOf("export async function getIncidentEpisodeTimeline"));
+    check("the active page reads the module's derived broken-now set, never raw resolved=false",
+      /incidentAccessors\.brokenNow\(token, \{ limit \}\)/.test(page) && !/resolved:\s*false/.test(page) && !/syncIssue\./.test(page));
+  }
   check("the timeline uses the same referent check and the episode fold", /getIncidentEpisodeTimeline[\s\S]*referentExistence\(rows, client\)[\s\S]*incidentEpisodes\(/.test(proj));
   const daily = code("lib/platform/customer/incidents-daily.ts");
   check("the CS trend reads the canonical timeline, not raw SyncIssue rows", /getIncidentEpisodeTimeline\(/.test(daily) && !/syncIssue\.findMany/.test(daily));

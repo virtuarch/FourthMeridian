@@ -35,7 +35,22 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { db } from "@/lib/db";
 import { recordSyncIssue } from "@/lib/plaid/syncIssues";
-import { getIncidentPreview } from "@/lib/platform/incidents/preview";
+import { previewFromPage } from "@/lib/platform/incidents/preview";
+import { incidentViewOf } from "@/lib/platform/incidents/projections";
+import { incidentReaderFor, loadIncidentFacts } from "@/lib/platform/incidents/intelligence";
+import { deriveIncidentVerdicts } from "@/lib/platform/incidents/intelligence/core";
+
+/**
+ * PB-1 R4 — production reads the active page through a token the ROUTE mints from
+ * its own guard result; a harness has no guard, so it walks the SAME loader, core
+ * and view mapping at the identity-free Platform Ops tier (minus only the token check).
+ */
+async function getIncidentPreview() {
+  const now = new Date();
+  const facts = await loadIncidentFacts(incidentReaderFor(db), { where: { resolved: false }, limit: 200, now });
+  const verdicts = deriveIncidentVerdicts(facts, { now, audience: "PLATFORM_OPS" }).all.filter((v) => v.brokenNow);
+  return previewFromPage({ incidents: verdicts.map(incidentViewOf), scanTruncated: facts.scanTruncated });
+}
 import { IncidentPreview } from "@/components/platform/widgets/IncidentPreview";
 
 let failures = 0;

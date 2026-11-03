@@ -26,6 +26,7 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { getActiveIncidentPage } from "./projections";
+import type { CsToken, OpsToken } from "./intelligence";
 import {
   countBySeverity,
   sortIncidentsForOperator,
@@ -94,8 +95,15 @@ async function resolveSubjects(views: IncidentView[]): Promise<Map<string, Incid
  * `activeTotal` counts every active incident the projection saw, not the six
  * rendered — an operator reading "2 shown" must still learn that eleven exist.
  */
-export async function getIncidentPreview(limit: number = PREVIEW_LIMIT): Promise<IncidentPreview> {
-  const { incidents, scanTruncated } = await getActiveIncidentPage(ACTIVE_SCAN_LIMIT);
+export async function getIncidentPreview(token: CsToken | OpsToken, limit: number = PREVIEW_LIMIT): Promise<IncidentPreview> {
+  return previewFromPage(await getActiveIncidentPage(token, ACTIVE_SCAN_LIMIT), limit);
+}
+
+/** The ordering + subject resolution over an already-read active page (the disposable-PG harness enters here). */
+export async function previewFromPage(
+  page: Awaited<ReturnType<typeof getActiveIncidentPage>>, limit: number = PREVIEW_LIMIT,
+): Promise<IncidentPreview> {
+  const { incidents, scanTruncated } = page;
   const ordered = sortIncidentsForOperator(incidents);
   const shown = ordered.slice(0, limit);
   const subjects = await resolveSubjects(shown);

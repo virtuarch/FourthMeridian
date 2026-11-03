@@ -258,6 +258,7 @@ function archivedDraft(a: ArchivedIncidentFacts): Draft {
       id: a.incidentId, rowClass: c.nature === "event" ? "evidence" : "incident", state: "archived", freshness: "current",
       closure: closureOfKind(a.resolutionKind), closureDerived: false,
       kind: a.kind, provider: a.provider, domain: c.domain, severity: c.severity, effectiveSeverity: c.severity,
+      customerActionable: c.customerActionable, cursorBlocking: false,
       operation, label: incidentLabel(a.kind, c.domain), operationLabel: incidentOperationLabel(operation),
       firstSeenAt: first.toISOString(), lastSeenAt: last.toISOString(), resolvedAt: iso(a.resolvedAt),
       occurrenceCount: a.occurrenceCount, correlatedOccurrenceCount: 0,
@@ -314,6 +315,7 @@ export function deriveIncidentVerdicts<A extends IncidentAudience>(
       verdict: {
         id: r.id, rowClass, state: d.state, freshness: d.freshness, closure: d.closure, closureDerived: d.closureDerived,
         kind: r.kind, provider: r.provider, domain: c.domain, severity: c.severity, effectiveSeverity,
+        customerActionable: c.customerActionable, cursorBlocking: c.cursorBlocking,
         operation, label: incidentLabel(r.kind, c.domain), operationLabel: incidentOperationLabel(operation),
         firstSeenAt: first.toISOString(), lastSeenAt: last.toISOString(), resolvedAt: iso(r.resolvedAt),
         occurrenceCount: r.occurrenceCount, correlatedOccurrenceCount: r.correlatedOccurrenceCount,

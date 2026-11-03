@@ -140,9 +140,9 @@ console.log("6. one source of truth (source pins)");
   check("the overview core folds through foldAttention and builds no reason set of its own",
     /foldAttention\(facts, now\)/.test(core) && !/reconnect:\s*only\(|new Set\(ids\.filter/.test(core) && /reasons: att\.keys\.map/.test(core));
   const overview = code("lib/platform/customer/overview.ts");
-  check("the overview reader reads the attention facts through loadAttention", /loadAttention\(now, client\)/.test(overview) && !/plaidItem\.findMany|customerPolicyAssignment/.test(overview));
+  check("the overview reader reads the attention facts through loadAttention", /loadAttention\(incidentToken, now, client\)/.test(overview) && !/plaidItem\.findMany|customerPolicyAssignment/.test(overview));
   const list = code("lib/platform/customer/customers.ts");
-  check("the list reads the SAME fold and filters BEFORE paging", /const att = await loadAttention\(now, client\)/.test(list) && /id: \{ in: \[\.\.\.idsForAttention\(att\.fold, filter\)\] \}/.test(list)
+  check("the list reads the SAME fold and filters BEFORE paging", /const att = await loadAttention\(opts\.incidentToken, now, client\)/.test(list) && /id: \{ in: \[\.\.\.idsForAttention\(att\.fold, filter\)\] \}/.test(list)
     && /client\.user\.count\(\{ where \}\)/.test(list));
   check("each row carries its reasons from the fold", /attention: attentionOf\(att\.fold, u\.id\)/.test(list));
   const route = code("app/api/platform/customer-success/customers/route.ts");
