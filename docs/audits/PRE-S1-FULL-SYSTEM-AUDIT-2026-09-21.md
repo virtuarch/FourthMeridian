@@ -1033,6 +1033,13 @@ Node 24 is documented consistently.
 
 ## 26. Findings register
 
+**Status update (2026-11-03).** Statuses below are re-checked against `develop`; the original findings text is kept as audited.
+- **FM-AUDIT-023:** refresh path FIXED (FIN-011, `lib/plaid/refresh.ts:221-253`); connect/reconnect path (`lib/plaid/exchangeToken.ts:425`) **IN PROGRESS** (builder).
+- **FM-AUDIT-022:** **IN PROGRESS** (builder).
+- **FM-AUDIT-021:** confirmed live; **QUEUED** for a builder.
+- **FM-AUDIT-025:** **CONFIRMED** (see its entry), fix **QUEUED**. Repair of rows already in the archive is **OWNER-GATED**.
+- **FM-AUDIT-053:** **CONFIRMED**, fix **QUEUED**.
+
 **Column legend:**
 - **Sev/Conf:** severity P0–P4 / confidence (PROVEN, HIGH, MEDIUM, LOW). ✔ means re-verified in source by the lead auditor.
 - **Reach:** whether the defect is reachable today.
@@ -1183,6 +1190,7 @@ Node 24 is documented consistently.
 - **Remediation:** mark the live row non-observed (e.g. `completenessTier:'estimated'`) or skip when a material balance is STALE.
 - **When:** AFTER-S1.
 - **Pin:** a Space with a STALE Plaid balance gets a non-observed row from sync-crypto.
+- **Status (2026-11-03):** still live on `develop` (`lib/snapshots/regenerate.ts:247,279`; freeze `regenerate-history.core.ts:364-368`). **QUEUED** for a builder.
 
 **FM-AUDIT-022 — Unpriced / unobserved wallet summed as the legacy balance column ($0 for ETH/SOL/BNB/AVAX, stale for BTC)**
 - **Sev/Conf:** P2 / HIGH
@@ -1191,6 +1199,7 @@ Node 24 is documented consistently.
 - **Remediation:** carry `state` on the DTO, exclude from sums, disclose (`cryptoUnpriced`), stamp the snapshot.
 - **When:** AFTER-S1.
 - **Pin:** force NO_PRICE ⇒ totals exclude it and disclose.
+- **Status (2026-11-03):** still live on `develop` (`lib/data/accounts.ts:260`, `lib/snapshots/space-accounts.ts:289`). **IN PROGRESS** (builder).
 
 **FM-AUDIT-023 — Plaid null current balance keeps the old value but stamps it freshly verified; connect-time null → $0**
 - **Sev/Conf:** P2 / HIGH (code), MEDIUM (frequency)
@@ -1198,6 +1207,7 @@ Node 24 is documented consistently.
 - **Remediation:** do not advance clocks or coverage on null (SKIPPED `PROVIDER_NULL_BALANCE`); store unknown at connect.
 - **When:** AFTER-S1 (small).
 - **Pin:** `accountsGet` fake with `current:null` ⇒ coverage not COVERED, `lastUpdated` unchanged.
+- **Status (2026-11-03):** refresh half FIXED (FIN-011, `lib/plaid/refresh.ts:221-253`). Connect/reconnect half still live (`lib/plaid/exchangeToken.ts:425`, `?? 0` with a fresh `lastUpdated`): **IN PROGRESS** (builder).
 
 **FM-AUDIT-024 — Successful Plaid lock release clears `syncIncompleteAt`, defeating the first-run rule and dropping mid-pipeline HISTORICAL_UPDATE webhooks**
 - **Sev/Conf:** P2 / HIGH
@@ -1214,6 +1224,11 @@ Node 24 is documented consistently.
 - **Remediation:** verify against the live API; chunk ≤90 days for CoinGecko, or re-date daily points; repair script.
 - **When:** verify BEFORE-S1 (cheap), fix AFTER-S1.
 - **Pin:** fixture of daily 00:00 points >90 days.
+- **Status (2026-11-03): CONFIRMED; fix QUEUED; archive repair OWNER-GATED.**
+  - CoinGecko's public documentation says ranges above 90 days return daily points at 00:00 UTC, and 2–90 days return hourly points. A keyless public probe (bitcoin only) matched: each daily point equals the hourly 00:00 point, which is the boundary price, i.e. the previous day's close.
+  - `parseMarketChartCloses` (`lib/prices/providers/coingecko.ts:295-310`) files the 00:00 point of day X as X's close. Every caller uses the 365-day default chunk (`lib/prices/backfill.ts:150`), and the token path requests its whole window at once, so backfilled crypto closes are one day late. Short (≤90-day) fills get hourly data, so the archive mixes two conventions.
+  - Fix: file an exact-00:00 point under the previous UTC date and extend the request end by one day.
+  - The archive is insert-only (`createMany` with `skipDuplicates`), so the fix does not correct stored rows. Rewriting them, then regenerating the affected crypto history, is an owner-gated decision (the same class as the PB-8 regeneration).
 
 **FM-AUDIT-026 — No request timeouts on Plaid, CoinGecko, Tiingo, ETH-history or SOL-history transports; some on user POST paths without `maxDuration`**
 - **Sev/Conf:** P2 / HIGH
@@ -1309,7 +1324,7 @@ Node 24 is documented consistently.
 | FM-AUDIT-050 | Price and FX jobs report "ok" when every provider call failed | HIGH | `lib/prices/fetch.ts:137-141`; `jobs/fetch-security-prices.ts:137-162`; `jobs/fetch-fx-rates.ts:53-57` | AFTER-S1 | THROTTLED adapter ⇒ degraded status |
 | FM-AUDIT-051 | Plaid ITEM webhooks ignored; NEEDS_REAUTH excluded from every sync, so LOGIN_REPAIRED is never observed | HIGH | `webhook/route.ts:74-80`; `sync-banks.ts:165` | BACKLOG | ITEM codes → `setPlaidItemHealth` |
 | FM-AUDIT-052 | ETH history: -32000 fatal, no batch shrink, no persisted cursor; SOL rescans newest-first each sync | HIGH | `eth-history.ts:444-451,681`; `wallet-history-refresh.ts:64` | BACKLOG | -32000 for batch>N ⇒ completes at smaller batch |
-| FM-AUDIT-053 | xpub balance includes unconfirmed; malformed multiaddr 200 parses to 0 BTC | HIGH | `btc-explorer.ts:291-316` | AFTER-S1 (zero case) | `{}` 200 ⇒ error, not 0 |
+| FM-AUDIT-053 | xpub balance includes unconfirmed; malformed multiaddr 200 parses to 0 BTC | HIGH | `btc-explorer.ts:291-316` (now `parseMultiaddrStats`, `:337-354`) | AFTER-S1 (zero case). **2026-11-03: CONFIRMED, fix QUEUED** (missing `addresses` or a non-numeric field ⇒ INVALID_DATA, never 0) | `{}` 200 ⇒ error, not 0 |
 | FM-AUDIT-054 | Space OWNER can leave own Space; DELETE has no PERSONAL guard ⇒ ownerless Space or `findFirstOrThrow` lockout | HIGH | `members/[userId]/route.ts:127-135`; `lib/space.ts:213-216` | AFTER-S1 (cheap; IMMEDIATE acceptable) | DELETE source has owner and PERSONAL refusals |
 | FM-AUDIT-055 | `DISABLE_SYSTEM_ADMIN` not enforced in platform authorization (30-day JWT) | HIGH | `lib/platform/authorize.ts`; `lib/session.ts:283-297` | BACKLOG | `decidePlatformAccess(..., {systemAdminDisabled:true})` false |
 | FM-AUDIT-056 | Two client-IP authorities; `cf-connecting-ip` trusted first (spoofable at origin) | MEDIUM | `lib/api.ts:70-81`, `lib/auth.ts:156-159` vs `lib/rate-limit.ts:247-253` | BACKLOG | single helper source scan |
