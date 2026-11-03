@@ -22,7 +22,8 @@
 
 import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity, type AlertSignal } from "@/lib/alerts/rules";
-import type { AuthorityOutputs, AlertJobHealth, SyncIncidentHealth } from "@/lib/alerts/authorities";
+import type { AuthorityOutputs, AlertJobHealth, SyncIncidentHealth, AiSpendAnomalyFacts, PlaidCallAnomalyFacts } from "@/lib/alerts/authorities";
+import { ANOMALY_DEFINITION, ANOMALY_DEFINITION_ID, anomalyBasis, judgeAnomaly } from "@/lib/alerts/anomaly";
 import { incidentLabel, type SyncIssueDomain } from "@/lib/platform/sync-issue-semantics";
 import type { ConnectionHealthResult, HealthState } from "@/lib/connections/health";
 import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
@@ -313,6 +314,26 @@ export function evaluateAiSpendFleetHigh(rule: AlertRuleDefinition, spend: AiSpe
       summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet threshold of $${spend.thresholds.fleetUsd} (${spend.customerInvocations} invocations, ${spend.customers} customer(s); estimate, not a bill).${unpricedLine}`,
     });
   }
+  // SEC-AI-001 — the OPTIONAL hard fleet ceiling, on the same rule and dedupe
+  // family: when the priced fleet spend has reached it, customers' next turns
+  // are being REFUSED (FLEET_CEILING_REACHED, lib/platform/ai/allowance-reservation.ts).
+  // Absent unless a ceiling is set, so a fleet with no ceiling signals exactly as before.
+  if (typeof spend.fleetCeilingUsd === "number" && spend.fleetUsd !== null && spend.fleetUsd >= spend.fleetCeilingUsd) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "critical",
+      dedupeKey: `${rule.id}:ceiling:${day}`,
+      summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet daily ceiling of $${spend.fleetCeilingUsd}. New Conversations turns and Daily Brief generations are being refused until the window falls below it (estimate, not a bill).${unpricedLine}`,
+    });
+  }
+  // S2 ruling (a) — a set ceiling the fold cannot price is NOT enforced (the
+  // reservation fails open); that is never silent.
+  if (typeof spend.fleetCeilingUsd === "number" && spend.fleetUsd === null && spend.customerInvocations > 0) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:ceiling-unenforceable:${day}`,
+      summary: `Fleet ceiling set ($${spend.fleetCeilingUsd}) but fleet spend could not be priced — not enforced. ${spend.customerInvocations} customer invocation(s) in the last ${spend.windowHours}h, none priced.${unpricedLine}`,
+    });
+  }
   if (spend.unpricedInvocations > 0) {
     out.push({
       ruleId: rule.id, kind: rule.kind, severity: "warning",
@@ -374,6 +395,85 @@ export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: Po
   return out;
 }
 
+// ── Quota / cost anomaly (anomaly@1) ────────────────────────────────────────────
+
+/** An evaluator that may decline to judge: `notEvaluable` says why (never a breach, never a recovery). */
+export interface AnomalyEvaluation {
+  signals: AlertSignal[];
+  notEvaluable: string | null;
+}
+
+/** The records an operator drills to from an anomaly signal (existing views only). */
+export const AI_CALLS_RECORDS_HREF = "/dashboard/platform/PLATFORM_OPS?workspace=platform-ai&aicalls=budget";
+export const PLAID_USAGE_RECORDS_HREF = "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers";
+
+/** The AI calls drilldown for the exact window the signal judged (aiuntil = its end). */
+export function aiCallsRecordsHref(checkedAtISO: string): string {
+  const ms = Date.parse(checkedAtISO);
+  return Number.isNaN(ms) ? AI_CALLS_RECORDS_HREF : `${AI_CALLS_RECORDS_HREF}&aiuntil=${ms}`;
+}
+
+const callsFmt = (n: number) => `${Math.round(n)} calls`;
+
+/** Fleet customer-surface AI spend, 24 h vs the 7-window median. One breach per UTC day. */
+export function evaluateAiSpendAnomaly(rule: AlertRuleDefinition, f: AiSpendAnomalyFacts): AnomalyEvaluation {
+  const j = judgeAnomaly({ current: f.fleet.current, baseline: f.fleet.baseline, floor: ANOMALY_DEFINITION.floors.aiFleetUsd });
+  if (j.verdict === "NOT_EVALUABLE") return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: ${j.reason}` };
+  if (j.verdict === "NORMAL") return { signals: [], notEvaluable: null };
+  return {
+    notEvaluable: null,
+    signals: [{
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:fleet:${f.checkedAt.slice(0, 10)}`,
+      summary: `AI spend jump across customer surfaces: ${anomalyBasis(j, usd, `${f.windowHours}h`)} — at least ×${ANOMALY_DEFINITION.ratio} and $${ANOMALY_DEFINITION.floors.aiFleetUsd}. Estimate, not a bill. Records: ${aiCallsRecordsHref(f.checkedAt)}`,
+    }],
+  };
+}
+
+/** One customer's AI spend, 24 h vs their own 7-window median. One breach per customer per UTC day, opaque refs only. */
+export function evaluateAiSpendUserAnomaly(rule: AlertRuleDefinition, f: AiSpendAnomalyFacts): AnomalyEvaluation {
+  // Rule-level: per-customer figures are only defined when every window is fully priced.
+  const unpriced = [f.fleet.current, ...f.fleet.baseline].filter((w) => w.kind === "UNPRICED" || w.kind === "UNREADABLE").length;
+  if (unpriced > 0) {
+    return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: ${unpriced} window(s) hold calls the rate card cannot price, so no customer's figure can be compared` };
+  }
+  if (f.fleet.current.kind !== "VALUE") {
+    return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: nothing was recorded in the current window (unavailable, never $0)` };
+  }
+  const out: AlertSignal[] = [];
+  let shortHistory = 0;
+  for (const c of f.customers) {
+    const j = judgeAnomaly({ current: c.current, baseline: c.baseline, floor: ANOMALY_DEFINITION.floors.aiCustomerUsd });
+    if (j.verdict === "NOT_EVALUABLE") { shortHistory++; continue; }
+    if (j.verdict !== "ANOMALOUS") continue;
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:${f.checkedAt.slice(0, 10)}:${c.dedupe}`,
+      summary: `AI spend jump for one customer (${c.ref}): ${anomalyBasis(j, usd, `${f.windowHours}h`)} — at least ×${ANOMALY_DEFINITION.ratio} and $${ANOMALY_DEFINITION.floors.aiCustomerUsd}. Estimate, not a bill. Records: ${aiCallsRecordsHref(f.checkedAt)}`,
+    });
+  }
+  // Every customer lacking history is NOT a rule-level gap — the rule judged the others.
+  const notEvaluable = f.customers.length > 0 && shortHistory === f.customers.length
+    ? `${ANOMALY_DEFINITION_ID}: none of the ${f.customers.length} active customer(s) has ${ANOMALY_DEFINITION.minBaselineWindows} active prior windows`
+    : null;
+  return { signals: out, notEvaluable };
+}
+
+/** Plaid calls on the last complete UTC day vs the 7 days before it. One breach per day. */
+export function evaluatePlaidCallAnomaly(rule: AlertRuleDefinition, f: PlaidCallAnomalyFacts): AnomalyEvaluation {
+  const j = judgeAnomaly({ current: f.current, baseline: f.baseline, floor: ANOMALY_DEFINITION.floors.plaidCalls });
+  if (j.verdict === "NOT_EVALUABLE") return { signals: [], notEvaluable: `${ANOMALY_DEFINITION_ID}: ${j.reason}` };
+  if (j.verdict === "NORMAL") return { signals: [], notEvaluable: null };
+  return {
+    notEvaluable: null,
+    signals: [{
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:${f.dayISO}`,
+      summary: `Plaid call volume jump on ${f.dayISO} (UTC): ${anomalyBasis(j, callsFmt, "day")} — at least ×${ANOMALY_DEFINITION.ratio} and ${ANOMALY_DEFINITION.floors.plaidCalls} calls. Records: ${PLAID_USAGE_RECORDS_HREF}`,
+    }],
+  };
+}
+
 // ── THE canonical evaluation ────────────────────────────────────────────────────
 
 /**
@@ -386,7 +486,29 @@ export function evaluateAlertRules(
   isEnabled: (ruleId: string) => boolean,
   rules: readonly AlertRuleDefinition[] = ALERT_RULES,
 ): AlertSignal[] {
+  return evaluateAlertRulesDetailed(authorities, isEnabled, rules).signals;
+}
+
+/**
+ * The same evaluation, plus WHY a rule could not judge this cycle (anomaly
+ * rules only: unpriced spend, nothing recorded, short history). A rule absent
+ * from `notEvaluable` either judged or has no such notion. An anomaly rule
+ * whose authority did not gather is reported not evaluable too, so a silent
+ * rule is never mistaken for a healthy one.
+ */
+export function evaluateAlertRulesDetailed(
+  authorities: AuthorityOutputs,
+  isEnabled: (ruleId: string) => boolean,
+  rules: readonly AlertRuleDefinition[] = ALERT_RULES,
+): { signals: AlertSignal[]; notEvaluable: Map<string, string> } {
   const signals: AlertSignal[] = [];
+  const notEvaluable = new Map<string, string>();
+  const anomaly = (rule: AlertRuleDefinition, facts: unknown, run: () => AnomalyEvaluation) => {
+    if (!facts) { notEvaluable.set(rule.id, `${ANOMALY_DEFINITION_ID}: the usage authority did not gather this cycle`); return; }
+    const r = run();
+    signals.push(...r.signals);
+    if (r.notEvaluable) notEvaluable.set(rule.id, r.notEvaluable);
+  };
   for (const rule of rules) {
     if (!rule.live || !isEnabled(rule.id)) continue;
     switch (rule.kind) {
@@ -417,13 +539,22 @@ export function evaluateAlertRules(
       case "policy-assignment":
         if (authorities.policyAssignments) signals.push(...evaluatePolicyAssignmentInvalid(rule, authorities.policyAssignments));
         break;
+      case "ai-spend-anomaly":
+        anomaly(rule, authorities.aiSpendAnomaly, () => evaluateAiSpendAnomaly(rule, authorities.aiSpendAnomaly!));
+        break;
+      case "ai-spend-user-anomaly":
+        anomaly(rule, authorities.aiSpendAnomaly, () => evaluateAiSpendUserAnomaly(rule, authorities.aiSpendAnomaly!));
+        break;
+      case "plaid-call-anomaly":
+        anomaly(rule, authorities.plaidCallAnomaly, () => evaluatePlaidCallAnomaly(rule, authorities.plaidCallAnomaly!));
+        break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;
         // this arm exists only for switch exhaustiveness.
         break;
     }
   }
-  return signals;
+  return { signals, notEvaluable };
 }
 
 // ── Suppression (suppress-while-open across cycles) ─────────────────────────────
@@ -497,6 +628,13 @@ export interface AlertRuleOutcome {
   firing: boolean;
   breaches: number;
   severity: AlertSeverity | null;
+  /**
+   * Quota/cost anomaly — why the rule could not judge this cycle (anomaly@1:
+   * unpriced spend, nothing recorded, short history, authority not gathered).
+   * Absent / null = it judged, or the rule has no such notion. A not-evaluable
+   * rule is neither firing nor healthy. Optional: older summaries lack it.
+   */
+  notEvaluable?: string | null;
 }
 
 /**
