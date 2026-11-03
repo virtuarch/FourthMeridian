@@ -279,6 +279,21 @@ async function main(): Promise<number> {
     one(`delete from "BetaAbuseEvidence" where id='e2';`);
   }
 
+  // ── 8. [cli] the read-only format census honours the WALLET exclusion ──
+  {
+    const r = spawnSync(path.join(ROOT, "node_modules", ".bin", "tsx"),
+      ["--require", "./scripts/lib/server-only-preload.cjs", "scripts/audit-ciphertext-versions.ts"],
+      { cwd: ROOT, encoding: "utf8", timeout: 300_000, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "",
+        DATABASE_URL: `${owner}?schema=public`, DIRECT_URL: `${owner}?schema=public` } as unknown as NodeJS.ProcessEnv });
+    const o = out(r);
+    // Columns: v1 v2 v3 invalid null total. Connection holds PLAID (v3) + MANUAL (NULL) + WALLET (clear-text descriptor, excluded).
+    const line = o.split("\n").find((l) => l.startsWith("Connection.credential")) ?? "";
+    const nums = line.trim().split(/\s+/).slice(-6).map(Number);
+    check(8, "[cli] audit-ciphertext-versions exits 0 and counts Connection.credential WITHOUT the WALLET row: 1 v3, 0 invalid, 1 null, 2 total",
+      r.status === 0 && JSON.stringify(nums) === JSON.stringify([0, 0, 1, 0, 1, 2]) && /provider≠WALLET/.test(line), `${r.status} ${line} ${o.slice(-400)}`);
+    check(8, "[cli] …and reports no invalid value anywhere", /TOTAL(\s+\d+){3}\s+0\s/.test(o) && !/WARNING: \d+ value\(s\) are neither/.test(o), o.slice(-600));
+  }
+
   return report("ENCRYPTION KEY ROTATION ACCEPTANCE");
 }
 
