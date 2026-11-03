@@ -84,9 +84,12 @@ console.log("1. the compact KPI strip (Net Worth Total)");
       && renderToStaticMarkup(createElement(CompactKpiStrip, { items: [], ariaLabel: "x" })) === "");
   check("the hero itself reads the SAME exported rows and change formatter",
     /const secondaryRows = wealthSecondaryRows\(result, metric\);/.test(code("components/space/widgets/wealth/WealthHero.tsx"))
-      && /<SecondaryChange delta=\{deltas\?\.\[row\.key\]\} goodDirection=\{row\.goodDirection\} currency=\{currency\} \/>/.test(code("components/space/widgets/wealth/WealthHero.tsx")));
+      // PB-8b (DELIBERATE) — the row's change is read through gatedDelta (withheld
+      // when that series would be compared across a balance-history floor);
+      // hero and strip still share ONE formatter and ONE delta source.
+      && /<SecondaryChange delta=\{gatedDelta\(result, changeGate, row\.key\)\} goodDirection=\{row\.goodDirection\} currency=\{currency\} \/>/.test(code("components/space/widgets/wealth/WealthHero.tsx")));
   check("the workspace builds the strip from result.asOfState with the hero's rows (no new sums)",
-    /wealthSecondaryRows\(result, metric\)\.map\(\(row\) => \(\{[\s\S]{0,120}value: formatCurrency\(result\.asOfState\[row\.key\], displayCurrency\),[\s\S]{0,80}change: <SecondaryChange delta=\{result\.deltas\?\.\[row\.key\]\}/.test(ww));
+    /wealthSecondaryRows\(result, metric\)\.map\(\(row\) => \(\{[\s\S]{0,120}value: formatCurrency\(result\.asOfState\[row\.key\], displayCurrency\),[\s\S]{0,80}change: <SecondaryChange delta=\{gatedDelta\(result, changeGate, row\.key\)\}/.test(ww));
   check("placed ONCE, under the chart and above composition + change ledger",
     (ww.match(/<CompactKpiStrip/g) ?? []).length === 1
       && ww.indexOf('id="wealth-trend"') < ww.indexOf("<CompactKpiStrip") && ww.indexOf("<CompactKpiStrip") < ww.indexOf('id="wealth-composition"'));

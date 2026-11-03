@@ -81,7 +81,10 @@ import { LiquidityWorkspace } from "@/components/space/widgets/liquidity/Liquidi
 import { InvestmentsWorkspace } from "@/components/space/widgets/investments/InvestmentsWorkspace";
 import { DebtWorkspace } from "@/components/space/widgets/debt/DebtWorkspace";
 import { RealAssetsSection } from "./RealAssetsSection";
-import { WealthHero, wealthSecondaryRows, SecondaryChange } from "./WealthHero";
+import { WealthHero, wealthSecondaryRows, SecondaryChange, gatedDelta } from "./WealthHero";
+import { wealthChangeGate } from "./wealth-change-gate";
+import { useSpaceIdContext } from "@/components/space/space-id-context";
+import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
 import { CompactKpiStrip } from "@/components/space/compact/CompactKpiStrip";
 import { formatCurrency } from "@/lib/currency";
 import { WealthTrendChart } from "./WealthTrendChart";
@@ -256,6 +259,12 @@ export function WealthWorkspace({
     }),
     [convertedSnapshots, asOf, compareTo, displayCurrency],
   );
+
+  // PB-8b — which series' change vs Compare To may be stated, against the Space's
+  // balance-history floors (the same one data-health read PB-8's chart marking
+  // uses). Presentation-side; WealthResult is untouched.
+  const balanceCoverage = useSpaceBalanceCoverage(useSpaceIdContext());
+  const changeGate = useMemo(() => wealthChangeGate(result, balanceCoverage), [result, balanceCoverage]);
 
   // The canonical Investments series over the SAME converted rows — the ONE
   // classifier of per-point confidence / coverage the Investments lens plotted.
@@ -591,7 +600,7 @@ export function WealthWorkspace({
         key: row.key,
         label: row.label,
         value: formatCurrency(result.asOfState[row.key], displayCurrency),
-        change: <SecondaryChange delta={result.deltas?.[row.key]} goodDirection={row.goodDirection} currency={displayCurrency} className="" />,
+        change: <SecondaryChange delta={gatedDelta(result, changeGate, row.key)} goodDirection={row.goodDirection} currency={displayCurrency} className="" />,
       }))
     : [];
 
@@ -608,7 +617,7 @@ export function WealthWorkspace({
         {/* ① Hero — the headline scalar of the page's subject. */}
         <div id="wealth-summary" className="scroll-mt-20">
           <WealthHero result={result} currency={displayCurrency} envelope={envelope} metric={metric} freshnessLabel={freshnessLabel} timePreset={timePreset}
-            cryptoPriceNote={cryptoPriceNote} />
+            cryptoPriceNote={cryptoPriceNote} changeGate={changeGate} />
         </div>
 
         {/* COMPACT DASHBOARD (P2) — the compact hierarchy is hero → Total · Assets ·
@@ -657,13 +666,14 @@ export function WealthWorkspace({
         {(mode !== "assets" || show.composition) && (
           <div className="grid gap-6 lg:grid-cols-12 lg:gap-8 items-start">
             <div id="wealth-composition" className="scroll-mt-20 min-w-0 lg:col-span-7">
-              <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} metric={metric} />
+              <WealthCompositionCard result={result} currency={displayCurrency} accounts={accounts} ctx={ctx} metric={metric} changeGate={changeGate} />
             </div>
             <div id="wealth-ledger" className="scroll-mt-20 min-w-0 lg:col-span-5">
               <WealthChangeLedger
                 result={result}
                 currency={displayCurrency}
                 metric={metric}
+                changeGate={changeGate}
               />
             </div>
           </div>

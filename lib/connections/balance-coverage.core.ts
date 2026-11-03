@@ -209,3 +209,63 @@ export function balanceCoverageNote(cov: BalanceCoverage | null, sides: readonly
     `${missing === 1 ? "has" : "have"} no balance history that far back, so earlier days don’t fully include ${missing === 1 ? "it" : "them"}` +
     `; ${owed ? "a missing debt isn’t $0 owed" : "a missing balance isn’t $0"}.`;
 }
+
+// ── PB-8b — a change is never measured across the coverage floor ─────────────
+//
+// PB-8 marks the days before the floor UNKNOWN on the chart, but a headline
+// "↑ $X · Y% vs <date>" subtracts the opening day from the closing one: when the
+// opening day is missing debts (counted as nothing), the difference is the
+// missing debt arriving, not a change. The codebase's idiom for a comparison
+// whose endpoint is not real is to WITHHOLD it and say why — the Wealth read
+// model emits deltas "only when BOTH endpoints are real", the composition card
+// says "Historical composition unavailable — no history before <date>", and the
+// Debt hero defers its change to the chart when the bases differ. Moving the
+// comparison silently to another day would disagree with the window the chart
+// and the Compare To selector state, so it is withheld, never re-anchored.
+//
+// An ESTIMATED endpoint (a held-flat liability inside its floor) is comparable —
+// both sides carry the same held value — but the change is labelled estimated.
+
+export type ChangeComparability =
+  | { state: "comparable" }
+  | { state: "estimated" }
+  | { state: "withheld"; coveredFromISO: string; message: string };
+
+export interface ChangeEndpoints {
+  /** The comparison (opening) day, YYYY-MM-DD. */
+  fromISO:        string;
+  /** The closing day, YYYY-MM-DD. */
+  toISO:          string;
+  /** The opening point is reconstructed (isEstimated) — not the live row. */
+  fromEstimated?: boolean;
+  toEstimated?:   boolean;
+}
+
+/** "Change unavailable: history is partial before Nov 2, 2026" — the one wording. */
+export function changeUnavailableMessage(coveredFromISO: string): string {
+  return `Change unavailable: history is partial before ${fmtDay(coveredFromISO)}`;
+}
+
+/** The label suffix an estimated comparison carries ("vs Jun 17, 2026 · estimated"). */
+export const ESTIMATED_CHANGE_SUFFIX = " · estimated";
+
+/**
+ * Whether a change between two days of a series composed from `sides` may be
+ * stated. Withheld when EITHER endpoint lies before the coverage floor (the
+ * latest floor on those sides); estimated when an endpoint is a reconstructed
+ * day that includes a held-flat liability; otherwise comparable. No coverage
+ * (loading, failed read, nothing to cover) ⇒ comparable — byte-identical to
+ * before PB-8b, the same fail-open every PB-8 surface uses.
+ */
+export function changeComparability(
+  cov: BalanceCoverage | null, sides: readonly BalanceCoverageSide[], e: ChangeEndpoints,
+): ChangeComparability {
+  const from = balanceCoveredFromISO(cov, sides);
+  if (!cov || !from) return { state: "comparable" };
+  if (e.fromISO < from || e.toISO < from) {
+    return { state: "withheld", coveredFromISO: from, message: changeUnavailableMessage(from) };
+  }
+  const est = (iso: string, estimated: boolean | undefined) => estimated === true && estimatedCoverageLabel(cov, sides, iso) !== null;
+  if (est(e.fromISO, e.fromEstimated) || est(e.toISO, e.toEstimated)) return { state: "estimated" };
+  return { state: "comparable" };
+}
