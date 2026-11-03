@@ -62,7 +62,7 @@ export const RETENTION_HORIZON_DAYS = 7;
  */
 export const PRODUCT_ANALYTICS_LOOKBACK_DAYS = RETENTION_COHORT_WEEKS * 7 + RETENTION_HORIZON_DAYS + 7;
 
-/** Presence: the one product event that says "a live session touched this day". */
+/** Presence: the one product event that says "a human-initiated authenticated request touched this day" (PB-10 F3: background polls excluded). */
 export const PRESENCE_ACTIONS: readonly AuditActionType[] = [AuditAction.SESSION_ACTIVE_DAY];
 /** The connection-lifecycle actions the engagement predicate admits. */
 export const CONNECTION_ADD_ACTIONS: readonly AuditActionType[] = [

@@ -19,6 +19,15 @@
  *      request, 60 s granularity, lib/auth/session-activity.ts). It feeds the
  *      SEC-010 idle cut-off and the user's own sessions list ONLY. Customer
  *      Operations and Growth must not read it as activity.
+ *      PB-10 F3 (S2 ruling): BACKGROUND reads do NOT touch it — the presence
+ *      heartbeat, the bell's unread-count poll, the notice rail's focus re-read
+ *      and the SessionProvider's GET /api/auth/session refetch run the full
+ *      guard with the touch off (lib/auth/presence-scope.ts allowlist). So a tab
+ *      left open but unused for 30 days signs out (the intended SEC-010 policy);
+ *      the 90-day absolute cut-off is unchanged. Navigations, RSC renders,
+ *      server actions and mutations still touch.
+ *      SESSION_ACTIVE_DAY (written by that same touch) is therefore "a UTC day
+ *      with a HUMAN-INITIATED authenticated request" — presence, not engagement.
  *   3. ONLINE PRESENCE — `UserSession.lastPresenceAt`: a VISIBLE browser tab
  *      holding the session sent a heartbeat (POST /api/user/presence) within
  *      PRESENCE_CONFIG.presenceFreshMs. Server-stamped (database clock). A
@@ -42,8 +51,7 @@
  *      TRANSACTIONS_VIEWED, MANUAL_ASSET_VALUE_UPDATED, plus connection adds)
  *      ∪ AiInvocation on ENGAGEMENT_AI_SURFACES with a userId. NEVER background
  *      sync, cron, webhooks, token refresh, polling, prefetch, focus refetch,
- *      heartbeats, or SESSION_ACTIVE_DAY (which is PRESENCE: "a valid session
- *      was in use that UTC day").
+ *      heartbeats, or SESSION_ACTIVE_DAY (which is PRESENCE — see below).
  *
  * ── WINDOWS, TIMEZONE, INCLUSION ─────────────────────────────────────────────
  *   · Every clock is the DATABASE clock (UTC). Client timestamps are never read.

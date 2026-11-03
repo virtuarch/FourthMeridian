@@ -48,9 +48,11 @@
  *     invoked in, and it would keep the write AFTER the response, which is
  *     exactly the lifetime that broke.
  *
- * Semantics: `lastActiveAt` feeds display and analytics (session lists, the
- * export, weekly-active counts) AND, since SEC-010, the 30-day IDLE cut-off in
- * lib/auth/session-proof.ts. Minute granularity loses nothing against a 30-day
+ * Semantics: `lastActiveAt` feeds display (session lists, the export) AND, since
+ * SEC-010, the 30-day IDLE cut-off in lib/auth/session-proof.ts. PB-10 F3: the
+ * allowlisted BACKGROUND reads (lib/auth/presence-scope.ts) skip this touch, so
+ * it — and the SESSION_ACTIVE_DAY row below — means "a human-initiated
+ * authenticated request", never a poll or a focus refetch. Minute granularity loses nothing against a 30-day
  * window. A revoked row is never touched.
  *
  * ── BETA A2 — THE PRESENCE ROW RIDES THE SAME STATEMENT ───────────────────────

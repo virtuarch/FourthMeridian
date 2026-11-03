@@ -13,7 +13,8 @@
  *      Growth returning), never by SEC-010 or any auth/security module.
  *   D. Engagement = the server-side predicate only: Growth "returning" and
  *      active7 count loadEngagedUserIdsSince (ENGAGEMENT_AUDIT_ACTIONS ∪ AI
- *      customer surfaces); SESSION_ACTIVE_DAY stays PRESENCE and no engagement
+ *      customer surfaces); SESSION_ACTIVE_DAY stays PRESENCE ("a UTC day with a
+ *      human-initiated authenticated request", PB-10 F3) and no engagement
  *      / active-user metric reads it; Customer Ops / Growth no longer read
  *      UserSession.lastActiveAt as activity.
  *
@@ -127,7 +128,10 @@ async function main() {
 
   console.log("\nD. engagement = the server-side predicate; SESSION_ACTIVE_DAY is presence");
   {
-    check("SESSION_ACTIVE_DAY is a PRESENCE action", PRESENCE_ACTIONS.includes(AuditAction.SESSION_ACTIVE_DAY));
+    check("SESSION_ACTIVE_DAY is a PRESENCE action (a UTC day with a human-initiated authenticated request)", PRESENCE_ACTIONS.includes(AuditAction.SESSION_ACTIVE_DAY));
+    const defs = read("lib/presence/definitions.ts");
+    check("definitions.ts states the F3 meaning: background reads excluded, 30-day unused tab signs out",
+      /HUMAN-INITIATED authenticated request/.test(defs) && /BACKGROUND reads do NOT touch it/.test(defs) && /90-day absolute cut-off is unchanged/.test(defs));
     check("…and not an engagement action", !ENGAGEMENT_AUDIT_ACTIONS.includes(AuditAction.SESSION_ACTIVE_DAY));
     check("every engagement audit action is a server-written product event or a connection add",
       ENGAGEMENT_AUDIT_ACTIONS.every((a) => PRODUCT_EVENT_ACTIONS.includes(a) || [AuditAction.ACCOUNT_ADD, AuditAction.WALLET_ADD, AuditAction.MANUAL_ASSET_ADD].includes(a as never)));
