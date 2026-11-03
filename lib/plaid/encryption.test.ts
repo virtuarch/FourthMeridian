@@ -29,6 +29,7 @@ import {
   keyIdOf,
   keyringKeyIds,
   previousKeyProblem,
+  previousKeyWarning,
   sealWithPurpose,
   openWithPurpose,
   openWithPurposeReportingKey,
@@ -267,8 +268,14 @@ console.log("keyring — PREVIOUS unset is the pre-keyring behaviour (only new w
       withKeys("", undefined, () => throws(() => encryptWithPurpose("x", EncryptionPurpose.TOTP_SECRET), /^ENCRYPTION_KEY must be exactly 64 hex characters/)));
     check("an empty ENCRYPTION_KEY_PREVIOUS is the same as unset",
       withKeys(K, "", () => keyringKeyIds().previous === null && decryptWithPurpose(v2, EncryptionPurpose.TOTP_SECRET) === "old-row"));
-    check("a PREVIOUS equal to the current key is REFUSED (one kid must name one key)",
-      withKeys(K, K, () => throws(() => keyringKeyIds(), /same key id/)));
+    check("a PREVIOUS EQUAL to the current key collapses to no previous (a copy-paste slip never breaks reads)",
+      withKeys(K, K, () => keyringKeyIds().previous === null && decryptWithPurpose(v2, EncryptionPurpose.TOTP_SECRET) === "old-row"
+        && ciphertextKeyId(encryptWithPurpose("w", EncryptionPurpose.TOTP_SECRET)) === kidOfHex(K)));
+    check("…is not a validation problem, but IS the boot warning (value-free)",
+      previousKeyProblem({ ENCRYPTION_KEY: K, ENCRYPTION_KEY_PREVIOUS: K } as unknown as NodeJS.ProcessEnv) === null
+        && previousKeyWarning({ ENCRYPTION_KEY: K, ENCRYPTION_KEY_PREVIOUS: K } as unknown as NodeJS.ProcessEnv) === "ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY — ignored; rotation not in progress"
+        && previousKeyWarning({ ENCRYPTION_KEY: K, ENCRYPTION_KEY_PREVIOUS: freshKey() } as unknown as NodeJS.ProcessEnv) === null
+        && previousKeyWarning({ ENCRYPTION_KEY: K } as unknown as NodeJS.ProcessEnv) === null);
   });
 }
 
@@ -384,7 +391,7 @@ console.log("keyring — ENCRYPTION_KEY_PREVIOUS validation (value-free)");
   check("found two different keys with colliding kids (test precondition)", pair !== null);
   if (pair) {
     const [a, b] = pair;
-    check("current and previous with COLLIDING kids are refused at keyring build",
+    check("DISTINCT current and previous with COLLIDING kids are refused at keyring build",
       withKeys(a, b, () => throws(() => keyringKeyIds(), /same key id/)) && withKeys(a, b, () => throws(() => decryptWithPurpose(makeV2Fixture("x", EncryptionPurpose.TOTP_SECRET, a), EncryptionPurpose.TOTP_SECRET))));
     const p = previousKeyProblem({ ENCRYPTION_KEY: a, ENCRYPTION_KEY_PREVIOUS: b } as unknown as NodeJS.ProcessEnv);
     check("…and by the boot validator, without echoing either key", p !== null && /same key id/.test(p) && !p.includes(a) && !p.includes(b));

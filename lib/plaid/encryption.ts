@@ -115,19 +115,38 @@ export function previousKeyProblem(env: NodeJS.ProcessEnv = process.env): string
   if (hex === undefined || hex === "") return null;
   if (!HEX64.test(hex)) return "ENCRYPTION_KEY_PREVIOUS, when set, must be exactly 64 hex characters.";
   const cur = env.ENCRYPTION_KEY;
-  // A key id must name ONE key. Equal keys, or two keys whose 32-bit fingerprints
-  // collide, would make a v3 kid ambiguous — refused rather than guessed.
-  if (cur && cur.length === 64 && keyIdOf(Buffer.from(cur, "hex")) === keyIdOf(Buffer.from(hex, "hex"))) {
-    return "ENCRYPTION_KEY and ENCRYPTION_KEY_PREVIOUS have the same key id (the same key, or a fingerprint collision); generate a new key.";
+  if (!cur || cur.length !== 64) return null;
+  const curKey = Buffer.from(cur, "hex"), prevKey = Buffer.from(hex, "hex");
+  // The SAME key is a harmless copy-paste slip: it collapses to "no previous"
+  // with a boot warning (previousKeyWarning) and must never take the app down.
+  if (curKey.equals(prevKey)) return null;
+  // DISTINCT keys whose 32-bit fingerprints collide would make a v3 kid name two
+  // keys — refused rather than guessed.
+  if (keyIdOf(curKey) === keyIdOf(prevKey)) {
+    return "ENCRYPTION_KEY and ENCRYPTION_KEY_PREVIOUS are different keys with the same key id (a fingerprint collision); generate a new key.";
   }
   return null;
+}
+
+export const PREVIOUS_EQUALS_CURRENT_WARNING = "ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY — ignored; rotation not in progress";
+
+/**
+ * The boot WARNING (never a failure) for ENCRYPTION_KEY_PREVIOUS === ENCRYPTION_KEY,
+ * or null. The keyring treats that state as "no previous"; the rotation script
+ * refuses it (a rotation needs two different keys). Value-free.
+ */
+export function previousKeyWarning(env: NodeJS.ProcessEnv = process.env): string | null {
+  const cur = env.ENCRYPTION_KEY, prev = env.ENCRYPTION_KEY_PREVIOUS;
+  if (!cur || !prev || cur.length !== 64 || !HEX64.test(prev)) return null;
+  return Buffer.from(cur, "hex").equals(Buffer.from(prev, "hex")) ? PREVIOUS_EQUALS_CURRENT_WARNING : null;
 }
 
 /**
  * The keyring, read from the environment on every call (as the single-key
  * module always did — tests and scripts change the key between calls).
- * A malformed PREVIOUS, or one whose kid collides with the current kid
- * (including an identical key), THROWS — see previousKeyProblem().
+ * A malformed PREVIOUS, or a DISTINCT one whose kid collides with the current
+ * kid, THROWS — see previousKeyProblem(). A PREVIOUS equal to the current key
+ * collapses to "no previous" (see previousKeyWarning()).
  */
 function getKeyring(): Keyring {
   const rootKey = getRootKey();
@@ -137,6 +156,7 @@ function getKeyring(): Keyring {
   const prevHex = process.env.ENCRYPTION_KEY_PREVIOUS;
   if (!prevHex) return { current, previous: null };
   const prevKey = Buffer.from(prevHex, "hex");
+  if (prevKey.equals(rootKey)) return { current, previous: null };
   return { current, previous: { kid: keyIdOf(prevKey), rootKey: prevKey } };
 }
 
