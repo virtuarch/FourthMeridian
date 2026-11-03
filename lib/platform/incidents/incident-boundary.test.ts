@@ -340,15 +340,28 @@ function main() {
       "lib/crypto/wallet-refresh.ts": "failure clock (no state)",
       // PERMANENT EXCEPTION (S2 ruling, 2026-11-03) — shape pinned below.
       "lib/plaid/backgroundHistorySync.ts": "EXCEPTION: control gate, not a display read (MISSING_ACCOUNT persisted-open COUNT gates recovery)",
-      // KNOWN RESIDUALS — not among PB-1 §13.1's six readers; each still derives open/closed from rows.
-      // Listed so they cannot multiply; each is a PB-1 Phase 3 item (S2 rulings, 2026-11-03).
-      // getIncidentDetail stays on this file's entry by ruling: execution evidence only; state ignored.
-      "lib/platform/incidents/projections.ts": "RESIDUAL: getIncidentEpisodeTimeline (CS daily trend) · KEPT: getIncidentDetail — execution evidence only; state ignored",
-      "lib/platform/incidents/episodes-core.ts": "RESIDUAL: the legacy episode fold the CS daily trend uses",
+      // PB-1 Phase 3 — the CS daily trend moved to module verdicts (incident-trend-core.ts); what remains is
+      // getIncidentDetail's IncidentView, KEPT by S2 ruling: execution evidence only; state ignored (pinned below).
+      "lib/platform/incidents/projections.ts": "KEPT: getIncidentDetail — execution evidence only; state ignored",
+      "lib/platform/incidents/episodes-core.ts": "KEPT: episodeStateOf for getIncidentDetail's view only — state ignored by its consumer",
       // PB-1 Phase 3 (S2-approved design a) — fm_app tenant read of the RLS-16 columns; the open/closed
       // decision is the module's PURE core (lib/activity/member-incidents.ts, audience MEMBER).
       "app/api/spaces/[id]/activity/route.ts": "raw read; open/closed decision from module core",
     };
+    // S2 (PB-1 Phase 3 close) — the census splits into NON-READER entries (writers, the authority, the export,
+    // a clock, a helper) and RESIDUAL READERS (display-path / raw-read paths outside the module). Both counts are
+    // pinned: exactly THREE residual readers — the control gate, getIncidentDetail's execution evidence and the
+    // member tenant read — and ten entries in all. Any growth is a reviewed change to these numbers.
+    const RESIDUAL_READERS = new Set([
+      "lib/plaid/backgroundHistorySync.ts",      // control gate (permanent exception)
+      "lib/platform/incidents/projections.ts",   // getIncidentDetail — execution evidence only
+      "app/api/spaces/[id]/activity/route.ts",   // member tenant read — open/closed from the module core
+    ]);
+    check("exactly THREE residual readers, all censused", RESIDUAL_READERS.size === 3 && [...RESIDUAL_READERS].every((f) => f in CENSUS));
+    const nonReaders = Object.keys(CENSUS).filter((f) => !RESIDUAL_READERS.has(f));
+    check("…and SEVEN non-reader entries (lifecycle writer, purge, retention, semantics authority, subject export, wallet clock, episodes-core helper)",
+      nonReaders.length === 7, nonReaders.join(", "));
+    check("the census holds TEN entries in all", Object.keys(CENSUS).length === 10, String(Object.keys(CENSUS).length));
     const found = [...walk("lib"), ...walk("app"), ...walk("components")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => !f.startsWith("lib/platform/incidents/intelligence/") && !f.startsWith("lib/platform/incidents/parity/"))
@@ -383,6 +396,14 @@ function main() {
     const opsAtt = code("lib/platform/ops/attention.ts");
     check("getIncidentDetail's only consumer reads occurrences, never its state",
       /getIncidentDetail\(v\.id\)/.test(opsAtt) && /detail\?\.occurrences\.find/.test(opsAtt) && !/detail\?\.incident|\.incident\.state/.test(opsAtt));
+    // PB-1 Phase 3 — the KEPT entries are only what the ruling names: projections' one SyncIssue read is
+    // getIncidentDetail's findUnique, and episodeStateOf's one caller is projections' IncidentView mapping.
+    const projReads = proj.match(new RegExp(RAW_READ.source, "g")) ?? [];
+    check("projections: its SyncIssue reads are exactly getIncidentDetail's findUnique (+ the view's episodeStateOf)",
+      JSON.stringify([...projReads].sort()) === JSON.stringify([".syncIssue.findUnique(", "episodeStateOf("].sort())
+      && /export async function getIncidentDetail[\s\S]*?\.syncIssue\.findUnique\(/.test(proj), projReads.join(", "));
+    const stateCallers = found.filter((f) => f !== "lib/platform/incidents/episodes-core.ts" && /\bepisodeStateOf\(/.test(code(f)));
+    check("episodeStateOf's only caller is projections.ts", stateCallers.join() === "lib/platform/incidents/projections.ts", stateCallers.join(", "));
     const page = proj.slice(proj.indexOf("export async function getActiveIncidentPage"));
     const pageBody = page.slice(0, page.indexOf("\n}\n") + 3);
     check("R4: getActiveIncidentPage reads the module (brokenNow) and no SyncIssue row",

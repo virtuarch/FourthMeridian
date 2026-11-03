@@ -7,22 +7,23 @@
  * emits day counts — no account, item, subject, kind or `detail` (which can
  * carry financial facts) leaves it.
  *
- * PB-4 — CANONICAL EPISODES ONLY. The series reads through
- * getIncidentEpisodeTimeline (lib/platform/incidents/projections.ts), which
- * derives each row's state with the SAME call the active-incident projection
- * uses (episodes-core.ts). Event rows (REMOVED_TOMBSTONE et al. — stored
- * resolved with no resolvedAt), superseded and orphaned rows are not incidents
- * and are not counted; an episode still open is exactly an active incident.
+ * PB-1 Phase 3 — MODULE VERDICTS ONLY. The series reads the incident-intelligence
+ * module's `window` accessor (open incidents whatever their age, plus closed ones
+ * that touched the window — D5 / D6) with the route's own token, and folds the
+ * verdicts in incident-trend-core.ts, which picks ONLY identity-free fields
+ * (rowClass, duplicateOf, state, closure, firstSeenAt, resolvedAt) — a count
+ * needs no customer, so none leaves the fold. Evidence, superseded, removed-subject and folded
+ * duplicate rows are not episodes and are not counted.
  *
  * "Opened" is the episode's first occurrence (`firstOccurredAt`, else
- * `createdAt`); "resolved" is a recovered episode's `resolvedAt`. Resolved
+ * `createdAt`); "resolved" is a resolved episode's `resolvedAt`. Resolved
  * episodes are retained 90 d after resolution (jobs/data-retention.ts), so a
  * 14-day window is complete unless the row cap is reached (then `floor`).
  */
 
 import "server-only";
-import { systemDb } from "@/lib/db";
-import { getIncidentEpisodeTimeline } from "@/lib/platform/incidents/projections";
+import { incidentAccessors, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence";
+import { incidentTrendInstants } from "./incident-trend-core";
 import { countByDay, windowDayKeys, windowStart } from "@/lib/platform/trends/daily-core";
 
 export const INCIDENTS_DAILY_WINDOW_DAYS = 14;
@@ -43,11 +44,17 @@ export interface IncidentsDailySeries {
 }
 
 export const INCIDENTS_DAILY_BASIS =
-  "Canonical sync-incident episodes per UTC day (event, superseded and orphaned rows excluded): opened = first occurrence (else created); resolved = the recovery's resolvedAt.";
+  "Sync-incident episodes per UTC day, from the incident-intelligence module (evidence, superseded, removed-connection and duplicate rows excluded): opened = first occurrence (else created); resolved = the resolution's resolvedAt.";
 
-export async function getIncidentsDailySeries(now: Date = new Date(), days = INCIDENTS_DAILY_WINDOW_DAYS): Promise<IncidentsDailySeries> {
+export async function getIncidentsDailySeries(
+  /** The token the ROUTE minted from its own guard result (counts only: the fold reads no identity field). */
+  incidentToken: CsToken | OpsToken,
+  now: Date = new Date(), days = INCIDENTS_DAILY_WINDOW_DAYS,
+): Promise<IncidentsDailySeries> {
   const since = windowStart(now, days);
-  const { episodes, scanTruncated } = await getIncidentEpisodeTimeline(since, INCIDENTS_DAILY_ROW_CAP, systemDb);
+  const page = await incidentAccessors.window(incidentToken, { from: since, to: now }, { limit: INCIDENTS_DAILY_ROW_CAP, now });
+  const scanTruncated = page.truncated;
+  const episodes = incidentTrendInstants(page.items);
   const keys = windowDayKeys(now, days);
   const opened = countByDay(keys, episodes.map((e) => e.openedAt));
   const resolved = countByDay(keys, episodes.map((e) => e.resolvedAt));
