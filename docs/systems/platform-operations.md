@@ -32,7 +32,7 @@ authorities, an alert engine and the sync-incident lifecycle.
 | Provider health | `lib/platform/provider-health.ts` | IMPLEMENTED |
 | Alerts | `lib/alerts/evaluate.ts`, `lib/alerts/run.ts` | IMPLEMENTED |
 | Incident lifecycle (the only writer) | `lib/platform/incidents/lifecycle.ts` plus the classifier `lib/platform/sync-issue-semantics.ts` | IMPLEMENTED |
-| Incident intelligence (shared reader) | `lib/platform/incidents/intelligence/*` (PRs #264, #287); parity gate `lib/platform/incidents/parity/*` (PR #263). R1–R6a cut over (R1/R2 CS incidents panel + CS detail loader #288; R3 convergence #310; R4 projection + R5 feed #325; R5 fold/evaluate #332; R6a Ops attention #333); R6b pending | IMPLEMENTED (module, R1–R6a); R6b PLANNED |
+| Incident intelligence (shared reader) | `lib/platform/incidents/intelligence/*` (PRs #264, #287); parity gate `lib/platform/incidents/parity/*` (PR #263). R1–R6b cut over (§13.1 complete: R1/R2 CS incidents panel + CS detail loader #288; R3 convergence #310; R4 projection + R5 feed #325; R5 fold/evaluate #332; R6a Ops attention #333; R6b CS attention #336); residuals named in `lib/platform/incidents/incident-boundary.test.ts` §11 (member activity feed and CS trend as follow-ups; the sync-control gate as a permanent exception) | IMPLEMENTED (module, R1–R6b) |
 | Scheduler presence (env-aware verdicts) | `lib/jobs/scheduler-presence.ts`, `scheduler-presence.core.ts` (PR #282) | IMPLEMENTED |
 | Provider verdict rules | `provider-outcome@1` `lib/platform/verdicts/provider-outcome.ts` (PR #282); `provider-connection@1` `lib/platform/verdicts/provider-connection.ts` (PRs #285, #286) | IMPLEMENTED |
 | Fleet AI spend status | `fleetSpendStatus` (`lib/platform/ai/fleet-spend-status.ts`, PR #281) | IMPLEMENTED |
@@ -375,8 +375,7 @@ Module and R1/R2 cutover IMPLEMENTED; remaining reader cutovers and the rest PLA
   loader read the module's verdicts.
 - **IMPLEMENTED: R3 convergence** (PR #310) and **R4 projection** (PR #325): convergence and the projection read module verdicts. **R5 alerts** (feed #325, fold and evaluation #332): incident alerts read module verdicts only and fire on `alertable && critical`. Their visible changes (D2/D2b/D3/D6/D7/D8/D10) are owner decisions for Production (release plan B10.3).
 - **IMPLEMENTED: R6a Ops attention** (PR #333): reads module `brokenNow`; unverified incidents rank one severity lower.
-- **PLANNED: reader cutover R6b.** The remaining readers still compete over incident state; each cutover is its own PR, after the parity gate is green
-  for that reader (PB-1 §13.3).
+- **IMPLEMENTED: R6b CS attention** (PR #336): attributes an incident to the customer it was observed for (`subjectUserId`) when recorded; older rows use the previous owner rule. **§13.1 is complete:** all six readers cut over with 0 parity divergences. Residuals are named in the `incident-boundary.test.ts` §11 allowlist: the member activity feed and the CS trend are follow-ups; the sync-control gate is a permanent exception.
 - **IMPLEMENTED, step 1 (PR #317):** a versioned metric-definition registry in code
   (`lib/platform/intelligence/metrics/*`, modelled on `lib/usage/pricing.ts`), definitions
   only; no surface reads it yet. **PROPOSED (plan), the rest:** the Platform UI, alerts and
@@ -525,7 +524,7 @@ All verified on develop.
   stores, and the `quota-low` alert rule is dormant.
 - **Two currently stale Production incidents stay as they are** until the Phase-2 shared
   reader is cut over and shows them as stale, and an owner-approved closure runs (PR #255
-  description). The module exists (PR #264); R1–R6a are cut over (PRs #288, #310, #325, #332, #333); R6b pending.
+  description). The module exists (PR #264); R1–R6b are cut over (PRs #288, #310, #325, #332, #333, #336; §13.1 complete).
 - **Opaque references are 32 bits** and the CS reverse lookup scans only the newest
   5,000 accounts; collisions are listed, not hidden, and a capped miss says so.
 
