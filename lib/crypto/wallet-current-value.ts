@@ -200,7 +200,8 @@ export function hasKnownValue(v: WalletCurrentValue | undefined): boolean {
 
 /**
  * FM-AUDIT-022 — THE classification every TOTALS path reads for a wallet's
- * balance. One helper, so no read site re-derives "does this wallet have a
+ * balance — and, FIN-A2, for ANY account whose balance was never observed
+ * (`balanceObserved === false`, checked first). One helper, so no read site re-derives "does this wallet have a
  * value, and if not, what does it contribute?".
  *
  *   not a spine wallet (`v` undefined) → the caller's own column, untouched.
@@ -232,7 +233,18 @@ export interface WalletTotalsBalance {
 export function resolveWalletBalance(
   columnBalance: number,
   v: WalletCurrentValue | undefined,
+  /**
+   * FIN-A2 (FM-AUDIT-023, new-row half) — FinancialAccount.balanceObserved.
+   * `false` ONLY on a row created at token exchange whose provider balance was
+   * not observed: its column is the schema's structural 0, not a value. Such a
+   * row — wallet or not — is EXCLUDED exactly like an unvalued wallet (same
+   * structural 0, same `valuationUnknown` flag, same `unvaluedCount`), so ONE
+   * classification still decides every totals path. Absent / true / null ⇒
+   * unchanged (every existing row defaults to true).
+   */
+  balanceObserved?: boolean | null,
 ): WalletTotalsBalance {
+  if (balanceObserved === false) return { balance: 0, valuationUnknown: true };
   if (v === undefined) return { balance: columnBalance };
   if (hasKnownValue(v)) return { balance: v.value! };
   return { balance: 0, valuationUnknown: true };
