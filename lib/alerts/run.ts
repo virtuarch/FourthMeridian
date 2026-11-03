@@ -32,7 +32,7 @@ import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
 import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-health";
 import { getAiSpendAnomalyFacts } from "@/lib/platform/ai/spend-anomaly";
 import { getPlaidCallAnomalyFacts } from "@/lib/platform/anomaly/plaid-calls";
-import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity } from "@/lib/alerts/rules";
+import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity, type AlertSignal } from "@/lib/alerts/rules";
 import type { AuthorityOutputs } from "@/lib/alerts/authorities";
 import {
   buildAlertEmailData,
@@ -52,7 +52,7 @@ import { currentJobRun } from "@/lib/jobs/run";
 import {
   FLAP_RECOVERIES, FLAP_STABLE_EVALUATIONS, FLAP_WINDOW_MS,
   advanceFlapping, advanceRecovery, cleanlyEvaluatedRules, clearRecoveredSuppression, deliveredFlapNotices, deliveredRecoveryKeys,
-  durationLabel, episodeIdentity, flappingKeyOf, openDelivered, previousFlap, previousOpen, recoveredRecord, recoveriesInWindow,
+  durationLabel, episodeIdentity, escalatesFlap, escalationKeyOf, flappingKeyOf, openDelivered, previousFlap, previousOpen, recoveredRecord, recoveriesInWindow,
   recoveryKeyOf, stableKeyOf, wouldFlap,
   type AlertFlapRecord, type AlertOpenRecord, type AlertRecoveredRecord,
 } from "@/lib/alerts/recovery";
@@ -229,9 +229,22 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   // still count as firing in the rule outcomes) until it is stable again.
   const flapById = new Map(previousFlap(recentRuns).map((f) => [f.identity, f] as const));
   const flappingIds = new Set([...flapById.values()].filter((f) => f.flappingSinceISO !== null).map((f) => f.identity));
-  const flapSuppressed = signals.filter((x) => flappingIds.has(episodeIdentity(x.dedupeKey)));
+  // ESCALATION BREAKS THROUGH: a flapping identity firing ABOVE its recorded
+  // `flappingSeverity` is emailed at once through the normal firing path (its
+  // own escalation key, not the re-notify window); equal or lower stays suppressed.
+  const priorNotices = deliveredFlapNotices(recentRuns);
+  const escalations: { signal: AlertSignal; key: string }[] = [];
+  const flapSuppressed: AlertSignal[] = [];
+  for (const x of signals) {
+    const id = episodeIdentity(x.dedupeKey);
+    if (!flappingIds.has(id)) continue;
+    const f = flapById.get(id)!;
+    const key = escalationKeyOf(id, x.severity, f.flappingSinceISO!);
+    if (escalatesFlap(f, x.severity) && !priorNotices.has(key) && !escalations.some((e) => e.key === key)) escalations.push({ signal: x, key });
+    else flapSuppressed.push(x);
+  }
   const decided = decideDeliveries(signals.filter((x) => !flappingIds.has(episodeIdentity(x.dedupeKey))), priorFired, now.getTime(), deps.renotifyMs);
-  const toSend = decided.toSend;
+  const toSend = [...decided.toSend, ...escalations.map((e) => e.signal)];
   const suppressed = [...decided.suppressed, ...flapSuppressed];
 
   // ── Deliver (best-effort) ──────────────────────────────────────────────────
@@ -310,6 +323,13 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   });
   const recovered: AlertRecoveredRecord[] = [];
   const flapNotices: string[] = [];
+  // Escalations delivered with this cycle's firing email: record their keys and raise the flap's severity.
+  for (const e of escalations) {
+    if (!delivered.includes(e.signal)) continue;
+    flapNotices.push(e.key);
+    const id = episodeIdentity(e.signal.dedupeKey);
+    flapById.set(id, { ...flapById.get(id)!, flappingSeverity: e.signal.severity });
+  }
   const handled = new Set<string>(); // identities whose due notice was delivered this cycle
   // Held in an object: the closures below write it (a `let` would be narrowed away by the compiler).
   const loss: { count: number; reason: AlertUndelivered["reason"] } = { count: 0, reason: "SEND_ERROR" };
@@ -337,6 +357,7 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
           identity: o.identity, ruleId: o.ruleId, kind: o.kind, dedupeKey: o.dedupeKey,
           recoveriesAtISO: [...(f ? recoveriesInWindow(f, deliveredAtISO) : []), deliveredAtISO],
           flappingSinceISO: deliveredAtISO, cleanEvaluations: o.absentEvaluations, cleanSinceISO: o.clearedAtISO,
+          flappingSeverity: o.severity,
         });
       }
       continue;
@@ -389,7 +410,8 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
     .filter((f) => f.flappingSinceISO !== null || f.recoveriesAtISO.length > 0);
   const open: AlertOpenRecord[] = openDelivered(
     advance.open.filter((o) => !handled.has(o.identity) && !flapById.get(o.identity)?.flappingSinceISO),
-    delivered, deliveredAtISO,
+    // An escalation of a flapping identity does not open an episode: the flap owns it until stable.
+    delivered.filter((x) => !flappingIds.has(episodeIdentity(x.dedupeKey))), deliveredAtISO,
   );
 
   const fired: AlertFiredRecord[] = delivered.map((s) => ({

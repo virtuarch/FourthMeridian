@@ -78,6 +78,14 @@ export interface AlertFlapRecord {
   cleanEvaluations: number;
   /** The first evaluation of the current clean streak (the "stable again" email's "cleared"); null while firing. */
   cleanSinceISO: string | null;
+  /**
+   * The highest severity already emailed for this identity while flapping (set
+   * when flapping is declared). A firing signal ABOVE it breaks through the
+   * suppression — an escalation is the breach an operator most needs — and
+   * raises it; equal or lower stays suppressed. Absent on non-flapping records
+   * (and on rows written before the field: treated as "warning").
+   */
+  flappingSeverity?: AlertSeverity;
 }
 
 /** One delivered breach being tracked until it recovers. Persisted in the JobRun summary. */
@@ -359,4 +367,16 @@ export function stableKeyOf(identity: string, flappingSinceISO: string): string 
 }
 export function flappingKeyOf(identity: string, nowISO: string): string {
   return `${identity}:flapping:${nowISO}`;
+}
+
+const SEVERITY_RANK: Record<AlertSeverity, number> = { warning: 0, critical: 1 };
+
+/** Does `severity` escalate past what this flapping identity has already emailed? */
+export function escalatesFlap(f: Pick<AlertFlapRecord, "flappingSeverity">, severity: AlertSeverity): boolean {
+  return SEVERITY_RANK[severity] > SEVERITY_RANK[f.flappingSeverity ?? "warning"];
+}
+
+/** The escalation's own dedupe key (one per severity per flapping period). */
+export function escalationKeyOf(identity: string, severity: AlertSeverity, flappingSinceISO: string): string {
+  return `${identity}:escalated:${severity}:${flappingSinceISO}`;
 }

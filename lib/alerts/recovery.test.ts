@@ -345,6 +345,38 @@ async function main() {
       expiredRecoveries(view) === 1 && expiredRecoveriesSentence(1) === "1 recovery could not be delivered within 7 days" && expiredRecoveriesSentence(3) === "3 recoveries could not be delivered within 7 days");
   }
 
+  console.log("\n12. ESCALATION breaks through flap suppression (warning → critical, same identity)");
+  {
+    const ai = (kind: "warn" | "crit" | "ok") => ({
+      aiFailures: {
+        windowHours: 24, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: at(0).toISOString(),
+        ...(kind === "warn" ? { returned: 10, failed: 3, timeouts: 0 } : kind === "crit" ? { returned: 0, failed: 5, timeouts: 0 } : { returned: 10, failed: 0, timeouts: 0 }),
+      },
+    });
+    const t = harness();
+    const Q = 0.25;
+    let i = 0;
+    const step = (k: "warn" | "crit" | "ok") => t.cycle((i++) * Q, healthy, { extra: ai(k) });
+    // Flap at WARNING: warn, ok, ok, warn, ok, ok ⇒ flapping declared at warning.
+    for (const k of ["warn", "ok", "ok", "warn", "ok", "ok"] as const) await step(k);
+    const flap = t.runs[0].flap?.find((f) => f.identity === "ai-provider-failing:errors");
+    check("fixture: ai-provider-failing:errors is flapping at WARNING", flap?.flappingSinceISO != null && flap.flappingSeverity === "warning");
+    const before = t.mail.length;
+    for (const k of ["warn", "ok", "ok"] as const) await step(k);
+    check("a WARNING re-fire while flapping stays suppressed", t.mail.length === before);
+    const esc = await step("crit");
+    const escalated = t.mail.slice(before);
+    check("the same identity firing CRITICAL ⇒ exactly ONE email, through the normal firing path",
+      escalated.length === 1 && !escalated[0].data.resolved && !escalated[0].data.flapping
+        && escalated[0].data.alerts.length === 1 && escalated[0].data.alerts[0].severity === "critical" && esc.counts.delivered === 1);
+    check("…recorded under its own escalation key, and flappingSeverity is raised",
+      (esc.flapNotices ?? []).some((k) => k.startsWith("ai-provider-failing:errors:escalated:critical:")) && esc.flap?.find((f) => f.identity === "ai-provider-failing:errors")?.flappingSeverity === "critical");
+    check("…without opening a new episode (the flap owns the identity)", !(esc.open ?? []).some((o) => o.identity === "ai-provider-failing:errors"));
+    const after = t.mail.length;
+    for (const k of ["ok", "ok", "crit", "ok", "ok", "crit", "warn", "ok", "crit"] as const) await step(k);
+    check("continued CRITICAL (and warning) flapping after that is suppressed", t.mail.length === after, String(t.mail.length - after));
+  }
+
   console.log(failures === 0 ? "\nAll alert-recovery checks passed." : `\n${failures} failure(s).`);
   process.exit(failures === 0 ? 0 : 1);
 }
