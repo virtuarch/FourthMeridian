@@ -367,8 +367,10 @@ console.log("architecture reuse + authority preservation");
 console.log("P-10 + Phase 1 UX · four Operations workspaces, every capability kept");
 {
   const ops = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS;
-  check("exactly four, in the approved order",
-    ops.map((w) => w.workspaceId).join(",") === "platform-overview,platform-providers,platform-ai,platform-policies",
+  // PB-1 2B — Incidents appended as the fifth (lead-only; no section key, so the
+  // capability census below is unchanged). The four approved ones keep their order.
+  check("the four approved, in order, then Incidents (PB-1 2B)",
+    ops.map((w) => w.workspaceId).join(",") === "platform-overview,platform-providers,platform-ai,platform-policies,platform-incidents",
     ops.map((w) => w.workspaceId).join(","));
   // Every section key the eight-workspace composition rendered (develop 78b7558).
   const BEFORE = [
@@ -425,12 +427,14 @@ console.log("Phase 1 UX · views");
     // views stay as drill-downs so platform-policies:defaults / :alerts and
     // ?view=emergency open exactly what they always did.
     "platform-policies[groups:<policies>{ops_policies+ops_alerts} defaults:ops_policies/defaults alerts:ops_alerts emergency:ops_policies/emergency]",
+    // PB-1 2B — the incidents workspace: three lead-only views, each one status preset.
+    "platform-incidents[open:<incidents-ops> verify:<incidents-ops> history:<incidents-ops>]",
   ].join(" | "), shape);
-  check("labels: Operations · Providers · AI & Costs · Policies (Operations is PLATFORM_OPS-local; the shared identity stays Overview)",
-    ops.map((w) => w.label ?? getPlatformWorkspace(w.workspaceId)?.label).join(" · ") === "Operations · Providers · AI & Costs · Policies"
+  check("labels: Operations · Providers · AI & Costs · Policies · Incidents (Operations is PLATFORM_OPS-local; the shared identity stays Overview)",
+    ops.map((w) => w.label ?? getPlatformWorkspace(w.workspaceId)?.label).join(" · ") === "Operations · Providers · AI & Costs · Policies · Incidents"
       && getPlatformWorkspace("platform-overview")?.label === "Overview");
   check("view labels", ops.map((w) => (w.views ?? []).map((v) => v.label).join("/")).join(" · ")
-    === "Overview/Jobs/Pipeline · Providers · AI & Costs · Policy groups/Platform defaults/Alerts/Emergency controls");
+    === "Overview/Jobs/Pipeline · Providers · AI & Costs · Policy groups/Platform defaults/Alerts/Emergency controls · Broken now/Needs verification/History");
 
   for (const w of ops) {
     const views = w.views ?? [];
@@ -499,9 +503,11 @@ console.log("Phase 1 UX · views");
   // the secondary workspaces (Security audit / operator actions, CS incidents) keep no views.
   // COMMUNICATIONS CENTER — the one exception: Customer Success › Communications
   // is a lead-only, four-view workspace (pinned in its own block below).
-  check("secondary workspaces outside PLATFORM_OPS keep no views (except CS › Communications)",
+  // PB-1 2B — the second exception: CS › Incidents keeps its preview as the
+  // default view and adds the investigation views (pinned in the CS block below).
+  check("secondary workspaces outside PLATFORM_OPS keep no views (except CS › Communications and CS › Incidents)",
     ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => getPlatformAreaWorkspaces(a).slice(1)
-      .filter((w) => !(a === "CUSTOMER_SUCCESS" && w.workspaceId === "platform-communications"))
+      .filter((w) => !(a === "CUSTOMER_SUCCESS" && (w.workspaceId === "platform-communications" || w.workspaceId === "platform-incidents")))
       .every((w) => w.views === undefined && w.label === undefined)));
   check("every non-Ops area's Overview is ONE dashboard view with a lead",
     ALL_PLATFORM_AREAS.filter((a) => a !== "PLATFORM_OPS").every((a) => { const w = getPlatformAreaWorkspaces(a)[0]; return w.views?.length === 1 && !!w.views[0].lead && w.views[0].sections.length === 0; }));
@@ -529,6 +535,7 @@ console.log("Phase 1 UX · views");
       // VISUAL SPEC §5 — one dashboard view; its id stays "ai" (default URL unchanged).
       "platform-ai": ["ai"],
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
+      "platform-incidents": ["open", "verify", "history"],
     }));
 
   // The view validator: unknown ⇒ default, never a ghost; no views ⇒ null.
@@ -578,6 +585,13 @@ console.log("Customer Success · Customers + Incidents");
     cs.map((w) => w.workspaceId).join(",") === "platform-overview,platform-incidents,platform-communications", cs.map((w) => w.workspaceId).join(","));
   check("customers on the first, sync incidents on the second; nothing else moved",
     cs[0].sections.join() === "cs_customers" && cs[1]?.sections.join() === "cs_sync_issues");
+  check("PB-1 2B — CS Incidents: the preview stays the DEFAULT view; Broken now / Needs verification / History are the CS investigation lead",
+    JSON.stringify(cs[1]?.views?.map((v) => [v.id, v.lead ?? null, v.sections.join()])) === JSON.stringify([
+      ["summary", null, "cs_sync_issues"], ["open", "incidents-cs", ""], ["verify", "incidents-cs", ""], ["history", "incidents-cs", ""],
+    ]));
+  check("PB-1 2B — both incidents leads are registered on the dashboard",
+    /"incidents-ops":\s+OpsIncidentsLead,/.test(readFileSync(path.join(process.cwd(), "components/platform/PlatformSpaceDashboard.tsx"), "utf8"))
+      && /"incidents-cs":\s+CsIncidentsLead,/.test(readFileSync(path.join(process.cwd(), "components/platform/PlatformSpaceDashboard.tsx"), "utf8")));
   check("PLATFORM SPACES 2.0 — Customers is one dashboard view (lead 'customer-success') hosting the audited list",
     cs[0].views?.length === 1 && cs[0].views[0].lead === "customer-success" && JSON.stringify(cs[0].views[0].hosted) === JSON.stringify(["cs_customers"]) && cs[0].views[0].sections.length === 0);
   check("Incidents is a registered Platform identity with a nav-resolvable icon",

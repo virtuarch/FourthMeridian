@@ -15,6 +15,13 @@
  *
  * NOT CUT OVER. No reader uses this module yet (PB-1 §13.3 step 5: one reader
  * per PR, after the parity gate is green for it).
+ *
+ * PB-1 Phase 2B adds two accessors for the incident investigation surfaces
+ * (Platform Ops / Customer Success incidents workspaces): `search` (one status
+ * preset — exactly one existing accessor's filter — plus validated filters,
+ * paged; search-core.ts) and `investigate` (one episode with its append-only
+ * SyncIssueEvent timeline, evidence DIGEST, relation / recurrence links,
+ * affected-subject counts and archive state). Both verify the token first.
  */
 
 import "server-only";
@@ -25,6 +32,18 @@ import { EVIDENCE_DIGEST_SELECT, evidenceDigestOf } from "../evidence";
 import { loadOccurrenceAccounts, loadSubjectFacts } from "../subjects";
 import { assertAudienceToken, type CsToken, type OpsToken, type SystemToken } from "./audience";
 import { deriveIncidentVerdicts, operationOf } from "./core";
+import {
+  archiveDates,
+  archivedTimelineOf,
+  dayBounds,
+  RECURRENCE_CAP,
+  SEARCH_SCAN_LIMIT,
+  searchVerdicts,
+  statusReadsClosed,
+  TIMELINE_READ_CAP,
+  timelineEventOf,
+} from "./search-core";
+import { isRegistryCode } from "../codes";
 import { attemptEndpointsFor, isPastStaleWindow, UNKNOWN_EVIDENCE } from "./staleness";
 import type {
   ArchivedIncidentFacts,
@@ -33,7 +52,11 @@ import type {
   IncidentAccessors,
   IncidentAudience,
   IncidentFacts,
+  IncidentInvestigation,
+  IncidentLink,
   IncidentRowFacts,
+  IncidentSearchQuery,
+  IncidentTimeline,
   IncidentVerdict,
   ListOptions,
   RelationFacts,
@@ -52,6 +75,8 @@ export type IncidentFactsReader = {
   syncIssueOccurrence: Pick<Db["syncIssueOccurrence"], "findMany" | "groupBy">;
   syncIssueArchive: Pick<Db["syncIssueArchive"], "findMany">;
   syncIssueRelation: Pick<Db["syncIssueRelation"], "findMany">;
+  /** PB-1 2B — the append-only timeline (read only; codes and refs). */
+  syncIssueEvent: Pick<Db["syncIssueEvent"], "findMany">;
   financialAccount: Pick<Db["financialAccount"], "findMany">;
   plaidItem: Pick<Db["plaidItem"], "findMany">;
   /** Stage attempts on subjects — the refresh ledger's ROW SEAM (never the ledger directly). */
@@ -81,6 +106,8 @@ export interface LoadOptions {
   limit: number;
   now: Date;
   includeArchive?: boolean;
+  /** PB-1 2B — scalar predicates for the archive scan (absent ⇒ the newest `limit` archive rows, unchanged). */
+  archiveWhere?: Prisma.SyncIssueArchiveWhereInput;
 }
 
 /**
@@ -163,7 +190,7 @@ export async function loadIncidentFacts(client: IncidentFactsReader, o: LoadOpti
       })
       : Promise.resolve([] as { syncIssueId: string; _count: { _all: number } }[]),
     o.includeArchive
-      ? client.syncIssueArchive.findMany({ orderBy: [{ archivedAt: "desc" }, { incidentId: "asc" }], take: o.limit, select: ARCHIVE_SELECT })
+      ? client.syncIssueArchive.findMany({ ...(o.archiveWhere ? { where: o.archiveWhere } : {}), orderBy: [{ archivedAt: "desc" }, { incidentId: "asc" }], take: o.limit, select: ARCHIVE_SELECT })
       : Promise.resolve([]),
     ids.length
       ? client.syncIssueRelation.findMany({
@@ -227,6 +254,32 @@ function list<T extends IncidentVerdict>(facts: IncidentFacts, items: T[]): Verd
   return { items, truncated: facts.scanTruncated, scanned: facts.rows.length };
 }
 
+/** An incident id as accepted from a URL: opaque id characters only (cuid / uuid). */
+const INCIDENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** SyncIssueEvent columns the timeline emits. NOT actorId (an operator's id is not shown; `audited` says an AuditLog exists). */
+const EVENT_SELECT = {
+  id: true, at: true, type: true, actorKind: true, auditId: true, fromState: true, toState: true,
+  causeCode: true, actionCode: true, outcomeCode: true, refEventId: true, refreshExecutionId: true, jobRunId: true,
+} as const;
+
+/** The SyncIssue + archive predicates for one search (scalar only; status / day range / provider). */
+export function searchWhere(q: IncidentSearchQuery): { where: Prisma.SyncIssueWhereInput; archiveWhere: Prisma.SyncIssueArchiveWhereInput | null } {
+  const { gte, lte } = dayBounds(q);
+  const range = gte || lte ? { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } : null;
+  // An open preset reads exactly the brokenNow / needsVerification scan ({ resolved: false }).
+  const base: Prisma.SyncIssueWhereInput = statusReadsClosed(q.status) ? {} : { resolved: false };
+  const extra: Prisma.SyncIssueWhereInput[] = [];
+  if (q.provider) extra.push({ provider: q.provider });
+  if (range) extra.push({ OR: [{ lastOccurredAt: range }, { lastOccurredAt: null, createdAt: range }] });
+  const where = extra.length ? { AND: [base, ...extra] } : base;
+  if (!statusReadsClosed(q.status)) return { where, archiveWhere: null };
+  const archiveExtra: Prisma.SyncIssueArchiveWhereInput[] = [];
+  if (q.provider) archiveExtra.push({ provider: q.provider });
+  if (range) archiveExtra.push({ OR: [{ lastOccurredAt: range }, { lastOccurredAt: null, archivedAt: range }] });
+  return { where, archiveWhere: archiveExtra.length ? { AND: archiveExtra } : {} };
+}
+
 export function createIncidentAccessors(client: IncidentFactsReader): IncidentAccessors {
   const derive = async (audience: IncidentAudience, where: Prisma.SyncIssueWhereInput, opts: ListOptions | undefined, includeArchive = false) => {
     const now = opts?.now ?? new Date();
@@ -281,6 +334,102 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
       const { set } = await derive(audience, { id }, { ...opts, limit: 1 }, false);
       return (set.all.find((v) => v.id === id) ?? null) as VerdictForToken<T> | null;
     },
+    async search<T extends CsToken | OpsToken>(token: T, query: IncidentSearchQuery, opts?: ListOptions) {
+      const audience = assertAudienceToken(token, READERS);
+      const now = opts?.now ?? new Date();
+      const { where, archiveWhere } = searchWhere(query);
+      const facts = await loadIncidentFacts(client, {
+        where, limit: opts?.limit ?? SEARCH_SCAN_LIMIT, now,
+        includeArchive: archiveWhere !== null, ...(archiveWhere ? { archiveWhere } : {}),
+      });
+      const set = deriveIncidentVerdicts(facts, { now, audience });
+      return searchVerdicts(set.all as VerdictForToken<T>[], query, { truncated: facts.scanTruncated, scanned: facts.rows.length + (facts.archived?.length ?? 0) });
+    },
+    async investigate<T extends CsToken | OpsToken>(token: T, id: string, opts?: ListOptions) {
+      const audience = assertAudienceToken(token, READERS);
+      if (typeof id !== "string" || !INCIDENT_ID.test(id)) return null;
+      const now = opts?.now ?? new Date();
+      const facts = await loadIncidentFacts(client, { where: { id }, limit: 1, now, includeArchive: true, archiveWhere: { incidentId: id } });
+      const verdict = deriveIncidentVerdicts(facts, { now, audience }).all.find((v) => v.id === id) as VerdictForToken<T> | undefined;
+      if (!verdict) return null;
+      const row = facts.rows.find((r) => r.id === id) ?? null;
+      const arch = facts.archived?.find((a) => a.incidentId === id) ?? null;
+      const itemId = row?.plaidItemId ?? arch?.plaidItemId ?? null;
+      const accountId = row?.financialAccountId ?? arch?.financialAccountId ?? null;
+      const incidentKey = row?.incidentKey ?? arch?.incidentKey ?? null;
+
+      const [events, archiveExtra, relationsRaw, items, occAccounts] = await Promise.all([
+        row
+          ? client.syncIssueEvent.findMany({ where: { incidentId: id }, orderBy: [{ at: "desc" }, { id: "desc" }], take: TIMELINE_READ_CAP + 1, select: EVENT_SELECT })
+          : Promise.resolve(null),
+        !row && arch
+          ? client.syncIssueArchive.findMany({ where: { incidentId: id }, take: 1, select: { ...EVIDENCE_DIGEST_SELECT, eventTimeline: true } })
+          : Promise.resolve([]),
+        client.syncIssueRelation.findMany({
+          where: { OR: [{ fromIncidentId: id }, { toIncidentId: id }] },
+          select: { fromIncidentId: true, toIncidentId: true, kind: true },
+        }),
+        itemId ? client.plaidItem.findMany({ where: { id: { in: [itemId] } }, select: { id: true, institutionName: true, status: true } }) : Promise.resolve([]),
+        row && itemId && !accountId ? loadOccurrenceAccounts([id], client) : Promise.resolve(new Map<string, string[]>()),
+      ]);
+
+      // Timeline — newest TIMELINE_READ_CAP read, then rendered OLDEST FIRST, each row field-for-field.
+      let timeline: IncidentTimeline;
+      if (events) {
+        const truncated = events.length > TIMELINE_READ_CAP;
+        const kept = events.slice(0, TIMELINE_READ_CAP).reverse();
+        timeline = { source: kept.length ? "events" : "none", events: kept.map(timelineEventOf), truncated };
+      } else timeline = archivedTimelineOf((archiveExtra[0] as { eventTimeline?: unknown } | undefined)?.eventTimeline ?? null);
+
+      // Links — explicit relations (both directions) and the previousIncidentId chain neighbours.
+      type Kind = IncidentLink["kind"];
+      const links: { id: string; kind: Kind }[] = [];
+      const add = (other: string, kind: Kind) => { if (other !== id && !links.some((l) => l.id === other && l.kind === kind)) links.push({ id: other, kind }); };
+      for (const r of relationsRaw) {
+        if (r.kind !== "RECURRENCE_OF" && r.kind !== "SAME_ROOT_CAUSE" && r.kind !== "RELATED") continue;
+        add(r.fromIncidentId === id ? r.toIncidentId : r.fromIncidentId, r.kind);
+      }
+      if (verdict.recurrence.previousIncidentId) add(verdict.recurrence.previousIncidentId, "PREVIOUS_EPISODE");
+      const linkedIds = [...new Set(links.map((l) => l.id))].filter((x) => INCIDENT_ID.test(x));
+      const neighbourOr: Prisma.SyncIssueWhereInput[] = [{ previousIncidentId: id }];
+      const archiveOr: Prisma.SyncIssueArchiveWhereInput[] = [{ previousIncidentId: id }];
+      if (incidentKey) { neighbourOr.push({ incidentKey }); archiveOr.push({ incidentKey }); }
+      if (linkedIds.length) { neighbourOr.push({ id: { in: linkedIds } }); archiveOr.push({ incidentId: { in: linkedIds } }); }
+      const neighbourLimit = RECURRENCE_CAP + linkedIds.length + 2;
+      const nFacts = await loadIncidentFacts(client, { where: { OR: neighbourOr }, limit: neighbourLimit, now, includeArchive: true, archiveWhere: { OR: archiveOr } });
+      const neighbours = (deriveIncidentVerdicts(nFacts, { now, audience }).all as VerdictForToken<T>[]).filter((v) => v.id !== id);
+      for (const v of neighbours) if (v.recurrence.previousIncidentId === id) add(v.id, "NEXT_EPISODE");
+      const byId = new Map(neighbours.map((v) => [v.id, v] as const));
+      const related: IncidentLink<VerdictForToken<T>>[] = links.map((l) => ({ id: l.id, kind: l.kind, incident: byId.get(l.id) ?? null }));
+      const recurrencesAll = incidentKey
+        ? neighbours.filter((v) => v.episodeKey === incidentKey).sort((a, b) => (a.firstSeenAt < b.firstSeenAt ? 1 : a.firstSeenAt > b.firstSeenAt ? -1 : 0))
+        : [];
+
+      const item = items[0] as { institutionName: string | null; status: unknown } | undefined;
+      const accountCount = accountId ? 1 : (occAccounts.get(id)?.length ?? facts.subjects.occurrenceAccounts?.get(id)?.length ?? 0);
+      const archivedAt = arch?.archivedAt.toISOString() ?? null;
+      const evidence = row ? row.evidence : (archiveExtra[0] ? evidenceDigestOf(archiveExtra[0] as Parameters<typeof evidenceDigestOf>[0]) : null);
+      const reason = row?.resolutionReasonCode ?? arch?.resolutionReasonCode ?? null;
+      const out: IncidentInvestigation<VerdictForToken<T>> = {
+        verdict,
+        evidence,
+        resolutionReasonCode: isRegistryCode(reason) ? reason : null,
+        timeline,
+        affected: {
+          provider: verdict.provider,
+          institution: item?.institutionName?.trim() || null,
+          itemCount: itemId ? 1 : 0,
+          accountCount,
+          subjectState: verdict.subjectState,
+          itemStatus: item ? String(item.status) : null,
+        },
+        related,
+        recurrences: recurrencesAll.slice(0, RECURRENCE_CAP),
+        recurrencesTruncated: recurrencesAll.length > RECURRENCE_CAP || nFacts.scanTruncated,
+        archive: { archived: verdict.state === "archived", archivedAt, ...archiveDates({ resolvedAt: verdict.resolvedAt, archivedAt }) },
+      };
+      return out;
+    },
   };
 }
 
@@ -290,6 +439,7 @@ export const incidentAccessors: IncidentAccessors = createIncidentAccessors({
   syncIssueOccurrence: systemDb.syncIssueOccurrence,
   syncIssueArchive: systemDb.syncIssueArchive,
   syncIssueRelation: systemDb.syncIssueRelation,
+  syncIssueEvent: systemDb.syncIssueEvent,
   financialAccount: systemDb.financialAccount,
   plaidItem: systemDb.plaidItem,
   stageAttempts: listSubjectStageAttempts,

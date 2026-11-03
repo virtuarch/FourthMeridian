@@ -351,12 +351,134 @@ export type VerdictForToken<T> = T extends AudienceToken<infer A> ? VerdictFor<A
  *   forCustomer        one customer's incidents — CUSTOMER_SUCCESS token only
  *   alertable          brokenNow ∩ alertable — SYSTEM token only (lib/alerts/)
  *   detail             one episode — tiered by token
+ *   search             PB-1 2B: filtered, paged search over one status preset — tiered by token
+ *   investigate        PB-1 2B: one episode with timeline, evidence digest, links — tiered by token
  */
-export interface IncidentAccessors {
+export interface IncidentAccessors extends IncidentInvestigationAccessors {
   brokenNow<T extends CsToken | OpsToken>(token: T, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
   needsVerification<T extends CsToken | OpsToken>(token: T, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
   history<T extends CsToken | OpsToken>(token: T, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
   forCustomer(token: CsToken, userId: string, opts?: ListOptions): Promise<VerdictList<CsIncidentVerdict>>;
   alertable(token: SystemToken, opts?: ListOptions): Promise<VerdictList<IncidentVerdict>>;
   detail<T extends CsToken | OpsToken>(token: T, id: string, opts?: ListOptions): Promise<VerdictForToken<T> | null>;
+}
+
+// ── PB-1 Phase 2B — investigation (search · detail · timeline) ──────────────
+
+/**
+ * The status preset a search starts from. Each is EXACTLY one accessor's filter:
+ *   broken-now          ≡ brokenNow
+ *   needs-verification  ≡ needsVerification
+ *   history             ≡ history (resolved + archived)
+ *   all                 every incident-class row (no evidence / superseded rows)
+ */
+export type IncidentStatusFilter = "broken-now" | "needs-verification" | "history" | "all";
+
+/** A parsed, validated search (search-core.ts `parseIncidentSearch` is the one parser). */
+export interface IncidentSearchQuery {
+  status: IncidentStatusFilter;
+  severity: Severity | null;
+  /** Platform provider value ("PLAID", "WALLET", …) — enum-shaped, never free text. */
+  provider: string | null;
+  /** A registered operation key. */
+  operation: string | null;
+  /** A registry-shaped code matched against the incident's kind OR its cause code. */
+  code: string | null;
+  /** Inclusive UTC day bounds on lastSeenAt (YYYY-MM-DD), clamped to the archive retention. */
+  from: string | null;
+  to: string | null;
+  /** 1-based page (clamped by the parser). */
+  page: number;
+}
+
+/** One page of a search. `total` counts the FILTERED set the scan saw (a floor when `truncated`). */
+export interface IncidentSearchResult<T extends IncidentVerdict = IncidentVerdict> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** D5 — the scan hit its cap: `total` is a floor. */
+  truncated: boolean;
+  scanned: number;
+  /** Values present in the scanned incidents, for the filter controls (identity-free codes only). */
+  facets: { providers: string[]; operations: string[]; codes: string[] };
+}
+
+/** One SyncIssueEvent (or archived timeline entry) — codes and opaque refs ONLY, in stored order. */
+export interface IncidentTimelineEvent {
+  /** The event row id; null for an archived (summary) entry. */
+  id: string | null;
+  at: string;
+  type: string;
+  actorKind: "SYSTEM" | "OPERATOR" | null;
+  /** An operator event carries an AuditLog id; only its presence is emitted (never the operator). */
+  audited: boolean;
+  fromState: string | null;
+  toState: string | null;
+  causeCode: string | null;
+  actionCode: string | null;
+  outcomeCode: string | null;
+  refEventId: string | null;
+  refreshExecutionId: string | null;
+  jobRunId: string | null;
+}
+
+export interface IncidentTimeline {
+  /** events = SyncIssueEvent rows; archive = the archive's capped code-only copy; none = nothing recorded. */
+  source: "events" | "archive" | "none";
+  events: IncidentTimelineEvent[];
+  /** The read cap was hit, or the archive copy dropped its oldest entries. */
+  truncated: boolean;
+}
+
+export type IncidentLinkKind = RelationFacts["kind"] | "PREVIOUS_EPISODE" | "NEXT_EPISODE";
+
+/** A linked incident. `incident` is null when the row is no longer readable (pruned past retention). */
+export interface IncidentLink<T extends IncidentVerdict = IncidentVerdict> {
+  id: string;
+  kind: IncidentLinkKind;
+  incident: T | null;
+}
+
+/** The affected subjects, identity-free: provider, institution label, counts and the subject facts. */
+export interface IncidentAffected {
+  provider: string;
+  /** PlaidItem.institutionName (an institution, never a customer); null when unknown. */
+  institution: string | null;
+  itemCount: number;
+  accountCount: number;
+  subjectState: SubjectStateV2;
+  /** PlaidItem.status of the subject item (an enum), when the incident is item-scoped and the item is readable. */
+  itemStatus: string | null;
+}
+
+export interface IncidentArchiveState {
+  archived: boolean;
+  archivedAt: string | null;
+  /** A live resolved row is pruned (and archived) this long after resolvedAt. */
+  archiveDueAt: string | null;
+  /** The archive record is kept until (archivedAt + 13 months). */
+  retainedUntil: string | null;
+}
+
+/** Everything an incident detail shows, tiered by the token (VerdictForToken). */
+export interface IncidentInvestigation<T extends IncidentVerdict = IncidentVerdict> {
+  verdict: T;
+  /** The evidence DIGEST (codes and counts) — never the stored evidence. */
+  evidence: ResolutionEvidenceDigest | null;
+  resolutionReasonCode: string | null;
+  timeline: IncidentTimeline;
+  affected: IncidentAffected;
+  /** SyncIssueRelation links + the previousIncidentId chain neighbours. */
+  related: IncidentLink<T>[];
+  /** Other episodes of the same incident key (recurrences), newest first, capped. */
+  recurrences: T[];
+  recurrencesTruncated: boolean;
+  archive: IncidentArchiveState;
+}
+
+/** PB-1 Phase 2B accessors (implemented in ./index.ts); token-checked before any read. */
+export interface IncidentInvestigationAccessors {
+  search<T extends CsToken | OpsToken>(token: T, query: IncidentSearchQuery, opts?: ListOptions): Promise<IncidentSearchResult<VerdictForToken<T>>>;
+  investigate<T extends CsToken | OpsToken>(token: T, id: string, opts?: ListOptions): Promise<IncidentInvestigation<VerdictForToken<T>> | null>;
 }

@@ -69,6 +69,7 @@ const client: IncidentFactsReader = {
   },
   syncIssueArchive: { findMany: (async () => { reads++; return []; }) as never },
   syncIssueRelation: { findMany: (async () => { reads++; return []; }) as never },
+  syncIssueEvent: { findMany: (async () => { reads++; return []; }) as never },
   financialAccount: { findMany: (async () => { reads++; return []; }) as never },
   plaidItem: {
     findMany: (async (a: { where?: Where }) => {
