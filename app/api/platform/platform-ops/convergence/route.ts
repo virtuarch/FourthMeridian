@@ -12,7 +12,7 @@
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { getConvergence } from "@/lib/platform/convergence/convergence";
-import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
+import { atOpsTier, incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import type { ConvergenceResult } from "@/lib/platform/convergence/types";
 
 export const runtime = "nodejs";
@@ -21,8 +21,9 @@ const YMD = /^\d{4}-\d{2}-\d{2}$/;
 export async function GET(req: Request): Promise<Response> {
   const [auth, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
   if (err) return err;
-  // PB-1 R3 — the incident tier follows THIS guard result (PLATFORM_OPS ⇒ identity-free).
-  const incidentToken = incidentAudienceFor(auth);
+  // PB-1 R3 — the incident tier follows THIS guard result, pinned to the identity-free
+  // Ops tier (a System Admin's break-glass would otherwise mint CUSTOMER_SUCCESS).
+  const incidentToken = atOpsTier(incidentAudienceFor(auth));
   if (!incidentToken) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const url = new URL(req.url);

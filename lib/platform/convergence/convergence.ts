@@ -17,8 +17,9 @@ import { todayUTCISO } from "@/lib/time/clock";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { loadRecentAlertRuns } from "@/lib/alerts/run";
-import { incidentAccessors, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence";
-import { CONVERGENCE_PARTICIPANTS, convergenceInstant, type ConvergenceReaders, type ConvergenceParticipant, type ConvergenceWindow } from "@/lib/platform/convergence/participants";
+import { incidentAccessors, WINDOW_SCAN_LIMIT, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence";
+import type { IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
+import { CONVERGENCE_PARTICIPANTS, convergenceInstant, type ConvSyncIssue, type ConvergenceReaders, type ConvergenceParticipant, type ConvergenceWindow } from "@/lib/platform/convergence/participants";
 import { worstTier } from "@/lib/platform/history/sources";
 import type { ConvergenceEvent, ConvergenceEpisode, ConvergenceResult } from "@/lib/platform/convergence/types";
 import type { OperationalTier } from "@/lib/platform/history/types";
@@ -132,11 +133,28 @@ function buildEpisode(events: ConvergenceEvent[], index: number): ConvergenceEpi
   };
 }
 
+/**
+ * One verdict → one convergence row, by an EXPLICIT field list. Whatever tier the
+ * verdict came from (a CS-tier one carries `subjectUserId`), nothing outside this
+ * list can reach a Platform Ops payload.
+ */
+export function convSyncIssueOf(v: IncidentVerdict, subjectLabel: string | null): ConvSyncIssue {
+  return {
+    id: v.id, provider: v.provider, kind: v.kind, plaidItemId: v.plaidItemId, financialAccountId: v.financialAccountId,
+    rowClass: v.rowClass, state: v.state, closure: v.closure, severity: v.severity, domain: v.domain,
+    operation: v.operation, episodeKey: v.episodeKey,
+    firstSeenAt: v.firstSeenAt, lastSeenAt: v.lastSeenAt, resolvedAt: v.resolvedAt,
+    subjectLabel,
+  };
+}
+
 // ── Real db-backed readers (the ONLY I/O; a fake replaces this in tests) ─────────
 
 function realReaders(now: Date, incidentToken: OpsToken | CsToken | undefined): ConvergenceReaders {
+  let scan: { truncated: boolean; scanned: number; cap: number } | null = null;
   return {
     now,
+    incidentScan: () => scan,
     async jobRuns(from, to) {
       return db.jobRun.findMany({
         where: { startedAt: { gte: from, lte: to } },
@@ -150,7 +168,10 @@ function realReaders(now: Date, incidentToken: OpsToken | CsToken | undefined): 
       // identity-free), never SyncIssue directly. D6: an OPEN incident is in every
       // window whatever its creation date; a closed row only when it sits in it.
       if (!incidentToken) throw new Error("convergence: sync-issue events need an incident audience token (fail closed)");
-      const { items: verdicts } = await incidentAccessors.window(incidentToken, { from, to });
+      const page = await incidentAccessors.window(incidentToken, { from, to });
+      // D5 — carried to the result: when the cap bit, story counts are a floor.
+      scan = { truncated: page.truncated, scanned: page.scanned, cap: WINDOW_SCAN_LIMIT };
+      const verdicts = page.items;
       const rows = verdicts.filter((v) => {
         const open = v.rowClass === "incident" && v.state !== "resolved" && v.state !== "archived";
         if (open) return true;
@@ -176,16 +197,10 @@ function realReaders(now: Date, incidentToken: OpsToken | CsToken | undefined): 
       // data and never crosses into an operator payload.
       const acctById = new Map(accounts.map((a) => [a.id, a.institution ?? `Account …${a.id.slice(-6)}`]));
 
-      return rows.map((v) => ({
-        id: v.id, provider: v.provider, kind: v.kind, plaidItemId: v.plaidItemId, financialAccountId: v.financialAccountId,
-        rowClass: v.rowClass, state: v.state, closure: v.closure, severity: v.severity, domain: v.domain,
-        operation: v.operation, episodeKey: v.episodeKey,
-        firstSeenAt: v.firstSeenAt, lastSeenAt: v.lastSeenAt, resolvedAt: v.resolvedAt,
-        subjectLabel:
-          (v.plaidItemId ? itemById.get(v.plaidItemId) : undefined)
-          ?? (v.financialAccountId ? acctById.get(v.financialAccountId) : undefined)
-          ?? null,
-      }));
+      return rows.map((v) => convSyncIssueOf(v,
+        (v.plaidItemId ? itemById.get(v.plaidItemId) : undefined)
+        ?? (v.financialAccountId ? acctById.get(v.financialAccountId) : undefined)
+        ?? null));
     },
     async statusTransitions(from, to) {
       const rows = await db.auditLog.findMany({
@@ -266,6 +281,7 @@ export async function getConvergence(args: ConvergenceArgs = {}, deps: Convergen
     events: timeline,
     eventCount: events.length,
     participants: [...participated],
+    incidentScan: readers.incidentScan?.() ?? null,
     checkedAt: now.toISOString(),
   };
 }

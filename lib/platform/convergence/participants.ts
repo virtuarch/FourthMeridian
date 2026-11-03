@@ -74,6 +74,8 @@ export interface ConvergenceReaders {
   jobRuns(from: Date, to: Date): Promise<ConvJobRun[]>;
   alertRuns(limit: number): Promise<AlertRunSummary[]>;
   syncIssues(from: Date, to: Date): Promise<ConvSyncIssue[]>;
+  /** PB-1 R3 (D5) — the last syncIssues scan's completeness; absent/null ⇒ not reported. */
+  incidentScan?(): { truncated: boolean; scanned: number; cap: number } | null;
   statusTransitions(from: Date, to: Date): Promise<ConvTransition[]>;
   /** OPS-6E — beta/account lifecycle AuditLog rows in the window. */
   lifecycleEvents(from: Date, to: Date): Promise<ConvLifecycleEvent[]>;

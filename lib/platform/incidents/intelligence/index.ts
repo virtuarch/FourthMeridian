@@ -248,6 +248,23 @@ export async function loadIncidentFacts(client: IncidentFactsReader, o: LoadOpti
   };
 }
 
+/** Two disjoint loads as one fact set (rows, subjects, evidence, relations). */
+function mergeFacts(a: IncidentFacts, b: IncidentFacts): IncidentFacts {
+  const merge = <K, V>(x: ReadonlyMap<K, V> | undefined, y: ReadonlyMap<K, V> | undefined) => new Map([...(x ?? []), ...(y ?? [])]);
+  return {
+    rows: [...a.rows, ...b.rows],
+    archived: [...(a.archived ?? []), ...(b.archived ?? [])],
+    subjects: {
+      items: merge(a.subjects.items, b.subjects.items),
+      accounts: merge(a.subjects.accounts, b.subjects.accounts),
+      occurrenceAccounts: merge(a.subjects.occurrenceAccounts, b.subjects.occurrenceAccounts),
+    },
+    attempts: merge(a.attempts, b.attempts),
+    relations: [...(a.relations ?? []), ...(b.relations ?? [])],
+    scanTruncated: a.scanTruncated || b.scanTruncated,
+  };
+}
+
 // ── Accessors ───────────────────────────────────────────────────────────────
 
 const READERS = ["CUSTOMER_SUCCESS", "PLATFORM_OPS"] as const;
@@ -339,12 +356,24 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
     },
     async window<T extends CsToken | OpsToken>(token: T, range: { from: Date; to: Date }, opts?: ListOptions) {
       const audience = assertAudienceToken(token, READERS);
+      const now = opts?.now ?? new Date();
+      const cap = opts?.limit ?? WINDOW_SCAN_LIMIT;
       const inRange = { gte: range.from, lte: range.to };
-      // D6 — an open row is in every window, whatever its creation date; a closed one only when it touched it.
-      const where: Prisma.SyncIssueWhereInput = {
-        OR: [{ resolved: false }, { createdAt: inRange }, { firstOccurredAt: inRange }, { lastOccurredAt: inRange }, { resolvedAt: inRange }],
-      };
-      const { facts, set } = await derive(audience, where, { ...opts, limit: opts?.limit ?? WINDOW_SCAN_LIMIT });
+      // OPEN-FIRST (D5 + D6): every not-closed row whatever its dates gets the cap first,
+      // so a long-open incident is never the one a busy window cuts; closed rows that
+      // touched the window take the remainder.
+      const open = await loadIncidentFacts(client, { where: { resolved: false }, limit: cap, now });
+      const remainder = cap - open.rows.length;
+      const closed = remainder > 0
+        ? await loadIncidentFacts(client, {
+          where: { resolved: true, OR: [{ createdAt: inRange }, { firstOccurredAt: inRange }, { lastOccurredAt: inRange }, { resolvedAt: inRange }] },
+          limit: remainder, now,
+        })
+        : null;
+      const facts = closed ? mergeFacts(open, closed) : { ...open, scanTruncated: true };
+      // Truncated when either scan hit its share, or the open scan alone used the whole cap.
+      facts.scanTruncated = open.scanTruncated || (closed?.scanTruncated ?? true);
+      const set = deriveIncidentVerdicts(facts, { now, audience });
       return list(facts, set.all) as VerdictList<VerdictForToken<T>>;
     },
     async search<T extends CsToken | OpsToken>(token: T, query: IncidentSearchQuery, opts?: ListOptions) {
