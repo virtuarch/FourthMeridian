@@ -267,8 +267,8 @@ console.log("keyring — PREVIOUS unset is the pre-keyring behaviour (only new w
       withKeys("", undefined, () => throws(() => encryptWithPurpose("x", EncryptionPurpose.TOTP_SECRET), /^ENCRYPTION_KEY must be exactly 64 hex characters/)));
     check("an empty ENCRYPTION_KEY_PREVIOUS is the same as unset",
       withKeys(K, "", () => keyringKeyIds().previous === null && decryptWithPurpose(v2, EncryptionPurpose.TOTP_SECRET) === "old-row"));
-    check("a PREVIOUS equal to the current key collapses to no previous",
-      withKeys(K, K, () => keyringKeyIds().previous === null));
+    check("a PREVIOUS equal to the current key is REFUSED (one kid must name one key)",
+      withKeys(K, K, () => throws(() => keyringKeyIds(), /same key id/)));
   });
 }
 
@@ -347,6 +347,22 @@ console.log("keyring — current and previous during a rotation");
   });
 }
 
+console.log("integrity — the GCM tag length is pinned to 16 bytes (v1, v2, v3)");
+{
+  const short = (hex: string) => hex.slice(0, 16); // 8 bytes
+  const v3 = encryptWithPurpose("intact", EncryptionPurpose.TOTP_SECRET).split(":");
+  const v2 = makeV2Fixture("intact", EncryptionPurpose.TOTP_SECRET).split(":");
+  const v1 = makeV1Fixture("intact").split(":");
+  check("a v3 value with an 8-byte (truncated) tag is refused",
+    throws(() => decryptWithPurpose([v3[0], v3[1], v3[2], short(v3[3]), v3[4]].join(":"), EncryptionPurpose.TOTP_SECRET), /authentication tag length/));
+  check("a v2 value with an 8-byte tag is refused (every key tried, every one refuses)",
+    throws(() => decryptWithPurpose([v2[0], v2[1], short(v2[2]), v2[3]].join(":"), EncryptionPurpose.TOTP_SECRET), /authentication tag length/));
+  check("a v1 value with an 8-byte tag is refused",
+    throws(() => decryptWithPurpose([v1[0], short(v1[1]), v1[2]].join(":"), EncryptionPurpose.TOTP_SECRET), /authentication tag length/));
+  check("a full 16-byte tag still decrypts (pin does not reject valid values)",
+    decryptWithPurpose(v3.join(":"), EncryptionPurpose.TOTP_SECRET) === "intact" && decryptWithPurpose(v1.join(":"), EncryptionPurpose.TOTP_SECRET) === "intact");
+}
+
 console.log("keyring — ENCRYPTION_KEY_PREVIOUS validation (value-free)");
 {
   check("unset ⇒ no problem", previousKeyProblem({} as unknown as NodeJS.ProcessEnv) === null);
@@ -355,6 +371,24 @@ console.log("keyring — ENCRYPTION_KEY_PREVIOUS validation (value-free)");
   const p = previousKeyProblem({ ENCRYPTION_KEY_PREVIOUS: bad } as unknown as NodeJS.ProcessEnv);
   check("non-hex ⇒ a problem that does not echo the value", p !== null && !p.includes(bad));
   check("wrong length ⇒ a problem", previousKeyProblem({ ENCRYPTION_KEY_PREVIOUS: "ab" } as unknown as NodeJS.ProcessEnv) !== null);
+  // A genuine 32-bit fingerprint collision between two DIFFERENT keys (birthday search, ~2^16 keys).
+  const seen = new Map<string, string>();
+  let pair: [string, string] | null = null;
+  for (let i = 0; i < 2_000_000 && !pair; i++) {
+    const k = freshKey();
+    const id = kidOfHex(k);
+    const prior = seen.get(id);
+    if (prior && prior !== k) pair = [prior, k];
+    else seen.set(id, k);
+  }
+  check("found two different keys with colliding kids (test precondition)", pair !== null);
+  if (pair) {
+    const [a, b] = pair;
+    check("current and previous with COLLIDING kids are refused at keyring build",
+      withKeys(a, b, () => throws(() => keyringKeyIds(), /same key id/)) && withKeys(a, b, () => throws(() => decryptWithPurpose(makeV2Fixture("x", EncryptionPurpose.TOTP_SECRET, a), EncryptionPurpose.TOTP_SECRET))));
+    const p = previousKeyProblem({ ENCRYPTION_KEY: a, ENCRYPTION_KEY_PREVIOUS: b } as unknown as NodeJS.ProcessEnv);
+    check("…and by the boot validator, without echoing either key", p !== null && /same key id/.test(p) && !p.includes(a) && !p.includes(b));
+  }
   check("a malformed PREVIOUS makes every keyring use throw (never silently ignored)",
     withKeys(freshKey(), "not-a-key", () => throws(() => encryptWithPurpose("x", EncryptionPurpose.TOTP_SECRET), /ENCRYPTION_KEY_PREVIOUS/)));
 }

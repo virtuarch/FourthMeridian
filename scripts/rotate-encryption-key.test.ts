@@ -74,7 +74,9 @@ console.log("1. the CLI refuses before any database contact");
   const badPrev = run(["--env=local"], { DATABASE_URL: LOCAL, ENCRYPTION_KEY_PREVIOUS: "zz-not-hex" });
   check("a malformed ENCRYPTION_KEY_PREVIOUS is refused before the database, without echoing it",
     refused(badPrev, /ENCRYPTION_KEY_PREVIOUS/) && !badPrev.stderr.includes("zz-not-hex"), badPrev.stderr);
-  const all = [noEnv, typo, prodNoAck, ackElsewhere, prodApplyNoTicket, prodApplyNoExpect, previewIsProd, noRef, localRemote, cloneGuard, vercelProd, badBatch, noKey, badPrev];
+  const both = run(["--env=local", "--apply", "--verify-complete"], { DATABASE_URL: LOCAL });
+  check("--verify-complete with --apply is refused (verify is read-only)", refused(both, /read-only/), both.stderr);
+  const all = [both, noEnv, typo, prodNoAck, ackElsewhere, prodApplyNoTicket, prodApplyNoExpect, previewIsProd, noRef, localRemote, cloneGuard, vercelProd, badBatch, noKey, badPrev];
   check("no refusal prints a password, project ref or key", all.every((r) => !leaks(r)));
 }
 
@@ -96,6 +98,15 @@ console.log("2. source pins");
   check("the database client is imported only after the gates",
     cli.indexOf('await import("@/lib/db")') > cli.indexOf("decideRepairEnvGuard({") && !/^import .*@\/lib\/db"/m.test(cli));
   check("the dry run is the default (writes need --apply)", /const apply = args\.includes\("--apply"\)/.test(cli));
+  check("the RLS-bypass principal check runs before ANY scan (dry run, verify and apply)",
+    /SELECT \(rolbypassrls OR rolsuper\) AS ok FROM pg_roles WHERE rolname = current_user/.test(core)
+      && core.indexOf("await rotationPrincipalRefusal(client)") < core.indexOf("plan.push(await scanField"));
+  check("the refusal reads 'the rotation principal must bypass RLS'", /the rotation principal must bypass RLS/.test(core) && /refuse\(\[PRINCIPAL_REFUSAL\]\)/.test(cli));
+  check("every apply writes ONE AuditLog row with the canon action ENCRYPTION_KEY_ROTATED (INSERT only)",
+    /INSERT INTO "AuditLog"/.test(core) && /AuditAction\.ENCRYPTION_KEY_ROTATED/.test(core) && !/(UPDATE|DELETE FROM) "AuditLog"/.test(core));
+  const actions = readFileSync(path.join(ROOT, "lib/audit-actions.ts"), "utf8");
+  check("ENCRYPTION_KEY_ROTATED is in the audit canon, the admin security filter and an admin group",
+    /ENCRYPTION_KEY_ROTATED:\s+"ENCRYPTION_KEY_ROTATED"/.test(actions) && (actions.match(/AuditAction\.ENCRYPTION_KEY_ROTATED/g) ?? []).length === 2);
 }
 
 console.log("3. the engine's classifier and summary are value-free");
@@ -116,11 +127,22 @@ console.log("3. the engine's classifier and summary are value-free");
     check("an unknown kid is unreadable", classifyValue(totp, foreign, kid).kind === "unreadable");
     const summary = summarizeRotation({
       mode: "APPLY", keyIds: { current: kid, previous: "0badc0de" },
-      fields: [{ field: "User.totpSecret", scanned: 3, empty: 0, unrecognised: 0, current: 1, byKid: { [kid]: 1, "0badc0de": 1 }, legacy: { v1: 0, v2: 1 }, candidates: 2, unreadable: 0, rotated: 1, conflicts: ["row-1"] }],
-      totals: { scanned: 3, candidates: 2, unreadable: 0, unrecognised: 0, rotated: 1, conflicts: 1 }, outcome: "INCOMPLETE",
+      fields: [{ field: "User.totpSecret", scanned: 3, empty: 0, unrecognised: 0, current: 1, byKid: { [kid]: 1, "0badc0de": 1 }, legacy: { v1: 0, v2: 1 }, candidates: 2, unreadable: 0, blocking: 1, rotated: 1, conflicts: ["row-1"] }],
+      totals: { scanned: 3, candidates: 2, unreadable: 0, unrecognised: 0, blocking: 1, rotated: 1, conflicts: 1 }, outcome: "INCOMPLETE",
     }, "local");
     check("the summary names kids, counts and conflict ids", summary.includes(kid) && summary.includes("previous") && summary.includes("row-1") && summary.includes("INCOMPLETE"));
     check("the summary never contains a value or a key", !summary.includes(v3) && !summary.includes("seed-plaintext") && !summary.includes(KEY));
+    check("the summary contains no ciphertext shape (v1/v2/v3/c1) and no 64-hex key",
+      !/\bv[23]:[0-9a-f]{8}|[0-9a-f]{32}:[0-9a-f]{32}|\bc1\.[A-Za-z0-9_-]{8}|[0-9a-f]{64}/i.test(summary));
+    check("the summary names kids by ROLE only (current / previous) — never pairs a kid with key material", !/kid [0-9a-f]{8}\s*[=:]\s*[0-9a-f]{16}/.test(summary));
+    const { auditMetadataOf } = await import("./lib/rotate-encryption-key.core");
+    const meta = JSON.stringify(auditMetadataOf({
+      mode: "APPLY", keyIds: { current: kid, previous: "0badc0de" },
+      fields: [{ field: "User.totpSecret", scanned: 3, empty: 0, unrecognised: 0, current: 1, byKid: {}, legacy: { v1: 0, v2: 1 }, candidates: 2, unreadable: 0, blocking: 1, rotated: 1, conflicts: ["row-1"] }],
+      totals: { scanned: 3, candidates: 2, unreadable: 0, unrecognised: 0, blocking: 1, rotated: 1, conflicts: 1 }, outcome: "INCOMPLETE",
+    }, { env: "local", targetHash: "0123456789abcdef", approvalTicket: null }));
+    check("the AuditLog metadata carries outcome, old/new kids and per-field counts", meta.includes('"newKid":"' + kid) && meta.includes('"oldKid":"0badc0de"') && meta.includes('"User.totpSecret":{"scanned":3') && meta.includes('"conflicts":1'));
+    check("…and no row id, value or key", !meta.includes("row-1") && !meta.includes(KEY) && !meta.includes(v3));
 
     console.log("");
     if (failures === 0) { console.log("rotate-encryption-key: all cases passed."); process.exit(0); }

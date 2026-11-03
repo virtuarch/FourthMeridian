@@ -557,6 +557,13 @@ export const AuditAction = {
   // row says that an erasure happened, in which Space, of which class and how
   // many versions — never what the item said, which is the thing they erased.
   AI_MEMORY_ERASED:         "AI_MEMORY_ERASED",
+
+  // ── Key management (PRIV-004) ───────────────────────────────────────────────
+  // One row per `scripts/rotate-encryption-key.ts --apply` run (userId null —
+  // an operator script, not a user). VALUE-FREE by contract: metadata carries
+  // the outcome, the old/new key ids (non-secret fingerprints) and per-field
+  // counts — never a key, a ciphertext, a plaintext or a row id.
+  ENCRYPTION_KEY_ROTATED:   "ENCRYPTION_KEY_ROTATED",
   //
   // ⚠️ TWO CONSTANTS WERE REMOVED HERE BY THE AI CONVERSATION RESET, because
   // their only writers were deleted with the conversation layer:
@@ -749,6 +756,8 @@ export const ADMIN_SECURITY_FILTER_ACTIONS: AuditActionType[] = [
   // Wave 3 ⑧ — anomaly trips surface in the security audit feed too, not just
   // the dedicated anomalies widget.
   AuditAction.SECURITY_ANOMALY_DETECTED,
+  // PRIV-004 — an encryption-key re-encryption run is a security event.
+  AuditAction.ENCRYPTION_KEY_ROTATED,
 ];
 
 /**
@@ -818,6 +827,10 @@ export const AUDIT_ACTION_GROUPS: { label: string; actions: AuditActionType[] }[
   {
     label: "Sessions",
     actions: [AuditAction.SESSION_REVOKED, AuditAction.ADMIN_SESSION_REVOKED],
+  },
+  {
+    label: "Key Management",
+    actions: [AuditAction.ENCRYPTION_KEY_ROTATED],
   },
   {
     label: "Goals",

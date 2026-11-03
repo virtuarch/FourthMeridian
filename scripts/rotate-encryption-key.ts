@@ -16,6 +16,10 @@
  *   # dry run (default) — counts per field and per key id; writes nothing
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs scripts/rotate-encryption-key.ts --env=<local|preview>
  *
+ *   # verify complete — the gate for step (d): exits 0 ONLY when no registered
+ *   # value would be unreadable without ENCRYPTION_KEY_PREVIOUS
+ *   npx tsx … scripts/rotate-encryption-key.ts --env=<env> --verify-complete
+ *
  *   # apply — local / Preview
  *   FM_PRODUCTION_DB_REF=<prod ref> npx tsx … scripts/rotate-encryption-key.ts --env=preview --apply [--expect=<n>] [--batch=<n>]
  *
@@ -41,17 +45,26 @@
  *     refuses before the first write).
  *   · FM_DB_GUARD=clone-only keeps its meaning (refuses anything not a clone);
  *     VERCEL_ENV=production refuses a non-production --env.
+ *   · The connecting role must BYPASS RLS (rolbypassrls or rolsuper), checked
+ *     before any scan: under row-level security a filtered table reads without
+ *     error, and a rotation that misses rows strands them.
  *   · No session-level SET is sent — every statement autocommits on its own.
+ *   · Every --apply run writes ONE AuditLog row (ENCRYPTION_KEY_ROTATED): the
+ *     outcome, old/new kids and per-field counts — never a value.
  *
- * Exit: 0 dry run done / apply COMPLETE · 2 refused before any database contact ·
- *       3 apply INCOMPLETE or --expect mismatch · 4 read-back verification failed
- *       (aborted; the failing row was restored) · 1 could not run.
+ * OUTPUT CONTRACT: counts, key ids and (for conflicts / an abort) row ids only.
+ * Never a key, a ciphertext, a plaintext, or which key a kid belongs to.
+ *
+ * Exit: 0 dry run done / apply COMPLETE / VERIFIED COMPLETE · 2 refused (before any
+ *       row is read) · 3 apply INCOMPLETE, --expect mismatch, or NOT COMPLETE ·
+ *       4 read-back verification failed (aborted; the failing row was restored) ·
+ *       1 could not run.
  */
 
 import { decideRepairEnvGuard, redactConnectionDetails } from "./lib/repair-env-guard";
-import { runKeyRotation, summarizeRotation } from "./lib/rotate-encryption-key.core";
+import { PRINCIPAL_REFUSAL, runKeyRotation, summarizeRotation } from "./lib/rotate-encryption-key.core";
 
-const KNOWN_FLAGS = new Set(["apply", "env", "expect", "batch", "i-have-owner-approval", "acknowledge-production-key-rotation"]);
+const KNOWN_FLAGS = new Set(["apply", "verify-complete", "env", "expect", "batch", "i-have-owner-approval", "acknowledge-production-key-rotation"]);
 const PRODUCTION_ACK_FLAG = "--acknowledge-production-key-rotation";
 
 function flag(name: string): string | null {
@@ -74,6 +87,8 @@ async function main(): Promise<void> {
   if (unknown.length) refuse([`unknown argument(s): ${unknown.map((a) => a.split("=")[0]).join(", ")} — refusing rather than guessing.`]);
 
   const apply = args.includes("--apply");
+  const verifyComplete = args.includes("--verify-complete");
+  if (apply && verifyComplete) refuse(["--verify-complete is read-only; it cannot be combined with --apply."]);
   const envFlag = flag("env");
   if (envFlag == null || envFlag === "") refuse(["--env=<local|preview|production> is required for every run, dry run included."]);
   if (envFlag === "production" && !args.includes(PRODUCTION_ACK_FLAG)) {
@@ -105,11 +120,18 @@ async function main(): Promise<void> {
 
   // Imported only after the gates: constructing the client is the first contact with any database.
   const { db } = await import("@/lib/db");
-  const report = await runKeyRotation(db, { apply, batchSize, expect: gate.expect });
+  const report = await runKeyRotation(db, {
+    apply, verifyComplete, batchSize, expect: gate.expect,
+    audit: { env: gate.env, targetHash: gate.targetHash, approvalTicket: gate.approvalTicket },
+  });
+  if (report.outcome === "REFUSED_PRINCIPAL") {
+    await db.$disconnect();
+    refuse([PRINCIPAL_REFUSAL]);
+  }
   console.log(`\n${summarizeRotation(report, gate.env)}\n`);
   if (gate.approvalTicket) console.log(`  owner approval: ${gate.approvalTicket}\n`);
   await db.$disconnect();
-  const code = { DRY_RUN: 0, COMPLETE: 0, INCOMPLETE: 3, REFUSED_EXPECT_MISMATCH: 3, ABORTED_VERIFY: 4 }[report.outcome];
+  const code = { DRY_RUN: 0, COMPLETE: 0, VERIFIED_COMPLETE: 0, INCOMPLETE: 3, NOT_COMPLETE: 3, REFUSED_EXPECT_MISMATCH: 3, ABORTED_VERIFY: 4, REFUSED_PRINCIPAL: 2 }[report.outcome];
   process.exit(code);
 }
 

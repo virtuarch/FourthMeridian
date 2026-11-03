@@ -124,7 +124,28 @@ async function main(): Promise<number> {
         ENCRYPTION_KEY: keys.current, ...(keys.previous ? { ENCRYPTION_KEY_PREVIOUS: keys.previous } : {}) } as unknown as NodeJS.ProcessEnv },
   );
   const out = (r: ReturnType<typeof cli>) => `${r.stdout}${r.stderr}`;
-  const leaks = (text: string) => [OLD, NEW, STRANGER, ...Object.values(plain), ...Object.values(fixture), owner].some((s) => text.includes(s));
+  // Output contract: counts and kids only — no key, plaintext, ciphertext (any format) or connection string.
+  const CIPHER_SHAPE = /\bv[23]:[0-9a-f]{8}|[0-9a-f]{32}:[0-9a-f]{32}|\bc1\.[A-Za-z0-9_-]{8}|[0-9a-f]{64}/i;
+  const leaks = (text: string) => CIPHER_SHAPE.test(text) || [OLD, NEW, STRANGER, ...Object.values(plain), ...Object.values(fixture), owner].some((s) => text.includes(s));
+  const auditRows = () => Number(val(`select count(*) from "AuditLog" where action = 'ENCRYPTION_KEY_ROTATED';`));
+  const lastAudit = () => val(`select metadata::text from "AuditLog" where action = 'ENCRYPTION_KEY_ROTATED' order by "createdAt" desc, id desc limit 1;`);
+
+  // ── 0. [cli] the principal must BYPASS RLS — refused before any scan, for every mode ──
+  {
+    const pw = randomBytes(18).toString("hex");
+    one(`create role fm_rotation_probe login password '${pw}' nobypassrls nosuperuser; grant usage on schema public to fm_rotation_probe;`);
+    const u = new URL(owner); u.username = "fm_rotation_probe"; u.password = pw;
+    const probe = (args: string[]) => spawnSync(path.join(ROOT, "node_modules", ".bin", "tsx"),
+      ["--require", "./scripts/lib/server-only-preload.cjs", "scripts/rotate-encryption-key.ts", ...args],
+      { cwd: ROOT, encoding: "utf8", timeout: 300_000, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "",
+        DATABASE_URL: `${u.toString()}?schema=public`, DIRECT_URL: `${u.toString()}?schema=public`, ENCRYPTION_KEY: NEW, ENCRYPTION_KEY_PREVIOUS: OLD } as unknown as NodeJS.ProcessEnv });
+    const before = snapshot();
+    const results = [probe(["--env=local"]), probe(["--env=local", "--verify-complete"]), probe(["--env=local", "--apply"])];
+    check(0, "[cli] a role WITHOUT BYPASSRLS is refused (exit 2, 'the rotation principal must bypass RLS') for dry run, --verify-complete and --apply",
+      results.every((r) => r.status === 2 && /the rotation principal must bypass RLS/.test(r.stderr)), results.map((r) => `${r.status} ${r.stderr.slice(-200)}`).join(" | "));
+    check(0, "[cli] …and nothing was written, not even an audit row", snapshot() === before && auditRows() === 0);
+  }
+
   // 9 candidates: u1t u2t u3t u1d u2d tok1 tok2 cred ev (u4t current; NULLs, sentinel, WALLET, MANUAL excluded)
   const EXPECTED = 9;
 
@@ -139,13 +160,19 @@ async function main(): Promise<number> {
         && o.includes("legacy v2 (no kid)") && o.includes("legacy v1 (no kid)") && o.includes("unreadable 0"), o.slice(-1500));
     check(1, "[cli] the WALLET descriptor is out of scope (Connection scans 2 rows: PLAID + MANUAL)", /Connection\.credential\s+scanned 2 /.test(o), o);
     check(1, "[cli] the output holds no key, plaintext, ciphertext or connection string", !leaks(o));
+    const v = cli(["--env=local", "--verify-complete"], { current: NEW, previous: OLD });
+    check(1, "[cli] --verify-complete before the apply exits 3 NOT COMPLETE: 8 values would be lost without PREVIOUS (the legacy v2 under the CURRENT key is not blocking), sealed evidence included",
+      v.status === 3 && out(v).includes("NOT COMPLETE") && out(v).includes("blocking 8") && /BetaAbuseEvidence\.sealedPayload[\s\S]*?blocking \(lost if PREVIOUS removed now\)\s+1\n/.test(out(v)) && snapshot() === before,
+      `${v.status} ${out(v).slice(-900)}`);
+    check(1, "[cli] --verify-complete writes nothing and leaks nothing", !leaks(out(v)) && auditRows() === 0);
   }
 
   // ── 2. [cli] --expect mismatch refuses before the first write ──
   {
     const before = snapshot();
     const r = cli(["--env=local", "--apply", `--expect=${EXPECTED + 1}`], { current: NEW, previous: OLD });
-    check(2, "[cli] apply with a wrong --expect exits 3 and writes nothing", r.status === 3 && /MISMATCH, nothing written/.test(out(r)) && snapshot() === before, `${r.status} ${out(r).slice(-600)}`);
+    check(2, "[cli] apply with a wrong --expect exits 3 and writes no ciphertext", r.status === 3 && /MISMATCH, nothing written/.test(out(r)) && snapshot() === before, `${r.status} ${out(r).slice(-600)}`);
+    check(2, "[cli] …and records the refused run as ONE AuditLog row (outcome REFUSED_EXPECT_MISMATCH)", auditRows() === 1 && JSON.parse(lastAudit()).outcome === "REFUSED_EXPECT_MISMATCH");
   }
 
   // ── 3. [cli] APPLY ──
@@ -154,6 +181,12 @@ async function main(): Promise<number> {
     const o = out(r);
     check(3, `[cli] apply (batch 2) exits 0 COMPLETE with ${EXPECTED} rotated, 0 conflicts`, r.status === 0 && o.includes(`rotated ${EXPECTED} · conflicts 0`) && o.includes("COMPLETE"), `${r.status} ${o.slice(-1200)}`);
     check(3, "[cli] the apply output holds no key, plaintext or ciphertext", !leaks(o));
+    const meta = lastAudit();
+    const m = JSON.parse(meta) as { outcome: string; env: string; newKid: string; oldKid: string; fields: Record<string, { rotated: number; candidates: number; conflicts: number }> };
+    check(3, "[cli] the apply wrote exactly ONE AuditLog row ENCRYPTION_KEY_ROTATED: outcome, env, old/new kids, per-field counts",
+      auditRows() === 2 && m.outcome === "COMPLETE" && m.env === "local" && m.newKid === kid(NEW) && m.oldKid === kid(OLD)
+        && m.fields["User.totpSecret"].rotated === 3 && m.fields["BetaAbuseEvidence.sealedPayload"].rotated === 1 && m.fields["Connection.credential"].rotated === 1, meta);
+    check(3, "[cli] the audit metadata holds no value, key or row id", !leaks(meta) && !/"u[1-5]"|"p[1-3]"|"c[1-3]"|"e1"/.test(meta));
     // Every value now opens with the NEW key ALONE — i.e. after PREVIOUS is removed.
     const read = (sql: string, purpose: typeof P[keyof typeof P]) => withKeys(NEW, undefined, () => {
       const v = val(sql);
@@ -185,6 +218,11 @@ async function main(): Promise<number> {
     const before = snapshot();
     const r = cli(["--env=local", "--apply"], { current: NEW, previous: OLD });
     check(4, "[cli] a second apply exits 0, rotates 0 and leaves every column byte-identical", r.status === 0 && out(r).includes("rotated 0 · conflicts 0") && snapshot() === before, out(r).slice(-600));
+    check(4, "[cli] …and still writes its one audit row (one per --apply run)", auditRows() === 3 && JSON.parse(lastAudit()).totals.rotated === 0);
+    const vBoth = cli(["--env=local", "--verify-complete"], { current: NEW, previous: OLD });
+    const vNew = cli(["--env=local", "--verify-complete"], { current: NEW });
+    check(4, "[cli] --verify-complete now exits 0 VERIFIED COMPLETE — with PREVIOUS still set and with it removed",
+      vBoth.status === 0 && vNew.status === 0 && out(vBoth).includes("VERIFIED COMPLETE") && out(vNew).includes("blocking 0") && !leaks(out(vNew)), `${vBoth.status}/${vNew.status} ${out(vNew).slice(-600)}`);
     const d = cli(["--env=local"], { current: NEW });
     check(4, "[cli] the dry run with PREVIOUS removed reports 0 to re-encrypt and 0 unreadable (the old kid's count is 0)",
       d.status === 0 && out(d).includes("to re-encrypt 0") && out(d).includes("unreadable 0") && !out(d).includes(kid(OLD)), out(d).slice(-800));
@@ -226,7 +264,19 @@ async function main(): Promise<number> {
     let threw = "";
     withKeys(NEW, OLD, () => { try { enc.decryptWithPurpose(stranger, P.TOTP_SECRET); } catch (e) { threw = (e as Error).message; } });
     check(6, "[cli] and the application read path throws on it (fail closed), naming no key", /not in the keyring/.test(threw) && !threw.includes(kid(STRANGER)));
+    const v = cli(["--env=local", "--verify-complete"], { current: NEW, previous: OLD });
+    check(6, "[cli] --verify-complete refuses completion while an unknown-kid value exists (exit 3)", v.status === 3 && out(v).includes("blocking 1"), `${v.status} ${out(v).slice(-500)}`);
     one(`delete from "User" where id='x1';`);
+  }
+
+  // ── 7. [cli] --verify-complete covers EVERY registered field: one old seal alone blocks it ──
+  {
+    one(`insert into "BetaAbuseEvidence" (id,"sourceRequestId","sealedPayload","capturedById","reasonCode","retainUntil")
+      values ('e2','req-2',${sqlStr(sealUnder(OLD, "late-evidence", P.BETA_ABUSE_EVIDENCE))},'u1','TEST',now() + interval '1 day');`);
+    const v = cli(["--env=local", "--verify-complete"], { current: NEW, previous: OLD });
+    check(7, "[cli] a single BetaAbuseEvidence seal opened only by PREVIOUS makes --verify-complete exit 3",
+      v.status === 3 && out(v).includes("blocking 1") && /BetaAbuseEvidence\.sealedPayload[\s\S]*?blocking \(lost if PREVIOUS removed now\)\s+1\n/.test(out(v)), `${v.status} ${out(v).slice(-700)}`);
+    one(`delete from "BetaAbuseEvidence" where id='e2';`);
   }
 
   return report("ENCRYPTION KEY ROTATION ACCEPTANCE");

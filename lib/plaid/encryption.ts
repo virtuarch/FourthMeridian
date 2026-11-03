@@ -114,13 +114,20 @@ export function previousKeyProblem(env: NodeJS.ProcessEnv = process.env): string
   const hex = env.ENCRYPTION_KEY_PREVIOUS;
   if (hex === undefined || hex === "") return null;
   if (!HEX64.test(hex)) return "ENCRYPTION_KEY_PREVIOUS, when set, must be exactly 64 hex characters.";
+  const cur = env.ENCRYPTION_KEY;
+  // A key id must name ONE key. Equal keys, or two keys whose 32-bit fingerprints
+  // collide, would make a v3 kid ambiguous — refused rather than guessed.
+  if (cur && cur.length === 64 && keyIdOf(Buffer.from(cur, "hex")) === keyIdOf(Buffer.from(hex, "hex"))) {
+    return "ENCRYPTION_KEY and ENCRYPTION_KEY_PREVIOUS have the same key id (the same key, or a fingerprint collision); generate a new key.";
+  }
   return null;
 }
 
 /**
  * The keyring, read from the environment on every call (as the single-key
  * module always did — tests and scripts change the key between calls).
- * A PREVIOUS equal to the current key collapses to "no previous".
+ * A malformed PREVIOUS, or one whose kid collides with the current kid
+ * (including an identical key), THROWS — see previousKeyProblem().
  */
 function getKeyring(): Keyring {
   const rootKey = getRootKey();
@@ -130,7 +137,6 @@ function getKeyring(): Keyring {
   const prevHex = process.env.ENCRYPTION_KEY_PREVIOUS;
   if (!prevHex) return { current, previous: null };
   const prevKey = Buffer.from(prevHex, "hex");
-  if (prevKey.equals(rootKey)) return { current, previous: null };
   return { current, previous: { kid: keyIdOf(prevKey), rootKey: prevKey } };
 }
 
@@ -186,11 +192,15 @@ function aesgcmEncrypt(key: Buffer, plaintext: string): string {
   return [iv.toString("hex"), tag.toString("hex"), enc.toString("hex")].join(":");
 }
 
+/** GCM tag length, pinned on decrypt for v1/v2/v3 alike: a truncated tag is refused, never accepted as a shorter one. */
+const GCM_TAG_BYTES = 16;
+
 function aesgcmDecrypt(key: Buffer, ivHex: string, tagHex: string, encHex: string): string {
   const iv      = Buffer.from(ivHex,  "hex");
   const tag     = Buffer.from(tagHex, "hex");
   const enc     = Buffer.from(encHex, "hex");
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  if (tag.length !== GCM_TAG_BYTES) throw new Error("Invalid authentication tag length");
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: GCM_TAG_BYTES });
   decipher.setAuthTag(tag);
   return decipher.update(enc).toString("utf8") + decipher.final("utf8");
 }
