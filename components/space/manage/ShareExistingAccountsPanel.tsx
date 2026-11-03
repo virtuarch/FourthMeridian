@@ -107,7 +107,12 @@ export function ShareExistingAccountsPanel({
                 <p className="text-sm text-[var(--text-primary)] truncate">{a.name}</p>
                 <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}{a.mask ? ` ···${a.mask}` : ""}</p>
               </div>
-              <p className="text-sm font-medium text-[var(--text-primary)] shrink-0 mr-1">{formatBalance(a.balance, a.currency)}</p>
+              {a.valuationUnknown ? (
+                // FM-AUDIT-022 — no value is not $0.00.
+                <p className="text-sm text-[var(--text-muted)] shrink-0 mr-1">Not yet valued</p>
+              ) : (
+                <p className="text-sm font-medium text-[var(--text-primary)] shrink-0 mr-1">{formatBalance(a.balance, a.currency)}</p>
+              )}
               <ChevronRight size={13} className={`text-[var(--text-muted)] shrink-0 transition-transform ${isSelected ? "rotate-90" : ""}`} />
             </button>
             {isSelected && (

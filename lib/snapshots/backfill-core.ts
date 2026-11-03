@@ -418,3 +418,62 @@ export function computeSnapshotFields(c: ClassifyTotals): SnapshotFields {
 
   return { stocks, crypto, total, cash, savings, debt, netWorth, totalAssets, netLiquid, cashOnHand };
 }
+
+// ── FM-AUDIT-022 — unvalued wallets in the historical backfill ────────────────
+
+/**
+ * The shape `resolveWalletBalance` (lib/crypto/wallet-current-value.ts) returns
+ * — declared structurally so this module stays import-free and pure.
+ */
+export interface ResolvedWalletBalance {
+  balance: number;
+  valuationUnknown?: true;
+}
+
+/**
+ * FM-AUDIT-022 — the backfill's account rows, run through THE totals
+ * classification for a wallet (`resolveWalletBalance`, resolved by the caller
+ * and passed in keyed by account id).
+ *
+ * The backfill holds crypto FLAT at today's value. "Today's value" must be the
+ * same one today's live snapshot counts (lib/snapshots/space-accounts.ts), not
+ * the stored `FinancialAccount.balance` column: for a NO_PRICE /
+ * NO_OBSERVATION wallet that column is the schema DEFAULT 0 or an undated,
+ * unprovenanced figure, and carrying it back 30 days wrote a number today's
+ * row explicitly refuses ("excluded, not yet valued").
+ *
+ *   no entry in `resolved` (not a spine wallet) → row untouched, byte-identical
+ *   VALUED / STALE                               → the spine value
+ *   NO_PRICE / NO_OBSERVATION                    → structural 0 + `valuationUnknown`,
+ *                                                  so `classifyAccounts` EXCLUDES it
+ *                                                  and counts it in `unvaluedCount`
+ */
+export function applyResolvedWalletBalances<T extends { id: string; balance: number }>(
+  accounts: readonly T[],
+  resolved: ReadonlyMap<string, ResolvedWalletBalance>,
+): Array<T & { valuationUnknown?: true }> {
+  return accounts.map((a) => {
+    const r = resolved.get(a.id);
+    if (r === undefined) return a;
+    return {
+      ...a,
+      balance: r.balance,
+      ...(r.valuationUnknown ? { valuationUnknown: true as const } : {}),
+    };
+  });
+}
+
+/**
+ * FM-AUDIT-022 — the completeness tier a reconstructed row records from its
+ * classification: "incomplete" when any account was EXCLUDED from the totals
+ * (an FX-unavailable balance, `unconverted`; or an unvalued wallet,
+ * `unvaluedCount`), else null (NOT RECORDED — the prior backfill behaviour).
+ *
+ * The same expression the live writer stamps (lib/snapshots/regenerate.ts,
+ * `c.unconverted || c.unvaluedCount > 0 ? "incomplete" : null`), in the same
+ * canonical vocabulary (snapshot-completeness.core.ts reads "incomplete" as
+ * `unreliable`). No new field, no parallel vocabulary.
+ */
+export function excludedTotalsCompletenessTier(c: { unconverted: boolean; unvaluedCount: number }): "incomplete" | null {
+  return c.unconverted || c.unvaluedCount > 0 ? "incomplete" : null;
+}

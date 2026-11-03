@@ -55,7 +55,7 @@
     "dev:reset-test-state": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/dev-reset-test-state.ts",
     "dev:reset-chase-history": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/reset-chase-history-test.ts",
     "backfill:ai-agents": "tsx scripts/backfill-ai-agents.ts",
-    "backfill:snapshots": "tsx scripts/backfill-snapshots.ts",
+    "backfill:snapshots": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/backfill-snapshots.ts",
     "backfill:merchant-intelligence": "tsx scripts/backfill-merchant-intelligence.ts",
     "backfill:personal-sections": "tsx scripts/backfill-personal-sections.ts",
     "audit": "tsx --env-file=.env.local scripts/run-audits.ts",

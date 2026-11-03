@@ -205,7 +205,10 @@ export function FinancesPanel({
                       <p className="text-sm text-[var(--text-primary)] truncate">{a.name}</p>
                       <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}</p>
                     </div>
-                    {(() => {
+                    {a.valuationUnknown ? (
+                      // FM-AUDIT-022 — no value is not $0.00.
+                      <p className="shrink-0 text-right text-sm text-[var(--text-muted)]">Not yet valued</p>
+                    ) : (() => {
                       const d = accountBalanceDisplay(a.balance, a.currency, ctx);
                       return (
                         <div className="shrink-0 text-right">

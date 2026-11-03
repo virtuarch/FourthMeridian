@@ -11,8 +11,11 @@
  * classifyAccounts() the live snapshot uses, so it stays internally consistent.
  *
  * Account set: queried directly from ACTIVE SpaceAccountLink (not via
- * lib/data/accounts.getAccounts) so this module stays free of the `server-only`
- * import chain and can run from a plain `tsx` script. Parity is preserved:
+ * lib/data/accounts.getAccounts), so no viewer session is needed. FM-AUDIT-022 —
+ * spine wallets are resolved through lib/crypto/wallet-current-value (lazy
+ * import), whose chain includes a `server-only` module, so the
+ * `backfill:snapshots` script runs with scripts/lib/server-only-preload.cjs
+ * (the house pattern for app modules run from tsx). Parity is preserved:
  * getAccountsWithVisibility returns the real balance + type for every ACTIVE,
  * non-deleted link regardless of visibility level (visibility only redacts
  * names/metadata, which snapshots never use), so the {id,type,balance} set —
@@ -44,6 +47,9 @@ import {
   computeAccountFloors,
   isHeldFlatBalanceAccount,
   isReconstructableCard,
+  applyResolvedWalletBalances,
+  excludedTotalsCompletenessTier,
+  type ResolvedWalletBalance,
   truncDateUTC,
   addDaysUTC,
   maxDate,
@@ -110,13 +116,40 @@ export async function backfillSpaceSnapshots(
           debtSubtype: true, creditLimit: true,
           // PB-8 — Plaid's subtype: a "credit card" without a limit still walks.
           providerSubtype: true,
+          // FM-AUDIT-022 — the wallet's chain + observation clock, so a wallet's
+          // flat value comes from THE totals classification (resolveWalletBalance),
+          // never the stored column.
+          walletChain: true, lastUpdated: true,
         },
       },
     },
   });
   if (linkRows.length === 0) return 0;
 
-  const accounts = linkRows.map((l) => ({
+  // FM-AUDIT-022 — a spine wallet's flat value is the SAME figure today's live
+  // snapshot counts (lib/snapshots/space-accounts.ts): VALUED / STALE ⇒ the
+  // spine value; NO_PRICE / NO_OBSERVATION ⇒ EXCLUDED (structural 0 flagged
+  // `valuationUnknown`), never the stored column carried back 30 days. Lazy
+  // import, as space-accounts.ts does, so this module's static import chain is
+  // unchanged. Non-wallet rows are absent from the map and stay byte-identical.
+  const { loadWalletCurrentValues, resolveWalletBalance } = await import("@/lib/crypto/wallet-current-value");
+  const walletValueByAccount = await loadWalletCurrentValues(
+    linkRows.map((l) => ({
+      id:          l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      lastUpdated: l.financialAccount.lastUpdated,
+    })),
+    // The SAME authority every other query in this module uses (module `db`),
+    // passed explicitly — never defaulted.
+    { client: db, contextSpaceId: spaceId },
+  );
+  const resolvedWallets = new Map<string, ResolvedWalletBalance>();
+  for (const l of linkRows) {
+    const v = walletValueByAccount.get(l.financialAccount.id);
+    if (v !== undefined) resolvedWallets.set(l.financialAccount.id, resolveWalletBalance(l.financialAccount.balance, v));
+  }
+
+  const accounts = applyResolvedWalletBalances(linkRows.map((l) => ({
     id:          l.financialAccount.id,
     type:        l.financialAccount.type as string,
     balance:     l.financialAccount.balance,
@@ -124,7 +157,7 @@ export async function backfillSpaceSnapshots(
     debtSubtype: l.financialAccount.debtSubtype,
     creditLimit: l.financialAccount.creditLimit,
     providerSubtype: l.financialAccount.providerSubtype,
-  }));
+  })), resolvedWallets);
 
   const today = todayUTC();
   const windowStart = addDaysUTC(today, -BACKFILL_DAYS);
@@ -259,7 +292,7 @@ export async function backfillSpaceSnapshots(
   // meaning (approved D-7): currency estimation is not written to snapshots.
   const rows: Array<{
     spaceId: string; date: Date; isEstimated: true; reportingCurrency: string;
-    cryptoValuationStatus: null;
+    cryptoValuationStatus: null; completenessTier: "incomplete" | null;
     stocks: number; crypto: number; total: number; cash: number; savings: number;
     debt: number; netWorth: number; totalAssets: number; netLiquid: number; cashOnHand: number;
   }> = [];
@@ -309,9 +342,16 @@ export async function backfillSpaceSnapshots(
     // explicitly null. A material flat crypto therefore resolves to
     // `legacy-unrecorded` at the read boundary — unassertable until a historical
     // regeneration values it and stamps `supported`.
+    //
+    // FM-AUDIT-022 — ONE exception to "no completeness tier": when an account
+    // was EXCLUDED from the totals (an unvalued wallet — `unvaluedCount` — or an
+    // FX-unavailable balance — `unconverted`), the stored sums are an honest
+    // partial, and the row records `completenessTier: "incomplete"` exactly as
+    // the live writer does (regenerate.ts), so no reader presents it as complete.
+    // Null otherwise — byte-identical to the prior backfill row.
     rows.push({
       spaceId, date: d, isEstimated: true, reportingCurrency: space.reportingCurrency,
-      cryptoValuationStatus: null, ...fields,
+      cryptoValuationStatus: null, completenessTier: excludedTotalsCompletenessTier(c), ...fields,
     });
   }
 
