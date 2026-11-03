@@ -76,7 +76,10 @@ console.log("1. the CLI refuses before any database contact");
     refused(badPrev, /ENCRYPTION_KEY_PREVIOUS/) && !badPrev.stderr.includes("zz-not-hex"), badPrev.stderr);
   const both = run(["--env=local", "--apply", "--verify-complete"], { DATABASE_URL: LOCAL });
   check("--verify-complete with --apply is refused (verify is read-only)", refused(both, /read-only/), both.stderr);
-  const all = [both, noEnv, typo, prodNoAck, ackElsewhere, prodApplyNoTicket, prodApplyNoExpect, previewIsProd, noRef, localRemote, cloneGuard, vercelProd, badBatch, noKey, badPrev];
+  const same = run(["--env=local"], { DATABASE_URL: LOCAL, ENCRYPTION_KEY_PREVIOUS: KEY });
+  check("ENCRYPTION_KEY_PREVIOUS EQUAL to ENCRYPTION_KEY is refused by the script (the app only warns)",
+    refused(same, /ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY/), same.stderr);
+  const all = [same, both, noEnv, typo, prodNoAck, ackElsewhere, prodApplyNoTicket, prodApplyNoExpect, previewIsProd, noRef, localRemote, cloneGuard, vercelProd, badBatch, noKey, badPrev];
   check("no refusal prints a password, project ref or key", all.every((r) => !leaks(r)));
 }
 

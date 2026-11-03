@@ -119,6 +119,10 @@ if (process.argv[2] === "child") {
     check("64 hex → passes", run({ ...CORE, NODE_ENV: "test", ENCRYPTION_KEY_PREVIOUS: "cd".repeat(32) }).includes("VALIDATE_OK"));
     const BAD = "not-a-key-value-QX7";
     const bad = run({ ...CORE, NODE_ENV: "test", ENCRYPTION_KEY_PREVIOUS: BAD });
+    const same = run({ ...CORE, NODE_ENV: "test", ENCRYPTION_KEY_PREVIOUS: CORE.ENCRYPTION_KEY });
+    check("equal to ENCRYPTION_KEY → boots (never a failure) with the loud ignored warning, value not echoed",
+      same.includes("VALIDATE_OK") && same.includes("ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY — ignored; rotation not in progress")
+        && !same.includes(CORE.ENCRYPTION_KEY), same.slice(0, 300));
     check("malformed → throws, names the variable, does not echo the value",
       bad.includes("VALIDATE_THREW") && bad.includes("ENCRYPTION_KEY_PREVIOUS") && !bad.includes(BAD), bad.slice(0, 300));
   }

@@ -46,7 +46,7 @@
 
 import "server-only";
 import { describeOpenAiConfiguration, type OpenAiConfigurationFacts } from "@/lib/ai/openai-configuration";
-import { previousKeyProblem } from "@/lib/plaid/encryption";
+import { previousKeyProblem, previousKeyWarning } from "@/lib/plaid/encryption";
 
 // ── Internal snapshot (read once at module load) ──────────────────────────────
 
@@ -610,6 +610,9 @@ export function validateEnv(): EnvReport {
   // here instead. The message names the rule, never the value.
   const previousKey = previousKeyProblem(process.env);
   if (previousKey) throw new Error(`[env] ${previousKey}`);
+  // Equal to ENCRYPTION_KEY: a copy-paste slip, ignored by the keyring — loud, never fatal.
+  const previousSame = previousKeyWarning(process.env);
+  if (previousSame) console.warn(`[env] ${previousSame}`);
 
   // V25-FINAL-2 — a production deployment must not silently run against Plaid
   // SANDBOX. Plaid is an OPTIONAL integration (a prod deploy with NO credentials

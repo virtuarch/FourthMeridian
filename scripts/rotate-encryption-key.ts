@@ -115,8 +115,13 @@ async function main(): Promise<void> {
   if (!gate.ok) refuse(gate.reasons);
 
   // Keyring before the database: an unusable key is a refusal, not a half-run.
-  const { keyringKeyIds } = await import("@/lib/plaid/encryption");
+  const { keyringKeyIds, previousKeyWarning } = await import("@/lib/plaid/encryption");
   try { keyringKeyIds(); } catch (e) { refuse([e instanceof Error ? e.message : "the keyring could not be read"]); }
+  // The app tolerates PREVIOUS === current (ignored, boot warning); a rotation does not:
+  // the operator almost certainly pasted the new key twice and the old key is missing.
+  if (previousKeyWarning(process.env)) {
+    refuse(["ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY — a rotation needs the OLD key in ENCRYPTION_KEY_PREVIOUS and the NEW key in ENCRYPTION_KEY."]);
+  }
 
   // Imported only after the gates: constructing the client is the first contact with any database.
   const { db } = await import("@/lib/db");

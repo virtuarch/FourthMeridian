@@ -44,6 +44,7 @@ import {
   encryptWithPurpose,
   keyringKeyIds,
   openWithPurposeReportingKey,
+  previousKeyWarning,
   sealWithPurpose,
 } from "@/lib/plaid/encryption";
 import { ENCRYPTED_FIELDS, fieldLabel, type EncryptedField } from "@/lib/plaid/encrypted-fields";
@@ -243,6 +244,7 @@ export async function rotationPrincipalRefusal(client: RotationClient): Promise<
 
 export async function runKeyRotation(client: RotationClient, opts: RotationOptions): Promise<RotationReport> {
   const keyIds = keyringKeyIds(); // throws (value-free) when ENCRYPTION_KEY / _PREVIOUS is unusable
+  if (previousKeyWarning(process.env)) throw new Error("ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY — refusing to rotate (the old key is missing)");
   const batchSize = Math.min(Math.max(opts.batchSize ?? 100, 1), 1000);
   const fields = ENCRYPTED_FIELDS.filter((f) => !opts.fields || opts.fields.includes(fieldLabel(f)));
   const mode = opts.verifyComplete ? "VERIFY" : opts.apply ? "APPLY" : "DRY_RUN";
