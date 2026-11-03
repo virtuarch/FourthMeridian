@@ -1035,10 +1035,10 @@ Node 24 is documented consistently.
 
 **Status update (2026-11-03).** Statuses below are re-checked against `develop`; the original findings text is kept as audited.
 - **FM-AUDIT-023:** **PARTIAL** — refresh (FIN-011) + exchange existing-row (#295) fixed; exchange new-row **OPEN** (FIN-A2, queued).
-- **FM-AUDIT-022:** **IN PROGRESS** (builder).
+- **FM-AUDIT-022:** **PARTIAL:** live totals FIXED (#301); today's-snapshot incomplete stamp IN PROGRESS (#302); history backfill + CSV export IN PROGRESS (FIN-B2). Flips to FIXED once both land.
 - **FM-AUDIT-021:** confirmed live; **QUEUED** for a builder.
-- **FM-AUDIT-025:** **CONFIRMED** (see its entry), fix **QUEUED**. Repair of rows already in the archive is **OWNER-GATED**.
-- **FM-AUDIT-053:** **CONFIRMED**, fix **QUEUED**.
+- **FM-AUDIT-025:** parser **FIXED** on `develop` (#300). Repair of rows already in the archive is **OWNER-GATED**.
+- **FM-AUDIT-053:** **FIXED** on `develop` (#300).
 
 **Column legend:**
 - **Sev/Conf:** severity P0–P4 / confidence (PROVEN, HIGH, MEDIUM, LOW). ✔ means re-verified in source by the lead auditor.
@@ -1199,7 +1199,7 @@ Node 24 is documented consistently.
 - **Remediation:** carry `state` on the DTO, exclude from sums, disclose (`cryptoUnpriced`), stamp the snapshot.
 - **When:** AFTER-S1.
 - **Pin:** force NO_PRICE ⇒ totals exclude it and disclose.
-- **Status (2026-11-03):** still live on `develop` (`lib/data/accounts.ts:260`, `lib/snapshots/space-accounts.ts:289`). **IN PROGRESS** (builder).
+- **Status (2026-11-03): PARTIAL:** live totals FIXED (#301); today's-snapshot incomplete stamp IN PROGRESS (#302); history backfill + CSV export IN PROGRESS (FIN-B2). Flips to FIXED once both land. Every reader resolves a wallet through one helper (`resolveWalletBalance`): an unpriced or never-observed wallet is excluded from totals rather than summed from the stored column, and surfaces disclose how many are not yet valued. Until #302 lands, today's row excludes the wallet but is not stamped partial.
 
 **FM-AUDIT-023 — Plaid null current balance keeps the old value but stamps it freshly verified; connect-time null → $0**
 - **Sev/Conf:** P2 / HIGH (code), MEDIUM (frequency)
@@ -1227,10 +1227,9 @@ Node 24 is documented consistently.
 - **Remediation:** verify against the live API; chunk ≤90 days for CoinGecko, or re-date daily points; repair script.
 - **When:** verify BEFORE-S1 (cheap), fix AFTER-S1.
 - **Pin:** fixture of daily 00:00 points >90 days.
-- **Status (2026-11-03): CONFIRMED; fix QUEUED; archive repair OWNER-GATED.**
+- **Status (2026-11-03): parser FIXED on `develop` (#300); archive repair OWNER-GATED.** #300 files an exact-00:00 UTC point as the previous day's close (`closeDateOf`) and ends each request at the next day's 00:00, for both the coin and token paths. The original confirmation:
   - CoinGecko's public documentation says ranges above 90 days return daily points at 00:00 UTC, and 2–90 days return hourly points. A keyless public probe (bitcoin only) matched: each daily point equals the hourly 00:00 point, which is the boundary price, i.e. the previous day's close.
   - `parseMarketChartCloses` (`lib/prices/providers/coingecko.ts:295-310`) files the 00:00 point of day X as X's close. Every caller uses the 365-day default chunk (`lib/prices/backfill.ts:150`), and the token path requests its whole window at once, so backfilled crypto closes are one day late. Short (≤90-day) fills get hourly data, so the archive mixes two conventions.
-  - Fix: file an exact-00:00 point under the previous UTC date and extend the request end by one day.
   - The archive is insert-only (`createMany` with `skipDuplicates`), so the fix does not correct stored rows. Rewriting them, then regenerating the affected crypto history, is an owner-gated decision (the same class as the PB-8 regeneration).
 
 **FM-AUDIT-026 — No request timeouts on Plaid, CoinGecko, Tiingo, ETH-history or SOL-history transports; some on user POST paths without `maxDuration`**
@@ -1327,7 +1326,7 @@ Node 24 is documented consistently.
 | FM-AUDIT-050 | Price and FX jobs report "ok" when every provider call failed | HIGH | `lib/prices/fetch.ts:137-141`; `jobs/fetch-security-prices.ts:137-162`; `jobs/fetch-fx-rates.ts:53-57` | AFTER-S1 | THROTTLED adapter ⇒ degraded status |
 | FM-AUDIT-051 | Plaid ITEM webhooks ignored; NEEDS_REAUTH excluded from every sync, so LOGIN_REPAIRED is never observed | HIGH | `webhook/route.ts:74-80`; `sync-banks.ts:165` | BACKLOG | ITEM codes → `setPlaidItemHealth` |
 | FM-AUDIT-052 | ETH history: -32000 fatal, no batch shrink, no persisted cursor; SOL rescans newest-first each sync | HIGH | `eth-history.ts:444-451,681`; `wallet-history-refresh.ts:64` | BACKLOG | -32000 for batch>N ⇒ completes at smaller batch |
-| FM-AUDIT-053 | xpub balance includes unconfirmed; malformed multiaddr 200 parses to 0 BTC | HIGH | `btc-explorer.ts:291-316` (now `parseMultiaddrStats`, `:337-354`) | AFTER-S1 (zero case). **2026-11-03: CONFIRMED, fix QUEUED** (missing `addresses` or a non-numeric field ⇒ INVALID_DATA, never 0) | `{}` 200 ⇒ error, not 0 |
+| FM-AUDIT-053 | xpub balance includes unconfirmed; malformed multiaddr 200 parses to 0 BTC | HIGH | `btc-explorer.ts:291-316` (now `parseMultiaddrStats`, `:337-354`) | AFTER-S1 (zero case). **2026-11-03: FIXED on `develop` (#300).** A response without an `addresses` array, an entry with a non-integer `n_tx` / `final_balance`, or a response that omits any requested address now fails as INVALID_DATA, never 0. (A keyless probe showed the provider returns every requested address, so an omitted address is an invalid response, not an implied zero.) | `{}` 200 ⇒ error, not 0 |
 | FM-AUDIT-054 | Space OWNER can leave own Space; DELETE has no PERSONAL guard ⇒ ownerless Space or `findFirstOrThrow` lockout | HIGH | `members/[userId]/route.ts:127-135`; `lib/space.ts:213-216` | AFTER-S1 (cheap; IMMEDIATE acceptable) | DELETE source has owner and PERSONAL refusals |
 | FM-AUDIT-055 | `DISABLE_SYSTEM_ADMIN` not enforced in platform authorization (30-day JWT) | HIGH | `lib/platform/authorize.ts`; `lib/session.ts:283-297` | BACKLOG | `decidePlatformAccess(..., {systemAdminDisabled:true})` false |
 | FM-AUDIT-056 | Two client-IP authorities; `cf-connecting-ip` trusted first (spoofable at origin) | MEDIUM | `lib/api.ts:70-81`, `lib/auth.ts:156-159` vs `lib/rate-limit.ts:247-253` | BACKLOG | single helper source scan |
