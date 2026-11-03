@@ -110,6 +110,9 @@ export async function backfillSpaceSnapshots(
       financialAccount: {
         select: {
           id: true, type: true, balance: true, createdAt: true,
+          // FIN-A2 — a never-observed balance is excluded by the one totals
+          // classification, never carried back as a $0 flat value.
+          balanceObserved: true,
           // MC1 Phase 3 Slice 3 — conversion input for the real space context.
           currency: true,
           // Slice 4B — used only to gate credit-card reconstruction.
@@ -146,7 +149,11 @@ export async function backfillSpaceSnapshots(
   const resolvedWallets = new Map<string, ResolvedWalletBalance>();
   for (const l of linkRows) {
     const v = walletValueByAccount.get(l.financialAccount.id);
-    if (v !== undefined) resolvedWallets.set(l.financialAccount.id, resolveWalletBalance(l.financialAccount.balance, v));
+    // FIN-A2 — a non-wallet row enters the map only when its balance was never
+    // observed; every other non-wallet row stays absent (byte-identical).
+    if (v !== undefined || l.financialAccount.balanceObserved === false) {
+      resolvedWallets.set(l.financialAccount.id, resolveWalletBalance(l.financialAccount.balance, v, l.financialAccount.balanceObserved));
+    }
   }
 
   const accounts = applyResolvedWalletBalances(linkRows.map((l) => ({

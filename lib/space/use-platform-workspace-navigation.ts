@@ -81,6 +81,8 @@ export const PLATFORM_WORKSPACE_SCOPED_PARAMS: readonly string[] = [
   "period", "records", "rq", "rsort", "rpage", "rfilter", "rid",
   // AI & Costs — the budget KPI's per-call drilldown (ai-budget-calls-url.ts AI_BUDGET_CALLS_URL_PARAMS).
   "aicalls", "aiuntil", "aipage",
+  // Platform Economics › Overview — the open KPI's records (economics-model.ts ECONOMICS_URL_PARAMS).
+  "econ", "econuntil",
   // PB-1 2B — the incidents workspace filters, page and open incident (incidents-url.ts INCIDENTS_URL_PARAMS).
   "isev", "iprov", "iop", "icode", "ifrom", "ito", "ipage", "iid",
 ];

@@ -44,6 +44,7 @@
  */
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
+import { ALL_CASH_HISTORY_AI_NOTE } from '@/lib/liquidity/cash-history';
 /**
  * RLS-AI-S6 — THE ASSEMBLER'S READ AUTHORITY IS NOW A PARAMETER, SO THIS FILE
  * HOLDS NO CLIENT AT ALL.
@@ -160,6 +161,7 @@ export function projectSnapshotSection(
       netWorth:      contaminated ? null : r.netWorth,
       totalAssets:   contaminated ? null : r.totalAssets,
       liabilities:   r.totalDebt,                    // rename for semantic clarity
+      // FIN-005 — ALL cash (restricted included): `liquidBasis` below says so.
       liquid:        r.totalCash + r.totalSavings,
       investments:   r.totalInvestments,             // rename for semantic clarity
       digitalAssets: contaminated ? null : r.totalCrypto,  // rename for semantic clarity
@@ -268,6 +270,12 @@ export function projectSnapshotSection(
       before: coveredFrom,
       note: `${partialNote} Never measure or state a change between a day before ${coveredFrom} and a later one.`,
     } } : {}),
+    // FIN-005 part 1 — the historical cash basis, stated on the payload: every
+    // point's `liquid` / `netLiquid` is ALL cash, restricted (HSA, retirement)
+    // INCLUDED, unlike the accounts section's unrestricted `totalLiquid`. No change
+    // between the two is computed here, and the note forbids the model making one.
+    liquidBasis:      'ALL_CASH',
+    liquidBasisNote:  ALL_CASH_HISTORY_AI_NOTE,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     latest,

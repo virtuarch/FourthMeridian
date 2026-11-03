@@ -36,6 +36,8 @@ import type {
 } from '@/lib/ai/types';
 import type { ClassificationReason, FinancialAssessment } from '@/lib/ai/intelligence';
 import { claimEvidence, claimsReachedBy } from './claim-evidence';
+// FIN-005 — the historical cash basis (ALL_CASH) vs today's unrestricted liquid.
+import { ALL_CASH_CHANGE_WITHHELD_MESSAGE, allCashChangeComparableToCurrent } from '@/lib/liquidity/cash-history';
 // PB-8c — the SAME floors and rule as the heroes (PB-8b) and the AI snapshot.
 import {
   balanceCoverageSidesFor, gateWindowChange, type BalanceCoverageRead,
@@ -314,8 +316,20 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
   const d1 = sincePreviousDay(history, cov, estimatedOn);
   const w1 = presetWindow(history, 'PAST_WEEK', cov, estimatedOn);
   const m1 = presetWindow(history, 'PAST_MONTH', cov, estimatedOn);
+  // FIN-005 — the liquid deltas are measured on the snapshot series, which is ALL
+  // cash (restricted included), while today's `currentState.liquid` is the
+  // UNRESTRICTED `totalLiquid`. Beside it, a liquid delta would be a change on one
+  // basis narrated with a figure on another: withheld, with the reason, whenever
+  // restricted cash exists today. (A retrospective Brief reads both from the
+  // snapshot — one basis — and is untouched.)
+  const allCashComparable = retrospective || allCashChangeComparableToCurrent(acc?.totalRestrictedCash);
+  const onCurrentBasis = (w: BriefChangeWindow | undefined): BriefChangeWindow | undefined => {
+    if (!w || allCashComparable || (w.liquid === undefined && w.unavailable?.liquid === undefined)) return w;
+    const { liquid: _withheld, ...rest } = w;
+    return { ...rest, unavailable: { ...w.unavailable, liquid: ALL_CASH_CHANGE_WITHHELD_MESSAGE } };
+  };
   const recentChanges: BriefPackage['recentChanges'] = {
-    ...(d1 ? { d1 } : {}), ...(w1 ? { w1 } : {}), ...(m1 ? { m1 } : {}),
+    ...(d1 ? { d1: onCurrentBasis(d1)! } : {}), ...(w1 ? { w1: onCurrentBasis(w1)! } : {}), ...(m1 ? { m1: onCurrentBasis(m1)! } : {}),
   };
 
   // ── Behavior ──

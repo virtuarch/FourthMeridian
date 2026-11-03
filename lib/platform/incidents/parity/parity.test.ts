@@ -14,7 +14,7 @@
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import type { CsIncidentVerdict, IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { buildWorld } from "./world";
-import { csPanelBaselineReader, LEGACY_READERS, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
+import { convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
 import { moduleVerdicts } from "./module-adapter";
 
 let failures = 0;
@@ -33,7 +33,8 @@ const projection = openIds(run("projection"));
 // R1 is cut over: this half proves the divergences against the panel's PRE-cutover
 // rule (kept inline as csPanelBaselineReader); the gate below runs the live reader.
 const csPanel = openIds(csPanelBaselineReader(w));
-const convergence = run("convergence");
+// R3 is cut over too: the sensitivity half reads convergence's PRE-cutover rule.
+const convergence = convergenceBaselineReader(w);
 const convOpen = openIds(convergence);
 const csAttention = run("cs-attention");
 
@@ -92,7 +93,8 @@ const MODULE_OPEN: Readonly<Record<ReaderId, (v: IncidentVerdict) => boolean>> =
 export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> = {
   // cut over in R1; any divergence from module brokenNow is now a defect
   "cs-panel": [],
-  convergence: ["D2", "D2b", "D3", "D6", "D7", "D10"],
+  // cut over in R3; any divergence from module state === "active" is now a defect
+  convergence: [],
   projection: ["D2", "D2b", "D10"],
   // D2: alerts select from the projection's active set, which does not honour a soft-deleted account.
   alerts: ["D2", "D2b", "D10"],

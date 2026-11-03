@@ -48,7 +48,7 @@ IMPLEMENTED in `lib/platform/workspaces.ts` (`PLATFORM_AREA_WORKSPACES`).
 
 | Area (label) | Workspaces → views | Lead component |
 |---|---|---|
-| Platform Operations | **Operations**: Overview · Jobs · Pipeline (drill-down, no second tab row) · **Providers** (one view) · **AI & Costs** (one view) · **Policies**: Policy groups · Platform defaults · Alerts · Emergency controls (drill-down) | `OperationsLead`, `PipelineLead`, `ProvidersLead`, `AiCostsLead`, `PoliciesLead` |
+| Platform Operations | **Operations**: Overview · Jobs · Pipeline (drill-down, no second tab row) · **Providers** (one view) · **Economics**: Overview · AI & Costs · **Policies**: Policy groups · Platform defaults · Alerts · Emergency controls (drill-down) · **Incidents** | `OperationsLead`, `PipelineLead`, `ProvidersLead`, `EconomicsOverviewLead`, `AiCostsLead`, `PoliciesLead` |
 | Security Operations | **Security** (posture dashboard) · **Audit** · **Operator actions** | `SecurityLead` |
 | Growth | **Growth** (acquisition dashboard; hosts the beta signup list) | `GrowthLead` |
 | Customer Success | **Customers** · **Incidents** · **Communications**: Library · Automations · Delivery & History · Preferences | `CustomerSuccessLead`, `components/platform/comms/*` |
@@ -431,19 +431,45 @@ threshold lives in its exported `PRESENCE_CONFIG`:
 - **Still open:** the platform intelligence plan's consolidation of the remaining competing
   "active" definitions (see [PLATFORM-INTELLIGENCE](../plans/PLATFORM-INTELLIGENCE.md)).
 
-## Economics restructure
+## Economics
 
-**PLANNED** (owner-approved, not implemented; proposal history in draft PR #129):
+**Overview and the AI & Costs move: IMPLEMENTED (PR A, draft).** Providers (cost
+attribution, quotas) and Entitlements (cost by policy group, read-only scenarios) are
+**PLANNED** as PR B; the distinct Platform AI category is **PLANNED** as PR C.
 
-- A new top-level **Economics** area with **Overview · AI & Costs · Providers ·
-  Entitlements**. Whether it becomes a new `PlatformArea` value or a re-composition of
-  existing workspaces is not yet decided in code.
-- **AI & Costs moves under Economics.** Today it is a Platform Operations workspace
-  (`platform-ai`), and its lead already reserves an "Economics, Phase 3" block with no
-  numbers (`components/platform/leads/AiCostsLead.tsx`).
-- **Provider health stays in Platform Operations › Providers** (operations). Economics
-  › Providers covers provider cost only.
-- **Configuration stays in Policies.** Economics reads it and never edits it.
+- **Navigation.** `platform-economics` is a Platform Operations workspace in the place
+  AI & Costs had (Operations · Providers · Economics · Policies · Incidents), with views
+  **Overview** (`economics-overview` lead) and **AI & Costs** (`ai`, the unchanged
+  `AiCostsLead` and its six hosted keys). Same `PLATFORM_OPS` grant; no new role.
+- **Deep links.** `platform-ai` and `platform-costs` are aliases of
+  `platform-economics` carrying the `ai` view, so `?workspace=platform-ai` (and the
+  `aicalls` / `aiuntil` / `aipage` drilldown) still opens AI & Costs, canonicalized in
+  place. Pinned in `components/space/shell/space-history.test.ts` (E1–E5) and
+  `lib/platform/workspaces.test.ts`.
+- **One reader.** `GET /api/platform/platform-ops/economics` (`PLATFORM_OPS` READ,
+  never cached) returns the `EconomicsSnapshot` from `lib/platform/economics/snapshot.ts`,
+  which composes the existing readers: `readSpendGroups` (AI ledger, all surfaces),
+  the Plaid census (`buildPlaidUsage`, present-during-cycle reading),
+  `loadEngagedUserIdsSince` (PB-10 engagement, never sessions) and `opaqueUserRef`.
+  The pure fold is `lib/platform/economics/snapshot-core.ts`.
+- **Figures** (current billing cycle = calendar month to date): operating cost; its AI,
+  providers and infrastructure split; active customers; cost per active customer
+  (operating cost ÷ engaged customers); revenue; margin. Plus AI cost over 7 / 30 / 90
+  UTC days with a daily series. Plaid is billed per Item-month, so it is never allocated
+  to days and the daily trend is AI only.
+- **Status per figure:** `MEASURED` only for counts (active customers); `ESTIMATED`
+  when every part was priced; `PARTIAL` when some part is unpriced or unmetered (a lower
+  bound, with the missing parts listed); `UNAVAILABLE` with a reason and a null value,
+  never $0. Operating cost is always `PARTIAL` today because infrastructure and other
+  providers are not metered. Revenue and margin are always `UNAVAILABLE`: "no billing
+  source".
+- **Drilldowns.** Each figure with records carries `drill.href` →
+  `GET /api/platform/platform-ops/economics/drill?figure=&window=&until=`. The figure's
+  value is defined as the sum of its drill rows (a count: the row count), computed from
+  the same inputs at the same window end, so a KPI and its list cannot disagree. The open
+  drill is in the URL (`?econ=<figure>.<window>&econuntil=`, workspace-scoped, REPLACE).
+- **Provider health stays in Platform Operations › Providers.** Configuration stays in
+  Policies; Economics reads it and never edits it.
 - All money shown stays an estimate, not a bill. See
   [billing-and-provider-costs](billing-and-provider-costs.md) for the rate card,
   attribution and the cost freeze. No billing or revenue data source exists.

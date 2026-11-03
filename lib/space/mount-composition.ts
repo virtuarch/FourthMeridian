@@ -140,6 +140,9 @@ export async function loadSpaceAccounts(
           // freshness authority can distinguish provider attestation from our own
           // write time instead of every surface assuming they are the same fact.
           balanceLastUpdatedAt: true,
+          // FIN-A2 — read by the one totals classification below; destructured
+          // out so the client payload keeps its exact shape.
+          balanceObserved: true,
           // V26-PRE (B3) — DebtProfile joined so the EFFECTIVE terms authority
           // (lib/debt/effective-terms.ts) can resolve APR/minimum payment.
           // Before this join, Space debt widgets computed interest and payoff
@@ -216,8 +219,8 @@ export async function loadSpaceAccounts(
   const unvaluedIds = new Set<string>();
   const effectiveLinks = links.map((l) => {
     const terms = resolveEffectiveDebtTerms(l.financialAccount);
-    const { debtProfile: _profile, ...account } = l.financialAccount;
-    const wb = resolveWalletBalance(account.balance, walletValueByAccount.get(account.id));
+    const { debtProfile: _profile, balanceObserved, ...account } = l.financialAccount;
+    const wb = resolveWalletBalance(account.balance, walletValueByAccount.get(account.id), balanceObserved);
     if (wb.valuationUnknown) unvaluedIds.add(account.id);
     return {
       ...l,

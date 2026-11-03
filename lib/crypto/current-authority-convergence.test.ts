@@ -129,8 +129,9 @@ const READERS = [
     !/visibilityLevel|TRANSACTION_DETAIL_VISIBILITY/.test(src));
   const accounts = code(read("lib", "data", "accounts.ts"));
   // FM-AUDIT-022 — re-pinned: through the one totals classification.
+  // FIN-A2 re-pin: the call now also passes balanceObserved (same balance read).
   check("BALANCE_ONLY still receives the corrected balance",
-    /balance:     walletBalance\(r\.balance, r\.id\)\.balance/.test(accounts));
+    /balance:     walletBalance\(r\.balance, r\.id, r\.balanceObserved\)\.balance/.test(accounts));
   const ai = code(read("lib", "ai", "assemblers", "accounts.ts"));
   check("the AI assembler still filters by balance disclosure AFTER substitution",
     /grantsBalanceDisclosure/.test(ai),

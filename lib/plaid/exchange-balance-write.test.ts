@@ -31,8 +31,10 @@ const NOW = new Date("2026-01-15T12:00:00Z");
   const s = planExchangeBalanceStamp(1234.56, NOW);
   check("observed ⇒ balance written", s.balance === 1234.56);
   check("observed ⇒ balance-verified stamp written", s.lastUpdated === NOW);
-  check("observed ⇒ ONLY balance + lastUpdated (no new balanceLastUpdatedAt write on the exchange)",
-    JSON.stringify(Object.keys(s).sort()) === JSON.stringify(["balance", "lastUpdated"]));
+  // FIN-A2 re-pin: an observed balance also writes balanceObserved: true (which
+  // closes the new-row half). Still NO balanceLastUpdatedAt write on the exchange.
+  check("observed ⇒ ONLY balance + lastUpdated + balanceObserved (no new balanceLastUpdatedAt write on the exchange)",
+    JSON.stringify(Object.keys(s).sort()) === JSON.stringify(["balance", "balanceObserved", "lastUpdated"]) && s.balanceObserved === true);
   check("observed zero is still an observation", planExchangeBalanceStamp(0, NOW).balance === 0);
   check("observed negative (card credit) is still an observation", planExchangeBalanceStamp(-12.5, NOW).balance === -12.5);
 }
@@ -84,8 +86,11 @@ for (const v of [0, 1, -1, 1e9, null, undefined, Number.NaN, Number.NEGATIVE_INF
       /\.\.\.balanceStamp/.test(data) && /deletedAt:\s*null/.test(data) && /syncStatus:\s*"synced"/.test(data));
   }
   const create = loop.slice(loop.indexOf("db.financialAccount.create("));
-  check("new row (create): observed balance written, null still 0 (open — no unknown state in schema)",
-    /balance:\s*balanceStamp\.balance \?\? 0,/.test(create.slice(0, create.indexOf("});"))));
+  // FIN-A2 re-pin: the new-row half is no longer open. A null `current` still
+  // stores the structural 0, but now MARKED balanceObserved: false (excluded
+  // from totals; see lib/plaid/balance-observed.test.ts).
+  check("new row (create): observed balance written; null stores the structural 0 marked balanceObserved: false",
+    /balance:\s*balanceStamp\.balance \?\? 0,\s*\.\.\.\(balanceStamp\.balanceObserved \? \{\} : \{ balanceObserved: false \}\),/.test(create.slice(0, create.indexOf("});"))));
   check("availableBalance null stays unwritten (`?? undefined`), never coerced to 0",
     /const availableBalance = acct\.balances\.available \?\? undefined;/.test(loop) && !/available \?\? 0/.test(loop));
   check("creditLimit null stays unwritten (`?? undefined`), never coerced to 0",

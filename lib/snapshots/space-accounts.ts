@@ -159,9 +159,9 @@ export interface SnapshotAccountsClient {
   spaceAccountLink: {
     findMany(args: {
       where:    Prisma.SpaceAccountLinkWhereInput;
-      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true; availableBalance: true } } };
+      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true; availableBalance: true; balanceObserved?: true } } };
       orderBy:  Prisma.SpaceAccountLinkOrderByWithRelationInput[];
-    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date; availableBalance?: number | null } }>>;
+    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date; availableBalance?: number | null; balanceObserved?: boolean } }>>;
   };
   /**
    * v2.7-P0 — the pending-evidence read (lib/balances/pending-evidence.ts, the
@@ -205,7 +205,8 @@ export async function readSpaceAccountsForSnapshot(
       financialAccount: {
         // v2.7-P0 — availableBalance forwarded RAW into lib/balances (the only
         // interpreter) for the adjusted-balance identity; never read as a value.
-        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true, availableBalance: true },
+        // FIN-A2 — balanceObserved feeds the one totals classification below.
+        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true, availableBalance: true, balanceObserved: true },
       },
     },
     // Mirrors getAccountsWithVisibility so summation order — and therefore the
@@ -291,7 +292,8 @@ export async function readSpaceAccountsForSnapshot(
     // and is still the best number there is; falling back to the column would
     // swap it for an unwritten zero. Staleness is DISCLOSED (below), not
     // expressed by discarding the figure. FM-AUDIT-022 — no value ⇒ excluded.
-    const wb = resolveWalletBalance(l.financialAccount.balance, v);
+    // FIN-A2 — a never-observed balance is excluded the same way.
+    const wb = resolveWalletBalance(l.financialAccount.balance, v, l.financialAccount.balanceObserved);
     return {
       id:       l.financialAccount.id,
       type:     l.financialAccount.type as string,
