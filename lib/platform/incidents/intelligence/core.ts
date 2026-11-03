@@ -37,6 +37,7 @@ import { demoteSeverity, incidentFreshness, UNKNOWN_EVIDENCE } from "./staleness
 import type {
   ArchivedIncidentFacts,
   AttemptEvidence,
+  AttemptEvidenceBasis,
   Closure,
   CsIncidentVerdict,
   DeriveOptions,
@@ -195,6 +196,15 @@ export function actionsFor(rowClass: RowClass, d: StateDecision, openKeyExists: 
   }
 }
 
+/**
+ * Why the evidence is what it is. A row the STALE rule did not need to read
+ * (inside its window, or closed) is "not-needed" — never "unreadable".
+ */
+export function evidenceBasisOf(looked: AttemptEvidence | undefined, needed: boolean): AttemptEvidenceBasis {
+  if (looked) return looked.basis ?? (looked.known ? "read" : "unreadable");
+  return needed ? "unreadable" : "not-needed";
+}
+
 export function attentionPriorityOf(rowClass: RowClass, state: IncidentState, effective: Severity): number {
   const rank = rowClass === "incident" ? STATE_RANK[state] : NON_INCIDENT_RANK;
   return rank * 10 + SEVERITY_ORDER[effective];
@@ -257,7 +267,7 @@ function archivedDraft(a: ArchivedIncidentFacts): Draft {
       attentionPriority: attentionPriorityOf(c.nature === "event" ? "evidence" : "incident", "archived", c.severity),
       spread: { groupKey: `${a.provider}::${c.domain}::${operation ?? "unknown"}`, spread: "isolated", affectedSubjects: 0 },
       recurrence: { generation: 1, previousIncidentId: a.previousIncidentId, relatedIncidentIds: [] },
-      recovery: { proofCount: 0, mayAdvance: false, lastAttemptAt: null, lastSkipAt: null, evidenceKnown: false },
+      recovery: { proofCount: 0, mayAdvance: false, lastAttemptAt: null, lastSkipAt: null, evidenceKnown: false, evidenceBasis: "not-needed" },
       causeStatus: causeStatusOf(a.causeStatus), causeCode: codeOrNull(a.causeCode),
       availableActions: [],
     },
@@ -286,7 +296,8 @@ export function deriveIncidentVerdicts<A extends IncidentAudience>(
     const rowClass = rowClassOf(r, c);
     const subject = subjectVerdict(r, subjectFacts, occurrenceAccounts.get(r.id) ?? []);
     const fullOp = operationOf(r);
-    const evidence = attempts.get(r.id) ?? UNKNOWN_EVIDENCE;
+    const looked = attempts.get(r.id);
+    const evidence = looked ?? UNKNOWN_EVIDENCE;
     const d: StateDecision = rowClass === "incident"
       ? decideState(r, subject, fullOp, evidence, now)
       // D1 — evidence and superseded rows are CLOSED by nature (never active, never
@@ -319,6 +330,7 @@ export function deriveIncidentVerdicts<A extends IncidentAudience>(
           lastAttemptAt: iso(evidence.lastAttemptAt),
           lastSkipAt: iso(evidence.lastSkipAt),
           evidenceKnown: evidence.known,
+          evidenceBasis: evidenceBasisOf(looked, rowClass === "incident" && d.closure === null && d.freshness !== "current"),
         },
         causeStatus: causeStatusOf(r.causeStatus), causeCode: codeOrNull(r.causeCode),
         availableActions: [], // pass 2

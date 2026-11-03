@@ -121,10 +121,21 @@ export interface SubjectFactsInput {
  * lastOccurredAt (the STALE rule, §12 P2.1). `known: false` = not looked up or
  * unreadable — never hides a row.
  */
+/**
+ * Why attempt evidence is what it is (operator wording keys off this, never off `known` alone):
+ *   read         looked up and read (incl. "the ledger records no attempt of this operation")
+ *   not-needed   the row is inside its window (or closed): the STALE rule never reads it
+ *   unsupported  the row names no subject the refresh ledger can be keyed on
+ *   unreadable   the read failed — still never hides the row
+ */
+export type AttemptEvidenceBasis = "read" | "not-needed" | "unsupported" | "unreadable";
+
 export interface AttemptEvidence {
   known: boolean;
   lastAttemptAt: Date | null;
   lastSkipAt: Date | null;
+  /** Absent ⇒ inferred: known ⇒ "read", else "unreadable". */
+  basis?: AttemptEvidenceBasis;
 }
 
 export interface RelationFacts {
@@ -212,6 +223,8 @@ export interface RecoveryVerdict {
   lastAttemptAt: string | null;
   lastSkipAt: string | null;
   evidenceKnown: boolean;
+  /** Why `evidenceKnown` is what it is — see AttemptEvidenceBasis. Unknown never hides a row. */
+  evidenceBasis: AttemptEvidenceBasis;
 }
 
 /** The identity-free verdict (PLATFORM_OPS tier, and the base of every tier). */
