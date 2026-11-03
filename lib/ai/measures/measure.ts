@@ -12,7 +12,7 @@
  * inclusion rule and no transaction list.
  *
  * ⚠️ A MONTHLY FIGURE IS A MEAN OVER WHOLE CALENDAR MONTHS, NEVER TOTAL ÷ DAYS.
- * The recorded defect (docs/plans/AI-MEASURES-COMPARISON-M1-INVESTIGATION.md §17):
+ * The recorded defect (docs/systems/ai-foundation.md §6; the M1 investigation is in git history):
  * a 90-day economic net holding seven biweekly paychecks was divided by three in
  * prose and called a monthly surplus. `perCompleteMonth` is null on a window with
  * no whole month, and a partial month is counted in `total` but never averaged.

@@ -246,7 +246,7 @@ const _e = {
   //   AI_REASONING_PATH          the legacy/new planner strangler
   //   AI_PROMPT_SHAPE            the prompt-shape experiment
   // A flag whose code is gone is not a kill switch, it is a lie in the
-  // environment surface. See docs/plans/AI-CONVERSATION-RESET.md.
+  // environment surface. See docs/systems/ai-foundation.md §9 (the reset).
   //
   // FLOWTYPE_SHADOW toggles an optional non-PII flow-distribution log line only
   // (no data-path effect); unset ⇒ "off". Read directly at its site — mirrored
