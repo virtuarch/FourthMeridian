@@ -631,6 +631,57 @@ export function statedInUserTurns(statedAs: unknown, userTexts: readonly string[
   return userTexts.some((t) => typeof t === 'string' && ` ${foldForUserEvidence(t)} `.includes(` ${needle} `));
 }
 
+/** SEC-AI-006 — the fewest folded words a `statedAs` excerpt may have. */
+export const MIN_STATED_AS_WORDS = 3;
+
+/** SEC-AI-006 — does the folded excerpt carry at least MIN_STATED_AS_WORDS words? PURE. */
+export function statedAsLongEnough(statedAs: unknown): boolean {
+  if (typeof statedAs !== 'string') return false;
+  const folded = foldForUserEvidence(statedAs);
+  return folded !== '' && folded.split(' ').length >= MIN_STATED_AS_WORDS;
+}
+
+/** Every Money-typed field name, across classes (an amend may not name its class). */
+const MONEY_FIELD_NAMES: ReadonlySet<string> = new Set(
+  Object.values(FIELDS).flatMap((spec) => Object.entries(spec).filter(([, t]) => t === 'Money').map(([k]) => k)));
+
+/**
+ * The numbers written in `text`, digits normalised: `$` dropped and thousands
+ * separators (`,` or spaces between 3-digit groups) removed, so "$4,200",
+ * "4 200" and "4200" are all 4200. Spelled-out numbers are not read. PURE.
+ */
+function digitNumbers(text: string): number[] {
+  const flat = text.replace(/\$/g, ' ').replace(/\d{1,3}(?:[,\s]\d{3})+(?!\d)/g, (g) => g.replace(/[,\s]/g, ''));
+  return [...flat.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0])).filter(Number.isFinite);
+}
+
+/**
+ * SEC-AI-006 VALUE BINDING — the first money figure in this write that its own
+ * `statedAs` does not contain, or null when every one is bound.
+ *
+ * Checked: every Money-typed field supplied (a record's fields, an amend's
+ * `set`) and every figure inside a supplied STRING (a label). A figure is bound
+ * when `statedAs` contains it as digits (normalised: "$4,200" ≡ "4200") or as a
+ * money figure the licence reads (a k/m suffix: "20k" ≡ 20000). A quote that
+ * really is the user's ("my rent") cannot carry an invented amount.
+ */
+export function unboundAmount(supplied: Fields, statedAs: unknown): { field: string; value: number } | null {
+  const quote = typeof statedAs === 'string' ? statedAs : '';
+  const inQuote = [...digitNumbers(quote), ...statedAmounts([quote]).money];
+  const bound = (v: number) => inQuote.some((x) => Math.abs(Math.abs(v) - x) < SAID_EXACTLY);
+  for (const [field, value] of Object.entries(supplied)) {
+    if (MONEY_FIELD_NAMES.has(field) && typeof value === 'number' && Number.isFinite(value) && !bound(value)) {
+      return { field, value };
+    }
+    if (typeof value === 'string') {
+      for (const f of extractFigures(value)) {
+        if (f.kind !== 'PERCENT' && !bound(f.value)) return { field, value: f.value };
+      }
+    }
+  }
+  return null;
+}
+
 const EPS = 1e-9;
 
 /**

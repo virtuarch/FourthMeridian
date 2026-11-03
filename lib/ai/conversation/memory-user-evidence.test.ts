@@ -19,8 +19,8 @@ process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'c'.repeat(64);
 delete process.env.DATABASE_URL;
 
 import { readFileSync } from 'node:fs';
-import { foldForUserEvidence, statedInUserTurns, turnEvidence } from './memory-model';
-import { MEMORY_TOOLS, STATED_AS_NOT_FROM_USER } from './memory-tools';
+import { foldForUserEvidence, statedInUserTurns, statedAsLongEnough, unboundAmount, turnEvidence } from './memory-model';
+import { MEMORY_TOOLS, STATED_AS_NOT_FROM_USER, STATED_AS_TOO_SHORT, AMOUNT_NOT_IN_STATED_AS } from './memory-tools';
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string) {
@@ -121,6 +121,55 @@ async function main() {
     check('retire is gated too', r.stored === false && r.refusal === STATED_AS_NOT_FROM_USER && f.touched.length === 0);
     const r2 = await remember.run({ op: 'amend', subject: 'cash-strategy', statedAs: 'make it nine', set: { liquidFloorMonthsOfExpenses: 9 } }, ctx) as Record<string, unknown>;
     check('amend is gated too', r2.stored === false && r2.refusal === STATED_AS_NOT_FROM_USER && f.touched.length === 0);
+  }
+
+  console.log('\n2b. minimum excerpt and value binding');
+  {
+    check('1 word is too short', !statedAsLongEnough('rent'));
+    check('2 words are too short', !statedAsLongEnough('my rent'));
+    check('punctuation does not count as words', !statedAsLongEnough('my — rent!!'));
+    check('3 words are enough', statedAsLongEnough('my rent is'));
+    check('"$4,200" in the quote binds 4200', unboundAmount({ amount: 4200 }, 'my rent is $4,200 a month') === null);
+    check('"4200" in the quote binds 4200', unboundAmount({ amount: 4200 }, 'my rent is 4200 a month') === null);
+    check('"4 200" in the quote binds 4200', unboundAmount({ monthlySpending: 4200 }, 'plan with 4 200 per month') === null);
+    check('"20k" in the quote binds 20000', unboundAmount({ amount: 20000 }, 'a car around 20k in 2027') === null);
+    check('a decimal binds exactly', unboundAmount({ amount: 4200.5 }, 'rent of $4,200.50 monthly') === null);
+    check('an amount absent from the quote is unbound', JSON.stringify(unboundAmount({ amount: 4200 }, 'my rent is due monthly')) === '{"field":"amount","value":4200}');
+    check('a different amount is unbound', unboundAmount({ targetAmount: 1000000 }, 'I want 900k by 2030') !== null);
+    check('spelled-out numbers are not read (refusal preferred)', unboundAmount({ amount: 4200 }, 'four thousand two hundred rent') !== null);
+    check('a figure inside a label must be bound too', unboundAmount({ label: 'car $30,000' }, 'I want a car someday') !== null);
+    check('non-money numbers are not bound here (their own gate covers them)', unboundAmount({ liquidFloorMonthsOfExpenses: 6 }, 'keep six months cash') === null);
+  }
+  {
+    const { f, ctx } = ctxWith(['Remember my rent']);
+    const r = await remember.run({ subject: 'rent', statedAs: 'my rent', plannedExpense: { label: 'rent', amount: 4200 } }, ctx) as Record<string, unknown>;
+    check('a 2-word quote REFUSES as too short', r.stored === false && r.refusal === STATED_AS_TOO_SHORT && f.touched.length === 0, JSON.stringify(r));
+    const r1 = await remember.run({ op: 'retire', subject: 'car', statedAs: 'forget' }, ctx) as Record<string, unknown>;
+    check('…retire too', r1.refusal === STATED_AS_TOO_SHORT && f.touched.length === 0);
+  }
+  {
+    const said = 'Please remember my rent, it comes out on the first.';
+    const { f, ctx } = ctxWith([said, 'and it is $4,200 a month']);
+    const r = await remember.run({ subject: 'rent', statedAs: 'remember my rent, it comes out',
+      plannedExpense: { label: 'rent', amount: 4200 } }, ctx) as Record<string, unknown>;
+    check('a real excerpt with an INVENTED amount REFUSES', r.stored === false && r.refusal === AMOUNT_NOT_IN_STATED_AS && f.touched.length === 0, JSON.stringify(r));
+  }
+  {
+    const { f, ctx } = ctxWith(['Remember: a car around $4,200 next spring.']);
+    const r = await remember.run({ subject: 'car', statedAs: 'a car around $4,200',
+      plannedExpense: { label: 'car', amount: 4200 } }, ctx) as Record<string, unknown>;
+    check('the amount IN the quote STORES', r.stored === true && f.touched.includes('create'), JSON.stringify(r));
+  }
+  {
+    const { f, ctx } = ctxWith(['Remember: a car around 4200 next spring.']);
+    const r = await remember.run({ subject: 'car', statedAs: 'a car around 4200',
+      plannedExpense: { label: 'car', amount: 4200 } }, ctx) as Record<string, unknown>;
+    check('"4200" in the quote matches the 4200 amount and STORES', r.stored === true && f.touched.includes('create'), JSON.stringify(r));
+  }
+  {
+    const { f, ctx } = ctxWith(['ok, change the car budget please']);
+    const r = await remember.run({ op: 'amend', subject: 'car', statedAs: 'change the car budget', set: { amount: 9000 } }, ctx) as Record<string, unknown>;
+    check('an amend whose `set` amount is not in the quote REFUSES', r.refusal === AMOUNT_NOT_IN_STATED_AS && f.touched.length === 0, JSON.stringify(r));
   }
 
   console.log('\n3. ordering');
