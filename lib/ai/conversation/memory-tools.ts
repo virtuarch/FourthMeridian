@@ -417,7 +417,7 @@ const remember: ToolDefinition = {
     if (unbound) {
       return { stored: false, refusal: AMOUNT_NOT_IN_STATED_AS,
         reason: `\`${unbound.field}\` is ${unbound.value}, but that amount is not in \`statedAs\`, so nothing was remembered. `
-          + 'Quote the user\'s words that state the amount (digits, e.g. "$4,200"); if they did not state it, leave the '
+          + 'Quote the user\'s words that state the amount (as digits); if they did not state it, leave the '
           + 'amount out or ask them for it.' };
     }
     const result = await rememberStated(clientOf(ctx), scopeOf(ctx), {
