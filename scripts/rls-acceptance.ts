@@ -372,6 +372,9 @@ async function main(): Promise<void> {
   // ── fm_auth: the pre-identity role must not be a way to reach money ───────
   authSurfaceProof(base);
 
+  // ── PB-1 Phase 1: the incident lifecycle tables are operator-only ─────────
+  incidentAclProof(base, appUrl);
+
   // ── backup completeness, and the failure mode it guards ───────────────────
   backupProof(base, appUrl);
 
@@ -467,6 +470,56 @@ function censusProof(ownerUrl: string): void {
  * fm_auth was never granted cannot be reached even if a policy is later written
  * carelessly. Absence of privilege outlives correctness of predicate.
  */
+/**
+ * Cases 42-48 — PB-1 Phase 1 (migration 20261103120000). The incident lifecycle
+ * data is OPERATOR-ONLY: tenants (fm_app) and the pre-identity role (fm_auth) can
+ * reach none of the new tables or the new SyncIssue columns; fm_system's event
+ * log is append-only and cannot be backdated; fm_backup can read for dumps.
+ */
+function incidentAclProof(ownerUrl: string, appUrl: string): void {
+  const NEW_TABLES = ["SyncIssueEvent", "SyncIssueArchive", "SyncIssueRelation"];
+  const NEW_SYNCISSUE_COLS = ["subjectUserId", "resolutionEvidence", "causeCode", "lifecycleState", "resolvedById"];
+
+  const authPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_auth LOGIN PASSWORD '${authPw}';`);
+  const authUrl = withRole(ownerUrl, "fm_auth", authPw);
+  const sysPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_system LOGIN PASSWORD '${sysPw}';`);
+  const sysUrl = withRole(ownerUrl, "fm_system", sysPw);
+  const bkPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_backup LOGIN PASSWORD '${bkPw}';`);
+  const bkUrl = withRole(ownerUrl, "fm_backup", bkPw);
+
+  const reachable = (url: string, role: string) => NEW_TABLES.flatMap((t) => {
+    const r = role === "fm_app" ? asApp(url, "alice", `select count(*) from "${t}";`) : psql(url, `select count(*) from "${t}";`, false);
+    return deniedByGrant(r) ? [] : [`${t} (${r.err.split("\n")[0] || `returned ${r.out}`})`];
+  });
+  const appReach = reachable(appUrl, "fm_app");
+  check(42, "fm_app (tenant) cannot read ANY incident lifecycle table", appReach.length === 0, `reachable: ${appReach.join("; ")}`);
+  const authReach = reachable(authUrl, "fm_auth");
+  check(43, "fm_auth (pre-identity) cannot read ANY incident lifecycle table", authReach.length === 0, `reachable: ${authReach.join("; ")}`);
+
+  const colReach = NEW_SYNCISSUE_COLS.flatMap((c) => {
+    const r = asApp(appUrl, "alice", `select "${c}" from "SyncIssue" limit 1;`);
+    return deniedByGrant(r) ? [] : [`${c} (${r.err.split("\n")[0] || "readable"})`];
+  });
+  check(44, `fm_app cannot read the new SyncIssue columns (${NEW_SYNCISSUE_COLS.length} probed)`, colReach.length === 0, `readable: ${colReach.join("; ")}`);
+
+  // fm_system: append-only, DB-timestamped event log.
+  const id = `rls_evt_${randomBytes(4).toString("hex")}`;
+  const ins = psql(sysUrl, `insert into "SyncIssueEvent" (id, "incidentId", type, "actorKind") values ('${id}', 'rls_inc', 'OBSERVED', 'SYSTEM');`, false);
+  check(45, "fm_system can append an incident event (at is DB-generated)", ins.ok, ins.err.split("\n")[0]);
+  const upd = psql(sysUrl, `update "SyncIssueEvent" set type = 'NOTE_CODE' where id = '${id}';`, false);
+  check(46, "fm_system can NOT update an incident event (append-only)", deniedByGrant(upd), upd.err.split("\n")[0] || "update succeeded");
+  const back = psql(sysUrl, `insert into "SyncIssueEvent" (id, "incidentId", at, type, "actorKind") values ('${id}_b', 'rls_inc', '2000-01-01', 'OBSERVED', 'SYSTEM');`, false);
+  check(47, "fm_system can NOT supply `at` (no backdating)", deniedByGrant(back), back.err.split("\n")[0] || "backdated insert succeeded");
+
+  const bkReach = NEW_TABLES.flatMap((t) => { const r = psql(bkUrl, `select count(*) from "${t}";`, false); return r.ok ? [] : [`${t} (${r.err.split("\n")[0]})`]; });
+  check(48, "fm_backup CAN read every incident lifecycle table (complete dumps)", bkReach.length === 0, `denied: ${bkReach.join("; ")}`);
+
+  psql(ownerUrl, `delete from "SyncIssueEvent" where id like 'rls_evt_%';`, false);
+}
+
 function authSurfaceProof(ownerUrl: string): void {
   const pw = randomBytes(18).toString("hex");
   psql(ownerUrl, `ALTER ROLE fm_auth LOGIN PASSWORD '${pw}';`);
