@@ -59,7 +59,7 @@ const inputs: AttentionInputs = {
     titles: { "job-failing": "Repeated job failures" },
   },
   incidents: {
-    items: [{ id: "inc_a", label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Chase · Checking", domain: "transactions", severity: "critical", state: "active", firstOccurredAt: AGO(100), lastOccurredAt: AGO(2), occurrenceCount: 4, occurrenceCountKnown: true, recovery: "automatic-available", refreshExecutionId: "exec_abc123" }],
+    items: [{ id: "inc_a", label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Chase · Checking", domain: "transactions", severity: "critical", effectiveSeverity: "critical", freshness: "current", state: "active", brokenNow: true, firstOccurredAt: AGO(100), lastOccurredAt: AGO(2), occurrenceCount: 4, occurrenceCountKnown: true, refreshExecutionId: "exec_abc123" }],
     activeTotal: 1, truncated: false,
   },
 };

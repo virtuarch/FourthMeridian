@@ -234,6 +234,13 @@ console.log("engine · sync-incident-critical (OBS-004)");
   check("fold keeps the module's ALERTABLE verdicts only, carries scanTruncated", folded.active.length === 1 && folded.active[0].id === "x1" && folded.scanTruncated);
   check("fold carries the module's severity / domain / lastSeenAt verbatim", folded.active[0].severity === "critical" && folded.active[0].domain === "transactions" && folded.active[0].lastOccurredAt === "2026-07-16T07:00:00.000Z");
   check("fold carries no classification object, no detail, no label, no alertable flag", !("classification" in folded.active[0]) && !("detail" in folded.active[0]) && !("label" in folded.active[0]) && !("alertable" in folded.active[0]));
+  // S2 (R5 review) — the slice's key set IS the fold's fixed field list. Adding a field to AlertSyncIncident
+  // (or to the fold's copy) fails here AND at compile time, so any widening of the alert payload is a reviewed change.
+  const ALERT_SYNC_INCIDENT_KEYS = ["id", "plaidItemId", "kind", "domain", "severity", "lastOccurredAt", "occurrenceCount"] as const;
+  type PinnedKey = (typeof ALERT_SYNC_INCIDENT_KEYS)[number];
+  const sliceKeysExact: [keyof AlertSyncIncident] extends [PinnedKey] ? ([PinnedKey] extends [keyof AlertSyncIncident] ? true : never) : never = true;
+  check("AlertSyncIncident's key set equals the fold's fixed field list (a new field is a reviewed change)",
+    sliceKeysExact && Object.keys(folded.active[0]).sort().join(",") === [...ALERT_SYNC_INCIDENT_KEYS].sort().join(","), Object.keys(folded.active[0]).join(","));
   {
     // Extra verdict fields (label, subjectUserId on a wider tier) never cross the fold.
     const wide = { ...fv("x4"), label: "Some Bank — failed", subjectUserId: "u_1" } as AlertFoldVerdict;

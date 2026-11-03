@@ -47,7 +47,15 @@ console.log("B · operator lists never read the account name");
   check("the incident preview selects institution / type / mask, not name",
     /financialAccount\.findMany\(\{[\s\S]*?select: \{ id: true, institution: true, type: true, mask: true \}/.test(preview) && !/name: true/.test(preview));
   check("…and labels the account through the minimized helper", /secondary: minimizedAccountPart\(acct\)/.test(preview) && !/acct\.name/.test(preview));
-  check("Platform Ops attention consumes that same minimized preview", /getIncidentPreview\(/.test(code("lib/platform/ops/attention.ts")));
+  // PB-1 R6a — DELIBERATE PIN UPDATE (was: /getIncidentPreview\(/). Ops attention now reads the module's
+  // broken-now page and names subjects through the preview's OWN minimized resolver (the same select and
+  // helper pinned above); it may not resolve subjects any other way, nor touch the account table itself.
+  {
+    const opsAttention = code("lib/platform/ops/attention.ts");
+    check("Platform Ops attention names subjects through that same minimized resolver",
+      /import \{ resolveSubjects \} from "@\/lib\/platform\/incidents\/preview";/.test(opsAttention) && /resolveSubjects\(shown\)/.test(opsAttention)
+      && !/financialAccount|plaidItem\.|institutionName|minimizedAccount/.test(opsAttention));
+  }
   check("Customer Success sync issues consume that same minimized preview", /getIncidentPreview\(/.test(code("app/api/platform/customer-success/sync-issues/route.ts")));
 }
 

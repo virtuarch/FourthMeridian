@@ -115,11 +115,12 @@ const alerts: NonNullable<AttentionInputs["alerts"]> = {
 
 const incident = (over: Partial<PlatformIncidentProjection> & { id: string }): PlatformIncidentProjection => ({
   label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Chase · Checking",
-  domain: "transactions", severity: "critical", state: "active", firstOccurredAt: AGO(100), lastOccurredAt: AGO(2),
-  occurrenceCount: 4, occurrenceCountKnown: true, recovery: "automatic-available", refreshExecutionId: "exec_1", ...over,
+  domain: "transactions", severity: "critical", effectiveSeverity: "critical", freshness: "current", state: "active", brokenNow: true,
+  firstOccurredAt: AGO(100), lastOccurredAt: AGO(2),
+  occurrenceCount: 4, occurrenceCountKnown: true, refreshExecutionId: "exec_1", ...over,
 });
 const incidents: NonNullable<AttentionInputs["incidents"]> = {
-  items: [incident({ id: "inc_a" }), incident({ id: "inc_b", severity: "warning", subject: null, refreshExecutionId: null, state: "active" })],
+  items: [incident({ id: "inc_a" }), incident({ id: "inc_b", severity: "warning", effectiveSeverity: "warning", subject: null, refreshExecutionId: null, state: "active" })],
   activeTotal: 2, truncated: false,
 };
 
@@ -339,10 +340,18 @@ console.log("source · the reader composes EXISTING authorities and owns no data
     check(`${name}: reads no process.env`, !/process\.env/.test(src));
   }
   check("the reader composes the six named authorities",
-    ["getConnectionHealth", "checkScheduledJobHealth", "getProviderHealth", "checkResourceFreshness", "loadLatestAlertEvaluation", "getIncidentPreview"].every((fn) => reader.includes(fn)));
+    ["getConnectionHealth", "checkScheduledJobHealth", "getProviderHealth", "checkResourceFreshness", "loadLatestAlertEvaluation", "incidentAccessors.brokenNow"].every((fn) => reader.includes(fn)));
   check("the reader hands provider health the SAME freshness and connection reads (no duplicate read)", /loadFreshness:\s*\(\)\s*=>/.test(reader) && /loadConnections:\s*\(\)\s*=>/.test(reader));
   check("history is returned as its own field, never folded into items", /recentFirings:/.test(reader) && /collectAlertHistory/.test(reader));
-  check("incidents pass through the D5 projection", reader.includes("projectIncidentForPlatform"));
+  check("incidents pass through the D5 projection", reader.includes("projectVerdictForPlatform"));
+  // PB-1 R6a — Ops attention reads the module's verdicts only: the Ops-tier brokenNow page, no projection
+  // view (getActiveIncidentPage / getIncidentPreview), and the core decides open/closed by `brokenNow` alone.
+  check("PB-1 R6a: the reader reads the module's broken-now page with the route's Ops token, never the projection page",
+    /incidentAccessors\.brokenNow\(token,/.test(reader) && !/getActiveIncidentPage|getIncidentPreview|getActiveIncidents\(/.test(reader));
+  check("PB-1 R6a: the core decides open/closed by the module's brokenNow, never a state / resolved comparison",
+    /\.filter\(\(inc\) => inc\.brokenNow\)/.test(core) && !/inc\.state === "active"|resolved/.test(core.slice(core.indexOf("function incidentItems("), core.indexOf("function policyAssignmentItems("))));
+  check("PB-1 R6a: incident rows rank on the module's effectiveSeverity", /SEVERITY_OF\.incident\[inc\.effectiveSeverity\]/.test(core));
+  check("PB-1 R6a: the reader names no syncIssue rows", !/syncIssue/.test(reader) && !/syncIssue/.test(core));
   // BETA V1 — the three user-impact readers are seams/readers, each best-effort, never a ledger accessor.
   check("BETA V1: the reader composes the three user-impact readers", ["queryRefreshExecutions", "getAiFailureHealth", "getBriefOps"].every((fn) => reader.includes(fn)));
   check("BETA V1: the execution seam is asked as OPERATOR for FAILED/PARTIAL only, bounded", /audience:\s*"operator"/.test(reader) && /overallStatus:\s*\["FAILED",\s*"PARTIAL"\]/.test(reader) && /limit:\s*USER_IMPACT_EXECUTIONS_LIMIT/.test(reader));
@@ -367,6 +376,25 @@ console.log("source · the reader composes EXISTING authorities and owns no data
   // a boolean (`destinationConfigured`), but the address itself never crosses.
   check("the projection never copies `destination` (presence only)",
     !/\bdestination\b/.test(latest.replace(/strips `destination`/g, "").replace(/newest\.destination\b/g, "").replace(/destinationConfigured/g, "")));
+}
+
+console.log("PB-1 R6a · incidents read the module's verdicts");
+{
+  const only = (items: PlatformIncidentProjection[]) =>
+    buildAttention({ ...full, incidents: { items, activeTotal: items.length, truncated: false } }, now).items.filter((x) => x.evidence?.kind === "execution" || x.evidence?.kind === "incident");
+  const rows = only([
+    incident({ id: "inc_live" }),
+    incident({ id: "inc_unverified", freshness: "unverified", effectiveSeverity: "error", refreshExecutionId: null }),
+    incident({ id: "inc_recovering", state: "recovering", refreshExecutionId: null }),
+    incident({ id: "inc_closed", brokenNow: false, state: "stale-unverified", refreshExecutionId: null }),
+  ]);
+  const byId = new Map(rows.map((r) => [r.id, r] as const));
+  check("a verdict that is not brokenNow never becomes a row (D10 stale-unverified, D2 removed, resolved…)", !byId.has("incident:inc_closed"));
+  check("an unverified critical ranks at its effectiveSeverity (error) and says it is unconfirmed (D10)",
+    byId.get("incident:inc_unverified")?.severity === "error" && /not confirmed inside its window/.test(byId.get("incident:inc_unverified")!.problem));
+  check("a current critical stays critical, with no unverified note", byId.get("incident:inc_live")?.severity === "critical" && !/not confirmed/.test(byId.get("incident:inc_live")!.problem));
+  check("a recovering incident is still listed (broken now) and says it is awaiting confirmation",
+    /recovering \(awaiting confirmation\)/.test(byId.get("incident:inc_recovering")?.problem ?? ""));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
