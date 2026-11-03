@@ -243,6 +243,69 @@ The role and policy model is specified in [SECURITY_MODEL §Database-level tenan
 - **`prisma studio` and `prisma db seed` run as the migration principal** and therefore bypass RLS. Use them only on local clones.
 - **Diagnostic access to hosted databases** uses a read-only role and the wrapper in §4b, never an application role and never a session-level `SET`.
 
+## 4e. `AuditLog` append-only at the database (DB-010 / PRIV-005) — PLANNED
+
+**Status: PLANNED (design, 2026-11-03).** Not implemented. The pre-beta register deferred it as "needs migration + design"; this section is the design. A builder implements it as one additive migration; it is applied to Preview through the guarded `db:migrate:safe` step, and Production follows the release process.
+
+**The gap (verified on `develop`).** `fm_app` is already append-only on `AuditLog` (INSERT plus a scoped SELECT, no UPDATE or DELETE), and `fm_auth` can only INSERT. But `fm_system` has `SELECT, INSERT, UPDATE, DELETE` and one `FOR ALL` policy (`20261002000100_rls_roles_and_policies`, lines 592 and 598). Every operator route and job runs as `fm_system`, so any one of them can rewrite or delete audit history. Today only application discipline prevents it.
+
+**What legitimately changes an `AuditLog` row** (complete inventory from a source sweep of `app/`, `lib/`, `jobs/` and `scripts/`):
+
+| Writer | Role | Change | Rows |
+|---|---|---|---|
+| `jobs/data-retention.ts` `runBetaIntakeNetworkMinimisation` | `fm_system` | UPDATE `ipAddress`→NULL, `userAgent`→NULL, `metadata` (adds `uaFamily`, `networkDigest`, `networkMinimisedAt`) | `action = 'BETA_ACCESS_REQUESTED'`, older than 90 days |
+| `jobs/product-event-retention.ts` `retainProductEvents` | `fm_system` | DELETE | `action IN PRODUCT_EVENT_ACTIONS`, older than 13 calendar months |
+| Account purge: `AuditLog.userId` FK `ON DELETE SET NULL` | referential action | `userId`→NULL | the deleted user's rows |
+| `scripts/scrub-audit-emails.ts`, `scripts/scrub-activity-account-names.ts`, `scripts/dev-reset-test-state.ts` | migration principal (owner-run) | metadata scrub / delete | owner-run one-offs; not runtime |
+
+Nothing else in runtime code updates or deletes an audit row.
+
+**Design.** Keep the table grants. Narrow them by column, and replace `fm_system_all` with one policy per command whose predicates are exactly the inventory above:
+
+1. `REVOKE UPDATE, DELETE ON public."AuditLog" FROM fm_system;`
+2. `GRANT UPDATE ("ipAddress", "userAgent", "metadata") ON public."AuditLog" TO fm_system;`. A column grant: `action`, `userId`, `spaceId`, `createdAt`, `performedByAdminId` and `id` become immutable to the runtime.
+3. `GRANT DELETE ON public."AuditLog" TO fm_system;` is re-granted, but only so the DELETE policy below can admit the retention rows.
+4. `DROP POLICY fm_system_all ON public."AuditLog";`, then:
+   - `fm_system_sel` FOR SELECT USING (true)
+   - `fm_system_ins` FOR INSERT WITH CHECK (true)
+   - `fm_system_minimise` FOR UPDATE USING (`action = 'BETA_ACCESS_REQUESTED' AND "createdAt" < now() - interval '90 days'`) WITH CHECK (`"ipAddress" IS NULL AND "userAgent" IS NULL`). The post-image must be minimised.
+   - `fm_system_retain` FOR DELETE USING (`action IN (<PRODUCT_EVENT_ACTIONS>) AND "createdAt" < now() - interval '13 months'`)
+5. `fm_backup` keeps SELECT, and `fm_app` / `fm_auth` are unchanged.
+
+Notes:
+
+- **The FK `SET NULL` keeps working.** Referential actions run as the table owner and bypass RLS and column privileges, so the purge needs no grant.
+- **The owner scripts run as the migration principal**, so they are unaffected. That is the documented break-glass path, and it stays owner-run.
+- **The SQL lists must not drift from the code.** The action list and both intervals are duplicated in SQL, so pin them. A unit test parses the migration and asserts the DELETE policy's action set equals `PRODUCT_EVENT_ACTIONS`, the 13-month interval equals `PRODUCT_EVENT_RETENTION_MONTHS`, and the UPDATE predicate's action and 90 days equal `BETA_INTAKE_AUDIT_ACTION` and `BETA_INTAKE_NETWORK_DAYS`. A later change to either constant then fails CI until a follow-up migration moves the policy with it.
+- **The window boundaries differ slightly.** The job's `createdAt < cutoff` is computed in UTC calendar arithmetic, while the policy uses `now() - interval`. Both are "older than"; the policy is the outer bound. A row the job selects that the policy rejects is simply not updated (`count` 0), never an error. The job already uses `updateMany`/`deleteMany`, which report counts.
+
+**Residual risk (accepted, stated):**
+
+- **`metadata` is still writable on the aged beta-intake rows** inside the UPDATE policy. That is a narrow window: one action, 90 days or older.
+- **`fm_system` can still DELETE product events past 13 months.** That is the retention the privacy policy promises.
+- **The migration principal can do anything.** That is true of every table; see SEC-003.
+
+**`rls:accept` cases (next free numbers, 49–56)**, run as each role against the throwaway database:
+
+| # | Role | Probe | Expect |
+|---|---|---|---|
+| 49 | `fm_system` | UPDATE `action` (or `userId`, `createdAt`) on any row | permission denied (column grant) |
+| 50 | `fm_system` | UPDATE `metadata` on a fresh, non-intake row | 0 rows (policy), the row unchanged |
+| 51 | `fm_system` | UPDATE `ipAddress`→NULL, `userAgent`→NULL on a 91-day-old `BETA_ACCESS_REQUESTED` row | 1 row |
+| 52 | `fm_system` | UPDATE that same aged row leaving `ipAddress` non-null | rejected by WITH CHECK |
+| 53 | `fm_system` | DELETE a fresh `SESSION_ACTIVE_DAY` row, and any 14-month-old **non**-product-event row (e.g. `LOGIN`) | 0 rows each |
+| 54 | `fm_system` | DELETE a 14-month-old `SESSION_ACTIVE_DAY` row | 1 row |
+| 55 | `fm_app` / `fm_auth` | UPDATE or DELETE any row | permission denied (unchanged; regression) |
+| 56 | migration principal | DELETE a `User` with audit rows | the rows survive with `userId` NULL (FK path still works) |
+
+**Tests beside the migration:**
+
+- the constant-to-SQL pin above;
+- `jobs/data-retention.test.ts` and `jobs/product-event-retention.test.ts` unchanged and green;
+- the purge census (`lib/account-deletion/purge-census.test.ts`) still classifies `AuditLog.userId` as NULL via the FK.
+
+**Rollback:** one statement block. Re-grant `UPDATE, DELETE` to `fm_system`, drop the four policies, and recreate `fm_system_all` with `USING (true) WITH CHECK (true)`. Write it into the migration folder's README before applying.
+
 ---
 
 ## 5. For agents specifically

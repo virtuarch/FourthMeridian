@@ -309,6 +309,9 @@ Table classes:
   invitee is not yet a member).
 - **`AuditLog`** — append-only for `fm_app` (permissive INSERT, no UPDATE/DELETE);
   SELECT is `userId` **or** visible `spaceId`; operator reads via `fm_system`.
+  `fm_system` still holds full UPDATE/DELETE under one `FOR ALL` policy. Narrowing it
+  to the two retention writers (column grant + per-command policies) is **PLANNED**:
+  [database-safety §4e](../operations/database-safety.md#4e-auditlog-append-only-at-the-database-db-010--priv-005--planned).
 - **`PlatformGrant`** — `SELECT` only for `fm_app`; grants are minted by the admin
   surface, never by a tenant session (`20261022000500_sec014_platform_grant_read_only`).
 - **`RateLimit`** — RLS on; `fm_app` reaches only its own `user:…:<userId>` buckets;
