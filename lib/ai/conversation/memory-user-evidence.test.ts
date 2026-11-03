@@ -133,6 +133,14 @@ async function main() {
     check('"4200" in the quote binds 4200', unboundAmount({ amount: 4200 }, 'my rent is 4200 a month') === null);
     check('"4 200" in the quote binds 4200', unboundAmount({ monthlySpending: 4200 }, 'plan with 4 200 per month') === null);
     check('"20k" in the quote binds 20000', unboundAmount({ amount: 20000 }, 'a car around 20k in 2027') === null);
+    check('"20K" (capital, attached) binds 20000', unboundAmount({ amount: 20000 }, 'a car around 20K in 2027') === null);
+    check('"2.5k" binds 2500', unboundAmount({ amount: 2500 }, 'rent is 2.5k monthly') === null);
+    check('"20m" is NOT expanded → 20,000,000 refused', unboundAmount({ targetAmount: 20000000 }, 'I want 20m by 2040') !== null);
+    check('"2mm" is NOT expanded', unboundAmount({ targetAmount: 2000000 }, 'I want 2mm by 2040') !== null);
+    check('"1bn" is NOT expanded', unboundAmount({ targetAmount: 1000000000 }, 'I want 1bn someday ok') !== null);
+    check('"20 k" (separated k) does NOT expand', unboundAmount({ amount: 20000 }, 'a car around 20 k in 2027') !== null);
+    check('a k inside a word ("20kg") does NOT expand', unboundAmount({ amount: 20000 }, 'a bike of 20kg for me') !== null);
+    check('"$20k" (currency mark + attached k) binds 20000', unboundAmount({ amount: 20000 }, 'a car around $20k in 2027') === null);
     check('a decimal binds exactly', unboundAmount({ amount: 4200.5 }, 'rent of $4,200.50 monthly') === null);
     check('an amount absent from the quote is unbound', JSON.stringify(unboundAmount({ amount: 4200 }, 'my rent is due monthly')) === '{"field":"amount","value":4200}');
     check('a different amount is unbound', unboundAmount({ targetAmount: 1000000 }, 'I want 900k by 2030') !== null);
@@ -165,6 +173,18 @@ async function main() {
     const r = await remember.run({ subject: 'car', statedAs: 'a car around 4200',
       plannedExpense: { label: 'car', amount: 4200 } }, ctx) as Record<string, unknown>;
     check('"4200" in the quote matches the 4200 amount and STORES', r.stored === true && f.touched.includes('create'), JSON.stringify(r));
+  }
+  {
+    const { f, ctx } = ctxWith(['Remember: I want 20m by 2040 for retirement']);
+    const r = await remember.run({ subject: 'nw-goal', statedAs: 'I want 20m by 2040',
+      goal: { targetMetric: 'netWorth', targetAmount: 20000000, byDate: '2040-01-01' } }, ctx) as Record<string, unknown>;
+    check('the tool refuses a "20m" amount (suffix not expanded)', r.refusal === AMOUNT_NOT_IN_STATED_AS && f.touched.length === 0, JSON.stringify(r));
+  }
+  {
+    const { f, ctx } = ctxWith(['Remember: a car around 20k next spring.']);
+    const r = await remember.run({ subject: 'car', statedAs: 'a car around 20k',
+      plannedExpense: { label: 'car', amount: 20000 } }, ctx) as Record<string, unknown>;
+    check('the tool stores a "20k" amount as 20000', r.stored === true && f.touched.includes('create'), JSON.stringify(r));
   }
   {
     const { f, ctx } = ctxWith(['ok, change the car budget please']);

@@ -648,11 +648,17 @@ const MONEY_FIELD_NAMES: ReadonlySet<string> = new Set(
 /**
  * The numbers written in `text`, digits normalised: `$` dropped and thousands
  * separators (`,` or spaces between 3-digit groups) removed, so "$4,200",
- * "4 200" and "4200" are all 4200. Spelled-out numbers are not read. PURE.
+ * "4 200" and "4200" are all 4200. ONE suffix is expanded: a `k`/`K` ATTACHED
+ * to the digits ("20k" = 20000, "2.5k" = 2500). A separate "k" ("20 k"), a k
+ * inside a word ("20kg"), and every other suffix ("20m", "2mm", "1bn") are NOT
+ * expanded — such an amount reads only as its bare digits, so it fails binding.
+ * Spelled-out numbers are not read. PURE.
  */
 function digitNumbers(text: string): number[] {
   const flat = text.replace(/\$/g, ' ').replace(/\d{1,3}(?:[,\s]\d{3})+(?!\d)/g, (g) => g.replace(/[,\s]/g, ''));
-  return [...flat.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0])).filter(Number.isFinite);
+  const out = [...flat.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
+  for (const m of flat.matchAll(/(?<![\d.])(\d+(?:\.\d+)?)[kK](?![A-Za-z0-9])/g)) out.push(Math.round(Number(m[1]) * 1000 * 100) / 100);
+  return out.filter(Number.isFinite);
 }
 
 /**
@@ -661,13 +667,13 @@ function digitNumbers(text: string): number[] {
  *
  * Checked: every Money-typed field supplied (a record's fields, an amend's
  * `set`) and every figure inside a supplied STRING (a label). A figure is bound
- * when `statedAs` contains it as digits (normalised: "$4,200" ≡ "4200") or as a
- * money figure the licence reads (a k/m suffix: "20k" ≡ 20000). A quote that
+ * when `statedAs` contains it as digits (normalised: "$4,200" ≡ "4200"), or
+ * with an attached `k` ("20k" ≡ 20000) — no other suffix (see digitNumbers). A quote that
  * really is the user's ("my rent") cannot carry an invented amount.
  */
 export function unboundAmount(supplied: Fields, statedAs: unknown): { field: string; value: number } | null {
   const quote = typeof statedAs === 'string' ? statedAs : '';
-  const inQuote = [...digitNumbers(quote), ...statedAmounts([quote]).money];
+  const inQuote = digitNumbers(quote);
   const bound = (v: number) => inQuote.some((x) => Math.abs(Math.abs(v) - x) < SAID_EXACTLY);
   for (const [field, value] of Object.entries(supplied)) {
     if (MONEY_FIELD_NAMES.has(field) && typeof value === 'number' && Number.isFinite(value) && !bound(value)) {
