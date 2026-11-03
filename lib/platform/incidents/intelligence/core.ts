@@ -27,11 +27,10 @@ import {
   incidentLabel,
   incidentOperationLabel,
   isSupersededMismatch,
-  stageOf,
   type SyncIssueClassification,
 } from "@/lib/platform/sync-issue-semantics";
 import { parseIncidentKey, LEGACY_UNSPECIFIED } from "../identity";
-import { OPERATION_KEYS, resolveOperationKey } from "../operation-key";
+import { OPERATION_KEYS } from "../operation-key";
 import { isRegistryCode } from "../codes";
 import { subjectVerdict, type SubjectFacts, type SubjectVerdict } from "../subjects-core";
 import { demoteSeverity, incidentFreshness, UNKNOWN_EVIDENCE } from "./staleness";
@@ -85,14 +84,16 @@ export function rowClassOf(r: Pick<IncidentRowFacts, "kind" | "provider" | "deta
 
 /**
  * The FULL operation discriminator, used internally (stale window, attempt
- * endpoints). The incident key's tail when the row has one, else the
- * registry's resolution of the row's stage. Never emitted as-is: an
- * `unregistered:<stage>` value carries a raw producer stage.
+ * endpoints): the incident key's tail. A row with no key has NO provable
+ * operation (null) — resolving a raw stage into an operation is the lifecycle
+ * authority's job alone (pinned in operation-key.test.ts), so the core never
+ * does it. Null falls back to the provider's default window and endpoints.
+ * Never emitted as-is: an `unregistered:<stage>` value carries a raw stage.
  */
-export function operationOf(r: Pick<IncidentRowFacts, "incidentKey" | "kind" | "provider" | "detail" | "plaidTransactionId">): string | null {
+export function operationOf(r: Pick<IncidentRowFacts, "incidentKey">): string | null {
   const parsed = parseIncidentKey(r.incidentKey);
-  if (parsed) return parsed.operation === LEGACY_UNSPECIFIED ? null : parsed.operation;
-  return resolveOperationKey(stageOf({ kind: r.kind, provider: r.provider, detail: r.detail, plaidTransactionId: r.plaidTransactionId }));
+  if (!parsed || parsed.operation === LEGACY_UNSPECIFIED) return null;
+  return parsed.operation;
 }
 
 /** The operation as emitted: a REGISTERED key, or null when unprovable. */
