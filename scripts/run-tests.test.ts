@@ -94,6 +94,10 @@ async function main(): Promise<void> {
     check("no failed check ⇒ nothing extra", failedCheckLines("1. s\n  ✓ ok\n2 passed, 0 failed").length === 0);
     const two = failedCheckLines("1. a\n  ✗ x\n  ✗ y\n2. b\n  ✗ z");
     check("a section header is printed once, before its first failure", JSON.stringify(two) === JSON.stringify(["1. a", "  ✗ x", "  ✗ y", "2. b", "  ✗ z"]), JSON.stringify(two));
+    const many = Array.from({ length: 120 }, (_, i) => `  ✗ failure ${i}`).join("\n");
+    const capped = failedCheckLines(`1. mass\n${many}`);
+    check("a mass failure is capped at 50 checks plus a '+N more' line",
+      capped.filter((l) => l.startsWith("  ✗")).length === 50 && capped[capped.length - 1] === "  … +70 more failed check(s) not shown", capped.slice(-2).join(" | "));
     const src = readFileSync("scripts/run-tests.ts", "utf8");
     check("run-tests prints the failed checks before the tail", /failedCheckLines\(output\)[\s\S]*slice\(-30\)/.test(src));
   }

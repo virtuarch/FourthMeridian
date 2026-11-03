@@ -12,20 +12,28 @@ const FAILED = /^\s*✗ /;
 // that are not a check, a summary or a log line.
 const SECTION = /^[^\s✓✗[]/;
 
-export function failedCheckLines(output: string): string[] {
+/** CI logs are world-readable: a mass failure must not flood them. */
+export const MAX_FAILED_CHECKS = 50;
+
+export function failedCheckLines(output: string, max = MAX_FAILED_CHECKS): string[] {
   const out: string[] = [];
   let section: string | null = null;
   let printedSection: string | null = null;
+  let shown = 0;
+  let omitted = 0;
   for (const line of output.split("\n")) {
     if (FAILED.test(line)) {
+      if (shown >= max) { omitted++; continue; }
       if (section !== null && section !== printedSection) {
         out.push(section);
         printedSection = section;
       }
       out.push(line);
+      shown++;
     } else if (SECTION.test(line)) {
       section = line;
     }
   }
+  if (omitted > 0) out.push(`  … +${omitted} more failed check(s) not shown`);
   return out;
 }
