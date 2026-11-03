@@ -454,9 +454,11 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
   await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-overview");
   check("P11. an explicit default canonicalizes to the clean URL in place", cur().search === "" && history.length === 2 && pushes() === 0, writes.join(" | "));
   await loadPlatform("/dashboard/platform/PLATFORM_OPS?foo=1&workspace=platform-providers");
-  await open("platform-ai");
+  // PLATFORM ECONOMICS — re-pinned: "platform-ai" is now an alias (Economics › AI & Costs),
+  // so the plain-workspace walk opens the live workspace that replaced it.
+  await open("platform-economics");
   check("P12. unrelated params are preserved by the writer (one serializer, no clobber)",
-    cur().search === "?foo=1&workspace=platform-ai" && history.length === 3, cur().search);
+    cur().search === "?foo=1&workspace=platform-economics" && history.length === 3, cur().search);
   await open(PLATFORM_DEFAULT_WORKSPACE_ID);
   check("    …and survive the default's key deletion", cur().search === "?foo=1", cur().search);
 
@@ -467,9 +469,9 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
     check("P13. ?attention= is declared workspace-scoped", PLATFORM_WORKSPACE_SCOPED_PARAMS.includes(CS_ATTENTION_PARAM));
     await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-providers&attention=reconnect");
     check("    hydration keeps it (a refresh / shared link opens the filtered list): no write", cur().searchParams.get("attention") === "reconnect" && writes.length === 0, writes.join(" | "));
-    await open("platform-ai");
+    await open("platform-economics"); // PLATFORM ECONOMICS — re-pinned (was the now-aliased platform-ai)
     check("    a USER workspace switch deletes it in the SAME single write that sets ?workspace=",
-      writes.length === 1 && writes[0] === "push /dashboard/platform/PLATFORM_OPS?workspace=platform-ai" && cur().searchParams.get("attention") === null, writes.join(" | "));
+      writes.length === 1 && writes[0] === "push /dashboard/platform/PLATFORM_OPS?workspace=platform-economics" && cur().searchParams.get("attention") === null, writes.join(" | "));
     await open("platform-providers");
     check("    …so returning to the workspace later does NOT silently re-apply the filter", cur().search === "?workspace=platform-providers", cur().search);
     await back(); await back();
@@ -499,12 +501,14 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
   const n0 = writes.length;
   await openView("jobs");
   check("V7. selecting the OPEN view writes nothing", writes.length === n0);
-  await open("platform-ai");
-  check("V8. switching workspace RESETS the view: AI & Costs opens on its default view, ?view= deleted",
-    pnav.activeTab === "platform-ai" && pnav.activeView === "ai" && ws() === "platform-ai" && vw() === null, cur().search);
+  // PLATFORM ECONOMICS — re-pinned: Economics (Overview · AI & Costs) replaced the
+  // single-view AI & Costs workspace, so the reset is to Economics › Overview.
+  await open("platform-economics");
+  check("V8. switching workspace RESETS the view: Economics opens on its default view, ?view= deleted",
+    pnav.activeTab === "platform-economics" && pnav.activeView === "overview" && ws() === "platform-economics" && vw() === null, cur().search);
   const n1 = writes.length;
-  await openView("overview");
-  check("V9. a view id foreign to the open workspace falls back to its default (no write)", pnav.activeView === "ai" && vw() === null && writes.length === n1);
+  await openView("pipeline");
+  check("V9. a view id foreign to the open workspace falls back to its default (no write)", pnav.activeView === "overview" && vw() === null && writes.length === n1);
   await open("platform-overview:pipeline");
   check("V10. a doorway's view target opens the workspace ON that view (one PUSH)",
     pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeView === "pipeline" && cur().search === "?view=pipeline" && writes[writes.length - 1].startsWith("push"));
@@ -524,8 +528,36 @@ console.log("P. Platform Space — the same contract on the ?workspace= axis (th
     pnav.activeTab === PLATFORM_DEFAULT_WORKSPACE_ID && pnav.activeView === "pipeline" && cur().search === "?view=pipeline" && pushes() === 0 && history.length === 2, writes.join(" | "));
   await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-costs");
   // Platform Ops visual spec §5 — AI & Costs is ONE dashboard (Costs moved into its
-  // drawers), so the retired economics id opens it on its only (default) view.
-  check("V16. ?workspace=platform-costs opens the AI & Costs dashboard", pnav.activeTab === "platform-ai" && pnav.activeView === "ai" && cur().search === "?workspace=platform-ai", cur().search);
+  // drawers). PLATFORM ECONOMICS — re-pinned: that dashboard is Economics › AI & Costs,
+  // so the retired id opens it there and canonicalizes in place.
+  check("V16. ?workspace=platform-costs opens the AI & Costs dashboard (Economics › AI & Costs)",
+    pnav.activeTab === "platform-economics" && pnav.activeView === "ai" && cur().search === "?workspace=platform-economics&view=ai" && pushes() === 0 && history.length === 2, cur().search);
+
+  // ── PLATFORM ECONOMICS — every existing AI & Costs deep link still lands ──
+  {
+    const { readAiBudgetCallsUrl } = await import("@/components/platform/leads/ai-budget-calls-url");
+    const UNTIL = Date.parse("2026-11-03T10:00:00Z");
+    const ssrTab = await loadPlatform("/dashboard/platform/PLATFORM_OPS?workspace=platform-ai");
+    check("E1. ?workspace=platform-ai: SSR and client open Economics › AI & Costs, canonicalized in place (no entry)",
+      ssrTab === "platform-economics" && pnav.activeTab === "platform-economics" && pnav.activeView === "ai"
+        && cur().search === "?workspace=platform-economics&view=ai" && pushes() === 0 && history.length === 2, cur().search);
+    await loadPlatform(`/dashboard/platform/PLATFORM_OPS?workspace=platform-ai&aicalls=budget&aiuntil=${UNTIL}&aipage=2`);
+    check("E2. ?workspace=platform-ai&aicalls=budget&aiuntil=…&aipage=2: lands on AI & Costs WITH the budget-calls drawer state intact",
+      pnav.activeTab === "platform-economics" && pnav.activeView === "ai"
+        && cur().searchParams.get("aicalls") === "budget" && cur().searchParams.get("aiuntil") === String(UNTIL) && cur().searchParams.get("aipage") === "2"
+        && pushes() === 0 && history.length === 2, cur().search);
+    const calls = readAiBudgetCallsUrl(cur().search, UNTIL + 3_600_000);
+    check("    …and the AI & Costs lead reads the SAME drilldown from the canonical URL (open · window end · page)",
+      calls.open && calls.untilMs === UNTIL && calls.page === 2, JSON.stringify(calls));
+    await loadPlatform(`/dashboard/platform/PLATFORM_OPS?workspace=platform-economics&view=ai&aicalls=budget&aiuntil=${UNTIL}`);
+    check("E3. the canonical form is itself stable: no write on hydration", writes.length === 0 && cur().searchParams.get("aicalls") === "budget", writes.join(" | "));
+    await open("platform-providers");
+    check("E4. a user switch away clears the drilldown params (workspace-scoped), as before",
+      cur().searchParams.get("aicalls") === null && cur().searchParams.get("aiuntil") === null && cur().search === "?workspace=platform-providers", cur().search);
+    await open("platform-ai");
+    check("E5. a doorway naming platform-ai (Providers' 'Open AI & Costs', read-model targets) opens Economics › AI & Costs (one PUSH)",
+      pnav.activeTab === "platform-economics" && pnav.activeView === "ai" && cur().search === "?workspace=platform-economics&view=ai" && writes[writes.length - 1].startsWith("push"), cur().search);
+  }
   await loadPlatform("/dashboard/platform/PLATFORM_OPS?foo=1&view=jobs");
   await open("platform-policies");
   check("V17. unrelated params survive view writes", cur().search === "?foo=1&workspace=platform-policies", cur().search);

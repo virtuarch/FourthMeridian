@@ -18,7 +18,9 @@
  *                                     open the per-call records of that exact window
  *                                     (AiBudgetCalls; ?aicalls/aiuntil/aipage, REPLACE)
  *        Customers & policy groups (6) top 3 by today's spend vs THEIR allowance
- *     E  Economics (12)               the Phase 3 slot — no numbers
+ *     E  Economics (12)               the Phase 3 slot — no numbers (revenue and
+ *                                     margin have no billing source; cost per
+ *                                     customer lives on Economics › Overview)
  *     F  AI & Costs detail nav        five drawers hosting the former widgets
  *   < lg
  *     compact hero → 2×2 KPIs → ONE chart card (daily spend) → customers (3)
@@ -313,7 +315,7 @@ export function AiCostsLeadSurface(p: AiCostsLeadSurfaceProps) {
       {/* E — Economics: the Phase 3 slot, deliberately without numbers. */}
       <Block id="ai-economics" label="Economics" hint={<span className="text-[11px] text-[var(--text-faint)]">Phase 3</span>}>
         <Surface tone="sunken" className="px-4 py-3 sm:px-5">
-          <p className="truncate text-xs text-[var(--text-muted)]" data-economics-slot>Revenue, margin and cost per customer — not yet available</p>
+          <p className="truncate text-xs text-[var(--text-muted)]" data-economics-slot>Revenue, margin: unavailable (no billing source) · cost per customer in Economics</p>
         </Surface>
       </Block>
 

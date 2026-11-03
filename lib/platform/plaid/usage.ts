@@ -85,9 +85,10 @@ export interface PlaidUsageReaders {
   transitions(take: number): Promise<PlaidItemTransition[]>;
 }
 
-const TRANSITIONS_LIMIT = 5000;
+export const TRANSITIONS_LIMIT = 5000;
 
-function realReaders(): PlaidUsageReaders {
+/** The real readers (exported so Economics reads the SAME census, with its own `today`). */
+export function realPlaidUsageReaders(): PlaidUsageReaders {
   return {
     today: () => todayUTCISO(),
     async items() {
@@ -188,7 +189,7 @@ export function buildPlaidUsage(
 }
 
 export async function getPlaidUsage(deps: { readers?: PlaidUsageReaders } = {}): Promise<PlaidUsage> {
-  const readers = deps.readers ?? realReaders();
+  const readers = deps.readers ?? realPlaidUsageReaders();
   const [items, transitions] = await Promise.all([readers.items(), readers.transitions(TRANSITIONS_LIMIT)]);
   return { checkedAt: new Date().toISOString(), ...buildPlaidUsage(items, transitions, readers.today()) };
 }
