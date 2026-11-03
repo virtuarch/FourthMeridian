@@ -14,7 +14,7 @@
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import type { CsIncidentVerdict, IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { buildWorld } from "./world";
-import { alertsReader, opsAttentionReader, convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionBaselineReader, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
+import { alertsReader, csAttentionReader, opsAttentionReader, convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionBaselineReader, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
 import { moduleVerdicts } from "./module-adapter";
 
 let failures = 0;
@@ -103,7 +103,8 @@ export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> 
   alerts: [],
   // cut over in R6a; any divergence from module brokenNow is now a defect
   "ops-attention": [],
-  "cs-attention": ["D2", "D2b", "D4", "D10"],
+  // cut over in R6b; any divergence from module brokenNow is now a defect
+  "cs-attention": [],
 };
 
 console.log("cutover gate");
@@ -144,6 +145,29 @@ console.log("R6a — Ops attention reads module verdicts only");
     narrow.some((x) => x.rowId === "r_stale_unknown" && x.open && x.severity === v0("r_stale_unknown").effectiveSeverity && v0("r_stale_unknown").effectiveSeverity !== v0("r_stale_unknown").severity));
   check("removed / revoked subjects and stale-unverified rows never become Ops attention rows (D2 / D2b / D10)",
     ["r_acct_soft_deleted", "r_item_live_acct_hard", "r_orphan_item", "r_revoked_item", "r_stale_open"].every((id) => !openIds(narrow).has(id)));
+}
+
+console.log("R6b — CS attention reads module verdicts only");
+{
+  const narrow = run("cs-attention");
+  const wide = csAttentionReader(w, "all");
+  const csTier = new Map(moduleVerdicts(w, "CUSTOMER_SUCCESS").map((x) => [x.id, x as CsIncidentVerdict] as const));
+  check("handed EVERY verdict (not just the broken-now page), the owner rule drops the non-broken-now ones itself",
+    JSON.stringify([...openIds(narrow)].sort()) === JSON.stringify([...openIds(wide)].sort()), { narrow: [...openIds(narrow)], wide: [...openIds(wide)] });
+  check("every CS attention owner is the module's CS-tier subjectUserId (D4), never re-attributed",
+    narrow.filter((x) => x.open).every((x) => x.subjectUserId === csTier.get(x.rowId)?.subjectUserId && !!x.subjectUserId));
+  check("removed / revoked subjects and stale-unverified rows never put a customer in the incident reason (D2 / D2b / D10)",
+    ["r_acct_soft_deleted", "r_item_live_acct_hard", "r_orphan_item", "r_revoked_item", "r_stale_open"].every((id) => !openIds(narrow).has(id)));
+}
+
+console.log("FINAL — PB-1 Phase 2 complete: every reader is the module");
+{
+  const readers = Object.keys(LEGACY_READERS).sort();
+  check("ALLOWED_DIVERGENCES names exactly the six readers", JSON.stringify(Object.keys(ALLOWED_DIVERGENCES).sort()) === JSON.stringify(readers), Object.keys(ALLOWED_DIVERGENCES));
+  const nonEmpty = Object.entries(ALLOWED_DIVERGENCES).filter(([, ds]) => ds.length > 0);
+  check("ALLOWED_DIVERGENCES is EMPTY for every reader — any divergence from the module is a defect", nonEmpty.length === 0, nonEmpty);
+  // The raw-row half (no file outside the module reads SyncIssue rows to decide open/closed) is the
+  // census in lib/platform/incidents/incident-boundary.test.ts §9, beside the other boundary pins.
 }
 
 console.log("the module's corrections hold (not merely allowed)");

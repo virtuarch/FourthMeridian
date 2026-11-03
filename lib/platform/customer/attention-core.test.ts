@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { buildCsOverview, type CsOverviewFacts } from "./overview-core";
 import {
-  ATTENTION_KEYS, ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, foldAttention, idsForAttention, parseAttentionFilter,
+  ATTENTION_KEYS, ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, foldAttention, idsForAttention, incidentOwnersOf, parseAttentionFilter,
 } from "./attention-core";
 
 let failures = 0;
@@ -117,13 +117,35 @@ console.log("4. beta-scale cap → floor (the active-incident scan's pattern)");
     && !buildCsOverview(off, NOW, 30).attention.floor);
   const reader = code("lib/platform/customer/attention.ts");
   const raw = readFileSync(path.join(process.cwd(), "lib/platform/customer/attention.ts"), "utf8");
-  check("the beta-scale assumption is named in the reader", /BETA-SCALE ASSUMPTION/.test(raw) && /ACTIVE_INCIDENT_SCAN → `scanTruncated` → `openFloor`/.test(raw));
+  check("the beta-scale assumption is named in the reader", /BETA-SCALE ASSUMPTION/.test(raw) && /ACTIVE_INCIDENT_SCAN → `truncated` → `openFloor`/.test(raw));
   const fleet = (reader.match(/findMany\(\{[^)]*\}\)/g) ?? []).filter((m) => !/id: \{ in:/.test(m));
   check("every fleet findMany this reader owns (5) is capped", fleet.length === 5 && fleet.every((m) => /take: cap/.test(m)), fleet);
   check("a read reaching the cap (or a truncated incident scan) marks the floor",
-    /\[customers, plaidBroken, connBroken, invalid, unassigned\]\.some\(\(rows\) => rows\.length >= cap\) \|\| activePage\.scanTruncated/.test(reader) && /floor,\n\s*\};/.test(reader));
+    /\[customers, plaidBroken, connBroken, invalid, unassigned\]\.some\(\(rows\) => rows\.length >= cap\) \|\| incidentPage\.truncated/.test(reader) && /floor,\n\s*\};/.test(reader));
+  // PB-1 R6b — CS attention reads the module's CS-tier broken-now page and takes the incident owner from the
+  // module's attribution (subjectUserId, D4): no projection page, no item / account owner lookup of its own.
+  check("PB-1 R6b: the reader reads the module's broken-now page with the route's CS token, never the projection page",
+    /incidentAccessors\.brokenNow\(incidentToken, \{ limit: ACTIVE_INCIDENT_SCAN \}\)/.test(reader) && !/getActiveIncidentPage|getActiveIncidents\(|incidents\/projections/.test(reader)
+    && /incidentToken: CsToken,/.test(reader) && !/OpsToken/.test(reader));
+  check("PB-1 R6b: incident owners are the module's subjectUserId on broken-now verdicts — no owner rule here (D4)",
+/incidentOwners: incidentOwnersOf\(incidentPage\.items\)/.test(reader)
+    && !/ownerUserId \?\? |createdByUserId|financialAccount\.findMany|plaidItem\.findMany\(\{ where: \{ id:/.test(reader));
+  check("PB-1 R6b: the reader names no syncIssue rows and compares no state / resolved", !/syncIssue|\.state ===|resolved/.test(reader));
   const list = code("lib/platform/customer/customers.ts");
   check("the list reports the floor and names only the reasons that apply", /attentionFloor: att\.fold\.floor/.test(list) && /fold\.keys\.map/.test(list));
+}
+
+console.log("4b. PB-1 R6b — incident owners are the module's verdicts");
+{
+  const owners = incidentOwnersOf([
+    { brokenNow: true, subjectUserId: "u_a" },
+    { brokenNow: true, subjectUserId: "u_a" },
+    { brokenNow: false, subjectUserId: "u_b" }, // removed subject / stale-unverified / resolved: the module said not broken now
+    { brokenNow: true, subjectUserId: null },   // unattributable: names no one
+  ]);
+  check("only broken-now verdicts count, owned by the module's subjectUserId; null names no one", owners.join() === "u_a,u_a");
+  const fold = foldAttention({ ...off, activeCustomerIds: new Set(["u_a", "u_b"]), incidentOwners: owners }, NOW);
+  check("…and the fold counts each customer once", fold.sets.incident.size === 1 && fold.sets.incident.has("u_a"));
 }
 
 console.log("5. filter parsing");

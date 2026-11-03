@@ -63,7 +63,15 @@ import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-hea
 
 /** Broken-now incidents shown. More than the preview's six; still a floor when exceeded. */
 export const ATTENTION_INCIDENT_LIMIT = 20;
-/** Open SyncIssue rows the module scans for the broken-now page (the preview's scan; `truncated` past it). */
+/**
+ * Open SyncIssue rows the module scans for the broken-now page (the preview's scan; `truncated` past it).
+ *
+ * KNOWN LIMIT (S2, PB-1 R6a review). The scan is the 200 most recently seen open rows
+ * (lastOccurredAt desc). A critical incident older than 200 newer open rows is not scanned, so it is
+ * not ranked here; the floor caption then shows "+" (`truncated`), so the gap is disclosed, never
+ * hidden. Acceptable at beta scale. Future fix: a bounded second scan of the critical kinds' open rows,
+ * merged in (the R3 convergence pattern: an open incident is included regardless of its age).
+ */
 const ATTENTION_INCIDENT_SCAN = 200;
 /** How many correlated incidents get a detail read to name their execution. */
 const INCIDENT_EVIDENCE_LOOKUPS = 10;

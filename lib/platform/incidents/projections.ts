@@ -243,16 +243,6 @@ export async function getIncidentEpisodeTimeline(
   };
 }
 
-/** Everything that is no longer active — resolved conditions and evidence alike. */
-export async function getHistoricalIncidents(limit = 200): Promise<IncidentView[]> {
-  const rows = await db.syncIssue.findMany({
-    orderBy: { lastOccurredAt: "desc" },
-    take: limit,
-    select: SELECT,
-  });
-  return (await build(rows as Row[])).filter((v) => v.state !== "active");
-}
-
 /** One episode with its occurrences, for drill-down into execution evidence. */
 export async function getIncidentDetail(
   id: string,

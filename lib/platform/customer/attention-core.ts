@@ -19,6 +19,7 @@
  * Pure: no I/O, no clock of its own (`now` is handed in).
  */
 
+import type { CsIncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { ABANDONMENT_HORIZON_DAYS, FUNNEL_STAGE_ORDER } from "@/lib/platform/growth/product-analytics-core";
 import { funnelThrough, type CohortFunnelFacts } from "@/lib/platform/growth/acquisition-core";
 import type { AttentionFilter, AttentionKey } from "./overview-types";
@@ -61,7 +62,7 @@ export interface AttentionFacts {
   funnel: CohortFunnelFacts;
   /** Owners of a NEEDS_REAUTH / ERROR Plaid Item or live-provider Connection. */
   reconnectOwners: readonly string[];
-  /** Owners of a canonical ACTIVE sync incident (the Incidents workspace's read). */
+  /** Owners of a broken-now sync incident — the module's attribution (incidentOwnersOf, PB-1 R6b). */
   incidentOwners: readonly string[];
   /** Customers whose assignment names an unknown, invalid or retired policy group (never the unassigned default). */
   policyIssueOwners: readonly string[];
@@ -88,6 +89,18 @@ export interface AttentionFold {
   /** The funnel restricted to active customers, and its strict fold (the overview's stage distribution reuses both). */
   activeFunnel: CohortFunnelFacts;
   through: ReadonlyMap<string, number>;
+}
+
+/**
+ * PB-1 R6b — the `incident` reason's owners, from the incident-intelligence
+ * module's CUSTOMER_SUCCESS-tier verdicts ONLY: a verdict counts when the module
+ * says it is broken now (D1/D2/D2b/D10 decided there), and its owner is the
+ * module's ONE attribution (`subjectUserId`, D4 — recorded at observation, else
+ * item owner, else account owner ?? creator). No item / account lookup and no
+ * owner rule here; an unattributable incident names no one.
+ */
+export function incidentOwnersOf(verdicts: readonly Pick<CsIncidentVerdict, "brokenNow" | "subjectUserId">[]): string[] {
+  return verdicts.flatMap((v) => (v.brokenNow && v.subjectUserId ? [v.subjectUserId] : []));
 }
 
 export function foldAttention(facts: AttentionFacts, now: Date): AttentionFold {
