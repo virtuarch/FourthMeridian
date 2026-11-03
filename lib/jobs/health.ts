@@ -35,6 +35,21 @@
  *              carries the code (e.g. BILLABLE_COST_FREEZE).
  *   healthy    none of the above.
  *
+ * ENVIRONMENT (Ops env-aware verdicts, 2026-11-03) — on a deployment with NO
+ * scheduler (Preview: Vercel fires crons on Production only; see
+ * lib/jobs/scheduler-presence.ts), the age-based states above (never-ran ·
+ * overdue · dead) measure the environment, not the job. There they become
+ *   not-scheduled  the job has no recorded failure at the head of its ledger
+ *                  and the deployment never schedules it — NEUTRAL: not
+ *                  failed, not healthy, no attention severity, no alert, and
+ *                  excluded from the overview's failure verdict.
+ * A job whose newest run(s) FAILED is still a failure there ("failing"): with
+ * no scheduler nothing will run to break the streak, so the recorded failure is
+ * the standing verdict. "running", "skipped", "failing" (≥ streak) and a
+ * recent "healthy" are unchanged. The presence is decided SERVER-SIDE from the
+ * deployment environment (never a client value); with a scheduler present
+ * (Production, development) classification is byte-identical to before.
+ *
  * OPS-5 S2 (2026-07-16) — RICH HEALTH. The same read pass now also derives the
  * operational metrics operators need, ALL from the identical JobRun window (no
  * second query, no persisted counters): last / average / streak, historical
@@ -84,6 +99,8 @@ import { loadRefreshPolicies, type RefreshPolicies } from "@/lib/platform/refres
 import { floorHoursFor } from "@/lib/platform/scheduler-capability";
 import { defaultJobCadencePolicies, loadJobCadencePolicies, type JobCadencePolicies } from "@/lib/jobs/cadence-policy";
 import { DUE_TOLERANCE_MS, type JobCadenceOrigin } from "@/lib/jobs/cadence-policy.core";
+import { deploymentSchedulerPresence } from "@/lib/jobs/scheduler-presence";
+import type { SchedulerPresence } from "@/lib/jobs/scheduler-presence.core";
 import {
   defaultRefreshPolicies, schedulerCanHonour,
   type RefreshCadence, type RefreshPolicy, type RefreshSourceKind,
@@ -121,7 +138,9 @@ export type JobHealthStatus =
   | "overdue"
   | "dead"
   | "failing"
-  | "skipped";
+  | "skipped"
+  /** No scheduler on this deployment and no recorded failure — neutral (see ENVIRONMENT above). */
+  | "not-scheduled";
 
 /**
  * BETA LIFECYCLE L2 — the summary convention a job uses to say "I ran, and was
@@ -198,6 +217,8 @@ export interface ScheduledJobsHealth {
   /** True only when every registered job is "healthy". */
   healthy: boolean;
   checkedAt: Date;
+  /** Whether this deployment has a scheduler (server-side, from the environment). */
+  scheduler: SchedulerPresence;
   jobs: JobHealthReport[];
 }
 
@@ -279,8 +300,29 @@ export function nextExpectedRun(lastStartedAt: Date | null, cadenceHours: number
  * Classify one job from its recent runs and derive its rich metrics — pure and
  * fully deterministic given a fixed clock and window. Status precedence:
  * never-ran → running → dead → overdue → failing → healthy.
+ *
+ * `scheduler` (default "present") — with "absent", the age-based states are
+ * re-read for an environment that never schedules the job (module header,
+ * ENVIRONMENT): a leading recorded failure ⇒ "failing", otherwise
+ * "not-scheduled". "present" never changes a verdict.
  */
 export function classifyJobHealth(
+  job: ClassifiableJob,
+  runs: readonly JobRunHealthRow[],
+  now: Date,
+  policyCtx?: JobPolicyContext | null,
+  cadence?: JobCadenceContext | null,
+  scheduler: SchedulerPresence = "present",
+): JobHealthReport {
+  const report = classifyWithScheduler(job, runs, now, policyCtx, cadence);
+  if (scheduler === "present") return report;
+  if (report.status !== "never-ran" && report.status !== "overdue" && report.status !== "dead") return report;
+  // A recorded failure at the head of the ledger is still a failure here.
+  return { ...report, status: report.consecutiveFailures > 0 ? "failing" : "not-scheduled" };
+}
+
+/** The classification with a scheduler present (the original, unchanged rule). */
+function classifyWithScheduler(
   job: ClassifiableJob,
   runs: readonly JobRunHealthRow[],
   now: Date,
@@ -413,9 +455,11 @@ export async function checkScheduledJobHealth(
   client: JobRunReadClient = db as unknown as JobRunReadClient,
   now: Date = new Date(),
   jobs: readonly ScheduledJob[] = SCHEDULED_JOBS,
-  opts: { policies?: RefreshPolicies; cadences?: JobCadencePolicies } = {},
+  opts: { policies?: RefreshPolicies; cadences?: JobCadencePolicies; scheduler?: SchedulerPresence } = {},
 ): Promise<ScheduledJobsHealth> {
   const reports: JobHealthReport[] = [];
+  // Server-side only: the deployment environment decides (tests inject it).
+  const scheduler = opts.scheduler ?? deploymentSchedulerPresence();
 
   // The resolved refresh policies, for source-bound jobs, and the resolved
   // execution cadences (P1). Injected by tests; loaded through the one loader
@@ -447,12 +491,13 @@ export async function checkScheduledJobHealth(
         summary: true,
       },
     });
-    reports.push(classifyJobHealth(job, runs, now, contextFor(job), cadenceFor(job)));
+    reports.push(classifyJobHealth(job, runs, now, contextFor(job), cadenceFor(job), scheduler));
   }
 
   return {
     healthy: reports.every((r) => r.status === "healthy"),
     checkedAt: now,
+    scheduler,
     jobs: reports,
   };
 }

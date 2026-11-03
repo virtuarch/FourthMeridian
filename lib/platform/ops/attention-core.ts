@@ -201,7 +201,7 @@ export function relativeAge(iso: string | null, now: Date): string {
   return ms >= 0 ? `${span} ago` : `in ${span}`;
 }
 
-const TRUST_WORD: Record<ProviderTrust, string> = { OPERATIONAL: "Operational", DEGRADED: "Degraded", STALE: "Stale data", FAILING: "Failing", UNKNOWN: "Unknown" };
+const TRUST_WORD: Record<ProviderTrust, string> = { OPERATIONAL: "Operational", DEGRADED: "Degraded", STALE: "Stale data", FAILING: "Failing", UNKNOWN: "Unknown", INSUFFICIENT_DATA: "Not enough data" };
 
 // ── Per-authority restatements ───────────────────────────────────────────────
 

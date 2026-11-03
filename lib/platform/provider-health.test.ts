@@ -20,6 +20,7 @@ import {
   PROVIDER_FAILING_STREAK,
   summarizeJobRuns,
   deriveProviderTrust,
+  executionAssessment,
   freshnessFromResourceReport,
   freshnessFromConnections,
   buildProviderHealth,
@@ -30,6 +31,7 @@ import {
 } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessReport, ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
 import type { ConnectionHealthResult, ConnectionHealthRow } from "@/lib/connections/health";
+import { PROVIDER_OUTCOME_DEFINITION, PROVIDER_OUTCOME_DEFINITION_ID, assessOutcomes } from "@/lib/platform/verdicts/provider-outcome";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -106,28 +108,82 @@ async function main(): Promise<void> {
       summarizeJobRuns([run(0.5, "running", null), run(6, "succeeded")], NOW).availability === 1);
   }
 
-  // ── 2. Trust precedence (pure) ─────────────────────────────────────────────
+  // ── 2. Trust precedence (pure) — execution half = provider-outcome@1 ──────
+  // Re-pinned 2026-11-03 (intentional, ops env-aware verdicts): the execution
+  // verdict now rests on decided/failed run COUNTS with a minimum sample, not a
+  // bare error rate — "high error rate" and "some failures" carry a sample.
   {
     const base: TrustSignals = {
-      hasExecutionSignal: true, lastRunFailed: false, consecutiveFailures: 0,
-      errorRate: 0, freshnessState: "fresh", connectionHardFault: false, connectionDegraded: false,
+      hasExecutionSignal: true, consecutiveFailures: 0, decidedRuns: 10, failedRuns: 0,
+      freshnessState: "fresh", connectionHardFault: false, connectionDegraded: false,
     };
     check("clean → OPERATIONAL", deriveProviderTrust(base) === "OPERATIONAL");
     check("idle data + clean execution → OPERATIONAL", deriveProviderTrust({ ...base, freshnessState: "idle" }) === "OPERATIONAL");
     check("failure streak → FAILING",
-      deriveProviderTrust({ ...base, consecutiveFailures: PROVIDER_FAILING_STREAK }) === "FAILING");
-    check("high error rate → FAILING", deriveProviderTrust({ ...base, errorRate: 0.5 }) === "FAILING");
+      deriveProviderTrust({ ...base, consecutiveFailures: PROVIDER_FAILING_STREAK, failedRuns: PROVIDER_FAILING_STREAK }) === "FAILING");
+    check("high error rate (≥ 50 % of a sufficient sample) → FAILING", deriveProviderTrust({ ...base, failedRuns: 5 }) === "FAILING");
     check("hard connection fault → FAILING", deriveProviderTrust({ ...base, connectionHardFault: true }) === "FAILING");
     check("stale data (green execution) → STALE (false-green catch)",
       deriveProviderTrust({ ...base, freshnessState: "stale" }) === "STALE");
     check("empty archive → STALE", deriveProviderTrust({ ...base, freshnessState: "empty" }) === "STALE");
     check("FAILING beats STALE (execution worse than content)",
-      deriveProviderTrust({ ...base, freshnessState: "stale", consecutiveFailures: PROVIDER_FAILING_STREAK }) === "FAILING");
-    check("some failures → DEGRADED", deriveProviderTrust({ ...base, errorRate: 0.2 }) === "DEGRADED");
+      deriveProviderTrust({ ...base, freshnessState: "stale", consecutiveFailures: PROVIDER_FAILING_STREAK, failedRuns: PROVIDER_FAILING_STREAK }) === "FAILING");
+    check("some failures (isolated, sufficient sample) → DEGRADED", deriveProviderTrust({ ...base, failedRuns: 2 }) === "DEGRADED");
     check("degraded connection → DEGRADED", deriveProviderTrust({ ...base, connectionDegraded: true }) === "DEGRADED");
     check("unknown freshness → DEGRADED (has execution)", deriveProviderTrust({ ...base, freshnessState: "unknown" }) === "DEGRADED");
     check("no signal at all → UNKNOWN",
-      deriveProviderTrust({ ...base, hasExecutionSignal: false, errorRate: null, freshnessState: "unknown" }) === "UNKNOWN");
+      deriveProviderTrust({ ...base, hasExecutionSignal: false, decidedRuns: 0, freshnessState: "unknown" }) === "UNKNOWN");
+
+    // The defect: 1 failed run of 1–2 in the window used to be FAILING (error rate ≥ 50 %).
+    // Review fix (S2 BLOCKER): a small sample never hides a failure — DEGRADED, not FAILING, not "not enough data".
+    check("1 failed of 1 run (below the run sample) → DEGRADED, not FAILING and not INSUFFICIENT_DATA",
+      deriveProviderTrust({ ...base, decidedRuns: 1, failedRuns: 1, consecutiveFailures: 1 }) === "DEGRADED");
+    check("1 failed of 2 runs → DEGRADED",
+      deriveProviderTrust({ ...base, decidedRuns: 2, failedRuns: 1, consecutiveFailures: 1 }) === "DEGRADED");
+    check("2 failed of 2 runs (streak 2) → DEGRADED",
+      deriveProviderTrust({ ...base, decidedRuns: 2, failedRuns: 2, consecutiveFailures: 2 }) === "DEGRADED");
+    check("too few clean runs → INSUFFICIENT_DATA, never OPERATIONAL",
+      deriveProviderTrust({ ...base, decidedRuns: 2 }) === "INSUFFICIENT_DATA");
+    check("no run at all but fresh data → INSUFFICIENT_DATA, never OPERATIONAL",
+      deriveProviderTrust({ ...base, hasExecutionSignal: false, decidedRuns: 0 }) === "INSUFFICIENT_DATA");
+    check("a recency streak is FAILING even within a small window (3 of 3 failed)",
+      deriveProviderTrust({ ...base, decidedRuns: 3, failedRuns: 3, consecutiveFailures: 3 }) === "FAILING");
+    check("a hard connection fault still beats a small sample", deriveProviderTrust({ ...base, decidedRuns: 1, connectionHardFault: true }) === "FAILING");
+    const a = executionAssessment({ ...base, decidedRuns: 10, failedRuns: 1 });
+    check("execution assessment traces to its counts and the rule id",
+      a?.verdict === "DEGRADED" && a.definition === PROVIDER_OUTCOME_DEFINITION_ID && a.evidence.decided === 10 && a.evidence.failed === 1 && a.basis === "1 of 10 runs failed");
+    check("no run recorded → no execution assessment (null, never a verdict)", executionAssessment({ ...base, hasExecutionSignal: false }) === null);
+  }
+
+  // ── 2b. provider-outcome@1 boundaries (the shared rule) ────────────────────
+  {
+    const d = PROVIDER_OUTCOME_DEFINITION;
+    check("definition is named + versioned", PROVIDER_OUTCOME_DEFINITION_ID === "provider-outcome@1" && d.version === 1);
+    const calls = (decided: number, failed: number) => assessOutcomes({ kind: "calls", decided, failed, recentConsecutiveFailures: null }).verdict;
+    const runs = (decided: number, failed: number, streak: number) => assessOutcomes({ kind: "runs", decided, failed, recentConsecutiveFailures: streak }).verdict;
+    check("1 failed of 20 calls → DEGRADED (isolated failure)", calls(20, 1) === "DEGRADED");
+    check("0 failed of 20 calls → HEALTHY", calls(20, 0) === "HEALTHY");
+    check("19 clean calls (below the 20 floor) → NOT_ENOUGH_DATA, never HEALTHY", calls(19, 0) === "NOT_ENOUGH_DATA");
+    // Review fix (S2 BLOCKER) — the small-sample and all-failed steps run before the floor.
+    check("runs 1/1 failed → DEGRADED (small sample)", runs(1, 1, 1) === "DEGRADED");
+    check("runs 2/2 failed (streak 2) → DEGRADED", runs(2, 2, 2) === "DEGRADED");
+    check("runs 0/2 → NOT_ENOUGH_DATA", runs(2, 0, 0) === "NOT_ENOUGH_DATA");
+    check("calls 3/3 failed → FAILING (all failed)", calls(3, 3) === "FAILING");
+    check("calls 19/19 failed → FAILING (all failed)", calls(19, 19) === "FAILING");
+    check("calls 2/2 failed (below 3) → DEGRADED (small sample)", calls(2, 2) === "DEGRADED");
+    check("calls 10/15 → DEGRADED (small sample, not all failed)", calls(15, 10) === "DEGRADED");
+    check("calls 1/19 → DEGRADED (small sample)", calls(19, 1) === "DEGRADED");
+    check("small-sample basis says so",
+      assessOutcomes({ kind: "runs", decided: 1, failed: 1, recentConsecutiveFailures: 1 }).basis === "1 of 1 run failed — small sample");
+    check("calls 1/20 → DEGRADED; calls 10/20 → FAILING", calls(20, 1) === "DEGRADED" && calls(20, 10) === "FAILING");
+    check("0 calls → NOT_ENOUGH_DATA", calls(0, 0) === "NOT_ENOUGH_DATA");
+    check("ratio boundary: 9/20 DEGRADED, 10/20 FAILING", calls(20, 9) === "DEGRADED" && calls(20, 10) === "FAILING");
+    check("calls carry no order: a ratio, never a recency verdict",
+      assessOutcomes({ kind: "calls", decided: 100, failed: 3, recentConsecutiveFailures: null }).rule === "isolated");
+    check("consecutive recent failures → FAILING (runs, last 3 all failed in a large window)", runs(40, 3, 3) === "FAILING");
+    check("…a streak of 2 in a large window is only DEGRADED", runs(40, 2, 2) === "DEGRADED");
+    check("run sample floor = 3: 2 clean runs NOT_ENOUGH_DATA, 3 clean runs HEALTHY", runs(2, 0, 0) === "NOT_ENOUGH_DATA" && runs(3, 0, 0) === "HEALTHY");
+    check("basis words carry the figures", assessOutcomes({ kind: "calls", decided: 20, failed: 1, recentConsecutiveFailures: null }).basis === "1 of 20 calls failed");
   }
 
   // ── 3. Freshness CONSUMPTION (never recomputed) ────────────────────────────
@@ -189,10 +245,11 @@ async function main(): Promise<void> {
     const client: ProviderHealthReadClient = {
       jobRun: {
         async findMany() {
-          return [
-            { jobName: "sync-banks", status: "succeeded", startedAt: hoursAgo(6), completedAt: hoursAgo(6), durationMs: 900 },
-            { jobName: "fetch-fx-rates", status: "succeeded", startedAt: hoursAgo(6), completedAt: hoursAgo(6), durationMs: 500 },
-          ];
+          // Three runs each: the provider-outcome@1 run sample floor (re-pinned 2026-11-03).
+          return [6, 30, 54].flatMap((h) => [
+            { jobName: "sync-banks", status: "succeeded", startedAt: hoursAgo(h), completedAt: hoursAgo(h), durationMs: 900 },
+            { jobName: "fetch-fx-rates", status: "succeeded", startedAt: hoursAgo(h), completedAt: hoursAgo(h), durationMs: 500 },
+          ]);
         },
       },
       apiUsageCounter: {
@@ -219,7 +276,9 @@ async function main(): Promise<void> {
     check("OXR operational when fresh + green", byKey("OPEN_EXCHANGE_RATES")?.trust === "OPERATIONAL");
     check("Plaid operational when healthy connections + green", byKey("PLAID")?.trust === "OPERATIONAL");
     check("driver wires Plaid call volume", byKey("PLAID")?.callsToday === 12);
-    check("counts aggregate the roll-up", result.counts.OPERATIONAL === 2);
+    check("counts aggregate the roll-up", result.counts.OPERATIONAL === 2 && result.counts.INSUFFICIENT_DATA === 0);
+    check("each provider carries its execution assessment (3 of 3 runs clean)",
+      result.providers.every((p) => p.execution?.verdict === "HEALTHY" && p.execution.evidence.decided === 3));
     check("checkedAt echoes the injected clock", result.checkedAt.getTime() === NOW.getTime());
   }
 

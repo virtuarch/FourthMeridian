@@ -34,6 +34,7 @@ export const TRUST_WORD: Record<ProviderTrust, string> = {
   STALE:       "Stale data",
   FAILING:     "Failing",
   UNKNOWN:     "Unknown",
+  INSUFFICIENT_DATA: "Not enough data",
 };
 
 export const TRUST_TONE: Record<ProviderTrust, StatusTone> = {
@@ -42,6 +43,7 @@ export const TRUST_TONE: Record<ProviderTrust, StatusTone> = {
   STALE:       "warn",
   FAILING:     "bad",
   UNKNOWN:     "muted",
+  INSUFFICIENT_DATA: "muted",
 };
 
 export function trustBadge(trust: ProviderTrust): { word: string; tone: StatusTone } {
@@ -194,7 +196,7 @@ export function providerRows(providers: Fetched<ProviderHealthResponse>, email: 
 
 /** The trust composition over the provider-health authority's own counts (its rows only). */
 export function trustSegments(counts: Record<ProviderTrust, number>): { word: string; count: number; tone: StatusTone }[] {
-  return (["OPERATIONAL", "DEGRADED", "STALE", "FAILING", "UNKNOWN"] as const).map((t) => ({ word: TRUST_WORD[t], count: counts[t] ?? 0, tone: TRUST_TONE[t] }));
+  return (["OPERATIONAL", "DEGRADED", "STALE", "FAILING", "UNKNOWN", "INSUFFICIENT_DATA"] as const).map((t) => ({ word: TRUST_WORD[t], count: counts[t] ?? 0, tone: TRUST_TONE[t] }));
 }
 
 export const PROVIDER_FOOTNOTE =

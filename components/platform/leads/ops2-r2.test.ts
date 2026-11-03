@@ -134,8 +134,11 @@ console.log("B. Providers — one entity per REPORTED provider, honest cap and c
   check("providers are exactly those the readers report", ents.map((e) => e.key).sort().join() === "ALCHEMY,COINGECKO,ESPLORA,OPENAI,OPEN_EXCHANGE_RATES,PLAID,RESEND", ents.map((e) => e.key).join());
   check("no provider has a known cap (no reader exposes one)", ents.every((e) => e.cap === CAP_UNKNOWN));
   const byKey = new Map(ents.map((e) => [e.key, e] as const));
-  check("status: provider-health words for Plaid / OXR; 'Not assessed' (muted) elsewhere",
-    byKey.get("PLAID")!.status.word === "Operational" && byKey.get("OPEN_EXCHANGE_RATES")!.status.word === "Stale data"
+  // Re-pinned 2026-11-03 (intentional, provider-outcome@1): Plaid's provider-health word is
+  // Operational, but 1 failed of 50 calls in 7 d is an isolated failure ⇒ the shared rule downgrades it to Degraded.
+  check("status: provider-health words for Plaid / OXR (Plaid downgraded by 1 of 50 failed calls); 'Not assessed' (muted) elsewhere",
+    byKey.get("PLAID")!.status.word === "Degraded" && /^1 of 50 provider calls failed in 7 d/.test(byKey.get("PLAID")!.statusBasis)
+      && byKey.get("OPEN_EXCHANGE_RATES")!.status.word === "Stale data"
       && ["ALCHEMY", "ESPLORA", "COINGECKO", "OPENAI", "RESEND"].every((k) => byKey.get(k)!.status.word === NOT_ASSESSED && byKey.get(k)!.status.tone === "muted"));
   check("spend: ESTIMATED only where a rate card answered (Plaid cycle, OpenAI tokens this cycle), else UNKNOWN",
     byKey.get("PLAID")!.spend.kind === "ESTIMATED" && byKey.get("OPENAI")!.spend.kind === "ESTIMATED"

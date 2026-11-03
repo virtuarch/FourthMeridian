@@ -139,7 +139,7 @@ function provider(over: Partial<ProviderHealth> & { key: string; label: string }
 }
 
 function providersResponse(list: ProviderHealth[]): ProviderHealthResponse {
-  const counts = { OPERATIONAL: 0, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0 };
+  const counts = { OPERATIONAL: 0, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0, INSUFFICIENT_DATA: 0 };
   for (const p of list) counts[p.trust]++;
   return { checkedAt: AGO(1), counts, providers: list };
 }
