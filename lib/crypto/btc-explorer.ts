@@ -335,12 +335,17 @@ export const BATCH_CHUNK = 50;
  * address with no pending activity the two agree to the satoshi. xpub balances
  * therefore include unconfirmed effects while single-address balances do not.
  *
- * Addresses the provider OMITS (documented: no activity) default to zero, so
- * the result always has an entry per requested address. But a response with no
- * `addresses` ARRAY, or an entry whose address / `n_tx` / `final_balance` is
- * not a valid value, is INVALID_DATA (FM-AUDIT-053) — never read as "0 BTC,
- * unused", which reported a wrong balance and could end the gap-limit scan
- * early.
+ * FAIL CLOSED (FM-AUDIT-053). The provider returns an entry for EVERY requested
+ * address — a never-used one comes back with n_tx 0 / final_balance 0 (probed
+ * 2026-11-03 with a freshly generated, never-used address: present, n_tx 0).
+ * So the result is built only from entries actually returned, and each of the
+ * following is INVALID_DATA, never read as "0 BTC, unused" (which reported a
+ * wrong balance and could end the gap-limit scan early):
+ *   - no `addresses` ARRAY;
+ *   - an entry whose address is not a string, or whose `n_tx` /
+ *     `final_balance` is not a non-negative integer;
+ *   - any REQUESTED address missing from the response (empty or partial).
+ * An entry for an address we did not request is ignored.
  */
 export function parseMultiaddrStats(json: unknown, requested: string[]): Map<string, AddrStat> {
   const arr = (json as { addresses?: unknown } | null)?.addresses;
@@ -348,8 +353,8 @@ export function parseMultiaddrStats(json: unknown, requested: string[]): Map<str
     throw new BtcSyncError("discovery", "unexpected multiaddr response shape (expected an addresses array)", "INVALID_DATA");
   }
   const count = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
-  const out = new Map<string, AddrStat>();
-  for (const a of requested) out.set(a, { txCount: 0, sats: 0 });
+  const wanted = new Set(requested);
+  const seen = new Map<string, AddrStat>();
   for (const e of arr) {
     const addr = (e as { address?: unknown } | null)?.address;
     const nTx  = (e as { n_tx?: unknown } | null)?.n_tx;
@@ -357,12 +362,19 @@ export function parseMultiaddrStats(json: unknown, requested: string[]): Map<str
     if (typeof addr !== "string") {
       throw new BtcSyncError("discovery", "unexpected multiaddr entry (address is not a string)", "INVALID_DATA");
     }
-    if (!out.has(addr)) continue; // an address we did not ask about is not ours to read
+    if (!wanted.has(addr)) continue; // an address we did not ask about is not ours to read
     if (!count(nTx) || !count(bal)) {
       throw new BtcSyncError("discovery", "unexpected multiaddr entry (n_tx / final_balance is not a non-negative integer)", "INVALID_DATA");
     }
-    out.set(addr, { txCount: nTx, sats: bal });
+    seen.set(addr, { txCount: nTx, sats: bal });
   }
+  const missing = [...wanted].filter((a) => !seen.has(a)).length;
+  if (missing > 0) {
+    throw new BtcSyncError("discovery", `multiaddr omitted ${missing} requested address(es)`, "INVALID_DATA");
+  }
+  // Requested order, one entry per distinct requested address.
+  const out = new Map<string, AddrStat>();
+  for (const a of wanted) out.set(a, seen.get(a)!);
   return out;
 }
 

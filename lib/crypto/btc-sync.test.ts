@@ -527,13 +527,14 @@ async function main(): Promise<void> {
     addresses: [
       { address: "A1", n_tx: 3, final_balance: 500000 },
       { address: "A2", n_tx: 0, final_balance: 0 },
-      // "A3" omitted by the provider (no activity) → must default to zeros.
+      // FM-AUDIT-053 — the provider returns EVERY requested address; an unused one is n_tx 0.
+      { address: "A3", n_tx: 0, final_balance: 0 },
     ],
   };
   const mstats = parseMultiaddrStats(multiaddrFixture, ["A1", "A2", "A3"]);
   check("parseMultiaddrStats: used address → txCount + sats",
     mstats.get("A1")?.txCount === 3 && mstats.get("A1")?.sats === 500000);
-  check("parseMultiaddrStats: omitted/zero address defaults to zero (entry always present)",
+  check("parseMultiaddrStats: an unused address (n_tx 0 entry) reads as zero",
     mstats.has("A3") && mstats.get("A3")?.txCount === 0 && mstats.get("A2")?.sats === 0);
 
   // FM-AUDIT-053 — a 200 with no / garbled `addresses` is INVALID_DATA, never "0 BTC, unused".
@@ -547,9 +548,15 @@ async function main(): Promise<void> {
   check("parseMultiaddrStats: missing / negative / fractional final_balance throws INVALID_DATA",
     invalid({ addresses: [{ address: "A1", n_tx: 3 }] }) && invalid({ addresses: [{ address: "A1", n_tx: 3, final_balance: -1 }] }) && invalid({ addresses: [{ address: "A1", n_tx: 3, final_balance: 1.5 }] }));
   check("parseMultiaddrStats: an entry with no address string throws INVALID_DATA", invalid({ addresses: [null] }) && invalid({ addresses: [{ n_tx: 1, final_balance: 1 }] }));
-  check("parseMultiaddrStats: an empty array is valid (every requested address unused)",
-    !invalid({ addresses: [] }) && parseMultiaddrStats({ addresses: [] }, ["A1"]).get("A1")?.sats === 0);
-  check("parseMultiaddrStats: the normal body is unchanged (A1 used, A2 zero, A3 omitted ⇒ zero)",
+  check("parseMultiaddrStats: an EMPTY array for a non-empty request throws INVALID_DATA (never \"0 BTC, unused\")", invalid({ addresses: [] }));
+  {
+    let msg = "";
+    try { parseMultiaddrStats({ addresses: [{ address: "A1", n_tx: 3, final_balance: 5 }] }, ["A1", "A2", "A3"]); } catch (e) { msg = e instanceof BtcSyncError && e.kind === "INVALID_DATA" ? e.message : ""; }
+    check("parseMultiaddrStats: a PARTIAL response (requested addresses dropped) throws INVALID_DATA, naming the count", msg === "multiaddr omitted 2 requested address(es)", msg);
+  }
+  check("parseMultiaddrStats: an empty request with an empty array is valid (nothing asked, nothing missing)", parseMultiaddrStats({ addresses: [] }, []).size === 0);
+  check("parseMultiaddrStats: an extra, unrequested entry is ignored", JSON.stringify([...parseMultiaddrStats({ addresses: [{ address: "A1", n_tx: 1, final_balance: 2 }, { address: "ZZ", n_tx: 9, final_balance: 9 }] }, ["A1"])]) === JSON.stringify([["A1", { txCount: 1, sats: 2 }]]));
+  check("parseMultiaddrStats: a full response including n_tx 0 entries parses (A1 used, A2 and A3 unused)",
     JSON.stringify([...parseMultiaddrStats(multiaddrFixture, ["A1", "A2", "A3"])]) === JSON.stringify([["A1", { txCount: 3, sats: 500000 }], ["A2", { txCount: 0, sats: 0 }], ["A3", { txCount: 0, sats: 0 }]]));
   {
     let threw = false;
