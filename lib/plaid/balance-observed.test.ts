@@ -152,6 +152,45 @@ async function main(): Promise<void> {
     const c = classifyAccounts(rows as any);
     check("snapshot classification excludes it and reports unvaluedCount (the incomplete-stamp input)",
       c.netWorth === 500 && c.unvaluedCount === 1);
+
+    // END TO END — the real live writer over the same read: an unobserved new
+    // account means today's snapshot is marked INCOMPLETE (the #302 stamp,
+    // `c.unconverted || c.unvaluedCount > 0`), and the 0 is never counted.
+    const { regenerateSpaceSnapshot } = await import("@/lib/snapshots/regenerate");
+    const NOW = new Date("2026-03-01T06:00:00Z");
+    const makeWriterFake = (unobserved: boolean) => {
+      let upserted: any = null;
+      const fake = {
+        spaceAccountLink: {
+          findMany: async () => [
+            { visibilityLevel: "FULL", financialAccount: { id: "fa-cash", type: "checking", balance: 500, currency: "USD", walletChain: null, lastUpdated: NOW, availableBalance: null, balanceObserved: true } },
+            { visibilityLevel: "FULL", financialAccount: { id: "fa-new", type: "savings", balance: 0, currency: "USD", walletChain: null, lastUpdated: NOW, availableBalance: null, balanceObserved: !unobserved } },
+          ],
+        },
+        positionObservation: { findMany: async () => [], groupBy: async () => [] },
+        financialAccount: {
+          findMany: async (args: any) => args?.select?.lastUpdated
+            ? [{ id: "fa-cash", type: "checking", syncStatus: "synced", lastUpdated: NOW, balanceLastUpdatedAt: null },
+               { id: "fa-new", type: "savings", syncStatus: "synced", lastUpdated: NOW, balanceLastUpdatedAt: null }]
+            : [],
+        },
+        space: { findUnique: async () => ({ reportingCurrency: "USD" }) },
+        spaceSnapshot: { upsert: async (a: any) => { upserted = a; return {}; }, findUnique: async () => null },
+        manualAssetValuation: { findMany: async () => [] },
+      };
+      return { fake, get upserted() { return upserted; } };
+    };
+    const un = makeWriterFake(true);
+    await regenerateSpaceSnapshot("space-synthetic", new Date(Date.UTC(2026, 2, 1)), un.fake as never, NOW);
+    check("end to end: an unobserved new account ⇒ today's snapshot completenessTier 'incomplete' (create AND update)",
+      un.upserted?.create.completenessTier === "incomplete" && un.upserted?.update.completenessTier === "incomplete",
+      JSON.stringify(un.upserted?.create));
+    check("end to end: …and its structural 0 is excluded, totals = the observed account only",
+      un.upserted?.create.netWorth === 500 && un.upserted?.create.savings === 0);
+    const ok = makeWriterFake(false);
+    await regenerateSpaceSnapshot("space-synthetic", new Date(Date.UTC(2026, 2, 1)), ok.fake as never, NOW);
+    check("end to end: the same Space with the balance observed ⇒ tier null (unchanged)",
+      ok.upserted?.create.completenessTier === null && ok.upserted?.create.netWorth === 500);
   }
 
   // ── 4. The incident — raised, account-scoped, resolved by the first observation ──
@@ -254,6 +293,10 @@ async function main(): Promise<void> {
       /ALTER TABLE "FinancialAccount" ADD COLUMN "balanceObserved" BOOLEAN NOT NULL DEFAULT true;/.test(sql) && !/UPDATE\s+"FinancialAccount"/i.test(sql));
     check("adds the SyncIssueKind value", /ALTER TYPE "SyncIssueKind" ADD VALUE IF NOT EXISTS 'BALANCE_UNOBSERVED';/.test(sql));
     check("drops, renames or retypes nothing; balance stays NOT NULL", !/DROP|RENAME|ALTER COLUMN|SET DATA TYPE/i.test(sql));
+    const readme = read("prisma", "migrations", NAME, "README.md");
+    check("README: rollback is a forward revert dropping only the column; the enum value stays; never resolve --rolled-back",
+      /forward revert migration/.test(readme) && /DROP COLUMN "balanceObserved"/.test(readme)
+      && /BALANCE_UNOBSERVED` stays/.test(readme) && /Never\s+use `prisma migrate resolve --rolled-back`/.test(readme));
     const schema = read("prisma", "schema.prisma");
     check("schema declares the column with default true", /balanceObserved\s+Boolean\s+@default\(true\)/.test(schema));
     check("schema declares the enum value", /BALANCE_UNOBSERVED/.test(schema.slice(schema.indexOf("enum SyncIssueKind"))));
