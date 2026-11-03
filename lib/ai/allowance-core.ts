@@ -91,11 +91,19 @@ export function sumTodaySpend(groups: readonly TodaySpendGroup[], todayISO: stri
  * RESERVATION_UNAVAILABLE (503 + Retry-After): the signal ages out and clears on
  * recovery. Nothing was spent.
  */
-export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE" | "LEDGER_UNTRUSTED";
+/**
+ * FLEET_CEILING_REACHED (SEC-AI-001) — an OPTIONAL fleet ceiling is set and the
+ * fleet's trailing-window spend plus the turns in flight has reached it
+ * (lib/platform/ai/fleet-ceiling.core.ts). Not this customer's allowance, so it
+ * takes the transient path — the existing "briefly unavailable" copy, 503 +
+ * Retry-After — and adds nothing user-facing beyond the reason code. Never
+ * produced while no ceiling is set.
+ */
+export type AllowanceReason = "ALLOWANCE_EXHAUSTED" | "UNPRICED_MODEL" | "RESERVATION_UNAVAILABLE" | "LEDGER_UNTRUSTED" | "FLEET_CEILING_REACHED";
 
-/** The two transient refusals: retryable, 503, Retry-After. */
+/** The transient refusals: retryable, 503, Retry-After. */
 export function isRetryableAllowanceReason(reason: AllowanceReason): boolean {
-  return reason === "RESERVATION_UNAVAILABLE" || reason === "LEDGER_UNTRUSTED";
+  return reason === "RESERVATION_UNAVAILABLE" || reason === "LEDGER_UNTRUSTED" || reason === "FLEET_CEILING_REACHED";
 }
 
 /** Seconds a client should wait before retrying a RESERVATION_UNAVAILABLE refusal. */

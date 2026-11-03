@@ -31,6 +31,7 @@ import {
 } from "@/lib/platform/settings/descriptor.core";
 import { ENTITLEMENT_DIMENSIONS } from "@/lib/entitlements/catalogue";
 import { AI_COST_CONTROL_DEFAULTS, AI_SPEND_RULE_IDS } from "@/lib/platform/ai/cost-controls.types";
+import { FLEET_CEILING_MAX_USD, FLEET_CEILING_MIN_USD } from "@/lib/platform/ai/fleet-ceiling.core";
 import {
   INVITATION_VALIDITY_DEFAULT_DAYS, INVITATION_VALIDITY_MAX_DAYS, INVITATION_VALIDITY_MIN_DAYS,
 } from "@/lib/platform/growth/invitation-issue.core";
@@ -117,6 +118,14 @@ export const PlatformSettingKey = {
   ALERT_RULE_ENABLED_AI_SPEND_USER_HIGH:  "alert_rule_enabled:ai-spend-user-high",
   ALERT_RULE_ENABLED_AI_SPEND_FLEET_HIGH: "alert_rule_enabled:ai-spend-fleet-high",
   AI_PAID_REQUESTS_PAUSED:     "ai_paid_requests_paused",
+  // SEC-AI-001 — the OPTIONAL hard fleet AI spend ceiling (whole USD over the
+  // fleet alert's trailing 24 h window). ABSENT_MEANS_OFF: no row ⇒ no ceiling,
+  // and the reservation takes no fleet lock and makes no fleet read. Read only
+  // through lib/platform/ai/fleet-ceiling*.ts (judged inside the allowance
+  // reservation under `pg_advisory_xact_lock(hashtext('ai-fleet'))`). Setting a
+  // value is an OWNER decision; no value is seeded or migrated, and no
+  // application writer exists yet (editing belongs to Policies).
+  AI_FLEET_DAILY_CEILING_USD:  "ai_fleet_daily_ceiling_usd_24h",
   // PR B (2026-10-31) — how long a NEW beta invitation stays redeemable, in
   // whole days (1–30, default 7). Read and written only through
   // lib/platform/growth/invitation-policy.ts (GROWTH_REVENUE WRITE, a reason,
@@ -212,6 +221,10 @@ const DEFAULTS: Record<PlatformSettingKeyType, string> = {
   // Ships OFF, and absence IS off (ABSENT_MEANS_OFF): the default documents the
   // contract; the admission reader tells MISSING from INVALID itself.
   ai_paid_requests_paused:      String(AI_COST_CONTROL_DEFAULTS["killSwitch.paused"]),
+  // SEC-AI-001 — NO value. Absence IS off (ABSENT_MEANS_OFF): the empty string
+  // documents "not set" and fails the integer descriptor, so it can never be
+  // read as a ceiling; the reader resolves the row itself (fleet-ceiling.core.ts).
+  ai_fleet_daily_ceiling_usd_24h: "",
   // Owner ruling 2026-10-31: 7 calendar days (the bounds live beside the issuance rules).
   beta_invitation_validity_days: String(INVITATION_VALIDITY_DEFAULT_DAYS),
   beta_intake_global_limit_per_hour: String(BETA_INTAKE_GLOBAL_LIMIT_DEFAULT),
@@ -409,6 +422,14 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
     "While on, every new paid AI request — Conversations, the Daily Brief and harness runs — is refused before the allowance is judged and before the provider is reached. No override lifts it. Absence is off; an unreadable value also refuses.",
     "ABSENT_MEANS_OFF",
   ),
+  ai_fleet_daily_ceiling_usd_24h: {
+    key: "ai_fleet_daily_ceiling_usd_24h", label: "AI fleet daily ceiling (USD / 24 h)",
+    description: `A HARD stop: estimated AI spend across every customer surface in the trailing 24 h (the ${AI_SPEND_RULE_IDS.fleet} fold) plus the turns in flight at or above which every customer's next Conversations turn or Daily Brief generation is refused, judged inside the allowance reservation under one fleet-wide lock. Whole dollars. Absent means no ceiling (the default); when the fleet spend cannot be priced at all the ceiling admits and logs rather than refusing on an unknown.`,
+    class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: FLEET_CEILING_MIN_USD, max: FLEET_CEILING_MAX_USD,
+    default: DEFAULTS.ai_fleet_daily_ceiling_usd_24h, missingRow: "ABSENT_MEANS_OFF",
+    writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",
+    operatorConfigurable: true, resettable: true,
+  },
   beta_invitation_validity_days: {
     key: "beta_invitation_validity_days", label: "Beta invitation validity (days)",
     description: `How many days a NEW beta invitation stays redeemable — approve, direct invite and resend alike — unless the operator chooses a different validity for that one invitation. Whole days, ${INVITATION_VALIDITY_MIN_DAYS}–${INVITATION_VALIDITY_MAX_DAYS}. Changing it never alters invitations already issued; extending one of those is a separate, audited action.`,

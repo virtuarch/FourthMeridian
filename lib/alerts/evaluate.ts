@@ -313,6 +313,17 @@ export function evaluateAiSpendFleetHigh(rule: AlertRuleDefinition, spend: AiSpe
       summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet threshold of $${spend.thresholds.fleetUsd} (${spend.customerInvocations} invocations, ${spend.customers} customer(s); estimate, not a bill).${unpricedLine}`,
     });
   }
+  // SEC-AI-001 — the OPTIONAL hard fleet ceiling, on the same rule and dedupe
+  // family: when the priced fleet spend has reached it, customers' next turns
+  // are being REFUSED (FLEET_CEILING_REACHED, lib/platform/ai/allowance-reservation.ts).
+  // Absent unless a ceiling is set, so a fleet with no ceiling signals exactly as before.
+  if (typeof spend.fleetCeilingUsd === "number" && spend.fleetUsd !== null && spend.fleetUsd >= spend.fleetCeilingUsd) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "critical",
+      dedupeKey: `${rule.id}:ceiling:${day}`,
+      summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet daily ceiling of $${spend.fleetCeilingUsd}. New Conversations turns and Daily Brief generations are being refused until the window falls below it (estimate, not a bill).${unpricedLine}`,
+    });
+  }
   if (spend.unpricedInvocations > 0) {
     out.push({
       ruleId: rule.id, kind: rule.kind, severity: "warning",

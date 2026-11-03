@@ -55,6 +55,15 @@
  * and the refusal clears when writes succeed again or the window ages out.
  * Enforcement explicitly OFF admits as before (an operator's decision).
  *
+ * ── The OPTIONAL fleet ceiling (SEC-AI-001) ─────────────────────────────────
+ * When `ai_fleet_daily_ceiling_usd_24h` is SET, a turn the customer allowance
+ * admits is then judged fleet-wide in the SAME transaction, after
+ * `pg_advisory_xact_lock(hashtext('ai-fleet'))` (taken after the customer lock,
+ * always — one lock order): THE fleet fold the alert judges + every customer's
+ * in-flight buckets × RESERVE_USD ≥ ceiling ⇒ FLEET_CEILING_REACHED (the
+ * transient refusal path). UNAVAILABLE fleet spend admits and logs (fail open —
+ * fleet-ceiling.core.ts). Absent (the default) ⇒ no fleet lock and no fleet read.
+ *
  * fm_system: AiInvocation and PlatformSetting are operator tables; RateLimit
  * carries no tenant data. Only the AUTHENTICATED user's id is ever the predicate.
  */
@@ -68,6 +77,12 @@ import {
 } from "@/lib/ai/allowance-core";
 import { readCustomerSpendGroupsToday, type CustomerSpendReadClient } from "@/lib/platform/ai/customer-spend-today";
 import { consecutiveLedgerWriteFailures, ledgerUntrusted, readLedgerWriteFailures } from "@/lib/platform/ai/ledger-health";
+import { buildAiSpendHealth, readUserSpendGroups, type SpendGroupsRawClient, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
+import { fleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
+import {
+  FLEET_CEILING_LOCK_KEY, FLEET_CEILING_SETTING_KEY, FLEET_CEILING_WINDOW_HOURS,
+  fleetCeilingDecision, resolveFleetCeiling, type FleetCeiling,
+} from "@/lib/platform/ai/fleet-ceiling.core";
 
 export const INFLIGHT_KEY_PREFIX = "user:ai-inflight:";
 export const INFLIGHT_BUCKET_MS = 60 * 60 * 1000;
@@ -91,7 +106,8 @@ export interface ReservationTx extends CustomerSpendReadClient {
     findUnique(args: { where: { key: string }; select: { value: true } }): Promise<{ value: string } | null>;
   };
   rateLimit: {
-    findMany(args: { where: { key: string; windowStart: { in: Date[] } }; select: { count: true } }): Promise<{ count: number }[]>;
+    /** `key` is exact for one customer's buckets; `{ startsWith }` sums EVERY customer's (the fleet in-flight, SEC-AI-001 — ceiling set only). */
+    findMany(args: { where: { key: string | { startsWith: string }; windowStart: { in: Date[] } }; select: { count: true } }): Promise<{ count: number }[]>;
     upsert(args: {
       where: { key_windowStart: { key: string; windowStart: Date } };
       create: { key: string; windowStart: Date; count: number };
@@ -135,6 +151,35 @@ async function readEnforced(client: { platformSetting: ReservationTx["platformSe
   }
 }
 
+/**
+ * SEC-AI-001 — the OPTIONAL fleet ceiling, read in the transaction. Absent ⇒
+ * OFF. An unreadable row is OFF too (logged): this cap is optional and never
+ * refuses on a value it cannot read — the per-customer allowance, which fails
+ * closed, is unaffected either way.
+ */
+async function readFleetCeiling(client: { platformSetting: ReservationTx["platformSetting"] }): Promise<FleetCeiling> {
+  try {
+    const row = await client.platformSetting.findUnique({ where: { key: FLEET_CEILING_SETTING_KEY }, select: { value: true } });
+    return resolveFleetCeiling(row?.value ?? null);
+  } catch (err) {
+    console.error("[ai/allowance] fleet ceiling unreadable; no fleet ceiling applied (optional cap fails open):", err);
+    return { state: "OFF" };
+  }
+}
+
+/**
+ * SEC-AI-001 — the fleet position, read UNDER the fleet lock: THE fleet fold's
+ * groups (customer surfaces, RETURNED, the alert's trailing window) and every
+ * customer's in-flight reservations. Injectable for tests.
+ */
+export interface FleetPositionDeps {
+  /** The grouped ledger read, through the transaction (default: readUserSpendGroups on `tx`). */
+  groups?: (tx: ReservationTx, since: Date, until: Date) => Promise<UserSpendGroup[]>;
+}
+
+const defaultFleetGroups = (tx: ReservationTx, since: Date, until: Date) =>
+  readUserSpendGroups(since, until, tx as unknown as SpendGroupsRawClient);
+
 const NO_RELEASE = async () => {};
 
 /**
@@ -149,6 +194,7 @@ export async function reserveAiTurn(
   now: Date = new Date(),
   client: ReservationClient = DEFAULT_CLIENT(),
   reserveUsd: number = RESERVE_USD,
+  fleetDeps: FleetPositionDeps = {},
 ): Promise<ReservationOutcome> {
   const key = inflightKey(userId);
   const bucket = inflightBucket(now);
@@ -158,11 +204,12 @@ export async function reserveAiTurn(
   try {
     const verdict = await client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${allowanceLockKey(userId)}))`;
-      const [enforced, groups, buckets, ledgerFailures] = await Promise.all([
+      const [enforced, groups, buckets, ledgerFailures, fleetCeiling] = await Promise.all([
         readEnforced(tx),
         readCustomerSpendGroupsToday(userId, now, tx),
         tx.rateLimit.findMany({ where: { key, windowStart: { in: [bucket, previous] } }, select: { count: true } }),
         readLedgerWriteFailures(tx, now),
+        readFleetCeiling(tx),
       ]);
       const spend = sumTodaySpend(groups, today);
       const inFlight = buckets.reduce((n, b) => n + Math.max(0, b.count), 0);
@@ -180,6 +227,44 @@ export async function reserveAiTurn(
         spentUsd: spend.spentUsd, allowanceUsd, unpricedInvocations: spend.unpricedInvocations,
         inFlight, reserveUsd, enforced, reservation: "RESERVED",
       });
+      // ── SEC-AI-001 — the OPTIONAL fleet ceiling ───────────────────────────
+      // Judged only for a turn the customer allowance would admit, and only
+      // when a ceiling is SET: with none, no fleet lock is taken and nothing
+      // fleet-wide is read (no added contention). When set, the fleet lock
+      // serialises EVERY admission (always after the customer lock — one order,
+      // no deadlock), so the in-flight count read below includes every turn
+      // admitted before this one, and two edge turns cannot both pass.
+      if (fleetCeiling.state === "INVALID") {
+        console.error(`[ai/allowance] fleet ceiling row is invalid (${JSON.stringify(fleetCeiling.raw)}); no fleet ceiling applied`);
+      }
+      if (v.allowed && fleetCeiling.state === "SET") {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${FLEET_CEILING_LOCK_KEY}))`;
+        const since = new Date(now.getTime() - FLEET_CEILING_WINDOW_HOURS * 60 * 60 * 1000);
+        const [fleetGroups, fleetBuckets] = await Promise.all([
+          (fleetDeps.groups ?? defaultFleetGroups)(tx, since, now),
+          tx.rateLimit.findMany({ where: { key: { startsWith: INFLIGHT_KEY_PREFIX }, windowStart: { in: [bucket, previous] } }, select: { count: true } }),
+        ]);
+        // THE fleet fold (the alert's) → THE fleet spend status. The threshold
+        // is irrelevant to the ceiling's decision; the status and priced USD are not.
+        const health = buildAiSpendHealth(fleetGroups, { fleetUsd: fleetCeiling.usd, userUsd: fleetCeiling.usd }, FLEET_CEILING_WINDOW_HOURS, now);
+        const status = fleetSpendStatus({
+          windowHours: FLEET_CEILING_WINDOW_HOURS,
+          fleet: { estimatedUsd: health.fleetUsd, thresholdUsd: 0, alertEnabled: false, utilizationPct: null, invocations: health.customerInvocations, customers: health.customers },
+          bySurface: [], // the fold is customer-only already ⇒ the reader's customer `unpriced` count
+          unpriced: { invocations: health.unpricedInvocations, models: health.unpricedModels },
+        });
+        const fleetInFlight = fleetBuckets.reduce((n, b) => n + Math.max(0, b.count), 0);
+        const f = fleetCeilingDecision({ spend: status, ceilingUsd: fleetCeiling.usd, fleetInFlight, reserveUsd });
+        if (f.outcome === "FAIL_OPEN") {
+          console.warn(`[ai/allowance] fleet spend UNAVAILABLE (${f.reason}); fleet ceiling $${f.ceilingUsd} NOT applied (optional cap fails open) user=${userId}`);
+        } else if (f.outcome === "REACHED") {
+          console.error(`[ai/allowance] fleet ceiling reached: committed $${f.committedUsd.toFixed(2)} (${f.status}, in-flight ${fleetInFlight}) ≥ ceiling $${f.ceilingUsd}; REFUSING user=${userId}`);
+          return {
+            allowed: false, reason: "FLEET_CEILING_REACHED", unpricedInvocations: 0,
+            spentUsd: v.spentUsd, allowanceUsd: v.allowanceUsd, enforced, reservation: "RESERVED", inFlight,
+          } satisfies AllowanceVerdict;
+        }
+      }
       if (v.allowed) {
         await tx.rateLimit.upsert({
           where: { key_windowStart: { key, windowStart: bucket } },

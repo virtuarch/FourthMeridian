@@ -35,6 +35,8 @@ import { CUSTOMER_SURFACES, isCustomerSurface, priceSpendGroup } from "@/lib/pla
 import { buildAiSpendHealth, readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { utcDayStart } from "@/lib/platform/ai/customer-spend-today";
+import { loadAiSpendThresholds, type ThresholdReadClient } from "@/lib/platform/ai/spend-thresholds";
+import { fleetCeilingUsdOf } from "@/lib/platform/ai/fleet-ceiling.core";
 import {
   loadRecentAlertSummaries, loadResolvedControls, recentTriggersFor, type CostControlsReadClient,
 } from "@/lib/platform/ai/cost-controls";
@@ -141,12 +143,14 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
   const controlsClient = deps.controls ?? (systemDb as unknown as CostControlsReadClient);
   const assignments = deps.assignments ?? (systemDb as unknown as AssignmentReadClient);
 
-  const [catalogue, controls, recent, windowGroups, todayGroups] = await Promise.all([
+  const [catalogue, controls, recent, windowGroups, todayGroups, spendSettings] = await Promise.all([
     (deps.loadCatalogue ?? loadPolicyGroupCatalogue)(),
     loadResolvedControls(controlsClient),
     loadRecentAlertSummaries(controlsClient),
     groups(since, now),
     groups(utcDayStart(now), now),
+    // SEC-AI-001 — the optional fleet ceiling, from the SAME settings read the fleet alert threshold uses.
+    loadAiSpendThresholds(controlsClient as unknown as ThresholdReadClient),
   ]);
 
   const thresholds = { fleetUsd: controls["fleetAlert.thresholdUsd"].value, userUsd: controls["userAlert.thresholdUsd"].value };
@@ -213,6 +217,7 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
       userAlertEnabled: controls["userAlert.enabled"].value,
       userAlertThresholdUsd: thresholds.userUsd,
       paused: controls["killSwitch.paused"].value,
+      fleetCeilingUsd: spendSettings.fleetCeiling ? fleetCeilingUsdOf(spendSettings.fleetCeiling) : null,
     },
     estimateNote: ESTIMATE_NOT_BILLING,
   };
