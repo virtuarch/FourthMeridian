@@ -32,7 +32,7 @@ if (!/clone|throwaway|fm_ci|test/i.test(dbName)) {
 }
 
 const db = systemDb;
-const U = "u_phase1", OTHER = "u_phase1_other";
+const U = "u_phase1", OTHER = "u_phase1_other", C1U = "u_phase1_c1";
 
 async function main() {
   // Reset (throwaway only) through the delegates — no raw SQL touches an account FK.
@@ -40,10 +40,10 @@ async function main() {
   await db.syncIssueRelation.deleteMany({});
   await db.syncIssueArchive.deleteMany({});
   await db.syncIssue.deleteMany({});
-  await db.financialAccount.deleteMany({ where: { id: { in: ["fa_p1", "fa_p1_other"] } } });
+  await db.financialAccount.deleteMany({ where: { id: { in: ["fa_p1", "fa_p1_other", "fa_c1"] } } });
   await db.plaidItem.deleteMany({ where: { id: "pi_p1" } });
-  await db.user.deleteMany({ where: { id: { in: [U, OTHER] } } });
-  await db.user.createMany({ data: [{ id: U, email: "p1@example.test" }, { id: OTHER, email: "p1o@example.test" }] });
+  await db.user.deleteMany({ where: { id: { in: [U, OTHER, C1U] } } });
+  await db.user.createMany({ data: [{ id: U, email: "p1@example.test" }, { id: OTHER, email: "p1o@example.test" }, { id: C1U, email: "p1c1@example.test" }] });
   await db.plaidItem.create({ data: { id: "pi_p1", userId: U, externalItemId: "ext", institutionId: "ins", institutionName: "A brokerage", encryptedToken: "" } });
   await db.financialAccount.createMany({ data: [
     { id: "fa_p1", name: "Wallet", institution: "Self-custody", type: "crypto", ownerType: "USER", ownerUserId: U },
@@ -105,6 +105,21 @@ async function main() {
     `${leftLive.length}/${leftArch.length}/${leftEvents.length}/${leftRel.length}`);
   check("provider-wide history survives", (await db.syncIssue.count({ where: { id: "si_provider_wide" } })) === 1);
   check("another customer's incident survives", (await db.syncIssue.count({ where: { subjectUserId: OTHER } })) === 1);
+
+  console.log("\n5. C1 — a LEGACY row's owner is resolved at archive time, so a later purge still finds it");
+  await db.financialAccount.create({ data: { id: "fa_c1", name: "Old", institution: "Self-custody", type: "crypto", ownerType: "USER", ownerUserId: C1U } });
+  const old = new Date(Date.now() - 200 * 86_400_000);
+  await db.syncIssue.create({ data: { id: "si_c1_legacy", kind: "UPSERT_ERROR", provider: "WALLET", financialAccountId: "fa_c1",
+    resolved: true, resolvedAt: old, resolutionKind: "AUTOMATIC_RECOVERY" } });
+  await archiveAndPruneSyncIssues(db as never, ["si_c1_legacy"], { resolved: true });
+  const c1Arch = await db.syncIssueArchive.findUnique({ where: { incidentId: "si_c1_legacy" } });
+  check("the legacy source had no owner; the archive row carries the account owner", c1Arch?.subjectUserId === C1U, String(c1Arch?.subjectUserId));
+  // The account is hard-deleted (its last link to the customer), THEN the customer is purged.
+  await db.financialAccount.delete({ where: { id: "fa_c1" } });
+  const c1Set = await resolveIncidentPurgeSet(db as never, { userId: C1U, plaidItemIds: [], financialAccountIds: [] });
+  check("the purge set still finds the archive row (by subjectUserId alone)", c1Set.archiveIds.includes(c1Arch!.id));
+  await db.$transaction(async (tx) => { await purgeIncidentSet(tx as never, c1Set); });
+  check("after the purge the archive row is gone", (await db.syncIssueArchive.count({ where: { incidentId: "si_c1_legacy" } })) === 0);
 
   await db.$disconnect();
   if (failures > 0) { console.error(`\n❌ phase-1 lifecycle harness: ${failures} failure(s)`); process.exit(1); }

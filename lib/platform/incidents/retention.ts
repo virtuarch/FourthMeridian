@@ -11,6 +11,13 @@
  *      code-only `eventTimeline`, then deletes those events,
  *   4. deletes the SyncIssue rows (occurrences cascade).
  *
+ * C1 — A LEGACY ROW (subjectUserId NULL) GETS ITS OWNER AT ARCHIVE TIME, from
+ * the authoritative columns (PlaidItem.userId via plaidItemId, else the
+ * FinancialAccount owner / creator via financialAccountId), read in the same
+ * transaction. Without it, an archive row whose account was later hard-deleted
+ * would match nothing at the customer's purge — its only remaining link to the
+ * customer would be gone. A subject that no longer exists stays NULL (honest).
+ *
  * Any failure rolls the whole batch back: a summary is never lost (no delete
  * without its archive) and never duplicated. The archive itself is retained
  * 13 months (the `syncIssueArchive` rule), SyncIssueRelation rows the same 13
@@ -23,9 +30,10 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { buildArchiveRow, type ArchivableEvent, type ArchivableIncident } from "./archive-core";
+import { loadSubjectFacts, ownerOf, type SubjectReader } from "./subjects";
 
 /** The transaction-side accessors the prune uses (structural, so a test can fake them). */
-export interface ArchivePruneTx {
+export interface ArchivePruneTx extends SubjectReader {
   syncIssue: {
     findMany(args: Record<string, unknown>): Promise<Array<Omit<ArchivableIncident, "occurrenceCount" | "kind"> & { kind: unknown; _count: { occurrences: number } }>>;
     deleteMany(args: { where: Record<string, unknown> }): Promise<{ count: number }>;
@@ -78,8 +86,12 @@ export async function archiveAndPruneSyncIssues(
       list.push(e);
       byIncident.set(e.incidentId, list);
     }
+    // C1 — owners for the legacy rows, from the subject rows (never `detail`).
+    const legacy = rows.filter((r) => !r.subjectUserId);
+    const owners = legacy.length ? (await loadSubjectFacts(legacy, tx)).owners : new Map<string, string | null>();
     const data = rows.map((r) => {
-      const a = buildArchiveRow({ ...r, kind: String(r.kind), occurrenceCount: r._count.occurrences }, byIncident.get(r.id) ?? []);
+      const subjectUserId = r.subjectUserId ?? ownerOf(r, owners);
+      const a = buildArchiveRow({ ...r, subjectUserId, kind: String(r.kind), occurrenceCount: r._count.occurrences }, byIncident.get(r.id) ?? []);
       return {
         ...a,
         resolutionEvidence: (a.resolutionEvidence ?? undefined) as Prisma.InputJsonValue | undefined,
