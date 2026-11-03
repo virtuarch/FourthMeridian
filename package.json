@@ -18,6 +18,7 @@
     "db:migrate:safe": "tsx scripts/db-guard.ts --mode=migrate-deploy && npm run db:backup && prisma migrate deploy",
     "db:backup": "tsx scripts/db-backup.ts",
     "db:guard": "tsx scripts/db-guard.ts",
+    "db:regrant": "tsx scripts/db-regrant.ts",
     "db:drift": "tsx --env-file=.env.local scripts/check-schema-drift.ts",
     "ai:baseline": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-conversation-baseline.ts",
     "ai:memory-check": "tsx --require ./scripts/lib/server-only-preload.cjs --env-file=.env.local scripts/ai-baseline/memory-store.check.ts",

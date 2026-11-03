@@ -73,9 +73,12 @@ T_RESTORED=$(date -u +%s)
 #      scratch BEFORE the restore, or the policy statements fail.
 #    - GRANTs are NOT in the dump (--no-privileges). Because the ledger is at head, replaying
 #      migrations does NOT re-grant: the runtime roles fail closed ("permission denied") until
-#      grants are re-established. GAP (DECIDED BUT NOT IMPLEMENTED): there is no automated
-#      re-grant step yet; until there is, a restore is not usable by the app roles, and the
-#      rehearsal must record that explicitly.
+#      grants are re-established. Re-grant from a freshly migrated reference database
+#      (IMPLEMENTED for clones; CI proof: rls:accept cases 38-41):
+#        REGRANT_REFERENCE_URL=<empty DB with migrations applied> \
+#        REGRANT_TARGET_URL="$SCRATCH" npm run db:regrant            # dry run: missing / extra
+#        REGRANT_REFERENCE_URL=... REGRANT_TARGET_URL="$SCRATCH" npm run db:regrant -- --apply
+#      Any EXTRA privilege it reports is a finding; record it before choosing --revoke-extra.
 #    The drift check below proves only that the ledger is at head:
 export DATABASE_URL="$SCRATCH?schema=public" DIRECT_URL="$DATABASE_URL" FM_DB_GUARD=clone-only
 npm run db:drift                      # expect: 0 pending, 0 unknown
