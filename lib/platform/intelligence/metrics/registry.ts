@@ -163,7 +163,7 @@ export const METRICS: readonly MetricDefinition[] = [
     exclusion: ["In-flight runs and calls (no outcome yet)"],
     freshnessSource: "JobRun rows (90-day retention) and ProviderCall rows (60-day retention)",
     provenance: { class: "MEASURED" },
-    coverageGaps: ["A small sample never reads Healthy (NOT_ENOUGH_DATA)", "ProviderCall roll-ups carry no order, so a recent failure streak is only visible in job runs"],
+    coverageGaps: ["A small sample never reads Healthy (NOT_ENOUGH_DATA)", "ProviderCall roll-ups carry no order, so a recent failure streak is only visible in job runs", "The provider-health route carries the job-run execution verdict only; the ProviderCall attempt verdict is folded by the Providers tile from the provider-operations payload (callsAssessment), so a retrieval through provider-health does not see it"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/provider-health/route.ts" }],
     tiles: [
       { component: "components/platform/leads/providers-model.ts", reads: "assessOutcomes(" },

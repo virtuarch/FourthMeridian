@@ -1,6 +1,6 @@
 # Platform Intelligence: governed operational and business intelligence
 
-> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-03 · **PRs:** #255, #257, feat/platform-metric-registry (foundation step 1), docs/active-definitions
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #255, #257, feat/platform-metric-registry (foundation step 1), docs/active-definitions, feat/metric-retrieval-contracts (Phase 3 slice 1)
 
 **Owner directives (2026-11-03).** One extensible, permissioned intelligence system for every Fourth Meridian domain. It answers questions nobody listed in advance, navigates the operator to the right record, and never acts without explicit authorization. The order is fixed: **data model → deterministic intelligence → conversation and navigation.** Incidents are the first domain ([PB1-INCIDENT-LIFECYCLE](PB1-INCIDENT-LIFECYCLE.md)). Every important KPI leads to the records behind it.
 
@@ -63,6 +63,17 @@
 
      It also checks that ids are unique, versions explicit, every metric has a permission and an identity tier, and an UNAVAILABLE provenance carries a reason.
    - **Next:** Phase 3 retrieval contracts, which return values through the same readers. Then the remaining step-2 metrics, which need either a canonical definition (one "active", replacing the four) or a reader that doesn't exist yet.
+   - **Phase 3 slice 1 — LANDED** (`feat/metric-retrieval-contracts`; values, no route, no UI, no AI wiring).
+     - **Contract:** `retrieveMetric(surface, ctx, id, params)` in `lib/platform/intelligence/metrics/retrieve.ts` (pure core: `retrieve-core.ts`). It resolves the definition through `describeMetric`, then calls only the reader the definition's first `path` hop calls, the same function the tile's route calls. It returns one envelope: `metric` (id@version), `value` (a number, or a small fixed object of numbers; null ⇔ UNAVAILABLE), `status` (MEASURED · ESTIMATED · PARTIAL · UNAVAILABLE, the Economics vocabulary), `reason`, `window`, `freshness`, `coverage`, `basis` (the registry's code refs) and `drill` (a descriptor `{ figure, window, href, page }` to the registry's records route, never rows). The drill is given only on the surface whose area gates that route; elsewhere it is `null` with `drillReason: "no drill on this surface"` (for example, `incident-broken-now` on Customer Success, whose drill is a Platform Ops route). Per-surface drills in the registry are a later follow-up.
+     - **Authority:** the caller's route builds `{ metricToken, incidentToken }` from its own guard result (`metricAccessFor` / `incidentAudienceFor`); the contract mints nothing. `surface` is a string literal at every call site (pinned by a source scan). `atSurface(surface, token, metric)` re-tiers downgrade-only, per metric: min(token tier, surface tier, the metric's identity tier for that surface). Break-glass on an Ops surface reads at OPS, and incident readers receive `atOpsTier(token)`. A forged token, an unknown or invisible id, or a metric that isn't served on the surface all return null from one branch, before any I/O.
+     - **Aggregates only:** `isAggregate` refuses anything else at runtime. An identity scan (CS tier, and break-glass on an Ops surface) pins that no envelope carries a subject id, a `user #`/`operator #` ref, a cuid or an email. A failing reader gives null and a reason, never 0.
+     - **Retrievable (9):** `provider-outcome@1`, `provider-connection@1` (providers by verdict), `ai-fleet-spend-status@1` (via `fleetSpendStatus`, the tile function), `engaged-users@1` (1/7/30), `growth-registrations@1` (90/30), `incident-broken-now@1` (Ops and CS), `merchant-identity-linked@1` (linked / live), `cs-needs-help@1`, `open-customers@1`.
+     - **NOT_RETRIEVABLE (4, reasons in the table):**
+       - `presence-state@1`: per subject.
+       - `incident-alertable@1`: the search reader pages its items, and the alertable accessor is SYSTEM-only.
+       - `live-sessions@1` and `accounts-with-live-session@1`: the counts are inline queries in their route handlers, so there is no reader to share. Moving them into a shared reader makes them retrievable.
+     - **Pins:** `retrieve.test.ts` checks registry coverage, reader binding against each registry path, parity with each tile's own function on the same fixtures, authority and tiering, honest absence for each metric, the identity scan, the drill, no mint path, literal surfaces, no writes or caching, and bounded importers.
+     - **A future route** is GET with `no-store`, guarded by the metric's own permission entry for the surface. AI and chat callers use this same contract and `atSurface`, with no bypass.
 2. **First metrics, each wrapping an existing permissioned reader:**
    - signups and verified users;
    - beta funnel conversion;
