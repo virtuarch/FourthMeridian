@@ -189,6 +189,11 @@ export function previewCases(): PreviewCase[] {
       firstFiredAtISO: new Date(at.getTime() - 3 * 60 * 60 * 1000).toISOString(), clearedAtISO: at.toISOString(), durationLabel: "3 h",
     },
   }));
+  cases.push(pc("platform-alert--flapping", "platform-alert", {
+    evaluatedAtISO: at.toISOString(),
+    alerts: [],
+    flapping: { ruleId: "job-failing", ruleTitle: "Scheduled job failing", dedupeKey: "job-failing:sync-banks", recoveries: 2, threshold: 2, windowHours: 24, stableAfterEvaluations: 8 },
+  }));
   cases.push(pc("smoke", "smoke", { note: "preview" }));
 
   return cases;

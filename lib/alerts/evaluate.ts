@@ -29,7 +29,7 @@ import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness"
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
-import type { AlertOpenRecord, AlertRecoveredRecord } from "@/lib/alerts/recovery";
+import type { AlertFlapRecord, AlertOpenRecord, AlertRecoveredRecord } from "@/lib/alerts/recovery";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -488,6 +488,20 @@ export interface AlertEmailData {
    * renders exactly as before.
    */
   resolved?: AlertResolvedEmailData;
+  /** FLAP PROTECTION — the "flapping" variant: ONE email when an identity starts flapping. */
+  flapping?: AlertFlappingEmailData;
+}
+
+/** One identity that has started flapping, as the `platform-alert` flapping variant renders it. */
+export interface AlertFlappingEmailData {
+  ruleId: string;
+  ruleTitle: string;
+  dedupeKey: string;
+  /** Recoveries inside the window, this one included. */
+  recoveries: number;
+  threshold: number;
+  windowHours: number;
+  stableAfterEvaluations: number;
 }
 
 /** One recovered breach, as the `platform-alert` resolved variant renders it. */
@@ -498,6 +512,8 @@ export interface AlertResolvedEmailData {
   firstFiredAtISO: string;
   clearedAtISO: string;
   durationLabel: string;
+  /** "stable" — the one email that ends a flapping period; absent on an ordinary recovery. */
+  variant?: "stable";
 }
 
 /** Build the email payload for the signals being delivered (critical first). */
@@ -547,11 +563,13 @@ export interface AlertRuleOutcome {
  *                       so the message went to a buffer nobody reads
  *   NO_DESTINATION      PLATFORM_ALERTS_EMAIL is unset
  *   SEND_ERROR          the transport attempted a send and failed
+ *   EXPIRED             ALERT RECOVERY only — a cleared breach's recovery could
+ *                       not be delivered within 7 days and was dropped
  *   LEDGER_WRITE_FAILED OBS-015 — this run's own JobRun start row failed to
  *                       write; delivery was circuit-broken because suppression
  *                       cannot persist (an alert storm would follow)
  */
-export type AlertUndeliveredReason = "NO_EMAIL_TRANSPORT" | "NO_DESTINATION" | "SEND_ERROR" | "LEDGER_WRITE_FAILED";
+export type AlertUndeliveredReason = "NO_EMAIL_TRANSPORT" | "NO_DESTINATION" | "SEND_ERROR" | "LEDGER_WRITE_FAILED" | "EXPIRED";
 export interface AlertUndelivered {
   reason: AlertUndeliveredReason;
   breaches: number;
@@ -587,7 +605,7 @@ export interface AlertRunSummary {
   deliveryStatus: "none" | "sent" | "captured" | "skipped" | "error";
   /** OBS-003 — set whenever firing breaches were due and did NOT reach a real transport. Null when nothing was lost. */
   undelivered?: AlertUndelivered | null;
-  counts: { evaluated: number; live: number; enabled: number; firing: number; delivered: number; suppressed: number; recovered?: number };
+  counts: { evaluated: number; live: number; enabled: number; firing: number; delivered: number; suppressed: number; recovered?: number; recoveryExpired?: number };
   rules: AlertRuleOutcome[];
   fired: AlertFiredRecord[];
   /**
@@ -600,6 +618,10 @@ export interface AlertRunSummary {
   recovered?: AlertRecoveredRecord[];
   /** ALERT RECOVERY — recoveries that were due and NOT delivered, with why (the same reasons as `undelivered`). Null when nothing was lost. */
   recoveryUndelivered?: AlertUndelivered | null;
+  /** FLAP PROTECTION — per-identity flap state (recent recoveries, flapping period), carried run to run. */
+  flap?: AlertFlapRecord[];
+  /** FLAP PROTECTION — flapping-notice keys delivered by this run (the dedupe record). */
+  flapNotices?: string[];
 }
 
 /**

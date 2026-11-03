@@ -43,12 +43,42 @@ import type { AuthorityOutputs } from "@/lib/alerts/authorities";
 /** Consecutive clean evaluations a delivered breach must be absent before it counts as recovered (flap protection). */
 export const RECOVERY_ABSENT_EVALUATIONS = 2;
 /**
- * An open episode whose rule has not been seen firing for this long is dropped
- * WITHOUT a recovery email (counted in `expired`): its recovery could not be
- * delivered for a week (no destination, no transport), and a week-old "cleared"
- * mail would mislead more than it informs.
+ * A CLEARED episode whose recovery could not be delivered for this long (no
+ * destination, no transport) is dropped WITHOUT a recovery email — counted as
+ * `counts.recoveryExpired`, `recoveryUndelivered.reason = "EXPIRED"`. Measured
+ * from `clearedAtISO` ONLY: an episode still firing (or whose rule is
+ * unknown, so it never cleared) keeps its state however long the outage lasts.
  */
 export const RECOVERY_STATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// ── Flap protection (S2 ruling, option b) ────────────────────────────────────
+/** Recoveries of one identity within FLAP_WINDOW_MS that mark it FLAPPING. */
+export const FLAP_RECOVERIES = 2;
+export const FLAP_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** Consecutive clean evaluations (no firing) a flapping identity needs before its one "stable again" email. */
+export const FLAP_STABLE_EVALUATIONS = 8;
+
+/**
+ * Per-identity flap state, carried run to run in `AlertRunSummary.flap` (the
+ * retained runs cover hours, not the 24 h window, so the recovery times travel
+ * with the state). While `flappingSinceISO` is set, the identity's firing AND
+ * recovery emails are suppressed; one "flapping" email opened it, one "stable
+ * again" email closes it.
+ */
+export interface AlertFlapRecord {
+  identity: string;
+  ruleId: string;
+  kind: AlertSignal["kind"];
+  dedupeKey: string;
+  /** Delivered recoveries (and the flapping notice) within FLAP_WINDOW_MS. */
+  recoveriesAtISO: string[];
+  /** Set while flapping (the flapping notice's delivery time). */
+  flappingSinceISO: string | null;
+  /** Consecutive clean evaluations since the last firing, while flapping. */
+  cleanEvaluations: number;
+  /** The first evaluation of the current clean streak (the "stable again" email's "cleared"); null while firing. */
+  cleanSinceISO: string | null;
+}
 
 /** One delivered breach being tracked until it recovers. Persisted in the JobRun summary. */
 export interface AlertOpenRecord {
@@ -220,7 +250,8 @@ export function advanceRecovery(input: {
     } else {
       next = { ...p }; // unknown — neither present nor absent
     }
-    if (!s && nowMs - Date.parse(next.lastSeenAtISO) > maxAge) { expired.push(next); continue; }
+    // Age is measured from when it CLEARED — never firstFired, never while firing or unknown.
+    if (!s && next.clearedAtISO !== null && nowMs - Date.parse(next.clearedAtISO) > maxAge) { expired.push(next); continue; }
     if (next.absentEvaluations >= n) {
       if (input.deliveredRecoveries.has(recoveryKeyOf(next.identity, next.firstFiredAtISO))) { alreadyRecovered.push(next); continue; }
       due.push(next);
@@ -281,4 +312,44 @@ export function recoveryAfter(fire: { dedupeKey: string; deliveredAtISO: string 
   const matches = recoveries.filter((r) => r.identity === identity && Date.parse(r.recoveredAtISO) >= t)
     .sort((a, b) => Date.parse(a.recoveredAtISO) - Date.parse(b.recoveredAtISO));
   return matches[0] ?? null;
+}
+
+// ── Flap protection ──────────────────────────────────────────────────────────
+
+/** The previous flap state: the newest run that recorded `flap`. */
+export function previousFlap(recentNewestFirst: readonly { flap?: AlertFlapRecord[] }[]): AlertFlapRecord[] {
+  const withState = recentNewestFirst.find((r) => Array.isArray(r.flap));
+  return withState ? withState.flap!.map((f) => ({ ...f, recoveriesAtISO: [...f.recoveriesAtISO] })) : [];
+}
+
+/** Recoveries still inside the window. */
+export function recoveriesInWindow(f: Pick<AlertFlapRecord, "recoveriesAtISO">, nowISO: string, windowMs = FLAP_WINDOW_MS): string[] {
+  const now = Date.parse(nowISO);
+  return f.recoveriesAtISO.filter((t) => now - Date.parse(t) < windowMs);
+}
+
+/** Would one more recovery of this identity make it flap? */
+export function wouldFlap(f: AlertFlapRecord | undefined, nowISO: string, k = FLAP_RECOVERIES): boolean {
+  return (f ? recoveriesInWindow(f, nowISO).length : 0) + 1 >= k;
+}
+
+/** PURE — a flapping identity's clean streak advanced by one evaluation. */
+export function advanceFlapping(f: AlertFlapRecord, firing: boolean, cleanlyEvaluated: boolean, nowISO: string): AlertFlapRecord {
+  if (firing) return { ...f, cleanEvaluations: 0, cleanSinceISO: null };
+  if (cleanlyEvaluated) return { ...f, cleanEvaluations: f.cleanEvaluations + 1, cleanSinceISO: f.cleanSinceISO ?? nowISO };
+  return { ...f }; // unknown: neither clean nor firing — never advances
+}
+
+/** Every flapping-notice key recorded as delivered in the retained runs. */
+export function deliveredFlapNotices(recent: readonly { flapNotices?: string[] }[]): Set<string> {
+  const out = new Set<string>();
+  for (const run of recent) for (const k of run.flapNotices ?? []) out.add(k);
+  return out;
+}
+
+export function stableKeyOf(identity: string, flappingSinceISO: string): string {
+  return `${identity}:stable:${flappingSinceISO}`;
+}
+export function flappingKeyOf(identity: string, nowISO: string): string {
+  return `${identity}:flapping:${nowISO}`;
 }

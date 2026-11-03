@@ -638,8 +638,8 @@ export const STANDALONE_CATALOG: Record<StandaloneKey, StandaloneSpec> = {
   PLATFORM_ALERT: {
     displayName: "Platform alert (operator inbox)", status: "ENABLED", category: "OPERATOR", audience: "OPERATOR_INBOX",
     consentClass: "OPERATOR", severity: "warning",
-    description: "One email to the platform-alerts inbox per alert evaluation that fires, and one \"resolved\" email per delivered breach once it has been absent for consecutive evaluations. Rules and muting live in Platform Ops.",
-    channels: [directEmail("platform-alert", ["platform-alert", "platform-alert--resolved"], "OPERATOR_EMAIL")],
+    description: "One email to the platform-alerts inbox per alert evaluation that fires, and one \"resolved\" email per delivered breach once it has been absent for consecutive evaluations (an alert that keeps flapping gets one \"flapping\" email, then one \"stable again\"). Rules and muting live in Platform Ops.",
+    channels: [directEmail("platform-alert", ["platform-alert", "platform-alert--resolved", "platform-alert--flapping"], "OPERATOR_EMAIL")],
     payload: { evaluatedAtISO: disp("iso-date"), alerts: disp("string[]") },
     trigger: site("lib/alerts/run.ts"),
     ownerSurface: OWNER.platformAlerts,

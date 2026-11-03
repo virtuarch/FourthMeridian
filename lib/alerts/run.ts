@@ -48,9 +48,11 @@ import { captureAlertDeliveryFailure } from "@/lib/alerts/delivery-capture";
 import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
 import { currentJobRun } from "@/lib/jobs/run";
 import {
-  advanceRecovery, cleanlyEvaluatedRules, clearRecoveredSuppression, deliveredRecoveryKeys, durationLabel,
-  openDelivered, previousOpen, recoveredRecord, recoveryKeyOf,
-  type AlertOpenRecord, type AlertRecoveredRecord,
+  FLAP_RECOVERIES, FLAP_STABLE_EVALUATIONS, FLAP_WINDOW_MS,
+  advanceFlapping, advanceRecovery, cleanlyEvaluatedRules, clearRecoveredSuppression, deliveredFlapNotices, deliveredRecoveryKeys,
+  durationLabel, episodeIdentity, flappingKeyOf, openDelivered, previousFlap, previousOpen, recoveredRecord, recoveriesInWindow,
+  recoveryKeyOf, stableKeyOf, wouldFlap,
+  type AlertFlapRecord, type AlertOpenRecord, type AlertRecoveredRecord,
 } from "@/lib/alerts/recovery";
 
 /** JobRun name of the alert-evaluation job (registered in lib/jobs/registry.ts). */
@@ -217,7 +219,14 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   const signals = evaluateAlertRules(authorities, isEnabled, rules);
   // ALERT RECOVERY — a recovered episode's last delivery no longer suppresses its re-fire.
   const priorFired = clearRecoveredSuppression(extractPriorFired(recentRuns), recentRuns);
-  const { toSend, suppressed } = decideDeliveries(signals, priorFired, now.getTime(), deps.renotifyMs);
+  // FLAP PROTECTION — a flapping identity's firing signals are suppressed (they
+  // still count as firing in the rule outcomes) until it is stable again.
+  const flapById = new Map(previousFlap(recentRuns).map((f) => [f.identity, f] as const));
+  const flappingIds = new Set([...flapById.values()].filter((f) => f.flappingSinceISO !== null).map((f) => f.identity));
+  const flapSuppressed = signals.filter((x) => flappingIds.has(episodeIdentity(x.dedupeKey)));
+  const decided = decideDeliveries(signals.filter((x) => !flappingIds.has(episodeIdentity(x.dedupeKey))), priorFired, now.getTime(), deps.renotifyMs);
+  const toSend = decided.toSend;
+  const suppressed = [...decided.suppressed, ...flapSuppressed];
 
   // ── Deliver (best-effort) ──────────────────────────────────────────────────
   const destination = resolveDestination();
@@ -278,35 +287,104 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   // ── ALERT RECOVERY (lib/alerts/recovery.ts) ─────────────────────────────────
   // Advance the tracked episodes against THIS cycle's signals; an episode absent
   // for RECOVERY_ABSENT_EVALUATIONS clean evaluations gets ONE recovery email,
-  // under exactly the gates a firing email meets.
+  // under exactly the gates a firing email meets. FLAP PROTECTION: the
+  // FLAP_RECOVERIES-th recovery of one identity inside FLAP_WINDOW_MS sends ONE
+  // "flapping" email instead, and the identity's firing and recovery emails are
+  // suppressed until FLAP_STABLE_EVALUATIONS clean evaluations end in ONE
+  // "stable again" email.
+  const cleanly = cleanlyEvaluatedRules(authorities, isEnabled, rules);
+  const deliveredKeys = deliveredRecoveryKeys(recentRuns);
+  for (const k of deliveredFlapNotices(recentRuns)) deliveredKeys.add(k);
   const advance = advanceRecovery({
-    previous: previousOpen(recentRuns),
-    signals,
-    cleanlyEvaluated: cleanlyEvaluatedRules(authorities, isEnabled, rules),
-    deliveredRecoveries: deliveredRecoveryKeys(recentRuns),
+    previous: previousOpen(recentRuns).filter((o) => !flappingIds.has(o.identity)),
+    signals: signals.filter((x) => !flappingIds.has(episodeIdentity(x.dedupeKey))),
+    cleanlyEvaluated: cleanly,
+    deliveredRecoveries: deliveredKeys,
     nowISO: deliveredAtISO,
   });
   const recovered: AlertRecoveredRecord[] = [];
-  let recoveryUndelivered: AlertUndelivered | null = null;
-  if (advance.due.length > 0) {
-    if (ledgerStartWriteFailed()) {
-      recoveryUndelivered = { reason: "LEDGER_WRITE_FAILED", breaches: advance.due.length };
-      console.error(`[alerts] ${advance.due.length} recovery notice(s) NOT delivered: this run's JobRun start row failed to write (OBS-015 circuit breaker).`);
-    } else if (!destination) {
-      recoveryUndelivered = { reason: "NO_DESTINATION", breaches: advance.due.length };
-    } else {
-      let lost = 0;
-      let lostReason: AlertUndelivered["reason"] = "SEND_ERROR";
-      for (const o of advance.due) {
-        const outcome = await deliverOne(sendAlertEmail, destination, recoveryEmailData(o, deliveredAtISO, rules), environment, recoveryKeyOf(o.identity, o.firstFiredAtISO));
-        if (outcome.delivered) recovered.push(recoveredRecord(o, deliveredAtISO));
-        else { lost++; lostReason = outcome.reason; }
+  const flapNotices: string[] = [];
+  const handled = new Set<string>(); // identities whose due notice was delivered this cycle
+  let lost = 0;
+  let lostReason: AlertUndelivered["reason"] = "SEND_ERROR";
+
+  // One gate for every recovery-side notice — the firing email's gates.
+  const gate = (): AlertUndelivered["reason"] | null =>
+    ledgerStartWriteFailed() ? "LEDGER_WRITE_FAILED" : !destination ? "NO_DESTINATION" : null;
+  const notify = async (data: AlertEmailData, key: string): Promise<boolean> => {
+    const blocked = gate();
+    if (blocked) { lost++; lostReason = blocked; return false; }
+    const outcome = await deliverOne(sendAlertEmail, destination!, data, environment, key);
+    if (!outcome.delivered) { lost++; lostReason = outcome.reason; }
+    return outcome.delivered;
+  };
+
+  // (1) Episodes due to recover: a recovery — or, at the K-th inside the window, the flapping notice.
+  for (const o of advance.due) {
+    const f = flapById.get(o.identity);
+    if (wouldFlap(f, deliveredAtISO)) {
+      const key = flappingKeyOf(o.identity, o.firstFiredAtISO);
+      if (await notify(flappingEmailData(o, deliveredAtISO, rules, f), key)) {
+        flapNotices.push(key);
+        handled.add(o.identity);
+        flapById.set(o.identity, {
+          identity: o.identity, ruleId: o.ruleId, kind: o.kind, dedupeKey: o.dedupeKey,
+          recoveriesAtISO: [...(f ? recoveriesInWindow(f, deliveredAtISO) : []), deliveredAtISO],
+          flappingSinceISO: deliveredAtISO, cleanEvaluations: o.absentEvaluations, cleanSinceISO: o.clearedAtISO,
+        });
       }
-      if (lost > 0) recoveryUndelivered = { reason: lostReason, breaches: lost };
+      continue;
+    }
+    if (await notify(recoveryEmailData(o, deliveredAtISO, rules), recoveryKeyOf(o.identity, o.firstFiredAtISO))) {
+      recovered.push(recoveredRecord(o, deliveredAtISO));
+      handled.add(o.identity);
+      flapById.set(o.identity, {
+        identity: o.identity, ruleId: o.ruleId, kind: o.kind, dedupeKey: o.dedupeKey,
+        recoveriesAtISO: [...(f ? recoveriesInWindow(f, deliveredAtISO) : []), deliveredAtISO],
+        flappingSinceISO: null, cleanEvaluations: 0, cleanSinceISO: null,
+      });
     }
   }
-  const recoveredIds = new Set(recovered.map((r) => r.identity));
-  const open: AlertOpenRecord[] = openDelivered(advance.open.filter((o) => !recoveredIds.has(o.identity)), delivered, deliveredAtISO);
+
+  // (2) Flapping identities: advance the clean streak; at FLAP_STABLE_EVALUATIONS, ONE "stable again".
+  for (const id of flappingIds) {
+    const f0 = flapById.get(id)!;
+    const firingNow = signals.some((x) => episodeIdentity(x.dedupeKey) === id);
+    const f = advanceFlapping(f0, firingNow, cleanly.has(f0.ruleId), deliveredAtISO);
+    flapById.set(id, f);
+    if (f.cleanEvaluations < FLAP_STABLE_EVALUATIONS) continue;
+    const key = stableKeyOf(id, f.flappingSinceISO!);
+    if (deliveredKeys.has(key)) { flapById.delete(id); continue; } // a replayed wake: already sent
+    if (await notify(stableEmailData(f, deliveredAtISO, rules), key)) {
+      recovered.push({
+        identity: id, ruleId: f.ruleId, kind: f.kind, dedupeKey: f.dedupeKey, recoveryKey: key,
+        firstFiredAtISO: f.flappingSinceISO!, clearedAtISO: f.cleanSinceISO ?? deliveredAtISO, recoveredAtISO: deliveredAtISO,
+        durationMs: Math.max(0, Date.parse(f.cleanSinceISO ?? deliveredAtISO) - Date.parse(f.flappingSinceISO!)),
+      });
+      flapById.delete(id); // a fresh start: the next fire is a new episode
+    }
+  }
+
+  // (3) Expired: cleared for longer than RECOVERY_STATE_MAX_AGE_MS without a delivered recovery.
+  const recoveryExpired = advance.expired.length;
+  if (recoveryExpired > 0) {
+    console.error(`[alerts] ${recoveryExpired} recovery notice(s) could not be delivered within 7 days and were dropped.`);
+  }
+  const recoveryUndelivered: AlertUndelivered | null =
+    lost > 0 ? { reason: lostReason, breaches: lost }
+    : recoveryExpired > 0 ? { reason: "EXPIRED", breaches: recoveryExpired }
+    : null;
+  if (lost > 0 && lostReason === "LEDGER_WRITE_FAILED") {
+    console.error(`[alerts] ${lost} recovery notice(s) NOT delivered: this run's JobRun start row failed to write (OBS-015 circuit breaker).`);
+  }
+
+  const flap: AlertFlapRecord[] = [...flapById.values()]
+    .map((f) => (f.flappingSinceISO ? f : { ...f, recoveriesAtISO: recoveriesInWindow(f, deliveredAtISO) }))
+    .filter((f) => f.flappingSinceISO !== null || f.recoveriesAtISO.length > 0);
+  const open: AlertOpenRecord[] = openDelivered(
+    advance.open.filter((o) => !handled.has(o.identity) && !flapById.get(o.identity)?.flappingSinceISO),
+    delivered, deliveredAtISO,
+  );
 
   const fired: AlertFiredRecord[] = delivered.map((s) => ({
     ruleId: s.ruleId,
@@ -348,12 +426,50 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
       delivered: delivered.length,
       suppressed: suppressed.length,
       recovered: recovered.length,
+      recoveryExpired,
     },
     rules: ruleOutcomes,
     fired,
     open,
     recovered,
     recoveryUndelivered,
+    flap,
+    flapNotices,
+  };
+}
+
+/** The flapping-variant payload: ONE email when an identity starts flapping. */
+function flappingEmailData(o: AlertOpenRecord, nowISO: string, rules: readonly AlertRuleDefinition[], f: AlertFlapRecord | undefined): AlertEmailData {
+  return {
+    evaluatedAtISO: nowISO,
+    alerts: [],
+    flapping: {
+      ruleId: o.ruleId,
+      ruleTitle: rules.find((r) => r.id === o.ruleId)?.title ?? o.ruleId,
+      dedupeKey: o.dedupeKey,
+      recoveries: (f ? recoveriesInWindow(f, nowISO).length : 0) + 1,
+      windowHours: FLAP_WINDOW_MS / 3_600_000,
+      stableAfterEvaluations: FLAP_STABLE_EVALUATIONS,
+      threshold: FLAP_RECOVERIES,
+    },
+  };
+}
+
+/** The resolved variant, "stable again": the one email that ends a flapping period. */
+function stableEmailData(f: AlertFlapRecord, nowISO: string, rules: readonly AlertRuleDefinition[]): AlertEmailData {
+  const clearedAtISO = f.cleanSinceISO ?? nowISO;
+  return {
+    evaluatedAtISO: nowISO,
+    alerts: [],
+    resolved: {
+      ruleId: f.ruleId,
+      ruleTitle: rules.find((r) => r.id === f.ruleId)?.title ?? f.ruleId,
+      dedupeKey: f.dedupeKey,
+      firstFiredAtISO: f.flappingSinceISO!,
+      clearedAtISO,
+      durationLabel: durationLabel(Math.max(0, Date.parse(clearedAtISO) - Date.parse(f.flappingSinceISO!))),
+      variant: "stable",
+    },
   };
 }
 

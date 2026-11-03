@@ -53,6 +53,8 @@ export interface PlatformAlertsResponse {
   latest: AlertLatestEvaluation | null;
   /** ALERT RECOVERY — delivered recoveries across the retained evaluations, newest first. Optional so older fixtures type. */
   recoveries?: AlertRecoveredRecord[];
+  /** ALERT RECOVERY — the latest run's `counts.recoveryExpired` (recoveries dropped undelivered after 7 days). */
+  latestRecoveryExpired?: number;
 }
 
 export async function GET() {
@@ -73,5 +75,6 @@ export async function GET() {
     historyRuns: recentRuns.length,
     latest: latestAlertEvaluation(recentRuns),
     recoveries: collectRecentRecoveries(recentRuns),
+    latestRecoveryExpired: recentRuns[0]?.counts.recoveryExpired ?? 0,
   } satisfies PlatformAlertsResponse);
 }

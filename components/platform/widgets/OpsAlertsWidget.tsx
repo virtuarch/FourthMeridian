@@ -57,6 +57,15 @@ export function deliveryWord(latest: AlertLatestEvaluation | null): { word: stri
   }
 }
 
+/** ALERT RECOVERY — recoveries the latest run dropped after 7 days undelivered. */
+export function expiredRecoveries(data: PlatformAlertsResponse): number {
+  const u = data.latest?.recoveryUndelivered;
+  return u && u.reason === "EXPIRED" ? u.breaches : (data.latestRecoveryExpired ?? 0);
+}
+export function expiredRecoveriesSentence(n: number): string {
+  return `${n} recover${n === 1 ? "y" : "ies"} could not be delivered within 7 days`;
+}
+
 export function AlertsSurface({ data }: { data: PlatformAlertsResponse }) {
   const recent = data.history.slice(0, 5);
   const delivery = deliveryWord(data.latest);
@@ -74,6 +83,12 @@ export function AlertsSurface({ data }: { data: PlatformAlertsResponse }) {
           <ToneBadge word={delivery.word} tone={delivery.tone} />
           <span className="text-[var(--text-secondary)]">{delivery.detail}</span>
         </p>
+        {expiredRecoveries(data) > 0 && (
+          // ALERT RECOVERY — cleared breaches whose recovery never reached the inbox.
+          <p className="text-xs text-[var(--text-secondary)]" role="status" data-testid="alert-recovery-expired">
+            {expiredRecoveriesSentence(expiredRecoveries(data))}
+          </p>
+        )}
       </div>
 
       <div className="grid gap-8 md:grid-cols-2">
