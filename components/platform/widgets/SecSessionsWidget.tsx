@@ -33,8 +33,8 @@ export function SessionsGroup({ sessions, nowMs }: { sessions: Fetched<PlatformS
           ) : (
             <div>
               <ul className="flex flex-col">
-                {d.recent.map((s) => (
-                  <li key={s.id} className="flex items-center justify-between gap-3 border-b px-1 py-2 last:border-b-0" style={{ borderColor: "var(--border-hairline)" }}>
+                {d.recent.map((s, i) => (
+                  <li key={`${s.at}-${i}`} className="flex items-center justify-between gap-3 border-b px-1 py-2 last:border-b-0" style={{ borderColor: "var(--border-hairline)" }}>
                     <TwoLine value={sessionLine(s)} qualifier="last recorded activity" />
                     <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{relTime(s.at, nowMs)}</span>
                   </li>

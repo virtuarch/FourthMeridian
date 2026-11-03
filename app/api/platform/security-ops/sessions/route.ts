@@ -19,21 +19,15 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
-import { parseUserAgent } from "@/lib/ua-parser";
 import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { countLiveSessions } from "@/lib/platform/security/live-sessions";
+import { toPlatformSessionRow, type PlatformSessionRow } from "@/lib/platform/security/session-rows";
 
 export const runtime = "nodejs";
 
 const RECENT_LIMIT = 8;
 
-export interface PlatformSessionRow {
-  id:      string;
-  device:  string; // parsed — e.g. "Desktop" / "Mobile"
-  browser: string; // parsed — e.g. "Chrome"
-  os:      string; // parsed — e.g. "macOS"
-  at:      string; // ISO lastActiveAt
-}
+export type { PlatformSessionRow };
 
 export interface PlatformSessionsResponse {
   totalActive:   number;
@@ -54,14 +48,12 @@ export async function GET() {
       where:   live,
       orderBy: { lastActiveAt: "desc" },
       take:    RECENT_LIMIT,
-      select:  { id: true, userAgent: true, lastActiveAt: true },
+      select:  { userAgent: true, lastActiveAt: true },
     }),
   ]);
 
-  const rows: PlatformSessionRow[] = recent.map((s) => {
-    const p = parseUserAgent(s.userAgent ?? "");
-    return { id: s.id, device: p.device, browser: p.browser, os: p.os, at: s.lastActiveAt.toISOString() };
-  });
+  // Identity-free: no session id, user id or token ever leaves this route (registry live-sessions@1 drill note).
+  const rows: PlatformSessionRow[] = recent.map(toPlatformSessionRow);
 
   return NextResponse.json({
     totalActive: counts.sessions,
