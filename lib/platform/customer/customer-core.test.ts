@@ -62,13 +62,22 @@ console.log("spaces");
   check("deleted Space dropped; roles typed as strings", s.length === 1 && s[0].role === "OWNER");
 }
 
-console.log("activity — which authority answered");
+console.log("activity — PB-10: presence buckets, never the session-use clock");
 {
-  const a = projectActivity({ lastSessionActiveAt: T("2026-10-08T10:00:00Z"), lastLoginAt: T("2026-10-07T00:00:00Z"), activeSessions: 1 });
-  check("session clock wins when newer", a.lastActiveSource === "SESSION");
-  const b = projectActivity({ lastSessionActiveAt: null, lastLoginAt: T("2026-10-07T00:00:00Z"), activeSessions: 0 });
-  check("LOGIN audit is the fallback", b.lastActiveSource === "LOGIN");
-  check("nothing recorded says so", projectActivity({ lastSessionActiveAt: null, lastLoginAt: null, activeSessions: 0 }).lastActiveSource === "NONE");
+  const now = T("2026-10-08T12:00:00Z");
+  const at = (min: number) => new Date(now.getTime() - min * 60_000);
+  const a = projectActivity({ presence: { lastPresenceAt: at(1), lastInteractionAt: at(2) }, lastLoginAt: T("2026-10-07T00:00:00Z"), activeSessions: 1, now });
+  check("fresh presence + recent interaction ⇒ Active now", a.presence === "ACTIVE" && a.presenceLabel === "Active now");
+  check("last active is a coarse bucket, never a raw timestamp", a.lastActive.bucket === "WITHIN_5_MIN" && !/\d{4}-\d{2}-\d{2}T/.test(a.lastActive.label));
+  check("last login is reported separately", a.lastLoginAt === "2026-10-07T00:00:00.000Z");
+  const b = projectActivity({ presence: { lastPresenceAt: at(1), lastInteractionAt: at(40) }, lastLoginAt: null, activeSessions: 1, now });
+  check("fresh presence, stale interaction ⇒ Online, idle", b.presence === "IDLE" && b.presenceLabel === "Online, idle" && b.lastActive.bucket === "WITHIN_HOUR");
+  const c = projectActivity({ presence: { lastPresenceAt: at(10), lastInteractionAt: at(10) }, lastLoginAt: null, activeSessions: 1, now });
+  check("expired presence ⇒ Offline, even with a valid session", c.presence === "OFFLINE" && c.presenceLabel === "Offline");
+  const d = projectActivity({ presence: { lastPresenceAt: null, lastInteractionAt: null }, lastLoginAt: T("2026-10-08T11:59:00Z"), activeSessions: 3, now });
+  check("valid sessions + a login a minute ago, no heartbeat ⇒ Unknown, never online", d.presence === "UNKNOWN" && d.lastActive.label === "Unknown");
+  check("the view has no raw presence/session clock field for operators",
+    !("lastActiveAt" in d) && !("lastPresenceAt" in d) && !("lastInteractionAt" in d) && !("lastActiveSource" in d));
 }
 
 console.log("connections — health from the shared derivation, no secrets");

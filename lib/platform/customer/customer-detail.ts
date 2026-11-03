@@ -7,7 +7,9 @@
  *   cohort / policy          CustomerCohort, CustomerPolicyAssignment → resolver
  *   beta lifecycle           BetaAccessRequest(+Event), AuditLog emailStatus
  *   Spaces                   SpaceMember × Space
- *   last active              UserSession.lastActiveAt (LOGIN audit as fallback)
+ *   presence / last active   PB-10: UserSession.lastPresenceAt / lastInteractionAt (heartbeat,
+ *                            lib/presence/definitions.ts) — NOT lastActiveAt (session last used)
+ *   last login               newest LOGIN audit row
  *   connections + health     PlaidItem, Connection → deriveConnectionHealthState
  *   first connection         min(PlaidItem, wallet Connection, MANUAL FinancialAccount).createdAt (BETA: manual included)
  *   roll-up (BETA §8)        AI turns + est. USD 30 d · Items · last engaged · funnel stage (customer-core projectRollup)
@@ -93,16 +95,17 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   });
   if (!user) return null;
 
-  const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, plaid, wallets, policies, manualAssets, lastEngagements, firstAiTurn, firstBriefView] = await Promise.all([
+  const [entitlements, cohorts, request, memberships, sessions, lastLogin, activeSessions, livePresence, plaid, wallets, policies, manualAssets, lastEngagements, firstAiTurn, firstBriefView] = await Promise.all([
     loadEffectiveEntitlements(client, userId, entitlementLoadOptions()),
     client.customerCohort.findMany({ where: { userId }, orderBy: { joinedAt: "asc" }, select: { cohort: true, joinedAt: true, source: true } }),
     client.betaAccessRequest.findUnique({ where: { email: user.email },
       select: { id: true, status: true, createdAt: true, decidedAt: true, invitedAt: true, inviteExpiresAt: true, redeemedAt: true } }),
     client.spaceMember.findMany({ where: { userId },
       select: { role: true, status: true, joinedAt: true, space: { select: { id: true, name: true, type: true, category: true, archivedAt: true, deletedAt: true } } } }),
-    client.userSession.aggregate({ where: { userId }, _max: { lastActiveAt: true }, _min: { createdAt: true } }),
+    client.userSession.aggregate({ where: { userId }, _max: { lastInteractionAt: true }, _min: { createdAt: true } }),
     client.auditLog.findFirst({ where: { userId, action: AuditAction.LOGIN }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     client.userSession.count({ where: { userId, revokedAt: null } }),
+    client.userSession.aggregate({ where: { userId, revokedAt: null }, _max: { lastPresenceAt: true } }),
     client.plaidItem.findMany({ where: { userId }, orderBy: { createdAt: "asc" },
       select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true, createdAt: true, investmentsConsent: true } }),
     client.connection.findMany({ where: { userId, provider: { notIn: ["PLAID", "MANUAL", "CSV"] } }, orderBy: { createdAt: "asc" },
@@ -204,7 +207,10 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
       registeredAt: user.createdAt, firstConnectedAt: connected,
     }),
     spaces: projectSpaces(memberships),
-    activity: projectActivity({ lastSessionActiveAt: sessions._max.lastActiveAt, lastLoginAt: lastLogin?.createdAt ?? null, activeSessions }),
+    activity: projectActivity({
+      presence: { lastPresenceAt: livePresence._max.lastPresenceAt, lastInteractionAt: sessions._max.lastInteractionAt },
+      lastLoginAt: lastLogin?.createdAt ?? null, activeSessions, now,
+    }),
     connections: projectConnections(plaid, wallets, { bank: staleWindowMs(policies.BANK), wallet: staleWindowMs(policies.WALLET) }, now.getTime()),
     incidents: projectIncidents(issues, executions, webhooks, accountLabels),
     ai: projectAiUsage(invocations, AI_WINDOW_DAYS),

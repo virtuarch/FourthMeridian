@@ -255,7 +255,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     tx.userSession.findMany({
       where:  { userId },
       orderBy: { createdAt: "desc" },
-      select: { ipAddress: true, userAgent: true, lastActiveAt: true, revokedAt: true, createdAt: true },
+      select: { ipAddress: true, userAgent: true, lastActiveAt: true, lastPresenceAt: true, lastInteractionAt: true, revokedAt: true, createdAt: true },
     }),
     tx.recoveryCode.findMany({
       where:  { userId },
@@ -368,6 +368,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       sessions: sessions.map((s) => ({
         ipAddress: s.ipAddress, userAgent: s.userAgent,
         lastActiveAt: iso(s.lastActiveAt), revokedAt: iso(s.revokedAt), createdAt: iso(s.createdAt),
+        // PB-10 — the presence heartbeat's last values (no history is kept).
+        lastPresenceAt: iso(s.lastPresenceAt), lastInteractionAt: iso(s.lastInteractionAt),
       })),
       recoveryCodes: recoveryCodes.map((c) => ({
         usedAt: iso(c.usedAt), expiresAt: iso(c.expiresAt), createdAt: iso(c.createdAt),
