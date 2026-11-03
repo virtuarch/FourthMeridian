@@ -108,7 +108,7 @@ other local evidence, LOST = irreplaceable without backup, UNKNOWN.
   (coverage COMPLETE 2022-03-26..2026-09-15, 1,636 rows) → effectively recovered.
 - Plaid: 13 `PlaidItem` rows SURVIVED with encrypted tokens and 2026-08-26
   cursors; `environment` column now NULL on all 13 (column post-dates backup).
-  Schwab stayed NEEDS_REAUTH throughout the window (no reauth lost). Sync
+  Institution C stayed NEEDS_REAUTH throughout the window (no reauth lost). Sync
   state since 08-26: PROVIDER.
 - `AuditLog` after 08-26 (2,018 rows on 09-14 vs 333 now, incl. 7
   PLAID_ITEM_STATUS_CHANGED, policy CHANGED/RESET, AI_CONTEXT_ASSEMBLED): LOST.
@@ -199,7 +199,7 @@ pull (null cursor) is NOT needed and would re-import 24 months.
 ## 10. Plaid / bank reconstruction
 
 Items, tokens and cursors survived (13 items, 13 tokens, 4 real items with
-cursors: Chase, Amex, Schwab, Robinhood). Schwab needs reauth (unchanged since
+cursors: Institution A, Institution B, Institution C, Institution D). Institution C needs reauth (unchanged since
 08-17). `environment` is NULL on all items after the restore because the column
 was added on 09-08; verify what the Plaid client derives when NULL before any
 refresh. Safe path: the existing manual refresh per item (`runFullRefresh`,
@@ -214,8 +214,8 @@ not be rebuilt from these; intentions may only be re-stated by the user.
 
 1,474 rows (2026-09-08 → 09-15 16:56) LOST. Exact per-invocation accounting
 is gone. Estimated evidence survives locally: the 09-14 census in
-`docs/plans/PLATFORM-OPS-CONTROL-PLANE-INVESTIGATION.md` (1,134 rows, ≈$5.11
-over five days, 8.6M prompt tokens), the dogfood gate report (28 rows, $0.1974),
+`docs/plans/PLATFORM-OPS-CONTROL-PLANE-INVESTIGATION.md` (1,134 rows, ≈<redacted: account billing>
+over five days, 8.6M prompt tokens), the dogfood gate report (28 rows, <redacted: account billing>),
 and per-run logs under gitignored `tmp/` (141 files newer than 08-27, e.g.
 `tmp/floor/out/pc-cost*.log`). Classification: EXACT lost, ESTIMATED available.
 No provider usage export is configured.
@@ -263,8 +263,8 @@ historical rows cannot be reproduced; only new briefs for new days can.
    17:25) are acceptable operational rows; they are consistent with the schema.
 4. Verify `PlaidItem.environment` NULL handling in the Plaid client before any
    bank refresh.
-5. Re-ingest bank truth: manual `FULL_REFRESH` per real item (Chase, Amex,
-   Robinhood; Schwab after reauth). Cursor resumes from 08-26.
+5. Re-ingest bank truth: manual `FULL_REFRESH` per real item (Institution A, Institution B,
+   Institution D; Institution C after reauth). Cursor resumes from 08-26.
 6. Reconnect ETH via the wallet route using the address from §15; run its sync
    (full reconstruction once, then incremental).
 7. BTC: run a manual sync once `mempool.space` answers (or accept balance-only

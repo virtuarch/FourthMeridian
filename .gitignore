@@ -110,3 +110,6 @@ _v26pre_bundle/
 # model transcripts. Research output for local human review — never committed.
 # See docs/systems/ai-foundation.md §8 (conversation harness).
 tmp/
+
+# Billing documents (invoices, statements) are private records — never commit them.
+docs/invoices/

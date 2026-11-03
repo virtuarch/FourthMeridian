@@ -66,7 +66,7 @@ Durable step log (private, 600): `~/fm-rehearsal-private/prod-cutover/release.lo
 ## 3. C3b deviation: transplant of rehearsed results
 
 **Why the scripts could not run directly:**
-- **Step 1** (`repair-liability-income-credits`) ran directly on Production: 51 rows. That is the 50 rehearsed, plus 1 identical-class $5.04 row created at 01:41 by the old classifier.
+- **Step 1** (`repair-liability-income-credits`) ran directly on Production: 51 rows. That is the 50 rehearsed, plus 1 identical-class row (<redacted: owner's private record>) created at 01:41 by the old classifier.
 - **Step 2** (`backfill-flow-authority`) lost its connection after 1,569 s (P1017) with 3,051/5,137 rows stamped. Its chunks are atomic, so the state was consistent.
 - **The cause is the link.** Round trips from the operator Mac to the ap-southeast-1 pooler take ~490 ms, and the pooler drops transactions after ~300 s. Step 4's 200-event batches (~650 statements) cannot fit in its 120 s transaction timeout.
 
@@ -115,7 +115,7 @@ Run everything from the operator Mac. The kit is in `~/fm-rehearsal-private/prod
 
 1. **Owner smoke (C7):** `./maint.sh owner-on` adds a bypass for this network's current public IPv4 only. Everyone else still gets 403. Then, at `https://fourthmeridian.com`:
    - log in with password + TOTP;
-   - confirm the dashboard loads and the busiest Space shows ~4,513 transactions. That is 4,538 minus 25 crypto rows (Σ $0.22) that banking views now exclude by design. Balances should match yesterday;
+   - confirm the dashboard loads and the busiest Space shows ~4,513 transactions. That is 4,538 minus 25 crypto rows (Σ <redacted: owner's private record>) that banking views now exclude by design. Balances should match yesterday;
    - try a wrong TOTP once (must be refused);
    - log out.
 2. **Pass → C8:**

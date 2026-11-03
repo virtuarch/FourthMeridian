@@ -90,7 +90,7 @@ The backup verification was never bypassed. Preview writes were held during Sess
   - Verified: 0 memberships, no CREATE, no write.
 - **Run.** Read-only transaction (`SET TRANSACTION READ ONLY` … ROLLBACK), via the Supavisor session pooler (the direct host is IPv6-only), with masked output only.
 - **Retired** per §6: sessions terminated, 4 policies dropped, grants revoked, role dropped. Verified 0 roles / 0 policies / 0 sessions, the schema ACL unchanged and health ok. The local secret files were securely deleted.
-- **Findings** (docs/plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md, on develop via #159):
+- **Findings** (docs/archive/evidence/security/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md; landed on develop via #159 under docs/plans/):
   - **20 PENDING** requests; none decided, none redeemed.
   - **13 of them form one probable single-actor cluster:**
     - dotted Gmail local parts;

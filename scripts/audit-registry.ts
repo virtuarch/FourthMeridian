@@ -395,7 +395,7 @@ export const AUDITS: readonly AuditEntry[] = [
           "missing-only, idempotent, insert-only, closed-dates-only and never interpolates; it " +
           "re-reads afterwards and reports days the vendor still does not serve. The latch repair " +
           "in the refresh path restores only the valuation's 7-day walk-back by design, so closing " +
-          "an older hole is this tool's job — docs/plans/CRYPTO-REFRESH-REPAIR-OPERATOR-PROCEDURE.md",
+          "an older hole is this tool's job — docs/operations/runbooks/crypto-refresh-repair.md",
   },
   {
     name: "backfill-fx-rates", tier: "OPERATIONAL", needsDb: true,
