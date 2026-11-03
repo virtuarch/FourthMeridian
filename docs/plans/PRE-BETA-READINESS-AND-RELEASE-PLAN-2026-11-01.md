@@ -1,6 +1,6 @@
 # Fourth Meridian: final pre-beta readiness and Production release plan (2026-11-01)
 
-> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-02 · **PRs:** #206–#219, #223
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-03 · **PRs:** #206–#219, #223
 
 **Authors.** Session 1 (coordinator) and Session 2. Each session independently cross-reviewed the other's conclusions, and the disagreements are reconciled in §8.
 
@@ -1205,6 +1205,105 @@ Checklist additions:
 | Post-check | denied_suspicious 13, **unblocked 0**, pending 7, **active blocks 13**, evidence 0 |
 | hzupno evidence | First attempt from the owner's everyday account → 403 (the route requires SYSTEM_ADMIN by design). Owner re-ran it from the separate System Admin account: **200**, evidence `…6roeb`, captured 01:19:29Z, reason ABUSE, retainUntil **2029-11-01**. DISABLE_SYSTEM_ADMIN not touched |
 | Final post-check | denied_suspicious 13, unblocked 0, pending 7, active blocks 13, **evidence 1**. Directive item 6 complete |
+
+## B10 release package (prepared 2026-11-03; Production actions require owner approval)
+
+*Prepared at Session 1's request from read-only git and GitHub data (develop `f0405e1`, main `dc76711`). Nothing was merged, deployed or migrated, and no Production or Preview system was touched. This package is a plan: **every step below needs the owner's explicit B10 approval.***
+
+**Baseline.** Main is still B9 (`dc76711`). The B10a candidate, #268 (`release/batch-10a`, OPEN, not merged), contains develop through PB-7 (`5642bb5`) plus a cherry-pick of #231: #220, #221, #222, #224, #226, #227, #229, #230 and #231. Those PRs are covered by #268 and are not repeated below. If #268 ships first, they are on main and the rollback target moves from B9 to the B10a deployment (not yet recorded). Nothing merged to develop after the cut is on main.
+
+### B10.1 Candidate PRs (merged to develop after the B10a cut, `5642bb5..f0405e1`)
+
+**SAFE TO PROMOTE.** These have no migration and no schema change.
+
+| PR | Title | Why it is safe |
+|---|---|---|
+| #233 | A Plaid webhook skipped during an in-flight sync is no longer erased | Lock/marker logic only; no schema change. #268 deferred it to a later candidate |
+| #234 | Fence the engine's final marker write; document accepted clock skew | Follow-up to #233; same files, no schema change |
+| #256 | Single-use TOTP codes at login (SEC-012) | Uses the existing `RateLimit` table and grants; no migration |
+| #258 | `db:regrant`: restore GRANTs after a `--no-privileges` restore | Adds a script only. Running it against Production is gated separately by the owner |
+| #262 | PB-9: Merchant Identity KPIs drill into their records | Read-only tables behind the existing MERCHANT_OPS permission |
+| #265 | PB-9 follow-up: rate-limit Reconsider; records search stays letters-only | Adds a rate limit; no data change |
+| #281 | AI & Costs: one authority for fleet spend status | Presentation-side tile wording |
+| #283 | AI & Costs: budget KPI drills into its 24 h calls | New read-only, PLATFORM_OPS READ route |
+| #282 | Ops: environment-aware job verdicts + provider-outcome@1 | Verdict rules only. On Production the job output is byte-identical (the scheduler reads as present) |
+| #285 | Provider trust: connection scope (provider-connection@1) + Preview freshness | Verdict rules only |
+| #286 | provider-connection@1: name unclassified codes; say when no share is computed | Basis wording and pins; no verdict change |
+| #284 | PRIV-ref: the opaque customer reference is a keyed digest | No schema or env change (reuses an existing required server secret). The reference format changes, see B10.3. **Dependency:** #284 edits removed-connections files that #225 introduced, so promoting it without #225 needs a rebuilt cherry-pick |
+| #238 | Test fixtures: real cash figures replaced with synthetic data | Test-only |
+| #239 | UI-hardening output goes to `tmp/`, not `docs/plans` | Local tooling only |
+
+**GATED.** Each of these needs an owner precondition or decision before Production.
+
+| PR | Title | Gate |
+|---|---|---|
+| #255 | PB-1 Phase 1: incident data model, removed-connection closure, archive + purge | **PB-1 migration.** It needs `20261103120000_pb1_s2_incident_lifecycle_schema` applied first, because its writers fill new columns at observation time (B10.2) |
+| #259 | test(RLS): PB-1 incident tables are operator-only | Test-only, but it tests #255's schema; it travels with #255 |
+| #263 | test(PB-1 §13): Phase-2 parity harness scaffold | Test-only; it is the gate for the PB-1 reader cutovers |
+| #264 | PB-1 Phase 2: incident-intelligence module (API + deterministic core) | **PB-1 reader cutovers.** Inert in this tree: no reader is cut over, and each cutover is its own future PR gated on the §13 parity harness. It reads #255's columns, so it travels with #255. No cutover PR had merged to develop as of `f0405e1`; see #288 below |
+| #288 | PB-1 Phase 2 R1/R2: CS incidents panel + CS detail loader read module verdicts | **PB-1 reader cutover.** Not yet merged at `f0405e1`; it is expected to be merged by the time B10 is cut. It travels with the PB-1 group and is bound by the same migration-first rule. R3–R6b remain pending |
+| #287 | PB-1 Phase 2: unattributed is null, never "" | Follow-up to #264; travels with it |
+| #232 | PB-8: liability coverage floor + held-flat probe | **PB-8 regeneration.** The PR modifies no stored row, but once deployed the *next automatic* regeneration (connect, refresh or the daily wealth regen, typically the 30-day window) rewrites the affected Spaces' recent history: liabilities held flat before their connection become unknown, and credit cards are walked. A full-window regeneration is a separate owner decision |
+| #266 | PB-8b: change-since never compares across a partial-history floor | Builds on #232's floors; travels with PB-8 |
+| #267 | PB-8c: server-side change claims (AI, launcher, Brief) respect the floor | Builds on #232/#266; travels with PB-8 |
+| #272 | PB-8d: AI history points before the floor are withheld | Builds on #267; travels with PB-8 |
+| #275 | PB-11: investments correctness (attribution FX, hero % gate, one allocation authority) | **Travels with PB-8 (code dependency).** Presentation-side itself, but `InvestmentsHero` imports `ESTIMATED_CHANGE_SUFFIX` from `lib/connections/balance-coverage.core`, a module created by #232 (PB-8) with the constant added by #266 (PB-8b). It promotes only with PB-8, or on a release branch that inlines the suffix (a rebuilt tree, S2-reviewed) |
+| #277 | PB-11b: investments display conversion fails closed on a rate miss | **Travels with PB-8 (code dependency).** Stacked on #275's files, so it inherits #275's dependency on PB-8 |
+| #274 | PB-10: presence and engagement | **PB-10 migration.** `20261103130000_pb10_session_presence` must be applied before the deploy (B10.2) |
+| #276 | PB-10 follow-ups: carry refused interactions; Content-Length precheck | Builds on #274; no schema change of its own |
+| #278 | PB-10 F3+F4: background reads don't extend the SEC-010 idle deadline | Builds on #274; no schema change of its own |
+| #280 | PB-10: pending interaction age = the latest input | Builds on #276; no schema change of its own |
+| #225 | PB-5: removed-connections list and operator Remove connection | #268 excluded it because **its live removal test is pending**. I couldn't confirm from git or GitHub that the test has since run. Needs S1 confirmation |
+
+**Docs-only** (they ship with whichever tree is promoted and need no gate): #236, #237 (also adds the docs-structure test), #241, #242, #243, #244, #245, #246 (also ignores `docs/invoices/`), #247, #248, #249, #250, #251, #253, #257, #260, #261, #273, #279.
+
+**Counts:** 14 safe, 16 gated, 19 docs-only (49 PRs), plus #288 (gated, PB-1) expected before the cut.
+
+**Recommended release tree (S2's advice).** The simplest reviewable tree is **develop at the B10 cut, with BOTH migrations applied first** (B10.2). That promotes everything above, except #225 if its live removal test has not run, and it requires the owner's PB-8 decision because PB-8 is in that tree. Any subset (excluding PB-8, PB-1, PB-10 or #225) means a release branch with reverts, and S2 reviews that exact tree before promotion. Develop is linear and the gated PRs are interleaved with the safe ones, so no subset is a clean cut.
+
+### B10.2 Migration order
+
+Two Prisma migrations are on develop and not on main (`git diff --name-only origin/main origin/develop -- prisma/migrations`). Prisma applies them in name order:
+
+| # | Migration | PR | Must it precede the deploy? |
+|---|---|---|---|
+| 1 | `20261103120000_pb1_s2_incident_lifecycle_schema` | #255 | **Yes**, if #255 is in the tree. The new observation writer sets `subjectUserId` and `openedBy` on every new incident and writes `SyncIssueEvent`. Without the columns and tables, incident writes fail. They fail closed (swallowed and reported on the observer), but Production would stop recording incidents. The migration is additive: the new columns are nullable, except one with a constant default (no table rewrite); the CHECKs are vacuous on existing rows; there is no backfill; and the three new tables are fm_system-only with forced RLS. B9 code ignores all of it |
+| 2 | `20261103130000_pb10_session_presence` | #274 | **Yes, and sign-in critical; never optional.** The Customer Success list and detail queries select `UserSession.lastPresenceAt` / `lastInteractionAt`, and the heartbeat writes them. The login path creates a `UserSession` without a `select`; Prisma's `create` returns every scalar column, so a session create against a database without these columns fails, and **sign-in would break** (Session 1 confirmed this reading). The migration adds two nullable columns with no default, no backfill and no grant change (catalog-only). B9 code ignores them |
+
+**Process:** apply both in one guarded run before the deploy, the same way as B1–B9: `npm run db:migrate:safe` (guard → backup → `prisma migrate deploy`), per [database-safety.md](../operations/database-safety.md). Preflight: tree − ledger = exactly these two; ledger − tree = ∅. **Owner approval is required.** **Preview:** both migrations are applied and finished on Preview (Session 1, read-only `_prisma_migrations` check, 2026-11-03).
+
+### B10.3 Owner-visible release notes
+
+Each note was checked against its PR description and the develop code.
+
+- **Idle tabs now sign out (SEC-010; PB-10 F3/F4, #278).** A tab left open but unused for 30 days now signs out. Before, background reads kept pushing the 30-day idle deadline back (the notification bell's unread count, the notice rail's re-read on focus, and the session refetch on focus). Those three reads still check the session but no longer extend it. Navigations and actions still count. The SEC-010 durations themselves are unchanged.
+- **Customer references change format (#284).** Operator-facing references change from the old masked id tail to `user #xxxxxxxx`, a keyed digest that no longer contains any part of the account id. Old references in past alert emails, alert summaries and operator notes stop matching, and Customer Success search no longer accepts the old form. Alert dedupe keys change format too, so **an alert that is already firing may re-notify once** after the deploy. Rotating the server secret it is derived from rotates every reference.
+- **Provider verdicts (provider-outcome@1, provider-connection@1; #282/#285/#286).**
+  - Any failure within a sufficient sample reads **Degraded** (before, an isolated failure under the old threshold read healthy).
+  - A small sample with no failures reads **"Not enough data"** (muted, no attention item), never Healthy. A small sample that has a failure still reads Degraded or Failing; it is never hidden.
+  - Providers no longer read **Failing** because a customer must re-authenticate or has revoked access. Reconnects show as a neutral fact on the tile. Only a provider-side error share can fail a provider. A large reauth wave reads Degraded.
+  - Every tile now shows the rule and the counts behind its word.
+- **Preview only: jobs read "Not scheduled in this environment" (#282).** Crons don't run on Preview, so jobs there read neutral instead of Failed; a job whose newest run failed still reads failing. Production output is unchanged.
+- **Customer Success presence labels (PB-10, #274/#276).** Customer Success now shows **Active now / Online, idle / Offline / Unknown**, a coarse last-active bucket (for example "within 5 min" or "active today"), last login, and signed-in sessions. It no longer reads the "session last used" clock. The new columns have no backfill, so every customer reads **Unknown** until their first heartbeat after the deploy. Growth "returning" and active-in-7-days now count meaningful engagement only, so those figures may drop.
+- **Other visible changes:** single-use TOTP codes at login (#256); Merchant Identity KPI drilldowns (#262); AI & Costs budget tiles agree and drill into their calls (#281/#283); investments show "unavailable" rather than mixed currencies on a rate miss (#275/#277; ships only with PB-8). If gated groups ship: the PB-8 partial-history wording ("Change unavailable: history is partial before …") and the removed-connections list (#225).
+
+### B10.4 Rollback notes
+
+**Code rollback** for every item is a Vercel rollback to the prior Production deployment (B9, main `dc76711`), or B10a's if #268 ships first. Leave the schema in place.
+
+| Item | Rollback | Trivial? |
+|---|---|---|
+| PB-10 migration + #274/#276/#278/#280 | The columns are additive and nullable; B9 code ignores them, and no down-migration is needed. Background reads go back to extending the idle deadline, and Customer Success goes back to the old "last active" | Yes |
+| PB-1 migration + #255/#259/#263/#264/#287/#288 | The columns and tables stay and old code ignores them; no down-migration. Data the new code wrote stays: incidents closed because their subject was removed stay closed, and archive rows stay. I found no main-code path that reopens a resolved incident, so the new `lifecycleState` CHECKs shouldn't block old writers | Yes, low risk |
+| #284 reference format | A rollback restores the old format. References issued meanwhile stop resolving, and dedupe keys change back, so a firing alert may re-notify once more | **Not trivial for operators** (references churn twice) |
+| PB-8 (#232/#266/#267/#272) | The code rolls back, but **history rows rewritten by regenerations that ran under PB-8 are not reverted**. They change back only when the previous code's own regeneration next rewrites that window, or by a backup restore (the same class as the B3/B6 re-stamp) | **Not trivial** |
+| #225 PB-5 (if promoted) | The list and button disappear. **Removals an operator made in the meantime are not undone**: the provider-side revocation is external and permanent | **Not trivial** for any removal made |
+| #256 TOTP | The replay window reopens. Claim rows in `RateLimit` are harmless | Yes |
+| #233/#234 | The skipped-webhook defect returns; no data change | Yes |
+| Verdict and label changes (#282/#285/#286, #281/#283, #262/#265, presence labels); #275/#277 roll back with PB-8's code | Presentation-only; old wording returns. Attention items that depend on provider trust revert with it | Yes |
+| #258, #238, #239, docs | No runtime effect | Yes |
+
+**Unverified here:** whether #225's live removal test has run.
 
 ## Beyond B10: carried from ROADMAP (2026-11-03)
 
