@@ -23,12 +23,15 @@ import { OperatorActionValidationError, auditEmailHash, parseOperatorReason, rec
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
 import { BetaAccessRequestStatus } from "@prisma/client";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-request-revoke");
+  if (limited) return limited;
 
   // SEC-PLAT-2 — a consequential action: the structured reason is parsed FIRST,
   // so a request without one never reaches the database.

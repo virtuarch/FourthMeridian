@@ -62,6 +62,7 @@ import {
   isProviderCleanupOwed,
   type ProviderCleanupStatus,
 } from "@/lib/platform/plaid/provider-cleanup";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -86,6 +87,8 @@ export type ProviderCleanupRetryResponse = {
 export async function POST(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "ops-provider-cleanup");
+  if (limited) return limited;
 
   const body = (await req.json().catch(() => null)) as { plaidItemId?: unknown } | null;
   const plaidItemId = typeof body?.plaidItemId === "string" ? body.plaidItemId : null;

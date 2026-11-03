@@ -29,6 +29,7 @@ import {
   REGISTRATION_MODES,
   type RegistrationMode,
 } from "@/lib/platform-settings";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -39,6 +40,8 @@ function isRegistrationMode(v: unknown): v is RegistrationMode {
 export async function PUT(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-registration-mode");
+  if (limited) return limited;
 
   const body = (await req.json().catch(() => ({}))) as { mode?: unknown; reason?: unknown };
   const next = body.mode;
