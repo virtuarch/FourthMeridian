@@ -1454,7 +1454,8 @@ export interface SnapshotDataPoint {
   netWorth:     number | null;
   totalAssets:  number | null;
   liabilities:  number; // `debt` column — positive absolute value
-  liquid:       number; // cash + savings
+  /** checking + savings — ALL cash, RESTRICTED (HSA, retirement) INCLUDED (FIN-005; see `SnapshotSectionData.liquidBasis`). */
+  liquid:       number;
   investments:  number; // `stocks` column
   digitalAssets: number | null; // `crypto` column — null when unassertable
   cashOnHand:   number;
@@ -1577,6 +1578,14 @@ export interface SnapshotSectionData {
    * unvouched. Absent when coverage was read (or there was nothing to cover).
    */
   balanceHistoryCompleteness?: { state: 'UNAVAILABLE'; note: string };
+  /**
+   * FIN-005 part 1 — the basis of every point's `liquid` and `netLiquid`: ALL cash,
+   * restricted (HSA, retirement) INCLUDED. The accounts section's `totalLiquid`
+   * EXCLUDES restricted cash, so the two are different measures and no change may
+   * be stated between them. Optional only for fixtures predating it.
+   */
+  liquidBasis?:     'ALL_CASH';
+  liquidBasisNote?: string;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.
