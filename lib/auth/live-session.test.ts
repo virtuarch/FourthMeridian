@@ -232,7 +232,8 @@ function pin() {
     "app/api/platform/security-ops/sessions/route.ts",
     "app/api/platform/security-ops/auth-posture/route.ts",
     "lib/platform/security/analytics.ts",
-    "app/api/platform/growth-revenue/users/route.ts",
+    // The Security sessions and Growth users COUNTS moved into this shared reader (live-sessions@1, accounts-with-live-session@1).
+    "lib/platform/security/live-sessions.ts",
     "lib/platform/customer/customer-detail.ts",
     "lib/platform/customer/customers.ts",
     "app/api/admin/security/admin-status/route.ts",

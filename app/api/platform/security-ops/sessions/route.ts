@@ -21,6 +21,7 @@ import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { parseUserAgent } from "@/lib/ua-parser";
 import { liveSessionWhere } from "@/lib/auth/session-proof";
+import { countLiveSessions } from "@/lib/platform/security/live-sessions";
 
 export const runtime = "nodejs";
 
@@ -44,10 +45,11 @@ export async function GET() {
   const [, err] = await requirePlatformAccess("SECURITY_OPS", "READ");
   if (err) return err;
 
-  const live = liveSessionWhere(new Date());
-  const [totalActive, distinctUsers, recent] = await Promise.all([
-    db.userSession.count({ where: live }),
-    db.userSession.groupBy({ by: ["userId"], where: live }),
+  const now = new Date();
+  const live = liveSessionWhere(now);
+  const [counts, recent] = await Promise.all([
+    // live-sessions@1 — the shared reader (lib/platform/security/live-sessions.ts), same rule and clock as the list below.
+    countLiveSessions(db, now),
     db.userSession.findMany({
       where:   live,
       orderBy: { lastActiveAt: "desc" },
@@ -62,8 +64,8 @@ export async function GET() {
   });
 
   return NextResponse.json({
-    totalActive,
-    distinctUsers: distinctUsers.length,
+    totalActive: counts.sessions,
+    distinctUsers: counts.distinctUsers,
     recent: rows,
   } satisfies PlatformSessionsResponse);
 }
