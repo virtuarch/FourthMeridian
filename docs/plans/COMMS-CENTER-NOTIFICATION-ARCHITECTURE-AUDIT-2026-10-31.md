@@ -1,5 +1,8 @@
 # Communications Center: Notification Architecture Audit (2026-10-31)
 
+> **Owner:** Session 1 (review: Session 2) · **Status:** ACTIVE · **Updated:** 2026-11-02 · **PRs:** #165; implemented across B6–B8
+> Current state (2026-11-02): implemented. Open: automations are ACTIVATION_DISABLED in Production pending hardening, and the Resend webhook is inert until its secret is set.
+
 **Scope.** This audit covers the notification infrastructure that a centralized Communications Center (inside Customer Success) would sit on: email, in-app, operator and banner channels; preferences; jobs; delivery records. It is Phase A input for Session 1, which owns the infrastructure. Session 2 owns the Customer Success UI, and this document designs no UI.
 
 **Basis.** Worktree `/Users/chrstn/dev/FM-comms`, `develop` at `bbfb2e0`, branch `docs/comms-center-contract`. PR #164 (`origin/feat/email-migration`, head `8adbe41`, not merged) was read through `git show`.

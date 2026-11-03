@@ -233,6 +233,116 @@ These are binding. Each one exists because violating it produced, or would produ
 
 ---
 
+## History acquisition, token history and valuation coverage (as built)
+
+This section records how the doctrine above is realised today for the networks that hold history. Every claim carries a status marker: **IMPLEMENTED** (with the code path or PR that proves it), **DECIDED BUT NOT IMPLEMENTED**, **PROPOSED**, or **DEPRECATED**. Which environments have the workers switched on is release state and lives in [`/STATUS.md`](../../STATUS.md), not here.
+
+### The autonomous history worker
+
+**IMPLEMENTED** — `jobs/sol-history-backfill.ts` (the job keeps its original name; it now carries every chain). Pure decisions live in `lib/crypto/sol-backfill-worker.core.ts`, `lib/crypto/btc-backfill-worker.core.ts`, `lib/crypto/eth-history-backfill.core.ts` and `lib/crypto/history-worker-schedule.core.ts`.
+
+- **One writer.** The `JobRun` claim guarantees one instance; each wallet is processed under its own sync lock, and checkpoints are compare-and-swapped (`Connection.historyCheckpoint`, migration `20261028120000_connection_history_checkpoint`). **IMPLEMENTED.**
+- **Fair.** Wallets that have never started go first, then least-recently-progressed; each wallet gets at most a per-wallet wall-clock budget per run, so one backlog cannot starve another. Chains with work run in a rotating order (the leader changes every run) and each phase gets a fair share of what is left, so every chain with eligible work starts a step within three runs. **IMPLEMENTED** (`orderCandidates`, `history-worker-schedule.core.ts`).
+- **Bounded.** A whole-job wall clock, a per-wallet budget, a global request rate (one token bucket per run) and a **durable daily request cap** read from the shared provider ledger (`ApiUsageCounter`). A bad env value falls back to the default, never to "unlimited". **IMPLEMENTED** (`workerConfig`).
+- **Shared provider budgets.** Solana and Ethereum spend the same Alchemy key and therefore the same daily cap (`SOL_BACKFILL_DAILY_REQUEST_CAP`); Bitcoin uses keyless Esplora with its own cap (`BTC_BACKFILL_DAILY_REQUEST_CAP`). Current token-holding capture defaults to the same Alchemy cap. **IMPLEMENTED** (`jobs/sol-history-backfill.ts`, `lib/crypto/wallet-token-capture.ts`, `lib/platform/wallet-history-recovery.core.ts`).
+- **Off by default, per chain.** All flags are strict opt-ins read from the environment:
+
+  | Work | Runs when | Source |
+  |---|---|---|
+  | Solana native history | `SOL_BACKFILL_ENABLED=true` | `sol-backfill-worker.core.ts` |
+  | Bitcoin history | the SOL flag is on **and** `BTC_BACKFILL_ENABLED` is not `false` | `btc-history-backfill.ts` |
+  | Ethereum full rebuild handed to the worker | SOL flag **and** `ETH_BACKFILL_ENABLED=true` (otherwise syncs rebuild inline) | `eth-history-backfill.core.ts` |
+  | SPL / Token-2022 history | `SPL_HISTORY_ENABLED=true` | `spl-history.store.ts` |
+  | ERC-20 history | SOL **and** ETH flags **and** `ERC20_HISTORY_ENABLED=true` | `erc20-history.core.ts` |
+
+  Snapshot growth additionally needs `WEALTH_REGENERATION_ENABLED` (the snapshot regeneration switch, not a history worker). **IMPLEMENTED.**
+- **Completion is the backfill's own verdict** — beginning reached, head verified, continuity proven — never "the job succeeded". **IMPLEMENTED.**
+- **Job outcome vs job status.** A price run that stops short (`BUDGET_STOPPED`, `ALLOWANCE_EXHAUSTED`, `TOKEN_LIMIT`, `STEP_FAILED`, for SPL and ERC-20 alike) sets `JobRun.summary.outcome = "PARTIAL"` with one `partialReasons` entry per stop; `JobRun.status` stays `succeeded`, because a budget stop is not a failure. A run refused by the platform (for example the billable gate) records `outcome: "SKIPPED"` with a `skipReason`. The summary carries counts and meters only — no ids, addresses or balances. **IMPLEMENTED** (`solBackfillJobOutcome`, `lib/jobs/health.ts`). Showing PARTIAL runs as "completed with limits" in the Platform Ops Jobs view is **PROPOSED** (handed to the Platform Ops owner; not built).
+- **Cadence.** Operator-tunable between 1 and 24 hours (`job_cadence_hours_sol-history-backfill`). **IMPLEMENTED** (`lib/jobs/cadence-policy.test.ts` pins it).
+- **Operator recovery.** Platform Ops → Providers → Fleet diagnostics → Connections → History recovery → **Resume history** runs one bounded pass for a wallet. It is refused when the chain's worker flag is off, when the shared daily cap is exhausted, or when the import is not in an eligible state; it never deletes rows, licences or checkpoints, and it records the audit action `WALLET_HISTORY_RESUMED`. **IMPLEMENTED** (PR #116, path after PR #135; `app/api/platform/platform-ops/connections/[id]/history-resume/route.ts`, `components/platform/widgets/WalletHistoryRecoveryPanel.tsx`).
+- **Rollback.** Unset the flags: workers stop at the next wake and checkpoints persist, so re-enabling resumes rather than restarts (except where noted for SPL below). The checkpoint migration is additive. **IMPLEMENTED** (behaviour of the flag gates above).
+
+### Per-chain acquisition and completeness
+
+| Chain | Acquisition | Completeness | Status |
+|---|---|---|---|
+| Bitcoin | Resumable backfill (`lib/crypto/btc-history-backfill.ts`), keyless Esplora, own token bucket and cap. | Replayed from posted native movements against an observed anchor, reconciled at zero satoshi, bounded by a persisted `COMPLETE` licence (see the capability table above). | **IMPLEMENTED** |
+| Solana (native) | Resumable signature walk via Alchemy (`lib/crypto/sol-history-backfill*.ts`). | Zero-residual reconciliation; the backfill reports COMPLETE only when beginning, head and continuity are proven. | **IMPLEMENTED** |
+| Ethereum (native) | State-read proof walk (`lib/crypto/eth-history.ts`), bounded probe budget per step, resumes at the proof's boundary; rows are written once, when the whole proof closes and reconciles. | Deductive interval licence (`code == "0x" ∧ nonce and balance unchanged`). | **IMPLEMENTED** |
+| Ethereum — early origin | At a proven boundary B the remainder `[lo, B]` is closed in one step when the address is proven **key-derived** by a receipt it signed (K), the state at B is empty (G), and one extra probe shows `lo` unchanged from B (P). The key proof is bound to this address, the Ethereum network and the writer's normalisation. Receive-only and counterfactual smart-wallet addresses fall back to the full walk. | Same licence as the walk; the shortcut only saves probes. | **IMPLEMENTED** (PR #126, PR #143; `acquireEthHistory`, `originProvenAtBlock` diagnostic) |
+| Ethereum — fast path | An index (`alchemy_getAssetTransfers`) only decides *where* to probe; every movement is still built from state deltas and every interval is still closed by the same deductive predicate, so a wrong or incomplete index costs probes, never truth. On by default; `ETH_HISTORY_FAST_PATH=false` restores the plain walk. | Unchanged. | **IMPLEMENTED** (PR #178; `ethFastPathEnabled`) |
+| SPL / Token-2022 | Token-account history staged per account inside the Solana worker (`lib/crypto/spl-history*.ts`). | Per mint: COMPLETE, PARTIAL, PENDING or UNSUPPORTED with a reason. | **IMPLEMENTED** (PR #120, flag-gated) |
+| ERC-20 | Token history pass inside the worker (`lib/crypto/erc20-history*.ts`). | Per token, same vocabulary. | **IMPLEMENTED** (PR #122, flag-gated) |
+
+**Known limits that stay** (all **IMPLEMENTED** as described, i.e. these are current behaviour, not plans):
+
+- **SPL staging caps.** An account keeps at most its newest 750 staged days (`MAX_DAYS_PER_ACCOUNT`), proven from the first kept day; the mint then reads PARTIAL and older days are not recoverable. A mint whose accounts together need more than 6,000 staged days (`MAX_STAGED_DAYS_TOTAL`) stays PENDING and is never shown complete.
+- **SPL flag toggles.** Any off→on toggle of token history forces a full re-walk, which costs requests.
+- **SPL licence withdrawal fails closed.** If a later account cannot prove it held zero of a frozen mint, the whole licence is withdrawn — this can remove rows that were correct.
+- **Spam-farmed Solana wallets.** A full discovery queue resets the token walk, so a spam-farmed wallet's first backfill can spend its small token request allowance (low severity).
+- **ETH endpoint-only pruning.** The walk's pruning test compares interval endpoints only, so a counterfactual CREATE2 address funded and swept inside one transaction could be missed while coverage reads COMPLETE. Rare, low severity, predates the early origin; tracked as a defect, no fix designed.
+
+### Valuation coverage: one model for native assets, ERC-20 and SPL
+
+**DECIDED** (owner ruling, 2026-10-30) and **IMPLEMENTED** (PR #122, with SPL sharing the same code; stored-row re-stamping in `7a09f55` inside #122; clear-stamp in PR #183).
+
+1. **Three facts, tracked separately.**
+   - *Balance-history completeness* ignores prices: a missing price never makes a balance import incomplete. **IMPLEMENTED** — `walletHistoryComplete` (`lib/crypto/wallet-instrument-history.ts`); the Connections "limited" history state is driven by balances only.
+   - *Price coverage* is per token, from `RAW_CLOSE` rows only; an `INTRADAY` quote never extends historical coverage. **IMPLEMENTED** — `ReconstructedTokenFacts.closesToISO` (`lib/crypto/token-valuation.core.ts`).
+   - *Valuation / chart coverage* is decided per day. **IMPLEMENTED** — see the day rule.
+2. **Day rule.** A day's crypto component is valued only if every held, non-excluded token has a price dated that day or the day before (one earlier price never covers later days). Otherwise the day's crypto component is refused or stamped `unavailable` — never $0, and never decided by what the wallet holds today. Native assets follow the same rule: a wallet emptied today with an unpriced past holding is refused rather than written as $0. **IMPLEMENTED** — `tokenDayMissingRequiredPrice` / `cryptoTokenDayDecision` (`lib/crypto/token-valuation.core.ts`) consumed by `regenerateDay` (`lib/snapshots/regenerate-history.ts`).
+3. **Stored rows are re-stamped.** One pure per-day persistence decision stamps a changed verdict onto an existing *estimated* row even when no value changes, lets a row earn `supported` back when its prices arrive, and clears a stale stamp when a real recompute finds no material crypto. Frozen (observed) rows and days with no stored row are never stamped. **IMPLEMENTED** — `planDayPersistence` (`lib/snapshots/regeneration-candidates.core.ts`).
+4. **Per-token coverage states** (`ReconstructedTokenValuation`): `VALUED`; `VALUED_WITH_GAPS` (interior held days no close serves — those days are unavailable); `VALUED_UNTIL_EARLIER` (closes stop inside the held period); `VALUED_FROM_LATER` (closes start inside the held period); `NO_MARKET` (vendor says unlisted or thin — a legitimate unpriced holding, disclosed and limiting); `NOT_VALUED_YET` (no held day priced for any other reason); `EXCLUDED`; `NEVER_HELD` (zero balance throughout — not a holding, ignored). Every state except `VALUED`, `EXCLUDED` and `NEVER_HELD` limits valuation and is disclosed. **IMPLEMENTED** — `reconstructedTokenValuation`; Connections copy in `lib/connections/valuation-coverage*.ts`.
+5. **Disclosure copy** follows the ruling: "Balance history verified through [date]" · "Valuation available from [date]" · "Older holdings exist but lack historical prices". Charts start at the earliest date with both balance and price coverage; interior unpriced days are partial or unavailable. **IMPLEMENTED** (`lib/connections/valuation-coverage.core.ts`, `lib/connections/connection-detail.core.ts`). Never permitted: $0 for an unknown price, silent omission, an earlier price used as coverage for later dates, or complete valuation inferred from balance completeness alone.
+6. **"No market price" is not spam.** A verified non-zero holding without a price makes its dates partial or unavailable. A held token is excluded **only** on an explicit classification with a source recorded on its alias (`metadata.exclusion = { kind: SPAM | NON_ECONOMIC | EXCLUDED, source, atISO }`); excluded tokens stay visible and are counted separately. **IMPLEMENTED** as a reader (`tokenValuationExclusion`). **No writer exists**, so today no held token is ever excluded and spam-farmed wallets show honest but noisy "partial" valuation. Which sources may write a classification (operator decision with a reason, curated list, or vendor spam flag) is an open **owner decision**; the first writer must also restrict the accepted `source` values — **DECIDED BUT NOT IMPLEMENTED**.
+7. **Stale token quantity.** A token whose latest quantity observation is stale contributes nothing and does not block the day. Existing behaviour; it does not arise inside verified token history, which writes a row for every held day. **IMPLEMENTED.**
+
+### First-time quote probes for sold tokens
+
+**IMPLEMENTED** — `lib/crypto/token-history-probe.ts` (chain-neutral, PR #144), used by `lib/crypto/erc20-history-prices.ts` (PR #122) and `lib/crypto/spl-history-prices.ts` (PR #144).
+
+A token that was held but never quoted (typically sold before capture began) gets one first-time quote through the current-quote path, so its historical closes can be fetched.
+
+- Durable per-UTC-day cap per chain: `ERC20_HISTORY_PROBE_DAILY_CAP` / `SPL_HISTORY_PROBE_DAILY_CAP` (default 20, clamped 0–1,000), counted in `ApiUsageCounter` under `ERC20_HISTORY` / `SPL_HISTORY`, metric `coingecko-probe`, unit `attempts`.
+- A held-token reserve: probes leave a fraction of the CoinGecko token share untouched for held-token quotes and history closes (`*_HISTORY_PROBE_HELD_RESERVE`, default 0.5, 0–1).
+- A token is re-asked at most every 7 days (`TOKEN_PROBE_RETRY_MS`). Never-held tokens are skipped. An unreadable usage ledger means **no** probe (unknown ⇒ allowance 0). Thin or unlisted tokens become `NO_MARKET`, never excluded.
+- A swallowed price-step failure reports `STEP_FAILED`, which makes the job outcome PARTIAL.
+
+Known limits (current behaviour): the allowance read and the attempt record are not atomic, so concurrent runs can overshoot a cap by the number of runs in flight; the SPL and ERC-20 reserves are separate settings, and setting either to 0 lets that chain's probes spend into the held-quote share; closes fetched right after a probe bypass the reserve (small, bounded by the cap); expect a steady trickle of SPL probes, because wallets close spam token accounts to reclaim rent, which makes those mints genuinely held.
+
+### Wallet refresh: price-archive maintenance and per-facet freshness
+
+These rules came out of the 2026-10-01 crypto refresh incident (evidence: see `docs/archive/evidence/incidents/`). The operator tool for older price gaps is the [crypto refresh repair runbook](../operations/runbooks/crypto-refresh-repair.md).
+
+- **Price-archive maintenance is a prerequisite of valuation, not a consequence of it.** Current crypto valuation reads `RAW_CLOSE` closes with a 7-day walk-back. The close authority repairs its own archive on a miss and re-reads, and the scheduled crypto sweep maintains every held asset's closes **before** it touches any wallet — so a failed valuation can no longer close the gate on its own repair (the "latch"). **IMPLEMENTED** — CRYPTO-LATCH-1 in `lib/crypto/crypto-close-coverage.ts`, `lib/crypto/btc-sync.ts`, `jobs/sync-crypto.ts`.
+- **Revaluation is declared, not inferred.** Whether a wallet sync revalued is declared by the chain registry's valuation model, so a chain without a valuation field cannot accidentally read as revalued. **IMPLEMENTED** — CRYPTO-LATCH-2 in `lib/crypto/wallet-sync-dispatch*.ts`.
+- **Each freshness facet reads its own authority.** Current position (newest `PositionObservation`), transaction history (`Connection.transactionsSyncedAt`), derived history (`Connection.historyRebuiltAt`) and balance read (`Connection.lastSyncedAt`) are separate clocks. `null` means never successfully established and renders as silence; no facet falls back to another's clock. The two columns were added with no backfill on purpose: inventing a success date would be the dishonesty the repair removed. **IMPLEMENTED** — CRYPTO-FRESHNESS-1, migration `20261001120000_connection_facet_freshness`, `lib/connections/intelligence.ts`, `lib/connections/space-data.ts`, `components/connections/ConnectionCard.tsx`.
+- **Quote and history stages run concurrently.** The intraday quote and the history reconstruction share nothing; both are gated on the sync's success exactly as before and neither can change it, so they run in parallel instead of in series. **IMPLEMENTED** — CRYPTO-PARALLEL-1 in `lib/crypto/wallet-sync-dispatch.ts`.
+- **Failure copy leads with the user message**, keeping the provider's own text as the reason. **IMPLEMENTED** — CRYPTO-COPY-1 in `components/dashboard/SyncWalletButton.tsx`, `lib/crypto/wallet-sync-dispatch.ts`.
+- **Timeouts and retries were deliberately left unchanged** by the repair. **IMPLEMENTED** (no change).
+
+### Production activation (release procedure)
+
+**DECIDED** (closeout, 2026-10-30); execution is release state owned by Session 1 and recorded in STATUS.md.
+
+1. Apply `20261028120000_connection_history_checkpoint` (additive) before the code that reads it is promoted, through the guarded migration procedure ([database-safety.md](../operations/database-safety.md)).
+2. Enable workers one at a time with explicit daily caps and a soak window between each: `SOL_BACKFILL_ENABLED` → `BTC_BACKFILL_ENABLED` → `ETH_BACKFILL_ENABLED` → `SPL_HISTORY_ENABLED` / `ERC20_HISTORY_ENABLED`. `WEALTH_REGENERATION_ENABLED` must be on for snapshot growth.
+3. Provider terms are owner decisions: the Alchemy plan must cover the shared SOL+ETH daily cap, and CoinGecko's tier (history depth, attribution and storage terms) must be confirmed or upgraded.
+4. Rollback: unset the flags (workers stop at the next wake, checkpoints persist), then redeploy the previous deployment if needed; the migration stays.
+
+### Open follow-ups
+
+All **PROPOSED** (not designed or not built):
+
+- **Merge-aware membership guard.** A duplicate-merge loser's link is treated as "left the Space", so earlier days stay blocked; after a merge the loser's history lives on the winner, so those days could be regenerated. Needs the amendment system or a merge-aware guard. Today's behaviour fails closed (never wrong, can shorten the backfill). See [historical-data.md](./historical-data.md#regeneration-membership-guard).
+- **Platform Ops "completed with limits"** display for PARTIAL history-worker runs.
+- **Token exclusion writer** with an owner-approved source allow-list (item 6 above).
+- **SPL deferred items:** stale rows for sibling mints after a rebuild; the recovery pass runs without the discovery hook; a checkpoint version bump orphans token state; checkpoint size (roughly 0.6–0.8 MB).
+- **Test gaps:** the regeneration call-site wiring is pinned by an exact source match rather than a behavioural run; the SPL store adapter dropping `status` is untested at the database adapter.
+- **ETH endpoint-only pruning gap** (above).
+
+---
+
 ## Transitional architecture, with stated exit conditions
 
 Two things below are known to be wrong-shaped and are carried deliberately. Both have a written exit.

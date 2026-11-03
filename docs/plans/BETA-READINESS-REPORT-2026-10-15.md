@@ -1,6 +1,6 @@
 # BETA IMPLEMENTATION — READINESS REPORT (2026-10-15)
 
-**Program:** invite-only beta implementation (owner authorization 2026-10-15: every REQUIRED + RECOMMENDED item of the [decision matrix](BETA-OWNER-DECISION-MATRIX-2026-10-15.md); [analytics design](BETA-PRODUCT-ANALYTICS-DESIGN.md); RWA-2 per [the design](RWA-2-ASSET-VALUATION-HISTORY.md) with the owner's 2026-10-15 rules) · **Branch:** `v2.6` · **Coordinator:** the consolidated lead session (after the crash of the two previous coordinating sessions; [recovery inventory](BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md)) · **Contract:** [coordination](BETA-IMPLEMENTATION-COORDINATION.md) · **State of record:** [`/STATUS.md`](../../STATUS.md) §3, §6, §11, §13, §14.
+**Program:** invite-only beta implementation (owner authorization 2026-10-15: every REQUIRED + RECOMMENDED item of the [decision matrix](BETA-OWNER-DECISION-MATRIX-2026-10-15.md); [analytics design](BETA-PRODUCT-ANALYTICS-DESIGN.md); RWA-2 per [the design](../systems/wealth.md#manual-real-world-asset-valuation-history-rwa-2) with the owner's 2026-10-15 rules) · **Branch:** `v2.6` · **Coordinator:** the consolidated lead session (after the crash of the two previous coordinating sessions; [recovery inventory](../archive/evidence/incidents/BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md)) · **Contract:** [coordination](BETA-IMPLEMENTATION-COORDINATION.md) · **State of record:** [`/STATUS.md`](../../STATUS.md) §3, §6, §11, §13, §14.
 
 **Production:** untouched. No deployment, migration, seed, configuration, credential or data change on Production. Everything below is Dev-built, locally gated, and Preview-deployed/verified only as §7–§8 state.
 
@@ -10,7 +10,7 @@
 
 ## 1. Recovered work (crash of 2026-10-15)
 
-Both coordinating sessions (beta implementation; real-world assets) and their background agents stopped mid-flight (machine crash + account usage limit). Nothing was lost that was committed; everything uncommitted was found intact in its worktree and finished by freshly briefed agents. The read-only inventory is the [recovery inventory](BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md). In short:
+Both coordinating sessions (beta implementation; real-world assets) and their background agents stopped mid-flight (machine crash + account usage limit). Nothing was lost that was committed; everything uncommitted was found intact in its worktree and finished by freshly briefed agents. The read-only inventory is the [recovery inventory](../archive/evidence/incidents/BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md). In short:
 
 | Found | State at recovery | Disposition |
 |---|---|---|
@@ -96,7 +96,7 @@ Both are old-client compatible and were applied on Preview ahead of the code pus
 | Connections | Page renders with Connect institution / Add wallet / **Add asset**; the Plaid Item shows its freshness | VERIFIED render. **Connection cap (10) and the 403 were not exercised** (one Item on Preview) — covered by `connection-cap.test.ts` and the two route placement pins |
 | AI spending limits | Allowance gate admitted a normal turn; **exhaustion ($5), the per-user/fleet alert firing and the unpriced-model 503 were not exercised live** — covered by allowance (35), model-rate-coverage (27), spend-by-surface (43) and alerts tests |
 | Registration / onboarding | **Not exercised** (account creation on a non-local host is outside what this coordinator may do); the register/verify-email/access-request routes are covered by their unit tests and the audit-digest change is verified in code | NOT VERIFIED in browser — owner to run one invite end-to-end |
-| Cleanup | Test asset archived through the UI (confirmation dialog); Total assets back to $86,541.74; its two append-only ledger rows remain on the soft-deleted account (by design) | VERIFIED |
+| Cleanup | Test asset archived through the UI (confirmation dialog); Total assets back to its pre-test value (figure redacted: owner's local data); its two append-only ledger rows remain on the soft-deleted account (by design) | VERIFIED |
 
 **Finding F1 — amendment recomputes whole days.** The consent preview for a $1→$2 test asset reported a ~$1,496 change on Oct 14. The existing amendment engine (`snapshot-amendment.ts`, pre-beta) rebuilds every component of each day from today's data (the proposal's "you cannot subtract one account's slice"), so the preview includes re-valuation of investments, cash walk-back and FX, not only the asset. The flow is honest (the figures are shown and nothing is written without consent) and the behaviour pre-dates this program, but a beta user adding a small asset may be surprised by the magnitude. Recommendation: owner decision — either accept with a wording addition in the dialog ("past days are rebuilt from today's data for every account, not only this asset") or defer the offer until the amendment engine can amend one account's slice (needs the D-H5 column and engine work; post-beta). Not a blocker for an invite-only beta because consent is explicit and the default keeps history as recorded.
 

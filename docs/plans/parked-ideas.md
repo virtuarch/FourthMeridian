@@ -1,5 +1,8 @@
 # Parked Ideas
 
+> **Owner:** unassigned (owner decision pending) · **Status:** DRAFT · **Updated:** 2026-11-02 · **PRs:** —
+> The roadmap this list references (ROADMAP.md) is superseded by the PRE-BETA release plan and the PB backlog. Whether to keep a long-range roadmap is an owner decision.
+
 *The roadmap ([ROADMAP.md](./ROADMAP.md)) ends at launch. These are deliberately parked, not forgotten. Each lists its unpark condition. Parked ideas are one-line ledger entries — the full investigation that justified parking lives in git history, not the working tree.*
 
 | Idea | Why parked | Unpark condition |

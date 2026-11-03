@@ -186,7 +186,7 @@ Nothing is revoked in this milestone.
 
 **One app-side consequence to hand to Agent A** (`lib/ai/rate-limit-retry.ts`, not this lane's file): a project hard-limit 429 carries `code: project_spend_limit_exceeded`, which `isQuotaExhaustedError` does **not** recognise (it matches `insufficient_quota` and three message phrasings), so the retry helper treats it as an ordinary rate limit, **retries it** up to `maxRetries`, and the ledger records `RATE_LIMITED` rather than `QUOTA`. Recommended: add the two `*_spend_limit_exceeded` codes to the quota predicate so a reached limit is recorded as `QUOTA`, not retried, and surfaces on the failure readers as the quota outage it is.
 
-### 6.2 The observed rates the figures are derived from (PROVEN, `docs/plans/AI-PLAID-COST-ECONOMICS-ASSESSMENT.md` §7; readiness report §Growth & Revenue)
+### 6.2 The observed rates the figures are derived from (PROVEN at the time by the 2026-10-15 AI/Plaid cost assessment, since extracted into [systems/billing-and-provider-costs.md](../systems/billing-and-provider-costs.md); readiness report §Growth & Revenue)
 
 - Chat turn on `gpt-5.1` (~80 % cached): **$0.0065 – $0.0116** observed in dogfood ledgers; Daily Brief **$0.003 – $0.005**.
 - Per active user per month: AI **$0.18 low / $0.82 baseline / $2.47 high** (20 / 60 / 200 turns + 15 / 30 / 30 Briefs).

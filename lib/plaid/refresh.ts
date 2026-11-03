@@ -591,7 +591,7 @@ export interface ManualItemRefreshDeps {
  * position observations, investment events, reconstruction output and a space
  * snapshot while leaving ZERO execution evidence, in direct contradiction of
  * REFRESH_EXECUTION_DOCTRINE §C ("every canonical refresh attempt produces
- * exactly one"). See docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md.
+ * exactly one"). See docs/systems/connections.md "Refresh paths and execution traceability".
  *
  * THE LOCK SITS INSIDE THE ENVELOPE — deliberately, and unlike the single-item
  * branch, which claims the lock OUTSIDE `runFullRefresh` and therefore records

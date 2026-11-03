@@ -2,7 +2,7 @@
 
 **Status:** ASSESSMENT / AWAITING OWNER DECISIONS · **Baseline:** v2.6 @ 0f07a62 · **Owner framing:** beta launch is the priority this week; UX P2 Phase A and Phase B targeted for beta; useful Platform Ops / Security Ops visibility prioritized; minimum viable beta analytics and AI/Plaid cost safeguards included; real-world assets targeted for beta if the existing backend supports a low-risk UI exposure; Coinbase, exchange adapters, universal connectors and multi-LLM support are post-beta.
 
-**Classes:** REQUIRED = beta should not open without it · RECOMMENDED = ship before beta if the week allows; otherwise first post-beta slice · POST-BETA. **Flags:** 🗄 schema migration · 🔒 security / privacy implication · ⛓ dependency. **Effort** is agent-hours of coding, excluding owner review. Sources: the three assessments ([nav](PLATFORM-SPACES-UX-P2-NAVIGATION-ASSESSMENT.md), [cost](AI-PLAID-COST-ECONOMICS-ASSESSMENT.md), [providers](AI-PROVIDER-READINESS-ASSESSMENT.md)) and the [beta analytics design](BETA-PRODUCT-ANALYTICS-DESIGN.md).
+**Classes:** REQUIRED = beta should not open without it · RECOMMENDED = ship before beta if the week allows; otherwise first post-beta slice · POST-BETA. **Flags:** 🗄 schema migration · 🔒 security / privacy implication · ⛓ dependency. **Effort** is agent-hours of coding, excluding owner review. Sources: the three assessments ([nav](PLATFORM-SPACES-UX-P2-NAVIGATION-ASSESSMENT.md), [cost](../systems/billing-and-provider-costs.md), [providers](AI-PROVIDER-READINESS-ASSESSMENT.md)) and the [beta analytics design](BETA-PRODUCT-ANALYTICS-DESIGN.md).
 
 ---
 
