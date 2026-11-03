@@ -124,7 +124,7 @@ Read from develop `8083b7b` (code and labels only; no database read). It unblock
 | X5 | **"This week" / "7 d" uses two clocks:** rolling 7 × 24 h (A2, A3, A8) and 7 UTC days including today (A1). | `signups/route.ts:37`, `growth.ts:204`, `activity.ts:143` vs `pac:146` |
 | X6 | **The same predicate has two names:** "Returning ever" and "Returned". "Returning (7d)" is a different predicate with the same root word. | `pac:308,339` vs `growth.ts:136` |
 | X7 | **Populations disagree.** Engagement counts (A1–A7) include operators and since-deactivated users. CS (A12) excludes both. "open accounts" (A13) excludes deactivated users but keeps operators, and it divides an all-roles numerator. A role-USER holder of a `PlatformGrant` counts as a customer everywhere, because only SYSTEM_ADMIN is distinguished (`lib/platform/authorize.ts:98`). | `pa:47-62`, `attention.ts:73`, `growth-model.ts:64` |
-| X8 | **"Live" session counts ignore the SEC-010 lifetime.** Expired, unrevoked rows read as active or signed in. | A16 sites vs `session-proof.ts:102-104` |
+| X8 | **"Live" session counts ignore the SEC-010 lifetime.** Expired, unrevoked rows read as active or signed in. **FIXED on `develop` (PR #345):** 9 sites in all (the A16 sites plus admin-status, admin security users, and the `_max(lastPresenceAt)` reads in `customer-detail.ts` / `customers.ts`) now use the shared `liveSessionWhere(now)` in `lib/auth/session-proof.ts`, which also excludes deactivated and deletion-scheduled accounts. Display-only; sign-in already enforced the limits | A16 sites vs `session-proof.ts:102-104` |
 | X9 | **Window constants are duplicated.** `ENGAGEMENT_WINDOW_DAYS` is unused by code, `PRODUCT_ANALYTICS_WINDOW_DAYS` restates its 30, and literals 1/7/30 sit in four files. | `defs:105`, `pac:52,505-506`, `activity.ts:140-153`, `signups/route.ts:37-38`, `growth.ts:204` |
 | X10 | **The "account active" predicate is inline in at least six places.** It is consistent today but not shared. | A14 sites, `attention.ts:73`, `security/analytics.ts:65` |
 
@@ -161,7 +161,7 @@ Read from develop `8083b7b` (code and labels only; no database read). It unblock
 | Item | Class |
 |---|---|
 | **OD-1.** Which window defines an "active customer" for unit economics: calendar cycle to date, or trailing 30 UTC days (Engaged MAU, A8 ruling)? And does a second cost-per-customer figure survive? | **OWNER DECISION** |
-| **OD-2.** Do operators count as customers: SYSTEM_ADMIN, and role-USER `PlatformGrant` holders using personal Spaces? | **OWNER DECISION** |
-| **OD-3.** Does an account deactivated or scheduled for deletion **now** still count in a window in which it was engaged? | **OWNER DECISION** |
+| **OD-2.** Do operators count as customers: SYSTEM_ADMIN, and role-USER `PlatformGrant` holders using personal Spaces? *S2 recommendation: no; any `PlatformGrant` holder is an operator, not a customer.* | **OWNER DECISION** |
+| **OD-3.** Does an account deactivated or scheduled for deletion **now** still count in a window in which it was engaged? *S2 recommendation: count it only in windows before its `deactivatedAt`.* | **OWNER DECISION** |
 | **OD-4.** Should a test or internal account be marked (a new flag means schema and instrumentation), and should it be excluded? | **OWNER DECISION** |
-| All labels, metric keys and versions, constant consolidation, the shared population module, and the lifetime check on live-session counts | **ENGINEERING** |
+| All labels, metric keys and versions, constant consolidation, the shared population module, and the lifetime check on live-session counts (done: #345) | **ENGINEERING** |
