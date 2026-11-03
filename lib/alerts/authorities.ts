@@ -38,12 +38,12 @@ export type AlertAuthority =
   | "provider-quota";
 
 /**
- * OBS-004 — the MINIMAL slice of the sync-incident read model the engine
- * reads: ACTIVE episodes (lib/platform/incidents/projections.ts, state
- * "active" by the semantic authority) with their derived severity. Folded by
- * lib/alerts/sync-incidents.ts from IncidentView; the engine never touches a
- * SyncIssue row. Carries opaque ids only — never `detail`, never a label that
- * names an institution.
+ * OBS-004 — the MINIMAL slice of the incident-intelligence module's verdicts
+ * the engine reads: the ALERTABLE episodes (PB-1 R5 — the module's `alertable`
+ * verdict, read with the SYSTEM token) with the module's severity. Folded by
+ * lib/alerts/sync-incidents.ts; the engine never touches a SyncIssue row and
+ * never decides open/closed. Carries opaque ids only — never `detail`, never a
+ * label that names an institution.
  */
 export interface AlertSyncIncident {
   /** SyncIssue.id (opaque). */
@@ -58,7 +58,7 @@ export interface AlertSyncIncident {
 }
 export interface SyncIncidentHealth {
   checkedAt: string;
-  /** Active episodes, every severity; the rule filters to critical. */
+  /** Alertable episodes (module verdict), every severity; the rule filters to critical. */
   active: readonly AlertSyncIncident[];
   /** True when the underlying scan hit its ceiling — `active` is then a floor. */
   scanTruncated: boolean;

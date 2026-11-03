@@ -232,7 +232,7 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     kind: "sync-incident",
     title: "Critical sync incident",
     description:
-      "An ACTIVE sync incident of critical severity — canonical financial data was not persisted and the provider cursor is held (TRANSACTION_PERSISTENCE_FAILED and its legacy shapes). One breach per Plaid Item (an opaque reference; never an institution or a customer), so a second Item's incident is never silenced by the first. Reads the incident projection (lib/platform/incidents/projections.ts) whose state and severity come from the sync-issue semantic authority; never re-derives either.",
+      "An ALERTABLE sync incident of critical severity (broken now, inside its window, not recovering) — canonical financial data was not persisted and the provider cursor is held (TRANSACTION_PERSISTENCE_FAILED and its legacy shapes). One breach per Plaid Item (an opaque reference; never an institution or a customer), so a second Item's incident is never silenced by the first. Reads the incident-intelligence module's alertable verdicts (lib/platform/incidents/intelligence) — state and severity are the module's; never re-derives either.",
     authority: "sync-incidents",
     live: true,
     defaultEnabled: true,

@@ -11,6 +11,9 @@ import { classifySyncIssue, syncIssueState, type SyncIssueState } from "@/lib/pl
 import { projectIncidents } from "@/lib/platform/customer/customer-core";
 import type { CsIncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { convergenceInstant, syncIssueOutcome } from "@/lib/platform/convergence/participants";
+import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
+import { evaluateSyncIncidentCritical } from "@/lib/alerts/evaluate";
+import { ALERT_RULES } from "@/lib/alerts/rules";
 import { moduleVerdicts } from "./module-adapter";
 import type { World, WorldRow } from "./world";
 
@@ -138,15 +141,24 @@ export function projectionReader(w: World): Verdict[] {
 }
 
 /**
- * R4/R5 — alerts AFTER the projection cutover: with the SYSTEM token the page is
- * the module's `alertable` set, and the rule keeps critical only, grouped per item.
+ * R4/R5 — alerts AFTER the cutover: the SYSTEM feed is the module's `alertable`
+ * set (what `incidentAccessors.alertable` returns), through the REAL fold
+ * (lib/alerts/sync-incidents.ts) and the REAL rule evaluator
+ * (evaluateSyncIncidentCritical). A row is open when its group — the evaluator's
+ * own dedupe key (per Plaid Item, else per episode) — produced a critical signal.
+ * `feed` lets the gate hand the fold a WIDER page to prove the fold's own guard.
  */
-export function alertsReader(w: World): Verdict[] {
-  return moduleVerdicts(w, "SYSTEM").filter((v) => v.alertable && v.severity === "critical").map((v) => ({
-    reader: "alerts" as const, rowId: v.id, open: true, severity: v.severity,
-  })).map((v) => {
-    const r = w.rows.find((x) => x.id === v.rowId)!;
-    return { ...v, reader: "alerts", groupKey: r.plaidItemId ? `item:${r.plaidItemId}` : `episode:${r.id}` };
+export function alertsReader(w: World, feed: "alertable" | "all" = "alertable"): Verdict[] {
+  const verdicts = moduleVerdicts(w, "SYSTEM").filter((v) => feed === "all" || v.alertable);
+  const health = foldSyncIncidents(verdicts, false, w.now);
+  const rule = ALERT_RULES.find((r) => r.id === "sync-incident-critical")!;
+  const fired = new Set(evaluateSyncIncidentCritical(rule, health).map((sig) => sig.dedupeKey));
+  return health.active.map((i) => {
+    const groupKey = i.plaidItemId ? `item:${i.plaidItemId}` : `episode:${i.id}`;
+    return {
+      reader: "alerts" as const, rowId: i.id, severity: i.severity, groupKey,
+      open: i.severity === "critical" && fired.has(`${rule.id}:${groupKey}`),
+    };
   });
 }
 
@@ -169,7 +181,7 @@ export const LEGACY_READERS = {
   "cs-panel": csPanelReader,
   projection: projectionReader,
   convergence: convergenceReader,
-  alerts: alertsReader,
+  alerts: (w: World) => alertsReader(w),
   "ops-attention": opsAttentionReader,
   "cs-attention": csAttentionReader,
 } as const;
