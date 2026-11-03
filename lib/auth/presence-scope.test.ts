@@ -44,7 +44,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 // ── the in-memory store ───────────────────────────────────────────────────────
 interface Row {
   userId: string; revokedAt: Date | null; createdAt: Date; lastActiveAt: Date;
-  user: { id: string; role: string; totpEnabled: boolean } | null;
+  user: { id: string; role: string; totpEnabled: boolean; deactivatedAt?: Date | null; deletionScheduledAt?: Date | null } | null;
 }
 const ROWS = new Map<string, Row>();
 const gates = new Map<string, Promise<void>>();
@@ -121,6 +121,10 @@ async function main() {
     { name: "revoked session", row: live({ revokedAt: new Date() }) },
     { name: "deactivated user (deactivation revokes every session — app/api/user/deactivate)", row: live({ revokedAt: new Date() }) },
     { name: "deletion-pending user (deletion request revokes every session — app/api/user/delete)", row: live({ revokedAt: new Date() }) },
+    // Deactivation-fix — INDEPENDENT of revocation: the account is locked out but
+    // the revoke never happened (failed / partial), so the row is still unrevoked.
+    { name: "deactivated user, session NOT revoked (lockout alone refuses)", row: live({ user: { id: USER, role: "USER", totpEnabled: false, deactivatedAt: new Date() } }) },
+    { name: "deletion-scheduled user, session NOT revoked", row: live({ user: { id: USER, role: "USER", totpEnabled: false, deactivatedAt: new Date(), deletionScheduledAt: new Date(Date.now() + 30 * DAY) } }) },
     { name: "unknown session token (no row)", row: null },
     { name: "SEC-010 idle-expired row", row: live({ lastActiveAt: new Date(Date.now() - SESSION_IDLE_TIMEOUT_MS - DAY) }) },
     { name: "SEC-010 absolute-expired row", row: live({ createdAt: new Date(Date.now() - 91 * DAY) }) },

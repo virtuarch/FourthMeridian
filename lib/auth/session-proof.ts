@@ -16,6 +16,8 @@
  *   2. a UserSession row with that sessionToken exists and is not revoked;
  *   3. that row's userId EQUALS the token's id (ownership, not mere existence);
  *   4. the row's user exists, and its role is a known role;
+ *   5. the row's user is not DEACTIVATED and not SCHEDULED FOR DELETION
+ *      (`deactivatedAt` / `deletionScheduledAt` null — see "ACCOUNT LOCKOUT");
  * and the role AND the TOTP-enrolment requirement the application acts on are
  * the user's CURRENT state from the store (factsFromRow), never the token's
  * claims. (P1b: `requireTotpSetup` in the token is client-updatable through
@@ -33,6 +35,18 @@
  * granularity. A row missing either timestamp is malformed and refused. The
  * clock and both limits are injectable (`SessionLifetimePolicy`) so the rule is
  * provable with fixed clocks.
+ *
+ * ACCOUNT LOCKOUT. Deactivation (user, CS operator) and a deletion request set
+ * `deactivatedAt` (deletion also `deletionScheduledAt`) and THEN revoke every
+ * session as a separate, non-transactional step. A revoke that failed or was
+ * partial left those sessions live indefinitely — the row was never revoked,
+ * and the store proved them. The account state is now part of the proof:
+ * factsFromRow refuses a row whose user carries either timestamp, exactly as
+ * it refuses a revoked row (verdict "not-live"). It applies within the
+ * revocation cache's existing TTL (lib/session-cache.ts) — the same window a
+ * revoked row has, never a longer one. Reactivation / cancel-deletion clear the
+ * timestamps in authorize() BEFORE the new session row is minted, so a fresh
+ * login is proved live.
  *
  * FAILURE IS NOT TRUST. When the store cannot answer, the verdict is
  * INDETERMINATE (deny this request, keep the cookie — PROD-POOLER-AUTH-
@@ -81,7 +95,7 @@ export const SESSION_ROW_SELECT = {
   revokedAt:    true,
   createdAt:    true,
   lastActiveAt: true,
-  user:      { select: { id: true, role: true, totpEnabled: true } },
+  user:      { select: { id: true, role: true, totpEnabled: true, deactivatedAt: true, deletionScheduledAt: true } },
 } as const;
 
 /** SEC-010 — idle cut-off: no recorded activity for this long ⇒ the session is over. */
@@ -126,13 +140,14 @@ export interface SessionRowLike {
   revokedAt?:    unknown;
   createdAt?:    unknown;
   lastActiveAt?: unknown;
-  user?:      { id?: unknown; role?: unknown; totpEnabled?: unknown } | null;
+  user?:      { id?: unknown; role?: unknown; totpEnabled?: unknown; deactivatedAt?: unknown; deletionScheduledAt?: unknown } | null;
 }
 
 /**
  * The facts a live session row proves, or null when it proves nothing:
- * absent, revoked, ownerless, inconsistent, carrying an unknown role, or past
- * its idle / absolute lifetime (SEC-010).
+ * absent, revoked, ownerless, inconsistent, carrying an unknown role, past
+ * its idle / absolute lifetime (SEC-010), or owned by a deactivated /
+ * deletion-scheduled account (ACCOUNT LOCKOUT).
  * Never throws — a malformed row is a refusal, not an exception.
  */
 export async function factsFromRow(
@@ -149,6 +164,10 @@ export async function factsFromRow(
   if (user.id !== row.userId) return null;
   if (typeof user.role !== "string" || !KNOWN_ROLES.includes(user.role)) return null;
   if (typeof user.totpEnabled !== "boolean") return null;
+  // ACCOUNT LOCKOUT — a deactivated or deletion-scheduled account proves no
+  // session, revoked or not. (Any non-null value is a lockout; SESSION_ROW_SELECT
+  // always selects both, so absence only occurs in a row built without it.)
+  if (user.deactivatedAt != null || user.deletionScheduledAt != null) return null;
   return {
     userId:           row.userId,
     role:             user.role,
