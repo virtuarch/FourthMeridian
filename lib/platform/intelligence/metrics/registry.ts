@@ -432,7 +432,8 @@ export const METRICS: readonly MetricDefinition[] = [
     denominator: null,
     compute: { module: "lib/auth/session-proof.ts", symbol: "liveSessionWhere" },
     path: [
-      { file: "app/api/platform/security-ops/sessions/route.ts", calls: "liveSessionWhere" },
+      { file: "app/api/platform/security-ops/sessions/route.ts", calls: "countLiveSessions" },
+      { file: "lib/platform/security/live-sessions.ts", calls: "liveSessionWhere" },
     ],
     inclusion: ["Non-revoked sessions inside both lifetimes", "Owner deactivatedAt IS NULL ∧ deletionScheduledAt IS NULL"],
     exclusion: ["Revoked sessions", "Idle- or absolute-expired rows that were never revoked", "Sessions of deactivated or deletion-scheduled accounts"],
@@ -459,7 +460,8 @@ export const METRICS: readonly MetricDefinition[] = [
     denominator: null,
     compute: { module: "lib/auth/session-proof.ts", symbol: "liveSessionWhere" },
     path: [
-      { file: "app/api/platform/growth-revenue/users/route.ts", calls: "liveSessionWhere" },
+      { file: "app/api/platform/growth-revenue/users/route.ts", calls: "countAccountsWithLiveSession" },
+      { file: "lib/platform/security/live-sessions.ts", calls: "liveSessionWhere" },
     ],
     inclusion: ["role USER accounts with ≥ 1 live session"],
     exclusion: ["SYSTEM_ADMIN accounts (by role)", "Accounts whose every session is revoked or expired", "Deactivated or deletion-scheduled accounts (the session lockout)"],

@@ -24,7 +24,7 @@ import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { db } from "@/lib/db";
 import { CLOSED_ACCOUNT_WHERE, CUSTOMER_WHERE } from "@/lib/platform/customer/population";
-import { liveSessionWhere } from "@/lib/auth/session-proof";
+import { countAccountsWithLiveSession } from "@/lib/platform/security/live-sessions";
 import { AuditAction } from "@/lib/audit-actions";
 
 export const runtime = "nodejs";
@@ -50,12 +50,14 @@ export async function GET(): Promise<Response> {
   if (err) return err;
 
   const customer = CUSTOMER_WHERE;
-  const [total, emailVerified, deactivated, deletionScheduled, liveSessionUsers, signedInUsers] = await Promise.all([
+  const now = new Date();
+  const [total, emailVerified, deactivated, deletionScheduled, withLiveSession, signedInUsers] = await Promise.all([
     db.user.count({ where: customer }),
     db.user.count({ where: { ...customer, emailVerifiedAt: { not: null } } }),
     db.user.count({ where: { ...customer, ...CLOSED_ACCOUNT_WHERE } }),
     db.user.count({ where: { ...customer, deletionScheduledAt: { not: null } } }),
-    db.userSession.groupBy({ by: ["userId"], where: liveSessionWhere(new Date(), { userWhere: customer }), _count: { _all: true } }),
+    // accounts-with-live-session@1 — the shared reader (lib/platform/security/live-sessions.ts).
+    countAccountsWithLiveSession(db, now),
     db.auditLog.groupBy({ by: ["userId"], where: { action: AuditAction.LOGIN, user: { is: customer } }, _count: { _all: true } }),
   ]);
 
@@ -64,7 +66,7 @@ export async function GET(): Promise<Response> {
     emailVerified,
     deactivated,
     deletionScheduled,
-    withLiveSession: liveSessionUsers.length,
+    withLiveSession,
     neverSignedIn: Math.max(0, total - signedInUsers.length),
     checkedAt: new Date().toISOString(),
   } satisfies GrowthUsersSummary);
