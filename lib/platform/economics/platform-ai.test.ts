@@ -61,7 +61,8 @@ async function main() {
   console.log("1. the Platform AI surface");
   check("PLATFORM_AI_SURFACES is exactly the operator path's recorded surface", JSON.stringify(PLATFORM_AI_SURFACES) === JSON.stringify([COMMS_AUTHORING_SURFACE]));
   const operatorCallers: string[] = [];
-  for (const root of ["lib/platform", "lib/notifications", "app/api/platform"]) {
+  // S2 (#331): operator AI can also run from jobs and alert evaluation — scanned too. Customer surfaces stay out of scope.
+  for (const root of ["lib/platform", "lib/notifications", "app/api/platform", "jobs", "lib/alerts"]) {
     for (const f of walk(path.join(process.cwd(), root))) {
       const t = readFileSync(f, "utf8");
       if (/runWithAiInvocationContext\(/.test(t) && !/^\s*import/m.test(t.slice(t.indexOf("runWithAiInvocationContext(") - 1, t.indexOf("runWithAiInvocationContext(")))) operatorCallers.push(path.relative(process.cwd(), f));
@@ -105,15 +106,19 @@ async function main() {
     id, occurredAt: new Date("2026-11-02T10:00:00Z"), provider: "OPENAI", model: "gpt-5-mini", surface: PLATFORM, subSurface: `${PLATFORM}:polish`,
     outcome: "RETURNED", errorCode: null, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000, latencyMs: 900, userId: "op_user_secret_id", ...o,
   });
-  const listed = [inv("a", {}), inv("b", { latencyMs: 1500 }), inv("c", { outcome: "FAILED", errorCode: "TIMEOUT", promptTokens: 0, completionTokens: 0, latencyMs: 30000 })];
+  const listed = [inv("a", {}), inv("b", { latencyMs: 1500 }), inv("c", { outcome: "FAILED", errorCode: "TIMEOUT", promptTokens: 0, completionTokens: 0, latencyMs: 30000 }),
+    inv("d", { outcome: "FAILED", errorCode: "The model said: your prompt contained secret text", promptTokens: 0, completionTokens: 0, latencyMs: 100 })];
   const rec = await getPlatformAiRecords({ window: "30d", untilMs: NOW, page: 1 }, {
     groups: async () => groups, plaidReaders: { items: async () => [], transitions: async () => [] }, engagedSince: async () => new Set(),
-    aiPricingConfigured: true, plaidRates: [], ref: (id) => `user #${id.length}`, list: async () => listed,
+    aiPricingConfigured: true, plaidRates: [], ref: (id) => `user #${id.length.toString(16).padStart(8, "0")}`, list: async () => listed,
   });
   check("records: Σ returned cost = the KPI (same pricer)", near(rec.returnedCostUsd, rec.figure.value) && near(rec.figure.value, 2.5), `${rec.returnedCostUsd} ${rec.figure.value}`);
-  check("records: a failure is 'not counted' (null), counted aside", rec.page.rows.find((r) => r.id === "c")?.pricing === "NOT_COUNTED" && rec.page.rows.find((r) => r.id === "c")?.costUsd === null && rec.counts.failed === 1 && rec.counts.returned === 2);
-  check("records: latency over returned calls; by-model rollup with in/out/cached tokens", rec.latencyMs?.p50 === 900 && rec.latencyMs?.p95 === 1500 && rec.byModel[0].model === "gpt-5-mini" && rec.byModel[0].calls === 3 && rec.byModel[0].promptTokens === 2_000_000);
-  check("records: operators are opaque refs, never the id", !JSON.stringify(rec).includes("op_user_secret_id") && rec.page.rows.every((r) => r.operatorRef?.startsWith("user #")));
+  check("records: a failure is 'not counted' (null), counted aside", rec.page.rows.find((r) => r.id === "c")?.pricing === "NOT_COUNTED" && rec.page.rows.find((r) => r.id === "c")?.costUsd === null && rec.counts.failed === 2 && rec.counts.returned === 2);
+  check("records: a code-shaped errorCode passes; provider prose never surfaces verbatim ('error')",
+    rec.page.rows.find((r) => r.id === "c")?.errorCode === "TIMEOUT" && rec.page.rows.find((r) => r.id === "d")?.errorCode === "error" && !JSON.stringify(rec).includes("secret text"));
+  check("records: latency over returned calls; by-model rollup with in/out/cached tokens", rec.latencyMs?.p50 === 900 && rec.latencyMs?.p95 === 1500 && rec.byModel[0].model === "gpt-5-mini" && rec.byModel[0].calls === 4 && rec.byModel[0].promptTokens === 2_000_000);
+  check("records: operators are opaque 'operator #' refs (same token), never the id and never a 'user #' customer ref",
+    !JSON.stringify(rec).includes("op_user_secret_id") && rec.page.rows.every((r) => r.operatorRef === "operator #00000011") && !JSON.stringify(rec).includes("user #"));
   check("query: window validated, until clamped, page ≥ 1", parsePlatformAiQuery(new URLSearchParams({ window: "bogus" }), NOW) === null
     && parsePlatformAiQuery(new URLSearchParams({ until: String(NOW + 5) }), NOW)?.untilMs === NOW && parsePlatformAiQuery(new URLSearchParams({ page: "-3" }), NOW)?.page === 1);
 
@@ -121,11 +126,12 @@ async function main() {
   console.log("5. render + route");
   const ok = { loading: false, error: null };
   const sum = renderToStaticMarkup(createElement(PlatformAiSummary, { data: { data: rec, ...ok }, onOpenCalls: () => {} }));
-  check("summary: figure, calls / failures, latency, top model", /data-platform-ai-value="true">\$2\.50</.test(sum) && /3 calls · 1 failed · measured/.test(sum) && /p50 900 ms/.test(sum) && /top model gpt-5-mini/.test(sum));
+  check("summary: figure, calls / failures, latency, top model", /data-platform-ai-value="true">\$2\.50</.test(sum) && /4 calls · 2 failed · measured/.test(sum) && /p50 900 ms/.test(sum) && /top model gpt-5-mini/.test(sum));
   const emptyRec = { ...rec, figure: none.figures.platform_ai_cost, counts: { total: 0, returned: 0, failed: 0, unpriced: 0 }, returnedCostUsd: null, latencyMs: null, byModel: [], page: { ...rec.page, total: 0, rows: [] } };
   const emptyHtml = renderToStaticMarkup(createElement(PlatformAiSummary, { data: { data: emptyRec, ...ok } }));
   check("summary with no usage: 'Unavailable', never $0.00, no Calls doorway", /data-platform-ai-value="true">Unavailable</.test(emptyHtml) && !/\$0\.00/.test(emptyHtml) && !/>Calls</.test(emptyHtml));
   const list = renderToStaticMarkup(createElement(PlatformAiCallsList, { data: rec }));
+  check("the Platform AI drawer emits no 'user #' prefix", !/user #/.test(list) && /operator #00000011/.test(list));
   check("calls list: priced rows show dollars, the failure 'not counted'", /data-platform-ai-pricing="NOT_COUNTED"/.test(list) && /not counted/.test(list) && (list.match(/\$1\.25/g) ?? []).length >= 2);
   const card = readFileSync(path.join(process.cwd(), "components/platform/leads/PlatformAiCard.tsx"), "utf8");
   check("375 px: no fixed pixel width, no table, rows shrink and wrap", !/\bw-\[\d+px\]/.test(card) && !/min-w-\[\d/.test(card) && !/<table/.test(card) && (card.match(/min-w-0/g) ?? []).length >= 6 && /flex-wrap/.test(card));

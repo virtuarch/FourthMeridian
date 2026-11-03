@@ -499,9 +499,9 @@ IMPLEMENTED (PR B, #326). The distinct **Platform AI** category: IMPLEMENTED (PR
   latency p50/p95 and top model. Its records
   (`GET …/economics/platform-ai?window=&until=&page=`) list every invocation (returned and
   failed) with model, sub-surface, in/out/cached tokens, latency, outcome, cost and an
-  opaque operator ref; the sum of returned cost equals the KPI. A ratchet in
+  opaque operator ref (`operator #…`, the same keyed token, never a customer `user #` ref; provider error prose is reduced to a code or "error"); the sum of returned cost equals the KPI. A ratchet in
   `lib/platform/economics/platform-ai.test.ts` fails if a new operator AI call site under
-  `lib/platform`, `lib/notifications` or `app/api/platform` does not record a Platform AI
+  `lib/platform`, `lib/notifications`, `app/api/platform`, `jobs` or `lib/alerts` does not record a Platform AI
   surface.
 - **Provider health stays in Platform Operations › Providers.** Configuration stays in
   Policies; Economics reads it and never edits it.

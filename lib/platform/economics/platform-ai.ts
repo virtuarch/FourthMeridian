@@ -19,6 +19,7 @@ import "server-only";
 import { systemDb } from "@/lib/db";
 import { PLATFORM_AI_SURFACES, priceSpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { operatorRefOf } from "@/lib/platform/opaque-user-ref-format";
 import { loadEconomicsInputs, type EconomicsDeps } from "@/lib/platform/economics/snapshot";
 import { economicsFigure, windowRange, type EconomicsFigure, type EconomicsWindow } from "@/lib/platform/economics/snapshot-core";
 
@@ -38,7 +39,7 @@ export interface PlatformAiCallRow {
   id: string; occurredAt: string; subSurface: string | null; model: string; outcome: string; errorCode: string | null;
   promptTokens: number; cachedPromptTokens: number; completionTokens: number; latencyMs: number;
   pricing: PlatformAiPricing; costUsd: number | null;
-  /** Opaque operator reference — never the id. */
+  /** Opaque OPERATOR reference ("operator #…", never "user #…") — never the id. */
   operatorRef: string | null;
 }
 
@@ -80,6 +81,13 @@ function priceOne(r: PlatformAiInvocationSource): { pricing: PlatformAiPricing; 
   return p.usd === null ? { pricing: "UNPRICED", costUsd: null } : { pricing: "PRICED", costUsd: p.usd };
 }
 
+/** A provider error CODE only — prose never surfaces verbatim (the #286 pattern); anything else reads "error". */
+export const ERROR_CODE_SHAPE = /^[A-Za-z0-9_.:-]{1,64}$/;
+export function safeErrorCode(code: string | null): string | null {
+  if (code === null) return null;
+  return ERROR_CODE_SHAPE.test(code) ? code : "error";
+}
+
 const pct = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))];
 
 export async function getPlatformAiRecords(q: { window: EconomicsWindow; untilMs: number; page: number }, deps: PlatformAiDeps = {}): Promise<PlatformAiRecords> {
@@ -95,9 +103,10 @@ export async function getPlatformAiRecords(q: { window: EconomicsWindow; untilMs
   const src = raw.slice(0, PLATFORM_AI_READ_CAP);
   const ref = deps.ref ?? opaqueUserRef;
   const rows: PlatformAiCallRow[] = src.map((r) => ({
-    id: r.id, occurredAt: r.occurredAt.toISOString(), subSurface: r.subSurface, model: r.model, outcome: r.outcome, errorCode: r.errorCode,
+    id: r.id, occurredAt: r.occurredAt.toISOString(), subSurface: r.subSurface, model: r.model, outcome: r.outcome,
     promptTokens: r.promptTokens, cachedPromptTokens: r.cachedPromptTokens, completionTokens: r.completionTokens, latencyMs: r.latencyMs,
-    ...priceOne(r), operatorRef: r.userId ? ref(r.userId) : null,
+    errorCode: safeErrorCode(r.errorCode),
+    ...priceOne(r), operatorRef: r.userId ? operatorRefOf(ref(r.userId)) : null,
   }));
   let returnedCostUsd: number | null = null;
   for (const r of rows) if (r.costUsd !== null) returnedCostUsd = (returnedCostUsd ?? 0) + r.costUsd;

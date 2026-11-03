@@ -30,3 +30,16 @@ export function opaqueRefToken(ref: string | null | undefined): string | null {
 export function opaqueRefOfToken(token: string): string {
   return `${OPAQUE_USER_REF_PREFIX}${token}`;
 }
+
+/**
+ * OPERATOR display (Platform AI records): the SAME keyed token, a different
+ * prefix — "operator #3fa9c21b". A "user #" prefix reads like a customer
+ * reference, and Customer Success search would resolve it to the staff
+ * account; this one never matches opaqueRefToken. The fallback is "operator".
+ */
+export const OPAQUE_OPERATOR_REF_PREFIX = "operator #";
+export const OPAQUE_OPERATOR_REF_FALLBACK = "operator";
+export function operatorRefOf(userRef: string): string {
+  const t = opaqueRefToken(userRef);
+  return t ? `${OPAQUE_OPERATOR_REF_PREFIX}${t}` : OPAQUE_OPERATOR_REF_FALLBACK;
+}
