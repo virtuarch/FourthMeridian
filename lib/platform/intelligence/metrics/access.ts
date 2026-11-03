@@ -21,6 +21,13 @@
  *                                           allows a SYSTEM_ADMIN unconditionally)
  *   anything else                         → null (no metric definitions)
  *
+ * ⚠️ Break-glass "sees everything" is sound ONLY because this module returns
+ * definitions — no values, no identity. If a retrieval contract ever returns
+ * VALUES through this token, break-glass must be re-tiered per metric to the
+ * identity tier of the surface it is used on (each definition's permission
+ * entries carry the tier), exactly as `atOpsTier` downgrades an incident token
+ * on an Ops surface (lib/platform/incidents/intelligence/audience.ts).
+ *
  * A metric is visible when the token satisfies ANY of its permission entries
  * (lib/platform/policy.ts hasPlatformAccess: same area, level rank ≥ needed).
  * Only the entries the caller satisfies are returned, so the identity tier a

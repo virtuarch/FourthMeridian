@@ -30,12 +30,14 @@ import { getAiSpendHealth } from "@/lib/platform/ai/spend-health";
 import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
 import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
 import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-health";
+import { getAiSpendAnomalyFacts } from "@/lib/platform/ai/spend-anomaly";
+import { getPlaidCallAnomalyFacts } from "@/lib/platform/anomaly/plaid-calls";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity } from "@/lib/alerts/rules";
 import type { AuthorityOutputs } from "@/lib/alerts/authorities";
 import {
   buildAlertEmailData,
   decideDeliveries,
-  evaluateAlertRules,
+  evaluateAlertRulesDetailed,
   extractPriorFired,
   resolveEnabled,
   type AlertEmailData,
@@ -98,7 +100,7 @@ function captureIsExpected(environment: string | undefined): boolean {
 // ── Real default I/O ─────────────────────────────────────────────────────────────
 
 async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
-  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments] = await Promise.all([
+  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly] = await Promise.all([
     checkScheduledJobHealth().catch((e) => (warn("job-health", e), null)),
     getConnectionHealth().catch((e) => (warn("connection-health", e), null)),
     checkResourceFreshness().catch((e) => (warn("resource-freshness", e), null)),
@@ -116,8 +118,12 @@ async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
     // Owner ruling (2026-10-30) — missing / invalid customer policy-group
     // assignments (bounded, read-only; the same read as the Attention item).
     loadPolicyAssignmentHealth().catch((e) => (warn("policy-assignments", e), null)),
+    // Quota/cost anomaly (anomaly@1) — the same spend fold over 8 trailing 24 h
+    // windows, and Plaid calls per UTC day from the usage ledger.
+    getAiSpendAnomalyFacts().catch((e) => (warn("ai-spend-anomaly", e), null)),
+    getPlaidCallAnomalyFacts().catch((e) => (warn("plaid-call-anomaly", e), null)),
   ]);
-  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments };
+  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly };
 }
 
 /** Unresolved SyncIssue rows scanned per cycle (the projection's default page). */
@@ -202,7 +208,7 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
     return rule ? resolveEnabled(rule, settings) : false;
   };
 
-  const signals = evaluateAlertRules(authorities, isEnabled, rules);
+  const { signals, notEvaluable } = evaluateAlertRulesDetailed(authorities, isEnabled, rules);
   const priorFired = extractPriorFired(recentRuns);
   const { toSend, suppressed } = decideDeliveries(signals, priorFired, now.getTime(), deps.renotifyMs);
 
@@ -281,6 +287,8 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
       firing: breaches.length > 0,
       breaches: breaches.length,
       severity: worstSeverity(breaches.map((b) => b.severity)),
+      // Quota/cost anomaly — present only when the rule could not judge.
+      ...(notEvaluable.has(rule.id) ? { notEvaluable: notEvaluable.get(rule.id)! } : {}),
     };
   });
 

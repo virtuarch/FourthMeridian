@@ -1034,7 +1034,7 @@ Node 24 is documented consistently.
 ## 26. Findings register
 
 **Status update (2026-11-03).** Statuses below are re-checked against `develop`; the original findings text is kept as audited.
-- **FM-AUDIT-023:** **PARTIAL** — refresh (FIN-011) + exchange existing-row (#295) fixed; exchange new-row **OPEN** (FIN-A2, queued).
+- **FM-AUDIT-023:** **FIXED** on `develop`: refresh (FIN-011) + exchange existing-row (#295) + exchange new-row (#316). Reviewing older rows that stored $0 from a null balance is owner-gated (release plan B10.5).
 - **FM-AUDIT-022:** **FIXED** on `develop`: live totals (#301), history backfill + CSV export (#307), today's-snapshot incomplete stamp (#302). Re-running the backfill over rows already written is owner-gated.
 - **FM-AUDIT-021:** **FIXED** on `develop` (#302). Re-opening past rows already frozen as observed over stale balances is owner-gated.
 - **FM-AUDIT-025:** parser **FIXED** on `develop` (#300). Repair of rows already in the archive is **OWNER-GATED**.
@@ -1207,10 +1207,10 @@ Node 24 is documented consistently.
 - **Remediation:** do not advance clocks or coverage on null (SKIPPED `PROVIDER_NULL_BALANCE`); store unknown at connect.
 - **When:** AFTER-S1 (small).
 - **Pin:** `accountsGet` fake with `current:null` ⇒ coverage not COVERED, `lastUpdated` unchanged.
-- **Status (2026-11-03): PARTIAL** — refresh (FIN-011) + exchange existing-row (#295) fixed; exchange new-row **OPEN** (FIN-A2, queued).
+- **Status (2026-11-03): FIXED on `develop`** — refresh (FIN-011) + exchange existing-row (#295) + exchange new-row (#316). Reviewing older rows that stored $0 from a null balance is **owner-gated** (release plan B10.5).
   - Refresh path: FIXED by FIN-011 (`lib/plaid/refresh.ts:221-253`).
   - Token exchange, existing account: FIXED by #295; a null current balance keeps the prior balance and clock.
-  - Token exchange, NEW account: still OPEN. A new account created with a null current balance stores $0, because `FinancialAccount.balance` is NOT NULL DEFAULT 0. Planned follow-up FIN-A2 (S2 design): a `balanceObserved` marker (Boolean, NOT NULL DEFAULT true), a new SyncIssueKind `BALANCE_UNOBSERVED`, and reuse of FIN-B's exclusion helper so an unobserved balance is excluded from totals. Queued after #301; it needs a migration.
+  - Token exchange, NEW account: FIXED by #316 (FIN-A2). A new account created with a null current balance is written with `balanceObserved = false`, excluded from every total, and raises a `BALANCE_UNOBSERVED` sync issue; the first real balance clears it. Migration `20261103150000_fin_a2_balance_observed` (additive).
 
 **FM-AUDIT-024 — Successful Plaid lock release clears `syncIncompleteAt`, defeating the first-run rule and dropping mid-pipeline HISTORICAL_UPDATE webhooks**
 - **Sev/Conf:** P2 / HIGH
