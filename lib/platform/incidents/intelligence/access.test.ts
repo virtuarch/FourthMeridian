@@ -16,6 +16,7 @@
 
 import { UserRole } from "@prisma/client";
 import { createIncidentAccessors, type IncidentFactsReader } from "./index";
+import { DEFAULT_SEARCH } from "./search-core";
 import { incidentAudienceFor, systemIncidentAudience, IncidentAudienceError, type CsToken, type OpsToken } from "./audience";
 
 let failures = 0;
@@ -106,6 +107,9 @@ async function main(): Promise<void> {
   await refusedBeforeRead("alertable with a PLATFORM_OPS token", () => acc.alertable(ops as never, opts));
   await refusedBeforeRead("brokenNow with the SYSTEM token", () => acc.brokenNow(sys as never, opts));
   await refusedBeforeRead("detail with the SYSTEM token", () => acc.detail(sys as never, "i_alice", opts));
+  // PB-1 2B — the investigation accessors refuse exactly like the other six.
+  await refusedBeforeRead("search with the SYSTEM token", () => acc.search(sys as never, DEFAULT_SEARCH, opts));
+  await refusedBeforeRead("investigate with the SYSTEM token", () => acc.investigate(sys as never, "i_alice", opts));
   for (const [name, fn] of [
     ["brokenNow", () => acc.brokenNow(forged as never, opts)],
     ["history", () => acc.history(forged as never, opts)],
@@ -113,6 +117,8 @@ async function main(): Promise<void> {
     ["detail", () => acc.detail(forged as never, "i_alice", opts)],
     ["forCustomer", () => acc.forCustomer(forged as never, "u_alice_0000000001", opts)],
     ["alertable", () => acc.alertable(forged as never, opts)],
+    ["search", () => acc.search(forged as never, DEFAULT_SEARCH, opts)],
+    ["investigate", () => acc.investigate(forged as never, "i_alice", opts)],
   ] as const) await refusedBeforeRead(`${name} with a hand-built CS-shaped object`, fn);
 
   console.log("\n2. PLATFORM_OPS output is identity-free on every Ops-reachable accessor");

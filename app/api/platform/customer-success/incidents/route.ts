@@ -24,15 +24,20 @@ import { incidentListDTO, type IncidentListDTO } from "@/lib/platform/incidents/
 
 export const runtime = "nodejs";
 
+/** Incident state (and, on the CS tier, customer ids): never cached — every response, errors included. */
+const NO_STORE = { "Cache-Control": "no-store" } as const;
+
 export type CsIncidentListResponse = IncidentListDTO;
 
 export async function GET(req: Request) {
   const [auth, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
-  if (err) return err;
+  if (err) { err.headers.set("Cache-Control", "no-store"); return err; }
   const token = incidentAudienceFor(auth);
-  if (!token || token.audience !== "CUSTOMER_SUCCESS") return NextResponse.json({ error: "Not authorized to read incidents." }, { status: 403 });
+  if (!token || token.audience !== "CUSTOMER_SUCCESS") return NextResponse.json({ error: "Not authorized to read incidents." }, { status: 403, headers: NO_STORE });
   const now = new Date();
   const { fromClamped, ...query } = parseIncidentSearch(new URL(req.url).searchParams, now.getTime());
-  const result = await incidentAccessors.search(token, query, { now });
-  return NextResponse.json(incidentListDTO(result, "cs", now, fromClamped) satisfies CsIncidentListResponse);
+  let result: Awaited<ReturnType<typeof incidentAccessors.search>>;
+  try { result = await incidentAccessors.search(token, query, { now }); }
+  catch { return NextResponse.json({ error: "Incident read failed." }, { status: 500, headers: NO_STORE }); }
+  return NextResponse.json(incidentListDTO(result, "cs", now, fromClamped) satisfies CsIncidentListResponse, { headers: NO_STORE });
 }

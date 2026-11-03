@@ -22,16 +22,21 @@ import { incidentDetailDTO, type IncidentDetailDTO } from "@/lib/platform/incide
 
 export const runtime = "nodejs";
 
+/** Incident state (and, on the CS tier, customer ids): never cached — every response, errors included. */
+const NO_STORE = { "Cache-Control": "no-store" } as const;
+
 export type CsIncidentDetailResponse = IncidentDetailDTO;
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
-  if (err) return err;
+  if (err) { err.headers.set("Cache-Control", "no-store"); return err; }
   const token = incidentAudienceFor(auth);
-  if (!token || token.audience !== "CUSTOMER_SUCCESS") return NextResponse.json({ error: "Not authorized to read incidents." }, { status: 403 });
+  if (!token || token.audience !== "CUSTOMER_SUCCESS") return NextResponse.json({ error: "Not authorized to read incidents." }, { status: 403, headers: NO_STORE });
   const { id } = await ctx.params;
   const now = new Date();
-  const inv = await incidentAccessors.investigate(token, id, { now });
-  if (!inv) return NextResponse.json({ error: "Incident not found." }, { status: 404 });
-  return NextResponse.json(incidentDetailDTO(inv, "cs", now) satisfies CsIncidentDetailResponse);
+  let inv: Awaited<ReturnType<typeof incidentAccessors.investigate>>;
+  try { inv = await incidentAccessors.investigate(token, id, { now }); }
+  catch { return NextResponse.json({ error: "Incident read failed." }, { status: 500, headers: NO_STORE }); }
+  if (!inv) return NextResponse.json({ error: "Incident not found." }, { status: 404, headers: NO_STORE });
+  return NextResponse.json(incidentDetailDTO(inv, "cs", now) satisfies CsIncidentDetailResponse, { headers: NO_STORE });
 }
