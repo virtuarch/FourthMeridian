@@ -423,7 +423,7 @@ current, and **never encoded as correct**; the register is pinned to
 - **Graph facts as product** (funding-hub concentration, a missing recurring transfer,
   "recurring savings transfer" copy, feed-freshness priority). **PROPOSED**, and bound by
   the rule above.
-- **GAP-1** (a liability outflow whose provider detail says credit-card payment counts as
+- **GAP-1** (formerly F-1, fixture-reconciliation doc; a liability outflow whose provider detail says credit-card payment counts as
   spending; it may be a returned payment) and **GAP-5** (debt service does not net a fee
   or interest reversal on a liability). Fixes exist in open draft PR #71; **requires
   owner approval**; the classifier stays at version 5 until then. If GAP-1 lands, the
