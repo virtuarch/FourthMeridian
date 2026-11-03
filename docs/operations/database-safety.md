@@ -243,6 +243,91 @@ The role and policy model is specified in [SECURITY_MODEL §Database-level tenan
 - **`prisma studio` and `prisma db seed` run as the migration principal** and therefore bypass RLS. Use them only on local clones.
 - **Diagnostic access to hosted databases** uses a read-only role and the wrapper in §4b, never an application role and never a session-level `SET`.
 
+## 4d. Seed (`prisma/seed.ts`) rules
+
+*Submitted for Session 2's authorship review (Session 2 is this document's writer). Carried
+from the v2.6 seed-convergence plan (SEED-1..3), deleted per ADR-008; recover it with
+`git log -- docs/plans/v2.6-SEED-1-SEED-CONVERGENCE.md`. Line numbers re-read on `develop`
+at `42f99ea` (2026-11-03).*
+
+`prisma/seed.ts` wipes every table, unscoped, including `User`. Treat it as a destructive
+command (§1) and run it only against a throwaway `fintracker_<suffix>` database.
+
+**Durable rules**
+
+- **The seed asks "whose data is here?", not only "where am I?"** —
+  `assertNonProductionSeed` (`prisma/seed.ts:292`) checks the environment;
+  `assertOnlyDemoUsersPresent` (`prisma/seed.ts:337-352`, called at `:355`) refuses when
+  any user is not one of the four `@example.com` demo accounts (`DEMO_EMAILS`, `:330-335`)
+  and names the foreign accounts. A correct environment does not make a wipe safe.
+  `SEED_ALLOW_DESTRUCTIVE=1` bypasses both, deliberately: it is the single explicit
+  opt-in, the same one the DB guard uses.
+- **A state that arms an invariant can also break it.** A corpus that cannot express an
+  invariant's failure mode makes that audit pass vacuously, so a reseed's acceptance test
+  is "every architectural state still exists", not "the audits still pass"
+  (`scripts/audit-seed-coverage.ts`, informational). But a state that is itself an
+  invariant *violation* (for example a tombstoned row whose event was never re-projected,
+  or a `CONTRADICTORY` settlement) goes in a **targeted fixture**, never the seed: on the
+  seed it would fail the REQUIRED gate on every fresh run. Example fixture:
+  `lib/plaid/removed-tombstone-reprojection.test.ts`. A realistic state (a tombstoned
+  row that *was* re-projected) does belong in the seed.
+- **Estimated snapshots stay out of the seed.** `isEstimated` is a property of a
+  computation (`tier !== "observed"` from `regenerateDay`), and the seed's snapshots are
+  synthetic (`buildHistory`, `prisma/seed.ts:99`, written at `:1521`). Asserting the flag
+  arms no REQUIRED audit, and an estimated row with material crypto and no recorded
+  crypto valuation status makes the wealth surfaces refuse. The seed's rows stay
+  `isEstimated = false`, which fails safe: regeneration treats them as frozen and
+  rollback never deletes them.
+- **Left out on purpose:** multi-currency accounts and `SUMMARY_ONLY` visibility. Both
+  were absent from the real-account reference corpus measured at the time; FX paths have
+  unit coverage under `lib/money/`, and the redaction path is exercised by `BALANCE_ONLY`
+  links. Adding them would make the demo world less representative to arm invariants
+  already covered elsewhere.
+- **The seed states evidence; production authorities derive the rest.** It writes through
+  the real write paths (economic date, event writer, provider identity, transfer
+  authority) and never computes a derived value itself. Consequence: the seed now depends
+  on the transfer authority as well as the classifier and event writer.
+
+**IMPLEMENTED (verified in `prisma/seed.ts` on `develop`)**
+
+- Non-demo refusal: `assertOnlyDemoUsersPresent`, `:337-352`.
+- Authorisation dates: card-like spending and every pending row carry a deterministic
+  `authorizedAt` (derived from the row index, never random), and the economic date comes
+  from `economicDateFor` (`:716-753`). Transfers, income and fees post without one.
+- Pending → posted succession: rows marked `settles(…)` expand into the two rows the
+  provider sends (`:1072-1094`; refuses on an account with no provider identity), the
+  posted row links by `providerPendingRef`, the seed refuses unless the link basis is
+  `PROVIDER_PENDING_REF` (`:1240-1247`), then tombstones the pending row and re-projects
+  the event (`:1249-1253`). Two pending rows stay live and unposted on purpose (the
+  left-hand side of the pending/posted desync audit).
+- Persisted transfer verdict: the seed replays `admitTransferCandidate →
+  resolveDestinationEvidenceFor` (`:994`, `:1030-1035`, `:2125-2130`) and persists a
+  counterparty only where the authority reports `persistableCounterparty`; it does not
+  apply the authority's flow-type half.
+- Provider identity: accounts given a `plaidAccountId` (`demo_acct_*`) get a
+  `ProviderAccountIdentity` row through `dualWriteProviderAccountIdentity`
+  (`:230-243`), the exchange-token route's own helper.
+
+**Open (DECIDED BUT NOT IMPLEMENTED unless marked)**
+
+- Retired `SpaceCategory` remnants: the seed no longer creates retired categories, but
+  the enum members remain in `prisma/schema.prisma:124-139`, along with their preset,
+  hero and perspective entries. Retiring `emergency_fund_progress` first needs a
+  declared-baseline successor.
+- `audit-transfer-identification`'s contradiction check passes vacuously on the seed: no
+  seeded account carries a `mask`, so the identification rung applies to no legs. The
+  transfer-authority fabrication guard is asserted over the authority's own verdicts, not
+  the stored column.
+- Provider identity covers 4 of the 22 Plaid-connected demo accounts (4 `demo_acct_*`
+  literals vs 22 `plaidItemId` connections in `prisma/seed.ts`); the other 18 still point
+  at a PlaidItem with no provider account id.
+- PROPOSED: generate the seed's snapshot history through `regenerateDay` /
+  `backfillSpaceSnapshots` from the seeded accounts and transactions, so `isEstimated` and
+  the completeness tier are derived, not asserted. Blocked on seeded price history.
+- Platform Spaces are created with `category: "OTHER"` (`lib/platform/seed.ts:42`), a
+  retired category, so any census that does not special-case them counts them as
+  retired-category Spaces.
+
 ---
 
 ## 5. For agents specifically
@@ -274,4 +359,5 @@ The role and policy model is specified in [SECURITY_MODEL §Database-level tenan
 `docs/operations/migration-safety.md` ·
 `docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md` ·
 `docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md` ·
-`docs/plans/RLS-SILENT-REFUSAL-CAS.md`.
+`docs/plans/RLS-SILENT-REFUSAL-CAS.md` ·
+`docs/plans/v2.6-SEED-1-SEED-CONVERGENCE.md` (§4d).

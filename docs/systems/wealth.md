@@ -218,6 +218,11 @@ liabilities = `totalDebt`.
 - When the snapshot from-currency is unknown, figures are labeled without conversion
   (`snapshotCurrency ?? display target`) rather than relabeled — no masqueraded
   conversion, but also no FX applied.
+- The confidence chip maps the as-of row's resolved `completenessTier` only for the
+  whole-row figures (Net worth, Total assets). Slices (Cash, Investments, Liquid NW,
+  Liabilities) keep the legacy `isEstimated` rule, because the row tier is the worst
+  across every component and per-component tiers are not stored — IMPLEMENTED
+  (`components/space/trust/wealth-chip-tier.ts:28-37`).
 
 ## Extension points
 
