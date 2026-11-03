@@ -376,6 +376,9 @@ async function main(): Promise<void> {
   // ── PB-1 Phase 1: the incident lifecycle tables are operator-only ─────────
   incidentAclProof(base, appUrl);
 
+  // ── DB-010: AuditLog is append-only for the runtime operator role ─────────
+  auditLogAppendOnlyProof(base, appUrl);
+
   // ── backup completeness, and the failure mode it guards ───────────────────
   const dumpFile = backupProof(base, appUrl);
 
@@ -522,6 +525,101 @@ function incidentAclProof(ownerUrl: string, appUrl: string): void {
   check(48, "fm_backup CAN read every incident lifecycle table (complete dumps)", bkReach.length === 0, `denied: ${bkReach.join("; ")}`);
 
   psql(ownerUrl, `delete from "SyncIssueEvent" where id like 'rls_evt_%';`, false);
+}
+
+/**
+ * Cases 49-56 — DB-010 / PRIV-005 (migration 20261103140000). AuditLog is
+ * append-only at the database for fm_system: UPDATE reaches only the three
+ * minimisation columns, and only on BETA_ACCESS_REQUESTED rows older than 90
+ * days whose post-image is minimised; DELETE reaches only product events older
+ * than 13 months. fm_app / fm_auth stay without UPDATE or DELETE, and the
+ * account purge's FK SET NULL still works. Design: docs/operations/database-safety.md §4e.
+ */
+function auditLogAppendOnlyProof(ownerUrl: string, appUrl: string): void {
+  const sysPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_system LOGIN PASSWORD '${sysPw}';`);
+  const sysUrl = withRole(ownerUrl, "fm_system", sysPw);
+  const authPw = randomBytes(18).toString("hex");
+  psql(ownerUrl, `ALTER ROLE fm_auth LOGIN PASSWORD '${authPw}';`);
+  const authUrl = withRole(ownerUrl, "fm_auth", authPw);
+
+  const CLEANUP = `delete from "AuditLog" where id like 'rls_al_%'; delete from "User" where id = 'rls_al_user';`;
+  psql(ownerUrl, CLEANUP, false);
+  // Fixtures, as the OWNER (RLS does not apply to setup). Ages are relative to now().
+  const seed = psql(ownerUrl, `
+    insert into "AuditLog" (id, action, metadata, "ipAddress", "userAgent", "createdAt") values
+      ('rls_al_login_fresh', 'LOGIN',                 '{"k":"orig"}'::jsonb, 'probe-net-1', 'UA/1', now()),
+      ('rls_al_beta_aged',   'BETA_ACCESS_REQUESTED', '{"k":"orig"}'::jsonb, 'probe-net-2', 'UA/1', now() - interval '91 days'),
+      ('rls_al_beta_aged2',  'BETA_ACCESS_REQUESTED', '{"k":"orig"}'::jsonb, 'probe-net-3', 'UA/1', now() - interval '91 days'),
+      ('rls_al_sad_fresh',   'SESSION_ACTIVE_DAY',    null, null, null, now()),
+      ('rls_al_login_old',   'LOGIN',                 null, null, null, now() - interval '14 months'),
+      ('rls_al_sad_old',     'SESSION_ACTIVE_DAY',    null, null, null, now() - interval '14 months');
+    insert into "User" (id, email, name, "updatedAt") values ('rls_al_user', 'rls-al@example.test', 'Audit Probe', now());
+    insert into "AuditLog" (id, "userId", action) values ('rls_al_user_1', 'rls_al_user', 'LOGIN'), ('rls_al_user_2', 'rls_al_user', 'SESSION_ACTIVE_DAY');`);
+  if (!seed.ok) {
+    for (const n of [49, 50, 51, 52, 53, 54, 55, 56]) check(n, "DB-010 AuditLog fixtures could be seeded", false, seed.err.split("\n")[0]);
+    return;
+  }
+  const owner = (q: string) => psql(ownerUrl, q, false).out.trim();
+  /** Affected-row count of a write, as fm_system (RETURNING needs only the SELECT policy). */
+  const sysCount = (stmt: string) => psql(sysUrl, `with w as (${stmt} returning 1) select count(*) from w;`, false);
+
+  // 49 — the column grant: identity / classification / time columns are immutable.
+  const immut = [`set action = 'TAMPERED'`, `set "userId" = null`, `set "createdAt" = now()`].map((set) => {
+    const r = psql(sysUrl, `update "AuditLog" ${set} where id = 'rls_al_login_fresh';`, false);
+    return deniedByGrant(r) ? null : `${set}: ${r.err.split("\n")[0] || "succeeded"}`;
+  }).filter(Boolean);
+  check(49, "fm_system can NOT update action / userId / createdAt on AuditLog (column grant)", immut.length === 0, immut.join("; "));
+
+  // 50 — a granted column on a row outside the minimisation predicate: 0 rows, unchanged.
+  const r50 = sysCount(`update "AuditLog" set metadata = '{"k":"tampered"}'::jsonb where id = 'rls_al_login_fresh'`);
+  const m50 = owner(`select metadata->>'k' from "AuditLog" where id = 'rls_al_login_fresh';`);
+  check(50, "fm_system UPDATE of metadata on a fresh non-intake row — 0 rows, the row unchanged",
+        r50.ok && r50.out === "0" && m50 === "orig", `count=${r50.out || r50.err.split("\n")[0]} metadata.k=${m50}`);
+
+  // 51 — the minimisation itself: a 91-day-old intake row, post-image minimised.
+  const r51 = sysCount(`update "AuditLog" set "ipAddress" = null, "userAgent" = null, metadata = '{"k":"orig","networkMinimisedAt":"x"}'::jsonb where id = 'rls_al_beta_aged'`);
+  const p51 = owner(`select coalesce("ipAddress",'-') || '|' || coalesce("userAgent",'-') from "AuditLog" where id = 'rls_al_beta_aged';`);
+  check(51, "fm_system minimises a 91-day-old BETA_ACCESS_REQUESTED row (ipAddress, userAgent → NULL) — 1 row",
+        r51.ok && r51.out === "1" && p51 === "-|-", `count=${r51.out || r51.err.split("\n")[0]} post=${p51}`);
+
+  // 52 — WITH CHECK: the post-image must be minimised.
+  const r52 = psql(sysUrl, `update "AuditLog" set "userAgent" = null where id = 'rls_al_beta_aged2';`, false);
+  const p52 = owner(`select "ipAddress" || '|' || coalesce("userAgent",'-') from "AuditLog" where id = 'rls_al_beta_aged2';`);
+  check(52, "fm_system UPDATE of an aged intake row leaving ipAddress non-null — rejected by WITH CHECK",
+        deniedByRls(r52) && p52 === "probe-net-3|UA/1", `${r52.err.split("\n")[0] || "update succeeded"} post=${p52}`);
+
+  // 53 — DELETE outside the retention predicate: fresh product event, aged non-product event.
+  const d53a = sysCount(`delete from "AuditLog" where id = 'rls_al_sad_fresh'`);
+  const d53b = sysCount(`delete from "AuditLog" where id = 'rls_al_login_old'`);
+  const left53 = owner(`select count(*) from "AuditLog" where id in ('rls_al_sad_fresh', 'rls_al_login_old');`);
+  check(53, "fm_system DELETE of a fresh SESSION_ACTIVE_DAY row and a 14-month-old LOGIN row — 0 rows each",
+        d53a.ok && d53a.out === "0" && d53b.ok && d53b.out === "0" && left53 === "2",
+        `fresh=${d53a.out || d53a.err.split("\n")[0]} oldLogin=${d53b.out || d53b.err.split("\n")[0]} surviving=${left53}`);
+
+  // 54 — the retention itself.
+  const d54 = sysCount(`delete from "AuditLog" where id = 'rls_al_sad_old'`);
+  const left54 = owner(`select count(*) from "AuditLog" where id = 'rls_al_sad_old';`);
+  check(54, "fm_system DELETE of a 14-month-old SESSION_ACTIVE_DAY row — 1 row",
+        d54.ok && d54.out === "1" && left54 === "0", `count=${d54.out || d54.err.split("\n")[0]} surviving=${left54}`);
+
+  // 55 — regression: the tenant and pre-identity roles still have no UPDATE / DELETE.
+  const probes55: Array<[string, { err: string }]> = [
+    ["fm_app UPDATE", asApp(appUrl, "alice", `update "AuditLog" set metadata = null where id = 'rls_al_login_fresh';`)],
+    ["fm_app DELETE", asApp(appUrl, "alice", `delete from "AuditLog" where id = 'rls_al_login_fresh';`)],
+    ["fm_auth UPDATE", psql(authUrl, `update "AuditLog" set metadata = null where id = 'rls_al_login_fresh';`, false)],
+    ["fm_auth DELETE", psql(authUrl, `delete from "AuditLog" where id = 'rls_al_login_fresh';`, false)],
+  ];
+  const open55 = probes55.filter(([, r]) => !deniedByGrant(r)).map(([k, r]) => `${k}: ${r.err.split("\n")[0] || "succeeded"}`);
+  check(55, "fm_app / fm_auth can NOT update or delete AuditLog (permission denied, unchanged)", open55.length === 0, open55.join("; "));
+
+  // 56 — the account purge's FK path: ON DELETE SET NULL still anonymises, rows survive.
+  const del56 = psql(ownerUrl, `delete from "User" where id = 'rls_al_user';`, false);
+  const left56 = owner(`select count(*) || '|' || count("userId") from "AuditLog" where id in ('rls_al_user_1', 'rls_al_user_2');`);
+  check(56, "migration principal DELETEs a User with audit rows — the rows survive with userId NULL (FK SET NULL)",
+        del56.ok && left56 === "2|0", `${del56.err.split("\n")[0] || "deleted"} rows|withUserId=${left56}`);
+
+  psql(ownerUrl, CLEANUP, false);
 }
 
 function authSurfaceProof(ownerUrl: string): void {
