@@ -85,6 +85,11 @@ export function undeliveredSentence(u: AlertUndelivered): string {
   }
 }
 
+/** Quota/cost anomaly — the outcomes that could not judge in the latest run (neither firing nor healthy). */
+export function notEvaluableNow(latest: AlertLatestEvaluation | null): AlertRuleOutcome[] {
+  return latest ? latest.rules.filter((r) => typeof r.notEvaluable === "string" && r.enabled && r.live) : [];
+}
+
 /** The outcomes that breached in the latest run — the "firing now" set. */
 export function firingNow(latest: AlertLatestEvaluation | null): AlertRuleOutcome[] {
   return latest ? latest.rules.filter((r) => r.firing) : [];
@@ -92,5 +97,9 @@ export function firingNow(latest: AlertLatestEvaluation | null): AlertRuleOutcom
 
 /** Rebuilt field by field so an unexpected key on a persisted summary never rides along. */
 function outcomeOnly(r: AlertRuleOutcome): AlertRuleOutcome {
-  return { id: r.id, kind: r.kind, enabled: r.enabled, live: r.live, firing: r.firing, breaches: r.breaches, severity: r.severity };
+  return {
+    id: r.id, kind: r.kind, enabled: r.enabled, live: r.live, firing: r.firing, breaches: r.breaches, severity: r.severity,
+    // Quota/cost anomaly — carried only as the reason string it is; never inferred.
+    ...(typeof r.notEvaluable === "string" ? { notEvaluable: r.notEvaluable } : {}),
+  };
 }
