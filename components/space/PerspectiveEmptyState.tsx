@@ -28,15 +28,34 @@ import { classifyPerspectiveEmpty, EMPTY_COPY, type PerspectiveKey } from "@/lib
 import type { DataSourceView } from "@/lib/connections/space-data-health.core";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import type { ValuationCoverage } from "@/lib/connections/valuation-coverage.core";
-import { balanceCoverageLoadFailureLine, type BalanceCoverage } from "@/lib/connections/balance-coverage.core";
+import {
+  BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine, isBalanceCoverageUnavailable, type BalanceCoverage, type BalanceCoverageRead,
+} from "@/lib/connections/balance-coverage.core";
 
-type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: ValuationCoverage | null; balanceCoverage: BalanceCoverage | null };
+type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: ValuationCoverage | null; balanceCoverage: BalanceCoverageRead };
+
+/**
+ * S2 sweep — what a FAILED data-health read means for each part: the sources and
+ * valuation note are simply unknown (the page keeps its own behaviour), but the
+ * balance coverage is UNAVAILABLE, so the heroes WITHHOLD the changes it governs
+ * instead of falling open to comparable.
+ */
+export const FAILED_DATA_HEALTH: DataHealthPayload = Object.freeze({ sources: null, valuationCoverage: null, balanceCoverage: BALANCE_COVERAGE_UNAVAILABLE });
+
+/** The wire value → BalanceCoverageRead. `{ unavailable: true }` is the route's failed read; anything malformed is unavailable too. */
+export function parseBalanceCoverage(v: unknown): BalanceCoverageRead {
+  if (v === null || v === undefined) return null;
+  if (isBalanceCoverageUnavailable(v as BalanceCoverageRead)) return BALANCE_COVERAGE_UNAVAILABLE;
+  const c = v as Partial<BalanceCoverage>;
+  const strings = (a: unknown) => Array.isArray(a) && a.every((x) => typeof x === "string");
+  return strings(c.liabilityFloors) && strings(c.assetFloors) && strings(c.estimatedLiabilityFloors) ? (v as BalanceCoverage) : BALANCE_COVERAGE_UNAVAILABLE;
+}
 const cache = new Map<string, Promise<DataHealthPayload | null>>();
 
 /**
  * PB-8c — the balance coverage rides this read; when it fails, the change gates
- * fall open to comparable. One counts-only line (no ids, no amounts) so frequent
- * failures are noticed.
+ * now FAIL CLOSED (S2 sweep: FAILED_DATA_HEALTH). One counts-only line (no ids,
+ * no amounts) so frequent failures are noticed.
  */
 function coverageReadFailed(): void {
   console.warn(balanceCoverageLoadFailureLine("client-data-health", 1, 1));
@@ -47,11 +66,13 @@ function loadPayload(spaceId: string): Promise<DataHealthPayload | null> {
   if (!p) {
     p = fetch(`/api/spaces/${encodeURIComponent(spaceId)}/data-health`, { cache: "no-store", credentials: "same-origin" })
       .then(async (r) => {
-        if (!r.ok) { coverageReadFailed(); return null; }
-        const j = (await r.json()) as { sources?: DataSourceView[]; valuationCoverage?: ValuationCoverage | null; balanceCoverage?: BalanceCoverage | null };
-        return { sources: j.sources ?? null, valuationCoverage: j.valuationCoverage ?? null, balanceCoverage: j.balanceCoverage ?? null };
+        if (!r.ok) { coverageReadFailed(); return FAILED_DATA_HEALTH; }
+        const j = (await r.json()) as { sources?: DataSourceView[]; valuationCoverage?: ValuationCoverage | null; balanceCoverage?: unknown };
+        const balanceCoverage = parseBalanceCoverage(j.balanceCoverage);
+        if (isBalanceCoverageUnavailable(balanceCoverage)) coverageReadFailed();
+        return { sources: j.sources ?? null, valuationCoverage: j.valuationCoverage ?? null, balanceCoverage };
       })
-      .catch(() => { coverageReadFailed(); return null; });
+      .catch(() => { coverageReadFailed(); return FAILED_DATA_HEALTH; });
     cache.set(spaceId, p);
     // A short-lived memo: perspectives mounting together share one read.
     setTimeout(() => cache.delete(spaceId), 30_000);
@@ -79,8 +100,12 @@ export function useSpaceValuationCoverage(spaceId: string | null | undefined): V
   return useDataHealth(spaceId)?.valuationCoverage ?? null;
 }
 
-/** PB-8 — before which date debt / cash history is partial (balance floors) — the same one read. */
-export function useSpaceBalanceCoverage(spaceId: string | null | undefined): BalanceCoverage | null {
+/**
+ * PB-8 — before which date debt / cash history is partial (balance floors) — the same one read.
+ * null while loading or when there is nothing to cover; BALANCE_COVERAGE_UNAVAILABLE when the
+ * read FAILED (the heroes withhold the changes it governs — S2 sweep).
+ */
+export function useSpaceBalanceCoverage(spaceId: string | null | undefined): BalanceCoverageRead {
   return useDataHealth(spaceId)?.balanceCoverage ?? null;
 }
 
