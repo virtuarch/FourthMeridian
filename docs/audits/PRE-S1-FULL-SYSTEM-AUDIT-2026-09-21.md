@@ -1034,7 +1034,7 @@ Node 24 is documented consistently.
 ## 26. Findings register
 
 **Status update (2026-11-03).** Statuses below are re-checked against `develop`; the original findings text is kept as audited.
-- **FM-AUDIT-023:** refresh path FIXED (FIN-011, `lib/plaid/refresh.ts:221-253`); connect/reconnect path (`lib/plaid/exchangeToken.ts:425`) **IN PROGRESS** (builder).
+- **FM-AUDIT-023:** **PARTIAL** — refresh (FIN-011) + exchange existing-row (#295) fixed; exchange new-row **OPEN** (FIN-A2, queued).
 - **FM-AUDIT-022:** **IN PROGRESS** (builder).
 - **FM-AUDIT-021:** confirmed live; **QUEUED** for a builder.
 - **FM-AUDIT-025:** **CONFIRMED** (see its entry), fix **QUEUED**. Repair of rows already in the archive is **OWNER-GATED**.
@@ -1207,7 +1207,10 @@ Node 24 is documented consistently.
 - **Remediation:** do not advance clocks or coverage on null (SKIPPED `PROVIDER_NULL_BALANCE`); store unknown at connect.
 - **When:** AFTER-S1 (small).
 - **Pin:** `accountsGet` fake with `current:null` ⇒ coverage not COVERED, `lastUpdated` unchanged.
-- **Status (2026-11-03):** refresh half FIXED (FIN-011, `lib/plaid/refresh.ts:221-253`). Connect/reconnect half still live (`lib/plaid/exchangeToken.ts:425`, `?? 0` with a fresh `lastUpdated`): **IN PROGRESS** (builder).
+- **Status (2026-11-03): PARTIAL** — refresh (FIN-011) + exchange existing-row (#295) fixed; exchange new-row **OPEN** (FIN-A2, queued).
+  - Refresh path: FIXED by FIN-011 (`lib/plaid/refresh.ts:221-253`).
+  - Token exchange, existing account: FIXED by #295; a null current balance keeps the prior balance and clock.
+  - Token exchange, NEW account: still OPEN. A new account created with a null current balance stores $0, because `FinancialAccount.balance` is NOT NULL DEFAULT 0. Planned follow-up FIN-A2 (S2 design): a `balanceObserved` marker (Boolean, NOT NULL DEFAULT true), a new SyncIssueKind `BALANCE_UNOBSERVED`, and reuse of FIN-B's exclusion helper so an unobserved balance is excluded from totals. Queued after #301; it needs a migration.
 
 **FM-AUDIT-024 — Successful Plaid lock release clears `syncIncompleteAt`, defeating the first-run rule and dropping mid-pipeline HISTORICAL_UPDATE webhooks**
 - **Sev/Conf:** P2 / HIGH
