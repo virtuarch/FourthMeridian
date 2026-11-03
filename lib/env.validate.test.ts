@@ -113,6 +113,16 @@ if (process.argv[2] === "child") {
     out4.slice(0, 200),
   );
 
+  console.log("4a. PRIV-004 — ENCRYPTION_KEY_PREVIOUS: optional; malformed refuses to boot, value never echoed");
+  {
+    check("unset → passes", run({ ...CORE, NODE_ENV: "test" }).includes("VALIDATE_OK"));
+    check("64 hex → passes", run({ ...CORE, NODE_ENV: "test", ENCRYPTION_KEY_PREVIOUS: "cd".repeat(32) }).includes("VALIDATE_OK"));
+    const BAD = "not-a-key-value-QX7";
+    const bad = run({ ...CORE, NODE_ENV: "test", ENCRYPTION_KEY_PREVIOUS: BAD });
+    check("malformed → throws, names the variable, does not echo the value",
+      bad.includes("VALIDATE_THREW") && bad.includes("ENCRYPTION_KEY_PREVIOUS") && !bad.includes(BAD), bad.slice(0, 300));
+  }
+
   console.log("4b. R2 — Turnstile keys must be paired (loud, never fatal)");
   {
     const secretOnly = run({ ...CORE, NODE_ENV: "test", TURNSTILE_SECRET_KEY: "s" });
