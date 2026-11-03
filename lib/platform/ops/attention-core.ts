@@ -9,8 +9,9 @@
  * reached: a connection's `healthState` (lib/connections/health.ts), a job's
  * `status` (lib/jobs/health.ts), a provider's `trust` (provider-health.ts), a
  * resource's `healthState` (resource-freshness.ts), a rule's `firing` in the
- * LATEST evaluate-alerts run (lib/alerts/latest-evaluation.ts) and an active
- * incident's `severity`/`state` (sync-issue-semantics via the D5 projection).
+ * LATEST evaluate-alerts run (lib/alerts/latest-evaluation.ts) and a broken-now
+ * incident's `brokenNow`/`effectiveSeverity` (the incident-intelligence module's
+ * verdict via the D5 projection — PB-1 R6a).
  * This module computes no staleness, no streak and no threshold. The ONE
  * judgement it makes — declared in `SEVERITY_OF` below and nowhere else — is
  * how those vocabularies line up on a single attention scale so the rows can
@@ -338,21 +339,30 @@ function alertItems(a: NonNullable<AttentionInputs["alerts"]>): AttentionItem[] 
 }
 
 function incidentItems(i: NonNullable<AttentionInputs["incidents"]>): AttentionItem[] {
+  // PB-1 R6a — open/closed and rank are the module's verdicts, never re-derived here:
+  // `brokenNow` (D1/D2/D2b/D10 decided in lib/platform/incidents/intelligence) and
+  // `effectiveSeverity` (one notch lower for an unverified incident — D10).
   return i.items
-    .filter((inc) => inc.state === "active")
+    .filter((inc) => inc.brokenNow)
     .map((inc) => ({
       id: `incident:${inc.id}`,
-      severity: SEVERITY_OF.incident[inc.severity],
+      severity: SEVERITY_OF.incident[inc.effectiveSeverity],
       entity: { kind: "incident", label: inc.subject ?? "Subject unavailable" },
-      problem: `${inc.label}${inc.operationLabel ? ` — ${inc.operationLabel}` : ""}${inc.occurrenceCountKnown ? ` · ${inc.occurrenceCount} occurrence${inc.occurrenceCount === 1 ? "" : "s"}` : " · depth unknown"}.`,
+      problem: `${inc.label}${inc.operationLabel ? ` — ${inc.operationLabel}` : ""}${inc.occurrenceCountKnown ? ` · ${inc.occurrenceCount} occurrence${inc.occurrenceCount === 1 ? "" : "s"}` : " · depth unknown"}${INCIDENT_QUALIFIER[inc.state] ?? ""}${inc.freshness === "unverified" ? " · not confirmed inside its window" : ""}.`,
       since: inc.firstOccurredAt,
       evidence: inc.refreshExecutionId
         ? { kind: "execution", id: inc.refreshExecutionId, workspace: "platform-refresh" }
         : { kind: "incident", id: inc.id, workspace: "platform-refresh" },
       actions: [{ kind: "open-workspace", workspace: "platform-refresh" }],
-      basis: "active sync incident (SyncIssue lifecycle via the semantics authority; subject = institution · account); since = first occurrence",
+      basis: "broken-now sync incident (incident-intelligence module verdict; severity = effectiveSeverity; subject = institution · account); since = first occurrence",
     }));
 }
+
+/** The module's broken-now states that read differently from a plain active incident. */
+const INCIDENT_QUALIFIER: Partial<Record<PlatformIncidentProjection["state"], string>> = {
+  acknowledged: " · acknowledged",
+  recovering: " · recovering (awaiting confirmation)",
+};
 
 function policyAssignmentItems(p: PolicyAssignmentHealth): AttentionItem[] {
   const severity = SEVERITY_OF.policyAssignment[p.enforced ? "enforced" : "dormant"];

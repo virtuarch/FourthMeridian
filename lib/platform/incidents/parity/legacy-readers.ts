@@ -14,6 +14,8 @@ import { convergenceInstant, syncIssueOutcome } from "@/lib/platform/convergence
 import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
 import { evaluateSyncIncidentCritical } from "@/lib/alerts/evaluate";
 import { ALERT_RULES } from "@/lib/alerts/rules";
+import { projectVerdictForPlatform } from "@/lib/platform/incidents/platform-projection";
+import { buildAttention } from "@/lib/platform/ops/attention-core";
 import { moduleVerdicts } from "./module-adapter";
 import type { World, WorldRow } from "./world";
 
@@ -162,9 +164,23 @@ export function alertsReader(w: World, feed: "alertable" | "all" = "alertable"):
   });
 }
 
-/** R6a — ops attention: the projection's active set, severity 1:1, no identity. */
-export function opsAttentionReader(w: World): Verdict[] {
-  return projectionReader(w).filter((v) => v.open).map((v) => ({ ...v, reader: "ops-attention" }));
+/**
+ * R6a — Ops attention AFTER its cutover: the module's Ops-tier `brokenNow` page
+ * (what `incidentAccessors.brokenNow` returns), through the REAL field-by-field
+ * projection (projectVerdictForPlatform) and the REAL attention composition
+ * (buildAttention → incidentItems). A row is open when it produced an attention
+ * item. `feed` lets the gate hand the core a WIDER page to prove its own guard.
+ */
+export function opsAttentionReader(w: World, feed: "brokenNow" | "all" = "brokenNow"): Verdict[] {
+  const verdicts = moduleVerdicts(w, "PLATFORM_OPS").filter((v) => feed === "all" || v.brokenNow);
+  const items = verdicts.map((v) => projectVerdictForPlatform(v, { primary: null, secondary: null }, null));
+  const shown = new Map(
+    buildAttention({ connections: null, jobs: null, providers: null, resources: null, alerts: null, incidents: { items, activeTotal: items.length, truncated: false } }, w.now)
+      .items.filter((x) => x.id.startsWith("incident:")).map((x) => [x.id.slice("incident:".length), x] as const),
+  );
+  return items.map((p) => ({
+    reader: "ops-attention" as const, rowId: p.id, open: shown.has(p.id), severity: shown.get(p.id)?.severity ?? p.effectiveSeverity,
+  }));
 }
 
 /** R6b — CS attention (customer/attention.ts:84-96): active set; owner via item→user, else account owner ?? createdBy. */
@@ -182,6 +198,6 @@ export const LEGACY_READERS = {
   projection: projectionReader,
   convergence: convergenceReader,
   alerts: (w: World) => alertsReader(w),
-  "ops-attention": opsAttentionReader,
+  "ops-attention": (w: World) => opsAttentionReader(w),
   "cs-attention": csAttentionReader,
 } as const;

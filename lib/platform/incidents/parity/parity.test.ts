@@ -14,7 +14,7 @@
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import type { CsIncidentVerdict, IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { buildWorld } from "./world";
-import { alertsReader, convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionBaselineReader, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
+import { alertsReader, opsAttentionReader, convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionBaselineReader, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
 import { moduleVerdicts } from "./module-adapter";
 
 let failures = 0;
@@ -101,7 +101,8 @@ export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> 
   // cut over in R4 (feed) + R5 (fold + evaluate read module verdicts only); any divergence from
   // module alertable && critical is now a defect
   alerts: [],
-  "ops-attention": ["D2", "D2b", "D10"],
+  // cut over in R6a; any divergence from module brokenNow is now a defect
+  "ops-attention": [],
   "cs-attention": ["D2", "D2b", "D4", "D10"],
 };
 
@@ -118,6 +119,8 @@ for (const id of Object.keys(LEGACY_READERS) as ReaderId[]) {
     unlisted.map((x) => ({ row: x, legacyOpen: theirs.has(x), moduleOpen: mod.has(x) })));
 }
 
+const v0 = (id: string) => byId.get(id)!;
+
 console.log("R5 — the alert fold + evaluator read module verdicts only");
 {
   const narrow = run("alerts");
@@ -129,6 +132,18 @@ console.log("R5 — the alert fold + evaluator read module verdicts only");
   check("the world exercises the alert rule: at least one critical alertable row fires", narrow.some((x) => x.open));
   check("…and at least one module-broken-now row is NOT alerted (D10 unverified / recovering / non-critical)",
     verdicts.some((x) => x.brokenNow && !openIds(narrow).has(x.id)));
+}
+
+console.log("R6a — Ops attention reads module verdicts only");
+{
+  const narrow = run("ops-attention");
+  const wide = opsAttentionReader(w, "all");
+  check("handed EVERY verdict (not just the broken-now page), the attention core drops the non-broken-now ones itself",
+    JSON.stringify([...openIds(narrow)].sort()) === JSON.stringify([...openIds(wide)].sort()), { narrow: [...openIds(narrow)], wide: [...openIds(wide)] });
+  check("an unverified broken-now incident (D10) is listed at its effectiveSeverity, one notch below its classified severity",
+    narrow.some((x) => x.rowId === "r_stale_unknown" && x.open && x.severity === v0("r_stale_unknown").effectiveSeverity && v0("r_stale_unknown").effectiveSeverity !== v0("r_stale_unknown").severity));
+  check("removed / revoked subjects and stale-unverified rows never become Ops attention rows (D2 / D2b / D10)",
+    ["r_acct_soft_deleted", "r_item_live_acct_hard", "r_orphan_item", "r_revoked_item", "r_stale_open"].every((id) => !openIds(narrow).has(id)));
 }
 
 console.log("the module's corrections hold (not merely allowed)");
