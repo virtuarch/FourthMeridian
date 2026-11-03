@@ -53,6 +53,20 @@ CREATE POLICY fm_system_all ON public."AuditLog" FOR ALL TO fm_system USING (tru
 COMMIT;
 ```
 
-After a rollback, mark the migration rolled back
-(`prisma migrate resolve --rolled-back 20261103140000_db010_auditlog_append_only`) through the
-guarded tooling before re-applying any fix.
+**Procedure: forward-only (`docs/operations/database-safety.md` §3a).**
+
+1. **Emergency step.** Run the block above as the migration principal, through the guarded
+   tooling (never raw `psql` against a shared database outside it). The runtime posture is then
+   restored immediately.
+2. **Forward migration.** Land a new migration, `<YYYYMMDDHHMMSS>_db010_revert`, carrying the
+   same SQL (written idempotently, so it is a no-op where step 1 already ran), and apply it with
+   `npm run db:migrate:safe`. The migration ledger and the database then agree again, and every
+   other environment converges through the normal path.
+
+⚠️ **Never run `prisma migrate resolve --rolled-back` on this migration once it has applied.**
+Prisma allows `--rolled-back` only for a migration that FAILED mid-way, which Postgres rolled
+back. Using it to "undo" an applied migration leaves the ledger lying about the schema.
+
+**An app rollback does not require a DB rollback.** The code that this migration constrains
+(B9: `jobs/data-retention.ts`, `jobs/product-event-retention.ts`) already writes only within
+these policies, so rolling the deployment back can leave DB-010 in place.
