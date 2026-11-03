@@ -333,7 +333,7 @@ const section4 = async () => {
   assert.ok(/loadBalanceCoverageFailClosed\(c, spaceId, 'daily-brief'\)/.test(load) && /return BALANCE_COVERAGE_UNAVAILABLE;/.test(load) && /deps\.projectSnapshots\(ceiled, balanceCoverage\)/.test(load)
     && /\n    balanceCoverage,\n    snapshotEstimatedDates:/.test(load), "Brief loader wired");
   const pes = src("../../components/space/PerspectiveEmptyState.tsx");
-  assert.equal((pes.match(/coverageReadFailed\(\)/g) ?? []).length, 3, "client hero path: counts-only line on !ok and on a thrown fetch");
+  assert.equal((pes.match(/coverageReadFailed\(\)/g) ?? []).length, 4, "client hero path: counts-only line on !ok, on a thrown fetch and on an unavailable / malformed coverage");
   assert.ok(/balanceCoverageLoadFailureLine\("client-data-health", 1, 1\)/.test(pes));
 
   // No second definition of the rule: every server path goes through the core.

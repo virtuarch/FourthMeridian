@@ -19,7 +19,7 @@ import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import type { WealthComponentId } from "./wealth-metric-facets";
 import {
   balanceCoverageSidesFor, changeComparability, ESTIMATED_CHANGE_SUFFIX,
-  type BalanceCoverage, type ChangeComparability,
+  type BalanceCoverageRead, type ChangeComparability,
 } from "@/lib/connections/balance-coverage.core";
 
 export type WealthChangeGate = Record<WealthMetricKey, ChangeComparability>;
@@ -31,7 +31,7 @@ const COMPARABLE: ChangeComparability = { state: "comparable" };
  * One verdict per series, or null when there is nothing to gate (no comparison,
  * or no coverage read yet — every change renders exactly as before).
  */
-export function wealthChangeGate(result: WealthResult, cov: BalanceCoverage | null): WealthChangeGate | null {
+export function wealthChangeGate(result: WealthResult, cov: BalanceCoverageRead): WealthChangeGate | null {
   const { asOfState, compareState } = result;
   if (!cov || !result.deltas || !compareState?.found || !compareState.date || !asOfState.date) return null;
   const endpoints = {

@@ -105,6 +105,10 @@ export function knownBalanceCoverage(cov: BalanceCoverageRead | undefined): Bala
 export const BALANCE_COVERAGE_UNREADABLE_NOTE =
   "balance-history completeness could not be read — do not state changes or pre-history values";
 
+/** Under a chart whose coverage could not be read (client BalanceCoverageNote). */
+export const BALANCE_COVERAGE_UNREADABLE_CHART_NOTE =
+  "Balance-history completeness couldn’t be read, so changes are withheld; earlier days may not include every account.";
+
 /** The withheld-change wording when coverage could not be read (cards render it; the AI reads it). */
 export const BALANCE_COVERAGE_UNREADABLE_MESSAGE =
   "Change unavailable: balance-history completeness could not be read";
@@ -374,7 +378,7 @@ export function gateWindowChange<C extends { fromDate: string; toDate: string }>
 
 /** Where a coverage read failed — named in the counts-only log line. */
 export type BalanceCoverageSurface =
-  | "ai-snapshot" | "ai-history-tool" | "space-launcher" | "daily-brief" | "client-data-health";
+  | "ai-snapshot" | "ai-history-tool" | "space-launcher" | "daily-brief" | "client-data-health" | "data-health-route";
 
 /**
  * The counts-only line logged when a coverage read FAILS and the change claims
