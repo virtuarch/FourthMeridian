@@ -13,7 +13,9 @@
 
 import { readFileSync } from "fs";
 import { join } from "path";
-import { staleMaterialBankAccountIds, isFedBankAccount } from "./stale-bank-balance.core";
+import { staleMaterialBankAccountIds, isFedBankAccount, countedReportingMagnitudes } from "./stale-bank-balance.core";
+import type { ConversionContext } from "@/lib/money/types";
+import type { Resolution } from "@/lib/fx/types";
 import { STALE_AFTER_DAYS } from "@/lib/freshness/observation";
 import { MATERIAL_VALUE_SHARE } from "@/lib/freshness/space-freshness";
 import { regenerateDay, type DayRegenInput } from "./regenerate-history.core";
@@ -49,7 +51,7 @@ function acct(id: string, type: string, balance: number, ageDays: number, over: 
 
 type UpsertArgs = { where: any; create: any; update: any };
 
-function makeFake(accounts: FakeAccount[]) {
+function makeFake(accounts: FakeAccount[], existingRow: { isEstimated: boolean } | null = null) {
   const calls: Array<{ name: string; args?: any }> = [];
   let upserted: UpsertArgs | null = null;
   const client = {
@@ -80,6 +82,7 @@ function makeFake(accounts: FakeAccount[]) {
     space: { async findUnique() { calls.push({ name: "space.findUnique" }); return { reportingCurrency: "USD" }; } },
     spaceSnapshot: {
       async upsert(args: UpsertArgs) { calls.push({ name: "spaceSnapshot.upsert" }); upserted = args; return {}; },
+      async findUnique() { calls.push({ name: "spaceSnapshot.findUnique" }); return existingRow; },
     },
     // Nothing observed for any wallet: a spine-chain wallet resolves NO_OBSERVATION.
     positionObservation: { async findMany() { return []; }, async groupBy() { return []; } },
@@ -285,6 +288,82 @@ async function partFourUnvalued(): Promise<void> {
   }
 }
 
+async function partFiveReview(): Promise<void> {
+  const { regenerateSpaceSnapshot } = await import("@/lib/snapshots/regenerate");
+
+  console.log("\n9. S2 review — same-day fresh after stale ⇒ observation; fresh on fresh byte-identical");
+  {
+    const accounts = [acct("chk", "checking", 3_000, 0.2), acct("sav", "savings", 1_000, 0.2)];
+    const afterStale = makeFake(accounts, { isEstimated: true });
+    await regenerateSpaceSnapshot("space-r1", SNAP_DATE, afterStale.client as never, NOW);
+    const a = afterStale.upserted as UpsertArgs | null;
+    check("stale→fresh: update writes isEstimated false", a?.update.isEstimated === false);
+    check("stale→fresh: tier cleared (null)", a?.update.completenessTier === null);
+    check("stale→fresh: create is still the pre-fix payload (no isEstimated key)",
+      JSON.stringify(Object.keys(a?.create ?? {})) === JSON.stringify(PRE_FIX_CREATE_KEYS));
+    check("stale→fresh: the row then FREEZES as an observation in history (real evidence)",
+      regenerateDay({
+        date: "2026-03-20", existingIsEstimated: a?.update.isEstimated,
+        base: { totalInvestments: 0, totalDigitalAssets: 0, totalChecking: 1, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+        investmentValue: 0, investmentTier: "observed", hasInvestmentEvidence: false,
+        digitalAssetValue: 0, digitalAssetTier: "observed", hasDigitalAssetEvidence: false,
+        cashCardTier: "derived", membershipChangedSince: false,
+      } as DayRegenInput).action === "skip-frozen");
+
+    const onFresh = makeFake(accounts, { isEstimated: false });
+    await regenerateSpaceSnapshot("space-r2", SNAP_DATE, onFresh.client as never, NOW);
+    const noRow = makeFake(accounts, null);
+    await regenerateSpaceSnapshot("space-r2", SNAP_DATE, noRow.client as never, NOW);
+    const b = onFresh.upserted as UpsertArgs | null;
+    const c = noRow.upserted as UpsertArgs | null;
+    check("fresh→fresh: update keys exactly the pre-fix set (byte-identical)",
+      JSON.stringify(Object.keys(b?.update ?? {})) === JSON.stringify(PRE_FIX_UPDATE_KEYS));
+    check("fresh→fresh and no-row payloads are byte-identical", JSON.stringify(b) === JSON.stringify(c));
+
+    const staleOnStale = makeFake([acct("chk", "checking", 3_000, 30)], { isEstimated: true });
+    await regenerateSpaceSnapshot("space-r3", SNAP_DATE, staleOnStale.client as never, NOW);
+    check("stale path never reads the same-day row and never writes isEstimated false",
+      !staleOnStale.calls.some((x) => x.name === "spaceSnapshot.findUnique")
+      && (staleOnStale.upserted as UpsertArgs | null)?.update.isEstimated === true);
+  }
+
+  console.log("\n10. S2 review — materiality is measured in the REPORTING currency");
+  {
+    const D = "2026-03-19";
+    const rate = (r: number): Resolution => ({ kind: "rate", rate: r, requestedDateISO: D, effectiveDates: { from: D, to: D }, staleness: "exact" });
+    const table: Record<string, Resolution> = { [`JPY|${D}`]: rate(0.007), [`EUR|${D}`]: rate(1.1) };
+    const ctx: ConversionContext = {
+      target: "USD",
+      resolve: (from, dateISO) => table[`${from}|${dateISO}`] ?? { kind: "miss", quote: from, requestedDateISO: dateISO },
+    };
+    const eligible = [
+      { id: "usd", balance: 100_000, currency: "USD" },
+      { id: "jpy", balance: 50_000,  currency: "JPY" }, // ¥50,000 ≈ $350 — 33% in native units, 0.3% converted
+      { id: "eur", balance: 2_000,   currency: "EUR" }, // €2,000 = $2,200 — over 1%
+      { id: "gbp", balance: 10,      currency: "GBP" }, // no rate
+    ];
+    const counted = countedReportingMagnitudes(eligible, ctx, D);
+    const by = new Map(counted.map((x) => [x.id, x.absValue]));
+    check("USD passes through, JPY/EUR converted", by.get("usd") === 100_000 && Math.abs(by.get("jpy")! - 350) < 1e-9 && Math.abs(by.get("eur")! - 2_200) < 1e-9);
+    check("a rate miss maps to null (unmeasurable)", by.get("gbp") === null);
+    const fresh = [acct("usd", "checking", 0, 0.2), acct("jpy", "savings", 0, 30), acct("eur", "savings", 0, 30), acct("gbp", "savings", 0, 30)];
+    const ids = staleMaterialBankAccountIds(counted, fresh, NOW);
+    check("stale JPY savings worth $350 of $102,550 is IMMATERIAL once converted", !ids.includes("jpy"));
+    check("stale EUR savings worth $2,200 is material", ids.includes("eur"));
+    check("stale GBP savings with no rate is MATERIAL (fail toward disclosure)", ids.includes("gbp"));
+    check("native-unit comparison would have called JPY material (the defect this prevents)",
+      staleMaterialBankAccountIds(eligible.map((e) => ({ id: e.id, absValue: e.balance })), fresh, NOW).includes("jpy"));
+    check("an unvalued wallet counts nothing", countedReportingMagnitudes([{ id: "w", balance: 5, currency: "USD", valuationUnknown: true }], ctx, D)[0].absValue === 0);
+
+    const R = readFileSync(join(process.cwd(), "lib/snapshots/regenerate.ts"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    check("the writer converts with the SAME ctx and valuation date it built for classifyAccounts",
+      /const valuationDateISO = yesterdayUTCISO\(\);/.test(R)
+      && /dates:\s*\[valuationDateISO\]/.test(R)
+      && /staleBankAccountIdsForSnapshot\(client, eligible, ctx, valuationDateISO, now\)/.test(R)
+      && /countedReportingMagnitudes\(eligible, ctx, valuationDateISO\)/.test(R));
+  }
+}
+
 function partThreeStatic(): void {
   console.log("\n6. Static pins — one gate, every caller through it");
   const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
@@ -295,7 +374,7 @@ function partThreeStatic(): void {
   const HIST = code(read("lib/snapshots/regenerate-history.core.ts"));
 
   check("regenerate.ts has exactly ONE spaceSnapshot.upsert", (REGEN.match(/spaceSnapshot\.upsert\(/g) ?? []).length === 1);
-  const gateAt = REGEN.indexOf("staleBankAccountIdsForSnapshot(client, eligible, now)");
+  const gateAt = REGEN.indexOf("staleBankAccountIdsForSnapshot(client, eligible, ctx, valuationDateISO, now)");
   check("the stale-bank gate runs inside regenerateSpaceSnapshot, before its upsert",
     gateAt > REGEN.indexOf("export async function regenerateSpaceSnapshot")
     && gateAt < REGEN.indexOf("spaceSnapshot.upsert("));
@@ -327,6 +406,7 @@ void (async () => {
   await partTwoWriter();
   partThreeStatic();
   await partFourUnvalued();
+  await partFiveReview();
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nAll FM-AUDIT-021 checks passed");
 })().catch((e) => { console.error(e); process.exit(1); });

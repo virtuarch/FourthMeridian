@@ -42,6 +42,8 @@
 
 import { isStaleBand, resolveAccountFreshness } from "@/lib/freshness/observation";
 import { MATERIAL_VALUE_SHARE } from "@/lib/freshness/space-freshness";
+import { convertMoney } from "@/lib/money/convert";
+import type { ConversionContext } from "@/lib/money/types";
 
 /** Account types whose balance comes from a bank feed. */
 export const BANK_BALANCE_TYPES: readonly string[] = Object.freeze(["checking", "savings", "debt"]);
@@ -60,8 +62,38 @@ export interface BankFreshnessRow {
 /** The counted magnitude of one snapshot account. */
 export interface CountedAccount {
   id: string;
-  /** |counted balance| — the figure the snapshot actually totals. */
-  absValue: number;
+  /**
+   * |counted balance| IN THE SPACE REPORTING CURRENCY — the figure the snapshot
+   * actually totals, converted through the same context classifyAccounts uses,
+   * so materiality is a share of one currency, never of mixed native units.
+   *
+   * NULL ⇒ a NONZERO balance whose rate was missing. It is left out of the
+   * total (it cannot be summed honestly) and, if it is a stale bank account,
+   * counts as MATERIAL: an unmeasurable share fails toward disclosure.
+   */
+  absValue: number | null;
+}
+
+/**
+ * The counted magnitude of each snapshot account IN THE REPORTING CURRENCY,
+ * through the SAME context and valuation date classifyAccounts totals with
+ * (S2 review), so the materiality share is measured in one currency.
+ *
+ * Counted = the adjusted depository figure where present, else the balance; an
+ * unvalued wallet (FM-AUDIT-022) counts nothing. A nonzero balance whose rate
+ * is missing maps to null — material by the rule below.
+ */
+export function countedReportingMagnitudes(
+  accounts: ReadonlyArray<{ id: string; balance: number; currency?: string | null; adjustedBalance?: number; valuationUnknown?: boolean }>,
+  ctx: ConversionContext,
+  valuationDateISO: string,
+): CountedAccount[] {
+  return accounts.map((a) => {
+    const native = a.valuationUnknown === true ? 0 : (a.adjustedBalance ?? a.balance);
+    if (native === 0) return { id: a.id, absValue: 0 };
+    const converted = convertMoney({ amount: native, currency: a.currency ?? null }, valuationDateISO, ctx).amount;
+    return { id: a.id, absValue: converted === null ? null : Math.abs(converted) };
+  });
 }
 
 /** True when `row` is a provider-fed bank account (see "bank" above). */
@@ -80,14 +112,16 @@ export function staleMaterialBankAccountIds(
   now: Date,
 ): string[] {
   const byId = new Map(freshness.map((r) => [r.id, r]));
-  const totalValue = counted.reduce((s, a) => s + a.absValue, 0);
+  const totalValue = counted.reduce((s, a) => s + (a.absValue ?? 0), 0);
   const floor = totalValue * MATERIAL_VALUE_SHARE;
 
   const out: string[] = [];
   for (const a of counted) {
     const row = byId.get(a.id);
     if (!row || !isFedBankAccount(row)) continue;
-    if (!(a.absValue > 0) || a.absValue < floor) continue;
+    // A rate miss (null) is material by definition; a measured value must be
+    // nonzero and at least MATERIAL_VALUE_SHARE of the converted total.
+    if (a.absValue !== null && (!(a.absValue > 0) || a.absValue < floor)) continue;
     const f = resolveAccountFreshness({
       accountId:         row.id,
       ingestedAt:        row.lastUpdated,

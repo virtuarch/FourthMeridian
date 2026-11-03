@@ -57,11 +57,13 @@ import { classifyAccounts } from "@/lib/account-classifier";
 import { computeSnapshotFields } from "@/lib/snapshots/backfill-core";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
+import type { ConversionContext } from "@/lib/money/types";
 import { ShareStatus, type Prisma } from "@prisma/client";
 import { worstTier } from "@/lib/perspective-engine/completeness";
 import { CRYPTO_MATERIALITY_EPSILON } from "@/lib/snapshots/crypto-valuation-status.core";
 import {
   BANK_BALANCE_TYPES,
+  countedReportingMagnitudes,
   staleMaterialBankAccountIds,
   type BankFreshnessRow,
 } from "@/lib/snapshots/stale-bank-balance.core";
@@ -111,6 +113,17 @@ export interface SpaceSnapshotClient extends SnapshotAccountsClient {
   };
   spaceSnapshot: {
     upsert(args: Prisma.SpaceSnapshotUpsertArgs): Promise<unknown>;
+    /**
+     * FM-AUDIT-021 (S2 review) — the same-day row's `isEstimated`, read on the
+     * FRESH path only. Optional ONLY so in-memory fakes that predate it keep
+     * running (the `transaction?` precedent in SnapshotAccountsClient): a client
+     * without it reports no existing estimate, i.e. the prior behaviour. The
+     * production clients always carry it.
+     */
+    findUnique?(args: {
+      where:  Prisma.SpaceSnapshotWhereUniqueInput;
+      select: { isEstimated: true };
+    }): Promise<{ isEstimated: boolean } | null>;
   };
 }
 
@@ -126,11 +139,17 @@ const BANK_FRESHNESS_SELECT = {
  * wallet-only Space makes exactly the queries it always did.
  *
  * The magnitude weighed for materiality is the COUNTED balance — the adjusted
- * depository figure where classifyAccounts totals it, else the balance.
+ * depository figure where classifyAccounts totals it, else the balance —
+ * CONVERTED to the Space reporting currency through the SAME context and
+ * valuation date classifyAccounts uses (S2 review), so the 1% share is a share
+ * of one currency. A rate miss on a nonzero balance yields null, which the rule
+ * treats as material (fail toward disclosure).
  */
 async function staleBankAccountIdsForSnapshot(
   client: SpaceSnapshotClient,
-  eligible: Array<{ id: string; type: string; balance: number; adjustedBalance?: number }>,
+  eligible: Array<{ id: string; type: string; balance: number; currency: string; adjustedBalance?: number; valuationUnknown?: true }>,
+  ctx: ConversionContext,
+  valuationDateISO: string,
   now: Date,
 ): Promise<string[]> {
   const bankIds = eligible.filter((a) => BANK_BALANCE_TYPES.includes(a.type)).map((a) => a.id);
@@ -140,7 +159,7 @@ async function staleBankAccountIdsForSnapshot(
     select: BANK_FRESHNESS_SELECT,
   });
   return staleMaterialBankAccountIds(
-    eligible.map((a) => ({ id: a.id, absValue: Math.abs(a.adjustedBalance ?? a.balance) })),
+    countedReportingMagnitudes(eligible, ctx, valuationDateISO),
     freshness.map((r) => ({
       id:                   r.id,
       type:                 r.type ?? "",
@@ -226,9 +245,12 @@ export async function regenerateSpaceSnapshot(
   });
   if (!space) return; // space vanished mid-call — nothing to snapshot
 
+  // The one valuation date classifyAccounts defaults to for this context; the
+  // stale-bank materiality conversion below uses the same one.
+  const valuationDateISO = yesterdayUTCISO();
   const ctx = await buildSpaceConversionContext(space, {
     currencies: eligible.map((a) => a.currency ?? null),
-    dates:      [yesterdayUTCISO()],
+    dates:      [valuationDateISO],
   });
   // v2.7-P0 — `eligible` rows carry the ADJUSTED depository balance
   // (readSpaceAccountsForSnapshot → adjustedDepositoryBalance), which the
@@ -356,13 +378,16 @@ export async function regenerateSpaceSnapshot(
   //                         was assertable to `legacy-unrecorded`.
   //
   // Not a skip (W6b precedent: a stale reading is still the best number there
-  // is). A FRESH write is byte-identical to before: the payload below is the
-  // same object, and isEstimated is neither created nor updated — so this never
-  // newly freezes a row a reconstruction wrote as an estimate. The cost of that
-  // identity: a same-day fresh rewrite after a stale write leaves the row
-  // estimated (with the tier cleared, as before) until regeneration revisits it
-  // — conservative, never a false observation.
-  const staleBankIds = await staleBankAccountIdsForSnapshot(client, eligible, now);
+  // is).
+  //
+  // A FRESH write is the same payload as before, with ONE exception (S2
+  // review): when today's row already exists AS AN ESTIMATE, the fresh update
+  // also writes `isEstimated: false`. A fresh same-day observation is real
+  // evidence, so the row becomes an observation (the tier is cleared by the
+  // composition, as always) and regenerate-history's frozen guard correctly
+  // treats it as one. Fresh-on-fresh, and every create, stays byte-identical:
+  // isEstimated is then neither created nor updated.
+  const staleBankIds = await staleBankAccountIdsForSnapshot(client, eligible, ctx, valuationDateISO, now);
   const written = staleBankIds.length === 0 ? composition : {
     ...composition,
     isEstimated: true,
@@ -370,6 +395,12 @@ export async function regenerateSpaceSnapshot(
     cryptoValuationStatus: composition.cryptoValuationStatus
       ?? (Math.abs(crypto) > CRYPTO_MATERIALITY_EPSILON ? "supported" as const : null),
   };
+  const supersedesEstimate = staleBankIds.length === 0 && client.spaceSnapshot.findUnique
+    ? (await client.spaceSnapshot.findUnique({
+        where:  { spaceId_date: { spaceId, date } },
+        select: { isEstimated: true },
+      }))?.isEstimated === true
+    : false;
   if (staleBankIds.length > 0) {
     console.log(`[snapshot] space ${spaceId}: ${staleBankIds.length} material bank balance(s) past the freshness horizon — today's row written as an estimate (FM-AUDIT-021).`);
   }
@@ -388,6 +419,7 @@ export async function regenerateSpaceSnapshot(
       netWorth, totalAssets, netLiquid, cashOnHand,
       reportingCurrency,
       ...written,
+      ...(supersedesEstimate ? { isEstimated: false } : {}),
     },
   });
 }
