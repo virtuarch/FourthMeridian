@@ -32,6 +32,8 @@ import { TrustIndicator } from "@/components/space/trust/TrustIndicator";
 import { HeroEyebrow, HeroTalk } from "@/components/space/hero/HeroParts";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import { WealthUnavailable, DeltaBadge } from "./wealth-ui";
+import { gateFor, gatedCompareLabel, type WealthChangeGate } from "./wealth-change-gate";
+import { ESTIMATED_CHANGE_SUFFIX } from "@/lib/connections/balance-coverage.core";
 import { investedClassLabel } from "@/lib/wealth/invested-label";
 import type { TalkSection } from "@/components/ai/talk-about-this";
 
@@ -89,6 +91,7 @@ export function WealthHero({
   cryptoPriceNote,
   freshnessLabel = null,
   timePreset,
+  changeGate = null,
 }: {
   result:   WealthResult;
   currency: string;
@@ -114,15 +117,25 @@ export function WealthHero({
   /** v2.7 R6 — the shell slice id for the compact "Talk with Fourth Meridian
    *  about this" link (kept there only when allowlisted). */
   timePreset?: string;
+  /**
+   * PB-8b — per-series change verdicts against the Space's balance-history
+   * floors (wealth-change-gate.ts). A change whose comparison day is before a
+   * floor is withheld and said; an estimated one is labelled. Absent ⇒ as before.
+   */
+  changeGate?: WealthChangeGate | null;
 }) {
-  const { asOfState, deltas, compareState } = result;
+  const { asOfState, compareState } = result;
+  const gate = gateFor(changeGate, metric);
+  // PB-8b — the headline's change is never stated across a balance-history floor.
+  const deltas = gate.state === "withheld" ? null : result.deltas;
+  const withheld = gate.state === "withheld" ? gate.message : null;
   // The `invested` figure is named for the classes actually held (canonical
   // composition) — never "& crypto" for a user with no crypto. Null ⇒ neither.
   const investedLabel = investedClassLabel(asOfState.composition);
   const metricLabel = metric === "invested" ? (investedLabel ?? "Investments") : METRIC_LABEL[metric];
   const secondaryRows = wealthSecondaryRows(result, metric);
-  const compareLabel =
-    compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined;
+  const compareLabel = gatedCompareLabel(
+    compareState?.found && compareState.date ? formatWealthDate(compareState.date) : undefined, gate);
   const asOfLabel = asOfState.date ? `As of ${formatWealthDate(asOfState.date)}` : undefined;
 
   // Rising liabilities are BAD; every other metric is good when it rises.
@@ -152,7 +165,7 @@ export function WealthHero({
   // exceptional note the WORKSPACE renders under the chart on compact (desktop
   // keeps it inline on the as-of line) — never a sixth row, never below the card.
   const compactRange = compareState?.found && compareState.date && asOfState.date
-    ? `${formatWealthDate(compareState.date)} → ${formatWealthDate(asOfState.date)}`
+    ? `${formatWealthDate(compareState.date)} → ${formatWealthDate(asOfState.date)}${gate.state === "estimated" ? ESTIMATED_CHANGE_SUFFIX : ""}`
     : (asOfLabel ?? "");
 
   return (
@@ -163,6 +176,7 @@ export function WealthHero({
         trust={<TrustIndicator variant="compact" envelope={envelope} />}
         value={formatCurrency(asOfState[metric], currency)}
         change={deltas ? { abs: deltas[metric].abs, pct: deltas[metric].pct, goodDirection } : null}
+        {...(withheld ? { noChangeLabel: withheld } : {})}
         range={compactRange}
         currency={currency}
         talkSection={TALK_SECTION[metric]}
@@ -185,6 +199,8 @@ export function WealthHero({
               compareLabel={compareLabel}
               className="!text-xs"
             />
+          ) : withheld ? (
+            <span className="text-[11px] text-[var(--text-muted)]" data-change-withheld>{withheld}</span>
           ) : (
             <span className="text-[11px] text-[var(--text-muted)]">Add a Compare To date above to see the change.</span>
           )}
@@ -198,7 +214,7 @@ export function WealthHero({
             {secondaryRows.map((row) => (
               <Stat key={row.key} label={row.label}>
                 {formatCurrency(asOfState[row.key], currency)}
-                <SecondaryChange delta={deltas?.[row.key]} goodDirection={row.goodDirection} currency={currency} />
+                <SecondaryChange delta={gatedDelta(result, changeGate, row.key)} goodDirection={row.goodDirection} currency={currency} />
               </Stat>
             ))}
           </div>
@@ -221,6 +237,16 @@ export function wealthSecondaryRows(result: WealthResult, metric: WealthMetricKe
   return SECONDARY[metric]
     .filter((row) => row.key !== "invested" || investedLabel !== null)
     .map((row) => (row.key === "invested" ? { ...row, label: investedLabel! } : row));
+}
+
+/**
+ * PB-8b — a secondary row's change, or null when that row's series would be
+ * compared across a balance-history floor (the row then shows its value only).
+ * Exported for the compact KPI strip, which states the same rows.
+ */
+export function gatedDelta(result: WealthResult, changeGate: WealthChangeGate | null | undefined, key: WealthMetricKey): { abs: number } | null {
+  if (gateFor(changeGate, key).state === "withheld") return null;
+  return result.deltas?.[key] ?? null;
 }
 
 /**
