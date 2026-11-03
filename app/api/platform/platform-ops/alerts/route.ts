@@ -27,6 +27,7 @@ import { env } from "@/lib/env";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { loadAlertSettings, loadRecentAlertRuns } from "@/lib/alerts/run";
 import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { collectRecentRecoveries, type AlertRecoveredRecord } from "@/lib/alerts/recovery";
 import {
   collectAlertHistory,
   deriveAlertRuleViews,
@@ -50,6 +51,8 @@ export interface PlatformAlertsResponse {
   /** The latest evaluation's verdict — the only source of "firing now". Null
    *  when the evaluator has never recorded a run. */
   latest: AlertLatestEvaluation | null;
+  /** ALERT RECOVERY — delivered recoveries across the retained evaluations, newest first. Optional so older fixtures type. */
+  recoveries?: AlertRecoveredRecord[];
 }
 
 export async function GET() {
@@ -69,5 +72,6 @@ export async function GET() {
     history: collectAlertHistory(recentRuns),
     historyRuns: recentRuns.length,
     latest: latestAlertEvaluation(recentRuns),
+    recoveries: collectRecentRecoveries(recentRuns),
   } satisfies PlatformAlertsResponse);
 }

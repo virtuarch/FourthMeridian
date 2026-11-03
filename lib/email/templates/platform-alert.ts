@@ -30,6 +30,8 @@ export function renderPlatformAlert(
   data: AlertEmailData & { preview?: boolean },
   opts: { brand?: EmailBrandConfig } = {},
 ): RenderedEmail {
+  // ALERT RECOVERY — the "resolved" variant: one recovered breach per email.
+  if (data.resolved) return renderResolved(data as AlertEmailData & { preview?: boolean; resolved: NonNullable<AlertEmailData["resolved"]> }, opts);
   const n = data.alerts.length;
   const criticals = data.alerts.filter((a) => a.severity === "critical").length;
   const lead = criticals > 0 ? `${criticals} critical` : "degraded";
@@ -46,6 +48,43 @@ export function renderPlatformAlert(
         text:
           "Open Platform Operations → Alerts for the full state and history. " +
           "This alert repeats at most once per re-notify window while the condition persists.",
+      },
+    ],
+    footer: { reason: "Internal Fourth Meridian operations email, sent to the configured platform-alerts inbox." },
+    ...(opts.brand ? { brand: opts.brand } : {}),
+  });
+}
+
+/**
+ * The resolved variant: names the rule, when the breach first fired, when it
+ * cleared and how long it lasted. Same sender, same footer, same surface
+ * pointer; no link, system-generated strings only.
+ */
+function renderResolved(
+  data: AlertEmailData & { preview?: boolean; resolved: NonNullable<AlertEmailData["resolved"]> },
+  opts: { brand?: EmailBrandConfig },
+): RenderedEmail {
+  const r = data.resolved;
+  return renderEmail({
+    subject: `${data.preview === true ? "[PREVIEW] " : ""}Fourth Meridian platform alert resolved: ${r.ruleTitle}`,
+    preheader: `${r.ruleTitle} has cleared after ${r.durationLabel}.`,
+    blocks: [
+      { kind: "hero", heading: `Resolved: ${r.ruleTitle}` },
+      { kind: "paragraph", text: `Platform Operations no longer detects this issue (${r.dedupeKey}).` },
+      {
+        kind: "info",
+        items: [
+          `Rule: ${r.ruleTitle} (${r.ruleId})`,
+          `First fired: ${evaluatedLabel(r.firstFiredAtISO)}`,
+          `Cleared: ${evaluatedLabel(r.clearedAtISO)}`,
+          `Duration: ${r.durationLabel}`,
+        ],
+      },
+      {
+        kind: "paragraph",
+        text:
+          "Open Platform Operations → Alerts for the full state and history. " +
+          "A recovery is sent once, after the issue has been absent for consecutive evaluations; it must fire again before another is sent.",
       },
     ],
     footer: { reason: "Internal Fourth Meridian operations email, sent to the configured platform-alerts inbox." },

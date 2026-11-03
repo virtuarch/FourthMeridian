@@ -29,6 +29,7 @@ import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness"
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
+import type { AlertOpenRecord, AlertRecoveredRecord } from "@/lib/alerts/recovery";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -461,6 +462,22 @@ export function decideDeliveries(
 export interface AlertEmailData {
   evaluatedAtISO: string;
   alerts: { title: string; severity: AlertSeverity; summary: string }[];
+  /**
+   * ALERT RECOVERY — the template's "resolved" variant. Present only on a
+   * recovery email (one per recovered breach); a firing email omits it and
+   * renders exactly as before.
+   */
+  resolved?: AlertResolvedEmailData;
+}
+
+/** One recovered breach, as the `platform-alert` resolved variant renders it. */
+export interface AlertResolvedEmailData {
+  ruleId: string;
+  ruleTitle: string;
+  dedupeKey: string;
+  firstFiredAtISO: string;
+  clearedAtISO: string;
+  durationLabel: string;
 }
 
 /** Build the email payload for the signals being delivered (critical first). */
@@ -550,9 +567,19 @@ export interface AlertRunSummary {
   deliveryStatus: "none" | "sent" | "captured" | "skipped" | "error";
   /** OBS-003 — set whenever firing breaches were due and did NOT reach a real transport. Null when nothing was lost. */
   undelivered?: AlertUndelivered | null;
-  counts: { evaluated: number; live: number; enabled: number; firing: number; delivered: number; suppressed: number };
+  counts: { evaluated: number; live: number; enabled: number; firing: number; delivered: number; suppressed: number; recovered?: number };
   rules: AlertRuleOutcome[];
   fired: AlertFiredRecord[];
+  /**
+   * ALERT RECOVERY (lib/alerts/recovery.ts) — the delivered breaches still being
+   * tracked until they recover: THE recovery state, carried run to run. Absent
+   * on rows written before the feature (the next run seeds it from `fired`).
+   */
+  open?: AlertOpenRecord[];
+  /** ALERT RECOVERY — recovery emails delivered by this run (the dedupe record: never re-sent). */
+  recovered?: AlertRecoveredRecord[];
+  /** ALERT RECOVERY — recoveries that were due and NOT delivered, with why (the same reasons as `undelivered`). Null when nothing was lost. */
+  recoveryUndelivered?: AlertUndelivered | null;
 }
 
 /**

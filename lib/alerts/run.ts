@@ -47,6 +47,11 @@ import {
 import { captureAlertDeliveryFailure } from "@/lib/alerts/delivery-capture";
 import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
 import { currentJobRun } from "@/lib/jobs/run";
+import {
+  advanceRecovery, cleanlyEvaluatedRules, clearRecoveredSuppression, deliveredRecoveryKeys, durationLabel,
+  openDelivered, previousOpen, recoveredRecord, recoveryKeyOf,
+  type AlertOpenRecord, type AlertRecoveredRecord,
+} from "@/lib/alerts/recovery";
 
 /** JobRun name of the alert-evaluation job (registered in lib/jobs/registry.ts). */
 export const ALERT_JOB_NAME = "evaluate-alerts";
@@ -66,8 +71,12 @@ export interface AlertRunDeps {
   loadRecentRuns?: (limit: number) => Promise<AlertRunSummary[]>;
   /** The destination address, or null when unconfigured. */
   resolveDestination?: () => string | null;
-  /** Deliver the alert email; returns the OPS-1 EmailResult status (+ transport name). */
-  sendAlertEmail?: (to: string, data: AlertEmailData) => Promise<{ status: string; provider?: string }>;
+  /**
+   * Deliver the alert email; returns the OPS-1 EmailResult status (+ transport name).
+   * ALERT RECOVERY — a recovery email passes its own `idempotencyKey` (the
+   * recovery key), forwarded to the provider; a firing email passes none.
+   */
+  sendAlertEmail?: (to: string, data: AlertEmailData, opts?: { idempotencyKey?: string }) => Promise<{ status: string; provider?: string }>;
   /** Re-notify window override (ms). */
   renotifyMs?: number;
   /** Rule set override (tests). */
@@ -166,8 +175,11 @@ function resolveDestinationDefault(): string | null {
   return env.PLATFORM_ALERTS_EMAIL;
 }
 
-async function sendAlertEmailDefault(to: string, data: AlertEmailData): Promise<{ status: string; provider?: string }> {
-  const res = await sendEmail("platform-alert", to, data as unknown as Record<string, unknown>, { key: "PLATFORM_ALERT", recipientUserId: null });
+async function sendAlertEmailDefault(to: string, data: AlertEmailData, opts?: { idempotencyKey?: string }): Promise<{ status: string; provider?: string }> {
+  const res = await sendEmail("platform-alert", to, data as unknown as Record<string, unknown>, {
+    key: "PLATFORM_ALERT", recipientUserId: null,
+    ...(opts?.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
+  });
   return { status: res.status, provider: res.provider };
 }
 
@@ -203,7 +215,8 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   };
 
   const signals = evaluateAlertRules(authorities, isEnabled, rules);
-  const priorFired = extractPriorFired(recentRuns);
+  // ALERT RECOVERY — a recovered episode's last delivery no longer suppresses its re-fire.
+  const priorFired = clearRecoveredSuppression(extractPriorFired(recentRuns), recentRuns);
   const { toSend, suppressed } = decideDeliveries(signals, priorFired, now.getTime(), deps.renotifyMs);
 
   // ── Deliver (best-effort) ──────────────────────────────────────────────────
@@ -261,6 +274,40 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   }
 
   const deliveredAtISO = now.toISOString();
+
+  // ── ALERT RECOVERY (lib/alerts/recovery.ts) ─────────────────────────────────
+  // Advance the tracked episodes against THIS cycle's signals; an episode absent
+  // for RECOVERY_ABSENT_EVALUATIONS clean evaluations gets ONE recovery email,
+  // under exactly the gates a firing email meets.
+  const advance = advanceRecovery({
+    previous: previousOpen(recentRuns),
+    signals,
+    cleanlyEvaluated: cleanlyEvaluatedRules(authorities, isEnabled, rules),
+    deliveredRecoveries: deliveredRecoveryKeys(recentRuns),
+    nowISO: deliveredAtISO,
+  });
+  const recovered: AlertRecoveredRecord[] = [];
+  let recoveryUndelivered: AlertUndelivered | null = null;
+  if (advance.due.length > 0) {
+    if (ledgerStartWriteFailed()) {
+      recoveryUndelivered = { reason: "LEDGER_WRITE_FAILED", breaches: advance.due.length };
+      console.error(`[alerts] ${advance.due.length} recovery notice(s) NOT delivered: this run's JobRun start row failed to write (OBS-015 circuit breaker).`);
+    } else if (!destination) {
+      recoveryUndelivered = { reason: "NO_DESTINATION", breaches: advance.due.length };
+    } else {
+      let lost = 0;
+      let lostReason: AlertUndelivered["reason"] = "SEND_ERROR";
+      for (const o of advance.due) {
+        const outcome = await deliverOne(sendAlertEmail, destination, recoveryEmailData(o, deliveredAtISO, rules), environment, recoveryKeyOf(o.identity, o.firstFiredAtISO));
+        if (outcome.delivered) recovered.push(recoveredRecord(o, deliveredAtISO));
+        else { lost++; lostReason = outcome.reason; }
+      }
+      if (lost > 0) recoveryUndelivered = { reason: lostReason, breaches: lost };
+    }
+  }
+  const recoveredIds = new Set(recovered.map((r) => r.identity));
+  const open: AlertOpenRecord[] = openDelivered(advance.open.filter((o) => !recoveredIds.has(o.identity)), delivered, deliveredAtISO);
+
   const fired: AlertFiredRecord[] = delivered.map((s) => ({
     ruleId: s.ruleId,
     kind: s.kind,
@@ -300,10 +347,62 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
       firing: signals.length,
       delivered: delivered.length,
       suppressed: suppressed.length,
+      recovered: recovered.length,
     },
     rules: ruleOutcomes,
     fired,
+    open,
+    recovered,
+    recoveryUndelivered,
   };
+}
+
+/** The resolved-variant payload for one recovered episode. */
+function recoveryEmailData(o: AlertOpenRecord, nowISO: string, rules: readonly AlertRuleDefinition[]): AlertEmailData {
+  const rec = recoveredRecord(o, nowISO);
+  return {
+    evaluatedAtISO: nowISO,
+    alerts: [],
+    resolved: {
+      ruleId: o.ruleId,
+      ruleTitle: rules.find((r) => r.id === o.ruleId)?.title ?? o.ruleId,
+      dedupeKey: o.dedupeKey,
+      firstFiredAtISO: rec.firstFiredAtISO,
+      clearedAtISO: rec.clearedAtISO,
+      durationLabel: durationLabel(rec.durationMs),
+    },
+  };
+}
+
+/**
+ * One recovery send, classified EXACTLY as the firing send is: `sent` is
+ * delivered; `captured` is delivered only where capture is the expected
+ * transport (development/test — OBS-003); anything else is lost and retried
+ * next cycle.
+ */
+async function deliverOne(
+  send: NonNullable<AlertRunDeps["sendAlertEmail"]>,
+  to: string,
+  data: AlertEmailData,
+  environment: string | undefined,
+  idempotencyKey: string,
+): Promise<{ delivered: true } | { delivered: false; reason: AlertUndelivered["reason"] }> {
+  try {
+    const res = await send(to, data, { idempotencyKey });
+    const status = normalizeStatus(res.status);
+    if (status === "sent") return { delivered: true };
+    if (status === "captured") {
+      if (captureIsExpected(environment)) return { delivered: true };
+      console.error(`[alerts] a recovery notice was NOT delivered: the email chokepoint selected the capture transport (no RESEND_API_KEY) in NODE_ENV=${environment ?? "(unset)"}.`);
+      return { delivered: false, reason: "NO_EMAIL_TRANSPORT" };
+    }
+    captureAlertDeliveryFailure(res, 1);
+    return { delivered: false, reason: "SEND_ERROR" };
+  } catch (e) {
+    console.warn("[alerts] recovery email delivery failed (non-fatal):", e);
+    captureAlertDeliveryFailure(e, 1);
+    return { delivered: false, reason: "SEND_ERROR" };
+  }
 }
 
 function normalizeStatus(status: string): AlertRunSummary["deliveryStatus"] {
