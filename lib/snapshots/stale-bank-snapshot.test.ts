@@ -19,6 +19,7 @@ import { MATERIAL_VALUE_SHARE } from "@/lib/freshness/space-freshness";
 import { regenerateDay, type DayRegenInput } from "./regenerate-history.core";
 import { resolveSnapshotCompleteness } from "./snapshot-completeness.core";
 import { resolveCryptoValuationState, isCryptoAssertable } from "./crypto-valuation-status.core";
+import { cryptoHoldersNotValued, valueCryptoDay } from "@/lib/crypto/historical-crypto-valuation.core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -36,6 +37,7 @@ const SNAP_DATE = new Date(Date.UTC(2026, 2, 20));
 interface FakeAccount {
   id: string; type: string; balance: number; currency: string;
   syncStatus: string | null; lastUpdated: Date; balanceLastUpdatedAt: Date | null;
+  walletChain?: string | null;
 }
 
 function acct(id: string, type: string, balance: number, ageDays: number, over: Partial<FakeAccount> = {}): FakeAccount {
@@ -58,7 +60,7 @@ function makeFake(accounts: FakeAccount[]) {
           visibilityLevel: "FULL",
           financialAccount: {
             id: a.id, type: a.type, balance: a.balance, currency: a.currency,
-            walletChain: null, lastUpdated: a.lastUpdated, availableBalance: null,
+            walletChain: a.walletChain ?? null, lastUpdated: a.lastUpdated, availableBalance: null,
           },
         }));
       },
@@ -79,7 +81,8 @@ function makeFake(accounts: FakeAccount[]) {
     spaceSnapshot: {
       async upsert(args: UpsertArgs) { calls.push({ name: "spaceSnapshot.upsert" }); upserted = args; return {}; },
     },
-    positionObservation: { async findMany() { return []; } },
+    // Nothing observed for any wallet: a spine-chain wallet resolves NO_OBSERVATION.
+    positionObservation: { async findMany() { return []; }, async groupBy() { return []; } },
     manualAssetValuation: { async findMany() { return []; } },
   };
   return { client, calls, get upserted() { return upserted; } };
@@ -222,6 +225,66 @@ async function partTwoWriter(): Promise<void> {
   }
 }
 
+async function partFourUnvalued(): Promise<void> {
+  const { regenerateSpaceSnapshot } = await import("@/lib/snapshots/regenerate");
+
+  console.log("\n7. FM-AUDIT-022 — a snapshot EXCLUDING an unvalued wallet is marked incomplete");
+  {
+    const wallet = acct("w-unobs", "crypto", 999, 0.2, { walletChain: "SOL" }); // stale column, nothing observed
+    const fx = makeFake([acct("chk", "checking", 3_000, 0.2), wallet]);
+    await regenerateSpaceSnapshot("space-u1", SNAP_DATE, fx.client as never, NOW);
+    const u = fx.upserted as UpsertArgs | null;
+    check("the unvalued wallet is excluded (crypto 0, never the 999 column)", u?.create.crypto === 0 && u?.create.netWorth === 3_000,
+      JSON.stringify(u?.create));
+    check("…and the row is stamped completenessTier 'incomplete' (create AND update)",
+      u?.create.completenessTier === "incomplete" && u?.update.completenessTier === "incomplete");
+    check("…still an observation otherwise (fresh bank ⇒ no isEstimated key)", !("isEstimated" in (u?.create ?? {})));
+    check("…which the canonical resolver reads as recorded incomplete",
+      resolveSnapshotCompleteness({ isEstimated: false, completenessTier: u?.create.completenessTier }).tier === "incomplete");
+
+    const sx = makeFake([acct("chk", "checking", 3_000, 30), wallet]);
+    await regenerateSpaceSnapshot("space-u2", SNAP_DATE, sx.client as never, NOW);
+    const v = sx.upserted as UpsertArgs | null;
+    check("stale bank + unvalued wallet ⇒ estimate, worst tier 'incomplete' wins over 'estimated'",
+      v?.create.isEstimated === true && v?.create.completenessTier === "incomplete");
+
+    const ok = makeFake([acct("chk", "checking", 3_000, 0.2)]);
+    await regenerateSpaceSnapshot("space-u3", SNAP_DATE, ok.client as never, NOW);
+    check("no unvalued wallet ⇒ tier stays null (unchanged)", (ok.upserted as UpsertArgs | null)?.create.completenessTier === null);
+  }
+
+  console.log("\n8. History: a crypto wallet with nativeBalance == null is a holder NOT valued");
+  {
+    // A licensed day valuing one wallet; a second wallet has no native quantity.
+    const valued = { financialAccountId: "w-ok", name: "W1", nativeBalance: 1, assetKey: "BTC", symbol: "BTC", applicable: true };
+    const valuation = valueCryptoDay({ accounts: [valued], unitPriceByAssetKey: { BTC: 100 }, quantityLicensed: true });
+    const unq = (applicable: boolean) => ({ financialAccountId: "w-null", name: "W2", nativeBalance: null, assetKey: null, symbol: null, applicable });
+    check("guard: inside its existence interval it is reported missing",
+      cryptoHoldersNotValued({ accounts: [valued, unq(true)] }, valuation).join() === "w-null");
+    check("guard: outside it, nothing is claimed", cryptoHoldersNotValued({ accounts: [valued, unq(false)] }, valuation).length === 0);
+    const day = regenerateDay({
+      date: "2026-03-01", existingIsEstimated: true,
+      existing: { stocks: 0, crypto: 50, total: 50, cash: 1_000, savings: 0, debt: 0, netWorth: 1_050, totalAssets: 1_050, netLiquid: 1_000, cashOnHand: 1_000 },
+      base: { totalInvestments: 0, totalDigitalAssets: 999, totalChecking: 1_000, totalSavings: 0, totalLiabilities: 0, totalRealAssets: 0 },
+      investmentValue: 0, investmentTier: "observed", hasInvestmentEvidence: false,
+      digitalAssetValue: 100, digitalAssetTier: "estimated", hasDigitalAssetEvidence: true,
+      cashCardTier: "derived", membershipChangedSince: false,
+      cryptoHoldersNotValued: ["w-null"],
+    } as DayRegenInput);
+    check("core: that day's crypto is 'unavailable', never 'supported'", day.cryptoValuationStatus === "unavailable", String(day.cryptoValuationStatus));
+    check("core: the stored crypto is preserved — neither the 100 partial nor the 999 column is written",
+      day.fieldPatch?.crypto === undefined && day.components?.find((c) => c.component === "crypto")?.action === "preserved");
+
+    const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
+    const H = read("lib/snapshots/regenerate-history.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    check("binding: null-native crypto wallets are collected", /unquantifiedCryptoAccounts = accounts\.filter\(\(a\) => a\.type === "crypto" && a\.nativeBalance == null\)/.test(H));
+    check("binding: …and handed to the holder guard with quantity null inside their floor",
+      /cryptoHoldersNotValued\(\{\s*accounts: \[\s*\.\.\.cryptoDayAccounts,\s*\.\.\.unquantifiedCryptoAccounts\.map\(\(a\) => \(\{[\s\S]{0,120}nativeBalance: null[\s\S]{0,120}applicable: floorByAccount\.get\(a\.id\)!\.getTime\(\) <= d\.getTime\(\)/.test(H));
+    check("binding: crypto is never held flat (the shared predicate admits only checking/savings/debt)",
+      /if \(a\.type !== "checking" && a\.type !== "savings" && a\.type !== "debt"\) return false;/.test(read("lib/snapshots/backfill-core.ts")));
+  }
+}
+
 function partThreeStatic(): void {
   console.log("\n6. Static pins — one gate, every caller through it");
   const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
@@ -263,6 +326,7 @@ void (async () => {
   partOneRule();
   await partTwoWriter();
   partThreeStatic();
+  await partFourUnvalued();
   if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
   console.log("\nAll FM-AUDIT-021 checks passed");
 })().catch((e) => { console.error(e); process.exit(1); });

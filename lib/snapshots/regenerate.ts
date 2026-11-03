@@ -299,7 +299,10 @@ export async function regenerateSpaceSnapshot(
   // migration window exists. Production today is all-USD (unconverted is
   // always false), so no live row changes.
   const composition = {
-    completenessTier: c.unconverted ? ("incomplete" as const) : null,
+    // FM-AUDIT-022 (FIN-B) — an unvalued wallet (NO_PRICE / NO_OBSERVATION) is
+    // EXCLUDED from every total by classifyAccounts, exactly like an
+    // FX-unavailable row, so the sum is equally partial and is stamped the same.
+    completenessTier: c.unconverted || c.unvaluedCount > 0 ? ("incomplete" as const) : null,
     contributingComponentCount: null,
     totalComponentCount: null,
     // V26-CRYPTO-STATUS-1 — written EXPLICITLY null, never omitted. This writer

@@ -184,7 +184,9 @@ function partOneStructural(): void {
   // canonical completeness vocabulary rather than storing partial-as-complete.
   check(
     "FX-partial sums are disclosed at the write site (unconverted → 'incomplete' tier)",
-    /completenessTier:\s*c\.unconverted\s*\?\s*\(?["']incomplete["']/.test(regenCode),
+    // FM-AUDIT-022 re-pin: the same stamp now also covers unvalued wallets
+    // (`|| c.unvaluedCount > 0`); the FX clause is still required, verbatim.
+    /completenessTier:\s*c\.unconverted\s*\|\|\s*c\.unvaluedCount\s*>\s*0\s*\?\s*\(?["']incomplete["']/.test(regenCode),
   );
 }
 
