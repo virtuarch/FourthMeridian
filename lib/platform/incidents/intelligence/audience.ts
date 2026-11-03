@@ -41,8 +41,7 @@
  * this minter ever pass "CUSTOMER_SUCCESS" to it.
  */
 
-import { UserRole } from "@prisma/client";
-import type { PlatformAuth } from "@/lib/platform/authorize";
+import { UserRole, type PlatformArea, type PlatformAccessLevel } from "@prisma/client";
 import type { IncidentAudience } from "./types";
 
 declare const AUDIENCE_BRAND: unique symbol;
@@ -66,7 +65,13 @@ function mint<A extends IncidentAudience>(audience: A): AudienceToken<A> {
 }
 
 /** Only the parts of a guard result the tier depends on. */
-export type AudienceAuth = { user: Pick<PlatformAuth["user"], "role">; grant: PlatformAuth["grant"] };
+/**
+ * Structurally the `PlatformAuth` that requirePlatformAccess returns (lib/platform/authorize.ts),
+ * declared here WITHOUT importing that module: the alert engine imports this file, and the
+ * background snapshot path must not reach the session layer (background-authority.test.ts).
+ * Assignability from PlatformAuth is pinned in intelligence/r4-audience-type.test.ts.
+ */
+export type AudienceAuth = { user: { role: UserRole }; grant: { area: PlatformArea; level: PlatformAccessLevel } | null };
 
 /** The tier the route's EXISTING guard result entitles — never more. */
 /** Grant levels that may read incidents (every PlatformAccessLevel is ≥ READ; an unknown one mints nothing). */

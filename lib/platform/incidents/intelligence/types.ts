@@ -243,6 +243,10 @@ export interface IncidentVerdict {
   severity: Severity;
   /** One notch lower for an `unverified` row; equal otherwise. Attention ranks on this. */
   effectiveSeverity: Severity;
+  /** The semantics authority's member-actionability (classifySyncIssue): an affirmative bank-transaction signal. */
+  customerActionable: boolean;
+  /** The semantics authority's held-cursor flag — the only condition with a proven automatic resolver. */
+  cursorBlocking: boolean;
   /** Registered operation key, or null when unprovable. */
   operation: string | null;
   /** Operator wording. */

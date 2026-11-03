@@ -12,18 +12,22 @@
 
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { getCsOverview } from "@/lib/platform/customer/overview";
 import type { CsOverviewResponse } from "@/lib/platform/customer/overview-types";
 
 export const runtime = "nodejs";
 
 export async function GET(req: Request): Promise<Response> {
-  const [, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
+  const [auth, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
   if (err) return err;
+  // PB-1 R4 — the incident tier follows THIS guard result (never a parameter).
+  const incidentToken = incidentAudienceFor(auth);
+  if (!incidentToken || incidentToken.audience !== "CUSTOMER_SUCCESS") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const raw = new URL(req.url).searchParams.get("window");
   if (raw !== null && raw !== "30" && raw !== "90") {
     return NextResponse.json({ error: "window must be 30 or 90" }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
-  const body = await getCsOverview(raw === "90" ? 90 : 30);
+  const body = await getCsOverview(raw === "90" ? 90 : 30, incidentToken);
   return NextResponse.json(body satisfies CsOverviewResponse, { headers: { "Cache-Control": "no-store" } });
 }

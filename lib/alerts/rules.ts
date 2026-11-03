@@ -15,7 +15,7 @@
  *   - Connection health  getConnectionHealth()      (lib/connections/health.ts)
  *   - AI failures        getAiFailureHealth()       (lib/platform/ai/failures.ts)
  *   - AI spend           getAiSpendHealth()         (lib/platform/ai/spend-health.ts)
- *   - Sync incidents     getActiveIncidentPage()    (lib/platform/incidents/projections.ts)
+ *   - Sync incidents     incidentAccessors.alertable(SYSTEM)  (lib/platform/incidents/intelligence)
  * and the destination is OPS-1's sendEmail() (lib/email/send.ts). The engine
  * (lib/alerts/evaluate.ts) NEVER queries a product table or re-derives a health
  * state — it only classifies signals over authority OUTPUT.

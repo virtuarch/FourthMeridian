@@ -16,13 +16,14 @@ import { getIncidentsDailySeries } from "./incidents-daily";
 import { loadAttention } from "./attention";
 import { buildCsOverview } from "./overview-core";
 import type { CsOverviewResponse } from "./overview-types";
+import type { CsToken } from "@/lib/platform/incidents/intelligence";
 
 export { ACTIVE_INCIDENT_SCAN } from "./attention";
 
-export async function getCsOverview(windowDays: 30 | 90, now: Date = new Date()): Promise<CsOverviewResponse> {
+export async function getCsOverview(windowDays: 30 | 90, incidentToken: CsToken, now: Date = new Date()): Promise<CsOverviewResponse> {
   const client = systemDb;
   const [attention, deactivated, health, daily] = await Promise.all([
-    loadAttention(now, client),
+    loadAttention(incidentToken, now, client),
     client.user.count({ where: { role: "USER", deactivatedAt: { not: null } } }),
     getConnectionHealth(0),
     getIncidentsDailySeries(now, windowDays),

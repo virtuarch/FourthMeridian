@@ -45,8 +45,13 @@ function convergenceReferentExists(w: World, r: WorldRow): boolean {
 
 const classifiable = (r: WorldRow) => ({ kind: r.kind, provider: r.provider, detail: r.detail, plaidTransactionId: r.plaidTransactionId });
 
-/** R4 canonical projection (getActiveIncidentPage + episodeStateOf): active only. */
-export function projectionReader(w: World): Verdict[] {
+/**
+ * R4 BASELINE — the projection AS IT WAS before its cutover (PB-1 R4):
+ * resolved=false, then episodeStateOf with the account-else-item referent check
+ * (deletedAt / REVOKED not honoured). Kept INLINE for the §13.2 sensitivity
+ * checks; no production code implements this rule any more.
+ */
+export function projectionBaselineReader(w: World): Verdict[] {
   return w.rows.filter((r) => !r.resolved).map((r) => {
     const state = syncIssueState(classifiable(r), { referentExists: projectionReferentExists(w, r), resolved: r.resolved });
     return { reader: "projection", rowId: r.id, open: state === "active", state, severity: classifySyncIssue(classifiable(r)).severity };
@@ -122,9 +127,24 @@ export function convergenceReader(w: World): Verdict[] {
   }));
 }
 
-/** R5 — alerts: the projection's active set, critical only, grouped per item. */
+/**
+ * R4 — the projection AFTER its cutover: getActiveIncidentPage reads the module's
+ * `brokenNow` (CS / Ops token). R6a / R6b consume this page.
+ */
+export function projectionReader(w: World): Verdict[] {
+  return moduleVerdicts(w, "PLATFORM_OPS").filter((v) => v.rowClass === "incident").map((v) => ({
+    reader: "projection" as const, rowId: v.id, open: v.brokenNow, severity: v.severity,
+  }));
+}
+
+/**
+ * R4/R5 — alerts AFTER the projection cutover: with the SYSTEM token the page is
+ * the module's `alertable` set, and the rule keeps critical only, grouped per item.
+ */
 export function alertsReader(w: World): Verdict[] {
-  return projectionReader(w).filter((v) => v.open && v.severity === "critical").map((v) => {
+  return moduleVerdicts(w, "SYSTEM").filter((v) => v.alertable && v.severity === "critical").map((v) => ({
+    reader: "alerts" as const, rowId: v.id, open: true, severity: v.severity,
+  })).map((v) => {
     const r = w.rows.find((x) => x.id === v.rowId)!;
     return { ...v, reader: "alerts", groupKey: r.plaidItemId ? `item:${r.plaidItemId}` : `episode:${r.id}` };
   });

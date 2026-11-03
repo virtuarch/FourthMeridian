@@ -36,6 +36,7 @@ import { loadLatestAlertEvaluation, loadRecentAlertRuns } from "@/lib/alerts/run
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { collectAlertHistory, type AlertFiredRecord } from "@/lib/alerts/evaluate";
 import { getIncidentPreview } from "@/lib/platform/incidents/preview";
+import type { OpsToken } from "@/lib/platform/incidents/intelligence";
 import { getIncidentDetail } from "@/lib/platform/incidents/projections";
 import { projectIncidentForPlatform, type PlatformIncidentProjection } from "@/lib/platform/incidents/platform-projection";
 import {
@@ -102,8 +103,8 @@ async function attempt<T>(what: AttentionAuthority | UserImpactAuthority | "aler
 }
 
 /** Active incidents through the D5 projection, with an execution named where one is correlated. */
-async function readIncidents(): Promise<NonNullable<AttentionInputs["incidents"]>> {
-  const preview = await getIncidentPreview(ATTENTION_INCIDENT_LIMIT);
+async function readIncidents(token: OpsToken): Promise<NonNullable<AttentionInputs["incidents"]>> {
+  const preview = await getIncidentPreview(token, ATTENTION_INCIDENT_LIMIT);
   const lookups = preview.items.filter((i) => i.executionCorrelated).slice(0, INCIDENT_EVIDENCE_LOOKUPS);
   const executionById = new Map<string, string | null>();
   await Promise.all(
@@ -117,7 +118,11 @@ async function readIncidents(): Promise<NonNullable<AttentionInputs["incidents"]
   return { items, activeTotal: preview.activeTotal, truncated: preview.truncated };
 }
 
-export async function getAttention(now: Date = new Date()): Promise<AttentionResponse> {
+export async function getAttention(
+  /** PB-1 R4 — the Ops-tier incident token the ROUTE minted (atOpsTier) from its own guard result. */
+  incidentToken: OpsToken,
+  now: Date = new Date(),
+): Promise<AttentionResponse> {
   const connectionsP = attempt("connection-health", () => getConnectionHealth(20));
   const freshnessP = attempt("resource-freshness", () => checkResourceFreshness(undefined, now));
 
@@ -135,7 +140,7 @@ export async function getAttention(now: Date = new Date()): Promise<AttentionRes
       latest: await loadLatestAlertEvaluation(),
       titles: Object.fromEntries(ALERT_RULES.map((r) => [r.id, r.title])),
     })),
-    attempt("incidents", readIncidents),
+    attempt("incidents", () => readIncidents(incidentToken)),
     attempt("alert-history", () => loadRecentAlertRuns()),
     // BETA V1 — user-impact readers, each best-effort and named when it fails.
     attempt("refresh-executions", async () => {

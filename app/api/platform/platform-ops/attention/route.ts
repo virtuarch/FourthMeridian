@@ -13,6 +13,7 @@
 
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { atOpsTier, incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { getAttention, type AttentionResponse } from "@/lib/platform/ops/attention";
 
 export const runtime = "nodejs";
@@ -20,7 +21,10 @@ export const runtime = "nodejs";
 export type { AttentionResponse };
 
 export async function GET() {
-  const [, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
+  const [auth, err] = await requirePlatformAccess("PLATFORM_OPS", "READ");
   if (err) return err;
-  return NextResponse.json((await getAttention()) satisfies AttentionResponse);
+  // PB-1 R4 — the incident tier follows THIS guard result, pinned to the identity-free Ops tier.
+  const incidentToken = atOpsTier(incidentAudienceFor(auth));
+  if (!incidentToken) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  return NextResponse.json((await getAttention(incidentToken)) satisfies AttentionResponse);
 }

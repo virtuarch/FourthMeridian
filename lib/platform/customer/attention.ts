@@ -32,6 +32,7 @@ import { UNASSIGNED_CUSTOMER_WHERE } from "@/lib/platform/policy-assignment-heal
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
 import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
+import type { CsToken, OpsToken } from "@/lib/platform/incidents/intelligence";
 import { foldAttention, type AttentionFacts, type AttentionFold } from "./attention-core";
 
 const BROKEN = ["NEEDS_REAUTH", "ERROR"] as const;
@@ -50,6 +51,8 @@ export interface AttentionRead {
 }
 
 export async function loadAttention(
+  /** PB-1 R4 — the incident token the ROUTE minted from its own guard result. */
+  incidentToken: CsToken | OpsToken,
   now: Date = new Date(), client = systemDb,
   /** Test seam only; production reads the resolver's own mode (entitlementLoadOptions). */
   opts: { failClosed?: boolean; cap?: number } = {},
@@ -70,7 +73,7 @@ export async function loadAttention(
     client.connection.findMany({ where: { status: { in: [...BROKEN] }, provider: { notIn: [...NOT_LIVE_PROVIDER] } }, select: { userId: true }, take: cap }),
     // The canonical ACTIVE incidents (derived state: orphaned, superseded and event rows excluded) —
     // the same read the Incidents workspace uses, so both say the same number.
-    getActiveIncidentPage(ACTIVE_INCIDENT_SCAN),
+    getActiveIncidentPage(incidentToken, ACTIVE_INCIDENT_SCAN),
     client.customerPolicyAssignment.findMany({ where: { policyGroup: { notIn: live } }, select: { userId: true }, take: cap }),
     // S2 ruling — unassigned customers are a reason only while fail-closed is ENFORCED;
     // the SAME predicate as the Platform Ops policy-assignment alert. Not read otherwise.
