@@ -149,14 +149,15 @@ Pending decisions in code: `lib/platform/customer/population.ts` names OD-1..OD-
 **Minimal renames — ENGINEERING (no owner input).** Status per item; copy only, populations and numbers unchanged (pinned):
 - `OpsActivityWidget` DAU/WAU/MAU → "Sign-ins · 1 d / 7 d / 30 d". **DONE** (#350)
 - GrowthLead "Signed in" → "Present". **DONE** (#350)
-- CS "Signed-in sessions", Security "Active sessions" and Growth "With a live session" → "Live sessions" (apply the lifetime rule to their reads). **DONE** (#350) (the reads already used `liveSessionWhere` since #345; Security's stated derivation now says so).
+- CS "Signed-in sessions", Security "Active sessions" and Growth "With a live session" → "Live sessions" (apply the lifetime rule to their reads). **DONE** (#350) (the reads already used `liveSessionWhere` since #345; Security's stated derivation now says so). Follow-up **DONE** (#PRNUM): Growth's figure counts accounts, so it reads "Accounts with a live session" (`accounts-with-live-session@1`), and the legacy /admin "Active sessions" reads "Live sessions". The session lockout (`deletionScheduledAt` too) is the auth rule (#291), kept distinct from the Open-account population rule.
 - "active this week" → "Engaged · 7 d". **DONE** (#350)
 - Economics "Active customers · this cycle" → "Engaged customers · this cycle" (or · 30 d, per OD-1); "Cost per active customer" → "Cost per engaged customer". **DONE** (#350) (cycle kept; both figures' basis states the OD-1..OD-4 definition is pending).
 - CS "active customers" → "open customer accounts". **DONE** (#350) (with an OD-2 / OD-4 "pending the owner's definition" caption).
 - Growth "open accounts" → use the Customer ∧ Open-account population. **NOT DONE** — waits on OD-2.
-- "Returning ever" → "Returned (ever)"; CS "Last active" → "Last interaction". **DONE** (#350)
+- "Returning ever" → "Returned (ever)"; CS "Last active" → "Last interaction". **DONE** (#350). The bucket label "active today" → "today" (the Last-interaction words; none says "active") **DONE** (#PRNUM).
+- GrowthLead "… this week" subline → "… in 7 d · … in 30 d (UTC days)". **DONE** (#PRNUM)
 - Constants: `ENGAGEMENT_WINDOW_DAYS` becomes the only window source (`PRODUCT_ANALYTICS_WINDOW_DAYS = ENGAGEMENT_WINDOW_DAYS.mau`; drop the literals) — **DONE** (#350); rolling 7 × 24 h reads move to UTC days — **NOT DONE** (changes numbers: new metric versions; each read carries a `rolling — see PLATFORM-INTELLIGENCE X5` note). Changing those reads changes their numbers, so they get new metric versions, not edits.
-- Registry: add `open-customers@1` and `live-sessions@1` — **DONE** (#350); register the economics figures after OD-1 (not done). `engaged-users@1` keeps its id.
+- Registry: add `open-customers@1` and `live-sessions@1` — **DONE** (#350); `live-sessions@1` is the SESSION count and `accounts-with-live-session@1` the account count — **DONE** (#PRNUM); register the economics figures after OD-1 (not done). `engaged-users@1` keeps its id.
 
 **Decision split**
 

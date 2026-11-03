@@ -163,8 +163,10 @@ export type LastActiveBucket =
   | "WITHIN_5_MIN" | "WITHIN_HOUR" | "TODAY" | "YESTERDAY" | "THIS_WEEK" | "THIS_MONTH" | "OVER_30_DAYS" | "NEVER";
 
 /**
- * The COARSE "last active" an operator sees — a bucket, never the raw beat
- * timestamp. "Today"/"yesterday" are UTC calendar days.
+ * The COARSE "Last interaction" an operator sees — a bucket, never the raw beat
+ * timestamp. "Today"/"yesterday" are UTC calendar days. Labels are bare time
+ * phrases (the vocabulary's "Last interaction" names them); none says "active",
+ * which only "Active now" keeps (PLATFORM-INTELLIGENCE, canonical vocabulary).
  */
 export function lastActiveBucket(lastInteractionAt: Date | null, now: Date): { bucket: LastActiveBucket; label: string } {
   const t = ms(lastInteractionAt);
@@ -173,7 +175,7 @@ export function lastActiveBucket(lastInteractionAt: Date | null, now: Date): { b
   const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   if (age <= PRESENCE_CONFIG.interactionActiveMs) return { bucket: "WITHIN_5_MIN", label: "within 5 min" };
   if (age <= 60 * 60_000) return { bucket: "WITHIN_HOUR", label: "within the hour" };
-  if (t >= dayStart) return { bucket: "TODAY", label: "active today" };
+  if (t >= dayStart) return { bucket: "TODAY", label: "today" };
   if (t >= dayStart - 86_400_000) return { bucket: "YESTERDAY", label: "yesterday" };
   if (age <= 7 * 86_400_000) return { bucket: "THIS_WEEK", label: "this week" };
   if (age <= 30 * 86_400_000) return { bucket: "THIS_MONTH", label: "this month" };

@@ -187,7 +187,7 @@ export function projectSpaces(rows: readonly MembershipRow[]): CustomerSpaceView
  *   presence      Active now / Online, idle / Offline / Unknown — from the
  *                 visible-tab heartbeat clocks (lastPresenceAt, lastInteractionAt)
  *   lastActive    a COARSE bucket of the newest reported interaction — never the
- *                 raw beat timestamp (operators see "within 5 min", "active today")
+ *                 raw beat timestamp (operators see "within 5 min", "today")
  *   lastLoginAt   the newest LOGIN audit row (a real sign-in time is fine to show)
  *   activeSessions valid sessions — NOT proof any browser is open
  * UserSession.lastActiveAt (session last USED — background polls and focus
