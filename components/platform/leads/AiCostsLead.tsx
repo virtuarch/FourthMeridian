@@ -48,6 +48,7 @@ import type { PlaidUsage } from "@/lib/platform/plaid/usage";
 import type { PlatformViewLeadProps, RenderHosted } from "./lead-contract";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { AiBudgetCalls } from "./AiBudgetCalls";
+import { PlatformAiCard } from "./PlatformAiCard";
 import { CLOSED_CALLS, aiBudgetCallsUrlUpdate, openBudgetCalls, readAiBudgetCallsUrl, type AiBudgetCallsUrlState } from "./ai-budget-calls-url";
 import { Caption, ChartMessage, Doorway, Meter, Segmented } from "./visual-kit";
 import { HealthHero, type HeroModel } from "../ops-visual/HealthHero";
@@ -373,6 +374,8 @@ export function AiCostsLead({ renderHosted, hasHosted, onOpenWorkspace }: Platfo
     <>
       <AiCostsLeadSurface trend={trend} spend={spend} inv7={inv7} inv30={inv30} budget={budget} plaid={plaid} apiUsage={apiUsage}
         nowMs={nowMs} hasHosted={hasHosted} onOpenDrawer={(k) => { applyCalls(CLOSED_CALLS); setDrawer(k); }} onOpenBudgetCalls={openCalls} />
+      {/* PR C — the distinct Platform AI category (operator features; never customer spend). */}
+      <div className="mt-8 min-w-0 sm:mt-10 max-lg:mt-6"><PlatformAiCard /></div>
       <DetailDrawer open={drawer !== null} onClose={() => setDrawer(null)} eyebrow="AI & Costs" title={d?.label ?? ""} size="xl">
         {body}
       </DetailDrawer>

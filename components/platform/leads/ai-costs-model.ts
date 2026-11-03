@@ -133,6 +133,7 @@ export const SURFACE_COLORS = {
   chat: "var(--meridian-400)",
   brief: "var(--emerald-400)",
   harness: "var(--brass-300)",
+  platform: "var(--coral-400)",
   other: "var(--text-faint)",
 } as const;
 
@@ -144,6 +145,8 @@ export function spendBySurface(s: AiSpendResponse | null): { items: SliceItem[];
     { id: "chat", label: "Conversations", value: sp.customer.chat.usd ?? 0, color: SURFACE_COLORS.chat },
     { id: "brief", label: "Daily Brief", value: sp.customer.brief.usd ?? 0, color: SURFACE_COLORS.brief },
     { id: "harness", label: "Evaluation harness", value: sp.overhead.harness.usd ?? 0, color: SURFACE_COLORS.harness },
+    // PR C — operator features (Comms authoring) as their own slice, no longer inside "Unattributed".
+    { id: "platform", label: "Platform AI", value: sp.overhead.platform?.usd ?? 0, color: SURFACE_COLORS.platform },
     { id: "other", label: "Unattributed", value: sp.overhead.other.usd ?? 0, color: SURFACE_COLORS.other },
   ];
   const items = all.filter((i) => i.value > 0);

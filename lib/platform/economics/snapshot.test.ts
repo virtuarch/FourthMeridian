@@ -167,8 +167,8 @@ async function main() {
     for (const key of (Object.keys(DRILLABLE) as EconomicsFigureKey[]).filter((k) => (ECONOMICS_FIGURES as readonly string[]).includes(k)) as OverviewFigureKey[]) {
       for (const w of DRILLABLE[key]!) {
         const d = buildEconomicsDrill(inputs, key, w);
-        const kpi = w === "cycle" ? snap.figures[key] : snap.trend.windows[w as "7d"];
-        const kpiValue = key === "ai_cost" && w !== "cycle" ? snap.trend.windows[w as "7d"].value : kpi.value;
+        const kpi = w === "cycle" ? snap.figures[key] : key === "platform_ai_cost" ? snap.trend.platformAi[w as "7d"] : snap.trend.windows[w as "7d"];
+        const kpiValue = kpi.value;
         check(`${name}: ${key}.${w} — drill total ${d.total} = KPI ${kpiValue}; same status`, near(d.total, kpiValue) && d.figure.status === kpi.status && near(d.figure.value, kpiValue));
         if (kpi.drill) {
           const q = parseEconomicsDrillQuery(new URL(kpi.drill.href, "http://x").searchParams, NOW + 60_000);

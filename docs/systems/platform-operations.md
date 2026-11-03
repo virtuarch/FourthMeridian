@@ -437,7 +437,7 @@ threshold lives in its exported `PRESENCE_CONFIG`:
 
 **Overview and the AI & Costs move: IMPLEMENTED (PR A, #314).** **Providers** (cost
 view) and **Entitlements** (cost by policy group, HYPOTHETICAL scenarios):
-IMPLEMENTED (PR B, draft). The distinct Platform AI category is **PLANNED** as PR C.
+IMPLEMENTED (PR B, #326). The distinct **Platform AI** category: IMPLEMENTED (PR C, draft).
 
 - **Navigation.** `platform-economics` is a Platform Operations workspace in the place
   AI & Costs had (Operations · Providers · Economics · Policies · Incidents), with views
@@ -490,6 +490,21 @@ IMPLEMENTED (PR B, draft). The distinct Platform AI category is **PLANNED** as P
   capped at the proposed daily allowance. Customers with their own allowance (an override,
   or an overlay that sets one) are left uncapped. Nothing is written and no policy
   changes (static pin in `lib/platform/economics/providers-entitlements.test.ts`).
+- **Platform AI** (PR C) is AI the platform invokes for an *operator*, never customer
+  spend. Exactly one such path is instrumented today: Comms Center authoring ("Polish with
+  Fourth Meridian AI", `lib/notifications/content/deps.ts`), recorded with
+  `surface: "comms_authoring"` (`COMMS_AUTHORING_SURFACE`). `PLATFORM_AI_SURFACES`
+  (`lib/platform/ai/spend-by-surface-core.ts`) is the single list. The spend fold gives it
+  its own `overhead.platform` bucket; it was previously in "Unattributed". Economics ›
+  Overview shows `platform_ai_cost` (cycle, plus 7 / 30 / 90 d) and lists it as its own
+  operating-cost row. AI & Costs shows a Platform AI card with spend, calls, failures,
+  latency p50/p95 and top model. Its records
+  (`GET …/economics/platform-ai?window=&until=&page=`) list every invocation (returned and
+  failed) with model, sub-surface, in/out/cached tokens, latency, outcome, cost and an
+  opaque operator ref (`operator #…`, the same keyed token, never a customer `user #` ref; provider error prose is reduced to a code or "error"); the sum of returned cost equals the KPI. A ratchet in
+  `lib/platform/economics/platform-ai.test.ts` fails if a new operator AI call site under
+  `lib/platform`, `lib/notifications`, `app/api/platform`, `jobs` or `lib/alerts` does not record a Platform AI
+  surface.
 - **Provider health stays in Platform Operations › Providers.** Configuration stays in
   Policies; Economics reads it and never edits it.
 - All money shown stays an estimate, not a bill. See

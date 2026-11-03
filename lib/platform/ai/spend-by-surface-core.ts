@@ -30,6 +30,19 @@ export function isCustomerSurface(surface: string | null | undefined): surface i
   return (CUSTOMER_SURFACES as readonly string[]).includes(surface ?? "");
 }
 
+/**
+ * PLATFORM AI — surfaces where the model is invoked for an OPERATOR, not a
+ * customer. Today exactly one is instrumented: Comms Center authoring ("Polish
+ * with Fourth Meridian AI", lib/notifications/content/deps.ts, which records
+ * COMMS_AUTHORING_SURFACE from lib/notifications/content/ai-allowance.ts — the
+ * equality is pinned in lib/platform/economics/platform-ai.test.ts). Overhead,
+ * never customer spend; reported as its own bucket instead of "Unattributed".
+ */
+export const PLATFORM_AI_SURFACES = ["comms_authoring"] as const;
+export function isPlatformAiSurface(surface: string | null | undefined): boolean {
+  return (PLATFORM_AI_SURFACES as readonly string[]).includes(surface ?? "");
+}
+
 /** One (provider, model) group of RETURNED rows' token usage — the shape every spend fold prices. */
 export interface ModelUsageGroup {
   provider: string;
@@ -69,8 +82,8 @@ export interface SpendDay {
 export interface AiSpendBySurface {
   /** What customers caused: Conversations and the Daily Brief, and their sum. */
   customer: { chat: SpendFigure; brief: SpendFigure; total: SpendFigure };
-  /** What the platform caused: evaluation runs and anything not attributed to a customer surface. */
-  overhead: { harness: SpendFigure; other: SpendFigure; total: SpendFigure };
+  /** What the platform caused: evaluation runs, Platform AI (operator features) and anything not attributed. */
+  overhead: { harness: SpendFigure; platform: SpendFigure; other: SpendFigure; total: SpendFigure };
   /** The coverage statement: what could NOT be priced, across every surface. */
   unpriced: { tokens: number; invocations: number; models: string[] };
   byDay: SpendDay[];
@@ -117,14 +130,14 @@ function sum(...figs: SpendFigure[]): SpendFigure {
 
 /** The fold. Pure. */
 export function buildAiSpendBySurface(groups: readonly SpendGroup[], rates: readonly AiRate[] = AI_RATES): AiSpendBySurface {
-  const chat = EMPTY(), brief = EMPTY(), harness = EMPTY(), other = EMPTY();
+  const chat = EMPTY(), brief = EMPTY(), harness = EMPTY(), platform = EMPTY(), other = EMPTY();
   const unpricedModels = new Set<string>();
   let unpricedTokens = 0, unpricedInvocations = 0;
   const days = new Map<string, SpendDay>();
 
   for (const g of groups) {
     const priced = priceSpendGroup(g, rates);
-    const bucket = g.surface === "chat" ? chat : g.surface === "brief" ? brief : g.surface === "harness" ? harness : other;
+    const bucket = g.surface === "chat" ? chat : g.surface === "brief" ? brief : g.surface === "harness" ? harness : isPlatformAiSurface(g.surface) ? platform : other;
     add(bucket, g, priced);
 
     const d = days.get(g.day) ?? { day: g.day, customerUsd: null, overheadUsd: null, unpricedInvocations: 0 };
@@ -142,7 +155,7 @@ export function buildAiSpendBySurface(groups: readonly SpendGroup[], rates: read
 
   return {
     customer: { chat, brief, total: sum(chat, brief) },
-    overhead: { harness, other, total: sum(harness, other) },
+    overhead: { harness, platform, other, total: sum(harness, platform, other) },
     unpriced: { tokens: unpricedTokens, invocations: unpricedInvocations, models: [...unpricedModels].sort() },
     byDay: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)),
   };

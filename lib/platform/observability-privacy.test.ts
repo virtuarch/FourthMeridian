@@ -102,6 +102,8 @@ const READERS = [
   "lib/platform/economics/providers-core.ts",
   "lib/platform/economics/entitlements-core.ts",
   "lib/platform/economics/providers-entitlements.ts",
+  // PR C — the Platform AI records reader (operators as opaque refs only).
+  "lib/platform/economics/platform-ai.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -141,6 +143,7 @@ const ROUTES = [
   "app/api/platform/platform-ops/economics/providers/route.ts",
   "app/api/platform/platform-ops/economics/entitlements/route.ts",
   "app/api/platform/platform-ops/economics/scenario/route.ts",
+  "app/api/platform/platform-ops/economics/platform-ai/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");
