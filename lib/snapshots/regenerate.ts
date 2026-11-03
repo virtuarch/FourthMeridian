@@ -54,7 +54,7 @@ import {
   type SnapshotAccountsClient,
 } from "@/lib/snapshots/space-accounts";
 import { classifyAccounts } from "@/lib/account-classifier";
-import { computeSnapshotFields } from "@/lib/snapshots/backfill-core";
+import { computeSnapshotFields, snapshotRestrictedCash } from "@/lib/snapshots/backfill-core";
 import { buildSpaceConversionContext } from "@/lib/money/server-context";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
@@ -405,19 +405,21 @@ export async function regenerateSpaceSnapshot(
     console.log(`[snapshot] space ${spaceId}: ${staleBankIds.length} material bank balance(s) past the freshness horizon — today's row written as an estimate (FM-AUDIT-021).`);
   }
 
+  // FIN-E part 2 — the restricted share of today's cash, from the SAME `c`.
+  const restrictedCash = snapshotRestrictedCash(c);
   await client.spaceSnapshot.upsert({
     where: { spaceId_date: { spaceId, date } },
     create: {
       spaceId, date,
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
-      reportingCurrency,
+      reportingCurrency, restrictedCash,
       ...written,
     },
     update: {
       stocks, crypto, total, cash, savings, debt,
       netWorth, totalAssets, netLiquid, cashOnHand,
-      reportingCurrency,
+      reportingCurrency, restrictedCash,
       ...written,
       ...(supersedesEstimate ? { isEstimated: false } : {}),
     },

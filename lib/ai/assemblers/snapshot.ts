@@ -44,7 +44,7 @@
  */
 
 import { getRecentSnapshots } from '@/lib/data/snapshots';
-import { ALL_CASH_HISTORY_AI_NOTE } from '@/lib/liquidity/cash-history';
+import { ALL_CASH_HISTORY_AI_NOTE, UNRESTRICTED_HISTORY_AI_NOTE, cashHistoryBasisOf, cashOnBasis } from '@/lib/liquidity/cash-history';
 /**
  * RLS-AI-S6 — THE ASSEMBLER'S READ AUTHORITY IS NOW A PARAMETER, SO THIS FILE
  * HOLDS NO CLIENT AT ALL.
@@ -147,6 +147,9 @@ export function projectSnapshotSection(
   // arithmetically composed WITH the crypto component — on the affected rows it
   // is 41.7%–99.9% of totalAssets. `liabilities`, `liquid`, `investments`,
   // `cashOnHand` and `netLiquid` never involved crypto and stay factual.
+  // FIN-E part 2 — ONE basis for the whole section: UNRESTRICTED only when every
+  // usable row recorded its restricted share; otherwise ALL_CASH (never stitched).
+  const liquidBasis = cashHistoryBasisOf(usable);
   const points: SnapshotDataPoint[] = usable.map((r) => {
     // v2.6-A/B — the AGGREGATE's verdict decides, not one component's boolean.
     // A model must never receive an unassertable Net Worth as a fact, and after
@@ -161,12 +164,12 @@ export function projectSnapshotSection(
       netWorth:      contaminated ? null : r.netWorth,
       totalAssets:   contaminated ? null : r.totalAssets,
       liabilities:   r.totalDebt,                    // rename for semantic clarity
-      // FIN-005 — ALL cash (restricted included): `liquidBasis` below says so.
-      liquid:        r.totalCash + r.totalSavings,
+      // FIN-005 / FIN-E — on the section's `liquidBasis` (ALL_CASH: restricted included).
+      liquid:        cashOnBasis(r, liquidBasis),
       investments:   r.totalInvestments,             // rename for semantic clarity
       digitalAssets: contaminated ? null : r.totalCrypto,  // rename for semantic clarity
       cashOnHand:    r.cashOnHand,
-      netLiquid:     r.netLiquid ?? 0,
+      netLiquid:     liquidBasis === 'UNRESTRICTED' ? (r.netLiquid ?? 0) - (r.restrictedCash as number) : r.netLiquid ?? 0,
       ...(contaminated
         ? { digitalAssetsUnavailableReason: r.cryptoUnavailableReason ?? "HISTORICAL_CRYPTO_VALUATION_UNAVAILABLE" }
         : {}),
@@ -270,12 +273,13 @@ export function projectSnapshotSection(
       before: coveredFrom,
       note: `${partialNote} Never measure or state a change between a day before ${coveredFrom} and a later one.`,
     } } : {}),
-    // FIN-005 part 1 — the historical cash basis, stated on the payload: every
-    // point's `liquid` / `netLiquid` is ALL cash, restricted (HSA, retirement)
-    // INCLUDED, unlike the accounts section's unrestricted `totalLiquid`. No change
-    // between the two is computed here, and the note forbids the model making one.
-    liquidBasis:      'ALL_CASH',
-    liquidBasisNote:  ALL_CASH_HISTORY_AI_NOTE,
+    // FIN-005 — the historical cash basis, stated on the payload. ALL_CASH: every
+    // point's `liquid` / `netLiquid` includes restricted cash (HSA, retirement),
+    // unlike the accounts section's unrestricted `totalLiquid`, and the note forbids
+    // any change between the two. UNRESTRICTED (FIN-E part 2): every row recorded
+    // its restricted share, so the points are on `totalLiquid`'s basis.
+    liquidBasis,
+    liquidBasisNote:  liquidBasis === 'UNRESTRICTED' ? UNRESTRICTED_HISTORY_AI_NOTE : ALL_CASH_HISTORY_AI_NOTE,
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     latest,

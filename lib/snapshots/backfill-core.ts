@@ -288,6 +288,20 @@ export function computeLiquidSplit(c: ClassifyTotals): LiquidSplit | null {
   };
 }
 
+/**
+ * FIN-E part 2 — THE value every snapshot writer stores in
+ * `SpaceSnapshot.restrictedCash`: the classifier's restricted share of the SAME
+ * cash the row's `cash + savings` sums (`classifyAccounts.totalRestrictedCash`).
+ * NULL when the totals carry no split (a hand-built `ClassifyTotals`) — never 0,
+ * because a 0 would claim "no restricted cash" where nothing was measured. Kept
+ * OUT of `SnapshotFields` so the stored-row identities pinned on those columns
+ * are untouched. Used by all three writers (regenerate, regenerate-history,
+ * backfill); pinned in lib/snapshots/restricted-cash-writers.test.ts.
+ */
+export function snapshotRestrictedCash(c: Pick<ClassifyTotals, "totalRestrictedCash">): number | null {
+  return typeof c.totalRestrictedCash === "number" && Number.isFinite(c.totalRestrictedCash) ? c.totalRestrictedCash : null;
+}
+
 export interface SnapshotFields {
   stocks:      number;
   crypto:      number;
