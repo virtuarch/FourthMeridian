@@ -263,8 +263,8 @@ one.
 - **AI context & richer historical breakdowns** — which, where they need *per-entity history*, require the schema evolution beyond pre-aggregated `SpaceSnapshot` (§2). This is why "composition over time per mode" is a v2.6 data-model change, not a v2.5 visualization change.
 
 **The dividing principle:** v2.5 removes every *false* promise and establishes every
-*authority*; v2.6 adds the *missing capability* on top. Active roadmap:
-[`docs/plans/ROADMAP.md`](../plans/ROADMAP.md).
+*authority*; v2.6 adds the *missing capability* on top. Current work: [`STATUS.md`](../../STATUS.md);
+launch scope (v3.0 L-1) and outstanding obligations: [the release plan](../plans/PRE-BETA-READINESS-AND-RELEASE-PLAN-2026-11-01.md).
 
 ---
 

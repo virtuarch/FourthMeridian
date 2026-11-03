@@ -30,7 +30,7 @@ Verify:
 ### □ Roadmap updated
 Priority: High · Status: ⚠️ Needs work · Owner: PO1
 Verify:
-- `ROADMAP.md` reflects this release's initiative and moves completed items.
+- `ROADMAP.md` (removed; see git history) reflects this release's initiative and moves completed items.
 
 ### □ STATUS.md updated
 Priority: High · Status: ⚠️ Needs work · Owner: PO1

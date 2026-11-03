@@ -27,7 +27,6 @@ Current state of the system: [`/STATUS.md`](../../STATUS.md).
 | [SEC-PLAT-1-OPERATOR-MFA-ROLLOUT-PLAN-2026-10-27](SEC-PLAT-1-OPERATOR-MFA-ROLLOUT-PLAN-2026-10-27.md) | Session 1 | BLOCKED | Production operator-TOTP activation awaits the owner |
 | [P1-REPAIR-PRODUCTION-RUNBOOK-2026-10-27](P1-REPAIR-PRODUCTION-RUNBOOK-2026-10-27.md) | Session 1 | BLOCKED | Never executed; owner decision D11. Moves to `operations/runbooks/` |
 | [KD-23-CROSS-TURN-TEMPORAL-CONTINUITY](KD-23-CROSS-TURN-TEMPORAL-CONTINUITY.md) | Owner (ticket) | DRAFT | Ticket only, by owner ruling |
-| [parked-ideas](parked-ideas.md) | unassigned | DRAFT | Owner decision: keep a long-range roadmap? |
 
 ## Ownership (one writer per canonical document)
 
