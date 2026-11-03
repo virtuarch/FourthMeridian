@@ -45,12 +45,14 @@ import { mapAccountType } from "@/lib/plaid/account-type";
 import { normalizeProviderSubtype } from "@/lib/account-classifier";
 import { isReconstructableCard } from "@/lib/snapshots/backfill-core";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
-import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
+import { Products, type Item as PlaidItemData } from "plaid";
+import { syncInvestmentsForItem, type SyncInvestmentsResult } from "@/lib/plaid/sync-investments";
+import { isInvestmentsBillable } from "@/lib/platform/plaid/item-months";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
-import { AccountType, PlaidItemStatus, ShareStatus } from "@prisma/client";
+import { AccountType, PlaidItemStatus, ShareStatus, type PlaidInvestmentsConsent } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { evaluateReconciliation } from "@/lib/plaid/reconcile-core";
-import { recordSyncIssue } from "@/lib/plaid/syncIssues";
+import { recordSyncIssue, resolveBalanceUnobservedIssue } from "@/lib/plaid/syncIssues";
 import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { emitDomainEvent } from "@/lib/events/emit";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
@@ -229,6 +231,13 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
     });
     accountsUpdated++;
     updatedAccountIds.push(fa.id);
+    // FIN-A2 — the FIRST observed balance on a row created without one is the
+    // evidence that closes its BALANCE_UNOBSERVED condition (through the
+    // incident authority, never a direct SyncIssue write). Only on that
+    // transition, so a routine refresh issues no extra query.
+    if (plan.observed && fa.balanceObserved === false) {
+      await resolveBalanceUnobservedIssue(fa.id);
+    }
     // DF-2E — balance written (institution-verified) → this execution advanced
     // the account's balance freshness, even if the value itself was unchanged.
     // FIN-011 — unless no balance was observed: then the account was evaluated
@@ -268,6 +277,8 @@ export interface BalanceWritePlan {
     availableBalance?:     number;
     creditLimit?:          number;
     balanceLastUpdatedAt?: Date | null;
+    /** FIN-A2 — written `true` with every observed balance; never written otherwise. */
+    balanceObserved?:      true;
     providerSubtype:       string | null;
     syncStatus:            "synced";
   };
@@ -294,15 +305,16 @@ export function isObservedBalance(current: number | null | undefined): current i
  * written `balanceLastUpdatedAt`, and this does not start to — an observed
  * balance writes exactly what it wrote before (`balance`, `lastUpdated`).
  *
- * A NEW row is not covered here: `balance` is `Float NOT NULL DEFAULT 0` and
- * there is no unknown-balance representation for a row with no prior value.
- * See the create site in exchangeToken.ts.
+ * FIN-A2 — an observed balance also writes `balanceObserved: true`, so a row
+ * created with no observed balance (the create site in exchangeToken.ts writes
+ * `balanceObserved: false`) re-enters every total the moment one lands. A null
+ * `current` writes nothing, so an unobserved row stays unobserved.
  */
 export function planExchangeBalanceStamp(
   current: number | null | undefined,
   now: Date,
-): { balance?: number; lastUpdated?: Date } {
-  return isObservedBalance(current) ? { balance: current, lastUpdated: now } : {};
+): { balance?: number; lastUpdated?: Date; balanceObserved?: true } {
+  return isObservedBalance(current) ? { balance: current, lastUpdated: now, balanceObserved: true } : {};
 }
 
 /**
@@ -347,8 +359,108 @@ export function planBalanceWrite(
   const balanceLastUpdatedAt = balances.last_updated_datetime ? new Date(balances.last_updated_datetime) : null;
   return {
     observed: true,
-    data: { ...base, balance: balances.current as number, balanceLastUpdatedAt },
+    // FIN-A2 — an observed balance is, by definition, observed.
+    data: { ...base, balance: balances.current as number, balanceLastUpdatedAt, balanceObserved: true },
   };
+}
+
+/**
+ * FIN-006 — THE holdings stage: one implementation for manual refresh, the
+ * scheduled sweep (jobs/sync-banks.ts) and the webhook pipeline
+ * (lib/plaid/backgroundHistorySync.ts). Extracted verbatim from refreshPlaidItem.
+ *
+ * Best-effort/non-fatal — an institution with no investment accounts, or a
+ * transient Plaid error here, should never block balances/transactions.
+ * PROV-3: identical ingest to exchangeToken via syncInvestmentsForItem. The
+ * primitive derives + change-detects consent (self-heals to ENABLED after the
+ * user grants consent via Link update mode), and skips the holdings call when
+ * the item is known to lack consent so ADDITIONAL_CONSENT_REQUIRED is never
+ * hit repeatedly.
+ */
+export async function runHoldingsStage(
+  bal: Pick<ItemBalanceRefresh, "item" | "accessToken" | "plaidAccounts" | "itemData">,
+  recorder?: RefreshStageRecorder,
+): Promise<SyncInvestmentsResult> {
+  const { item, accessToken, plaidAccounts, itemData } = bal;
+  const investmentPlaidAccounts = plaidAccounts.filter(
+    (a) => mapAccountType(a.type, a.subtype) === AccountType.investment
+  );
+  // DF-2A — an item with no investment accounts has nothing to sync here; that
+  // is NOT_APPLICABLE, not a failure, and must never degrade the refresh.
+  const hasInvestmentAccounts = investmentPlaidAccounts.length > 0;
+  if (hasInvestmentAccounts) recorder?.begin("HOLDINGS", "PROVIDER");
+  else recorder?.skip("HOLDINGS", "PROVIDER", "NOT_APPLICABLE");
+  const investmentsResult = await syncInvestmentsForItem({
+    accessToken,
+    plaidItemId:     item.id,
+    institutionName: item.institutionName,
+    investmentAccounts: investmentPlaidAccounts,
+    item:            itemData,
+    storedConsent:   item.investmentsConsent,
+  });
+  // DF-2B — HOLDINGS coverage = the investment FinancialAccount ids the stage
+  // GENUINELY processed (resolved + synced), sourced from syncInvestmentsForItem
+  // itself. Coarse evidence only (present ≠ updated; empty ≠ uncovered).
+  if (hasInvestmentAccounts)
+    recorder?.succeed("HOLDINGS", {
+      recordsChanged:    investmentsResult.holdingsSynced,
+      coveredAccountIds: investmentsResult.processedAccountIds,
+      accounts:          investmentsResult.accountCoverage,
+    });
+  return investmentsResult;
+}
+
+/**
+ * FIN-006 — may an AUTOMATIC trigger (the scheduled sweep, a webhook) run the
+ * holdings stage for this Item? BILLING-NEUTRAL BY CONSTRUCTION: only when
+ * Plaid ALREADY bills Investments on the Item — `billed_products` of the SAME
+ * accountsGet answer the balances stage just read (no extra call) includes
+ * Investments — AND the stored consent is ENABLED.
+ *
+ * ⚠️ ENABLED ALONE IS NOT "BILLED". deriveInvestmentsConsent returns ENABLED
+ * from `consented_products` (lib/plaid/investmentsConsent.ts), and our link
+ * tokens request `products=[transactions]` with Investments as an ADDITIONAL
+ * consented product, which Plaid does not bill until the first call to its
+ * endpoint initializes it. Gating on consent alone would make that first
+ * investmentsHoldingsGet automatically and switch Investments billing ON for
+ * every consented-but-uninitialized Item. Those stay MANUAL-only (a person's
+ * Refresh initializes them, exactly as before FIN-006); turning them on
+ * automatically is a separate OWNER decision.
+ */
+export function autoHoldingsEligible(
+  storedConsent: PlaidInvestmentsConsent | null | undefined,
+  itemData: Pick<PlaidItemData, "billed_products"> | null | undefined,
+): boolean {
+  return isInvestmentsBillable({ investmentsConsent: storedConsent ?? null })
+    && (itemData?.billed_products ?? []).includes(Products.Investments);
+}
+
+export type AutoHoldingsOutcome =
+  | { ran: true; result: SyncInvestmentsResult }
+  | { ran: false; reason: "NOT_ELIGIBLE" | "FAILED" };
+
+/**
+ * FIN-006 — the holdings stage as the automatic pipelines run it: eligibility
+ * first (consent ENABLED and Investments already billed — autoHoldingsEligible;
+ * a non-eligible Item records NOTHING — its execution is exactly what it
+ * was before FIN-006), then runHoldingsStage, never throwing (a failure is
+ * recorded FAILED on the open stage and the pipeline continues, like the
+ * balance/snapshot freshness step it sits beside).
+ */
+export async function runAutoHoldingsStage(
+  bal: Pick<ItemBalanceRefresh, "item" | "accessToken" | "plaidAccounts" | "itemData">,
+  recorder: RefreshStageRecorder | undefined,
+  deps: { stage?: typeof runHoldingsStage; log?: Pick<Console, "warn"> } = {},
+): Promise<AutoHoldingsOutcome> {
+  if (!autoHoldingsEligible(bal.item.investmentsConsent, bal.itemData)) return { ran: false, reason: "NOT_ELIGIBLE" };
+  try {
+    const result = await (deps.stage ?? runHoldingsStage)(bal, recorder);
+    return { ran: true, result };
+  } catch (e) {
+    recorder?.failOpen(e);
+    (deps.log ?? console).warn(`[plaid][FIN-006] holdings stage failed for PlaidItem ${bal.item.id} (non-fatal):`, redactedErrorForLog(e));
+    return { ran: false, reason: "FAILED" };
+  }
 }
 
 /**
@@ -380,39 +492,11 @@ export async function refreshPlaidItem(
   recorder?.succeed("BALANCES", { recordsChanged: accountsUpdated, coveredAccountIds: updatedAccountIds, accounts: accountCoverage });
 
   // ── 2. Investment holdings ──────────────────────────────────────────────
-  // Best-effort/non-fatal — an institution with no investment accounts, or a
-  // transient Plaid error here, should never block balances/transactions.
-  // PROV-3: identical ingest to exchangeToken via syncInvestmentsForItem. The
-  // primitive derives + change-detects consent (self-heals to ENABLED after the
-  // user grants consent via Link update mode), and skips the holdings call when
-  // the item is known to lack consent so ADDITIONAL_CONSENT_REQUIRED is never
-  // hit repeatedly.
-  const investmentPlaidAccounts = plaidAccounts.filter(
-    (a) => mapAccountType(a.type, a.subtype) === AccountType.investment
-  );
-  // DF-2A — an item with no investment accounts has nothing to sync here; that
-  // is NOT_APPLICABLE, not a failure, and must never degrade the refresh.
-  const hasInvestmentAccounts = investmentPlaidAccounts.length > 0;
-  if (hasInvestmentAccounts) recorder?.begin("HOLDINGS", "PROVIDER");
-  else recorder?.skip("HOLDINGS", "PROVIDER", "NOT_APPLICABLE");
-  const investmentsResult = await syncInvestmentsForItem({
-    accessToken,
-    plaidItemId:     plaidItemDbId,
-    institutionName: item.institutionName,
-    investmentAccounts: investmentPlaidAccounts,
-    item:            itemData,
-    storedConsent:   item.investmentsConsent,
-  });
+  // FIN-006 — THE holdings stage, shared with the cron and webhook pipelines
+  // (runHoldingsStage below). Manual behaviour is unchanged: every item is
+  // offered to it, and syncInvestmentsForItem's own consent gate decides.
+  const investmentsResult = await runHoldingsStage({ item, accessToken, plaidAccounts, itemData }, recorder);
   const holdingsUpdated = investmentsResult.holdingsSynced;
-  // DF-2B — HOLDINGS coverage = the investment FinancialAccount ids the stage
-  // GENUINELY processed (resolved + synced), sourced from syncInvestmentsForItem
-  // itself. Coarse evidence only (present ≠ updated; empty ≠ uncovered).
-  if (hasInvestmentAccounts)
-    recorder?.succeed("HOLDINGS", {
-      recordsChanged:    holdingsUpdated,
-      coveredAccountIds: investmentsResult.processedAccountIds,
-      accounts:          investmentsResult.accountCoverage,
-    });
 
   // ── 3. Transactions ──────────────────────────────────────────────────────
   // Reuses the existing cursor-based sync as-is — no duplicated logic.

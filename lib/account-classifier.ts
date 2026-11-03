@@ -102,6 +102,18 @@ export function unvaluedAccountCount(a: { valuationUnknown?: boolean; unvaluedMe
 }
 
 /**
+ * FIN-A2 — what a surface prints IN PLACE of a balance for a row the totals
+ * classification excluded (`valuationUnknown`). Never "$0". A wallet is
+ * "Not yet valued" (no price / no observation, FM-AUDIT-022); any other account
+ * excluded there was connected without an observed balance
+ * (`balanceObserved === false`) and reads "Balance unavailable". ONE place, so
+ * no surface invents its own wording.
+ */
+export function unvaluedBalanceLabel(a: { type: string }): "Not yet valued" | "Balance unavailable" {
+  return a.type === "crypto" ? "Not yet valued" : "Balance unavailable";
+}
+
+/**
  * v2.7-P0 — THE balance a TOTAL counts for one account. Depository accounts
  * (checking / savings, restricted included) count their adjusted balance when
  * the server resolved one; every other account — and any depository row with no

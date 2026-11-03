@@ -19,6 +19,7 @@ import { Loader2, ChevronRight, Landmark, Share2, ArrowRight } from "lucide-reac
 import { GlassButton } from "@/components/atlas/GlassButton";
 import { SPACE_ACCOUNTS_CHANGED_EVENT } from "@/lib/space-nav";
 import { formatBalance, type SharedAccount, type UserAccount } from "./manage-shared";
+import { unvaluedBalanceLabel } from "@/lib/account-classifier";
 
 export function ShareExistingAccountsPanel({
   spaceId,
@@ -108,8 +109,8 @@ export function ShareExistingAccountsPanel({
                 <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}{a.mask ? ` ···${a.mask}` : ""}</p>
               </div>
               {a.valuationUnknown ? (
-                // FM-AUDIT-022 — no value is not $0.00.
-                <p className="text-sm text-[var(--text-muted)] shrink-0 mr-1">Not yet valued</p>
+                // FM-AUDIT-022 / FIN-A2 — no value is not $0.00.
+                <p className="text-sm text-[var(--text-muted)] shrink-0 mr-1">{unvaluedBalanceLabel(a)}</p>
               ) : (
                 <p className="text-sm font-medium text-[var(--text-primary)] shrink-0 mr-1">{formatBalance(a.balance, a.currency)}</p>
               )}

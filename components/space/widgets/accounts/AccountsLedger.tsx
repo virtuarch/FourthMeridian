@@ -41,7 +41,7 @@ import { formatCurrency } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
-import { unvaluedAccountCount } from "@/lib/account-classifier";
+import { unvaluedAccountCount, unvaluedBalanceLabel } from "@/lib/account-classifier";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import { resolveAccountBalances, reconcileAccount } from "@/lib/balances/account-balances";
@@ -389,8 +389,8 @@ export function AccountsLedger({
             )}
             {summary.unvalued > 0 && (
               <p className="text-[11px] text-[var(--text-faint)]">
-                {summary.unvalued} wallet{summary.unvalued === 1 ? "" : "s"} not yet valued{" "}
-                {summary.unvalued === 1 ? "is" : "are"} excluded from all totals
+                {summary.unvalued} account{summary.unvalued === 1 ? "" : "s"} not yet valued or without a
+                balance {summary.unvalued === 1 ? "is" : "are"} excluded from all totals
               </p>
             )}
             {(health.synced > 0 || health.attention > 0) && (
@@ -587,8 +587,8 @@ function LedgerRow({
 
       <div className="relative shrink-0 text-right">
         {row.valuationUnknown ? (
-          // FM-AUDIT-022 — no value is not $0.00.
-          <p className="text-sm text-[var(--text-muted)]">Not yet valued</p>
+          // FM-AUDIT-022 / FIN-A2 — no value is not $0.00.
+          <p className="text-sm text-[var(--text-muted)]">{unvaluedBalanceLabel(row)}</p>
         ) : isCredit ? (
           <p className="tabular-nums text-sm text-[var(--accent-positive)]">
             {approx}{formatCurrency(credit, currency)} credit

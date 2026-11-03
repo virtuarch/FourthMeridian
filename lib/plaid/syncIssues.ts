@@ -143,6 +143,29 @@ export async function resolveCursorBlockingIssues(
 }
 
 /**
+ * FIN-A2 — close the BALANCE_UNOBSERVED condition of ONE account after its first
+ * observed balance was written (refresh or re-exchange). FACADE over the
+ * canonical resolution authority, exactly like resolveCursorBlockingIssues:
+ * this names the scope that recovered (domain "balances", the account) and the
+ * authority decides which open conditions that write actually proves. Never
+ * throws; returns how many rows were resolved.
+ */
+export async function resolveBalanceUnobservedIssue(
+  financialAccountId: string,
+  client: IncidentClient = systemDb,
+  runId?: string | null,
+  deps: SyncIssueDeps = {},
+): Promise<number> {
+  const { resolved } = await resolveByAutomaticRecovery(
+    { financialAccountId, domain: "balances", runId: runId ?? ambientRunId() },
+    client,
+    deps.getExecutionIdByRunId,
+    { onWriteFailure: deps.onWriteFailure },
+  );
+  return resolved;
+}
+
+/**
  * OPS-2D-5A-2 — the execution-lookup seam, forwarded.
  *
  * Exists so a disposable-database harness can exercise the REAL lifecycle path
