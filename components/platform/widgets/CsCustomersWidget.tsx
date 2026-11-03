@@ -96,7 +96,7 @@ const SOURCE_TONE: Record<string, string> = {
 
 function fmtValue(v: boolean | number): string { return typeof v === "boolean" ? (v ? "on" : "off") : String(v); }
 function ago(iso: string | null): string { return iso ? `${timeAgo(iso)} ago` : "—"; }
-/** PB-10 — the coarse presence line: "Active now", "Online, idle · within the hour", "Offline · active today". */
+/** PB-10 — the coarse presence line: "Active now", "Online, idle · within the hour", "Offline · today" (the Last interaction bucket). */
 function presenceText(c: { presence: string; presenceLabel: string; lastActive: { bucket: string; label: string } }): string {
   if (c.presence === "ACTIVE" || c.lastActive.bucket === "NEVER") return c.presenceLabel;
   return `${c.presenceLabel} · ${c.lastActive.label}`;

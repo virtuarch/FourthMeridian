@@ -64,6 +64,7 @@ export interface LifecycleFields {
   resolvingExecutionId: string | null;
   incidentKey: string | null;
   lifecycleState?: string | null;
+  resolutionReasonCode?: string | null;
   resolvedById?: string | null;
   resolutionAuditId?: string | null;
   resolutionEvidence?: unknown;
@@ -109,6 +110,8 @@ export function lifecycleViolation(
   const state = f.lifecycleState ?? null;
   if (state !== null && !(LIFECYCLE_STATES as readonly string[]).includes(state)) return `unknown lifecycleState "${state}"`;
   if (state !== null && (state === "RESOLVED") !== f.resolved) return "lifecycleState RESOLVED must move with resolved";
+  // Mirrors SyncIssue_resolved_state_reason_check: a RESOLVED state names its reason.
+  if (state === "RESOLVED" && !(f.resolutionReasonCode ?? null)) return "lifecycleState RESOLVED must carry a resolutionReasonCode";
 
   // CONDITION — here `resolved` and `resolvedAt` genuinely do move together.
   if (f.resolved && f.resolvedAt === null)  return "recovered CONDITION must carry resolvedAt";

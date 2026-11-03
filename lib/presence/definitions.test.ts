@@ -88,11 +88,16 @@ console.log("\nlast-active buckets — coarse, never a raw timestamp");
   check("never ⇒ Unknown", b(null).bucket === "NEVER" && b(null).label === "Unknown");
   check("≤ 5 min", b(I).bucket === "WITHIN_5_MIN");
   check("≤ 1 h", b(I + 1).bucket === "WITHIN_HOUR" && b(60 * MIN).bucket === "WITHIN_HOUR");
-  check("earlier today (UTC)", b(3 * 60 * MIN).bucket === "TODAY" && b(3 * 60 * MIN).label === "active today");
+  check("earlier today (UTC)", b(3 * 60 * MIN).bucket === "TODAY" && b(3 * 60 * MIN).label === "today");
   check("yesterday (UTC)", b(13 * 60 * MIN).bucket === "YESTERDAY");
   check("this week", b(3 * 86_400_000).bucket === "THIS_WEEK");
   check("this month", b(20 * 86_400_000).bucket === "THIS_MONTH");
   check("older", b(40 * 86_400_000).bucket === "OVER_30_DAYS");
+  // Vocabulary (PLATFORM-INTELLIGENCE): the bucket labels are the Last-interaction words, exactly; none says "active".
+  const labels = [I, I + 1, 3 * 60 * MIN, 13 * 60 * MIN, 3 * 86_400_000, 20 * 86_400_000, 40 * 86_400_000].map((ms) => b(ms).label);
+  check("bucket labels are exactly the Last-interaction words",
+    JSON.stringify(labels) === JSON.stringify(["within 5 min", "within the hour", "today", "yesterday", "this week", "this month", "over 30 days ago"]), labels.join(", "));
+  check("no bucket label says 'active'", ![...labels, b(null).label].some((l) => /active/i.test(l)));
   const all = [null, I, 3 * 60 * MIN, 40 * 86_400_000].map((m) => b(m).label).join("|");
   check("no label contains a date or a clock time", !/\d{4}-\d{2}|\d{1,2}:\d{2}/.test(all), all);
 }

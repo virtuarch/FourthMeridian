@@ -28,8 +28,19 @@ const MAX_FACTS = 8;
 const MAX_SUBJECTS = 20;
 
 /** One stage result an evidence rule looked at. Ids and enums only. */
+/**
+ * Where a stage fact came from. `BalanceObservation` (FIN-A2) is an observed
+ * balance written for the incident's own account — the write that proves a
+ * BALANCE_UNOBSERVED condition false. It may happen outside a refresh
+ * execution (re-exchange), so `executionId` is null there, never invented.
+ * The fact carries no amount: the proof is that a balance was observed, not
+ * what it was.
+ */
+export const STAGE_FACT_SOURCES = ["RefreshEndpointResult", "InvestmentEventCoverage", "BalanceObservation"] as const;
+export type StageFactSource = (typeof STAGE_FACT_SOURCES)[number];
+
 export interface StageFact {
-  source: "RefreshEndpointResult" | "InvestmentEventCoverage";
+  source: StageFactSource;
   executionId: string | null;
   endpoint: string;
   /** SUCCEEDED is the only proof. SKIPPED / NOT_ATTEMPTED / FAILED are recorded as non-proof. */
@@ -139,7 +150,7 @@ export function reshapeStoredEvidence(stored: unknown): ResolutionEvidence | nul
   const facts = [...(Array.isArray(e.proof) ? e.proof : []), ...(Array.isArray(e.nonProof) ? e.nonProof : [])]
     .filter((f): f is StageFact => typeof f === "object" && f !== null
       && ["SUCCEEDED", "FAILED", "SKIPPED", "NOT_ATTEMPTED", "PROVIDER_LIMITED"].includes((f as StageFact).status)
-      && ["RefreshEndpointResult", "InvestmentEventCoverage"].includes((f as StageFact).source)
+      && (STAGE_FACT_SOURCES as readonly string[]).includes((f as StageFact).source)
       && typeof (f as StageFact).endpoint === "string" && /^[A-Z_]{2,64}$/.test((f as StageFact).endpoint));
   const isSubject = (x: unknown): x is SubjectRecord => typeof x === "object" && x !== null
     && ["PLAID_ITEM", "FINANCIAL_ACCOUNT"].includes((x as SubjectRecord).kind)

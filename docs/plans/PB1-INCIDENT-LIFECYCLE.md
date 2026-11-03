@@ -326,6 +326,13 @@ Add the three routes to the adoption ratchet `lib/platform/operator-action-adopt
 
 Automatic transitions write no AuditLog. They are system facts and are persisted on the row with their evidence. This matches the existing `AUTOMATIC_RECOVERY` behaviour.
 
+**Implemented (P8 #1, 2026-11-03).** `resolveByAutomaticRecovery` now uses the subject-removal shape. Each matching row gets its own small transaction. It runs a CAS on the `lifecycleState` it read, sets `lifecycleState=RESOLVED` with `resolved`, and writes a registry `resolutionReasonCode`, the typed `resolutionEvidence` and a SYSTEM `STATE_CHANGED → RESOLVED` event carrying the resolving execution. Rows are independent incidents. A lost CAS skips only that row: it is logged as a conflict, reported on the observer, and retried by the next success. Any other failure, such as the event insert, also rolls back only its row. The return value counts successes, and a per-row tally asserts that every observed row was either written or reported. The proof fact is synthesised by the resolver, so it is legitimate only because of its call sites. `auto-recovery-callers.test.ts` pins them: the two facades are the only callers, each reachable only after its success condition. The evidence rules are:
+
+- transactions: `TRANSACTIONS_SYNC_SUCCEEDED_V1`, reason `TRANSACTIONS_SYNC_SUCCEEDED`, proof `RefreshEndpointResult · TRANSACTIONS · SUCCEEDED`;
+- balances: `BALANCE_OBSERVED_V1`, reason `BALANCE_OBSERVED`, proof `BalanceObservation · BALANCES · SUCCEEDED`.
+
+Neither proof carries an amount or a subject id. The fix is forward-only. Automatic recoveries written before it have no event and no evidence, and they are not backfilled.
+
 ---
 
 ## 7. UX — Customer Success incidents workspace

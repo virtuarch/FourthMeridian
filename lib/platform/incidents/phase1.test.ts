@@ -47,7 +47,11 @@ async function main() {
     check("SUBJECT_REMOVED needs resolutionEvidence.subject", /subject/.test(lifecycleViolation("condition", { ...base, resolutionKind: "SUBJECT_REMOVED" }) ?? ""));
     check("SUBJECT_REMOVED never names a resolving execution",
       /resolvingExecutionId/.test(lifecycleViolation("condition", { ...base, resolutionKind: "SUBJECT_REMOVED", resolvingExecutionId: "x", resolutionEvidence: removedEvidence }) ?? ""));
-    check("SUBJECT_REMOVED with evidence is sound", lifecycleViolation("condition", { ...base, resolutionKind: "SUBJECT_REMOVED", resolutionEvidence: removedEvidence, lifecycleState: "RESOLVED" }) === null);
+    check("SUBJECT_REMOVED with evidence is sound", lifecycleViolation("condition", { ...base, resolutionKind: "SUBJECT_REMOVED", resolutionEvidence: removedEvidence, lifecycleState: "RESOLVED", resolutionReasonCode: "SUBJECT_DELETED" }) === null);
+    // P8 #1 — mirrors SyncIssue_resolved_state_reason_check, which the in-memory fakes cannot enforce.
+    check("lifecycleState RESOLVED without a resolutionReasonCode is refused (the DB CHECK, mirrored)",
+      /resolutionReasonCode/.test(lifecycleViolation("condition", { ...base, resolutionKind: "AUTOMATIC_RECOVERY", lifecycleState: "RESOLVED" }) ?? ""));
+    check("…and with one it is sound", lifecycleViolation("condition", { ...base, resolutionKind: "AUTOMATIC_RECOVERY", lifecycleState: "RESOLVED", resolutionReasonCode: "TRANSACTIONS_SYNC_SUCCEEDED" }) === null);
     check("a LIVE subject is not removal evidence", !isRemovedSubjectEvidence({ subject: { ...removedEvidence.subject, state: "LIVE" } }));
     check("lifecycleState must move with resolved", lifecycleViolation("condition", { ...base, resolutionKind: "AUTOMATIC_RECOVERY", lifecycleState: "ACTIVE" }) !== null);
     check("an unknown lifecycleState is refused", lifecycleViolation("condition", { resolved: false, resolvedAt: null, resolutionKind: null, resolvingExecutionId: null, incidentKey: "k", lifecycleState: "REOPENED" }) !== null);
