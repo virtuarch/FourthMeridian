@@ -67,14 +67,23 @@ export interface AiSpendHealth {
 }
 
 
-/** Pure: fold per-user groups into the health report. */
-export function buildAiSpendHealth(
-  groups: readonly UserSpendGroup[],
-  thresholds: { fleetUsd: number; userUsd: number },
-  windowHours: number,
-  now: Date,
-  rates: readonly AiRate[] = AI_RATES,
-): AiSpendHealth {
+/**
+ * THE fleet spend fold over per-user groups — priced by the rate card, an
+ * unpriceable group COUNTED and never priced at $0. Shared by the 24 h health
+ * report below and the anomaly windows (spend-anomaly.ts), so a window's figure
+ * is the same computation the fleet rule judges. Pure. `perUser` is keyed by the
+ * raw user id and must never leave a server module: callers reduce it to opaque
+ * references.
+ */
+export interface SpendFold {
+  fleetUsd: number | null;
+  perUser: Map<string, number>;
+  invocations: number;
+  unpricedInvocations: number;
+  unpricedModels: Set<string>;
+}
+
+export function foldSpendGroups(groups: readonly UserSpendGroup[], rates: readonly AiRate[] = AI_RATES): SpendFold {
   let fleetUsd: number | null = null;
   let invocations = 0, unpricedInvocations = 0;
   const unpricedModels = new Set<string>();
@@ -92,6 +101,18 @@ export function buildAiSpendHealth(
     fleetUsd = (fleetUsd ?? 0) + priced.usd;
     if (g.userId) perUser.set(g.userId, (perUser.get(g.userId) ?? 0) + priced.usd);
   }
+  return { fleetUsd, perUser, invocations, unpricedInvocations, unpricedModels };
+}
+
+/** Pure: fold per-user groups into the health report. */
+export function buildAiSpendHealth(
+  groups: readonly UserSpendGroup[],
+  thresholds: { fleetUsd: number; userUsd: number },
+  windowHours: number,
+  now: Date,
+  rates: readonly AiRate[] = AI_RATES,
+): AiSpendHealth {
+  const { fleetUsd, perUser, invocations, unpricedInvocations, unpricedModels } = foldSpendGroups(groups, rates);
 
   let maxUserUsd: number | null = null, maxUserId: string | null = null, customersAtOrOverThreshold = 0;
   for (const [userId, usd] of perUser) {
