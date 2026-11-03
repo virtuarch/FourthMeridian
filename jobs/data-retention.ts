@@ -91,7 +91,14 @@ export type RetentionTable =
   | "userSession" | "aiInvocation" | "jobRun" | "refreshExecution" | "providerCall"
   | "plaidWebhookEvent" | "syncIssue" | "apiUsageCounter" | "betaAccessRequest"
   | "betaAccessRequestEvent" | "dailyBrief" | "automationRun" | "commsProviderEvent"
-  | "betaBlockedIdentifier" | "betaAbuseEvidence";
+  | "betaBlockedIdentifier" | "betaAbuseEvidence" | "syncIssueArchive" | "syncIssueRelation";
+
+/**
+ * PB-1 Phase 1 — owner decision 2026-11-03: resolved-incident SUMMARIES are kept
+ * 13 months (SyncIssueArchive), as are explicit incident relations. 13 × 30.44 d,
+ * rounded up.
+ */
+export const INCIDENT_ARCHIVE_RETENTION_DAYS = 396;
 
 export interface RetentionRule {
   table: RetentionTable;
@@ -105,6 +112,12 @@ export interface RetentionRule {
   where: (cutoff: Date, now: Date) => Record<string, unknown>;
   /** The column the oldest-first batch order uses. */
   orderBy: string;
+  /**
+   * PB-1 Phase 1 — the batch is ARCHIVED, then deleted, in one transaction
+   * (lib/platform/incidents/retention.ts) instead of a bare deleteMany. A rule
+   * with this flag never deletes without its archive.
+   */
+  archiveBeforeDelete?: true;
 }
 
 /** THE schedule. Changing a window is a privacy decision — say so in the commit. */
@@ -121,8 +134,15 @@ export const RETENTION_RULES: readonly RetentionRule[] = [
     where: (c) => ({ startedAt: { lt: c } }), orderBy: "startedAt" },
   { table: "plaidWebhookEvent", what: "PlaidWebhookEvent older than 30 days", days: 30,
     where: (c) => ({ receivedAt: { lt: c } }), orderBy: "receivedAt" },
-  { table: "syncIssue", what: "SyncIssue resolved more than 90 days ago (+ occurrences by cascade)", days: 90,
-    where: (c) => ({ resolved: true, OR: [{ resolvedAt: { lt: c } }, { resolvedAt: null, updatedAt: { lt: c } }] }), orderBy: "updatedAt" },
+  { table: "syncIssue", what: "SyncIssue resolved more than 90 days ago (+ occurrences by cascade, + its events) — a summary-only copy is archived first, in the same transaction", days: 90,
+    where: (c) => ({ resolved: true, OR: [{ resolvedAt: { lt: c } }, { resolvedAt: null, updatedAt: { lt: c } }] }), orderBy: "updatedAt",
+    archiveBeforeDelete: true },
+  // PB-1 Phase 1 — owner decision 2026-11-03: resolved-incident summaries, 13 months from archiving.
+  { table: "syncIssueArchive", what: "SyncIssueArchive (summary-only resolved-incident records) archived more than 13 months ago", days: INCIDENT_ARCHIVE_RETENTION_DAYS,
+    where: (c) => ({ archivedAt: { lt: c } }), orderBy: "archivedAt" },
+  // Relations are soft references that may name archived incidents: kept the same 13 months, from creation.
+  { table: "syncIssueRelation", what: "SyncIssueRelation (explicit incident links) created more than 13 months ago", days: INCIDENT_ARCHIVE_RETENTION_DAYS,
+    where: (c) => ({ createdAt: { lt: c } }), orderBy: "createdAt" },
   { table: "apiUsageCounter", what: "ApiUsageCounter day buckets older than 90 days", days: 90,
     where: (c) => ({ day: { lt: c } }), orderBy: "day" },
   { table: "betaAccessRequest", what: "BetaAccessRequest DENIED, or PENDING/APPROVED-and-unredeemed, untouched for 180 days (REDEEMED kept until account deletion)", days: 180,
@@ -160,6 +180,12 @@ export interface RetentionDelegate {
 export type RetentionClient = Record<RetentionTable, RetentionDelegate> & {
   /** Optional so a test client for the delete rules need not model AuditLog. */
   auditLog?: AuditMinimiseDelegate;
+  /**
+   * PB-1 Phase 1 — archive-then-delete for `archiveBeforeDelete` rules. The
+   * real client is wired to lib/platform/incidents/retention.ts; an injected
+   * client WITHOUT it makes those rules fail closed (nothing deleted).
+   */
+  archiveAndPruneSyncIssues?: (ids: readonly string[], where: Record<string, unknown>) => Promise<number>;
 };
 
 /** In a dry run `deleted` is the number of rows a real run WOULD delete (bounded like a real run). */
@@ -369,13 +395,26 @@ export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date)
   return new Date(now.getTime() - rule.days * DAY_MS);
 }
 
+/** The production client: systemDb, with the archive-before-delete prune wired in. */
+async function realRetentionClient(): Promise<RetentionClient> {
+  const base = (await import("@/lib/db")).systemDb as unknown as RetentionClient;
+  const { systemDb } = await import("@/lib/db");
+  const { archiveAndPruneSyncIssues } = await import("@/lib/platform/incidents/retention");
+  const archive = (ids: readonly string[], where: Record<string, unknown>) =>
+    archiveAndPruneSyncIssues(systemDb as unknown as Parameters<typeof archiveAndPruneSyncIssues>[0], ids, where);
+  // A read-through view of the real client plus the archiver (the client itself is not mutated).
+  return new Proxy(base, {
+    get: (target, key) => (key === "archiveAndPruneSyncIssues" ? archive : Reflect.get(target, key)),
+  }) as RetentionClient;
+}
+
 export async function runDataRetention(
   client?: RetentionClient,
   now: Date = new Date(),
   comms?: RollupClient,
   opts: { dryRun?: boolean } = {},
 ): Promise<DataRetentionResult> {
-  const c = client ?? ((await import("@/lib/db")).systemDb as unknown as RetentionClient);
+  const c = client ?? (await realRetentionClient());
   // An injected rules client never implies the real database for the rollup.
   const commsClient = comms ?? (client ? null : rollupClientFrom((await import("@/lib/db")).systemDb as unknown as PrismaRollupLike));
   const dryRun = !!opts.dryRun;
@@ -396,8 +435,15 @@ export async function runDataRetention(
         const rows = await c[rule.table].findMany({ where, orderBy: { [rule.orderBy]: "asc" }, take: RETENTION_BATCH, select: { id: true } });
         res.batches++;
         if (rows.length === 0) { res.exhausted = true; break; }
-        const del = await c[rule.table].deleteMany({ where: { AND: [{ id: { in: rows.map((r) => r.id) } }, where] } });
-        res.deleted += del.count;
+        let deleted: number;
+        if (rule.archiveBeforeDelete) {
+          // Fail closed: no archiver, no delete — a summary is never lost.
+          if (!c.archiveAndPruneSyncIssues) throw new Error(`${rule.table}: refusing to delete without archiving (no archiver wired)`);
+          deleted = await c.archiveAndPruneSyncIssues(rows.map((r) => r.id), where);
+        } else {
+          deleted = (await c[rule.table].deleteMany({ where: { AND: [{ id: { in: rows.map((r) => r.id) } }, where] } })).count;
+        }
+        res.deleted += deleted;
         if (rows.length < RETENTION_BATCH) { res.exhausted = true; break; }
       }
     } catch (err) {

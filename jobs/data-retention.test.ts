@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import {
   runDataRetention, retentionCutoffFor, RETENTION_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES,
   uaFamily, networkDigest, resolveNetworkDigestKey, canonicalIp, minimiseAuditNetwork, runBetaIntakeNetworkMinimisation,
-  BETA_INTAKE_AUDIT_ACTION, MINIMISE_BATCH, MINIMISE_MAX_BATCHES,
+  BETA_INTAKE_AUDIT_ACTION, MINIMISE_BATCH, MINIMISE_MAX_BATCHES, INCIDENT_ARCHIVE_RETENTION_DAYS,
   type RetentionClient, type RetentionTable,
 } from "@/jobs/data-retention";
 
@@ -42,7 +42,7 @@ function matches(row: Row, where: Record<string, unknown>): boolean {
   });
 }
 
-function makeClient(tables: Partial<Record<RetentionTable, Row[]>>, opts: { failOn?: RetentionTable } = {}) {
+function makeClient(tables: Partial<Record<RetentionTable, Row[]>>, opts: { failOn?: RetentionTable; noArchiver?: boolean } = {}) {
   const data = Object.fromEntries(RETENTION_RULES.map((r) => [r.table, [...(tables[r.table] ?? [])]])) as Record<RetentionTable, Row[]>;
   const calls: Array<{ table: string; op: string; where: Record<string, unknown> }> = [];
   const client = Object.fromEntries(RETENTION_RULES.map((r) => [r.table, {
@@ -58,7 +58,19 @@ function makeClient(tables: Partial<Record<RetentionTable, Row[]>>, opts: { fail
       return { count: before - data[r.table].length };
     },
   }])) as unknown as RetentionClient;
-  return { client, data, calls };
+  // PB-1 Phase 1 — the archive-then-delete prune (lib/platform/incidents/retention.ts), faked:
+  // archives exactly the rows it deletes, under the same predicate.
+  const archived: string[] = [];
+  if (!opts.noArchiver) {
+    client.archiveAndPruneSyncIssues = async (ids, where) => {
+      calls.push({ table: "syncIssue", op: "archive+delete", where });
+      const doomed = data.syncIssue.filter((row) => ids.includes(row.id) && matches(row, where));
+      archived.push(...doomed.map((d) => d.id));
+      data.syncIssue = data.syncIssue.filter((row) => !doomed.includes(row));
+      return doomed.length;
+    };
+  }
+  return { client, data, calls, archived };
 }
 
 const quiet = <T,>(fn: () => Promise<T>) => {
@@ -75,6 +87,10 @@ async function main() {
       days.userSession === 30 && days.aiInvocation === 90 && days.jobRun === 90 && days.refreshExecution === 60 && days.providerCall === 60
       && days.plaidWebhookEvent === 30 && days.syncIssue === 90 && days.apiUsageCounter === 90 && days.betaAccessRequest === 180
       && days.betaAccessRequestEvent === 180 && days.dailyBrief === 90 && days.automationRun === 90 && days.commsProviderEvent === 90, JSON.stringify(days));
+    check("PB-1 Phase 1: incident archive + relations kept 13 months (396 d)",
+      days.syncIssueArchive === 396 && days.syncIssueRelation === 396 && INCIDENT_ARCHIVE_RETENTION_DAYS === 396, JSON.stringify(days));
+    check("PB-1 Phase 1: the SyncIssue rule archives before it deletes; no other rule does",
+      RETENTION_RULES.filter((x) => x.archiveBeforeDelete).map((x) => x.table).join() === "syncIssue");
     check("cutoff is exactly N days before now", retentionCutoffFor({ days: 30 }, NOW).getTime() === daysAgo(30).getTime());
   }
 
@@ -125,6 +141,30 @@ async function main() {
     check("CommsProviderEvent > 90 d deleted (Comms Center C); 89 d and recent kept", left("commsProviderEvent") === "cpe-edge,cpe-new", left("commsProviderEvent"));
     check("totals add up (1+1+1+1+1+1+2+1+3+1+1+1)", r.totalDeleted === 15, `${r.totalDeleted}`);
     check("every table reports exhausted", RETENTION_RULES.every((rule) => r[rule.table].exhausted));
+  }
+
+  console.log("\nPB-1 Phase 1 — archive-on-prune and the 13-month incident summaries");
+  {
+    const { client, data, calls, archived } = makeClient({
+      syncIssue: [
+        { id: "si-old", resolved: true, resolvedAt: daysAgo(91), updatedAt: daysAgo(91) },
+        { id: "si-open", resolved: false, resolvedAt: null, updatedAt: daysAgo(500) },
+      ],
+      syncIssueArchive: [{ id: "ar-old", archivedAt: daysAgo(397) }, { id: "ar-edge", archivedAt: daysAgo(395) }],
+      syncIssueRelation: [{ id: "rel-old", createdAt: daysAgo(397) }, { id: "rel-new", createdAt: daysAgo(10) }],
+    });
+    await quiet(() => runDataRetention(client, NOW));
+    const left = (t: RetentionTable) => data[t].map((x) => x.id).sort().join();
+    check("the resolved episode is ARCHIVED and deleted together; the open one is untouched",
+      archived.join() === "si-old" && left("syncIssue") === "si-open", `${archived} / ${left("syncIssue")}`);
+    check("the SyncIssue rule never issues a bare deleteMany", !calls.some((c) => c.table === "syncIssue" && c.op === "delete"));
+    check("archive rows > 13 months deleted; 395 d kept", left("syncIssueArchive") === "ar-edge", left("syncIssueArchive"));
+    check("relations > 13 months deleted; recent kept", left("syncIssueRelation") === "rel-new", left("syncIssueRelation"));
+
+    const noArch = makeClient({ syncIssue: [{ id: "si-old", resolved: true, resolvedAt: daysAgo(91), updatedAt: daysAgo(91) }] }, { noArchiver: true });
+    const r2 = await quiet(() => runDataRetention(noArch.client, NOW));
+    check("FAIL CLOSED: with no archiver wired, no SyncIssue row is deleted and the rule reports an error",
+      noArch.data.syncIssue.length === 1 && !!r2.syncIssue.error, JSON.stringify(r2.syncIssue));
   }
 
   console.log("\nowner P2-1 — the hashed beta blocklist and its sealed evidence (stored deadlines, not ages)");

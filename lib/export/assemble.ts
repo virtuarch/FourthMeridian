@@ -91,6 +91,7 @@ import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { resolvePersonalSpaceId } from "@/lib/accounts/space-account-link";
 import { SECURITY_HISTORY_ACTIONS, securityHistoryLabel } from "@/lib/security-history";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
+import { readExportIncidents } from "@/lib/export/incidents";
 import {
   capTransactions,
   EXPORT_TRANSACTION_CAP,
@@ -423,6 +424,9 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     dailyBriefs: dailyBriefs.map((b) => ({
       spaceId: b.spaceId, briefDay: iso(b.briefDay), content: b.content, generatedAt: iso(b.generatedAt),
     })),
+    // PB-1 Phase 1 — after every tenant phase, on the incident tables' own
+    // authority (fm_system), with this user's ids only (lib/export/incidents.ts).
+    syncIncidents: await readExportIncidents(userId),
   };
 
   const counts: Record<string, number> = {
@@ -437,6 +441,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     aiAdvice: data.aiAdvice.length,
     aiMemory: data.aiMemory.length,
     dailyBriefs: data.dailyBriefs.length,
+    syncIncidents: data.syncIncidents.live.length,
+    syncIncidentArchives: data.syncIncidents.archived.length,
     sessions: data.security.sessions.length,
   };
 

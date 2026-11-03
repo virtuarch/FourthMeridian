@@ -69,14 +69,23 @@ const RETAINED: Record<string, string> = {
   "BetaBlockedIdentifier.createdById":  "operator whose deny / verdict / backfill created a blocklist row — actor identity on a platform record (no customer column)",
   "BetaBlockedIdentifier.removedById":  "operator who removed a block — actor identity on a platform record",
   "BetaAbuseEvidence.capturedById":     "SYSTEM_ADMIN who preserved sealed abuse evidence — actor identity on a platform record",
+  // PB-1 Phase 1 — operator identities on an incident (who acknowledged / resolved /
+  // confirmed a cause): actor identity on a CUSTOMER's record, like revokedById above;
+  // the customer's own incident rows are deleted (lib/platform/incidents/purge.ts).
+  "SyncIssue.acknowledgedById":       "operator who acknowledged an incident — actor identity on another customer's record",
+  "SyncIssue.resolvedById":           "operator who resolved an incident — actor identity on another customer's record",
+  "SyncIssue.causeConfirmedById":     "operator who confirmed an incident's cause — actor identity on another customer's record",
   "AiInvocation.spaceId":             "not a user column: a soft Space reference on a ledger that survives by design (RLS migration §4); the user column is nulled",
 };
 
 // ── Parse the schema ─────────────────────────────────────────────────────────
 
 const schema = readFileSync("prisma/schema.prisma", "utf8");
-const purge = readFileSync("lib/account-deletion/purge.ts", "utf8")
-  .replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+const stripComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+// PB-1 Phase 1 — the purge's destructive tail calls the incident purge module
+// (purgeIncidentSet(tx, …)); its explicit deletes count as the purge's own.
+const purge = stripComments(readFileSync("lib/account-deletion/purge.ts", "utf8"))
+  + "\n" + stripComments(readFileSync("lib/platform/incidents/purge.ts", "utf8"));
 
 interface UserColumn { model: string; column: string; kind: "FK" | "SOFT"; onDelete: string | null }
 

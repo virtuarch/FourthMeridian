@@ -73,8 +73,16 @@ const ALL_PRODUCERS = [
   { file: "lib/crypto/btc-sync.ts",                          enveloped: false },
 ] as const;
 
-/** The ONLY module permitted to touch SyncIssue rows directly. */
-const LIFECYCLE_INTERNALS = new Set(["lib/platform/incidents/lifecycle.ts"]);
+/**
+ * The ONLY modules permitted to touch SyncIssue rows directly. PB-1 Phase 1
+ * adds two, deliberately: the account-deletion incident purge and the
+ * archive-on-prune retention step — both DELETE, neither observes or resolves.
+ */
+const LIFECYCLE_INTERNALS = new Set([
+  "lib/platform/incidents/lifecycle.ts",
+  "lib/platform/incidents/purge.ts",
+  "lib/platform/incidents/retention.ts",
+]);
 
 function main() {
   // ── 1. The semantics authority stays the only classifier ────────────────────
@@ -113,12 +121,26 @@ function main() {
     const resolvers = prod.filter((f) => /export async function resolveByAutomaticRecovery/.test(code(f)));
     check("one automatic-resolution service", resolvers.length === 1 && resolvers[0] === LIFECYCLE, resolvers.join(", "));
 
-    // Only AUTOMATIC_RECOVERY exists — no kind without a producer.
+    const removers = prod.filter((f) => /export async function resolveBySubjectRemoval/.test(code(f)));
+    check("one subject-removal service", removers.length === 1 && removers[0] === LIFECYCLE, removers.join(", "));
+
+    // PB-1 S2 — DELIBERATE PIN UPDATE (was: "AUTOMATIC_RECOVERY is the only kind").
+    // The kind set is exactly these three; each has one writer or is declared for
+    // the invariant only (OPERATOR_RESOLVED — its writer is S6).
     const lc = code(LIFECYCLE);
+    const inv = code("lib/platform/incidents/invariant.ts");
     for (const unbacked of ["CONNECTION_REMOVED", "REAUTHENTICATED", "OPERATOR_ACTION", "SUPERSEDED"]) {
-      check(`no unbacked resolution kind \`${unbacked}\``, !new RegExp(`"${unbacked}"`).test(lc));
+      check(`no unbacked resolution kind \`${unbacked}\``, !new RegExp(`"${unbacked}"`).test(lc) && !new RegExp(`"${unbacked}"`).test(inv));
     }
-    check("AUTOMATIC_RECOVERY is the only kind", /RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY"/.test(lc));
+    check("the resolution kinds are exactly AUTOMATIC_RECOVERY, OPERATOR_RESOLVED, SUBJECT_REMOVED",
+      /RESOLUTION_KINDS = \["AUTOMATIC_RECOVERY", "OPERATOR_RESOLVED", "SUBJECT_REMOVED"\] as const/.test(inv)
+      && /RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY"/.test(lc)
+      && /RESOLUTION_KIND_SUBJECT_REMOVED = "SUBJECT_REMOVED"/.test(lc)
+      && /RESOLUTION_KIND_OPERATOR = "OPERATOR_RESOLVED"/.test(lc));
+    check("OPERATOR_RESOLVED has no writer yet (S6 owns applyOperatorTransition)",
+      !/resolutionKind:\s*RESOLUTION_KIND_OPERATOR/.test(lc) && !/applyOperatorTransition/.test(lc));
+    check("SUBJECT_REMOVED is never written as a recovery (its writer names its own kind)",
+      /resolutionKind:\s*RESOLUTION_KIND_SUBJECT_REMOVED/.test(lc));
   }
 
   // ── 3. Producers submit facts; they decide nothing ──────────────────────────
@@ -160,7 +182,7 @@ function main() {
     const consumers = [...walk("lib"), ...walk("app"), ...walk("jobs")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => !f.startsWith("lib/platform/incidents/"))
-      .filter((f) => /recordIncidentObservation\(|resolveByAutomaticRecovery\(/.test(code(f)));
+      .filter((f) => /recordIncidentObservation\(|resolveByAutomaticRecovery\(|resolveBySubjectRemoval\(/.test(code(f)));
     check("only the facade calls the lifecycle authority",
       consumers.length === 1 && consumers[0] === FACADE, consumers.join(", "));
 
@@ -210,6 +232,74 @@ function main() {
     }
     check("the lifecycle authority knows nothing of admission reasons",
       !/INGESTION_PAUSED|MAINTENANCE_MODE|CONTROL_PLANE_|admissionReason/.test(code(LIFECYCLE)));
+  }
+
+  // ── 8. PB-1 Phase 1 — provenance is append-only, evidence is typed ─────────
+  console.log("8. the chronology, the archive and the evidence have one writer each");
+  {
+    const prod = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")]
+      .filter((f) => !/\.test\.tsx?$/.test(f));
+    const touching = (re: RegExp) => prod.filter((f) => re.test(code(f)));
+    check("SyncIssueEvent is never updated anywhere (append-only)",
+      touching(/syncIssueEvent\.(update|updateMany|upsert)\(|UPDATE\s+"?SyncIssueEvent/i).length === 0);
+    const eventDeleters = touching(/syncIssueEvent\.(delete|deleteMany)\(|DELETE\s+FROM\s+"?SyncIssueEvent/i);
+    check("SyncIssueEvent is deleted ONLY by the purge and the retention prune",
+      eventDeleters.every((f) => f === "lib/platform/incidents/purge.ts" || f === "lib/platform/incidents/retention.ts")
+      && eventDeleters.length === 2, eventDeleters.join(", "));
+    const eventWriters = touching(/syncIssueEvent\.(create|createMany)\(|INSERT\s+INTO\s+"?SyncIssueEvent/i);
+    check("SyncIssueEvent is written ONLY by the lifecycle authority",
+      eventWriters.length === 1 && eventWriters[0] === LIFECYCLE, eventWriters.join(", "));
+    const archiveWriters = touching(/syncIssueArchive\.(create|createMany|update|updateMany|upsert)\(/);
+    check("SyncIssueArchive is written ONLY by the archive-on-prune step",
+      archiveWriters.length === 1 && archiveWriters[0] === "lib/platform/incidents/retention.ts", archiveWriters.join(", "));
+    check("the archive row is shaped ONLY by the allowlist builder", /buildArchiveRow\(/.test(code("lib/platform/incidents/retention.ts")));
+    const lc = code(LIFECYCLE);
+    // The evidence columns may be NAMED only where they are built, copied through
+    // the builder, or exported read-only; the write forms are pinned in place.
+    const EVIDENCE_FILES = new Set([
+      LIFECYCLE, "lib/platform/incidents/evidence.ts", "lib/platform/incidents/archive-core.ts",
+      "lib/platform/incidents/retention.ts", "lib/platform/incidents/invariant.ts", "lib/export/incidents.ts",
+    ]);
+    const evidenceNamers = touching(/\bresolutionEvidence\b/).filter((f) => !EVIDENCE_FILES.has(f));
+    check("resolutionEvidence is touched only by its builder, the archive copy and the export",
+      evidenceNamers.length === 0, evidenceNamers.join(", "));
+    check("lifecycle writes resolutionEvidence only from buildResolutionEvidence",
+      /const evidence = buildResolutionEvidence\(/.test(lc) && /resolutionEvidence:\s*evidence as unknown/.test(lc));
+    check("the archive copy re-builds it through the typed reshaper",
+      /resolutionEvidence:\s*reshapeStoredEvidence\(/.test(code("lib/platform/incidents/archive-core.ts")));
+    const summaryNamers = touching(/\bevidenceSummary\b/).filter((f) => f !== LIFECYCLE && f !== "lib/platform/incidents/evidence.ts");
+    check("evidenceSummary is written ONLY via buildOccurrenceEvidenceSummary",
+      summaryNamers.length === 0 && /evidenceSummary:\s*buildOccurrenceEvidenceSummary\(/.test(lc), summaryNamers.join(", "));
+    check("a transition is a CAS that THROWS on 0 rows, inside one transaction with its event",
+      /\$transaction\(async \(tx\)/.test(lc) && /lifecycleState:\s*c\.lifecycleState/.test(lc)
+      && /if \(count !== 1\) throw new IncidentTransitionConflictError/.test(lc));
+  }
+
+  // ── 9. PB-1 S3 — every removal path closes its subject's incidents ────────
+  console.log("9. removal closes incidents as SUBJECT_REMOVED; restore never reopens");
+  {
+    for (const f of ["lib/accounts/disconnect.ts", "lib/plaid/disconnect.ts", "lib/account-deletion/purge.ts"]) {
+      check(`${f}: calls the subject-removal facade`, /resolveIncidentsForRemovedSubjects|resolveRemovedSubjects/.test(code(f)));
+    }
+    const restore = code("app/api/accounts/[id]/restore/route.ts");
+    check("restore does not reopen a closed episode (no incident code at all)",
+      !/syncIssue|incidents\/|recordSyncIssue|resolveIncidents/.test(restore));
+  }
+
+  // ── 10. RLS — the tenant role's column grant is unchanged ─────────────────
+  console.log("10. fm_app still reads only the RLS-16 columns of SyncIssue");
+  {
+    const dir = path.join(ROOT, "prisma/migrations");
+    const grants: string[] = [];
+    for (const m of readdirSync(dir)) {
+      let sql = "";
+      try { sql = readFileSync(path.join(dir, m, "migration.sql"), "utf8"); } catch { continue; }
+      sql = sql.replace(/--.*$/gm, "");
+      for (const g of sql.match(/GRANT[^;]*ON\s+TABLE\s+public\."SyncIssue(Occurrence|Event|Archive|Relation)?"[^;]*TO\s+fm_app[^;]*;/g) ?? []) grants.push(`${m}: ${g.replace(/\s+/g, " ")}`);
+    }
+    check("exactly one fm_app grant on the incident tables, the RLS-16 six columns",
+      grants.length === 1 && grants[0].startsWith("20261002000500_rls_app_sync_issue_read")
+      && /"id", "kind", "resolved", "createdAt", "financialAccountId", "plaidTransactionId"/.test(grants[0]), grants.join(" | "));
   }
 
   if (failures > 0) {

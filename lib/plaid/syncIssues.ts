@@ -29,8 +29,12 @@
 import { systemDb } from "@/lib/db";
 import type { LedgerWriteObserver } from "@/lib/monitoring/capture";
 import type { SyncIssueKind, Prisma } from "@prisma/client";
-import { recordIncidentObservation, resolveByAutomaticRecovery, type IncidentClient } from "@/lib/platform/incidents/lifecycle";
+import {
+  recordIncidentObservation, resolveByAutomaticRecovery, resolveBySubjectRemoval,
+  type IncidentClient, type RemovalClient, type SubjectRemovalScope,
+} from "@/lib/platform/incidents/lifecycle";
 import { getProviderCallContext } from "@/lib/plaid/provider-call-context";
+import { currentJobRun } from "@/lib/jobs/run";
 
 /**
  * PB-1 S1 — the run id of the refresh execution in flight on this async stack,
@@ -175,6 +179,45 @@ export interface SyncIssueDeps {
    * operation.
    */
   onWriteFailure?: LedgerWriteObserver;
+  /**
+   * PB-1 Phase 1 — the subject-owner seam. Production never passes it: the
+   * default reads the AUTHORITATIVE owner (PlaidItem.userId, else
+   * FinancialAccount.ownerUserId / createdByUserId) through `systemDb` — but
+   * only when the incident client IS `systemDb`, so an injected test client
+   * can never cause a real-database read.
+   */
+  lookupSubjectOwner?: (subject: { plaidItemId: string | null; financialAccountId: string | null }) => Promise<string | null>;
+}
+
+/**
+ * The owner of an incident's subject, from the owning row — never from
+ * `detail`. Never throws: an unknown owner is stored as null, honestly.
+ */
+export async function lookupSubjectOwnerDefault(
+  subject: { plaidItemId: string | null; financialAccountId: string | null },
+): Promise<string | null> {
+  try {
+    if (subject.plaidItemId) {
+      const item = await systemDb.plaidItem.findUnique({ where: { id: subject.plaidItemId }, select: { userId: true } });
+      if (item) return item.userId;
+    }
+    if (subject.financialAccountId) {
+      const acct = await systemDb.financialAccount.findUnique({
+        where: { id: subject.financialAccountId }, select: { ownerUserId: true, createdByUserId: true },
+      });
+      if (acct) return acct.ownerUserId ?? acct.createdByUserId ?? null;
+    }
+    return null;
+  } catch (e) {
+    console.error("[syncIssues] subject owner lookup failed; storing the incident without one (non-fatal):", e instanceof Error ? e.name : "error");
+    return null;
+  }
+}
+
+/** A non-empty string field of `detail`, or null. Only ids are read; nothing else leaves `detail`. */
+function detailId(detail: Record<string, unknown>, key: string): string | null {
+  const v = detail[key];
+  return typeof v === "string" && v !== "" && v.length <= 128 ? v : null;
 }
 
 export async function recordSyncIssue(
@@ -205,6 +248,16 @@ export async function recordSyncIssue(
   const detail = runId && !explicitRunId
     ? ({ ...detailObj, runId } as Prisma.InputJsonValue)
     : input.detail;
+  // PB-1 Phase 1 — typed facts for the new structured columns.
+  //   owner      the subject's owning row (never `detail`); see lookupSubjectOwner
+  //   subjects   the producer's account / security ids — today several producers
+  //              carry them only in `detail` (design F3), so they are lifted
+  //              into columns HERE, once, as ids; nothing else leaves `detail`
+  //   job        the ambient JobRun, which outlives the 60-day execution ledger
+  const subjectRef = { plaidItemId: input.plaidItemId ?? null, financialAccountId: input.financialAccountId ?? null };
+  const lookupOwner = deps.lookupSubjectOwner ?? (client === systemDb ? lookupSubjectOwnerDefault : null);
+  const subjectUserId = lookupOwner ? await lookupOwner(subjectRef).catch(() => null) : null;
+  const job = currentJobRun();
   await recordIncidentObservation(
     {
       kind:               input.kind,
@@ -215,9 +268,39 @@ export async function recordSyncIssue(
       plaidAccountId:     input.plaidAccountId ?? null,
       runId,
       detail,
+      subjectUserId,
+      subjectAccountId:   input.financialAccountId ?? detailId(detailObj, "financialAccountId"),
+      securityId:         detailId(detailObj, "securityId"),
+      jobRunId:           job?.id ?? null,
+      jobName:            job?.jobName ?? null,
     },
     client,
     deps.getExecutionIdByRunId,
     { onWriteFailure: deps.onWriteFailure },
   );
+}
+
+/**
+ * PB-1 S3 — close the open incidents of subjects a removal path just removed
+ * (design §5). FACADE over `resolveBySubjectRemoval`: the ids are candidates,
+ * the authority re-reads each subject and closes only what is genuinely
+ * DELETED / REVOKED / MISSING, as `SUBJECT_REMOVED` — never as a recovery.
+ *
+ * Called by every removal path (lib/accounts/disconnect.ts,
+ * lib/plaid/disconnect.ts, lib/account-deletion/purge.ts) AFTER its own
+ * transactions committed (OPS-2D-TX-1). Never throws; returns how many closed.
+ */
+export async function resolveIncidentsForRemovedSubjects(
+  scope: SubjectRemovalScope,
+  client: RemovalClient = systemDb,
+  deps: Pick<SyncIssueDeps, "onWriteFailure"> = {},
+): Promise<number> {
+  try {
+    const { resolved } = await resolveBySubjectRemoval(scope, client, { onWriteFailure: deps.onWriteFailure });
+    return resolved;
+  } catch {
+    // Unreachable (the authority never throws) — kept so a removal path can
+    // never be failed by its own telemetry.
+    return 0;
+  }
 }
