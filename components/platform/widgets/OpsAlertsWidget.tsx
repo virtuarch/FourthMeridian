@@ -31,6 +31,7 @@ import { PlatformWidgetCard, WidgetMessage, timeAgo, useWidgetFetch, type Platfo
 import { BigStat, GroupLabel, SectionSurface, ToneBadge, type StatusTone } from "../platform-surface";
 import type { PlatformAlertsResponse } from "@/app/api/platform/platform-ops/alerts/route";
 import { undeliveredSentence, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
+import { recoveryAfter } from "@/lib/alerts/recovery";
 
 export const ALERT_RULES_TITLE = "Alert rules";
 
@@ -56,6 +57,15 @@ export function deliveryWord(latest: AlertLatestEvaluation | null): { word: stri
   }
 }
 
+/** ALERT RECOVERY — recoveries the latest run dropped after 7 days undelivered. */
+export function expiredRecoveries(data: PlatformAlertsResponse): number {
+  const u = data.latest?.recoveryUndelivered;
+  return u && u.reason === "EXPIRED" ? u.breaches : (data.latestRecoveryExpired ?? 0);
+}
+export function expiredRecoveriesSentence(n: number): string {
+  return `${n} recover${n === 1 ? "y" : "ies"} could not be delivered within 7 days`;
+}
+
 export function AlertsSurface({ data }: { data: PlatformAlertsResponse }) {
   const recent = data.history.slice(0, 5);
   const delivery = deliveryWord(data.latest);
@@ -73,6 +83,12 @@ export function AlertsSurface({ data }: { data: PlatformAlertsResponse }) {
           <ToneBadge word={delivery.word} tone={delivery.tone} />
           <span className="text-[var(--text-secondary)]">{delivery.detail}</span>
         </p>
+        {expiredRecoveries(data) > 0 && (
+          // ALERT RECOVERY — cleared breaches whose recovery never reached the inbox.
+          <p className="text-xs text-[var(--text-secondary)]" role="status" data-testid="alert-recovery-expired">
+            {expiredRecoveriesSentence(expiredRecoveries(data))}
+          </p>
+        )}
       </div>
 
       <div className="grid gap-8 md:grid-cols-2">
@@ -107,7 +123,14 @@ export function AlertsSurface({ data }: { data: PlatformAlertsResponse }) {
                     <ToneBadge word={h.severity} tone={h.severity === "critical" ? "bad" : "warn"} />{" "}
                     {h.summary}
                   </span>
-                  <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{timeAgo(h.deliveredAtISO)} ago</span>
+                  <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">
+                    {timeAgo(h.deliveredAtISO)} ago
+                    {(() => {
+                      // ALERT RECOVERY — the delivered recovery that closed this fire's episode, if any.
+                      const rec = recoveryAfter(h, data.recoveries ?? []);
+                      return rec ? <span data-testid="alert-recovered"> · recovered at {new Date(rec.recoveredAtISO).toISOString().slice(0, 16).replace("T", " ")} UTC</span> : null;
+                    })()}
+                  </span>
                 </li>
               ))}
             </ul>

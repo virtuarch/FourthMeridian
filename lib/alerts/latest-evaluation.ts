@@ -38,6 +38,8 @@ export interface AlertLatestEvaluation {
   counts: AlertRunSummary["counts"];
   /** Every rule's outcome in that run; `firing` is the only "active" there is. */
   rules: AlertRuleOutcome[];
+  /** ALERT RECOVERY — recovery notices due and NOT delivered in that run (incl. EXPIRED). Optional on the type for older fixtures. */
+  recoveryUndelivered?: AlertUndelivered | null;
 }
 
 /**
@@ -62,6 +64,7 @@ export function latestAlertEvaluation(recent: readonly AlertRunSummary[]): Alert
       : null,
     counts: newest.counts,
     rules: Array.isArray(newest.rules) ? newest.rules.map(outcomeOnly) : [],
+    recoveryUndelivered: undeliveredOnly(newest.recoveryUndelivered),
   };
 }
 
@@ -70,7 +73,7 @@ function undeliveredOnly(u: AlertRunSummary["undelivered"]): AlertUndelivered | 
   if (!u || typeof u !== "object") return null;
   const reason = u.reason;
   const breaches = typeof u.breaches === "number" ? u.breaches : 0;
-  if (reason !== "NO_EMAIL_TRANSPORT" && reason !== "NO_DESTINATION" && reason !== "SEND_ERROR" && reason !== "LEDGER_WRITE_FAILED") return null;
+  if (reason !== "NO_EMAIL_TRANSPORT" && reason !== "NO_DESTINATION" && reason !== "SEND_ERROR" && reason !== "LEDGER_WRITE_FAILED" && reason !== "EXPIRED") return null;
   return { reason, breaches };
 }
 
@@ -81,6 +84,7 @@ export function undeliveredSentence(u: AlertUndelivered): string {
     case "NO_EMAIL_TRANSPORT": return `${n} NOT delivered — no email transport: RESEND_API_KEY is not set, so the message was captured in memory and reached nobody.`;
     case "NO_DESTINATION":     return `${n} NOT delivered — PLATFORM_ALERTS_EMAIL is not set.`;
     case "SEND_ERROR":         return `${n} NOT delivered — the email provider returned an error; the next evaluation retries.`;
+    case "EXPIRED":            return `${u.breaches} recover${u.breaches === 1 ? "y" : "ies"} could not be delivered within 7 days and ${u.breaches === 1 ? "was" : "were"} dropped.`;
     case "LEDGER_WRITE_FAILED": return `${n} NOT delivered — the evaluator's own JobRun row failed to write, so delivery was circuit-broken to prevent an alert storm.`;
   }
 }
