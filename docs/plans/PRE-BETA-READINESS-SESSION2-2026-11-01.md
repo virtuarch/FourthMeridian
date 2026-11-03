@@ -34,7 +34,7 @@
 
 ### What happened (the 13-request investigation, 2026-10-31)
 
-Evidence comes from `docs/plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md`, on branch `docs/beta-risk-and-parity` at 1dead91. It was produced by the temporary, owner-approved `fm_diag_ro` role, using column grants only, a read-only guard, and masked output. The role was retired afterwards.
+Evidence comes from `docs/plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md` (now `docs/archive/evidence/security/`), on branch `docs/beta-risk-and-parity` at 1dead91. It was produced by the temporary, owner-approved `fm_diag_ro` role, using column grants only, a read-only guard, and masked output. The role was retired afterwards.
 
 - **Requests:** 20 in total, all `PENDING`.
 - **Decisions:** 0 decided, 0 invited, 0 redeemed, 0 decision events. This is per-request in section D of the masked output (`decided f`, `redeemed f`, `decision_events 0`).

@@ -72,6 +72,84 @@ Point-in-time answers resolve at the nearest snapshot **≤ the as-of date**
 - `convertWealthSnapshots()` — `lib/wealth/display-conversion.ts:74`, the display-FX
   transform (see Invariants).
 
+## Manual real-world asset valuation history (RWA-2)
+
+**IMPLEMENTED** — RWA-2A (`a5727b0`) and RWA-2B (`6d1a491`); migration
+`20261015120000_rls_asset_valuations`. This is the one place Wealth's input series
+carries a value that is not an observation, so the rules are recorded here. Status
+markers as in the [documentation lifecycle](../README.md#documentation-lifecycle).
+
+**What the user records** (a manual asset is a `FinancialAccount` with type `other` and
+`syncStatus = "manual"`):
+
+- On add: an optional acquisition date, an optional purchase price, an opt-in (default
+  off) to use the purchase price as the asset's value on that date, a valuation date
+  (default today) and a required current estimate.
+- On update: a dated valuation is **appended** (`PATCH /api/accounts/manual/[id]`, body
+  `{ balance, effectiveDate? }`); nothing is overwritten. The effective date may not be in
+  the future or before acquisition.
+- **Storage.** `AssetValuation` is an append-only ledger (effective date, value,
+  currency, source `USER_ESTIMATE`, `recordedAt`, recorder) — append-only by grant:
+  the tenant role may only `SELECT` and `INSERT`. `ManualAssetProfile` (1:1) holds the
+  acquisition facts. Both use the account-subtree RLS predicate.
+
+**One valuation policy for every reader** — the per-asset chart, the AI tools and the
+history rebuild all call the pure resolver `valueOn` in
+`lib/assets/valuation-series.core.ts`, so no two surfaces can describe an asset's past
+differently. For day *d*:
+
+| Day *d* | Result | Basis |
+|---|---|---|
+| before the acquisition date (else before the first anchor) | not held — `null` | — |
+| after acquisition, before the first anchor | held but not valued — `null`, nothing invented | — |
+| on an anchor date | that anchor's value | `recorded` |
+| strictly between two anchors | linear interpolation in the asset's own currency, rounded to whole units | `modeled` |
+| after the last anchor | the last anchor carried flat — **never extrapolated** (owner decision D-H4) | `carried` |
+
+- **Anchors** are the user's valuations; the purchase price is an anchor **only** with the
+  opt-in, and is otherwise shown as a fact, never as a market value.
+- **Same-day corrections:** for one effective date the row with the latest `recordedAt`
+  is the anchor; earlier rows stay stored as correction history and are never used.
+- **Today's value:** `FinancialAccount.balance` equals the latest-effective-date anchor, so
+  a backdated correction never changes today's balance.
+- **Labels:** modeled values are labelled "modeled", never "valued", in the UI and to the
+  AI. The AI receives recorded valuations plus a `modeledHistory` descriptor — never
+  modeled points (`lib/ai/assemblers/accounts.ts`, `lib/ai/conversation/tools/snapshot.ts`).
+
+**Privacy.** RLS lets any viewer of an ACTIVE link read these rows, including a
+`BALANCE_ONLY` link, but valuation history discloses more than that tier allows. Every
+application read is therefore additionally gated to the owner or a viewer holding an
+ACTIVE **FULL** link; anyone else — and a missing asset — gets the same 404
+(`GET /api/accounts/manual/[id]/valuations`, `lib/assets/valuations.ts`).
+
+**Historical net worth (RWA-2B)** — the snapshot history engine values a manual asset
+from the same resolver (`lib/snapshots/manual-asset-history.core.ts`):
+
+- **Floor = the first anchor** (the acquisition date only when the purchase price was
+  opted in). Held-but-unvalued days contribute nothing. In a shared Space the floor is
+  also bounded by the date the asset was linked into it (`computeAccountFloors`).
+- A modeled or carried day is an **estimate**: the stored row stays `isEstimated = true`.
+  `SpaceSnapshot` has no "modeled" column, so the modeled distinction is re-derived at
+  read time from the ledger (`lib/snapshots/real-asset-basis.core.ts`), and the Net Worth
+  chart draws those days with the modeled basis.
+- **Legacy assets** (created before RWA-2: no valuation rows, no profile) keep their
+  pre-RWA-2B history byte-for-byte (floor = today), because applying the resolver would
+  change existing estimated history without any user action — which the owner ruled out.
+  The first recorded value turns the legacy balance into a ledger row and the resolver
+  drives history from then on.
+- **Frozen observed days are not rewritten automatically** (D-H1). A Personal-Space owner
+  who adds history or backdates a valuation is offered "Update past net worth?": a dry-run
+  preview of the affected range with before → after figures through the existing
+  consent-based amendment route, applied only on explicit consent and never in a shared
+  Space. Automatic range rebuilds stay behind `WEALTH_REGENERATION_ENABLED` (D-H2). The
+  frozen-row and membership guards are unchanged.
+- Today's snapshot is regenerated after an add, update, archive or restore
+  (`regenerateSnapshotsForAccounts`), best-effort and non-fatal.
+
+**Open items** (**PROPOSED**, not built): amendment day rows record per-component and
+net-worth before/after but have no dedicated real-asset column; there is no asset↔loan
+link, so equity display (a secured asset net of its loan) is a separate decision (RWA-3).
+
 ## Persistence
 
 Wealth **persists nothing** and owns no table. It reads `SpaceSnapshot`

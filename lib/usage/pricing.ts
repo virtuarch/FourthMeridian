@@ -90,9 +90,9 @@ export const AI_RATES: readonly AiRate[] = [
 
 /**
  * ⚠️ PLAID IS NOT PRICED PER CALL, AND THAT IS THE WHOLE POINT OF THIS BLOCK.
- * Invoice `S-J7Y5657ZK0-2607` (July 2026) reconciles exactly to the Plaid
- * dashboard: Transactions qty 40 = "Items billed in the 7/1–7/31 cycle";
- * Investments qty 4 = Investments-Transactions billed. `/transactions/sync` is
+ * The July 2026 Plaid invoice (detail in the owner's private record) reconciles
+ * exactly to the Plaid dashboard: the Transactions quantity = "Items billed in
+ * the cycle"; the Investments quantity = Investments-Transactions billed. `/transactions/sync` is
  * included in the subscription and `/transactions/refresh` has zero call sites
  * (the dashboard's Refresh chart reads 0), so REFRESHES COST $0. The
  * `PLAID/<method>/calls` counters are operational telemetry with no monotonic
@@ -115,9 +115,10 @@ export type PlaidBillableProduct = 'transactions' | 'investments';
  * ⚠️ ONE PERIOD OF EVIDENCE, AND THE RATES ARE SCOPED TO IT. These unit prices
  * are DERIVED from the single reconciled invoice, not read from a price sheet:
  *
- *   Transactions  $12.00 / 40 Item-months = $0.30   — independently confirmed by
- *                 the recorded orphan estimate, "9 orphans, ~$2.70/mo" (9 × $0.30)
- *   Investments   ($13.40 total − $12.00) / 4       = $0.35, forced by subtraction
+ *   Transactions  line total / Transactions Item-months = $0.30 — independently
+ *                 consistent with the recorded orphan-cost estimate
+ *   Investments   (invoice total − Transactions line) / Investments Item-months
+ *                 = $0.35, forced by subtraction
  *
  * `effectiveFrom` is the cycle the evidence covers. Cycles before it are
  * UNPRICED — not zero — because no invoice evidences a rate for them, and
@@ -128,9 +129,9 @@ export type PlaidBillableProduct = 'transactions' | 'investments';
  */
 export const PLAID_RATES: readonly PlaidRate[] = [
   { provider: 'PLAID', product: 'transactions', effectiveFrom: '2026-07-01', usdPerItemMonth: 0.30,
-    source: 'invoice S-J7Y5657ZK0-2607 (Jul 2026): $12.00 Transactions / 40 Item-months; cross-checked against the recorded 9-orphan estimate of ~$2.70/mo' },
+    source: 'Plaid invoice, Jul 2026 cycle: unit price evidenced per Transactions Item-month (invoice detail in the owner\'s private record)' },
   { provider: 'PLAID', product: 'investments', effectiveFrom: '2026-07-01', usdPerItemMonth: 0.35,
-    source: 'invoice S-J7Y5657ZK0-2607 (Jul 2026): ($13.40 total − $12.00 Transactions) / 4 Investments Item-months — derived by subtraction, not quoted' },
+    source: 'Plaid invoice, Jul 2026 cycle: Investments unit price derived by subtraction, not quoted (invoice detail in the owner\'s private record)' },
 ];
 
 /**

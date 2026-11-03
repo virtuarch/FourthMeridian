@@ -12,7 +12,7 @@
  * so the cutover marker below is the only record of where the basis changes. A
  * chart window that spans it says so; nothing is rewritten.
  *
- * ── CUTOVER SEMANTICS (v2.7-P5; runbook docs/plans/V2.7-ADJUSTED-CASH-CUTOVER-RUNBOOK-2026-10-27.md)
+ * ── CUTOVER SEMANTICS (v2.7-P5; runbook docs/archive/evidence/production-cutover/V2.7-ADJUSTED-CASH-CUTOVER-RUNBOOK-2026-10-27.md)
  *
  * SpaceSnapshot rows are keyed by UTC calendar day (`date @db.Date`). The live
  * writer (lib/snapshots/regenerate.ts) upserts TODAY's (UTC) row every time a
