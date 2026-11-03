@@ -338,12 +338,14 @@ function main() {
       "lib/platform/incidents/subject-export.ts": "subject export (verbatim facts)",
       // The wallet-sync incident's LAST FAILURE INSTANT (max lastOccurredAt) — a clock, not an open/closed verdict.
       "lib/crypto/wallet-refresh.ts": "failure clock (no state)",
+      // PERMANENT EXCEPTION (S2 ruling, 2026-11-03) — shape pinned below.
+      "lib/plaid/backgroundHistorySync.ts": "EXCEPTION: control gate, not a display read (MISSING_ACCOUNT persisted-open COUNT gates recovery)",
       // KNOWN RESIDUALS — not among PB-1 §13.1's six readers; each still derives open/closed from rows.
-      // Listed so they cannot multiply; each is a PB-1 Phase 3 item (Session 1 ruling, PB-1 R6b report).
-      "lib/platform/incidents/projections.ts": "RESIDUAL: getIncidentEpisodeTimeline (CS daily trend) + getIncidentDetail (Ops execution evidence; state unused)",
+      // Listed so they cannot multiply; each is a PB-1 Phase 3 item (S2 rulings, 2026-11-03).
+      // getIncidentDetail stays on this file's entry by ruling: execution evidence only; state ignored.
+      "lib/platform/incidents/projections.ts": "RESIDUAL: getIncidentEpisodeTimeline (CS daily trend) · KEPT: getIncidentDetail — execution evidence only; state ignored",
       "lib/platform/incidents/episodes-core.ts": "RESIDUAL: the legacy episode fold the CS daily trend uses",
-      "app/api/spaces/[id]/activity/route.ts": "RESIDUAL: member activity feed (resolved=false, bank-transaction rows only)",
-      "lib/plaid/backgroundHistorySync.ts": "RESIDUAL: sync control (MISSING_ACCOUNT blocking count gates recovery)",
+      "app/api/spaces/[id]/activity/route.ts": "RESIDUAL: member activity feed (resolved=false, bank-transaction rows only) — design under S2 review",
     };
     const found = [...walk("lib"), ...walk("app"), ...walk("components")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
@@ -362,7 +364,23 @@ function main() {
     ];
     const leaks = found.filter((f) => CUT_OVER.some((d) => f.startsWith(d)));
     check("none of the cut-over readers (R1–R3, R5, R6a, R6b) reads SyncIssue rows or a legacy state helper", leaks.length === 0, leaks.join(", "));
+    // The control-gate exception's SHAPE (S2): exactly one SyncIssue read in the file — a COUNT over
+    // MISSING_ACCOUNT with resolved=false, scoped to the item (and the legacy resolvedAt=null guard);
+    // no select, no detail, no other kind. Anything wider is a new reader and fails here.
+    const gate = code("lib/plaid/backgroundHistorySync.ts");
+    const gateReads = gate.match(new RegExp(RAW_READ.source, "g")) ?? [];
+    check("backgroundHistorySync: its ONE SyncIssue read is a COUNT", gateReads.length === 1 && gateReads[0] === ".syncIssue.count(", gateReads.join(", "));
+    check("…over MISSING_ACCOUNT, resolved=false, per item — no select, no detail",
+      /\.syncIssue\.count\(\{\s*where: \{ plaidItemId: id, kind: SyncIssueKind\.MISSING_ACCOUNT, resolvedAt: null, resolved: false \},?\s*\}\)/.test(gate)
+      && !/\.syncIssue\.count\(\{[^)]*(select|detail|include)/.test(gate));
+    check("…and the revisit note (derived module-only closure on MISSING_ACCOUNT) stays beside it",
+      /REVISIT if the intelligence module ever applies a module-only \(derived,\s*\n?\s*\/\/ not persisted\) closure to MISSING_ACCOUNT/.test(readFileSync(path.join(ROOT, "lib/plaid/backgroundHistorySync.ts"), "utf8")));
     const proj = code("lib/platform/incidents/projections.ts");
+    // KEPT by ruling: getIncidentDetail is execution evidence only — its single consumer (Ops attention) reads
+    // occurrences, never the derived state.
+    const opsAtt = code("lib/platform/ops/attention.ts");
+    check("getIncidentDetail's only consumer reads occurrences, never its state",
+      /getIncidentDetail\(v\.id\)/.test(opsAtt) && /detail\?\.occurrences\.find/.test(opsAtt) && !/detail\?\.incident|\.incident\.state/.test(opsAtt));
     const page = proj.slice(proj.indexOf("export async function getActiveIncidentPage"));
     const pageBody = page.slice(0, page.indexOf("\n}\n") + 3);
     check("R4: getActiveIncidentPage reads the module (brokenNow) and no SyncIssue row",
