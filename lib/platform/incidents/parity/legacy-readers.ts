@@ -9,6 +9,8 @@
 
 import { classifySyncIssue, syncIssueState, type SyncIssueState } from "@/lib/platform/sync-issue-semantics";
 import { projectIncidents } from "@/lib/platform/customer/customer-core";
+import type { CsIncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
+import { moduleVerdicts } from "./module-adapter";
 import type { World, WorldRow } from "./world";
 
 export type ReaderId = "cs-panel" | "projection" | "convergence" | "alerts" | "ops-attention" | "cs-attention";
@@ -50,18 +52,35 @@ export function projectionReader(w: World): Verdict[] {
   });
 }
 
-/** R1+R2 — customer-detail.ts:137 query (resolved=false; user's items OR live-connection accounts), then projectIncidents. */
-export function csPanelReader(w: World): Verdict[] {
+/**
+ * R1+R2 BASELINE — the CS panel AS IT WAS before its cutover (PB-1 R1): the
+ * customer-detail query (resolved=false; the user's items OR live-connection
+ * accounts) and the raw `!resolved` open filter projectIncidents used to apply.
+ * Kept INLINE as the historical record the §13.2 sensitivity checks prove
+ * divergences against; no production code implements this rule any more.
+ */
+export function csPanelBaselineReader(w: World): Verdict[] {
   const out: Verdict[] = [];
   for (const userId of w.users) {
     const itemIds = new Set(w.items.filter((i) => i.userId === userId).map((i) => i.id));
     const accountIds = new Set(w.accounts.filter((a) => a.viaItemId && itemIds.has(a.viaItemId) && !a.softDeleted && !a.hardDeleted).map((a) => a.id));
     const selected = w.rows.filter((r) => !r.resolved && ((r.plaidItemId && itemIds.has(r.plaidItemId)) || (r.financialAccountId && accountIds.has(r.financialAccountId))));
-    const view = projectIncidents(selected.map((r) => ({
-      id: r.id, provider: r.provider, kind: r.kind, plaidItemId: r.plaidItemId, financialAccountId: r.financialAccountId,
-      firstOccurredAt: r.firstOccurredAt, lastOccurredAt: r.lastOccurredAt, createdAt: r.createdAt, resolved: r.resolved,
-    })), [], []);
-    for (const o of view.open) out.push({ reader: "cs-panel", rowId: o.id, open: true, subjectUserId: userId });
+    for (const r of selected) out.push({ reader: "cs-panel", rowId: r.id, open: true, subjectUserId: userId });
+  }
+  return out;
+}
+
+/**
+ * R1+R2 — the CS panel AFTER its cutover: per customer, the module's
+ * CUSTOMER_SUCCESS-tier verdicts attributed to them (what forCustomer returns),
+ * through the REAL projectIncidents, which lists those that are brokenNow.
+ */
+export function csPanelReader(w: World): Verdict[] {
+  const cs = moduleVerdicts(w, "CUSTOMER_SUCCESS") as CsIncidentVerdict[];
+  const out: Verdict[] = [];
+  for (const userId of w.users) {
+    const mine = cs.filter((v) => v.rowClass === "incident" && v.subjectUserId === userId);
+    for (const o of projectIncidents(mine, [], []).open) out.push({ reader: "cs-panel", rowId: o.id, open: true, subjectUserId: userId });
   }
   return out;
 }

@@ -14,7 +14,7 @@
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import type { CsIncidentVerdict, IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { buildWorld } from "./world";
-import { LEGACY_READERS, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
+import { csPanelBaselineReader, LEGACY_READERS, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
 import { moduleVerdicts } from "./module-adapter";
 
 let failures = 0;
@@ -30,7 +30,9 @@ const row = (id: string) => w.rows.find((r) => r.id === id)!;
 
 console.log("§13.2 — every divergence is reproduced from today's readers");
 const projection = openIds(run("projection"));
-const csPanel = openIds(run("cs-panel"));
+// R1 is cut over: this half proves the divergences against the panel's PRE-cutover
+// rule (kept inline as csPanelBaselineReader); the gate below runs the live reader.
+const csPanel = openIds(csPanelBaselineReader(w));
 const convergence = run("convergence");
 const convOpen = openIds(convergence);
 const csAttention = run("cs-attention");
@@ -59,8 +61,7 @@ check("D10 baseline: a long-silent unresolved incident is open for every legacy 
   projection.has("r_stale_open") && csPanel.has("r_stale_open"));
 
 console.log("every legacy-vs-projection difference is explained by the world");
-for (const id of ["cs-panel", "convergence"] as const) {
-  const theirs = openIds(run(id));
+for (const [id, theirs] of [["cs-panel (pre-cutover)", csPanel], ["convergence", convOpen]] as const) {
   const diff = [...new Set([...theirs, ...projection])].filter((x) => theirs.has(x) !== projection.has(x));
   const unexplained = diff.filter((x) => row(x).exercises.every((e) => e === "baseline"));
   check(`${id}: ${diff.length} difference(s), all on rows built to exercise a §13.2 divergence`, unexplained.length === 0, unexplained);
@@ -89,7 +90,8 @@ const MODULE_OPEN: Readonly<Record<ReaderId, (v: IncidentVerdict) => boolean>> =
   convergence: (v) => v.state === "active",
 };
 export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> = {
-  "cs-panel": ["D1", "D2", "D2b", "D4", "D10"],
+  // cut over in R1; any divergence from module brokenNow is now a defect
+  "cs-panel": [],
   convergence: ["D2", "D2b", "D3", "D6", "D7", "D10"],
   projection: ["D2", "D2b", "D10"],
   // D2: alerts select from the projection's active set, which does not honour a soft-deleted account.
