@@ -1737,7 +1737,7 @@
             },
             "statedAs": {
               "type": "string",
-              "description": "The user's own words for this, or a faithful one-sentence paraphrase. Required."
+              "description": "The user's own words for this, quoted exactly from what they wrote in this conversation (an excerpt is fine; never a paraphrase). Required — a write whose words the user did not say is refused."
             },
             "goal": {
               "type": "object",

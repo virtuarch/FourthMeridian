@@ -25,7 +25,7 @@ import {
 } from './memory-store';
 import {
   STATED_CLASSES, SHAPE_KEY, REMEMBERED, GOAL_METRICS, EXAMPLES, readMemory, stateOf, describeMemory, expectedFrom,
-  admitWrite,
+  admitWrite, statedInUserTurns,
   type MemoryClass, type MemoryRow, type Fields,
 } from './memory-model';
 import { ALLOCATION_TARGET_WORDS } from './scenario-rules';
@@ -295,6 +295,9 @@ const SHAPES = STATED_CLASSES.map((c) => [c, SHAPE_KEY[c]] as const);
  * INTENTION needs intent + amount + label" is the sentence that produced
  * `amount: 0`: 32 of the 45 rows stored after a refusal carried a coerced amount.
  */
+/** SEC-AI-006 — the typed refusal when `statedAs` is not in any USER turn of this conversation. */
+export const STATED_AS_NOT_FROM_USER = 'STATED_AS_NOT_FROM_USER' as const;
+
 const remember: ToolDefinition = {
   name: 'remember',
   description:
@@ -316,7 +319,8 @@ const remember: ToolDefinition = {
         + 'already under `subject`, keeping the rest. retire = they no longer want it used.' },
     subject: str('A short stable key: "cash-strategy", "planning-spending", "net-worth-target", "car". '
       + 'Re-use the subject shown in memory to change or retire that item.'),
-    statedAs: str('The user\'s own words for this, or a faithful one-sentence paraphrase. Required.'),
+    statedAs: str('The user\'s own words for this, quoted exactly from what they wrote in this conversation '
+      + '(an excerpt is fine; never a paraphrase). Required — a write whose words the user did not say is refused.'),
     goal: shape({
       targetMetric: { type: 'string', enum: [...GOAL_METRICS], description: 'What should reach the level.' },
       targetAmount: num('The level, in dollars, as they stated it. 0 only with `debt` (debt-free).'),
@@ -380,6 +384,17 @@ const remember: ToolDefinition = {
     if (op === 'record' && cls && !ctx.turn && fields && typeof fields === 'object') {
       const blind = admitWrite({ cls, supplied: fields as Fields, current: null, evidence: null, asOf: ctx.asOfISO });
       if (!blind.ok) return { stored: false, reason: blind.reason };
+    }
+    // ⚠️ SEC-AI-006 — A "USER SAID" MEMORY NEEDS THE USER TO HAVE SAID IT. The
+    // `statedAs` words must appear in one of THIS conversation's USER turns
+    // (folded for case, whitespace, punctuation and curly quotes). Assistant
+    // prose, tool results and the orientation are not user turns. No turn
+    // evidence on the context ⇒ refused too: this never falls back to writing.
+    if (!statedInUserTurns(a.statedAs, ctx.turn?.userTexts)) {
+      return { stored: false, refusal: STATED_AS_NOT_FROM_USER,
+        reason: '`statedAs` must quote the user\'s own words from this conversation, and these words are not in '
+          + 'anything the user said here, so nothing was remembered. Retry with `statedAs` set to an exact excerpt '
+          + 'of what the user wrote; if they did not say it, do not remember it and say nothing was saved.' };
     }
     const result = await rememberStated(clientOf(ctx), scopeOf(ctx), {
       op,

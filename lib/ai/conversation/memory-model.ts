@@ -602,6 +602,35 @@ export function turnEvidence(userTexts: readonly string[], messages: readonly un
   };
 }
 
+/**
+ * SEC-AI-006 — fold text for the "did the user say this?" check: Unicode NFKC,
+ * lower case, curly quotes to straight, apostrophes dropped, every other
+ * punctuation mark a space, runs of whitespace one space. PURE.
+ */
+export function foldForUserEvidence(text: string): string {
+  return text.normalize('NFKC').toLowerCase()
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u0060\u00B4]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+    .replace(/'/g, '')
+    .replace(/\p{P}/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * SEC-AI-006 — is `statedAs` something the USER said in this conversation?
+ *
+ * True only when its folded text is a whole-word substring of one folded USER
+ * turn. `userTexts` is the conversation's explicit user turns (TurnEvidence) —
+ * never assistant prose, tool results or the orientation. Blank never matches.
+ */
+export function statedInUserTurns(statedAs: unknown, userTexts: readonly string[] | null | undefined): boolean {
+  if (typeof statedAs !== 'string' || !userTexts?.length) return false;
+  const needle = foldForUserEvidence(statedAs);
+  if (!needle) return false;
+  return userTexts.some((t) => typeof t === 'string' && ` ${foldForUserEvidence(t)} `.includes(` ${needle} `));
+}
+
 const EPS = 1e-9;
 
 /**
