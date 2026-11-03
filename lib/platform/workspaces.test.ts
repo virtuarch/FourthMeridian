@@ -369,8 +369,10 @@ console.log("P-10 + Phase 1 UX · four Operations workspaces, every capability k
   const ops = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS;
   // PB-1 2B — Incidents appended as the fifth (lead-only; no section key, so the
   // capability census below is unchanged). The four approved ones keep their order.
-  check("the four approved, in order, then Incidents (PB-1 2B)",
-    ops.map((w) => w.workspaceId).join(",") === "platform-overview,platform-providers,platform-ai,platform-policies,platform-incidents",
+  // PLATFORM ECONOMICS — re-pinned: AI & Costs moved under Economics, which takes
+  // its place (third); its six keys are still composed (BEFORE census below).
+  check("the four approved, in order (Economics in AI & Costs' place), then Incidents (PB-1 2B)",
+    ops.map((w) => w.workspaceId).join(",") === "platform-overview,platform-providers,platform-economics,platform-policies,platform-incidents",
     ops.map((w) => w.workspaceId).join(","));
   // Every section key the eight-workspace composition rendered (develop 78b7558).
   const BEFORE = [
@@ -389,14 +391,17 @@ console.log("P-10 + Phase 1 UX · four Operations workspaces, every capability k
   check("no section renders twice across Operations (one home per fact)", all.length === new Set(all).size,
     all.filter((k, i) => all.indexOf(k) !== i).join(", "));
   check("retired ids resolve to their new home",
-    canonicalPlatformWorkspaceId("platform-trends") === "platform-overview" && canonicalPlatformWorkspaceId("platform-costs") === "platform-ai"
+    canonicalPlatformWorkspaceId("platform-trends") === "platform-overview" && canonicalPlatformWorkspaceId("platform-costs") === "platform-economics"
+      // PLATFORM ECONOMICS — the former AI & Costs workspace id is now an alias of Economics.
+      && canonicalPlatformWorkspaceId("platform-ai") === "platform-economics"
       && canonicalPlatformWorkspaceId("platform-jobs") === "platform-overview" && canonicalPlatformWorkspaceId("platform-refresh") === "platform-overview"
       && canonicalPlatformWorkspaceId("platform-providers") === "platform-providers" && canonicalPlatformWorkspaceId(null) === null);
   check("view-carrying aliases carry their view",
     aliasedPlatformViewId("platform-jobs") === "jobs" && aliasedPlatformViewId("platform-refresh") === "pipeline"
-      // VISUAL SPEC §5 — AI & Costs is one dashboard (Costs is in its drawers), so the
-      // retired economics id carries no view any more: it lands on that dashboard.
-      && aliasedPlatformViewId("platform-costs") === null && aliasedPlatformViewId("platform-trends") === null && aliasedPlatformViewId("platform-ai") === null);
+      // VISUAL SPEC §5 — AI & Costs is one dashboard (Costs is in its drawers).
+      // PLATFORM ECONOMICS — re-pinned: that dashboard is now Economics' "ai" VIEW, so
+      // both retired ids carry it (?workspace=platform-ai still opens AI & Costs).
+      && aliasedPlatformViewId("platform-costs") === "ai" && aliasedPlatformViewId("platform-ai") === "ai" && aliasedPlatformViewId("platform-trends") === null);
   check("every alias target is a live workspace, and every alias view a live view of it",
     Object.values(PLATFORM_WORKSPACE_ALIASES).every((a) => {
       const w = ops.find((x) => x.workspaceId === a.workspaceId);
@@ -420,7 +425,9 @@ console.log("Phase 1 UX · views");
     "platform-providers[health:<providers>{ops_provider_health+ops_provider_operations+ops_resource_freshness+ops_connection_diagnostics+ops_provider_cleanup+ops_api_usage+ops_email_delivery}]",
     // VISUAL SPEC §5 — AI & Costs re-ruled from two inline views (AI · Costs) to ONE
     // lead view hosting the same six keys in drawers (no key added or lost).
-    "platform-ai[ai:<ai-costs>{ops_ai_invocations+ops_ai_trend+ops_ai_budget+ops_brief_ops+ops_plaid_usage+ops_cost}]",
+    // PLATFORM ECONOMICS — re-pinned: Economics = a lead-only Overview, then that
+    // AI & Costs view UNCHANGED (same id "ai", same lead, same six hosted keys).
+    "platform-economics[overview:<economics-overview> ai:<ai-costs>{ops_ai_invocations+ops_ai_trend+ops_ai_budget+ops_brief_ops+ops_plaid_usage+ops_cost}]",
     // VISUAL SPEC §5 — Policies › Policy groups re-ruled from the inline catalogue
     // panel to ONE read-only entitlement lead hosting ops_policies (in its groups /
     // defaults / emergency variants) and ops_alerts in drawers; the other three
@@ -430,11 +437,12 @@ console.log("Phase 1 UX · views");
     // PB-1 2B — the incidents workspace: three lead-only views, each one status preset.
     "platform-incidents[open:<incidents-ops> verify:<incidents-ops> history:<incidents-ops>]",
   ].join(" | "), shape);
-  check("labels: Operations · Providers · AI & Costs · Policies · Incidents (Operations is PLATFORM_OPS-local; the shared identity stays Overview)",
-    ops.map((w) => w.label ?? getPlatformWorkspace(w.workspaceId)?.label).join(" · ") === "Operations · Providers · AI & Costs · Policies · Incidents"
+  // PLATFORM ECONOMICS — re-pinned: "Economics" in AI & Costs' place.
+  check("labels: Operations · Providers · Economics · Policies · Incidents (Operations is PLATFORM_OPS-local; the shared identity stays Overview)",
+    ops.map((w) => w.label ?? getPlatformWorkspace(w.workspaceId)?.label).join(" · ") === "Operations · Providers · Economics · Policies · Incidents"
       && getPlatformWorkspace("platform-overview")?.label === "Overview");
   check("view labels", ops.map((w) => (w.views ?? []).map((v) => v.label).join("/")).join(" · ")
-    === "Overview/Jobs/Pipeline · Providers · AI & Costs · Policy groups/Platform defaults/Alerts/Emergency controls · Broken now/Needs verification/History");
+    === "Overview/Jobs/Pipeline · Providers · Overview/AI & Costs · Policy groups/Platform defaults/Alerts/Emergency controls · Broken now/Needs verification/History");
 
   for (const w of ops) {
     const views = w.views ?? [];
@@ -532,8 +540,9 @@ console.log("Phase 1 UX · views");
       // R2 — Providers is one master–detail view; its id stays "health" so the
       // default URL and ?view=health deep links are unchanged.
       "platform-providers": ["health"],
-      // VISUAL SPEC §5 — one dashboard view; its id stays "ai" (default URL unchanged).
-      "platform-ai": ["ai"],
+      // VISUAL SPEC §5 — one dashboard view; its id stays "ai".
+      // PLATFORM ECONOMICS — re-pinned: it is now Economics' second view, after Overview.
+      "platform-economics": ["overview", "ai"],
       "platform-policies": ["groups", "defaults", "alerts", "emergency"],
       "platform-incidents": ["open", "verify", "history"],
     }));
@@ -553,11 +562,13 @@ console.log("Phase 1 UX · views");
   // Destinations: one resolver for doorways, block links and read-model targets.
   check("platformViewTarget spells workspace:view", platformViewTarget("platform-overview", "jobs") === "platform-overview:jobs");
   check("parsePlatformDestination: workspace, view target, and aliases (explicit view beats the alias's)",
-    JSON.stringify(parsePlatformDestination("platform-ai")) === JSON.stringify({ workspaceId: "platform-ai", viewId: null })
+    // PLATFORM ECONOMICS — re-pinned: platform-ai is an alias carrying the "ai" view.
+    JSON.stringify(parsePlatformDestination("platform-ai")) === JSON.stringify({ workspaceId: "platform-economics", viewId: "ai" })
+      && JSON.stringify(parsePlatformDestination("platform-economics")) === JSON.stringify({ workspaceId: "platform-economics", viewId: null })
       && JSON.stringify(parsePlatformDestination("platform-policies:alerts")) === JSON.stringify({ workspaceId: "platform-policies", viewId: "alerts" })
       && JSON.stringify(parsePlatformDestination("platform-jobs")) === JSON.stringify({ workspaceId: "platform-overview", viewId: "jobs" })
       && JSON.stringify(parsePlatformDestination("platform-refresh")) === JSON.stringify({ workspaceId: "platform-overview", viewId: "pipeline" })
-      && JSON.stringify(parsePlatformDestination("platform-costs")) === JSON.stringify({ workspaceId: "platform-ai", viewId: null }));
+      && JSON.stringify(parsePlatformDestination("platform-costs")) === JSON.stringify({ workspaceId: "platform-economics", viewId: "ai" }));
   const label = (id: string) => resolvePlatformDestination(id)?.label;
   check("resolvePlatformDestination labels a view by the view, a workspace by its (area-local) label",
     label("platform-jobs") === "Jobs" && label("platform-refresh") === "Pipeline" && label("platform-overview:jobs") === "Jobs"
@@ -635,8 +646,9 @@ console.log("Security · Posture + Audit + Operator actions");
   const nav = readFileSync(path.join(process.cwd(), "components/ui/ContextualNavbar.tsx"), "utf8");
   check("both identities are registered with nav-resolvable icons",
     getPlatformWorkspace("platform-audit")?.icon === "ScrollText" && getPlatformWorkspace("platform-operator-actions")?.icon === "UserCog"
-      // The icon list's tail, pinned exactly: Security's two, then Communications' Mail, then the close.
-      && /ScrollText, UserCog,\n  \/\/ Platform redesign — Customer Success › Communications\.\n  Mail,\n\};/.test(nav));
+      // The icon list's tail, pinned exactly: Security's two, then Communications' Mail,
+      // then (PLATFORM ECONOMICS — re-pinned) Economics' Receipt, then the close.
+      && /ScrollText, UserCog,\n  \/\/ Platform redesign — Customer Success › Communications\.\n  Mail,\n  \/\/ Platform Economics\.\n  Receipt,\n\};/.test(nav));
 }
 
 if (failures > 0) {

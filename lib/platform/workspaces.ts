@@ -18,8 +18,8 @@
  *   2. PLATFORM_AREA_WORKSPACES — THE single composition owner. It answers, from
  *      one place, "which Workspaces does each Platform area expose, in what order,
  *      and which section-widgets does each render?" This replaces "everything
- *      lands in one Overview grid": Platform Operations decomposes into four
- *      workspaces (Operations · Providers · AI & Costs · Policies), each with named VIEWS,
+ *      lands in one Overview grid": Platform Operations decomposes into its
+ *      workspaces (Operations · Providers · Economics · Policies · Incidents), each with named VIEWS,
  *      each a real Workspace rendered in the shared SpaceShell workspace slot.
  *      The other areas (Security/Growth/Customer-Success) keep a single Overview
  *      workspace (behavior-preserving) — decomposition is demand-pulled per area.
@@ -79,13 +79,15 @@ export const PLATFORM_WORKSPACES: Record<string, WorkspaceDefinition> = {
     id: "platform-providers", kind: "standard", domain: "platform",
     label: "Providers", icon: "PlugZap",
   },
-  // OPS-6D — the AI operations console (usage volume + trend + estimated cost).
-  "platform-ai": {
-    id: "platform-ai", kind: "standard", domain: "platform",
-    // P-10 — AI usage AND the economics console in one workspace (the former
-    // "Economics" tab, platform-costs, merged here). PLATFORM OPS PHASE 1 UX —
-    // relabelled "AI & Costs" (owner brief); its two VIEWS split usage from spend.
-    label: "AI & Costs", icon: "Sparkles",
+  // PLATFORM ECONOMICS (owner priority #6) — the top-level Economics section:
+  // Overview (operating cost, its AI / providers / infrastructure split, cost per
+  // active customer, the 7/30/90-day trend, revenue + margin UNAVAILABLE) and
+  // AI & Costs (the former "platform-ai" workspace, now a VIEW of this one — the
+  // retired id resolves here through PLATFORM_WORKSPACE_ALIASES, view-carrying,
+  // so every ?workspace=platform-ai deep link still opens AI & Costs).
+  "platform-economics": {
+    id: "platform-economics", kind: "standard", domain: "platform",
+    label: "Economics", icon: "Receipt",
   },
   // PLATFORM OPS PHASE 1 UX — "platform-jobs" and "platform-refresh" are no
   // longer workspace identities: Jobs and Pipeline are VIEWS of Operations
@@ -145,6 +147,8 @@ export interface PlatformWorkspaceView {
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
 export type PlatformViewLead =
   | "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant"
+  // Platform Economics — the Overview view's lead.
+  | "economics-overview"
   // Customer Success › Communications Center — one lead per view.
   | "comms-library" | "comms-automations" | "comms-delivery" | "comms-preferences"
   // PB-1 2B — the incidents workspace, one lead per tier (Ops identity-free; CS names the customer).
@@ -223,10 +227,14 @@ export function platformViewTarget(workspaceId: string, viewId: string): string 
  */
 export const PLATFORM_WORKSPACE_ALIASES: Readonly<Record<string, { readonly workspaceId: string; readonly viewId?: string }>> = {
   "platform-trends":  { workspaceId: "platform-overview" },
-  // PLATFORM OPS VISUAL SPEC §5 — AI & Costs is ONE analytical dashboard; the
-  // former "costs" view (Plaid usage + operational cost) is in its drawers, so
-  // the retired economics id lands on that dashboard.
-  "platform-costs":   { workspaceId: "platform-ai" },
+  // PLATFORM ECONOMICS — AI & Costs moved under Economics as its "ai" VIEW. The
+  // former workspace id keeps opening exactly that dashboard (and its
+  // ?aicalls/aiuntil/aipage drilldown, which is workspace-scoped and survives
+  // the in-place canonicalization), and so does the older "platform-costs"
+  // (PLATFORM OPS VISUAL SPEC §5 — Plaid usage + operational cost live in the
+  // AI & Costs drawers).
+  "platform-ai":      { workspaceId: "platform-economics", viewId: "ai" },
+  "platform-costs":   { workspaceId: "platform-economics", viewId: "ai" },
   "platform-jobs":    { workspaceId: "platform-overview", viewId: "jobs" },
   "platform-refresh": { workspaceId: "platform-overview", viewId: "pipeline" },
 };
@@ -295,18 +303,26 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
           hosted: ["ops_provider_health", "ops_provider_operations", "ops_resource_freshness", "ops_connection_diagnostics", "ops_provider_cleanup", "ops_api_usage", "ops_email_delivery"] },
       ],
     }),
-    // ── AI & Costs (P-10) — PLATFORM OPS VISUAL SPEC §5: ONE analytical
-    // dashboard (components/platform/leads/AiCostsLead.tsx): estimated-spend
-    // hero (billed = Unknown) · daily spend · cost by surface · tokens &
-    // invocations · cost by provider · budget utilisation · customers · the
-    // Economics (Phase 3) slot. The former AI and Costs views' widgets are
-    // HOSTED unchanged in its drawers (Invocations · Daily Brief · Usage ledger
-    // · Budget & controls · Plaid & operational cost), so the second tab row is
-    // gone; the retired "costs" view id falls back to this one (and the
-    // platform-costs alias lands here). Composition only — no second spend engine.
+    // ── Economics (owner priority #6) — "what does running the platform cost,
+    // per customer, and what can we NOT see?" Two views (PR A; Providers and
+    // Entitlements follow), each a lead, no section key of its own:
+    //   overview  components/platform/leads/EconomicsOverviewLead.tsx — ONE
+    //             server reader (lib/platform/economics/snapshot.ts) composing
+    //             the existing AI / Plaid / engagement readers; every figure is
+    //             MEASURED / ESTIMATED / PARTIAL / UNAVAILABLE with coverage and
+    //             freshness, and opens its own records. Revenue and margin are
+    //             UNAVAILABLE (no billing source).
+    //   ai        AI & Costs, moved here UNCHANGED (PLATFORM OPS VISUAL SPEC §5:
+    //             ONE analytical dashboard, components/platform/leads/
+    //             AiCostsLead.tsx, its former widgets HOSTED in drawers —
+    //             Invocations · Daily Brief · Usage ledger · Budget & controls ·
+    //             Plaid & operational cost). Its view id stays "ai" and the
+    //             retired platform-ai / platform-costs ids alias to it.
+    // Provider HEALTH stays in Providers; configuration stays in Policies.
     withViews({
-      workspaceId: "platform-ai",
+      workspaceId: "platform-economics",
       views: [
+        { id: "overview", label: "Overview", lead: "economics-overview", sections: [] },
         { id: "ai", label: "AI & Costs", lead: "ai-costs", sections: [],
           hosted: ["ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_brief_ops", "ops_plaid_usage", "ops_cost"] },
       ],
