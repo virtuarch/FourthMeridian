@@ -274,7 +274,7 @@ app/
 
 ## Migration waves (gated by exit criteria, not feature lists)
 
-Consistent with `ROADMAP.md` (removed; see git history) (removed; see git history): each wave's exit criteria are the
+Consistent with `ROADMAP.md` (removed; see git history): each wave's exit criteria are the
 next wave's entry criteria.
 
 ### Wave 0 — Primitive foundation *(Slices A + D)*
