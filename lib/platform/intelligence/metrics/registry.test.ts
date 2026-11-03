@@ -193,15 +193,17 @@ console.log("accessor (definitions only, permission-filtered, token-minted)");
       const p = path.join(dir, e);
       if (e === "node_modules" || e.startsWith(".")) continue;
       if (statSync(p).isDirectory()) walk(p);
-      else if (/\.(ts|tsx)$/.test(e) && /intelligence\/metrics\/access["']/.test(readFileSync(p, "utf8"))) importers.push(path.relative(ROOT, p));
+      else if (/\.(ts|tsx)$/.test(e) && (/intelligence\/metrics\/access["']/.test(readFileSync(p, "utf8"))
+        || (p.includes(`${path.sep}intelligence${path.sep}metrics${path.sep}`) && /from\s+["']\.\/access["']/.test(readFileSync(p, "utf8"))))) importers.push(path.relative(ROOT, p));
     }
   };
   for (const d of ["app", "lib", "components", "jobs"]) if (existsSync(path.join(ROOT, d))) walk(path.join(ROOT, d));
-  const badImporters = importers.filter((f) => !f.endsWith(".test.ts")
+  // retrieve-core.ts (Phase 3 retrieval) reads definitions through describeMetric and mints nothing (retrieve.test.ts pins it).
+  const badImporters = importers.filter((f) => !f.endsWith(".test.ts") && f !== "lib/platform/intelligence/metrics/retrieve-core.ts"
     && !(f.startsWith("app/api/") && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8"))));
   check("metric access tokens are issued in exactly one module (access.ts)",
     /ISSUED\.add\(/.test(code(src("lib/platform/intelligence/metrics/access.ts") ?? "")) && importers.every((f) => !/ISSUED\.add\(/.test(code(src(f) ?? ""))));
-  check("access.ts is imported only by tests or by API routes that mint from their own requirePlatformAccess result", badImporters.length === 0, badImporters.join(", "));
+  check("access.ts is imported only by tests, retrieve-core.ts, or API routes that mint from their own requirePlatformAccess result", badImporters.length === 0, badImporters.join(", "));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

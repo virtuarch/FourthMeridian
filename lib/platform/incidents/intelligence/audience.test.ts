@@ -117,7 +117,14 @@ console.log("\n4. static pins");
   check("incidentAudienceFor is only ever given a guard result destructured in the same function",
     badMints.length === 0, badMints.join("; "));
   const importers = files.filter((f) => /from\s+["']@\/lib\/platform\/incidents\/intelligence\/audience["']|from\s+["']\.\/audience["']/.test(code(f)));
-  const strayImporters = importers.filter((f) => !f.startsWith(INTEL) && !f.startsWith("lib/alerts/") && !mintCallers.includes(f));
+  // Platform Intelligence retrieval (Phase 3 slice 1) imports ONLY the runtime gate and the
+  // downgrade (assertAudienceToken, atOpsTier): it never mints (no incidentAudienceFor, no SYSTEM token).
+  const RETRIEVAL = "lib/platform/intelligence/metrics/retrieve-core.ts";
+  const retrievalOk = (f: string) => f === RETRIEVAL && !/incidentAudienceFor|systemIncidentAudience/.test(code(f))
+    && [...code(f).matchAll(/import\s*\{([^}]*)\}\s*from\s*["']@\/lib\/platform\/incidents\/intelligence\/audience["']/g)]
+      .flatMap((mm) => mm[1].split(",").map((x) => x.trim().replace(/^type\s+/, "")).filter(Boolean))
+      .every((n) => ["assertAudienceToken", "atOpsTier", "CsToken", "OpsToken"].includes(n));
+  const strayImporters = importers.filter((f) => !f.startsWith(INTEL) && !f.startsWith("lib/alerts/") && !mintCallers.includes(f) && !retrievalOk(f));
   check("the minter is imported only by the accessors, lib/alerts/ and guarded routes that mint",
     strayImporters.length === 0, strayImporters.join(", "));
   const minters = files.filter((f) => /MINTED\.add\(|function mint\b/.test(code(f)));
