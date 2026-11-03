@@ -135,6 +135,87 @@ export function judgeSessionLifetime(
   return "LIVE";
 }
 
+/**
+ * LIVE SESSION — the ONE reporting definition of a "live" / "active" session,
+ * built from the SAME constants and the SAME comparisons `judgeSessionLifetime`
+ * and `factsFromRow` apply, so an operator count can never call a session live
+ * that the auth path would refuse (S3 finding, 2026-11-03: five-plus surfaces
+ * counted `revokedAt: null` alone, so idle / over-age rows read as live).
+ *
+ * A session is LIVE when ALL hold:
+ *   · not revoked                                   (`revokedAt` null);
+ *   · within the absolute lifetime                  (`now − createdAt    ≤ SESSION_ABSOLUTE_LIFETIME_MS`);
+ *   · within the idle timeout                       (`now − lastActiveAt ≤ SESSION_IDLE_TIMEOUT_MS`);
+ *   · the account is not locked out (ACCOUNT LOCKOUT, #291 — `deactivatedAt` and
+ *     `deletionScheduledAt` both null).
+ * The cut-offs are INCLUSIVE (`gte`) because judgeSessionLifetime expires only
+ * on a strict `>`: a row exactly at the limit is live on both paths.
+ *
+ * Census pin: lib/auth/live-session.test.ts — no userSession read outside this
+ * module may filter on a bare `revokedAt: null`.
+ */
+export function liveSessionCutoffs(now: Date, policy: Omit<SessionLifetimePolicy, "now"> = {}): { createdAfter: Date; activeAfter: Date } {
+  const t = now.getTime();
+  return {
+    createdAfter: new Date(t - (policy.absoluteMs    ?? SESSION_ABSOLUTE_LIFETIME_MS)),
+    activeAfter:  new Date(t - (policy.idleTimeoutMs ?? SESSION_IDLE_TIMEOUT_MS)),
+  };
+}
+
+/**
+ * The Prisma `where` (UserSessionWhereInput) for LIVE sessions, for counts,
+ * groupBys, aggregates and lists. `userWhere` narrows the owning user further
+ * (e.g. `{ role: "USER" }`) — it is merged with, never replaces, the lockout.
+ * Typed structurally so this module stays free of a Prisma import.
+ */
+export function liveSessionWhere<U extends object = Record<never, never>>(
+  now: Date,
+  extra: { userId?: string | { in: string[] }; userWhere?: U } = {},
+  policy: Omit<SessionLifetimePolicy, "now"> = {},
+) {
+  const { createdAfter, activeAfter } = liveSessionCutoffs(now, policy);
+  return {
+    ...(extra.userId !== undefined ? { userId: extra.userId } : {}),
+    revokedAt:    null,
+    createdAt:    { gte: createdAfter },
+    lastActiveAt: { gte: activeAfter },
+    user:         { is: { ...(extra.userWhere ?? ({} as U)), deactivatedAt: null, deletionScheduledAt: null } },
+  };
+}
+
+/**
+ * The pure predicate over an in-memory row — same rule as liveSessionWhere.
+ * STRICT like factsFromRow: the owning user's lockout stamps must be present.
+ */
+export function isSessionLive(
+  row: { revokedAt?: unknown; createdAt?: unknown; lastActiveAt?: unknown;
+         user?: { deactivatedAt?: unknown; deletionScheduledAt?: unknown } | null },
+  now: Date,
+  policy: Omit<SessionLifetimePolicy, "now"> = {},
+): boolean {
+  if (!row || row.revokedAt !== null) return false;
+  if (judgeSessionLifetime(row, { ...policy, now: () => now.getTime() }) !== "LIVE") return false;
+  const user = row.user;
+  if (!user || typeof user !== "object") return false;
+  return user.deactivatedAt === null && user.deletionScheduledAt === null;
+}
+
+/**
+ * For a SESSION LIST (a user's own devices, or an admin's view of one user's):
+ * the row's own state, without the account lockout (that is a user-level fact
+ * the list's owner shows elsewhere). An unrevoked row past its lifetime is
+ * EXPIRED_NOT_REVOKED — it can no longer authenticate, and it is shown apart
+ * from live sessions rather than hidden or miscounted.
+ */
+export type SessionDisplayState = "LIVE" | "EXPIRED_NOT_REVOKED" | "REVOKED";
+export function sessionDisplayState(
+  row: { revokedAt?: unknown; createdAt?: unknown; lastActiveAt?: unknown },
+  now: Date,
+): SessionDisplayState {
+  if (row.revokedAt !== null && row.revokedAt !== undefined) return "REVOKED";
+  return judgeSessionLifetime(row, { now: () => now.getTime() }) === "LIVE" ? "LIVE" : "EXPIRED_NOT_REVOKED";
+}
+
 export interface SessionRowLike {
   userId?:       unknown;
   revokedAt?:    unknown;

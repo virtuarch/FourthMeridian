@@ -34,7 +34,7 @@ import {
 import { OverlaySurface } from "@/components/atlas/OverlaySurface";
 import { TotpSection } from "@/components/dashboard/TotpSection";
 import { formatDateTime } from "@/lib/format";
-import { SessionsList, type SessionRow } from "@/components/security/SessionsList";
+import { SessionsList, SESSION_LIST_LABELS, type SessionRow } from "@/components/security/SessionsList";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -323,6 +323,7 @@ function UserSessionsModal({ user, onClose }: { user: SecurityUser; onClose: () 
               onRevoke={async (id) => { await revoke(id); }}
               onRevokeAll={revokeAll}
               revokeAllLabel="Revoke all sessions for this user"
+              expiredLabels={SESSION_LIST_LABELS.admin}
             />
           )}
         </div>
@@ -650,6 +651,7 @@ export function AdminSecurityConsole() {
           onRevoke={revokeAdminSession}
           onRevokeAll={revokeAllOtherAdminSessions}
           revokeAllLabel="Revoke all other sessions"
+          expiredLabels={SESSION_LIST_LABELS.admin}
         />
       </SectionCard>
 

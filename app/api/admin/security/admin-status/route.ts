@@ -12,6 +12,7 @@ import { countRemainingCodes } from "@/lib/recovery-codes";
 import { systemDb } from "@/lib/db";
 import { requireSystemAdmin } from "@/lib/session";
 import { env } from "@/lib/env";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 
 export async function GET() {
   const [user, err] = await requireSystemAdmin();
@@ -25,7 +26,7 @@ export async function GET() {
       select: { totpEnabled: true, totpSecret: true },
     }),
     countRemainingCodes(systemDb, userId),
-    db.userSession.count({ where: { userId, revokedAt: null } }),
+    db.userSession.count({ where: liveSessionWhere(new Date(), { userId }) }),
     db.auditLog.findFirst({
       where:   { userId, action: "LOGIN" },
       orderBy: { createdAt: "desc" },

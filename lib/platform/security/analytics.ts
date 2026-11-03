@@ -12,6 +12,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { env } from "@/lib/env";
 import { AuditAction, OPERATOR_ACTION_FEED_ACTIONS } from "@/lib/audit-actions";
 import { getSetting, PlatformSettingKey } from "@/lib/platform-settings";
@@ -64,7 +65,7 @@ export async function loadSecurityAnalyticsFacts(client: SecurityAnalyticsDb, no
     }),
     client.user.groupBy({ by: ["totpEnabled"], where: { role: "USER", deactivatedAt: null }, _count: { _all: true } }),
     client.user.groupBy({ by: ["totpEnabled"], where: { role: "SYSTEM_ADMIN", deactivatedAt: null }, _count: { _all: true } }),
-    client.userSession.count({ where: { revokedAt: null } }),
+    client.userSession.count({ where: liveSessionWhere(now) }),
     getSetting(PlatformSettingKey.REQUIRE_TOTP_ALL_USERS),
   ]);
 

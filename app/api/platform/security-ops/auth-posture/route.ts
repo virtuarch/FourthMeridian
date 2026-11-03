@@ -13,6 +13,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export interface PlatformAuthPosture {
   totalUsers:             number;
   totpEnabled:            number; // users with TOTP enabled
   forcedResetPending:     number; // users with forcePasswordReset = true
-  activeSessions:         number; // non-revoked UserSession rows
+  activeSessions:         number; // LIVE UserSession rows (liveSessionWhere — SEC-010 lifetime + lockout)
   usersWithRecoveryCodes: number; // users with ≥1 unused recovery code
 }
 
@@ -32,7 +33,7 @@ export async function GET() {
     db.user.count(),
     db.user.count({ where: { totpEnabled: true } }),
     db.user.count({ where: { forcePasswordReset: true } }),
-    db.userSession.count({ where: { revokedAt: null } }),
+    db.userSession.count({ where: liveSessionWhere(new Date()) }),
     db.recoveryCode.groupBy({ by: ["userId"], where: { usedAt: null }, _count: { id: true } }),
   ]);
 

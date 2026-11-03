@@ -23,6 +23,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { AuditAction } from "@/lib/audit-actions";
 import { detailAccountLabel } from "@/lib/platform/incidents/account-label";
 import { createIncidentAccessors, incidentReaderFor, type CsToken } from "@/lib/platform/incidents/intelligence";
@@ -113,8 +114,8 @@ export async function getCustomerDetail(userId: string, incidentToken: CsToken, 
       select: { role: true, status: true, joinedAt: true, space: { select: { id: true, name: true, type: true, category: true, archivedAt: true, deletedAt: true } } } }),
     client.userSession.aggregate({ where: { userId }, _max: { lastInteractionAt: true }, _min: { createdAt: true } }),
     client.auditLog.findFirst({ where: { userId, action: AuditAction.LOGIN }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-    client.userSession.count({ where: { userId, revokedAt: null } }),
-    client.userSession.aggregate({ where: { userId, revokedAt: null }, _max: { lastPresenceAt: true } }),
+    client.userSession.count({ where: liveSessionWhere(now, { userId }) }),
+    client.userSession.aggregate({ where: liveSessionWhere(now, { userId }), _max: { lastPresenceAt: true } }),
     client.plaidItem.findMany({ where: { userId }, orderBy: { createdAt: "asc" },
       select: { id: true, institutionName: true, status: true, errorCode: true, lastSyncedAt: true, createdAt: true, investmentsConsent: true } }),
     client.connection.findMany({ where: { userId, provider: { notIn: ["PLAID", "MANUAL", "CSV"] } }, orderBy: { createdAt: "asc" },
