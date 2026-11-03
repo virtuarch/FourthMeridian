@@ -27,8 +27,19 @@
  *       alert dedupe keeps per-Item grouping
  *   D9  severity is emitted; each consumer keeps its own filter (not a divergence)
  *
+ * Divergences the MODULE introduces on purpose (listed in ALLOWED_DIVERGENCES):
+ *   D10 a stale-unverified row stays `resolved = false` but is NOT brokenNow
+ *       (legacy readers count it as open)
+ *   D2b a REVOKED Item's incidents read "connection removed" (closed); legacy
+ *       readers still treat them as live
+ *
+ * AUDIENCE: accessors take an UNFORGEABLE AudienceToken (./audience.ts), never a
+ * string. Only the pure core takes the plain `IncidentAudience`.
+ *
  * THIS FILE IS THE CONTRACT. Changing a shape here is a reviewed change.
  */
+
+import type { AudienceToken, CsToken, OpsToken, SystemToken } from "./audience";
 
 // ── Facts (input) ────────────────────────────────────────────────────────────
 
@@ -279,10 +290,16 @@ export type VerdictFor<A extends IncidentAudience> = A extends "CUSTOMER_SUCCESS
 
 // ── Harness hooks (design §13.3 step 2) ─────────────────────────────────────
 
-/** The per-row verdict the parity harness compares, normalised across readers. */
+/**
+ * The per-row verdict the parity harness compares, normalised across readers.
+ * `open` MEANS `brokenNow` (counts toward "broken now"); both are emitted so a
+ * reader that expresses one can be compared without guessing.
+ */
 export interface NormalisedVerdict {
   id: string;
   open: boolean;
+  brokenNow: boolean;
+  alertable: boolean;
   state: IncidentState | "evidence" | "superseded";
   severity?: Severity;
   subjectUserId?: string | null;
@@ -308,25 +325,30 @@ export type NormaliseVerdict = (v: IncidentVerdict | CsIncidentVerdict) => Norma
 export interface ListOptions {
   /** Row cap for the underlying scan (D5 — reported via `truncated`). */
   limit?: number;
+  /** Required for determinism in tests; defaults to the wall clock at the accessor only. */
   now?: Date;
 }
 
+/** The verdict shape a token entitles. A PLATFORM_OPS / SYSTEM verdict has NO `subjectUserId` key. */
+export type VerdictForToken<T> = T extends AudienceToken<infer A> ? VerdictFor<A> : never;
+
 /**
  * The typed, permission-scoped read surface. Every consumer uses one of these;
- * none reads SyncIssue itself.
+ * none reads SyncIssue itself. Each accessor verifies its token at runtime
+ * (assertAudienceToken) before reading anything.
  *
  *   brokenNow          active + acknowledged + recovering (attention, CS reason)
  *   needsVerification  stale-unverified (shown separately; never alerts)
  *   history            resolved + archived
- *   forCustomer        one customer's incidents — CUSTOMER_SUCCESS only
- *   alertable          brokenNow ∩ alertable — SYSTEM only (the alert engine)
- *   detail             one episode — tiered by audience
+ *   forCustomer        one customer's incidents — CUSTOMER_SUCCESS token only
+ *   alertable          brokenNow ∩ alertable — SYSTEM token only (lib/alerts/)
+ *   detail             one episode — tiered by token
  */
 export interface IncidentAccessors {
-  brokenNow<A extends "PLATFORM_OPS" | "CUSTOMER_SUCCESS">(audience: A, opts?: ListOptions): Promise<VerdictList<VerdictFor<A>>>;
-  needsVerification<A extends "PLATFORM_OPS" | "CUSTOMER_SUCCESS">(audience: A, opts?: ListOptions): Promise<VerdictList<VerdictFor<A>>>;
-  history<A extends "PLATFORM_OPS" | "CUSTOMER_SUCCESS">(audience: A, opts?: ListOptions): Promise<VerdictList<VerdictFor<A>>>;
-  forCustomer(audience: "CUSTOMER_SUCCESS", userId: string, opts?: ListOptions): Promise<VerdictList<CsIncidentVerdict>>;
-  alertable(audience: "SYSTEM", opts?: ListOptions): Promise<VerdictList<IncidentVerdict>>;
-  detail<A extends "PLATFORM_OPS" | "CUSTOMER_SUCCESS">(audience: A, id: string, opts?: ListOptions): Promise<VerdictFor<A> | null>;
+  brokenNow<T extends CsToken | OpsToken>(token: T, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
+  needsVerification<T extends CsToken | OpsToken>(token: T, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
+  history<T extends CsToken | OpsToken>(token: T, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
+  forCustomer(token: CsToken, userId: string, opts?: ListOptions): Promise<VerdictList<CsIncidentVerdict>>;
+  alertable(token: SystemToken, opts?: ListOptions): Promise<VerdictList<IncidentVerdict>>;
+  detail<T extends CsToken | OpsToken>(token: T, id: string, opts?: ListOptions): Promise<VerdictForToken<T> | null>;
 }
