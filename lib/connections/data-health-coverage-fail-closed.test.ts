@@ -82,7 +82,8 @@ const nwHero = (changeGate: unknown, metric = "netWorth") =>
 // ── §2 the client read ───────────────────────────────────────────────────────
 {
   assert.equal(parseBalanceCoverage(null), null, "nothing to cover stays null");
-  assert.equal(parseBalanceCoverage(undefined), null, "an older payload without the key stays null");
+  // S2 2026-11-03 — re-pinned STRICTER: a missing key (version skew) no longer falls open to null.
+  assert.equal(parseBalanceCoverage(undefined), BALANCE_COVERAGE_UNAVAILABLE, "a payload without the key ⇒ unavailable (never null)");
   assert.deepEqual(parseBalanceCoverage(COV), COV, "a read coverage passes through untouched");
   assert.equal(parseBalanceCoverage({ unavailable: true }), BALANCE_COVERAGE_UNAVAILABLE, "the route's failed read");
   assert.equal(parseBalanceCoverage({ liabilityFloors: "x" }), BALANCE_COVERAGE_UNAVAILABLE, "malformed ⇒ unavailable, never trusted");
@@ -93,7 +94,7 @@ const nwHero = (changeGate: unknown, metric = "netWorth") =>
   assert.ok(/\.catch\(\(\) => \{ coverageReadFailed\(\); return FAILED_DATA_HEALTH; \}\)/.test(pes), "thrown / bad JSON ⇒ FAILED_DATA_HEALTH");
   assert.ok(/parseBalanceCoverage\(j\.balanceCoverage\)/.test(pes), "the wire value is parsed, never cast");
   assert.ok(!/return null;/.test(pes.slice(pes.indexOf("function loadPayload"), pes.indexOf("function useDataHealth"))), "no failure path returns null any more");
-  ok("§2 client: non-OK, thrown or malformed reads ⇒ BALANCE_COVERAGE_UNAVAILABLE; null / absent / read coverage unchanged");
+  ok("§2 client: non-OK, thrown or malformed reads ⇒ BALANCE_COVERAGE_UNAVAILABLE; null / read coverage unchanged; absent key ⇒ unavailable");
 }
 
 // ── §3 the heroes withhold ───────────────────────────────────────────────────
@@ -122,7 +123,7 @@ const nwHero = (changeGate: unknown, metric = "netWorth") =>
 {
   const none = debtWindowChange(slice, null);
   assert.ok(none.change && none.withheld === null, "nothing to cover ⇒ measured, as before");
-  assert.equal(wealthChangeGate(wealth, null), null, "nothing to cover / loading ⇒ no gate, as before");
+  assert.equal(wealthChangeGate(wealth, null), null, "nothing to cover ⇒ no gate, as before (loading is its own state now)");
   const read = debtWindowChange(slice, COV);
   assert.ok(read.change === null && /history is partial before Nov 2, 2026/.test(read.withheld ?? ""), "a read coverage ⇒ the PB-8b wording, unchanged");
   const note = (cov: unknown) => renderToStaticMarkup(createElement(BalanceCoverageNote, { from: "2026-06-17", metric: "totalLiabilities", coverage: cov } as never));

@@ -11,10 +11,10 @@
 
 import type { DebtHistorySlice } from "@/lib/debt-space-data";
 import type { TrendPoint } from "@/components/space/widgets/charts/TrendChart";
-import { changeComparability, markPartialBalanceCoverage, type BalanceCoverageRead } from "@/lib/connections/balance-coverage.core";
+import { changeComparability, markPartialBalanceCoverage, type ClientBalanceCoverage } from "@/lib/connections/balance-coverage.core";
 import { formatDate } from "@/lib/format";
 
-export function debtTrendPoints(history: DebtHistorySlice | null, balanceCoverage: BalanceCoverageRead): TrendPoint[] {
+export function debtTrendPoints(history: DebtHistorySlice | null, balanceCoverage: ClientBalanceCoverage): TrendPoint[] {
   return markPartialBalanceCoverage(
     (history?.points ?? []).map((p): TrendPoint => ({ date: p.date, value: p.totalDebt, estimated: p.isEstimated })),
     balanceCoverage,
@@ -45,7 +45,7 @@ export interface DebtWindowChange {
  */
 export function debtWindowChange(
   history: DebtHistorySlice | null,
-  balanceCoverage: BalanceCoverageRead,
+  balanceCoverage: ClientBalanceCoverage,
 ): { change: DebtWindowChange | null; withheld: string | null } {
   const pts = history?.points ?? [];
   if (pts.length < 2) return { change: null, withheld: null };

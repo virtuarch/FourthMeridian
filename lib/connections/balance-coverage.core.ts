@@ -92,13 +92,41 @@ export const BALANCE_COVERAGE_UNAVAILABLE: BalanceCoverageUnavailable = Object.f
 /** What a server-side coverage read yields: the floors, nothing to cover (null), or unavailable. */
 export type BalanceCoverageRead = BalanceCoverage | BalanceCoverageUnavailable | null;
 
-export function isBalanceCoverageUnavailable(cov: BalanceCoverageRead | undefined): cov is BalanceCoverageUnavailable {
+export function isBalanceCoverageUnavailable(cov: ClientBalanceCoverage | undefined): cov is BalanceCoverageUnavailable {
   return !!cov && (cov as BalanceCoverageUnavailable).unavailable === true;
 }
 
-/** The floors when they were read; null for "nothing to cover" AND for unavailable (no floor is known). */
-export function knownBalanceCoverage(cov: BalanceCoverageRead | undefined): BalanceCoverage | null {
-  return !cov || isBalanceCoverageUnavailable(cov) ? null : cov;
+// ── S2 ruling 2026-11-03 — LOADING is its own state on the client ────────────
+//
+// While the data-health read is in flight the client used to hold `null` — the
+// SAME value as "nothing to cover" — so every coverage-governed change rendered
+// as comparable for a moment and was then RETRACTED once the floors arrived. A
+// shown-then-retracted debt or net-worth change is a brief false claim. The
+// client therefore carries an explicit tri-state:
+//
+//     loading  |  read (BalanceCoverage | null)  |  unavailable
+//
+// and a governed change renders PENDING ("—") until the read resolves. Series
+// coverage does not govern (invested: sides = []) render immediately. Server
+// callers never see `loading` (they await their read), so their paths are
+// unchanged.
+
+/** The client's data-health read has not resolved yet — distinct from null and from unavailable. */
+export interface BalanceCoverageLoading { readonly loading: true }
+export const BALANCE_COVERAGE_LOADING: BalanceCoverageLoading = Object.freeze({ loading: true as const });
+/** The client tri-state: loading | read (floors or null = nothing to cover) | unavailable. */
+export type ClientBalanceCoverage = BalanceCoverageRead | BalanceCoverageLoading;
+
+export function isBalanceCoverageLoading(cov: ClientBalanceCoverage | undefined): cov is BalanceCoverageLoading {
+  return !!cov && (cov as BalanceCoverageLoading).loading === true;
+}
+
+/** What a governed change shows while coverage is loading — the pending placeholder, never a figure. */
+export const BALANCE_COVERAGE_PENDING_MESSAGE = "—";
+
+/** The floors when they were read; null for "nothing to cover", unavailable AND loading (no floor is known). */
+export function knownBalanceCoverage(cov: ClientBalanceCoverage | undefined): BalanceCoverage | null {
+  return !cov || isBalanceCoverageUnavailable(cov as BalanceCoverageRead) || isBalanceCoverageLoading(cov) ? null : (cov as BalanceCoverage);
 }
 
 /** The note every AI surface carries when the coverage read failed (owner wording, S2 sweep). */
@@ -170,7 +198,7 @@ function floorsFor(cov: BalanceCoverage, sides: readonly BalanceCoverageSide[]):
  * The first day every counted account on these sides is covered — the LATEST
  * floor — or null when there is nothing to cover.
  */
-export function balanceCoveredFromISO(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[]): string | null {
+export function balanceCoveredFromISO(covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[]): string | null {
   const cov = knownBalanceCoverage(covRead);
   if (!cov) return null;
   const all = floorsFor(cov, sides);
@@ -184,7 +212,7 @@ function noun(sides: readonly BalanceCoverageSide[], cov: BalanceCoverage, n: nu
 }
 
 /** "Partial: 1 of 3 debts has no balance history this far back" — the tooltip's coverage line for one day. */
-export function partialCoverageLabel(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
+export function partialCoverageLabel(covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
   const cov = knownBalanceCoverage(covRead);
   if (!cov) return null;
   const all = floorsFor(cov, sides);
@@ -194,7 +222,7 @@ export function partialCoverageLabel(covRead: BalanceCoverageRead, sides: readon
 }
 
 /** "Estimated: 1 of 4 debts held at today’s balance (no history)" — or null. */
-export function estimatedCoverageLabel(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
+export function estimatedCoverageLabel(covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
   const cov = knownBalanceCoverage(covRead);
   if (!cov || !sides.includes("liability")) return null;
   const n = cov.estimatedLiabilityFloors.filter((f) => f <= dateISO).length;
@@ -216,7 +244,7 @@ export function estimatedCoverageLabel(covRead: BalanceCoverageRead, sides: read
  */
 export function markPartialBalanceCoverage<P extends { date: string; estimated?: boolean; basis?: "unreliable" | "carried" | (string & {}); coverageLabel?: string | null }>(
   points: readonly P[],
-  cov: BalanceCoverageRead,
+  cov: ClientBalanceCoverage,
   sides: readonly BalanceCoverageSide[],
 ): P[] {
   const from = balanceCoveredFromISO(cov, sides);
@@ -239,7 +267,7 @@ function fmtDay(iso: string): string {
  * starts before the coverage floor. Counts only the accounts whose floor falls
  * inside the window — the ones actually missing from its earliest day.
  */
-export function balanceCoverageNote(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], chartFromISO: string | null): string | null {
+export function balanceCoverageNote(covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[], chartFromISO: string | null): string | null {
   const cov = knownBalanceCoverage(covRead);
   const from = balanceCoveredFromISO(cov, sides);
   if (!cov || !from || !chartFromISO || chartFromISO >= from) return null;
@@ -272,7 +300,9 @@ export type ChangeComparability =
   | { state: "estimated" }
   | { state: "withheld"; coveredFromISO: string; message: string }
   /** The coverage read FAILED: no floor is known, so no change may be stated. */
-  | { state: "withheld"; coveredFromISO: null; message: string; unreadable: true };
+  | { state: "withheld"; coveredFromISO: null; message: string; unreadable: true }
+  /** S2 2026-11-03 — the client read is still LOADING: the change is PENDING ("—"), never shown-then-retracted. */
+  | { state: "withheld"; coveredFromISO: null; message: string; pending: true };
 
 export interface ChangeEndpoints {
   /** The comparison (opening) day, YYYY-MM-DD. */
@@ -301,8 +331,14 @@ export const ESTIMATED_CHANGE_SUFFIX = " · estimated";
  * before PB-8b. A FAILED server read (BALANCE_COVERAGE_UNAVAILABLE) is withheld, never comparable.
  */
 export function changeComparability(
-  covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], e: ChangeEndpoints,
+  covRead: ClientBalanceCoverage, sides: readonly BalanceCoverageSide[], e: ChangeEndpoints,
 ): ChangeComparability {
+  // S2 2026-11-03 — LOADING: a governed change is PENDING until the read
+  // resolves; an ungoverned series (sides = []) is never gated, so it renders now.
+  if (isBalanceCoverageLoading(covRead)) {
+    if (sides.length === 0) return { state: "comparable" };
+    return { state: "withheld", coveredFromISO: null, message: BALANCE_COVERAGE_PENDING_MESSAGE, pending: true };
+  }
   // A FAILED read is never "comparable" for a series coverage governs (fail closed).
   // A series composed of neither cash nor debt (investments, crypto: sides = [])
   // was never gated by balance coverage, so an outage does not withhold it either.

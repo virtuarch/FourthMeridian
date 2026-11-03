@@ -29,7 +29,8 @@ import type { DataSourceView } from "@/lib/connections/space-data-health.core";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import type { ValuationCoverage } from "@/lib/connections/valuation-coverage.core";
 import {
-  BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine, isBalanceCoverageUnavailable, type BalanceCoverage, type BalanceCoverageRead,
+  BALANCE_COVERAGE_LOADING, BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine, isBalanceCoverageUnavailable,
+  type BalanceCoverage, type BalanceCoverageRead, type ClientBalanceCoverage,
 } from "@/lib/connections/balance-coverage.core";
 
 type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: ValuationCoverage | null; balanceCoverage: BalanceCoverageRead };
@@ -42,9 +43,18 @@ type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: 
  */
 export const FAILED_DATA_HEALTH: DataHealthPayload = Object.freeze({ sources: null, valuationCoverage: null, balanceCoverage: BALANCE_COVERAGE_UNAVAILABLE });
 
-/** The wire value → BalanceCoverageRead. `{ unavailable: true }` is the route's failed read; anything malformed is unavailable too. */
+/**
+ * The wire value → BalanceCoverageRead. `{ unavailable: true }` is the route's failed read; anything malformed is unavailable too.
+ *
+ * S2 2026-11-03 — a MISSING key (`undefined`) is UNAVAILABLE, not null. Every OK
+ * answer of the data-health route carries `balanceCoverage` (null included), so an
+ * absent key means a payload from a different build (version skew mid-deploy) —
+ * mapping it to null ("nothing to cover") would fall open. Only an explicit null
+ * means nothing to cover.
+ */
 export function parseBalanceCoverage(v: unknown): BalanceCoverageRead {
-  if (v === null || v === undefined) return null;
+  if (v === null) return null;
+  if (v === undefined) return BALANCE_COVERAGE_UNAVAILABLE;
   if (isBalanceCoverageUnavailable(v as BalanceCoverageRead)) return BALANCE_COVERAGE_UNAVAILABLE;
   const c = v as Partial<BalanceCoverage>;
   const strings = (a: unknown) => Array.isArray(a) && a.every((x) => typeof x === "string");
@@ -102,11 +112,24 @@ export function useSpaceValuationCoverage(spaceId: string | null | undefined): V
 
 /**
  * PB-8 — before which date debt / cash history is partial (balance floors) — the same one read.
- * null while loading or when there is nothing to cover; BALANCE_COVERAGE_UNAVAILABLE when the
- * read FAILED (the heroes withhold the changes it governs — S2 sweep).
+ * The client tri-state (S2 2026-11-03), via `balanceCoverageState`:
+ *   BALANCE_COVERAGE_LOADING      the read is in flight — governed changes render PENDING;
+ *   BalanceCoverage | null        read (null = nothing to cover);
+ *   BALANCE_COVERAGE_UNAVAILABLE  the read FAILED — governed changes are withheld (S2 sweep).
  */
-export function useSpaceBalanceCoverage(spaceId: string | null | undefined): BalanceCoverageRead {
-  return useDataHealth(spaceId)?.balanceCoverage ?? null;
+export function useSpaceBalanceCoverage(spaceId: string | null | undefined): ClientBalanceCoverage {
+  return balanceCoverageState(spaceId, useDataHealth(spaceId));
+}
+
+/**
+ * The tri-state from the hook's inputs. No Space ⇒ no read will ever run, so there is
+ * nothing to cover (null). A Space whose payload has not arrived ⇒ LOADING — never null,
+ * which would let a governed change render and then be retracted.
+ */
+export function balanceCoverageState(spaceId: string | null | undefined, payload: DataHealthPayload | null): ClientBalanceCoverage {
+  if (!spaceId) return null;
+  if (payload === null) return BALANCE_COVERAGE_LOADING;
+  return payload.balanceCoverage;
 }
 
 const NOTE_COPY = {

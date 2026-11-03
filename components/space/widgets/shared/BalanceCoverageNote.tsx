@@ -14,13 +14,13 @@
 
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import { useSpaceBalanceCoverage } from "@/components/space/PerspectiveEmptyState";
-import { BALANCE_COVERAGE_UNREADABLE_CHART_NOTE, balanceCoverageNote, balanceCoverageSidesFor, isBalanceCoverageUnavailable, type BalanceCoverageRead } from "@/lib/connections/balance-coverage.core";
+import { BALANCE_COVERAGE_UNREADABLE_CHART_NOTE, balanceCoverageNote, balanceCoverageSidesFor, isBalanceCoverageUnavailable, type ClientBalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 export function BalanceCoverageNote({ from, metric, coverage: given }: {
   from: string | null;
   metric: string;
   /** Fixture-driven renders only; the page always reads the Space's data-health. */
-  coverage?: BalanceCoverageRead;
+  coverage?: ClientBalanceCoverage;
 }) {
   const live = useSpaceBalanceCoverage(useSpaceIdContext());
   const coverage = given !== undefined ? given : live;
@@ -28,6 +28,8 @@ export function BalanceCoverageNote({ from, metric, coverage: given }: {
   if (isBalanceCoverageUnavailable(coverage) && balanceCoverageSidesFor(metric).length > 0) {
     return <p className="mt-2 text-[11px] text-[var(--text-faint)]" data-balance-coverage-note="unavailable">{BALANCE_COVERAGE_UNREADABLE_CHART_NOTE}</p>;
   }
+  // S2 2026-11-03 — LOADING renders nothing (balanceCoverageNote knows no floor yet):
+  // the note is pending, never a sentence that the resolved read then contradicts.
   const note = balanceCoverageNote(coverage, balanceCoverageSidesFor(metric), from);
   if (!note) return null;
   return <p className="mt-2 text-[11px] text-[var(--text-faint)]" data-balance-coverage-note>{note}</p>;
