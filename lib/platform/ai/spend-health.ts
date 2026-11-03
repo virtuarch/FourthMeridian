@@ -57,6 +57,12 @@ export interface AiSpendHealth {
   unpricedModels: string[];
   /** The thresholds in force when the report was built — the rule judges against these. */
   thresholds: { fleetUsd: number; userUsd: number };
+  /**
+   * SEC-AI-001 — the OPTIONAL fleet ceiling (whole USD) when one is SET. OMITTED
+   * otherwise, so a report with no ceiling is byte-identical to before. The
+   * fleet rule raises its critical `:ceiling:` signal against it.
+   */
+  fleetCeilingUsd?: number;
   checkedAt: string;
 }
 
@@ -114,9 +120,18 @@ interface RawGroup {
   invocations: bigint | number; prompt: bigint | number; cached: bigint | number; completion: bigint | number;
 }
 
-/** The real grouped read: customer surfaces, RETURNED rows, per (userId, provider, model, day). */
-export async function readUserSpendGroups(since: Date, until: Date): Promise<UserSpendGroup[]> {
-  const rows = await systemDb.$queryRaw<RawGroup[]>`
+/** The raw-query surface the grouped read needs — fm_system, or a transaction on it. */
+export interface SpendGroupsRawClient {
+  $queryRaw<T = unknown>(query: TemplateStringsArray | Prisma.Sql, ...values: unknown[]): Prisma.PrismaPromise<T> | Promise<T>;
+}
+
+/**
+ * The real grouped read: customer surfaces, RETURNED rows, per (userId, provider, model, day).
+ * SEC-AI-001 — `client` lets the fleet ceiling run THE SAME read inside the
+ * reservation transaction; every other caller keeps fm_system.
+ */
+export async function readUserSpendGroups(since: Date, until: Date, client: SpendGroupsRawClient = systemDb): Promise<UserSpendGroup[]> {
+  const rows = await client.$queryRaw<RawGroup[]>`
     SELECT "userId", "provider", "model", "surface",
            to_char(("occurredAt" AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS "day",
            count(*)::bigint AS "invocations",
@@ -149,5 +164,7 @@ export async function getAiSpendHealth(windowHours = 24, deps: AiSpendHealthDeps
     (deps.groups ?? readUserSpendGroups)(since, now),
     (deps.thresholds ?? loadAiSpendThresholds)(),
   ]);
-  return buildAiSpendHealth(groups, { fleetUsd: thresholds.fleet.usd, userUsd: thresholds.user.usd }, windowHours, now);
+  const health = buildAiSpendHealth(groups, { fleetUsd: thresholds.fleet.usd, userUsd: thresholds.user.usd }, windowHours, now);
+  // SEC-AI-001 — present only when a ceiling is SET (an absent or invalid row adds nothing).
+  return thresholds.fleetCeiling?.state === "SET" ? { ...health, fleetCeilingUsd: thresholds.fleetCeiling.usd } : health;
 }

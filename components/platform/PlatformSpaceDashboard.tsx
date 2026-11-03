@@ -53,7 +53,7 @@ import {
 } from "@/lib/space/use-platform-workspace-navigation";
 import type { SpaceMountContext, SpaceMountAccess } from "@/lib/space/mount-context";
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, ArrowRight, ChevronLeft } from "lucide-react";
+import { LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, Receipt, ArrowRight, ChevronLeft } from "lucide-react";
 import type { PlatformArea } from "@prisma/client";
 import { SpaceShell, type SpaceShellRailOption } from "@/components/space/shell/SpaceShell";
 import { SegmentedControl } from "@/components/atlas/SegmentedControl";
@@ -72,6 +72,7 @@ import { OperationsLead } from "./leads/OperationsLead";
 import { PipelineLead } from "./leads/PipelineLead";
 import { ProvidersLead } from "./leads/ProvidersLead";
 import { AiCostsLead } from "./leads/AiCostsLead";
+import { EconomicsOverviewLead } from "./leads/EconomicsOverviewLead";
 import { GrowthLead } from "./leads/GrowthLead";
 import { SecurityLead } from "./leads/SecurityLead";
 import { CustomerSuccessLead } from "./leads/CustomerSuccessLead";
@@ -221,6 +222,8 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   pipeline:   PipelineLead,
   providers:  ProvidersLead,
   "ai-costs": AiCostsLead,
+  // Platform Economics › Overview (lib/platform/economics/snapshot.ts).
+  "economics-overview": EconomicsOverviewLead,
   policies:   PoliciesLead,
   growth:     GrowthLead,
   security:   SecurityLead,
@@ -292,7 +295,7 @@ const NO_HOSTED_KEYS: readonly string[] = [];
 
 /** Lucide icon-name → component, for the Platform workspace identities. */
 const WORKSPACE_ICONS: Record<string, LucideIcon> = {
-  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal,
+  LayoutDashboard, Timer, PlugZap, Wrench, BellRing, History, Sparkles, Gauge, RefreshCw, SlidersHorizontal, Receipt,
 };
 
 interface Props {

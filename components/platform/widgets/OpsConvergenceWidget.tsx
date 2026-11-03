@@ -34,6 +34,9 @@ export function OpsConvergenceWidget({ section }: { section: PlatformSection }) 
             <WidgetStat value={data.eventCount} label="Events" />
             <WidgetStat value={data.participants.length} label="Ledgers" />
           </div>
+          {data.incidentScan?.truncated ? (
+            <p className="text-[11px] text-[var(--text-muted)] mt-1">{`Incident evidence capped at ${data.incidentScan.cap} — story counts are a floor.`}</p>
+          ) : null}
 
           {data.episodes.length === 0 ? (
             <p className="text-xs text-[var(--text-secondary)] mt-1">No correlated operational episodes in the window.</p>

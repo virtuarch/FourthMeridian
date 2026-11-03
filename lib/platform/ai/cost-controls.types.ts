@@ -246,6 +246,15 @@ export interface AiBudgetUtilization {
     userAlertEnabled: boolean;
     userAlertThresholdUsd: number;
     paused: boolean;
+    /**
+     * SEC-AI-001 — APPENDED. The optional fleet daily ceiling in force (whole USD
+     * over the trailing 24 h), or null when none is set — the surface reads
+     * "Fleet daily ceiling: not set". Read-only here; editing belongs to Policies.
+     * Optional so a payload from before the field reads as "not set".
+     */
+    fleetCeilingUsd?: number | null;
+    /** SEC-AI-001 — APPENDED. What the ceiling is doing (fleet-ceiling.core.ts FleetCeilingState); absent ⇒ NOT_SET. */
+    fleetCeilingState?: "NOT_SET" | "ENFORCED" | "UNENFORCEABLE" | "ENFORCEMENT_OFF";
   };
   /** The sentence every dollar on the surface is governed by. */
   estimateNote: string;

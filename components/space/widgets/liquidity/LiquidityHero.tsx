@@ -75,6 +75,7 @@ export function LiquidityHero({
   historical,
   change,
   deltaBasisDiffers,
+  deltaBasisReason = "REACHABLE",
   envelope,
   verdict,
   verdictAsOf,
@@ -105,6 +106,9 @@ export function LiquidityHero({
   /** v2.6-L3 — true when the headline is reachable cash but `change` was computed
    *  on the ledger-balance snapshot series. The delta is then suppressed. */
   deltaBasisDiffers: boolean;
+  /** FIN-005 — WHY the bases differ: the headline is reachable cash (v2.6-L3), or the
+   *  history includes restricted cash the headline excludes. Default REACHABLE. */
+  deltaBasisReason?: "REACHABLE" | "RESTRICTED_CASH";
   /** The balance-history window delta, or null when no window exists. */
   change:        LiquidityWindowChange | null;
   /** The workspace's canonical trust envelope — drives the confidence chip. */
@@ -159,8 +163,10 @@ export function LiquidityHero({
           )
         )}
         {!historical && deltaBasisDiffers && (
-          <span className="text-[11px] text-[var(--text-muted)]">
-            Change over time is shown in the chart below — it tracks ledger balances, not reachable cash.
+          <span className="text-[11px] text-[var(--text-muted)]" data-liquidity-delta-deferred={deltaBasisReason}>
+            {deltaBasisReason === "RESTRICTED_CASH"
+              ? "Change over time is shown in the chart below — it tracks all cash, including restricted cash this figure excludes."
+              : "Change over time is shown in the chart below — it tracks ledger balances, not reachable cash."}
           </span>
         )}
       </div>

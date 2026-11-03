@@ -19,6 +19,7 @@
 import "server-only";
 import { systemDb } from "@/lib/db";
 import { PlatformSettingKey, getSettingDescriptor, validateSetting, type PlatformSettingKeyType } from "@/lib/platform-settings";
+import { FLEET_CEILING_SETTING_KEY, resolveFleetCeiling, type FleetCeiling } from "@/lib/platform/ai/fleet-ceiling.core";
 
 export type ThresholdOrigin = "DEFAULT" | "SETTING" | "INVALID_SETTING";
 
@@ -36,6 +37,12 @@ export interface AiSpendThreshold {
 export interface AiSpendThresholds {
   fleet: AiSpendThreshold;
   user: AiSpendThreshold;
+  /**
+   * SEC-AI-001 — the OPTIONAL fleet ceiling (ABSENT_MEANS_OFF), read in the same
+   * query as the two thresholds. Optional on the type so a caller that supplies
+   * only the thresholds means "no ceiling".
+   */
+  fleetCeiling?: FleetCeiling;
 }
 
 export const AI_SPEND_THRESHOLD_KEYS = {
@@ -63,13 +70,14 @@ export interface ThresholdReadClient {
   };
 }
 
-/** The one read: both rows in one query, resolved through the descriptors. */
+/** The one read: the three rows in one query, resolved through the descriptors. */
 export async function loadAiSpendThresholds(client: ThresholdReadClient = systemDb): Promise<AiSpendThresholds> {
-  const keys = [AI_SPEND_THRESHOLD_KEYS.fleet, AI_SPEND_THRESHOLD_KEYS.user];
+  const keys: string[] = [AI_SPEND_THRESHOLD_KEYS.fleet, AI_SPEND_THRESHOLD_KEYS.user, FLEET_CEILING_SETTING_KEY];
   const rows = await client.platformSetting.findMany({ where: { key: { in: keys } }, select: { key: true, value: true, updatedAt: true } });
   const byKey = new Map(rows.map((r) => [r.key, r]));
   return {
     fleet: resolveAiSpendThreshold(AI_SPEND_THRESHOLD_KEYS.fleet, byKey.get(AI_SPEND_THRESHOLD_KEYS.fleet) ?? null),
     user: resolveAiSpendThreshold(AI_SPEND_THRESHOLD_KEYS.user, byKey.get(AI_SPEND_THRESHOLD_KEYS.user) ?? null),
+    fleetCeiling: resolveFleetCeiling(byKey.get(FLEET_CEILING_SETTING_KEY)?.value ?? null),
   };
 }

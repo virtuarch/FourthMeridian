@@ -1267,6 +1267,16 @@ model FinancialAccount {
   // as optional on all AccountBalance responses). Never backfilled for existing
   // rows; null means "provenance unknown", not "balance is current".
   balanceLastUpdatedAt DateTime?
+  // FIN-A2 (FM-AUDIT-023, new-row half) — false ONLY on a row created at token
+  // exchange whose provider `current` was NOT observed: `balance` then holds the
+  // column's structural 0, which is not a value. Such a row is EXCLUDED from
+  // every total ("Balance unavailable", never $0) through the one totals
+  // classification (resolveWalletBalance), and flips to true the first time an
+  // observed balance is written (planBalanceWrite / planExchangeBalanceStamp).
+  // DEFAULT true: every existing row keeps its current meaning (no backfill).
+  // Deliberately NOT inferred from balanceLastUpdatedAt, which is null on most
+  // legacy rows and would pull them out of totals.
+  balanceObserved      Boolean     @default(true)
 
   // Plaid deduplication key
   plaidAccountId String? @unique
@@ -3972,6 +3982,7 @@ enum SyncIssueKind {
   INVESTMENT_DATA_PERSISTENCE_FAILED // holdings/events/opening-position repair failed
   IMPORT_ROLLBACK_FAILED // a user import rollback did not complete
   WALLET_SYNC_FAILED // on-chain wallet discovery/balance/price failed
+  BALANCE_UNOBSERVED // FIN-A2 — a new account was created with no observed balance; resolves when one lands
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
