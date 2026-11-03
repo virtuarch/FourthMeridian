@@ -39,11 +39,18 @@
  *   5. LAST ACTIVE — `UserSession.lastInteractionAt`: the server time of the
  *      newest beat whose body said "interacted since the last beat" (coarse
  *      local pointer/key/scroll/visibility events — never keystroke contents,
- *      coordinates or page content). ⚠️ LOW TRUST: the boolean is
+ *      coordinates or page content; NOT visibility — F4: macOS flips it on
+ *      window occlusion / screen lock with nobody at the tab). ⚠️ LOW TRUST: the boolean is
  *      CLIENT-ASSERTED. It may drive ONLY the presence buckets (Active now /
  *      Online, idle / Offline) and the coarse Customer Success "last active ~"
  *      display. It must NEVER feed engagement (DAU/WAU/MAU, "Returned",
  *      Growth returning), SEC-010, or any security decision.
+ *      KNOWN LIMITATION (accepted): the server stamps the interaction at beat
+ *      ARRIVAL, so a real input just before the tab is hidden is credited when
+ *      the next beat lands — up to one interval later, or on return. Capped: a
+ *      pending flag is dropped once the INPUT is more than 2 × clientBeatIntervalMs
+ *      old — including a flag restored after a refused / lost beat
+ *      (lib/presence/heartbeat-client.ts STALE_INTERACTION_MS).
  *   6. MEANINGFUL ENGAGEMENT — actual product use, from SERVER-SIDE events only:
  *      the frozen engagement predicate in
  *      lib/platform/growth/product-analytics-core.ts — ENGAGEMENT_AUDIT_ACTIONS

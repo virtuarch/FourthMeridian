@@ -8,8 +8,23 @@
  *   · on MOUNT — immediately (presence on arrival, interacted=false: loading a
  *     page is not proof of a human);
  *   · every PRESENCE_CONFIG.clientBeatIntervalMs (`tick`);
- *   · when the tab becomes visible again (interacted=true).
+ *   · when the tab becomes visible again — PRESENCE ONLY.
  * An interaction only MARKS the pending flag; it never sends a beat itself.
+ *
+ * F4 (Preview, macOS) — visibility is NOT an interaction. Chrome flips
+ * visibilitychange on window occlusion, screen lock/unlock and other windows
+ * covering or uncovering the tab, with no human touching it; counting it showed
+ * "Active now" for a session idle 6+ minutes. Only the real INTERACTION_EVENTS
+ * (components/presence/PresenceHeartbeat.tsx) set the flag; the visible beat
+ * carries whatever REAL input is still pending (normally none ⇒ false).
+ *
+ * STALE CAP. The server stamps an interaction at beat ARRIVAL, so an input just
+ * before the tab was hidden is credited when the next beat lands. A pending
+ * flag is dropped — that beat goes out interacted=false — when the INPUT it
+ * records is more than STALE_INTERACTION_MS (2 × the client interval) old. The
+ * age is the input's, not the beat's, and a flag RESTORED after a 429 / 5xx /
+ * network failure keeps its original age — so an old interaction can never be
+ * replayed late (S2 ruling).
  *
  * F1 (S2 review) — CARRY-OVER. The rate-limit bucket is per SESSION, shared by
  * every tab, so a beat can be refused (429) or lost (network). The pending
@@ -21,6 +36,11 @@
  * Nothing here reads event contents, coordinates or page content; nothing sends
  * a time. The server stamps every clock.
  */
+
+import { PRESENCE_CONFIG } from "./definitions";
+
+/** A pending interaction older than this (measured from the INPUT) is dropped, never sent. */
+export const STALE_INTERACTION_MS = 2 * PRESENCE_CONFIG.clientBeatIntervalMs;
 
 export type BeatOutcome = { status: number } | { networkError: true };
 
@@ -43,31 +63,40 @@ export interface HeartbeatController {
 
 export function createHeartbeatController(deps: HeartbeatDeps): HeartbeatController {
   let interacted = false;
+  /** When the pending flag was first set (kept across an F1 restore). */
+  let pendingSince: number | null = null;
   let stopped = false;
   let lastBeatAt: number | null = null;
   let inFlight = false;
 
   async function beat(): Promise<void> {
     if (stopped || inFlight || !deps.isVisible()) return;
-    const carried = interacted;
+    const now = deps.now();
+    // Age of the pending flag = time since the INPUT (kept across an F1 restore), never since a beat.
+    const stale = pendingSince !== null && now - pendingSince > STALE_INTERACTION_MS;
+    const carried = interacted && !stale;
+    const carriedSince = carried ? pendingSince : null;
     interacted = false;
+    pendingSince = null;
     inFlight = true;
-    lastBeatAt = deps.now();
+    lastBeatAt = now;
     let outcome: BeatOutcome;
     try { outcome = await deps.send(JSON.stringify({ interacted: carried })); }
     catch { outcome = { networkError: true }; }
     inFlight = false;
-    if ("networkError" in outcome) { if (carried) interacted = true; return; }
+    const restore = () => { if (carried && !interacted) { interacted = true; pendingSince = carriedSince; } };
+    if ("networkError" in outcome) { restore(); return; }
     const { status } = outcome;
     if (status === 401 || status === 403) { stopped = true; return; }
-    if (status === 429 || status >= 500) { if (carried) interacted = true; }
+    if (status === 429 || status >= 500) restore();
   }
 
   return {
     mount: () => beat(),
     tick: () => beat(),
-    async visible() { interacted = true; await beat(); },
-    interaction() { interacted = true; },
+    // F4 — presence only: visibility never sets the flag (occlusion / lock flips it).
+    visible: () => beat(),
+    interaction() { if (!interacted) { interacted = true; pendingSince = deps.now(); } },
     stop() { stopped = true; },
     state: () => ({ interacted, stopped, lastBeatAt, inFlight }),
   };
