@@ -210,7 +210,7 @@ console.log("7. pricing is effective-dated and never fabricated");
   const c = priceCycle([item({ createdAt: "2026-06-01" })], [], JULY, "presentDuringCycle");
   check("a July Item-month prices at the evidenced $0.30", near(c.usd, 0.30));
   check("the rate carries its provenance",
-    (plaidRateAt("transactions", "2026-07-01")!.source ?? "").includes("S-J7Y5657ZK0-2607"));
+    /Plaid invoice, Jul 2026 cycle/.test(plaidRateAt("transactions", "2026-07-01")!.source ?? ""));
 
   // ⚠️ NO EVIDENCE, NO PRICE. June predates the only invoice we have.
   const june = priceCycle([item({ createdAt: "2026-01-01" })], [], monthCycle("2026-06"), "presentDuringCycle");

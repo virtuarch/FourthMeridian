@@ -83,19 +83,19 @@ async function main() {
       src5.adjusted + dst5.adjusted === 4500);
 
     // (6) Available temporarily held (A2/A5): total keeps C; accessible drops.
-    const b6 = bal("savings", 17000, 15374.59);
+    const b6 = bal("savings", 13500, 12260.15);
     const r6 = adjustedDepositoryBalance(b6, NO_PENDING)!;
     const rec6 = reconcileAccount(b6, NO_PENDING);
-    check("(6) hold: adjusted = C 17,000; reachable = A 15,374.59", r6.adjusted === 17000 && rec6.reachable?.amount === 15374.59);
+    check("(6) hold: adjusted = C 13,500; reachable = A 12,260.15", r6.adjusted === 13500 && rec6.reachable?.amount === 12260.15);
 
     // (7) Missing available balance (contract E5).
     const r7 = adjustedDepositoryBalance(bal("checking", 1000, null), pend(-50))!;
     check("(7) A = null → UNPROVEN, C (never 950), flagged", r7.basis === "UNPROVEN" && r7.adjusted === 1000 && r7.flagged);
 
     // (8) Duplicate pending + posted (contract E3): never C + 2P.
-    const r8 = adjustedDepositoryBalance(bal("checking", 3751.68, 929.01), pend(-1500, -1500, -125.41, -747.26, -300, -150))!;
+    const r8 = adjustedDepositoryBalance(bal("checking", 2930.25, 929.85), pend(-1200, -1200, -100.4, -450, -200, -100))!;
     check("(8) stale pending beside its posted twin → UNPROVEN, C, never C + 2P",
-      r8.basis === "UNPROVEN" && r8.adjusted === 3751.68 && r8.adjusted !== 3751.68 + 2 * r8.pendingSum);
+      r8.basis === "UNPROVEN" && r8.adjusted === 2930.25 && r8.adjusted !== 2930.25 + 2 * r8.pendingSum);
 
     // (9) Stale / mismatched sync instants: balance from a later sync than the pending set.
     const r9 = adjustedDepositoryBalance(bal("checking", 1200, 1150), pend(-100))!;
@@ -155,7 +155,8 @@ async function main() {
   // ── 3. Production 10-26 fixture, end to end ─────────────────────────────────
   console.log("\n3. Production 10-26 fixture — mount · snapshot writer · AI assembler · client totals");
   {
-    // Anonymized: masked ids, no names/numbers. C / A / P exactly as observed.
+    // Synthetic C / A / P with the same shape as the Production 10-26 observation
+    // (real values removed 2026-11-02; masked ids, no names).
     const NOW = new Date("2026-10-26T21:45:00Z");
     const fa = (id: string, type: string, balance: number, availableBalance: number | null, extra: Record<string, unknown> = {}) => ({
       id, type, institution: `Inst ${id}`, balance, availableBalance, currency: "USD",
@@ -165,16 +166,16 @@ async function main() {
       debtProfile: null, connections: [], ...extra,
     });
     const ACCOUNTS = [
-      fa("a1", "checking", 5251.68, 929.01),
-      fa("a2", "checking", 1500, 0),
-      fa("a3", "checking", 1000, 1000),
-      fa("a4", "savings", 5000.08, 5000.08),
-      fa("a5", "savings", 17000, 15374.59),
+      fa("a1", "checking", 4180.25, 929.85),
+      fa("a2", "checking", 1200, 0),
+      fa("a3", "checking", 800, 800),
+      fa("a4", "savings", 4100.3, 4100.3),
+      fa("a5", "savings", 13500, 12260.15),
       // Non-depository: untouched by the contract.
-      fa("inv", "investment", 901.66, 0, { providerSubtype: "brokerage" }),
-      fa("card", "debt", 562.37, 33022.48, { creditLimit: 33700 }),
+      fa("inv", "investment", 750, 0, { providerSubtype: "brokerage" }),
+      fa("card", "debt", 480, 24520, { creditLimit: 25000 }),
     ];
-    const PENDING_A1 = [-1500, -1500, -125.41, -747.26, -300, -150]; // Σ −4,322.67 (6 rows)
+    const PENDING_A1 = [-1200, -1200, -100.4, -450, -200, -100]; // Σ −3,250.40 (6 rows)
     const pendingRows = PENDING_A1.map((amount, i) => ({
       id: `t${i}`, financialAccountId: "a1", amount, plaidTransactionId: null,
       settlementState: "PENDING", pending: true, deletedAt: null,
@@ -209,9 +210,9 @@ async function main() {
     const spaceAccounts = await loadSpaceAccounts(client, "space-1");
     const byId = new Map(spaceAccounts.map((a: any) => [a.id, a]));
     const a1 = byId.get("a1") as any;
-    check("mount: A1 basis PENDING_EXCLUDED, adjusted 929.01, P −4,322.67 (6 rows), balance stays reported",
-      a1.currentState.basis === "PENDING_EXCLUDED" && near(a1.adjustedBalance, 929.01)
-      && near(a1.currentState.pendingSum, -4322.67) && a1.currentState.pendingCount === 6 && a1.balance === 5251.68);
+    check("mount: A1 basis PENDING_EXCLUDED, adjusted 929.85, P −3,250.40 (6 rows), balance stays reported",
+      a1.currentState.basis === "PENDING_EXCLUDED" && near(a1.adjustedBalance, 929.85)
+      && near(a1.currentState.pendingSum, -3250.4) && a1.currentState.pendingCount === 6 && a1.balance === 4180.25);
     check("mount: A2/A3/A4/A5 NO_PENDING, adjusted = reported",
       ["a2", "a3", "a4", "a5"].every((id) => { const r = byId.get(id) as any; return r.currentState.basis === "NO_PENDING" && r.adjustedBalance === r.balance; }));
     check("mount: non-depository rows carry no adjusted claim",
@@ -222,19 +223,19 @@ async function main() {
     const reported = cash.reduce((s: number, a: any) => s + a.balance, 0);
     const c = classifyAccounts(spaceAccounts as any[]);
     const totalCash = c.totalLiquid + c.totalRestrictedCash;
-    check("fixture: reported 29,751.76", near(reported, 29751.76));
-    check("fixture: adjusted total cash 25,429.09 (classifier)", near(totalCash, 25429.09), String(totalCash));
-    check("fixture: pending correction −4,322.67", near(totalCash - reported, -4322.67));
+    check("fixture: reported 23,780.55", near(reported, 23780.55));
+    check("fixture: adjusted total cash 20,530.15 (classifier)", near(totalCash, 20530.15), String(totalCash));
+    check("fixture: pending correction −3,250.40", near(totalCash - reported, -3250.4));
 
     const { buildCashAccounts } = await import("@/components/space/widgets/liquidity/cash-accounts");
     const { groupCashAccounts } = await import("@/components/space/widgets/liquidity/cash-accounts");
     const { reachableNow } = await import("@/components/space/widgets/liquidity-adapters");
     const ledger = buildCashAccounts(spaceAccounts as any[]);
     const reach = reachableNow(spaceAccounts as any[]);
-    check("fixture: accessible 22,303.68 (unchanged, provider-attested)", near(reach.total, 22303.68) && near(ledger.accessible, 22303.68));
-    check("fixture: holds 3,125.41", near(ledger.holds, 3125.41) && near(reach.unexplainedTotal, 3125.41));
+    check("fixture: accessible 18,090.30 (unchanged, provider-attested)", near(reach.total, 18090.3) && near(ledger.accessible, 18090.3));
+    check("fixture: holds 2,439.85", near(ledger.holds, 2439.85) && near(reach.unexplainedTotal, 2439.85));
     check("ledger: Σ rows = total cash; reported + correction = total cash",
-      near(ledger.totalCash, totalCash) && near(ledger.reported, 29751.76) && near(ledger.reported + ledger.pendingCorrection, ledger.totalCash));
+      near(ledger.totalCash, totalCash) && near(ledger.reported, 23780.55) && near(ledger.reported + ledger.pendingCorrection, ledger.totalCash));
     for (const by of ["account", "institution", "type"] as const) {
       check(`donut (${by}): Σ groups = total cash`, near(groupCashAccounts(ledger, by).reduce((s, g) => s + g.value, 0), totalCash));
     }
@@ -242,15 +243,15 @@ async function main() {
     const comp = wealthAccountRows(spaceAccounts as any[]);
     check("net-worth composition rows: Σ = classifyAccounts totalAssets",
       near(comp.reduce((s, r) => s + r.value, 0), c.totalAssets));
-    check("net-worth composition: A1 row is 929.01", near(comp.find((r) => r.id === "a1")!.value, 929.01));
+    check("net-worth composition: A1 row is 929.85", near(comp.find((r) => r.id === "a1")!.value, 929.85));
     check("countedBalance: depository → adjusted; investment → balance",
-      countedBalance(a1) === a1.adjustedBalance && countedBalance(byId.get("inv") as any) === 901.66);
+      countedBalance(a1) === a1.adjustedBalance && countedBalance(byId.get("inv") as any) === 750);
 
     // (c) THE SNAPSHOT WRITER — today's row.
     const { regenerateSpaceSnapshot } = await import("@/lib/snapshots/regenerate");
     await regenerateSpaceSnapshot("space-1", new Date(Date.UTC(2026, 9, 27)), client);
     const row = upserted?.create;
-    check("snapshot today: cash + savings = 25,429.09 (adjusted)", row && near(row.cash + row.savings, 25429.09), row ? String(row.cash + row.savings) : "no row");
+    check("snapshot today: cash + savings = 20,530.15 (adjusted)", row && near(row.cash + row.savings, 20530.15), row ? String(row.cash + row.savings) : "no row");
     check("snapshot today: totalAssets/netWorth equal the classifier's",
       row && near(row.totalAssets, c.totalAssets) && near(row.netWorth, c.netWorth));
     const fields = computeSnapshotFields(c);
@@ -264,12 +265,12 @@ async function main() {
     const assemble = getAssembler(FinanceDomains.ACCOUNTS)!;
     const section = await assemble(client, { spaceId: "space-1", userId: "u1" } as any, { scopeHint: "full" } as any);
     const data = section?.data as any;
-    check("AI: totalLiquid = 25,429.09 (adjusted)", data && near(data.totalLiquid, 25429.09), data ? String(data.totalLiquid) : "no data");
+    check("AI: totalLiquid = 20,530.15 (adjusted)", data && near(data.totalLiquid, 20530.15), data ? String(data.totalLiquid) : "no data");
     check("AI: totalAssets / netWorth equal the classifier's", data && near(data.totalAssets, c.totalAssets) && near(data.netWorth, c.netWorth));
     const aiA1 = data?.accounts?.find((a: any) => a.id === "a1");
-    check("AI: A1 row — balance reported, currentState.adjustedBalance 929.01, basis PENDING_EXCLUDED, reportingBalance adjusted",
-      aiA1 && aiA1.balance === 5251.68 && near(aiA1.currentState.adjustedBalance, 929.01)
-      && aiA1.currentState.balanceBasis === "PENDING_EXCLUDED" && near(aiA1.reportingBalance, 929.01) && !aiA1.currentState.pendingNotReconciled);
+    check("AI: A1 row — balance reported, currentState.adjustedBalance 929.85, basis PENDING_EXCLUDED, reportingBalance adjusted",
+      aiA1 && aiA1.balance === 4180.25 && near(aiA1.currentState.adjustedBalance, 929.85)
+      && aiA1.currentState.balanceBasis === "PENDING_EXCLUDED" && near(aiA1.reportingBalance, 929.85) && !aiA1.currentState.pendingNotReconciled);
     const aiCashSum = (data?.accounts ?? [])
       .filter((a: any) => a.type === "checking" || a.type === "savings")
       .reduce((s: number, a: any) => s + a.reportingBalance, 0);
@@ -279,7 +280,7 @@ async function main() {
     const all = [totalCash, ledger.totalCash, row ? row.cash + row.savings : NaN, data?.totalLiquid ?? NaN,
       groupCashAccounts(ledger, "account").reduce((s, g) => s + g.value, 0)];
     check("hero/snapshot-today · classifier · donut · ledger · AI accounts all = Σ adjusted",
-      all.every((v) => near(v, 25429.09)), all.join(" / "));
+      all.every((v) => near(v, 20530.15)), all.join(" / "));
   }
 
   // ── 4. Forward-only basis disclosure ────────────────────────────────────────
