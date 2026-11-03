@@ -5,7 +5,7 @@
  * one owner revokes the CO-OWNER's link too, and the co-owner's Space comes back
  * in `affectedSpaceIds` so their snapshot is regenerated. That is what the
  * product has always done, and an authority migration is not allowed to change
- * it quietly. See docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md.
+ * it quietly. See docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide.
  *
  * ⚠️ THE VACUOUS PASS IS THE REAL ADVERSARY HERE. A fixture that yields an empty
  * link set makes every assertion below pass for the wrong reason — an earlier

@@ -73,7 +73,7 @@ The investigation's Preview design (§10) assumed Previews live only on `*.verce
 
 | Client | Database role | Env var | Used for |
 |---|---|---|---|
-| `db` (legacy) | Currently `postgres`, which has BYPASSRLS (`docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md:265-272`) | `DATABASE_URL` | Still imported by many API route files at investigation time, including the Plaid webhook, jobs and `access-request`. The RLS conversion is reducing this. |
+| `db` (legacy) | Currently `postgres`, which has BYPASSRLS (`docs/architecture/SECURITY_MODEL.md` §Database roles) | `DATABASE_URL` | Still imported by many API route files at investigation time, including the Plaid webhook, jobs and `access-request`. The RLS conversion is reducing this. |
 | `tenantDb` | `fm_app` | `DATABASE_URL_APP` | Requests subject to RLS, through `withTenantDb` |
 | `authDb` | `fm_auth` | `DATABASE_URL_AUTH` | The pre-identity step: credential and revocation checks only (`lib/auth.ts:25-30`) |
 | `systemDb` | `fm_system` | `DATABASE_URL_SYSTEM` | Cron, webhooks, operator consoles |
@@ -125,7 +125,7 @@ Inbound: Vercel Cron ──> /api/jobs/*   Plaid ──> /api/plaid/webhook   Pl
   - `fm_ai_state`: HttpOnly, Lax, `Path=/api/ai/chat`, AES-GCM (`app/api/ai/chat/route.ts:223-229`)
   - `fintracker_space` (`ACTIVE_SPACE_COOKIE`, `lib/space.ts:31`; the investigation called it `fm_active_space`, which is wrong): not HttpOnly, readable by page scripts (`app/api/space/switch/route.ts:106-112`)
   - `fm_ai_transcript`: hint cookie written by page scripts (`components/ai/transcript-cache.ts:59,276`)
-- **CSRF on the app's own API:** relies only on SameSite=Lax. There are no Origin or Host checks and no CORS anywhere (grep found none). 65 route handlers call `req.json()` without checking the content type. `docs/operations/security-checklist.md:240-241` already lists "add Origin check" as needed work.
+- **CSRF on the app's own API:** relies only on SameSite=Lax. There are no Origin or Host checks and no CORS anywhere (grep found none). 65 route handlers call `req.json()` without checking the content type. The Origin boundary has since shipped (`docs/architecture/SECURITY_MODEL.md` §Security checklist, API).
 - **Revoked sessions lose the deep link.** A revoked-but-signed JWT passes `proxy.ts`. The page then calls `redirect("/login")` with no `callbackUrl`, e.g. `app/(shell)/dashboard/spaces/page.tsx:43` and `lib/settings/loaders.ts:62`.
 - **The auth flow is same-origin throughout.** It cannot span `fourthmeridian.com` and `app.fourthmeridian.com` without explicit changes, and per §8 it should not.
 

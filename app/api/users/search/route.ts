@@ -12,7 +12,7 @@
  * ANY Space: the roster is never returned, but it is a DIFFERENTIAL oracle —
  * run the same query with and without `&exclude=<victimSpaceId>` and a hit that
  * disappears proves that user is an ACTIVE member of that Space. See
- * docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 1.
+ * docs/architecture/SECURITY_MODEL.md §Policy model (SpaceMember).
  *
  * The roster read is now gated on `member:invite` (ADMIN+, ACTIVE) in the
  * named Space — the authority this endpoint actually serves, since its ONLY

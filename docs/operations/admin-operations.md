@@ -61,5 +61,5 @@ enforced). It is **not a customer Space.**
 ## Related runbooks
 
 - [key-rotation](./key-rotation.md) · [incident-response](./incident-response.md) ·
-  [security-checklist](./security-checklist.md) · [background-jobs](./background-jobs.md)
+  [security checklist](../architecture/SECURITY_MODEL.md#security-checklist-release-gate) · [background-jobs](./background-jobs.md)
 - Provider/connection operations: [systems/platform-operations](../systems/platform-operations.md)
