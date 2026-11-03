@@ -462,7 +462,7 @@ while they matter; a closed item states where it is enforced.
 - Reset tokens: 32 random bytes, stored hashed, 1 h TTL, single-use; link built from the trusted app URL, never the request Host; non-enumerating request (`lib/password-reset-token.ts`) — IMPLEMENTED.
 - Email verification consumed by POST only; login blocked until verified — IMPLEMENTED.
 - Login rate limit **inside `authorize()`**, per identifier, fail-closed when the limiter store is unavailable; CAPTCHA step-up after repeated failures (`lib/auth.ts`, `lib/login-limits.ts`) — IMPLEMENTED.
-- TOTP secrets encrypted with a per-purpose key; disabling 2FA claims the TOTP step so a captured code cannot be replayed (`app/api/user/totp/disable/route.ts`) — IMPLEMENTED. **Login-path one-time use** (reject a code already used in its step; `lib/auth.ts` still calls `verifyTOTP` with a ±1 window) — DECIDED BUT NOT IMPLEMENTED.
+- TOTP secrets encrypted with a per-purpose key; disabling 2FA claims the TOTP step so a captured code cannot be replayed (`app/api/user/totp/disable/route.ts`) — IMPLEMENTED. **Login-path one-time use** (SEC-012): login claims the matched step (`user:totp-login-step:<id>` unique per 30 s window in `RateLimit`), so the same code cannot sign in twice (`lib/auth.ts`; pinned in `app/api/auth/[...nextauth]/route.test.ts`) — IMPLEMENTED.
 - Mandatory MFA for `SYSTEM_ADMIN` and operators — see §Mandatory MFA and SEC-PLAT-1 above.
 - Registration / invite / email-change existence disclosure — accepted for closed beta; hardening PROPOSED before public beta.
 
