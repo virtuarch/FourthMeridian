@@ -45,7 +45,9 @@
  *   (the envelope becomes UNAVAILABLE). No per-user row, no identifier, no
  *   label from a payload ever enters the envelope: every string in it comes
  *   from the registry or from this module. Per-row and per-subject readers are
- *   NOT_RETRIEVABLE with a stated reason (the table below).
+ *   NOT_RETRIEVABLE with a stated reason (the table below), and a permission
+ *   entry whose route is per-subject (a `[param]` segment) is never served as a
+ *   fleet value (isFleetEntry): that surface reads null.
  *
  * HONEST ABSENCE (S2 condition 6; the Economics status vocabulary)
  *   MEASURED · ESTIMATED · PARTIAL (a floor / lower bound, reason + missing) ·
@@ -80,6 +82,7 @@ import type { AcquisitionResponse } from "@/lib/platform/growth/acquisition-type
 import type { ProductAnalyticsResponse } from "@/lib/platform/growth/product-analytics-types";
 import type { MerchantOverviewResponse } from "@/lib/platform/merchant/overview-types";
 import type { CsOverviewResponse } from "@/lib/platform/customer/overview-types";
+import type { LiveSessionCounts } from "@/lib/platform/security/live-sessions";
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -144,6 +147,8 @@ export interface RetrievalReaders {
   incidentSearch(token: CsToken | OpsToken, query: IncidentSearchQuery, opts: { now: Date }): Promise<Pick<IncidentSearchResult, "total" | "truncated" | "scanned">>;
   merchantOverview(): Promise<MerchantOverviewResponse>;
   csOverview(token: CsToken): Promise<CsOverviewResponse>;
+  liveSessions(now: Date): Promise<LiveSessionCounts>;
+  accountsWithLiveSession(now: Date): Promise<number>;
 }
 export type ReaderKey = keyof RetrievalReaders;
 
@@ -156,6 +161,8 @@ export const READER_SYMBOL: Readonly<Record<ReaderKey, string>> = {
   incidentSearch: "incidentAccessors.search",
   merchantOverview: "getMerchantOverview",
   csOverview: "getCsOverview",
+  liveSessions: "countLiveSessions",
+  accountsWithLiveSession: "countAccountsWithLiveSession",
 };
 
 // ── The per-metric table ─────────────────────────────────────────────────────
@@ -341,12 +348,22 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
     },
   },
   "live-sessions@1": {
-    kind: "NOT_RETRIEVABLE",
-    reason: "No reader function exists to share: the count is an inline query in the Security Ops sessions route handler (and the CS customer detail is per-subject). Retrieving it would mean a parallel query; it becomes retrievable when the route's count moves into a shared reader.",
+    // The Security Ops FLEET count, identity-free. Its CUSTOMER_SUCCESS entry is the
+    // per-customer detail route (customers/[userId]) — a per-customer figure, never
+    // served as a fleet value (isFleetEntry; pinned in retrieve.test.ts).
+    kind: "RETRIEVABLE", reader: "liveSessions", unit: "counts", windows: [],
+    async read({ readers, now }) {
+      // The tile: d.totalActive / d.distinctUsers, which the route sets from this reader.
+      const c = await readers.liveSessions(now);
+      return { value: { sessions: c.sessions, distinctUsers: c.distinctUsers }, asOf: now.toISOString() };
+    },
   },
   "accounts-with-live-session@1": {
-    kind: "NOT_RETRIEVABLE",
-    reason: "No reader function exists to share: the groupBy is an inline query in the Growth users route handler. Retrieving it would mean a parallel query; it becomes retrievable when the route's figures move into a shared reader.",
+    kind: "RETRIEVABLE", reader: "accountsWithLiveSession", unit: "count", windows: [],
+    async read({ readers, now }) {
+      // The tile: data.withLiveSession, which the Growth users route sets from this reader.
+      return { value: await readers.accountsWithLiveSession(now), asOf: now.toISOString() };
+    },
   },
 };
 
@@ -357,6 +374,14 @@ const minTier = (...t: IdentityTier[]): IdentityTier => t.reduce((a, b) => (TIER
 
 /** The most identity a surface can ever show: only the Customer Success surface shows customers. */
 export const SURFACE_TIER = (surface: MetricSurface): IdentityTier => (surface === "CUSTOMER_SUCCESS" ? "CUSTOMER_SUCCESS" : "OPS");
+
+/**
+ * True when a permission entry's route serves a FLEET figure: its path has no
+ * dynamic segment. A `/[userId]/`-style route is a per-subject figure (e.g. the
+ * CS customer detail's live sessions), and retrieval never serves it as a fleet
+ * value on that surface — the surface reads null, like a metric not served there.
+ */
+export const isFleetEntry = (p: Pick<MetricPermission, "route">): boolean => !/\[[^\]]+\]/.test(p.route);
 
 export interface SurfaceScope {
   definition: MetricDefinition;
@@ -495,6 +520,8 @@ export async function retrieveWith(
 
   if (!entry) return unavailable("not retrievable: this metric version has no retrieval contract");
   if (entry.kind === "NOT_RETRIEVABLE") return unavailable(`not retrievable: ${entry.reason}`);
+  // A per-subject permission entry (a /[param]/ records route) is never served as a fleet value.
+  if (!isFleetEntry(scope.entry)) return null;
 
   let incident: CsToken | OpsToken | null = null;
   if (entry.incidentScoped) {
