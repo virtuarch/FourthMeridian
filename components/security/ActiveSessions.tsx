@@ -12,14 +12,14 @@
  * unchanged /api/user/sessions* routes; revoke-one and revoke-all behavior is
  * preserved exactly. The current session is clearly labelled and is never
  * offered an "End session" action — the only self sign-out path remains the
- * global one elsewhere. The shared admin <SessionsList> is intentionally left
- * untouched.
+ * global one elsewhere. The shared admin <SessionsList> is not used here; only
+ * its ExpiredSessionsGroup is, with the CUSTOMER label set (SEC-010).
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Smartphone, Tablet, Monitor, Globe, LogOut, Search, ListChecks } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
-import { type SessionRow } from "@/components/security/SessionsList";
+import { ExpiredSessionsGroup, SESSION_LIST_LABELS, type SessionRow } from "@/components/security/SessionsList";
 import { sessionDisplayState } from "@/lib/auth/session-proof";
 import { FormModal } from "@/components/atlas/FormModal";
 
@@ -180,6 +180,8 @@ export function ActiveSessions() {
   // as one of this user's signed-in devices ("Sign out other sessions" still
   // revokes it — revokeOtherUserSessions writes every unrevoked row).
   const active  = useMemo(() => { const now = new Date(); return sessions.filter((s) => sessionDisplayState(s, now) === "LIVE"); }, [sessions]);
+  // Expired, not revoked — shown apart (customer copy), removable one by one.
+  const expired = useMemo(() => { const now = new Date(); return sessions.filter((s) => sessionDisplayState(s, now) === "EXPIRED_NOT_REVOKED").sort(byRecent); }, [sessions]);
   const current = useMemo(() => active.find((s) => s.isCurrent) ?? null, [active]);
   const others  = useMemo(() => active.filter((s) => !s.isCurrent).sort(byRecent), [active]);
 
@@ -228,6 +230,10 @@ export function ActiveSessions() {
       {others.length === 0 && (
         <p className="text-xs text-gray-600 mt-3">Only this device is signed in.</p>
       )}
+
+      <div className="mt-3">
+        <ExpiredSessionsGroup sessions={expired} labels={SESSION_LIST_LABELS.customer} onRemove={(s) => handleEnd(s.id)} removingId={revokingId} />
+      </div>
 
       {hiddenCount > 0 && (
         <button

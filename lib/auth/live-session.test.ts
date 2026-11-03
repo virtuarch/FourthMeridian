@@ -22,9 +22,16 @@
  *      `revokedAt: null`; no session list filters rows on `!x.revokedAt` alone.
  *      The revoke WRITES (updateMany) are named exceptions with reasons.
  *   4. The nine display sites use the shared definition.
+ *   5. SURFACE COPY — the expired group renders the admin labels ("expired, not
+ *      revoked" / "Revoke") on the admin views and the customer labels
+ *      ("Expired — these sessions can no longer access your account" /
+ *      "Remove") in the customer Security Center; each surface passes its set.
  */
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync, readdirSync, statSync } from "node:fs";
+import { ExpiredSessionsGroup, SESSION_LIST_LABELS, SessionsList, type SessionRow } from "@/components/security/SessionsList";
 import { join, relative } from "node:path";
 import {
   factsFromRow, isSessionLive, judgeSessionLifetime, liveSessionWhere, sessionDisplayState,
@@ -130,6 +137,9 @@ async function main() {
   console.log("\n4. census pin");
   pin();
 
+  console.log("\n5. expired-group copy by surface");
+  surfaceCopy();
+
   console.log(`\n${passes} passed, ${failures} failed.`);
   process.exit(failures > 0 ? 1 : 0);
 }
@@ -234,6 +244,47 @@ function pin() {
   for (const f of ["components/security/SessionsList.tsx", "components/security/ActiveSessions.tsx"]) {
     check(`${f} uses sessionDisplayState`, /sessionDisplayState\s*\(/.test(readFileSync(join(ROOT, f), "utf8")));
   }
+}
+
+function surfaceCopy() {
+  const parsed = { browser: "Chrome", os: "macOS", device: "Desktop" } as SessionRow["parsed"];
+  const base = { userId: "user_a", ipAddress: null, userAgent: null, revokedAt: null, parsed };
+  const nowIso = new Date().toISOString();
+  const liveRow: SessionRow = { ...base, id: "s_live", createdAt: nowIso, lastActiveAt: nowIso };
+  const expiredRow: SessionRow = { ...base, id: "s_exp",
+    createdAt: new Date(Date.now() - SESSION_ABSOLUTE_LIFETIME_MS - 86_400_000).toISOString(), lastActiveAt: nowIso };
+  const noop = async () => {};
+  const CUSTOMER_HEADING = "Expired — these sessions can no longer access your account";
+
+  // Admin per-user view + admin's own view: SessionsList with the admin set.
+  const admin = renderToStaticMarkup(createElement(SessionsList, {
+    sessions: [liveRow, expiredRow], onRevoke: noop, onRevokeAll: noop, expiredLabels: SESSION_LIST_LABELS.admin,
+  }));
+  const adminGroup = admin.slice(admin.indexOf("data-sessions-expired"));
+  check("admin: expired group heading is \"1 expired, not revoked\"", adminGroup.includes("1 expired, not revoked"));
+  check("admin: expired row action is \"Revoke\"", />Revoke<\/button>/.test(adminGroup));
+  check("admin: no customer copy", !admin.includes(CUSTOMER_HEADING) && !/>Remove</.test(admin));
+  const adminDefault = renderToStaticMarkup(createElement(SessionsList, { sessions: [expiredRow], onRevoke: noop, onRevokeAll: noop }));
+  check("SessionsList defaults to the admin set", adminDefault.includes("1 expired, not revoked"));
+
+  // Customer Security Center: the shared group with the customer set.
+  const customer = renderToStaticMarkup(createElement(ExpiredSessionsGroup, {
+    sessions: [expiredRow], labels: SESSION_LIST_LABELS.customer, onRemove: noop, removingId: null,
+  }));
+  check("customer: heading is the customer copy", customer.includes(CUSTOMER_HEADING));
+  check("customer: action is \"Remove\"", />Remove<\/button>/.test(customer));
+  check("customer: no operator copy", !/Revoke/.test(customer) && !/not revoked/.test(customer));
+  check("empty expired group renders nothing", renderToStaticMarkup(createElement(ExpiredSessionsGroup, {
+    sessions: [], labels: SESSION_LIST_LABELS.customer, onRemove: noop, removingId: null })) === "");
+
+  // Each surface passes its own set.
+  const console_ = readFileSync(join(ROOT, "components/admin/AdminSecurityConsole.tsx"), "utf8");
+  check("AdminSecurityConsole: both SessionsList mounts pass SESSION_LIST_LABELS.admin",
+    (console_.match(/<SessionsList\b/g) ?? []).length === 2 &&
+    (console_.match(/expiredLabels=\{SESSION_LIST_LABELS\.admin\}/g) ?? []).length === 2);
+  const active = readFileSync(join(ROOT, "components/security/ActiveSessions.tsx"), "utf8");
+  check("ActiveSessions (customer Security Center) passes SESSION_LIST_LABELS.customer",
+    /<ExpiredSessionsGroup[^>]*labels=\{SESSION_LIST_LABELS\.customer\}/.test(active) && !/SESSION_LIST_LABELS\.admin/.test(active));
 }
 
 main().catch((e) => { console.error("  ✗ threw —", e); process.exit(1); });

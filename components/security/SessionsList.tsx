@@ -53,18 +53,82 @@ function DeviceIcon({ device }: { device: string }) {
   return <Monitor size={13} className="text-gray-400" />;
 }
 
+/**
+ * SEC-010 — copy for the "expired, not revoked" group, by SURFACE. Operators
+ * see the precise state; customers see what it means for them. One component,
+ * the label set passed in (lib/auth/live-session.test.ts pins each surface).
+ */
+export interface ExpiredSessionLabels {
+  heading: (n: number) => string;
+  row:     string;
+  action:  string;
+}
+export const SESSION_LIST_LABELS = {
+  admin: {
+    heading: (n: number) => `${n} expired, not revoked`,
+    row:     "Expired, not revoked",
+    action:  "Revoke",
+  },
+  customer: {
+    heading: () => "Expired — these sessions can no longer access your account",
+    row:     "Expired",
+    action:  "Remove",
+  },
+} as const satisfies Record<"admin" | "customer", ExpiredSessionLabels>;
+
+/** The expired-but-unrevoked group (SEC-010): shown apart from live sessions, still removable. */
+export function ExpiredSessionsGroup({
+  sessions, labels, onRemove, removingId,
+}: {
+  sessions:   SessionRow[];
+  labels:     ExpiredSessionLabels;
+  onRemove:   (s: SessionRow) => void | Promise<void>;
+  removingId: string | null;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="space-y-1.5" data-sessions-expired>
+      <p className="text-xs text-[var(--text-muted)] pt-2 border-t border-[var(--border-hairline)]">
+        {labels.heading(sessions.length)}
+      </p>
+      {sessions.map((s) => (
+        <div key={s.id} className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)]">
+          <div className="flex items-center gap-2.5 min-w-0 opacity-70">
+            <DeviceIcon device={s.parsed.device} />
+            <div className="min-w-0">
+              <p className="text-xs text-[var(--text-muted)]">{s.parsed.browser} on {s.parsed.os}</p>
+              <p className="text-xs text-[var(--text-faint)]" suppressHydrationWarning>{labels.row} · last active {fmtRelative(s.lastActiveAt)}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onRemove(s)}
+            disabled={removingId === s.id}
+            className="shrink-0 text-xs px-2.5 py-1 rounded-lg border bg-[var(--surface-muted)] border-[var(--border-hairline-strong)] text-[var(--text-muted)] hover:text-[var(--danger-400,#f87171)] transition-colors disabled:opacity-40"
+          >
+            {removingId === s.id ? "…" : labels.action}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function SessionsList({
   sessions,
   onRevoke,
   onRevokeAll,
   revokeAllLabel = "Revoke all other sessions",
   showRevokeAll  = true,
+  expiredLabels  = SESSION_LIST_LABELS.admin,
 }: {
   sessions:       SessionRow[];
   onRevoke:       (id: string, isCurrent: boolean) => Promise<void>;
   onRevokeAll:    () => Promise<void>;
   revokeAllLabel?: string;
   showRevokeAll?:  boolean;
+  /** Copy for the expired-not-revoked group, by surface (SESSION_LIST_LABELS). */
+  expiredLabels?:  ExpiredSessionLabels;
 }) {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [confirmSelfId, setConfirmSelfId] = useState<string | null>(null);
@@ -168,31 +232,7 @@ export function SessionsList({
       )}
 
       {/* Expired, not revoked — past the SEC-010 lifetime; cannot authenticate. */}
-      {expired.length > 0 && (
-        <div className="space-y-1.5" data-sessions-expired>
-          <p className="text-xs text-[var(--text-muted)] pt-2 border-t border-[var(--border-hairline)]">
-            {expired.length} expired, not revoked
-          </p>
-          {expired.map((s) => (
-            <div key={s.id} className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)]">
-              <div className="flex items-center gap-2.5 min-w-0 opacity-70">
-                <DeviceIcon device={s.parsed.device} />
-                <div className="min-w-0">
-                  <p className="text-xs text-[var(--text-muted)]">{s.parsed.browser} on {s.parsed.os}</p>
-                  <p className="text-xs text-[var(--text-faint)]" suppressHydrationWarning>Expired, not revoked · last active {fmtRelative(s.lastActiveAt)}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => handleRevoke(s)}
-                disabled={revoking === s.id}
-                className="shrink-0 text-xs px-2.5 py-1 rounded-lg border bg-[var(--surface-muted)] border-[var(--border-hairline-strong)] text-[var(--text-muted)] hover:text-[var(--danger-400,#f87171)] transition-colors disabled:opacity-40"
-              >
-                {revoking === s.id ? "…" : "Revoke"}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      <ExpiredSessionsGroup sessions={expired} labels={expiredLabels} onRemove={(s) => handleRevoke(s)} removingId={revoking} />
 
       {/* Recently revoked */}
       {revoked.length > 0 && (
