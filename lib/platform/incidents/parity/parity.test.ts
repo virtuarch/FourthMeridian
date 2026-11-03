@@ -71,7 +71,9 @@ check("Platform Ops attention carries no customer identity", run("ops-attention"
  * with reader "projection"-shaped output (open/state/severity/subjectUserId/groupKey).
  * ALLOWED lists the owner-approved corrections (PB-1 §13.2), keyed reader → D-id.
  */
-const PHASE2_MODULE: ((w: World) => Verdict[]) | null = null;
+// A cast, not an annotation: an annotated `= null` const narrows to `null`, and the
+// gate branch below then fails tsc (TS2349, "not callable").
+const PHASE2_MODULE = null as ((w: World) => Verdict[]) | null;
 export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> = {
   "cs-panel": ["D1", "D2", "D2b", "D4", "D10"],
   convergence: ["D2", "D2b", "D3", "D6", "D7", "D10"],
