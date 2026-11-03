@@ -198,8 +198,9 @@ export async function loadIncidentFacts(client: IncidentFactsReader, o: LoadOpti
     loadAttemptEvidence(rows, client, o.now),
   ]);
   // Full owner facts for D4 (loadSubjectFacts keeps the owner keyed by subject).
-  const items = new Map<string, { status: string; userId: string }>();
-  for (const [id, status] of subjects.itemStatus) items.set(id, { status, userId: subjects.owners.get(`item:${id}`) ?? "" });
+  // Unattributed is null, never "" — an empty string is a value a caller could match on.
+  const items = new Map<string, { status: string; userId: string | null }>();
+  for (const [id, status] of subjects.itemStatus) items.set(id, { status, userId: subjects.owners.get(`item:${id}`) || null });
   const accounts = new Map<string, { deletedAt: Date | null; ownerUserId: string | null; createdByUserId: string | null }>();
   // The owner map already folds ownerUserId ?? createdByUserId (the D4 order).
   for (const [id, deletedAt] of subjects.accountDeletedAt) accounts.set(id, { deletedAt, ownerUserId: subjects.owners.get(`account:${id}`) ?? null, createdByUserId: null });
@@ -251,6 +252,8 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
     },
     async forCustomer(token: CsToken, userId: string, opts?: ListOptions) {
       const audience = assertAudienceToken(token, ["CUSTOMER_SUCCESS"] as const);
+      // No user ⇒ no incidents: unattributed rows are never anybody's.
+      if (!userId) return { items: [], truncated: false, scanned: 0 };
       // Candidate rows: stamped for the user, or on a subject the user owns (D4) —
       // the exact attribution is then the core's, and the list is filtered on it.
       const [items, accounts] = await Promise.all([

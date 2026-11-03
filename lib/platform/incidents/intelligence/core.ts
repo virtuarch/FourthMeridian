@@ -120,11 +120,12 @@ export function attributionOf(
   r: Pick<IncidentRowFacts, "subjectUserId" | "plaidItemId" | "financialAccountId">,
   s: IncidentFacts["subjects"],
 ): string | null {
+  // Unattributed is null everywhere: an empty id is treated as absent, never emitted.
   if (r.subjectUserId) return r.subjectUserId;
   const item = r.plaidItemId ? s.items.get(r.plaidItemId) : undefined;
-  if (item) return item.userId;
+  if (item?.userId) return item.userId;
   const acct = r.financialAccountId ? s.accounts.get(r.financialAccountId) : undefined;
-  return acct ? acct.ownerUserId ?? acct.createdByUserId ?? null : null;
+  return acct ? acct.ownerUserId || acct.createdByUserId || null : null;
 }
 
 function closureOfKind(kind: string | null): Closure {

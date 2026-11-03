@@ -108,8 +108,8 @@ export interface ArchivedIncidentFacts {
 
 /** Subject facts (the D2 / D4 inputs), keyed by id. */
 export interface SubjectFactsInput {
-  /** PlaidItem id → { status, userId }. Absent ⇒ the row is missing. */
-  items: ReadonlyMap<string, { status: string; userId: string }>;
+  /** PlaidItem id → { status, userId }. Absent ⇒ the row is missing. `userId: null` ⇒ no known owner (unattributed). */
+  items: ReadonlyMap<string, { status: string; userId: string | null }>;
   /** FinancialAccount id → { deletedAt, ownerUserId, createdByUserId }. Absent ⇒ missing. */
   accounts: ReadonlyMap<string, { deletedAt: Date | null; ownerUserId: string | null; createdByUserId: string | null }>;
   /** Episode id → account ids named on its occurrences (§12 P2.2). Optional per episode. */
