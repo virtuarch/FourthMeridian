@@ -358,8 +358,14 @@ function WorkspaceDoorway({ targetId, onOpen }: { targetId: string; onOpen: (id:
  * Atlas SegmentedControl (the same primitive as the rail), at the top of the
  * workspace body at every width. Below lg it scrolls horizontally (the
  * primitive's own overflow) and every segment is a ≥44px touch target; at lg+
- * it is the compact control. Exported for the render test.
+ * it is the compact control. Below sm the segments tighten their horizontal
+ * padding (px-4 → px-2.5) so a four-view strip such as Economics (Overview ·
+ * AI & Costs · Providers · Entitlements) fits a 375px viewport without a hidden
+ * last tab; longer strips still scroll, with the active tab scrolled into view.
+ * Exported for the render test (platform-view-switcher.test.ts).
  */
+export const PLATFORM_VIEW_SWITCHER_CLASS = "max-lg:[&>button]:min-h-11 max-sm:[&>button]:px-2.5";
+
 export function PlatformViewSwitcher({ views, activeView, onSelect, workspaceLabel }: {
   views: readonly PlatformWorkspaceView[];
   activeView: string;
@@ -374,7 +380,7 @@ export function PlatformViewSwitcher({ views, activeView, onSelect, workspaceLab
         value={activeView}
         onChange={onSelect}
         touchOptimized
-        className="max-lg:[&>button]:min-h-11"
+        className={PLATFORM_VIEW_SWITCHER_CLASS}
       />
     </div>
   );
