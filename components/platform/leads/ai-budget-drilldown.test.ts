@@ -94,6 +94,9 @@ console.log("1. the KPI and the card open the per-call records; the state lives 
   check("the API path carries the window end and the page", aiBudgetCallsApiPath(back) === `/api/platform/platform-ops/ai-budget/calls?until=${NOW_MS}&page=3`);
   const stale = readAiBudgetCallsUrl(`?aicalls=budget&aiuntil=${NOW_MS - 30 * 24 * H}&aipage=x`, NOW_MS);
   check("a refused aiuntil / aipage is dropped (opens the current window, page 1), never an error", stale.open && stale.untilMs === null && stale.page === 1);
+  check("deep link lookback is 48 h: a 47 h-old window end is kept, a 49 h-old one is dropped",
+    readAiBudgetCallsUrl(`?aicalls=budget&aiuntil=${NOW_MS - 47 * H}`, NOW_MS).untilMs === NOW_MS - 47 * H
+      && readAiBudgetCallsUrl(`?aicalls=budget&aiuntil=${NOW_MS - 49 * H}`, NOW_MS).untilMs === null);
   check("an unknown aicalls value is closed", !readAiBudgetCallsUrl("?aicalls=everything", NOW_MS).open);
 }
 

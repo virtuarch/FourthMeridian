@@ -109,7 +109,7 @@ export interface ControlValueView<V extends boolean | number> {
 }
 
 export interface AllowanceOverrideView {
-  /** Opaque customer reference ("user …abc123"); never an email, name or full id on this surface. */
+  /** Opaque customer reference ("user #3fa9c21b"); never an email, name or full id on this surface. */
   ref: string;
   usd: number;
   updatedAt: string;

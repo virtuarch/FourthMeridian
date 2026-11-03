@@ -26,7 +26,8 @@ import { buildFleetWindow, BUDGET_WINDOW_HOURS } from "@/lib/platform/ai/ai-budg
 import { loadResolvedControls, type CostControlsReadClient } from "@/lib/platform/ai/cost-controls";
 import { ESTIMATE_NOT_BILLING } from "@/lib/platform/ai/cost-controls.types";
 import { fleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
-import { opaqueUserRef, readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
+import { readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import {
   BUDGET_CALL_SURFACES, BUDGET_CALLS_PAGE_SIZE, projectCall,
   type BudgetCallSource, type BudgetCallsQuery, type BudgetCallsResponse,

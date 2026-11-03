@@ -19,7 +19,12 @@ import { loadBudgetCalls } from "./budget-calls";
 import { BUDGET_CALLS_PAGE_SIZE, parseBudgetCallsQuery, priceCall, projectCall, type BudgetCallSource } from "./budget-calls-core";
 import { fleetSpendStatus } from "./fleet-spend-status";
 import { CUSTOMER_SURFACES } from "./spend-by-surface-core";
-import { opaqueUserRef, type UserSpendGroup } from "./spend-health";
+import type { UserSpendGroup } from "./spend-health";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { BUDGET_CALLS_MAX_LOOKBACK_MS } from "./budget-calls-core";
+
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
 import type { CostControlsReadClient } from "./cost-controls";
 import { CODE_CATALOGUE } from "@/lib/entitlements/policy-groups";
 
@@ -112,10 +117,15 @@ async function main() {
     check("no until ⇒ now; no page ⇒ 1", (() => { const q = parseBudgetCallsQuery(new URLSearchParams(), now); return q.untilMs === now && q.page === 1; })());
     check("until as epoch ms and as ISO", parseBudgetCallsQuery(new URLSearchParams({ until: String(now - H) }), now).untilMs === now - H
       && parseBudgetCallsQuery(new URLSearchParams({ until: new Date(now - H).toISOString() }), now).untilMs === now - H);
-    check("future / > 7 d old / garbage until ⇒ now (a stale link opens the current window)",
+    check("future / > 48 h old / garbage until ⇒ now (a stale link opens the current window)",
       parseBudgetCallsQuery(new URLSearchParams({ until: String(now + 10 * 60 * 1000) }), now).untilMs === now
-        && parseBudgetCallsQuery(new URLSearchParams({ until: String(now - 8 * 24 * H) }), now).untilMs === now
+        && parseBudgetCallsQuery(new URLSearchParams({ until: String(now - 49 * H) }), now).untilMs === now
+        && parseBudgetCallsQuery(new URLSearchParams({ until: String(now - 3 * 24 * H) }), now).untilMs === now
         && parseBudgetCallsQuery(new URLSearchParams({ until: "yesterday" }), now).untilMs === now);
+    check("lookback is 48 h: 47 h back is kept, exactly 48 h is kept, 48 h + 1 ms is now", BUDGET_CALLS_MAX_LOOKBACK_MS === 48 * H
+      && parseBudgetCallsQuery(new URLSearchParams({ until: String(now - 47 * H) }), now).untilMs === now - 47 * H
+      && parseBudgetCallsQuery(new URLSearchParams({ until: String(now - 48 * H) }), now).untilMs === now - 48 * H
+      && parseBudgetCallsQuery(new URLSearchParams({ until: String(now - 48 * H - 1) }), now).untilMs === now);
     check("bad pages ⇒ 1", ["0", "-2", "1.5", "x", "100000"].every((p) => parseBudgetCallsQuery(new URLSearchParams({ page: p }), now).page === 1));
     const priced = priceCall(call({ at: now }));
     check("a rate-card model is PRICED with a positive estimate", priced.pricing === "PRICED" && (priced.costUsd ?? 0) > 0);
@@ -126,7 +136,7 @@ async function main() {
     const failed = priceCall(call({ at: now, outcome: "QUOTA", promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0 }));
     check("a failure fact is NOT_COUNTED (the fold prices RETURNED only), no dollar figure", failed.pricing === "NOT_COUNTED" && failed.costUsd === null);
     const row = projectCall(call({ at: now, userId: "usr_secret_full_id_999999", outcome: "FAILED", errorCode: "500" }), opaqueUserRef);
-    check("projection: opaque ref only (never the full id), error code kept on a failure", row.customerRef === "user …999999" && !JSON.stringify(row).includes("usr_secret") && row.errorCode === "500");
+    check("projection: opaque ref only (never the full id), error code kept on a failure", row.customerRef === opaqueUserRef("usr_secret_full_id_999999") && /^user #[0-9a-f]{8}$/.test(row.customerRef ?? "") && !JSON.stringify(row).includes("999999") && !JSON.stringify(row).includes("usr_secret") && row.errorCode === "500");
     check("projection: no user ⇒ null ref", projectCall(call({ at: now, userId: null }), opaqueUserRef).customerRef === null);
   }
 

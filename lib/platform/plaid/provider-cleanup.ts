@@ -52,6 +52,7 @@
  */
 
 import { systemDb } from "@/lib/db";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { readScrubbedItemIds } from "@/lib/plaid/token-scrub-state";
 
 /**
@@ -221,7 +222,7 @@ export function foldCleanupStatus(rows: MarkerRow[], items: OwnerItem[], now: Da
     return {
       plaidItemId:     id,
       institution:     row?.institutionName ?? null,
-      ownerRef:        row ? row.userId.slice(-6) : "(gone)",
+      ownerRef:        row ? opaqueUserRef(row.userId) : "(gone)",
       productStatus:   row?.status ?? null,
       itemGone:        row === undefined,
       owedSinceISO:    owedSince.createdAt.toISOString(),

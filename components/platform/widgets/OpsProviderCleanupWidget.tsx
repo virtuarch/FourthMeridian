@@ -132,7 +132,7 @@ export function OpsProviderCleanupWidget({ section, access }: { section: Platfor
                 <div key={o.plaidItemId} className="flex flex-col gap-1 rounded-lg border border-[var(--border-hairline)] p-2.5">
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="text-[var(--text-primary)]">{o.institution ?? "(unknown institution)"}</span>
-                    <span className="text-[11px] tabular-nums text-[var(--text-muted)]">owner …{o.ownerRef}</span>
+                    <span className="text-[11px] tabular-nums text-[var(--text-muted)]">owner {o.ownerRef}</span>
                   </div>
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-[var(--text-muted)]">
                     {/* The distinction, in the UI, in words. */}

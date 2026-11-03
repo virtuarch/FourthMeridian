@@ -19,6 +19,7 @@ import { env } from "@/lib/env";
 import { resolvableGroupKeys, type PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { POLICY_ASSIGNMENT_ISSUE_CAP, buildPolicyAssignmentHealth, type PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
+import { opaqueDedupeToken, opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 
 /** The narrow read surface (systemDb satisfies it; tests hand a fake). Counts and finds only. */
 export interface PolicyAssignmentReadClient {
@@ -76,5 +77,7 @@ export async function loadPolicyAssignmentHealth(opts: {
     unassignedRows: unassignedRows.map((r) => ({ userId: r.id, createdAt: r.createdAt })),
     unknownRows,
     enforced: opts.enforced ?? env.isPolicyAssignmentFailClosed,
+    refOf: opaqueUserRef,
+    dedupeOf: opaqueDedupeToken,
   }, opts.now ?? new Date(), cap);
 }

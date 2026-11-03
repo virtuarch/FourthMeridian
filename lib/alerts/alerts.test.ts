@@ -35,6 +35,10 @@ import type { ResourceFreshnessResult, ResourceFreshnessReport, FreshnessHealthS
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+
+
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
   if (cond) console.log(`  ✓ ${name}`);
@@ -71,7 +75,7 @@ function aiHealth(o: Partial<AiFailureHealth>): AiFailureHealth {
   return { windowHours: 24, returned: 0, failed: 0, timeouts: 0, rateLimited: 0, quota: 0, lastFailureAt: null, lastQuotaAt: null, checkedAt: NOW.toISOString(), ...o };
 }
 function aiSpend(o: Partial<AiSpendHealth>): AiSpendHealth {
-  return { windowHours: 24, fleetUsd: null, maxUserUsd: null, maxUserRef: null, customers: 0, customersAtOrOverThreshold: 0, customerInvocations: 0, unpricedInvocations: 0, unpricedModels: [], thresholds: { fleetUsd: 10, userUsd: 3 }, checkedAt: NOW.toISOString(), ...o };
+  return { windowHours: 24, fleetUsd: null, maxUserUsd: null, maxUserRef: null, maxUserDedupe: null, customers: 0, customersAtOrOverThreshold: 0, customerInvocations: 0, unpricedInvocations: 0, unpricedModels: [], thresholds: { fleetUsd: 10, userUsd: 3 }, checkedAt: NOW.toISOString(), ...o };
 }
 function resource(id: string, state: FreshnessHealthState, trustLevel: "high" | "medium" | "low" | "unknown" = "low"): ResourceFreshnessReport {
   return {
@@ -250,10 +254,10 @@ console.log("engine · ai-spend");
 {
   const sig = (o: Partial<AiSpendHealth>) =>
     evaluateAlertRules(outputs({ aiSpend: aiSpend(o) }), ALL_ON).filter((s) => s.kind === "ai-spend-fleet" || s.kind === "ai-spend-user");
-  check("quiet fleet, every invocation priced ⇒ no signal", sig({ fleetUsd: 2.5, maxUserUsd: 1.2, maxUserRef: "user …abc123", customers: 3, customerInvocations: 40 }).length === 0);
+  check("quiet fleet, every invocation priced ⇒ no signal", sig({ fleetUsd: 2.5, maxUserUsd: 1.2, maxUserRef: "user #3fa9c21b", customers: 3, customerInvocations: 40 }).length === 0);
   check("nothing priced and nothing unpriced (empty window) ⇒ no signal", sig({}).length === 0);
 
-  const fleet = sig({ fleetUsd: 10, maxUserUsd: 2, maxUserRef: "user …abc123", customers: 5, customerInvocations: 120 });
+  const fleet = sig({ fleetUsd: 10, maxUserUsd: 2, maxUserRef: "user #3fa9c21b", customers: 5, customerInvocations: 120 });
   check("fleet at the threshold ⇒ ONE warning on the per-day fleet key", fleet.length === 1 && fleet[0].severity === "warning" && fleet[0].dedupeKey === "ai-spend-fleet-high:fleet:2026-07-16");
   check("fleet summary names the estimated USD and the threshold", /\$10\.00/.test(fleet[0].summary) && /threshold of \$10/.test(fleet[0].summary) && /estimate, not a bill/.test(fleet[0].summary));
   check("fleet summary carries no unpriced line when everything was priced", !/unpriced/.test(fleet[0].summary));
@@ -261,21 +265,21 @@ console.log("engine · ai-spend");
   check("fleet just under twice ⇒ still a warning", sig({ fleetUsd: 19.99 })[0]?.severity === "warning");
   check("fleet just under the threshold ⇒ no signal", sig({ fleetUsd: 9.99 }).length === 0);
 
-  const user = sig({ fleetUsd: 4, maxUserUsd: 3, maxUserRef: "user …abc123", customers: 2, customerInvocations: 30 });
-  check("one customer at the per-user threshold ⇒ warning on a per-day, per-opaque-ref key", user.length === 1 && user[0].severity === "warning" && user[0].dedupeKey === "ai-spend-user-high:user:2026-07-16:abc123");
-  check("user summary names the opaque ref, the USD and the threshold — no email, no full id", /user …abc123/.test(user[0].summary) && /\$3\.00/.test(user[0].summary) && /threshold of \$3/.test(user[0].summary) && !/@/.test(user[0].summary));
-  check("one customer at twice the per-user threshold ⇒ critical", sig({ maxUserUsd: 6, maxUserRef: "user …abc123" })[0]?.severity === "critical");
+  const user = sig({ fleetUsd: 4, maxUserUsd: 3, maxUserRef: "user #3fa9c21b", customers: 2, customerInvocations: 30 });
+  check("one customer at the per-user threshold ⇒ warning on a per-day, per-opaque-ref key", user.length === 1 && user[0].severity === "warning" && user[0].dedupeKey === "ai-spend-user-high:user:2026-07-16:3fa9c21b");
+  check("user summary names the opaque ref, the USD and the threshold — no email, no full id", /user #3fa9c21b/.test(user[0].summary) && /\$3\.00/.test(user[0].summary) && /threshold of \$3/.test(user[0].summary) && !/@/.test(user[0].summary));
+  check("one customer at twice the per-user threshold ⇒ critical", sig({ maxUserUsd: 6, maxUserRef: "user #3fa9c21b" })[0]?.severity === "critical");
   check("a lone breacher's summary does not claim company", !/customers are at or above/.test(user[0].summary));
-  const crowd = sig({ fleetUsd: 4, maxUserUsd: 3.5, maxUserRef: "user …abc123", customers: 4, customersAtOrOverThreshold: 3, customerInvocations: 30 });
+  const crowd = sig({ fleetUsd: 4, maxUserUsd: 3.5, maxUserRef: "user #3fa9c21b", customers: 4, customersAtOrOverThreshold: 3, customerInvocations: 30 });
   check("several customers at or over the per-user threshold ⇒ ONE signal that names the largest and says how many are over",
-    crowd.length === 1 && /user …abc123/.test(crowd[0].summary) && /3 customers are at or above it/.test(crowd[0].summary));
-  check("per-user just under the threshold ⇒ no signal", sig({ maxUserUsd: 2.99, maxUserRef: "user …abc123" }).length === 0);
+    crowd.length === 1 && /user #3fa9c21b/.test(crowd[0].summary) && /3 customers are at or above it/.test(crowd[0].summary));
+  check("per-user just under the threshold ⇒ no signal", sig({ maxUserUsd: 2.99, maxUserRef: "user #3fa9c21b" }).length === 0);
 
   // ⚠️ FAIL CLOSED. An unpriced invocation fires on its own, whatever the dollars say.
-  const unpriced = sig({ fleetUsd: 0.4, maxUserUsd: 0.2, maxUserRef: "user …abc123", unpricedInvocations: 3, unpricedModels: ["OPENAI:gpt-7-preview"] });
+  const unpriced = sig({ fleetUsd: 0.4, maxUserUsd: 0.2, maxUserRef: "user #3fa9c21b", unpricedInvocations: 3, unpricedModels: ["OPENAI:gpt-7-preview"] });
   check("any unpriced invocation ⇒ a warning even when spend is far under both thresholds", unpriced.length === 1 && unpriced[0].severity === "warning" && unpriced[0].dedupeKey === "ai-spend-fleet-high:unpriced:2026-07-16");
   check("the unpriced summary counts them, names the model and says not counted / see rate card", /3 invocation\(s\) on unpriced models \(OPENAI:gpt-7-preview\)/.test(unpriced[0].summary) && /not counted; see rate card/.test(unpriced[0].summary));
-  const both = sig({ fleetUsd: 12, maxUserUsd: 1, maxUserRef: "user …abc123", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] });
+  const both = sig({ fleetUsd: 12, maxUserUsd: 1, maxUserRef: "user #3fa9c21b", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] });
   check("fleet breach + unpriced ⇒ two independent breaches, and the fleet summary carries the unpriced line", both.length === 2 && new Set(both.map((s) => s.dedupeKey)).size === 2 && /not counted; see rate card/.test(both.find((s) => s.dedupeKey.includes(":fleet:"))!.summary));
   check("no dollar value in any dedupe key", [...fleet, ...user, ...unpriced, ...both].every((s) => !/\$|\d+\.\d{2}/.test(s.dedupeKey)));
 
@@ -288,7 +292,7 @@ console.log("engine · ai-spend");
   check("the next UTC day is a new breach key", nextDay[0].dedupeKey === "ai-spend-fleet-high:fleet:2026-07-17" && decideDeliveries(nextDay, new Map([[fleet[0].dedupeKey, NOW_MS]]), NOW_MS + 24 * HOUR).toSend.length === 1);
 
   // AI COST CONTROLS — each rule is independently enable-able through the engine's existing key; disabling one changes evaluation only.
-  const bothBreach = { fleetUsd: 12, maxUserUsd: 4, maxUserRef: "user …abc123", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] };
+  const bothBreach = { fleetUsd: 12, maxUserUsd: 4, maxUserRef: "user #3fa9c21b", unpricedInvocations: 1, unpricedModels: ["OPENAI:x"] };
   const onlyUser = (id: string) => id === "ai-spend-user-high";
   const onlyFleet = (id: string) => id === "ai-spend-fleet-high";
   const userOnly = evaluateAlertRules(outputs({ aiSpend: aiSpend(bothBreach) }), onlyUser);

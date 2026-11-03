@@ -8,7 +8,7 @@
  * PRIVACY: rows carry institution / job / provider / resource / rule labels and
  * opaque connection ids. Incident subjects are the D5 institution · account
  * label. Policy-assignment rows (owner ruling, 2026-10-30) name a customer by the
- * opaque `user …abc123` reference only. No email, no userId, no address, no token.
+ * opaque `user #3fa9c21b` reference only. No email, no userId, no address, no token.
  */
 
 import { NextResponse } from "next/server";

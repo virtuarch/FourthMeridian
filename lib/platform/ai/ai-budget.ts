@@ -32,7 +32,8 @@ import { resolveEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import type { PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { CUSTOMER_SURFACES, isCustomerSurface, priceSpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
-import { buildAiSpendHealth, opaqueUserRef, readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
+import { buildAiSpendHealth, readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { utcDayStart } from "@/lib/platform/ai/customer-spend-today";
 import {
   loadRecentAlertSummaries, loadResolvedControls, recentTriggersFor, type CostControlsReadClient,

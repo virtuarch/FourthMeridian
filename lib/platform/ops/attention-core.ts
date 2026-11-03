@@ -71,7 +71,7 @@ export type AttentionEntityKind = "connection" | "job" | "provider" | "resource"
 export interface AttentionEntity {
   kind: AttentionEntityKind;
   /** Institution / job name / provider label / resource label / rule title / subject label /
-   *  a customer's OPAQUE `user …abc123` reference (never an email, name or whole id). */
+   *  a customer's OPAQUE `user #3fa9c21b` reference (never an email, name or whole id). */
   label: string;
   /** An OPAQUE reference the actions need (a connection id). Never a customer id. */
   ref?: string;
@@ -356,8 +356,9 @@ function incidentItems(i: NonNullable<AttentionInputs["incidents"]>): AttentionI
 
 function policyAssignmentItems(p: PolicyAssignmentHealth): AttentionItem[] {
   const severity = SEVERITY_OF.policyAssignment[p.enforced ? "enforced" : "dormant"];
+  // The row id carries the keyed dedupe token (distinct per customer even when every ref reads "customer").
   return p.items.map((i) => ({
-    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${i.ref.slice(-6)}`,
+    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${i.dedupe}`,
     severity,
     entity: { kind: "customer" as const, label: i.ref },
     problem: describePolicyAssignmentIssue(i, p.enforced),

@@ -14,6 +14,10 @@ import { ESTIMATE_NOT_BILLING } from "./cost-controls.types";
 import type { UserSpendGroup } from "./spend-health";
 import type { CostControlsReadClient } from "./cost-controls";
 import { codeFallbackCatalogue, CODE_CATALOGUE } from "@/lib/entitlements/policy-groups";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+
 
 /**
  * HERMETIC CATALOGUE. `loadAiBudgetUtilization` defaults to the cached DB
@@ -82,7 +86,7 @@ async function main() {
     check("customers / invocations counted on customer surfaces (unpriced row counted as an invocation, not a customer)", m.fleet.customers === 3 && m.fleet.invocations === 5);
     check("unpriced: 1 invocation, the model named", m.unpriced.invocations === 1 && m.unpriced.models.join() === "OPENAI:gpt-99-x");
     const [a, b, c] = m.customers;
-    check("top customers by rolling-24 h, opaque refs, no full id", a.ref === "user …aaa111" && close(a.rolling24hUsd, 7.5) && b.ref === "user …bbb222" && c.ref === "user …ccc333" && !JSON.stringify(m).includes("usr_aaa111"));
+    check("top customers by rolling-24 h, opaque refs, no full id", a.ref === opaqueUserRef("usr_aaa111") && close(a.rolling24hUsd, 7.5) && b.ref === opaqueUserRef("usr_bbb222") && c.ref === opaqueUserRef("usr_ccc333") && !JSON.stringify(m).includes("usr_aaa111"));
     check("a: today $2.50 against the USER_OVERRIDE 15 ⇒ 16.7 %; alert 7.5 / 3 = 250 %", close(a.todayUsd, 2.5) && a.allowanceUsd === 15 && a.allowanceSource === "USER_OVERRIDE" && a.allowanceUtilizationPct === 16.7 && a.alertUtilizationPct === 250);
     check("b: the founder OVERLAY 20 beats the platform 8", b.allowanceUsd === 20 && b.allowanceSource === "OVERLAY" && close(b.todayUsd, 1.25));
     check("c: no assignment row ⇒ the PLATFORM_SETTING 8 (never POLICY_DEFAULT on this surface)", c.allowanceUsd === 8 && c.allowanceSource === "PLATFORM_SETTING" && c.allowanceUtilizationPct === 6.3);

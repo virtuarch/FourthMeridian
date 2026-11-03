@@ -41,6 +41,10 @@ import { PRE_PROVIDER_GRACE_MS, PRE_PROVIDER_PHASE, cleanupVerdicts, isRemovalIn
 import { foldRemovedConnections, queryRemovedConnections } from "./removed-connections.core";
 import { selectRetryCandidates, retryPlaidRemovals } from "@/jobs/plaid-removal-retry";
 import { readScrubbedItemIds } from "@/lib/plaid/token-scrub-state";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -84,7 +88,7 @@ async function main() {
     // The widget and the list count the same owed set — in-progress INCLUDED.
     const list = queryRemovedConnections(foldRemovedConnections({
       plaidItems: ["young", "aged", "plain", "retried"].map((id) => ({ ...item(id), links: [] })),
-      wallets: [], markers, revokedTransitions: [], customerActs: [], operatorActs: [], operatorLabel: () => null, now: NOW,
+      wallets: [], markers, revokedTransitions: [], customerActs: [], operatorActs: [], operatorLabel: () => null, refOf: opaqueUserRef, now: NOW,
     }), { owner: null, provider: null, outcome: null, page: 1, pageSize: 25 });
     check("widget owed === list owed (4 — the in-progress removal is genuinely unconfirmed)", list.cleanup.owedCount === status.owedCount && status.owedCount === 4,
       { list: list.cleanup, widget: status.owedCount });
@@ -213,7 +217,7 @@ async function main() {
 
     const list = queryRemovedConnections(foldRemovedConnections({
       plaidItems: items.map((i) => ({ ...i, links: [] })),
-      wallets: [], markers, revokedTransitions: [], customerActs: [], operatorActs: [], operatorLabel: () => null, now: NOW,
+      wallets: [], markers, revokedTransitions: [], customerActs: [], operatorActs: [], operatorLabel: () => null, refOf: opaqueUserRef, now: NOW,
     }), { owner: null, provider: null, outcome: null, page: 1, pageSize: 25 });
     const row = list.rows.find((r) => r.id === "phantom")!;
     check("LIST: the phantom reads Confirmed removed, not retryable", row.outcome === "CONFIRMED_REMOVED" && row.retryEligible === false, row);
