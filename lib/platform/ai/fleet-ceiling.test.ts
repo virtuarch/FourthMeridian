@@ -21,11 +21,14 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { RESERVE_USD, allowanceRefusalBody, allowanceRefusalStatus } from "@/lib/ai/allowance-core";
+import { FLEET_CEILING_RETRY_AFTER_SECONDS, RESERVATION_RETRY_AFTER_SECONDS, RESERVE_USD, allowanceRefusalBody, allowanceRefusalStatus } from "@/lib/ai/allowance-core";
+import { allowanceUnavailableSentence } from "@/lib/ai/conversation/refusal-sentences";
+import { allowanceRefusal } from "@/lib/ai/allowance";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { reserveAiTurn, inflightBucket, inflightKey, type ReservationClient, type ReservationTx } from "./allowance-reservation";
 import {
   FLEET_CEILING_LOCK_KEY, FLEET_CEILING_NOT_SET, FLEET_CEILING_SETTING_KEY,
-  fleetCeilingDecision, fleetCeilingText, fleetCeilingUsdOf, resolveFleetCeiling,
+  fleetCeilingDecision, fleetCeilingState, fleetCeilingText, fleetCeilingUsdOf, resolveFleetCeiling,
 } from "./fleet-ceiling.core";
 import type { UserSpendGroup } from "./spend-health";
 import { buildAiSpendHealth, getAiSpendHealth } from "./spend-health";
@@ -59,7 +62,7 @@ const fleetGroup = (usd: number, over: Partial<UserSpendGroup> = {}): UserSpendG
  * which waits for every earlier holder of `k`; locks release at the body's end
  * (commit). `honourFleetLock: false` simulates the defect (no fleet lock).
  */
-function makeClient(opts: { ceiling?: string | null; customerSpentUsd?: number; honourFleetLock?: boolean; fleetGroups?: UserSpendGroup[] } = {}) {
+function makeClient(opts: { ceiling?: string | null; enforced?: string | null; customerSpentUsd?: number; honourFleetLock?: boolean; fleetGroups?: UserSpendGroup[] } = {}) {
   const buckets = new Map<string, number>();
   const lockLog: string[] = [];
   const fleetReads: number[] = [];
@@ -70,6 +73,7 @@ function makeClient(opts: { ceiling?: string | null; customerSpentUsd?: number; 
     : [];
   const settings = new Map<string, string>();
   if (opts.ceiling != null) settings.set(FLEET_CEILING_SETTING_KEY, opts.ceiling);
+  if (opts.enforced != null) settings.set("ai_daily_allowance_enforced", opts.enforced);
   const platformSetting = { findUnique: async ({ where }: { where: { key: string } }) => (settings.has(where.key) ? { value: settings.get(where.key)! } : null) };
   const yieldTick = () => new Promise<void>((r) => setTimeout(r, 1));
 
@@ -141,7 +145,17 @@ async function main() {
     const u = fleetCeilingDecision({ spend: est(null, "UNAVAILABLE"), ceilingUsd: 10, fleetInFlight: 50, reserveUsd: 0.5 });
     check("UNAVAILABLE ⇒ FAIL_OPEN with the reason (never blocks on unknown spend)", u.outcome === "FAIL_OPEN" && /could be priced/.test((u as { reason: string }).reason));
     check("Budget & controls text: off ⇒ 'Fleet daily ceiling: not set'", fleetCeilingText(null) === "Fleet daily ceiling: not set" && FLEET_CEILING_NOT_SET === fleetCeilingText(null));
-    check("…set ⇒ the figure over the window", fleetCeilingText(1500) === "Fleet daily ceiling: $1,500 / 24 h");
+    check("(d) set ⇒ the figure per ROLLING 24 h (not the allowance's UTC day)", fleetCeilingText(1500, "ENFORCED") === "Fleet daily ceiling: $1,500 per rolling 24 h");
+    check("(b) enforcement off ⇒ disclosed on the line",
+      fleetCeilingText(40, "ENFORCEMENT_OFF") === "Fleet daily ceiling: $40 per rolling 24 h — not enforced (allowance enforcement is off)");
+    check("(a) unpriceable fleet spend ⇒ disclosed on the line",
+      fleetCeilingText(40, "UNENFORCEABLE") === "Fleet daily ceiling: $40 per rolling 24 h — not enforced (fleet spend could not be priced)");
+    check("state: not set / enforcement off / unenforceable / enforced",
+      fleetCeilingState({ ceilingUsd: null, allowanceEnforced: true, fleetPricedUsd: 1, fleetInvocations: 1 }) === "NOT_SET"
+        && fleetCeilingState({ ceilingUsd: 40, allowanceEnforced: false, fleetPricedUsd: null, fleetInvocations: 3 }) === "ENFORCEMENT_OFF"
+        && fleetCeilingState({ ceilingUsd: 40, allowanceEnforced: true, fleetPricedUsd: null, fleetInvocations: 3 }) === "UNENFORCEABLE"
+        && fleetCeilingState({ ceilingUsd: 40, allowanceEnforced: true, fleetPricedUsd: 5, fleetInvocations: 3 }) === "ENFORCED"
+        && fleetCeilingState({ ceilingUsd: 40, allowanceEnforced: true, fleetPricedUsd: null, fleetInvocations: 0 }) === "ENFORCED");
   }
 
   console.log("\n2. ABSENT ⇒ unchanged: no fleet lock, no fleet read");
@@ -170,6 +184,17 @@ async function main() {
     check("the EXISTING refusal path: AI_ALLOWANCE code, the transient copy, 503 + Retry-After, the reason code",
       allowanceRefusalStatus(v) === 503 && body.code === "AI_ALLOWANCE" && body.reason === "FLEET_CEILING_REACHED" && body.retryable === true
         && body.error === allowanceRefusalBody({ ...v, reason: "RESERVATION_UNAVAILABLE" }, "Conversations").error);
+    check("(c) Retry-After is a fixed 300 s for the fleet ceiling; 15 s stays for the other transient reasons",
+      body.retryAfterSeconds === FLEET_CEILING_RETRY_AFTER_SECONDS && FLEET_CEILING_RETRY_AFTER_SECONDS === 300
+        && allowanceRefusalBody({ ...v, reason: "RESERVATION_UNAVAILABLE" }, "Conversations").retryAfterSeconds === RESERVATION_RETRY_AFTER_SECONDS
+        && allowanceRefusalBody({ ...v, reason: "LEDGER_UNTRUSTED" }, "Conversations").retryAfterSeconds === 15);
+    const res = allowanceRefusal(v, "Conversations")!;
+    check("…and the HTTP response says Retry-After: 300", res.status === 503 && res.headers.get("Retry-After") === "300");
+    check("the 503 body: the generic 'briefly unavailable' copy + the reason code; NO fleet figure",
+      body.error === allowanceUnavailableSentence("Conversations")
+        && JSON.stringify(Object.keys(body).sort()) === JSON.stringify(["allowanceUsd", "code", "error", "reason", "retryAfterSeconds", "retryable", "spentUsd"])
+        && close(body.spentUsd, 1.25) && body.allowanceUsd === 5 // the CUSTOMER's own figures, as on every transient refusal
+        && !/10\.5|\$10\b|fleet|ceiling/i.test(JSON.stringify({ ...body, reason: undefined })), JSON.stringify(body));
     const under = makeClient({ ceiling: "10", customerSpentUsd: 1.25, fleetGroups: [fleetGroup(2)] });
     const ok = await reserveAiTurn("u1", 5, NOW, under.client, RESERVE_USD, under.fleetDeps);
     check("under the ceiling ⇒ admitted and reserved as before", ok.verdict.allowed && under.inflight() === 1);
@@ -223,6 +248,33 @@ async function main() {
     check("both fail-open decisions were logged with the reason", lines.length === 2 && lines.every((l) => /fleet spend UNAVAILABLE/.test(l) && /fails open/.test(l)), lines.join(" | "));
   }
 
+  console.log("\n5b. (b) enforcement OFF disables the ceiling");
+  {
+    const off = makeClient({ ceiling: "1", enforced: "false", fleetGroups: [fleetGroup(50)] });
+    const r = await reserveAiTurn("uA", 5, NOW, off.client, RESERVE_USD, off.fleetDeps);
+    check("enforcement off ⇒ admitted over the ceiling, NO fleet lock, NO fleet read",
+      r.verdict.allowed && !off.lockLog.includes(FLEET_CEILING_LOCK_KEY) && off.fleetReads.length === 0);
+  }
+
+  console.log("\n5c. the two new log lines name the customer by an OPAQUE ref only");
+  {
+    const err = console.error, warn = console.warn; const lines: string[] = [];
+    console.error = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+    console.warn = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+    try {
+      const refuse = makeClient({ ceiling: "1", fleetGroups: [fleetGroup(5)] });
+      await reserveAiTurn("user_raw_id_123", 5, NOW, refuse.client, RESERVE_USD, refuse.fleetDeps);
+      const open = makeClient({ ceiling: "1", fleetGroups: [fleetGroup(5, { model: "gpt-unpriced-test" })] });
+      await reserveAiTurn("user_raw_id_123", 5, NOW, open.client, RESERVE_USD, open.fleetDeps);
+    } finally { console.error = err; console.warn = warn; }
+    const mine = lines.filter((l) => /fleet ceiling reached|fleet spend UNAVAILABLE/.test(l));
+    check("both lines logged", mine.length === 2, lines.join(" | "));
+    check("…with the opaque ref, never the raw id or `user=`", mine.every((l) => l.includes(opaqueUserRef("user_raw_id_123")) && !l.includes("user_raw_id_123") && !/user=/.test(l)), mine.join(" | "));
+    const src = readFileSync(path.join(process.cwd(), "lib/platform/ai/allowance-reservation.ts"), "utf8");
+    const fleetLines = src.split("\n").filter((l) => /fleet ceiling reached|fleet spend UNAVAILABLE/.test(l));
+    check("source pin: the fleet log lines interpolate opaqueUserRef(userId)", fleetLines.length === 2 && fleetLines.every((l) => /opaqueUserRef\(userId\)/.test(l) && !/user=\$\{userId\}/.test(l)));
+  }
+
   console.log("\n6. the alert: the existing fleet rule raises a critical ceiling signal, only when set");
   {
     const rule = ALERT_RULES.find((r) => r.id === "ai-spend-fleet-high")!;
@@ -235,6 +287,13 @@ async function main() {
     check("ceiling reached ⇒ a CRITICAL `:ceiling:<day>` signal on the same rule", c?.severity === "critical" && /fleet daily ceiling of \$11/.test(c.summary));
     check("…beside the unchanged threshold signal", JSON.stringify(withCeiling.filter((s) => s !== c)) === JSON.stringify(before));
     check("ceiling not yet reached ⇒ no ceiling signal", !evaluateAiSpendFleetHigh(rule, { ...base, fleetCeilingUsd: 50 }).some((s) => s.dedupeKey.includes(":ceiling:")));
+    const unpricedOnly = buildAiSpendHealth([fleetGroup(5, { model: "gpt-unpriced-test" })], th, 24, NOW);
+    const ue = evaluateAiSpendFleetHigh(rule, { ...unpricedOnly, fleetCeilingUsd: 40 }).find((s) => s.dedupeKey === `ai-spend-fleet-high:ceiling-unenforceable:${DAY}`);
+    check("(a) ceiling set + fleet spend unpriceable ⇒ WARNING `ceiling-unenforceable` signal, never silent",
+      ue?.severity === "warning" && /fleet ceiling set \(\$40\) but fleet spend could not be priced — not enforced/i.test(ue.summary), ue?.summary);
+    check("…not raised without a ceiling", !evaluateAiSpendFleetHigh(rule, unpricedOnly).some((s) => s.dedupeKey.includes("ceiling-unenforceable")));
+    check("…not raised when the spend IS priced", !withCeiling.some((s) => s.dedupeKey.includes("ceiling-unenforceable")));
+    check("…not raised for an empty window (nothing to price)", !evaluateAiSpendFleetHigh(rule, { ...buildAiSpendHealth([], th, 24, NOW), fleetCeilingUsd: 40 }).some((s) => s.dedupeKey.includes("ceiling-unenforceable")));
   }
 
   console.log("\n7. the settings source: the fleet threshold's own read");
@@ -265,7 +324,7 @@ async function main() {
     const types = strip("lib/platform/ai/cost-controls.types.ts");
     check("the ceiling is NOT a PATCH-able cost control (not in AI_COST_CONTROL_KEYS)", !/AI_COST_CONTROL_KEYS = \[[^\]]*fleetCeiling/.test(types));
     const widget = strip("components/platform/widgets/OpsAiBudgetWidget.tsx");
-    check("Budget & controls renders the read-only ceiling line", /fleetCeilingText\(data\.controls\.fleetCeilingUsd \?\? null\)/.test(widget));
+    check("Budget & controls renders the read-only ceiling line with its state", /fleetCeilingText\(data\.controls\.fleetCeilingUsd \?\? null, data\.controls\.fleetCeilingState\)/.test(widget));
   }
 
   console.log(failures === 0 ? "\nAll fleet-ceiling checks passed." : `\n${failures} failure(s).`);

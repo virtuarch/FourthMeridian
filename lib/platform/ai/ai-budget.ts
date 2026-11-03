@@ -36,7 +36,7 @@ import { buildAiSpendHealth, readUserSpendGroups, type UserSpendGroup } from "@/
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { utcDayStart } from "@/lib/platform/ai/customer-spend-today";
 import { loadAiSpendThresholds, type ThresholdReadClient } from "@/lib/platform/ai/spend-thresholds";
-import { fleetCeilingUsdOf } from "@/lib/platform/ai/fleet-ceiling.core";
+import { fleetCeilingState, fleetCeilingUsdOf } from "@/lib/platform/ai/fleet-ceiling.core";
 import {
   loadRecentAlertSummaries, loadResolvedControls, recentTriggersFor, type CostControlsReadClient,
 } from "@/lib/platform/ai/cost-controls";
@@ -197,6 +197,8 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
     };
   });
 
+  const fleetCeilingUsd = spendSettings.fleetCeiling ? fleetCeilingUsdOf(spendSettings.fleetCeiling) : null;
+
   const recentAlerts = [...recentTriggersFor(AI_SPEND_RULE_IDS.fleet, recent, BUDGET_RECENT_ALERTS_CAP), ...recentTriggersFor(AI_SPEND_RULE_IDS.user, recent, BUDGET_RECENT_ALERTS_CAP)]
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
     .slice(0, BUDGET_RECENT_ALERTS_CAP);
@@ -217,7 +219,11 @@ export async function loadAiBudgetUtilization(deps: AiBudgetDeps = {}): Promise<
       userAlertEnabled: controls["userAlert.enabled"].value,
       userAlertThresholdUsd: thresholds.userUsd,
       paused: controls["killSwitch.paused"].value,
-      fleetCeilingUsd: spendSettings.fleetCeiling ? fleetCeilingUsdOf(spendSettings.fleetCeiling) : null,
+      fleetCeilingUsd,
+      fleetCeilingState: fleetCeilingState({
+        ceilingUsd: fleetCeilingUsd, allowanceEnforced: controls["allowance.enforced"].value,
+        fleetPricedUsd: fleetWindow.fleet.estimatedUsd, fleetInvocations: fleetWindow.fleet.invocations,
+      }),
     },
     estimateNote: ESTIMATE_NOT_BILLING,
   };

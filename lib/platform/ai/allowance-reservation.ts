@@ -79,6 +79,7 @@ import { readCustomerSpendGroupsToday, type CustomerSpendReadClient } from "@/li
 import { consecutiveLedgerWriteFailures, ledgerUntrusted, readLedgerWriteFailures } from "@/lib/platform/ai/ledger-health";
 import { buildAiSpendHealth, readUserSpendGroups, type SpendGroupsRawClient, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
 import { fleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import {
   FLEET_CEILING_LOCK_KEY, FLEET_CEILING_SETTING_KEY, FLEET_CEILING_WINDOW_HOURS,
   fleetCeilingDecision, resolveFleetCeiling, type FleetCeiling,
@@ -237,7 +238,10 @@ export async function reserveAiTurn(
       if (fleetCeiling.state === "INVALID") {
         console.error(`[ai/allowance] fleet ceiling row is invalid (${JSON.stringify(fleetCeiling.raw)}); no fleet ceiling applied`);
       }
-      if (v.allowed && fleetCeiling.state === "SET") {
+      // S2 ruling (b) — the ceiling is part of enforcement: with
+      // `ai_daily_allowance_enforced` OFF it is not judged (and the Budget &
+      // controls line discloses "not enforced (allowance enforcement is off)").
+      if (v.allowed && enforced && fleetCeiling.state === "SET") {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${FLEET_CEILING_LOCK_KEY}))`;
         const since = new Date(now.getTime() - FLEET_CEILING_WINDOW_HOURS * 60 * 60 * 1000);
         const [fleetGroups, fleetBuckets] = await Promise.all([
@@ -256,9 +260,9 @@ export async function reserveAiTurn(
         const fleetInFlight = fleetBuckets.reduce((n, b) => n + Math.max(0, b.count), 0);
         const f = fleetCeilingDecision({ spend: status, ceilingUsd: fleetCeiling.usd, fleetInFlight, reserveUsd });
         if (f.outcome === "FAIL_OPEN") {
-          console.warn(`[ai/allowance] fleet spend UNAVAILABLE (${f.reason}); fleet ceiling $${f.ceilingUsd} NOT applied (optional cap fails open) user=${userId}`);
+          console.warn(`[ai/allowance] fleet spend UNAVAILABLE (${f.reason}); fleet ceiling $${f.ceilingUsd} NOT applied (optional cap fails open) ${opaqueUserRef(userId)}`);
         } else if (f.outcome === "REACHED") {
-          console.error(`[ai/allowance] fleet ceiling reached: committed $${f.committedUsd.toFixed(2)} (${f.status}, in-flight ${fleetInFlight}) ≥ ceiling $${f.ceilingUsd}; REFUSING user=${userId}`);
+          console.error(`[ai/allowance] fleet ceiling reached: committed $${f.committedUsd.toFixed(2)} (${f.status}, in-flight ${fleetInFlight}) ≥ ceiling $${f.ceilingUsd}; REFUSING ${opaqueUserRef(userId)}`);
           return {
             allowed: false, reason: "FLEET_CEILING_REACHED", unpricedInvocations: 0,
             spentUsd: v.spentUsd, allowanceUsd: v.allowanceUsd, enforced, reservation: "RESERVED", inFlight,

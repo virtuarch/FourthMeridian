@@ -110,6 +110,18 @@ export function isRetryableAllowanceReason(reason: AllowanceReason): boolean {
 export const RESERVATION_RETRY_AFTER_SECONDS = 15;
 
 /**
+ * SEC-AI-001 (S2 ruling c) — FLEET_CEILING_REACHED is judged over a ROLLING 24 h
+ * window, which no 15 s retry can cure: a fixed 300 s. The other transient
+ * reasons keep RESERVATION_RETRY_AFTER_SECONDS.
+ */
+export const FLEET_CEILING_RETRY_AFTER_SECONDS = 300;
+
+/** The Retry-After for a retryable refusal reason. */
+export function retryAfterSecondsFor(reason: AllowanceReason): number {
+  return reason === "FLEET_CEILING_REACHED" ? FLEET_CEILING_RETRY_AFTER_SECONDS : RESERVATION_RETRY_AFTER_SECONDS;
+}
+
+/**
  * How the in-flight reservation was judged:
  *   RESERVED     the decision ran under the advisory lock with the in-flight
  *                count, and (when allowed) this turn now holds a reservation;
@@ -256,7 +268,10 @@ export function allowanceRefusalBody(v: Extract<AllowanceVerdict, { allowed: fal
     return {
       error: allowanceUnavailableSentence(surfaceLabel),
       code: ALLOWANCE_CODE, reason: v.reason, spentUsd: cents(v.spentUsd), allowanceUsd: v.allowanceUsd,
-      retryable: true, retryAfterSeconds: RESERVATION_RETRY_AFTER_SECONDS,
+      // SEC-AI-001 — for FLEET_CEILING_REACHED this body carries the generic copy and
+      // the reason code only: `spentUsd` / `allowanceUsd` are the CUSTOMER's own
+      // figures (as for every transient refusal), never a fleet figure.
+      retryable: true, retryAfterSeconds: retryAfterSecondsFor(v.reason),
     };
   }
   const error = v.reason === "UNPRICED_MODEL"

@@ -81,7 +81,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
             <KeyRow label="Paid AI requests" value={<ToneBadge word={paused.word} tone={paused.tone} />} />
             <KeyRow label="Daily allowance" value={<ToneBadge word={enforced.word} tone={enforced.tone} />} />
             {/* SEC-AI-001 — read-only; set and changed in Policies, never here. */}
-            <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{fleetCeilingText(data.controls.fleetCeilingUsd ?? null)}</p>
+            <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{fleetCeilingText(data.controls.fleetCeilingUsd ?? null, data.controls.fleetCeilingState)}</p>
             <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">{controlsText(data.controls, data.windowHours)}</p>
           </div>
         </div>

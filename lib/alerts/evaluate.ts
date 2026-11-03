@@ -324,6 +324,15 @@ export function evaluateAiSpendFleetHigh(rule: AlertRuleDefinition, spend: AiSpe
       summary: `Estimated AI spend across customer surfaces in the last ${spend.windowHours}h is ${usd(spend.fleetUsd)} — at or above the fleet daily ceiling of $${spend.fleetCeilingUsd}. New Conversations turns and Daily Brief generations are being refused until the window falls below it (estimate, not a bill).${unpricedLine}`,
     });
   }
+  // S2 ruling (a) — a set ceiling the fold cannot price is NOT enforced (the
+  // reservation fails open); that is never silent.
+  if (typeof spend.fleetCeilingUsd === "number" && spend.fleetUsd === null && spend.customerInvocations > 0) {
+    out.push({
+      ruleId: rule.id, kind: rule.kind, severity: "warning",
+      dedupeKey: `${rule.id}:ceiling-unenforceable:${day}`,
+      summary: `Fleet ceiling set ($${spend.fleetCeilingUsd}) but fleet spend could not be priced — not enforced. ${spend.customerInvocations} customer invocation(s) in the last ${spend.windowHours}h, none priced.${unpricedLine}`,
+    });
+  }
   if (spend.unpricedInvocations > 0) {
     out.push({
       ruleId: rule.id, kind: rule.kind, severity: "warning",

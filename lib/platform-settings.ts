@@ -424,7 +424,7 @@ export const SETTING_DESCRIPTORS: Readonly<Record<PlatformSettingKeyType, Descri
   ),
   ai_fleet_daily_ceiling_usd_24h: {
     key: "ai_fleet_daily_ceiling_usd_24h", label: "AI fleet daily ceiling (USD / 24 h)",
-    description: `A HARD stop: estimated AI spend across every customer surface in the trailing 24 h (the ${AI_SPEND_RULE_IDS.fleet} fold) plus the turns in flight at or above which every customer's next Conversations turn or Daily Brief generation is refused, judged inside the allowance reservation under one fleet-wide lock. Whole dollars. Absent means no ceiling (the default); when the fleet spend cannot be priced at all the ceiling admits and logs rather than refusing on an unknown.`,
+    description: `A HARD stop: estimated AI spend across every customer surface in the trailing 24 h (the ${AI_SPEND_RULE_IDS.fleet} fold) plus the turns in flight at or above which every customer's next Conversations turn or Daily Brief generation is refused, judged inside the allowance reservation under one fleet-wide lock. Whole dollars. Absent means no ceiling (the default). Not judged while the daily allowance is not enforced. When the fleet spend cannot be priced at all the ceiling admits, logs and raises the fleet alert's ceiling-unenforceable warning rather than refusing on an unknown. A refusal asks the client to retry after 300 s.`,
     class: "OPERATOR_CONFIGURABLE", valueType: "integer", min: FLEET_CEILING_MIN_USD, max: FLEET_CEILING_MAX_USD,
     default: DEFAULTS.ai_fleet_daily_ceiling_usd_24h, missingRow: "ABSENT_MEANS_OFF",
     writeSurfaces: ["PLATFORM_OPS"], writeCapability: "CONTROL",

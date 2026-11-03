@@ -26,7 +26,10 @@
  * ── UNAVAILABLE spend: FAIL OPEN (S2 to rule) ───────────────────────────────
  * When the fold has no priced figure (no customer call in the window, or none
  * could be priced) the fleet spend is UNKNOWN. This optional cap does NOT refuse
- * on an unknown: it admits and the caller LOGS it. Unpriced calls are already
+ * on an unknown: it admits and the caller LOGS it — never silently (S2 ruling a):
+ * the fleet rule raises `ai-spend-fleet-high:ceiling-unenforceable:<day>` and the
+ * Budget & controls line says "not enforced". With `ai_daily_allowance_enforced`
+ * OFF the ceiling is not judged at all (ruling b), and the line says so. Unpriced calls are already
  * refused per customer (UNPRICED_MODEL, fail closed) and raise the existing
  * fleet alert's unpriced warning, so a cap that also refused would turn one
  * missing rate into a fleet-wide outage. PARTIAL is judged on its priced LOWER
@@ -102,7 +105,28 @@ export function fleetCeilingDecision(input: {
     : { outcome: "WITHIN", committedUsd, ceilingUsd, status };
 }
 
-/** Budget & controls — the read-only line. */
-export function fleetCeilingText(ceilingUsd: number | null): string {
-  return ceilingUsd === null ? FLEET_CEILING_NOT_SET : `Fleet daily ceiling: $${ceilingUsd.toLocaleString("en-US")} / ${FLEET_CEILING_WINDOW_HOURS} h`;
+/**
+ * What the ceiling is doing right now, for the read-only line (S2 rulings a/b):
+ *   NOT_SET          no ceiling;
+ *   ENFORCED         set, and judged on a priced fleet spend;
+ *   UNENFORCEABLE    set, but the fleet spend could not be priced — admitted, not enforced (fail open, alerted);
+ *   ENFORCEMENT_OFF  set, but `ai_daily_allowance_enforced` is off — not judged.
+ */
+export type FleetCeilingState = "NOT_SET" | "ENFORCED" | "UNENFORCEABLE" | "ENFORCEMENT_OFF";
+
+/** PURE — the state from the ceiling, the enforcement flag and the fleet fold's priced figure. */
+export function fleetCeilingState(input: { ceilingUsd: number | null; allowanceEnforced: boolean; fleetPricedUsd: number | null; fleetInvocations: number }): FleetCeilingState {
+  if (input.ceilingUsd === null) return "NOT_SET";
+  if (!input.allowanceEnforced) return "ENFORCEMENT_OFF";
+  if (input.fleetPricedUsd === null && input.fleetInvocations > 0) return "UNENFORCEABLE";
+  return "ENFORCED";
+}
+
+/** Budget & controls — the read-only line. "rolling 24 h": unlike the per-customer allowance's UTC day (ruling d). */
+export function fleetCeilingText(ceilingUsd: number | null, state?: FleetCeilingState): string {
+  if (ceilingUsd === null) return FLEET_CEILING_NOT_SET;
+  const base = `Fleet daily ceiling: $${ceilingUsd.toLocaleString("en-US")} per rolling ${FLEET_CEILING_WINDOW_HOURS} h`;
+  if (state === "ENFORCEMENT_OFF") return `${base} — not enforced (allowance enforcement is off)`;
+  if (state === "UNENFORCEABLE") return `${base} — not enforced (fleet spend could not be priced)`;
+  return base;
 }
