@@ -4,7 +4,7 @@
  * CoinGecko BTC daily-close fetch — standalone tsx, mocked HTTP (no network).
  */
 
-import { fetchCoinDailyClosesUsd, effectiveRequestFromISO, type CoinGeckoFetch, type CoinGeckoHttpResponse } from "./coingecko";
+import { fetchCoinDailyClosesUsd, effectiveRequestFromISO, parseMarketChartCloses, closeDateOf, marketChartToSec, type CoinGeckoFetch, type CoinGeckoHttpResponse } from "./coingecko";
 import { PRICE_PROVIDER_TIMEOUT_MS } from "../config";
 import {
   createCoinGeckoPriceProvider,
@@ -56,8 +56,8 @@ const KEY = "demo-key";
     const body = { prices: [
       [ms("2026-06-01", 1), 60000], [ms("2026-06-01", 23), 60500], // 06-01 close = 60500
       [ms("2026-06-02", 6), 61000], [ms("2026-06-02", 20), 61200], // 06-02 close = 61200
-      [ms("2026-06-03", 0), 62000],                                 // 06-03 close = 62000
-      [ms("2026-06-04", 0), 99999],                                 // outside window → dropped
+      [ms("2026-06-03", 12), 62000],                                // 06-03 close = 62000
+      [ms("2026-06-04", 1), 99999],                                 // outside window → dropped
     ] };
     const { fn, calls } = fake(body);
     const out = await fetchCoinDailyClosesUsd("bitcoin", "2026-06-01", "2026-06-03", { apiKey: KEY, fetchImpl: fn });
@@ -244,16 +244,16 @@ const KEY = "demo-key";
         from !== Date.parse("2025-08-02T00:00:00Z") / 1000);
     }
 
-    // The upper bound was checked for the same defect and has none: it is not
-    // padded at all, so it cannot overshoot capability. Pinned so it stays that way.
+    // FM-AUDIT-025 — the upper bound is the midnight AFTER toISO: that 00:00:00Z
+    // point is toISO's close (it files under toISO). 23:59:59Z dropped it in daily mode.
     {
       const { fn, calls } = fake({ prices: [] });
       await fetchCoinDailyClosesUsd("bitcoin", "2026-01-01", "2026-03-22", {
         apiKey: "k", fetchImpl: fn, deploymentFloorISO: FLOOR,
       });
       const to = Number(new URL(calls[0]).searchParams.get("to"));
-      check("upper bound is unpadded (no equivalent defect)",
-        to === Date.parse("2026-03-22T23:59:59Z") / 1000, String(to));
+      check("upper bound is (toISO + 1 day) 00:00:00Z, so toISO's close is included",
+        to === Date.parse("2026-03-23T00:00:00Z") / 1000 && to === marketChartToSec("2026-03-22"), String(to));
     }
 
     // G — response parsing is unchanged: points are still filtered against the
@@ -272,6 +272,38 @@ const KEY = "demo-key";
         JSON.stringify(out.map((r) => r.dateISO)));
       check("G. close selection unchanged", out[0].price === 222 && out[1].price === 333);
     }
+  }
+
+  console.log("FM-AUDIT-025. A 00:00:00Z point is the PREVIOUS day's close (daily and hourly modes agree)");
+  {
+    check("closeDateOf: exactly midnight → previous UTC date", closeDateOf(ms("2026-06-02", 0)) === "2026-06-01");
+    check("closeDateOf: one millisecond after midnight → its own date", closeDateOf(ms("2026-06-02", 0) + 1) === "2026-06-02");
+    check("closeDateOf: month / year rollover", closeDateOf(ms("2026-03-01", 0)) === "2026-02-28" && closeDateOf(ms("2026-01-01", 0)) === "2025-12-31");
+    // The SAME underlying series in both granularities. Boundary price at D 00:00 = close of D-1.
+    const boundary: Record<string, number> = { "2026-05-31": 100, "2026-06-01": 110, "2026-06-02": 120, "2026-06-03": 130, "2026-06-04": 140 };
+    const midnightAfter = (d: string) => Date.parse(`${d}T00:00:00Z`) + 86_400_000;
+    // DAILY (>90 d window): one point per day stamped exactly 00:00:00Z — CoinGecko's daily format.
+    const daily = { prices: Object.entries(boundary).map(([d, p]) => [midnightAfter(d), p]) };
+    // HOURLY (≤90 d window): intraday points, then the next midnight carrying the same boundary price.
+    const hourly = { prices: Object.entries(boundary).flatMap(([d, p]) => [
+      [ms(d, 0) + 5 * 60_000, p - 7], [ms(d, 12), p - 3], [ms(d, 23) + 55 * 60_000, p - 1], [midnightAfter(d), p],
+    ]) };
+    const from = "2026-06-01", to = "2026-06-03";
+    const d = parseMarketChartCloses(daily, from, to);
+    const h = parseMarketChartCloses(hourly, from, to);
+    check("daily: each day's close is the NEXT midnight's point (no one-day shift)",
+      JSON.stringify(d) === JSON.stringify([{ dateISO: "2026-06-01", price: 110 }, { dateISO: "2026-06-02", price: 120 }, { dateISO: "2026-06-03", price: 130 }]), JSON.stringify(d));
+    check("hourly: the same calendar day gets the same close as daily", JSON.stringify(h) === JSON.stringify(d), JSON.stringify(h));
+    check("edge: the from-day's own midnight point (closes from-1) is dropped by the from bound", !d.some((r) => r.dateISO === "2026-05-31") && d[0].price !== 100);
+    check("edge: toISO's close comes from (toISO + 1) 00:00 and is kept; the midnight after that is out of window",
+      d[d.length - 1].dateISO === to && d[d.length - 1].price === 130 && !d.some((r) => r.dateISO === "2026-06-04"));
+    // End to end: the request asks through (to + 1) 00:00, and the fetch path yields the same closes.
+    const { fn, calls } = fake(daily);
+    const out = await fetchCoinDailyClosesUsd("bitcoin", from, to, { apiKey: KEY, fetchImpl: fn });
+    check("fetch path (daily body): same closes, request to = (to + 1) 00:00Z",
+      JSON.stringify(out) === JSON.stringify(d) && Number(new URL(calls[0]).searchParams.get("to")) === Date.parse("2026-06-04T00:00:00Z") / 1000);
+    check("edge: a single-day window [D, D] closes on (D + 1) 00:00 in daily mode",
+      JSON.stringify(parseMarketChartCloses(daily, "2026-06-02", "2026-06-02")) === JSON.stringify([{ dateISO: "2026-06-02", price: 120 }]));
   }
 
   console.log(failures === 0 ? "\nAll coingecko checks passed" : `\n${failures} failure(s)`);

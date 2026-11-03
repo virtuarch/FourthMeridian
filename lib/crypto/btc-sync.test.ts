@@ -536,6 +536,28 @@ async function main(): Promise<void> {
   check("parseMultiaddrStats: omitted/zero address defaults to zero (entry always present)",
     mstats.has("A3") && mstats.get("A3")?.txCount === 0 && mstats.get("A2")?.sats === 0);
 
+  // FM-AUDIT-053 — a 200 with no / garbled `addresses` is INVALID_DATA, never "0 BTC, unused".
+  const invalid = (body: unknown) => {
+    try { parseMultiaddrStats(body, ["A1", "A2"]); return false; }
+    catch (e) { return e instanceof BtcSyncError && e.kind === "INVALID_DATA" && e.stage === "discovery"; }
+  };
+  check("parseMultiaddrStats: `{}` body throws INVALID_DATA", invalid({}));
+  check("parseMultiaddrStats: null / non-array `addresses` throws INVALID_DATA", invalid(null) && invalid({ addresses: "A1" }) && invalid({ addresses: { A1: 3 } }));
+  check("parseMultiaddrStats: a garbled entry (string n_tx) throws INVALID_DATA", invalid({ addresses: [{ address: "A1", n_tx: "3", final_balance: 500000 }] }));
+  check("parseMultiaddrStats: missing / negative / fractional final_balance throws INVALID_DATA",
+    invalid({ addresses: [{ address: "A1", n_tx: 3 }] }) && invalid({ addresses: [{ address: "A1", n_tx: 3, final_balance: -1 }] }) && invalid({ addresses: [{ address: "A1", n_tx: 3, final_balance: 1.5 }] }));
+  check("parseMultiaddrStats: an entry with no address string throws INVALID_DATA", invalid({ addresses: [null] }) && invalid({ addresses: [{ n_tx: 1, final_balance: 1 }] }));
+  check("parseMultiaddrStats: an empty array is valid (every requested address unused)",
+    !invalid({ addresses: [] }) && parseMultiaddrStats({ addresses: [] }, ["A1"]).get("A1")?.sats === 0);
+  check("parseMultiaddrStats: the normal body is unchanged (A1 used, A2 zero, A3 omitted ⇒ zero)",
+    JSON.stringify([...parseMultiaddrStats(multiaddrFixture, ["A1", "A2", "A3"])]) === JSON.stringify([["A1", { txCount: 3, sats: 500000 }], ["A2", { txCount: 0, sats: 0 }], ["A3", { txCount: 0, sats: 0 }]]));
+  {
+    let threw = false;
+    const badFetch: typeof fetch = (async () => okResponse({})) as unknown as typeof fetch;
+    try { await fetchAddressStatsBatch(["A1"], badFetch); } catch (e) { threw = e instanceof BtcSyncError && e.kind === "INVALID_DATA"; }
+    check("fetchAddressStatsBatch: a `{}` 200 propagates INVALID_DATA (the scan does not see zeros)", threw);
+  }
+
   let batchCalls = 0;
   const batchFetch: typeof fetch = (async () => { batchCalls += 1; return okResponse(multiaddrFixture); }) as unknown as typeof fetch;
   const batched = await fetchAddressStatsBatch(["A1", "A2", "A3"], batchFetch);
