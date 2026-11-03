@@ -25,3 +25,16 @@ export function presenceLimitKey(sessionToken: string): string {
   return createHash("sha256").update(`presence:${sessionToken}`).digest("hex").slice(0, 32);
 }
 
+
+/**
+ * F2 (S2 review) — refuse an oversized or unsized body BEFORE reading it.
+ * `null` = acceptable; otherwise the status to answer with:
+ *   400 the Content-Length header is absent or not a non-negative integer
+ *       (a browser fetch with a string body always sends one);
+ *   413 it declares more than MAX_BODY_BYTES.
+ * parsePresenceBody's own length check stays as the backstop (a lying header).
+ */
+export function presenceContentLengthRefusal(header: string | null): 400 | 413 | null {
+  if (header === null || !/^\d{1,10}$/.test(header.trim())) return 400;
+  return Number(header.trim()) > MAX_BODY_BYTES ? 413 : null;
+}

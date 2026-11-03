@@ -31,6 +31,14 @@ check("presence outlives at least two missed beats (no flapping on one dropped r
 check("the server throttle is finer than the client interval (a visible tab's beats all land)",
   PRESENCE_CONFIG.serverThrottleSeconds * 1000 < PRESENCE_CONFIG.clientBeatIntervalMs);
 check("the rate-limit window admits the client cadence", PRESENCE_CONFIG.rateLimit.windowSec * 1000 <= PRESENCE_CONFIG.clientBeatIntervalMs);
+// Documented semantics (S2/Session 1 observation: 204 at +47 s and +61 s, 429 at +76 s):
+// the window is FIXED and epoch-aligned, so beats straddling a boundary both pass.
+{
+  const bucket = (t: number) => Math.floor(t / (PRESENCE_CONFIG.rateLimit.windowSec * 1000));
+  const b47 = 1_800_000_047_000, b61 = b47 + 14_000, b76 = b47 + 29_000;
+  check("fixed window: +47 s and +61 s fall in different aligned buckets (both admitted)", bucket(b47) !== bucket(b61));
+  check("fixed window: +61 s and +76 s share one (the second is refused)", bucket(b61) === bucket(b76));
+}
 check("DAU/WAU/MAU windows are 1/7/30 UTC days", ENGAGEMENT_WINDOW_DAYS.dau === 1 && ENGAGEMENT_WINDOW_DAYS.wau === 7 && ENGAGEMENT_WINDOW_DAYS.mau === 30);
 check("labels", PRESENCE_LABELS.ACTIVE === "Active now" && PRESENCE_LABELS.IDLE === "Online, idle" && PRESENCE_LABELS.OFFLINE === "Offline" && PRESENCE_LABELS.UNKNOWN === "Unknown");
 check("the explanation says a signed-in session alone is not online", /session alone is not counted as online/.test(PRESENCE_EXPLANATION));

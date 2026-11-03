@@ -2,6 +2,8 @@
  * POST /api/user/presence  (PB-10 — the visible-tab presence heartbeat)
  *
  * Body: `{ "interacted": boolean }` and nothing else. 204 on success.
+ * A missing / non-numeric Content-Length ⇒ 400, one above the 64-byte cap ⇒ 413,
+ * both before the body is read (the parsed-length cap remains as a backstop).
  *
  * WHAT IT RECORDS. "A visible tab holding THIS session checked in" (and, when
  * `interacted` is true, "…and the user clicked / typed / scrolled / focused it
@@ -23,7 +25,9 @@
  *
  * RATE LIMIT. Its OWN per-session bucket (`presence`, keyed on a hash of the
  * session token — never the token), PRESENCE_CONFIG.rateLimit; a 429 returns
- * before any write. The database throttle (PRESENCE_CONFIG.serverThrottleSeconds)
+ * before any write. It is a FIXED, epoch-aligned window (lib/rate-limit.ts):
+ * two beats straddling a window boundary are both admitted even if seconds
+ * apart; two inside one window are not (see PRESENCE_CONFIG.rateLimit). The database throttle (PRESENCE_CONFIG.serverThrottleSeconds)
  * bounds writes across instances on top of it.
  *
  * PRIVACY. No IP, user agent or page path is read, stored or logged here.
@@ -34,7 +38,7 @@ import { requireUser, recordSessionPresence } from "@/lib/session";
 import { runWithoutSessionTouch } from "@/lib/auth/presence-scope";
 import { limitByKey } from "@/lib/rate-limit";
 import { PRESENCE_CONFIG } from "@/lib/presence/definitions";
-import { parsePresenceBody, presenceLimitKey } from "@/lib/presence/heartbeat-request";
+import { parsePresenceBody, presenceContentLengthRefusal, presenceLimitKey } from "@/lib/presence/heartbeat-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,6 +50,11 @@ export async function POST(req: Request) {
   if (err) return err;
   if (!user.sessionToken) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_STORE });
 
+  // F2 — size the body from its header before reading a byte of it.
+  const sizeRefusal = presenceContentLengthRefusal(req.headers.get("content-length"));
+  if (sizeRefusal) {
+    return NextResponse.json({ error: sizeRefusal === 413 ? "Body too large" : "Invalid body" }, { status: sizeRefusal, headers: NO_STORE });
+  }
   const body = parsePresenceBody(await req.text().catch(() => ""));
   if (!body) return NextResponse.json({ error: "Invalid body" }, { status: 400, headers: NO_STORE });
 
