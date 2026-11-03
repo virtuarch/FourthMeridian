@@ -86,6 +86,7 @@ import { withTenantDb } from "@/lib/db/tenant-context";
 import { getAccountsWithVisibility } from "@/lib/data/accounts";
 import { getCurrentPositions } from "@/lib/investments/current-positions";
 import { mergeSpaceExportHoldings } from "@/lib/export/holdings";
+import { countUnvaluedExportAccounts, toExportAccount } from "@/lib/export/accounts";
 import { getTransactions } from "@/lib/data/transactions";
 import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { resolvePersonalSpaceId } from "@/lib/accounts/space-account-link";
@@ -212,7 +213,9 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     // exported at FULL detail. Both gates, as before.
     for (const row of phase.withVis) {
       if (!isFullVisibility(row.visibilityLevel)) continue;
-      accounts.push({ ...row.account, spaceId, spaceName });
+      // FM-AUDIT-022 — an unvalued wallet exports `balance: null` + a status,
+      // never the structural 0 the read layer carries for the totals.
+      accounts.push(toExportAccount(row.account, spaceId, spaceName));
     }
     for (const t of phase.spaceTxns.rows) transactions.push({ ...t, spaceId });
     holdings.push(...mergeSpaceExportHoldings({
@@ -454,6 +457,15 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   ];
   if (data.holdings.length) {
     notes.push("Transactions cover banking activity; investment positions are in holdings.csv.");
+  }
+  // FM-AUDIT-022 — stated only when such accounts are present.
+  const unvaluedAccounts = countUnvaluedExportAccounts(data.accounts);
+  if (unvaluedAccounts > 0) {
+    notes.push(
+      `${unvaluedAccounts} account(s) are not yet valued (a wallet with no price or no observation). ` +
+      `Their balance is empty in accounts.csv and null in data.json — not zero — and valuation_status / ` +
+      `valuationStatus reads "not_yet_valued". They are excluded from every total.`,
+    );
   }
   if (truncated) {
     notes.push(`Transactions were capped at the newest ${data.transactions.length} rows (KD-7 5,000-row limit).`);

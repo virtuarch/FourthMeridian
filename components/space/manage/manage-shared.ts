@@ -53,6 +53,8 @@ export type SharedAccount = {
   balance:     number;
   currency:    string;
   lastUpdated: string;
+  /** FM-AUDIT-022 — no value (unpriced / never-observed wallet): `balance` is a structural 0; show "Not yet valued". */
+  valuationUnknown?: true;
 };
 
 export type UserAccount = SharedAccount & { mask?: string | null };
