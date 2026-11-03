@@ -1208,7 +1208,7 @@ Checklist additions:
 
 ## Beyond B10: carried from ROADMAP (2026-11-03)
 
-*Copied verbatim from `ROADMAP.md` (removed; see git history) (deleted 2026-11-03; recover with `git log -- docs/plans/ROADMAP.md`). Session 1 carries these into the post-B10 STATUS "Beyond B10 / outstanding obligations".*
+*Carried from `docs/plans/ROADMAP.md` (deleted 2026-11-03; recover with `git log -- docs/plans/ROADMAP.md`). Verbatim, except that DF-6's per-transaction details (merchant names, amounts, dates from the owner's accounts) are redacted under the public-repo rule; the original is in the owner's private record. Session 1 carries these into the post-B10 STATUS "Beyond B10 / outstanding obligations".*
 
 ### v3.0 — Launch (L-1) — **not started**
 
@@ -1216,4 +1216,4 @@ Billing/subscription; onboarding funnel; counsel-reviewed legal/compliance postu
 
 **Exit:** a stranger can pay, connect a bank, share a Space with a partner, and be supported and recovered.
 
-**DF-6 — Historical Production Duplicate Cleanup — DEFERRED, unscheduled.** Retire the three historical duplicate lineages left in production by the 2026-07-22 reconnect re-pull that predates DF-4 (T-Mobile −119.00 / 2026-07-08; YouTube Premium −15.99 / 2026-06-28; Anthropic −42.22 / 2026-07-01, one Amex account). Extend the DF-5 repair pattern: dry-run by default, `--apply` to write, soft-delete only, abort on shape mismatch, idempotent, scoped to the three proven `(date, amount, raw descriptor)` lineages; retire the later row of each pair. No commit has referenced DF-6 since August. **Not to be executed during a release window**, and not before the cutover's own duplicate-identity preflight (which measured 0 duplicate PLAID identities on 2026-10-06 — a different check; the three lineages are economic duplicates, not identity duplicates).
+**DF-6 — Historical Production Duplicate Cleanup — DEFERRED, unscheduled.** Retire the three historical duplicate lineages left in production by the 2026-07-22 reconnect re-pull that predates DF-4 (transaction details redacted). Extend the DF-5 repair pattern: dry-run by default, `--apply` to write, soft-delete only, abort on shape mismatch, idempotent, scoped to the three proven `(date, amount, raw descriptor)` lineages; retire the later row of each pair. No commit has referenced DF-6 since August. **Not to be executed during a release window**, and not before the cutover's own duplicate-identity preflight (which measured 0 duplicate PLAID identities on 2026-10-06 — a different check; the three lineages are economic duplicates, not identity duplicates).
