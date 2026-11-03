@@ -228,7 +228,7 @@ check("E members caller doors are requireSpaceRole; its findUniques are targetMe
 // gate on POST /api/transactions/[id]/correct, so a VIEWER of a Space holding a
 // FULL link could stamp the row, mint a USER MerchantRule that steers every
 // future transaction, and set a category override. See
-// docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
+// docs/architecture/SECURITY_MODEL.md §Database-level tenant isolation.
 //
 // The fix is AND, never OR: the role door is added, the read predicate stays.
 // ─────────────────────────────────────────────────────────────────────────────

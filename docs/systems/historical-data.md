@@ -28,6 +28,21 @@ Every historical value has a provenance class:
 - **A10 — strict historical investment path.** The single authority for *past* investment portfolio values (`getInvestmentsTimeMachine`). The current portfolio is a **separate** path (`getCurrentPositions`). These two never cross-derive — see [../systems/investments.md](../systems/investments.md).
 - **`getAccountsAsOf` / `getInvestmentValueAsOf`** — per-account historical anchors used by the Liquidity **splice** engine: the live per-account balance is the anchor, the reconstructed past is spliced in per account, and no second valuation authority or classifier is introduced (see [../systems/liquidity.md](../systems/liquidity.md)).
 
+## Regeneration membership guard
+
+**IMPLEMENTED** — PR #124 (per revoked link), PR #143 (fail-closed exits); `membershipExitLinks` / `loadRevokedLinkWindows` in `lib/snapshots/regenerate-history.ts`, the decision in `lib/snapshots/regenerate-history.core.ts` ("MEMBERSHIP GUARD, PER REVOKED LINK"), and the `skip-membership-changed` regeneration action.
+
+Automatic (non-amendment) regeneration sees only the Space's **currently active** links. It must therefore never rewrite a day whose stored row may carry the contribution of an account that has since left the Space, or it would silently drop that contribution.
+
+- **The rule.** Day *d* is blocked iff some membership exit's account **could have contributed** to *d*'s stored row, i.e. *d* lies in `[contributesFrom, exitDay)`. The exit day itself is not blocked.
+- **What counts as an exit.** A REVOKED link exits at the UTC day of `revokedAt`; a REVOKED link with a null `revokedAt` exits **today** (every earlier day stays blocked); an ACTIVE link to a trashed account exits at the account's `deletedAt`. A link present in both sets keeps the earlier exit.
+- **What bounds a contribution.** A floor is usable only when every writer that could ever have produced the stored row respected it. Only **manual real assets with a valuation ledger** have one: the earliest of the first valuation anchor, the link `createdAt`, the account `createdAt`, the earliest transaction, the earliest valuation row in any currency, and the acquisition date. Banks, cards, loans, investments, crypto wallets, legacy balance-only assets, unknown kinds and any failed read are **unbounded** — they block every earlier day, because earlier writers walked cash back from today's balance and held investments and crypto flat at today's quantity. The guard fails closed: only a positively established floor unblocks a day.
+- **Floor premise.** `ManualAssetProfile` is never mutated by code (pinned by a source-scan test); an edit path for its acquisition date would invalidate the floor. `AssetValuation` is append-only for tenants.
+- **Amendments are exempt by construction.** A consented `SnapshotAmendment` rebuild is the sanctioned way to revise a membership-changed day (see the consent boundary above).
+- **Operator view.** `scripts/regenerate-wealth-history.ts` prints each blocking link, its blocked range and the number of days left untouched.
+
+Residual risks (current behaviour): a Space that revokes a bank, investment or crypto account still needs the amendment system to rewrite earlier days; a hard permanent delete removes the link row, so neither guard protects that account's history. A **merge-aware** guard (treat a duplicate-merge loser as "merged into the winner" rather than "left the Space", so those days could be regenerated) is **PROPOSED**; today such days stay blocked, which is never wrong but can shorten history.
+
 ## Crypto bucket split (ratified taxonomy)
 
 Crypto occupies a **single** bucket and is counted **once**. The ratified split:

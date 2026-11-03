@@ -64,7 +64,7 @@
  *     BALANCE_ONLY / SUMMARY_ONLY link could reach, erasing transaction detail
  *     they were never permitted to READ. Two copies of one authority rule is
  *     how that happens; there is now one copy. See
- *     docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md §17.1 item 7.
+ *     docs/architecture/SECURITY_MODEL.md §Database-level tenant isolation.
  *   - The caller must be either the batch's own creator (createdByUserId)
  *     or a canManage (OWNER/ADMIN) member of that Space — undoing your own
  *     import is unrestricted; undoing someone else's requires management

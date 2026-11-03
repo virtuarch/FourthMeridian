@@ -421,7 +421,7 @@ export async function getExecutionContext(
  * But the bare `catch { return null }` meant a REFUSED or FAILED read produced
  * the identical value, and the occurrence was then written permanently UNLINKED
  * while every surface read it as "this run named no execution". The
- * silent-refusal defect (docs/plans/RLS-SILENT-REFUSAL-CAS.md) on the
+ * silent-refusal defect (docs/architecture/SECURITY_MODEL.md §The silent-refusal hazard) on the
  * correlation path: a refusal published as a fact.
  *
  * The value is unchanged — the honest one is still null, and the caller still

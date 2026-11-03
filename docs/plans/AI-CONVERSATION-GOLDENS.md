@@ -2,7 +2,7 @@
 
 **Status:** product examples. **Not tests.** Not scoped to what the repository can do today.
 
-Written after the [AI conversation reset](AI-CONVERSATION-RESET.md) and before any
+Written after the [AI conversation reset](../systems/ai-foundation.md#9-history-the-2026-09-07-conversation-reset--deprecated-machinery) and before any
 replacement architecture, deliberately in that order: *the transcripts come first, and
 whatever machinery is needed falls out of them.* Every gap between one of these and the
 current repository is recorded in

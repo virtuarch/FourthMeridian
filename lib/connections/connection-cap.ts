@@ -2,8 +2,8 @@
  * lib/connections/connection-cap.ts  (BETA C7′ — the connection-count entitlement)
  *
  * HOW MANY PROVIDER CONNECTIONS A CUSTOMER MAY HOLD AT ONCE, AND WHERE THAT IS
- * ASKED. Before this there was no bound at all (AI-PLAID-COST-ECONOMICS-
- * ASSESSMENT §6.2, growth vector 6): every fresh Plaid link mints a billable
+ * ASKED. Before this there was no bound at all (docs/systems/
+ * billing-and-provider-costs.md, "Plaid growth controls"): every fresh Plaid link mints a billable
  * Item-month, and nothing stopped a single account from minting fifty.
  *
  *   PURE VERDICT   `connectionCapVerdict`  — counts in, verdict out; no clock,
