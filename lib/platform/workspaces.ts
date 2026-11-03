@@ -147,8 +147,8 @@ export interface PlatformWorkspaceView {
 /** The summary-first leads a view may declare (Platform Ops 2.0 plan §4.2–§4.3). */
 export type PlatformViewLead =
   | "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant"
-  // Platform Economics — the Overview view's lead.
-  | "economics-overview"
+  // Platform Economics — one lead per view (Overview · Providers · Entitlements; AI & Costs reuses "ai-costs").
+  | "economics-overview" | "economics-providers" | "economics-entitlements"
   // Customer Success › Communications Center — one lead per view.
   | "comms-library" | "comms-automations" | "comms-delivery" | "comms-preferences"
   // PB-1 2B — the incidents workspace, one lead per tier (Ops identity-free; CS names the customer).
@@ -304,8 +304,8 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       ],
     }),
     // ── Economics (owner priority #6) — "what does running the platform cost,
-    // per customer, and what can we NOT see?" Two views (PR A; Providers and
-    // Entitlements follow), each a lead, no section key of its own:
+    // per customer, and what can we NOT see?" Four views, each a lead, no
+    // section key of its own (Providers + Entitlements arrived in PR B):
     //   overview  components/platform/leads/EconomicsOverviewLead.tsx — ONE
     //             server reader (lib/platform/economics/snapshot.ts) composing
     //             the existing AI / Plaid / engagement readers; every figure is
@@ -325,6 +325,10 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
         { id: "overview", label: "Overview", lead: "economics-overview", sections: [] },
         { id: "ai", label: "AI & Costs", lead: "ai-costs", sections: [],
           hosted: ["ops_ai_invocations", "ops_ai_trend", "ops_ai_budget", "ops_brief_ops", "ops_plaid_usage", "ops_cost"] },
+        // PR B — provider COST (health stays in Providers) and cost by policy group
+        // with read-only HYPOTHETICAL allowance scenarios (configuration stays in Policies).
+        { id: "providers", label: "Providers", lead: "economics-providers", sections: [] },
+        { id: "entitlements", label: "Entitlements", lead: "economics-entitlements", sections: [] },
       ],
     }),
     // ── Policies (formerly "Controls") — declared policy. ONE section,

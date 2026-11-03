@@ -276,11 +276,13 @@ export function EconomicsDrill({ state }: { state: EconomicsDrillUrlState }) {
   return <EconomicsDrillBody data={res.data} />;
 }
 
-export function EconomicsOverviewLead({ onOpenWorkspace }: PlatformViewLeadProps) {
-  const snapshot = useSharedWidgetFetch<EconomicsSnapshot>(ECONOMICS_URL);
+/**
+ * THE drill state every Economics lead shares: the open figure lives in the URL
+ * (?econ / ?econuntil, REPLACE), read after mount (SSR-safe) and on Back/Forward.
+ */
+export function useEconomicsDrill(): { drill: EconomicsDrillUrlState | null; open: (f: EconomicsFigure) => void; close: () => void } {
   const spaceUrl = useSpaceUrl();
   const [drill, setDrill] = useState<EconomicsDrillUrlState | null>(null);
-  // First paint is closed (SSR-safe); the URL is read after mount and on Back/Forward.
   useEffect(() => {
     const sync = () => setDrill(readEconomicsDrillUrl(spaceUrl.getSearch(), Date.now()));
     sync();
@@ -291,16 +293,30 @@ export function EconomicsOverviewLead({ onOpenWorkspace }: PlatformViewLeadProps
     setDrill(next);
     spaceUrl.commit(economicsDrillUrlUpdate(next), { history: "replace" });
   }, [spaceUrl]);
+  return { drill, open: useCallback((f: EconomicsFigure) => apply(drillStateOf(f)), [apply]), close: useCallback(() => apply(null), [apply]) };
+}
+
+/** The records drawer for the open drill (shared by every Economics lead). */
+export function EconomicsDrillDrawer({ drill, title, onClose }: { drill: EconomicsDrillUrlState | null; title: string; onClose: () => void }) {
+  return (
+    <DetailDrawer open={drill !== null} onClose={onClose} eyebrow="Economics · records" title={title} size="xl">
+      {drill ? <EconomicsDrill state={drill} /> : null}
+    </DetailDrawer>
+  );
+}
+
+export function EconomicsOverviewLead({ onOpenWorkspace }: PlatformViewLeadProps) {
+  const snapshot = useSharedWidgetFetch<EconomicsSnapshot>(ECONOMICS_URL);
+  const { drill, open, close } = useEconomicsDrill();
+  const figures = snapshot.data?.figures as Readonly<Record<string, EconomicsFigure>> | undefined;
   const title = drill && snapshot.data
-    ? (drill.window === "cycle" ? snapshot.data.figures[drill.figure]?.label : snapshot.data.trend.windows[drill.window as TrendWindow]?.label) ?? "Records"
+    ? (drill.window === "cycle" ? figures?.[drill.figure]?.label : snapshot.data.trend.windows[drill.window as TrendWindow]?.label) ?? "Records"
     : "Records";
 
   return (
     <>
-      <EconomicsOverviewSurface snapshot={snapshot} onOpenDrill={(f) => apply(drillStateOf(f))} onOpenAiCosts={() => onOpenWorkspace("platform-economics:ai")} />
-      <DetailDrawer open={drill !== null} onClose={() => apply(null)} eyebrow="Economics · records" title={title} size="xl">
-        {drill ? <EconomicsDrill state={drill} /> : null}
-      </DetailDrawer>
+      <EconomicsOverviewSurface snapshot={snapshot} onOpenDrill={open} onOpenAiCosts={() => onOpenWorkspace("platform-economics:ai")} />
+      <EconomicsDrillDrawer drill={drill} title={title} onClose={close} />
     </>
   );
 }

@@ -98,6 +98,10 @@ const READERS = [
   // Platform Economics — the Overview snapshot + drill reader and core (opaque customer refs only).
   "lib/platform/economics/snapshot.ts",
   "lib/platform/economics/snapshot-core.ts",
+  // PR B — Providers (cost) and Entitlements (cost by group, HYPOTHETICAL scenarios): ids are joins, refs are output.
+  "lib/platform/economics/providers-core.ts",
+  "lib/platform/economics/entitlements-core.ts",
+  "lib/platform/economics/providers-entitlements.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -134,6 +138,9 @@ const ROUTES = [
   // Platform Economics — the snapshot and its drill, PLATFORM_OPS READ (gates pinned in lib/platform/economics/snapshot.test.ts).
   "app/api/platform/platform-ops/economics/route.ts",
   "app/api/platform/platform-ops/economics/drill/route.ts",
+  "app/api/platform/platform-ops/economics/providers/route.ts",
+  "app/api/platform/platform-ops/economics/entitlements/route.ts",
+  "app/api/platform/platform-ops/economics/scenario/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");

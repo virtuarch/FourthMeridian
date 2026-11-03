@@ -19,6 +19,7 @@ import {
   parseEconomicsDrillQuery,
   type EconomicsFigure,
   type EconomicsFigureKey,
+  type OverviewFigureKey,
   type EconomicsSnapshot,
   type EconomicsStatus,
   type EconomicsTrendDay,
@@ -63,7 +64,7 @@ export function checkedText(iso: string): string {
 }
 
 /** The cost split shown under the hero: AI · Providers · Infrastructure, each with its own status. */
-export const SPLIT_KEYS: readonly EconomicsFigureKey[] = ["ai_cost", "provider_cost", "infra_cost"];
+export const SPLIT_KEYS: readonly OverviewFigureKey[] = ["ai_cost", "provider_cost", "infra_cost"];
 export function splitFigures(s: EconomicsSnapshot): EconomicsFigure[] {
   return SPLIT_KEYS.map((k) => s.figures[k]);
 }
@@ -93,39 +94,41 @@ export function trendSeries(days: readonly EconomicsTrendDay[]): { points: Trend
 
 // ── The drill's place in the URL (the PB-9 / ai-budget-calls idiom) ────────────
 
-/** ?econ=<figure>.<window>&econuntil=<epoch ms> — workspace-scoped, REPLACE intent. */
+/** ?econ=<figure>.<window>[.<GROUP>]&econuntil=<epoch ms> — workspace-scoped, REPLACE intent. */
 export const ECONOMICS_URL_PARAMS = ["econ", "econuntil"] as const;
 
-export interface EconomicsDrillUrlState { figure: EconomicsFigureKey; window: EconomicsWindow; untilMs: number | null }
+export interface EconomicsDrillUrlState { figure: EconomicsFigureKey; window: EconomicsWindow; untilMs: number | null; group?: string }
 
 /** Read the open drill from a search string, through the route's own parser (an unknown value is dropped). */
 export function readEconomicsDrillUrl(search: string, nowMs: number): EconomicsDrillUrlState | null {
   const p = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   const econ = p.get("econ");
   if (!econ) return null;
-  const [figure, window] = econ.split(".");
+  const [figure, window, group] = econ.split(".");
   const probe = new URLSearchParams({ figure: figure ?? "", window: window ?? "cycle" });
+  if (group) probe.set("group", group);
   const until = p.get("econuntil");
   if (until) probe.set("until", until);
   const q = parseEconomicsDrillQuery(probe, nowMs);
   if (!q) return null;
-  return { figure: q.figure, window: q.window, untilMs: until !== null && q.untilMs !== nowMs ? q.untilMs : null };
+  return { figure: q.figure, window: q.window, untilMs: until !== null && q.untilMs !== nowMs ? q.untilMs : null, ...(q.group ? { group: q.group } : {}) };
 }
 
 export function economicsDrillUrlUpdate(s: EconomicsDrillUrlState | null): Record<string, string | null> {
-  return { econ: s ? `${s.figure}.${s.window}` : null, econuntil: s && s.untilMs !== null ? String(s.untilMs) : null };
+  return { econ: s ? `${s.figure}.${s.window}${s.group ? `.${s.group}` : ""}` : null, econuntil: s && s.untilMs !== null ? String(s.untilMs) : null };
 }
 
 /** The drill state a figure opens: its own window, ending at the snapshot's checkedAt. */
 export function drillStateOf(f: EconomicsFigure): EconomicsDrillUrlState | null {
   if (!f.drill) return null;
   const t = Date.parse(f.freshness.asOf);
-  return { figure: f.drill.figure, window: f.drill.window, untilMs: Number.isFinite(t) ? t : null };
+  return { figure: f.drill.figure, window: f.drill.window, untilMs: Number.isFinite(t) ? t : null, ...(f.drill.group ? { group: f.drill.group } : {}) };
 }
 
 /** The records path for a drill state (the route re-validates everything). */
 export function economicsDrillApiPath(s: EconomicsDrillUrlState): string {
   const p = new URLSearchParams({ figure: s.figure, window: s.window });
+  if (s.group) p.set("group", s.group);
   if (s.untilMs !== null) p.set("until", String(s.untilMs));
   return `${ECONOMICS_DRILL_PATH}?${p.toString()}`;
 }
@@ -140,4 +143,22 @@ export function drillTotalText(figure: Pick<EconomicsFigure, "status" | "unit">,
 export function rowValueText(v: number | null, unit: "usd" | "count"): string {
   if (v === null) return UNAVAILABLE_TEXT;
   return unit === "usd" ? usd(v) : n(v);
+}
+
+// ── PR B — Providers and Entitlements words ─────────────────────────────────────
+
+/** "1,204 calls · measured" / "calls unavailable". */
+export function callsText(c: { value: number | null; status: "MEASURED" | "UNAVAILABLE" }): string {
+  return c.value === null ? "calls unavailable" : `${n(c.value)} call${c.value === 1 ? "" : "s"} this cycle · measured`;
+}
+
+/** "$5.00 / day allowance" — the group's configured value (ASSUMED config, not spend); invalid ⇒ said so. */
+export function allowanceText(v: number | null): string {
+  return v === null ? "allowance unavailable (invalid definition)" : `${usd(v)} / day AI allowance (configured)`;
+}
+
+/** The scenario headline: "HYPOTHETICAL · $12.40 → $9.10 (−$3.30)". Unknown parts say Unavailable. */
+export function scenarioHeadline(s: { current: { value: number | null; status: EconomicsStatus; unit: "usd" | "count" }; hypotheticalCost: { value: number | null; status: EconomicsStatus; unit: "usd" | "count" }; differenceUsd: number | null }): string {
+  const a = figureValueText(s.current), b = figureValueText(s.hypotheticalCost);
+  return `HYPOTHETICAL · ${a} → ${b}${s.differenceUsd === null ? "" : ` (−${usd(s.differenceUsd)})`}`;
 }

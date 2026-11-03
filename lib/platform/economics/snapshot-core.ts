@@ -41,6 +41,7 @@ import type { SpendStatus } from "@/lib/platform/ai/fleet-spend-status";
 import { isCustomerSurface, priceSpendGroup, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 import type { BillingCycle, PlaidCycleCost } from "@/lib/platform/plaid/item-months";
 import { plaidRateAt, type PlaidBillableProduct, type PlaidRate } from "@/lib/usage/pricing";
+import { POLICY_GROUP_KEY_PATTERN } from "@/lib/entitlements/policy-groups";
 
 const DAY_MS = 86_400_000;
 
@@ -60,7 +61,14 @@ export const ECONOMICS_FIGURES = [
   "operating_cost", "ai_cost", "provider_cost", "infra_cost",
   "active_customers", "cost_per_active_customer", "revenue", "margin",
 ] as const;
-export type EconomicsFigureKey = (typeof ECONOMICS_FIGURES)[number];
+/** The Overview's figures (the snapshot's `figures` record). */
+export type OverviewFigureKey = (typeof ECONOMICS_FIGURES)[number];
+/** PR B — Providers (per-provider cost) and Entitlements (cost by policy group, scenarios). */
+export const PROVIDER_FIGURES = ["openai_cost", "plaid_cost", "provider_unmetered"] as const;
+export const ENTITLEMENT_FIGURES = ["group_cost", "unattributed_cost", "scenario_cost"] as const;
+export type EconomicsFigureKey = OverviewFigureKey | (typeof PROVIDER_FIGURES)[number] | (typeof ENTITLEMENT_FIGURES)[number];
+const ALL_FIGURES: readonly string[] = [...ECONOMICS_FIGURES, ...PROVIDER_FIGURES, ...ENTITLEMENT_FIGURES];
+export function isOverviewFigure(k: string): k is OverviewFigureKey { return (ECONOMICS_FIGURES as readonly string[]).includes(k); }
 
 /** Figures that have records to drill into, and the windows each accepts. */
 export const DRILLABLE: Readonly<Partial<Record<EconomicsFigureKey, readonly EconomicsWindow[]>>> = {
@@ -69,6 +77,10 @@ export const DRILLABLE: Readonly<Partial<Record<EconomicsFigureKey, readonly Eco
   provider_cost: ["cycle"],
   active_customers: ["cycle"],
   cost_per_active_customer: ["cycle"],
+  openai_cost: ["cycle"],
+  plaid_cost: ["cycle"],
+  group_cost: ["cycle"],
+  unattributed_cost: ["cycle"],
 };
 
 export const ECONOMICS_DRILL_PATH = "/api/platform/platform-ops/economics/drill";
@@ -109,6 +121,8 @@ export interface EconomicsFreshness {
 export interface EconomicsDrillRef {
   figure: EconomicsFigureKey;
   window: EconomicsWindow;
+  /** group_cost only — the policy group key the figure is for. */
+  group?: string;
   /** The records endpoint — the SAME inputs and row builder as the figure. */
   href: string;
 }
@@ -152,7 +166,7 @@ export interface EconomicsTrendDay {
 export interface EconomicsSnapshot {
   checkedAt: string;
   cycle: BillingCycle & { today: string };
-  figures: Readonly<Record<EconomicsFigureKey, EconomicsFigure>>;
+  figures: Readonly<Record<OverviewFigureKey, EconomicsFigure>>;
   trend: {
     windows: Readonly<Record<TrendWindow, EconomicsFigure>>;
     /** The last 90 calendar UTC days, ascending (the 7 d / 30 d series are its tails). */
@@ -227,13 +241,15 @@ export function rowsTotal(rows: readonly EconomicsDrillRow[]): number | null {
   return total;
 }
 
-function drillRef(key: EconomicsFigureKey, window: EconomicsWindow, checkedAt: string): EconomicsDrillRef | null {
+export function drillRef(key: EconomicsFigureKey, window: EconomicsWindow, checkedAt: string, group?: string): EconomicsDrillRef | null {
   if (!DRILLABLE[key]?.includes(window)) return null;
-  const p = new URLSearchParams({ figure: key, window, until: String(Date.parse(checkedAt)) });
-  return { figure: key, window, href: `${ECONOMICS_DRILL_PATH}?${p.toString()}` };
+  const p = new URLSearchParams({ figure: key, window });
+  if (group !== undefined) p.set("group", group);
+  p.set("until", String(Date.parse(checkedAt)));
+  return { figure: key, window, ...(group !== undefined ? { group } : {}), href: `${ECONOMICS_DRILL_PATH}?${p.toString()}` };
 }
 
-interface FigureSpec {
+export interface FigureSpec {
   key: EconomicsFigureKey;
   window: EconomicsWindow;
   label: string;
@@ -251,7 +267,7 @@ interface FigureSpec {
  * structurally-absent parts. A row without a value (unpriced, unmetered) or a
  * PARTIAL row makes the whole PARTIAL; no row with a value ⇒ UNAVAILABLE.
  */
-function figureFromRows(spec: FigureSpec, rows: readonly EconomicsDrillRow[], nowMs: number, checkedAt: string): EconomicsFigure {
+export function figureFromRows(spec: FigureSpec, rows: readonly EconomicsDrillRow[], nowMs: number, checkedAt: string): EconomicsFigure {
   const value = rowsTotal(rows);
   const range = windowRange(spec.window, nowMs);
   const missingRows = rows.filter((r) => r.value === null || r.status === "PARTIAL").map((r) => `${r.label} — ${r.detail}`);
@@ -270,7 +286,7 @@ function figureFromRows(spec: FigureSpec, rows: readonly EconomicsDrillRow[], no
   };
 }
 
-function unavailable(key: EconomicsFigureKey, label: string, unit: "usd" | "count", reason: string, basis: string, window: EconomicsWindow, nowMs: number, checkedAt: string): EconomicsFigure {
+export function unavailable(key: EconomicsFigureKey, label: string, unit: "usd" | "count", reason: string, basis: string, window: EconomicsWindow, nowMs: number, checkedAt: string): EconomicsFigure {
   const range = windowRange(window, nowMs);
   return {
     key, window, label, unit, value: null, status: "UNAVAILABLE", reason,
@@ -306,7 +322,7 @@ export function aiDays(inputs: Pick<EconomicsInputs, "spendGroups">, from: strin
   });
 }
 
-function aiDayRows(inputs: EconomicsInputs, window: EconomicsWindow): EconomicsDrillRow[] {
+export function aiDayRows(inputs: Pick<EconomicsInputs, "spendGroups" | "nowMs">, window: EconomicsWindow): EconomicsDrillRow[] {
   const { from, to } = windowRange(window, inputs.nowMs);
   return aiDays(inputs, from, to).filter((d) => d.observed).map((d) => ({
     id: d.day,
@@ -320,7 +336,7 @@ function aiDayRows(inputs: EconomicsInputs, window: EconomicsWindow): EconomicsD
 }
 
 const fmt = (v: number | null) => (v === null ? "none" : `$${v.toFixed(2)}`);
-const AI_BASIS = "AiInvocation ledger, RETURNED calls, each (model, UTC day) priced by the code-owned rate card; all surfaces (customer + overhead)";
+export const AI_BASIS = "AiInvocation ledger, RETURNED calls, each (model, UTC day) priced by the code-owned rate card; all surfaces (customer + overhead)";
 
 export function aiCostFigure(inputs: EconomicsInputs, window: EconomicsWindow, checkedAt: string): EconomicsFigure {
   const label = window === "cycle" ? "AI · this cycle" : `AI cost · ${window.replace("d", " d")}`;
@@ -339,13 +355,21 @@ export function aiCostFigure(inputs: EconomicsInputs, window: EconomicsWindow, c
 
 const PRODUCT_LABEL: Readonly<Record<PlaidBillableProduct, string>> = { transactions: "Plaid · Transactions", investments: "Plaid · Investments" };
 
-function plaidRows(inputs: EconomicsInputs): EconomicsDrillRow[] {
+export function plaidRows(inputs: Pick<EconomicsInputs, "plaidCycle" | "plaidRates">): EconomicsDrillRow[] {
   const c = inputs.plaidCycle;
   if (!c) return [];
   const rows: EconomicsDrillRow[] = [];
   for (const product of ["transactions", "investments"] as const) {
     const months = c.itemMonths[product];
     if (months === 0) continue;
+    // S2 (PR B review): Plaid bills Investments per Item-month only once the product is
+    // INITIALIZED (Plaid's `billed_products`), not merely consented. The census counts
+    // consented Items, and `billed_products` is not stored, so these Item-months are
+    // NOT EVIDENCED as billed: counted and named, never priced (the figure is PARTIAL).
+    if (product === "investments") {
+      rows.push({ id: "plaid-investments", label: PRODUCT_LABEL.investments, value: null, status: "UNAVAILABLE", detail: investmentsGap(months) });
+      continue;
+    }
     const rate = plaidRateAt(product, c.cycle.start, inputs.plaidRates);
     rows.push(rate
       ? { id: `plaid-${product}`, label: PRODUCT_LABEL[product], value: months * rate.usdPerItemMonth, status: "ESTIMATED", detail: `${months} Item-month${months === 1 ? "" : "s"} × $${rate.usdPerItemMonth.toFixed(2)}` }
@@ -354,8 +378,14 @@ function plaidRows(inputs: EconomicsInputs): EconomicsDrillRow[] {
   return rows;
 }
 
+/** Why consented Investments Item-months are not priced (exported: the UI and tests say the same words). */
+export const REASON_INVESTMENTS_NOT_EVIDENCED = "billed only once initialized (Plaid billed_products), which is not stored — consent alone is not evidence";
+export function investmentsGap(months: number): string {
+  return `${months} consented Item-month${months === 1 ? "" : "s"} — ${REASON_INVESTMENTS_NOT_EVIDENCED}; not counted`;
+}
+
 /** Census caveats that make a priced Plaid figure a lower bound (or uncertain). */
-function plaidCaveats(inputs: EconomicsInputs): string[] {
+export function plaidCaveats(inputs: Pick<EconomicsInputs, "plaidCycle" | "plaidReadingsAgree">): string[] {
   const c = inputs.plaidCycle;
   if (!c) return [];
   const out = c.coverage.incomplete ? c.coverage.reasons.map((r) => `Plaid census — ${r}`) : [];
@@ -364,9 +394,9 @@ function plaidCaveats(inputs: EconomicsInputs): string[] {
   return out;
 }
 
-const PLAID_BASIS = "PlaidItem census × invoice-derived Item-month rate (present during the cycle); sandbox and seeded Items excluded";
+export const PLAID_BASIS = "PlaidItem census × invoice-derived Item-month rate (present during the cycle); sandbox and seeded Items excluded";
 
-function plaidEmptyReason(inputs: EconomicsInputs): string {
+export function plaidEmptyReason(inputs: Pick<EconomicsInputs, "plaidCycle" | "plaidRates">): string {
   if (inputs.plaidRates.length === 0) return REASON_NO_PLAID_RATE;
   if (!inputs.plaidCycle) return REASON_NO_PLAID_CYCLE;
   return REASON_NO_PLAID_PRICED;
@@ -427,7 +457,7 @@ export function costPerCustomerRows(inputs: EconomicsInputs): EconomicsDrillRow[
 const OPERATING_BASIS = "AI (invocation ledger × rate card) + Plaid (Item-months × invoice-derived rate) this cycle; other providers and infrastructure are not metered";
 
 /** One figure, from the same rows its drill returns. */
-export function economicsFigure(inputs: EconomicsInputs, key: EconomicsFigureKey, window: EconomicsWindow, checkedAt: string): EconomicsFigure {
+export function economicsFigure(inputs: EconomicsInputs, key: OverviewFigureKey, window: EconomicsWindow, checkedAt: string): EconomicsFigure {
   const now = inputs.nowMs;
   switch (key) {
     case "ai_cost":
@@ -476,7 +506,7 @@ export function economicsFigure(inputs: EconomicsInputs, key: EconomicsFigureKey
 }
 
 /** The records behind one figure — the rows its value is the sum of. */
-export function economicsDrillRows(inputs: EconomicsInputs, key: EconomicsFigureKey, window: EconomicsWindow): EconomicsDrillRow[] {
+export function economicsDrillRows(inputs: EconomicsInputs, key: OverviewFigureKey, window: EconomicsWindow): EconomicsDrillRow[] {
   switch (key) {
     case "ai_cost": return inputs.aiPricingConfigured ? aiDayRows(inputs, window) : [];
     case "operating_cost": return operatingCostRows(inputs);
@@ -505,7 +535,7 @@ export function buildEconomicsSnapshot(inputs: EconomicsInputs): EconomicsSnapsh
   };
 }
 
-export function buildEconomicsDrill(inputs: EconomicsInputs, key: EconomicsFigureKey, window: EconomicsWindow): EconomicsDrillResponse {
+export function buildEconomicsDrill(inputs: EconomicsInputs, key: OverviewFigureKey, window: EconomicsWindow): EconomicsDrillResponse {
   const checkedAt = new Date(inputs.nowMs).toISOString();
   const rows = economicsDrillRows(inputs, key, window);
   const figure = economicsFigure(inputs, key, window, checkedAt);
@@ -515,15 +545,21 @@ export function buildEconomicsDrill(inputs: EconomicsInputs, key: EconomicsFigur
 
 // ── The drill query (validated once, shared by the route and the URL mirror) ────
 
-export interface EconomicsDrillQuery { figure: EconomicsFigureKey; window: EconomicsWindow; untilMs: number }
+export interface EconomicsDrillQuery { figure: EconomicsFigureKey; window: EconomicsWindow; untilMs: number; group?: string }
 
 /** Parse `figure`, `window`, `until` (epoch ms, ≤ now; else now). Null for a figure/window without records. */
 export function parseEconomicsDrillQuery(p: URLSearchParams, nowMs: number): EconomicsDrillQuery | null {
   const figure = p.get("figure") as EconomicsFigureKey | null;
   const window = (p.get("window") ?? "cycle") as EconomicsWindow;
-  if (!figure || !(ECONOMICS_FIGURES as readonly string[]).includes(figure)) return null;
+  if (!figure || !ALL_FIGURES.includes(figure)) return null;
   if (!DRILLABLE[figure]?.includes(window)) return null;
   const raw = Number(p.get("until"));
   const untilMs = Number.isFinite(raw) && raw > 0 && raw <= nowMs ? Math.floor(raw) : nowMs;
+  if (figure === "group_cost") {
+    // A policy group key in the catalogue's own shape; the reader re-checks it exists.
+    const group = p.get("group");
+    if (!group || !POLICY_GROUP_KEY_PATTERN.test(group)) return null;
+    return { figure, window, untilMs, group };
+  }
   return { figure, window, untilMs };
 }
