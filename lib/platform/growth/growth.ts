@@ -26,6 +26,7 @@ import { db, systemDb } from "@/lib/db";
 import { buildFunnel, firstConnections, type FunnelInputs } from "@/lib/platform/growth/product-analytics-core";
 import { loadEngagedUserIdsSince, loadFunnelFacts } from "@/lib/platform/growth/product-analytics";
 import type { FunnelStage } from "@/lib/platform/growth/product-analytics-types";
+import { ENGAGEMENT_WINDOW_DAYS } from "@/lib/presence/definitions";
 
 const DAY_MS = 86_400_000;
 
@@ -201,7 +202,8 @@ export async function getBetaInvitationLifecycle(
 export async function getGrowthFunnel(deps: { now?: Date; readers?: GrowthReaders } = {}): Promise<GrowthFunnel> {
   const now = deps.now ?? new Date();
   const r = deps.readers ?? realReaders(now);
-  const weekAgo = new Date(now.getTime() - 7 * DAY_MS);
+  // rolling — see PLATFORM-INTELLIGENCE X5: 7 × 24 h back from now, NOT 7 UTC days ("Returning (7d)").
+  const weekAgo = new Date(now.getTime() - ENGAGEMENT_WINDOW_DAYS.wau * DAY_MS);
 
   const [beta, redeemedActivated, total, verified, activated, returning7, facts] = await Promise.all([
     r.betaByStatus(),

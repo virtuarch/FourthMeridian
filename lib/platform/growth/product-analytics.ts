@@ -22,6 +22,7 @@ import "server-only";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { decodeTransitions } from "@/lib/platform/plaid/usage";
+import { DEACTIVATED_IN_WINDOW_POLICY, engagedPopulation, type UndecidedPopulationPolicy } from "@/lib/platform/customer/population";
 import {
   ANALYTICS_AUDIT_ACTIONS, ENGAGEMENT_AI_SURFACES, ENGAGEMENT_AUDIT_ACTIONS, analysisSince, buildProductAnalytics,
   type ProductAnalyticsFacts, type UserInstant,
@@ -103,7 +104,11 @@ export async function loadLastEngagements(client: ProductAnalyticsDb, userIds?: 
  * client-asserted lastInteractionAt, never SESSION_ACTIVE_DAY (presence) — is
  * what "returning" and DAU/WAU/MAU count.
  */
-export async function loadEngagedUserIdsSince(client: ProductAnalyticsDb, since: Date): Promise<Set<string>> {
+export async function loadEngagedUserIdsSince(
+  client: ProductAnalyticsDb, since: Date,
+  /** OD-3 — who an engagement count keeps (default UNDECIDED = every user with a fact, as today). */
+  policy: UndecidedPopulationPolicy<"OD-3"> = DEACTIVATED_IN_WINDOW_POLICY,
+): Promise<Set<string>> {
   const [ai, audit] = await Promise.all([
     client.aiInvocation.groupBy({
       by: ["userId"], where: { userId: { not: null }, occurredAt: { gte: since }, surface: { in: [...ENGAGEMENT_AI_SURFACES] } },
@@ -114,7 +119,7 @@ export async function loadEngagedUserIdsSince(client: ProductAnalyticsDb, since:
   ]);
   const out = new Set<string>();
   for (const r of [...ai, ...audit]) if (r.userId) out.add(r.userId);
-  return out;
+  return engagedPopulation(out, policy);
 }
 
 /** "Ever" facts for the funnel and the cohorts: who exists, first visit, first connection, first AI turn, first Brief view, last engagement. */

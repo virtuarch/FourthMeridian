@@ -27,6 +27,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { env } from "@/lib/env";
 import { FOUNDER_INTERNAL_V1, type EntitlementValue } from "@/lib/entitlements/catalogue";
 import { loadPlatformEntitlementInputs, type EntitlementReadClient } from "@/lib/entitlements/resolve";
@@ -103,7 +104,7 @@ export async function readPolicyGroupDetail(key: string, now: Date = new Date())
     systemDb.customerPolicyAssignment.groupBy({ by: ["overlay", "aiDailyUsdAllowanceOverride"], where: { policyGroup: key }, _count: { _all: true } }),
     loadPlatformEntitlementInputs(systemDb as unknown as EntitlementReadClient),
     g.isDefault && !enforced
-      ? systemDb.user.count({ where: { role: "USER", deactivatedAt: null, policyAssignment: { is: null } } })
+      ? systemDb.user.count({ where: { ...OPEN_CUSTOMER_WHERE, policyAssignment: { is: null } } })
       : Promise.resolve(0),
   ]);
 

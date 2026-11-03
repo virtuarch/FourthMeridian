@@ -12,6 +12,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { getImportEvidence } from "@/lib/platform/refresh/projections";
 import { IMPORT_WINDOW_MS, deriveImportStatus, type ImportItemFacts, type ImportedItem } from "./import-status-core";
 
@@ -27,7 +28,7 @@ export const IMPORT_ITEMS_MAX = 1_000;
 export type { ImportedItem };
 
 /** The population both readers count: active role-USER customers (the CS overview's own population). */
-const CUSTOMER_OWNER = { role: "USER" as const, deactivatedAt: null };
+const CUSTOMER_OWNER = OPEN_CUSTOMER_WHERE;
 
 async function fold(rows: Array<ImportItemFacts & { institutionName: string; userId?: string }>, now: Date): Promise<{ items: ImportedItem[]; floor: boolean }> {
   const { evidence, floor } = await getImportEvidence(rows.map((r) => ({ id: r.id, createdAt: r.createdAt })), IMPORT_WINDOW_MS);

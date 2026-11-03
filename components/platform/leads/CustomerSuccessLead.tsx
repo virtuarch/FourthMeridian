@@ -42,7 +42,7 @@ import { ShareBars } from "../charts/ShareBars";
 import { cohortLayout } from "../charts/heatmap-model";
 import { ONBOARDING_SHORT, cohortCellText, describeCohortCell } from "./growth-model";
 import {
-  CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, atLeast, attentionBars, csHero, healthItems, incidentBars, stageBars,
+  CS_POPULATION_PENDING_NOTE, CUSTOMER_LIST_KEY, INCIDENTS_WORKSPACE, INCIDENT_PALETTE, atLeast, attentionBars, csHero, healthItems, incidentBars, stageBars,
   type CsWindow,
 } from "./customer-success-model";
 import type { ReactNode } from "react";
@@ -102,12 +102,13 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
           hint={<span className="text-[11px] text-[var(--text-faint)]">Now</span>}>
           <Surface className="flex flex-1 flex-col justify-center p-4 sm:p-5">
             {o ? (
-              o.customers.active === 0 ? <ChartMessage>No active customers</ChartMessage> : (
+              o.customers.active === 0 ? <ChartMessage>No open customer accounts</ChartMessage> : (
                 <>
-                  <ShareBars items={attentionBars(o)} ariaLabel="Active customers needing help, by reason" noun="customer"
-                    denominator={`of ${n(o.customers.active)} active customers · one customer can have several reasons`}
+                  <ShareBars items={attentionBars(o)} ariaLabel="Open customer accounts needing help, by reason" noun="customer"
+                    denominator={`of ${n(o.customers.active)} open customer accounts · one customer can have several reasons`}
                     {...(showWho ? { onSelect: (key: string) => showWho(key as AttentionFilter), selectLabel: (b: { label: string; count: number }) => `Show the ${n(b.count)} customer${b.count === 1 ? "" : "s"}: ${b.label}` } : {})} />
                   {o.attention.floor && <Caption>{"Counts are at least (≥) — a fleet read reached its row cap"}</Caption>}
+                  <Caption>{CS_POPULATION_PENDING_NOTE}</Caption>
                   {showWho && o.attention.customers > 0 && (
                     <button type="button" onClick={() => showWho("any")} data-attention-any
                       className="mt-2 inline-flex min-h-11 items-center self-start text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] lg:min-h-8">
@@ -154,8 +155,8 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
         <Block id="cs-stages" label="Where customers are" className="min-w-0 lg:col-span-5"
           hint={<span className="text-[11px] text-[var(--text-faint)]">Furthest stage reached</span>}>
           <Surface className="flex-1 p-4 sm:p-5">
-            {o ? <ShareBars items={stageBars(o)} ariaLabel="Active customers by the furthest onboarding stage reached" noun="customer"
-              denominator={`of ${n(o.customers.active)} active customers · strict funnel, now`} /> : <Loading f={p.f} what="onboarding stages" />}
+            {o ? <ShareBars items={stageBars(o)} ariaLabel="Open customer accounts by the furthest onboarding stage reached" noun="customer"
+              denominator={`of ${n(o.customers.active)} open customer accounts · strict funnel, now`} /> : <Loading f={p.f} what="onboarding stages" />}
           </Surface>
         </Block>
         <Block id="cs-friction" label="Onboarding friction by registration week" className="min-w-0 lg:col-span-7">
@@ -164,7 +165,7 @@ export function CustomerSuccessLeadSurface(p: CsLeadSurfaceProps) {
               o.onboarding.rows.some((r) => r.size > 0) ? (
                 <>
                   <HeatGrid layout={cohorts} rowHeight={26} labelWidth={74} domainMax={1} cellText={cohortCellText} legend={{ low: "0%", high: "100%" }}
-                    ariaLabel="Share of each registration week's active customers that got through each onboarding stage"
+                    ariaLabel="Share of each registration week's open customer accounts that got through each onboarding stage"
                     describe={(r, c, cell) => describeCohortCell(o.onboarding.rows[r], o.onboarding.stages[c].label, cell, "customers")} />
                   <Caption>A pale cell is where a week&apos;s customers stall · as of today</Caption>
                 </>
