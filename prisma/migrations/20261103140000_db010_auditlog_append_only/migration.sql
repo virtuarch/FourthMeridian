@@ -34,7 +34,12 @@
 --     owner-only break-glass path.
 --
 -- BOUNDARIES. The jobs compute their cutoff in UTC arithmetic; the policies use
--- now() - interval. Both mean "older than"; the policy is the outer bound. A row
+-- (now() AT TIME ZONE 'UTC') - interval. "createdAt" is TIMESTAMP(3) WITHOUT
+-- TIME ZONE holding UTC (Prisma), so the comparison is UTC-to-UTC and does NOT
+-- depend on the session TimeZone (a pooled session's SET can leak through
+-- Supavisor — the 2026-10-25 incident). House convention: PB-10 presence SQL
+-- (lib/auth/presence-activity.ts). Both mean "older than"; the policy is the
+-- outer bound. A row
 -- the job selects but the policy rejects is simply not changed (count 0) — the
 -- jobs use updateMany / deleteMany, which report counts and never throw on 0.
 --
@@ -60,7 +65,7 @@ CREATE POLICY fm_system_ins ON public."AuditLog" FOR INSERT TO fm_system WITH CH
 
 -- The post-image must be minimised.
 CREATE POLICY fm_system_minimise ON public."AuditLog" FOR UPDATE TO fm_system
-  USING (action = 'BETA_ACCESS_REQUESTED' AND "createdAt" < now() - interval '90 days')
+  USING (action = 'BETA_ACCESS_REQUESTED' AND "createdAt" < (now() AT TIME ZONE 'UTC') - interval '90 days')
   WITH CHECK ("ipAddress" IS NULL AND "userAgent" IS NULL);
 
 CREATE POLICY fm_system_retain ON public."AuditLog" FOR DELETE TO fm_system
@@ -76,5 +81,5 @@ CREATE POLICY fm_system_retain ON public."AuditLog" FOR DELETE TO fm_system
       'FIRST_SYNC_SUCCEEDED',
       'AI_TURN_FAILED'
     )
-    AND "createdAt" < now() - interval '13 months'
+    AND "createdAt" < (now() AT TIME ZONE 'UTC') - interval '13 months'
   );

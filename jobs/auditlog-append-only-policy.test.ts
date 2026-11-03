@@ -40,6 +40,15 @@ function policy(name: string): string | null {
 }
 const intervals = (body: string) => [...body.matchAll(/interval\s+'(\d+)\s+(\w+)'/gi)].map((m) => ({ n: Number(m[1]), unit: m[2].toLowerCase() }));
 
+/**
+ * "createdAt" is TIMESTAMP WITHOUT TIME ZONE holding UTC. A bare now() (timestamptz) makes the
+ * comparison depend on the SESSION TimeZone, and a pooled session's SET can leak (2026-10-25,
+ * Supavisor). House convention (PB-10, lib/auth/presence-activity.ts): (now() AT TIME ZONE 'UTC').
+ */
+const UTC_WINDOW = /"createdAt"\s*<\s*\(\s*now\(\)\s+AT\s+TIME\s+ZONE\s+'UTC'\s*\)\s*-\s*interval/i;
+/** Occurrences of now() NOT immediately wrapped as (now() AT TIME ZONE 'UTC'). */
+const bareNow = (body: string) => (body.match(/now\(\)/gi) ?? []).length - (body.match(/\(\s*now\(\)\s+AT\s+TIME\s+ZONE\s+'UTC'\s*\)/gi) ?? []).length;
+
 console.log("\nDB-010 AuditLog append-only — SQL ↔ code drift pin\n");
 
 // ── DELETE: product-event retention ──────────────────────────────────────────
@@ -58,7 +67,8 @@ if (retain) {
   const iv = intervals(retain);
   check(`the DELETE window is exactly one interval of PRODUCT_EVENT_RETENTION_MONTHS (${PRODUCT_EVENT_RETENTION_MONTHS}) months`,
     iv.length === 1 && iv[0].n === PRODUCT_EVENT_RETENTION_MONTHS && /^months?$/.test(iv[0].unit), JSON.stringify(iv));
-  check("the DELETE window is \"older than\" (createdAt < now() - interval)", /"createdAt"\s*<\s*now\(\)\s*-\s*interval/i.test(retain));
+  check("the DELETE window is \"older than\" in UTC (createdAt < (now() AT TIME ZONE 'UTC') - interval)", UTC_WINDOW.test(retain));
+  check("the DELETE window never uses a session-TimeZone-dependent bare now()", bareNow(retain) === 0, retain);
 }
 
 // ── UPDATE: beta-intake network minimisation ─────────────────────────────────
@@ -74,7 +84,8 @@ if (minimise) {
   const iv = intervals(using);
   check(`the UPDATE window is exactly one interval of BETA_INTAKE_NETWORK_DAYS (${BETA_INTAKE_NETWORK_DAYS}) days`,
     iv.length === 1 && iv[0].n === BETA_INTAKE_NETWORK_DAYS && /^days?$/.test(iv[0].unit), JSON.stringify(iv));
-  check("the UPDATE window is \"older than\" (createdAt < now() - interval)", /"createdAt"\s*<\s*now\(\)\s*-\s*interval/i.test(using));
+  check("the UPDATE window is \"older than\" in UTC (createdAt < (now() AT TIME ZONE 'UTC') - interval)", UTC_WINDOW.test(using));
+  check("the UPDATE window never uses a session-TimeZone-dependent bare now()", bareNow(minimise) === 0, minimise);
   check("the UPDATE post-image must be minimised (ipAddress AND userAgent IS NULL)",
     /"ipAddress"\s+IS\s+NULL/i.test(check_) && /"userAgent"\s+IS\s+NULL/i.test(check_) && !/\bOR\b/i.test(check_), check_);
 }
