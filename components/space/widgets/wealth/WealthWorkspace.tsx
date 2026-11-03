@@ -305,6 +305,12 @@ export function WealthWorkspace({
     () => (ctx && accounts && accounts.length > 0 ? classifyAccounts(accounts, ctx).unconverted : false),
     [accounts, ctx],
   );
+  // FM-AUDIT-022 — wallets EXCLUDED from the current composition for having no
+  // value (unpriced / never observed), disclosed as "N not yet valued".
+  const unvaluedCount = useMemo(
+    () => (accounts && accounts.length > 0 ? classifyAccounts(accounts, ctx).unvaluedCount : 0),
+    [accounts, ctx],
+  );
 
   // Trust envelope — resolved from THIS workspace's own result, emitted up to the
   // shell chip in Total / Assets. In Debt the Debt workspace owns the slot.
@@ -321,8 +327,8 @@ export function WealthWorkspace({
     [result, convertedSnapshots, metric],
   );
   const envelope = useMemo(
-    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted, wealthChipTier: chipTier }),
-    [result, displayCurrency, fxUnconverted, chipTier],
+    () => resolvePerspectiveEnvelope({ perspectiveId: "wealth", wealthResult: result, currency: displayCurrency, fxUnconverted, wealthChipTier: chipTier, unvaluedCount }),
+    [result, displayCurrency, fxUnconverted, chipTier, unvaluedCount],
   );
   useEffect(() => {
     if (mode === "debt") return; // DebtWorkspace emits its own

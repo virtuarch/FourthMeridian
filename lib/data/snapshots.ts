@@ -29,7 +29,7 @@ import { Snapshot } from "@/types";
 import { loadRealAssetBasisByDate } from "@/lib/snapshots/real-asset-basis";
 import { isRealAssetsModeled } from "@/lib/snapshots/real-asset-basis.core";
 import { todayUTCISO } from "@/lib/time/clock";
-import type { BalanceCoverage, WithheldChange } from "@/lib/connections/balance-coverage.core";
+import type { BalanceCoverageRead, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
 /**
  * Resolve the stamp-conversion context for a set of snapshot rows against the
@@ -361,10 +361,11 @@ export async function getSpaceNetWorthSummaries(
   spaceIds: string[],
   /**
    * PB-8c — each Space's balance-history floors (loadBalanceCoverageBySpace),
-   * read by the caller in a phase of its own. A Space absent from the map, or
-   * mapped to null, keeps its change exactly as before (fail-open).
+   * read by the caller in a phase of its own. A Space mapped to null (nothing to
+   * cover) or absent keeps its change exactly as before; one mapped to
+   * BALANCE_COVERAGE_UNAVAILABLE (the read failed) has it withheld (S2 sweep).
    */
-  balanceCoverage?: ReadonlyMap<string, BalanceCoverage | null>,
+  balanceCoverage?: ReadonlyMap<string, BalanceCoverageRead>,
 ): Promise<Record<string, SpaceNetWorthSummary>> {
   if (spaceIds.length === 0) return {};
 

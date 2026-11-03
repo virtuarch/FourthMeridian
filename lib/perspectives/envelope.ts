@@ -60,7 +60,14 @@ export type EnvelopeWarningKind =
    * completeness answers "how was this value obtained", this answers "is the
    * provider's picture of it fully arrived yet".
    */
-  | "sync-incomplete";
+  | "sync-incomplete"
+  /**
+   * FM-AUDIT-022 — one or more accounts (unpriced or never-observed crypto
+   * wallets) have NO value and are EXCLUDED from the total. Orthogonal to
+   * completeness, exactly like `fx`'s unconverted case: the figure shown is an
+   * honest partial, never one that counted them at $0.
+   */
+  | "unvalued";
 
 export interface EnvelopeWarning {
   kind:    EnvelopeWarningKind;
@@ -138,6 +145,25 @@ export const SYNC_INCOMPLETE_WARNING: readonly EnvelopeWarning[] = [
       "Some connected data is still syncing. Balances may be current while recent transactions and history are still catching up.",
   },
 ];
+
+/**
+ * FM-AUDIT-022 — the "N not yet valued" caveat, from `classifyAccounts`'
+ * `unvaluedCount`. Same channel and wording family as the FX exclusion: a
+ * partial total, stated as one.
+ */
+export function unvaluedWarning(unvaluedCount?: number): EnvelopeWarning[] {
+  const n = unvaluedCount ?? 0;
+  if (n <= 0) return [];
+  return [
+    {
+      kind:  "unvalued",
+      label: `${n} not yet valued`,
+      tone:  "warning",
+      detail:
+        `${n} crypto wallet${n === 1 ? " has" : "s have"} no value yet — no price is available, or ${n === 1 ? "it has" : "they have"} not been observed yet — so ${n === 1 ? "it is" : "they are"} excluded from this total. The figure shown is a partial total of the accounts that could be valued.`,
+    },
+  ];
+}
 
 function syncIncompleteWarning(syncIncomplete?: boolean): EnvelopeWarning[] {
   return syncIncomplete ? [...SYNC_INCOMPLETE_WARNING] : [];
@@ -415,8 +441,17 @@ export function resolvePerspectiveEnvelope(args: {
    * consumed only by the wealth branch; absent ⇒ byte-identical envelope.
    */
   wealthChipTier?: CompletenessTier;
+  /**
+   * FM-AUDIT-022 — `classifyAccounts(...).unvaluedCount` over the accounts the
+   * wealth totals were computed from. Consumed by the wealth branch only (net
+   * worth / assets / digital assets are where a wallet counts); absent or 0 ⇒
+   * byte-identical envelope.
+   */
+  unvaluedCount?: number;
 }): PerspectiveEnvelope {
-  const env = resolveBase(args);
+  const base = resolveBase(args);
+  const unvalued = args.perspectiveId === "wealth" && args.wealthResult ? unvaluedWarning(args.unvaluedCount) : [];
+  const env = unvalued.length > 0 ? { ...base, warnings: mergeWarnings(base.warnings, unvalued) } : base;
   // Applied uniformly AFTER the per-perspective resolution: partial convergence
   // is a property of the Space's connections, not of any one lens's math, so it
   // must not depend on which perspective happens to be open.

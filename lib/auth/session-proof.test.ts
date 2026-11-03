@@ -71,7 +71,7 @@ let encode: typeof import("next-auth/jwt").encode;
 let UserRole: typeof import("@prisma/client").UserRole;
 
 // ── The fake session store ────────────────────────────────────────────────────
-interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string; totpEnabled: boolean } | null; createdAt?: Date; lastActiveAt?: Date }
+interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string; totpEnabled: boolean; deactivatedAt: Date | null; deletionScheduledAt: Date | null } | null; createdAt?: Date; lastActiveAt?: Date }
 const ROWS = new Map<string, Row>();
 let lookups = 0;
 let failStore = false;
@@ -90,10 +90,10 @@ const ORPHAN_SESSION  = "0b6f2a4e-5c1d-4f8e-9a7b-555555555555";
 
 function seed() {
   ROWS.clear();
-  ROWS.set(ALICE_SESSION,   { userId: ALICE, revokedAt: null,       user: { id: ALICE, role: "USER", totpEnabled: true } });
-  ROWS.set(BOB_SESSION,     { userId: BOB,   revokedAt: null,       user: { id: BOB,   role: "USER", totpEnabled: true } });
-  ROWS.set(ADMIN_SESSION,   { userId: ADMIN, revokedAt: null,       user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled: true } });
-  ROWS.set(REVOKED_SESSION, { userId: ALICE, revokedAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true } });
+  ROWS.set(ALICE_SESSION,   { userId: ALICE, revokedAt: null,       user: { id: ALICE, role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } });
+  ROWS.set(BOB_SESSION,     { userId: BOB,   revokedAt: null,       user: { id: BOB,   role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } });
+  ROWS.set(ADMIN_SESSION,   { userId: ADMIN, revokedAt: null,       user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } });
+  ROWS.set(REVOKED_SESSION, { userId: ALICE, revokedAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } });
   ROWS.set(ORPHAN_SESSION,  { userId: "cmdeleted0000000000000000", revokedAt: null, user: null });
 }
 
@@ -217,12 +217,12 @@ async function main() {
     decideAdminApiAccess({ role: f5.user?.role as UserRoleT, requireTotpSetup: false, systemAdminDisabled: false }) !== "ALLOW");
   // Demotion after issuance: the store now says USER for the admin.
   seed();
-  ROWS.set(ADMIN_SESSION, { userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "USER", totpEnabled: true } });
+  ROWS.set(ADMIN_SESSION, { userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } });
   const demoted = await serve(await forge({ id: ADMIN, role: "SYSTEM_ADMIN", sessionToken: ADMIN_SESSION }));
   check("5. an admin demoted after login is served with the CURRENT role (USER)", demoted.user?.role === "USER", JSON.stringify(demoted));
   // Unknown role in the store → refused, never defaulted.
   seed();
-  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "ROOT", totpEnabled: true } });
+  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "ROOT", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } });
   const unknownRole = await serve(await forge({ id: ALICE, role: "USER", sessionToken: ALICE_SESSION }));
   check("5. a role the application does not know → refused", !authenticated(unknownRole), JSON.stringify(unknownRole));
 
@@ -252,7 +252,7 @@ async function main() {
   check("9. valid SYSTEM_ADMIN session whose store role is SYSTEM_ADMIN → accepted as SYSTEM_ADMIN",
     admin.user?.id === ADMIN && admin.user?.role === "SYSTEM_ADMIN", JSON.stringify(admin));
   seed();
-  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "SYSTEM_ADMIN", totpEnabled: true } });
+  ROWS.set(ALICE_SESSION, { userId: ALICE, revokedAt: null, user: { id: ALICE, role: "SYSTEM_ADMIN", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } });
   const promoted = await serve(await forge({ id: ALICE, role: "USER", sessionToken: ALICE_SESSION }));
   check("9. a user promoted after login is served with the CURRENT role", promoted.user?.role === "SYSTEM_ADMIN", JSON.stringify(promoted));
 
@@ -293,25 +293,25 @@ async function main() {
     seed(); ROWS.set(ALICE_SESSION, row); settingReads = 0;
     return serve(await forge({ id: row.userId, role: "USER", sessionToken: ALICE_SESSION, requireTotpSetup: claim }));
   };
-  const unenrolledAdmin = await totp({ userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled: false } }, null);
+  const unenrolledAdmin = await totp({ userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled: false, deactivatedAt: null, deletionScheduledAt: null } }, null);
   check("T1. un-enrolled SYSTEM_ADMIN whose token says requireTotpSetup: null → served PENDING",
     unenrolledAdmin.user?.role === "SYSTEM_ADMIN" && unenrolledAdmin.requireTotpSetup === true, JSON.stringify(unenrolledAdmin));
   check("    …so admin access is denied despite the token", decideAdminApiAccess({ role: "SYSTEM_ADMIN" as UserRoleT,
     requireTotpSetup: unenrolledAdmin.requireTotpSetup === true, systemAdminDisabled: false }) !== "ALLOW");
   check("    …and the setting was not consulted for an admin (as authorize() does)", settingReads === 0);
   requireTotpAllUsers = true;
-  const forcedUser = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false } }, false);
+  const forcedUser = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false, deactivatedAt: null, deletionScheduledAt: null } }, false);
   check("T2. require_totp_all_users ON + un-enrolled USER whose token (client-updated) says false → served PENDING",
     forcedUser.requireTotpSetup === true && settingReads === 1, JSON.stringify(forcedUser));
   requireTotpAllUsers = false;
-  const optionalUser = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false } }, true);
+  const optionalUser = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false, deactivatedAt: null, deletionScheduledAt: null } }, true);
   check("T3. setting OFF + un-enrolled USER whose token says true → served NOT pending (the hint never decides)",
     optionalUser.user?.id === ALICE && optionalUser.requireTotpSetup === false, JSON.stringify(optionalUser));
-  const enrolled = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: true } }, true);
+  const enrolled = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } }, true);
   check("T4. enrolled user with a stale `true` hint → served NOT pending, setting not read",
     enrolled.requireTotpSetup === false && settingReads === 0, JSON.stringify(enrolled));
   failSetting = true;
-  const settingDown = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false } }, false);
+  const settingDown = await totp({ userId: ALICE, revokedAt: null, user: { id: ALICE, role: "USER", totpEnabled: false, deactivatedAt: null, deletionScheduledAt: null } }, false);
   failSetting = false;
   check("T5. settings read fails for an un-enrolled USER → NOT authenticated (indeterminate), never 'not required'",
     !authenticated(settingDown) && settingDown[SESSION_INDETERMINATE_FLAG] === true, JSON.stringify(settingDown));
@@ -320,11 +320,18 @@ async function main() {
   console.log("\n13. pure judgement edges");
   const never = async (): Promise<boolean> => { throw new Error("setting must not be read"); };
   check("factsFromRow(revokedAt missing) → null (malformed is not 'not revoked')",
-    (await factsFromRow({ userId: ALICE, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true } }, never)) === null);
+    (await factsFromRow({ userId: ALICE, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } }, never)) === null);
   check("factsFromRow(user.id ≠ row.userId) → null",
-    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: BOB, role: "USER", totpEnabled: true } }, never)) === null);
+    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: BOB, role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } }, never)) === null);
+  // Deactivation-fix (strict) — the lockout is never the one fact that fails open.
+  check("factsFromRow(lockout fields missing) → null (malformed is not 'not locked out')",
+    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true } }, never)) === null);
+  check("factsFromRow(only deletionScheduledAt missing) → null",
+    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true, deactivatedAt: null } }, never)) === null);
+  check("factsFromRow(lockout field not null / Date) → null",
+    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER", totpEnabled: true, deactivatedAt: "yes", deletionScheduledAt: null } }, never)) === null);
   check("factsFromRow(totpEnabled missing) → null (cannot derive the requirement)",
-    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER" } }, never)) === null);
+    (await factsFromRow({ userId: ALICE, revokedAt: null, createdAt: new Date(), lastActiveAt: new Date(), user: { id: ALICE, role: "USER", deactivatedAt: null, deletionScheduledAt: null } }, never)) === null);
   check("judgeSession(stale verified facts of ANOTHER user) → refused",
     judgeSession({ userId: ALICE, sessionToken: BOB_SESSION }, { valid: true, facts: { userId: BOB, role: "USER", requireTotpSetup: false }, disposition: "STALE_HIT" }).kind === "refused");
   check("judgeSession(valid without facts) → refused, never authenticated",

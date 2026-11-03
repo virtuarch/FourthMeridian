@@ -263,17 +263,19 @@ async function assembleAccounts(
   // product surfaces use. This assembler decides scope and visibility; it
   // decides no financial semantics, which is why the substitution is a call
   // and not a branch.
-  const canonical = new Map(
-    (await applyCanonicalWalletBalances(
-      links.map((l) => ({
-        id: l.financialAccount.id,
-        walletChain: l.financialAccount.walletChain,
-        lastUpdated: l.financialAccount.lastUpdated,
-        balance: l.financialAccount.balance,
-      })),
-      { client, contextSpaceId: spaceId },
-    )).map((r) => [r.id, r.balance] as const),
+  const canonicalRows = await applyCanonicalWalletBalances(
+    links.map((l) => ({
+      id: l.financialAccount.id,
+      walletChain: l.financialAccount.walletChain,
+      lastUpdated: l.financialAccount.lastUpdated,
+      balance: l.financialAccount.balance,
+    })),
+    { client, contextSpaceId: spaceId },
   );
+  const canonical = new Map(canonicalRows.map((r) => [r.id, r.balance] as const));
+  // FM-AUDIT-022 — wallets with NO value, excluded from every total below and
+  // disclosed as `totalsUnvaluedCount`. Never valued at 0 or a stored column.
+  const unvaluedIds = new Set(canonicalRows.filter((r) => r.valuationUnknown === true).map((r) => r.id));
   for (const l of links) {
     const b = canonical.get(l.financialAccount.id);
     if (b !== undefined) l.financialAccount.balance = b;
@@ -406,6 +408,7 @@ async function assembleAccounts(
     currency:   l.financialAccount.currency,
     syncStatus: l.financialAccount.syncStatus ?? undefined,
     providerSubtype: l.financialAccount.providerSubtype,
+    ...(unvaluedIds.has(l.financialAccount.id) ? { valuationUnknown: true } : {}),
   }));
 
   // MC1 Phase 3 Slice 4 — THE AI FLIP (plan seam #3). Totals convert at the
@@ -860,6 +863,9 @@ async function assembleAccounts(
     totalRealAssets:    classification.totalRealAssets,
     totalsEstimated:    classification.estimated, // MC1 P3 Slice 4 (D-7) — data-only
     totalsUnconverted:  classification.unconverted, // V25-FINAL-1 — a balance was excluded (no rate)
+    // FM-AUDIT-022 — wallets excluded for having no value. OMITTED when 0, so
+    // a fully-valued Space's context is byte-identical.
+    ...(classification.unvaluedCount > 0 ? { totalsUnvaluedCount: classification.unvaluedCount } : {}),
 
     counts: {
       liquid:        classification.liquid.length,

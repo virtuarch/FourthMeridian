@@ -32,7 +32,7 @@ import type { FinancialAssessment } from '@/lib/ai/intelligence';
 import type { MemoryScope, RecalledMemory } from '@/lib/ai/conversation/memory-store';
 import type { SpaceContext } from '@/lib/space';
 import type { SpaceDataHealth } from '@/lib/connections/space-data-health.core';
-import { balanceCoverageLoadFailureLine, type BalanceCoverage } from '@/lib/connections/balance-coverage.core';
+import { BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine, type BalanceCoverageRead } from '@/lib/connections/balance-coverage.core';
 import type { Snapshot } from '@/types';
 import { todayUTCISO } from '@/lib/time/clock';
 import { projectBriefPackage } from './package';
@@ -48,13 +48,14 @@ const RETROSPECTIVE_WINDOW_DAYS = 90;
 export interface BriefLoadDeps {
   assemble(domain: string, spaceCtx: SpaceContext, options: AssemblerOptions): Promise<ContextDomainSection | null>;
   readSnapshots(spaceId: string): Promise<Snapshot[]>;
-  /** PB-8c — `balanceCoverage` gates the section's changes (null ⇒ as before). */
-  projectSnapshots(rows: Snapshot[], balanceCoverage?: BalanceCoverage | null): SnapshotSectionData | null;
+  /** PB-8c — `balanceCoverage` gates the section's changes (null ⇒ nothing to cover; UNAVAILABLE ⇒ all withheld). */
+  projectSnapshots(rows: Snapshot[], balanceCoverage?: BalanceCoverageRead): SnapshotSectionData | null;
   /**
-   * PB-8c — optional: the Space's balance-history floors. Fails OPEN to null
-   * (every change as before) with a counts-only log line; never degrades the Brief.
+   * PB-8c — optional: the Space's balance-history floors. S2 sweep — FAILS CLOSED
+   * to BALANCE_COVERAGE_UNAVAILABLE (every change withheld) with a counts-only
+   * log line; never degrades the Brief.
    */
-  balanceCoverage?(spaceId: string): Promise<BalanceCoverage | null>;
+  balanceCoverage?(spaceId: string): Promise<BalanceCoverageRead>;
   recall(scope: MemoryScope): Promise<RecalledMemory[]>;
   /** `accountTypeOf` resolves the CLASS of account a row posted on; ids never leave the loader. */
   recentActivity(spaceId: string, asOf: string, accountTypeOf?: AccountTypeLookup): Promise<BriefRecentActivity>;
@@ -112,7 +113,7 @@ async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
   const { computeAssessment } = await import('@/lib/ai/intelligence');
   const { loadSpaceDataHealth } = await import('@/lib/connections/space-data-health');
   const { transactionAccountPopulation } = await import('@/lib/data/transaction-population');
-  const { loadBalanceCoverageFailOpen } = await import('@/lib/connections/balance-coverage');
+  const { loadBalanceCoverageFailClosed } = await import('@/lib/connections/balance-coverage');
   return {
     /**
      * RLS-AI-S6 — THE ASSEMBLERS NOW RUN AS THE BRIEF'S OWNER, LIKE EVERY OTHER
@@ -146,7 +147,7 @@ async function defaultDeps(rt: BriefRuntime): Promise<BriefLoadDeps> {
     projectSnapshots: (rows, balanceCoverage) => projectSnapshotSection(rows, 'full', balanceCoverage ?? null),
     // PB-8c — a phase of its own, so a failed coverage read cannot abort another read.
     balanceCoverage: (spaceId) =>
-      rt.asOwnerReading((c) => loadBalanceCoverageFailOpen(c, spaceId, 'daily-brief')),
+      rt.asOwnerReading((c) => loadBalanceCoverageFailClosed(c, spaceId, 'daily-brief')),
     recall: (scope) => rt.asOwner((c) => recallMemories(c, scope, { limit: 50 })),
     recentActivity: (spaceId, asOf, accountTypeOf) =>
       rt.asOwnerReading((c) => loadRecentActivity(c, spaceId, asOf, undefined, accountTypeOf)),
@@ -248,11 +249,12 @@ export async function loadBriefPackage(args: {
   const recentActivityRead = accountsRead.then((section) => attempt('recentActivity', () =>
     deps.recentActivity(spaceId, asOf, accountTypeLookup(section?.data as AccountsSectionData | undefined)), null));
 
-  // PB-8c — fails OPEN: never in `degraded`, never fatal (counts-only log line).
-  const balanceCoverageRead: Promise<BalanceCoverage | null> = deps.balanceCoverage
+  // PB-8c — never in `degraded`, never fatal (counts-only log line). S2 sweep —
+  // FAILS CLOSED: a failed read is UNAVAILABLE, so every recent change is withheld.
+  const balanceCoverageRead: Promise<BalanceCoverageRead> = deps.balanceCoverage
     ? deps.balanceCoverage(spaceId).catch(() => {
         console.warn(balanceCoverageLoadFailureLine('daily-brief', 1, 1));
-        return null;
+        return BALANCE_COVERAGE_UNAVAILABLE;
       })
     : Promise.resolve(null);
 

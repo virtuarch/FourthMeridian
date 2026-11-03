@@ -46,7 +46,7 @@ import { composeMemoryLine, MEMORY_LINE_RULES } from './memory-model';
 import { transactionCorpusSpan } from '@/lib/data/transaction-query';
 import type { PhasedRead, MemoryPhasedRead } from '@/lib/ai/tenant-phase';
 import { loadBalanceCoverage } from '@/lib/connections/balance-coverage';
-import { balanceCoverageLoadFailureLine, type BalanceCoverage } from '@/lib/connections/balance-coverage.core';
+import { BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine, type BalanceCoverageRead } from '@/lib/connections/balance-coverage.core';
 import { todayUTCISO } from '@/lib/time/clock';
 import {
   resolveActivityWindow, projectActivityFrame, type ActivityFrame,
@@ -134,23 +134,26 @@ export const MEMORY_LINE_DOMAIN = 'memory';
  * ⚠️ NEVER ON ANOTHER READ'S CLIENT. Inside a tenant transaction a failed
  * statement aborts it ("current transaction is aborted"), so a coverage hiccup
  * sharing the snapshot domain's phase would take that domain — and the turn's
- * evidence — down with it. Its own phase isolates it; a failure falls OPEN to
- * null (every change comparable, as PB-8) with one counts-only log line, and is
- * never named in `unreadableDomains` (nothing the model reads went missing).
+ * evidence — down with it. Its own phase isolates it. S2 sweep — a failure
+ * FAILS CLOSED to BALANCE_COVERAGE_UNAVAILABLE (every change withheld, points
+ * unvouched, the snapshot section and the history tools say so) with one
+ * counts-only log line; it is never named in `unreadableDomains` because the
+ * section discloses it itself.
  * Without a phase runner (`onClient`, the migration-principal harnesses) the read
  * runs on a client that holds no transaction, so it cannot abort anything either.
  */
-export function readBalanceCoverage(read: PhasedRead, spaceId: string): Promise<BalanceCoverage | null> {
+export function readBalanceCoverage(read: PhasedRead, spaceId: string): Promise<BalanceCoverageRead> {
   return read('balance_coverage', (c) => loadBalanceCoverage(c, spaceId)).catch(() => {
     console.warn(balanceCoverageLoadFailureLine('ai-snapshot', 1, 1));
-    return null;
+    // S2 sweep — FAIL CLOSED: unavailable, never null ("nothing to cover").
+    return BALANCE_COVERAGE_UNAVAILABLE;
   });
 }
 
 export async function assembleFullContext(
   read: PhasedRead, spaceCtx: SpaceContext, agentId: string,
   /** PB-8c — the floors, already in flight (engine.ts shares them with the tools). */
-  balanceCoverage: Promise<BalanceCoverage | null> = readBalanceCoverage(read, spaceCtx.spaceId),
+  balanceCoverage: Promise<BalanceCoverageRead> = readBalanceCoverage(read, spaceCtx.spaceId),
 ): Promise<SpaceContext_AI> {
   const domains: Record<string, ContextDomainSection> = {};
   // RLS-AI-S0 — WHICH AUTHORITIES BROKE, not merely that something did.

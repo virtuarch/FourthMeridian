@@ -40,7 +40,7 @@ import {
 } from "@/lib/account-privacy";
 import { resolveRowBalances, reconcileAccount, adjustedDepositoryBalance } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
-import { loadWalletCurrentValues, hasKnownValue, type WalletCurrentValue } from "@/lib/crypto/wallet-current-value";
+import { loadWalletCurrentValues, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
 
 /**
  * One visible account plus the SpaceAccountLink.visibilityLevel that
@@ -229,35 +229,30 @@ export async function getAccountsWithVisibility(
   );
 
   /**
-   * The balance a surface should show.
+   * The balance a surface should show — and whether there is one.
    *
    * A wallet with a real number displaces the column — VALUED or STALE alike.
    * W6b: falling back for staleness would swap a dated last-known figure for an
    * unwritten column that always reads zero, which is strictly worse. Staleness
-   * travels on `cryptoPosition.freshness` instead. NO_PRICE and NO_OBSERVATION
-   * still fall through: there is no number to show.
+   * travels on `cryptoPosition.freshness` instead.
    *
-   * ── W6d — THE FALLBACK IS A LAST RESORT, AND IT IS DISCLOSED ───────────────
-   * With Bitcoin in the map, the column this falls back to is no longer always
-   * an unwritten zero: a BTC wallet that has never been through `syncBtcWallet`
-   * (the seeded demo wallets) carries a real-looking USD figure with no dated
-   * provenance behind it. The fallback is KEPT rather than zeroed — showing
-   * $0.00 for a wallet we simply have not observed is the exact "unknown
-   * rendered as money" defect this module exists to prevent, and it would be a
-   * worse lie than an unprovenanced number.
+   * ── FM-AUDIT-022 — NO VALUE IS EXCLUDED, NEVER THE COLUMN ─────────────────
+   * NO_PRICE and NO_OBSERVATION used to fall through to the stored `balance`
+   * column, on the argument that $0.00 for an unobserved wallet would be a
+   * worse lie than an unprovenanced number. Both were lies, and the fallback
+   * produced both: a NEW wallet is created with the column's DEFAULT 0 (so it
+   * counted as $0 in net worth), and a never-synced one carried whatever undated
+   * figure the column held. The disclosure on `cryptoPosition` was real, but no
+   * totals path read it.
    *
-   * What makes it defensible is that it is no longer HIDDEN: `cryptoPosition`
-   * travels on the same row with `state: "NO_OBSERVATION"` and both
-   * `quantity` and `value` null, so a surface that shows money can tell that
-   * this figure is not spine-backed. A consumer that ignores the tri-state and
-   * prints `balance` is making a claim the row explicitly disclaims.
-   *
-   * DELETION CONDITION: when every linked wallet has at least one OBSERVED
-   * PositionObservation, this branch is unreachable for wallets and the column
-   * argument can be dropped for them entirely.
+   * Now ONE classification decides it (`resolveWalletBalance`): such a wallet
+   * is a structural 0 flagged `valuationUnknown`, which `classifyAccounts`
+   * EXCLUDES from every total and counts in `unvaluedCount` so the total is
+   * disclosed as partial. The flag rides on the row at every tier that
+   * discloses a balance — it describes that balance.
    */
-  const displayBalance = (columnBalance: number, v: WalletCurrentValue | undefined): number =>
-    hasKnownValue(v) ? v!.value! : columnBalance;
+  const walletBalance = (columnBalance: number, accountId: string) =>
+    resolveWalletBalance(columnBalance, walletValueByAccount.get(accountId));
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return links.map((link: any) => {
@@ -313,7 +308,7 @@ export async function getAccountsWithVisibility(
           // W-M3a — a wallet's spine value is its balance, and BALANCE_ONLY
           // discloses balances. Passing the column here instead would have shown
           // this tier $0.00 for a wallet the FULL tier values correctly.
-          balance:     displayBalance(r.balance, walletValue),
+          balance:     walletBalance(r.balance, r.id).balance,
           currency:    r.currency,
           lastUpdated: r.lastUpdated,
         },
@@ -327,6 +322,8 @@ export async function getAccountsWithVisibility(
           type:        safe.type as Account["type"],
           institution: "",              // redacted — institution is identifying
           balance:     safe.balance,
+          // FM-AUDIT-022 — a fact about the balance this tier discloses.
+          ...(walletBalance(r.balance, r.id).valuationUnknown ? { valuationUnknown: true as const } : {}),
           currency:    safe.currency,
           lastUpdated: safe.lastUpdated,
           // v2.6-L1 — a timestamp about a balance this tier already discloses, so
@@ -394,7 +391,8 @@ export async function getAccountsWithVisibility(
       name:          accountDisplayName(r),
       type:          r.type as Account["type"],
       institution:   r.institution,
-      balance:       displayBalance(r.balance, walletValue),
+      // FM-AUDIT-022 — `valuationUnknown` present only for an unvalued wallet.
+      ...walletBalance(r.balance, r.id),
       currency:      r.currency,
       lastUpdated:   r.lastUpdated.toISOString(),
       balanceLastUpdatedAt: r.balanceLastUpdatedAt
@@ -430,9 +428,9 @@ export async function getAccountsWithVisibility(
       // produced 0, not absence.
       nativeBalance: walletValue?.quantity ?? r.nativeBalance ?? undefined,
       // The tri-state behind the number: VALUED / NO_PRICE / NO_OBSERVATION.
-      // A consumer that shows money MUST branch on this — `balance` falls back
-      // to the (zero) column for the two states that have no value, and only
-      // this field distinguishes "holds nothing" from "we do not know".
+      // FM-AUDIT-022 — for the two states with no value, `balance` is a
+      // structural 0 flagged `valuationUnknown` (excluded from every total);
+      // this field says WHICH unknown it is (unpriced vs never observed).
       ...(walletValue ? { cryptoPosition: {
         state:      walletValue.state,
         freshness:  walletValue.freshness,

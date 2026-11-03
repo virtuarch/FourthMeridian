@@ -152,7 +152,7 @@ const cov = deriveBalanceCoverage(inputs)!;
 {
   const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
   const route = src("../../app/api/spaces/[id]/data-health/route.ts");
-  assert.ok(/loadBalanceCoverage\(tx, spaceId\)/.test(route) && /sources: health\.sources, balanceCoverage,/.test(route), "data-health returns balanceCoverage");
+  assert.ok(/loadBalanceCoverageFailClosed\(tx, spaceId, "data-health-route"\)/.test(route) && /sources: health\.sources, balanceCoverage,/.test(route), "data-health returns balanceCoverage (fail-closed, its own phase)");
   assert.ok(/useSpaceBalanceCoverage/.test(src("../../components/space/widgets/wealth/WealthTrendChart.tsx")), "Net Worth trend marks partial");
   assert.ok(/debtTrendPoints\(history, balanceCoverage\)/.test(src("../../components/space/widgets/debt/DebtBalanceHistory.tsx")), "Debt trend marks partial");
   assert.ok(/<BalanceCoverageNote[^>]*metric=\{metric\}/.test(src("../../components/space/widgets/wealth/WealthWorkspace.tsx")), "Net Worth caption");

@@ -26,7 +26,7 @@ import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
 import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
-import type { BalanceCoverage, WithheldChange } from "@/lib/connections/balance-coverage.core";
+import type { BalanceCoverageRead, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -190,7 +190,7 @@ export interface AssemblerOptions {
    * assembler's client: a failed statement would abort a shared transaction).
    * Absent / null ⇒ every change comparable (fail-open, byte-identical payload).
    */
-  balanceCoverage?: BalanceCoverage | null;
+  balanceCoverage?: BalanceCoverageRead;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +559,13 @@ export interface AccountsSectionData {
    * "approximate".
    */
   totalsUnconverted:  boolean;
+  /**
+   * FM-AUDIT-022 — crypto wallets EXCLUDED from the totals above because they
+   * have no value (unpriced, or never observed). Never valued at 0 or at a
+   * stale stored balance: the digital-asset total (and so assets / net worth)
+   * is an honest PARTIAL. OMITTED when nothing was excluded.
+   */
+  totalsUnvaluedCount?: number;
   counts: {
     liquid:       number;
     investments:  number;
@@ -1564,6 +1571,12 @@ export interface SnapshotSectionData {
    * be measured across that date. Absent when history is complete.
    */
   partialHistory?: { before: string; note: string };
+  /**
+   * S2 sweep — the balance-history coverage read FAILED: no floor is known, so
+   * every change above is withheld (BALANCE_HISTORY_UNREADABLE) and the points are
+   * unvouched. Absent when coverage was read (or there was nothing to cover).
+   */
+  balanceHistoryCompleteness?: { state: 'UNAVAILABLE'; note: string };
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.

@@ -51,7 +51,7 @@ import type { ConversionContext } from "@/lib/money/types";
 // PB-8c — the launcher's 1M change obeys the SAME partial-history floor as the
 // inside-Space hero (PB-8b): one rule, `changeComparability`, via gateWindowChange.
 import {
-  balanceCoverageSidesFor, gateWindowChange, type BalanceCoverage, type WithheldChange,
+  balanceCoverageSidesFor, gateWindowChange, type BalanceCoverageRead, type WithheldChange,
 } from "@/lib/connections/balance-coverage.core";
 
 /** The stored columns the row authority reads. Structural — no Prisma import. */
@@ -229,11 +229,11 @@ export interface NetWorthSeriesSummary {
  *
  * Rule 6 (PB-8c): the 1M change is never measured across the balance-history
  * floor — withheld with its reason, or marked estimated (gateWindowChange).
- * No coverage ⇒ byte-identical to before.
+ * No coverage ⇒ byte-identical to before; UNAVAILABLE (failed read) ⇒ withheld (S2 sweep).
  */
 export function summarizeNetWorthSeries(
   points: readonly AdmissibleNetWorthPoint[],
-  balanceCoverage: BalanceCoverage | null = null,
+  balanceCoverage: BalanceCoverageRead = null,
 ): NetWorthSeriesSummary {
   const latest = points[points.length - 1];
   const raw = canonicalWindowChange(points.map((p) => ({ date: p.date, value: p.value })));

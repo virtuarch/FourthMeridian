@@ -6,7 +6,7 @@ import { SpacesClient }     from "@/components/dashboard/SpacesClient";
 import { getSpaceContext } from "@/lib/space";
 import { getSpaceNetWorthSummaries } from "@/lib/data/snapshots";
 import { loadBalanceCoverageBySpace } from "@/lib/connections/balance-coverage";
-import { balanceCoverageLoadFailureLine } from "@/lib/connections/balance-coverage.core";
+import { BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine } from "@/lib/connections/balance-coverage.core";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { getSpaceCardFreshness } from "@/lib/freshness/space-card-freshness";
 
@@ -284,13 +284,14 @@ export default async function SpacesPage() {
   // at membership for financial figures before the product did.
   // PB-8c — the balance-history floors of the viewer's OWN Spaces, so a card's
   // 1M change is withheld (or marked estimated) by the same rule as the
-  // inside-Space hero. A phase of its own: a failed read falls open to "as
-  // before" with a counts-only log line, and cannot abort the figures' read.
+  // inside-Space hero. A phase of its own: a failed read FAILS CLOSED (the
+  // change is withheld) with a counts-only log line, and cannot abort the figures' read.
   const balanceCoverageBySpace = await withTenantDb(userId, (tx) =>
     loadBalanceCoverageBySpace(tx, mySpaceIds, "space-launcher"),
   ).catch(() => {
     console.warn(balanceCoverageLoadFailureLine("space-launcher", mySpaceIds.length, mySpaceIds.length));
-    return undefined;
+    // S2 sweep — FAIL CLOSED: every one of the viewer's Spaces is UNAVAILABLE, so its card withholds the change.
+    return new Map(mySpaceIds.map((id) => [id, BALANCE_COVERAGE_UNAVAILABLE] as const));
   });
   const netWorthBySpace = await withTenantDb(userId, (tx) =>
     getSpaceNetWorthSummaries(tx, allIds, balanceCoverageBySpace),
