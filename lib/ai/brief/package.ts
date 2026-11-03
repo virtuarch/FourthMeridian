@@ -322,7 +322,9 @@ export function projectBriefPackage(i: BriefInputs): BriefPackage {
   // basis narrated with a figure on another: withheld, with the reason, whenever
   // restricted cash exists today. (A retrospective Brief reads both from the
   // snapshot — one basis — and is untouched.)
-  const allCashComparable = retrospective || allCashChangeComparableToCurrent(acc?.totalRestrictedCash);
+  // FIN-E part 2 — an UNRESTRICTED history is on currentState.liquid's basis already.
+  const allCashComparable = retrospective || i.snapshot?.liquidBasis === 'UNRESTRICTED'
+    || allCashChangeComparableToCurrent(acc?.totalRestrictedCash);
   const onCurrentBasis = (w: BriefChangeWindow | undefined): BriefChangeWindow | undefined => {
     if (!w || allCashComparable || (w.liquid === undefined && w.unavailable?.liquid === undefined)) return w;
     const { liquid: _withheld, ...rest } = w;

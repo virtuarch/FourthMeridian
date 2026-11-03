@@ -252,6 +252,11 @@ export function LiquidityWorkspace({
     [snapshots, asOf, compareTo, snapshotCurrency, ctx],
   );
 
+  // FIN-005 / FIN-E part 2 — the window delta is on the series' basis; it says nothing
+  // about the unrestricted headline when the series is ALL_CASH and restricted cash exists.
+  const allCashDeltaMismatch = (cashHistory?.basis ?? "ALL_CASH") === "ALL_CASH"
+    && !allCashChangeComparableToCurrent(classification.totalRestrictedCash);
+
   // Balance-history WINDOW delta for the Hero (cashNow snapshot basis — the figure the chart
   // states). Only real when ≥2 in-window points exist; never invented.
   const change = useMemo<LiquidityWindowChange | null>(() => {
@@ -358,11 +363,11 @@ export function LiquidityWorkspace({
             // The headline uses reachable cash whenever ANY account supplied a
             // current-state claim; the window delta is computed from the ledger
             // snapshot series, so the two bases diverge exactly then.
-            // FIN-005 — and whenever restricted cash exists: the snapshot series is
-            // ALL cash (restricted included) while the headline excludes it.
-            deltaBasisDiffers={(reach.coveredCount > 0 && cashNow !== classification.totalLiquid)
-              || !allCashChangeComparableToCurrent(classification.totalRestrictedCash)}
-            deltaBasisReason={!allCashChangeComparableToCurrent(classification.totalRestrictedCash) ? "RESTRICTED_CASH" : "REACHABLE"}
+            // FIN-005 — and whenever restricted cash exists while the window's series
+            // is ALL cash (restricted included) and the headline excludes it. FIN-E
+            // part 2: an UNRESTRICTED window is on the headline's basis.
+            deltaBasisDiffers={(reach.coveredCount > 0 && cashNow !== classification.totalLiquid) || allCashDeltaMismatch}
+            deltaBasisReason={allCashDeltaMismatch ? "RESTRICTED_CASH" : "REACHABLE"}
             envelope={figureEnvelope}
             verdict={verdict}
             verdictAsOf={verdictAsOf}

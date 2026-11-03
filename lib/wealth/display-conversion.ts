@@ -61,6 +61,8 @@ function convertSnapshot(s: Snapshot, from: string, ctx: ConversionContext): Sna
     totalInvestments: conv(s.totalInvestments),
     totalCrypto:      conv(s.totalCrypto),
     cashOnHand:       conv(s.cashOnHand),
+    // FIN-E part 2 — converted at the same rate when recorded; absent stays absent.
+    ...(typeof s.restrictedCash === "number" ? { restrictedCash: conv(s.restrictedCash) } : {}),
   };
   return missed ? { ...next, fxMiss: true } : next;
 }

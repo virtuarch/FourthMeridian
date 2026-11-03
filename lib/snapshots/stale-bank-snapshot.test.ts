@@ -94,8 +94,10 @@ function makeFake(accounts: FakeAccount[], existingRow: { isEstimated: boolean }
 const FIELDS = ["stocks", "crypto", "total", "cash", "savings", "debt", "netWorth", "totalAssets", "netLiquid", "cashOnHand"] as const;
 
 /** The exact payload keys the live writer produced before FM-AUDIT-021. */
+// FIN-E part 2 — re-pinned: `restrictedCash` (SpaceSnapshot.restrictedCash) is the
+// ONE key added to the live writer's payload, beside reportingCurrency.
 const PRE_FIX_CREATE_KEYS = [
-  "spaceId", "date", ...FIELDS, "reportingCurrency",
+  "spaceId", "date", ...FIELDS, "reportingCurrency", "restrictedCash",
   "completenessTier", "contributingComponentCount", "totalComponentCount", "cryptoValuationStatus",
 ];
 const PRE_FIX_UPDATE_KEYS = PRE_FIX_CREATE_KEYS.filter((k) => k !== "spaceId" && k !== "date");
@@ -159,7 +161,7 @@ async function partTwoWriter(): Promise<void> {
       spaceId: "space-f", date: SNAP_DATE.toISOString(),
       stocks: 10_000, crypto: 0, total: 10_000, cash: 3_000, savings: 1_000, debt: 500,
       netWorth: 13_500, totalAssets: 14_000, netLiquid: 3_500, cashOnHand: 3_000,
-      reportingCurrency: "USD",
+      reportingCurrency: "USD", restrictedCash: 0, // FIN-E part 2 — no restricted account ⇒ a measured 0
       completenessTier: null, contributingComponentCount: null, totalComponentCount: null, cryptoValuationStatus: null,
     });
     check("create payload byte-identical to the pre-fix observation", JSON.stringify(f.create) === expected, JSON.stringify(f.create));

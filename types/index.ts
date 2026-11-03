@@ -202,6 +202,13 @@ export interface Snapshot {
   totalDebt: number;
   totalCash: number;      // checking only
   totalSavings: number;   // savings only
+  /**
+   * FIN-E part 2 — SpaceSnapshot.restrictedCash: the restricted share (HSA,
+   * retirement cash) of `totalCash + totalSavings`, converted like every other
+   * total. ABSENT = NOT RECORDED (rows written before the column, or a history
+   * day whose cash was preserved) — never 0. Read by lib/liquidity/cash-history.ts.
+   */
+  restrictedCash?: number;
   totalInvestments: number;
   totalCrypto: number;
   /**

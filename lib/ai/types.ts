@@ -1454,7 +1454,7 @@ export interface SnapshotDataPoint {
   netWorth:     number | null;
   totalAssets:  number | null;
   liabilities:  number; // `debt` column — positive absolute value
-  /** checking + savings — ALL cash, RESTRICTED (HSA, retirement) INCLUDED (FIN-005; see `SnapshotSectionData.liquidBasis`). */
+  /** checking + savings on `SnapshotSectionData.liquidBasis` (ALL_CASH: restricted INCLUDED — FIN-005). */
   liquid:       number;
   investments:  number; // `stocks` column
   digitalAssets: number | null; // `crypto` column — null when unassertable
@@ -1579,12 +1579,13 @@ export interface SnapshotSectionData {
    */
   balanceHistoryCompleteness?: { state: 'UNAVAILABLE'; note: string };
   /**
-   * FIN-005 part 1 — the basis of every point's `liquid` and `netLiquid`: ALL cash,
-   * restricted (HSA, retirement) INCLUDED. The accounts section's `totalLiquid`
-   * EXCLUDES restricted cash, so the two are different measures and no change may
-   * be stated between them. Optional only for fixtures predating it.
+   * FIN-005 — the basis of every point's `liquid` and `netLiquid`. ALL_CASH:
+   * restricted (HSA, retirement) INCLUDED; the accounts section's `totalLiquid`
+   * EXCLUDES it, so no change may be stated between them. UNRESTRICTED (FIN-E
+   * part 2): every row recorded its restricted share and the points EXCLUDE it,
+   * on `totalLiquid`'s basis. Optional only for fixtures predating it.
    */
-  liquidBasis?:     'ALL_CASH';
+  liquidBasis?:     'ALL_CASH' | 'UNRESTRICTED';
   liquidBasisNote?: string;
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD

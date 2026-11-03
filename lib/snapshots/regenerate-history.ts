@@ -976,6 +976,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     contributingComponentCount: number | null;
     totalComponentCount: number | null;
     cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
+    restrictedCash: number | null; // FIN-E part 2
   }> = [];
 
   /**
@@ -996,6 +997,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     contributingComponentCount: number | null;
     totalComponentCount: number | null;
     cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
+    restrictedCash: number | null; // FIN-E part 2
   }> = [];
 
   for (const dISO of candidateDates) {
@@ -1224,6 +1226,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         totalSavings:       c.totalSavings,
         totalLiabilities:   c.totalLiabilities,
         totalRealAssets:    c.totalRealAssets,
+        // FIN-E part 2 — the restricted share of the SAME walked cash.
+        totalRestrictedCash: c.totalRestrictedCash,
       },
       investmentValue,
       investmentTier,
@@ -1306,6 +1310,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         contributingComponentCount: res.contributingComponentCount,
         totalComponentCount: res.totalComponentCount,
         cryptoValuationStatus: res.cryptoValuationStatus,
+        restrictedCash: res.restrictedCash ?? null,
       });
     }
     if (plan.write && res.fields) {
@@ -1321,6 +1326,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         contributingComponentCount: res.contributingComponentCount,
         totalComponentCount: res.totalComponentCount,
         cryptoValuationStatus: res.cryptoValuationStatus,
+        restrictedCash: res.restrictedCash ?? null,
       });
     }
 
@@ -1366,6 +1372,8 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         // never "unknown but assume fine": the read boundary resolves an
         // immaterial component to `none`, which IS assertable.
         cryptoValuationStatus: toStoredCryptoValuationStatus(w.cryptoValuationStatus),
+        // FIN-E part 2 — null when this run did not recompute the day's cash.
+        restrictedCash: w.restrictedCash,
         reportingCurrency: space.reportingCurrency,
         // Phase 2 — stamp the amendment that revised this row (amendment runs only).
         ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
@@ -1398,6 +1406,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
           contributingComponentCount: p.contributingComponentCount,
           totalComponentCount: p.totalComponentCount,
           cryptoValuationStatus: toStoredCryptoValuationStatus(p.cryptoValuationStatus),
+          // FIN-E part 2 — only when this run recomputed the cash; a preserved
+          // cash component leaves the stored restrictedCash untouched.
+          ...(typeof p.restrictedCash === "number" ? { restrictedCash: p.restrictedCash } : {}),
           ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
         },
       });

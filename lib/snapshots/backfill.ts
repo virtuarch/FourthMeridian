@@ -44,6 +44,7 @@ import {
   reconstructDailyCashBalances,
   reconstructDailyLiabilityBalances,
   computeSnapshotFields,
+  snapshotRestrictedCash,
   computeAccountFloors,
   isHeldFlatBalanceAccount,
   isReconstructableCard,
@@ -295,6 +296,7 @@ export async function backfillSpaceSnapshots(
     cryptoValuationStatus: null; completenessTier: "incomplete" | null;
     stocks: number; crypto: number; total: number; cash: number; savings: number;
     debt: number; netWorth: number; totalAssets: number; netLiquid: number; cashOnHand: number;
+    restrictedCash: number | null;
   }> = [];
 
   // MC1 Phase 3 Slice 3 — THE BACKFILL FLIP (plan seams #2). One real space
@@ -352,6 +354,8 @@ export async function backfillSpaceSnapshots(
     rows.push({
       spaceId, date: d, isEstimated: true, reportingCurrency: space.reportingCurrency,
       cryptoValuationStatus: null, completenessTier: excludedTotalsCompletenessTier(c), ...fields,
+      // FIN-E part 2 — the restricted share of THIS day's cash, from the same `c`.
+      restrictedCash: snapshotRestrictedCash(c),
     });
   }
 

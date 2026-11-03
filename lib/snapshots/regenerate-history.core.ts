@@ -49,7 +49,7 @@
  *    a date's data from its neighbours.
  */
 
-import { computeSnapshotFields, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
+import { computeSnapshotFields, snapshotRestrictedCash, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
 import { worstTier } from "@/lib/perspective-engine/completeness";
 import {
   CRYPTO_MATERIALITY_EPSILON, type CryptoValuationStatus,
@@ -336,6 +336,14 @@ export interface DayRegenResult {
    * write nothing. Null on a skip.
    */
   fieldPatch: SnapshotFieldPatch | null;
+  /**
+   * FIN-E part 2 — the restricted share of this day's cash
+   * (`snapshotRestrictedCash(base)`), present on `write` / `write-partial` only.
+   * NULL when the cash or savings component was PRESERVED (the stored cash is
+   * not this run's, so its restricted share is unknown) or the totals carry no
+   * split. Absent on every skip, which writes nothing.
+   */
+  restrictedCash?: number | null;
   reason: string;
 }
 
@@ -602,6 +610,7 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     contributingComponentCount: refusedBy.has("stocks") ? null : (input.contributingComponentCount ?? null),
     totalComponentCount:        refusedBy.has("stocks") ? null : (input.totalComponentCount ?? null),
     cryptoValuationStatus: cryptoVerdict,
+    restrictedCash: refusedBy.has("cash") || refusedBy.has("savings") ? null : snapshotRestrictedCash(base),
     reason: partial
       ? `PARTIAL: ${refusals.map((r) => `${r.component} preserved — ${r.reason}`).join(" | ")}` +
         (parts.length ? ` || rewritten: ${parts.join(" + ")}` : " || rewritten: cash/savings/debt from the posted ledger")

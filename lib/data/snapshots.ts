@@ -213,6 +213,9 @@ export async function getRecentSnapshots(
       // V26-PRE (B2) — rides the same stamp-aware conversion as every other
       // total (convertStampedValues converts all keys of this object).
       netLiquid:        r.netLiquid,
+      // FIN-E part 2 — only when RECORDED (null = not recorded, never 0), so a
+      // row without it is byte-identical; converted with the rest when present.
+      ...(typeof r.restrictedCash === "number" ? { restrictedCash: r.restrictedCash as number } : {}),
     };
 
     // V26-INVESTMENTS-HISTORY / V26-CRYPTO-STATUS-1 / v2.6-A — the row's
@@ -246,7 +249,7 @@ export async function getRecentSnapshots(
 
     // Off-stamp: convert every total at THIS row's own date (historical FX);
     // the display-estimation flag joins the existing badge mechanism.
-    const converted = convertStampedValues(raw, stamp, r.date.toISOString().slice(0, 10), stampCtx);
+    const converted = convertStampedValues(raw as Record<keyof typeof raw, number>, stamp, r.date.toISOString().slice(0, 10), stampCtx);
     return {
       date: r.date.toISOString().split("T")[0],
       ...converted.values,
