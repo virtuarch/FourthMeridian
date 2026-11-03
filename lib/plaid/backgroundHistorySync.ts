@@ -547,6 +547,14 @@ export async function runDeferredHistorySync(
         // projection the lifecycle service writes in lockstep with `resolvedAt`,
         // but legacy rows predate that service, so requiring BOTH to be open
         // counts only issues that are unambiguously still open.
+        //
+        // PB-1 PERMANENT EXCEPTION (S2 ruling, 2026-11-03) — a CONTROL GATE, not a
+        // display read: this persisted-open COUNT decides whether recovery runs; it
+        // never shows an incident to anyone. Pinned (incident-boundary.test.ts §11)
+        // to a COUNT over MISSING_ACCOUNT with resolved=false — no detail, no select.
+        // ⚠ REVISIT if the intelligence module ever applies a module-only (derived,
+        // not persisted) closure to MISSING_ACCOUNT: this gate would then count a row
+        // the module already reads as closed.
         countBlockingIssues: (id) => db.syncIssue.count({
           where: { plaidItemId: id, kind: SyncIssueKind.MISSING_ACCOUNT, resolvedAt: null, resolved: false },
         }),
