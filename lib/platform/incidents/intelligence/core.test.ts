@@ -139,6 +139,31 @@ console.log("D4 — ONE attribution rule; identity only on the CUSTOMER_SUCCESS 
   check("CS normalised verdicts carry it", cs.map(normaliseVerdict).every((n) => "subjectUserId" in n));
 }
 
+console.log("D4 — unattributed is null, never an empty string");
+{
+  const base = facts([]).subjects;
+  const subjects = {
+    ...base,
+    items: new Map([...base.items, ["item_ownerless", { status: "ACTIVE", userId: null }], ["item_blank", { status: "ACTIVE", userId: "" }]]),
+    accounts: new Map([...base.accounts, ["acct_blank", { deletedAt: null, ownerUserId: "", createdByUserId: "" }]]),
+  };
+  const rows = [
+    row("ownerless", { plaidItemId: "item_ownerless" }),
+    row("blank_item", { plaidItemId: "item_blank" }),
+    row("blank_acct", { plaidItemId: null, financialAccountId: "acct_blank" }),
+    row("blank_stamp", { subjectUserId: "", plaidItemId: "item_ownerless" }),
+    row("ownerless_item_owned_acct", { plaidItemId: "item_ownerless", financialAccountId: "acct_live" }),
+  ];
+  const cs = derive(facts(rows, { subjects }), "CUSTOMER_SUCCESS") as CsIncidentVerdict[];
+  const who = Object.fromEntries(cs.map((v) => [v.id, v.subjectUserId]));
+  check("an ownerless item gives CS subjectUserId null", who.ownerless === null && "subjectUserId" in cs.find((v) => v.id === "ownerless")!);
+  check("blank owner ids are unattributed (null), never \"\"", who.blank_item === null && who.blank_acct === null && who.blank_stamp === null);
+  check("an ownerless item falls through to the account owner (D4 order)", who.ownerless_item_owned_acct === "u_alice");
+  check("no CS verdict ever carries an empty subjectUserId", cs.every((v) => v.subjectUserId !== ""));
+  const ops = derive(facts(rows, { subjects }), "PLATFORM_OPS");
+  check("Platform Ops still has no subjectUserId key", ops.every((v) => !("subjectUserId" in v)) && ops.map(normaliseVerdict).every((n) => !("subjectUserId" in n)));
+}
+
 console.log("D5 — every set says whether it is complete");
 {
   const s = deriveIncidentVerdicts(facts([row("a"), row("b")], { scanTruncated: true }), { now: NOW, audience: "PLATFORM_OPS" });
