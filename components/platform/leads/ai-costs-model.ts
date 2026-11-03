@@ -26,6 +26,7 @@
 import type { AiUsageTrend } from "@/lib/platform/ai/ai-usage";
 import type { AiOperations } from "@/lib/platform/ai/invocations";
 import type { AiBudgetUtilization, CustomerBudgetView } from "@/lib/platform/ai/cost-controls.types";
+import { FLEET_REASON_NO_CALLS, FLEET_REASON_NONE_PRICED, fleetSpendStatus, type FleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
 import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/route";
 import type { ApiUsageResponse } from "@/app/api/platform/platform-ops/api-usage/route";
 import type { PlaidUsage } from "@/lib/platform/plaid/usage";
@@ -209,7 +210,9 @@ export function costByProvider(args: { trend: Fetched<AiUsageTrend>; plaid: Fetc
 // ── Budget ────────────────────────────────────────────────────────────────────
 
 export interface BudgetMeter {
-  /** Rolling-window spend vs the fleet alert threshold; null pct = unpriced. */
+  /** THE fleet spend status (lib/platform/ai/fleet-spend-status.ts) — every budget tile reads this one object. */
+  status: FleetSpendStatus;
+  /** Rolling-window spend vs the fleet alert threshold; null pct = UNAVAILABLE. A lower bound when PARTIAL. */
   pct: number | null;
   spend: Money;
   thresholdUsd: number;
@@ -220,15 +223,56 @@ export interface BudgetMeter {
 
 export function budgetMeter(b: AiBudgetUtilization | null): BudgetMeter | null {
   if (!b) return null;
-  const f = b.fleet;
-  const pct = f.utilizationPct;
+  const s = fleetSpendStatus(b);
+  const pct = s.utilisationPct;
   return {
+    status: s,
     pct,
-    spend: f.estimatedUsd === null ? { kind: "UNKNOWN", reason: "no priced customer spend in the window" } : { kind: "ESTIMATED", usd: f.estimatedUsd, partial: b.unpriced.invocations > 0, basis: "tokens × rate card" },
-    thresholdUsd: f.thresholdUsd,
-    windowHours: b.windowHours,
-    alertEnabled: f.alertEnabled,
+    spend: s.pricedUsd === null ? { kind: "UNKNOWN", reason: s.reason ?? "no priced customer spend in the window" } : { kind: "ESTIMATED", usd: s.pricedUsd, partial: s.atLeast, basis: "tokens × rate card" },
+    thresholdUsd: s.thresholdUsd,
+    windowHours: s.windowHours,
+    alertEnabled: s.alertEnabled,
     tone: pct === null ? "muted" : pct >= 100 ? "bad" : pct >= 80 ? "warn" : "ok",
+  };
+}
+
+const calls = (k: number) => `${n(k)} unpriced call${k === 1 ? "" : "s"}`;
+
+/**
+ * The words for every budget tile, from the ONE status. ESTIMATED: "42%" of the
+ * threshold, an estimate. PARTIAL: "≥ 42%", "at least $4.20", the unpriced count.
+ * UNAVAILABLE: no figure and no percentage — the reason and the threshold, never
+ * "$0" and never "Unknown of $10.00".
+ */
+export function budgetTileText(m: BudgetMeter): { kpiValue: string; kpiSub: string; headline: string; detail: string; meterLabel: string } {
+  const s = m.status;
+  const of = `of ${usd(s.thresholdUsd)} · ${s.windowHours} h`;
+  if (s.status === "UNAVAILABLE" || s.pricedUsd === null || s.utilisationPct === null) {
+    const why = s.reason ?? FLEET_REASON_NONE_PRICED;
+    return {
+      kpiValue: "—",
+      kpiSub: `unavailable · ${why === FLEET_REASON_NO_CALLS ? "no calls" : `${calls(s.unpricedInvocations || s.invocations)}, none priced`} · ${s.windowHours} h`,
+      headline: "Unavailable",
+      detail: `${why} · threshold ${usd(s.thresholdUsd)} / ${s.windowHours} h`,
+      meterLabel: "Fleet AI budget used",
+    };
+  }
+  const p = `${Math.round(s.utilisationPct)}%`;
+  if (s.status === "PARTIAL") {
+    return {
+      kpiValue: `≥${p}`,
+      kpiSub: `partial · at least ${usd(s.pricedUsd)} ${of} · ${calls(s.unpricedInvocations)}`,
+      headline: `≥${p}`,
+      detail: `at least ${usd(s.pricedUsd)} ${of} · partial · ${calls(s.unpricedInvocations)} not counted`,
+      meterLabel: "Fleet AI budget used — at least, partial estimate",
+    };
+  }
+  return {
+    kpiValue: p,
+    kpiSub: `${of} · estimated`,
+    headline: p,
+    detail: `${usd(s.pricedUsd)} ${of} · estimated`,
+    meterLabel: "Fleet AI budget used",
   };
 }
 
@@ -244,11 +288,12 @@ const pct1 = (v: number) => `${v < 10 ? v.toFixed(1) : v.toFixed(0)}%`;
 export function aiKpis(args: { budget: Fetched<AiBudgetUtilization>; inv7: Fetched<AiOperations> }): Kpi[] {
   const out: Kpi[] = [];
   const m = budgetMeter(args.budget.data);
-  out.push(m
-    ? m.pct === null
-      ? { key: "budget", label: "Budget used", value: "—", sub: "spend unpriced", tone: "muted" }
-      : { key: "budget", label: "Budget used", value: `${Math.round(m.pct)}%`, sub: `of ${usd(m.thresholdUsd)} · ${m.windowHours} h · est.`, tone: m.tone === "ok" ? undefined : m.tone }
-    : { key: "budget", label: "Budget used", value: "—", sub: args.budget.loading ? "reading…" : "unavailable", tone: "muted" });
+  if (m) {
+    const t = budgetTileText(m);
+    out.push({ key: "budget", label: "Budget used", value: t.kpiValue, sub: t.kpiSub, tone: m.tone === "ok" ? undefined : m.tone });
+  } else {
+    out.push({ key: "budget", label: "Budget used", value: "—", sub: args.budget.loading ? "reading…" : "unavailable", tone: "muted" });
+  }
 
   const i = args.inv7.data;
   if (!i) {

@@ -17,6 +17,7 @@
 import type { StatusTone } from "../platform-surface";
 import type { AiBudgetUtilization, AlertTriggerView, CustomerBudgetView, SurfaceBudgetView } from "@/lib/platform/ai/cost-controls.types";
 import { ESTIMATE_CAPTION, fmtCount, fmtUsd } from "./overview/ai-economics-view";
+import { FLEET_REASON_NONE_PRICED, fleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
 
 export const AI_BUDGET_SUBJECT = "AI budget utilization";
 export const PAST_DELIVERIES_NOTE = "Past deliveries from the alert evaluator, newest first — a fire is history, never an open incident.";
@@ -40,20 +41,33 @@ export function utilizationFill(pct: number | null): number {
   return Math.max(0, Math.min(100, pct));
 }
 
-/** The fleet headline: an estimated figure with its utilization reading, or the reason there is none. */
-export function fleetReading(b: Pick<AiBudgetUtilization, "fleet" | "windowHours">):
-  | { kind: "figure"; value: string; qualifier: string }
-  | { kind: "unavailable"; reason: string; qualifier: string } {
+/**
+ * The fleet headline, from THE fleet spend status (lib/platform/ai/fleet-spend-status.ts —
+ * the same object the AI & Costs budget tiles read): ESTIMATED is the figure with its
+ * utilization; PARTIAL is "at least" the priced figure, its utilization a lower bound and
+ * its unpriced calls counted; UNAVAILABLE is the reason — never $0.
+ */
+export function fleetReading(b: Pick<AiBudgetUtilization, "fleet" | "windowHours" | "bySurface" | "unpriced">):
+  | { kind: "figure"; status: "ESTIMATED" | "PARTIAL"; value: string; qualifier: string; pct: number | null }
+  | { kind: "unavailable"; status: "UNAVAILABLE"; reason: string; qualifier: string; pct: null } {
   const f = b.fleet;
+  const s = fleetSpendStatus(b);
   const scope = `${fmtCount(f.customers)} customer${f.customers === 1 ? "" : "s"} · ${fmtCount(f.invocations)} invocation${f.invocations === 1 ? "" : "s"} · rolling ${b.windowHours} h`;
-  if (f.estimatedUsd === null) {
-    const reason = f.invocations === 0 ? "no customer invocations in the window" : "no customer invocation in the window could be priced";
-    return { kind: "unavailable", reason, qualifier: `${scope} · ${ESTIMATE_CAPTION}` };
+  if (s.status === "UNAVAILABLE" || s.pricedUsd === null) {
+    return { kind: "unavailable", status: "UNAVAILABLE", reason: s.reason ?? FLEET_REASON_NONE_PRICED, qualifier: `${scope} · ${ESTIMATE_CAPTION}`, pct: null };
+  }
+  if (s.status === "PARTIAL") {
+    const u = `${fmtCount(s.unpricedInvocations)} unpriced invocation${s.unpricedInvocations === 1 ? "" : "s"} not counted`;
+    return {
+      kind: "figure", status: "PARTIAL", pct: s.utilisationPct,
+      value: `at least ${fmtUsd(s.pricedUsd)}`,
+      qualifier: `at least ${pctText(s.utilisationPct)} of the ${fmtUsdWhole(f.thresholdUsd)} fleet alert threshold · partial — ${u} · ${scope} · ${ESTIMATE_CAPTION}`,
+    };
   }
   return {
-    kind: "figure",
-    value: fmtUsd(f.estimatedUsd),
-    qualifier: `${pctText(f.utilizationPct)} of the ${fmtUsdWhole(f.thresholdUsd)} fleet alert threshold · ${scope} · ${ESTIMATE_CAPTION}`,
+    kind: "figure", status: "ESTIMATED", pct: s.utilisationPct,
+    value: fmtUsd(s.pricedUsd),
+    qualifier: `${pctText(s.utilisationPct)} of the ${fmtUsdWhole(f.thresholdUsd)} fleet alert threshold · ${scope} · ${ESTIMATE_CAPTION}`,
   };
 }
 

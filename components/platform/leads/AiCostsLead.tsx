@@ -50,6 +50,7 @@ import {
   aiKpis,
   aiSpend30d,
   budgetMeter,
+  budgetTileText,
   costByProvider,
   invocationDays,
   moneyText,
@@ -178,6 +179,7 @@ export function AiCostsLeadSurface(p: AiCostsLeadSurfaceProps) {
   const priced = providers.filter((x) => x.money.kind === "ESTIMATED");
   const unknown = providers.filter((x) => x.money.kind === "UNKNOWN");
   const meter = budgetMeter(p.budget.data);
+  const budgetText = meter ? budgetTileText(meter) : null;
   const customers = topCustomers(p.budget.data, CUSTOMER_ROWS);
   const drawers = AI_DRAWERS.filter((d) => d.keys.some(p.hasHosted));
   const can = (k: AiCostsDrawer) => drawers.some((d) => d.key === k);
@@ -248,13 +250,13 @@ export function AiCostsLeadSurface(p: AiCostsLeadSurfaceProps) {
           hint={<ProvenanceChip kind={meter?.spend.kind === "ESTIMATED" ? "ESTIMATED" : "UNKNOWN"} />}
           action={can("budget") ? <Doorway label="Budget & controls" onSelect={() => p.onOpenDrawer("budget")} dialog /> : undefined}>
           <Surface className="flex-1 p-4 sm:p-5">
-            {meter ? (
+            {meter && budgetText ? (
               <>
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-2xl font-semibold tabular-nums text-[var(--text-primary)]">{meter.pct === null ? "Unknown" : `${Math.round(meter.pct)}%`}</span>
-                  <span className="truncate text-[11px] tabular-nums text-[var(--text-muted)]">{`${moneyText(meter.spend)} of ${usd(meter.thresholdUsd)} · ${meter.windowHours} h`}</span>
+                <div className="flex items-baseline justify-between gap-3" data-fleet-spend-status={meter.status.status}>
+                  <span className="text-2xl font-semibold tabular-nums text-[var(--text-primary)]">{budgetText.headline}</span>
+                  <span className="truncate text-[11px] tabular-nums text-[var(--text-muted)]">{budgetText.detail}</span>
                 </div>
-                <div className="mt-3">{meter.pct === null ? <span className="block h-2 w-full rounded-full border border-dashed border-[var(--border-hairline-strong)]" /> : <Meter pct={meter.pct} tone={meter.tone} label="Fleet AI budget used" />}</div>
+                <div className="mt-3">{meter.pct === null ? <span className="block h-2 w-full rounded-full border border-dashed border-[var(--border-hairline-strong)]" /> : <Meter pct={meter.pct} tone={meter.tone} label={budgetText.meterLabel} />}</div>
                 <Caption>{`Fleet alert threshold (configured) · alert ${meter.alertEnabled ? "on" : "off"}`}</Caption>
               </>
             ) : (

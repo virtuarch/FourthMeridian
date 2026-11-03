@@ -72,7 +72,7 @@ export function AiBudgetSurface({ section, data }: { section: PlatformSection; d
               derivation={thresholdText(data.fleet, data.windowHours)}
               hint={FLEET_NOTE}
             />
-            <UtilizationBar label="Fleet utilization of the alert threshold" pct={data.fleet.utilizationPct} />
+            <UtilizationBar label="Fleet utilization of the alert threshold" pct={fleet.pct} />
             <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">{overheadText(data.overhead)}</p>
           </div>
           <div className="flex flex-col gap-2 border-t border-[var(--border-hairline)] pt-5 @min-[42rem]:border-t-0 @min-[42rem]:border-l @min-[42rem]:pl-6 @min-[42rem]:pt-0">
