@@ -1242,7 +1242,8 @@ Checklist additions:
 | #255 | PB-1 Phase 1: incident data model, removed-connection closure, archive + purge | **PB-1 migration.** It needs `20261103120000_pb1_s2_incident_lifecycle_schema` applied first, because its writers fill new columns at observation time (B10.2) |
 | #259 | test(RLS): PB-1 incident tables are operator-only | Test-only, but it tests #255's schema; it travels with #255 |
 | #263 | test(PB-1 §13): Phase-2 parity harness scaffold | Test-only; it is the gate for the PB-1 reader cutovers |
-| #264 | PB-1 Phase 2: incident-intelligence module (API + deterministic core) | **PB-1 reader cutovers.** Inert in this tree: no reader is cut over, and each cutover is its own future PR gated on the §13 parity harness. It reads #255's columns, so it travels with #255. No cutover PR has merged to develop as of `f0405e1` |
+| #264 | PB-1 Phase 2: incident-intelligence module (API + deterministic core) | **PB-1 reader cutovers.** Inert in this tree: no reader is cut over, and each cutover is its own future PR gated on the §13 parity harness. It reads #255's columns, so it travels with #255. No cutover PR had merged to develop as of `f0405e1`; see #288 below |
+| #288 | PB-1 Phase 2 R1/R2: CS incidents panel + CS detail loader read module verdicts | **PB-1 reader cutover.** Not yet merged at `f0405e1`; it is expected to be merged by the time B10 is cut. It travels with the PB-1 group and is bound by the same migration-first rule. R3–R6b remain pending |
 | #287 | PB-1 Phase 2: unattributed is null, never "" | Follow-up to #264; travels with it |
 | #232 | PB-8: liability coverage floor + held-flat probe | **PB-8 regeneration.** The PR modifies no stored row, but once deployed the *next automatic* regeneration (connect, refresh or the daily wealth regen, typically the 30-day window) rewrites the affected Spaces' recent history: liabilities held flat before their connection become unknown, and credit cards are walked. A full-window regeneration is a separate owner decision |
 | #266 | PB-8b: change-since never compares across a partial-history floor | Builds on #232's floors; travels with PB-8 |
@@ -1256,7 +1257,7 @@ Checklist additions:
 
 **Docs-only** (they ship with whichever tree is promoted and need no gate): #236, #237 (also adds the docs-structure test), #241, #242, #243, #244, #245, #246 (also ignores `docs/invoices/`), #247, #248, #249, #250, #251, #253, #257, #260, #261, #273, #279.
 
-**Counts:** 16 safe, 14 gated, 19 docs-only (49 PRs). Promoting only the safe subset is not a clean cut, because develop is linear and the gated PRs are interleaved with the safe ones. The simplest tree is develop at a pinned SHA after both migrations and the PB-8 decision are approved. Excluding any gated group means building a release branch with reverts, which needs a fresh S2 review of that exact tree.
+**Counts:** 16 safe, 14 gated, 19 docs-only (49 PRs), plus #288 (gated, PB-1) expected before the cut. Promoting only the safe subset is not a clean cut, because develop is linear and the gated PRs are interleaved with the safe ones. The simplest tree is develop at a pinned SHA after both migrations and the PB-8 decision are approved. Excluding any gated group means building a release branch with reverts, which needs a fresh S2 review of that exact tree.
 
 ### B10.2 Migration order
 
@@ -1265,9 +1266,9 @@ Two Prisma migrations are on develop and not on main (`git diff --name-only orig
 | # | Migration | PR | Must it precede the deploy? |
 |---|---|---|---|
 | 1 | `20261103120000_pb1_s2_incident_lifecycle_schema` | #255 | **Yes**, if #255 is in the tree. The new observation writer sets `subjectUserId` and `openedBy` on every new incident and writes `SyncIssueEvent`. Without the columns and tables, incident writes fail. They fail closed (swallowed and reported on the observer), but Production would stop recording incidents. The migration is additive: the new columns are nullable, except one with a constant default (no table rewrite); the CHECKs are vacuous on existing rows; there is no backfill; and the three new tables are fm_system-only with forced RLS. B9 code ignores all of it |
-| 2 | `20261103130000_pb10_session_presence` | #274 | **Yes.** The Customer Success list and detail queries select `UserSession.lastPresenceAt` / `lastInteractionAt`, and the heartbeat writes them. From reading the code (not tested): the login path creates a `UserSession` without a `select`, and Prisma returns every column by default, so sign-in would likely fail without them too. The migration adds two nullable columns with no default, no backfill and no grant change (catalog-only). B9 code ignores them |
+| 2 | `20261103130000_pb10_session_presence` | #274 | **Yes, and sign-in critical; never optional.** The Customer Success list and detail queries select `UserSession.lastPresenceAt` / `lastInteractionAt`, and the heartbeat writes them. The login path creates a `UserSession` without a `select`; Prisma's `create` returns every scalar column, so a session create against a database without these columns fails, and **sign-in would break** (Session 1 confirmed this reading). The migration adds two nullable columns with no default, no backfill and no grant change (catalog-only). B9 code ignores them |
 
-**Process:** apply both in one guarded run before the deploy, the same way as B1–B9: `npm run db:migrate:safe` (guard → backup → `prisma migrate deploy`), per [database-safety.md](../operations/database-safety.md). Preflight: tree − ledger = exactly these two; ledger − tree = ∅. **Owner approval is required.** Whether both migrations are already on Preview can't be checked from git; #255 required its migration on Preview before merge, and #274 left the Preview run to Session 1.
+**Process:** apply both in one guarded run before the deploy, the same way as B1–B9: `npm run db:migrate:safe` (guard → backup → `prisma migrate deploy`), per [database-safety.md](../operations/database-safety.md). Preflight: tree − ledger = exactly these two; ledger − tree = ∅. **Owner approval is required.** **Preview:** both migrations are applied and finished on Preview (Session 1, read-only `_prisma_migrations` check, 2026-11-03).
 
 ### B10.3 Owner-visible release notes
 
@@ -1286,12 +1287,12 @@ Each note was checked against its PR description and the develop code.
 
 ### B10.4 Rollback notes
 
-**Code rollback** for every item is a Vercel rollback to the prior Production deployment: B9 `dpl_GE3Dz…` (main `dc76711`), or B10a's deployment if #268 ships first. Leave the schema in place.
+**Code rollback** for every item is a Vercel rollback to the prior Production deployment (B9, main `dc76711`), or B10a's if #268 ships first. Leave the schema in place.
 
 | Item | Rollback | Trivial? |
 |---|---|---|
 | PB-10 migration + #274/#276/#278/#280 | The columns are additive and nullable; B9 code ignores them, and no down-migration is needed. Background reads go back to extending the idle deadline, and Customer Success goes back to the old "last active" | Yes |
-| PB-1 migration + #255/#259/#263/#264/#287 | The columns and tables stay and old code ignores them; no down-migration. Data the new code wrote stays: incidents closed because their subject was removed stay closed, and archive rows stay. I found no main-code path that reopens a resolved incident, so the new `lifecycleState` CHECKs shouldn't block old writers | Yes, low risk |
+| PB-1 migration + #255/#259/#263/#264/#287/#288 | The columns and tables stay and old code ignores them; no down-migration. Data the new code wrote stays: incidents closed because their subject was removed stay closed, and archive rows stay. I found no main-code path that reopens a resolved incident, so the new `lifecycleState` CHECKs shouldn't block old writers | Yes, low risk |
 | #284 reference format | A rollback restores the old format. References issued meanwhile stop resolving, and dedupe keys change back, so a firing alert may re-notify once more | **Not trivial for operators** (references churn twice) |
 | PB-8 (#232/#266/#267/#272) | The code rolls back, but **history rows rewritten by regenerations that ran under PB-8 are not reverted**. They change back only when the previous code's own regeneration next rewrites that window, or by a backup restore (the same class as the B3/B6 re-stamp) | **Not trivial** |
 | #225 PB-5 (if promoted) | The list and button disappear. **Removals an operator made in the meantime are not undone**: the provider-side revocation is external and permanent | **Not trivial** for any removal made |
@@ -1300,7 +1301,7 @@ Each note was checked against its PR description and the develop code.
 | Verdict and label changes (#282/#285/#286, #281/#283, #262/#265, #275/#277, presence labels) | Presentation-only; old wording returns. Attention items that depend on provider trust revert with it | Yes |
 | #258, #238, #239, docs | No runtime effect | Yes |
 
-**Unverified here:** whether #225's live removal test has run; whether both migrations are applied on Preview; the login-path `UserSession` inference in B10.2 (from reading the code, not a test).
+**Unverified here:** whether #225's live removal test has run.
 
 ## Beyond B10: carried from ROADMAP (2026-11-03)
 
