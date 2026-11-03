@@ -379,6 +379,9 @@ export const AuditAction = {
   // the database; its record carries the full report and a recovery snapshot.
   MERCHANT_MERGE_APPLIED:              "MERCHANT_MERGE_APPLIED",
   MERCHANT_MERGE_DISMISSED:            "MERCHANT_MERGE_DISMISSED",
+  // PB-9 — a dismissed pair's suppression removed (the decision row deleted,
+  // its snapshot carried here) so the detector may propose it again.
+  MERCHANT_MERGE_RECONSIDERED:         "MERCHANT_MERGE_RECONSIDERED",
 
   // ── Platform access (PO1.0) ─────────────────────────────────────────────
   // Grant lifecycle on a platform area (user × area × level). Never free
@@ -720,6 +723,7 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   // mutations, and the Plaid webhook dry run.
   AuditAction.MERCHANT_MERGE_APPLIED,
   AuditAction.MERCHANT_MERGE_DISMISSED,
+  AuditAction.MERCHANT_MERGE_RECONSIDERED,
   AuditAction.PLATFORM_CONTROL_REFUSED,
   AuditAction.PLAID_ITEM_WEBHOOK_DRY_RUN,
   // SEC-PLAT-3 — authorized customer-identity reads.

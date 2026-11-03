@@ -88,6 +88,10 @@ const READERS = [
   "lib/platform/merchant/overview-core.ts",
   // PLATFORM OPS PHASE 1 UX — the shared Policy Group catalogue reader (counts only).
   "lib/platform/policy-groups-read.ts",
+  // PB-9 — the Merchant Identity record readers (no amount, address, account name or email; descriptors sanitized).
+  "lib/platform/merchant/records.ts",
+  "lib/platform/merchant/records-query.ts",
+  "lib/platform/merchant/records-core.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -114,6 +118,9 @@ const ROUTES = [
   "app/api/platform/security-ops/analytics/route.ts",
   "app/api/platform/customer-success/overview/route.ts",
   "app/api/platform/merchant-ops/overview/route.ts",
+  // PB-9 — the Merchant Identity drill-down routes (MERCHANT_OPS READ; gates pinned in lib/platform/merchant/records.test.ts).
+  "app/api/platform/merchant-ops/records/route.ts",
+  "app/api/platform/merchant-ops/merchants/[id]/route.ts",
   // PLATFORM OPS PHASE 1 UX — the Policy Group catalogue, PLATFORM_OPS READ (gate pinned in its route.test.ts).
   "app/api/platform/platform-ops/policy-groups/route.ts",
 ];

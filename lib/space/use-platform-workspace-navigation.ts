@@ -75,7 +75,11 @@ export const PLATFORM_WORKSPACE_PARAM = "workspace";
 export const PLATFORM_VIEW_PARAM = "view";
 
 /** Params scoped to one workspace's content, deleted by a user workspace switch (see the header). */
-export const PLATFORM_WORKSPACE_SCOPED_PARAMS: readonly string[] = ["attention"];
+export const PLATFORM_WORKSPACE_SCOPED_PARAMS: readonly string[] = [
+  "attention",
+  // PB-9 — Merchant Identity period + records table (merchant-records-url.ts MERCHANT_URL_PARAMS).
+  "period", "records", "rq", "rsort", "rpage", "rfilter", "rid",
+];
 
 /**
  * The Platform default workspace id. Mirrors the server resolver's default

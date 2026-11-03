@@ -12,6 +12,7 @@ import type { BreakdownItem } from "@/components/space/widgets/BreakdownWidget";
 import type { DayBar, Fetched, Kpi } from "../ops-visual/ops-visual-model";
 import type { HeroModel } from "../ops-visual/HealthHero";
 import type { ShareBar } from "../charts/ShareBars";
+import { formatCoveragePct } from "@/lib/platform/merchant/records-core";
 
 export type MerchantWindow = "30" | "90";
 export const REVIEW_HREF = "/merchant-ops";
@@ -26,6 +27,20 @@ export function coveragePct(m: MerchantOverviewResponse): number | null {
   return m.transactions.total > 0 ? (m.transactions.resolved / m.transactions.total) * 100 : null;
 }
 
+/**
+ * PB-9 — the hero's linked share as text, FLOORED to two decimals (formatCoveragePct):
+ * 7,986 of 8,014 reads "99.65%", never the "100%" Math.round printed.
+ */
+export function coverageLabel(m: MerchantOverviewResponse): string | null {
+  return formatCoveragePct(m.transactions.resolved, m.transactions.total);
+}
+
+/** PB-9 — the "Without a merchant" split: identity expected (actionable) vs legitimate exclusions. */
+export function unlinkedSplit(m: MerchantOverviewResponse): { actionable: number; excluded: number } {
+  const c = m.transactions.coverage.unlinkedByClass;
+  return { actionable: c.ELIGIBLE, excluded: c.TRANSFER + c.WALLET + c.NO_COUNTERPARTY };
+}
+
 export function merchantKpis(f: Fetched<MerchantOverviewResponse>): Kpi[] {
   const m = f.data;
   if (!m) {
@@ -34,7 +49,7 @@ export function merchantKpis(f: Fetched<MerchantOverviewResponse>): Kpi[] {
   }
   return [
     { key: "merchants", label: "Merchants", value: n(m.merchants.total), sub: `${n(m.merchants.aliases.reduce((a, x) => a + x.count, 0))} aliases` },
-    { key: "unresolved", label: "Without a merchant", value: n(m.transactions.total - m.transactions.resolved), sub: "incl. transfers & wallet rows" },
+    { key: "unresolved", label: "Without a merchant", value: n(m.transactions.coverage.unlinked), sub: `${n(unlinkedSplit(m).actionable)} identity expected · ${n(unlinkedSplit(m).excluded)} excluded` },
     { key: "merged", label: "Merged", value: n(m.decisions.merged), sub: `${m.windowDays} d · review decisions` },
     { key: "dismissed", label: "Dismissed", value: n(m.decisions.dismissed), sub: `${m.windowDays} d · kept apart` },
   ];
@@ -42,14 +57,16 @@ export function merchantKpis(f: Fetched<MerchantOverviewResponse>): Kpi[] {
 
 export function merchantHero(f: Fetched<MerchantOverviewResponse>): HeroModel {
   const m = f.data;
-  const pct = m ? coveragePct(m) : null;
+  const pct = m ? coverageLabel(m) : null;
   return {
     title: "Merchant identity",
     dot: false,
     provenance: "MEASURED",
-    verdict: { word: !m ? "—" : pct === null ? "No transactions" : `${pct < 1 && pct > 0 ? "<1" : Math.round(pct)}% linked`, tone: "muted" },
+    verdict: { word: !m ? "—" : pct === null ? "No transactions" : `${pct} linked`, tone: "muted" },
     checked: m ? hhmm(m.checkedAt) : null,
-    caption: m ? `${n(m.transactions.resolved)} of ${n(m.transactions.total)} live transactions linked to a canonical merchant · all tenants · transfers and wallet rows have none` : reason(f, "merchant figures"),
+    caption: m
+      ? `${n(m.transactions.resolved)} of ${n(m.transactions.total)} live transactions linked to a canonical merchant · all tenants · ${n(unlinkedSplit(m).actionable)} without one where identity is expected${m.transactions.coverage.eligible > 0 ? ` (${formatCoveragePct(m.transactions.coverage.eligibleLinked, m.transactions.coverage.eligible)} of eligible linked)` : ""}`
+      : reason(f, "merchant figures"),
     kpis: merchantKpis(f),
     kpiLabels: { first: "Merchant identity figures", second: "Merge review figures", all: "Merchant figures" },
   };

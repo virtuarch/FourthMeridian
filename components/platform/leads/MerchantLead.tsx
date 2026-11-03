@@ -12,13 +12,16 @@
  *
  *   every width (review first — it is the Space's one action)
  *     1  scope line + period + hero (share of live transactions linked) · 4 KPIs
+ *        PB-9 — each KPI OPENS its records (MerchantRecords, directly below the
+ *        hero): the same count the tile shows is the table's total. The period
+ *        and the open table live in the URL (merchant-records-url.ts, REPLACE).
  *     2  merge review: decisions per day (8) · by evidence tier + Open review (4)
  *     3  category provenance (7) · aliases by source (5, ≥ lg only)
  *     4  identity growth: aliases and customer rules per day (≥ lg only)
  *     5  how measured
  */
 
-import { useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { Block, Surface } from "@/components/atlas/Surface";
@@ -35,6 +38,10 @@ import { ShareBars } from "../charts/ShareBars";
 import {
   GROWTH_PALETTE, MERGE_PALETTE, REVIEW_HREF, aliasItems, decisionBars, growthBars, merchantHero, sourceBars, type MerchantWindow,
 } from "./merchant-model";
+import type { MerchantRecordsKind } from "@/lib/platform/merchant/records-types";
+import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
+import { CLOSED_STATE, merchantRecordsUrlUpdate, openRecords, readMerchantRecordsUrl, type MerchantRecordsUrlState } from "./merchant-records-url";
+import { MerchantRecords } from "./MerchantRecords";
 
 const n = (v: number) => v.toLocaleString("en-US");
 const GRID = "grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8";
@@ -49,10 +56,17 @@ export interface MerchantLeadSurfaceProps {
   onPeriod: (w: MerchantWindow) => void;
   /** The review doorway follows its section row (enabled ⇒ shown), as the hosted link card did. */
   reviewAvailable?: boolean;
+  /** PB-9 — open a KPI's records. Absent ⇒ the KPIs keep their in-page section links. */
+  onOpenRecords?: (kind: MerchantRecordsKind) => void;
+  /** PB-9 — the open records panel (rendered directly below the hero). */
+  records?: ReactNode;
 }
 
 export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
   const m = p.f.data;
+  const open = (kind: MerchantRecordsKind, label: string, fallbackLabel: string, fallbackSection: string) => p.onOpenRecords
+    ? { label, onSelect: () => p.onOpenRecords?.(kind) }
+    : { label: fallbackLabel, onSelect: () => goToSection(fallbackSection) };
   return (
     <div className="min-w-0 space-y-8 sm:space-y-10 max-lg:space-y-6!" data-merchant-dashboard>
       <div className="flex flex-col gap-3">
@@ -64,12 +78,14 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
           </span>
         </div>
         <HealthHero model={{ ...merchantHero(p.f), actions: {
-          merchants: { label: "Show merchant aliases", onSelect: () => goToSection("mo-aliases") },
-          unresolved: { label: "Show where categories come from", onSelect: () => goToSection("mo-provenance") },
-          merged: { label: "Show the merge review", onSelect: () => goToSection("mo-decisions") },
-          dismissed: { label: "Show the merge review", onSelect: () => goToSection("mo-decisions") },
+          // PB-9 — each KPI opens the records it counts; without a records host (a static render) it keeps its in-page section link.
+          merchants: open("merchants", "Open the merchant directory", "Show merchant aliases", "mo-aliases"),
+          unresolved: open("unlinked", "Open the transactions without a merchant", "Show where categories come from", "mo-provenance"),
+          merged: open("merged", "Open the merge history", "Show the merge review", "mo-decisions"),
+          dismissed: open("dismissed", "Open the dismissed candidates", "Show the merge review", "mo-decisions"),
         } }} />
       </div>
+      {p.records && <div id="mo-records" className="min-w-0" data-records-anchor>{p.records}</div>}
 
       {/* Review first at every width — it is the Space's one action. With no
           decisions in the window there is nothing to chart: one compact row, never an empty chart. */}
@@ -165,8 +181,27 @@ export function MerchantLeadSurface(p: MerchantLeadSurfaceProps) {
   );
 }
 
-export function MerchantLead({ hasHosted }: PlatformViewLeadProps) {
-  const [period, setPeriod] = useState<MerchantWindow>("30");
+export function MerchantLead({ hasHosted, access }: PlatformViewLeadProps) {
+  const spaceUrl = useSpaceUrl();
+  // PB-9 — period + open records live in the URL. First paint is the default
+  // (SSR-safe); the URL is read after mount and on Back/Forward.
+  const [state, setState] = useState<MerchantRecordsUrlState>(CLOSED_STATE);
+  useEffect(() => {
+    const sync = () => setState(readMerchantRecordsUrl(spaceUrl.getSearch()));
+    sync();
+    return spaceUrl.subscribe(sync);
+  }, [spaceUrl]);
+  /** THE one setter: state + the URL mirror (REPLACE — a refinement of this entry, never a history step). */
+  const apply = useCallback((next: MerchantRecordsUrlState) => {
+    setState(next);
+    spaceUrl.commit(merchantRecordsUrlUpdate(next), { history: "replace" });
+  }, [spaceUrl]);
+  const period: MerchantWindow = state.period === 90 ? "90" : "30";
   const f = useSharedWidgetFetch<MerchantOverviewResponse>(`/api/platform/merchant-ops/overview?window=${period}`);
-  return <MerchantLeadSurface f={f} period={period} onPeriod={setPeriod} reviewAvailable={hasHosted("merchant_review")} />;
+  const open = (kind: MerchantRecordsKind) => { apply(openRecords(state, kind)); goToSection("mo-records"); };
+  return (
+    <MerchantLeadSurface f={f} period={period} onPeriod={(w) => apply({ ...state, period: w === "90" ? 90 : 30, page: 1 })}
+      reviewAvailable={hasHosted("merchant_review")} onOpenRecords={open}
+      records={state.records ? <MerchantRecords state={{ ...state, records: state.records }} onState={apply} canWrite={access?.canWrite === true} /> : null} />
+  );
 }

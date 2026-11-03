@@ -303,6 +303,7 @@ export const REASON_REQUIRED_ACTIONS: ReadonlySet<AuditActionType> = new Set<Aud
   AuditAction.BETA_ABUSE_EVIDENCE_DELETED,
   AuditAction.MERCHANT_MERGE_APPLIED,
   AuditAction.MERCHANT_MERGE_DISMISSED,
+  AuditAction.MERCHANT_MERGE_RECONSIDERED,
   // PB-5 — removing a customer's connection is irreversible at the provider.
   AuditAction.CONNECTION_REMOVED_BY_OPERATOR,
   AuditAction.CONNECTION_REMOVAL_REQUESTED,
