@@ -122,8 +122,13 @@ export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
  * accounts", never a payment or a debt reduction; an unclassified movement is
  * described only as money that moved (docs/systems/transactions.md, "Resolved
  * transaction nature").
+ *
+ * partial-history-1 (PB-8c): a change withheld because its window opens before the
+ * balance-history floor arrives as `recentChanges.<w>.unavailable.<metric>` (the
+ * reason, never a figure) and is said as "history is partial before <date>"; an
+ * estimated change is called estimated.
  */
-export const BRIEF_PROMPT_REVISION = 'debt-semantics-2';
+export const BRIEF_PROMPT_REVISION = 'partial-history-1';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

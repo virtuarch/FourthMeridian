@@ -28,21 +28,30 @@ import { classifyPerspectiveEmpty, EMPTY_COPY, type PerspectiveKey } from "@/lib
 import type { DataSourceView } from "@/lib/connections/space-data-health.core";
 import { useSpaceIdContext } from "@/components/space/space-id-context";
 import type { ValuationCoverage } from "@/lib/connections/valuation-coverage.core";
-import type { BalanceCoverage } from "@/lib/connections/balance-coverage.core";
+import { balanceCoverageLoadFailureLine, type BalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 type DataHealthPayload = { sources: DataSourceView[] | null; valuationCoverage: ValuationCoverage | null; balanceCoverage: BalanceCoverage | null };
 const cache = new Map<string, Promise<DataHealthPayload | null>>();
+
+/**
+ * PB-8c — the balance coverage rides this read; when it fails, the change gates
+ * fall open to comparable. One counts-only line (no ids, no amounts) so frequent
+ * failures are noticed.
+ */
+function coverageReadFailed(): void {
+  console.warn(balanceCoverageLoadFailureLine("client-data-health", 1, 1));
+}
 
 function loadPayload(spaceId: string): Promise<DataHealthPayload | null> {
   let p = cache.get(spaceId);
   if (!p) {
     p = fetch(`/api/spaces/${encodeURIComponent(spaceId)}/data-health`, { cache: "no-store", credentials: "same-origin" })
       .then(async (r) => {
-        if (!r.ok) return null;
+        if (!r.ok) { coverageReadFailed(); return null; }
         const j = (await r.json()) as { sources?: DataSourceView[]; valuationCoverage?: ValuationCoverage | null; balanceCoverage?: BalanceCoverage | null };
         return { sources: j.sources ?? null, valuationCoverage: j.valuationCoverage ?? null, balanceCoverage: j.balanceCoverage ?? null };
       })
-      .catch(() => null);
+      .catch(() => { coverageReadFailed(); return null; });
     cache.set(spaceId, p);
     // A short-lived memo: perspectives mounting together share one read.
     setTimeout(() => cache.delete(spaceId), 30_000);
