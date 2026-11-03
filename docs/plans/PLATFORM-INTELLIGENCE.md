@@ -1,6 +1,6 @@
 # Platform Intelligence: governed operational and business intelligence
 
-> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-03 · **PRs:** #255, #257, feat/platform-metric-registry (foundation step 1)
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-03 · **PRs:** #255, #257, feat/platform-metric-registry (foundation step 1), docs/active-definitions
 
 **Owner directives (2026-11-03).** One extensible, permissioned intelligence system for every Fourth Meridian domain. It answers questions nobody listed in advance, navigates the operator to the right record, and never acts without explicit authorization. The order is fixed: **data model → deterministic intelligence → conversation and navigation.** Incidents are the first domain ([PB1-INCIDENT-LIFECYCLE](PB1-INCIDENT-LIFECYCLE.md)). Every important KPI leads to the records behind it.
 
@@ -19,7 +19,7 @@
 |---|---|---|---|
 | Growth | `User` lifecycle dates; beta funnel (`BetaAccessRequest`); allowlisted acquisition source (180 d) | "signup cohort" vs policy `CustomerCohort` | Geography: only a country header that is probably always null |
 | Auth and sessions | `UserSession`; login/2FA/password/session audit actions | none | Login method and device class |
-| Engagement | 9 server-side `PRODUCT_EVENT_ACTIONS` (interactive by construction, 13 months) | **Four definitions of "active"** (growth, product analytics, customer detail, a reaped-session count) | Feature use outside Space, Brief and Transactions |
+| Engagement | 9 server-side `PRODUCT_EVENT_ACTIONS` (interactive by construction, 13 months) | **Several definitions of "active"** (19 inventoried, 10 conflicts: see the "Definitions of active" subsection under Open owner decisions) | Feature use outside Space, Brief and Transactions |
 | Onboarding | The PB-7 import-status fold | none | Anything older than 60 days (RefreshExecution retention) |
 | Entitlements and billing | Policy groups, assignments, versions | none | **No billing, subscription, payment or revenue data exists** |
 | Provider cost | `ProviderCall` (60 d), `ApiUsageCounter` (90 d), versioned rate estimates | none | Real invoices (no reconciliation) |
@@ -84,3 +84,84 @@
 - Billing and revenue data has no source. Unit economics stay estimate-only until a billing system exists.
 - Whether to record country at registration (two-letter code only).
 - Minimising identifiers in security audit rows. Session 2 proposes: after 90 days, null the IP and user agent on all auth and security audit rows and keep a keyed digest (the `BETA_INTAKE_HASH_KEY` pattern, with its own versioned key). The rows themselves are kept as security evidence.
+
+### Definitions of "active" (inventory 2026-11-03)
+
+Read from develop `8083b7b` (code and labels only; no database read). It unblocks foundation step 2 (DAU/WAU/MAU and unit economics). Abbreviations: `pac` = `lib/platform/growth/product-analytics-core.ts`, `pa` = `lib/platform/growth/product-analytics.ts`, `snap` = `lib/platform/economics/snapshot-core.ts`, `defs` = `lib/presence/definitions.ts`.
+
+**Inventory — IMPLEMENTED (as the code stands).** "All users" means every `User` row: operators and deactivated or deletion-scheduled accounts are included. No surface excludes test accounts: no test-account flag exists (`UserRole` is only USER and SYSTEM_ADMIN, `prisma/schema.prisma:250`), and only seeded Plaid Items are excluded, from cost (`lib/platform/plaid/item-months.ts:72`). Pending deletion also sets `deactivatedAt` (`schema.prisma:397-402`), so "not deactivated" excludes it too.
+
+| # | Name in code / UI | Predicate (counts) | Population | Window and constant | Signal | Shown at (label · route · registry key) |
+|---|---|---|---|---|---|---|
+| A1 | Engaged (DAU/WAU/MAU) | distinct users with ≥1 frozen-predicate fact: `ENGAGEMENT_AUDIT_ACTIONS` ∪ chat/brief `AiInvocation` with a userId (`pac:178`, `pac:210`) | all users with a fact; no role or deactivation filter (`pa:47-62`) | 1 / 7 / 30 **UTC days incl. today**; `PRODUCT_ANALYTICS_WINDOW_DAYS` = 30 (`pac:52`) plus literals 1 and 7 (`pac:505-507`); `ENGAGEMENT_WINDOW_DAYS` (`defs:105`) is read by no code | AuditLog product events, AiInvocation | "Engaged · 30 d" KPI (`components/platform/leads/growth-model.ts:63`); "Engaged" series and "… this week · … in 30 d" (`GrowthLead.tsx:95,103`); "Engaged per UTC day" (`GrowthProductAnalyticsWidget.tsx:185`) · `/api/platform/growth-revenue/product-analytics`, `…/activity` (`active.*`) · `engaged-users@1` (`registry.ts:250`) |
+| A2 | "active this week" (`active7`) | `loadEngagedUserIdsSince` (`pa:106`), the A1 predicate | all users | **rolling** 7 × 24 h, literal (`app/api/platform/growth-revenue/signups/route.ts:37,48`) | as A1 | `GrowthSignupsWidget.tsx:42` · `/api/platform/growth-revenue/signups` · none |
+| A3 | "Returning (7d)" (`returning7`) | the A1 predicate in the window **and** created before the window start | all users | rolling 7 × 24 h, literal (`lib/platform/growth/growth.ts:204,212`) | as A1 + `User.createdAt` | `growth-funnel-view.ts:176` · `/api/platform/growth-revenue/growth` · none |
+| A4 | "Active customers · this cycle" | `loadEngagedUserIdsSince(cycleStart)` (`lib/platform/economics/snapshot.ts:58-63`) | all users | **UTC calendar month to date** (`snap:81`) | as A1 | label `snap:521`; drill "engaged this cycle" (`snap:481`) · `/api/platform/platform-ops/economics` (+ `/drill`) · none |
+| A5 | "Cost per active customer" | operating cost this cycle (customer AI + overhead AI + Platform AI + Plaid, `snap:436`) ÷ A4 | as A4 | cycle | AiInvocation, Plaid census | label `snap:533` · economics route · none |
+| A6 | "Cost per engaged user · 30 d" (A8) | (customer-surface AI over 30 d + Plaid this cycle) ÷ A1 MAU (`pac:452-485`) | as A1 | 30 UTC days (AI) **mixed with** the cycle (Plaid) | AiInvocation, Plaid census | `product-analytics-view.ts:261` · product-analytics route · none |
+| A7 | Present / "Signed in" | `SESSION_ACTIVE_DAY` ∪ the UTC day a session was created (`pac:170`) | all users | 1 / 7 / 30 UTC days (as A1) | AuditLog `SESSION_ACTIVE_DAY`, `UserSession.createdAt` | "Signed in" (`GrowthLead.tsx:95`); "Present per UTC day" (`GrowthProductAnalyticsWidget.tsx:184`) · product-analytics, activity · none |
+| A8 | "DAU / WAU / MAU" (sign-ins) | distinct users with an AuditLog `LOGIN` (`lib/platform/activity/activity.ts:97-103`) | all users | **rolling** 1 / 7 / 30 × 24 h, literals (`activity.ts:142-144`) | AuditLog `LOGIN` | **"DAU" "WAU" "MAU"** (`components/platform/widgets/OpsActivityWidget.tsx:33-35`) · `/api/platform/growth-revenue/activity` · none |
+| A9 | "sign-ins" stratum | distinct users with `LOGIN` (`pac:187`) | all users | UTC days (as A1) | AuditLog `LOGIN` | `product-analytics-view.ts:117` · product-analytics, activity · none |
+| A10 | "Active now" / "Online, idle" / "Offline" / "Unknown" | `derivePresenceState` (`defs:141`): presence beat ≤ 3 min; interaction ≤ 5 min | one customer (CS list and detail) | `PRESENCE_CONFIG` (`defs:99-101`) | `UserSession.lastPresenceAt` / `lastInteractionAt` | `CsCustomersWidget.tsx:100,402` · `/api/platform/customer-success/customers` · `presence-state@1` (`registry.ts:227`) |
+| A11 | "Last active" ("active today", "this week" …) | coarse bucket of the newest interaction (`defs:169-180`) | one customer | literals 1 h / 7 d / 30 d in `lastActiveBucket` | `lastInteractionAt` (client-asserted) | `CsCustomersWidget.tsx:403` · CS customers · inside `presence-state@1` |
+| A12 | "active customers" (CS) | `role USER ∧ deactivatedAt null` (`lib/platform/customer/attention.ts:73`) | customers; operators = SYSTEM_ADMIN only | point in time | `User` | "of N active customers" (`customer-success-model.ts:59`, `CustomerSuccessLead.tsx:105-167`) · `/api/platform/customer-success/overview` · `cs-needs-help@1` denominator (`registry.ts:379`) |
+| A13 | "open accounts" | registrations − deactivated (`growth-model.ts:64`) | **all roles** | point in time | `User` | Growth KPI sub-line · product-analytics · none |
+| A14 | unassigned *active* customers | `role USER ∧ deactivatedAt null ∧ no assignment` (`lib/platform/policy-groups-read.ts:88`; also `policy-group-detail.ts:106`, `policy-group-lifecycle-read.ts:87`, `policies/reconcile-beta.ts:66`) | as A12 | point in time | `User` | Policies "Unassigned" (`policies-model.ts:235`) · policy-groups routes · none |
+| A15 | owner inactive (connections) | owner `deactivatedAt` set ⇒ connection retired (`lib/connections/health.ts:319`) | connections | point in time | `User` | provider-connection verdict · provider-health · `provider-connection@1` |
+| A16 | "Signed-in sessions" / "Active sessions" / "With a live session" | `UserSession.revokedAt IS NULL`: **no SEC-010 lifetime check**, so idle- or absolute-expired rows that were never revoked still count | sessions (CS, Security) or users (Growth) | none; the lifetime lives in `SESSION_IDLE_TIMEOUT_MS` / `SESSION_ABSOLUTE_LIFETIME_MS` (`lib/auth/session-proof.ts:102-104`) but is not applied here | `UserSession` | `CsCustomersWidget.tsx:407` (`customer-detail.ts:116`); `security-posture-view.ts:247` (`security-ops/sessions/route.ts:45`, `auth-posture/route.ts:35`, `security/analytics.ts:67`); `OpsUsersWidget.tsx:41` (`growth-revenue/users/route.ts:57`, role USER) · none |
+| A17 | "Active {time}" (own sessions) | `UserSession.lastActiveAt`, which any human-initiated authenticated request moves | sessions | none | `lastActiveAt` | `components/security/SessionsList.tsx:125`, `ActiveSessions.tsx:103`; "recently active sessions" (`SecSessionsWidget.tsx:32`) |
+| A18 | "Returning ever" ≡ funnel "Returned" | engaged on any UTC day after the first-visit day (`pac:308`, `pac:339`) | all users | ever | as A1 + first session | `GrowthProductAnalyticsWidget.tsx:192`; funnel stage label (`pac:90`) · product-analytics, growth · none |
+| A19 | "Activated" | ≥ 1 `UserSession` ever (`activity.ts:108`, `signups/route.ts:46`) | all users | ever | `UserSession` | `OpsActivityWidget.tsx:39`, `GrowthSignupsWidget.tsx:39` · activity, signups · none |
+
+**Conflicts**
+
+| # | Conflict | Where |
+|---|---|---|
+| X1 | **"DAU/WAU/MAU" means two things.** The widget labels LOGIN sign-ins (A8) with the same words the registry uses for engaged users (A1). | `OpsActivityWidget.tsx:33-35` vs `registry.ts:250` |
+| X2 | **"Active customers" means two things.** CS means not deactivated (point in time, role USER); Economics means engaged this cycle (all roles, deactivated included). | `overview-core.ts:46`, `attention.ts:73` vs `snap:521` |
+| X3 | **Two cost-per-customer figures disagree.** They differ in window (30 UTC days vs cycle), numerator (customer AI vs all operating cost) and name ("engaged user" vs "active customer"). | `pac:452` vs `snap:529-536` |
+| X4 | **"Signed in" names three predicates:** present (A7), a non-revoked session (A16) and `LOGIN` (A9, "sign-ins"). | `GrowthLead.tsx:95`; `CsCustomersWidget.tsx:407`; `product-analytics-view.ts:117` |
+| X5 | **"This week" / "7 d" uses two clocks:** rolling 7 × 24 h (A2, A3, A8) and 7 UTC days including today (A1). | `signups/route.ts:37`, `growth.ts:204`, `activity.ts:143` vs `pac:146` |
+| X6 | **The same predicate has two names:** "Returning ever" and "Returned". "Returning (7d)" is a different predicate with the same root word. | `pac:308,339` vs `growth.ts:136` |
+| X7 | **Populations disagree.** Engagement counts (A1–A7) include operators and since-deactivated users. CS (A12) excludes both. "open accounts" (A13) excludes deactivated users but keeps operators, and it divides an all-roles numerator. A role-USER holder of a `PlatformGrant` counts as a customer everywhere, because only SYSTEM_ADMIN is distinguished (`lib/platform/authorize.ts:98`). | `pa:47-62`, `attention.ts:73`, `growth-model.ts:64` |
+| X8 | **"Live" session counts ignore the SEC-010 lifetime.** Expired, unrevoked rows read as active or signed in. | A16 sites vs `session-proof.ts:102-104` |
+| X9 | **Window constants are duplicated.** `ENGAGEMENT_WINDOW_DAYS` is unused by code, `PRODUCT_ANALYTICS_WINDOW_DAYS` restates its 30, and literals 1/7/30 sit in four files. | `defs:105`, `pac:52,505-506`, `activity.ts:140-153`, `signups/route.ts:37-38`, `growth.ts:204` |
+| X10 | **The "account active" predicate is inline in at least six places.** It is consistent today but not shared. | A14 sites, `attention.ts:73`, `security/analytics.ts:65` |
+
+**Canonical vocabulary — PROPOSED.** No surface keeps the bare word "active" except "Active now".
+
+| Name | One definition | One constant | Owning module | Replaces |
+|---|---|---|---|---|
+| **Engaged (N d)**; DAU/WAU/MAU = Engaged 1/7/30 d | ≥ 1 frozen-predicate fact in the N UTC days ending today | `ENGAGEMENT_WINDOW_DAYS` (`defs`) | predicate: `pac` (`engagementDays`); id sets: `pa` | A1, A2, A3 (window), A4 (window per OD-1) |
+| **Engaged this cycle** (only if OD-1 keeps cycles) | same predicate, since 00:00Z on the 1st of the month | economics cycle helper | `snap` | A4 |
+| **Present (N d)** | `SESSION_ACTIVE_DAY` ∪ session-start day | `ENGAGEMENT_WINDOW_DAYS` | `pac` (`presenceDays`) | A7 ("Signed in") |
+| **Sign-ins (N d)** | distinct users with `LOGIN` in the N UTC days ending today | `ENGAGEMENT_WINDOW_DAYS` | `pac` (`signInDays`) | A8, A9 |
+| **Active now / Online, idle / Offline** | `derivePresenceState` | `PRESENCE_CONFIG` | `defs` | A10 (unchanged) |
+| **Last interaction** | `lastActiveBucket` | `PRESENCE_CONFIG` + bucket literals | `defs` | A11 ("Last active", "active today") |
+| **Open account** | `deactivatedAt IS NULL` (covers deletion-scheduled) | one exported `where` | new `lib/platform/customer/population.ts` | A12–A15 predicates |
+| **Customer** | role USER, plus the OD-2 / OD-4 exclusions | same module | same | the population in every count above |
+| **Live sessions** | `revokedAt IS NULL ∧ judgeSessionLifetime = LIVE` | `SESSION_*_MS` | `lib/auth/session-proof.ts` | A16 |
+| **Returning (7 d)** / **Returned (ever)** | as A3 (UTC days) / A18 | `ENGAGEMENT_WINDOW_DAYS.wau` | `pac` | A3, A18 ("Returning ever") |
+| **Cost per engaged customer** | operating cost ÷ Engaged (OD-1 window) | the OD-1 window | `snap` (one figure) | A5 and A6 (one survives, per OD-1) |
+
+**Minimal renames — ENGINEERING (no owner input; PROPOSED):**
+- `OpsActivityWidget` DAU/WAU/MAU → "Sign-ins · 1 d / 7 d / 30 d".
+- GrowthLead "Signed in" → "Present".
+- CS "Signed-in sessions", Security "Active sessions" and Growth "With a live session" → "Live sessions" (apply the lifetime rule to their reads).
+- "active this week" → "Engaged · 7 d".
+- Economics "Active customers · this cycle" → "Engaged customers · this cycle" (or · 30 d, per OD-1); "Cost per active customer" → "Cost per engaged customer".
+- CS "active customers" → "open customer accounts".
+- Growth "open accounts" → use the Customer ∧ Open-account population.
+- "Returning ever" → "Returned (ever)"; CS "Last active" → "Last interaction".
+- Constants: `ENGAGEMENT_WINDOW_DAYS` becomes the only window source (`PRODUCT_ANALYTICS_WINDOW_DAYS = ENGAGEMENT_WINDOW_DAYS.mau`; drop the literals); rolling 7 × 24 h reads move to UTC days. Changing those reads changes their numbers, so they get new metric versions, not edits.
+- Registry: add `open-customers@1` and `live-sessions@1`; register the economics figures after OD-1. `engaged-users@1` keeps its id.
+
+**Decision split**
+
+| Item | Class |
+|---|---|
+| **OD-1.** Which window defines an "active customer" for unit economics: calendar cycle to date, or trailing 30 UTC days (Engaged MAU, A8 ruling)? And does a second cost-per-customer figure survive? | **OWNER DECISION** |
+| **OD-2.** Do operators count as customers: SYSTEM_ADMIN, and role-USER `PlatformGrant` holders using personal Spaces? | **OWNER DECISION** |
+| **OD-3.** Does an account deactivated or scheduled for deletion **now** still count in a window in which it was engaged? | **OWNER DECISION** |
+| **OD-4.** Should a test or internal account be marked (a new flag means schema and instrumentation), and should it be excluded? | **OWNER DECISION** |
+| All labels, metric keys and versions, constant consolidation, the shared population module, and the lifetime check on live-session counts | **ENGINEERING** |
