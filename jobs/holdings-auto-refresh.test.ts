@@ -57,10 +57,10 @@ type Ev = { op: "begin" | "succeed" | "skip" | "fail" | "failOpen"; endpoint?: R
 function fakeRecorder() {
   const events: Ev[] = [];
   const recorder: RefreshStageRecorder = {
-    begin: (endpoint) => { events.push({ op: "begin", endpoint }); },
-    succeed: (endpoint) => { events.push({ op: "succeed", endpoint }); },
-    skip: (endpoint, _k, reason) => { events.push({ op: "skip", endpoint, reason }); },
-    fail: (endpoint) => { events.push({ op: "fail", endpoint }); },
+    begin: (endpoint: RefreshEndpoint) => { events.push({ op: "begin", endpoint }); },
+    succeed: (endpoint: RefreshEndpoint) => { events.push({ op: "succeed", endpoint }); },
+    skip: (endpoint: RefreshEndpoint, _k: unknown, reason: RefreshSkipReason) => { events.push({ op: "skip", endpoint, reason }); },
+    fail: (endpoint: RefreshEndpoint) => { events.push({ op: "fail", endpoint }); },
     failOpen: () => { events.push({ op: "failOpen" }); },
   } as unknown as RefreshStageRecorder;
   const seq = () => events.map((e) => `${e.op}:${e.endpoint ?? ""}${e.reason ? `/${e.reason}` : ""}`);
@@ -70,7 +70,7 @@ function fakeRecorder() {
 const RESULT: SyncInvestmentsResult = { holdingsSynced: 3, consent: PlaidInvestmentsConsent.ENABLED, processedAccountIds: ["inv-1"], accountCoverage: [], eventsIngestAttempted: true };
 
 type Bal = Parameters<typeof runHoldingsStage>[0];
-const bal = (consent: PlaidInvestmentsConsent | null, accounts: Array<{ type: string; subtype: string }> = []) => ({
+const bal = (consent: PlaidInvestmentsConsent | null, accounts: Array<{ type: string; subtype: string }> = []): Bal => ({
   item: { id: "item-1", institutionName: "Broker", investmentsConsent: consent },
   accessToken: "tok",
   plaidAccounts: accounts.map((a, i) => ({ account_id: `pa-${i}`, ...a })),
@@ -79,7 +79,7 @@ const bal = (consent: PlaidInvestmentsConsent | null, accounts: Array<{ type: st
   accountsUpdated: 1,
   reconcileTargets: [],
   accountCoverage: [],
-});
+}) as unknown as Bal;
 
 const TX = { added: 1, modified: 0, removed: 0, created: 1, updatedByPlaidId: 0, updatedByFingerprint: 0, skippedMissingAccount: 0 };
 
@@ -112,12 +112,12 @@ async function main() {
   {
     let called = 0;
     const r = fakeRecorder();
-    const out = await runAutoHoldingsStage(bal(null) as Bal, r.recorder, { stage: async () => { called++; return RESULT; } });
+    const out = await runAutoHoldingsStage(bal(null), r.recorder, { stage: async () => { called++; return RESULT; } });
     check("not eligible ⇒ the stage is NOT called and NOTHING is recorded", called === 0 && r.events.length === 0 && !out.ran && out.reason === "NOT_ELIGIBLE");
   }
   {
     const r = fakeRecorder();
-    const out = await quiet(() => runAutoHoldingsStage(bal(PlaidInvestmentsConsent.ENABLED) as Bal, r.recorder, {
+    const out = await quiet(() => runAutoHoldingsStage(bal(PlaidInvestmentsConsent.ENABLED), r.recorder, {
       stage: async (_b, rec) => { rec?.begin("HOLDINGS", "PROVIDER"); throw new Error("holdings boom"); },
     }));
     check("a throwing stage never throws out; the OPEN stage is failed (failOpen) and the outcome is FAILED",
@@ -127,7 +127,7 @@ async function main() {
     // The REAL shared stage: an ENABLED Item with no investment accounts records
     // HOLDINGS SKIPPED/NOT_APPLICABLE (syncInvestmentsForItem returns before any call).
     const r = fakeRecorder();
-    const out = await runAutoHoldingsStage(bal(PlaidInvestmentsConsent.ENABLED, [{ type: "depository", subtype: "checking" }]) as Bal, r.recorder);
+    const out = await runAutoHoldingsStage(bal(PlaidInvestmentsConsent.ENABLED, [{ type: "depository", subtype: "checking" }]), r.recorder);
     check("real runHoldingsStage: no investment accounts ⇒ HOLDINGS SKIPPED/NOT_APPLICABLE (same as manual refresh)",
       out.ran && r.seq().join() === "skip:HOLDINGS/NOT_APPLICABLE" && out.result.holdingsSynced === 0, r.seq().join());
   }
