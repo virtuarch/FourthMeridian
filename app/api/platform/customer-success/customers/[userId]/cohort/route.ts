@@ -11,6 +11,7 @@ import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { getRequestMeta } from "@/lib/api";
 import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
 import { AssignmentRefusedError, assignCustomerCohort, type AssignCohortResult } from "@/lib/platform/customer/assign";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -19,6 +20,8 @@ export interface AssignCohortResponse { success: true; result: AssignCohortResul
 export async function POST(req: NextRequest, ctx: { params: Promise<{ userId: string }> }): Promise<Response> {
   const [auth, err] = await requireFreshPlatformAccess("CUSTOMER_SUCCESS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "cs-customer-cohort");
+  if (limited) return limited;
   const { userId } = await ctx.params;
   const body = await req.json().catch(() => ({})) as { cohort?: unknown; reason?: unknown };
   if (typeof body.cohort !== "string") return NextResponse.json({ error: "cohort must be a string." }, { status: 400 });

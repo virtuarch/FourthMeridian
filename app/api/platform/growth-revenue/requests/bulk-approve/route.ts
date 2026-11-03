@@ -30,6 +30,7 @@ import { getClientIp } from "@/lib/api";
 import { bulkApproveBetaRequests } from "@/lib/platform/growth/bulk-approve";
 import { parseBulkApproveBody } from "@/lib/platform/growth/bulk-approve.core";
 import { parseOptionalReason } from "@/lib/platform/growth/invitation-http";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 // The repo's standard long-route budget (refresh-all, CS refresh, import, jobs).
@@ -40,6 +41,8 @@ export const maxDuration = 300;
 export async function POST(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-requests-bulk-approve");
+  if (limited) return limited;
 
   const parsed = parseBulkApproveBody(await req.json().catch(() => null));
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
