@@ -58,7 +58,9 @@ console.log('1. EXACT DATES ARE CODE\'S, NOT THE MODEL\'S');
   check('the tool adds no arithmetic of its own',
     !/Math\.min\(|Math\.max\(|\.sort\(|\.reduce\(/.test(toolBody));
   check('it reads through the SAME snapshot authority as the series tool — one history',
-    (tools.match(/projectSnapshotSection\(rows as Snapshot\[\], 'full'\)/g) ?? []).length === 3);
+    // PB-8c — the series tool also hands the projection its balance coverage
+    // (the partial-history gate); still the same authority, still three readers.
+    (tools.match(/projectSnapshotSection\(rows as Snapshot\[\], 'full'(, balanceCoverage)?\)/g) ?? []).length === 3);
   check('and it respects the information ceiling',
     /const to = clampToCeiling\(\(a\.to as string\) \|\| ceiling, ceiling\)/.test(tools));
 }

@@ -251,7 +251,7 @@ const tok = (s: string) => Math.ceil(s.length / 4);
  * Deliberately excludes: per-account rows, the snapshot series, category and
  * merchant rollups, position detail. Those are what the tools are for.
  */
-function thinCore(
+export function thinCore(
   ctx: SpaceContext_AI,
   /**
    * The trailing-six-month measured frame, or null when it must not exist.
@@ -305,6 +305,11 @@ function thinCore(
     netWorthHistory: snap?.latest ? {
       latest: snap.latest.date, pointsInContext: snap.snapshotCount,
       earliest: snap.oldestDate, changeThisMonth: snap.canonicalChange,
+      // PB-8c — a withheld change arrives as its REASON, never as a number: the
+      // month crosses the balance-history floor, so say that history is partial.
+      ...(snap.canonicalChangeUnavailable
+        ? { changeThisMonthUnavailable: snap.canonicalChangeUnavailable.message } : {}),
+      ...(snap.partialHistory ? { partialHistory: snap.partialHistory.note } : {}),
     } : null,
     signals: ctx.signals.map((s) => `${s.severity}: ${s.title}`),
     // ⚠️ M1 — THE PROHIBITION SITS ON THE EVIDENCE THAT GETS DIVIDED. A tool

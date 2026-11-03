@@ -167,7 +167,8 @@ export const AUDITS: readonly AuditEntry[] = [
     name: "audit-snapshot-window-claims", tier: "REQUIRED", needsDb: true,
     what: "a snapshot section's spanDays is the TRUE calendar distance between its endpoints " +
           "(never the row count), and its canonicalChange is reproducible by the same " +
-          "compareToForPreset authority the Space launcher and the inside-Space selector use",
+          "compareToForPreset authority the Space launcher and the inside-Space selector use; " +
+          "PB-8c: the partial-history gate only ever withholds it (null + reason), never alters it",
   },
   {
     name: "audit-transfer-authority", tier: "REQUIRED", needsDb: true,

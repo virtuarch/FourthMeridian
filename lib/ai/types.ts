@@ -26,6 +26,7 @@ import type { BoundedSelection } from "@/lib/ai/bounded-selection";
 import type { TemporalRequest, TemporalScope, ScopeProvenance } from "@/lib/ai/temporal-scope";
 import type { DebtService } from "@/lib/transactions/debt-service";
 import type { CanonicalSpendingRead } from "@/lib/transactions/canonical-spending";
+import type { WithheldChange } from "@/lib/connections/balance-coverage.core";
 
 // ---------------------------------------------------------------------------
 // Domain type
@@ -1516,7 +1517,18 @@ export interface SnapshotSectionData {
     pct:       number | null;
     abs:       number;
     preset:    string;
+    /** PB-8c — an endpoint includes a held-flat (estimated) debt: state it as estimated. */
+    estimated?: true;
   } | null;
+  /**
+   * PB-8c — present when `canonicalChange` is null because its window crosses the
+   * balance-history floor (balance-coverage.core `changeComparability`): the
+   * opening day is missing accounts that have no history that far back, so the
+   * difference would be those accounts arriving, not a change. The model states
+   * `message` ("history is partial before <date>"), never a figure. Absent
+   * otherwise (byte-identical payloads).
+   */
+  canonicalChangeUnavailable?: WithheldChange;
   /**
    * W3 — the LIABILITIES change over the same product-defined window, from the
    * same authority (`canonicalWindowChange`), so the debt trend never again
@@ -1534,7 +1546,17 @@ export interface SnapshotSectionData {
     pct:       number | null;
     abs:       number;
     preset:    string;
+    /** PB-8c — see `canonicalChange.estimated`. */
+    estimated?: true;
   } | null;
+  /** PB-8c — as `canonicalChangeUnavailable`, for the liabilities change. */
+  liabilitiesChangeUnavailable?: WithheldChange;
+  /**
+   * PB-8c — present when the history starts before the balance-history floor:
+   * points dated before `before` do not include every account, so no change may
+   * be measured across that date. Absent when history is complete.
+   */
+  partialHistory?: { before: string; note: string };
   oldestDate:      string | null; // YYYY-MM-DD
   newestDate:      string | null; // YYYY-MM-DD
   /** Absolute net-worth change from oldest to newest in the window.

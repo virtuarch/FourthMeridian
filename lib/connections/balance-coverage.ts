@@ -15,7 +15,10 @@ import { grantsBalanceDisclosure } from "@/lib/account-privacy";
 import { getAccountCoverage } from "@/lib/data/account-coverage";
 import { coverageClassFor } from "@/lib/data/account-coverage.core";
 import { isReconstructableCard, isoDate, maxDate, truncDateUTC } from "@/lib/snapshots/backfill-core";
-import { balanceCoverageSideOf, deriveBalanceCoverage, writerAlignedFloorISO, type BalanceCoverage, type BalanceCoverageAccountInput } from "./balance-coverage.core";
+import {
+  balanceCoverageLoadFailureLine, balanceCoverageSideOf, deriveBalanceCoverage, writerAlignedFloorISO,
+  type BalanceCoverage, type BalanceCoverageAccountInput, type BalanceCoverageSurface,
+} from "./balance-coverage.core";
 
 export async function loadBalanceCoverage(client: ReadClient, spaceId: string): Promise<BalanceCoverage | null> {
   const space = await client.space.findUnique({ where: { id: spaceId }, select: { type: true } });
@@ -60,4 +63,37 @@ export async function loadBalanceCoverage(client: ReadClient, spaceId: string): 
     });
   });
   return deriveBalanceCoverage(inputs);
+}
+
+/**
+ * PB-8c — the read the server-side change claims use. A failure FALLS OPEN to
+ * null (every change comparable — the PB-8 / PB-8b rule) and is logged with
+ * counts only (`balanceCoverageLoadFailureLine`).
+ *
+ * ⚠️ On a shared transaction a failed statement aborts it, so callers issue
+ * this read LAST in their phase (or in a phase of its own).
+ */
+export async function loadBalanceCoverageFailOpen(
+  client: ReadClient, spaceId: string, surface: BalanceCoverageSurface,
+): Promise<BalanceCoverage | null> {
+  try {
+    return await loadBalanceCoverage(client, spaceId);
+  } catch {
+    console.warn(balanceCoverageLoadFailureLine(surface, 1, 1));
+    return null;
+  }
+}
+
+/** The same, for several Spaces in one phase; one counts-only line for all failures. */
+export async function loadBalanceCoverageBySpace(
+  client: ReadClient, spaceIds: readonly string[], surface: BalanceCoverageSurface,
+): Promise<Map<string, BalanceCoverage | null>> {
+  const out = new Map<string, BalanceCoverage | null>();
+  let failed = 0;
+  for (const id of spaceIds) {
+    try { out.set(id, await loadBalanceCoverage(client, id)); }
+    catch { failed++; out.set(id, null); }
+  }
+  if (failed > 0) console.warn(balanceCoverageLoadFailureLine(surface, failed, spaceIds.length));
+  return out;
 }
