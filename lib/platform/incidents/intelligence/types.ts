@@ -39,7 +39,10 @@
  * THIS FILE IS THE CONTRACT. Changing a shape here is a reviewed change.
  */
 
+import type { ResolutionEvidenceDigest } from "../evidence";
 import type { AudienceToken, CsToken, OpsToken, SystemToken } from "./audience";
+
+export type { ResolutionEvidenceDigest };
 
 // ── Facts (input) ────────────────────────────────────────────────────────────
 
@@ -71,7 +74,12 @@ export interface IncidentRowFacts {
   subjectUserId: string | null;
   causeStatus: string | null;
   causeCode: string | null;
-  resolutionEvidence: unknown;
+  /**
+   * The stored resolution evidence as a codes-and-counts DIGEST, derived by the
+   * evidence builder (../evidence.ts `evidenceDigestOf`). The raw JSONB never
+   * enters the module, so it can never reach an audience-scoped output.
+   */
+  evidence: ResolutionEvidenceDigest | null;
   occurrenceCount: number;
   correlatedOccurrenceCount: number;
 }
