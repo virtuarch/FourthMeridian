@@ -1334,6 +1334,11 @@ These rewrite stored rows. None runs as part of B10, and each needs its own owne
 | Snapshot backfill re-run (`backfill:snapshots`, FM-AUDIT-022 / #307) | The backfilled snapshot window for Spaces with unvalued wallets | Regeneration-class: #307 changes what the backfill writes, but rows already written stay until it is re-run |
 | PB-8 full-window regeneration | Stored history before each account's partial-history floor | Already noted under #232: deploying PB-8 rewrites only the next automatic window; a full window is a separate decision |
 
+**Order (S2):**
+1. Run data steps only **after** the B10 code deploy. The new code must be live, or a re-run writes the old semantics.
+2. Run the **CoinGecko archive repair before the snapshot backfill re-run**, so the re-run values history against corrected closes.
+3. Run the **PB-8 full-window regeneration last**, after both.
+
 ## Beyond B10: carried from ROADMAP (2026-11-03)
 
 *Carried from `docs/plans/ROADMAP.md` (deleted 2026-11-03; recover with `git log -- docs/plans/ROADMAP.md`). Verbatim, except that DF-6's per-transaction details (merchant names, amounts, dates from the owner's accounts) are redacted under the public-repo rule; the original is in the owner's private record. Session 1 carries these into the post-B10 STATUS "Beyond B10 / outstanding obligations".*
