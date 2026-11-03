@@ -345,7 +345,9 @@ function main() {
       // getIncidentDetail stays on this file's entry by ruling: execution evidence only; state ignored.
       "lib/platform/incidents/projections.ts": "RESIDUAL: getIncidentEpisodeTimeline (CS daily trend) · KEPT: getIncidentDetail — execution evidence only; state ignored",
       "lib/platform/incidents/episodes-core.ts": "RESIDUAL: the legacy episode fold the CS daily trend uses",
-      "app/api/spaces/[id]/activity/route.ts": "RESIDUAL: member activity feed (resolved=false, bank-transaction rows only) — design under S2 review",
+      // PB-1 Phase 3 (S2-approved design a) — fm_app tenant read of the RLS-16 columns; the open/closed
+      // decision is the module's PURE core (lib/activity/member-incidents.ts, audience MEMBER).
+      "app/api/spaces/[id]/activity/route.ts": "raw read; open/closed decision from module core",
     };
     const found = [...walk("lib"), ...walk("app"), ...walk("components")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
