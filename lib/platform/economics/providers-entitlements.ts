@@ -16,12 +16,13 @@
  *   catalogue          loadPolicyGroupCatalogue (labels, default, allowance values)
  *
  * READ-ONLY: nothing here writes, assigns, or changes a policy or an allowance —
- * the scenario included (static pin in entitlements.test.ts). fm_system / db reads,
- * identity-free output: every customer leaves as an opaque reference.
+ * the scenario included (static pin in providers-entitlements.test.ts). Every read is
+ * on fm_system (systemDb — the operator role; never the migration principal), and the
+ * output is identity-free: every customer leaves as an opaque reference.
  */
 
 import "server-only";
-import { db, systemDb } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import { readUserSpendGroups, type UserSpendGroup } from "@/lib/platform/ai/spend-health";
 import { OVERLAYS } from "@/lib/entitlements/catalogue";
 import { POLICY_GROUP_KEY_PATTERN, resolvableGroupKeys, type PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
@@ -55,14 +56,14 @@ export interface ProvidersEntitlementsDeps extends EconomicsDeps {
 
 async function readProviderCalls(since: Date): Promise<ProviderCallsFact[] | null> {
   try {
-    const rows = await db.apiUsageCounter.groupBy({ by: ["provider"], where: { day: { gte: since }, unit: "calls" }, _sum: { count: true } });
+    const rows = await systemDb.apiUsageCounter.groupBy({ by: ["provider"], where: { day: { gte: since }, unit: "calls" }, _sum: { count: true } });
     return rows.map((r) => ({ provider: r.provider, calls: Number(r._sum.count ?? 0) }));
   } catch {
     return null; // the counter is unavailable — calls say so, never 0
   }
 }
 
-const readItemOwners = () => db.plaidItem.findMany({ select: { id: true, userId: true } });
+const readItemOwners = () => systemDb.plaidItem.findMany({ select: { id: true, userId: true } });
 const readAssignments = (userIds: readonly string[]) => userIds.length === 0 ? Promise.resolve([] as AssignmentFact[])
   : systemDb.customerPolicyAssignment.findMany({
       where: { userId: { in: [...userIds] } },

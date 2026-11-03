@@ -201,6 +201,9 @@ async function main() {
     const t = strip(r);
     check(`${r}: PLATFORM_OPS READ, GET only, no-store`, /requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(t) && !/export async function (POST|PUT|PATCH|DELETE)/.test(t) && /no-store/.test(t));
   }
+  const reader = strip("lib/platform/economics/providers-entitlements.ts");
+  check("the PR B reader reads through fm_system only (systemDb), never the migration principal (db)",
+    /import \{ systemDb \} from "@\/lib\/db"/.test(reader) && !/\bdb\./.test(reader) && !/import \{[^}]*\bdb\b[^}]*\} from "@\/lib\/db"/.test(reader));
   const ent = strip("components/platform/leads/EconomicsEntitlementsLead.tsx");
   check("the scenario UI has no apply / save / assign control", !/>\s*(Apply|Save|Assign|Update policy|Set allowance)\b/i.test(ent) && /Compute \(read-only\)/.test(ent));
 
