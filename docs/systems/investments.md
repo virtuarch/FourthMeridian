@@ -209,17 +209,19 @@ Line numbers were re-read on `develop` at `42f99ea` (2026-11-03).
   longer leaves a mixed-currency figure: the conversion fails closed and the surface
   withholds the value.
 
-**Partial or tracked elsewhere:**
+**Corrected, partial or tracked elsewhere:**
 
-- **M3 — one crypto engine. PARTIAL.** IMPLEMENTED: the legacy `Holding` dual-write in
-  `btc-sync` is retired (`lib/crypto/btc-sync.ts:235-240`), the
-  `lib/investments/legacy-crypto-holdings.ts` bridge is deleted
-  (`lib/ai/assemblers/holdings.ts:20`), and the A9 history writer resolves each wallet's
-  asset from its chain instead of assuming BTC
-  (`lib/snapshots/regenerate-history.ts:318-328`). OPEN: A9 still values crypto as today's
-  `nativeBalance` held constant × that day's close
-  (`regenerate-history.ts:309-316`), not through valuation-core over spine positions.
-- **M1 — converge the today-snapshot writer. OPEN, tracked as FM-AUDIT-021**
+- **M3 — one crypto engine. IMPLEMENTED (corrected 2026-11-03; earlier marked PARTIAL).**
+  The legacy `Holding` dual-write in `btc-sync` is retired (`lib/crypto/btc-sync.ts:235-240`),
+  the `lib/investments/legacy-crypto-holdings.ts` bridge is deleted
+  (`lib/ai/assemblers/holdings.ts:20`), and A9 no longer values crypto as today's balance
+  held constant. No chain feeds the legacy historical authority any more
+  (`feedsLegacyWealthHistory` is false for every chain, pinned in
+  `lib/crypto/btc-history.test.ts:220-226`). A9 reads each spine wallet's dated position
+  under its `PositionCoverage` licence (`lib/snapshots/regenerate-history.ts:478-494`), and
+  the constant-carry predicate applies only to legacy-authority accounts, of which there
+  are none (`regenerate-history.ts:648-659`).
+- **M1 — converge the today-snapshot writer. OPEN, tracked as FM-AUDIT-021 (confirmed live and queued for a builder, 2026-11-03)**
   (`docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md`): today's row is written from
   live account balances as "observed" and is then frozen against history regeneration.
 - **M13 — amendment preview = apply. OPEN, gated off.** The amendment route refuses while
