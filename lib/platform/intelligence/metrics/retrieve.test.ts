@@ -26,7 +26,7 @@ import { UserRole } from "@prisma/client";
 import { METRICS, metricKey } from "./registry";
 import { metricAccessFor, type MetricAccessToken } from "./access";
 import {
-  NO_DRILL_ON_SURFACE, READER_SYMBOL, RETRIEVAL, atSurface, drillRouteArea, isAggregate, retrieveWith,
+  NO_DRILL_ON_SURFACE, READER_SYMBOL, RETRIEVAL, atSurface, drillRouteArea, isAggregate, isFleetEntry, retrieveWith,
   type MetricEnvelope, type RetrievalContext, type RetrievalReaders,
 } from "./retrieve-core";
 import { incidentAudienceFor, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
@@ -36,6 +36,7 @@ import { growthKpis } from "@/components/platform/leads/growth-model";
 import { coverageLabel } from "@/components/platform/leads/merchant-model";
 import { csKpis } from "@/components/platform/leads/customer-success-model";
 import { incidentTotalText } from "@/components/platform/incidents/incidents-model";
+import { sessionsReadings } from "@/components/platform/widgets/security-posture-view";
 import type { AiBudgetUtilization } from "@/lib/platform/ai/cost-controls.types";
 import type { AcquisitionResponse } from "@/lib/platform/growth/acquisition-types";
 import type { ProductAnalyticsResponse } from "@/lib/platform/growth/product-analytics-types";
@@ -112,6 +113,9 @@ const searchFx = (truncated = false): SearchResult => ({
   total: 3, page: 1, pageSize: 25, truncated, scanned: 500, facets: { providers: [], operations: [], codes: [] },
 } as unknown as SearchResult);
 
+const LIVE_FX = { sessions: 7, distinctUsers: 3 };
+const ACCOUNTS_FX = 2;
+
 interface Recorder { incidentAudiences: string[]; csAudiences: string[]; windows: number[] }
 function readers(rec: Recorder, over: Partial<RetrievalReaders> = {}): RetrievalReaders {
   return {
@@ -122,6 +126,8 @@ function readers(rec: Recorder, over: Partial<RetrievalReaders> = {}): Retrieval
     incidentSearch: async (t) => { rec.incidentAudiences.push(t.audience); return searchFx(); },
     merchantOverview: async () => merchantFx(),
     csOverview: async (t) => { rec.csAudiences.push(t.audience); return csFx(); },
+    liveSessions: async () => ({ ...LIVE_FX }),
+    accountsWithLiveSession: async () => ACCOUNTS_FX,
     ...over,
   };
 }
@@ -157,8 +163,10 @@ console.log("1. every registered metric is retrievable or NOT_RETRIEVABLE with a
   check("every NOT_RETRIEVABLE entry states its reason", blank.length === 0, blank.join(", "));
   const table = Object.entries(RETRIEVAL).map(([k, e]) => `${k}=${e.kind === "RETRIEVABLE" ? "R" : "N"}`).join(" ");
   console.log(`    ${table}`);
-  check("the per-subject / per-row / inline-query metrics are NOT_RETRIEVABLE",
-    ["presence-state@1", "incident-alertable@1", "live-sessions@1", "accounts-with-live-session@1"].every((k) => RETRIEVAL[k]?.kind === "NOT_RETRIEVABLE"));
+  check("the per-subject and per-row metrics are NOT_RETRIEVABLE",
+    ["presence-state@1", "incident-alertable@1"].every((k) => RETRIEVAL[k]?.kind === "NOT_RETRIEVABLE"));
+  check("the live-session counts are retrievable through the shared readers (#361)",
+    ["live-sessions@1", "accounts-with-live-session@1"].every((k) => RETRIEVAL[k]?.kind === "RETRIEVABLE"));
 }
 
 // ── 2. one reader: the registry's path, bound in retrieve.ts ────────────────
@@ -258,6 +266,52 @@ await (async () => {
   const helpF = await retrieveWith("CUSTOMER_SUCCESS", readers(newRec(), { csOverview: async () => csFx(true) }), CS, "cs-needs-help", {}, NOW);
   check("…a capped fleet read ⇒ PARTIAL (the tile's '≥')", helpF?.status === "PARTIAL" && csKpis(fetched(csFx(true))).find((k) => k.key === "help")!.value === `≥${helpF.value}`);
   check("the CS overview reader received a CUSTOMER_SUCCESS incident token", rec.csAudiences.every((a) => a === "CUSTOMER_SUCCESS") && rec.csAudiences.length >= 2);
+
+  // live-sessions@1 — the route sets { totalActive: counts.sessions, distinctUsers: counts.distinctUsers } from the same reader.
+  const SEC = ctxFor(UserRole.USER, grant("SECURITY_OPS"));
+  const ls = await get("SECURITY_OPS", SEC, "live-sessions");
+  const lsv = ls?.value as { sessions: number; distinctUsers: number };
+  const readings = sessionsReadings({ totalActive: LIVE_FX.sessions, distinctUsers: LIVE_FX.distinctUsers, recent: [] });
+  check("live-sessions: value = the Security posture readings (d.totalActive, d.distinctUsers) the route builds from countLiveSessions",
+    readings[0].value === String(lsv.sessions) && readings[1].value === String(lsv.distinctUsers) && ls?.status === "MEASURED" && ls.tier === "OPS");
+  const acc = await get("GROWTH_REVENUE", GR, "accounts-with-live-session");
+  check("accounts-with-live-session: value = data.withLiveSession (the Growth users route sets it from countAccountsWithLiveSession)",
+    acc?.value === ACCOUNTS_FX && acc.status === "MEASURED" && acc.tier === "OPS");
+  check("…a measured 0 stays 0 (a real count of no accounts, not missing data)",
+    (await retrieveWith("GROWTH_REVENUE", readers(newRec(), { accountsWithLiveSession: async () => 0 }), GR, "accounts-with-live-session", {}, NOW))?.value === 0);
+})();
+
+// ── 3b. fleet vs per-subject (S2) ────────────────────────────────────────────
+console.log("\n3b. a per-subject permission entry is never served as a fleet value");
+await (async () => {
+  const R = readers(newRec());
+  const SEC = ctxFor(UserRole.USER, grant("SECURITY_OPS"));
+  const ls = METRICS.find((m) => m.id === "live-sessions")!;
+  const lsCs = ls.permission.find((p) => p.area === "CUSTOMER_SUCCESS");
+  check("live-sessions@1's CUSTOMER_SUCCESS entry is the PER-CUSTOMER detail route (not fleet-level) — if it ever becomes fleet-level, this pin must be revisited",
+    !!lsCs && /\[userId\]/.test(lsCs.route) && !isFleetEntry(lsCs), lsCs?.route);
+  check("…so live-sessions on CUSTOMER_SUCCESS reads null (CS grant), like a metric not served there",
+    (await retrieveWith("CUSTOMER_SUCCESS", R, CS, "live-sessions", {}, NOW)) === null);
+  check("…and null for break-glass on CUSTOMER_SUCCESS too", (await retrieveWith("CUSTOMER_SUCCESS", R, SA, "live-sessions", {}, NOW)) === null);
+  check("live-sessions on SECURITY_OPS is the fleet count, identity-free (OPS tier), for a Security grant and for break-glass",
+    (await retrieveWith("SECURITY_OPS", R, SEC, "live-sessions", {}, NOW))?.tier === "OPS" && (await retrieveWith("SECURITY_OPS", R, SA, "live-sessions", {}, NOW))?.tier === "OPS");
+  const acc = METRICS.find((m) => m.id === "accounts-with-live-session")!;
+  check("accounts-with-live-session@1: its only entry is GROWTH_REVENUE, fleet-level (no [param] route), OPS tier",
+    acc.permission.length === 1 && acc.permission[0].area === "GROWTH_REVENUE" && isFleetEntry(acc.permission[0]) && acc.permission[0].identityTier === "OPS");
+  check("…served on GROWTH_REVENUE, and on no other surface (CS / Security / Ops read null, break-glass included)",
+    (await retrieveWith("GROWTH_REVENUE", R, SA, "accounts-with-live-session", {}, NOW))?.tier === "OPS"
+    && (await retrieveWith("CUSTOMER_SUCCESS", R, SA, "accounts-with-live-session", {}, NOW)) === null
+    && (await retrieveWith("SECURITY_OPS", R, SA, "accounts-with-live-session", {}, NOW)) === null
+    && (await retrieveWith("PLATFORM_OPS", R, SA, "accounts-with-live-session", {}, NOW)) === null);
+  // Generic: every retrievable metric, every per-subject entry ⇒ null; every fleet entry ⇒ an envelope.
+  for (const m of retrievable) {
+    for (const p of m.permission) {
+      const e = await retrieveWith(p.area, R, SA, metricKey(m), {}, NOW);
+      check(`${metricKey(m)} on ${p.area}: ${isFleetEntry(p) ? "fleet entry ⇒ served" : "per-subject entry ⇒ null"}`, isFleetEntry(p) ? e !== null : e === null);
+    }
+  }
+  check("isFleetEntry: a [param] segment is per-subject; a list route is fleet",
+    !isFleetEntry({ route: "app/api/platform/customer-success/customers/[userId]/route.ts" }) && isFleetEntry({ route: "app/api/platform/customer-success/customers/route.ts" }));
 })();
 
 // ── 4. authority ─────────────────────────────────────────────────────────────
@@ -309,6 +363,7 @@ await (async () => {
   const boom = async () => { throw new Error(`db down for ${EMAIL} ${CUID}`); };
   const failing: RetrievalReaders = {
     providerHealth: boom, aiBudget: boom, acquisition: boom, productAnalytics: boom, incidentSearch: boom, merchantOverview: boom, csOverview: boom,
+    liveSessions: boom, accountsWithLiveSession: boom,
   };
   for (const m of retrievable) {
     const surface = m.permission[0].area;
@@ -331,7 +386,7 @@ await (async () => {
       const e = await retrieveWith(ops.area, R, SA, k, {}, NOW);
       check(`${k}: break-glass on ${ops.area} — no identity in the envelope, tier OPS`, !!e && scan(e).length === 0 && e.tier === "OPS", scan(e).join());
     }
-    if (m.permission.some((p) => p.area === "CUSTOMER_SUCCESS")) {
+    if (m.permission.some((p) => p.area === "CUSTOMER_SUCCESS" && isFleetEntry(p))) {
       const e = await retrieveWith("CUSTOMER_SUCCESS", R, CS, k, {}, NOW);
       check(`${k}: CS tier — no identity in the envelope either (aggregates only in this slice)`, !!e && scan(e).length === 0, scan(e).join());
     }
@@ -366,7 +421,7 @@ await (async () => {
     check(`${metricKey(m)}: drill route ${m.drill.api} is gated by its segment's area (${area})`,
       !!area && new RegExp(`require(?:Fresh)?PlatformAccess\\(\\s*"${area}"`).test(code(src(route))), route);
     for (const p of m.permission) {
-      if (RETRIEVAL[metricKey(m)]?.kind !== "RETRIEVABLE") continue;
+      if (RETRIEVAL[metricKey(m)]?.kind !== "RETRIEVABLE" || !isFleetEntry(p)) continue;
       const e = await retrieveWith(p.area, R, SA, metricKey(m), {}, NOW);
       check(`${metricKey(m)} on ${p.area}: drill ${p.area === area ? "given" : "null + reason"} (drill route gated by ${area})`,
         p.area === area ? (!!e?.drill && e.drillReason === null) : (e?.drill === null && e.drillReason === NO_DRILL_ON_SURFACE));
