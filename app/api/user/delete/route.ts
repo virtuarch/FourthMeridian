@@ -76,6 +76,9 @@ export async function POST(req: NextRequest) {
     // Already pending (a race with another device, or a double-submit) — treat
     // as success, no double stamp or re-revoke.
     if (dbUser.deletionScheduledAt) {
+      // Re-run the revocation (idempotent): a first attempt that scheduled the
+      // deletion and then failed to revoke must not leave sessions live.
+      await revokeAllUserSessions(user.id);
       return NextResponse.json({ success: true, scheduledAt: dbUser.deletionScheduledAt.toISOString() });
     }
 

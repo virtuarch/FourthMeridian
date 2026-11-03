@@ -75,12 +75,12 @@ console.log("D · full account names only in the audited profile");
     /issues\.map\(\(i\) => i\.financialAccountId\)\.filter\(\(x\): x is string => !!x && accountIds\.includes\(x\)\)/.test(detail));
   check("…through the detail label", /detailAccountLabel\(a\)/.test(detail));
   const v = projectIncidents(
-    [{ id: "i1", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: null, financialAccountId: "a1", firstOccurredAt: null, lastOccurredAt: null, createdAt: new Date(0), resolved: false }],
+    [{ id: "i1", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: null, financialAccountId: "a1", firstSeenAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), brokenNow: true, state: "active", freshness: "current" }],
     [], [], new Map([["a1", "Rent fund (Chase · Checking ••1234)"]]),
   );
   check("projectIncidents attaches the label", v.open[0].account === "Rent fund (Chase · Checking ••1234)");
   check("…and null without one", projectIncidents(
-    [{ id: "i2", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: "p", financialAccountId: null, firstOccurredAt: null, lastOccurredAt: null, createdAt: new Date(0), resolved: false }], [], [],
+    [{ id: "i2", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: "p", financialAccountId: null, firstSeenAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), brokenNow: true, state: "active", freshness: "current" }], [], [],
   ).open[0].account === null);
   check("profile VIEWS never crowd the profile's operator-action list",
     /action: \{ not: AuditAction\.CUSTOMER_PROFILE_VIEWED \}/.test(detail));

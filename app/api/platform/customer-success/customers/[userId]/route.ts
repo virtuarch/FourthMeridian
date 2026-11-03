@@ -11,6 +11,7 @@ import { NextResponse } from "next/server";
 import { systemDb } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { getCustomerDetail, type CustomerDetail } from "@/lib/platform/customer/customer-detail";
+import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
@@ -24,7 +25,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ userId: string 
   const [auth, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
   if (err) return err;
   const { userId } = await ctx.params;
-  const detail = await getCustomerDetail(userId);
+  // PB-1 Phase 2 — the incident tier follows THIS guard result (never a parameter).
+  const incidentToken = incidentAudienceFor(auth);
+  if (!incidentToken || incidentToken.audience !== "CUSTOMER_SUCCESS") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const detail = await getCustomerDetail(userId, incidentToken);
   if (!detail) return NextResponse.json({ error: "Customer not found." }, { status: 404 });
 
   // SEC-PLAT-3 (owner ruling P-4) — this is the authorized, AUDITED identity

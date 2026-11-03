@@ -44,7 +44,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 // ── the in-memory store ───────────────────────────────────────────────────────
 interface Row {
   userId: string; revokedAt: Date | null; createdAt: Date; lastActiveAt: Date;
-  user: { id: string; role: string; totpEnabled: boolean } | null;
+  user: { id: string; role: string; totpEnabled: boolean; deactivatedAt: Date | null; deletionScheduledAt: Date | null } | null;
 }
 const ROWS = new Map<string, Row>();
 const gates = new Map<string, Promise<void>>();
@@ -105,7 +105,7 @@ const tok = () => `0b6f2a4e-5c1d-4f8e-9a7b-${String(++seq).padStart(12, "0")}`;
 
 function live(over: Partial<Row> = {}): Row {
   return { userId: USER, revokedAt: null, createdAt: new Date(Date.now() - DAY), lastActiveAt: new Date(Date.now() - 120_000),
-    user: { id: USER, role: "USER", totpEnabled: false }, ...over };
+    user: { id: USER, role: "USER", totpEnabled: false, deactivatedAt: null, deletionScheduledAt: null }, ...over };
 }
 
 async function jwtFor(sessionToken: string, over: Record<string, unknown> = {}, maxAge?: number): Promise<string> {
@@ -121,10 +121,14 @@ async function main() {
     { name: "revoked session", row: live({ revokedAt: new Date() }) },
     { name: "deactivated user (deactivation revokes every session — app/api/user/deactivate)", row: live({ revokedAt: new Date() }) },
     { name: "deletion-pending user (deletion request revokes every session — app/api/user/delete)", row: live({ revokedAt: new Date() }) },
+    // Deactivation-fix — INDEPENDENT of revocation: the account is locked out but
+    // the revoke never happened (failed / partial), so the row is still unrevoked.
+    { name: "deactivated user, session NOT revoked (lockout alone refuses)", row: live({ user: { id: USER, role: "USER", totpEnabled: false, deactivatedAt: new Date(), deletionScheduledAt: null } }) },
+    { name: "deletion-scheduled user, session NOT revoked", row: live({ user: { id: USER, role: "USER", totpEnabled: false, deactivatedAt: new Date(), deletionScheduledAt: new Date(Date.now() + 30 * DAY) } }) },
     { name: "unknown session token (no row)", row: null },
     { name: "SEC-010 idle-expired row", row: live({ lastActiveAt: new Date(Date.now() - SESSION_IDLE_TIMEOUT_MS - DAY) }) },
     { name: "SEC-010 absolute-expired row", row: live({ createdAt: new Date(Date.now() - 91 * DAY) }) },
-    { name: "row owned by someone else", row: live({ userId: OTHER, user: { id: OTHER, role: "USER", totpEnabled: false } }) },
+    { name: "row owned by someone else", row: live({ userId: OTHER, user: { id: OTHER, role: "USER", totpEnabled: false, deactivatedAt: null, deletionScheduledAt: null } }) },
     { name: "expired JWT", row: live(), jwt: (t) => jwtFor(t, {}, -60) },
     { name: "malformed claims (no sessionToken)", row: live(), jwt: () => encode({ token: { id: USER, role: "USER" } as never, secret: process.env.NEXTAUTH_SECRET! }) },
     { name: "pending TOTP (served with requireTotpSetup ⇒ requireUser 403s)", row: live(), totpAll: true },

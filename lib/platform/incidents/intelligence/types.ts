@@ -335,6 +335,12 @@ export interface ListOptions {
   limit?: number;
   /** Required for determinism in tests; defaults to the wall clock at the accessor only. */
   now?: Date;
+  /**
+   * Scan only NOT-closed rows (`resolved = false`) — for a "broken now" view
+   * whose cap must not be spent on history. The verdicts are unchanged; only
+   * the scan narrows. Ignored by accessors that already scan open rows.
+   */
+  openOnly?: boolean;
 }
 
 /** The verdict shape a token entitles. A PLATFORM_OPS / SYSTEM verdict has NO `subjectUserId` key. */

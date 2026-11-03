@@ -34,7 +34,9 @@ console.log("A · deactivation lives in Customer Success only");
   check("state change + operator action commit together, actor area CUSTOMER_SUCCESS",
     (s.match(/systemDb\.\$transaction\(async \(tx\) =>/g) ?? []).length === 2 && /recordOperatorAction\(tx,/.test(s) && s.includes('operatorActorFrom(auth, "CUSTOMER_SUCCESS")'));
   check("guards kept: no SYSTEM_ADMIN target, no self-target", /UserRole\.SYSTEM_ADMIN\) return NextResponse\.json/.test(s) && /target\.id === auth\.user\.id/.test(s));
-  check("deactivation still revokes every session afterwards", s.indexOf("deactivatedAt: now") < s.indexOf("revokeAllUserSessions("));
+  // Deactivation-fix — the "already deactivated" retry now ALSO revokes (before
+  // the stamp in source order), so the pin reads the first revoke AFTER the stamp.
+  check("deactivation still revokes every session afterwards", s.indexOf("revokeAllUserSessions(", s.indexOf("deactivatedAt: now")) > s.indexOf("deactivatedAt: now"));
   check("operator surface on fm_system (no migration-principal db)", /import \{ systemDb \} from "@\/lib\/db"/.test(s) && !/\bdb\./.test(s.replace(/systemDb\./g, "")));
   const detail = code("lib/platform/customer/customer-detail.ts");
   check("the customer profile points its action at the CS route", /\/api\/platform\/customer-success\/customers\/\$\{user\.id\}\/access/.test(detail) && !/growth-revenue\/users/.test(detail));

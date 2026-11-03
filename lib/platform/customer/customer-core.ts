@@ -26,6 +26,7 @@ import type { PolicyGroupCatalogue } from "@/lib/entitlements/policy-groups";
 import { deriveConnectionHealthState, type HealthState } from "@/lib/connections/health";
 import { priceAiUsage, type UsageRowLike } from "@/lib/usage/pricing";
 import { recoveredExecutionIds } from "@/lib/platform/refresh/recovery-core";
+import type { CsIncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import {
   PRESENCE_LABELS, derivePresenceState, lastActiveBucket,
   type LastActiveBucket, type PresenceClocks, type PresenceState,
@@ -263,7 +264,14 @@ export function firstConnectedAt(
 
 // ── Incidents ─────────────────────────────────────────────────────────────────
 
-export interface SyncIssueFacts { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: Date | null; lastOccurredAt: Date | null; createdAt: Date; resolved: boolean }
+/**
+ * PB-1 Phase 2 (R1) — the panel reads incident VERDICTS from the intelligence
+ * module (CS tier), never raw SyncIssue rows. "Open" is the module's
+ * `brokenNow` (D1: derived state; D2/D2b: removed subjects closed; D10: a
+ * stale-unverified row is not broken now) — never `resolved = false`.
+ */
+export type IncidentVerdictFacts = Pick<CsIncidentVerdict,
+  "id" | "provider" | "kind" | "plaidItemId" | "financialAccountId" | "firstSeenAt" | "lastSeenAt" | "brokenNow" | "state" | "freshness">;
 export interface ExecutionFacts { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: Date; durationMs: number | null; failureCategory: string | null;
   /** PB-7 — read ONLY to recognise a reaped (stale) row; never projected. */
   errorSummary?: string | null }
@@ -272,7 +280,13 @@ export interface WebhookFacts { receivedAt: Date; webhookType: string; webhookCo
 export interface IncidentsView {
   open: { id: string; provider: string; kind: string; plaidItemId: string | null; financialAccountId: string | null; firstOccurredAt: string | null; lastOccurredAt: string | null;
     /** SEC-PLAT-3 — the affected account, named in full (audited profile only); null when the incident has no account or it is unresolved. */
-    account: string | null }[];
+    account: string | null;
+    /** PB-1 — active | acknowledged | recovering (the broken-now states). */
+    state: CsIncidentVerdict["state"];
+    /** PB-1 D10 — `unverified`: past its window, attempted or skipped since, not proven to succeed. */
+    freshness: CsIncidentVerdict["freshness"] }[];
+  /** PB-1 D5 — the incident scan hit its cap: `open` is a floor. */
+  openTruncated: boolean;
   recentExecutions: { id: string; sourceKind: string; plaidItemId: string | null; sourceRef: string | null; trigger: string; profile: string; overallStatus: string; startedAt: string; durationMs: number | null; failureCategory: string | null;
     /** PB-7 — a reaped (stale) execution a later success for the same source superseded: show "recovered", not "failed". */
     recovered: boolean }[];
@@ -280,17 +294,20 @@ export interface IncidentsView {
 }
 
 export function projectIncidents(
-  issues: readonly SyncIssueFacts[], executions: readonly ExecutionFacts[], webhooks: readonly WebhookFacts[],
+  issues: readonly IncidentVerdictFacts[], executions: readonly ExecutionFacts[], webhooks: readonly WebhookFacts[],
   accountLabels: ReadonlyMap<string, string> = new Map(),
+  opts: { truncated?: boolean } = {},
 ): IncidentsView {
   // PB-7 — judged over the loaded rows (newest first, so a superseding success is in the set).
   const recovered = recoveredExecutionIds(executions.map((e) => ({ ...e, errorSummary: e.errorSummary ?? null })));
   return {
-    open: issues.filter((i) => !i.resolved).map((i) => ({
+    open: issues.filter((i) => i.brokenNow).map((i) => ({
       id: i.id, provider: i.provider, kind: i.kind, plaidItemId: i.plaidItemId, financialAccountId: i.financialAccountId,
-      firstOccurredAt: iso(i.firstOccurredAt ?? i.createdAt), lastOccurredAt: iso(i.lastOccurredAt ?? i.createdAt),
+      firstOccurredAt: i.firstSeenAt, lastOccurredAt: i.lastSeenAt,
       account: (i.financialAccountId && accountLabels.get(i.financialAccountId)) || null,
+      state: i.state, freshness: i.freshness,
     })),
+    openTruncated: opts.truncated === true,
     recentExecutions: executions.map((e) => ({
       id: e.id, sourceKind: e.sourceKind, plaidItemId: e.plaidItemId, sourceRef: e.sourceRef, trigger: e.trigger, profile: e.profile,
       overallStatus: e.overallStatus, startedAt: e.startedAt.toISOString(), durationMs: e.durationMs, failureCategory: e.failureCategory,

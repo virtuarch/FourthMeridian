@@ -25,6 +25,7 @@ import "server-only";
 import { systemDb } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { detailAccountLabel } from "@/lib/platform/incidents/account-label";
+import { createIncidentAccessors, incidentReaderFor, type CsToken } from "@/lib/platform/incidents/intelligence";
 import { loadEffectiveEntitlements } from "@/lib/entitlements/resolve";
 import { entitlementLoadOptions } from "@/lib/entitlements/consume";
 import { assignableGroups } from "@/lib/entitlements/policy-groups";
@@ -87,7 +88,15 @@ const CONNECTION_ACTIONS = [
   AuditAction.OPERATOR_REFRESH_ALL,
 ];
 
-export async function getCustomerDetail(userId: string, client = systemDb, now: Date = new Date()): Promise<CustomerDetail | null> {
+/** Rows the CS panel's incident scan reads (open rows only); a full scan is reported as a floor (D5). */
+const INCIDENT_SCAN = 50;
+
+/**
+ * @param incidentToken  the CUSTOMER_SUCCESS audience token the ROUTE minted from
+ *   its own guard result (incidentAudienceFor) — incidents are read only through
+ *   the intelligence module, which verifies it before reading anything.
+ */
+export async function getCustomerDetail(userId: string, incidentToken: CsToken, client = systemDb, now: Date = new Date()): Promise<CustomerDetail | null> {
   const user = await client.user.findUnique({
     where: { id: userId },
     select: { id: true, email: true, name: true, username: true, role: true, createdAt: true, emailVerifiedAt: true, deactivatedAt: true,
@@ -127,7 +136,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
   })).map((a) => a.financialAccountId);
 
   const since = new Date(now.getTime() - AI_WINDOW_DAYS * 86_400_000);
-  const [events, inviteAudit, issues, executions, webhooks, invocations, userActions, connectionActions] = await Promise.all([
+  const [events, inviteAudit, incidentList, executions, webhooks, invocations, userActions, connectionActions] = await Promise.all([
     client.betaAccessRequestEvent.findMany({ where: { email: user.email }, orderBy: { receivedAt: "asc" }, select: { receivedAt: true, source: true } }),
     // PR B — two rows: an issuance row and its EMAIL_OUTCOME can share a
     // millisecond, and the outcome (written after the send) wins that tie.
@@ -137,11 +146,9 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
       orderBy: { createdAt: "desc" }, take: 2, select: { createdAt: true, metadata: true, action: true },
     }).then((rows) => rows.find((r) => r.createdAt.getTime() === rows[0].createdAt.getTime() && r.action === AuditAction.BETA_INVITATION_EMAIL_OUTCOME) ?? rows[0] ?? null)
       : Promise.resolve(null),
-    client.syncIssue.findMany({
-      where: { resolved: false, OR: [{ plaidItemId: { in: itemIds } }, { financialAccountId: { in: accountIds } }] },
-      orderBy: { lastOccurredAt: "desc" }, take: 50,
-      select: { id: true, provider: true, kind: true, plaidItemId: true, financialAccountId: true, firstOccurredAt: true, lastOccurredAt: true, createdAt: true, resolved: true },
-    }),
+    // PB-1 Phase 2 (R1/R2) — the customer's incidents through the ONE intelligence
+    // module: D4 attribution (manual accounts included), D1/D2/D2b/D10 verdicts.
+    createIncidentAccessors(incidentReaderFor(client)).forCustomer(incidentToken, userId, { limit: INCIDENT_SCAN, now, openOnly: true }),
     client.refreshExecution.findMany({
       where: { OR: [{ plaidItemId: { in: itemIds } }, { sourceRef: { in: accountIds } }] },
       orderBy: { startedAt: "desc" }, take: RECENT_EXECUTIONS,
@@ -168,6 +175,9 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
       select: { id: true, action: true, createdAt: true, performedByAdminId: true, metadata: true },
     }),
   ]);
+
+  // Broken now only (the panel lists what needs attention; stale-unverified is not).
+  const issues = incidentList.items.filter((v) => v.brokenNow);
 
   // SEC-PLAT-3 (owner ruling P-4) — this profile is the authorized, AUDITED
   // detail (the route records CUSTOMER_PROFILE_VIEWED before returning it), so
@@ -212,7 +222,7 @@ export async function getCustomerDetail(userId: string, client = systemDb, now: 
       lastLoginAt: lastLogin?.createdAt ?? null, activeSessions, now,
     }),
     connections: projectConnections(plaid, wallets, { bank: staleWindowMs(policies.BANK), wallet: staleWindowMs(policies.WALLET) }, now.getTime()),
-    incidents: projectIncidents(issues, executions, webhooks, accountLabels),
+    incidents: projectIncidents(issues, executions, webhooks, accountLabels, { truncated: incidentList.truncated }),
     ai: projectAiUsage(invocations, AI_WINDOW_DAYS),
     rollup: projectRollup({
       invocations30d: invocations.filter((i) => i.surface !== null && ENGAGEMENT_AI_SURFACES.includes(i.surface)),

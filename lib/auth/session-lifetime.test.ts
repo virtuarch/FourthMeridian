@@ -29,7 +29,7 @@ const clock = { now: () => NOW };
 const never = async (): Promise<boolean> => false;
 const row = (createdDaysAgo: number, activeDaysAgo: number) => ({
   userId: "u1", revokedAt: null, createdAt: at(createdDaysAgo), lastActiveAt: at(activeDaysAgo),
-  user: { id: "u1", role: "USER", totpEnabled: true },
+  user: { id: "u1", role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null },
 });
 
 async function main() {
@@ -63,9 +63,9 @@ async function main() {
   check("idle row (31 days) → null", (await factsFromRow(row(60, 31), never, clock)) === null);
   check("old row (100 days, active today) → null", (await factsFromRow(row(100, 0), never, clock)) === null);
   check("row without timestamps → null (malformed is a refusal)",
-    (await factsFromRow({ userId: "u1", revokedAt: null, user: { id: "u1", role: "USER", totpEnabled: true } }, never, clock)) === null);
+    (await factsFromRow({ userId: "u1", revokedAt: null, user: { id: "u1", role: "USER", totpEnabled: true, deactivatedAt: null, deletionScheduledAt: null } }, never, clock)) === null);
   let settingRead = false;
-  await factsFromRow({ ...row(100, 0), user: { id: "u1", role: "USER", totpEnabled: false } }, async () => { settingRead = true; return false; }, clock);
+  await factsFromRow({ ...row(100, 0), user: { id: "u1", role: "USER", totpEnabled: false, deactivatedAt: null, deletionScheduledAt: null } }, async () => { settingRead = true; return false; }, clock);
   check("an expired row is refused before the TOTP setting is read", settingRead === false);
 
   if (failures > 0) { console.error(`\nsession-lifetime: ${failures} check(s) failed.`); process.exit(1); }
