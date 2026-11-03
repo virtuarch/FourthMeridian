@@ -1034,7 +1034,7 @@ Node 24 is documented consistently.
 ## 26. Findings register
 
 **Status update (2026-11-03).** Statuses below are re-checked against `develop`; the original findings text is kept as audited.
-- **FM-AUDIT-023:** refresh path FIXED (FIN-011, `lib/plaid/refresh.ts:221-253`); connect/reconnect path (`lib/plaid/exchangeToken.ts:425`) **IN PROGRESS** (builder).
+- **FM-AUDIT-023:** **FIXED** on `develop`: refresh path by FIN-011 (`lib/plaid/refresh.ts:221-253`); connect/reconnect path by #295 (a null current balance keeps the prior balance and clock).
 - **FM-AUDIT-022:** **IN PROGRESS** (builder).
 - **FM-AUDIT-021:** confirmed live; **QUEUED** for a builder.
 - **FM-AUDIT-025:** **CONFIRMED** (see its entry), fix **QUEUED**. Repair of rows already in the archive is **OWNER-GATED**.
@@ -1207,7 +1207,7 @@ Node 24 is documented consistently.
 - **Remediation:** do not advance clocks or coverage on null (SKIPPED `PROVIDER_NULL_BALANCE`); store unknown at connect.
 - **When:** AFTER-S1 (small).
 - **Pin:** `accountsGet` fake with `current:null` ⇒ coverage not COVERED, `lastUpdated` unchanged.
-- **Status (2026-11-03):** refresh half FIXED (FIN-011, `lib/plaid/refresh.ts:221-253`). Connect/reconnect half still live (`lib/plaid/exchangeToken.ts:425`, `?? 0` with a fresh `lastUpdated`): **IN PROGRESS** (builder).
+- **Status (2026-11-03):** refresh half FIXED (FIN-011, `lib/plaid/refresh.ts:221-253`). Connect/reconnect half (`exchangeToken.ts`, formerly `?? 0` with a fresh `lastUpdated`) FIXED by #295: a null current balance keeps the prior balance and clock. **FIXED on `develop`; not yet on main.**
 
 **FM-AUDIT-024 — Successful Plaid lock release clears `syncIncompleteAt`, defeating the first-run rule and dropping mid-pipeline HISTORICAL_UPDATE webhooks**
 - **Sev/Conf:** P2 / HIGH
