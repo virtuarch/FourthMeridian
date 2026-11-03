@@ -22,7 +22,7 @@ import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import type { PortfolioValuePoint } from "@/lib/investments/portfolio-series";
 import type { TrendPoint } from "@/components/space/widgets/charts/TrendChart";
-import { markPartialBalanceCoverage, balanceCoverageSidesFor, type BalanceCoverageRead } from "@/lib/connections/balance-coverage.core";
+import { markPartialBalanceCoverage, balanceCoverageSidesFor, type ClientBalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 /** The series whose value INCLUDES the real-asset component (computeSnapshotFields). */
 const REAL_ASSET_SERIES: ReadonlySet<WealthMetricKey> = new Set<WealthMetricKey>(["netWorth", "totalAssets"]);
@@ -37,7 +37,7 @@ export function projectWealthTrendPoints(
   /** PB-8 — the Space's balance floors. Points before the latest floor this
    *  series is composed from are marked PARTIAL (values unchanged). Absent ⇒
    *  byte-identical to before. */
-  balanceCoverage?: BalanceCoverageRead,
+  balanceCoverage?: ClientBalanceCoverage,
 ): TrendPoint[] {
   const points = result.chart.points;
   if (metric !== "invested" || !investedSeries) {

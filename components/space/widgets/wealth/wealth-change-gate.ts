@@ -19,7 +19,7 @@ import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import type { WealthComponentId } from "./wealth-metric-facets";
 import {
   balanceCoverageSidesFor, changeComparability, ESTIMATED_CHANGE_SUFFIX,
-  type BalanceCoverageRead, type ChangeComparability,
+  type ClientBalanceCoverage, type ChangeComparability,
 } from "@/lib/connections/balance-coverage.core";
 
 export type WealthChangeGate = Record<WealthMetricKey, ChangeComparability>;
@@ -29,9 +29,11 @@ const COMPARABLE: ChangeComparability = { state: "comparable" };
 
 /**
  * One verdict per series, or null when there is nothing to gate (no comparison,
- * or no coverage read yet — every change renders exactly as before).
+ * or nothing to cover — every change renders exactly as before). S2 2026-11-03:
+ * while coverage is LOADING every governed series is PENDING ("—") and the
+ * ungoverned one (invested) is comparable — no change is shown, then retracted.
  */
-export function wealthChangeGate(result: WealthResult, cov: BalanceCoverageRead): WealthChangeGate | null {
+export function wealthChangeGate(result: WealthResult, cov: ClientBalanceCoverage): WealthChangeGate | null {
   const { asOfState, compareState } = result;
   if (!cov || !result.deltas || !compareState?.found || !compareState.date || !asOfState.date) return null;
   const endpoints = {

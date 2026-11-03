@@ -71,7 +71,8 @@ export function WealthChangeLedger({
   if (gate.state === "withheld") {
     return (
       <Block label={heading}>
-        <WealthUnavailable message={`${gate.message}.`} />
+        {/* S2 2026-11-03 — while coverage loads the change is PENDING: "—", not a sentence. */}
+        <WealthUnavailable message={"pending" in gate ? gate.message : `${gate.message}.`} />
       </Block>
     );
   }
