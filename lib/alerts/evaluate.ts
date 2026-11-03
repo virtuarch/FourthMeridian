@@ -625,6 +625,8 @@ export interface AlertResolvedEmailData {
   durationLabel: string;
   /** "stable" — the one email that ends a flapping period; absent on an ordinary recovery. */
   variant?: "stable";
+  /** "stable" only — the HIGHEST severity reached during the flap, so a critical episode inside it is never hidden. */
+  peakSeverity?: AlertSeverity;
 }
 
 /** Build the email payload for the signals being delivered (critical first). */
