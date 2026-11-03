@@ -109,7 +109,7 @@ async function main() {
       syncIssueArchive: { findMany: empty }, syncIssueRelation: { findMany: empty }, syncIssueEvent: { findMany: empty },
       financialAccount: { findMany: empty },
       plaidItem: { findMany: (async () => [{ id: "item_a", status: "ACTIVE", userId: "u_1" }]) as never },
-      stageAttempts: empty,
+      latestAttempts: empty,
     } as IncidentFactsReader;
     const ops = incidentAudienceFor({ user: { role: UserRole.USER }, grant: { area: "PLATFORM_OPS", level: "READ" } as never }) as OpsToken;
     const page = await createIncidentAccessors(client).window(ops, { from: D("2026-10-20T00:00:00Z"), to: D("2026-11-03T23:59:59Z") }, { now: NOW, limit: 3 });

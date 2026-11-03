@@ -27,7 +27,9 @@ import { getConnectionHealth } from "@/lib/connections/health";
 import { checkResourceFreshness } from "@/lib/platform/resource-freshness";
 import { getAiFailureHealth } from "@/lib/platform/ai/failures";
 import { getAiSpendHealth } from "@/lib/platform/ai/spend-health";
-import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
+import { incidentViewOf } from "@/lib/platform/incidents/projections";
+import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
+import { systemIncidentAudience } from "@/lib/platform/incidents/intelligence/audience";
 import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
 import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-health";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity } from "@/lib/alerts/rules";
@@ -110,8 +112,11 @@ async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
     getAiSpendHealth(24).catch((e) => (warn("ai-spend", e), null)),
     // OBS-004 — the ACTIVE sync incidents (state + severity decided by the
     // semantic authority inside the projection), folded to the engine's slice.
-    getActiveIncidentPage(SYNC_INCIDENT_SCAN)
-      .then((page) => foldSyncIncidents(page.incidents, page.scanTruncated, new Date()))
+    // PB-1 R4 — the module's ALERTABLE set (broken now, inside its window, not
+    // recovering), read with the SYSTEM token — lib/alerts only (pinned) — and
+    // shaped by the projection's own view mapping, so the fold is unchanged.
+    incidentAccessors.alertable(systemIncidentAudience(), { limit: SYNC_INCIDENT_SCAN })
+      .then((page) => foldSyncIncidents(page.items.map(incidentViewOf), page.truncated, new Date()))
       .catch((e) => (warn("sync-incidents", e), null)),
     // Owner ruling (2026-10-30) — missing / invalid customer policy-group
     // assignments (bounded, read-only; the same read as the Attention item).

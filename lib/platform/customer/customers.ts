@@ -27,6 +27,7 @@
  */
 
 import "server-only";
+import type { CsToken } from "@/lib/platform/incidents/intelligence";
 import { systemDb } from "@/lib/db";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { opaqueRefOfToken } from "@/lib/platform/opaque-user-ref-format";
@@ -126,7 +127,7 @@ export async function resolveOpaqueRef(
 }
 
 export async function listCustomers(
-  opts: { search?: string; limit?: number; now?: Date; attention?: AttentionFilter | null } = {}, client = systemDb,
+  opts: { search?: string; limit?: number; now?: Date; attention?: AttentionFilter | null; incidentToken: CsToken }, client = systemDb,
 ): Promise<CustomerList> {
   const now = opts.now ?? new Date();
   const search = (opts.search ?? "").trim();
@@ -155,7 +156,7 @@ export async function listCustomers(
   // PB-4 — the attention fold is read for every page (the row chips need it);
   // a filter narrows the population BEFORE paging, so `total` is the filtered count.
   const filter = opts.attention ?? null;
-  const att = await loadAttention(now, client);
+  const att = await loadAttention(opts.incidentToken, now, client);
   const where = filter
     ? { AND: [searchWhere, { id: { in: [...idsForAttention(att.fold, filter)] } }] }
     : searchWhere;

@@ -14,7 +14,7 @@
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import type { CsIncidentVerdict, IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { buildWorld } from "./world";
-import { convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
+import { convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionBaselineReader, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
 import { moduleVerdicts } from "./module-adapter";
 
 let failures = 0;
@@ -29,7 +29,8 @@ const openIds = (vs: Verdict[]) => new Set(vs.filter((v) => v.open).map((v) => v
 const row = (id: string) => w.rows.find((r) => r.id === id)!;
 
 console.log("§13.2 — every divergence is reproduced from today's readers");
-const projection = openIds(run("projection"));
+// R4 is cut over: the sensitivity half reads the projection's PRE-cutover rule.
+const projection = openIds(projectionBaselineReader(w));
 // R1 is cut over: this half proves the divergences against the panel's PRE-cutover
 // rule (kept inline as csPanelBaselineReader); the gate below runs the live reader.
 const csPanel = openIds(csPanelBaselineReader(w));
@@ -95,9 +96,11 @@ export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> 
   "cs-panel": [],
   // cut over in R3; any divergence from module state === "active" is now a defect
   convergence: [],
-  projection: ["D2", "D2b", "D10"],
-  // D2: alerts select from the projection's active set, which does not honour a soft-deleted account.
-  alerts: ["D2", "D2b", "D10"],
+  // cut over in R4; any divergence from module brokenNow is now a defect
+  projection: [],
+  // feed cut over in R4 (the SYSTEM token reads the module's alertable set); any divergence from
+  // module alertable && critical is now a defect. R5 cuts the pure evaluate/fold over the same set.
+  alerts: [],
   "ops-attention": ["D2", "D2b", "D10"],
   "cs-attention": ["D2", "D2b", "D4", "D10"],
 };

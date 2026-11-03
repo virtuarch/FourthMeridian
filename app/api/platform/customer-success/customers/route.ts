@@ -18,6 +18,7 @@
 
 import { NextResponse } from "next/server";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { listCustomers, opaqueRefSearchToken, type CustomerList } from "@/lib/platform/customer/customers";
 import { limitByUser } from "@/lib/rate-limit";
 import { parseAttentionFilter } from "@/lib/platform/customer/attention-keys";
@@ -29,6 +30,9 @@ export type CustomerListResponse = CustomerList;
 export async function GET(req: Request): Promise<Response> {
   const [auth, err] = await requirePlatformAccess("CUSTOMER_SUCCESS", "READ");
   if (err) return err;
+  // PB-1 R4 — the incident tier follows THIS guard result (never a parameter).
+  const incidentToken = incidentAudienceFor(auth);
+  if (!incidentToken || incidentToken.audience !== "CUSTOMER_SUCCESS") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   // PRIV-ref — a modest per-operator limit (the list had none); a pasted reference digests up to
   // REF_SEARCH_SCAN_CAP ids, so reference lookups have their own tighter bucket.
   const listLimited = await limitByUser(auth.user.id, "cs-customers-list", { limit: 60, windowSec: 60 });
@@ -43,6 +47,6 @@ export async function GET(req: Request): Promise<Response> {
   if (attention === undefined) {
     return NextResponse.json({ error: "attention must be reconnect, incident, policy, unassigned, stalled or any" }, { status: 400 });
   }
-  const list = await listCustomers({ search: url.searchParams.get("search") ?? "", limit: Number.isFinite(limitRaw) ? limitRaw : 50, attention });
+  const list = await listCustomers({ search: url.searchParams.get("search") ?? "", limit: Number.isFinite(limitRaw) ? limitRaw : 50, attention, incidentToken });
   return NextResponse.json(list satisfies CustomerListResponse);
 }
