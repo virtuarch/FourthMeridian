@@ -35,7 +35,7 @@ import { tallyBySource, type ConnectionHealthResult, type ConnectionHealthRow } 
 import { PROVIDER_OUTCOME_DEFINITION, PROVIDER_OUTCOME_DEFINITION_ID, PROVIDER_FAILING_SHARE, assessOutcomes } from "@/lib/platform/verdicts/provider-outcome";
 import {
   CUSTOMER_REAUTH_CODES, PROVIDER_CONNECTION_DEFINITION, PROVIDER_CONNECTION_DEFINITION_ID, PROVIDER_SIDE_ERROR_CODES,
-  assessConnections, connectionTrustState,
+  NOT_A_CODE, assessConnections, codeWord, connectionTrustState, tallyConnections,
 } from "@/lib/platform/verdicts/provider-connection";
 import { WEBHOOK_REAUTH_ERROR_CODES } from "@/lib/plaid/webhook-receiver";
 
@@ -222,6 +222,26 @@ async function main(): Promise<void> {
     check("only provider/institution-side codes → ERROR (down, not responding, internal, rate limit)",
       ["INSTITUTION_DOWN", "INSTITUTION_NOT_RESPONDING", "INTERNAL_SERVER_ERROR", "RATE_LIMIT_EXCEEDED"].every((c) => connectionTrustState("ERROR", c) === "ERROR"));
     check("no code is both a provider-side and a customer code", [...PROVIDER_SIDE_ERROR_CODES].every((c) => !CUSTOMER_REAUTH_CODES.has(c)));
+    // S2 follow-up — the two lists are DISJOINT, pinned both ways and by size.
+    check("PROVIDER_SIDE_ERROR_CODES and CUSTOMER_REAUTH_CODES are disjoint (both directions; union size = sum)",
+      [...CUSTOMER_REAUTH_CODES].every((c) => !PROVIDER_SIDE_ERROR_CODES.has(c))
+        && new Set([...PROVIDER_SIDE_ERROR_CODES, ...CUSTOMER_REAUTH_CODES]).size === PROVIDER_SIDE_ERROR_CODES.size + CUSTOMER_REAUTH_CODES.size);
+
+    // S2 follow-up — the unclassified basis names its codes (capped, codes only).
+    const un = (rows: { healthState: string; errorCode: string | null; count?: number }[], active: number) => assessConnections(tallyConnections(rows, active, 0));
+    check("unclassified basis names the code: '3 of 9 connections with an unclassified error (FOO_CODE)'",
+      un([{ healthState: "ERROR", errorCode: "FOO_CODE", count: 3 }], 9).basis === "3 of 9 connections with an unclassified error (FOO_CODE)");
+    check("…several codes sorted, capped at 3 with '+N more'",
+      un(["E_D", "E_B", "E_A", "E_C", "E_E"].map((c) => ({ healthState: "ERROR", errorCode: c })), 9).basis === "5 of 9 connections with an unclassified error (E_A, E_B, E_C +2 more)");
+    check("…a missing code is 'no code'; a non-code value (free text) is never echoed",
+      un([{ healthState: "ERROR", errorCode: null }, { healthState: "DEGRADED", errorCode: "Request failed: user x@y timed out" }], 4).basis === "2 of 4 connections with an unclassified error (no code, non-code value)");
+    check("codeWord: code-shaped only", codeWord("INSTITUTION_DOWN") === "INSTITUTION_DOWN" && codeWord("lower case") === NOT_A_CODE && codeWord("") === "no code" && codeWord("A".repeat(65)) === NOT_A_CODE);
+    // S2 follow-up — without a tally the share is not computed, and the basis says so.
+    const noPop = connectionAssessmentFor("PLAID", [connRow({ healthState: "ERROR", status: "ERROR", errorCode: "INSTITUTION_DOWN" }), connRow({ id: "i2", healthState: "ERROR", status: "ERROR", errorCode: "INSTITUTION_DOWN" })], null);
+    check("tally absent → DEGRADED (never FAILING), basis 'connection population unavailable — share not computed'",
+      noPop.verdict === "DEGRADED" && noPop.basis === "2 connections in provider-side error — connection population unavailable — share not computed", noPop.basis ?? "");
+    check("tally present → the share is computed and the basis carries no such words",
+      connectionAssessmentFor("PLAID", [], { active: 2, revoked: 0, faults: [{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 2 }] }).basis === "2 of 2 connections in provider-side error");
     check("the provider-side list is exactly pinned (adding one is a reviewed change)",
       [...PROVIDER_SIDE_ERROR_CODES].sort().join() === "INSTITUTION_DOWN,INSTITUTION_NOT_AVAILABLE,INSTITUTION_NOT_RESPONDING,INSTITUTION_NO_LONGER_SUPPORTED,INTERNAL_SERVER_ERROR,PLANNED_MAINTENANCE,PRODUCT_NOT_READY,RATE_LIMIT_EXCEEDED");
     check("an unknown or missing code under ERROR is UNCLASSIFIED (degrades, never fails)",
@@ -245,6 +265,20 @@ async function main(): Promise<void> {
       t.PLAID.active === 4 && t.PLAID.revoked === 2 && t.WALLET.active === 1 && t.EXCHANGE.active === 0 && t.EXCHANGE.revoked === 1);
     check("tally: faults grouped by (state, code), healthy rows omitted",
       JSON.stringify(t.PLAID.faults) === JSON.stringify([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 2 }, { healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 1 }]));
+    // S2 follow-up — getConnectionHealth sets bySource for EVERY source present in rows.
+    const mixed = [
+      { source: "PLAID", healthState: "HEALTHY" as const, errorCode: null },
+      { source: "ALCHEMY", healthState: "HEALTHY" as const, errorCode: null },
+      { source: "ESPLORA", healthState: "STALE" as const, errorCode: null },
+      { source: "EXCHANGE", healthState: "ERROR" as const, errorCode: "INSTITUTION_DOWN" },
+    ];
+    const tm = tallyBySource(mixed, new Map());
+    check("bySource has an entry for every source present in rows (healthy-only sources included), active = its row count",
+      [...new Set(mixed.map((r) => r.source))].every((src) => tm[src]?.active === mixed.filter((r) => r.source === src).length)
+        && Object.keys(tm).length === 4);
+    const healthSrc = readFileSync("lib/connections/health.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    check("getConnectionHealth builds bySource from the SAME rows it returns (tallyBySource(rows, …)) and returns it",
+      /const bySource = tallyBySource\(rows, revokedBySource\);/.test(healthSrc) && /return \{\s*total: rows\.length, counts, unhealthy, retired, bySource,/.test(healthSrc));
     const a = connectionAssessmentFor("PLAID", [], t.PLAID);
     check("tally → provider-connection@1: 1 of 4 in error ⇒ DEGRADED; 2 reauth + 2 revoked as facts",
       a.verdict === "DEGRADED" && a.basis === "1 of 4 connections in provider-side error"
@@ -313,7 +347,7 @@ async function main(): Promise<void> {
       connectionRows: [connRow({ healthState: "ERROR", status: "ERROR", errorCode: "INSTITUTION_DOWN" })], now: NOW,
     });
     check("Plaid: one provider-side ERROR, population unknown → DEGRADED (never FAILING without a denominator)",
-      plaidError.trust === "DEGRADED" && /1 connection in provider-side error \(provider-connection@1\)/.test(plaidError.trustBasis ?? ""), plaidError.trustBasis);
+      plaidError.trust === "DEGRADED" && /^1 connection in provider-side error — connection population unavailable — share not computed \(provider-connection@1\)$/.test(plaidError.trustBasis ?? ""), plaidError.trustBasis);
 
     // ── 4b. provider-connection@1 through the assembly (with the authority's per-source tally) ──
     const runs3 = [run(6, "succeeded"), run(30, "succeeded"), run(54, "succeeded")];
