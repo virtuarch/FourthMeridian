@@ -170,22 +170,22 @@ export function SessionsList({
       {/* Expired, not revoked — past the SEC-010 lifetime; cannot authenticate. */}
       {expired.length > 0 && (
         <div className="space-y-1.5" data-sessions-expired>
-          <p className="text-xs text-gray-500 pt-2 border-t border-gray-800/60">
+          <p className="text-xs text-[var(--text-muted)] pt-2 border-t border-[var(--border-hairline)]">
             {expired.length} expired, not revoked
           </p>
           {expired.map((s) => (
-            <div key={s.id} className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-gray-800/20 border border-gray-800/40">
+            <div key={s.id} className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-[var(--surface-inset)] border border-[var(--border-hairline)]">
               <div className="flex items-center gap-2.5 min-w-0 opacity-70">
                 <DeviceIcon device={s.parsed.device} />
                 <div className="min-w-0">
-                  <p className="text-xs text-gray-500">{s.parsed.browser} on {s.parsed.os}</p>
-                  <p className="text-xs text-gray-600" suppressHydrationWarning>Expired, not revoked · last active {fmtRelative(s.lastActiveAt)}</p>
+                  <p className="text-xs text-[var(--text-muted)]">{s.parsed.browser} on {s.parsed.os}</p>
+                  <p className="text-xs text-[var(--text-faint)]" suppressHydrationWarning>Expired, not revoked · last active {fmtRelative(s.lastActiveAt)}</p>
                 </div>
               </div>
               <button
                 onClick={() => handleRevoke(s)}
                 disabled={revoking === s.id}
-                className="shrink-0 text-xs px-2.5 py-1 rounded-lg border bg-gray-800 border-gray-700 text-gray-500 hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-40"
+                className="shrink-0 text-xs px-2.5 py-1 rounded-lg border bg-[var(--surface-muted)] border-[var(--border-hairline-strong)] text-[var(--text-muted)] hover:text-[var(--danger-400,#f87171)] transition-colors disabled:opacity-40"
               >
                 {revoking === s.id ? "…" : "Revoke"}
               </button>
