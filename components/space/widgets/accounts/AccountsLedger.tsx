@@ -41,6 +41,7 @@ import { formatCurrency } from "@/lib/currency";
 import { useAggregateCurrency } from "@/components/space/widgets/display-money";
 import type { ConversionContext } from "@/lib/money/types";
 import { amountOwed, creditBalance } from "@/lib/debt/balance-semantics";
+import { unvaluedAccountCount } from "@/lib/account-classifier";
 import type { AccountDetailRow } from "@/app/api/spaces/[id]/accounts/detail/route";
 import { resolveAccountFreshness } from "@/lib/freshness/observation";
 import { resolveAccountBalances, reconcileAccount } from "@/lib/balances/account-balances";
@@ -75,6 +76,9 @@ interface FallbackAccount {
   userEstimate?:         true;
   /** v2.7-P0 — SpaceAccount.adjustedBalance (the figure an asset TOTAL counts). */
   adjustedBalance?:      number;
+  /** FM-AUDIT-022 — SpaceAccount.valuationUnknown / unvaluedMemberCount (excluded from totals). */
+  valuationUnknown?:     true;
+  unvaluedMemberCount?:  number;
   /** REVIEW-3 B-1 — present only on aggregated BALANCE_ONLY rows (SpaceAccount.aggregate). */
   aggregate?: {
     memberAccountIds: string[];
@@ -172,6 +176,8 @@ export function accountDetailFallbackRows(accounts: FallbackAccount[], now: Date
     visibility:         a.aggregate ? ("BALANCE_ONLY" as const) : ("FULL" as const),
     ...(a.aggregate ? { memberCount: a.aggregate.memberCount } : {}),
     ...(a.aggregate && a.aggregate.creditTotal > 0 ? { creditTotal: a.aggregate.creditTotal } : {}),
+    ...(a.valuationUnknown ? { valuationUnknown: true as const } : {}),
+    ...(a.unvaluedMemberCount ? { unvaluedMemberCount: a.unvaluedMemberCount } : {}),
     name:               a.name,
     // "" on aggregate rows — institution is identifying and is never present
     // on a privacy-reduced SpaceAccount (matches the fetched read).
@@ -259,10 +265,14 @@ export function AccountsLedger({
   // total is honest (never a naive sum of mixed denominations). Assets vs liabilities
   // split by kind (debt = liability); estimated taints if any member was walked back.
   const summary = useMemo(() => {
-    let assets = 0, liabilities = 0, assetsEst = false, liabEst = false;
+    let assets = 0, liabilities = 0, assetsEst = false, liabEst = false, unvalued = 0;
     const institutions = new Set<string>();
     for (const d of display) {
       if (d.row.institution) institutions.add(d.row.institution);
+      // FM-AUDIT-022 — an unvalued wallet is EXCLUDED from the summary (never
+      // summed as $0) and counted for the disclosure line below.
+      unvalued += unvaluedAccountCount(d.row);
+      if (d.row.valuationUnknown) continue;
       // V25-SIDE-1 — a liability contributes what is OWED. `Math.abs` made the
       // summary count a credit balance as $124 of liability while the row above
       // it read "−$124.04" — the two disagreed on screen about the same account.
@@ -277,7 +287,7 @@ export function AccountsLedger({
     }
     const hasDebt = display.some((d) => d.row.type === "debt");
     const hasAsset = display.some((d) => d.row.type !== "debt");
-    return { assets, liabilities, assetsEst, liabEst, hasDebt, hasAsset, institutions: institutions.size };
+    return { assets, liabilities, assetsEst, liabEst, hasDebt, hasAsset, institutions: institutions.size, unvalued };
   }, [display, ctx]);
 
   // Connection-health summary — render-only-when-present, in ConnectionCard's language.
@@ -375,6 +385,12 @@ export function AccountsLedger({
               <p className="text-[11px] text-[var(--text-faint)]">
                 {redactedCount} shared account{redactedCount === 1 ? "" : "s"} without balance
                 disclosure {redactedCount === 1 ? "is" : "are"} excluded from all totals
+              </p>
+            )}
+            {summary.unvalued > 0 && (
+              <p className="text-[11px] text-[var(--text-faint)]">
+                {summary.unvalued} wallet{summary.unvalued === 1 ? "" : "s"} not yet valued{" "}
+                {summary.unvalued === 1 ? "is" : "are"} excluded from all totals
               </p>
             )}
             {(health.synced > 0 || health.attention > 0) && (
@@ -570,7 +586,10 @@ function LedgerRow({
       </div>
 
       <div className="relative shrink-0 text-right">
-        {isCredit ? (
+        {row.valuationUnknown ? (
+          // FM-AUDIT-022 — no value is not $0.00.
+          <p className="text-sm text-[var(--text-muted)]">Not yet valued</p>
+        ) : isCredit ? (
           <p className="tabular-nums text-sm text-[var(--accent-positive)]">
             {approx}{formatCurrency(credit, currency)} credit
           </p>
@@ -584,7 +603,7 @@ function LedgerRow({
             + {approx}{formatCurrency(credit, currency)} issuer credit
           </p>
         )}
-        {foreign && (
+        {foreign && !row.valuationUnknown && (
           <p className="mt-0.5 tabular-nums text-[11px] text-[var(--text-faint)]">{formatCurrency(row.balance, row.currency)}</p>
         )}
       </div>

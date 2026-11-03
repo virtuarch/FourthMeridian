@@ -134,15 +134,18 @@ export interface Account {
    *   NO_PRICE        held, quantity known, worth unknown. `value` is null.
    *   NO_OBSERVATION  never observed. Both null. NOT zero.
    *
-   * `balance` falls back to the column for the latter two, so any surface that
-   * renders money for a wallet must branch on `state` rather than trust it.
-   *
-   * ⚠️ W6d — that fallback is no longer always a zero. A BTC wallet never taken
-   * through `syncBtcWallet` (the seeded demo wallets) carries a real-looking USD
-   * figure in the column with no dated provenance behind it, and it arrives here
-   * as `state: "NO_OBSERVATION"` beside a non-zero `balance`. Both readings are
-   * wrong to publish unqualified; only `state` tells them apart.
+   * FM-AUDIT-022 — for the latter two, `balance` is a structural 0 flagged
+   * `valuationUnknown` (below) and EXCLUDED from every total. It no longer falls
+   * back to the stored column (the schema DEFAULT 0 for a new wallet, or an
+   * undated figure for an unsynced one).
    */
+  /**
+   * FM-AUDIT-022 — present (true) only when this account has NO value (a wallet
+   * in NO_PRICE / NO_OBSERVATION, per `resolveWalletBalance`). `balance` is then
+   * a structural 0 that `classifyAccounts` EXCLUDES from every total and counts
+   * in `unvaluedCount`; a surface must say "not yet valued", never $0.00.
+   */
+  valuationUnknown?: true;
   cryptoPosition?: {
     state:     "VALUED" | "STALE" | "NO_PRICE" | "NO_OBSERVATION";
     /** Canonical freshness band of the successful provider read behind this. */

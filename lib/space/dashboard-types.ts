@@ -97,6 +97,18 @@ export type SpaceAccount = {
    * set on an aggregated privacy row (it names no single account).
    */
   userEstimate?:  true;
+  /**
+   * FM-AUDIT-022 — present (true) only on a FULL row whose account has NO value
+   * (an unpriced or never-observed wallet, `resolveWalletBalance`). `balance` is
+   * a structural 0, EXCLUDED from every total by `classifyAccounts`, which
+   * counts it in `unvaluedCount` for disclosure. Never on an aggregate row.
+   */
+  valuationUnknown?: true;
+  /**
+   * FM-AUDIT-022 — on an aggregated privacy row only: members excluded as
+   * unvalued (already absent from `balance`). Counted by `classifyAccounts`.
+   */
+  unvaluedMemberCount?: number;
   creditLimit?:   number;
   interestRate?:  number;  // APR, e.g. 19.99
   minimumPayment?: number; // monthly minimum

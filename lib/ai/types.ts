@@ -559,6 +559,13 @@ export interface AccountsSectionData {
    * "approximate".
    */
   totalsUnconverted:  boolean;
+  /**
+   * FM-AUDIT-022 — crypto wallets EXCLUDED from the totals above because they
+   * have no value (unpriced, or never observed). Never valued at 0 or at a
+   * stale stored balance: the digital-asset total (and so assets / net worth)
+   * is an honest PARTIAL. OMITTED when nothing was excluded.
+   */
+  totalsUnvaluedCount?: number;
   counts: {
     liquid:       number;
     investments:  number;
