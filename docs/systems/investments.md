@@ -205,6 +205,9 @@ Line numbers were re-read on `develop` at `42f99ea` (2026-11-03).
 - **M7 — one allocation authority. IMPLEMENTED (#275).** `HoldingsConcentration.tsx` and
   `InvestmentAllocationPanel.tsx` no longer call `computeAllocation` in the browser; they
   consume the server-computed allocation.
+- **Display FX fails closed. IMPLEMENTED (PB-11b, #277).** A missing display-currency rate no
+  longer leaves a mixed-currency figure: the conversion fails closed and the surface
+  withholds the value.
 
 **Partial or tracked elsewhere:**
 
