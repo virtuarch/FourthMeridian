@@ -23,7 +23,7 @@ export interface WorldRow {
   exercises: string[];
 }
 
-export interface WorldItem { id: string; userId: string; deleted: boolean }
+export interface WorldItem { id: string; userId: string; deleted: boolean; /** PlaidItem.status; REVOKED rows still exist. */ status?: "ACTIVE" | "REVOKED" }
 export interface WorldAccount {
   id: string;
   ownerUserId: string | null;
@@ -67,6 +67,7 @@ export function buildWorld(): World {
     items: [
       { id: "item_a", userId: "u_alice", deleted: false },
       { id: "item_gone", userId: "u_alice", deleted: true },
+      { id: "item_revoked", userId: "u_alice", deleted: false, status: "REVOKED" },
     ],
     accounts: [
       { id: "acct_live", ownerUserId: "u_alice", createdByUserId: "u_alice", softDeleted: false, hardDeleted: false, viaItemId: "item_a" },
@@ -87,6 +88,9 @@ export function buildWorld(): World {
       row("r_old_but_active", { createdAt: ago(40), firstOccurredAt: ago(40), lastOccurredAt: ago(1), exercises: ["D6", "D7"] }),
       row("r_recur_1", { resolved: true, incidentKey: "k_recur", createdAt: ago(10), firstOccurredAt: ago(10), lastOccurredAt: ago(9), exercises: ["D8"] }),
       row("r_recur_2", { incidentKey: "k_recur", createdAt: ago(3), firstOccurredAt: ago(3), lastOccurredAt: ago(1), exercises: ["D8"] }),
+      // Introduced by the Phase-2 module (API review 2026-11-03), not by today's readers:
+      row("r_revoked_item", { plaidItemId: "item_revoked", exercises: ["D2b"] }),
+      row("r_stale_open", { createdAt: ago(30), firstOccurredAt: ago(30), lastOccurredAt: ago(30), exercises: ["D10"] }),
     ],
   };
 }

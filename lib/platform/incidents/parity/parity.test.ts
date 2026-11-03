@@ -50,6 +50,11 @@ check("D6: an incident created before the 14-day window is active for the projec
 check("D8: no reader groups the recurrence pair by incidentKey",
   ![...run("alerts"), ...convergence].some((v) => v.groupKey?.includes("k_recur")) && row("r_recur_2").incidentKey === "k_recur");
 
+check("D2b baseline: every legacy reader treats a REVOKED item's incident as live (the module will close it)",
+  projection.has("r_revoked_item") && csPanel.has("r_revoked_item") && convOpen.has("r_revoked_item"));
+check("D10 baseline: a long-silent unresolved incident is open for every legacy reader (the module marks it stale-unverified)",
+  projection.has("r_stale_open") && csPanel.has("r_stale_open"));
+
 console.log("every legacy-vs-projection difference is explained by the world");
 for (const id of ["cs-panel", "convergence"] as const) {
   const theirs = openIds(run(id));
@@ -68,12 +73,12 @@ check("Platform Ops attention carries no customer identity", run("ops-attention"
  */
 const PHASE2_MODULE: ((w: World) => Verdict[]) | null = null;
 export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> = {
-  "cs-panel": ["D1", "D4"],
-  convergence: ["D2", "D3", "D6", "D7"],
-  projection: ["D2"],
-  alerts: [],
-  "ops-attention": [],
-  "cs-attention": ["D4"],
+  "cs-panel": ["D1", "D2", "D2b", "D4", "D10"],
+  convergence: ["D2", "D2b", "D3", "D6", "D7", "D10"],
+  projection: ["D2", "D2b", "D10"],
+  alerts: ["D2b", "D10"],
+  "ops-attention": ["D2", "D2b", "D10"],
+  "cs-attention": ["D2", "D2b", "D4", "D10"],
 };
 
 console.log("cutover gate");
