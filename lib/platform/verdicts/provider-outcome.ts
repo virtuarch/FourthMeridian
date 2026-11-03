@@ -11,16 +11,30 @@
  * ≥ 50 %) made a provider FAILING, and any failure at all DEGRADED it, whatever
  * the sample. A verdict needs evidence; v1 states how much.
  *
- * DEFINITION (provider-outcome@1), over one evidence kind at a time:
+ * DEFINITION (provider-outcome@1), over one evidence kind at a time, in THIS
+ * order (the first step that matches decides):
  *
- *   1. RECENCY   the last `recentFailingRun` outcomes ALL failed   ⇒ FAILING
- *                (only where the evidence is ordered — job runs; ProviderCall
- *                roll-ups carry no order, so for calls this step is skipped).
- *   2. SAMPLE    fewer than `minSample[kind]` decided outcomes       ⇒ NOT_ENOUGH_DATA
- *                (never HEALTHY — too few outcomes is not "fine").
- *   3. RATIO     failed / decided ≥ `failingRatio`                   ⇒ FAILING
- *   4. ISOLATED  any failure below that ratio                        ⇒ DEGRADED
- *   5. NONE      no failure in a sufficient sample                   ⇒ HEALTHY
+ *   1.  RECENCY      the last `recentFailingRun` outcomes ALL failed   ⇒ FAILING
+ *                    (ordered evidence only — job runs; ProviderCall roll-ups
+ *                    carry no order, so for calls this step is skipped).
+ *   2b. ALL FAILED   unordered evidence (calls) with at least
+ *                    `recentFailingRun` decided outcomes, every one failed ⇒ FAILING
+ *                    (all-failed needs no ordering).
+ *   2a. SMALL SAMPLE fewer than `minSample[kind]` decided outcomes, but at
+ *                    least one failed                                  ⇒ DEGRADED
+ *                    (a small sample never HIDES a failure; basis
+ *                    "N of M … failed — small sample").
+ *   2.  SAMPLE       fewer than `minSample[kind]` decided outcomes, none failed
+ *                                                                      ⇒ NOT_ENOUGH_DATA
+ *                    (never HEALTHY — too few outcomes is not "fine").
+ *   3.  RATIO        failed / decided ≥ `failingRatio`                 ⇒ FAILING
+ *   4.  ISOLATED     any failure below that ratio                      ⇒ DEGRADED
+ *   5.  NONE         no failure in a sufficient sample                 ⇒ HEALTHY
+ *
+ * Fail-safe direction: steps 1, 2b and 2a run BEFORE the sample floor, so the
+ * floor can only withhold a HEALTHY verdict — it never downgrades a failure to
+ * "Not enough data" (review fix, 2026-11-03: 1/1 and 2/2 failed runs, 19/19 and
+ * 10/15 failed calls must not read NOT_ENOUGH_DATA).
  *
  * Every input is a count an operator can drill to: job runs are JobRun rows in
  * the provider window; calls are ProviderCall attempt rows in the 7-day roll-up.
@@ -72,8 +86,8 @@ export interface OutcomeEvidence {
 export interface OutcomeAssessment {
   verdict: OutcomeVerdict;
   definition: typeof PROVIDER_OUTCOME_DEFINITION_ID;
-  /** The rule step that decided (1–5 above). */
-  rule: "recency" | "sample" | "ratio" | "isolated" | "none";
+  /** The rule step that decided (see the order above). */
+  rule: "recency" | "all-failed" | "small-sample" | "sample" | "ratio" | "isolated" | "none";
   evidence: OutcomeEvidence;
   minSample: number;
   /** One line, figures included: "1 of 20 calls failed". */
@@ -96,6 +110,12 @@ export function assessOutcomes(e: OutcomeEvidence): OutcomeAssessment {
 
   if (e.recentConsecutiveFailures !== null && e.recentConsecutiveFailures >= d.recentFailingRun) {
     return out("FAILING", "recency", `last ${words(e.recentConsecutiveFailures, e.kind)} all failed`);
+  }
+  if (e.recentConsecutiveFailures === null && decided >= d.recentFailingRun && failed === decided) {
+    return out("FAILING", "all-failed", `all ${words(decided, e.kind)} failed`);
+  }
+  if (decided < minSample && failed > 0) {
+    return out("DEGRADED", "small-sample", `${ratio} — small sample`);
   }
   if (decided < minSample) {
     return out("NOT_ENOUGH_DATA", "sample", `${words(decided, e.kind)} with an outcome — ${minSample} needed for a verdict`);

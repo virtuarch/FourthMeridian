@@ -135,10 +135,13 @@ async function main(): Promise<void> {
       deriveProviderTrust({ ...base, hasExecutionSignal: false, decidedRuns: 0, freshnessState: "unknown" }) === "UNKNOWN");
 
     // The defect: 1 failed run of 1–2 in the window used to be FAILING (error rate ≥ 50 %).
-    check("1 failed of 1 run (below the run sample) → INSUFFICIENT_DATA, not FAILING",
-      deriveProviderTrust({ ...base, decidedRuns: 1, failedRuns: 1, consecutiveFailures: 1 }) === "INSUFFICIENT_DATA");
-    check("1 failed of 2 runs → INSUFFICIENT_DATA, not FAILING",
-      deriveProviderTrust({ ...base, decidedRuns: 2, failedRuns: 1, consecutiveFailures: 1 }) === "INSUFFICIENT_DATA");
+    // Review fix (S2 BLOCKER): a small sample never hides a failure — DEGRADED, not FAILING, not "not enough data".
+    check("1 failed of 1 run (below the run sample) → DEGRADED, not FAILING and not INSUFFICIENT_DATA",
+      deriveProviderTrust({ ...base, decidedRuns: 1, failedRuns: 1, consecutiveFailures: 1 }) === "DEGRADED");
+    check("1 failed of 2 runs → DEGRADED",
+      deriveProviderTrust({ ...base, decidedRuns: 2, failedRuns: 1, consecutiveFailures: 1 }) === "DEGRADED");
+    check("2 failed of 2 runs (streak 2) → DEGRADED",
+      deriveProviderTrust({ ...base, decidedRuns: 2, failedRuns: 2, consecutiveFailures: 2 }) === "DEGRADED");
     check("too few clean runs → INSUFFICIENT_DATA, never OPERATIONAL",
       deriveProviderTrust({ ...base, decidedRuns: 2 }) === "INSUFFICIENT_DATA");
     check("no run at all but fresh data → INSUFFICIENT_DATA, never OPERATIONAL",
@@ -160,7 +163,19 @@ async function main(): Promise<void> {
     const runs = (decided: number, failed: number, streak: number) => assessOutcomes({ kind: "runs", decided, failed, recentConsecutiveFailures: streak }).verdict;
     check("1 failed of 20 calls → DEGRADED (isolated failure)", calls(20, 1) === "DEGRADED");
     check("0 failed of 20 calls → HEALTHY", calls(20, 0) === "HEALTHY");
-    check("19 calls (below the 20 floor) → NOT_ENOUGH_DATA, never HEALTHY", calls(19, 0) === "NOT_ENOUGH_DATA" && calls(19, 1) === "NOT_ENOUGH_DATA");
+    check("19 clean calls (below the 20 floor) → NOT_ENOUGH_DATA, never HEALTHY", calls(19, 0) === "NOT_ENOUGH_DATA");
+    // Review fix (S2 BLOCKER) — the small-sample and all-failed steps run before the floor.
+    check("runs 1/1 failed → DEGRADED (small sample)", runs(1, 1, 1) === "DEGRADED");
+    check("runs 2/2 failed (streak 2) → DEGRADED", runs(2, 2, 2) === "DEGRADED");
+    check("runs 0/2 → NOT_ENOUGH_DATA", runs(2, 0, 0) === "NOT_ENOUGH_DATA");
+    check("calls 3/3 failed → FAILING (all failed)", calls(3, 3) === "FAILING");
+    check("calls 19/19 failed → FAILING (all failed)", calls(19, 19) === "FAILING");
+    check("calls 2/2 failed (below 3) → DEGRADED (small sample)", calls(2, 2) === "DEGRADED");
+    check("calls 10/15 → DEGRADED (small sample, not all failed)", calls(15, 10) === "DEGRADED");
+    check("calls 1/19 → DEGRADED (small sample)", calls(19, 1) === "DEGRADED");
+    check("small-sample basis says so",
+      assessOutcomes({ kind: "runs", decided: 1, failed: 1, recentConsecutiveFailures: 1 }).basis === "1 of 1 run failed — small sample");
+    check("calls 1/20 → DEGRADED; calls 10/20 → FAILING", calls(20, 1) === "DEGRADED" && calls(20, 10) === "FAILING");
     check("0 calls → NOT_ENOUGH_DATA", calls(0, 0) === "NOT_ENOUGH_DATA");
     check("ratio boundary: 9/20 DEGRADED, 10/20 FAILING", calls(20, 9) === "DEGRADED" && calls(20, 10) === "FAILING");
     check("calls carry no order: a ratio, never a recency verdict",

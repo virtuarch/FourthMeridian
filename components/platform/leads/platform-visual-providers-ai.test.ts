@@ -123,9 +123,10 @@ console.log("1. Providers — health classes, verdict, distribution, KPIs, hones
   check("call counts alone never make a provider 'healthy' (Alchemy: 20 clean calls, still not assessed)", by.get("ALCHEMY")!.status.word === "Not assessed");
   // Re-pinned 2026-11-03 (intentional): the downgrade is provider-outcome@1 — ≥ 20 attempts,
   // then any failure ⇒ degraded, ≥ 50 % ⇒ failing; below the floor nothing changes.
-  check("downgrade rule (provider-outcome@1): 1 of 20 ⇒ degraded, 2 of 80 ⇒ degraded, 10 of 20 ⇒ failing; 1 of 19, 0 of 20, 0 of 0 ⇒ none",
+  check("downgrade rule (provider-outcome@1): 1 of 20 ⇒ degraded, 2 of 80 ⇒ degraded, 10 of 20 ⇒ failing; 1 of 19 ⇒ degraded (small sample), 19 of 19 ⇒ failing; 0 of 19, 0 of 20, 0 of 0 ⇒ none",
     callsDowngrade(20, 1) === "degraded" && callsDowngrade(80, 2) === "degraded" && callsDowngrade(100, 5) === "degraded" && callsDowngrade(20, 10) === "failing"
-      && callsDowngrade(19, 1) === null && callsDowngrade(20, 0) === null && callsDowngrade(0, 0) === null);
+      && callsDowngrade(19, 1) === "degraded" && callsDowngrade(19, 19) === "failing" && callsDowngrade(15, 10) === "degraded"
+      && callsDowngrade(19, 0) === null && callsDowngrade(20, 0) === null && callsDowngrade(0, 0) === null);
   const isolated = providerEntities(inputs({ operations: ok({ ...(inputs().operations.data as object), operations: [opsRow("PLAID", 20, 1)] }) as never })).find((e) => e.key === "PLAID")!;
   check("the defect: Plaid with 1 failed call of 20 in 7 d reads Degraded (never Failing), the basis naming both counts",
     isolated.healthClass === "degraded" && isolated.status.word === "Degraded" && /^1 of 20 provider calls failed in 7 d \(5% · provider-outcome@1\)$/.test(isolated.statusBasis), isolated.statusBasis);

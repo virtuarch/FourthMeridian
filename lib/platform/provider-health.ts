@@ -403,10 +403,11 @@ export interface TrustSignals {
  *   STALE    the DATA is behind/absent (freshness stale|empty) — the false-green
  *            catch: a green job over a stale archive still reads STALE here.
  *   UNKNOWN  no signal at all to judge (no runs AND freshness un-assertable).
- *   DEGRADED execution DEGRADED (isolated failures in a sufficient sample), a
+ *   DEGRADED execution DEGRADED (isolated failures in a sufficient sample, or
+ *            ANY failure in a small one — a small sample never hides it), a
  *            degraded connection, or un-assertable freshness despite having an
  *            execution signal.
- *   INSUFFICIENT_DATA  clean otherwise, but too few run outcomes for a verdict.
+ *   INSUFFICIENT_DATA  clean otherwise (no failure), but too few run outcomes for a verdict.
  *   OPERATIONAL otherwise (fresh/idle data + a sufficient, clean execution sample).
  */
 export function deriveProviderTrust(s: TrustSignals): ProviderTrust {

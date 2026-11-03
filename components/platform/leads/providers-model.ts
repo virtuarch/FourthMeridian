@@ -22,10 +22,11 @@
  *     assessed, the latter worded "Not enough data");
  *   · provider-ops may only DOWNGRADE, by the SHARED rule provider-outcome@1
  *     (lib/platform/verdicts/provider-outcome.ts) over the 7-day attempt counts:
- *     at least 20 attempts, then any failure ⇒ degraded and ≥ 50 % ⇒ failing.
- *     Never "healthy" from call counts alone — a provider without a health
- *     authority whose calls look fine stays "Not assessed"; too few attempts
- *     change nothing.
+ *     ≥ 3 attempts all failed ⇒ failing; under 20 attempts any failure ⇒
+ *     degraded ("small sample"); from 20 attempts any failure ⇒ degraded and
+ *     ≥ 50 % ⇒ failing. Never "healthy" from call counts alone — a provider
+ *     without a health authority whose calls look fine stays "Not assessed";
+ *     too few CLEAN attempts change nothing.
  *
  * HONESTY RULES (pinned by platform-visual-providers-ai.test.ts):
  *   · no reader exposes a usage cap, so every tile says "cap unknown" — never a
