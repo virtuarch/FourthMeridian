@@ -20,6 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader2, Smartphone, Tablet, Monitor, Globe, LogOut, Search, ListChecks } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
 import { type SessionRow } from "@/components/security/SessionsList";
+import { sessionDisplayState } from "@/lib/auth/session-proof";
 import { FormModal } from "@/components/atlas/FormModal";
 
 const CARD_OTHERS_LIMIT = 2;
@@ -174,7 +175,11 @@ export function ActiveSessions() {
     setLoading(false);
   }
 
-  const active  = useMemo(() => sessions.filter((s) => !s.revokedAt), [sessions]);
+  // SEC-010 — live by the auth path's own rule, not `!revokedAt`: an unrevoked
+  // session past its idle / absolute lifetime cannot sign in and is not listed
+  // as one of this user's signed-in devices ("Sign out other sessions" still
+  // revokes it — revokeOtherUserSessions writes every unrevoked row).
+  const active  = useMemo(() => { const now = new Date(); return sessions.filter((s) => sessionDisplayState(s, now) === "LIVE"); }, [sessions]);
   const current = useMemo(() => active.find((s) => s.isCurrent) ?? null, [active]);
   const others  = useMemo(() => active.filter((s) => !s.isCurrent).sort(byRecent), [active]);
 

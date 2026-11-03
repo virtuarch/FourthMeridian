@@ -15,6 +15,7 @@ import { useState } from "react";
 import { Smartphone, Tablet, Monitor, Globe, LogOut, ChevronDown } from "lucide-react";
 import { ParsedUA } from "@/lib/ua-parser";
 import { formatDateTime } from "@/lib/format";
+import { sessionDisplayState } from "@/lib/auth/session-proof";
 
 export type SessionRow = {
   id:           string;
@@ -68,8 +69,14 @@ export function SessionsList({
   const [revoking, setRevoking] = useState<string | null>(null);
   const [confirmSelfId, setConfirmSelfId] = useState<string | null>(null);
 
-  const active = sessions.filter((s) => !s.revokedAt);
-  const revoked = sessions.filter((s) => s.revokedAt);
+  // SEC-010 — "active" is the auth path's own rule (sessionDisplayState →
+  // judgeSessionLifetime), not `!revokedAt`. An unrevoked row past its idle /
+  // absolute lifetime can no longer sign anyone in; it is listed on its own as
+  // "expired, not revoked" (still revocable), never counted as active.
+  const now = new Date();
+  const active  = sessions.filter((s) => sessionDisplayState(s, now) === "LIVE");
+  const expired = sessions.filter((s) => sessionDisplayState(s, now) === "EXPIRED_NOT_REVOKED");
+  const revoked = sessions.filter((s) => sessionDisplayState(s, now) === "REVOKED");
 
   async function handleRevoke(s: SessionRow) {
     if (s.isCurrent && confirmSelfId !== s.id) {
@@ -160,12 +167,39 @@ export function SessionsList({
         </button>
       )}
 
+      {/* Expired, not revoked — past the SEC-010 lifetime; cannot authenticate. */}
+      {expired.length > 0 && (
+        <div className="space-y-1.5" data-sessions-expired>
+          <p className="text-xs text-gray-500 pt-2 border-t border-gray-800/60">
+            {expired.length} expired, not revoked
+          </p>
+          {expired.map((s) => (
+            <div key={s.id} className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-gray-800/20 border border-gray-800/40">
+              <div className="flex items-center gap-2.5 min-w-0 opacity-70">
+                <DeviceIcon device={s.parsed.device} />
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-500">{s.parsed.browser} on {s.parsed.os}</p>
+                  <p className="text-xs text-gray-600" suppressHydrationWarning>Expired, not revoked · last active {fmtRelative(s.lastActiveAt)}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => handleRevoke(s)}
+                disabled={revoking === s.id}
+                className="shrink-0 text-xs px-2.5 py-1 rounded-lg border bg-gray-800 border-gray-700 text-gray-500 hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-40"
+              >
+                {revoking === s.id ? "…" : "Revoke"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Recently revoked */}
       {revoked.length > 0 && (
         <details className="group">
           <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-400 transition-colors list-none flex items-center gap-1.5 pt-2 border-t border-gray-800/60">
             <ChevronDown size={11} className="group-open:rotate-180 transition-transform" />
-            {revoked.length} revoked / expired session{revoked.length !== 1 ? "s" : ""}
+            {revoked.length} revoked session{revoked.length !== 1 ? "s" : ""}
           </summary>
           <div className="mt-2 space-y-1.5">
             {revoked.map((s) => (

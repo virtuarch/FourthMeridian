@@ -29,6 +29,7 @@
 import "server-only";
 import type { CsToken } from "@/lib/platform/incidents/intelligence";
 import { systemDb } from "@/lib/db";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { opaqueRefOfToken } from "@/lib/platform/opaque-user-ref-format";
 import { AuditAction } from "@/lib/audit-actions";
@@ -198,7 +199,7 @@ export async function listCustomers(
     client.financialAccount.groupBy({ by: ["createdByUserId"], where: { createdByUserId: { in: ids }, syncStatus: "manual", deletedAt: null }, _min: { createdAt: true } }),
     client.aiInvocation.groupBy({ by: ["userId"], where: { userId: { in: ids }, surface: "chat" }, _min: { occurredAt: true } }),
     client.auditLog.groupBy({ by: ["userId"], where: { userId: { in: ids }, action: AuditAction.BRIEF_VIEWED }, _min: { createdAt: true } }),
-    client.userSession.groupBy({ by: ["userId"], where: { userId: { in: ids }, revokedAt: null }, _max: { lastPresenceAt: true } }),
+    client.userSession.groupBy({ by: ["userId"], where: liveSessionWhere(now, { userId: { in: ids } }), _max: { lastPresenceAt: true } }),
   ]);
   const assignBy = new Map(assignments.map((a) => [a.userId, a] as const));
   const cohortsBy = new Map<string, string[]>();

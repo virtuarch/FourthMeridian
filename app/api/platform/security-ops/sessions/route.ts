@@ -8,7 +8,9 @@
  * No site-wide active-session route exists today — the only session route is
  * the per-user, DELETE-capable admin one
  * (/api/admin/security/users/[userId]/sessions), which is out of scope and NOT
- * reused. This is a fresh READ over UserSession (revokedAt = null), scaled to a
+ * reused. This is a fresh READ over LIVE UserSessions (liveSessionWhere — not
+ * revoked, within the SEC-010 idle/absolute lifetime, account not locked out;
+ * the same rule the auth path enforces), scaled to a
  * card: a live count, distinct-user count, and a short most-recently-active
  * list showing only parsed device/browser + time — never IP, user-agent string,
  * userId, or email.
@@ -18,6 +20,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { parseUserAgent } from "@/lib/ua-parser";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 
 export const runtime = "nodejs";
 
@@ -41,11 +44,12 @@ export async function GET() {
   const [, err] = await requirePlatformAccess("SECURITY_OPS", "READ");
   if (err) return err;
 
+  const live = liveSessionWhere(new Date());
   const [totalActive, distinctUsers, recent] = await Promise.all([
-    db.userSession.count({ where: { revokedAt: null } }),
-    db.userSession.groupBy({ by: ["userId"], where: { revokedAt: null } }),
+    db.userSession.count({ where: live }),
+    db.userSession.groupBy({ by: ["userId"], where: live }),
     db.userSession.findMany({
-      where:   { revokedAt: null },
+      where:   live,
       orderBy: { lastActiveAt: "desc" },
       take:    RECENT_LIMIT,
       select:  { id: true, userAgent: true, lastActiveAt: true },

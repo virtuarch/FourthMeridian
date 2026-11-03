@@ -24,6 +24,7 @@ import { NextResponse } from "next/server";
 import { UserRole } from "@prisma/client";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { db } from "@/lib/db";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { AuditAction } from "@/lib/audit-actions";
 
 export const runtime = "nodejs";
@@ -37,7 +38,7 @@ export interface GrowthUsersSummary {
   deactivated: number;
   /** …with an account deletion scheduled. */
   deletionScheduled: number;
-  /** …holding at least one session that is not revoked. */
+  /** …holding at least one LIVE session (liveSessionWhere — not revoked, within the SEC-010 lifetime, account not locked out). */
   withLiveSession: number;
   /** …with no recorded sign-in at all (AuditLog LOGIN, which is never pruned). */
   neverSignedIn: number;
@@ -54,7 +55,7 @@ export async function GET(): Promise<Response> {
     db.user.count({ where: { ...customer, emailVerifiedAt: { not: null } } }),
     db.user.count({ where: { ...customer, deactivatedAt: { not: null } } }),
     db.user.count({ where: { ...customer, deletionScheduledAt: { not: null } } }),
-    db.userSession.groupBy({ by: ["userId"], where: { revokedAt: null, user: { is: customer } }, _count: { _all: true } }),
+    db.userSession.groupBy({ by: ["userId"], where: liveSessionWhere(new Date(), { userWhere: customer }), _count: { _all: true } }),
     db.auditLog.groupBy({ by: ["userId"], where: { action: AuditAction.LOGIN, user: { is: customer } }, _count: { _all: true } }),
   ]);
 

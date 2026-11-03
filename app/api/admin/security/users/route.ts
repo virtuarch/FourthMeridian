@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import { requireSystemAdmin } from "@/lib/session";
+import { liveSessionWhere } from "@/lib/auth/session-proof";
 
 export async function GET(req: NextRequest) {
   const [, err] = await requireSystemAdmin();
@@ -55,7 +56,7 @@ export async function GET(req: NextRequest) {
     }),
     db.userSession.groupBy({
       by:     ["userId"],
-      where:  { userId: { in: userIds }, revokedAt: null },
+      where:  liveSessionWhere(new Date(), { userId: { in: userIds } }),
       _count: { id: true },
     }),
     db.auditLog.findMany({
