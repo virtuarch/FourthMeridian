@@ -139,7 +139,9 @@ export async function backfillSpaceSnapshots(
       walletChain: l.financialAccount.walletChain,
       lastUpdated: l.financialAccount.lastUpdated,
     })),
-    { contextSpaceId: spaceId },
+    // The SAME authority every other query in this module uses (module `db`),
+    // passed explicitly — never defaulted.
+    { client: db, contextSpaceId: spaceId },
   );
   const resolvedWallets = new Map<string, ResolvedWalletBalance>();
   for (const l of linkRows) {
