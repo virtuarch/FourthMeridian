@@ -50,7 +50,7 @@ import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
 import { AccountType, PlaidItemStatus, ShareStatus } from "@prisma/client";
 import { syncTransactionsForItem } from "@/lib/plaid/syncTransactions";
 import { evaluateReconciliation } from "@/lib/plaid/reconcile-core";
-import { recordSyncIssue } from "@/lib/plaid/syncIssues";
+import { recordSyncIssue, resolveBalanceUnobservedIssue } from "@/lib/plaid/syncIssues";
 import { regenerateSnapshotsForAccounts, regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { emitDomainEvent } from "@/lib/events/emit";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
@@ -229,6 +229,13 @@ export async function refreshBalancesForItem(plaidItemDbId: string): Promise<Ite
     });
     accountsUpdated++;
     updatedAccountIds.push(fa.id);
+    // FIN-A2 — the FIRST observed balance on a row created without one is the
+    // evidence that closes its BALANCE_UNOBSERVED condition (through the
+    // incident authority, never a direct SyncIssue write). Only on that
+    // transition, so a routine refresh issues no extra query.
+    if (plan.observed && fa.balanceObserved === false) {
+      await resolveBalanceUnobservedIssue(fa.id);
+    }
     // DF-2E — balance written (institution-verified) → this execution advanced
     // the account's balance freshness, even if the value itself was unchanged.
     // FIN-011 — unless no balance was observed: then the account was evaluated
@@ -268,6 +275,8 @@ export interface BalanceWritePlan {
     availableBalance?:     number;
     creditLimit?:          number;
     balanceLastUpdatedAt?: Date | null;
+    /** FIN-A2 — written `true` with every observed balance; never written otherwise. */
+    balanceObserved?:      true;
     providerSubtype:       string | null;
     syncStatus:            "synced";
   };
@@ -294,15 +303,16 @@ export function isObservedBalance(current: number | null | undefined): current i
  * written `balanceLastUpdatedAt`, and this does not start to — an observed
  * balance writes exactly what it wrote before (`balance`, `lastUpdated`).
  *
- * A NEW row is not covered here: `balance` is `Float NOT NULL DEFAULT 0` and
- * there is no unknown-balance representation for a row with no prior value.
- * See the create site in exchangeToken.ts.
+ * FIN-A2 — an observed balance also writes `balanceObserved: true`, so a row
+ * created with no observed balance (the create site in exchangeToken.ts writes
+ * `balanceObserved: false`) re-enters every total the moment one lands. A null
+ * `current` writes nothing, so an unobserved row stays unobserved.
  */
 export function planExchangeBalanceStamp(
   current: number | null | undefined,
   now: Date,
-): { balance?: number; lastUpdated?: Date } {
-  return isObservedBalance(current) ? { balance: current, lastUpdated: now } : {};
+): { balance?: number; lastUpdated?: Date; balanceObserved?: true } {
+  return isObservedBalance(current) ? { balance: current, lastUpdated: now, balanceObserved: true } : {};
 }
 
 /**
@@ -347,7 +357,8 @@ export function planBalanceWrite(
   const balanceLastUpdatedAt = balances.last_updated_datetime ? new Date(balances.last_updated_datetime) : null;
   return {
     observed: true,
-    data: { ...base, balance: balances.current as number, balanceLastUpdatedAt },
+    // FIN-A2 — an observed balance is, by definition, observed.
+    data: { ...base, balance: balances.current as number, balanceLastUpdatedAt, balanceObserved: true },
   };
 }
 

@@ -269,6 +269,8 @@ export async function GET(
           // v2.6-L1 — the institution's own balance clock, kept distinct from
           // `lastUpdated` (ours) all the way to the client.
           balanceLastUpdatedAt: true,
+          // FIN-A2 — read only by the one totals classification below.
+          balanceObserved: true,
           creditLimit:    true,
           debtSubtype:    true,
           // 2026-10-07 — groups privacy aggregates by liquidity access, as the
@@ -414,9 +416,10 @@ export async function GET(
     // EXCLUDED through the one totals classification, never its stored column.
     // W6d put Bitcoin on this path too, through the same registry predicate and
     // with no chain named here.
-    const wb = resolveWalletBalance(raw.balance, walletValue);
+    // FIN-A2 — a never-observed balance is excluded by the same classification.
+    const wb = resolveWalletBalance(raw.balance, walletValue, raw.balanceObserved);
     if (wb.valuationUnknown) unvaluedIds.add(raw.id);
-    const a = walletValue === undefined ? raw : { ...raw, balance: wb.balance };
+    const a = walletValue === undefined && !wb.valuationUnknown ? raw : { ...raw, balance: wb.balance };
 
     if (link.visibilityLevel !== "FULL") {
       // Reuse the shared normalizer's exact ShareRow shape (FULL/BALANCE_ONLY).
