@@ -48,6 +48,11 @@ export const SPACE_URL_PARAMS = [
   "rpage",
   "rfilter",
   "rid",
+  // AI & Costs — the budget KPI's per-call drilldown: open flag, the KPI's
+  // window end, and the page (components/platform/leads/ai-budget-calls-url.ts; REPLACE-written).
+  "aicalls",
+  "aiuntil",
+  "aipage",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
 

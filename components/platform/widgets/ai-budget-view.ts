@@ -17,7 +17,7 @@
 import type { StatusTone } from "../platform-surface";
 import type { AiBudgetUtilization, AlertTriggerView, CustomerBudgetView, SurfaceBudgetView } from "@/lib/platform/ai/cost-controls.types";
 import { ESTIMATE_CAPTION, fmtCount, fmtUsd } from "./overview/ai-economics-view";
-import { FLEET_REASON_NONE_PRICED, fleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
+import { FLEET_REASON_NONE_PRICED, NO_THRESHOLD, fleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
 
 export const AI_BUDGET_SUBJECT = "AI budget utilization";
 export const PAST_DELIVERIES_NOTE = "Past deliveries from the alert evaluator, newest first — a fire is history, never an open incident.";
@@ -56,18 +56,22 @@ export function fleetReading(b: Pick<AiBudgetUtilization, "fleet" | "windowHours
   if (s.status === "UNAVAILABLE" || s.pricedUsd === null) {
     return { kind: "unavailable", status: "UNAVAILABLE", reason: s.reason ?? FLEET_REASON_NONE_PRICED, qualifier: `${scope} · ${ESTIMATE_CAPTION}`, pct: null };
   }
+  // A 0 / unset threshold is NO threshold — never "0% of the $0 fleet alert threshold".
+  const share = (prefix: string) => s.thresholdSet
+    ? `${prefix}${pctText(s.utilisationPct)} of the ${fmtUsdWhole(f.thresholdUsd)} fleet alert threshold`
+    : NO_THRESHOLD;
   if (s.status === "PARTIAL") {
     const u = `${fmtCount(s.unpricedInvocations)} unpriced invocation${s.unpricedInvocations === 1 ? "" : "s"} not counted`;
     return {
       kind: "figure", status: "PARTIAL", pct: s.utilisationPct,
       value: `at least ${fmtUsd(s.pricedUsd)}`,
-      qualifier: `at least ${pctText(s.utilisationPct)} of the ${fmtUsdWhole(f.thresholdUsd)} fleet alert threshold · partial — ${u} · ${scope} · ${ESTIMATE_CAPTION}`,
+      qualifier: `${share("at least ")} · partial — ${u} · ${scope} · ${ESTIMATE_CAPTION}`,
     };
   }
   return {
     kind: "figure", status: "ESTIMATED", pct: s.utilisationPct,
     value: fmtUsd(s.pricedUsd),
-    qualifier: `${pctText(s.utilisationPct)} of the ${fmtUsdWhole(f.thresholdUsd)} fleet alert threshold · ${scope} · ${ESTIMATE_CAPTION}`,
+    qualifier: `${share("")} · ${scope} · ${ESTIMATE_CAPTION}`,
   };
 }
 
@@ -75,9 +79,10 @@ export function fmtUsdWhole(n: number): string {
   return `$${n}`;
 }
 
-/** "Threshold $10 / 24 h · alert enabled" */
+/** "Threshold $10 / 24 h · alert enabled"; a 0 / unset threshold is "No threshold set". */
 export function thresholdText(f: Pick<AiBudgetUtilization["fleet"], "thresholdUsd" | "alertEnabled">, windowHours: number): string {
-  return `Threshold ${fmtUsdWhole(f.thresholdUsd)} / ${windowHours} h · alert ${f.alertEnabled ? "enabled" : "disabled"}`;
+  const set = Number.isFinite(f.thresholdUsd) && f.thresholdUsd > 0;
+  return `${set ? `Threshold ${fmtUsdWhole(f.thresholdUsd)} / ${windowHours} h` : NO_THRESHOLD} · alert ${f.alertEnabled ? "enabled" : "disabled"}`;
 }
 
 /** The overhead line: harness and unattributed, never fleet. A null figure is said, never zeroed. */
@@ -111,11 +116,14 @@ export function sourceText(source: CustomerBudgetView["allowanceSource"]): strin
 }
 
 /** One customer row's two readings — today against the allowance, the rolling window against the alert threshold. */
-export function customerRowText(c: CustomerBudgetView, userAlertThresholdUsd: number): { today: string; todayPct: number; rolling: string; rollingPct: number } {
+export function customerRowText(c: CustomerBudgetView, userAlertThresholdUsd: number): { today: string; todayPct: number | null; rolling: string; rollingPct: number | null } {
+  // A $0 allowance / threshold has no share (pct() is null): say so, never "0% of $0".
+  const allowance = c.allowanceUtilizationPct === null ? "no allowance" : pctText(c.allowanceUtilizationPct);
+  const alert = c.alertUtilizationPct === null ? NO_THRESHOLD.toLowerCase() : pctText(c.alertUtilizationPct);
   return {
-    today: `${fmtUsd(c.todayUsd)} of ${fmtUsdWhole(c.allowanceUsd)} (${pctText(c.allowanceUtilizationPct)}, ${sourceText(c.allowanceSource)})`,
+    today: `${fmtUsd(c.todayUsd)} of ${fmtUsdWhole(c.allowanceUsd)} (${allowance}, ${sourceText(c.allowanceSource)})`,
     todayPct: c.allowanceUtilizationPct,
-    rolling: `${fmtUsd(c.rolling24hUsd)} vs ${fmtUsdWhole(userAlertThresholdUsd)} (${pctText(c.alertUtilizationPct)})`,
+    rolling: `${fmtUsd(c.rolling24hUsd)} vs ${fmtUsdWhole(userAlertThresholdUsd)} (${alert})`,
     rollingPct: c.alertUtilizationPct,
   };
 }

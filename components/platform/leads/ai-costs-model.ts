@@ -26,7 +26,8 @@
 import type { AiUsageTrend } from "@/lib/platform/ai/ai-usage";
 import type { AiOperations } from "@/lib/platform/ai/invocations";
 import type { AiBudgetUtilization, CustomerBudgetView } from "@/lib/platform/ai/cost-controls.types";
-import { FLEET_REASON_NO_CALLS, FLEET_REASON_NONE_PRICED, fleetSpendStatus, type FleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
+import { FLEET_REASON_NO_CALLS, FLEET_REASON_NONE_PRICED, NO_THRESHOLD, fleetSpendStatus, type FleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
+import type { ProvenanceKind } from "../ui/ProvenanceChip";
 import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/route";
 import type { ApiUsageResponse } from "@/app/api/platform/platform-ops/api-usage/route";
 import type { PlaidUsage } from "@/lib/platform/plaid/usage";
@@ -223,7 +224,11 @@ export interface BudgetMeter {
 
 export function budgetMeter(b: AiBudgetUtilization | null): BudgetMeter | null {
   if (!b) return null;
-  const s = fleetSpendStatus(b);
+  return budgetMeterOf(fleetSpendStatus(b));
+}
+
+/** The meter for a status already computed (the budget-calls drilldown's summary is the KPI's own status). */
+export function budgetMeterOf(s: FleetSpendStatus): BudgetMeter {
   const pct = s.utilisationPct;
   return {
     status: s,
@@ -242,29 +247,46 @@ const calls = (k: number) => `${n(k)} unpriced call${k === 1 ? "" : "s"}`;
  * The words for every budget tile, from the ONE status. ESTIMATED: "42%" of the
  * threshold, an estimate. PARTIAL: "≥ 42%", "at least $4.20", the unpriced count.
  * UNAVAILABLE: no figure and no percentage — the reason and the threshold, never
- * "$0" and never "Unknown of $10.00".
+ * "$0" and never "Unknown of $10.00". NO THRESHOLD (0 or unset): the spend as
+ * its status says, and "No threshold set" — never "0% of $0.00".
  */
-export function budgetTileText(m: BudgetMeter): { kpiValue: string; kpiSub: string; headline: string; detail: string; meterLabel: string } {
+export function budgetTileText(m: BudgetMeter): { kpiValue: string; kpiSub: string; headline: string; detail: string; meterLabel: string; provenance: ProvenanceKind } {
   const s = m.status;
+  const threshold = s.thresholdSet ? `threshold ${usd(s.thresholdUsd)} / ${s.windowHours} h` : `${NO_THRESHOLD.toLowerCase()} · ${s.windowHours} h`;
   const of = `of ${usd(s.thresholdUsd)} · ${s.windowHours} h`;
-  if (s.status === "UNAVAILABLE" || s.pricedUsd === null || s.utilisationPct === null) {
+  if (s.status === "UNAVAILABLE" || s.pricedUsd === null) {
     const why = s.reason ?? FLEET_REASON_NONE_PRICED;
     return {
       kpiValue: "—",
       kpiSub: `unavailable · ${why === FLEET_REASON_NO_CALLS ? "no calls" : `${calls(s.unpricedInvocations || s.invocations)}, none priced`} · ${s.windowHours} h`,
       headline: "Unavailable",
-      detail: `${why} · threshold ${usd(s.thresholdUsd)} / ${s.windowHours} h`,
+      detail: `${why} · ${threshold}`,
       meterLabel: "Fleet AI budget used",
+      provenance: "UNAVAILABLE",
+    };
+  }
+  const partial = s.status === "PARTIAL";
+  const figure = `${partial ? "at least " : ""}${usd(s.pricedUsd)}`;
+  const tail = partial ? `partial · ${calls(s.unpricedInvocations)}` : "estimated";
+  if (!s.thresholdSet || s.utilisationPct === null) {
+    return {
+      kpiValue: figure.replace("at least ", "≥"),
+      kpiSub: `${NO_THRESHOLD.toLowerCase()} · ${s.windowHours} h · ${tail}`,
+      headline: NO_THRESHOLD,
+      detail: `${figure} · ${s.windowHours} h · ${tail}${partial ? " not counted" : ""}`,
+      meterLabel: "Fleet AI budget used — no threshold set",
+      provenance: "ESTIMATED",
     };
   }
   const p = `${Math.round(s.utilisationPct)}%`;
-  if (s.status === "PARTIAL") {
+  if (partial) {
     return {
       kpiValue: `≥${p}`,
       kpiSub: `partial · at least ${usd(s.pricedUsd)} ${of} · ${calls(s.unpricedInvocations)}`,
       headline: `≥${p}`,
       detail: `at least ${usd(s.pricedUsd)} ${of} · partial · ${calls(s.unpricedInvocations)} not counted`,
       meterLabel: "Fleet AI budget used — at least, partial estimate",
+      provenance: "ESTIMATED",
     };
   }
   return {
@@ -273,6 +295,7 @@ export function budgetTileText(m: BudgetMeter): { kpiValue: string; kpiSub: stri
     headline: p,
     detail: `${usd(s.pricedUsd)} ${of} · estimated`,
     meterLabel: "Fleet AI budget used",
+    provenance: "ESTIMATED",
   };
 }
 
