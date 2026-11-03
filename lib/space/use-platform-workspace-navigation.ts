@@ -45,6 +45,16 @@
  *     (`resolvePlatformViewId`, shared with the server's first paint);
  *   • a retired workspace id that became a view (`?workspace=platform-jobs`)
  *     opens that view and canonicalizes in place.
+ *
+ * WORKSPACE-SCOPED FILTERS (PB-4, S2 ruling 2026-11-02) — a param that belongs
+ * to ONE workspace's content (Customer Success's `?attention=`) is DELETED by a
+ * user workspace switch, in the SAME write that changes `?workspace=` (one
+ * commit carrying both keys, with the switch's declared intent). A filter set in
+ * Customers therefore never silently re-applies when the operator comes back
+ * later from another workspace. Hydration and Back/Forward never strip it:
+ * returning to the entry that had it restores it, as any history entry is
+ * restored (and React StrictMode's double mount is irrelevant — nothing is
+ * cleared on unmount).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -63,6 +73,9 @@ export const PLATFORM_WORKSPACE_PARAM = "workspace";
 
 /** The Space-scoped param carrying the open view of that workspace (non-default only). */
 export const PLATFORM_VIEW_PARAM = "view";
+
+/** Params scoped to one workspace's content, deleted by a user workspace switch (see the header). */
+export const PLATFORM_WORKSPACE_SCOPED_PARAMS: readonly string[] = ["attention"];
 
 /**
  * The Platform default workspace id. Mirrors the server resolver's default
@@ -131,6 +144,8 @@ export function usePlatformWorkspaceNavigation({
 
   // ── HISTORY INTENT — declared by the entry point, never inferred ────────────
   const historyIntent = useRef<"push" | "replace">("replace");
+  /** The workspace the URL last carried — a USER switch away from it clears the workspace-scoped params. */
+  const committedTab = useRef<string | null>(null);
 
   // First paint = the server's resolution of the same URL, so hydration never
   // diverges; everything after mount is URL-driven.
@@ -189,10 +204,14 @@ export function usePlatformWorkspaceNavigation({
     const history = historyIntent.current;
     historyIntent.current = "replace";
     const defaultView = viewIds[state.tab]?.[0] ?? null;
+    // A USER switch (declared PUSH) to another workspace — never hydration or Back/Forward (REPLACE / no write).
+    const switched = history === "push" && committedTab.current !== null && committedTab.current !== state.tab;
+    committedTab.current = state.tab;
     spaceUrl.commit(
       {
         [PLATFORM_WORKSPACE_PARAM]: state.tab === PLATFORM_DEFAULT_WORKSPACE_ID ? null : state.tab,
         [PLATFORM_VIEW_PARAM]: state.view && state.view !== defaultView ? state.view : null,
+        ...(switched ? Object.fromEntries(PLATFORM_WORKSPACE_SCOPED_PARAMS.map((k) => [k, null])) : {}),
       },
       { history },
     );

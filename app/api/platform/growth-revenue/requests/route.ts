@@ -26,6 +26,14 @@
  * operator verdict. Identity-free (no IP, user agent or digest leaves the
  * reader). If the risk read fails the queue still answers, without `risk`
  * and with a note — the signals never gate the queue.
+ *
+ * PB-6 (2026-11-02) — THE STATUS VIEW. With `?view=PENDING|APPROVED|DENIED|
+ * REDEEMED|ALL` (optional `verdict=SUSPICIOUS`, `page`, `pageSize` ≤ 100) the
+ * same READ gate answers a server-paged BetaRequestListResponse instead
+ * (lib/platform/growth/beta-request-list.ts): every request by status, each
+ * with its latest verdict and whether it currently causes a block — derived
+ * from the blocklist's sourceRequestId link, never an HMAC or a key. Without
+ * `view` the response is the queue above, unchanged. A malformed query is 400.
  */
 
 import { NextResponse } from "next/server";
@@ -37,6 +45,8 @@ import type { AcquisitionSource } from "@/lib/marketing/acquisition";
 import { loadBetaRisk } from "@/lib/platform/growth/beta-risk";
 import type { BetaRequestRisk } from "@/lib/platform/growth/beta-risk-types";
 import { approvalEligibility } from "@/lib/platform/growth/bulk-approve.core";
+import { listBetaRequests } from "@/lib/platform/growth/beta-request-list";
+import { parseBetaRequestListQuery, type BetaRequestListResponse } from "@/lib/platform/growth/beta-request-list-types";
 
 export const runtime = "nodejs";
 
@@ -90,9 +100,18 @@ export interface BetaRequestsResponse {
   riskNotes?:  string[];
 }
 
-export async function GET() {
+export async function GET(req?: Request) {
   const [, err] = await requirePlatformAccess("GROWTH_REVENUE", "READ");
   if (err) return err;
+
+  // PB-6 — the status view (gate first; the legacy queue when `view` is absent).
+  const params = req ? new URL(req.url).searchParams : null;
+  if (params?.has("view")) {
+    const parsed = parseBetaRequestListQuery(params);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400, headers: { "Cache-Control": "no-store" } });
+    const list = await listBetaRequests(parsed.query);
+    return NextResponse.json(list satisfies BetaRequestListResponse, { headers: { "Cache-Control": "no-store" } });
+  }
 
   const now = new Date();
   const [pending, invitations, pendingCount, approvedCount, deniedCount, redeemedCount] = await Promise.all([

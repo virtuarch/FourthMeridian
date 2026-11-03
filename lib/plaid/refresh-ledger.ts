@@ -103,6 +103,7 @@ import type {
   RefreshExecutionStartData,
 } from "@/lib/plaid/refresh-execution";
 import type { SyncIssueInput } from "@/lib/plaid/syncIssues";
+import { STALE_EXECUTION_ERROR_SUMMARY } from "@/lib/plaid/stale-execution.core";
 
 // ── The provider-call row ────────────────────────────────────────────────────
 //
@@ -344,6 +345,13 @@ export interface LedgerRecorder {
 export interface LedgerHandle {
   /** Minted by `open()`. Read-only. Nothing can be written under another id. */
   readonly executionId: string;
+  /**
+   * PB-1 S1 — this execution's run id (the correlator the incident authority
+   * resolves to `refreshExecutionId`) and whether its completion write has run.
+   * Read by the facade's ambient adoption; optional so test doors need not care.
+   */
+  readonly runId?: string;
+  readonly closed?: boolean;
 
   /** The immutable per-stage results, flushed once at completion. */
   recordStages(rows: readonly Omit<RefreshEndpointResultData, "refreshExecutionId">[]): Promise<void>;
@@ -561,8 +569,11 @@ export function ledgerRecorderFor(
   };
 
   function makeHandle(executionId: string, runId: string): LedgerHandle {
+    let closed = false;
     const handle: LedgerHandle = {
       executionId,
+      runId,
+      get closed() { return closed; },
       degradations,
 
       async recordStages(rows) {
@@ -650,6 +661,10 @@ export function ledgerRecorderFor(
       },
 
       async close(data) {
+        // Closed from the first instant of the completion write: an observation
+        // racing it (a fire-and-forget producer) is left uncorrelated rather
+        // than attributed to an execution that is already finishing.
+        closed = true;
         try {
           await client.refreshExecution.update({ where: { id: executionId }, data });
         } catch (err) {
@@ -711,9 +726,12 @@ export function activeLedger(): LedgerHandle | null {
 export const REFRESH_EXECUTION_MAX_DURATION_MS = 300_000;
 /** Margin past it before an open row is called dead (clock skew, a slow completion write). */
 export const STALE_EXECUTION_MARGIN_MS = 300_000;
-/** The errorSummary a reaped row carries — the JobRun finaliser's vocabulary word, with its reason. */
-export const STALE_EXECUTION_ERROR_SUMMARY =
-  "stale: no completion was recorded within the function's maximum duration (the process ended mid-run)";
+/**
+ * The errorSummary a reaped row carries — the JobRun finaliser's vocabulary word, with its reason.
+ * PB-7: defined in the pure stale-execution.core.ts so the readers that must
+ * recognise a reaped row (lib/platform/refresh/recovery-core.ts) need not import this door.
+ */
+export { STALE_EXECUTION_ERROR_SUMMARY };
 
 /** Rows reaped per sweep at most (the backlog drains over successive wakes). */
 export const STALE_EXECUTION_REAP_LIMIT = 200;
