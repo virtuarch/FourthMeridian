@@ -635,3 +635,53 @@ These are binding before S2, S6, S7 and the §10 dry run.
 3. **Cost observability (post-B9 item, linked to S5; not a B-batch blocker).** The out-of-envelope `investmentsTransactionsGet` is a paid Plaid request with **no ProviderCall row**. It is invisible to per-execution cost attribution and to provider-health readers. During S5:
    - confirm it sits behind sync-banks' per-item billable gate (B4/5 showed no skips, so probably gated upstream);
    - confirm that bringing it into an envelope does not double-count against any per-item Plaid budget.
+
+## 13. Phase-2 parity harness — cutover gate (Session 2, 2026-11-03) — PROPOSED
+
+**Purpose.** No reader is switched to the Phase-2 incident-intelligence module until a harness shows, on one shared fixture world, that the module reproduces each of today's six readers **or** that every difference is a listed, owner-approved correction. Test-only code; no runtime or schema change.
+
+### 13.1 The readers under test (mapped on `develop`, 2026-11-03)
+
+| # | Reader | Entry | Kind |
+|---|---|---|---|
+| R1 | CS incidents panel | `projectIncidents` — `lib/platform/customer/customer-core.ts` | pure |
+| R2 | CS detail loader | `getCustomerDetail` — `lib/platform/customer/customer-detail.ts` | I/O (feeds R1) |
+| R3 | Convergence | `realReaders().syncIssues` + `syncIssueParticipant` + `correlateEpisodes` — `lib/platform/convergence/` | I/O + pure |
+| R4 | Canonical projection | `getActiveIncidentPage` / `referentExistence` / `episodeStateOf` — `lib/platform/incidents/` | I/O + pure |
+| R5 | Alerts | `foldSyncIncidents` + `evaluateSyncIncidentCritical` — `lib/alerts/` | pure over R4 |
+| R6 | Attention (Ops + CS) | `incidentItems` (`lib/platform/ops/attention-core.ts`), `loadAttention`/`foldAttention` (`lib/platform/customer/`) | pure over R4 |
+
+R4–R6 already share one active set; the parity risk is concentrated in **R1/R2** and **R3**.
+
+### 13.2 Known divergences the harness must classify (each needs a decision before cutover)
+
+| ID | Divergence today | Proposed canonical rule |
+|---|---|---|
+| D1 | R1/R2 treat raw `resolved = false` as open, so evidence (`REMOVED_TOMBSTONE`), superseded and orphaned rows count as open in the CS panel; R4–R6 use derived `active`. | Derived `active` everywhere (fixes the CS panel). |
+| D2 | Orphan rule: R4 checks the account when `financialAccountId` is set (else the item); R3 uses item-OR-account; neither honours `deletedAt`. | One referent rule in the module; soft-deleted referents count as removed (feeds SUBJECT_REMOVED). |
+| D3 | R3 omits `plaidTransactionId`, so `UPSERT_ERROR`/`MISSING_ACCOUNT` can classify to a different domain/severity than R4. | Classification always receives the full fact set. |
+| D4 | Customer attribution: R2 = item→user + live AccountConnection; CS attention = item→user else `ownerUserId ?? createdByUserId`. A manual-account incident appears in CS attention but not the CS panel. | One attribution rule, recorded as `subjectUserId` at observation (Phase 1). |
+| D5 | Caps and truncation: R2 50 (no flag); R4 200; Ops 200/20; CS attention 1000; R3 none. | Module returns explicit `truncated`/floor with every list. |
+| D6 | Window: R3 sees only rows **created** in its 14-day window, so a long-active incident is invisible to convergence. | Active incidents included regardless of creation date. |
+| D7 | Time basis differs (`createdAt` vs `lastOccurredAt` vs `firstOccurredAt`). | `firstOccurredAt` = since; `lastOccurredAt` = ordering/recency. |
+| D8 | Grouping: alerts by item; R3 by item/account/provider + runId; others per row; none by `incidentKey`. | Episode identity = `incidentKey` (+ `previousIncidentId` recurrence); alert dedupe keeps per-item grouping. |
+| D9 | Severity: alerts critical-only; Ops 1:1; R3 three outcomes; CS none. | Module emits severity; each consumer keeps its own filter (a consumer concern, not a divergence). |
+
+### 13.3 Harness design
+
+1. **One fixture world**, seeded into the existing in-memory `FakePrisma` (so the real I/O loaders R2/R3/R4/`loadAttention` run unmodified), covering the matrix:
+   - nature: condition / evidence (tombstone) / superseded (`BALANCE_TX_MISMATCH` without `basis: "posted"`) / orphan;
+   - resolved: yes / no; referent: item live / item removed / account live / account soft-deleted / account hard-deleted / manual account with no AccountConnection;
+   - owner: item-owned / account `ownerUserId` / `createdByUserId` only;
+   - severity: critical / non-critical; with and without `plaidTransactionId`;
+   - recurrence: two episodes sharing `incidentKey` via `previousIncidentId`; `detail.runId` present / legacy;
+   - time: inside and outside the 14-day window, `createdAt ≠ firstOccurredAt ≠ lastOccurredAt`;
+   - volume: one population above each cap (50 / 200 / 1000) to exercise truncation.
+2. **Normalise** every reader's output to per-row verdicts `{ id, open, state, severity?, subjectUserId?, groupKey? }` (only the fields that reader actually expresses).
+3. **Compare** the Phase-2 module's verdicts against each reader's. A mismatch passes only if it is listed in an `ALLOWED_DIVERGENCES` table keyed `(readerId, D-id, rowId)` with the approved rule from §13.2. Unlisted mismatch ⇒ fail.
+4. **Metamorphic checks** on the module: input-order independence, idempotence (same facts ⇒ same output), cap/floor honesty, no `detail` or provider free text in any output, identity tier respected (Platform Ops output carries no `subjectUserId`).
+5. **Gate.** Cutover of a reader requires: zero unlisted mismatches for that reader, every allowed divergence owner-approved, and the reader's existing tests still green. Readers cut over one at a time; the harness stays in CI afterwards as a regression guard.
+
+### 13.4 Decisions requested (via Session 1)
+
+D1–D8 canonical rules as proposed above (D9 is not a divergence). D1 and D4 change what the Customer Success panel shows (fewer false "open" incidents; manual-account incidents become visible), so they are owner-visible behaviour changes.
