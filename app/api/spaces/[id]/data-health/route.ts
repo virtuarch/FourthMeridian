@@ -14,6 +14,7 @@ import { withApiHandler } from "@/lib/api";
 import { withTenantDb } from "@/lib/db/tenant-context";
 import { loadSpaceDataHealth } from "@/lib/connections/space-data-health";
 import { loadValuationCoverage } from "@/lib/connections/valuation-coverage";
+import { loadBalanceCoverage } from "@/lib/connections/balance-coverage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,10 +30,13 @@ export const GET = withApiHandler(async (
   if (err) return err;
   const viewerUserId = auth.user.id;
 
-  const [health, valuationCoverage] = await withTenantDb(viewerUserId, (tx) => Promise.all([
+  const [health, valuationCoverage, balanceCoverage] = await withTenantDb(viewerUserId, (tx) => Promise.all([
     loadSpaceDataHealth(tx, { spaceId, viewerUserId, now: new Date() }),
     // Why the Net Worth history starts where it does when PRICES (not balances) bound it.
     loadValuationCoverage(tx, spaceId),
+    // PB-8 — before which date debt / cash history is PARTIAL (an account's balance
+    // history floor), so a missing liability is never read as $0 owed. Dates + counts only.
+    loadBalanceCoverage(tx, spaceId),
   ]));
-  return NextResponse.json({ sources: health.sources, valuationCoverage }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ sources: health.sources, balanceCoverage, valuationCoverage }, { headers: { "Cache-Control": "no-store" } });
 }, "GET /api/spaces/[id]/data-health");
