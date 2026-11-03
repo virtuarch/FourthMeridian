@@ -161,8 +161,16 @@ export async function loadAttemptEvidence(
       return;
     }
     for (const n of group) {
-      const hit = latest.find((x) => ("item" in n.subject ? x.plaidItemId === n.subject.item : x.sourceRef === n.subject.account));
-      out.set(n.id, { known: true, lastAttemptAt: hit?.lastAttemptAt ?? null, lastSkipAt: hit?.lastSkipAt ?? null, basis: "read" });
+      // groupBy keys on the (plaidItemId, sourceRef) PAIR, so one subject can own several rows:
+      // take the max over ALL of them. Then apply THIS row's `since` — the read used the group's
+      // earliest one — and a `_max` not after it means nothing after it exists.
+      const mine = latest.filter((x) => ("item" in n.subject ? x.plaidItemId === n.subject.item : x.sourceRef === n.subject.account));
+      const maxOf = (pick: (x: (typeof latest)[number]) => Date | null): Date | null => {
+        let best: Date | null = null;
+        for (const x of mine) { const t = pick(x); if (t && (!best || t > best)) best = t; }
+        return best && best.getTime() > n.since.getTime() ? best : null;
+      };
+      out.set(n.id, { known: true, lastAttemptAt: maxOf((x) => x.lastAttemptAt), lastSkipAt: maxOf((x) => x.lastSkipAt), basis: "read" });
     }
   }));
   return out;

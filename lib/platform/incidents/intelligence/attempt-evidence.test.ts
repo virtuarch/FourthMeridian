@@ -54,7 +54,7 @@ function reader(latest: Latest | Error) {
 function verdictOf(r: IncidentRowFacts, attempts: Map<string, import("./types").AttemptEvidence>) {
   const facts: IncidentFacts = {
     rows: [r],
-    subjects: { items: new Map(), accounts: new Map([["wallet_1", { deletedAt: null, ownerUserId: "u_1", createdByUserId: "u_1" }]]) },
+    subjects: { items: new Map(), accounts: new Map(["wallet_1", "wallet_a", "wallet_b"].map((id) => [id, { deletedAt: null, ownerUserId: "u_1", createdByUserId: "u_1" }] as const)) },
     attempts, scanTruncated: false,
   };
   return deriveIncidentVerdicts(facts, { now: NOW, audience: "PLATFORM_OPS" }).all[0];
@@ -134,6 +134,33 @@ async function main() {
       calls.length === 2 && calls.some((c) => c.plaidItemIds.join() === "item_1" && c.endpoints.join() === "TRANSACTIONS")
       && calls.some((c) => c.sourceRefs.join() === "wallet_1" && c.endpoints.join() === "WALLET_SYNC"), calls);
     check("the Plaid row reads its item's attempt", ev.get("p_tx")?.lastAttemptAt?.getTime() === ago(3).getTime());
+  }
+
+  console.log("per-row `since` survives grouping; the max wins over every group row");
+  {
+    // Same endpoint set ⇒ one read using the EARLIER since (B's); A's own since is later.
+    const a = row("a_late", { financialAccountId: "wallet_a", incidentKey: "v1::WALLET::account:wallet_a::wallet::balance", lastOccurredAt: ago(10) });
+    const b = row("b_early", { financialAccountId: "wallet_b", incidentKey: "v1::WALLET::account:wallet_b::wallet::balance", lastOccurredAt: ago(20) });
+    const { client, calls } = reader([
+      // An attempt on A's wallet BETWEEN the two failures: after B's since, before A's.
+      { plaidItemId: null, sourceRef: "wallet_a", lastAttemptAt: ago(15), lastSkipAt: ago(15) },
+      { plaidItemId: null, sourceRef: "wallet_b", lastAttemptAt: null, lastSkipAt: null },
+    ]);
+    const ev = await loadAttemptEvidence([a, b], client, NOW);
+    check("one read for the group, from the earliest since", calls.length === 1 && calls[0].after.getTime() === ago(20).getTime());
+    check("an attempt before A's own failure is NOT 'attempted since' for A ⇒ stale", ev.get("a_late")?.lastAttemptAt === null && ev.get("a_late")?.lastSkipAt === null
+      && verdictOf(a, ev).state === "stale-unverified", ev.get("a_late"));
+  }
+  {
+    // One Plaid item, two group rows (sourceRef null and set): the later attempt is in the SECOND row.
+    const p = row("p_two", { provider: "PLAID", kind: "UPSERT_ERROR", plaidItemId: "item_9", financialAccountId: null, incidentKey: null, lastOccurredAt: ago(20) });
+    const { client } = reader([
+      { plaidItemId: "item_9", sourceRef: null, lastAttemptAt: ago(12), lastSkipAt: ago(3) },
+      { plaidItemId: "item_9", sourceRef: "ref_x", lastAttemptAt: ago(2), lastSkipAt: ago(18) },
+    ]);
+    const e = (await loadAttemptEvidence([p], client, NOW)).get("p_two");
+    check("the latest attempt and the latest skip are each the max over every row for the subject",
+      e?.lastAttemptAt?.getTime() === ago(2).getTime() && e?.lastSkipAt?.getTime() === ago(3).getTime(), e);
   }
 
   if (failures) { console.error(`\nattempt-evidence.test: ${failures} failure(s).`); process.exit(1); }
