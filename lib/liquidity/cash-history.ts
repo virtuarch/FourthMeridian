@@ -35,14 +35,33 @@ import type { ConversionContext } from "@/lib/money/types";
 import type { Snapshot } from "@/types";
 
 /**
- * FIN-005 part 1 — what a cash-history series SUMS. Today there is one basis:
- * `ALL_CASH`, every checking + savings balance the snapshot stored, RESTRICTED
- * cash (HSA, retirement cash) included. It is NOT "Available now"
- * (`classifyAccounts.totalLiquid`, restricted excluded), and no surface may draw
- * or narrate it as if it were. Part 2 (a `SpaceSnapshot.restrictedCash` column +
- * backfill) adds the unrestricted basis; until then this is the honest label.
+ * FIN-005 — what a cash-history series SUMS.
+ *
+ *   ALL_CASH      every checking + savings balance the snapshot stored, RESTRICTED
+ *                 cash (HSA, retirement) included. NOT "Available now", and no
+ *                 surface may draw or narrate it as if it were.
+ *   UNRESTRICTED  (FIN-E part 2) checking + savings − `restrictedCash` — the
+ *                 "Available now" basis (`classifyAccounts.totalLiquid`). Used
+ *                 ONLY when EVERY point in the window carries a recorded
+ *                 `restrictedCash`; one unrecorded row keeps the whole window
+ *                 ALL_CASH (never stitched — `cashHistoryBasisOf`).
  */
-export type CashHistoryBasis = "ALL_CASH";
+export type CashHistoryBasis = "ALL_CASH" | "UNRESTRICTED";
+
+/**
+ * FIN-E part 2 — THE basis decision for a set of snapshot rows: UNRESTRICTED only
+ * when every row RECORDED its restricted share; any row without it (null at rest
+ * ⇒ absent on the DTO) keeps the set ALL_CASH. Empty ⇒ ALL_CASH (nothing proven).
+ */
+export function cashHistoryBasisOf(rows: readonly { restrictedCash?: number | null }[]): CashHistoryBasis {
+  return rows.length > 0 && rows.every((r) => typeof r.restrictedCash === "number" && Number.isFinite(r.restrictedCash))
+    ? "UNRESTRICTED" : "ALL_CASH";
+}
+
+/** One row's cash on a basis: all cash, or all cash minus its RECORDED restricted share. */
+export function cashOnBasis(s: { totalCash: number; totalSavings: number; restrictedCash?: number | null }, basis: CashHistoryBasis): number {
+  return basis === "UNRESTRICTED" ? s.totalCash + s.totalSavings - (s.restrictedCash as number) : s.totalCash + s.totalSavings;
+}
 
 /** The ONE presentation of each basis — chart title / legend and its basis note. */
 export const CASH_HISTORY_BASIS_PRESENTATION: Record<CashHistoryBasis, { label: string; note: string }> = {
@@ -51,6 +70,11 @@ export const CASH_HISTORY_BASIS_PRESENTATION: Record<CashHistoryBasis, { label: 
     note:
       "History counts all checking and savings, including restricted cash such as HSA and retirement cash. " +
       "“Available now” excludes restricted cash, so the two are not the same measure.",
+  },
+  UNRESTRICTED: {
+    label: "Cash excl. restricted",
+    note:
+      "History excludes restricted cash such as HSA and retirement cash, the same accounts “Available now” leaves out.",
   },
 };
 
@@ -70,6 +94,11 @@ export function allCashChangeComparableToCurrent(totalRestrictedCash: number | n
 export const ALL_CASH_CHANGE_WITHHELD_MESSAGE =
   "Change unavailable: cash history includes restricted cash (HSA, retirement), while the current liquid figure excludes it";
 
+/** FIN-E part 2 — the note when every historical row recorded its restricted share (UNRESTRICTED basis). */
+export const UNRESTRICTED_HISTORY_AI_NOTE =
+  "Historical `liquid` and `netLiquid` EXCLUDE restricted cash (HSA, retirement): every point recorded its restricted share, so they are " +
+  "on the same basis as current unrestricted liquid (accounts `totalLiquid`).";
+
 /** The note the AI snapshot section carries beside its historical `liquid` / `netLiquid`. */
 export const ALL_CASH_HISTORY_AI_NOTE =
   "Historical `liquid` and `netLiquid` are ALL_CASH: every checking + savings balance INCLUDING restricted cash (HSA, retirement). " +
@@ -79,7 +108,7 @@ export const ALL_CASH_HISTORY_AI_NOTE =
 /** One clipped point — the cashNow (checking + savings) projection of a Snapshot. */
 export interface CashHistoryPoint {
   date: string;
-  /** totalCash (checking) + totalSavings (savings) — ALL cash, restricted included (FIN-005). */
+  /** totalCash + totalSavings on the slice's `basis`: ALL cash, or minus the recorded restricted share (FIN-E). */
   cashNow: number;
   /** True for a reconstructed/backfilled row (Snapshot.isEstimated). */
   isEstimated: boolean;
@@ -118,14 +147,16 @@ export function clipCashHistory(
   compareTo: string | null,
   currency: string,
 ): CashHistorySlice | null {
-  const points: CashHistoryPoint[] = snapshots
+  const rows = snapshots
     .filter((s) => typeof s.totalCash === "number" && typeof s.totalSavings === "number" && s.fxMiss !== true)
     .filter((s) => s.date <= asOf && (compareTo === null || s.date >= compareTo))
-    .sort((a, b) => (a.date < b.date ? -1 : 1))
-    .map((s) => ({ date: s.date, cashNow: s.totalCash + s.totalSavings, isEstimated: s.isEstimated === true }));
-
-  if (points.length === 0) return null;
-  return { points, basis: "ALL_CASH", currency, windowStart: compareTo, windowAsOf: asOf };
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+  if (rows.length === 0) return null;
+  // FIN-E part 2 — the basis is decided over the WINDOW's rows, once: never per point.
+  const basis = cashHistoryBasisOf(rows);
+  const points: CashHistoryPoint[] = rows
+    .map((s) => ({ date: s.date, cashNow: cashOnBasis(s, basis), isEstimated: s.isEstimated === true }));
+  return { points, basis, currency, windowStart: compareTo, windowAsOf: asOf };
 }
 
 /**

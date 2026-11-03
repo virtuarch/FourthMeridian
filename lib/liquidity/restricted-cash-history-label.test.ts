@@ -75,7 +75,10 @@ const SNAPS = DAYS.map(snap);
   assert.ok(/tracks all cash, including restricted cash this figure excludes/.test(withRestricted), "…and the reason is said");
   assert.ok(/975/.test(hero(false)), "no restricted cash ⇒ the delta renders as before");
   const ws = src("../../components/space/widgets/liquidity/LiquidityWorkspace.tsx");
-  assert.ok(/\|\| !allCashChangeComparableToCurrent\(classification\.totalRestrictedCash\)/.test(ws), "the workspace defers the delta on restricted cash");
+  // FIN-E part 2 — re-pinned: deferred on restricted cash while the series is ALL_CASH
+  // (an UNRESTRICTED window is on the headline's basis).
+  assert.ok(/const allCashDeltaMismatch = \(cashHistory\?\.basis \?\? "ALL_CASH"\) === "ALL_CASH"\s*&& !allCashChangeComparableToCurrent\(classification\.totalRestrictedCash\);/.test(ws)
+    && /\|\| allCashDeltaMismatch\}/.test(ws), "the workspace defers the delta on restricted cash");
   ok("§2 hero: all-cash delta withheld with a reason whenever restricted cash exists");
 }
 

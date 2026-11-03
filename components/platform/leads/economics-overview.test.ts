@@ -93,7 +93,7 @@ for (const k of ECONOMICS_FIGURES) {
     check(`${k}: no records ⇒ not a button`, !new RegExp(`<button[^>]*data-econ-tile="${k}"`).test(html));
   }
 }
-check("every drillable cycle figure renders as a button", Object.keys(DRILLABLE).every((k) => new RegExp(`<button[^>]*data-econ-tile="${k}"`).test(html)));
+check("every drillable Overview figure renders as a button", Object.keys(DRILLABLE).filter((k) => (ECONOMICS_FIGURES as readonly string[]).includes(k)).every((k) => new RegExp(`<button[^>]*data-econ-tile="${k}"`).test(html)));
 check("the trend window figure opens its own records", /<button[^>]*data-econ-tile="ai_cost\.30d"/.test(html));
 check("revenue + margin: 'Unavailable' and 'no billing source', status chip Unavailable",
   /data-econ-value="revenue">Unavailable</.test(html) && /data-econ-value="margin">Unavailable</.test(html) && text.split(REASON_NO_BILLING).length - 1 >= 2);
@@ -110,7 +110,7 @@ check("loading / error states say so (no figures)", /Reading economics/.test(loa
 
 // ── 3. Drill body ─────────────────────────────────────────────────────────────
 console.log("3. drill body");
-for (const key of Object.keys(DRILLABLE) as (keyof typeof DRILLABLE)[]) {
+for (const key of Object.keys(DRILLABLE).filter((k) => (ECONOMICS_FIGURES as readonly string[]).includes(k)) as (typeof ECONOMICS_FIGURES)[number][]) {
   for (const w of DRILLABLE[key]!) {
     const d = buildEconomicsDrill(FULL, key, w);
     const kpi = w === "cycle" ? snap.figures[key] : snap.trend.windows[w as "7d"];

@@ -73,6 +73,8 @@ import { PipelineLead } from "./leads/PipelineLead";
 import { ProvidersLead } from "./leads/ProvidersLead";
 import { AiCostsLead } from "./leads/AiCostsLead";
 import { EconomicsOverviewLead } from "./leads/EconomicsOverviewLead";
+import { EconomicsProvidersLead } from "./leads/EconomicsProvidersLead";
+import { EconomicsEntitlementsLead } from "./leads/EconomicsEntitlementsLead";
 import { GrowthLead } from "./leads/GrowthLead";
 import { SecurityLead } from "./leads/SecurityLead";
 import { CustomerSuccessLead } from "./leads/CustomerSuccessLead";
@@ -224,6 +226,8 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   "ai-costs": AiCostsLead,
   // Platform Economics › Overview (lib/platform/economics/snapshot.ts).
   "economics-overview": EconomicsOverviewLead,
+  "economics-providers": EconomicsProvidersLead,
+  "economics-entitlements": EconomicsEntitlementsLead,
   policies:   PoliciesLead,
   growth:     GrowthLead,
   security:   SecurityLead,

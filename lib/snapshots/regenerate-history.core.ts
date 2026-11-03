@@ -49,7 +49,7 @@
  *    a date's data from its neighbours.
  */
 
-import { computeSnapshotFields, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
+import { computeSnapshotFields, snapshotRestrictedCash, type ClassifyTotals, type SnapshotFields } from "./backfill-core";
 import { worstTier } from "@/lib/perspective-engine/completeness";
 import {
   CRYPTO_MATERIALITY_EPSILON, type CryptoValuationStatus,
@@ -336,7 +336,28 @@ export interface DayRegenResult {
    * write nothing. Null on a skip.
    */
   fieldPatch: SnapshotFieldPatch | null;
+  /**
+   * FIN-E part 2 — the restricted share of this day's cash
+   * (`snapshotRestrictedCash(base)`), set ONLY when this run RECOMPUTED both
+   * cash and savings: a number, or NULL when the totals carry no split.
+   * UNDEFINED — "not this run's to write" — when the cash or savings component
+   * was PRESERVED (the stored row keeps its own restrictedCash, recorded or not:
+   * S2 review — a preserving write must never NULL a recorded value) and on
+   * every skip. Persisted only through `restrictedCashWriteData`.
+   */
+  restrictedCash?: number | null;
   reason: string;
+}
+
+/**
+ * FIN-E part 2 — THE write-data fragment for `SpaceSnapshot.restrictedCash`, used by
+ * BOTH the full-write upsert and the partial patch: the key is present only when
+ * this run recomputed the day's cash (`restrictedCash !== undefined`), so a
+ * preserving write leaves the stored value — recorded or a pre-column NULL —
+ * exactly as it was.
+ */
+export function restrictedCashWriteData(res: { restrictedCash?: number | null }): { restrictedCash?: number | null } {
+  return res.restrictedCash === undefined ? {} : { restrictedCash: res.restrictedCash };
 }
 
 /** Fields whose recomputed value differs from the stored one by more than a cent. */
@@ -602,6 +623,8 @@ export function regenerateDay(input: DayRegenInput): DayRegenResult {
     contributingComponentCount: refusedBy.has("stocks") ? null : (input.contributingComponentCount ?? null),
     totalComponentCount:        refusedBy.has("stocks") ? null : (input.totalComponentCount ?? null),
     cryptoValuationStatus: cryptoVerdict,
+    // Preserved cash/savings ⇒ UNDEFINED: the column is left untouched (never NULLed).
+    ...(refusedBy.has("cash") || refusedBy.has("savings") ? {} : { restrictedCash: snapshotRestrictedCash(base) }),
     reason: partial
       ? `PARTIAL: ${refusals.map((r) => `${r.component} preserved — ${r.reason}`).join(" | ")}` +
         (parts.length ? ` || rewritten: ${parts.join(" + ")}` : " || rewritten: cash/savings/debt from the posted ledger")

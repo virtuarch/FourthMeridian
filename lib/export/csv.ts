@@ -157,6 +157,9 @@ export function toSnapshotsCsv(rows: ExportSnapshot[]): string {
       total_debt:        r.totalDebt,
       total_cash:        r.totalCash,
       total_savings:     r.totalSavings,
+      // FIN-E part 2 — SpaceSnapshot.restrictedCash (HSA / retirement share of
+      // cash + savings). Empty = NOT RECORDED, deliberately distinct from 0.
+      restricted_cash:   typeof r.restrictedCash === "number" ? r.restrictedCash : "",
       total_investments: r.totalInvestments,
       total_crypto:      r.totalCrypto,
       cash_on_hand:      r.cashOnHand,
