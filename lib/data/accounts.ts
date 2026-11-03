@@ -251,8 +251,10 @@ export async function getAccountsWithVisibility(
    * disclosed as partial. The flag rides on the row at every tier that
    * discloses a balance — it describes that balance.
    */
-  const walletBalance = (columnBalance: number, accountId: string) =>
-    resolveWalletBalance(columnBalance, walletValueByAccount.get(accountId));
+  // FIN-A2 — an account whose balance was never observed is excluded by the
+  // same classification (`balanceObserved` rides on the included row).
+  const walletBalance = (columnBalance: number, accountId: string, balanceObserved?: boolean | null) =>
+    resolveWalletBalance(columnBalance, walletValueByAccount.get(accountId), balanceObserved);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return links.map((link: any) => {
@@ -308,7 +310,7 @@ export async function getAccountsWithVisibility(
           // W-M3a — a wallet's spine value is its balance, and BALANCE_ONLY
           // discloses balances. Passing the column here instead would have shown
           // this tier $0.00 for a wallet the FULL tier values correctly.
-          balance:     walletBalance(r.balance, r.id).balance,
+          balance:     walletBalance(r.balance, r.id, r.balanceObserved).balance,
           currency:    r.currency,
           lastUpdated: r.lastUpdated,
         },
@@ -323,7 +325,7 @@ export async function getAccountsWithVisibility(
           institution: "",              // redacted — institution is identifying
           balance:     safe.balance,
           // FM-AUDIT-022 — a fact about the balance this tier discloses.
-          ...(walletBalance(r.balance, r.id).valuationUnknown ? { valuationUnknown: true as const } : {}),
+          ...(walletBalance(r.balance, r.id, r.balanceObserved).valuationUnknown ? { valuationUnknown: true as const } : {}),
           currency:    safe.currency,
           lastUpdated: safe.lastUpdated,
           // v2.6-L1 — a timestamp about a balance this tier already discloses, so
@@ -392,7 +394,7 @@ export async function getAccountsWithVisibility(
       type:          r.type as Account["type"],
       institution:   r.institution,
       // FM-AUDIT-022 — `valuationUnknown` present only for an unvalued wallet.
-      ...walletBalance(r.balance, r.id),
+      ...walletBalance(r.balance, r.id, r.balanceObserved),
       currency:      r.currency,
       lastUpdated:   r.lastUpdated.toISOString(),
       balanceLastUpdatedAt: r.balanceLastUpdatedAt

@@ -85,6 +85,12 @@ export const OPERATION_KEYS = {
   // lib/plaid/exchange-collision.ts, never by exchangeToken.ts itself.
   "exchange-account-persist": "exchange-account-persist",
 
+  // ── New account with no observed balance (FIN-A2) ─────────────────────────
+  // The exchange created a FinancialAccount whose provider `current` was null.
+  // The row is excluded from every total until a balance is observed, which
+  // resolves the condition. Recorded by lib/plaid/exchange-balance-observation.ts.
+  "exchange-balance-unobserved": "exchange-balance-unobserved",
+
   // ── Account-FK re-parenting refused (RLS-ACC-FK) ───────────────────────────
   // Written when a provider identifier resolved an EXISTING row that belongs to
   // a DIFFERENT FinancialAccount, so updating it with this sync's fields would

@@ -52,6 +52,7 @@ export type SyncIssueDomain =
   | "imports"         // user file-import rollback repair
   | "wallet"          // on-chain wallet sync (BTC)
   | "reconciliation"  // balance↔transaction detector
+  | "balances"        // FIN-A2 — an account's balance was never observed
   | "unknown";        // unrecognised producer — fails LOUD, see classifySyncIssue
 
 export type SyncIssueSeverity = "critical" | "error" | "warning" | "info";
@@ -140,6 +141,8 @@ const STAGE_DOMAIN: Record<string, SyncIssueDomain> = {
   // collided on a unique provider identity. Account linking, not transaction
   // persistence; same non-actionable posture as reparenting-refused.
   "exchange-account-persist":     "transactions",
+  // FIN-A2 — a new account created with no observed balance (BALANCE_UNOBSERVED).
+  "exchange-balance-unobserved":  "balances",
   // lib/investments/*
   "opening-position-repair":      "investments",
   "investment-import-repair":     "investments",
@@ -234,6 +237,16 @@ export function classifySyncIssue(row: ClassifiableSyncIssue): SyncIssueClassifi
       // (chain or provider trouble). The three stay distinct INCIDENTS through
       // their operation keys, which is where that detail belongs.
       return { domain: "wallet", severity: "error", nature: "condition",
+               customerActionable: false, cursorBlocking: false };
+
+    case "BALANCE_UNOBSERVED":
+      // FIN-A2 — a NEW account was created at token exchange with no observed
+      // balance (Plaid `current` null). An open CONDITION, scoped to the account,
+      // closed by the first observed balance (resolveByAutomaticRecovery,
+      // domain "balances"). The account is excluded from every total meanwhile,
+      // so nothing is wrong in a figure — a value is missing. Not customer-
+      // actionable: the institution, not the member, withheld the balance.
+      return { domain: "balances", severity: "warning", nature: "condition",
                customerActionable: false, cursorBlocking: false };
 
     case "UPSERT_ERROR":
@@ -377,6 +390,7 @@ const DOMAIN_LABEL: Record<SyncIssueDomain, string> = {
   imports:        "Import rollback failed",
   wallet:         "Wallet sync failed",
   reconciliation: "Balance and transactions disagreed",
+  balances:       "Balance not yet observed",
   unknown:        "Unrecognised sync failure",
 };
 
@@ -386,6 +400,7 @@ const DOMAIN_DESCRIPTION: Record<SyncIssueDomain, string> = {
   imports:        "A member file import could not be fully rolled back, leaving its data partially applied.",
   wallet:         "On-chain wallet synchronisation did not complete.",
   reconciliation: "A reported balance did not agree with the transactions observed in one refresh window.",
+  balances:       "An account was connected without a balance from the provider. It is excluded from totals until one is observed.",
   unknown:        "This failure is not recognised by the semantic authority and needs classification.",
 };
 
@@ -488,6 +503,8 @@ const OPERATION_PHRASE: Record<OperationKey, string> = {
   "reparenting-refused":          "Confirming which account a transaction belongs to",
   "fingerprint-adoption-ambiguous": "Matching a synced transaction to an existing one",
   "exchange-account-persist":     "Linking a newly connected bank account",
+  // FIN-A2 — balances.
+  "exchange-balance-unobserved":  "Reading the balance of a newly connected account",
 
   // Investments — six operations that otherwise share one label.
   "investment-events-fetch":      "Retrieving investment activity",

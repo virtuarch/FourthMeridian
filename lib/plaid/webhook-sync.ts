@@ -127,6 +127,17 @@ export function shouldRunFollowUp(
   return first.followUp && !isFollowUp && trigger !== "RESUME" && first.elapsedMs <= FOLLOW_UP_MAX_FIRST_RUN_MS;
 }
 
+/**
+ * FIN-006 — does this trigger's deferred pipeline run the HOLDINGS stage? Only
+ * a WEBHOOK (TRANSACTIONS sync codes and HOLDINGS/DEFAULT_UPDATE alike — the
+ * balances it refreshes and the positions must agree). RECONNECT follows
+ * exchangeToken, which already synced holdings; RESUME continues an incomplete
+ * import and keeps its pipeline. Pure, pinned.
+ */
+export function deferredPipelineRunsHoldings(trigger: RefreshTrigger): boolean {
+  return trigger === "WEBHOOK";
+}
+
 /** The billable operation each trigger represents. */
 export function webhookSyncOperation(trigger: RefreshTrigger): BillableOperation {
   return trigger === "RESUME" ? "plaid_resume_sync" : trigger === "WEBHOOK" ? "plaid_webhook_sync" : "plaid_sync";
@@ -254,7 +265,7 @@ async function runLockedOnce(
 
         let ok = false;
         try {
-          ok = await runDeferredHistorySync(plaidItemId, recorder, runId);
+          ok = await runDeferredHistorySync(plaidItemId, recorder, runId, { holdings: deferredPipelineRunsHoldings(trigger) });
           return "ran";
         } finally {
           // Release the lock, and on a SUCCESSFUL run also clear syncIncompleteAt in the

@@ -490,17 +490,45 @@ export async function recordIncidentObservation(
 
 // ── Automatic resolution ─────────────────────────────────────────────────────
 
-export interface AutomaticRecoveryScope {
-  /** The connection whose work succeeded. */
-  plaidItemId: string;
-  /**
-   * The semantic scope that recovered. Only incidents whose own scope MATCHES
-   * are resolved — an investments stage succeeding says nothing about a held
-   * transaction page, and item health turning ACTIVE says nothing about either.
-   */
-  domain: "transactions";
-  /** The run that proved recovery. Null stays null; never invented. */
-  runId?: string | null;
+export type AutomaticRecoveryScope =
+  | {
+      /** The connection whose work succeeded. */
+      plaidItemId: string;
+      /**
+       * The semantic scope that recovered. Only incidents whose own scope MATCHES
+       * are resolved — an investments stage succeeding says nothing about a held
+       * transaction page, and item health turning ACTIVE says nothing about either.
+       */
+      domain: "transactions";
+      /** The run that proved recovery. Null stays null; never invented. */
+      runId?: string | null;
+    }
+  | {
+      /**
+       * FIN-A2 — the ACCOUNT whose first observed balance just landed. The proof
+       * is exactly that write, so the scope is the account, never its item: a
+       * balance on one account says nothing about another's.
+       */
+      financialAccountId: string;
+      domain: "balances";
+      runId?: string | null;
+    };
+
+/**
+ * Which unresolved candidates a success in `scope` actually proves. ONE rule
+ * per domain, derived from the semantics authority:
+ *   transactions  a held (cursor-blocking) transaction condition — a completed
+ *                 sync proves the held page replayed;
+ *   balances      the account's BALANCE_UNOBSERVED condition — an observed
+ *                 balance written for that account is the evidence.
+ */
+function provenByRecovery(
+  scope: AutomaticRecoveryScope,
+  cls: { nature: string; domain: string; cursorBlocking: boolean },
+  kind: string,
+): boolean {
+  if (cls.nature !== "condition" || cls.domain !== scope.domain) return false;
+  return scope.domain === "transactions" ? cls.cursorBlocking : kind === "BALANCE_UNOBSERVED";
 }
 
 /**
@@ -548,7 +576,9 @@ export async function resolveByAutomaticRecovery(
     const resolvingExecutionId = await resolveExecutionId(scope.runId, lookupExecutionId ?? getExecutionIdByRunId);
 
     const candidates = await client.syncIssue.findMany({
-      where: { plaidItemId: scope.plaidItemId, resolved: false },
+      where: scope.domain === "balances"
+        ? { financialAccountId: scope.financialAccountId, resolved: false }
+        : { plaidItemId: scope.plaidItemId, resolved: false },
       select: { id: true, kind: true, provider: true, detail: true, plaidTransactionId: true },
     });
 
@@ -560,7 +590,7 @@ export async function resolveByAutomaticRecovery(
         detail: c.detail,
         plaidTransactionId: c.plaidTransactionId,
       });
-      return cls.nature === "condition" && cls.domain === scope.domain && cls.cursorBlocking;
+      return provenByRecovery(scope, cls, c.kind);
     });
     if (matching.length === 0) return { resolved: 0, resolvingExecutionId };
 
@@ -602,7 +632,7 @@ export async function resolveByAutomaticRecovery(
     );
     if (count > 0) {
       console.log(
-        `[incidents] item ${scope.plaidItemId} — resolved ${count} ${scope.domain} incident(s) by automatic recovery` +
+        `[incidents] ${scope.domain === "balances" ? `account ${scope.financialAccountId}` : `item ${scope.plaidItemId}`} — resolved ${count} ${scope.domain} incident(s) by automatic recovery` +
           (resolvingExecutionId ? ` (execution ${resolvingExecutionId})` : " (no execution correlator)"),
       );
     }
