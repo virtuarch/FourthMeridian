@@ -26,6 +26,7 @@ decision, write a new ADR that supersedes the old one (note it at the top of bot
 | [ADR-005](./ADR-005-numeric-precision.md) | Money representation audit + Float→Decimal migration roadmap | — |
 | [ADR-006](./ADR-006-provider-abstraction-timing.md) | Introduce a provider-neutral abstraction from the *second* provider, not the first | [FINANCIAL_TRUTH_SPINE §12](../architecture/FINANCIAL_TRUTH_SPINE.md) |
 | [ADR-008](./ADR-008-documentation-lifecycle.md) | Documentation is update-first, indexed (`plans/INDEX.md`) and archived at release; evidence is never deleted | [docs/README.md](../README.md#documentation-lifecycle) |
+| [ADR-009](./ADR-009-transfer-resolution-local-matching.md) | Transfer resolution stays local and evidence-tiered; global/greedy matching, wider windows, persisted scores, chain inference, subset-sum, name routing and fee/FX tolerance are never implemented | [systems/transactions.md § Transfer resolution authority](../systems/transactions.md#transfer-resolution-authority) |
 
 Beyond the ADRs, the immutable **[PHASE_2_DECISION_MATRIX.md](./PHASE_2_DECISION_MATRIX.md)**
 records the D1–D14 Phase-2 decisions (duplicate-candidate handling, Connection
