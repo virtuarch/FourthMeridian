@@ -64,7 +64,12 @@ import { getRecentSnapshots } from '@/lib/data/snapshots';
 import type { ReadClient } from '@/lib/db/tenant-context';
 // v2.6-WINDOW-1 — imported from the PURE module, not through the server-only
 // read, so the projection below stays reachable from a probe.
-import { canonicalWindowChange, seriesSpanDays } from '@/lib/data/snapshot-window';
+import { canonicalWindowChange, seriesSpanDays, type CanonicalWindowChange } from '@/lib/data/snapshot-window';
+// PB-8c — the SAME floors and the SAME rule the client heroes use (PB-8b).
+import {
+  balanceCoverageNote, balanceCoveredFromISO, balanceCoverageSidesFor, gateWindowChange,
+  type BalanceCoverage,
+} from '@/lib/connections/balance-coverage.core';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
 import { FinanceDomains } from '@/lib/ai/types';
@@ -116,6 +121,11 @@ const CANONICAL_CHANGE_PRESET = "PAST_MONTH" as const;
 export function projectSnapshotSection(
   rows: Snapshot[],
   scopeHint: 'brief' | 'full',
+  /**
+   * PB-8c — the Space's balance-history floors (lib/connections/balance-coverage).
+   * Null / omitted ⇒ every change comparable (fail-open, byte-identical payload).
+   */
+  balanceCoverage: BalanceCoverage | null = null,
 ): SnapshotSectionData | null {
   const usable   = rows.filter((r) => !r.fxMiss);
   const excluded = rows.length - usable.length;
@@ -209,6 +219,32 @@ export function projectSnapshotSection(
   const liabilitiesSeries = points.map((p) => ({ date: new Date(p.date), value: p.liabilities }));
   const liabilitiesChange = canonicalWindowChange(liabilitiesSeries, CANONICAL_CHANGE_PRESET);
 
+  // PB-8c — neither change is ever measured across the balance-history floor.
+  // Before it, the stored series omits the accounts with no history that far
+  // back (a mortgage connected yesterday reads as $0 owed), so a window opening
+  // there measures those accounts ARRIVING. `changeComparability` (via
+  // `gateWindowChange`) withholds it: the figure becomes null and the REASON
+  // travels in its place, so the model says "history is partial before <date>"
+  // instead of "net worth fell $X". An endpoint that includes a held-flat debt
+  // keeps its figure, marked estimated. No coverage ⇒ untouched.
+  const estimatedOn = new Map(usable.map((r) => [r.date.slice(0, 10), r.isEstimated === true]));
+  const openingOf = (s: { date: Date }[], fromDate: string) =>
+    s.filter((p) => p.date.toISOString().slice(0, 10) <= fromDate).at(-1)?.date.toISOString().slice(0, 10) ?? null;
+  const gate = (c: CanonicalWindowChange | null, s: { date: Date }[], metric: 'netWorth' | 'totalLiabilities') => {
+    const openingISO = c ? openingOf(s, c.fromDate) : null;
+    return gateWindowChange<CanonicalWindowChange>(c, balanceCoverage, balanceCoverageSidesFor(metric), {
+      openingISO,
+      fromEstimated: openingISO ? estimatedOn.get(openingISO) : undefined,
+      toEstimated: c ? estimatedOn.get(c.toDate) : undefined,
+    });
+  };
+  const netWorthGate = gate(canonicalChange, series, 'netWorth');
+  const liabilitiesGate = gate(liabilitiesChange, liabilitiesSeries, 'totalLiabilities');
+  const coveredFrom = balanceCoveredFromISO(balanceCoverage, balanceCoverageSidesFor('netWorth'));
+  const partialNote = coveredFrom && oldest.date < coveredFrom
+    ? balanceCoverageNote(balanceCoverage, balanceCoverageSidesFor('netWorth'), oldest.date)
+    : null;
+
   return {
     // REVIEW-3 C-6 — the effective currency of these figures, from the newest
     // usable row's stamp (the canonical read boundary resolves it). Consumers
@@ -219,8 +255,14 @@ export function projectSnapshotSection(
       : {}),
     snapshotCount:    usable.length,
     spanDays,
-    canonicalChange,
-    liabilitiesChange,
+    canonicalChange:   netWorthGate.change,
+    ...(netWorthGate.withheld ? { canonicalChangeUnavailable: netWorthGate.withheld } : {}),
+    liabilitiesChange: liabilitiesGate.change,
+    ...(liabilitiesGate.withheld ? { liabilitiesChangeUnavailable: liabilitiesGate.withheld } : {}),
+    ...(coveredFrom && partialNote ? { partialHistory: {
+      before: coveredFrom,
+      note: `${partialNote} Never measure or state a change between a day before ${coveredFrom} and a later one.`,
+    } } : {}),
     oldestDate:       oldest.date,
     newestDate:       latest.date,
     latest,
@@ -244,13 +286,17 @@ async function assembleSnapshot(
   options:  AssemblerOptions,
 ): Promise<ContextDomainSection | null> {
   const { spaceId } = spaceCtx;
-  const { scopeHint = 'full' } = options;
+  const { scopeHint = 'full', balanceCoverage = null } = options;
   const assembledAt = new Date().toISOString();
 
   // Canonical, stamp-aware, bounded read (newest-last, ascending by date).
   const rows = await getRecentSnapshots(client, { rows: SNAPSHOT_HISTORY_LIMIT }, { spaceId });
+  // PB-8c — the balance-history floors arrive on `options`, read by the caller in
+  // a phase of its OWN (readBalanceCoverage, lib/ai/conversation/evidence.ts) —
+  // never on this client, where a failed statement would abort the shared
+  // transaction and take this domain (and a turn) down with it.
 
-  const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full');
+  const data = projectSnapshotSection(rows, scopeHint === 'brief' ? 'brief' : 'full', balanceCoverage);
   if (data === null) return null;
 
   return {

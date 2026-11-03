@@ -46,6 +46,7 @@ import type { WealthResult } from "@/lib/wealth/wealth-time-machine";
 import { formatWealthDate, wealthCompositionItems } from "@/lib/wealth/wealth-time-machine";
 import { Surface, Block } from "@/components/atlas/Surface";
 import { WealthUnavailable, formatSigned } from "./wealth-ui";
+import { gateForDriver, type WealthChangeGate } from "./wealth-change-gate";
 import type { WealthMetricKey } from "@/lib/wealth/wealth-mode";
 import {
   METRIC_COMPOSITION_REGIME,
@@ -72,6 +73,7 @@ export function WealthCompositionCard({
   accounts = [],
   ctx,
   metric = "netWorth",
+  changeGate = null,
 }: {
   result:    WealthResult;
   currency:  string;
@@ -80,12 +82,19 @@ export function WealthCompositionCard({
   ctx?:      ConversionContext;
   /** Selected wealth metric — drives which composition REGIME renders. */
   metric?:   WealthMetricKey;
+  /** PB-8b — per-series change verdicts; a cash / debt chip whose change crosses
+   *  a balance-history floor is not shown. Absent ⇒ every chip as before. */
+  changeGate?: WealthChangeGate | null;
 }) {
   const [mode, setMode] = useState<CompositionMode>("class");
   // UX-CLOSE-2 — one selection, scoped to this card. No provider, no event bus:
   // the same local-useState idiom the five ledgers already use.
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const { asOfState, drivers } = result;
+  const { asOfState } = result;
+  // PB-8b — a class whose change would be measured across a balance-history
+  // floor (its missing accounts counted as nothing) has no chip; the trend's
+  // coverage note says why.
+  const drivers = result.drivers?.filter((d) => gateForDriver(changeGate, d.id).state !== "withheld") ?? null;
 
   // V25-CLOSE-4A — the composition REGIME follows the selected metric. Assets and
   // Net Worth share the asset donut (Net Worth additionally shows a liabilities

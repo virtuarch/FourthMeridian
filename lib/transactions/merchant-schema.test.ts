@@ -152,6 +152,12 @@ check("no MerchantAsset model exists in schema", !/model\s+MerchantAsset\b/.test
   // resolvedMerchant in selects, merchantDisplayName in output) but never write.
   const READ_SURFACES = new Set([
     "lib/transactions/serialize.ts",
+    // PB-9 — the Merchant Identity KPI readers and their record-set definitions.
+    // Every `merchantId:` / `categorySource:` occurrence is a WHERE fragment, a
+    // groupBy key or a select; both modules are READ-ONLY (they write no table),
+    // pinned by (d) below and by lib/platform/merchant/records.test.ts.
+    "lib/platform/merchant/records.ts",
+    "lib/platform/merchant/records-query.ts",
     "lib/data/transactions.ts",
     "lib/ai/assemblers/transactions.ts",
     // TX-3.1b — the explorer's pure query contract. Its `merchantId:` occurrences

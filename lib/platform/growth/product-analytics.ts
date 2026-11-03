@@ -95,6 +95,28 @@ export async function loadLastEngagements(client: ProductAnalyticsDb, userIds?: 
   ];
 }
 
+/**
+ * PB-10 — the distinct users with a MEANINGFUL ENGAGEMENT fact at or after
+ * `since` (lib/presence/definitions.ts §6): the same frozen predicate as
+ * loadLastEngagements, windowed. This — never UserSession.lastActiveAt (any
+ * authenticated request, polls included), never the presence heartbeat's
+ * client-asserted lastInteractionAt, never SESSION_ACTIVE_DAY (presence) — is
+ * what "returning" and DAU/WAU/MAU count.
+ */
+export async function loadEngagedUserIdsSince(client: ProductAnalyticsDb, since: Date): Promise<Set<string>> {
+  const [ai, audit] = await Promise.all([
+    client.aiInvocation.groupBy({
+      by: ["userId"], where: { userId: { not: null }, occurredAt: { gte: since }, surface: { in: [...ENGAGEMENT_AI_SURFACES] } },
+    }),
+    client.auditLog.groupBy({
+      by: ["userId"], where: { userId: { not: null }, createdAt: { gte: since }, action: { in: [...ENGAGEMENT_AUDIT_ACTIONS] } },
+    }),
+  ]);
+  const out = new Set<string>();
+  for (const r of [...ai, ...audit]) if (r.userId) out.add(r.userId);
+  return out;
+}
+
 /** "Ever" facts for the funnel and the cohorts: who exists, first visit, first connection, first AI turn, first Brief view, last engagement. */
 export async function loadFunnelFacts(client: ProductAnalyticsDb): Promise<Pick<ProductAnalyticsFacts,
   "users" | "firstSessions" | "firstAiTurns" | "firstBriefViews" | "lastEngagements" | "plaidItems" | "walletConnections" | "manualAssets">> {

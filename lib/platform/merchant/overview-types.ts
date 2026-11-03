@@ -9,19 +9,25 @@
  * Client-safe (types only); counts only — no merchant names, no tenant data.
  */
 
+import type { IdentityCoverage } from "./records-types";
+
 export interface MerchantOverviewResponse {
   checkedAt: string;
   windowDays: 30 | 90;
   transactions: {
+    /** PB-9 — every LIVE transaction, all tenants (wallet rows, transfers and income included). */
     total: number;
     /** Transactions with a resolved Merchant (merchantId set). */
     resolved: number;
+    /** PB-9 — the precise split behind total / resolved (records-core.ts definitions; the drill-down reads the same). */
+    coverage: IdentityCoverage;
     /** By category provenance; `null` key = pre-MI (provenance not recorded). */
     bySource: { key: string; label: string; count: number }[];
   };
   merchants: { total: number; aliases: { source: string; label: string; count: number }[]; userRules: number };
   decisions: {
     days: { day: string; merged: number; dismissed: number }[];
+    /** PB-9 — the KPI figures: decisions since the window's first UTC day (the drill-down's count fn). */
     merged: number;
     dismissed: number;
     /** All-time decisions by evidence tier. */

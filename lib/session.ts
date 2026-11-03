@@ -65,6 +65,7 @@ import { authDb }                from "@/lib/db";
 import { withTenantDb }          from "@/lib/db/tenant-context";
 import { setCachedRevocation, type SessionFacts } from "@/lib/session-cache";
 import { factsFromRow, readSessionClaims, SESSION_ROW_SELECT } from "@/lib/auth/session-proof";
+import { recordPresenceBeat }    from "@/lib/auth/presence-activity";
 import { authCookiesSecure, sessionCookieName } from "@/lib/auth/session-cookie";
 import { getToken }              from "next-auth/jwt";
 import { cookies }               from "next/headers";
@@ -444,4 +445,23 @@ export async function requireSpaceRole(
   if (!meetsMinRole(membership.role, minRole))        return [null, forbidden()];
 
   return [{ user, membership }, null];
+}
+
+// ── PB-10 — the presence heartbeat write ──────────────────────────────────────
+
+/**
+ * Record a presence beat for the CALLER'S OWN session (POST /api/user/presence).
+ * `user` must come from a guard that just verified the session; the row is bound
+ * by the cookie's sessionToken AND the verified user id, so no body field can
+ * name another session or user.
+ *
+ * fm_auth (authDb), one autocommit statement — the same authority and shape as
+ * the session touch it sits beside (lib/auth/session-activity.ts), which is why
+ * it lives here, in one of the confined authDb importers, and not in the route.
+ * It writes lastPresenceAt / lastInteractionAt ONLY (lib/auth/presence-activity.ts).
+ * Bookkeeping: a failure resolves to 0, never an error the caller must handle.
+ */
+export async function recordSessionPresence(user: SessionUser, interacted: boolean): Promise<number> {
+  if (!user.sessionToken) return 0;
+  return recordPresenceBeat(authDb, user.sessionToken, user.id, interacted === true).then((n) => n, () => 0);
 }

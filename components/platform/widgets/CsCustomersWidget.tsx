@@ -65,6 +65,7 @@ import {
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
 import { CsOnboardingTimeline } from "./CsOnboardingTimeline";
 import { CS_OPEN_CUSTOMER_EVENT, openCustomerIdOf } from "../leads/cs-open-customer";
+import { PRESENCE_EXPLANATION } from "@/lib/presence/definitions";
 
 /**
  * AI COST CONTROLS — the effective allowance as CustomerPolicyView carries it
@@ -95,6 +96,11 @@ const SOURCE_TONE: Record<string, string> = {
 
 function fmtValue(v: boolean | number): string { return typeof v === "boolean" ? (v ? "on" : "off") : String(v); }
 function ago(iso: string | null): string { return iso ? `${timeAgo(iso)} ago` : "—"; }
+/** PB-10 — the coarse presence line: "Active now", "Online, idle · within the hour", "Offline · active today". */
+function presenceText(c: { presence: string; presenceLabel: string; lastActive: { bucket: string; label: string } }): string {
+  if (c.presence === "ACTIVE" || c.lastActive.bucket === "NEVER") return c.presenceLabel;
+  return `${c.presenceLabel} · ${c.lastActive.label}`;
+}
 
 /** UI-001 — the one line a READ holder sees where the editors would be. */
 export const CS_READ_ONLY_LINE =
@@ -317,7 +323,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
               <thead className="border-b border-[var(--border-hairline)]">
                 <tr>
                   <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-[30%]">Customer</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Onboarding</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)]">Policy</th>
-                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-24">Connections</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-28">Last active</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-8"><span className="sr-only">Open</span></th>
+                  <th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-24">Connections</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-28">Presence</th><th className="px-2 py-2 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--text-faint)] w-8"><span className="sr-only">Open</span></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-hairline)]">
@@ -336,7 +342,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       <span className="block truncate text-[11px] text-[var(--text-muted)]">{c.cohorts.length ? c.cohorts.join(", ") : "no cohort"}</span>
                     </td>
                     <td className="px-2 py-2.5 align-middle tabular-nums text-[var(--text-secondary)]">{c.connectionCount}</td>
-                    <td className="px-2 py-2.5 align-middle tabular-nums" style={{ color: c.deactivatedAt ? "var(--text-faint)" : "var(--text-secondary)" }}>{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</td>
+                    <td className="px-2 py-2.5 align-middle tabular-nums" style={{ color: c.deactivatedAt ? "var(--text-faint)" : "var(--text-secondary)" }}>{c.deactivatedAt ? "deactivated" : presenceText(c)}</td>
                     <td className="px-2 py-2.5 align-middle text-[var(--text-faint)]"><ChevronRight size={12} aria-hidden /></td>
                   </tr>
                 ))}
@@ -356,7 +362,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                       </span>
                       <NeedsHelpChip keys={c.attention} reasons={list.attentionReasons} />
                     </span>
-                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : ago(c.lastActiveAt)}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.deactivatedAt ? "deactivated" : presenceText(c)}</span>
                   </button>
                 </li>
               ))}
@@ -367,6 +373,7 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
               </button>
             )}
             <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{ROLLUP_NOTE}</p>
+            <p className="text-[10px] leading-relaxed text-[var(--text-faint)] max-lg:hidden">{PRESENCE_EXPLANATION}</p>
             </>
           )}
         </>
@@ -389,10 +396,14 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     <Row label="Registered" value={ago(detail.identity.createdAt)} />
                     <Row label="Email verified" value={detail.identity.emailVerifiedAt ? "yes" : "no"} />
                     <Row label="State" value={detail.identity.deactivatedAt ? (detail.identity.deletionScheduledAt ? `deletion scheduled ${ago(detail.identity.deletionScheduledAt).replace(" ago", "")}` : "deactivated") : "active"} />
-                    <Row label="Last active" value={`${ago(detail.activity.lastActiveAt)} (${detail.activity.lastActiveSource.toLowerCase()})`} />
+                    <Row label="Presence" value={detail.activity.presenceLabel} />
+                    <Row label="Last active" value={detail.activity.lastActive.label} />
+                    <Row label="Last login" value={detail.activity.lastLoginAt ? fmtUtc(detail.activity.lastLoginAt) : "—"} />
                     {/* UI-009 — the instant every relative age in this panel is measured from. */}
                     <Row label="Detail checked" value={fmtUtc(detail.checkedAt)} />
-                    <Row label="Sessions" value={String(detail.activity.activeSessions)} />
+                    <Row label="Signed-in sessions" value={String(detail.activity.activeSessions)} />
+                    {/* PB-10 — what the words mean; a valid session alone is never "online". */}
+                    <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{PRESENCE_EXPLANATION}</p>
                   </Section>
 
                   {/* PB-7 — how onboarding went: registration → connections + imports → first AI turn / Brief. */}

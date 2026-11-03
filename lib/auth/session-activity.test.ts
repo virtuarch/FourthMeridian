@@ -92,8 +92,10 @@ async function main() {
     /await touchSessionActivity\(db, sessionToken, verdict\.userId\)/.test(auth));
   check("…and never launches it un-awaited anywhere else",
     (auth.match(/touchSessionActivity\(/g) ?? []).length === 1);
-  check("…only on a LIVE check (a COALESCED or STALE_HIT caller adds no write)",
-    /if \(outcome\.disposition === "LIVE"\) \{\s*await touchSessionActivity\(/.test(auth));
+  // PB-10 — re-pinned on purpose: the one added conjunct is the presence
+  // heartbeat's request-scoped exemption (lib/auth/presence-scope.ts).
+  check("…only on a LIVE check (a COALESCED or STALE_HIT caller adds no write), and never inside the presence heartbeat's scope",
+    /if \(outcome\.disposition === "LIVE" && !isSessionTouchSuppressed\(\)\) \{\s*await touchSessionActivity\(/.test(auth));
   check("…after the verdict: a refused session returns before any touch",
     auth.indexOf('if (verdict.kind === "refused") return refusedSession(session);') > 0
     && auth.indexOf('if (verdict.kind === "refused") return refusedSession(session);') < auth.indexOf("await touchSessionActivity("));

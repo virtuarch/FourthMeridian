@@ -239,9 +239,23 @@ function main() {
   {
     // Disposable-PG harnesses (scripts/test-*.ts) reset their own throwaway
     // database and refuse any other; they are fixtures, not product code.
+    // The RLS acceptance suite issues raw SQL against these tables ON PURPOSE, to
+    // prove the database REFUSES it (cases 42-48: UPDATE / backdated INSERT denied
+    // by grant). It runs only against a throwaway clone. Exempted by exact path —
+    // ONE file, pinned below to keep proving refusal — never by loosening a pattern.
+    const ACCEPTANCE_PROBES = new Set(["scripts/rls-acceptance.ts"]);
     const prod = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
-      .filter((f) => !/^scripts\/test-[\w-]+\.ts$/.test(f));
+      .filter((f) => !/^scripts\/test-[\w-]+\.ts$/.test(f))
+      .filter((f) => !ACCEPTANCE_PROBES.has(f));
+    check("the acceptance-probe exemption covers exactly one file",
+      ACCEPTANCE_PROBES.size === 1 && ACCEPTANCE_PROBES.has("scripts/rls-acceptance.ts"));
+    {
+      const probes = code("scripts/rls-acceptance.ts");
+      check("…and that file still asserts the refusals it is exempted for (append-only, no backdating)",
+        /can NOT update an incident event \(append-only\)/.test(probes) && /can NOT supply `at` \(no backdating\)/.test(probes)
+        && /deniedByGrant\(upd\)/.test(probes) && /deniedByGrant\(back\)/.test(probes));
+    }
     const touching = (re: RegExp) => prod.filter((f) => re.test(code(f)));
     check("SyncIssueEvent is never updated anywhere (append-only)",
       touching(/syncIssueEvent\.(update|updateMany|upsert)\(|UPDATE\s+"?SyncIssueEvent/i).length === 0);

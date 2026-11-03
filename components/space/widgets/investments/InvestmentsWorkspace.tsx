@@ -47,7 +47,8 @@ import Link from "next/link";
 import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/perspectives/envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import type { ConversionContext } from "@/lib/money/types";
-import { convertInvestmentsSpaceData } from "@/lib/investments/display-conversion";
+import { convertInvestmentsSpaceData, investmentsDisplayUnavailable } from "@/lib/investments/display-conversion";
+import { InvestmentsDisplayUnavailable } from "./InvestmentsDisplayUnavailable";
 import { convertPortfolioValueSeries } from "@/lib/investments/portfolio-series";
 import { Surface, Block } from "@/components/atlas/Surface";
 import { PerspectiveEmptyState } from "@/components/space/PerspectiveEmptyState";
@@ -124,7 +125,11 @@ export function InvestmentsWorkspace({
   useEffect(() => { onEnvelopeChange?.(envelope); }, [envelope, onEnvelopeChange]);
 
   // Display-currency conversion (pure; identity when reporting === target).
+  // PB-11b — FAIL CLOSED: no rate ⇒ null, and the whole workspace says it is
+  // unavailable in the display currency (never a source figure under its label).
   const data = useMemo(() => (raw && ctx ? convertInvestmentsSpaceData(raw, ctx, asOf) : raw), [raw, ctx, asOf]);
+  const displayUnavailable = raw && ctx && data === null
+    ? investmentsDisplayUnavailable(raw.current.reportingCurrency, ctx.target, asOf) : null;
   const series = useMemo(() => (ctx ? convertPortfolioValueSeries(rawSeries, ctx, asOf) : rawSeries), [rawSeries, ctx, asOf]);
 
   // B-6 — SERVER-AUTHORITATIVE classification (lib/time/basis.ts): asOf is
@@ -135,6 +140,9 @@ export function InvestmentsWorkspace({
   // the server's — around midnight the same date sat on both sides at once.
   const historicalMode = !!data && isHistoricalDay(asOf, serverToday ?? today) && data.historical != null;
   const primary = data ? (historicalMode && data.historical ? data.historical : data.current) : null;
+  // PB-11 M7 — THE server-computed allocation for the mode on screen (one
+  // computation site, lib/investments/space-data-core); never re-reduced here.
+  const allocation = data ? (historicalMode && data.historical ? data.historicalAllocation ?? null : data.current.allocation) : null;
 
   // Publish section anchors to the sidebar once real holdings exist (cleared on unmount).
   const publishSections = useSpaceSectionsPublisher();
@@ -144,6 +152,10 @@ export function InvestmentsWorkspace({
     publishSections(showSections ? INVESTMENTS_SECTIONS : []);
     return () => publishSections([]);
   }, [publishSections, showSections, embedded]);
+
+  if (displayUnavailable) {
+    return <InvestmentsDisplayUnavailable unavailable={displayUnavailable} figureLabel={raw?.trust?.figureLabel} />;
+  }
 
   if (!data || !primary) {
     if (error) {
@@ -283,11 +295,12 @@ export function InvestmentsWorkspace({
             the donut, exactly as Net Worth's "Where it sits" card does. */}
         <Block label="Allocation" action={<Dropdown options={ALLOCATION_GROUPINGS} value={allocationDimension} onChange={setAllocationDimension} ariaLabel="Allocation grouping" />}>
           <DataCard>
-            <InvestmentAllocationPanel
+            {allocation && <InvestmentAllocationPanel
+              allocation={allocation}
               holdings={primary.holdings} accounts={accounts}
               reportingCurrency={reportingCurrency} showConcentrationInsight={false}
               dimension={allocationDimension}
-            />
+            />}
           </DataCard>
         </Block>
       </div>
@@ -305,7 +318,7 @@ export function InvestmentsWorkspace({
       {/* ⑤ Concentration — "how exposed am I?" (largest / top-5 / sector). */}
       <div id="investments-concentration" className="scroll-mt-20">
         <Block label="Concentration">
-          <HoldingsConcentration holdings={primary.holdings} accounts={accounts} />
+          <HoldingsConcentration allocation={allocation} />
         </Block>
       </div>
 
