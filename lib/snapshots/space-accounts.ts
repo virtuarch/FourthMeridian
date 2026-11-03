@@ -133,6 +133,14 @@ export interface SnapshotAccount {
    * writers never read this module, so no prior row is touched.
    */
   adjustedBalance?: number;
+  /**
+   * FM-AUDIT-022 — this wallet has NO value (NO_PRICE / NO_OBSERVATION, per
+   * `resolveWalletBalance`): `balance` is a structural 0 and `classifyAccounts`
+   * EXCLUDES the row from every total, reporting it in `unvaluedCount` — the
+   * signal the writer needs to stamp the row partial. OMITTED on every other
+   * row, so a valued row stays byte-identical.
+   */
+  valuationUnknown?: true;
 }
 
 /**
@@ -183,7 +191,7 @@ export async function readSpaceAccountsForSnapshot(
   // be exercised in environments with no database engine at all. Uninjected
   // callers get the shared client exactly as before.
   const prisma = client ?? (await import("@/lib/db")).db;
-  const { loadWalletCurrentValues, hasKnownValue, isFreshCurrentValue } =
+  const { loadWalletCurrentValues, hasKnownValue, isFreshCurrentValue, resolveWalletBalance } =
     await import("@/lib/crypto/wallet-current-value");
 
   const links = await prisma.spaceAccountLink.findMany({
@@ -241,10 +249,10 @@ export async function readSpaceAccountsForSnapshot(
   // the CURRENT row only — `regenerate-history.ts` owns every prior date and is
   // untouched, so nothing written here back-paints history.
   //
-  // ⚠️ A wallet that falls through to the column contributes that column's
-  // figure to net worth with NO disclosure on the snapshot row — `cryptoStale`
-  // covers a stale reading, not an absent one. See the deletion condition in
-  // lib/data/accounts.ts.
+  // FM-AUDIT-022 — a wallet with NO value (NO_PRICE / NO_OBSERVATION) no
+  // longer falls through to its column: it is EXCLUDED through the one totals
+  // classification (`resolveWalletBalance`) and flagged `valuationUnknown`, so
+  // `classifyAccounts` reports it in `unvaluedCount`.
   const walletValueByAccount = await loadWalletCurrentValues(
     links.map((l) => ({
       id: l.financialAccount.id,
@@ -279,14 +287,15 @@ export async function readSpaceAccountsForSnapshot(
           pendingByAccount.get(fa.id) ?? NO_PENDING,
         )
       : null;
+    // W6b — VALUED or STALE alike. A stale reading is the LAST KNOWN position
+    // and is still the best number there is; falling back to the column would
+    // swap it for an unwritten zero. Staleness is DISCLOSED (below), not
+    // expressed by discarding the figure. FM-AUDIT-022 — no value ⇒ excluded.
+    const wb = resolveWalletBalance(l.financialAccount.balance, v);
     return {
       id:       l.financialAccount.id,
       type:     l.financialAccount.type as string,
-      // W6b — VALUED or STALE alike. A stale reading is the LAST KNOWN position
-      // and is still the best number there is; falling back to the column would
-      // swap it for an unwritten zero. Staleness is DISCLOSED (below), not
-      // expressed by discarding the figure.
-      balance:  hasKnownValue(v) ? v!.value! : l.financialAccount.balance,
+      balance:  wb.balance,
       currency: l.financialAccount.currency,
       /**
        * W6b — present ONLY when this row's balance came from a wallet
@@ -303,6 +312,8 @@ export async function readSpaceAccountsForSnapshot(
       // v2.7-P0 — depository rows only; OMITTED elsewhere so non-cash rows stay
       // byte-identical to what this read has always returned.
       ...(adj ? { adjustedBalance: adj.adjusted } : {}),
+      // FM-AUDIT-022 — OMITTED unless the wallet has no value.
+      ...(wb.valuationUnknown ? { valuationUnknown: true as const } : {}),
     };
   });
 }

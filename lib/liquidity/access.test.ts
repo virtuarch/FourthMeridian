@@ -186,7 +186,9 @@ console.log("7. Write path and consumers — one authority, provider evidence on
   // is now the ADJUSTED depository balance (countedBalance), never the raw ledger.
   check("net-worth Cash composition is the cash BALANCE (restricted included)", /c\.totalLiquid \+ c\.totalRestrictedCash/.test(src("components/space/widgets/wealth-adapters.tsx")));
   check("…and the classifier sums the ADJUSTED depository balance (countedBalance), restricted included",
-    /accounts\.reduce\(\(s, a\) => s \+ countedBalance\(a\), 0\)/.test(src("lib/account-classifier.ts"))
+    // FM-AUDIT-022 — re-pinned: the same countedBalance sum, now skipping an
+    // unvalued (excluded) row rather than adding it.
+    /accounts\.reduce\(\(s, a\) => \(a\.valuationUnknown === true \? s : s \+ countedBalance\(a\)\), 0\)/.test(src("lib/account-classifier.ts"))
     && /amount: countedBalance\(a\)/.test(src("lib/account-classifier.ts")));
   {
     const c = classifyAccounts([

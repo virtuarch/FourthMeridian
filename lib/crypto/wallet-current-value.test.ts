@@ -140,8 +140,11 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
     // W6b — the predicate moved into ONE authority (`hasKnownValue`), which
     // admits VALUED and STALE alike: falling back for staleness would swap a
     // dated last-known figure for an unwritten column that always reads zero.
+    // FM-AUDIT-022 — re-pinned to the totals classification that wraps it:
+    // `resolveWalletBalance` also EXCLUDES NO_PRICE/NO_OBSERVATION (never the
+    // column), and no consumer may substitute `.value!` itself.
     check(`${name} displaces the column only when a real number exists`,
-      /hasKnownValue\(/.test(src),
+      /resolveWalletBalance\(/.test(src) && !/\.value!/.test(src),
       "substituting on NO_PRICE/NO_OBSERVATION would publish an invented number as money");
     check(`${name} does NOT re-derive that predicate locally`,
       !/state === "VALUED"/.test(src),
@@ -158,8 +161,9 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
     detailBody.indexOf("loadWalletCurrentValues(") < detailBody.indexOf("fullFreshness = resolveAccountFreshness(")
       && (detailBody.match(/loadWalletCurrentValues\(/g) ?? []).length === 1);
   // A wallet's value IS a balance, so the tier that discloses balances gets it.
+  // FM-AUDIT-022 — re-pinned: through the one totals classification.
   check("BALANCE_ONLY receives the corrected balance, not the zero column",
-    /balance:     displayBalance\(r\.balance, walletValue\)/.test(ACCOUNTS));
+    /balance:     walletBalance\(r\.balance, r\.id\)\.balance/.test(ACCOUNTS));
   // W6b — a stale reading is disclosed, never discarded.
   check("a STALE wallet keeps its number rather than falling back to the column",
     /state === "VALUED" \|\| v\.state === "STALE"/.test(code(read("lib", "crypto", "wallet-current-value.ts"))),
