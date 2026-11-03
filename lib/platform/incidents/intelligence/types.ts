@@ -357,6 +357,8 @@ export type VerdictForToken<T> = T extends AudienceToken<infer A> ? VerdictFor<A
  *   forCustomer        one customer's incidents — CUSTOMER_SUCCESS token only
  *   alertable          brokenNow ∩ alertable — SYSTEM token only (lib/alerts/)
  *   detail             one episode — tiered by token
+ *   window             PB-1 R3: every row touching [from, to] (seen, created or resolved in it)
+ *                      PLUS every NOT-closed row whatever its dates (D6) — tiered by token
  *   search             PB-1 2B: filtered, paged search over one status preset — tiered by token
  *   investigate        PB-1 2B: one episode with timeline, evidence digest, links — tiered by token
  */
@@ -367,6 +369,7 @@ export interface IncidentAccessors extends IncidentInvestigationAccessors {
   forCustomer(token: CsToken, userId: string, opts?: ListOptions): Promise<VerdictList<CsIncidentVerdict>>;
   alertable(token: SystemToken, opts?: ListOptions): Promise<VerdictList<IncidentVerdict>>;
   detail<T extends CsToken | OpsToken>(token: T, id: string, opts?: ListOptions): Promise<VerdictForToken<T> | null>;
+  window<T extends CsToken | OpsToken>(token: T, range: { from: Date; to: Date }, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
 }
 
 // ── PB-1 Phase 2B — investigation (search · detail · timeline) ──────────────

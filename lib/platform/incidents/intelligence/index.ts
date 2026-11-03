@@ -64,6 +64,8 @@ import type {
   VerdictList,
 } from "./types";
 
+/** Row cap for a window scan (convergence); D5 — reported as `truncated`, never silent. */
+export const WINDOW_SCAN_LIMIT = 500;
 /** Default row cap for one scan (D5 — reported, never silent). */
 export const DEFAULT_SCAN_LIMIT = 200;
 /** Cap on the attempt-evidence scan; hitting it makes EVERY row's evidence UNKNOWN (never hides a row). */
@@ -334,6 +336,16 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
       const audience = assertAudienceToken(token, READERS);
       const { set } = await derive(audience, { id }, { ...opts, limit: 1 }, false);
       return (set.all.find((v) => v.id === id) ?? null) as VerdictForToken<T> | null;
+    },
+    async window<T extends CsToken | OpsToken>(token: T, range: { from: Date; to: Date }, opts?: ListOptions) {
+      const audience = assertAudienceToken(token, READERS);
+      const inRange = { gte: range.from, lte: range.to };
+      // D6 — an open row is in every window, whatever its creation date; a closed one only when it touched it.
+      const where: Prisma.SyncIssueWhereInput = {
+        OR: [{ resolved: false }, { createdAt: inRange }, { firstOccurredAt: inRange }, { lastOccurredAt: inRange }, { resolvedAt: inRange }],
+      };
+      const { facts, set } = await derive(audience, where, { ...opts, limit: opts?.limit ?? WINDOW_SCAN_LIMIT });
+      return list(facts, set.all) as VerdictList<VerdictForToken<T>>;
     },
     async search<T extends CsToken | OpsToken>(token: T, query: IncidentSearchQuery, opts?: ListOptions) {
       const audience = assertAudienceToken(token, READERS);

@@ -17,7 +17,8 @@ import { todayUTCISO } from "@/lib/time/clock";
 import { db } from "@/lib/db";
 import { AuditAction } from "@/lib/audit-actions";
 import { loadRecentAlertRuns } from "@/lib/alerts/run";
-import { CONVERGENCE_PARTICIPANTS, type ConvergenceReaders, type ConvergenceParticipant, type ConvergenceWindow } from "@/lib/platform/convergence/participants";
+import { incidentAccessors, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence";
+import { CONVERGENCE_PARTICIPANTS, convergenceInstant, type ConvergenceReaders, type ConvergenceParticipant, type ConvergenceWindow } from "@/lib/platform/convergence/participants";
 import { worstTier } from "@/lib/platform/history/sources";
 import type { ConvergenceEvent, ConvergenceEpisode, ConvergenceResult } from "@/lib/platform/convergence/types";
 import type { OperationalTier } from "@/lib/platform/history/types";
@@ -30,6 +31,12 @@ export interface ConvergenceArgs {
   asOf?: string;                    // window end (YYYY-MM-DD), default today
   from?: string;                    // window start (YYYY-MM-DD), default asOf-14d
   participantIds?: readonly string[];
+  /**
+   * PB-1 R3 — the incident audience token the ROUTE minted from its own guard
+   * result. Sync-issue events are read only through the intelligence module,
+   * which refuses a missing or forged token (fail closed).
+   */
+  incidentToken?: OpsToken | CsToken;
 }
 export interface ConvergenceDeps {
   now?: Date;
@@ -127,7 +134,7 @@ function buildEpisode(events: ConvergenceEvent[], index: number): ConvergenceEpi
 
 // ── Real db-backed readers (the ONLY I/O; a fake replaces this in tests) ─────────
 
-function realReaders(now: Date): ConvergenceReaders {
+function realReaders(now: Date, incidentToken: OpsToken | CsToken | undefined): ConvergenceReaders {
   return {
     now,
     async jobRuns(from, to) {
@@ -139,24 +146,20 @@ function realReaders(now: Date): ConvergenceReaders {
     },
     alertRuns: (limit) => loadRecentAlertRuns(limit),
     async syncIssues(from, to) {
-      const rows = await db.syncIssue.findMany({
-        where: { createdAt: { gte: from, lte: to } },
-        orderBy: { createdAt: "asc" },
-        // Phase 4 — `resolved` was previously not even selected, which is why
-        // every issue rendered as an active degradation forever. `detail` is
-        // read ONLY to derive semantics/correlation; the projection never
-        // interpolates it (see participants.ts).
-        select: {
-          provider: true, kind: true, plaidItemId: true, createdAt: true,
-          resolved: true, financialAccountId: true, detail: true,
-        },
+      // PB-1 Phase 2 (R3) — through the ONE intelligence module (Platform Ops tier,
+      // identity-free), never SyncIssue directly. D6: an OPEN incident is in every
+      // window whatever its creation date; a closed row only when it sits in it.
+      if (!incidentToken) throw new Error("convergence: sync-issue events need an incident audience token (fail closed)");
+      const { items: verdicts } = await incidentAccessors.window(incidentToken, { from, to });
+      const rows = verdicts.filter((v) => {
+        const open = v.rowClass === "incident" && v.state !== "resolved" && v.state !== "archived";
+        if (open) return true;
+        const at = Date.parse(convergenceInstant(v));
+        return at >= from.getTime() && at <= to.getTime();
       });
       if (rows.length === 0) return [];
 
-      // ONE batched lookup for operator-safe labels + referent existence, rather
-      // than a query per row. A row naming an account or item that no longer
-      // exists describes nothing actionable — it is classified `orphaned` and
-      // kept out of the active set WITHOUT mutating the row.
+      // ONE batched lookup for operator-safe labels, rather than a query per row.
       const itemIds = [...new Set(rows.map((r) => r.plaidItemId).filter((v): v is string => v !== null))];
       const acctIds = [...new Set(rows.map((r) => r.financialAccountId).filter((v): v is string => v !== null))];
       const [items, accounts] = await Promise.all([
@@ -170,34 +173,19 @@ function realReaders(now: Date): ConvergenceReaders {
       const itemById = new Map(items.map((i) => [i.id, i.institutionName]));
       // PLATFORM OPS PRIVACY — the operator label is the institution, or an
       // opaque account reference. The customer's own account NAME is customer
-      // data and never crosses into an operator payload (it did, as
-      // "institution · name", until this line).
+      // data and never crosses into an operator payload.
       const acctById = new Map(accounts.map((a) => [a.id, a.institution ?? `Account …${a.id.slice(-6)}`]));
 
-      return rows.map((r) => {
-        // A row with no referent at all (neither id set) cannot be orphaned —
-        // there is nothing to dangle. Only a NAMED-but-missing referent is.
-        const namesItem = r.plaidItemId !== null;
-        const namesAcct = r.financialAccountId !== null;
-        const itemOk    = namesItem && itemById.has(r.plaidItemId!);
-        const acctOk    = namesAcct && acctById.has(r.financialAccountId!);
-        const referentExists = (!namesItem && !namesAcct) || itemOk || acctOk;
-
-        return {
-          provider: r.provider,
-          kind: r.kind,
-          plaidItemId: r.plaidItemId,
-          createdAt: r.createdAt,
-          resolved: r.resolved,
-          financialAccountId: r.financialAccountId,
-          detail: r.detail,
-          subjectLabel:
-            (r.plaidItemId ? itemById.get(r.plaidItemId) : undefined)
-            ?? (r.financialAccountId ? acctById.get(r.financialAccountId) : undefined)
-            ?? null,
-          referentExists,
-        };
-      });
+      return rows.map((v) => ({
+        id: v.id, provider: v.provider, kind: v.kind, plaidItemId: v.plaidItemId, financialAccountId: v.financialAccountId,
+        rowClass: v.rowClass, state: v.state, closure: v.closure, severity: v.severity, domain: v.domain,
+        operation: v.operation, episodeKey: v.episodeKey,
+        firstSeenAt: v.firstSeenAt, lastSeenAt: v.lastSeenAt, resolvedAt: v.resolvedAt,
+        subjectLabel:
+          (v.plaidItemId ? itemById.get(v.plaidItemId) : undefined)
+          ?? (v.financialAccountId ? acctById.get(v.financialAccountId) : undefined)
+          ?? null,
+      }));
     },
     async statusTransitions(from, to) {
       const rows = await db.auditLog.findMany({
@@ -249,7 +237,7 @@ const TIMELINE_CAP = 100;
 
 export async function getConvergence(args: ConvergenceArgs = {}, deps: ConvergenceDeps = {}): Promise<ConvergenceResult> {
   const now = deps.now ?? new Date();
-  const readers = deps.readers ?? realReaders(now);
+  const readers = deps.readers ?? realReaders(now, args.incidentToken);
   const all = deps.participants ?? CONVERGENCE_PARTICIPANTS;
   const participants = args.participantIds ? all.filter((p) => args.participantIds!.includes(p.ledger)) : all;
 
