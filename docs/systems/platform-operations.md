@@ -435,10 +435,11 @@ threshold lives in its exported `PRESENCE_CONFIG`:
   reaper, account purge and data export. Applied on Preview; **Production follows the
   release process.**
 - **Readers:** Customer Success shows Active now / Online, idle / Offline / Unknown, a coarse
-  last-active bucket, Last login and Signed-in sessions. Growth's returning-user and
-  active-7 counts use the engagement predicate.
-- **Still open:** the platform intelligence plan's consolidation of the remaining competing
-  "active" definitions (see [PLATFORM-INTELLIGENCE](../plans/PLATFORM-INTELLIGENCE.md)).
+  Last interaction bucket, Last login and Live sessions. Growth's returning-user and
+  Engaged · 7 d counts use the engagement predicate.
+- **Still open:** the owner decisions OD-1..OD-4 on who counts in the "active" populations
+  (see [PLATFORM-INTELLIGENCE](../plans/PLATFORM-INTELLIGENCE.md)); the engineering renames and
+  the shared population module (`lib/platform/customer/population.ts`) are done.
 
 ## Economics
 

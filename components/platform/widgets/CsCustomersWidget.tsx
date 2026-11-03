@@ -400,11 +400,11 @@ export function CsCustomersWidget({ section, access }: { section: PlatformSectio
                     <Row label="Email verified" value={detail.identity.emailVerifiedAt ? "yes" : "no"} />
                     <Row label="State" value={detail.identity.deactivatedAt ? (detail.identity.deletionScheduledAt ? `deletion scheduled ${ago(detail.identity.deletionScheduledAt).replace(" ago", "")}` : "deactivated") : "active"} />
                     <Row label="Presence" value={detail.activity.presenceLabel} />
-                    <Row label="Last active" value={detail.activity.lastActive.label} />
+                    <Row label="Last interaction" value={detail.activity.lastActive.label} />
                     <Row label="Last login" value={detail.activity.lastLoginAt ? fmtUtc(detail.activity.lastLoginAt) : "—"} />
                     {/* UI-009 — the instant every relative age in this panel is measured from. */}
                     <Row label="Detail checked" value={fmtUtc(detail.checkedAt)} />
-                    <Row label="Signed-in sessions" value={String(detail.activity.activeSessions)} />
+                    <Row label="Live sessions" value={String(detail.activity.activeSessions)} />
                     {/* PB-10 — what the words mean; a valid session alone is never "online". */}
                     <p className="text-[10px] leading-relaxed text-[var(--text-faint)]">{PRESENCE_EXPLANATION}</p>
                   </Section>
@@ -670,7 +670,7 @@ export function listPopulation(list: CustomerListResponse): string {
   const deactivated = rows.filter((c) => c.deactivatedAt).length;
   const activeCustomers = rows.filter((c) => !c.deactivatedAt && c.role === "USER").length;
   const other = rows.length - deactivated - activeCustomers;
-  const parts = [`${activeCustomers} active customer${activeCustomers === 1 ? "" : "s"}`, deactivated ? `${deactivated} deactivated` : null, other ? `${other} admin` : null].filter(Boolean);
+  const parts = [`${activeCustomers} open customer account${activeCustomers === 1 ? "" : "s"}`, deactivated ? `${deactivated} deactivated` : null, other ? `${other} admin` : null].filter(Boolean);
   // Truncated: the breakdown describes the rows SHOWN, never the whole total beside it.
   if (rows.length < list.total) return `showing ${rows.length} of ${list.total} accounts · of these ${parts.join(" · ")}`;
   return `${list.total} account${list.total === 1 ? "" : "s"} · ${parts.join(" · ")}`;

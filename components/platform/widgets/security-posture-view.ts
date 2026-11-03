@@ -207,7 +207,7 @@ export const NOTES_SOURCES: ReadonlyArray<{ source: string; note: string }> = [
   { source: "AuditLog", note: "LOGIN_FAILED · SECURITY_ANOMALY_DETECTED · the 15-action security filter · operator actions" },
   { source: "User", note: "totpEnabled · forcePasswordReset" },
   { source: "RecoveryCode", note: "usedAt IS NULL" },
-  { source: "UserSession", note: "revokedAt IS NULL" },
+  { source: "UserSession", note: "live = revokedAt IS NULL ∧ inside the SEC-010 lifetime ∧ owner open (liveSessionWhere)" },
 ];
 
 // ── Feeds (audit · operator-actions · sessions) ──────────────────────────────
@@ -244,7 +244,7 @@ export function operatorLine(e: OperatorActionEvent, reasonWord: (code: string) 
 
 export function sessionsReadings(d: PlatformSessionsResponse): Reading[] {
   return [
-    { label: "Active sessions", value: String(d.totalActive), derivation: "COUNT(UserSession.revokedAt IS NULL), counted now" },
+    { label: "Live sessions", value: String(d.totalActive), derivation: "COUNT(UserSession) live: revokedAt IS NULL, inside the SEC-010 idle and absolute lifetime, owner not deactivated or pending deletion (liveSessionWhere), counted now" },
     { label: "Distinct users with a session", value: String(d.distinctUsers), derivation: "distinct account count over the same rows — grouped server-side; no identifier is returned" },
   ];
 }

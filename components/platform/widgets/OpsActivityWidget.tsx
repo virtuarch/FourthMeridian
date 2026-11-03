@@ -30,9 +30,9 @@ export function OpsActivityWidget({ section }: { section: PlatformSection }) {
       ) : (
         <>
           <div className="grid grid-cols-3 gap-3">
-            <WidgetStat value={data.dau} label="DAU" />
-            <WidgetStat value={data.wau} label="WAU" />
-            <WidgetStat value={data.mau} label="MAU" />
+            <WidgetStat value={data.dau} label="Sign-ins · 1 d" />
+            <WidgetStat value={data.wau} label="Sign-ins · 7 d" />
+            <WidgetStat value={data.mau} label="Sign-ins · 30 d" />
           </div>
           <div className="grid grid-cols-3 gap-3 mt-1">
             <WidgetStat value={data.newUsers7} label="New · 7d" />

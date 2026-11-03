@@ -16,6 +16,7 @@ import { NextResponse } from "next/server";
 import { db, systemDb } from "@/lib/db";
 import { loadEngagedUserIdsSince } from "@/lib/platform/growth/product-analytics";
 import { requirePlatformAccess } from "@/lib/platform/authorize";
+import { ENGAGEMENT_WINDOW_DAYS } from "@/lib/presence/definitions";
 
 export const runtime = "nodejs";
 
@@ -35,8 +36,10 @@ export async function GET() {
   if (err) return err;
 
   const now    = Date.now();
-  const week   = new Date(now - 7 * DAY_MS);
-  const month  = new Date(now - 30 * DAY_MS);
+  // rolling — see PLATFORM-INTELLIGENCE X5: n × 24 h back from now, NOT n UTC days (a UTC-day
+  // read changes the numbers and needs a new metric version). The day counts come from the one constant.
+  const week   = new Date(now - ENGAGEMENT_WINDOW_DAYS.wau * DAY_MS);
+  const month  = new Date(now - ENGAGEMENT_WINDOW_DAYS.mau * DAY_MS);
 
   const [totalUsers, signups7, signups30, verified, activatedEver, active7] = await Promise.all([
     db.user.count(),
