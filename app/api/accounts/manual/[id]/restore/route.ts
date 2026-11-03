@@ -20,7 +20,7 @@
  * phase has proved ownership. And the ORDER is forced: links first, because
  * `AccountConnection.fm_app_upd` is `fm_account_visible("financialAccountId")`
  * and that is false while the links are still REVOKED. See that route's header
- * and docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md for the full reasoning.
+ * and docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide for the full reasoning.
  */
 
 import { NextRequest, NextResponse }   from "next/server";
