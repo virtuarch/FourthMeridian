@@ -24,7 +24,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { EncryptionPurpose } from "./encryption";
-import { ENCRYPTED_FIELDS, NON_STORED_PURPOSES, fieldLabel } from "./encrypted-fields";
+import { ENCRYPTED_FIELDS, NON_STORED_PURPOSES, fieldLabel, scopeWhere } from "./encrypted-fields";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -149,6 +149,20 @@ for (const p of Object.values(EncryptionPurpose)) {
 check("the registry is the five known columns",
   labels.slice().sort().join() === ["BetaAbuseEvidence.sealedPayload", "Connection.credential", "PlaidItem.encryptedToken", "User.dateOfBirthEncrypted", "User.totpSecret"].join(),
   labels.join(", "));
+
+// ── 3b. the format census honours the registry's scope ──────────────────────
+console.log("3b. scripts/audit-ciphertext-versions.ts scans the registry, excluding clear-text WALLET rows");
+{
+  const conn = ENCRYPTED_FIELDS.find((f) => fieldLabel(f) === "Connection.credential")!;
+  check("Connection.credential is scoped to provider ≠ WALLET", JSON.stringify(scopeWhere(conn)) === JSON.stringify({ provider: { not: "WALLET" } }));
+  check("an unscoped field selects every row", ENCRYPTED_FIELDS.filter((f) => !f.scope).every((f) => JSON.stringify(scopeWhere(f)) === "{}"));
+  const audit = stripComments(readFileSync(path.join(ROOT, "scripts/audit-ciphertext-versions.ts"), "utf8"));
+  check("the audit iterates ENCRYPTED_FIELDS (cipher format) instead of a hand-kept list",
+    /for \(const f of ENCRYPTED_FIELDS\.filter\(\(x\) => x\.format === "cipher"\)\)/.test(audit));
+  check("the audit applies scopeWhere(f) to every page query", /where: \{ AND: \[afterId \? \{ id: \{ gt: afterId \} \} : \{\}, scopeWhere\(f\)\] \}/.test(audit));
+  check("the audit no longer queries a registered column by hand", !/db\.(plaidItem|user|connection)\.findMany/.test(audit));
+  check("the audit stays read-only (findMany only)", !/\.(update|updateMany|create|delete|deleteMany|upsert)\(|\$executeRaw/.test(audit));
+}
 
 // ── 4. schema agreement ─────────────────────────────────────────────────────
 console.log("4. every entry is a String column of an un-mapped model in prisma/schema.prisma");
