@@ -57,7 +57,7 @@ import {
   type CashAccountBalance,
 } from "@/lib/snapshots/backfill-core";
 import {
-  regenerateDay, revokedLinkContributionWindow, blockingRevokedLinks,
+  regenerateDay, revokedLinkContributionWindow, blockingRevokedLinks, restrictedCashWriteData,
   type DayRegenInput, type DayRegenResult, type RevokedLinkFacts, type RevokedLinkWindow,
 } from "@/lib/snapshots/regenerate-history.core";
 import {
@@ -976,7 +976,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     contributingComponentCount: number | null;
     totalComponentCount: number | null;
     cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
-    restrictedCash: number | null; // FIN-E part 2
+    restrictedCash?: number | null; // FIN-E part 2 — undefined = preserved cash, leave the column untouched
   }> = [];
 
   /**
@@ -997,7 +997,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
     contributingComponentCount: number | null;
     totalComponentCount: number | null;
     cryptoValuationStatus: DayRegenResult["cryptoValuationStatus"];
-    restrictedCash: number | null; // FIN-E part 2
+    restrictedCash?: number | null; // FIN-E part 2 — undefined = preserved cash, leave the column untouched
   }> = [];
 
   for (const dISO of candidateDates) {
@@ -1310,7 +1310,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         contributingComponentCount: res.contributingComponentCount,
         totalComponentCount: res.totalComponentCount,
         cryptoValuationStatus: res.cryptoValuationStatus,
-        restrictedCash: res.restrictedCash ?? null,
+        restrictedCash: res.restrictedCash,
       });
     }
     if (plan.write && res.fields) {
@@ -1326,7 +1326,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         contributingComponentCount: res.contributingComponentCount,
         totalComponentCount: res.totalComponentCount,
         cryptoValuationStatus: res.cryptoValuationStatus,
-        restrictedCash: res.restrictedCash ?? null,
+        restrictedCash: res.restrictedCash,
       });
     }
 
@@ -1372,8 +1372,9 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
         // never "unknown but assume fine": the read boundary resolves an
         // immaterial component to `none`, which IS assertable.
         cryptoValuationStatus: toStoredCryptoValuationStatus(w.cryptoValuationStatus),
-        // FIN-E part 2 — null when this run did not recompute the day's cash.
-        restrictedCash: w.restrictedCash,
+        // FIN-E part 2 — only when this run recomputed the day's cash; a preserving
+        // write leaves the stored restrictedCash untouched (S2 review).
+        ...restrictedCashWriteData(w),
         reportingCurrency: space.reportingCurrency,
         // Phase 2 — stamp the amendment that revised this row (amendment runs only).
         ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
@@ -1408,7 +1409,7 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
           cryptoValuationStatus: toStoredCryptoValuationStatus(p.cryptoValuationStatus),
           // FIN-E part 2 — only when this run recomputed the cash; a preserved
           // cash component leaves the stored restrictedCash untouched.
-          ...(typeof p.restrictedCash === "number" ? { restrictedCash: p.restrictedCash } : {}),
+          ...restrictedCashWriteData(p),
           ...(args.isAmendment && args.amendedByAmendmentId ? { amendedByAmendmentId: args.amendedByAmendmentId } : {}),
         },
       });

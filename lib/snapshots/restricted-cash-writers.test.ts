@@ -20,7 +20,8 @@ import type { Snapshot } from "@/types";
 import type { AccountsSectionData } from "@/lib/ai/types";
 import { classifyAccounts } from "@/lib/account-classifier";
 import { snapshotRestrictedCash } from "./backfill-core";
-import { regenerateDay, type DayRegenInput } from "./regenerate-history.core";
+import { regenerateDay, restrictedCashWriteData, type DayRegenInput } from "./regenerate-history.core";
+import { convertStampedValues } from "./stamp-conversion";
 import {
   ALL_CASH_HISTORY_AI_NOTE, UNRESTRICTED_HISTORY_AI_NOTE, CASH_HISTORY_BASIS_PRESENTATION,
   cashHistoryBasisOf, clipCashHistory,
@@ -60,12 +61,13 @@ const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8")
   // Writer 3 — regenerate-history: base carries the split; full writes always set it; patches only when recomputed.
   const rh = src("./regenerate-history.ts");
   assert.ok(/totalRestrictedCash: c\.totalRestrictedCash,/.test(rh), "regenerate-history: the day's classification feeds the base");
-  assert.ok(/restrictedCash: w\.restrictedCash,/.test(rh), "regenerate-history: every full write sets it");
-  assert.ok(/\.\.\.\(typeof p\.restrictedCash === "number" \? \{ restrictedCash: p\.restrictedCash \} : \{\}\)/.test(rh),
-    "regenerate-history: a partial patch sets it only when the cash was recomputed");
+  // S2 review — re-pinned: the full write and the patch BOTH go through the one
+  // fragment, which omits the key when the cash was preserved (see §6).
+  assert.ok(/\.\.\.restrictedCashWriteData\(w\),/.test(rh), "regenerate-history: every full write goes through restrictedCashWriteData");
+  assert.ok(/\.\.\.restrictedCashWriteData\(p\),/.test(rh), "regenerate-history: a partial patch too");
   const core = src("./regenerate-history.core.ts");
-  assert.ok(/restrictedCash: refusedBy\.has\("cash"\) \|\| refusedBy\.has\("savings"\) \? null : snapshotRestrictedCash\(base\),/.test(core),
-    "regenerate-history core: preserved cash ⇒ NULL (its restricted share is not this run's)");
+  assert.ok(/\.\.\.\(refusedBy\.has\("cash"\) \|\| refusedBy\.has\("savings"\) \? \{\} : \{ restrictedCash: snapshotRestrictedCash\(base\) \}\),/.test(core),
+    "regenerate-history core: preserved cash ⇒ the key is ABSENT (never NULL over a recorded value)");
 
   // …and behaviourally, through the pure day rule.
   const day = (over: Partial<DayRegenInput> = {}): DayRegenInput => ({
@@ -179,6 +181,81 @@ const ONE_MISSING = DAYS.map((d, i) => snap(d, i === 0 ? undefined : 1_500));
   const schema = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
   assert.ok(/^\s+restrictedCash Float\?$/m.test(schema), "schema: Float? (nullable, no default)");
   ok("§5 migration: one nullable catalog-only column");
+}
+
+// ── §6 S2 review — a PRESERVING write never NULLs a recorded value ───────────
+{
+  const base = { totalInvestments: 0, totalDigitalAssets: 0, totalChecking: 1_400, totalSavings: 250, totalLiabilities: 0, totalRealAssets: 0, totalRestrictedCash: 300 };
+  const existing = { stocks: 0, crypto: 0, total: 0, cash: 1_200, savings: 250, debt: 0, netWorth: 1_450, totalAssets: 1_450, netLiquid: 1_450, cashOnHand: 1_200 };
+  const input = (over: Partial<DayRegenInput>): DayRegenInput => ({
+    date: "2026-02-01", existingIsEstimated: true, existing, base,
+    investmentValue: 0, investmentTier: "derived", hasInvestmentEvidence: false,
+    digitalAssetValue: 0, digitalAssetTier: "estimated", hasDigitalAssetEvidence: false,
+    cashCardTier: "derived", ...over,
+  } as DayRegenInput);
+  // Prisma update semantics: an omitted key leaves the stored column as it is.
+  const applyUpdate = <T extends object>(stored: T, data: object): T => ({ ...stored, ...data });
+
+  // (a) cash PRESERVED (an impossible walked balance) ⇒ the key is omitted, the stored 400 survives.
+  const preservedCash = regenerateDay(input({ base: { ...base, totalChecking: -5 } }));
+  assert.ok(preservedCash.components?.some((c) => c.component === "cash" && c.action === "preserved"), "fixture: cash is preserved");
+  assert.ok(!("restrictedCash" in preservedCash), "preserved cash ⇒ restrictedCash UNDEFINED (not this run's)");
+  assert.deepEqual(restrictedCashWriteData(preservedCash), {}, "…so the write data carries no restrictedCash key");
+  assert.equal(applyUpdate({ restrictedCash: 400 as number | null }, restrictedCashWriteData(preservedCash)).restrictedCash, 400,
+    "stored 400 + a write preserving cash ⇒ still 400");
+  const preservedSavings = regenerateDay(input({ base: { ...base, totalSavings: Number.NaN } }));
+  assert.equal(applyUpdate({ restrictedCash: 400 as number | null }, restrictedCashWriteData(preservedSavings)).restrictedCash, 400,
+    "…and the same when savings is the preserved component");
+  // (c) a pre-part-2 NULL row that is preserved stays NULL (never a made-up number).
+  assert.equal(applyUpdate({ restrictedCash: null as number | null }, restrictedCashWriteData(preservedCash)).restrictedCash, null,
+    "pre-part-2 null + preserving write ⇒ still null");
+
+  // (b) cash RECOMPUTED ⇒ the new value is written over the stored one.
+  const recomputed = regenerateDay(input({}));
+  assert.equal(recomputed.restrictedCash, 300);
+  assert.equal(applyUpdate({ restrictedCash: 400 as number | null }, restrictedCashWriteData(recomputed)).restrictedCash, 300,
+    "recomputed cash ⇒ the new restricted share replaces the stored one");
+  // Recomputed but no split on the totals ⇒ an explicit NULL (the stored share describes cash this run replaced).
+  const noSplit = regenerateDay(input({ base: { ...base, totalRestrictedCash: undefined } }));
+  assert.deepEqual(restrictedCashWriteData(noSplit), { restrictedCash: null });
+
+  // Both persistence sites go through the one fragment; no other restrictedCash key is written there.
+  const rh = src("./regenerate-history.ts");
+  assert.equal((rh.match(/\.\.\.restrictedCashWriteData\((w|p)\),/g) ?? []).length, 2, "full write AND patch use restrictedCashWriteData");
+  assert.ok(!/restrictedCash: w\.restrictedCash|restrictedCash: p\.restrictedCash|restrictedCash: res\.restrictedCash \?\? null/.test(rh),
+    "no direct (NULL-capable) restrictedCash assignment at a write site");
+  ok("§6 preserving writes leave restrictedCash untouched (recorded 400 or pre-part-2 null); recomputed writes replace it");
+}
+
+// ── §7 FX — restrictedCash converts with the SAME rate and date as the row's cash ──
+{
+  const seen: string[] = [];
+  const RATE = 0.8;
+  const ctx = {
+    target: "USD",
+    resolve: (from: string, d: string) => { seen.push(`${from}@${d}`); return { kind: "rate", rate: RATE, requestedDateISO: d, effectiveDates: { from: d, to: d }, staleness: "exact" }; },
+  } as never;
+  // A non-USD (EUR-stamped) stored row, through the canonical read's stamp conversion.
+  const raw = { totalCash: 2_000, totalSavings: 500, restrictedCash: 750, netWorth: 2_500 };
+  const out = convertStampedValues(raw, "EUR", "2026-02-10", ctx);
+  const factor = (k: keyof typeof raw) => out.values[k] / raw[k];
+  assert.ok(Math.abs(factor("restrictedCash") - factor("totalCash")) < 1e-12 && Math.abs(factor("restrictedCash") - factor("totalSavings")) < 1e-12,
+    "stamp conversion: restrictedCash takes the identical factor as cash and savings");
+  assert.ok(seen.every((x) => x === "EUR@2026-02-10"), "…at the row's own date and currency, for every field");
+  assert.ok(out.values.restrictedCash <= out.values.totalCash + out.values.totalSavings, "invariant after stamp conversion: restricted ≤ cash + savings");
+
+  // …and through the display conversion (Wealth/Liquidity), on a non-USD target.
+  const disp = { target: "GBP", resolve: (_f: string, d: string) => ({ kind: "rate", rate: 0.79, requestedDateISO: d, effectiveDates: { from: d, to: d }, staleness: "exact" }) } as never;
+  const rows = [snap("2026-02-20", 1_500), snap("2026-02-21", 6_000)];
+  for (const r of convertWealthSnapshots(rows, "USD", disp)) {
+    const src0 = rows.find((x) => x.date === r.date)!;
+    assert.ok(Math.abs(r.restrictedCash! / src0.restrictedCash! - r.totalCash / src0.totalCash) < 1e-12, `display: identical factor (${r.date})`);
+    assert.ok(r.restrictedCash! <= r.totalCash + r.totalSavings + 1e-9, `display invariant: restricted ≤ cash + savings (${r.date})`);
+  }
+  // The unrestricted series built from converted rows is never negative.
+  const u = clipCashHistory(convertWealthSnapshots(rows, "USD", disp), "2026-02-21", null, "GBP")!;
+  assert.ok(u.basis === "UNRESTRICTED" && u.points.every((p) => p.cashNow >= 0), "converted UNRESTRICTED series ≥ 0");
+  ok("§7 FX: restrictedCash converts at the row's own rate/date, identical factor; restricted ≤ cash + savings after conversion");
 }
 
 for (const c of checks) console.log(`  ✓ ${c}`);
