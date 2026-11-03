@@ -12,6 +12,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { UserRole } from "@prisma/client";
 import { assertAudienceToken, incidentAudienceFor, systemIncidentAudience, IncidentAudienceError } from "./audience";
+import type { CoreAudience, IncidentAudience } from "./types";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -121,6 +122,25 @@ console.log("\n4. static pins");
     strayImporters.length === 0, strayImporters.join(", "));
   const minters = files.filter((f) => /MINTED\.add\(|function mint\b/.test(code(f)));
   check("tokens are minted in exactly one module", minters.length === 1 && minters[0] === `${INTEL}audience.ts`, minters.join(", "));
+}
+
+console.log("\n5. MEMBER — a pure-core-only audience (PB-1 Phase 3, S2 conditions)");
+{
+  const files = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")];
+  // (a) NOT a token tier: the type says so at compile time…
+  const memberIsNotATier: "MEMBER" extends IncidentAudience ? never : true = true;
+  const memberIsCore: "MEMBER" extends CoreAudience ? true : never = true;
+  check("MEMBER is a CoreAudience but NOT an IncidentAudience (no AudienceToken<\"MEMBER\"> can exist)", memberIsNotATier && memberIsCore);
+  // (b) …and the minter never names it: no token type, no mint path.
+  const minter = code("lib/platform/incidents/intelligence/audience.ts");
+  check("audience.ts has no MEMBER token type and no MEMBER mint path", !/MEMBER/.test(minter));
+  // (c) no accessor accepts it.
+  const accessors = code("lib/platform/incidents/intelligence/index.ts");
+  check("no accessor's allowed list (or any accessor) names MEMBER", !/MEMBER/.test(accessors));
+  check("…and a MEMBER-shaped object is refused by the runtime gate", throws(() => assertAudienceToken({ audience: "MEMBER" }, ["CUSTOMER_SUCCESS", "PLATFORM_OPS", "SYSTEM"])));
+  // (d) only the member activity feed's pure path tells the core MEMBER (like SYSTEM is lib/alerts/ only).
+  const memberCallers = files.filter((f) => /audience:\s*"MEMBER"/.test(code(f)) && !/\.test\.tsx?$/.test(f));
+  check("only lib/activity/member-incidents.ts tells the core MEMBER", memberCallers.join() === "lib/activity/member-incidents.ts", memberCallers.join(", "));
 }
 
 if (failures > 0) { console.error(`\naudience.test: ${failures} failure(s).`); process.exit(1); }

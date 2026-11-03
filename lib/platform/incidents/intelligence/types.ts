@@ -311,7 +311,17 @@ export interface IncidentVerdictSet<T extends IncidentVerdict = IncidentVerdict>
  */
 export type IncidentAudience = "PLATFORM_OPS" | "CUSTOMER_SUCCESS" | "SYSTEM";
 
-export type VerdictFor<A extends IncidentAudience> = A extends "CUSTOMER_SUCCESS" ? CsIncidentVerdict : IncidentVerdict;
+/**
+ * The audiences the PURE core accepts: the token tiers above plus "MEMBER"
+ * (PB-1 Phase 3, S2-approved). MEMBER is identity-free (never `subjectUserId`)
+ * and exists ONLY for deriveIncidentVerdicts, called by the tenant-scoped member
+ * activity feed (lib/activity/member-incidents.ts). It is deliberately NOT an
+ * IncidentAudience: there is no MEMBER token type, no mint path, and no accessor
+ * accepts it (all pinned in audience.test.ts).
+ */
+export type CoreAudience = IncidentAudience | "MEMBER";
+
+export type VerdictFor<A extends CoreAudience> = A extends "CUSTOMER_SUCCESS" ? CsIncidentVerdict : IncidentVerdict;
 
 // ── Harness hooks (design §13.3 step 2) ─────────────────────────────────────
 
@@ -333,11 +343,11 @@ export interface NormalisedVerdict {
 
 export interface DeriveOptions {
   now: Date;
-  audience: IncidentAudience;
+  audience: CoreAudience;
 }
 
 /** The pure core's signature (implemented in ./core.ts). */
-export type DeriveIncidentVerdicts = <A extends IncidentAudience>(
+export type DeriveIncidentVerdicts = <A extends CoreAudience>(
   facts: IncidentFacts,
   opts: DeriveOptions & { audience: A },
 ) => IncidentVerdictSet<VerdictFor<A>>;

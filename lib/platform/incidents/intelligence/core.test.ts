@@ -12,7 +12,7 @@ import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import { buildResolutionEvidence, digestStoredEvidence } from "../evidence";
 import { deriveIncidentVerdicts, normaliseVerdict, WIDESPREAD_MIN_SUBJECTS } from "./core";
 import { STALE_WINDOWS_MS } from "./staleness";
-import type { AttemptEvidence, CsIncidentVerdict, IncidentAudience, IncidentFacts, IncidentRowFacts, IncidentVerdict } from "./types";
+import type { AttemptEvidence, CoreAudience, CsIncidentVerdict, IncidentAudience, IncidentFacts, IncidentRowFacts, IncidentVerdict } from "./types";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {
@@ -58,7 +58,7 @@ function facts(rows: IncidentRowFacts[], over: Partial<IncidentFacts> = {}): Inc
   };
 }
 
-function derive(f: IncidentFacts, audience: IncidentAudience = "PLATFORM_OPS"): IncidentVerdict[] {
+function derive(f: IncidentFacts, audience: CoreAudience = "PLATFORM_OPS"): IncidentVerdict[] {
   return deriveIncidentVerdicts(f, { now: NOW, audience }).all;
 }
 const one = (r: IncidentRowFacts, over: Partial<IncidentFacts> = {}, audience: IncidentAudience = "PLATFORM_OPS") => derive(facts([r], over), audience)[0];
@@ -131,7 +131,8 @@ console.log("D4 — ONE attribution rule; identity only on the CUSTOMER_SUCCESS 
   check("else the account ownerUserId", who.owner === "u_alice");
   check("else createdByUserId (a manual account is attributed)", who.creator === "u_bob");
   check("no subject ⇒ null", who.none === null);
-  for (const a of ["PLATFORM_OPS", "SYSTEM"] as const) {
+  // PB-1 Phase 3 — MEMBER (pure-core-only audience, the member activity feed) is identity-free too.
+  for (const a of ["PLATFORM_OPS", "SYSTEM", "MEMBER"] as const) {
     const vs = derive(facts(rows), a);
     check(`${a} verdicts have NO subjectUserId key`, vs.every((v) => !("subjectUserId" in v)) && !JSON.stringify(vs).includes("u_bob"));
     check(`${a} normalised verdicts carry no subjectUserId`, vs.map(normaliseVerdict).every((n) => !("subjectUserId" in n)));
