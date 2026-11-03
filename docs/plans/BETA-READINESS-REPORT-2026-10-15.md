@@ -1,6 +1,6 @@
 # BETA IMPLEMENTATION — READINESS REPORT (2026-10-15)
 
-**Program:** invite-only beta implementation (owner authorization 2026-10-15: every REQUIRED + RECOMMENDED item of the [decision matrix](BETA-OWNER-DECISION-MATRIX-2026-10-15.md); [analytics design](BETA-PRODUCT-ANALYTICS-DESIGN.md); RWA-2 per [the design](../systems/wealth.md#manual-real-world-asset-valuation-history-rwa-2) with the owner's 2026-10-15 rules) · **Branch:** `v2.6` · **Coordinator:** the consolidated lead session (after the crash of the two previous coordinating sessions; [recovery inventory](BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md)) · **Contract:** [coordination](BETA-IMPLEMENTATION-COORDINATION.md) · **State of record:** [`/STATUS.md`](../../STATUS.md) §3, §6, §11, §13, §14.
+**Program:** invite-only beta implementation (owner authorization 2026-10-15: every REQUIRED + RECOMMENDED item of the [decision matrix](BETA-OWNER-DECISION-MATRIX-2026-10-15.md); [analytics design](BETA-PRODUCT-ANALYTICS-DESIGN.md); RWA-2 per [the design](../systems/wealth.md#manual-real-world-asset-valuation-history-rwa-2) with the owner's 2026-10-15 rules) · **Branch:** `v2.6` · **Coordinator:** the consolidated lead session (after the crash of the two previous coordinating sessions; [recovery inventory](../archive/evidence/incidents/BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md)) · **Contract:** [coordination](BETA-IMPLEMENTATION-COORDINATION.md) · **State of record:** [`/STATUS.md`](../../STATUS.md) §3, §6, §11, §13, §14.
 
 **Production:** untouched. No deployment, migration, seed, configuration, credential or data change on Production. Everything below is Dev-built, locally gated, and Preview-deployed/verified only as §7–§8 state.
 
@@ -10,7 +10,7 @@
 
 ## 1. Recovered work (crash of 2026-10-15)
 
-Both coordinating sessions (beta implementation; real-world assets) and their background agents stopped mid-flight (machine crash + account usage limit). Nothing was lost that was committed; everything uncommitted was found intact in its worktree and finished by freshly briefed agents. The read-only inventory is the [recovery inventory](BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md). In short:
+Both coordinating sessions (beta implementation; real-world assets) and their background agents stopped mid-flight (machine crash + account usage limit). Nothing was lost that was committed; everything uncommitted was found intact in its worktree and finished by freshly briefed agents. The read-only inventory is the [recovery inventory](../archive/evidence/incidents/BETA-CRASH-RECOVERY-INVENTORY-2026-10-15.md). In short:
 
 | Found | State at recovery | Disposition |
 |---|---|---|

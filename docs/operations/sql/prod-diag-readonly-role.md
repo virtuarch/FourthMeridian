@@ -1,6 +1,6 @@
 # Production read-only diagnostic role, `fm_diag_ro` (EXECUTED AND RETIRED 2026-10-31)
 
-**Status.** The owner approved this on 2026-10-31. The role was created per §2, with the helper pinned at `8320dc3`, and it was used for one masked, read-only investigation. Every run printed `read_only_guard = on` and `read_only_role_guard = verified`. The role was then dropped per §6: afterwards there were 0 roles, 0 policies and 0 sessions. Findings: [docs/plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md](../../plans/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md).
+**Status.** The owner approved this on 2026-10-31. The role was created per §2, with the helper pinned at `8320dc3`, and it was used for one masked, read-only investigation. Every run printed `read_only_guard = on` and `read_only_role_guard = verified`. The role was then dropped per §6: afterwards there were 0 roles, 0 policies and 0 sessions. Findings: [docs/archive/evidence/security/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md](../../archive/evidence/security/BETA-REQUEST-PROD-INVESTIGATION-RESULTS-2026-10-31.md).
 
 The helper has been hardened since that run, after the third and fourth independent reviews:
 - the run ends in ROLLBACK, never COMMIT;

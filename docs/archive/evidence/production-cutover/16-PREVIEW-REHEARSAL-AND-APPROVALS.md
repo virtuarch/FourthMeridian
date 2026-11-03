@@ -83,7 +83,7 @@
 
 Supabase's dashboard labels change over time. Where a label differs, record what the dashboard shows.
 
-1. Open the **Preview** project (ref begins `lqag…`; region and name as shown). Confirm in **Project Settings → General** that this is Preview, not Production.
+1. Open the **Preview** project (ref <redacted: Preview project ref>; region and name as shown). Confirm in **Project Settings → General** that this is Preview, not Production.
 2. **Plan:** Organization → Billing. Record the plan (Free / Pro / Team / Enterprise). Free projects have no dashboard-restorable backups. Daily backups and their retention are tied to the plan: Pro is 7 days, Team 14, Enterprise up to 30 (verify against the dashboard).
 3. **Database → Backups → Scheduled backups.** Record:
    - (a) whether the list is populated;

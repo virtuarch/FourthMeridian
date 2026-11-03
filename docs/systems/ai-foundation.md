@@ -1,6 +1,6 @@
 # AI Foundation — Financial Intelligence
 
-*Governs how the platform thinks: deterministic modules compute financial knowledge, and anything that speaks about money narrates what they computed. The north-star reference every future architectural proposal is measured against. These are binding rules, not a status report — and as of the AI conversation reset there is no conversational consumer of them in the repository. See also [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md), [money & FX](./money-and-fx.md).*
+*Governs how the platform thinks: deterministic modules compute financial knowledge, and anything that speaks about money narrates what they computed. The north-star reference every future architectural proposal is measured against. These are binding rules; the [implementation map](#implementation--the-ai-subsystem-as-built) at the end says what is built today. See also [Financial Truth Spine](../architecture/FINANCIAL_TRUTH_SPINE.md), [money & FX](./money-and-fx.md).*
 
 > **New here? The one inversion.** **Financial Intelligence is NOT AI.** Financial
 > Intelligence is *deterministic knowledge* — computed by pure, versioned code from
@@ -16,36 +16,12 @@
 > The implementation section at the end of this doc is the map; the doctrine below is
 > the law.
 
-> **⚠️ STALE STATUS BELOW (FM-AUDIT-066, open).** The "conversation layer was removed"
-> note that follows is historical: `/api/ai/chat` is live again (a 20-tool engine,
-> Memory V2, a sealed scenario carrier). This doc has not been re-baselined yet; the one
-> section kept current is [Conversation state carrier](#conversation-state-carrier-current).
-
-> ## ⚠️ The conversation layer was removed (AI conversation reset)
->
-> **The doctrine below is unchanged and still binding. The conversational layer
-> that consumed it is gone.** `/api/ai/chat` returns an explicit
-> `503 AWAITING_REDESIGN`; there is no prompt builder, no router, no planner, no
-> output validator and no answer verifier in this repository today. Nothing in
-> the product issues a chat completion.
->
-> What survives is exactly the half this document calls binding: the
-> deterministic financial intelligence (`lib/ai/intelligence/**`), the grounded
-> context builder and its assemblers, the visibility gate, the forecast engine,
-> and the single provider seam. See
-> [`docs/plans/AI-CONVERSATION-RESET.md`](../plans/AI-CONVERSATION-RESET.md) for
-> what was removed, what was kept, and why. **No replacement architecture has
-> been chosen.**
->
-> Read the "Implementation map" at the end of this document with that in mind —
-> it has been corrected, and it now names fewer things.
-
 This is the foundational architectural doctrine for Financial Intelligence inside
 Fourth Meridian. It defines how the platform thinks, how future systems must be
 designed, how new ideas are classified, and how architectural drift is prevented.
 It is doctrine, not description — it states what must be true, not what happens to
-be true today. (Implementation detail lives in the separate AI System document;
-this file stays doctrine-level.)
+be true today. (Implementation detail lives in the
+"Implementation" part at the end of this file.)
 
 ---
 
@@ -337,65 +313,115 @@ until proven otherwise.
 
 # Implementation — the AI subsystem (as built)
 
-*This section folds the former `systems/ai.md` so the AI doctrine and its
-implementation live in one place. It describes the shipped Space-scoped chat.*
+*Re-baselined 2026-11-02 (closes the ai-foundation part of FM-AUDIT-066). This part is
+the map; the doctrine above is the law. Every claim is marked:* **IMPLEMENTED** *(with
+a code path or PR) ·* **DECIDED BUT NOT IMPLEMENTED** *·* **PROPOSED** *·*
+**DEPRECATED**. *If the code disagrees with this section, the code wins and this
+section is the defect.*
 
-**Governing premise:** deterministic-first. The system computes provenance-carrying
-facts deterministically; the LLM only *narrates* them. The model is structurally
-prevented from calculating figures, inventing data, or seeing account data the
-requesting Space is not permitted to see.
+*Durable content extracted here from the retired working documents: the AI conversation
+reset record, the baseline-harness contract, the production-promotion record, the
+Memory V2 design (rulings R1–R12), the M1 measures investigation and the post-M1
+architecture-program closure. Their full text is in git history (`git log --
+docs/plans/<NAME>.md`). Provider pricing, the invocation ledger, allowances and the
+emergency pause are documented separately (billing and provider costs).*
 
-- **One provider seam** — `lib/ai/provider.ts` `generateChatReply(systemPrompt, messages)`
-  is the *only* file permitted to import the OpenAI SDK (model set via `CHAT_MODEL`,
-  today `gpt-4o-mini`). Every AI feature calls through it, so the vendor is one seam,
-  not a hundred call sites — the codebase can move providers without touching a route.
-- **Context builder** — `lib/ai/context-builder.ts` `buildContext` turns a Space into
-  a grounded `SpaceContext_AI` via the self-registering assembler registry
-  (`lib/ai/assemblers/`). Assemblers *read the canonical financial authorities and
-  re-decide nothing* (see [Financial Truth Spine §9](../architecture/FINANCIAL_TRUTH_SPINE.md)):
-  transactions gate on `BANKING_POPULATION` and partition via `flow-predicates`;
-  accounts delegate to `classifyAccounts` and `reportingBalance`; holdings read
-  `getCurrentPositions`, never the legacy `Holding` table.
-- **Visibility fails closed** — `lib/ai/visibility.ts` `TRANSACTION_DETAIL_VISIBILITY`
-  (`[FULL]`) is the single predicate deciding which account data may enter a prompt.
-  `BALANCE_ONLY` contributes only totals; `SUMMARY_ONLY`/`PRIVATE`/legacy `SHARED` are
-  excluded; absence of a grant is exclusion. `VIEWER` role is excluded from chat as
-  defense in depth. The data layer and the assemblers share the one predicate so a
-  drifted copy can never leak.
-- **Enforcement — currently NONE, and deliberately so.** `lib/ai/output-validator.ts`
-  (membership-with-tolerance over the reply's numbers) was deleted in the AI
-  conversation reset, along with the assessment-contradiction guard, the forecast
-  figure licence, the typed answer boundary and the answer verifier. The
-  *principle* in this document stands: a referee that judges artifacts and never
-  finances. What was removed is one particular referee, built to police prose,
-  which grew until it became the product's behaviour rather than its backstop.
-  **A new conversation layer must arrive with its own enforcement story; it does
-  not inherit one.**
-- **Stateless by design** — there is **no** `Conversation`/`ChatMessage`/`conversationId`
-  model. Each turn is stateless; the client owns history. Only `AuditLog` and
-  `ApiUsageCounter` are persisted. Conversation persistence and durable memory are
-  deliberately *not built yet*: statelessness keeps the trust surface small while the
-  deterministic-and-narrate core is proven, and the prompt forbids the model implying
-  a persistence capability it lacks. (This is the major unbuilt AI layer — see
-  `/STATUS.md`.)
-- **Orchestration — absent.** `app/api/ai/chat/route.ts` authenticates, rate
-  limits, and returns `503 AWAITING_REDESIGN`. `AI_CONTEXT_ASSEMBLED` is still
-  emitted, by `buildContext` itself, on every Brief and expense-baseline build.
-- **Deterministic forecast** — `lib/forecast/**` (the engine and its authorities)
-  and `lib/ai/forecast/{assemble,streams,pay-dates}.ts` (the Space adapter, the
-  bounded ledger read, the pay-date resolver) project cash from EXPLICIT typed
-  inputs. They read no sentence and have no conversational dependency; the
-  natural-language extractors that used to feed them were deleted with the
-  conversation layer.
+## 1. Where AI attaches
 
-**Where AI attaches, in one line:** one provider import site (`lib/ai/provider.ts`),
-one visibility gate (`lib/ai/visibility.ts` `[FULL]`), one context entry
-(`buildContext → SpaceContext_AI`), narrating facts the Financial Truth Spine owns —
-never authoring them.
+- **One provider seam — IMPLEMENTED.** `lib/ai/provider.ts` is the only OpenAI import
+  site: `generateChatReply`, `generateWithTools` (one request, one response, raw tool
+  calls returned; the tool *loop* is the caller's), `generateStructured` /
+  `generateStructuredWithUsage`. The seam picks the parameter dialect by model family
+  (`usesModernParams`: `max_completion_tokens` and default temperature for `gpt-5.x`),
+  refuses an unpriced model (`assertPricedModel`) and re-checks the paid-requests
+  admission (`assertPaidRequestsAdmitted`) on every call.
+- **Model call sites — IMPLEMENTED.** Exactly three product surfaces call the seam:
+  the conversation runtime (`lib/ai/conversation/turn.ts`, one `generateWithTools(`
+  call site, asserted by `scripts/ai-baseline/baseline.test.ts`), the Daily Brief
+  (`lib/ai/brief/generate.ts`, one structured call, no tool loop) and operator-invoked
+  Communications authoring (`lib/notifications/content/deps.ts`, surface
+  `comms_authoring`). Every call runs inside an AI invocation context, so the provider
+  writes one attributable `AiInvocation` row per call.
+- **Grounded context — IMPLEMENTED.** `lib/ai/context-builder.ts` `buildContext` →
+  `SpaceContext_AI` through the self-registering assembler registry
+  (`lib/ai/assemblers/`). Assemblers read the canonical authorities and re-decide
+  nothing ([Financial Truth Spine §9](../architecture/FINANCIAL_TRUTH_SPINE.md)).
+  Since RLS slice S6 an `AssemblerFn` takes a required leading `ReadClient`, so a
+  conversation turn cannot be split-authority between its orientation and its tools.
+- **Visibility fails closed — IMPLEMENTED.** `lib/ai/visibility.ts`
+  `TRANSACTION_DETAIL_VISIBILITY` (`[FULL]`) is the single predicate deciding which
+  account detail may reach a model. `BALANCE_ONLY` contributes totals only; absence of
+  a grant is exclusion.
+- **Tenant authority — IMPLEMENTED.** The chat route binds every read to the
+  authenticated user through `aiPhaseRunner(user.id)` (`lib/ai/tenant-phase`): one short
+  tenant transaction for the prologue, one per tool call, one for a durable write. No
+  tool argument, schema field, header, body or cookie can reach that identity.
+- **Deterministic forecast — IMPLEMENTED.** `lib/forecast/**` and
+  `lib/ai/forecast/{assemble,streams,pay-dates}.ts` project cash from explicit typed
+  inputs (`statements: UserStatement[]`, routed by `routeStatement`). No regular
+  expression is declared in `lib/ai/forecast/assemble.ts` (asserted by
+  `assemble.test.ts`).
 
----
+## 2. The conversation runtime
 
-## Conversation state carrier (current)
+**IMPLEMENTED — promoted 2026-09-13 (`989d63d`), `POST /api/ai/chat`, model `gpt-5.1`.**
+
+- **Two clients, one engine.** The product route and the terminal harness both open a
+  transcript with `openTranscript()` and run turns through
+  `lib/ai/conversation/engine.ts` / `turn.ts` (`runStatelessTurn`, `executeTurn`). The
+  runtime imports nothing from `scripts/`, no route imports the harness, and there is
+  exactly one `generateWithTools(` call site (all asserted by
+  `scripts/ai-baseline/baseline.test.ts`).
+- **The model is a constant.** `CHAT_MODEL = 'gpt-5.1'` in `engine.ts`, with no
+  environment override: a model is changed by measuring the new one, not by setting a
+  variable. (`lib/ai/provider.ts` keeps a separate `AI_CHAT_MODEL` default for the
+  non-conversation callers; `lib/ai/model-rate-coverage.test.ts` requires both to be
+  on the rate card.)
+- **Turn budgets.** At most 6 tool round trips (`MAX_TOOL_ROUNDTRIPS`) and 16 tool calls
+  (`MAX_TOOL_CALLS_PER_TURN`) per turn (`turn.ts`), inside a wall-clock budget
+  (`lib/ai/turn-deadline.ts`, `CHAT_TURN_BUDGET_MS`). Compaction keeps raw tool results
+  for the last 2 completed turns and elides older ones (`compaction.ts`
+  `DEFAULT_COMPACTION`).
+- **The tool surface — 21 tools** (`lib/ai/conversation/tools.ts` `TOOLS`):
+  `get_financial_snapshot`, `get_spending`, `measure_flows`, `get_baselines`,
+  `get_transactions`, `get_income`, `get_investments`, `get_net_worth_history`,
+  `find_in_balance_history`, `explain_net_worth_composition`, `project_cash`,
+  `get_pay_dates`, `investment_scenario`, `scenario_projection`, `scenario_crossing`,
+  `scenario_goal_seek`, `reconcile_projection`, `stage_assumptions`, `recall`,
+  `remember`, `describe_fourth_meridian`. The financial tools are adapters over existing
+  authorities and compute no financial figure the authorities do not; tool names use the
+  user's vocabulary, not internal terms. The only durable writes are `remember` and the
+  silent evidence-based projection checkpoint, both in `memory-store.ts`, which touches
+  only `db.spaceMemory`.
+- **The system instruction is short and figure-free.** `SYSTEM_INSTRUCTION`
+  (`turn.ts`) is pinned at roughly 90–490 words with no worked example, no phrase table,
+  no financial figure, and no sentence copied from the golden conversations
+  (`baseline.test.ts` §2). Each word-count increase was one measured sentence with an
+  A/B check under `scripts/ai-baseline/`.
+
+### 2.1 The trust boundary (`app/api/ai/chat/route.ts`) — IMPLEMENTED
+
+- **Order:** `requireUser()` → the `conversations` entitlement → per-minute and per-hour
+  pacing (`lib/ai/pacing.ts`, both fail closed) → the paid-requests admission (a paused
+  platform returns 503 `AI_PAUSED`) → the daily allowance with a reservation released in
+  `finally` → body parsing. No model work happens before all of these pass.
+- **What the browser may send:** a `spaceId` and `{role, content}` turns with role
+  `user` or `assistant` (`lib/ai/conversation/request.ts`). A `system` or `tool` turn is
+  a refused request (400), not a dropped message. The memory line, evidence, scenario,
+  model, as-of date and owner are all built server-side.
+- **The Space is re-resolved, never accepted.** A named Space that does not come back
+  from `resolveSpaceContext` as itself is a 403. Only the selector's "all my Spaces"
+  sentinel (resolved to `null` by the parser) may fall back to the user's own Space.
+- **What leaves:** `AiChatResponse` (`types/index.ts`) — the answer, its `guidance`
+  level, any `knowledgeGaps`, and `continuity` only on the turn a plan is lost. No
+  evidence, tool result, usage or provider detail. Failures
+  return one of a fixed set of sentences (`refusal-sentences.ts`); the reason is logged
+  server-side and never put in a response body.
+- **No conversation persistence.** No conversation table, id or restore. A conversation
+  that ends is gone, apart from the durable memory the user asked for (§5) and
+  the cost-ledger rows.
+
+### 2.2 Conversation state carrier — IMPLEMENTED
 
 *Kept current by the pre-S1 gate repairs (FM-AUDIT-018, FM-AUDIT-019), 2026-09-22.*
 
@@ -406,18 +432,380 @@ when needed — a **continuity-loss** descriptor. Three slots, never merged; non
 financial truth, and none is durable (2 h TTL, bound to user + Space + the digest of the
 last assistant reply, so a new chat or another Space opens to nothing).
 
-- **Cipher:** the repo's purpose-derived AES-256-GCM (`sealWithPurpose`), as one base64url
-  token (`c1.` iv‖tag‖ciphertext, 12-byte IV, 16-byte tag pinned both sides).
-- **Capacity:** 3,900 characters — a browser discards a cookie over 4,096 bytes silently —
-  holding ~2,890 bytes of state (base64url; the previous hex encoding held ~1,915).
+- **Cipher:** the repo's purpose-derived AES-256-GCM (`sealWithPurpose`,
+  `EncryptionPurpose.AI_RUNTIME_STATE`), as one base64url token (`c1.`
+  iv‖tag‖ciphertext, 12-byte IV, 16-byte tag pinned both sides).
+- **Capacity:** 3,900 characters (`MAX_SEALED_CHARS`) — a browser discards a cookie over
+  4,096 bytes silently — holding ~2,890 bytes of state.
 - **Overflow is explicit, never silent.** State that does not fit is replaced by a sealed
   continuity marker naming what was lost (an executed scenario, N staged clauses). The next
   turn receives a `CONTINUITY NOT CARRIED` notice (`continuity.ts`) saying the plan is not in
   force; the plan stays *in play* (project_cash refuses to answer it from the current trend
   unless `ignoreStaged`); the loss is carried until a scenario runs again; the response
   carries `continuity` on the turn it happens and the chat UI shows a notice.
-- **Durable memory** (`SpaceMemory`, Memory V2) is separate from the carrier and is written
-  only when the turn's context says `memoryWrites: true` — the product chat route. Dogfood /
-  evaluation harnesses are read-only for memory unless `FM_AI_MEMORY_WRITES=clone-only` against
-  a clone (`memory-write-policy.ts`).
+- **Known gap (accepted):** a transcript rebuilt from the browser has the prose but not
+  the raw tool results of the last two turns, so the model re-reads through a tool
+  (documented at `replayHistory` in `engine.ts`). The carrier is per browser, not per
+  tab; the conversation-tail binding stops two tabs reading each other's hypothetical,
+  but the last tab to answer owns the cookie.
 
+## 3. Enforcement — what referees model output today
+
+The pre-reset prose validator is gone (§9). Enforcement now sits where a figure is
+*produced or admitted*, not in a sweep over prose:
+
+- **Daily Brief figure licence — IMPLEMENTED.** `lib/ai/brief/licence.ts`: every amount-like
+  token in Brief prose must be a faithful rounding of a number in the deterministic
+  package, compared at the precision it was written at and never looser than 3%.
+  `lib/ai/brief/generate.ts` refuses a Brief whose headline states an unlicensed figure
+  (`UNLICENSED_HEADLINE`) and drops an observation that does (`UNLICENSED_FIGURE`), cites
+  nothing real (`NO_EVIDENCE`), mislabels a movement (`MISLABELED_MOVEMENT`) or ties a
+  balance to an unconnected movement (`UNCONNECTED_MOVEMENT`). It drops rather than
+  regenerates: a loop that asks again until the numbers look right eventually accepts a
+  wrong one.
+- **Memory provenance gate — IMPLEMENTED.** `memory-model.ts` `admitWrite` (§5).
+- **Scenario argument contract — IMPLEMENTED.** An argument a scenario tool's schema does
+  not declare is refused by name (`lib/ai/conversation/tools/scenario/setup.ts`); which
+  clauses ran is reported from the ledger's own movements (`clausesInForce`,
+  `scenario-rules.ts`), never from the caller's arguments; a rule is named from its fields
+  (`contributionName`), never from a caller's label.
+
+## 4. Unprompted speech requires a licence
+
+> **The Daily Brief speaks unprompted under a deterministic licence; nothing else may
+> speak unprompted until it has its own licence of the same kind.**
+
+- **The rule — DECIDED** (carried from the roadmap's Workstream 3 gate: *the system may
+  not speak unprompted until it cannot misquote a number*).
+- **The Daily Brief — IMPLEMENTED** under that licence (`lib/ai/brief/licence.ts`,
+  `generate.ts`, §3). It met the gate through the licence, not through the deleted
+  output validator.
+- **No other unprompted AI surface exists — IMPLEMENTED (by absence).** The only other
+  model callers are the chat runtime (speaks only when the user asks) and Communications
+  authoring (an operator asks for a polish or check; nothing is sent to a customer
+  by the model). Any proactive AI surface (ambient insights, AI-written notifications) is
+  **PROPOSED** at most and must arrive with its own licence before it ships.
+
+## 5. Durable financial memory (Memory V2)
+
+**IMPLEMENTED 2026-09-21 (post-M1 program, slices S1–S6, no migration).** Model:
+`lib/ai/conversation/memory-model.ts` (pure); store and tools: `memory-store.ts`,
+`memory-tools.ts`; user surface: `app/api/ai/memory/**` and
+`components/dashboard/MemoryPanel.tsx`; table `SpaceMemory`.
+
+Three sentences the design keeps true: **memory is not financial truth; memory is not an
+active scenario; a scenario is not memory.**
+
+### 5.1 Invariants
+
+1. **A figure enters memory only as the user stated it — exactly.** Every new Money,
+   Months, Fraction and Percent value must appear in the user's own turns, read as that
+   kind of quantity, matched to half a cent (`SAID_EXACTLY = 0.005`). Our own figures
+   (orientation, envelope, tool results, our prose) license nothing, even when the user
+   loosely echoes them ("so about 180k?" does not admit a projected 181,204.37). A digit
+   group inside a larger number or a date licenses nothing. Money means a currency mark,
+   a k/m suffix, thousands grouping, decimals, a spelled currency word, or a bare
+   integer ≥ 1,000 that is not a year; a bare small integer is a count. Months also accept
+   a closed word list ("six months"). One exception: a `Fraction` of exactly `1` needs no
+   figure ("…then invest the rest").
+2. **Memory is never financial truth.** No measure, baseline resolver, forecast or
+   liquidity reader reads a remembered figure. It reaches arithmetic only when the model
+   passes it as an explicit tool argument, and the answer says it was remembered.
+3. **Memory never acts by itself.** It activates no scenario and re-seeds no envelope;
+   the user surface cannot "use it now".
+4. **A projection is remembered only when it rests on evidence.** A projection that rests
+   on a user-stated figure is a hypothetical and is never recorded
+   (`memory-store.ts` checkpoint path).
+
+### 5.2 The model
+
+Four stateable classes plus one we write (`STATED_CLASSES`, `KIND_OF_CLASS`):
+
+| Class | Stored kind | Fields (closed set) |
+|---|---|---|
+| `GOAL` | `INTENTION` | `targetMetric` (`netWorth`·`liquid`·`investments`·`debt`), `targetAmount`, optional `byDate` |
+| `PLANNED_EXPENSE` | `INTENTION` | `label` (1–40 chars), `amount`, optional `earliest` |
+| `RULE` | `INTENTION` | nested `rule`: `liquidFloorMonthsOfExpenses` **or** `liquidFloor` (+ `fractionOfExcess`, `target`), **or** `surplusFraction` (+ `target`); optional `from` / `to` |
+| `BASELINE` | `ASSUMPTION` | exactly one of `monthlySpending` / `annualReturnPct`; code stamps `basis: "REMEMBERED", scope: "PLANNING"` |
+| `PROJECTION` | `CHECKPOINT` | a projection we made, with its evidence basis |
+
+Shape (synthetic values):
+
+```json
+{ "kind": "INTENTION",  "payload": { "v": 2, "class": "RULE", "rule": { "liquidFloorMonthsOfExpenses": 6, "fractionOfExcess": 1, "target": ["highest_apr", "investments"] } } }
+{ "kind": "ASSUMPTION", "payload": { "v": 2, "class": "BASELINE", "monthlySpending": 4000, "basis": "REMEMBERED", "scope": "PLANNING" } }
+```
+
+States (`stateOf`): `IN_FORCE`, `STALE` (a planning figure older than 180 days,
+`BASELINE_STALE_AFTER_DAYS`), `NOT_YET`, `LAPSED` (a goal whose date passed — still
+readable), `SETTLED`, `SUPERSEDED`, `RETIRED`. Supersession keeps history: an amend
+writes a new version and marks the old one `SUPERSEDED`.
+
+### 5.3 The twelve rulings (R1–R12) as implemented
+
+| # | Ruling | Status |
+|---|---|---|
+| R1 | The user's words are passed in (`userTexts`), never read off the transcript: the orientation is itself a `user`-role message and carries every balance we hold. `turnEvidence(userTexts, messages)` is pure. | IMPLEMENTED |
+| R2 | A Money field with a relational sibling (`liquidFloor` ↔ `liquidFloorMonthsOfExpenses`) needs positive user evidence; otherwise the refusal names the months field. Not rememberable in a rule: `amount`+`cadence`, `fractionOfLiquid`+`cadence`, `{liability: id}` targets (ids churn on reconnect), `onDate`, `label`. | IMPLEMENTED |
+| R3 | A remembered planning figure is `REMEMBERED`, never `STATED`. It is not a rung of `resolveExpenseBaseline`; no tool reads it. | IMPLEMENTED |
+| R4 | One vocabulary authority: the model imports `CONTRIBUTION_KEYS`, `ALLOCATION_TARGET_WORDS`, `unknownContributionKeys`, `contributionBasis`, `contributionName` from `scenario-rules.ts`. A stored rule holds exactly contract keys. `scenario-ledger.ts` stays import-free; its `AllocationTarget` type is tied to the constant by the compiler, plus a parity test. | IMPLEMENTED |
+| R5 | Validators split: `validateShape` / `validateFields` are timeless; `admitWrite` judges only this call's supplied fields, exempts values equal to the current version's, and checks future dates (`byDate`, `to`). | IMPLEMENTED |
+| R6 | Priming is measured and gates the reader: `composeMemoryLine(rows, today, {rules})`; production ships `MEMORY_LINE_RULES = 'clause'` after a measured 0 silent applications. | IMPLEMENTED |
+| R7 | Cuts: no `PREFERENCE` class; digits-only money (no word numbers); no `unreadable: n` in the memory line (kept in `recall` and the panel). | IMPLEMENTED |
+| R8 | Legacy V1 rows are read deterministically: goal and projection shapes are readable; a planned outlay is readable only when `intent ∈ {buy, purchase, spend}`, `amount > 0`, `label` 1–40 chars; everything else (including a standalone V1 assumption) is unreadable. Nothing is rewritten by deploy. | IMPLEMENTED (`readMemory`) |
+| R9 | Readers land before writers (S1 model → S2 checkpoints → S3 readers → S4 writers → S5 API → S6 panel). | IMPLEMENTED (sequencing rule; also binding for future memory changes) |
+| R10 | The memory line's bytes are measured and pinned by test (typical ≈1.2 KB, capped worst case ≈3 KB); caps `LINE_CAPS`: 3 goals, 3 rules, 2 planning figures, 3 planned, 6 horizons. | IMPLEMENTED (`memory-model.test.ts`) |
+| R11 | The replay corpus is a sanitised, committed fixture (`lib/ai/conversation/fixtures/remember-replay.json`); no test reads `tmp/`. | IMPLEMENTED |
+| R12 | Acceptance runs on a database clone, production path, full tool surface. | IMPLEMENTED (procedure; see §8) |
+
+### 5.4 The memory line, recall, and the user's control
+
+- **The memory line — IMPLEMENTED.** Sent on every request (`composeMemoryLine`). It
+  lists only the user's own `ACTIVE`, readable, `IN_FORCE`/`STALE` items and says
+  "Nothing listed is in effect and none of it is a current figure". When a planning
+  figure is listed it adds one `planningNote`: answer on measured evidence unless asked,
+  and if the figure is used say it was remembered on its date and give the measured
+  figure beside it.
+- **Write behaviour — IMPLEMENTED.** An identical restatement writes nothing
+  (`unchanged: true`), except that restating a `STALE` or `LAPSED` item writes a new
+  version and moves its date. Every `RULE` write echoes `otherRulesInForce`.
+- **Who may write — IMPLEMENTED** (`memory-write-policy.ts`, FM-AUDIT-019). Writes are
+  off unless the turn context says `memoryWrites: true`. Only two callers set it: the
+  product chat route, and a harness explicitly opted in with
+  `FM_AI_MEMORY_WRITES=clone-only` against a clone database (`fintracker_<suffix>`). Any
+  other value, or a live/unidentifiable database, refuses before anything runs.
+- **User agency — IMPLEMENTED.** `GET /api/ai/memory` lists, `PATCH /api/ai/memory/[id]`
+  retires, `DELETE` erases. Scope is always `{spaceId, ownerUserId: user.id}`; no route
+  takes a user id, no owner/admin bypass, another member's id is a 404. Erasure writes
+  one content-free `AuditLog` row (`AI_MEMORY_ERASED`, `{kind, versionsErased}`). The
+  surface cannot create, edit or apply memory. The panel lives under
+  `components/dashboard/` because `components/ai/` is presentation-only by guard.
+
+### 5.5 Known and deliberately not built
+
+1. **Concurrent first-record race — DECIDED BUT NOT IMPLEMENTED.** Two turns recording
+   the same new subject at the same instant can leave two `ACTIVE` rows. The fix is a
+   partial unique index on `(spaceId, ownerUserId, kind, subject) WHERE status =
+   'ACTIVE'`, which needs a migration; `SpaceMemory` today has only
+   `@@index([spaceId, ownerUserId, kind, status])`.
+2. **An amend inherits a legacy goal's ungated amount** (by `admitWrite`'s
+   equal-to-current exemption). Accepted; the user can see and delete it in the panel.
+3. **"Remember my raise in March" is refused** — a future income change is not in the
+   `RULE` vocabulary.
+4. **Derived dates are not gated**, and word-form money is asked for once in digits.
+
+## 6. Measures and baselines (M1)
+
+**IMPLEMENTED 2026-09-20 (`d056898`).** Pure modules `lib/ai/measures/{period,measure,baseline}.ts`;
+tools `measure_flows` and `get_baselines` in `lib/ai/conversation/tools/measures.ts`.
+
+Three kinds of figure, never collapsed:
+
+- **MEASURE** — what happened over a requested period. Code owns it entirely.
+- **BASELINE** — the representative monthly rate for forward reasoning, always with its
+  basis and window. Code resolves it given a basis; the model chooses the window and must
+  say which.
+- **DERIVED** — arithmetic over baselines and state (surplus, savings rate, runway,
+  thresholds). Code owns it; every result ships with numerator, denominator and basis, and
+  a zero or unknown denominator is an explicit refusal (never Infinity or NaN).
+
+### 6.1 `measure_flows({ measure, period, compareTo?, category?, asOf? })`
+
+- `measure ∈ FLOW_MEASURES`: `spending`, `income`, `economicNet`, `cardAndDebtPayments`,
+  `transfersBetweenOwnAccounts`, `refunds`. All read the one economic fold through the
+  transactions assembler's monthly rows; there is no second inclusion rule.
+- **A monthly figure is a mean over whole calendar months, never total ÷ days.**
+  `perCompleteMonth` is null on a window with no whole month; a partial month counts in
+  `total` but is never averaged.
+- `period`: relative presets (`MTD`, `QTD`, `YTD`, `PAST_MONTH`, `PAST_QUARTER`,
+  `PAST_6_MONTHS`, `PAST_YEAR`), explicit `month` / `quarter` / `year`,
+  `completeMonths: N`, or `from`/`to` (`period.ts`).
+- `compareTo`: `PREVIOUS` (for a to-date period, the same elapsed days of the prior unit),
+  `SAME_PERIOD_LAST_YEAR`, or an explicit period. **Both sides are computed in one call**
+  with the difference, percentage and direction, so the model never holds one side and
+  computes the other. A window compared with itself is refused.
+- `category` filters `spending` only; spending reports what was charged and, when refunds
+  arrived, `netOfRefunds` / `changeNetOfRefunds`.
+- **Completeness is population-aware** (`completenessFor`): a stale source lowers a
+  measure's tier only when its accounts feed this measure's population. Tiers use the
+  platform `CompletenessTier` vocabulary.
+- `asOf` is an information ceiling clamped to today.
+
+### 6.2 `get_baselines({ statedMonthlySpending?, statedMonthlyIncome?, spendingWindow?, monthsOfExpenses?, liquidChange?, asOf? })`
+
+- **Expense precedence is the canonical one:** STATED (this conversation) > DECLARED (the
+  product setting) > MEASURED, through `resolveExpenseBaseline`
+  (`lib/liquidity/expense-baseline.ts`, which gained the STATED rung in M1). There is no
+  second chain. The measured rung is net economic spending (charges less same-month
+  refunds); the default window is the cash projection's canonical baseline
+  (`lib/transactions/canonical-spending`), and a named `spendingWindow` is a measurement
+  that never replaces it.
+- **Income precedence:** STATED > CADENCE (settled paycheck streams) > MEASURED.
+- **Derived:** `monthlySurplus = incomeBaseline − expenseBaseline`; one savings-rate
+  definition, `(income − expense) / income`, which requires a recurring income basis
+  (STATED or CADENCE) and refuses otherwise; `runwayMonths = liquid / expenseBaseline`
+  (liquid = the canonical `totalLiquid`); `thresholds` always price 3, 6 and 12 months of
+  expenses plus any `monthsOfExpenses` asked, each with the rule, the baseline multiplied
+  and the gap to current cash; `liquidChange` prices a one-off movement
+  (`afterLiquidChange`).
+- **It never says what the user should spend or keep.** Thresholds are reference points;
+  the choice of reserve is the user's.
+- **Scenario composition:** `liquidFloorMonthsOfExpenses` on a contribution rule is
+  resolved to a literal floor from the scenario's own spending level
+  (`resolveMonthsOfExpensesFloor`), and the floor's derivation is echoed. The ledger
+  stays pure.
+
+## 7. Other primitives from the post-M1 program
+
+**IMPLEMENTED 2026-09-21 (`b9e9fd6`).** The program's test for every change: *did we add a
+reusable financial primitive, or did we patch a question?* Phrase handlers, provider
+exceptions, an annual-spending tool and schema de-duplication were refused on that test.
+
+- **A payment is not a cost** — `lib/transactions/debt-service.ts`: `netPaydown =
+  max(0, payments − newChargesOnLiabilities − debtProceeds)`; an unmeasured paydown is
+  `null`, never defaulted to the payments total. Monthly money figures are complete-month
+  means (`meanPerReliableMonth`).
+- **A verdict carries its reason** — `ClassificationReason<T>`
+  (`lib/ai/intelligence/annotations/classification-reason.ts`): scope, the rung that
+  fired, operands, thresholds, population. Freshness belongs to the claim it feeds
+  (`lib/ai/brief/claim-evidence.ts`), not to the Space. `pctOfOpening` decides when a
+  percentage of an opening value means anything. A 429 is absorbed by a bounded retry
+  (`lib/ai/rate-limit-retry.ts`).
+- **The difference is a field** — `positionChange` in scenario payloads; `project_cash`
+  takes a `from` and states what comes in, goes out and remains.
+
+## 8. Conversation harness
+
+The harness is how every conversation change is measured before it ships. It drives the
+**same engine** the product uses (`openTranscript` / `executeTurn`); it owns only the
+experiment around a turn — probe, evidence arm, model, artifact.
+
+### 8.1 What is where
+
+| Path | Role |
+|---|---|
+| `scripts/ai-conversation-baseline.ts` | CLI: batch probe runs (`npm run ai:baseline`) and interactive operator mode (`npm run ai:chat`). Model tiers (`TIERS`): `control` gpt-4o-mini, `mid` gpt-4.1 (the interactive default), `ceiling` gpt-5.5, `candidate` gpt-5.1, `frontier` gpt-6-astra (no tools through chat completions, A0/A1 only). |
+| `scripts/ai-baseline/probes.ts` | The probe conversations (`broad`, `projection`, `cadence`, `debt`, `investments`, `affordability`, `networth`, `spending`, `strategy`, `format`, `session`). Each is multi-turn and replayed against a growing transcript. The goldens' answers are never sent to the model; `whatItDiscriminates` reaches the artifact only. |
+| `scripts/ai-baseline/run.ts` | Runs one probe × arm × model and writes the artifact. |
+| `scripts/ai-baseline/interactive.ts` | The A2 arm with a keyboard: `/tools`, `/cost`, `/exit`; the transcript is written after every turn and on Ctrl-C. A model that cannot call tools is refused, not downgraded. |
+| `scripts/ai-baseline/artifacts.ts` | Artifact shape (`INDEX.md`, `index.json`, one JSON per case with blank human-review fields). |
+| `scripts/ai-baseline/baseline.test.ts` | **Pure, runs in CI.** Pins the structural contract: one turn loop, no harness import from product code, the instruction's size and content rules, the arm contract, the write census. |
+| `scripts/ai-baseline/*.check.ts` | **Live checks**, one per capability (`ai:measures-check`, `ai:memory-check`, `ai:chat-route-check`, `ai:brief-check`, …; full list in `package.json`). Real database and real model calls; **not run by CI**. Run the relevant one when that path changes. Each derives its as-of, horizon and expected figures from the run, never from pinned dates. |
+| `docs/plans/AI-CONVERSATION-GOLDENS.md` | The 21 golden conversations the probes are drawn from. Kept in place: `baseline.test.ts` reads it to assert no sentence of the system instruction appears in it. |
+
+### 8.2 Evidence arms (`lib/ai/conversation/evidence.ts`)
+
+| Arm | Given | Tools | The question it answers |
+|---|---|---|---|
+| A0 | full assembled context, assessment withheld | no | Can a model infer relevance from clean evidence alone? |
+| A1 | full context + `computeAssessment` | no | Does the deterministic verdict layer help or fight the conversation? |
+| A2 | thin orientation + coverage envelope | yes | Is a compact orientation plus retrieval enough? (**the shipped runtime**) |
+| A3 | the date only | yes | Can tool selection replace deterministic routing? |
+
+A0/A1 deliberately skip `resolveDomains` so the broad-context arms are not a test of the
+router.
+
+### 8.3 Running it
+
+```bash
+npm run ai:baseline -- --list                 # probes, arms, models
+npm run ai:baseline -- --smoke --dry-run      # resolve the matrix, call nothing
+npm run ai:baseline -- --smoke                # projection+debt+investments × all arms × mid (12 cases)
+npm run ai:baseline -- --probe projection --arm A2 --model mid
+npm run ai:baseline -- --probe debt --arm A0,A1 --model control,mid,ceiling
+npm run ai:baseline -- --space <spaceId> --probe broad --arm A2 --model mid
+npm run ai:baseline -- --all                  # every probe × arm × tier; must be asked for
+npm run ai:baseline -- --probe session --arm A2 --model ceiling --no-compaction
+npm run ai:chat                               # interactive, default tier mid
+npm run ai:chat -- --model ceiling            # skip the picker
+```
+
+Rules (IMPLEMENTED in the CLI):
+
+- **Nothing runs without an explicit selection.** `--all` is many whole conversations
+  against a paid API and is never implied.
+- **Durable memory is read-only by default** (`FM_AI_MEMORY_WRITES`, §5.4). Turns still
+  write `AiInvocation` usage rows, as the product does.
+- **The Space is printed before anything runs.** Default: the `PERSONAL` Space with the
+  most transactions; `--space` overrides.
+- **Artifacts go to `tmp/ai-baseline/<run-id>/`, which is gitignored**: they contain real
+  balances, merchant names and transcripts. Never commit them, and never copy their
+  figures into tests or docs (tests use synthetic values of the same shape).
+- **Checks that write rows run only against a clone.** `memory-store`, `applied-facts`
+  and `daily-brief-lifecycle` checks call `assertCloneForDurableWrites()`. Setting
+  `FM_DB_GUARD=clone-only` makes `lib/db.ts` refuse any database that is not a clone
+  (`lib/db/live-guard.ts`); the income, planning, advice and hardening checks document
+  running under it. An exported `DATABASE_URL` beats
+  `--env-file`, so a worktree's env file alone is not isolation; the guard in the script
+  is.
+
+### 8.4 Method
+
+- **The transcripts are the result.** Metrics are mechanical only (success, latency,
+  tokens, tool calls, errors); a person scores accuracy, relevance, conversation,
+  conciseness, judgment and follow-up 1–5 in the artifact's blank fields. No LLM judge,
+  no claim extraction, no rubric scorer.
+- **Counts, not rates.** Acceptance runs report n per case (typically n = 6) on the
+  production path with the full tool surface. Withholding a tool is not isolation: the
+  turn loop has two durable write paths.
+- **A prompt change is one measured sentence** with an A/B check committed beside it.
+  Prompt-only rules often move nothing; fix the tool contract first.
+
+## 9. History: the 2026-09-07 conversation reset — DEPRECATED machinery
+
+The first conversation layer failed its own dogfood and was **deleted rather than
+patched** (`95512bb`). Between the user's sentence and the answer it had grown a lexical
+intent classifier, scope resolver, retrieval planner, figure-licence table, typed answer
+schema, answer verifier and repair loop, deterministic figure-dump fallback,
+contradiction and numerical guards, a prose numerical sweep and six environment flags.
+In one session a follow-up re-planned from scratch, the safety fallback printed several
+mutually inconsistent figures for one question, and a plain formatting request returned
+a 502.
+
+**DEPRECATED and removed — do not reintroduce:** `lib/reasoning/**`, `lib/ai/chat/**`,
+`lib/ai/intent/**`, `lib/ai/prompts/**`, `lib/ai/conformance/**`,
+`lib/ai/retrieval-plan.ts`, `lib/ai/output-validator.ts`, `lib/ai/assessment-guard.ts`,
+`lib/ai/claim-detection.ts`, the forecast numerical guard, horizon parser and statement
+extractors; the flags `AI_ANSWER_MODE`, `AI_REASONING_PATH`, `AI_PROMPT_SHAPE`,
+`AI_ASSESSMENT_GUARD_MODE`, `AI_OUTPUT_VALIDATION_MODE`, `AI_FORECAST_GUARD_MODE`; the
+audit actions `AI_CONTEXT_SELECTION_PLANNED`, `AI_OUTPUT_VALIDATION_FLAGGED` (historical
+rows still render). The fourteen removed operator harnesses are tombstoned in
+`scripts/audit-registry.ts` so none can silently reappear.
+
+**Kept, because it is deterministic knowledge rather than conversation machinery:**
+`visibility.ts`, `types.ts`, `assemblers/**`, `buildContext`, `signals/**`,
+`intelligence/**`, `coverage-envelope.ts`, `domain-relevance.ts`,
+`economic-concepts.ts` (`composeInvestments`, a double-count prevention rule),
+`bounded-selection.ts`, `temporal-scope.ts`, the forecast engine, and the provider seam.
+
+**Constraints the reset carries into any design (binding):**
+
+1. **Possession of a number is not permission to use it.** A current and a future figure
+   that happen to be equal are different claims; conversation history never mints an
+   authority.
+2. **A refusal is an answer to a question — make sure it is the question asked.**
+3. **A safety mechanism that changes what the user reads is part of the product**, and is
+   judged on the sentence the user ends up reading.
+4. **When the answer to a measured failure is a fourth guard, the architecture is the
+   failure.**
+5. **Design from exemplar conversations, measured in the harness**, not from the list of
+   removed components. The north star: a person can talk to it like a capable assistant
+   with access to their financial world, without learning Fourth Meridian's internals;
+   provenance and safety support the conversation and do not become it.
+
+## 10. Open items recorded at closure
+
+Recorded open at the post-M1 closure (2026-09-21) and the promotion (2026-09-13). Later
+programs (I1 income changes, planning continuity, S1 category spending) targeted several;
+re-measure before relying on any of these as current:
+
+- A changed assumption or horizon sometimes answered without recomputing (no-tool answers
+  disclosed it). A system-instruction decision, not a tool gap.
+- A change starting on a future date ("cut spending 20% starting January") had no
+  representation at closure.
+- A measured figure sometimes passed back as a stated assumption, relabelling OBSERVED as
+  STATED.
+- Quiet-day Daily Brief goldens: standing classifications appear every day. Needs a
+  product decision on whether a standing warning may go unsaid on day two.
+- Browser dogfood of the chat page (composer, abort, Space selector, refusal rendering) was
+  not claimed at promotion.

@@ -231,7 +231,7 @@ export interface DayRegenInput {
    * violates "historical snapshots may remain historical"
    * (docs/bugfixes/BUGFIX_ARCHIVED_ACCOUNT_SNAPSHOT_STALENESS.md's
    * principle, which A9 broke without anyone deciding to). See
-   * docs/plans/CONNECTIONS-CRYPTO-HISTORY-CLOSEOUT-2026-10-30.md §3.1 (the §9 membership guard).
+   * docs/systems/historical-data.md "Regeneration membership guard".
    *
    * 2026-10-30 — decided PER REVOKED LINK, not Space-wide: the binding sets this
    * from `membershipChangedOn` (below), true only when a revoked account could
