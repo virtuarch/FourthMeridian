@@ -70,7 +70,10 @@ export interface DomainStatus {
 
 // ── Inputs (already read by their authorities) ──────────────────────────────
 
-export interface JobHealthCounts { healthy: number; running: number; overdue: number; failing: number; dead: number; neverRan: number; /** BETA LIFECYCLE L2 — refused by a cost freeze (always set by the loader). */ skipped?: number }
+export interface JobHealthCounts { healthy: number; running: number; overdue: number; failing: number; dead: number; neverRan: number; /** BETA LIFECYCLE L2 — refused by a cost freeze (always set by the loader). */ skipped?: number;
+  /** Ops env-aware verdicts — jobs this deployment never schedules (Preview), no recorded failure. NEUTRAL:
+   *  never healthy, never failing, never "recorded"; absent/0 on a deployment with a scheduler. */
+  notScheduled?: number }
 
 export interface AiOverviewInput {
   /** Billed (RETURNED) invocations in the window. */
@@ -214,12 +217,18 @@ export function deriveJobs(j: JobHealthCounts, nextSlotAt: string | null, now: D
     : recorded === 0 ? "UNKNOWN"
     : skipped > 0 ? "DEGRADED"
     : "HEALTHY";
-  const headline =
+  // Ops env-aware verdicts — neutral jobs (no scheduler on this deployment) are
+  // outside every count above; they only add their own words when present.
+  const notScheduled = j.notScheduled ?? 0;
+  const nsWords = notScheduled ? `${notScheduled} not scheduled in this environment` : null;
+  const baseHeadline =
     state === "FAILED" ? `${j.dead + j.failing} job${j.dead + j.failing === 1 ? "" : "s"} failing or dead.`
     : state === "STALE" ? `${j.overdue} job${j.overdue === 1 ? "" : "s"} overdue against the registry cadence.`
+    : state === "UNKNOWN" && notScheduled > 0 && j.neverRan === 0 ? `${notScheduled} job${notScheduled === 1 ? " is" : "s are"} not scheduled in this environment — this deployment runs no scheduler.`
     : state === "UNKNOWN" ? `No job has recorded a run yet (${j.neverRan} registered).`
     : state === "DEGRADED" ? `${skipped} job${skipped === 1 ? "" : "s"} skipped — their work was refused (cost freeze or plan restriction)${j.healthy ? `; ${j.healthy} healthy` : ""}${j.neverRan ? `; ${j.neverRan} never ran` : ""}.`
     : `${recorded} scheduled job${recorded === 1 ? "" : "s"} recorded runs and all are healthy${j.neverRan ? `; ${j.neverRan} never ran` : ""}.`;
+  const headline = nsWords && !(state === "UNKNOWN" && j.neverRan === 0) ? `${baseHeadline.replace(/\.$/, "")}; ${nsWords}.` : baseHeadline;
   const facts: DomainFact[] = [
     { label: "Healthy", value: String(j.healthy), tone: "ok" },
     { label: "Running", value: String(j.running) },
@@ -227,16 +236,18 @@ export function deriveJobs(j: JobHealthCounts, nextSlotAt: string | null, now: D
     { label: "Failing / dead", value: String(j.failing + j.dead), tone: j.failing + j.dead ? "bad" : undefined },
     { label: "Skipped (cost freeze / plan)", value: String(skipped), tone: skipped ? "warn" : undefined },
     { label: "Never ran", value: String(j.neverRan), tone: j.neverRan ? "muted" : undefined },
+    ...(notScheduled ? [{ label: "Not scheduled in this environment", value: String(notScheduled), tone: "muted" as const }] : []),
     { label: "Next slot", value: nextSlotAt ? relative(nextSlotAt, now) : "not derivable" },
   ];
   const neverRan = j.neverRan ? `${j.neverRan} never ran` : null;
   const next = nextSlotAt ? `next due ${relative(nextSlotAt, now)}` : "next due not derivable";
   const figure: DomainFigure =
-    state === "FAILED" ? { value: `${j.dead + j.failing} failing`, qualifier: [neverRan, next].filter(Boolean).join(" · ") }
-    : state === "STALE" ? { value: `${j.overdue} overdue`, qualifier: [neverRan, next].filter(Boolean).join(" · ") }
-    : state === "UNKNOWN" ? { value: "no runs yet", qualifier: [neverRan ?? "none registered", next].join(" · ") }
-    : state === "DEGRADED" ? { value: `${skipped} skipped`, qualifier: [`${j.healthy} healthy`, neverRan, next].filter(Boolean).join(" · ") }
-    : { value: `${recorded} healthy`, qualifier: [neverRan, next].filter(Boolean).join(" · ") };
+    state === "FAILED" ? { value: `${j.dead + j.failing} failing`, qualifier: [neverRan, nsWords, next].filter(Boolean).join(" · ") }
+    : state === "STALE" ? { value: `${j.overdue} overdue`, qualifier: [neverRan, nsWords, next].filter(Boolean).join(" · ") }
+    : state === "UNKNOWN" && notScheduled > 0 && j.neverRan === 0 ? { value: `${notScheduled} not scheduled`, qualifier: "no scheduler on this deployment" }
+    : state === "UNKNOWN" ? { value: "no runs yet", qualifier: [neverRan ?? "none registered", nsWords, next].filter(Boolean).join(" · ") }
+    : state === "DEGRADED" ? { value: `${skipped} skipped`, qualifier: [`${j.healthy} healthy`, neverRan, nsWords, next].filter(Boolean).join(" · ") }
+    : { value: `${recorded} healthy`, qualifier: [neverRan, nsWords, next].filter(Boolean).join(" · ") };
   return { key: "jobs", title: "Scheduled jobs", state, headline, figure, facts, basis: "JobRun ledger against the job registry", workspace: "platform-jobs" };
 }
 
@@ -361,9 +372,9 @@ export interface PostureInputs {
   configuration: EnvReport | null;
 }
 
-const TRUST_RANK: Record<ProviderTrust, number> = { FAILING: 0, STALE: 1, DEGRADED: 2, UNKNOWN: 3, OPERATIONAL: 4 };
-const TRUST_WORD: Record<ProviderTrust, string> = { OPERATIONAL: "Operational", DEGRADED: "Degraded", STALE: "Stale data", FAILING: "Failing", UNKNOWN: "Unknown" };
-const TRUST_TONE: Record<ProviderTrust, PostureTone> = { OPERATIONAL: "ok", DEGRADED: "warn", STALE: "warn", FAILING: "bad", UNKNOWN: "muted" };
+const TRUST_RANK: Record<ProviderTrust, number> = { FAILING: 0, STALE: 1, DEGRADED: 2, UNKNOWN: 3, INSUFFICIENT_DATA: 3, OPERATIONAL: 4 };
+const TRUST_WORD: Record<ProviderTrust, string> = { OPERATIONAL: "Operational", DEGRADED: "Degraded", STALE: "Stale data", FAILING: "Failing", UNKNOWN: "Unknown", INSUFFICIENT_DATA: "Not enough data" };
+const TRUST_TONE: Record<ProviderTrust, PostureTone> = { OPERATIONAL: "ok", DEGRADED: "warn", STALE: "warn", FAILING: "bad", UNKNOWN: "muted", INSUFFICIENT_DATA: "muted" };
 
 const unavailable = (key: PostureKey, label: string, workspace: string, basis: string): PostureChip =>
   ({ key, label, word: "Unavailable", tone: "muted", count: "could not be asked", state: "unavailable", workspace, basis });

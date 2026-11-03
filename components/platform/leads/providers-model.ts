@@ -18,11 +18,14 @@
  *
  * HEALTH CLASSES (the donut + tiles): healthy / degraded / failing / not assessed.
  *   · the class is provider-health's verdict (OPERATIONAL → healthy; DEGRADED or
- *     STALE → degraded; FAILING → failing; UNKNOWN → not assessed);
- *   · provider-ops may only DOWNGRADE: ≥ FAILED_CALL_SHARE_DEGRADED of at least
- *     MIN_CALLS_FOR_SHARE attempts failed in 7 d ⇒ degraded (never "healthy"
- *     from call counts alone — a provider without a health authority whose calls
- *     look fine stays "Not assessed").
+ *     STALE → degraded; FAILING → failing; UNKNOWN / INSUFFICIENT_DATA → not
+ *     assessed, the latter worded "Not enough data");
+ *   · provider-ops may only DOWNGRADE, by the SHARED rule provider-outcome@1
+ *     (lib/platform/verdicts/provider-outcome.ts) over the 7-day attempt counts:
+ *     at least 20 attempts, then any failure ⇒ degraded and ≥ 50 % ⇒ failing.
+ *     Never "healthy" from call counts alone — a provider without a health
+ *     authority whose calls look fine stays "Not assessed"; too few attempts
+ *     change nothing.
  *
  * HONESTY RULES (pinned by platform-visual-providers-ai.test.ts):
  *   · no reader exposes a usage cap, so every tile says "cap unknown" — never a
@@ -45,6 +48,7 @@ import type { ProviderOperationRollup, ProviderOperationSummary } from "@/lib/pl
 import { trustBadge } from "../widgets/provider-view";
 import type { Fetched, Kpi } from "../ops-visual/ops-visual-model";
 import { openAiCycleSpend, plaidCycleSpend, sumMoney, usd, type Money } from "./ai-costs-model";
+import { assessOutcomes, PROVIDER_OUTCOME_DEFINITION, type OutcomeAssessment } from "@/lib/platform/verdicts/provider-outcome";
 
 /** Display identity for the provider strings the readers emit (ApiUsageCounter.provider, ProviderHealth.key, ProviderCall.provider). */
 const KNOWN_LABEL: Readonly<Record<string, string>> = {
@@ -66,9 +70,8 @@ const RESOURCE_PROVIDERS: ReadonlySet<string> = new Set(["OPEN_EXCHANGE_RATES", 
 
 export const CAP_UNKNOWN = "cap unknown";
 export const NOT_ASSESSED = "Not assessed";
-/** The provider-ops downgrade rule (see the module header). */
-export const FAILED_CALL_SHARE_DEGRADED = 0.05;
-export const MIN_CALLS_FOR_SHARE = 20;
+/** The provider-ops downgrade rule's sample floor — provider-outcome@1, restated (see the module header). */
+export const MIN_CALLS_FOR_SHARE = PROVIDER_OUTCOME_DEFINITION.minSample.calls;
 /** The provider-operations read this dashboard asks for: the last 7 calendar UTC days. */
 export const OPS_WINDOW_DAYS = 7;
 
@@ -132,9 +135,15 @@ function classOfTrust(trust: string): HealthClass {
   return "not-assessed";
 }
 
-/** True when 7-day ProviderCall evidence downgrades a provider (see the module header). */
-export function callsDegrade(calls: number, failed: number): boolean {
-  return calls >= MIN_CALLS_FOR_SHARE && failed / calls >= FAILED_CALL_SHARE_DEGRADED;
+/** provider-outcome@1 over 7-day ProviderCall attempts (unordered: no recency step). */
+export function callsAssessment(calls: number, failed: number): OutcomeAssessment {
+  return assessOutcomes({ kind: "calls", decided: calls, failed, recentConsecutiveFailures: null });
+}
+
+/** The class 7-day call evidence would DOWNGRADE a provider to, or null (no downgrade). */
+export function callsDowngrade(calls: number, failed: number): "degraded" | "failing" | null {
+  const v = callsAssessment(calls, failed).verdict;
+  return v === "FAILING" ? "failing" : v === "DEGRADED" ? "degraded" : null;
 }
 
 /** Every provider a reader reports, worst first (failing → degraded → healthy → not assessed), then by name. */
@@ -176,13 +185,18 @@ export function providerEntities(inp: ProviderInputs): ProviderEntity[] {
     let status: ProviderEntity["status"];
     let healthClass: HealthClass;
     let statusBasis: string;
-    if (h) { status = trustBadge(h.trust); healthClass = classOfTrust(h.trust); statusBasis = "provider-health verdict"; }
+    if (h) {
+      status = trustBadge(h.trust); healthClass = classOfTrust(h.trust);
+      // The execution half traces to its run counts and the rule (absent on an older payload).
+      statusBasis = h.execution ? `provider-health verdict · ${h.execution.basis} (${h.execution.definition})` : "provider-health verdict";
+    }
     else if ((HEALTH_REGISTRY as readonly string[]).includes(key)) { status = { word: inp.health.loading ? "Reading" : "Unavailable", tone: "muted" }; healthClass = "not-assessed"; statusBasis = healthReason; }
     else { status = { word: NOT_ASSESSED, tone: "muted" }; healthClass = "not-assessed"; statusBasis = key === "RESEND" ? "delivery counts, no verdict" : "no health authority on a Platform Operations route"; }
-    if ((healthClass === "healthy" || healthClass === "not-assessed") && callsDegrade(opCalls, opFailed)) {
-      healthClass = "degraded";
-      status = { word: "Degraded", tone: "warn" };
-      statusBasis = `${Math.round((opFailed / opCalls) * 100)}% of ${n(opCalls)} provider calls failed in ${OPS_WINDOW_DAYS} d`;
+    const down = callsDowngrade(opCalls, opFailed);
+    if (down && CLASS_RANK[down] < CLASS_RANK[healthClass]) {
+      healthClass = down;
+      status = down === "failing" ? { word: "Failing", tone: "bad" } : { word: "Degraded", tone: "warn" };
+      statusBasis = `${n(opFailed)} of ${n(opCalls)} provider calls failed in ${OPS_WINDOW_DAYS} d (${Math.round((opFailed / opCalls) * 100)}% · ${callsAssessment(opCalls, opFailed).definition})`;
     }
 
     const diagnostics: string[] = [];

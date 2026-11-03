@@ -9,6 +9,7 @@
  */
 
 import type { JobHealthStatus } from "@/lib/jobs/health";
+import { NOT_SCHEDULED_LABEL } from "@/lib/jobs/scheduler-presence.core";
 
 const EM_DASH = "—";
 
@@ -23,6 +24,8 @@ export const JOB_STATUS_META: Record<JobHealthStatus, { label: string; rank: num
   // The per-job surfaces refine this from the run's skipReason (lib/jobs/skip-label.ts).
   skipped:     { label: "Skipped (cost freeze / plan)", rank: 3, tone: "warn" },
   "never-ran": { label: "Never ran", rank: 3, tone: "muted" },
+  // Ops env-aware verdicts — no scheduler on this deployment (Preview): neutral, never healthy or failing.
+  "not-scheduled": { label: NOT_SCHEDULED_LABEL, rank: 3, tone: "muted" },
   running:     { label: "Running",   rank: 4, tone: "info" },
   healthy:     { label: "Healthy",   rank: 5, tone: "ok" },
 };
