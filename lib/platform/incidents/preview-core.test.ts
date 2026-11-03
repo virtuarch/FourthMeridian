@@ -209,10 +209,28 @@ function main() {
   }
 
   // ── 8. Scope — the browser and the resolvers did not start ─────────────────
-  console.log("8. Preview only: no browser, no resolver, no operator controls");
+  console.log("8. Scope — the browser is read-only (PB-1 2B); no resolver, no operator controls");
   {
-    const controlRoutes = walk("app/api").filter((f) => /\/incidents?\//.test(f));
-    check("no incident browser API was built", controlRoutes.length === 0, controlRoutes.join(", "));
+    // PB-1 2B — DELIBERATE FENCE UPDATE (was: "no incident browser API was built").
+    // The browser shipped as exactly four READ routes over the intelligence
+    // module; the fence now pins that they stay read-only, guarded, and the
+    // only incident routes (operator controls remain S6's).
+    const controlRoutes = walk("app/api").filter((f) => /\/incidents?\//.test(f)).sort();
+    const BROWSER = [
+      "app/api/platform/customer-success/incidents/[id]/route.ts",
+      "app/api/platform/customer-success/incidents/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/route.ts",
+      "app/api/platform/platform-ops/incidents/route.ts",
+    ];
+    check("the only incident API routes are the four PB-1 2B browser reads", JSON.stringify(controlRoutes) === JSON.stringify(BROWSER), controlRoutes.join(", "));
+    for (const f of BROWSER) {
+      const s = code(f);
+      const area = f.includes("/platform-ops/") ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS";
+      check(`${f}: GET only, ${area} READ, through the intelligence accessors (no db)`,
+        !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(s)
+        && new RegExp(`requirePlatformAccess\\(\\s*"${area}"\\s*,\\s*"READ"\\s*\\)`).test(s)
+        && /incidentAccessors\.(search|investigate)\(/.test(s) && !/@\/lib\/db|\.syncIssue\./.test(s));
+    }
 
     for (const f of [CORE, PREVIEW, VIEW, "components/platform/widgets/IncidentPreview.tsx"]) {
       const s = code(f);

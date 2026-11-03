@@ -76,6 +76,7 @@ import { GrowthLead } from "./leads/GrowthLead";
 import { SecurityLead } from "./leads/SecurityLead";
 import { CustomerSuccessLead } from "./leads/CustomerSuccessLead";
 import { MerchantLead } from "./leads/MerchantLead";
+import { OpsIncidentsLead, CsIncidentsLead } from "./incidents/IncidentsLead";
 import { CommsLibraryLead } from "./comms/LibraryView";
 import { confirmLeaveCommsContent } from "./comms/unsaved-content";
 import { CommsAutomationsLead } from "./comms/AutomationsView";
@@ -230,6 +231,9 @@ const PLATFORM_VIEW_LEADS: Record<PlatformViewLead, ComponentType<PlatformViewLe
   "comms-automations": CommsAutomationsLead,
   "comms-delivery":    CommsDeliveryLead,
   "comms-preferences": CommsPreferencesLead,
+  // PB-1 2B — the incidents workspace (one lead per tier; the view is the status preset).
+  "incidents-ops":     OpsIncidentsLead,
+  "incidents-cs":      CsIncidentsLead,
 };
 
 /**
@@ -410,6 +414,7 @@ export function PlatformWorkspaceBody({
   access = READ_ONLY_ACCESS,
   lead,
   hosted = NO_HOSTED_KEYS,
+  viewId,
 }: {
   sectionKeys: readonly PlatformViewSection[];
   doorways?:   readonly string[];
@@ -423,6 +428,8 @@ export function PlatformWorkspaceBody({
   lead?:       PlatformViewLead;
   /** The view's HOSTED keys — rendered only when the lead asks (drawers / detail). */
   hosted?:     readonly string[];
+  /** PB-1 2B — the open view's id, for a lead shared by several views (the incidents presets). */
+  viewId?:     string;
 }) {
   const rows = resolveWorkspaceRows(sectionKeys, dbByKey);
   const Lead = lead ? PLATFORM_VIEW_LEADS[lead] : null;
@@ -450,7 +457,7 @@ export function PlatformWorkspaceBody({
     <div className="flex flex-col gap-8 md:gap-10 pb-16">
       {Lead && (
         <WorkspaceSessionProvider>
-          <Lead renderHosted={renderHosted} hasHosted={hasHosted} onOpenWorkspace={onOpen} access={access} />
+          <Lead renderHosted={renderHosted} hasHosted={hasHosted} onOpenWorkspace={onOpen} access={access} viewId={viewId} />
           {rows.length > 0 && (
             <div className="flex flex-col gap-8 md:gap-10">
               {rows.map(({ row }) => {
@@ -695,6 +702,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
             onOpen={setActiveTab}
             lead={activeViewDef?.lead}
             hosted={activeViewDef?.hosted}
+            viewId={activeViewDef?.id}
           />
         </div>
       ) : (

@@ -53,6 +53,16 @@ export const SPACE_URL_PARAMS = [
   "aicalls",
   "aiuntil",
   "aipage",
+  // PB-1 2B — the incidents workspace: its filters, page and the open incident
+  // (components/platform/incidents/incidents-url.ts; all REPLACE-written).
+  "isev",
+  "iprov",
+  "iop",
+  "icode",
+  "ifrom",
+  "ito",
+  "ipage",
+  "iid",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
 

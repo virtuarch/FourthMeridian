@@ -95,9 +95,9 @@ const absent = (qs: string, k: string) => !params(qs).has(k);
 // ── the documented Space params are exactly the fifteen known ones ──────────────
 {
   check(
-    "SPACE_URL_PARAMS lists the twenty-six Space-scoped params (Markets added `view`; Platform added `workspace`; compact Debt added `section`; v2.7 added the flow group's fasof/fcompareto/fpreset/fperiod; PB-4 added Customer Success `attention`; PB-9 added Merchant Identity period/records/rq/rsort/rpage/rfilter/rid; AI & Costs added the budget drilldown aicalls/aiuntil/aipage)",
+    "SPACE_URL_PARAMS lists the thirty-four Space-scoped params (Markets added `view`; Platform added `workspace`; compact Debt added `section`; v2.7 added the flow group's fasof/fcompareto/fpreset/fperiod; PB-4 added Customer Success `attention`; PB-9 added Merchant Identity period/records/rq/rsort/rpage/rfilter/rid; AI & Costs added the budget drilldown aicalls/aiuntil/aipage; PB-1 2B added the incidents workspace isev/iprov/iop/icode/ifrom/ito/ipage/iid)",
     JSON.stringify([...SPACE_URL_PARAMS].sort()) ===
-      JSON.stringify(["account", "aicalls", "aipage", "aiuntil", "asof", "attention", "compareto", "fasof", "fcompareto", "fperiod", "fpreset", "metric", "period", "perspective", "preset", "records", "rfilter", "rid", "rpage", "rq", "rsort", "section", "tab", "transaction", "view", "workspace"]),
+      JSON.stringify(["account", "aicalls", "aipage", "aiuntil", "asof", "attention", "compareto", "fasof", "fcompareto", "fperiod", "fpreset", "icode", "ifrom", "iid", "iop", "ipage", "iprov", "isev", "ito", "metric", "period", "perspective", "preset", "records", "rfilter", "rid", "rpage", "rq", "rsort", "section", "tab", "transaction", "view", "workspace"]),
   );
 }
 

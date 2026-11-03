@@ -146,7 +146,9 @@ export interface PlatformWorkspaceView {
 export type PlatformViewLead =
   | "operations" | "pipeline" | "providers" | "ai-costs" | "policies" | "growth" | "security" | "customer-success" | "merchant"
   // Customer Success › Communications Center — one lead per view.
-  | "comms-library" | "comms-automations" | "comms-delivery" | "comms-preferences";
+  | "comms-library" | "comms-automations" | "comms-delivery" | "comms-preferences"
+  // PB-1 2B — the incidents workspace, one lead per tier (Ops identity-free; CS names the customer).
+  | "incidents-ops" | "incidents-cs";
 
 /** One Workspace's place in an area: its identity id (→ PLATFORM_WORKSPACES) plus
  *  the ordered SpaceDashboardSection keys it renders. Overview additionally offers
@@ -332,6 +334,23 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
         { id: "emergency", label: "Emergency controls", sections: [{ key: "ops_policies", variant: "emergency" }] },
       ],
     }),
+    // ── Incidents (PB-1 2B) — "what is broken, since when, why, and what happened?"
+    // Every sync incident through the ONE intelligence module (Ops token —
+    // identity-free): the list (filterable, paged, every row opens the detail
+    // drawer: verdict + why, the append-only timeline, evidence digest, affected
+    // subjects, related / recurring incidents, archive state, the existing
+    // resync / reauth actions) and the 13-month history. Each VIEW is one status
+    // preset — exactly one accessor's filter — so the Operations "broken now"
+    // figure opens the default view and the two read the same query. Lead-only:
+    // no section key, nothing to seed.
+    withViews({
+      workspaceId: "platform-incidents",
+      views: [
+        { id: "open", label: "Broken now", lead: "incidents-ops", sections: [] },
+        { id: "verify", label: "Needs verification", lead: "incidents-ops", sections: [] },
+        { id: "history", label: "History", lead: "incidents-ops", sections: [] },
+      ],
+    }),
   ],
   SECURITY_OPS: [
     // BETA V2 — one "Security posture" surface (hosted by the first composed key,
@@ -377,7 +396,19 @@ export const PLATFORM_AREA_WORKSPACES: Record<PlatformArea, readonly PlatformWor
       workspaceId: "platform-overview",
       views: [{ id: "overview", label: "Customers", lead: "customer-success", sections: [], hosted: ["cs_customers"] }],
     }),
-    { workspaceId: "platform-incidents", sections: ["cs_sync_issues"] },
+    // PB-1 2B — the first view keeps the existing preview widget (cs_sync_issues,
+    // unchanged; its reader is cut over separately); Broken now / Needs
+    // verification / History are the investigation lead over the intelligence
+    // module with the CS token (the attributed customer may appear here only).
+    withViews({
+      workspaceId: "platform-incidents",
+      views: [
+        { id: "summary", label: "Summary", sections: ["cs_sync_issues"] },
+        { id: "open", label: "Broken now", lead: "incidents-cs", sections: [] },
+        { id: "verify", label: "Needs verification", lead: "incidents-cs", sections: [] },
+        { id: "history", label: "History", lead: "incidents-cs", sections: [] },
+      ],
+    }),
     // COMMUNICATIONS CENTER (owner-approved, 2026-10-31) — four views, each a
     // LEAD over the Comms Center read API and nothing else: no section key, no
     // DB row, no seeding (the leads self-fetch; the server routes gate on

@@ -43,6 +43,9 @@ import type { SchedulerObservationResponse } from "@/app/api/platform/platform-o
 import type { ExecutionPageDTO } from "@/lib/platform/refresh/execution-query-core";
 import type { RefreshDailySeries } from "@/lib/platform/refresh/types";
 import type { OperationalHistoryResult } from "@/lib/platform/history/types";
+import type { IncidentListDTO } from "@/lib/platform/incidents/investigation-dto";
+import { INCIDENTS_WORKSPACE_ID, OPS_BROKEN_NOW_KPI_PATH } from "../incidents/incidents-url";
+import { incidentTotalText } from "../incidents/incidents-model";
 import { STATE_TONE, STATE_WORD } from "../widgets/ops-overview-view";
 import { ExecutionTimelinePanel } from "../widgets/ExecutionTimelinePanel";
 import { StatusBoard } from "../widgets/overview/StatusBoard";
@@ -152,6 +155,8 @@ export interface OperationsLeadSurfaceProps {
   manualStarts?: readonly string[] | null;
   /** it2 — env-status `deploymentEnv` (null/absent = unknown): crons fire on Production only. */
   deploymentEnv?: string | null;
+  /** PB-1 2B — the broken-now incidents KPI (OPS_BROKEN_NOW_KPI_PATH); absent ⇒ not shown. */
+  incidents?: Fetched<IncidentListDTO>;
 }
 
 export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
@@ -170,7 +175,9 @@ export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
   const jobsTotal = composition.reduce((a, c) => a + c.value, 0);
 
   const openGroup = (g: AttentionGroup) => {
-    if (g.action.kind === "job") p.onSelectJob(g.action.job);
+    // PB-1 2B — an incident group opens the incidents workspace (Broken now), not the attention drawer.
+    if (g.key.startsWith("incident|")) p.onOpenWorkspace(INCIDENTS_WORKSPACE_ID);
+    else if (g.action.kind === "job") p.onSelectJob(g.action.job);
     else if (g.action.kind === "jobs") p.onOpenWorkspace(JOBS_VIEW);
     else if (board) p.onOpenDrawer("attention");
     else p.onOpenWorkspace(g.action.workspace);
@@ -237,7 +244,18 @@ export function OperationsLeadSurface(p: OperationsLeadSurfaceProps) {
       {/* C — Needs attention (6) · Refresh activity (6). */}
       <div className="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">
         <Block id="ops-attention" label="Needs attention" className="min-w-0 lg:col-span-6"
-          action={board && total > 0 ? <Doorway label={`View all (${n(total)})`} onSelect={() => p.onOpenDrawer("attention")} dialog /> : undefined}>
+          action={(board && total > 0) || p.incidents ? (
+            <span className="flex flex-wrap items-center justify-end gap-x-3">
+              {/* PB-1 2B — the broken-now incidents KPI: its figure is the incidents list's own total (same route, same query). */}
+              {p.incidents && (
+                <Doorway
+                  label={p.incidents.data ? `Incidents · ${incidentTotalText(p.incidents.data)} broken now` : p.incidents.loading ? "Incidents · reading" : "Incidents"}
+                  onSelect={() => p.onOpenWorkspace(INCIDENTS_WORKSPACE_ID)}
+                />
+              )}
+              {board && total > 0 && <Doorway label={`View all (${n(total)})`} onSelect={() => p.onOpenDrawer("attention")} dialog />}
+            </span>
+          ) : undefined}>
           <Surface className="flex-1 px-4 py-2 sm:px-5">
             {p.attention.data ? (
               groups.length === 0 ? (
@@ -348,6 +366,8 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
   const operations = useSharedWidgetFetch<{ recent?: { startedAt: string }[] }>(OPERATIONS_URL);
   // it2 — the deployment environment (shared with the jobs card: one request).
   const envStatus = useSharedWidgetFetch<{ deploymentEnv?: string }>(ENV_STATUS_URL);
+  // PB-1 2B — the broken-now KPI: the incidents workspace's default list, same route + query.
+  const incidents = useSharedWidgetFetch<IncidentListDTO>(OPS_BROKEN_NOW_KPI_PATH);
   // One clock read per mount (relative ages + the day axis), never during render.
   const [nowMs] = useState(() => Date.now());
   const [drawer, setDrawer] = useState<OperationsDrawer | null>(null);
@@ -381,6 +401,7 @@ export function OperationsLead({ renderHosted, hasHosted, onOpenWorkspace, acces
         overview={overview} attention={attention} jobs={jobs} scheduler={scheduler} history={history} daily={daily} executions={executions}
         nowMs={nowMs} hasHosted={hasHosted} manualStarts={operations.data?.recent?.map((r) => r.startedAt) ?? null}
         deploymentEnv={envStatus.data?.deploymentEnv ?? null}
+        incidents={incidents}
         jobsSlot={<UnifiedJobs mode="summary" access={access} nowMs={nowMs} selected={job} onSelect={setJob} />}
         onOpenDrawer={setDrawer} onOpenWorkspace={onOpenWorkspace} onSelectExecution={setExecution}
         onSelectJob={(j) => (hasHosted(JOBS_KEY) ? setJob(j) : onOpenWorkspace(JOBS_VIEW))}
