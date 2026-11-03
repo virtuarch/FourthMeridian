@@ -43,6 +43,7 @@ import { db, systemDb } from "@/lib/db";
 // account resolver (was a private mapAccountType copy + two inline lookups here).
 import { mapAccountType } from "@/lib/plaid/account-type";
 import { normalizeProviderSubtype } from "@/lib/account-classifier";
+import { isReconstructableCard } from "@/lib/snapshots/backfill-core";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
 import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
@@ -74,11 +75,12 @@ function reconcileKind(fa: {
   type: string;
   debtSubtype: string | null;
   creditLimit: number | null;
+  providerSubtype: string | null;
 }): "cash" | "card" | null {
   if (fa.type === "checking" || fa.type === "savings") return "cash";
-  if (fa.type === "debt" && (fa.debtSubtype === "credit_card" || (fa.debtSubtype == null && fa.creditLimit != null))) {
-    return "card";
-  }
+  // PB-8 — THE shared revolving-card predicate (backfill-core), never a local
+  // copy: the walk and the reconciliation must agree on what a card is.
+  if (isReconstructableCard(fa)) return "card";
   return null;
 }
 

@@ -224,7 +224,7 @@ export interface DetectionResult {
  * perfectly healthy call returns when there was nothing to do — a refused
  * lifecycle write, an invariant refusal and "no active episode matched" are
  * indistinguishable to every caller. That is the silent-refusal defect
- * (docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 1) sitting on two tables `fm_app`
+ * (docs/architecture/SECURITY_MODEL.md §The silent-refusal hazard, Writes) sitting on two tables `fm_app`
  * is revoked from outright, so under the authority flip a grant refusal here
  * would have reported health.
  *

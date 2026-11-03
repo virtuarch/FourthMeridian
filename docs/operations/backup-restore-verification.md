@@ -67,8 +67,19 @@ shasum -a 256 -c "backups/<env>-<STAMP>.sql.sha256"
 grep -v '^SET transaction_timeout' "backups/<env>-<STAMP>.sql" | psql "$SCRATCH" -v ON_ERROR_STOP=1 -q
 T_RESTORED=$(date -u +%s)
 
-# 3. Roles + grants + policies come from the migration history, not the dump:
-#    the ledger is already at head (it was dumped), so this is a no-op that PROVES it.
+# 3. What the dump does and does not restore (see database-safety §4c):
+#    - Policies, RLS flags and the _prisma_migrations ledger ARE in the dump (restored above).
+#    - Roles are cluster-level and are NEVER in a dump: the four roles must exist on the
+#      scratch BEFORE the restore, or the policy statements fail.
+#    - GRANTs are NOT in the dump (--no-privileges). Because the ledger is at head, replaying
+#      migrations does NOT re-grant: the runtime roles fail closed ("permission denied") until
+#      grants are re-established. Re-grant from a freshly migrated reference database
+#      (IMPLEMENTED for clones; CI proof: rls:accept cases 38-41):
+#        REGRANT_REFERENCE_URL=<empty DB with migrations applied> \
+#        REGRANT_TARGET_URL="$SCRATCH" npm run db:regrant            # dry run: missing / extra
+#        REGRANT_REFERENCE_URL=... REGRANT_TARGET_URL="$SCRATCH" npm run db:regrant -- --apply
+#      Any EXTRA privilege it reports is a finding; record it before choosing --revoke-extra.
+#    The drift check below proves only that the ledger is at head:
 export DATABASE_URL="$SCRATCH?schema=public" DIRECT_URL="$DATABASE_URL" FM_DB_GUARD=clone-only
 npm run db:drift                      # expect: 0 pending, 0 unknown
 #    If the target predates the RLS migrations (Production today), apply them here:
@@ -101,7 +112,9 @@ Dashboard → Database → Backups: record the plan's backup cadence, the newest
 
 | Date (UTC) | Env | Dump timestamp | sha256 (first 16) | PG major src→scratch | Restore s | Serving s | **RPO** | **RTO** | Counts equal? | Health/login | Result | Operator |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| _none yet_ | | | | | | | | | | | | |
+| 2026-11-03 05:43–05:47 | preview (ledger 146) | 2026-11-03T05:43:46Z | not recorded (dump `rm -P`'d after the run) | 17 → 17 (local throwaway) | 1 | — (no app boot) | ≈ 0 (fresh read-only snapshot) | ≈ 3 min to a regranted, readable clone: dump 174 s · start PG 2 s · reference migrate 2 s · restore 1 s · `db:regrant` 2 s | dump verified row-for-row by `db:backup`; 89/89 public tables restored | fm_app read OK after regrant; app boot + `/api/health` **not run** | **PARTIAL PASS** — see notes | Session 2 |
+
+**2026-11-03 Preview rehearsal notes (Session 2).** Restore of the `--no-privileges` dump into a vanilla PostgreSQL 17: 3 errors, all Supabase-platform (`supabase_vault` extension, `vault.secrets`), none in `public`. Before regrant the runtime role was refused (`permission denied for table Instrument`), confirming the gap; `db:regrant` dry run reported **680 missing, 0 extra**; `--apply` ran 680 GRANTs in one transaction, re-diff **0 / 0**, and fm_app read the table. `rls:accept` against the restored clone: 36/38 — the two failures (cases 28/38) are an artefact of restoring a *Supabase* dump into a non-Supabase server (the restored `auth` schema is not dumpable by `fm_backup`), not of the regrant. Not yet done: app boot + `/api/health` against the clone (needs a production build in the heavy slot), and a restore into a Supabase-shaped target. Nothing was written to Preview.
 
 The first PASSED row for `production` closes the G0 line item "restore rehearsal record with RPO/RTO".
 

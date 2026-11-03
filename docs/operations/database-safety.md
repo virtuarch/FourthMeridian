@@ -7,7 +7,7 @@
 
 ## 0. The one rule
 
-**The local database is NOT disposable.** It is a personal development environment that holds **real test data** — a real `chrstn` operator account, connected **Plaid** accounts, real sync history, and manually created Spaces/configuration. **`prisma db seed` does NOT recreate any of that.** Treat this DB as valuable, backed-up state, exactly like a small production DB.
+**The local database is NOT disposable.** It is a personal development environment that holds **real test data** — a real operator account, connected **Plaid** accounts, real sync history, and manually created Spaces/configuration. **`prisma db seed` does NOT recreate any of that.** Treat this DB as valuable, backed-up state, exactly like a small production DB.
 
 ---
 
@@ -64,7 +64,7 @@ Until 2026-09-21 the guard and the backup read `DATABASE_URL` while Prisma Migra
 | Family | Identity | Example pair that is the SAME |
 |---|---|---|
 | local (loopback) | port + database name | `localhost:5432/fintracker_x` ≡ `127.0.0.1/fintracker_x` |
-| Supabase | project ref + database name | pooler `postgres.<ref>@…pooler.supabase.com:6543/postgres` ≡ direct `db.<ref>.supabase.co:5432/postgres` |
+| Supabase | project ref + database name | pooled `<role>.<ref>@<pooler-host>:6543/postgres` ≡ direct `<direct-host-for-ref>:5432/postgres` |
 | any other host | exact host + port + database name | — |
 
 Anything not provably the same (two unknown hosts that might be a pooler and its primary) is refused. `db:wipe` checks the same authority before its inventory, backup and Plaid teardown.
@@ -79,6 +79,59 @@ Generating a migration needs a **shadow** database to compute the diff. **Never 
 - Add the field to `schema.prisma`, then `npm run db:migrate:safe` (which runs `migrate deploy` — additive, non-destructive), letting a proper migration be authored against a throwaway shadow.
 
 The guard refuses if it ever sees `SHADOW_DATABASE_URL === DATABASE_URL`.
+
+---
+
+## 3a. Migration policy — forward-only, expand/contract
+
+Status markers: **IMPLEMENTED** (enforced in code/CI) · **DECIDED BUT NOT IMPLEMENTED** · **PROPOSED** · **DEPRECATED**.
+
+1. **Forward-only — IMPLEMENTED (no down migrations exist).** A migration is reverted by a *new* migration that reverses it, never by editing or deleting an applied one (applied migrations are checksummed). `prisma migrate resolve --rolled-back` is only for a migration that **failed mid-way** (Postgres rolled it back), not for undoing an applied one.
+2. **Expand / contract, two releases apart — DECIDED (review discipline, not mechanically enforced).**
+   - *Expand (release N):* add the new table / nullable-or-defaulted column / index / enum value, and ship code that tolerates both shapes. The old app must keep working on the new schema — that is what allows the schema to be applied while the old deployment serves.
+   - *Contract (release N+1 or later):* drop the old shape only once no promotable deployment reads it. Never in the same release as the code that made it safe.
+   - Never in one step: rename a column, change a type, add `NOT NULL` to a populated column, remove an enum value, drop a table the previous deployment reads.
+3. **Data-dependent constraints are preflighted.** A migration that can `RAISE` on existing rows (`SET NOT NULL`, `CHECK`, unique index) ships with a read-only SQL preflight that counts violators, run on a clone and on the target before deploy.
+4. **Enum values are written only after the code that knows them is promoted** — an old Prisma client throws on an unknown enum value in a row it reads.
+5. **Names are `<YYYYMMDDHHMMSS>_<slug>`, unique and monotone — IMPLEMENTED** (`scripts/audit-migration-names.ts`, REQUIRED tier in CI; legacy date-only names are a closed allowlist). Let `prisma migrate dev --create-only` name the directory (on a throwaway database, §3).
+6. **One mechanism — IMPLEMENTED.** `npm run db:migrate:safe` = `scripts/db-guard.ts --mode=migrate-deploy` → `npm run db:backup` → `prisma migrate deploy` (`package.json`). Raw `npx prisma migrate …` bypasses the guard and the backup and is not used on any database that matters. `prisma migrate dev` is local-only and refused non-interactively against a populated database (§2).
+7. **Deploys do not migrate — IMPLEMENTED.** `build` is `prisma generate && next build`. The schema is applied by a person before promotion and verified with `npm run db:drift` (read-only, `scripts/check-schema-drift.ts`) — [release-checklist.md](release-checklist.md) §3. A policy migration that lands before the code that sets the tenant identity makes protected tables return **zero rows silently**, so order matters.
+8. **Every new table is classified for RLS in the migration that creates it — IMPLEMENTED.** `scripts/migration-rls-census.test.ts` replays every migration and fails if any table ends up without `ENABLE` + `FORCE ROW LEVEL SECURITY` outside its closed exception list. Default privileges grant new tables to nobody. See [SECURITY_MODEL §Database-level tenant isolation](../architecture/SECURITY_MODEL.md#database-level-tenant-isolation-row-level-security).
+
+## 3b. Rehearsal, rollback and restore verification
+
+**Rehearse on a clone of the target's real rows (CI already proves empty → head).**
+Throwaway Postgres of the **target's major version**, `FM_DB_GUARD=clone-only`, both `DATABASE_URL` and `DIRECT_URL` pointed at it, restore the owner-supplied dump (filter `SET transaction_timeout` for an older server, §4), then:
+
+```sh
+npm run db:drift            # before: exactly the pending set, nothing unknown
+npm run db:migrate:safe     # guard → backup (of the clone) → migrate deploy
+npm run db:drift            # after: 0 pending
+npm run audit:ci            # REQUIRED invariants on the rehearsed rows
+RLS_TARGET_URL="$DATABASE_URL" npm run rls:accept   # incl. the GRANT/POLICY census
+# any accompanying backfill: dry-run, then --apply, then its audit
+docker rm -f -v <container>  # -v: never leak the volume
+```
+
+A failure while applying is a finding against the migration (fix with a new migration or a preflight, never by editing history); a failure afterwards is a finding against the code.
+
+**Rollback plan.**
+
+| Situation | Action |
+|---|---|
+| Migration failed mid-way | Read the error and check what actually applied (a migration is atomic only if its SQL is one transaction); `prisma migrate resolve --rolled-back <name>`; fix forward with a corrected migration |
+| Schema applied, new app misbehaves | Redeploy/promote the previous build; the schema stays (additive by rule 2) |
+| Schema applied, data looks wrong | Stop writes if needed (maintenance mode); restore the pre-migration backup **into a clone first**, diff, then decide |
+| A contract migration shipped too early | New migration re-adding the shape, backfilled from the backup |
+| "Undo" an applied migration | Write the reverse as a new migration |
+
+Hard constraints: **never `DISABLE ROW LEVEL SECURITY`** as a recovery lever (a broken policy that over-denies is safe; removing isolation is a security incident and needs the app offline), never hand-revert a policy migration, never edit `_prisma_migrations` by hand.
+
+**Restore verification (owner).** A backup that has never been restored is a hope. Before any Production migration: note the provider's newest backup / PITR window, take the application dump over a **session-mode** connection, restore it into a clone, and compare per-table counts with the source. The timed procedure and its record live in [backup-restore-verification.md](backup-restore-verification.md).
+
+**Record per rehearsal / Production migration** (release ticket): date and operator, target and dump checksum, migrations before → after (0 unfinished, 0 rolled back), preflight counts, `db:drift` result, `audit:ci` and `rls:accept` results, backfill dry-run/applied counts, `migrate deploy` wall time, anomalies.
+
+**Not enforced (owner-accepted):** old-app-on-new-schema compatibility is asserted by review of the migration class, not by running the previous build against the rehearsed clone — PROPOSED as the next step if the beta grows.
 
 ---
 
@@ -164,7 +217,7 @@ Evidence: [`docs/plans/PREVIEW-AI-FAILURE-AND-CONVERSATION-PERSISTENCE-2026-10-2
 | `SET default_transaction_read_only = on` (or any `SET name = …` / `SET SESSION …`) | `BEGIN READ ONLY;` … `COMMIT;`, or `SET TRANSACTION READ ONLY` as the first statement of an explicit transaction |
 | `SET statement_timeout = …` | `SET LOCAL statement_timeout = …` inside the transaction |
 | `RESET …`, `set_config(name, value, false)` | `set_config(name, value, true)` (transaction-local; this is what `lib/db/tenant-context.ts` does) |
-| `psql -c "SET …" -c "select …"` (each `-c` is its own transaction) | [`scripts/db-readonly-psql.sh`](../../scripts/db-readonly-psql.sh). Everything runs in one `BEGIN … SET TRANSACTION READ ONLY` transaction that **ends in ROLLBACK**, provided nothing in the input ends it early; the input scan refuses every known way to do that. A remote run requires `DIAG_REQUIRE_ROLE`, a database-side guard that refuses any role able to write, own objects, reach server files or programs, or run unexpected SECURITY DEFINER functions. Those two are the real barriers. On top of them, a best-effort input scan refuses before connecting: statements not starting with SELECT/WITH/VALUES/TABLE/SHOW/EXPLAIN/SET LOCAL, session-level `SET`/`RESET`, `set_config`, SQL-in-a-string executors, meta-commands other than `\echo`/`\qecho`/`\pset`, `:var` interpolation, `$`, control bytes, extra psql arguments, CR, and local, loopback-resolving or redirected URLs. The checked address is pinned with `hostaddr`. The password reaches psql only through a private 0600 pgpass file, and psql runs under `env -i` |
+| `psql -c "SET …" -c "select …"` (each `-c` is its own transaction) | For a one-off: `psql -1` (single transaction) with `SET TRANSACTION READ ONLY` as the first command. Preferred: [`scripts/db-readonly-psql.sh`](../../scripts/db-readonly-psql.sh). Everything runs in one `BEGIN … SET TRANSACTION READ ONLY` transaction that **ends in ROLLBACK**, provided nothing in the input ends it early; the input scan refuses every known way to do that. A remote run requires `DIAG_REQUIRE_ROLE`, a database-side guard that refuses any role able to write, own objects, reach server files or programs, or run unexpected SECURITY DEFINER functions. Those two are the real barriers. On top of them, a best-effort input scan refuses before connecting: statements not starting with SELECT/WITH/VALUES/TABLE/SHOW/EXPLAIN/SET LOCAL, session-level `SET`/`RESET`, `set_config`, SQL-in-a-string executors, meta-commands other than `\echo`/`\qecho`/`\pset`, `:var` interpolation, `$`, control bytes, extra psql arguments, CR, and local, loopback-resolving or redirected URLs. The checked address is pinned with `hostaddr`. The password reaches psql only through a private 0600 pgpass file, and psql runs under `env -i` |
 
 Use `SHOW name` to read a setting; it changes nothing.
 
@@ -173,6 +226,22 @@ Use `SHOW name` to read a setting; it changes nothing.
 - The same test pins the wrapper's transaction scoping and its refusals.
 
 **If `25006` appears on a primary** (`select pg_is_in_recovery()` is `false`) and no role setting explains it (`pg_db_role_setting`), suspect a leaked session setting. Compare `pg_stat_activity.backend_start` for the role against recent operator activity. Recycled connections clear it. Don't change roles or pooler settings to "fix" it.
+
+---
+
+## 4c. Database roles, RLS and backups — operational rules
+
+The role and policy model is specified in [SECURITY_MODEL §Database-level tenant isolation](../architecture/SECURITY_MODEL.md#database-level-tenant-isolation-row-level-security). What it means for anyone touching a database:
+
+- **Two principals, one database — IMPLEMENTED.** `DIRECT_URL` (migrations) authenticates as the migration principal; the runtime authenticates as `fm_app` / `fm_auth` / `fm_system` through `DATABASE_URL_APP` / `_AUTH` / `_SYSTEM`. `lib/db/target-identity.ts` keys identity on host/port/project/database and ignores the username, so the guard's "same database" verdict still holds. Do not weaken the guard to accommodate the role split.
+- **Strict mode in Production — IMPLEMENTED** (`lib/db/strict-mode.ts`): a Production process refuses to boot without `FM_RLS_STRICT=true` and valid role URLs. Outside strict mode the role clients silently fall back to the migration principal, which bypasses RLS — check `activeDbRoles()` / the Platform db-authority report, never assume.
+- **Role credentials are set out of band.** Migrations create the roles without passwords; the owner sets them with `ALTER ROLE … PASSWORD` and stores them in the owner's password manager. `fm_backup` never appears in Vercel.
+- **Backups run as `fm_backup` (`BYPASSRLS`) — IMPLEMENTED** (`scripts/lib/db-backup.core.ts`). A dump taken as an RLS-subject role is **silently partial**; the row-for-row check in §2 is what catches it. `fm_backup` also needs `SELECT` grants (`BYPASSRLS` skips policies, not privileges).
+- **What a dump carries.** `db:backup` uses `--no-owner --no-privileges`: the dump carries tables, rows, RLS flags, policies and the `_prisma_migrations` ledger, but **no GRANTs**, and roles are cluster-level so they are never in a dump. A restore target must have the four roles before the policies restore, and table grants must be re-established before the runtime roles can read (fails closed: `permission denied`). Replaying migrations does not re-grant, because the restored ledger is already at head; re-grant with `npm run db:regrant` (`scripts/db-regrant.ts`, pure core `scripts/lib/acl-core.ts`): it diffs the restore against a freshly migrated reference database and GRANTs what is missing (dry run by default; extra privileges are reported as findings) — **IMPLEMENTED for clones**, proven in CI by `rls:accept` cases 38–41 (restore → permission denied → regrant → exact match → fm_app reads). Running it against a hosted Production restore is owner-gated ([backup-restore-verification §4](backup-restore-verification.md), step 3). Never trust a restored database until `RLS_TARGET_URL=<clone> npm run rls:accept` passes against it.
+- **A wipe removes isolation until migrations re-run — IMPLEMENTED behaviour.** `scripts/db-wipe.ts` runs `DROP SCHEMA public CASCADE`, which drops policies, grants and RLS flags with the tables; re-apply with `npm run db:migrate:safe` (the RLS migrations are idempotent about roles).
+- **CI proves isolation as the runtime role — IMPLEMENTED.** `.github/workflows/ci.yml` runs `rls:accept`, `rls:accept:app`, `rls:accept:ai`, `rls:accept:plaid`, `rls:accept:foreground` and `rls:accept:allowance` against the throwaway database, connecting as `fm_app` rather than the container superuser every other step uses.
+- **`prisma studio` and `prisma db seed` run as the migration principal** and therefore bypass RLS. Use them only on local clones.
+- **Diagnostic access to hosted databases** uses a read-only role and the wrapper in §4b, never an application role and never a session-level `SET`.
 
 ---
 
@@ -195,5 +264,14 @@ Use `SHOW name` to read a setting; it changes nothing.
   so a harness still writes usage rows to whatever database it is pointed at.
 - Never pass `$DATABASE_URL` as `--shadow-database-url`.
 - Take `npm run db:backup` before anything schema-touching.
-- Diagnose pooled databases with `scripts/db-readonly-psql.sh` (or `BEGIN READ ONLY`); never issue a session-level `SET` through a pooler (§4b).
+- Diagnose pooled databases with `scripts/db-readonly-psql.sh` (or `psql -1` with `SET TRANSACTION READ ONLY` / `BEGIN READ ONLY`); never issue a session-level `SET` through a pooler (§4b).
+- Never run raw `npx prisma migrate …` against a shared database; never `DISABLE ROW LEVEL SECURITY` (§3a, §3b).
 - If unsure whether an operation is destructive, stop and ask.
+
+---
+
+*Sources consolidated (deleted; recover with `git log -- <path>`):*
+`docs/operations/migration-safety.md` ·
+`docs/plans/POSTGRES-RLS-ARCHITECTURE-INVESTIGATION.md` ·
+`docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md` ·
+`docs/plans/RLS-SILENT-REFUSAL-CAS.md`.

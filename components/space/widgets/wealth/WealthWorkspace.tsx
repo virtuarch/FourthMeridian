@@ -87,6 +87,7 @@ import { formatCurrency } from "@/lib/currency";
 import { WealthTrendChart } from "./WealthTrendChart";
 import { AdjustedBasisNote } from "./AdjustedBasisNote";
 import { ValuationCoverageNote } from "./ValuationCoverageNote";
+import { BalanceCoverageNote } from "@/components/space/widgets/shared/BalanceCoverageNote";
 import { useHistoryExploration } from "@/components/history/useHistoryExploration";
 import type { LensRoot } from "@/lib/history/lens-root-node";
 import { WealthChangeLedger } from "./WealthChangeLedger";
@@ -641,6 +642,9 @@ export function WealthWorkspace({
           {(metric === "netWorth" || metric === "totalAssets") && (
             <ValuationCoverageNote from={result.chart.points[0]?.date ?? null} />
           )}
+          {/* PB-8 — a window reaching back before an account's balance-history
+              floor says the history there is partial (never $0 owed). */}
+          <BalanceCoverageNote from={result.chart.points[0]?.date ?? null} metric={metric} />
           {/* v2.7 header parity — compact disclosures live under the chart, never below the card. */}
           <HeroNotes notes={[cryptoPriceNote]} className="lg:hidden" />
         </div>

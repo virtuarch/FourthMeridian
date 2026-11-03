@@ -28,7 +28,7 @@
  * count is accurate under `fm_app` too. Unlike `SpaceAccountLink`, there is no
  * second tenant whose row could be hidden from the count. The authority here is
  * about the EXECUTION PHASE (background, post-commit), not about blast radius.
- * See docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md, "Not a finding".
+ * See docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide (the Plaid orphan gate note).
  *
  * ⚠️ `remaining !== 0` is a plain read, NOT a conditional write, so it is not an
  * instance of the RLS-C-S6a count-as-business-answer defect — and on `fm_system`

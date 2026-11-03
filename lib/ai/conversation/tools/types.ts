@@ -82,7 +82,7 @@ export interface ToolContext {
    * before an absence contract exists would convert a refusal into a confident
    * false statement to the user. Separately, a chat turn makes up to six model
    * calls, so a tenant transaction cannot span one. The MECHANISM is in place; the
-   * authority moves in a later slice. See docs/plans/RLS-SILENT-REFUSAL-CAS.md.
+   * authority moves in a later slice. See docs/architecture/SECURITY_MODEL.md §The silent-refusal hazard.
    *
    * Narrower than `memoryClient` in intent and wider in type: `ReadClient` has no
    * `$transaction`, so no tool can open a transaction of its own.

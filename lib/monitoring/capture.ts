@@ -232,7 +232,7 @@ export type OperationalLedger =
  * being true" — and conflating them was the concrete gap RLS-P-1 recorded: the
  * resolution authority returns `{resolved: 0}` both when nothing matched and
  * when the write was refused, which is the silent-refusal defect
- * (docs/plans/RLS-SILENT-REFUSAL-CAS.md Part 1) on the operational ledger.
+ * (docs/architecture/SECURITY_MODEL.md §The silent-refusal hazard, Writes) on the operational ledger.
  *
  * `correlate` is the one READ in the family that is part of a write: resolving
  * `runId` to a `RefreshExecution.id` before an occurrence is stored. Its failure

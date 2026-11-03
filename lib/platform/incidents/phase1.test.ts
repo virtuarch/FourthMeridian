@@ -247,6 +247,40 @@ async function main() {
     check("a converging observation writes no event", events.length === 1, `${events.length}`);
   }
 
+  console.log("\n8. C1 — archive-on-prune resolves a LEGACY row's owner from the subject row");
+  {
+    const { archiveAndPruneSyncIssues } = await import("./retention");
+    const written: Record<string, unknown>[] = [];
+    const row = (id: string, extra: Record<string, unknown>) => ({
+      id, incidentKey: null, provider: "WALLET", kind: "UPSERT_ERROR", plaidItemId: null, financialAccountId: null,
+      subjectUserId: null, previousIncidentId: null, firstOccurredAt: NOW, lastOccurredAt: NOW, resolvedAt: NOW,
+      resolutionKind: "AUTOMATIC_RECOVERY", resolutionReasonCode: null, causeStatus: null, causeCode: null,
+      resolutionEvidence: null, _count: { occurrences: 1 }, ...extra,
+    });
+    const tx = {
+      syncIssue: {
+        findMany: async () => [
+          row("si-legacy-acct", { financialAccountId: "fa-1" }),
+          row("si-legacy-item", { plaidItemId: "pi-1" }),
+          row("si-owned", { financialAccountId: "fa-1", subjectUserId: "kept-owner" }),
+          row("si-gone", { financialAccountId: "fa-missing" }),
+        ],
+        deleteMany: async () => ({ count: 4 }),
+      },
+      syncIssueEvent: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) },
+      syncIssueArchive: { createMany: async ({ data }: { data: Record<string, unknown>[] }) => { written.push(...data); return { count: data.length }; } },
+      financialAccount: { findMany: async () => [{ id: "fa-1", deletedAt: NOW, ownerUserId: null, createdByUserId: "creator-1" }] },
+      plaidItem: { findMany: async () => [{ id: "pi-1", status: "REVOKED", userId: "item-user-1" }] },
+    };
+    const client = { $transaction: async (fn: (t: typeof tx) => Promise<number>) => fn(tx) };
+    await archiveAndPruneSyncIssues(client as never, ["si-legacy-acct", "si-legacy-item", "si-owned", "si-gone"], { resolved: true });
+    const by = (id: string) => written.find((w) => w.incidentId === id)?.subjectUserId;
+    check("legacy account-scoped row → the account's owner / creator", by("si-legacy-acct") === "creator-1", String(by("si-legacy-acct")));
+    check("legacy item-scoped row → the Item's user", by("si-legacy-item") === "item-user-1", String(by("si-legacy-item")));
+    check("an owner stamped at observation is never overwritten", by("si-owned") === "kept-owner");
+    check("a subject that no longer exists stays NULL (honest)", by("si-gone") === null);
+  }
+
   if (failures > 0) { console.error(`\nphase1.test: ${failures} failure(s).`); process.exit(1); }
   console.log("\nphase1.test: all passed.");
 }

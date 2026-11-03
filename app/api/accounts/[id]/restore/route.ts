@@ -50,7 +50,7 @@
  * smaller count rather than an error. Identical blast radius to the disconnect, so
  * identical authority: ONE narrow capability on `fm_system`
  * (lib/accounts/links-everywhere.ts), reached only with an id a tenant phase has
- * proved, with the shortfall asserted. See docs/plans/RLS-DISCONNECT-BLAST-RADIUS.md.
+ * proved, with the shortfall asserted. See docs/architecture/SECURITY_MODEL.md §Disconnect is deployment-wide.
  *
  * ⚠️ AND THE PHASES RUN IN THE OPPOSITE ORDER TO THE DISCONNECT'S.
  * `AccountConnection.fm_app_upd` is `fm_account_visible("financialAccountId")`,
