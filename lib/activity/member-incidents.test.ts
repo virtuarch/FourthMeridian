@@ -81,7 +81,7 @@ console.log("source pins");
     return out;
   }
   const FACADE = "lib/plaid/syncIssues.ts";
-  const producers = [...walk("lib"), ...walk("app"), ...walk("jobs").filter(() => true)].filter((f) => f !== FACADE && /recordSyncIssue\(/.test(code(f)));
+  const producers = [...walk("lib"), ...walk("app"), ...walk("jobs")].filter((f) => f !== FACADE && /recordSyncIssue\(/.test(code(f)));
   const setters = producers.filter((f) => /plaidTransactionId\s*:/.test(code(f)));
   check("Condition 2b: among recordSyncIssue producers, only the Plaid transaction sync sets plaidTransactionId",
     setters.join() === "lib/plaid/syncTransactions.ts", setters);
