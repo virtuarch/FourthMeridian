@@ -172,10 +172,10 @@ console.log("\n2. each retrievable metric reads ONLY the reader its registry pat
     const owner = sym.split(".")[0];
     // The module the ROUTE imports the reader from (the same specifier must appear in retrieve.ts).
     const routeImport = code(src(m.path[0].file)).match(new RegExp(`import\\s*\\{[^}]*\\b${owner}\\b[^}]*\\}\\s*from\\s*"@/([^"]+)"`));
-    const module = routeImport?.[1];
-    check(`${metricKey(m)}: retrieve.ts binds ${e.reader} to ${sym}( imported from ${module}`,
+    const readerModule = routeImport?.[1];
+    check(`${metricKey(m)}: retrieve.ts binds ${e.reader} to ${sym}( imported from ${readerModule}`,
       new RegExp(`\\b${e.reader}:\\s*\\([^)]*\\)\\s*=>\\s*${esc(sym)}\\(`).test(bind)
-      && !!module && new RegExp(`import\\s*\\{[^}]*\\b${owner}\\b[^}]*\\}\\s*from\\s*"@/${esc(module)}"`).test(bind));
+      && !!readerModule && new RegExp(`import\\s*\\{[^}]*\\b${owner}\\b[^}]*\\}\\s*from\\s*"@/${esc(readerModule)}"`).test(bind));
   }
   const keys = Object.keys(READER_SYMBOL);
   check("retrieve.ts binds every reader key and nothing else",
