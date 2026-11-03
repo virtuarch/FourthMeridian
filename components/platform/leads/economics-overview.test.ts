@@ -113,7 +113,7 @@ console.log("3. drill body");
 for (const key of Object.keys(DRILLABLE).filter((k) => (ECONOMICS_FIGURES as readonly string[]).includes(k)) as (typeof ECONOMICS_FIGURES)[number][]) {
   for (const w of DRILLABLE[key]!) {
     const d = buildEconomicsDrill(FULL, key, w);
-    const kpi = w === "cycle" ? snap.figures[key] : snap.trend.windows[w as "7d"];
+    const kpi = w === "cycle" ? snap.figures[key] : key === "platform_ai_cost" ? snap.trend.platformAi[w as "7d"] : snap.trend.windows[w as "7d"];
     const body = unescape(renderToStaticMarkup(createElement(EconomicsDrillBody, { data: d })));
     const tileText = figureValueText(kpi);
     check(`${key}.${w}: the drill's total reads as the tile ('${tileText}')`, body.includes(drillTotalText(d.figure, d.total, d.rows.length)) && drillTotalText(d.figure, d.total, d.rows.length).startsWith(`Total ${tileText}`), drillTotalText(d.figure, d.total, d.rows.length));
@@ -141,7 +141,7 @@ console.log("5. 375 px");
 const lead = readFileSync(path.join(process.cwd(), "components/platform/leads/EconomicsOverviewLead.tsx"), "utf8");
 check("no fixed pixel width or min-width (nothing wider than a 375 px phone)", !/\bw-\[\d+px\]/.test(lead) && !/min-w-\[\d/.test(lead) && !/width:\s*\d{3,}/.test(lead));
 check("multi-column grids only from sm / lg up; the tile grid is 2-up on a phone",
-  /grid grid-cols-2 gap-3 lg:grid-cols-4/.test(lead) && /grid gap-3 sm:grid-cols-3/.test(lead) && /lg:grid-cols-12/.test(lead) && !/(?<![a-z]:)grid-cols-(3|4|12)\b/.test(lead.replace(/(sm|md|lg|xl):grid-cols-\d+/g, "")));
+  (lead.match(/grid grid-cols-2 gap-3 lg:grid-cols-4/g) ?? []).length === 2 /* PR C re-pin: the revenue row is 2-up / 4-up (was sm:grid-cols-3) */ && /lg:grid-cols-12/.test(lead) && !/(?<![a-z]:)grid-cols-(3|4|12)\b/.test(lead.replace(/(sm|md|lg|xl):grid-cols-\d+/g, "")));
 check("every flex row can shrink (min-w-0) and long text truncates or wraps", (lead.match(/min-w-0/g) ?? []).length >= 10 && /truncate/.test(lead) && /break-words/.test(lead));
 check("no table (a list scales to a phone without horizontal scroll)", !/<table/.test(lead));
 check("the lead reads the snapshot through the shared workspace fetch; no access-level literal; no viewport read",

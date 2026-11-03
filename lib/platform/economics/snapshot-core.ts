@@ -38,7 +38,7 @@
  */
 
 import type { SpendStatus } from "@/lib/platform/ai/fleet-spend-status";
-import { isCustomerSurface, priceSpendGroup, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
+import { PLATFORM_AI_SURFACES, isCustomerSurface, isPlatformAiSurface, priceSpendGroup, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 import type { BillingCycle, PlaidCycleCost } from "@/lib/platform/plaid/item-months";
 import { plaidRateAt, type PlaidBillableProduct, type PlaidRate } from "@/lib/usage/pricing";
 import { POLICY_GROUP_KEY_PATTERN } from "@/lib/entitlements/policy-groups";
@@ -60,6 +60,8 @@ export const MAX_TREND_DAYS = 90;
 export const ECONOMICS_FIGURES = [
   "operating_cost", "ai_cost", "provider_cost", "infra_cost",
   "active_customers", "cost_per_active_customer", "revenue", "margin",
+  // PR C — AI invoked for an OPERATOR (Comms authoring), split out of overhead.
+  "platform_ai_cost",
 ] as const;
 /** The Overview's figures (the snapshot's `figures` record). */
 export type OverviewFigureKey = (typeof ECONOMICS_FIGURES)[number];
@@ -74,6 +76,7 @@ export function isOverviewFigure(k: string): k is OverviewFigureKey { return (EC
 export const DRILLABLE: Readonly<Partial<Record<EconomicsFigureKey, readonly EconomicsWindow[]>>> = {
   operating_cost: ["cycle"],
   ai_cost: ["cycle", "7d", "30d", "90d"],
+  platform_ai_cost: ["cycle", "7d", "30d", "90d"],
   provider_cost: ["cycle"],
   active_customers: ["cycle"],
   cost_per_active_customer: ["cycle"],
@@ -169,6 +172,8 @@ export interface EconomicsSnapshot {
   figures: Readonly<Record<OverviewFigureKey, EconomicsFigure>>;
   trend: {
     windows: Readonly<Record<TrendWindow, EconomicsFigure>>;
+    /** PR C — Platform AI over the same windows (weekly / monthly / quarterly; the daily rows are its drill). */
+    platformAi: Readonly<Record<TrendWindow, EconomicsFigure>>;
     /** The last 90 calendar UTC days, ascending (the 7 d / 30 d series are its tails). */
     days: readonly EconomicsTrendDay[];
     /** Why the daily trend is AI-only. */
@@ -351,6 +356,29 @@ export function aiCostFigure(inputs: EconomicsInputs, window: EconomicsWindow, c
   }, rows, inputs.nowMs, checkedAt);
 }
 
+// ── Platform AI (operator features) ─────────────────────────────────────────────
+
+export const REASON_NO_PLATFORM_AI = "no Platform AI usage recorded in the window";
+export const PLATFORM_AI_BASIS = `AiInvocation ledger, RETURNED calls on the operator surfaces (${PLATFORM_AI_SURFACES.join(", ")}), each (model, UTC day) priced by the rate card`;
+
+/** Per-UTC-day priced Platform AI spend (observed days only) — the KPI's drill rows. */
+export function platformAiDayRows(inputs: Pick<EconomicsInputs, "spendGroups" | "nowMs" | "aiPricingConfigured">, window: EconomicsWindow): EconomicsDrillRow[] {
+  if (!inputs.aiPricingConfigured) return [];
+  return aiDayRows({ nowMs: inputs.nowMs, spendGroups: inputs.spendGroups.filter((g) => isPlatformAiSurface(g.surface)) }, window)
+    .map((r) => ({ ...r, detail: r.detail.replace(/^customer none · overhead /, "Platform AI ") }));
+}
+
+export function platformAiCostFigure(inputs: EconomicsInputs, window: EconomicsWindow, checkedAt: string): EconomicsFigure {
+  const label = window === "cycle" ? "Platform AI · this cycle" : `Platform AI · ${window.replace("d", " d")}`;
+  if (!inputs.aiPricingConfigured) return unavailable("platform_ai_cost", label, "usd", REASON_NO_AI_RATE_CARD, PLATFORM_AI_BASIS, window, inputs.nowMs, checkedAt);
+  const rows = platformAiDayRows(inputs, window);
+  return figureFromRows({
+    key: "platform_ai_cost", window, label, unit: "usd", basis: PLATFORM_AI_BASIS,
+    covered: ["Comms Center authoring (Polish / Check)"], absent: [],
+    emptyReason: rows.length === 0 ? REASON_NO_PLATFORM_AI : REASON_NO_AI_PRICED,
+  }, rows, inputs.nowMs, checkedAt);
+}
+
 // ── Plaid (the Item-month census) ───────────────────────────────────────────────
 
 const PRODUCT_LABEL: Readonly<Record<PlaidBillableProduct, string>> = { transactions: "Plaid · Transactions", investments: "Plaid · Investments" };
@@ -410,7 +438,11 @@ export function operatingCostRows(inputs: EconomicsInputs): EconomicsDrillRow[] 
   const aiPriced = inputs.aiPricingConfigured && ai.some((r) => r.value !== null);
   const unpricedAi = inputs.aiPricingConfigured ? ai.reduce((a, r) => a + (r.status === "ESTIMATED" ? 0 : 1), 0) : 0;
   const { from, to } = windowRange("cycle", inputs.nowMs);
-  const days = inputs.aiPricingConfigured ? aiDays(inputs, from, to).filter((d) => d.observed) : [];
+  // PR C — Platform AI (operator features) is its own component; customer / overhead exclude it.
+  const nonPlatform = { spendGroups: inputs.spendGroups.filter((g) => !isPlatformAiSurface(g.surface)) };
+  const days = inputs.aiPricingConfigured ? aiDays(nonPlatform, from, to).filter((d) => d.observed) : [];
+  const platformRows = platformAiDayRows(inputs, "cycle");
+  const platform = rowsTotal(platformRows);
   let customer: number | null = null, overhead: number | null = null;
   for (const d of days) {
     if (d.customerUsd !== null) customer = (customer ?? 0) + d.customerUsd;
@@ -423,6 +455,12 @@ export function operatingCostRows(inputs: EconomicsInputs): EconomicsDrillRow[] 
     { id: "ai-customer", label: "AI · customer surfaces", value: customer, status: aiStatus(customer), detail: aiDetail(customer, "Conversations + Daily Brief") },
     { id: "ai-overhead", label: "AI · overhead", value: overhead, status: aiStatus(overhead), detail: aiDetail(overhead, "evaluation + unattributed") },
   ];
+  // Only when the ledger holds Platform AI rows this cycle: no usage is not a missing part.
+  if (platformRows.length > 0) {
+    rows.push({ id: "ai-platform", label: "AI · Platform AI", value: platform,
+      status: platform === null ? "UNAVAILABLE" : platformRows.some((r) => r.status !== "ESTIMATED") ? "PARTIAL" : "ESTIMATED",
+      detail: platform === null ? REASON_NO_AI_PRICED : "operator features (Comms authoring) · tokens × rate card" });
+  }
   const plaid = plaidRows(inputs);
   if (plaid.length > 0) rows.push(...plaid);
   else rows.push({ id: "plaid", label: "Plaid", value: null, status: "UNAVAILABLE", detail: plaidEmptyReason(inputs) });
@@ -498,6 +536,8 @@ export function economicsFigure(inputs: EconomicsInputs, key: OverviewFigureKey,
         emptyReason: inputs.engagedCustomerRefs.length === 0 ? REASON_NO_ENGAGED : REASON_NOTHING_PRICED,
       }, rows, now, checkedAt);
     }
+    case "platform_ai_cost":
+      return platformAiCostFigure(inputs, window, checkedAt);
     case "revenue":
       return unavailable(key, "Revenue", "usd", REASON_NO_BILLING, "no billing source is connected; revenue is never inferred", "cycle", now, checkedAt);
     case "margin":
@@ -509,6 +549,7 @@ export function economicsFigure(inputs: EconomicsInputs, key: OverviewFigureKey,
 export function economicsDrillRows(inputs: EconomicsInputs, key: OverviewFigureKey, window: EconomicsWindow): EconomicsDrillRow[] {
   switch (key) {
     case "ai_cost": return inputs.aiPricingConfigured ? aiDayRows(inputs, window) : [];
+    case "platform_ai_cost": return platformAiDayRows(inputs, window);
     case "operating_cost": return operatingCostRows(inputs);
     case "provider_cost": return providerCostRows(inputs);
     case "active_customers": return activeCustomerRows(inputs);
@@ -524,13 +565,14 @@ export function buildEconomicsSnapshot(inputs: EconomicsInputs): EconomicsSnapsh
   const checkedAt = new Date(inputs.nowMs).toISOString();
   const figures = Object.fromEntries(ECONOMICS_FIGURES.map((k) => [k, economicsFigure(inputs, k, "cycle", checkedAt)])) as Record<EconomicsFigureKey, EconomicsFigure>;
   const windows = Object.fromEntries(TREND_WINDOWS.map((w) => [w, aiCostFigure(inputs, w, checkedAt)])) as Record<TrendWindow, EconomicsFigure>;
+  const platformAi = Object.fromEntries(TREND_WINDOWS.map((w) => [w, platformAiCostFigure(inputs, w, checkedAt)])) as Record<TrendWindow, EconomicsFigure>;
   const { from, to } = windowRange("90d", inputs.nowMs);
   const days = inputs.aiPricingConfigured ? aiDays(inputs, from, to) : calendarDays(from, to).map((day) => ({ day, observed: false, customerUsd: null, overheadUsd: null, totalUsd: null, unpricedInvocations: 0 }));
   return {
     checkedAt,
     cycle: { ...cycleOf(inputs.nowMs), today: dayKey(inputs.nowMs) },
     figures,
-    trend: { windows, days, note: TREND_NOTE },
+    trend: { windows, platformAi, days, note: TREND_NOTE },
     estimateNote: ESTIMATE_NOTE,
   };
 }

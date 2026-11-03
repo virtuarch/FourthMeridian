@@ -191,10 +191,12 @@ export function EconomicsOverviewSurface({ snapshot, onOpenDrill, onOpenAiCosts 
       </Block>
 
       {/* B — what there is no source for, beside who the cost is spread over. */}
-      <div className="grid gap-3 sm:grid-cols-3" data-econ-revenue-row>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-econ-revenue-row>
         <FigureTile figure={f.revenue} />
         <FigureTile figure={f.margin} />
         <FigureTile figure={f.active_customers} onOpen={onOpenDrill} />
+        {/* PR C — AI invoked for operators (Comms authoring), split out of overhead. */}
+        <FigureTile figure={f.platform_ai_cost} onOpen={onOpenDrill} />
       </div>
 
       {/* C — AI cost trend (8) · split (4). */}
@@ -310,7 +312,8 @@ export function EconomicsOverviewLead({ onOpenWorkspace }: PlatformViewLeadProps
   const { drill, open, close } = useEconomicsDrill();
   const figures = snapshot.data?.figures as Readonly<Record<string, EconomicsFigure>> | undefined;
   const title = drill && snapshot.data
-    ? (drill.window === "cycle" ? figures?.[drill.figure]?.label : snapshot.data.trend.windows[drill.window as TrendWindow]?.label) ?? "Records"
+    ? (drill.window === "cycle" ? figures?.[drill.figure]?.label
+      : (drill.figure === "platform_ai_cost" ? snapshot.data.trend.platformAi : snapshot.data.trend.windows)[drill.window as TrendWindow]?.label) ?? "Records"
     : "Records";
 
   return (
