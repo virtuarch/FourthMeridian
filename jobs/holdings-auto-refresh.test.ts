@@ -37,6 +37,9 @@ import { deferredPipelineRunsHoldings, syncPlaidItemFromWebhook } from "@/lib/pl
 import { decidePlaidWebhook, handlePlaidWebhook, isSyncTrigger } from "@/lib/plaid/webhook-receiver";
 import { billableSkipCode } from "@/lib/entitlements/billable-gate-core";
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
+import { Products } from "plaid";
+import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
+import { OPERATION_KEYS } from "@/lib/platform/incidents/operation-key";
 import { defaultJobCadencePolicies } from "@/lib/jobs/cadence-policy";
 import type { RefreshEndpoint, RefreshSkipReason, RefreshStageRecorder } from "@/lib/plaid/refresh-execution-types";
 import type { SyncInvestmentsResult } from "@/lib/plaid/sync-investments";
@@ -70,11 +73,13 @@ function fakeRecorder() {
 const RESULT: SyncInvestmentsResult = { holdingsSynced: 3, consent: PlaidInvestmentsConsent.ENABLED, processedAccountIds: ["inv-1"], accountCoverage: [], eventsIngestAttempted: true };
 
 type Bal = Parameters<typeof runHoldingsStage>[0];
-const bal = (consent: PlaidInvestmentsConsent | null, accounts: Array<{ type: string; subtype: string }> = []): Bal => ({
+/** `billed`: Plaid's accountsGet `item.billed_products` includes Investments (default true for ENABLED). */
+const bal = (consent: PlaidInvestmentsConsent | null, accounts: Array<{ type: string; subtype: string }> = [],
+  billed: boolean = consent === PlaidInvestmentsConsent.ENABLED): Bal => ({
   item: { id: "item-1", institutionName: "Broker", investmentsConsent: consent },
   accessToken: "tok",
   plaidAccounts: accounts.map((a, i) => ({ account_id: `pa-${i}`, ...a })),
-  itemData: {},
+  itemData: { billed_products: billed ? [Products.Transactions, Products.Investments] : [Products.Transactions], consented_products: [Products.Transactions, Products.Investments] },
   updatedAccountIds: ["a1"],
   accountsUpdated: 1,
   reconcileTargets: [],
@@ -84,11 +89,11 @@ const bal = (consent: PlaidInvestmentsConsent | null, accounts: Array<{ type: st
 const TX = { added: 1, modified: 0, removed: 0, created: 1, updatedByPlaidId: 0, updatedByFingerprint: 0, skippedMissingAccount: 0 };
 
 /** Cron deps with the REAL eligibility (runAutoHoldingsStage) over a counted fake stage. */
-function cronDeps(consent: PlaidInvestmentsConsent | null, over: Partial<CronItemDeps> = {}, counter = { calls: 0 }) {
+function cronDeps(consent: PlaidInvestmentsConsent | null, over: Partial<CronItemDeps> = {}, counter = { calls: 0 }, billed?: boolean) {
   const deps: CronItemDeps = {
     syncTransactions: (async () => TX) as unknown as CronItemDeps["syncTransactions"],
     withLock: (async (_id: string, fn: () => Promise<unknown>) => ({ ok: true, result: await fn() })) as unknown as CronItemDeps["withLock"],
-    refreshBalances: (async () => bal(consent)) as unknown as CronItemDeps["refreshBalances"],
+    refreshBalances: (async () => bal(consent, [], billed)) as unknown as CronItemDeps["refreshBalances"],
     regenerateSnapshots: (async () => ["space-1"]) as unknown as CronItemDeps["regenerateSnapshots"],
     holdings: ((b: Bal, r?: RefreshStageRecorder) =>
       runAutoHoldingsStage(b, r, { stage: async (_b, rec) => { counter.calls++; rec?.begin("HOLDINGS", "PROVIDER"); rec?.succeed("HOLDINGS"); return RESULT; } })) as CronItemDeps["holdings"],
@@ -105,10 +110,16 @@ const quiet = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 async function main() {
   // ── 1. eligibility ─────────────────────────────────────────────────────────
-  console.log("eligibility (automatic paths: ENABLED consent only)");
-  check("ENABLED is eligible", autoHoldingsEligible(PlaidInvestmentsConsent.ENABLED));
-  check("null / CONSENT_REQUIRED / UNSUPPORTED / undefined are NOT (automatic paths never add the Investments product)",
-    [null, undefined, PlaidInvestmentsConsent.CONSENT_REQUIRED, PlaidInvestmentsConsent.UNSUPPORTED].every((c) => !autoHoldingsEligible(c)));
+  console.log("eligibility (automatic paths: ENABLED consent AND Investments already billed)");
+  const BILLED = { billed_products: [Products.Transactions, Products.Investments] };
+  const CONSENTED_ONLY = { billed_products: [Products.Transactions] };
+  check("ENABLED + billed_products includes Investments ⇒ eligible", autoHoldingsEligible(PlaidInvestmentsConsent.ENABLED, BILLED));
+  check("ENABLED but consented-only (Investments NOT yet billed) ⇒ NOT eligible — the first call would switch billing on",
+    !autoHoldingsEligible(PlaidInvestmentsConsent.ENABLED, CONSENTED_ONLY));
+  check("ENABLED with no accountsGet item data ⇒ NOT eligible (fails closed)",
+    !autoHoldingsEligible(PlaidInvestmentsConsent.ENABLED, null) && !autoHoldingsEligible(PlaidInvestmentsConsent.ENABLED, undefined));
+  check("null / CONSENT_REQUIRED / UNSUPPORTED / undefined are NOT, even when billed",
+    [null, undefined, PlaidInvestmentsConsent.CONSENT_REQUIRED, PlaidInvestmentsConsent.UNSUPPORTED].every((c) => !autoHoldingsEligible(c, BILLED)));
   {
     let called = 0;
     const r = fakeRecorder();
@@ -152,6 +163,13 @@ async function main() {
       counter.calls === 0 && !r.seq().some((x) => x.includes("HOLDINGS"))
       && r.seq().join() === "begin:TRANSACTIONS,succeed:TRANSACTIONS,begin:BALANCES,succeed:BALANCES,begin:SNAPSHOT,succeed:SNAPSHOT"
       && out.holdingsEventsIngested === false, r.seq().join());
+  }
+  {
+    const r = fakeRecorder();
+    const counter = { calls: 0 };
+    const out = await runCronItemRefresh("item-1", r.recorder, "run-1", cronDeps(PlaidInvestmentsConsent.ENABLED, {}, counter, false));
+    check("cron: ENABLED but consented-only (not billed) ⇒ NO holdings call, NO HOLDINGS row — billing-neutral",
+      counter.calls === 0 && !r.seq().some((x) => x.includes("HOLDINGS")) && out.holdingsEventsIngested === false, r.seq().join());
   }
   {
     const r = fakeRecorder();
@@ -271,9 +289,63 @@ async function main() {
   const snap = BG.indexOf('recorder?.begin("SNAPSHOT", "DERIVED")');
   check("the deferred pipeline runs the SHARED stage after BALANCES and before SNAPSHOT, only when asked",
     balOk > 0 && hStage > balOk && snap > hStage, `balances@${balOk} holdings@${hStage} snapshot@${snap}`);
+  for (const [label, billed, expect] of [["billed", true, 1], ["consented-only", false, 0]] as const) {
+    let calls = 0;
+    const r = fakeRecorder();
+    await runAutoHoldingsStage(bal(PlaidInvestmentsConsent.ENABLED, [], billed), r.recorder, { stage: async () => { calls++; return RESULT; } });
+    check(`webhook pipeline's shared stage: ENABLED + ${label} ⇒ ${expect} holdings call(s)`,
+      calls === expect && (expect === 1 || r.events.length === 0), `calls=${calls} events=${r.seq().join()}`);
+  }
+  check("the deferred pipeline hands the stage the SAME accountsGet answer (bal) — billed_products costs no extra call",
+    /\(opts\.holdingsStage \?\? runAutoHoldingsStage\)\(bal, recorder\)/.test(BG) && /const bal = await refreshBalancesForItem\(plaidItemId\);/.test(BG));
   const RECEIVER = readFileSync("lib/plaid/webhook-receiver.ts", "utf8");
   check("the receiver comment no longer claims the pipeline already synced holdings",
     !/Same FULL pipeline, never a holdings-only sync\./.test(RECEIVER) && /FIN-006/.test(RECEIVER));
+
+  // ── 5b. manual refresh unchanged ──────────────────────────────────────────
+  console.log("manual refresh unchanged");
+  {
+    const REFRESH_SRC = readFileSync("lib/plaid/refresh.ts", "utf8");
+    const manual = REFRESH_SRC.slice(REFRESH_SRC.indexOf("export async function refreshPlaidItem("));
+    check("manual refresh calls runHoldingsStage directly — NO auto-eligibility gate (a person's Refresh still initializes Investments, as before)",
+      /await runHoldingsStage\(\{ item, accessToken, plaidAccounts, itemData \}, recorder\);/.test(manual)
+      && !/autoHoldingsEligible|runAutoHoldingsStage/.test(manual.slice(0, manual.indexOf("\nexport "))));
+    const stage = REFRESH_SRC.slice(REFRESH_SRC.indexOf("export async function runHoldingsStage("), REFRESH_SRC.indexOf(" * FIN-006 — may an AUTOMATIC trigger"));
+    check("runHoldingsStage itself applies no billing gate (consent stays syncInvestmentsForItem's, byte-for-byte the old manual block)",
+      !/billed_products|autoHoldingsEligible/.test(stage) && /storedConsent:\s+item\.investmentsConsent/.test(stage));
+  }
+
+  // ── 5c. a holdings failure is an Investments-domain stage fact, not SYNC_FAILED ──
+  console.log("holdings failure → HOLDINGS stage / investments domain, never a generic item SYNC_FAILED");
+  {
+    // Behaviour: a throwing holdings stage under the cron returns normally, so
+    // syncOneBankItem's catch (item health + notifyItemSyncFailed = SYNC_FAILED) is never reached.
+    let threw = false;
+    const r = fakeRecorder();
+    try {
+      await quiet(() => runCronItemRefresh("item-1", r.recorder, "run-1", cronDeps(PlaidInvestmentsConsent.ENABLED, {
+        holdings: ((b: Bal, rec?: RefreshStageRecorder) => runAutoHoldingsStage(b, rec, {
+          stage: async (_b, x) => { x?.begin("HOLDINGS", "PROVIDER"); throw Object.assign(new Error("INSTITUTION_DOWN"), { response: { data: { error_code: "INSTITUTION_DOWN" } } }); },
+        })) as CronItemDeps["holdings"],
+      })));
+    } catch { threw = true; }
+    check("a holdings provider error never escapes the item pipeline (so no item health flip, no SYNC_FAILED notification)",
+      !threw && r.seq().includes("begin:HOLDINGS") && r.seq().includes("failOpen:"), r.seq().join());
+    const SYNCINV = readFileSync("lib/plaid/sync-investments.ts", "utf8").replace(/\/\/[^\n]*/g, "");
+    check("syncInvestmentsForItem (the existing issue path) never flips item health or notifies SYNC_FAILED",
+      !/setPlaidItemHealth|notifyItemSyncFailed|classifyPlaidErrorForHealth/.test(SYNCINV));
+    const INGEST = readFileSync("lib/investments/investment-event-ingest.ts", "utf8");
+    check("its investment-event fetch failure records INVESTMENT_DATA_PERSISTENCE_FAILED at stage investment-events-fetch (a registered operation key)",
+      /recordSyncIssue\(\{ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED",[^}]*stage: "investment-events-fetch"/.test(INGEST)
+      && OPERATION_KEYS["investment-events-fetch"] === "investment-events-fetch");
+    const sem = classifySyncIssue({ kind: "INVESTMENT_DATA_PERSISTENCE_FAILED", provider: "PLAID", detail: { stage: "investment-events-fetch" } });
+    check("…which classifies to the INVESTMENTS domain, not customer-actionable (never a 'reconnect your bank')",
+      sem.domain === "investments" && sem.customerActionable === false, JSON.stringify(sem));
+    const BANKS_SRC = readFileSync("jobs/sync-banks.ts", "utf8");
+    const runner = BANKS_SRC.slice(BANKS_SRC.indexOf("export async function runCronItemRefresh("), BANKS_SRC.indexOf("export const SYNC_BANKS_BUDGET_MS"));
+    check("the cron item runner has no SYNC_FAILED / health path of its own (that stays syncOneBankItem's, for transaction failures)",
+      !/notifyItemSyncFailed|setPlaidItemHealth/.test(runner));
+  }
 
   // ── 6. cadence pin ────────────────────────────────────────────────────────
   console.log("cadence (bounded, follows the BANK refresh policy)");

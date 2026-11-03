@@ -45,6 +45,7 @@ import { mapAccountType } from "@/lib/plaid/account-type";
 import { normalizeProviderSubtype } from "@/lib/account-classifier";
 import { isReconstructableCard } from "@/lib/snapshots/backfill-core";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
+import { Products, type Item as PlaidItemData } from "plaid";
 import { syncInvestmentsForItem, type SyncInvestmentsResult } from "@/lib/plaid/sync-investments";
 import { isInvestmentsBillable } from "@/lib/platform/plaid/item-months";
 import { resolvePlaidAccountByExternalId } from "@/lib/accounts/reconcile";
@@ -400,15 +401,27 @@ export async function runHoldingsStage(
 
 /**
  * FIN-006 — may an AUTOMATIC trigger (the scheduled sweep, a webhook) run the
- * holdings stage for this Item? Only when the stored consent is the one the
- * Plaid cost model already prices as an Investments Item-month
- * (lib/platform/plaid/item-months.ts, owner decision C2: ENABLED only). So the
- * automatic paths never ADD the Investments product to an Item; they only keep
- * an already-billed Item's holdings fresh. Manual refresh keeps its own wider
- * probe (unknown consent is tried once there, by a person).
+ * holdings stage for this Item? BILLING-NEUTRAL BY CONSTRUCTION: only when
+ * Plaid ALREADY bills Investments on the Item — `billed_products` of the SAME
+ * accountsGet answer the balances stage just read (no extra call) includes
+ * Investments — AND the stored consent is ENABLED.
+ *
+ * ⚠️ ENABLED ALONE IS NOT "BILLED". deriveInvestmentsConsent returns ENABLED
+ * from `consented_products` (lib/plaid/investmentsConsent.ts), and our link
+ * tokens request `products=[transactions]` with Investments as an ADDITIONAL
+ * consented product, which Plaid does not bill until the first call to its
+ * endpoint initializes it. Gating on consent alone would make that first
+ * investmentsHoldingsGet automatically and switch Investments billing ON for
+ * every consented-but-uninitialized Item. Those stay MANUAL-only (a person's
+ * Refresh initializes them, exactly as before FIN-006); turning them on
+ * automatically is a separate OWNER decision.
  */
-export function autoHoldingsEligible(storedConsent: PlaidInvestmentsConsent | null | undefined): boolean {
-  return isInvestmentsBillable({ investmentsConsent: storedConsent ?? null });
+export function autoHoldingsEligible(
+  storedConsent: PlaidInvestmentsConsent | null | undefined,
+  itemData: Pick<PlaidItemData, "billed_products"> | null | undefined,
+): boolean {
+  return isInvestmentsBillable({ investmentsConsent: storedConsent ?? null })
+    && (itemData?.billed_products ?? []).includes(Products.Investments);
 }
 
 export type AutoHoldingsOutcome =
@@ -417,7 +430,8 @@ export type AutoHoldingsOutcome =
 
 /**
  * FIN-006 — the holdings stage as the automatic pipelines run it: eligibility
- * first (a non-eligible Item records NOTHING — its execution is exactly what it
+ * first (consent ENABLED and Investments already billed — autoHoldingsEligible;
+ * a non-eligible Item records NOTHING — its execution is exactly what it
  * was before FIN-006), then runHoldingsStage, never throwing (a failure is
  * recorded FAILED on the open stage and the pipeline continues, like the
  * balance/snapshot freshness step it sits beside).
@@ -427,7 +441,7 @@ export async function runAutoHoldingsStage(
   recorder: RefreshStageRecorder | undefined,
   deps: { stage?: typeof runHoldingsStage; log?: Pick<Console, "warn"> } = {},
 ): Promise<AutoHoldingsOutcome> {
-  if (!autoHoldingsEligible(bal.item.investmentsConsent)) return { ran: false, reason: "NOT_ELIGIBLE" };
+  if (!autoHoldingsEligible(bal.item.investmentsConsent, bal.itemData)) return { ran: false, reason: "NOT_ELIGIBLE" };
   try {
     const result = await (deps.stage ?? runHoldingsStage)(bal, recorder);
     return { ran: true, result };

@@ -148,7 +148,11 @@ export interface CronItemDeps {
  *
  * FIN-006 (2026-11-03) — between BALANCES and SNAPSHOT, the HOLDINGS stage
  * (runAutoHoldingsStage — the SAME implementation manual refresh runs) for an
- * Item whose stored Investments consent is ENABLED. Before this the sweep never
+ * Item whose stored Investments consent is ENABLED AND that Plaid already bills
+ * for Investments (`billed_products` of the same accountsGet). A consented but
+ * never-initialized Item is skipped: its first holdings call would switch
+ * Investments billing on, so it stays manual-only (owner decision for any
+ * change). Billing-neutral: Plaid bills per Item-month. Before this the sweep never
  * refreshed holdings, so after a trade the positions stopped summing to the
  * freshly-refreshed account balance until someone pressed Refresh. CADENCE: the
  * stage lives INSIDE the per-Item pipeline, so it runs at most once per Item per

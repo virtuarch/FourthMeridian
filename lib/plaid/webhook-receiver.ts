@@ -129,7 +129,7 @@ export function isSyncTrigger(webhookType: string | null, webhookCode: string | 
     // sync. FIN-006: until 2026-11-03 that pipeline had NO holdings stage, so
     // this webhook refreshed transactions and balances but never the positions.
     // Trigger WEBHOOK now runs the HOLDINGS stage (deferredPipelineRunsHoldings,
-    // lib/plaid/webhook-sync.ts) for an ENABLED-consent Item.
+    // lib/plaid/webhook-sync.ts) for an Item Plaid ALREADY bills for Investments.
     (webhookType === "HOLDINGS" && webhookCode === "DEFAULT_UPDATE")
   );
 }

@@ -600,7 +600,7 @@ export async function runDeferredHistorySync(
         accounts:          bal.accountCoverage,
       });
       // FIN-006 — the SAME holdings stage manual refresh and the cron run, for an
-      // ENABLED-consent Item; never throws. Before today's snapshot, so the
+      // Item Plaid already bills for Investments; never throws. Before today's snapshot, so the
       // snapshot reads the fresh positions.
       if (opts.holdings) await (opts.holdingsStage ?? runAutoHoldingsStage)(bal, recorder);
       if (bal.updatedAccountIds.length > 0) {
