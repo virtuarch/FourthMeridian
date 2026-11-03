@@ -234,6 +234,18 @@ console.log("UX-P1 · posture (firing NOW, never the delivery history)");
   const allDown = derivePosture({ alerts: null, providers: null, freshness: null, configuration: null });
   check("every loader failing → four Unavailable chips, none ok", allDown.every((c) => c.state === "unavailable" && c.tone === "muted"));
   check("empty registries → Unknown, never Fresh/Operational", derivePosture({ ...inputs, providers: { ...inputs.providers!, providers: [] }, freshness: { ...inputs.freshness!, resources: [] } }).slice(1, 3).every((c) => c.word === "Unknown"));
+
+  // Preview (no scheduler): a resource whose producing job is unscheduled reads not-refreshed — neutral.
+  {
+    const fx = inputs.freshness!.resources[0];
+    const nr = { ...fx, healthState: "not-refreshed" as const, trust: { level: "unknown" as const, caveats: ["Not refreshed in this environment"] } };
+    const prev = derivePosture({ ...inputs, freshness: { ...inputs.freshness!, resources: [nr, inputs.freshness!.resources[1]] } })[2];
+    check("freshness chip: not-refreshed (+ blocked) → 'Not refreshed here', muted, never Stale or Fresh",
+      prev.word === "Not refreshed here" && prev.tone === "muted" && /0 of 2 not fresh · 1 blocked · 1 not refreshed in this environment/.test(prev.count), JSON.stringify(prev));
+    const mixed = derivePosture({ ...inputs, freshness: { ...inputs.freshness!, resources: [nr, fx] } })[2];
+    check("…a genuinely stale resource beside it still leads (Stale)", mixed.word === "Stale" && mixed.tone === "warn");
+    check("Production (no not-refreshed): the chip is unchanged", JSON.stringify(derivePosture(inputs)[2]) === JSON.stringify(chips[2]) && !/not refreshed/.test(chips[2].count));
+  }
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

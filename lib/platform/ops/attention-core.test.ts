@@ -204,6 +204,12 @@ console.log("ops env-aware verdicts — not-scheduled jobs are neutral");
   check("a provider with not enough data raises no attention item", !notEnough.items.some((i) => i.entity.kind === "provider"));
 }
 
+console.log("not-refreshed resources are neutral");
+{
+  const nr = buildAttention({ ...full, resources: { ...resources, resources: [{ ...resources.resources[0], healthState: "not-refreshed", trust: { level: "unknown", caveats: ["Not refreshed in this environment"] } }] } }, now);
+  check("a not-refreshed resource raises no attention item", !nr.items.some((i) => i.entity.kind === "resource"));
+}
+
 console.log("failed authorities and floors");
 {
   const partial = buildAttention({ ...full, jobs: null, incidents: null }, now);
