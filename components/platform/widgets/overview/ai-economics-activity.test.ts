@@ -88,7 +88,7 @@ const fig = (usd: number | null, invocations = 1, unpriced = 0) => ({ usd, invoc
 const spendResp = (over: Partial<AiSpendResponse["spend"]> = {}): AiSpendResponse => ({
   spend: {
     customer: { chat: fig(0.30, 10), brief: fig(0.10, 2), total: fig(0.40, 12) },
-    overhead: { harness: fig(1.90, 372), other: fig(null, 0), total: fig(1.90, 372) },
+    overhead: { harness: fig(1.90, 372), platform: fig(null, 0) /* PR C: the Platform AI bucket */, other: fig(null, 0), total: fig(1.90, 372) },
     unpriced: { tokens: 0, invocations: 0, models: [] },
     byDay: [{ day: "2026-10-12", customerUsd: 0.3, overheadUsd: 1.9, unpricedInvocations: 0 }, { day: "2026-10-14", customerUsd: 0.1, overheadUsd: null, unpricedInvocations: 0 }],
     window: { days: 30, from: "2026-09-15", to: "2026-10-14" }, pricingConfigured: true, estimateNote: "Not a bill.", checkedAt: new Date(NOW).toISOString(),
