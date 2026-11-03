@@ -91,6 +91,13 @@ export interface SyncInvestmentsResult {
    * (consent) or no investment accounts.
    */
   accountCoverage: AccountCoverageFact[];
+  /**
+   * FIN-006 — true once this run reached its investment-EVENT step (holdings
+   * succeeded, so ingestInvestmentEvents ran or its disabled coverage was
+   * recorded). The scheduled sweep reads it so one cron pass never calls
+   * investmentsTransactionsGet twice for the same Item. Absent ⇒ false.
+   */
+  eventsIngestAttempted?: boolean;
 }
 
 /**
@@ -124,6 +131,7 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
   // outcome is persisted either way, so the probe never repeats.
   const holdingsCallable = consent === null || consent === PlaidInvestmentsConsent.ENABLED;
   if (!holdingsCallable) return { holdingsSynced, consent, processedAccountIds, accountCoverage };
+  let eventsIngestAttempted = false;
 
   try {
     // DRIFT-2: always retry.
@@ -207,6 +215,7 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
       if (fa) coveredFinancialAccountIds.push(fa.id);
     }
 
+    eventsIngestAttempted = true;
     if (investmentEventsEnabled()) {
       try {
         await ingestInvestmentEvents(db, { accessToken, plaidItemId, now: new Date(), coveredFinancialAccountIds });
@@ -245,5 +254,5 @@ export async function syncInvestmentsForItem(params: SyncInvestmentsParams): Pro
     }
   }
 
-  return { holdingsSynced, consent, processedAccountIds, accountCoverage };
+  return { holdingsSynced, consent, processedAccountIds, accountCoverage, eventsIngestAttempted };
 }

@@ -123,8 +123,13 @@ export function isSyncTrigger(webhookType: string | null, webhookCode: string | 
   if (!webhookType || !webhookCode) return false;
   return (
     (webhookType === "TRANSACTIONS" && SYNC_TRIGGER_CODES.has(webhookCode)) ||
-    // HOLDINGS/DEFAULT_UPDATE fires once investment holdings are ready (e.g. after
-    // Investments consent). Same FULL pipeline, never a holdings-only sync.
+    // HOLDINGS/DEFAULT_UPDATE fires when investment holdings change (a trade,
+    // or once holdings are ready after Investments consent). It schedules the
+    // same deferred pipeline as a TRANSACTIONS trigger, never a holdings-only
+    // sync. FIN-006: until 2026-11-03 that pipeline had NO holdings stage, so
+    // this webhook refreshed transactions and balances but never the positions.
+    // Trigger WEBHOOK now runs the HOLDINGS stage (deferredPipelineRunsHoldings,
+    // lib/plaid/webhook-sync.ts) for an ENABLED-consent Item.
     (webhookType === "HOLDINGS" && webhookCode === "DEFAULT_UPDATE")
   );
 }

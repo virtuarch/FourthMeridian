@@ -59,7 +59,7 @@ import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { ingestInvestmentEvents, investmentEventsEnabled } from "@/lib/investments/investment-event-ingest";
 import { regenerateWealthHistoryForAccounts, wealthRegenerationEnabled, recentWealthWindow } from "@/lib/snapshots/regenerate-history";
 import { regenerateSnapshotsForAccounts } from "@/lib/snapshots/regenerate";
-import { refreshBalancesForItem } from "@/lib/plaid/refresh";
+import { refreshBalancesForItem, runAutoHoldingsStage } from "@/lib/plaid/refresh";
 // DF-2B — scheduled refresh adopts the SAME canonical execution authority as
 // manual refresh. runFullRefresh owns the RefreshExecution lifecycle; cron
 // injects its OWN stage pipeline (below) so its provider work is unchanged —
@@ -122,6 +122,12 @@ export interface CronItemOutcome {
   added:    number;
   modified: number;
   removed:  number;
+  /**
+   * FIN-006 — the HOLDINGS stage reached its investment-event step this run, so
+   * the sweep's separate A3-4 event ingest is not repeated for this Item (one
+   * investmentsTransactionsGet per Item per pass, as before FIN-006).
+   */
+  holdingsEventsIngested?: boolean;
 }
 
 /** Injection seam for testing the cron stage sequence without Plaid or a database. */
@@ -130,13 +136,28 @@ export interface CronItemDeps {
   withLock?:            typeof withPlaidItemSyncLock;
   refreshBalances?:     typeof refreshBalancesForItem;
   regenerateSnapshots?: typeof regenerateSnapshotsForAccounts;
+  /** FIN-006 — the shared automatic holdings stage (lib/plaid/refresh.ts). */
+  holdings?:            typeof runAutoHoldingsStage;
 }
 
 /**
  * DF-2B — the cron per-item stage pipeline, driving the RefreshExecution
  * recorder. Behavior-preserving vs. the previous inline body: transactions
  * under the item lock (skip → IN_FLIGHT), then best-effort balances + today's
- * snapshot (never fails the item; recorded FAILED without throwing). Wealth-
+ * snapshot (never fails the item; recorded FAILED without throwing).
+ *
+ * FIN-006 (2026-11-03) — between BALANCES and SNAPSHOT, the HOLDINGS stage
+ * (runAutoHoldingsStage — the SAME implementation manual refresh runs) for an
+ * Item whose stored Investments consent is ENABLED. Before this the sweep never
+ * refreshed holdings, so after a trade the positions stopped summing to the
+ * freshly-refreshed account balance until someone pressed Refresh. CADENCE: the
+ * stage lives INSIDE the per-Item pipeline, so it runs at most once per Item per
+ * sweep — the BANK refresh policy (24 h default), never for an Item synced
+ * within SYNC_BANKS_RECENT_MS, and never for an Item the admission, cost-freeze
+ * or billable gates refused (those record their skip exactly as before, for the
+ * whole execution). A non-eligible Item records no HOLDINGS row: its execution
+ * is unchanged. Today's snapshot is regenerated AFTER holdings, so it reads the
+ * fresh positions. Wealth-
  * history self-heal and investment-event ingestion stay in syncBanks, exactly
  * as before (a wealth projection and a lock-independent Plaid call, not stages
  * of this locked refresh). A thrown transaction error propagates to
@@ -152,6 +173,7 @@ export async function runCronItemRefresh(
   const withLock            = deps.withLock            ?? withPlaidItemSyncLock;
   const refreshBalances     = deps.refreshBalances     ?? refreshBalancesForItem;
   const regenerateSnapshots = deps.regenerateSnapshots ?? regenerateSnapshotsForAccounts;
+  const holdings            = deps.holdings            ?? runAutoHoldingsStage;
 
   // ── TRANSACTIONS — the ONE stage under the item lock ─────────────────────
   recorder.begin("TRANSACTIONS", "PROVIDER");
@@ -172,6 +194,7 @@ export async function runCronItemRefresh(
   // snapshot from those fresh balances.)
   recorder.begin("BALANCES", "PROVIDER");
   let stage: RefreshEndpoint = "BALANCES";
+  let holdingsEventsIngested = false;
   try {
     const bal = await refreshBalances(itemId);
     recorder.succeed("BALANCES", {
@@ -179,6 +202,9 @@ export async function runCronItemRefresh(
       coveredAccountIds: bal.updatedAccountIds,
       accounts:          bal.accountCoverage,
     });
+    // ── HOLDINGS — FIN-006; never throws (failure recorded on the stage) ──
+    const h = await holdings(bal, recorder);
+    holdingsEventsIngested = h.ran && h.result.eventsIngestAttempted === true;
     if (bal.updatedAccountIds.length > 0) {
       stage = "SNAPSHOT";
       recorder.begin("SNAPSHOT", "DERIVED");
@@ -193,7 +219,7 @@ export async function runCronItemRefresh(
     console.warn(`[sync-banks] balance/snapshot freshness failed for PlaidItem ${itemId} (non-fatal):`, redactedErrorForLog(e));
   }
 
-  return { skippedLocked: false, added: tx.added, modified: tx.modified, removed: tx.removed };
+  return { skippedLocked: false, added: tx.added, modified: tx.modified, removed: tx.removed, holdingsEventsIngested };
 }
 
 /** OPS-001 — the sweep's wall-clock budget inside the 300 s cron lambda (leaves headroom for siblings and regen). */
@@ -338,6 +364,8 @@ async function syncOneBankItem(
 ): Promise<"succeeded" | "failed" | "skipped"> {
   const eventsOn = investmentEventsEnabled();
   let outcomeKind: "succeeded" | "failed" | "skipped" = "succeeded";
+  // FIN-006 — set when the HOLDINGS stage already ran this Item's event ingest.
+  let holdingsEventsIngested = false;
   try {
     // DF-2B — through the canonical execution authority. runFullRefresh opens
     // one immutable RefreshExecution per item, runs cron's OWN stage pipeline
@@ -349,6 +377,7 @@ async function syncOneBankItem(
       { itemId: item.id, trigger: "CRON", profile: "FULL_REFRESH" },
       { refresh: ({ recorder, runId }) => runCronItemRefresh(item.id, recorder, runId) },
     );
+    holdingsEventsIngested = outcome.holdingsEventsIngested === true;
     if (outcome.skippedLocked) {
       counters.skipped++; outcomeKind = "skipped";
       console.log(`[sync-banks] ${item.institutionName}: skipped — sync already in progress elsewhere`);
@@ -405,7 +434,12 @@ async function syncOneBankItem(
   // Deliberately unconditional on the lock outcome above — event ingestion is
   // a separate Plaid call (investmentsTransactionsGet) with its own dedupe,
   // not part of the cursor/transaction race this lock guards against.
-  if (eventsOn && item.investmentsConsent === PlaidInvestmentsConsent.ENABLED) {
+  //
+  // FIN-006 — skipped when this pass's HOLDINGS stage already reached the same
+  // ingest inside syncInvestmentsForItem (counted once, called once).
+  if (eventsOn && holdingsEventsIngested) {
+    counters.eventItems++;
+  } else if (eventsOn && item.investmentsConsent === PlaidInvestmentsConsent.ENABLED) {
     try {
       const accessToken = decryptWithPurpose(item.encryptedToken, EncryptionPurpose.PLAID_ACCESS_TOKEN);
       // RLS-C-S8 — a cron job's authority, stated at the call site. `db` and
