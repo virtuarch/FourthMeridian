@@ -389,33 +389,57 @@ async function main() {
       lrow.resolved === false && lrow.lifecycleState === "ACKNOWLEDGED" && lrow.resolutionKind == null && lrow.resolutionEvidence == null);
     check("CAS loser: the shortfall is reported as a resolution write failure (never silent)", reported.join() === "SyncIssue:resolution", reported.join());
 
-    // ALL-OR-NOTHING: one row's lost CAS rolls back the whole call (no partial
-    // count, no orphan event), is reported, and the next success proves the rest.
+    // ── PER ROW (S2) — rows are independent incidents ──
+    const threeRows = async (k: ReturnType<typeof makeClient>) => {
+      const ids: string[] = [];
+      for (const stage of ["transaction-persist", "transaction-page-persist", "transaction-upsert"]) {
+        ids.push((await recordIncidentObservation({ ...txFail("it1"), detail: { stage, cursorBlocking: true } }, k.client))!.incidentId);
+      }
+      return ids;
+    };
+    const live = (k: ReturnType<typeof makeClient>, id: string) => k.issues.find((i) => i.id === id)!;
+
+    // (a) 3 rows, 1 CAS loses → 2 resolved (each with its event), 1 left open, conflict reported.
     const m = makeClient();
-    const a1 = await recordIncidentObservation(txFail("it1"), m.client);
-    const a2 = await recordIncidentObservation({ ...txFail("it1"), detail: { stage: "transaction-page-persist", cursorBlocking: true } }, m.client);
+    const [x1, x2, x3] = await threeRows(m);
     const mraw = m.client as unknown as { syncIssue: { findMany: (a: unknown) => Promise<Record<string, unknown>[]> } };
     const mFind = mraw.syncIssue.findMany;
     let race = true;
     mraw.syncIssue.findMany = async (a: unknown) => {
       const rows = (await mFind(a)).map((x) => ({ ...x })); // what the resolver READ
-      if (race) { race = false; m.issues.find((i) => i.id === a1!.incidentId)!.lifecycleState = "ACKNOWLEDGED"; }
+      if (race) { race = false; live(m, x2).lifecycleState = "ACKNOWLEDGED"; } // the racing writer
       return rows;
     };
     const mReported: string[] = [];
-    const mEvents = m.events.length;
     const rm = await quiet(() => resolveByAutomaticRecovery({ plaidItemId: "it1", domain: "transactions" }, m.client, undefined, { onWriteFailure: (tb, ph) => mReported.push(`${tb}:${ph}`) }));
-    const live1 = () => m.issues.find((i) => i.id === a1!.incidentId)!;
-    const live2 = () => m.issues.find((i) => i.id === a2!.incidentId)!;
-    check("a lost CAS on one of two rows rolls back BOTH: 0 resolved, no event, reported",
-      a1!.incidentId !== a2!.incidentId && rm.resolved === 0 && live1().resolved === false && live2().resolved === false
-      && live2().resolutionEvidence == null && m.events.length === mEvents && mReported.join() === "SyncIssue:resolution",
-      `${rm.resolved} / ${mReported}`);
+    check("(a) three distinct episodes on the item (the fixture is not vacuous)", new Set([x1, x2, x3]).size === 3);
+    check("(a) 3 rows, 1 lost CAS → returns 2 (successes only)", rm.resolved === 2, String(rm.resolved));
+    check("(a) …the two winners are RESOLVED, each with its evidence and exactly ONE STATE_CHANGED",
+      [x1, x3].every((id) => live(m, id).resolved === true && live(m, id).lifecycleState === "RESOLVED"
+        && live(m, id).resolutionEvidence != null && stateChanges(m.events, id).length === 1));
+    check("(a) …the loser is left OPEN in the winner's state, with no resolution, evidence or event",
+      live(m, x2).resolved === false && live(m, x2).lifecycleState === "ACKNOWLEDGED"
+      && live(m, x2).resolutionKind == null && live(m, x2).resolutionEvidence == null && stateChanges(m.events, x2).length === 0);
+    check("(a) …and exactly ONE conflict is reported (never silent)", mReported.join() === "SyncIssue:resolution", mReported.join());
     const rm2 = await quiet(() => resolveByAutomaticRecovery({ plaidItemId: "it1", domain: "transactions" }, m.client));
-    check("…and the next success resolves both, ACKNOWLEDGED → RESOLVED recorded as such",
-      rm2.resolved === 2 && live1().resolved && live2().resolved
-      && stateChanges(m.events, a1!.incidentId)[0]?.fromState === "ACKNOWLEDGED"
-      && stateChanges(m.events, a2!.incidentId)[0]?.fromState === "ACTIVE");
+    check("(a) the conflicted row is retried by the next success: ACKNOWLEDGED → RESOLVED, one event",
+      rm2.resolved === 1 && live(m, x2).resolved && stateChanges(m.events, x2).length === 1
+      && stateChanges(m.events, x2)[0]?.fromState === "ACKNOWLEDGED");
+
+    // (b) an event-insert failure on one row rolls back ONLY that row.
+    const f = makeClient();
+    const [y1, y2, y3] = await threeRows(f);
+    const fev = (f.client as unknown as { syncIssueEvent: { create: (a: { data: Record<string, unknown> }) => Promise<unknown> } }).syncIssueEvent;
+    const realCreate = fev.create;
+    fev.create = async (a) => { if (a.data.incidentId === y2 && a.data.type === "STATE_CHANGED") throw new Error("event insert refused"); return realCreate(a); };
+    const fReported: string[] = [];
+    const rf = await quiet(() => resolveByAutomaticRecovery({ plaidItemId: "it1", domain: "transactions" }, f.client, undefined, { onWriteFailure: (tb, ph) => fReported.push(`${tb}:${ph}`) }));
+    check("(b) an event-insert failure on one row: the other two resolve (returns 2)", rf.resolved === 2
+      && [y1, y3].every((id) => live(f, id).resolved === true && stateChanges(f.events, id).length === 1), String(rf.resolved));
+    check("(b) …the failed row is ROLLED BACK (its CAS write undone: open, no evidence, no event)",
+      live(f, y2).resolved === false && live(f, y2).resolutionEvidence == null && live(f, y2).lifecycleState == null
+      && stateChanges(f.events, y2).length === 0);
+    check("(b) …and the failure is reported", fReported.join() === "SyncIssue:resolution", fReported.join());
   }
 
   if (failures > 0) {

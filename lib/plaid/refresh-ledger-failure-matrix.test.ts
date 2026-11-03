@@ -702,12 +702,18 @@ async function main() {
       { onWriteFailure: (l, p) => { seen.push([l, p]); } },
     );
     check("the partial update was attempted (the fixture is not vacuous)", resolved.length === 1);
-    check("a 1-of-2 resolution reports ZERO resolved, never a plausible partial",
-      out.resolved === 0, String(out.resolved));
-    check("…and the rolled-back transaction leaves NO STATE_CHANGED event behind (the fake has no rollback, so: none was reached for i2)",
-      !events.some((e) => (e as { incidentId?: string }).incidentId === "i2"));
-    check("and it is ANNOUNCED as a SyncIssue/resolution failure, not as 'nothing matched'",
-      seen.length === 1 && seen[0][0] === "SyncIssue" && seen[0][1] === "resolution",
+    // P8 #1 / S2 — PER-ROW semantics, stated explicitly: rows are independent
+    // incidents, each in its own transaction. The count is EXACTLY the rows
+    // actually written (the visible i1), never the rows attempted; the hidden
+    // row writes nothing and is ANNOUNCED. Every observed row is accounted for:
+    // written (1) + reported (1) === observed (2).
+    check("a 1-of-2 resolution reports EXACTLY the 1 row written — never the 2 attempted",
+      out.resolved === 1, String(out.resolved));
+    check("…the written row has its STATE_CHANGED event; the refused row has NONE",
+      events.filter((e) => (e as { incidentId?: string }).incidentId === "i1").length === 1
+      && !events.some((e) => (e as { incidentId?: string }).incidentId === "i2"));
+    check("and the refused row is ANNOUNCED as a SyncIssue/resolution failure, not as 'nothing matched' (written + reported = observed)",
+      seen.length === 1 && seen[0][0] === "SyncIssue" && seen[0][1] === "resolution" && out.resolved + seen.length === rows.length,
       JSON.stringify(seen));
 
     // THE DENOMINATOR, and the half that makes the case above mean anything: a
@@ -750,7 +756,7 @@ async function main() {
     check("an item with NO open episode reports 0 and announces nothing — the three states are distinct",
       noneOut.resolved === 0 && seenNone.length === 0, JSON.stringify(seenNone));
     record(11, "zero-row conditional write",
-      "IMMUNE BY CONSTRUCTION in the four refresh tables — the door issues no updateMany/deleteMany, and its one update is keyed by primary key so a miss RAISES P2025 rather than returning 0. The family's ONE conditional write (the incident resolution) now compares the count against the rows it observed in the same phase and announces a shortfall as a FAILURE; 'nothing matched' stays silent and the three states are finally distinct.");
+      "IMMUNE BY CONSTRUCTION in the four refresh tables — the door issues no updateMany/deleteMany, and its one update is keyed by primary key so a miss RAISES P2025 rather than returning 0. The family's ONE conditional write (the incident resolution) is a per-row CAS: every row it observed in the same phase is either written or announced as a FAILURE (the count is the rows written); 'nothing matched' stays silent and the three states are finally distinct.");
   }
 
   // ══ 12. BATCH / PARTIAL-WRITE ACCOUNTING ═════════════════════════════════

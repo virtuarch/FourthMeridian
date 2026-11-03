@@ -39,6 +39,7 @@ import "server-only";
 // as a type (`Pick<typeof systemDb, …>`) as well as a value, which keeps the
 // structural accessor set anchored to a real client rather than hand-listed.
 import { systemDb } from "@/lib/db";
+import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import type { Prisma, SyncIssueKind } from "@prisma/client";
 import {
   captureLedgerWriteFailure,
@@ -562,12 +563,29 @@ function provenByRecovery(
  * clean item again.
  *
  * ── P8 #1 — A RECOVERY IS A TRANSITION, WITH ITS PROOF ───────────────────────
- * Same shape as resolveBySubjectRemoval, in ONE transaction for the call (so a
- * shortfall stays all-or-nothing, as the single updateMany was): per row the
- * CAS (`lifecycleState` as read, `resolved: false`), `lifecycleState: RESOLVED`
+ * Same shape as resolveBySubjectRemoval, ONE small transaction PER ROW (a lost
+ * CAS skips only that row, reported as a conflict; the return counts
+ * successes): the CAS (`lifecycleState` as read, `resolved: false`), `lifecycleState: RESOLVED`
  * with `resolved`, the typed `resolutionEvidence` (the SUCCEEDED transactions
  * stage, or the observed balance) and a SYSTEM `STATE_CHANGED → RESOLVED`
  * event. Forward-only: closures written before this change carry neither.
+ *
+ * ── ⚠️ THE PROOF IS SYNTHESISED HERE — ITS LEGITIMACY IS THE CALL SITES ─────
+ * The stage fact (SUCCEEDED, completedAt = now) is built by this resolver, not
+ * read from the ledger. It is true only because of WHO calls it, so the callers
+ * are pinned (lib/platform/incidents/auto-recovery-callers.test.ts):
+ *   - the ONLY production callers are the two facades in lib/plaid/syncIssues.ts:
+ *     resolveCursorBlockingIssues (transactions) and
+ *     resolveBalanceUnobservedIssue (balances);
+ *   - resolveCursorBlockingIssues is reached only after a COMPLETED transactions
+ *     sync (syncTransactionsForItem, after the success health flip — directly,
+ *     or through the refresh ledger door's resolveIncidentsByRecovery);
+ *   - resolveBalanceUnobservedIssue is reached only on an OBSERVED balance write
+ *     (refreshBalancesForItem after the update, guarded by `plan.observed`;
+ *     re-exchange guarded by `balanceStamp.balanceObserved`).
+ * A new caller must hold the same success condition, or it fabricates proof.
+ * `executionId` is the looked-up correlator: null when there is no run, and it
+ * STAYS null — never filled in.
  */
 export async function resolveByAutomaticRecovery(
   scope: AutomaticRecoveryScope,
@@ -641,36 +659,62 @@ export async function resolveByAutomaticRecovery(
       // alerting on it would train an operator to ignore the channel.
       return { resolved: 0, resolvingExecutionId };
     }
-    // THE SUBJECT-REMOVAL SHAPE (P8 #1), in ONE transaction: for every matching
-    // row a compare-and-set on the state this call READ, then its STATE_CHANGED
-    // event — so the append-only timeline is never silent about the most common
-    // closure. A 0-row CAS THROWS and rolls the WHOLE transaction back, writing
-    // nothing: each row was observed eligible one statement ago under this
-    // authority, so a shortfall is concurrent modification and is REPORTED
-    // (the outer catch), never counted as a plausible partial. The `findMany`
-    // above stays THE GUARD (lib/db/conditional-write.ts doctrine). Rows a
-    // rollback leaves open are still open, and the next success proves them.
-    await client.$transaction(async (tx) => {
-      for (const c of matching) {
-        // The state AS READ, captured before the write: it is both the CAS
-        // expectation and the event's fromState (NULL = legacy, derived ACTIVE).
-        const asRead = c.lifecycleState ?? null;
-        const { count: n } = await tx.syncIssue.updateMany({
-          where: { id: c.id, resolved: false, lifecycleState: asRead },
-          data,
+    // THE SUBJECT-REMOVAL SHAPE (P8 #1), PER ROW (S2): each matching row gets
+    // its OWN small transaction — compare-and-set on the state this call READ,
+    // then its STATE_CHANGED event — so the append-only timeline is never silent
+    // about the most common closure. Rows are independent incidents: a
+    // contended row must never starve its siblings, so a lost CAS (0 rows: the
+    // row moved between the read and the write) rolls back ONLY that row, is
+    // logged as a CONFLICT and reported, and is retried by the next success.
+    // Any other failure (e.g. the event insert) also rolls back only its row.
+    let written = 0;
+    let conflicts = 0;
+    let failed = 0;
+    for (const c of matching) {
+      // The state AS READ, captured before the write: it is both the CAS
+      // expectation and the event's fromState (NULL = legacy, derived ACTIVE).
+      const asRead = c.lifecycleState ?? null;
+      try {
+        await client.$transaction(async (tx) => {
+          const { count: n } = await tx.syncIssue.updateMany({
+            where: { id: c.id, resolved: false, lifecycleState: asRead },
+            data,
+          });
+          if (n !== 1) throw new IncidentTransitionConflictError(c.id, asRead);
+          await tx.syncIssueEvent.create({
+            data: eventData({
+              incidentId: c.id, type: "STATE_CHANGED", actorKind: "SYSTEM",
+              fromState: asRead ?? "ACTIVE", toState: "RESOLVED", outcomeCode: null,
+              refreshExecutionId: resolvingExecutionId,
+            }),
+            select: { id: true },
+          });
         });
-        if (n !== 1) throw new IncidentTransitionConflictError(c.id, asRead);
-        await tx.syncIssueEvent.create({
-          data: eventData({
-            incidentId: c.id, type: "STATE_CHANGED", actorKind: "SYSTEM",
-            fromState: asRead ?? "ACTIVE", toState: "RESOLVED", outcomeCode: null,
-            refreshExecutionId: resolvingExecutionId,
-          }),
-          select: { id: true },
-        });
+        written += 1;
+      } catch (e) {
+        if (e instanceof IncidentTransitionConflictError) {
+          // Contention, not a defect: logged as a conflict, retried next sync —
+          // but still REPORTED, so a shortfall is never read as "nothing to do".
+          conflicts += 1;
+          console.warn(`[incidents] automatic-recovery CONFLICT on ${c.id} (state moved since read; retried on the next success)`);
+        } else {
+          failed += 1;
+          console.error(`[incidents] automatic-recovery transition for ${c.id} failed (non-fatal):`, redactedErrorForLog(e));
+          captureLedgerWriteFailure("SyncIssue", "resolution", e);
+        }
+        reportWriteFailure(observers, "SyncIssue", "resolution");
       }
-    });
-    const count = matching.length;
+    }
+    // THE ROWS WERE OBSERVED ONE STATEMENT AGO, UNDER THIS AUTHORITY — the
+    // per-row tally: every observed row was either WRITTEN or REPORTED (as a
+    // conflict or a failure). Nothing is silently dropped. The `findMany` above
+    // stays THE GUARD (lib/db/conditional-write.ts doctrine).
+    assertEveryObservedRowWasWritten(
+      { table: "SyncIssue", operation: "update", scope: `${matching.length} matching active condition(s), written or reported` },
+      matching.length,
+      written + conflicts + failed,
+    );
+    const count = written;
     if (count > 0) {
       console.log(
         `[incidents] ${scope.domain === "balances" ? `account ${scope.financialAccountId}` : `item ${scope.plaidItemId}`} — resolved ${count} ${scope.domain} incident(s) by automatic recovery` +
