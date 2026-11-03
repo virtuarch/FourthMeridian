@@ -114,7 +114,7 @@ type SpaceItem = {
     estimated?: true;
   } | null;
   /** PB-8c — why `change` is null: the month crosses the partial-history floor. */
-  changeWithheld?: { reason: string; coveredFrom: string; message: string } | null;
+  changeWithheld?: { reason: string; coveredFrom: string | null; message: string } | null;
   /** v2.6-L4F — ACCOUNT freshness (Slice 1). Null when the Space has no accounts. */
   freshness?: {
     label: string; anchorObservedAt: string | null; qualifier: string | null;
@@ -429,7 +429,8 @@ function SpaceCard({
           {/* PB-8c — the 1M change crosses the partial-history floor: said, never a %. */}
           {delta === null && space.changeWithheld && (
             <p className="mt-0.5 text-[11px] text-[var(--text-muted)]" title={space.changeWithheld.message}>
-              <span aria-hidden>Partial history</span>
+              {/* S2 sweep — a failed coverage read withholds too, with its own short word. */}
+              <span aria-hidden>{space.changeWithheld.reason === "BALANCE_HISTORY_UNREADABLE" ? "Change unavailable" : "Partial history"}</span>
               <span className="sr-only">{space.changeWithheld.message}</span>
             </p>
           )}

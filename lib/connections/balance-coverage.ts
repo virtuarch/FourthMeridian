@@ -16,8 +16,8 @@ import { getAccountCoverage } from "@/lib/data/account-coverage";
 import { coverageClassFor } from "@/lib/data/account-coverage.core";
 import { isReconstructableCard, isoDate, maxDate, truncDateUTC } from "@/lib/snapshots/backfill-core";
 import {
-  balanceCoverageLoadFailureLine, balanceCoverageSideOf, deriveBalanceCoverage, writerAlignedFloorISO,
-  type BalanceCoverage, type BalanceCoverageAccountInput, type BalanceCoverageSurface,
+  BALANCE_COVERAGE_UNAVAILABLE, balanceCoverageLoadFailureLine, balanceCoverageSideOf, deriveBalanceCoverage, writerAlignedFloorISO,
+  type BalanceCoverage, type BalanceCoverageAccountInput, type BalanceCoverageRead, type BalanceCoverageSurface,
 } from "./balance-coverage.core";
 
 export async function loadBalanceCoverage(client: ReadClient, spaceId: string): Promise<BalanceCoverage | null> {
@@ -66,33 +66,34 @@ export async function loadBalanceCoverage(client: ReadClient, spaceId: string): 
 }
 
 /**
- * PB-8c — the read the server-side change claims use. A failure FALLS OPEN to
- * null (every change comparable — the PB-8 / PB-8b rule) and is logged with
+ * PB-8c — the read the server-side change claims use. A failure FAILS CLOSED to
+ * BALANCE_COVERAGE_UNAVAILABLE (S2 sweep): points are unvouched and every change
+ * claim is withheld — never null, which means "nothing to cover". Logged with
  * counts only (`balanceCoverageLoadFailureLine`).
  *
  * ⚠️ On a shared transaction a failed statement aborts it, so callers issue
  * this read LAST in their phase (or in a phase of its own).
  */
-export async function loadBalanceCoverageFailOpen(
+export async function loadBalanceCoverageFailClosed(
   client: ReadClient, spaceId: string, surface: BalanceCoverageSurface,
-): Promise<BalanceCoverage | null> {
+): Promise<BalanceCoverageRead> {
   try {
     return await loadBalanceCoverage(client, spaceId);
   } catch {
     console.warn(balanceCoverageLoadFailureLine(surface, 1, 1));
-    return null;
+    return BALANCE_COVERAGE_UNAVAILABLE;
   }
 }
 
 /** The same, for several Spaces in one phase; one counts-only line for all failures. */
 export async function loadBalanceCoverageBySpace(
   client: ReadClient, spaceIds: readonly string[], surface: BalanceCoverageSurface,
-): Promise<Map<string, BalanceCoverage | null>> {
-  const out = new Map<string, BalanceCoverage | null>();
+): Promise<Map<string, BalanceCoverageRead>> {
+  const out = new Map<string, BalanceCoverageRead>();
   let failed = 0;
   for (const id of spaceIds) {
     try { out.set(id, await loadBalanceCoverage(client, id)); }
-    catch { failed++; out.set(id, null); }
+    catch { failed++; out.set(id, BALANCE_COVERAGE_UNAVAILABLE); }
   }
   if (failed > 0) console.warn(balanceCoverageLoadFailureLine(surface, failed, spaceIds.length));
   return out;

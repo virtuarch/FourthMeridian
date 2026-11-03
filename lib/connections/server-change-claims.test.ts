@@ -39,9 +39,10 @@ import { admissibleNetWorthSeries, summarizeNetWorthSeries, type RawSnapshotRow 
 import { projectBriefPackage, type BriefInputs } from "@/lib/ai/brief/package";
 import { loadBriefPackage } from "@/lib/ai/brief/load";
 import { BRIEF_SYSTEM_PROMPT } from "@/lib/ai/brief/prompt";
-import { loadBalanceCoverageBySpace, loadBalanceCoverageFailOpen } from "./balance-coverage";
+import { loadBalanceCoverageBySpace, loadBalanceCoverageFailClosed } from "./balance-coverage";
 import {
   balanceCoverageLoadFailureLine, changeUnavailableMessage, gateWindowChange, type BalanceCoverage,
+  BALANCE_COVERAGE_UNAVAILABLE, BALANCE_COVERAGE_UNREADABLE_MESSAGE,
 } from "./balance-coverage.core";
 
 const checks: string[] = [];
@@ -252,38 +253,47 @@ const section3 = async () => {
   } finally { console.warn = warn; }
   const none = await loadBriefPackage({ spaceCtx, now: new Date(`${TODAY}T12:00:00.000Z`), deps: deps(async () => null) });
   assert.ok(none.package.recentChanges.m1?.debt, "no coverage ⇒ measured as before");
-  assert.deepEqual(failed.package.recentChanges, none.package.recentChanges, "a failed coverage read falls open (as no coverage)");
-  assert.ok(!failed.degraded.includes("balanceCoverage"), "fail-open never degrades the Brief");
+  // S2 sweep — FAIL CLOSED: every recent change is withheld with the unreadable reason, none measured.
+  const windows = Object.values(failed.package.recentChanges);
+  assert.ok(windows.length > 0 && windows.every((w) => w && !("debt" in w) && !("netWorth" in w)
+    && Object.values(w.unavailable ?? {}).length > 0 && Object.values(w.unavailable ?? {}).every((m) => m === BALANCE_COVERAGE_UNREADABLE_MESSAGE)),
+    "a failed coverage read withholds every recent change (fail closed), never measures across an unknown floor");
+  assert.ok(!failed.degraded.includes("balanceCoverage"), "a failed coverage read never degrades the Brief");
   assert.deepEqual(lines, [balanceCoverageLoadFailureLine("daily-brief", 1, 1)], "one counts-only line");
-  ok("§3 Daily Brief: m1/w1 netWorth+debt withheld with reason, d1 estimated labelled, complete unchanged, loader wired + fails open");
+  ok("§3 Daily Brief: m1/w1 netWorth+debt withheld with reason, d1 estimated labelled, complete unchanged, loader wired + fails CLOSED");
 };
 
-// ── §4 fail-open + counts-only log ───────────────────────────────────────────
+// ── §4 fail-CLOSED + counts-only log (S2 sweep; was fail-open) ───────────────
 const section4 = async () => {
   assert.equal(balanceCoverageLoadFailureLine("ai-snapshot", 2, 5),
-    "[balance-coverage] load failed surface=ai-snapshot failed=2 of=5; change claims fall open to comparable");
+    "[balance-coverage] load failed surface=ai-snapshot failed=2 of=5; coverage unavailable, change claims withheld");
   const boom = { space: { findUnique: async () => { throw new Error("boom space_secret acct_42 $316,074.35"); } } } as never;
   const fine = { space: { findUnique: async () => ({ type: "PERSONAL" }) }, spaceAccountLink: { findMany: async () => [] } } as never;
   const warn = console.warn; const lines: string[] = [];
   console.warn = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
   try {
-    assert.equal(await loadBalanceCoverageFailOpen(boom, "space_secret", "ai-snapshot"), null, "fails open to null");
+    assert.equal(await loadBalanceCoverageFailClosed(boom, "space_secret", "ai-snapshot"), BALANCE_COVERAGE_UNAVAILABLE, "fails CLOSED to unavailable, never null");
     const by = await loadBalanceCoverageBySpace({
       space: { findUnique: async (q: { where: { id: string } }) => { if (q.where.id === "b") throw new Error("boom b"); return { type: "PERSONAL" }; } },
       spaceAccountLink: { findMany: async () => [] },
     } as never, ["a", "b"], "space-launcher");
-    assert.deepEqual([...by.entries()], [["a", null], ["b", null]]);
-    assert.equal(await loadBalanceCoverageFailOpen(fine, "x", "ai-snapshot"), null, "nothing to cover ⇒ null, no log");
+    assert.deepEqual([...by.entries()], [["a", null], ["b", BALANCE_COVERAGE_UNAVAILABLE]], "nothing to cover stays null; the failed Space is unavailable");
+    assert.equal(await loadBalanceCoverageFailClosed(fine, "x", "ai-snapshot"), null, "nothing to cover ⇒ null, no log");
   } finally { console.warn = warn; }
   assert.deepEqual(lines, [
     balanceCoverageLoadFailureLine("ai-snapshot", 1, 1),
     balanceCoverageLoadFailureLine("space-launcher", 1, 2),
   ]);
   assert.ok(lines.every((l) => !/space_secret|acct_|316|boom|\bb\b/.test(l.replace("surface=", ""))), "no ids, amounts or error text");
-  // The fail-open verdict is "as before": a null coverage gates nothing.
+  // Null ("nothing to cover") gates nothing — as before.
   assert.deepEqual(gateWindowChange({ fromDate: "2026-06-17", toDate: TODAY }, null, ["liability"]),
     { change: { fromDate: "2026-06-17", toDate: TODAY }, withheld: null });
-  ok("§4 coverage read failure: falls open, one counts-only line per surface (no ids / amounts / error text)");
+  // A FAILED read withholds every change, on every side, with the unreadable reason.
+  for (const sides of [["liability"], ["asset"], ["asset", "liability"], []] as const) {
+    assert.deepEqual(gateWindowChange({ fromDate: "2026-06-17", toDate: TODAY }, BALANCE_COVERAGE_UNAVAILABLE, sides),
+      { change: null, withheld: { reason: "BALANCE_HISTORY_UNREADABLE", coveredFrom: null, message: BALANCE_COVERAGE_UNREADABLE_MESSAGE } });
+  }
+  ok("§4 coverage read failure: fails CLOSED (every change withheld), one counts-only line per surface (no ids / amounts / error text)");
 };
 
 // ── §5 wiring pins + the window-claims audit ─────────────────────────────────
@@ -295,7 +305,7 @@ const section4 = async () => {
     && /projectSnapshotSection\(rows, scopeHint === 'brief' \? 'brief' : 'full', balanceCoverage\)/.test(asm), "AI assembler takes coverage from options");
   assert.ok(!/loadBalanceCoverage/.test(strip(asm)), "…and NEVER reads it on its own (shared) client");
   const ev = src("../ai/conversation/evidence.ts");
-  assert.ok(/read\('balance_coverage', \(c\) => loadBalanceCoverage\(c, spaceId\)\)\.catch\(/.test(ev), "AI coverage read: its OWN prologue phase, fail-open");
+  assert.ok(/read\('balance_coverage', \(c\) => loadBalanceCoverage\(c, spaceId\)\)\.catch\(/.test(ev) && /return BALANCE_COVERAGE_UNAVAILABLE;/.test(ev), "AI coverage read: its OWN prologue phase, fail-CLOSED");
   assert.ok(/const coverage = d === FinanceDomains\.SNAPSHOT_HISTORY \? await balanceCoverage : undefined;\n\s*const section = await read\(d,/.test(ev), "awaited outside the snapshot phase, then handed to it");
   assert.ok(/changeThisMonthUnavailable: snap\.canonicalChangeUnavailable\.message/.test(ev), "orientation carries the reason");
   const eng = src("../ai/conversation/engine.ts");
@@ -303,18 +313,21 @@ const section4 = async () => {
     && /assembleFullContext\(read, spaceCtx, agentId, balanceCoverage\)/.test(eng)
     && /balanceCoverage: \(\) => balanceCoverage,/.test(eng), "engine: one coverage read per transcript, shared with the tools");
   const tool = src("../ai/conversation/tools/history.ts");
-  assert.ok(/ctx\.balanceCoverage \? await ctx\.balanceCoverage\(\)/.test(tool)
-    && /!ctx\.phase \? await loadBalanceCoverageFailOpen\(ctx\.readClient, ctx\.spaceId, 'ai-history-tool'\)/.test(tool)
+  assert.ok(/if \(ctx\.balanceCoverage\) return ctx\.balanceCoverage\(\);/.test(tool)
+    && /if \(!ctx\.phase\) return loadBalanceCoverageFailClosed\(ctx\.readClient, ctx\.spaceId, 'ai-history-tool'\);/.test(tool)
+    && /return BALANCE_COVERAGE_UNAVAILABLE;/.test(tool)
+    && (tool.match(/await historyCoverage\(ctx, rows\.length\)/g) ?? []).length === 2
     && /changeBlock\(pt\(inRange\[0\]\), pt\(inRange\[inRange\.length - 1\]\), balanceCoverage, estimatedOn\)/.test(tool),
     "history tool: coverage from the transcript's own phase; on its call client ONLY when there is no phase (no transaction)");
   const page = src("../../app/(shell)/dashboard/spaces/page.tsx");
   assert.ok(/loadBalanceCoverageBySpace\(tx, mySpaceIds, "space-launcher"\)/.test(page)
     && /getSpaceNetWorthSummaries\(tx, allIds, balanceCoverageBySpace\)/.test(page)
-    && (page.match(/changeWithheld: nw\?\.changeWithheld \?\? null/g) ?? []).length === 2, "launcher page wired");
+    && (page.match(/changeWithheld: nw\?\.changeWithheld \?\? null/g) ?? []).length === 2
+    && /mySpaceIds\.map\(\(id\) => \[id, BALANCE_COVERAGE_UNAVAILABLE\] as const\)/.test(page), "launcher page wired; a failed phase fails CLOSED");
   const snaps = src("../data/snapshots.ts");
   assert.ok(/summarizeNetWorthSeries\(\s*admissibleNetWorthSeries\(series, target, stampCtx\), balanceCoverage\?\.get\(id\) \?\? null\)/.test(snaps), "summaries gated per Space");
   const load = src("../ai/brief/load.ts");
-  assert.ok(/loadBalanceCoverageFailOpen\(c, spaceId, 'daily-brief'\)/.test(load) && /deps\.projectSnapshots\(ceiled, balanceCoverage\)/.test(load)
+  assert.ok(/loadBalanceCoverageFailClosed\(c, spaceId, 'daily-brief'\)/.test(load) && /return BALANCE_COVERAGE_UNAVAILABLE;/.test(load) && /deps\.projectSnapshots\(ceiled, balanceCoverage\)/.test(load)
     && /\n    balanceCoverage,\n    snapshotEstimatedDates:/.test(load), "Brief loader wired");
   const pes = src("../../components/space/PerspectiveEmptyState.tsx");
   assert.equal((pes.match(/coverageReadFailed\(\)/g) ?? []).length, 3, "client hero path: counts-only line on !ok and on a thrown fetch");
@@ -379,14 +392,16 @@ const section6 = async () => {
     cov = await readBalanceCoverage(runner(true), "space_A");
     ctx = await assembleFullContext(runner(true), spaceCtx, "t");
   } finally { console.warn = warn; }
-  assert.equal(cov, null, "a throwing coverage read falls open to null (never rejects)");
+  assert.equal(cov, BALANCE_COVERAGE_UNAVAILABLE, "a throwing coverage read fails CLOSED to unavailable (never rejects, never null)");
   const snapData = ctx.domains[FinanceDomains.SNAPSHOT_HISTORY]?.data as ReturnType<typeof projectSnapshotSection>;
   assert.ok(snapData, "the turn still assembles its snapshot domain");
   assert.ok(!ctx.unreadableDomains?.includes(FinanceDomains.SNAPSHOT_HISTORY), "the snapshot domain is not unreadable");
   assert.ok(!ctx.unreadableDomains?.includes("balance_coverage"), "a coverage failure is never named as an unreadable domain");
   const ungated = projectSnapshotSection(ROWS, "full")!.canonicalChange;
-  assert.ok(ungated && snapData!.canonicalChange?.abs === ungated.abs && !("canonicalChangeUnavailable" in snapData!),
-    "the change falls open to comparable");
+  assert.ok(ungated && snapData!.canonicalChange === null
+    && snapData!.canonicalChangeUnavailable?.reason === "BALANCE_HISTORY_UNREADABLE"
+    && snapData!.balanceHistoryCompleteness?.state === "UNAVAILABLE",
+    "the change is WITHHELD with the unreadable reason, and the section says why (fail closed)");
   assert.ok(lines.length >= 2 && lines.every((l) => l === balanceCoverageLoadFailureLine("ai-snapshot", 1, 1)),
     `the counts-only line fires: ${JSON.stringify(lines)}`);
   assert.ok(parts.includes("balance_coverage") && parts.includes(FinanceDomains.SNAPSHOT_HISTORY), "coverage read in its OWN phase");
@@ -399,7 +414,7 @@ const section6 = async () => {
   const g = gatedCtx.domains[FinanceDomains.SNAPSHOT_HISTORY]?.data as ReturnType<typeof projectSnapshotSection>;
   assert.equal(g?.canonicalChange, null);
   assert.equal(g?.canonicalChangeUnavailable?.message, MESSAGE, "the assembled context carries the reason");
-  ok("§6 AI assembly: a throwing coverage read (own phase) leaves the turn assembled, the change comparable, the log line fired");
+  ok("§6 AI assembly: a throwing coverage read (own phase) leaves the turn assembled, the change WITHHELD (fail closed), the log line fired");
 };
 
 section3().then(section4).then(section6).then(() => {

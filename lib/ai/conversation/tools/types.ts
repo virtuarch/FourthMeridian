@@ -30,7 +30,7 @@ import type { MemoryClient } from '../memory-store';
  */
 import type { ReadClient } from '@/lib/db/tenant-context';
 import type { AiPhaseRunner } from '@/lib/ai/tenant-phase';
-import type { BalanceCoverage } from '@/lib/connections/balance-coverage.core';
+import type { BalanceCoverageRead } from '@/lib/connections/balance-coverage.core';
 
 // ── The tool contract ────────────────────────────────────────────────────────
 
@@ -109,10 +109,10 @@ export interface ToolContext {
   /**
    * PB-8c — the Space's balance-history floors, read by the surface that opened
    * the transcript in a phase of its OWN (engine.ts → readBalanceCoverage), never
-   * on this call's transaction. Never rejects (fail-open ⇒ null). Absent on a
+   * on this call's transaction. Never rejects: a failed read is BALANCE_COVERAGE_UNAVAILABLE (fail CLOSED; null means "nothing to cover"). Absent on a
    * context built without the engine: see get_net_worth_history.
    */
-  balanceCoverage?: () => Promise<BalanceCoverage | null>;
+  balanceCoverage?: () => Promise<BalanceCoverageRead>;
   /** Test seam only — see CashSpineReads. Unset in production. */
   cashSpineReads?: CashSpineReads;
   /**

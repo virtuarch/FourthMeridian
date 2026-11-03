@@ -67,8 +67,8 @@ import type { ReadClient } from '@/lib/db/tenant-context';
 import { canonicalWindowChange, seriesSpanDays, type CanonicalWindowChange } from '@/lib/data/snapshot-window';
 // PB-8c — the SAME floors and the SAME rule the client heroes use (PB-8b).
 import {
-  balanceCoverageNote, balanceCoveredFromISO, balanceCoverageSidesFor, gateWindowChange,
-  type BalanceCoverage,
+  BALANCE_COVERAGE_UNREADABLE_NOTE, balanceCoverageNote, balanceCoveredFromISO, balanceCoverageSidesFor, gateWindowChange,
+  isBalanceCoverageUnavailable, type BalanceCoverageRead,
 } from '@/lib/connections/balance-coverage.core';
 
 import { registerAssembler } from '@/lib/ai/assembler-registry';
@@ -123,9 +123,11 @@ export function projectSnapshotSection(
   scopeHint: 'brief' | 'full',
   /**
    * PB-8c — the Space's balance-history floors (lib/connections/balance-coverage).
-   * Null / omitted ⇒ every change comparable (fail-open, byte-identical payload).
+   * Null / omitted ⇒ nothing to cover: every change comparable (byte-identical payload).
+   * BALANCE_COVERAGE_UNAVAILABLE (the read FAILED) ⇒ every change withheld and
+   * `balanceHistoryCompleteness` says why (S2 sweep — fail closed).
    */
-  balanceCoverage: BalanceCoverage | null = null,
+  balanceCoverage: BalanceCoverageRead = null,
 ): SnapshotSectionData | null {
   const usable   = rows.filter((r) => !r.fxMiss);
   const excluded = rows.length - usable.length;
@@ -259,6 +261,9 @@ export function projectSnapshotSection(
     ...(netWorthGate.withheld ? { canonicalChangeUnavailable: netWorthGate.withheld } : {}),
     liabilitiesChange: liabilitiesGate.change,
     ...(liabilitiesGate.withheld ? { liabilitiesChangeUnavailable: liabilitiesGate.withheld } : {}),
+    // S2 sweep — a FAILED coverage read: the gates above withheld every change; say why.
+    ...(isBalanceCoverageUnavailable(balanceCoverage)
+      ? { balanceHistoryCompleteness: { state: 'UNAVAILABLE' as const, note: BALANCE_COVERAGE_UNREADABLE_NOTE } } : {}),
     ...(coveredFrom && partialNote ? { partialHistory: {
       before: coveredFrom,
       note: `${partialNote} Never measure or state a change between a day before ${coveredFrom} and a later one.`,
