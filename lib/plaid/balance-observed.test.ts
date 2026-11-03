@@ -41,8 +41,9 @@ function makeIncidentClient() {
   const match = (row: IssueRow, where: Record<string, unknown>) =>
     Object.entries(where).every(([k, v]) => {
       if (k === "id" && typeof v === "object" && v && "in" in (v as object)) return (v as { in: string[] }).in.includes(row.id);
-      return row[k] === v;
+      return (row[k] ?? null) === v; // an unwritten column reads as NULL
     });
+  const events: Record<string, unknown>[] = [];
   const client = {
     syncIssue: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
@@ -64,9 +65,11 @@ function makeIncidentClient() {
       },
     },
     syncIssueOccurrence: { create: async ({ data }: { data: Record<string, unknown> }) => ({ ...data, id: `o${++n}` }) },
-    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
+    syncIssueEvent: { create: async ({ data }: { data: Record<string, unknown> }) => (events.push(data), { id: `e${++n}` }) },
+    // P8 #1 — the resolver's own CAS + STATE_CHANGED transaction runs on the fake.
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ syncIssue: client.syncIssue, syncIssueEvent: client.syncIssueEvent }),
   };
-  return { client: client as unknown as IncidentClient, issues };
+  return { client: client as unknown as IncidentClient, issues, events };
 }
 const noExec = async () => null;
 
@@ -202,7 +205,7 @@ async function main(): Promise<void> {
     check("labelled honestly", incidentLabel("BALANCE_UNOBSERVED", "balances") === "Balance not yet observed");
     check("its stage is a registered operation key", isRegisteredOperation("exchange-balance-unobserved"));
 
-    const { client, issues } = makeIncidentClient();
+    const { client, issues, events } = makeIncidentClient();
     const raise = (acc: string) => recordIncidentObservation(
       { kind: "BALANCE_UNOBSERVED", provider: "PLAID", financialAccountId: acc, plaidAccountId: `p-${acc}`, detail: { stage: "exchange-balance-unobserved" } } as any,
       client, noExec);
@@ -221,6 +224,16 @@ async function main(): Promise<void> {
     check("…the held transaction page stays open", issues.some((x) => x.kind === "UPSERT_ERROR" && x.resolved === false));
     check("…resolved AUTOMATICALLY (the evidence path), not by an operator",
       issues.some((x) => x.financialAccountId === "fa-a" && x.resolved === true && x.resolutionKind != null));
+    // P8 #1 — the closure is a transition with its proof: the observed balance
+    // as evidence (no amount) and a STATE_CHANGED event on the timeline.
+    const faA = issues.find((x) => x.financialAccountId === "fa-a" && x.resolved === true)!;
+    const ev = faA.resolutionEvidence as { rule?: string; proof?: { source: string; endpoint: string; status: string }[] } | undefined;
+    check("…with resolutionEvidence = the observed balance (BalanceObservation · BALANCES · SUCCEEDED), lifecycleState RESOLVED",
+      faA.lifecycleState === "RESOLVED" && ev?.rule === "BALANCE_OBSERVED_V1" && ev.proof?.length === 1
+      && ev.proof[0].source === "BalanceObservation" && ev.proof[0].endpoint === "BALANCES" && ev.proof[0].status === "SUCCEEDED"
+      && !/120\.5|amount/.test(JSON.stringify(ev)), JSON.stringify(ev));
+    check("…and ONE STATE_CHANGED → RESOLVED event on its timeline",
+      events.filter((e) => e.incidentId === faA.id && e.type === "STATE_CHANGED" && e.toState === "RESOLVED").length === 1);
     const again = await resolveByAutomaticRecovery({ financialAccountId: "fa-a", domain: "balances" }, client, noExec);
     check("idempotent: a later observed balance resolves nothing more", again.resolved === 0);
     const tx = await resolveByAutomaticRecovery({ plaidItemId: "item-1", domain: "transactions" }, client, noExec);

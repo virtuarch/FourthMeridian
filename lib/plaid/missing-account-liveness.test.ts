@@ -69,9 +69,11 @@ function makeFakeDb(opts: { accounts: Record<string, string>; softDeleted?: Set<
         id: `si${n + 1}`, kind: i.kind, provider: "PLAID", detail: i.detail,
         plaidTransactionId: i.plaidTransactionId, resolved: i.resolved,
       })),
-      updateMany: async ({ where }: { where: { id?: { in: string[] } } }) => {
+      // P8 #1 — the resolver now writes per row (`id` is a string) inside its
+      // own CAS transaction; the bulk `{in}` form is kept for older callers.
+      updateMany: async ({ where }: { where: { id?: string | { in: string[] } } }) => {
         let count = 0;
-        const ids = where.id?.in ?? [];
+        const ids = typeof where.id === "string" ? [where.id] : where.id?.in ?? [];
         for (const [n, i] of syncIssues.entries()) {
           if (ids.includes(`si${n + 1}`) && !i.resolved) { i.resolved = true; count++; }
         }
@@ -79,7 +81,11 @@ function makeFakeDb(opts: { accounts: Record<string, string>; softDeleted?: Set<
       },
     },
     syncIssueOccurrence: { create: async () => ({ id: "so1" }) },
-    $transaction: async () => { throw new Error("the incident lifecycle must not open transactions"); },
+    // P8 #1 — the incident lifecycle's OWN transition transaction (CAS +
+    // STATE_CHANGED) runs on this fake; the sync itself opens none.
+    async $transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn({ syncIssue: this.syncIssue, syncIssueEvent: { create: async () => ({ id: "ev1" }) } });
+    },
     plaidItem: {
       findUnique: async () => ({ ...item }),
       update: async ({ data }: { data: { cursor?: string | null } }) => {

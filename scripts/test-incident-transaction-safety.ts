@@ -345,6 +345,20 @@ async function main() {
     const b = await db.syncIssue.findUnique({ where: { id: blocking!.incidentId }, select: { resolved: true, resolvedAt: true, resolutionKind: true } });
     check("it carries a resolution timestamp and kind",
       b?.resolved === true && b?.resolvedAt !== null && b?.resolutionKind === "AUTOMATIC_RECOVERY");
+    // P8 #1 — against the REAL CHECKs (resolved/state/reason, evidence size, event codes):
+    // the closure is a transition with its proof and its timeline event.
+    const full = await db.syncIssue.findUnique({ where: { id: blocking!.incidentId }, select: { lifecycleState: true, resolutionReasonCode: true, resolutionEvidence: true } });
+    const ev = full?.resolutionEvidence as { rule?: string; proofCount?: number; proof?: { endpoint?: string; status?: string }[] } | null;
+    check("it is lifecycleState RESOLVED with reason TRANSACTIONS_SYNC_SUCCEEDED (the DB CHECK accepted it)",
+      full?.lifecycleState === "RESOLVED" && full?.resolutionReasonCode === "TRANSACTIONS_SYNC_SUCCEEDED", JSON.stringify(full));
+    check("its resolutionEvidence is the SUCCEEDED TRANSACTIONS stage",
+      ev?.rule === "TRANSACTIONS_SYNC_SUCCEEDED_V1" && ev.proofCount === 1 && ev.proof?.[0]?.endpoint === "TRANSACTIONS" && ev.proof?.[0]?.status === "SUCCEEDED");
+    const changed = await db.syncIssueEvent.findMany({ where: { incidentId: blocking!.incidentId, type: "STATE_CHANGED" }, select: { fromState: true, toState: true, actorKind: true } });
+    check("exactly one SYSTEM STATE_CHANGED ACTIVE → RESOLVED event was written",
+      changed.length === 1 && changed[0].fromState === "ACTIVE" && changed[0].toState === "RESOLVED" && changed[0].actorKind === "SYSTEM", JSON.stringify(changed));
+    const rerun = await resolveByAutomaticRecovery({ plaidItemId: ITEM, domain: "transactions", runId: null }, db, async () => null);
+    const after = await db.syncIssueEvent.count({ where: { incidentId: blocking!.incidentId, type: "STATE_CHANGED" } });
+    check("a re-run is idempotent: 0 resolved, no second event", rerun.resolved === 0 && after === 1);
     const u = await db.syncIssue.findUnique({ where: { id: unrelated!.incidentId }, select: { resolved: true } });
     check("the unrelated investments condition stays OPEN", u?.resolved === false);
     resolvedEpisodeId = blocking!.incidentId;
