@@ -178,6 +178,29 @@ async function main() {
     check("a recent input is carried even when the last beat was long ago (age from the input)", a.carried(1) === true);
   }
 
+  {
+    // S2 nit — the age is the LATEST pending input's: input t0, 429 at t0+50, keeps
+    // typing, 429 at t0+110, the beat at t0+170 still carries the input from 1 s ago.
+    const r = rig();
+    await r.c.mount();
+    let at = 0; const to = (ms: number) => { r.advance(ms - at); at = ms; };   // ms since t0
+    r.c.interaction();                                   // t0
+    to(50_000);  r.replies.push({ status: 429 }); await r.c.tick();   // t0+50: refused, restored
+    for (let ms = 60_000; ms <= 100_000; ms += 10_000) { to(ms); r.c.interaction(); } // keeps typing
+    to(110_000); r.replies.push({ status: 429 }); await r.c.tick();   // t0+110: refused, restored
+    to(169_000); r.c.interaction();                      // typed 1 s before the beat
+    to(170_000); await r.c.tick();                       // t0+170
+    check("the beats were: idle, carried (429), carried (429), then this one", r.sent.length === 4 && r.carried(1) && r.carried(2));
+    check("latest-input age: the beat at t0+170 carries the keystroke from t0+169 (first input was > 2× interval ago)",
+      r.carried(3) === true, JSON.stringify(r.sent));
+    // Replay safety unchanged: no input for > 2 × interval after a restore ⇒ false.
+    const q = rig();
+    await q.c.mount(); q.c.interaction();
+    q.advance(50_000); q.replies.push({ status: 429 }); await q.c.tick();
+    q.advance(STALE_INTERACTION_MS); await q.c.tick();
+    check("replay safety: a restored flag with no newer input is dropped after the cap", q.carried(2) === false);
+  }
+
   console.log("\nstop conditions");
   for (const status of [401, 403]) {
     const r = rig();

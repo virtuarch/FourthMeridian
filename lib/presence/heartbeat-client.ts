@@ -63,7 +63,7 @@ export interface HeartbeatController {
 
 export function createHeartbeatController(deps: HeartbeatDeps): HeartbeatController {
   let interacted = false;
-  /** When the pending flag was first set (kept across an F1 restore). */
+  /** When the LATEST pending input happened (kept across an F1 restore). */
   let pendingSince: number | null = null;
   let stopped = false;
   let lastBeatAt: number | null = null;
@@ -96,7 +96,8 @@ export function createHeartbeatController(deps: HeartbeatDeps): HeartbeatControl
     tick: () => beat(),
     // F4 — presence only: visibility never sets the flag (occlusion / lock flips it).
     visible: () => beat(),
-    interaction() { if (!interacted) { interacted = true; pendingSince = deps.now(); } },
+    // Every input refreshes the age: the flag is as fresh as the LATEST pending input (S2 nit).
+    interaction() { interacted = true; pendingSince = deps.now(); },
     stop() { stopped = true; },
     state: () => ({ interacted, stopped, lastBeatAt, inFlight }),
   };
