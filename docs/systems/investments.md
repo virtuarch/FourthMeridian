@@ -193,33 +193,18 @@ authorities (A10 `getInvestmentsTimeMachine`, `getCurrentPositions`,
 its findings are about consumers that bypass them. Status labels follow ADR-008.
 Line numbers were re-read on `develop` at `42f99ea` (2026-11-03).
 
-**Verified open on `develop` (re-read 2026-11-03):**
+**Fixed in PB-11 (#275, `60109e1`), verified on `develop` 2026-11-03.** They were found open by this register's re-read and fixed the same day:
 
-- **M4 — `attribution` escapes display-FX conversion. OPEN.** `convHistorical`
-  (`lib/investments/display-conversion.ts:148-156`) spreads `...h` and converts
-  `holdings`, `portfolio`, `flows` and `reconciliation` only. The A10 result still
-  carries `attribution?: PeriodAttribution | null`
-  (`lib/investments/investments-time-machine-core.ts:185`), so on a display-currency
-  switch the hero delta and the bridge's partial / not-attributable state can show
-  source-currency amounts under a display-currency label.
-  `lib/investments/display-conversion.test.ts` has no reference to `attribution`, so the
-  exhaustiveness guard does not cover the field. Fix: convert `attribution`, and make the
-  test walk every money field of the result type (guardrail R3).
-- **M5 — ungated percentage fallback in the hero. OPEN.** When `attribution` is null,
-  `components/space/widgets/investments/InvestmentsHero.tsx:68` still computes
-  `(change / opening) * 100` from `reconciliation`, the expression the attribution gate
-  (`heroComparison`) was built to replace. `attribution` is still optional on the A10
-  result (`investments-time-machine-core.ts:185`). Fix: make `attribution` required and
-  delete the fallback branch (`InvestmentsHero.tsx:64-68`).
-- **M7 — allocation recomputed client-side. OPEN.** The envelope already carries the
-  server-computed, display-converted `current.allocation`
-  (`lib/investments/space-data-core.ts`), but
-  `components/space/widgets/investments/HoldingsConcentration.tsx:55` and
-  `components/space/widgets/investments/InvestmentAllocationPanel.tsx:90` each call
-  `computeAllocation(holdings, accountNames)` again in the browser, with account names
-  taken from the `accounts` prop rather than the server's resolver. (`AllocationSliceDetail`
-  no longer calls it; it reduces through the same key functions.) Fix: consume
-  `current.allocation` / `share` and delete the client recomputes.
+- **M4 — `attribution` display-FX conversion. IMPLEMENTED (#275).** `lib/investments/display-conversion.ts`
+  now converts `attribution` alongside holdings, portfolio, flows and reconciliation;
+  covered by `lib/investments/pb11-investments-correctness.test.ts`. Guardrail R3 (a
+  structural walker over every money field) is still worth adding; see the list below.
+- **M5 — hero percentage gate. IMPLEMENTED (#275).** `InvestmentsHero.tsx` no longer
+  computes an ungated `(change / opening) * 100`: an indefensible opening withholds the
+  change with its reason, and a percentage is shown only for a defensible pair.
+- **M7 — one allocation authority. IMPLEMENTED (#275).** `HoldingsConcentration.tsx` and
+  `InvestmentAllocationPanel.tsx` no longer call `computeAllocation` in the browser; they
+  consume the server-computed allocation.
 
 **Partial or tracked elsewhere:**
 
