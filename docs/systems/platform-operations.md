@@ -375,13 +375,13 @@ Module and R1/R2 cutover IMPLEMENTED; remaining reader cutovers and the rest PLA
   loader read the module's verdicts.
 - **IMPLEMENTED: R3 convergence** (PR #310) and **R4 projection** (PR #325): convergence and the projection read module verdicts. **R5 alerts** (feed #325, fold and evaluation #332): incident alerts read module verdicts only and fire on `alertable && critical`. Their visible changes (D2/D2b/D3/D6/D7/D8/D10) are owner decisions for Production (release plan B10.3).
 - **IMPLEMENTED: R6a Ops attention** (PR #333): reads module `brokenNow`; unverified incidents rank one severity lower.
-- **IMPLEMENTED: R6b CS attention** (PR #336): attributes an incident to the customer it was observed for (`subjectUserId`) when recorded; older rows use the previous owner rule. **§13.1 is complete:** all six readers cut over with 0 parity divergences. Residuals are named in the `incident-boundary.test.ts` §11 allowlist: the member activity feed and the CS trend are follow-ups; the sync-control gate is a permanent exception.
+- **IMPLEMENTED: R6b CS attention** (PR #336): attributes an incident to the customer it was observed for (`subjectUserId`) when recorded; older rows use the previous owner rule. **§13.1 is complete:** all six readers cut over with 0 parity divergences. Residuals are named in the `incident-boundary.test.ts` §11 allowlist: the CS trend is a follow-up (the member activity feed is done, #339); the sync-control gate is a permanent exception (#338).
 
   **Remaining direct SyncIssue readers** (named list, `incident-boundary.test.ts` §11):
   1. **The CS daily trend** (`lib/platform/incidents/projections.ts` `getIncidentEpisodeTimeline` + `episodes-core.ts`): PLANNED follow-up.
-  2. **The member activity feed** (`app/api/spaces/[id]/activity`): PLANNED. It stays under tenant RLS (`fm_app`); the design is under review.
+  2. **The member activity feed** (`app/api/spaces/[id]/activity`): IMPLEMENTED (PR #339). Open/closed now comes from the module's pure core under a MEMBER `CoreAudience`; the read stays a tenant read under RLS (`fm_app`); output proven byte-identical, no visible change.
   3. **`getIncidentDetail`** (`projections.ts`): execution evidence only; it doesn't use incident state.
-  4. **`lib/plaid/backgroundHistorySync.ts`**'s open `MISSING_ACCOUNT` count: a permanent control exception. That blocking count gates recovery.
+  4. **`lib/plaid/backgroundHistorySync.ts`**'s open `MISSING_ACCOUNT` count: a permanent control exception (pinned by PR #338; no runtime change). That blocking count gates recovery.
 - **IMPLEMENTED, step 1 (PR #317):** a versioned metric-definition registry in code
   (`lib/platform/intelligence/metrics/*`, modelled on `lib/usage/pricing.ts`), definitions
   only; no surface reads it yet. **PROPOSED (plan), the rest:** the Platform UI, alerts and
