@@ -112,6 +112,19 @@ const SNAPS = DAYS.map(snap);
   assert.deepEqual(projectBriefPackage(inputs({ accounts: acc(undefined) })).recentChanges, clean.recentChanges,
     "no restricted figure ⇒ byte-identical");
 
+  // S2 — the fail-open edge (`totalRestrictedCash` absent ⇒ comparable) is sound ONLY
+  // because today's liquid figure comes from the SAME accounts summary. A missing
+  // summary must therefore yield NO current liquid figure to pair a change with…
+  const noAccounts = projectBriefPackage(inputs({ accounts: null }));
+  assert.equal(noAccounts.currentState.basis, "CURRENT_ACCOUNTS");
+  assert.equal(noAccounts.currentState.liquid, null, "no accounts summary ⇒ no currentState.liquid (nothing to pair a change with)");
+  // …and the two must keep reading the one `acc`: no other source for current liquid.
+  const pkg = src("../ai/brief/package.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+  assert.ok(/liquid:\s+moneyOrNull\(acc\?\.totalLiquid\)/.test(pkg), "current liquid is the accounts summary's totalLiquid");
+  assert.ok(/allCashChangeComparableToCurrent\(acc\?\.totalRestrictedCash\)/.test(pkg), "…and the comparability test reads the SAME acc");
+  assert.equal((pkg.match(/currentState\.liquid\s*=|liquid:\s+moneyOrNull\(/g) ?? []).length, 2,
+    "exactly two currentState.liquid sources: CURRENT (acc) and HISTORICAL (the snapshot point, one basis)");
+
   const restricted = projectBriefPackage(inputs({ accounts: acc(3_000) }));
   assert.equal(restricted.currentState.liquid, 4_000, "currentState.liquid is the unrestricted figure");
   for (const k of ["d1", "w1", "m1"] as const) {
