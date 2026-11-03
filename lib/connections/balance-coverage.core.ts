@@ -76,6 +76,39 @@ export interface BalanceCoverage {
  * "Estimated" line. VERIFIED / RECONSTRUCTED points are untouched.
  */
 
+// ── Fail CLOSED when the coverage read itself fails ──────────────────────────
+//
+// `null` means "nothing to cover" (no counted account): every change is
+// comparable and every point is as-is. A FAILED read used to collapse into that
+// same null — so a coverage outage silently re-enabled pre-floor points and
+// cross-floor changes as facts. A failed read is now its own value: the points
+// stay as they are but are UNVOUCHED, and every change claim is withheld with
+// the unreadable reason (`changeComparability`). Client surfaces never receive
+// it (they read BalanceCoverage | null), so their paths are unchanged.
+
+/** A coverage read that FAILED — distinct from null ("nothing to cover"). */
+export interface BalanceCoverageUnavailable { readonly unavailable: true }
+export const BALANCE_COVERAGE_UNAVAILABLE: BalanceCoverageUnavailable = Object.freeze({ unavailable: true as const });
+/** What a server-side coverage read yields: the floors, nothing to cover (null), or unavailable. */
+export type BalanceCoverageRead = BalanceCoverage | BalanceCoverageUnavailable | null;
+
+export function isBalanceCoverageUnavailable(cov: BalanceCoverageRead | undefined): cov is BalanceCoverageUnavailable {
+  return !!cov && (cov as BalanceCoverageUnavailable).unavailable === true;
+}
+
+/** The floors when they were read; null for "nothing to cover" AND for unavailable (no floor is known). */
+export function knownBalanceCoverage(cov: BalanceCoverageRead | undefined): BalanceCoverage | null {
+  return !cov || isBalanceCoverageUnavailable(cov) ? null : cov;
+}
+
+/** The note every AI surface carries when the coverage read failed (owner wording, S2 sweep). */
+export const BALANCE_COVERAGE_UNREADABLE_NOTE =
+  "balance-history completeness could not be read — do not state changes or pre-history values";
+
+/** The withheld-change wording when coverage could not be read (cards render it; the AI reads it). */
+export const BALANCE_COVERAGE_UNREADABLE_MESSAGE =
+  "Change unavailable: balance-history completeness could not be read";
+
 /**
  * The day an account enters the stored series, from the coverage authority's
  * facts, aligned with the writer (computeAccountFloors):
@@ -133,7 +166,8 @@ function floorsFor(cov: BalanceCoverage, sides: readonly BalanceCoverageSide[]):
  * The first day every counted account on these sides is covered — the LATEST
  * floor — or null when there is nothing to cover.
  */
-export function balanceCoveredFromISO(cov: BalanceCoverage | null, sides: readonly BalanceCoverageSide[]): string | null {
+export function balanceCoveredFromISO(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[]): string | null {
+  const cov = knownBalanceCoverage(covRead);
   if (!cov) return null;
   const all = floorsFor(cov, sides);
   return all.length ? [...all].sort().at(-1)! : null;
@@ -146,7 +180,8 @@ function noun(sides: readonly BalanceCoverageSide[], cov: BalanceCoverage, n: nu
 }
 
 /** "Partial: 1 of 3 debts has no balance history this far back" — the tooltip's coverage line for one day. */
-export function partialCoverageLabel(cov: BalanceCoverage | null, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
+export function partialCoverageLabel(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
+  const cov = knownBalanceCoverage(covRead);
   if (!cov) return null;
   const all = floorsFor(cov, sides);
   const missing = all.filter((f) => f > dateISO).length;
@@ -155,7 +190,8 @@ export function partialCoverageLabel(cov: BalanceCoverage | null, sides: readonl
 }
 
 /** "Estimated: 1 of 4 debts held at today’s balance (no history)" — or null. */
-export function estimatedCoverageLabel(cov: BalanceCoverage | null, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
+export function estimatedCoverageLabel(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], dateISO: string): string | null {
+  const cov = knownBalanceCoverage(covRead);
   if (!cov || !sides.includes("liability")) return null;
   const n = cov.estimatedLiabilityFloors.filter((f) => f <= dateISO).length;
   if (n === 0) return null;
@@ -176,7 +212,7 @@ export function estimatedCoverageLabel(cov: BalanceCoverage | null, sides: reado
  */
 export function markPartialBalanceCoverage<P extends { date: string; estimated?: boolean; basis?: "unreliable" | "carried" | (string & {}); coverageLabel?: string | null }>(
   points: readonly P[],
-  cov: BalanceCoverage | null,
+  cov: BalanceCoverageRead,
   sides: readonly BalanceCoverageSide[],
 ): P[] {
   const from = balanceCoveredFromISO(cov, sides);
@@ -199,7 +235,8 @@ function fmtDay(iso: string): string {
  * starts before the coverage floor. Counts only the accounts whose floor falls
  * inside the window — the ones actually missing from its earliest day.
  */
-export function balanceCoverageNote(cov: BalanceCoverage | null, sides: readonly BalanceCoverageSide[], chartFromISO: string | null): string | null {
+export function balanceCoverageNote(covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], chartFromISO: string | null): string | null {
+  const cov = knownBalanceCoverage(covRead);
   const from = balanceCoveredFromISO(cov, sides);
   if (!cov || !from || !chartFromISO || chartFromISO >= from) return null;
   const all = floorsFor(cov, sides);
@@ -229,7 +266,9 @@ export function balanceCoverageNote(cov: BalanceCoverage | null, sides: readonly
 export type ChangeComparability =
   | { state: "comparable" }
   | { state: "estimated" }
-  | { state: "withheld"; coveredFromISO: string; message: string };
+  | { state: "withheld"; coveredFromISO: string; message: string }
+  /** The coverage read FAILED: no floor is known, so no change may be stated. */
+  | { state: "withheld"; coveredFromISO: null; message: string; unreadable: true };
 
 export interface ChangeEndpoints {
   /** The comparison (opening) day, YYYY-MM-DD. */
@@ -254,12 +293,20 @@ export const ESTIMATED_CHANGE_SUFFIX = " · estimated";
  * stated. Withheld when EITHER endpoint lies before the coverage floor (the
  * latest floor on those sides); estimated when an endpoint is a reconstructed
  * day that includes a held-flat liability; otherwise comparable. No coverage
- * (loading, failed read, nothing to cover) ⇒ comparable — byte-identical to
- * before PB-8b, the same fail-open every PB-8 surface uses.
+ * (loading, nothing to cover) ⇒ comparable — byte-identical to
+ * before PB-8b. A FAILED server read (BALANCE_COVERAGE_UNAVAILABLE) is withheld, never comparable.
  */
 export function changeComparability(
-  cov: BalanceCoverage | null, sides: readonly BalanceCoverageSide[], e: ChangeEndpoints,
+  covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], e: ChangeEndpoints,
 ): ChangeComparability {
+  // A FAILED read is never "comparable" for a series coverage governs (fail closed).
+  // A series composed of neither cash nor debt (investments, crypto: sides = [])
+  // was never gated by balance coverage, so an outage does not withhold it either.
+  if (isBalanceCoverageUnavailable(covRead)) {
+    if (sides.length === 0) return { state: "comparable" };
+    return { state: "withheld", coveredFromISO: null, message: BALANCE_COVERAGE_UNREADABLE_MESSAGE, unreadable: true };
+  }
+  const cov = covRead;
   const from = balanceCoveredFromISO(cov, sides);
   if (!cov || !from) return { state: "comparable" };
   if (e.fromISO < from || e.toISO < from) {
@@ -282,17 +329,19 @@ export function changeComparability(
 
 /** The typed reason a server-side change claim was withheld. Dates only. */
 export interface WithheldChange {
-  reason:      "PARTIAL_BALANCE_HISTORY";
-  /** YYYY-MM-DD — the coverage floor the comparison crossed. */
-  coveredFrom: string;
+  /** PARTIAL_BALANCE_HISTORY: crossed the floor. BALANCE_HISTORY_UNREADABLE: the coverage read failed. */
+  reason:      "PARTIAL_BALANCE_HISTORY" | "BALANCE_HISTORY_UNREADABLE";
+  /** YYYY-MM-DD — the coverage floor the comparison crossed; null when the coverage could not be read. */
+  coveredFrom: string | null;
   /** The one wording (`changeUnavailableMessage`). */
   message:     string;
 }
 
 export function withheldChangeOf(g: ChangeComparability): WithheldChange | null {
-  return g.state === "withheld"
-    ? { reason: "PARTIAL_BALANCE_HISTORY", coveredFrom: g.coveredFromISO, message: g.message }
-    : null;
+  if (g.state !== "withheld") return null;
+  return g.coveredFromISO === null
+    ? { reason: "BALANCE_HISTORY_UNREADABLE", coveredFrom: null, message: g.message }
+    : { reason: "PARTIAL_BALANCE_HISTORY", coveredFrom: g.coveredFromISO, message: g.message };
 }
 
 export interface GatedWindowChange<C> {
@@ -305,11 +354,11 @@ export interface GatedWindowChange<C> {
  * Gate one already-computed window change. `openingISO` is the date of the
  * observation the change actually opened on (it may precede `fromDate` when the
  * series has a gap) — the earlier of the two is the one compared to the floor.
- * No coverage ⇒ the change unchanged (fail-open, as `changeComparability`).
+ * No coverage ⇒ the change unchanged; UNAVAILABLE ⇒ withheld (as `changeComparability`).
  */
 export function gateWindowChange<C extends { fromDate: string; toDate: string }>(
   change: C | null,
-  cov: BalanceCoverage | null,
+  cov: BalanceCoverageRead,
   sides: readonly BalanceCoverageSide[],
   e: { openingISO?: string | null; fromEstimated?: boolean; toEstimated?: boolean } = {},
 ): GatedWindowChange<C> {
@@ -329,9 +378,9 @@ export type BalanceCoverageSurface =
 
 /**
  * The counts-only line logged when a coverage read FAILS and the change claims
- * fall open to comparable (no ids, no amounts, no error text — an error message
+ * are withheld (BALANCE_COVERAGE_UNAVAILABLE) (no ids, no amounts, no error text — an error message
  * can carry a query's values). Frequent failures would otherwise be silent.
  */
 export function balanceCoverageLoadFailureLine(surface: BalanceCoverageSurface, failed: number, of: number): string {
-  return `[balance-coverage] load failed surface=${surface} failed=${failed} of=${of}; change claims fall open to comparable`;
+  return `[balance-coverage] load failed surface=${surface} failed=${failed} of=${of}; coverage unavailable, change claims withheld`;
 }

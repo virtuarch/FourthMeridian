@@ -38,7 +38,7 @@ import type { ClassificationReason, FinancialAssessment } from '@/lib/ai/intelli
 import { claimEvidence, claimsReachedBy } from './claim-evidence';
 // PB-8c — the SAME floors and rule as the heroes (PB-8b) and the AI snapshot.
 import {
-  balanceCoverageSidesFor, gateWindowChange, type BalanceCoverage,
+  balanceCoverageSidesFor, gateWindowChange, type BalanceCoverageRead,
 } from '@/lib/connections/balance-coverage.core';
 import type {
   BriefChangeWindow, BriefClassification, BriefDelta, BriefPackage, BriefRecentActivity,
@@ -69,9 +69,10 @@ export interface BriefInputs {
   bankingPopulationKnown?: boolean;
   /**
    * PB-8c — the Space's balance-history floors. A change opening before them is
-   * withheld with its reason; null / absent ⇒ every change as before (fail-open).
+   * withheld with its reason; null / absent ⇒ nothing to cover (every change as before);
+   * BALANCE_COVERAGE_UNAVAILABLE (the read failed) ⇒ every change withheld (fail closed).
    */
-  balanceCoverage?: BalanceCoverage | null;
+  balanceCoverage?: BalanceCoverageRead;
   /** PB-8c — the snapshot days that are reconstructions (row `isEstimated`), for the estimated mark. */
   snapshotEstimatedDates?: readonly string[];
 }
@@ -115,7 +116,7 @@ const METRIC_SERIES: Record<Metric, string> = {
  */
 function gatedInto(
   out: BriefChangeWindow, m: Metric, d: BriefDelta, openingISO: string, closingISO: string,
-  cov: BalanceCoverage | null, estimated: ReadonlyMap<string, boolean>,
+  cov: BalanceCoverageRead, estimated: ReadonlyMap<string, boolean>,
 ): void {
   const g = gateWindowChange({ fromDate: openingISO, toDate: closingISO }, cov, balanceCoverageSidesFor(METRIC_SERIES[m]), {
     fromEstimated: estimated.get(openingISO), toEstimated: estimated.get(closingISO),
@@ -166,7 +167,7 @@ const classified = (
  */
 function presetWindow(
   history: readonly SnapshotDataPoint[], preset: 'PAST_WEEK' | 'PAST_MONTH',
-  cov: BalanceCoverage | null = null, estimated: ReadonlyMap<string, boolean> = new Map(),
+  cov: BalanceCoverageRead = null, estimated: ReadonlyMap<string, boolean> = new Map(),
 ): BriefChangeWindow | undefined {
   const anchor = canonicalWindowChange(seriesOf(history, 'liquid'), preset, NARRATED);
   if (!anchor) return undefined;
@@ -191,7 +192,7 @@ function presetWindow(
  */
 function sincePreviousDay(
   history: readonly SnapshotDataPoint[],
-  cov: BalanceCoverage | null = null, estimated: ReadonlyMap<string, boolean> = new Map(),
+  cov: BalanceCoverageRead = null, estimated: ReadonlyMap<string, boolean> = new Map(),
 ): BriefChangeWindow | undefined {
   if (history.length < 2) return undefined;
   const last = history[history.length - 1];
