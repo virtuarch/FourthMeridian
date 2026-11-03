@@ -159,6 +159,8 @@ const WORKSPACE_ICONS_BY_NAME: Record<string, LucideIcon> = {
   ScrollText, UserCog,
   // Platform redesign — Customer Success › Communications.
   Mail,
+  // Platform Economics.
+  Receipt,
 };
 
 /** The row icon: the published icon NAME first, else the id-keyed lens map. */

@@ -95,6 +95,9 @@ const READERS = [
   // AI & Costs — the 24 h budget KPI's per-call drilldown (opaque customer ref only; no prompt, conversation or request id).
   "lib/platform/ai/budget-calls.ts",
   "lib/platform/ai/budget-calls-core.ts",
+  // Platform Economics — the Overview snapshot + drill reader and core (opaque customer refs only).
+  "lib/platform/economics/snapshot.ts",
+  "lib/platform/economics/snapshot-core.ts",
 ];
 const ROUTES = [
   "app/api/platform/platform-ops/overview/route.ts",
@@ -128,6 +131,9 @@ const ROUTES = [
   "app/api/platform/platform-ops/policy-groups/route.ts",
   // AI & Costs — the budget KPI's per-call drilldown, PLATFORM_OPS READ (gate pinned in lib/platform/ai/budget-calls.test.ts).
   "app/api/platform/platform-ops/ai-budget/calls/route.ts",
+  // Platform Economics — the snapshot and its drill, PLATFORM_OPS READ (gates pinned in lib/platform/economics/snapshot.test.ts).
+  "app/api/platform/platform-ops/economics/route.ts",
+  "app/api/platform/platform-ops/economics/drill/route.ts",
 ];
 
 console.log("source · no customer identity or secret is selected");

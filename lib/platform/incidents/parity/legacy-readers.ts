@@ -10,6 +10,7 @@
 import { classifySyncIssue, syncIssueState, type SyncIssueState } from "@/lib/platform/sync-issue-semantics";
 import { projectIncidents } from "@/lib/platform/customer/customer-core";
 import type { CsIncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
+import { convergenceInstant, syncIssueOutcome } from "@/lib/platform/convergence/participants";
 import { moduleVerdicts } from "./module-adapter";
 import type { World, WorldRow } from "./world";
 
@@ -85,8 +86,13 @@ export function csPanelReader(w: World): Verdict[] {
   return out;
 }
 
-/** R3 — convergence: rows CREATED in the window; referent OR-rule; classification without plaidTransactionId. */
-export function convergenceReader(w: World): Verdict[] {
+/**
+ * R3 BASELINE — convergence AS IT WAS before its cutover (PB-1 R3): rows CREATED
+ * in the window; the referent OR-rule; classification without plaidTransactionId.
+ * Kept INLINE as the historical record the §13.2 sensitivity checks prove
+ * divergences against; no production code implements this rule any more.
+ */
+export function convergenceBaselineReader(w: World): Verdict[] {
   const from = w.now.getTime() - w.windowDays * DAY;
   return w.rows.filter((r) => r.createdAt.getTime() >= from).map((r) => {
     const facts = { kind: r.kind, provider: r.provider, detail: r.detail }; // participants.ts:154 omits plaidTransactionId
@@ -97,6 +103,23 @@ export function convergenceReader(w: World): Verdict[] {
       groupKey: `plaidItem:${r.plaidItemId ?? r.financialAccountId ?? `provider:${r.provider}`}|run:${runId}`,
     };
   });
+}
+
+/**
+ * R3 — convergence AFTER its cutover: the module's Platform Ops verdicts for the
+ * window (an OPEN incident whatever its dates — D6; a closed row only when its
+ * instant sits in the window), through the REAL participant outcome rule.
+ */
+export function convergenceReader(w: World): Verdict[] {
+  const from = w.now.getTime() - w.windowDays * DAY;
+  return moduleVerdicts(w, "PLATFORM_OPS").filter((v) => {
+    if (v.rowClass === "incident" && v.state !== "resolved" && v.state !== "archived") return true;
+    const at = Date.parse(convergenceInstant(v));
+    return at >= from && at <= w.now.getTime();
+  }).map((v) => ({
+    reader: "convergence" as const, rowId: v.id, open: syncIssueOutcome(v) === "degraded", severity: v.severity,
+    groupKey: `plaidItem:${v.plaidItemId ?? v.financialAccountId ?? `provider:${v.provider}`}|episode:${v.episodeKey}`,
+  }));
 }
 
 /** R5 — alerts: the projection's active set, critical only, grouped per item. */
