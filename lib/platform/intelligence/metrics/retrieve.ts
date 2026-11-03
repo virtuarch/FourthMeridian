@@ -22,6 +22,8 @@ import { getProductAnalytics } from "@/lib/platform/growth/product-analytics";
 import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
 import { getMerchantOverview } from "@/lib/platform/merchant/overview";
 import { getCsOverview } from "@/lib/platform/customer/overview";
+import { countAccountsWithLiveSession, countLiveSessions } from "@/lib/platform/security/live-sessions";
+import { systemDb } from "@/lib/db";
 import {
   retrieveWith,
   type MetricEnvelope, type MetricSurface, type RetrievalContext, type RetrievalParams, type RetrievalReaders,
@@ -38,6 +40,9 @@ const READERS: RetrievalReaders = {
   incidentSearch: (token, query, opts) => incidentAccessors.search(token, query, opts),
   merchantOverview: () => getMerchantOverview(30),
   csOverview: (token) => getCsOverview(30, token),
+  // The shared live-session readers take their client: the Platform's fm_system authority.
+  liveSessions: (now) => countLiveSessions(systemDb, now),
+  accountsWithLiveSession: (now) => countAccountsWithLiveSession(systemDb, now),
 };
 
 /**
