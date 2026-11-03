@@ -146,6 +146,33 @@ not the window.
   card balance (that is a Debt-domain STOCK fact).
 - Currency conversion is per-row at the row's own date; absent a `ConversionContext`,
   raw amounts are used (the same rule as every other Cash Flow helper).
+- **Reporting period (flow group) — IMPLEMENTED.** Since the v2.7 perspective UX pass
+  (PRs #66–#69), Cash Flow and Spending share their own URL-backed period
+  (`fasof` / `fcompareto` / `fpreset`, plus `fperiod` for a heatmap-picked month, quarter
+  or year), independent of Net Worth / Assets / Debt (`asof` / `compareto` / `preset`).
+  Both default to 1M; a rolling As Of is omitted from the URL and advances at UTC
+  midnight; a legacy Cash Flow link with no flow params is read as the flow group's and
+  canonicalised (`lib/space/perspective-time-groups.ts:1-36`; React binding
+  `components/space/shell/usePerspectiveShellState.ts`).
+- A custom header range on Cash Flow keeps the last relative period (reported at the
+  v2.7 UX pass, 2026-10-27; not re-verified).
+- A provider interest credit categorised as Transfer, and unconfirmed ACH / CD
+  movements, stay **unresolved transfers** (a magnitude counted in neither axis), never
+  income or spending — the owner rule that an unconfirmed destination is never asserted.
+  Card-side payment rows that carry a charge sign are tracked as F-1 in
+  `docs/plans/V2.7-TRANSFER-PAYMENT-CLASSIFICATION-AUDIT-2026-10-27.md`.
+
+## Deferred
+
+- **Spending "Talk with Fourth Meridian" link — DECIDED BUT NOT IMPLEMENTED.** The
+  Spending perspective has no conversation link at either width. Adding one means a
+  `spending` entry in `TALK_SECTIONS` (`components/ai/talk-about-this.ts:22`, today
+  `net-worth`, `assets`, `cash`, `investments`, `debt`, `cash-flow`), which changes the AI
+  templates, so it was deferred at the v2.7 UX pass (2026-10-27). The compact card keeps
+  the row's height with R5 empty (`components/space/widgets/cashflow/SpendingSections.tsx:64-67`).
+  The absence is pinned by `components/ai/talk-about-this.test.ts:154-156` and
+  `components/space/compact/mobile-desktop-parity.test.ts:250`; both pins must change
+  together when the link is added.
 
 ## Extension points
 

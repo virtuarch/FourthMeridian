@@ -183,6 +183,143 @@ subsystem (`investment-event-ingest.ts`, `reconstruction-*.ts`).
   re-valuing per date, so its granularity and coverage are exactly whatever the
   snapshot history holds; `fxMiss` points are honestly dropped rather than interpolated.
 
+### Known limitations and residual migrations (from the v2.6 consumer audit)
+
+Carried from the v2.6 semantic consumer audit (audit baseline 2026-08-01; the working
+plan was deleted per ADR-008, recover it with
+`git log -- docs/plans/V26-SEMANTICS-CONSUMER-CONVERGENCE.md`). The audit found the
+authorities (A10 `getInvestmentsTimeMachine`, `getCurrentPositions`,
+`computeWealthTimeMachine`, `buildInvestmentsTrustSummary`, the valuation core) sound;
+its findings are about consumers that bypass them. Status labels follow ADR-008.
+Line numbers were re-read on `develop` at `42f99ea` (2026-11-03).
+
+**Fixed in PB-11 (#275, `60109e1`), verified on `develop` 2026-11-03.** They were found open by this register's re-read and fixed the same day:
+
+- **M4 — `attribution` display-FX conversion. IMPLEMENTED (#275).** `lib/investments/display-conversion.ts`
+  now converts `attribution` alongside holdings, portfolio, flows and reconciliation;
+  covered by `lib/investments/pb11-investments-correctness.test.ts`. Guardrail R3 (a
+  structural walker over every money field) is still worth adding; see the list below.
+- **M5 — hero percentage gate. IMPLEMENTED (#275).** `InvestmentsHero.tsx` no longer
+  computes an ungated `(change / opening) * 100`: an indefensible opening withholds the
+  change with its reason, and a percentage is shown only for a defensible pair.
+- **M7 — one allocation authority. IMPLEMENTED (#275).** `HoldingsConcentration.tsx` and
+  `InvestmentAllocationPanel.tsx` no longer call `computeAllocation` in the browser; they
+  consume the server-computed allocation.
+- **Display FX fails closed. IMPLEMENTED (PB-11b, #277).** A missing display-currency rate no
+  longer leaves a mixed-currency figure: the conversion fails closed and the surface
+  withholds the value.
+
+**Partial or tracked elsewhere:**
+
+- **M3 — one crypto engine. PARTIAL.** IMPLEMENTED: the legacy `Holding` dual-write in
+  `btc-sync` is retired (`lib/crypto/btc-sync.ts:235-240`), the
+  `lib/investments/legacy-crypto-holdings.ts` bridge is deleted
+  (`lib/ai/assemblers/holdings.ts:20`), and the A9 history writer resolves each wallet's
+  asset from its chain instead of assuming BTC
+  (`lib/snapshots/regenerate-history.ts:318-328`). OPEN: A9 still values crypto as today's
+  `nativeBalance` held constant × that day's close
+  (`regenerate-history.ts:309-316`), not through valuation-core over spine positions.
+- **M1 — converge the today-snapshot writer. OPEN, tracked as FM-AUDIT-021**
+  (`docs/audits/PRE-S1-FULL-SYSTEM-AUDIT-2026-09-21.md`): today's row is written from
+  live account balances as "observed" and is then frozen against history regeneration.
+- **M13 — amendment preview = apply. OPEN, gated off.** The amendment route refuses while
+  `HISTORICAL_AMENDMENT_ENABLED = false` (`lib/snapshots/amendment-availability.ts:28`,
+  checked at `app/api/spaces/[id]/wealth/amend/route.ts:51`); the regression test pins the
+  flag false (`lib/snapshots/amendment-whole-day.regression.test.ts:87`).
+- **M10 — AI / Brief convergence. OPEN; in part KD-14** (`AiAdvice` has no production
+  writer; see STATUS.md). The rest of M10 is not re-verified (below).
+- **M14 — quantity authority `compare` → `adopt`. DECIDED BUT NOT IMPLEMENTED.**
+  `QUANTITY_AUTHORITY_MODE` defaults to off; unset or unrecognised values mean off
+  (`lib/env.ts:223-235`), and "adopt" must not be set in Production before the compare
+  ledger is reviewed.
+
+**NOT RE-VERIFIED (open until measured).** One line each so nothing is lost; each is the
+audit's 2026-08-01 finding and may since have changed.
+
+- M2 — wire `mayClaimObserved` (3-axis) + `assessRepresentativeness` into A9's write decision (were diagnostic-only).
+- M6 — serve the portfolio series inside the `InvestmentsSpaceData` contract with a declared basis; render the today/history basis seam; guarantee endpoint points at `asOf` / `compareTo` or label the plotted range.
+- M8 — move the per-holding return math out of `HoldingDetail` into a lib authority with tier / basis gates.
+- M9 — move SpaceTrendHero, NetWorthChart (+ modal), `debt_history`, launcher cards and the `net_worth` / `investment_summary` sections onto `computeWealthTimeMachine` / `classifyAccounts` / `getCurrentPositions`; end the "view as" currency masquerade.
+- M10 (remainder) — holdings assembler to consume `portfolio` + trust summary + scope divergence; snapshot reductions from `computeWealthTimeMachine`; count-as-days (3 sites) and hardcoded `$`; serialize snapshot / holdings windows and coverage; Brief "since" window honesty.
+- M11 — one FX-miss policy for series across the display-conversion modules; missing `fxMiss` filters; replace fabricated `?? 0` zeros with honest absence.
+- M12 — unify nearest-≤ resolution on `nearestOnOrBefore`; decide the staleness ceiling deliberately.
+- M15 — Liquidity option profile: reconcile `holdConstantBeforeEarliest` with A9 / A10 or record the divergence as a tested decision.
+- M16 — the snapshots route's local mid-sync check → `spaceHasSyncIncompleteProviderData`.
+- M17 — fire snapshot regeneration from `opening-position` writes; run event ingest before A9 in `sync-banks` (or document the one-day lag at both sites).
+- R1 — import bans: `components/**` may not import valuation, quantity, reconstruction, `classifyAccounts`, `computeAllocation`, `computeConcentration` or Prisma.
+- R2 — expression tripwires under `components/**` (`/ opening) * 100`, `.slice(-`, `points[0]`, `new Date()` window math, `Intl.NumberFormat(`) with a shrink-only baseline.
+- R3 — structural display-FX exhaustiveness walker over every money field (would have caught M4).
+- R4 — single-writer snapshot guard: `spaceSnapshot.upsert|createMany` only in the A9 family.
+- R5 — one-series guard: the series arrives inside the contract; the route adds no fields beyond it.
+- R6 — nearest-≤ singleton: the resolution idiom allowed only in the primitive and the two archives.
+- R7 — reason-vocabulary registry test mapping every refusal code into one vocabulary.
+- R8 — AI parity tests: AI caveat strings `===` the trust-summary authors; scope-divergence disclosed beside `accounts.totalInvestments`.
+- R9 — unit honesty: brand `SnapshotCount` vs `DayCount`.
+- R10 — bucket-flag ratchet: register every `getInvestmentValueAsOf|ForWindow` call site's option triple.
+- R11 — dead-honesty tripwire: every exported field of `WealthResult` / trust summary / view has a non-test consumer.
+- R12 — enforce `implemented: false` in `SectionCard.renderBody()` with a test.
+
+**PROPOSED — canonical ownership (one owner per financial fact; everyone else consumes
+the object).** ⊕ = no owner exists yet.
+
+| Financial fact | Owner (target) | Must never recompute it |
+|---|---|---|
+| Current holdings + valuation | `getCurrentPositions` | Investments page, AI holdings, Export, Connections counts, Dashboard / section / launcher "current" numbers |
+| Historical quantity as-of | quantity authority (`decideQuantity`, mode adopt) | everything except valuation-core |
+| Historical instrument value | `valueInstrumentAsOf` / `valuePositionRowsOverDates` | A10, A9, Liquidity splice (via their bindings only) |
+| Historical portfolio (as-of, compare, flows, reconciliation, attribution) | A10 `getInvestmentsTimeMachine` | Investments page, AI, Brief, Reports (via `HistoricalPortfolioView`) |
+| Portfolio value series | ⊕ one series builder with declared basis | Investments chart and hero |
+| Opening / closing period values | `assessPeriodAttribution` + `buildReconciliation` | hero, bridge, chart endpoints, AI period claims; no `points[0]` rules |
+| Portfolio gain / gain % | `heroComparison` gated by `mayShowReturnPercentage` | every surface; no local `(b − a) / a` |
+| Per-holding return | ⊕ lib authority, tier- and basis-gated | `HoldingDetail` |
+| Net worth (current) | `classifyAccounts`, with spine investments once converged | sections, AI accounts, snapshot writer |
+| Net worth (historical, deltas, drivers, chart) | `computeWealthTimeMachine` | Wealth surfaces, SpaceTrendHero, NetWorthChart, launcher, Brief, AI snapshot reductions |
+| Snapshot as-of resolution | `nearestOnOrBefore` | every hand-rolled nearest-≤ copy |
+| Snapshot series read + FX stamping | `getRecentSnapshots`, with one shared fxMiss / estimated policy | all readers |
+| Snapshot writing (all rows incl. today) | A9 `regenerateWealthHistory` + a converged today-writer | — |
+| Snapshot write admission | `mayClaimObserved` + `assessRepresentativeness` | A9 writer |
+| Price as-of | `priceArchive.readRange` semantics | valuation only |
+| Price coverage / priceability | `coverage-binding.core` | jobs, acquisition planning |
+| Event-stream coverage | `event-coverage.core` | quantity authority |
+| Crypto valuation | valuation-core over spine positions | A9, A10, AI |
+| Trust / completeness prose | `buildInvestmentsTrustSummary` (+ Wealth `completeness`) | UI chips, AI, Brief, Export |
+| Scope divergence disclosure | `investmentsScopeDivergence` | Investments UI, AI, Brief |
+| Concentration | `lib/investments/concentration.ts` | Investments, wealth adapters (no local HHI) |
+| Allocation | server `computeAllocation` in the envelope | panels / widgets consume `share` |
+| Money-in / money-out grouping | ⊕ one helper in `investment-flows-core` | bridge and activity cards |
+| Display FX | `convertMoney` + per-domain display conversion, one miss policy | all |
+| Liability sign | `amountOwed` (`balance-semantics.ts`) | AllocationChart |
+| Period window (preset → asOf / compareTo) | `shellTimeReducer` / `compareToForPreset` | NetWorthChart intervals, SpaceTrendHero, launcher, AI windows |
+
+**PROPOSED — `HistoricalPortfolioView` contract.** One immutable object per
+(scope, period), assembled by one authority and read verbatim by every surface, AI
+assembler, Brief section and export row that states a historical portfolio fact:
+
+```
+HistoricalPortfolioView {
+  period             // ONE interval {fromISO, toISO, preset?} (today split across five shapes)
+  opening            // {value, date, coverage, defensible}; null only with a reason
+  closing            // {value, date, coverage}
+  historicalSeries   // [{date, value, basis, estimated}]: one series, per-point basis, so the
+                     //   today/history basis seam is a point attribute, not a silent step
+  coverage           // valuation + price + event coverage mapped into one consumer vocabulary
+  attribution        // PeriodAttribution: REQUIRED, display-FX-converted like every money field
+  gaps               // [{fromISO, toISO, reason}] from quantity, price and snapshot holes
+  unsupportedReasons // ONE reason vocabulary unifying the existing refusal / fallback enums
+  gain               // from attribution; null carries a reason code
+  gainPercent        // present ONLY when mayShowReturnPercentage; computed once, here
+  valuationBasis     // portfolio rollup of per-row basisUsed
+  quantityBasis      // OBSERVED_ANCHOR / REPLAYED / BACK_PROJECTED / HELD_FLAT rollup
+  priceBasis         // RAW_CLOSE etc. + staleness envelope
+}
+```
+
+A10 already produces most of this. The audit's deltas: make `attribution` required and
+converted; serve the series behind the contract rather than beside it on the route;
+surface `gaps`; unify the reason vocabularies; add the three basis rollups. `WealthResult`
+is the same pattern for net worth and would need a real `coverage` object, an attribution
+verdict gating `WealthDelta.pct`, and a consumer for its own `basis` field.
+
 ## Extension points
 
 - **New workspace slice** — add a field to `InvestmentsSpaceData`, populate it in the
