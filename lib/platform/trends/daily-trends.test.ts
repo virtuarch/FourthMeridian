@@ -49,8 +49,8 @@ console.log("Customer Success reader — counts only, no subject, no detail");
   check("reads no SyncIssue row itself (no findMany / select here)", !/syncIssue\.findMany|select:/.test(s));
   check("never touches detail, account, item, kind or subject", !/detail|financialAccount|plaidItem|kind|subject|incidentKey/.test(s.replace(/import[^;]+;/g, "")));
   // PB-1 Phase 3 — DELIBERATE PIN UPDATE (was: getIncidentEpisodeTimeline(since, INCIDENTS_DAILY_ROW_CAP, systemDb)).
-  check("module window reader (identity-free tier) with a row cap and a floor flag",
-    /incidentAccessors\.window\(atOpsTier\(incidentToken\)!, \{ from: since, to: now \}, \{ limit: INCIDENTS_DAILY_ROW_CAP, now \}\)/.test(s) && /floor: scanTruncated/.test(s) && /scanTruncated = page\.truncated/.test(s));
+  check("module window reader (route token, identity-free fold) with a row cap and a floor flag",
+    /incidentAccessors\.window\(incidentToken, \{ from: since, to: now \}, \{ limit: INCIDENTS_DAILY_ROW_CAP, now \}\)/.test(s) && /floor: scanTruncated/.test(s) && /scanTruncated = page\.truncated/.test(s));
   const r = code("app/api/platform/customer-success/incidents-daily/route.ts");
   check("route: CUSTOMER_SUCCESS READ, GET only, no-store", /requirePlatformAccess\("CUSTOMER_SUCCESS", "READ"\)/.test(r) && !/export async function (POST|PUT|PATCH|DELETE)/.test(r) && /no-store/.test(r));
 }

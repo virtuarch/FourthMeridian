@@ -115,11 +115,12 @@ console.log("5. source pins — the trend reads module verdicts only");
 {
   const code = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const core = code("lib/platform/customer/incident-trend-core.ts");
+  check("the fold's verdict slice carries no identity field", /Pick<IncidentVerdict, "rowClass" \| "duplicateOf" \| "state" \| "closure" \| "firstSeenAt" \| "resolvedAt">/.test(core) && !/subjectUserId|plaidItemId|financialAccountId|label/.test(core));
   check("the fold reads verdict fields only — no row → state call, no syncIssue, no referent rule",
     !/syncIssueState|episodeStateOf|syncIssue\.|referent|resolved:/.test(core) && /v\.rowClass !== "incident"/.test(core) && /v\.duplicateOf !== null/.test(core));
   const daily = code("lib/platform/customer/incidents-daily.ts");
-  check("the reader reads the module's window at the identity-free tier, through the fold",
-    /incidentAccessors\.window\(atOpsTier\(incidentToken\)!, \{ from: since, to: now \}, \{ limit: INCIDENTS_DAILY_ROW_CAP, now \}\)/.test(daily)
+  check("the reader reads the module's window with the route's token, through the identity-free fold",
+    /incidentAccessors\.window\(incidentToken, \{ from: since, to: now \}, \{ limit: INCIDENTS_DAILY_ROW_CAP, now \}\)/.test(daily)
     && /incidentTrendInstants\(page\.items\)/.test(daily) && !/projections|episodes-core|systemDb|syncIssue/.test(daily));
   const route = code("app/api/platform/customer-success/incidents-daily/route.ts");
   check("the route mints the CS token from its own guard result", /const incidentToken = incidentAudienceFor\(auth\);/.test(route) && /incidentToken\.audience !== "CUSTOMER_SUCCESS"/.test(route));

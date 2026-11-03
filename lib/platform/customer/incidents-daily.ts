@@ -9,9 +9,10 @@
  *
  * PB-1 Phase 3 — MODULE VERDICTS ONLY. The series reads the incident-intelligence
  * module's `window` accessor (open incidents whatever their age, plus closed ones
- * that touched the window — D5 / D6), at the identity-free Ops tier (the route's
- * CS token is downgraded here: a count needs no customer), and folds the verdicts
- * in incident-trend-core.ts. Evidence, superseded, removed-subject and folded
+ * that touched the window — D5 / D6) with the route's own token, and folds the
+ * verdicts in incident-trend-core.ts, which picks ONLY identity-free fields
+ * (rowClass, duplicateOf, state, closure, firstSeenAt, resolvedAt) — a count
+ * needs no customer, so none leaves the fold. Evidence, superseded, removed-subject and folded
  * duplicate rows are not episodes and are not counted.
  *
  * "Opened" is the episode's first occurrence (`firstOccurredAt`, else
@@ -21,7 +22,7 @@
  */
 
 import "server-only";
-import { incidentAccessors, atOpsTier, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence";
+import { incidentAccessors, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence";
 import { incidentTrendInstants } from "./incident-trend-core";
 import { countByDay, windowDayKeys, windowStart } from "@/lib/platform/trends/daily-core";
 
@@ -46,12 +47,12 @@ export const INCIDENTS_DAILY_BASIS =
   "Sync-incident episodes per UTC day, from the incident-intelligence module (evidence, superseded, removed-connection and duplicate rows excluded): opened = first occurrence (else created); resolved = the resolution's resolvedAt.";
 
 export async function getIncidentsDailySeries(
-  /** The token the ROUTE minted from its own guard result; downgraded to the identity-free tier here. */
+  /** The token the ROUTE minted from its own guard result (counts only: the fold reads no identity field). */
   incidentToken: CsToken | OpsToken,
   now: Date = new Date(), days = INCIDENTS_DAILY_WINDOW_DAYS,
 ): Promise<IncidentsDailySeries> {
   const since = windowStart(now, days);
-  const page = await incidentAccessors.window(atOpsTier(incidentToken)!, { from: since, to: now }, { limit: INCIDENTS_DAILY_ROW_CAP, now });
+  const page = await incidentAccessors.window(incidentToken, { from: since, to: now }, { limit: INCIDENTS_DAILY_ROW_CAP, now });
   const scanTruncated = page.truncated;
   const episodes = incidentTrendInstants(page.items);
   const keys = windowDayKeys(now, days);
