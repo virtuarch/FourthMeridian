@@ -51,6 +51,11 @@ export const ATTRIBUTION_REFUSALS = [
   // by `assessPeriodAttribution`: the period's figures cannot be expressed in the
   // display currency, so none of them is shown rather than one shown unconverted.
   "DISPLAY_RATE_UNAVAILABLE",
+  // PB-11b — set only by `reconciliationComparison`: neither endpoint reports an
+  // unvalued holding, yet the reconciliation says they are not like-for-like.
+  "ENDPOINT_COVERAGE_MISMATCH",
+  // PB-11b — set only by `reconciliationComparison`: a total it needs is absent.
+  "PERIOD_TOTALS_UNAVAILABLE",
 ] as const;
 export type AttributionRefusal = (typeof ATTRIBUTION_REFUSALS)[number];
 
@@ -73,6 +78,10 @@ export const REFUSAL_COPY: Record<AttributionRefusal, string> = {
     "A holding carries a reconstruction conflict across this period.",
   DISPLAY_RATE_UNAVAILABLE:
     "No conversion rate to the display currency is available for this period, so its change can't be shown in it.",
+  ENDPOINT_COVERAGE_MISMATCH:
+    "The start and end of this period don't cover the same holdings in the same way, so the difference between them isn't a like-for-like change.",
+  PERIOD_TOTALS_UNAVAILABLE:
+    "The opening or closing value for this period isn't available, so no change can be stated.",
 };
 
 /** Everything the assessment needs. Deliberately plain data — no view objects. */
@@ -273,24 +282,38 @@ export function heroComparison(a: PeriodAttribution): {
  * A value change with external flows keeps its amount but never a percentage.
  */
 export function reconciliationComparison(r: {
-  openingValue: number; closingValue: number; totalChange: number;
+  openingValue: number | null; closingValue: number | null; totalChange: number | null;
   endpointIncomplete: boolean; coverageConsistent: boolean;
   changeInterpretation: "return" | "value-change" | "incomparable";
   completeness: CompletenessTier; conflict: boolean;
   openingCoverage: { unavailableCount: number };
+  closingCoverage: { unavailableCount: number };
 }): ReturnType<typeof heroComparison> & { estimated: boolean } {
-  if (r.endpointIncomplete || !r.coverageConsistent || r.changeInterpretation === "incomparable") {
-    return {
-      showChange: false, changeAmount: null, showPercentage: false, percentage: null, estimated: false,
-      suppressedReason: r.openingCoverage.unavailableCount > 0
-        ? REFUSAL_COPY.OPENING_ENDPOINT_INCOMPLETE : REFUSAL_COPY.CLOSING_ENDPOINT_INCOMPLETE,
-    };
+  const withheld = (reason: string) => ({
+    showChange: false, changeAmount: null, showPercentage: false, percentage: null, estimated: false,
+    suppressedReason: reason,
+  });
+  // PB-11b — never read a total that is not there (a display conversion that
+  // failed closed, or any non-finite figure): withhold, never compute.
+  const finite = (v: number | null) => typeof v === "number" && Number.isFinite(v);
+  if (!finite(r.openingValue) || !finite(r.closingValue) || !finite(r.totalChange)) {
+    return withheld(REFUSAL_COPY.PERIOD_TOTALS_UNAVAILABLE);
   }
+  if (r.endpointIncomplete || !r.coverageConsistent || r.changeInterpretation === "incomparable") {
+    // PB-11b — the reason names the endpoint that is actually short; when
+    // neither reports an unvalued holding, it says the coverage differs.
+    return withheld(
+      r.openingCoverage.unavailableCount > 0 ? REFUSAL_COPY.OPENING_ENDPOINT_INCOMPLETE
+      : r.closingCoverage.unavailableCount > 0 ? REFUSAL_COPY.CLOSING_ENDPOINT_INCOMPLETE
+      : REFUSAL_COPY.ENDPOINT_COVERAGE_MISMATCH);
+  }
+  const opening = r.openingValue as number;
+  const totalChange = r.totalChange as number;
   const estimated = !OBSERVED_TIERS.has(r.completeness);
-  const mayShowPct = !estimated && !r.conflict && r.changeInterpretation === "return" && r.openingValue !== 0;
+  const mayShowPct = !estimated && !r.conflict && r.changeInterpretation === "return" && opening !== 0;
   return {
-    showChange: true, changeAmount: r.totalChange,
-    showPercentage: mayShowPct, percentage: mayShowPct ? (r.totalChange / r.openingValue) * 100 : null,
+    showChange: true, changeAmount: totalChange,
+    showPercentage: mayShowPct, percentage: mayShowPct ? (totalChange / opening) * 100 : null,
     estimated,
     suppressedReason: mayShowPct ? null
       : estimated ? REFUSAL_COPY.OPENING_NOT_OBSERVED
