@@ -312,9 +312,16 @@ async function main(): Promise<number> {
     const v = cli(["--env=local", "--verify-complete"], { current: NEW });
     check(9, "[cli] --verify-complete with the new key alone exits 0 with a kid-less v2 present (the current key opens it)",
       v.status === 0 && out(v).includes("VERIFIED COMPLETE") && out(v).includes("legacy v2 (no kid)") && out(v).includes("blocking 0"), `${v.status} ${out(v).slice(-700)}`);
+    const audits0 = auditRows();
     const a = cli(["--env=local", "--apply"], { current: NEW });
-    check(9, "[cli] an apply with PREVIOUS unset rotates 0 and leaves every column byte-identical (v2 is never churned to v3)",
-      a.status === 0 && out(a).includes("to re-encrypt 0") && out(a).includes("rotated 0 · conflicts 0") && snapshot() === before, `${a.status} ${out(a).slice(-700)}`);
+    check(9, "[cli] an apply with PREVIOUS unset is a NO-OP: exit 0, 'no rotation in progress — nothing to do', every column byte-identical, NO audit row",
+      a.status === 0 && out(a).includes("no rotation in progress — nothing to do") && snapshot() === before && auditRows() === audits0, `${a.status} ${out(a).slice(-700)}`);
+    const aSame = cli(["--env=local", "--apply"], { current: NEW, previous: NEW });
+    check(9, "[cli] an apply with PREVIOUS equal to the current key is the same NO-OP (exit 0, no write, no audit row)",
+      aSame.status === 0 && out(aSame).includes("no rotation in progress — nothing to do") && snapshot() === before && auditRows() === audits0, `${aSame.status} ${out(aSame).slice(-500)}`);
+    const dry = cli(["--env=local"], { current: NEW });
+    check(9, "[cli] the dry run with PREVIOUS unset is unchanged: exit 0, 0 to re-encrypt (the kid-less v2 is current)",
+      dry.status === 0 && out(dry).includes("to re-encrypt 0") && snapshot() === before, `${dry.status} ${out(dry).slice(-500)}`);
     const u1 = withKeys(NEW, undefined, () => enc.decryptWithPurposeReportingKey(val(`select "totpSecret" from "User" where id='u1'`), P.TOTP_SECRET));
     check(9, "[cli] a v3 value written during the rotation is still v3 and reads under the new key alone after (d)",
       enc.detectCiphertextVersion(val(`select "totpSecret" from "User" where id='u1'`)) === "v3" && u1.kid === kid(NEW) && u1.plaintext === plain.u1t);

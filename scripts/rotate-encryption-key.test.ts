@@ -79,7 +79,16 @@ console.log("1. the CLI refuses before any database contact");
   const same = run(["--env=local"], { DATABASE_URL: LOCAL, ENCRYPTION_KEY_PREVIOUS: KEY });
   check("ENCRYPTION_KEY_PREVIOUS EQUAL to ENCRYPTION_KEY is refused by the script (the app only warns)",
     refused(same, /ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY/), same.stderr);
-  const all = [same, both, noEnv, typo, prodNoAck, ackElsewhere, prodApplyNoTicket, prodApplyNoExpect, previewIsProd, noRef, localRemote, cloneGuard, vercelProd, badBatch, noKey, badPrev];
+  const noop = run(["--env=local", "--apply"], { DATABASE_URL: LOCAL });
+  check("--apply with ENCRYPTION_KEY_PREVIOUS unset is a NO-OP: exit 0, 'no rotation in progress — nothing to do', before any database contact",
+    noop.status === 0 && /no rotation in progress — nothing to do/.test(noop.stdout) && /no audit row/.test(noop.stdout) && !/REFUSED/.test(noop.stderr), `${noop.status} ${noop.stdout} ${noop.stderr}`);
+  const noopSame = run(["--env=local", "--apply"], { DATABASE_URL: LOCAL, ENCRYPTION_KEY_PREVIOUS: KEY });
+  check("--apply with PREVIOUS EQUAL to the current key is the same NO-OP (exit 0) and still prints the equal-key warning",
+    noopSame.status === 0 && /no rotation in progress — nothing to do/.test(noopSame.stdout) && /ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY/.test(noopSame.stdout), `${noopSame.status} ${noopSame.stdout} ${noopSame.stderr}`);
+  const dryUnset = run(["--env=local"], { DATABASE_URL: LOCAL });
+  check("…while a dry run with PREVIOUS unset is unchanged (it proceeds to the database; here the unreachable target makes it exit 1, never 0)",
+    dryUnset.status === 1 && !/nothing to do/.test(dryUnset.stdout), `${dryUnset.status}`);
+  const all = [noop, noopSame, dryUnset, same, both, noEnv, typo, prodNoAck, ackElsewhere, prodApplyNoTicket, prodApplyNoExpect, previewIsProd, noRef, localRemote, cloneGuard, vercelProd, badBatch, noKey, badPrev];
   check("no refusal prints a password, project ref or key", all.every((r) => !leaks(r)));
 }
 
@@ -153,9 +162,10 @@ async function engineAcrossTheRotation(): Promise<void> {
 
   // The table: id → totpSecret. `writes` counts every UPDATE the engine lands.
   const table = new Map<string, string | null>();
-  let writes = 0;
+  let writes = 0, calls = 0, audits = 0;
   const client = {
     async $queryRawUnsafe<T>(sql: string, ...v: unknown[]): Promise<T> {
+      calls++;
       if (/FROM pg_roles/.test(sql)) return [{ ok: true }] as T;
       let m = /^SELECT "id", "totpSecret" AS v FROM "User" WHERE "id" > \$1 ORDER BY "id" ASC LIMIT (\d+)$/.exec(sql);
       if (m) {
@@ -167,7 +177,8 @@ async function engineAcrossTheRotation(): Promise<void> {
       throw new Error(`unexpected query: ${sql}`);
     },
     async $executeRawUnsafe(sql: string, ...v: unknown[]): Promise<number> {
-      if (/^INSERT INTO "AuditLog"/.test(sql)) return 1;
+      calls++;
+      if (/^INSERT INTO "AuditLog"/.test(sql)) { audits++; return 1; }
       if (/^UPDATE "User" SET "totpSecret" = \$1 WHERE "id" = \$2 AND "totpSecret" = \$3$/.test(sql)) {
         const [next, id, old] = v as [string, string, string];
         if (table.get(id) !== old) return 0;
@@ -184,8 +195,17 @@ async function engineAcrossTheRotation(): Promise<void> {
   table.set("b", v1Under(OLD, "seed-b"));                                                  // legacy v1 under OLD
   check("precondition: the pre-rotation application write is v2", enc.detectCiphertextVersion(table.get("a")!) === "v2");
   const pre = await run(OLD, undefined, { apply: true });
-  check("before (b): an apply with PREVIOUS unset rotates nothing (0 candidates, 0 writes — B9 can still read every value)",
-    pre.outcome === "COMPLETE" && pre.totals.candidates === 0 && writes === 0 && pre.totals.blocking === 0, JSON.stringify(pre.totals));
+  check("before (b): an apply with PREVIOUS unset is a NO-OP (NO_ROTATION): no query, no write, no audit row — B9 can still read every value",
+    pre.outcome === "NO_ROTATION" && calls === 0 && writes === 0 && audits === 0, `${pre.outcome} calls=${calls}`);
+  const preSame = await run(OLD, OLD, { apply: true });
+  check("an apply with PREVIOUS EQUAL to the current key is the same NO-OP", preSame.outcome === "NO_ROTATION" && calls === 0 && audits === 0);
+  const { summarizeRotation: summarize } = await import("./lib/rotate-encryption-key.core");
+  check("the NO-OP summary says 'no rotation in progress — nothing to do'", /no rotation in progress — nothing to do/.test(summarize(pre, "local")));
+  const preDry = await run(OLD, undefined, {});
+  check("…while a dry run with PREVIOUS unset is unchanged: it scans (0 to re-encrypt, the kid-less values are current)",
+    preDry.outcome === "DRY_RUN" && calls > 0 && preDry.totals.scanned === 2 && preDry.totals.candidates === 0 && audits === 0, JSON.stringify(preDry.totals));
+  const preVerify = await run(OLD, undefined, { verifyComplete: true });
+  check("…and --verify-complete with PREVIOUS unset is unchanged (VERIFIED_COMPLETE)", preVerify.outcome === "VERIFIED_COMPLETE");
 
   // During the rotation (b)–(c): NEW current, OLD previous.
   table.set("c", keys(NEW, undefined, () => enc.encryptWithPurpose("seed-c", P)));          // kid-less v2 under NEW
@@ -213,8 +233,11 @@ async function engineAcrossTheRotation(): Promise<void> {
   const verified = await run(NEW, undefined, { verifyComplete: true });
   check("after (d): --verify-complete accepts the kid-less v2 the current key opens (VERIFIED_COMPLETE, 0 blocking)",
     verified.outcome === "VERIFIED_COMPLETE" && verified.totals.blocking === 0 && verified.fields[0].legacy.v2 === 1, JSON.stringify(verified.fields[0]));
+  const a0 = audits;
   const idle = await run(NEW, undefined, { apply: true });
-  check("after (d): an apply has 0 candidates and writes nothing (v2 writes are not churned)", idle.totals.candidates === 0 && writes === w0);
+  check("after (d): an apply is the NO-OP and writes nothing, not even an audit row (v2 writes are not churned)", idle.outcome === "NO_ROTATION" && writes === w0 && audits === a0);
+  const idleDry = await run(NEW, undefined, {});
+  check("after (d): the dry run reports 0 to re-encrypt with the kid-less v2 counted as current", idleDry.totals.candidates === 0 && idleDry.fields[0].legacy.v2 === 1);
   check("after (d): every v3 value written during the rotation is still v3 and reads under the new key alone",
     ["a", "b", "c", "d", "e"].every((id) => enc.detectCiphertextVersion(table.get(id)!) === "v3"
       && keys(NEW, undefined, () => enc.decryptWithPurpose(table.get(id)!, P)) === `seed-${id}`));

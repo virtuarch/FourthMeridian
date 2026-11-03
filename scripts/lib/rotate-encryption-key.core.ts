@@ -101,9 +101,11 @@ export interface RotationReport {
   /**
    * DRY_RUN · COMPLETE / INCOMPLETE (apply) · ABORTED_VERIFY · REFUSED_EXPECT_MISMATCH ·
    * VERIFIED_COMPLETE / NOT_COMPLETE (--verify-complete) · REFUSED_PRINCIPAL (the
-   * connecting role does not bypass RLS, so a scan could silently miss rows).
+   * connecting role does not bypass RLS, so a scan could silently miss rows) ·
+   * NO_ROTATION (--apply with ENCRYPTION_KEY_PREVIOUS unset or equal to the
+   * current key: nothing to do — no database contact, no write, no audit row).
    */
-  outcome: "DRY_RUN" | "COMPLETE" | "INCOMPLETE" | "ABORTED_VERIFY" | "REFUSED_EXPECT_MISMATCH" | "VERIFIED_COMPLETE" | "NOT_COMPLETE" | "REFUSED_PRINCIPAL";
+  outcome: "NO_ROTATION" | "DRY_RUN" | "COMPLETE" | "INCOMPLETE" | "ABORTED_VERIFY" | "REFUSED_EXPECT_MISMATCH" | "VERIFIED_COMPLETE" | "NOT_COMPLETE" | "REFUSED_PRINCIPAL";
   /** Set when outcome is ABORTED_VERIFY — the field and row whose read-back failed. */
   abortedAt?: { field: string; id: string; reason: string };
   expect?: { expected: number; planned: number; matched: boolean };
@@ -267,8 +269,17 @@ export async function rotationPrincipalRefusal(client: RotationClient): Promise<
   return rows.length === 1 && rows[0].ok === true ? null : PRINCIPAL_REFUSAL;
 }
 
+export const NO_ROTATION_MESSAGE = "no rotation in progress — nothing to do";
+
 export async function runKeyRotation(client: RotationClient, opts: RotationOptions): Promise<RotationReport> {
   const keyIds = keyringKeyIds(); // throws (value-free) when ENCRYPTION_KEY / _PREVIOUS is unusable
+  // --apply outside a rotation (PREVIOUS unset, or equal to the current key — the
+  // keyring collapses that to "no previous") is a NO-OP: there is no old key to move
+  // values off, and the application's v2 writes must stay v2 (B10 rollback safety).
+  // Nothing was attempted, so nothing is read, written or audited.
+  if (opts.apply && !opts.verifyComplete && keyIds.previous === null) {
+    return { keyIds, mode: "APPLY", fields: [], totals: totalsOf([]), outcome: "NO_ROTATION" };
+  }
   if (previousKeyWarning(process.env)) throw new Error("ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY — refusing to rotate (the old key is missing)");
   const batchSize = Math.min(Math.max(opts.batchSize ?? 100, 1), 1000);
   const fields = ENCRYPTED_FIELDS.filter((f) => !opts.fields || opts.fields.includes(fieldLabel(f)));
@@ -393,6 +404,7 @@ export function summarizeRotation(r: RotationReport, env: string | null): string
     (r.mode === "APPLY" ? ` · rotated ${t.rotated} · conflicts ${t.conflicts}` : ""));
   if (r.expect) L.push(`  --expect=${r.expect.expected}: planned ${r.expect.planned} — ${r.expect.matched ? "matched" : "MISMATCH, nothing written"}`);
   switch (r.outcome) {
+    case "NO_ROTATION": L.push(`  NO-OP — ${NO_ROTATION_MESSAGE} (ENCRYPTION_KEY_PREVIOUS is unset or equal to ENCRYPTION_KEY). Nothing was read or written; no audit row.`); break;
     case "DRY_RUN": L.push(`  Dry run. An apply would re-encrypt ${t.candidates} value(s); pass --expect=${t.candidates} to bind it to this count.`); break;
     case "COMPLETE": L.push("  COMPLETE — every value is under the current key. Re-run the dry run to confirm 0 to re-encrypt."); break;
     case "INCOMPLETE": L.push("  INCOMPLETE — conflicts and/or unreadable values remain. Re-run (conflicts are re-read and retried on the next run); investigate unreadable values before removing ENCRYPTION_KEY_PREVIOUS."); break;
