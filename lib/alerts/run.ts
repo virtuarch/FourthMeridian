@@ -30,12 +30,14 @@ import { getAiSpendHealth } from "@/lib/platform/ai/spend-health";
 import { getActiveIncidentPage } from "@/lib/platform/incidents/projections";
 import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
 import { loadPolicyAssignmentHealth } from "@/lib/platform/policy-assignment-health";
+import { getAiSpendAnomalyFacts } from "@/lib/platform/ai/spend-anomaly";
+import { getPlaidCallAnomalyFacts } from "@/lib/platform/anomaly/plaid-calls";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity } from "@/lib/alerts/rules";
 import type { AuthorityOutputs } from "@/lib/alerts/authorities";
 import {
   buildAlertEmailData,
   decideDeliveries,
-  evaluateAlertRules,
+  evaluateAlertRulesDetailed,
   extractPriorFired,
   resolveEnabled,
   type AlertEmailData,
@@ -109,7 +111,7 @@ function captureIsExpected(environment: string | undefined): boolean {
 // ── Real default I/O ─────────────────────────────────────────────────────────────
 
 async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
-  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments] = await Promise.all([
+  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly] = await Promise.all([
     checkScheduledJobHealth().catch((e) => (warn("job-health", e), null)),
     getConnectionHealth().catch((e) => (warn("connection-health", e), null)),
     checkResourceFreshness().catch((e) => (warn("resource-freshness", e), null)),
@@ -127,8 +129,12 @@ async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
     // Owner ruling (2026-10-30) — missing / invalid customer policy-group
     // assignments (bounded, read-only; the same read as the Attention item).
     loadPolicyAssignmentHealth().catch((e) => (warn("policy-assignments", e), null)),
+    // Quota/cost anomaly (anomaly@1) — the same spend fold over 8 trailing 24 h
+    // windows, and Plaid calls per UTC day from the usage ledger.
+    getAiSpendAnomalyFacts().catch((e) => (warn("ai-spend-anomaly", e), null)),
+    getPlaidCallAnomalyFacts().catch((e) => (warn("plaid-call-anomaly", e), null)),
   ]);
-  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments };
+  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly };
 }
 
 /** Unresolved SyncIssue rows scanned per cycle (the projection's default page). */
@@ -216,7 +222,7 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
     return rule ? resolveEnabled(rule, settings) : false;
   };
 
-  const signals = evaluateAlertRules(authorities, isEnabled, rules);
+  const { signals, notEvaluable } = evaluateAlertRulesDetailed(authorities, isEnabled, rules);
   // ALERT RECOVERY — a recovered episode's last delivery no longer suppresses its re-fire.
   const priorFired = clearRecoveredSuppression(extractPriorFired(recentRuns), recentRuns);
   // FLAP PROTECTION — a flapping identity's firing signals are suppressed (they
@@ -292,7 +298,7 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   // "flapping" email instead, and the identity's firing and recovery emails are
   // suppressed until FLAP_STABLE_EVALUATIONS clean evaluations end in ONE
   // "stable again" email.
-  const cleanly = cleanlyEvaluatedRules(authorities, isEnabled, rules);
+  const cleanly = cleanlyEvaluatedRules(authorities, isEnabled, rules, notEvaluable);
   const deliveredKeys = deliveredRecoveryKeys(recentRuns);
   for (const k of deliveredFlapNotices(recentRuns)) deliveredKeys.add(k);
   const advance = advanceRecovery({
@@ -305,17 +311,17 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
   const recovered: AlertRecoveredRecord[] = [];
   const flapNotices: string[] = [];
   const handled = new Set<string>(); // identities whose due notice was delivered this cycle
-  let lost = 0;
-  let lostReason: AlertUndelivered["reason"] = "SEND_ERROR";
+  // Held in an object: the closures below write it (a `let` would be narrowed away by the compiler).
+  const loss: { count: number; reason: AlertUndelivered["reason"] } = { count: 0, reason: "SEND_ERROR" };
 
   // One gate for every recovery-side notice — the firing email's gates.
   const gate = (): AlertUndelivered["reason"] | null =>
     ledgerStartWriteFailed() ? "LEDGER_WRITE_FAILED" : !destination ? "NO_DESTINATION" : null;
   const notify = async (data: AlertEmailData, key: string): Promise<boolean> => {
     const blocked = gate();
-    if (blocked) { lost++; lostReason = blocked; return false; }
+    if (blocked) { loss.count++; loss.reason = blocked; return false; }
     const outcome = await deliverOne(sendAlertEmail, destination!, data, environment, key);
-    if (!outcome.delivered) { lost++; lostReason = outcome.reason; }
+    if (!outcome.delivered) { loss.count++; loss.reason = outcome.reason; }
     return outcome.delivered;
   };
 
@@ -371,11 +377,11 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
     console.error(`[alerts] ${recoveryExpired} recovery notice(s) could not be delivered within 7 days and were dropped.`);
   }
   const recoveryUndelivered: AlertUndelivered | null =
-    lost > 0 ? { reason: lostReason, breaches: lost }
+    loss.count > 0 ? { reason: loss.reason, breaches: loss.count }
     : recoveryExpired > 0 ? { reason: "EXPIRED", breaches: recoveryExpired }
     : null;
-  if (lost > 0 && lostReason === "LEDGER_WRITE_FAILED") {
-    console.error(`[alerts] ${lost} recovery notice(s) NOT delivered: this run's JobRun start row failed to write (OBS-015 circuit breaker).`);
+  if (loss.count > 0 && loss.reason === "LEDGER_WRITE_FAILED") {
+    console.error(`[alerts] ${loss.count} recovery notice(s) NOT delivered: this run's JobRun start row failed to write (OBS-015 circuit breaker).`);
   }
 
   const flap: AlertFlapRecord[] = [...flapById.values()]
@@ -406,6 +412,8 @@ export async function evaluatePlatformAlerts(deps: AlertRunDeps = {}): Promise<A
       firing: breaches.length > 0,
       breaches: breaches.length,
       severity: worstSeverity(breaches.map((b) => b.severity)),
+      // Quota/cost anomaly — present only when the rule could not judge.
+      ...(notEvaluable.has(rule.id) ? { notEvaluable: notEvaluable.get(rule.id)! } : {}),
     };
   });
 

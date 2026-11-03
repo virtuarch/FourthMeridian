@@ -135,10 +135,14 @@ export function cleanlyEvaluatedRules(
   authorities: AuthorityOutputs,
   isEnabled: (ruleId: string) => boolean,
   rules: readonly AlertRuleDefinition[],
+  /** The evaluator's own `notEvaluable` verdicts (evaluateAlertRulesDetailed): treated exactly like disabled / dormant / partial. */
+  notEvaluable: ReadonlyMap<string, string> = new Map(),
 ): Set<string> {
   const out = new Set<string>();
   for (const rule of rules) {
     if (!rule.live || !isEnabled(rule.id)) continue;
+    // An evaluator that declined to judge (unpriced, nothing recorded, short history, source missing) is UNKNOWN.
+    if (notEvaluable.has(rule.id)) continue;
     let ok: boolean;
     switch (rule.kind) {
       case "job-failing":
@@ -150,6 +154,9 @@ export function cleanlyEvaluatedRules(
       case "ai-spend-user":      ok = authorities.aiSpend != null && authorities.aiSpend.unpricedInvocations === 0; break;
       case "sync-incident":      ok = authorities.syncIncidents != null && !authorities.syncIncidents.scanTruncated; break;
       case "policy-assignment":  ok = authorities.policyAssignments != null; break;
+      case "ai-spend-anomaly":
+      case "ai-spend-user-anomaly": ok = authorities.aiSpendAnomaly != null; break;
+      case "plaid-call-anomaly": ok = authorities.plaidCallAnomaly != null; break;
       default:                   ok = false; // dormant kinds have no authority
     }
     if (ok) out.add(rule.id);

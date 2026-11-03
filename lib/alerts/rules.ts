@@ -81,6 +81,15 @@
  * (the exposure, before it bites). One breach per customer keyed on the opaque
  * reference, plus one `:unlisted` breach for any beyond the read's cap.
  *
+ * ai-spend-anomaly, ai-spend-user-anomaly, plaid-call-anomaly (quota/cost
+ * anomaly, approved backlog): spend or usage that JUMPS against its own recent
+ * baseline, whether or not an absolute threshold is crossed. All three apply
+ * the ONE anomaly rule (lib/alerts/anomaly.ts, anomaly@1: current ≥ ×3 the
+ * 7-window median AND ≥ an absolute floor, with ≥ 5 active baseline windows)
+ * and are WARNING only. When the evidence cannot support a verdict (unpriced
+ * spend, nothing recorded, short history) the rule is NOT EVALUABLE: it never
+ * fires, never "recovers", and its outcome says why (AlertRuleOutcome.notEvaluable).
+ *
  * ── Dormant rules (future-safe, not recreated) ───────────────────────────────
  * `quota-low` is a first-class rule KIND but has NO authority to consume yet:
  * FX provider quota (OXR /usage.json) is owned by a sibling slice (OPS-5 S3,
@@ -107,6 +116,9 @@ export type AlertRuleKind =
   | "ai-spend-user"
   | "sync-incident"
   | "policy-assignment"
+  | "ai-spend-anomaly"
+  | "ai-spend-user-anomaly"
+  | "plaid-call-anomaly"
   | "quota-low";
 
 /** Two levels only — a solo operator's pager does not need more (alert fatigue
@@ -232,6 +244,36 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     description:
       "A customer account has no policy-group assignment, or its assignment names a key the catalogue does not define. Raised (critical) only while POLICY_ASSIGNMENT_FAIL_CLOSED=enforce, when the customer fails closed (new AI, manual refresh and new connections are refused); while the switch is off nothing is refused and the exposure shows as a warning in Platform Ops › Attention instead of an alert. One breach per customer, named by an opaque reference only; fix it in Customer Success by assigning a valid policy group — access recovers on the next request. Reads the policy-assignment authority (lib/platform/policy-assignment-health.ts); never writes an assignment.",
     authority: "policy-assignments",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "ai-spend-anomaly",
+    kind: "ai-spend-anomaly",
+    title: "AI spend jump — fleet",
+    description:
+      "Estimated customer-surface AI spend over the trailing 24 h is at least 3× the median of the 7 prior 24 h windows AND at least $1 (anomaly@1), whether or not the fleet threshold is crossed. Warning only. Not evaluable — never fires, never recovers — when any window holds a call the rate card cannot price, when nothing was recorded in the last 24 h, or when fewer than 5 of the prior windows show spend. Reads the same AiInvocation spend fold as ai-spend-fleet-high (lib/platform/ai/spend-health.ts) over 8 windows (lib/platform/ai/spend-anomaly.ts); every figure is an estimate, not a bill.",
+    authority: "ai-spend",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "ai-spend-user-anomaly",
+    kind: "ai-spend-user-anomaly",
+    title: "AI spend jump — one customer",
+    description:
+      "ONE customer's estimated AI spend over the trailing 24 h is at least 3× their own median over the 7 prior 24 h windows AND at least $1 (anomaly@1). One breach per customer, named by an opaque reference only. Warning only. A customer with fewer than 5 active prior windows is not judged; the whole rule is not evaluable when any window holds an unpriced call. Reads the same spend fold as the fleet rules.",
+    authority: "ai-spend",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "plaid-call-anomaly",
+    kind: "plaid-call-anomaly",
+    title: "Plaid call volume jump",
+    description:
+      "Plaid provider calls on the last complete UTC day are at least 3× the median of the 7 days before it AND at least 20 calls (anomaly@1). Warning only. Not evaluable when no call was recorded that day or fewer than 5 of the prior days show calls. Reads the ApiUsageCounter ledger (provider PLAID, unit calls) the Plaid client writes per call (lib/platform/anomaly/plaid-calls.ts).",
+    authority: "provider-usage",
     live: true,
     defaultEnabled: true,
   },

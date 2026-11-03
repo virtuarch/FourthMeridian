@@ -22,8 +22,13 @@ import type { AuthorityOutputs, AlertJobHealth } from "@/lib/alerts/authorities"
 import type { AlertEmailData, AlertRunSummary } from "@/lib/alerts/evaluate";
 import { evaluatePlatformAlerts } from "@/lib/alerts/run";
 import {
-  RECOVERY_ABSENT_EVALUATIONS, advanceRecovery, collectRecentRecoveries, durationLabel, episodeIdentity, recoveryAfter,
+  FLAP_RECOVERIES, FLAP_STABLE_EVALUATIONS, FLAP_WINDOW_MS, RECOVERY_ABSENT_EVALUATIONS, RECOVERY_STATE_MAX_AGE_MS,
+  advanceRecovery, collectRecentRecoveries, durationLabel, episodeIdentity, recoveryAfter,
 } from "@/lib/alerts/recovery";
+import { evaluateAlertRulesDetailed } from "@/lib/alerts/evaluate";
+import type { PlaidCallAnomalyFacts } from "@/lib/alerts/authorities";
+import { latestAlertEvaluation, undeliveredSentence } from "@/lib/alerts/latest-evaluation";
+import { expiredRecoveries, expiredRecoveriesSentence } from "@/components/platform/widgets/OpsAlertsWidget";
 import { renderPlatformAlert } from "@/lib/email/templates/platform-alert";
 
 process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
@@ -44,8 +49,8 @@ const at = (h: number) => new Date(T0 + h * HOUR);
 
 const failing: AlertJobHealth = { jobs: [{ job: "sync-banks", status: "failing", expectedEveryHours: 1, consecutiveFailures: 3 }] };
 const healthy: AlertJobHealth = { jobs: [{ job: "sync-banks", status: "healthy", expectedEveryHours: 1, consecutiveFailures: 0 }] };
-const authorities = (jobHealth: AlertJobHealth | null): AuthorityOutputs => ({
-  jobHealth, connectionHealth: null, resourceFreshness: null, aiFailures: null, aiSpend: null, syncIncidents: null, policyAssignments: null,
+const authorities = (jobHealth: AlertJobHealth | null, extra: Partial<AuthorityOutputs> = {}): AuthorityOutputs => ({
+  jobHealth, connectionHealth: null, resourceFreshness: null, aiFailures: null, aiSpend: null, syncIncidents: null, policyAssignments: null, ...extra,
 });
 
 /** A ledger + fake sender; `cycle` runs one evaluation and appends its summary. */
@@ -53,10 +58,10 @@ function harness() {
   const runs: AlertRunSummary[] = []; // newest first
   const mail: { data: AlertEmailData; idempotencyKey?: string }[] = [];
   let destination: string | null = "ops@example.invalid";
-  async function cycle(h: number, jobHealth: AlertJobHealth | null, opts: { persist?: boolean } = {}) {
+  async function cycle(h: number, jobHealth: AlertJobHealth | null, opts: { persist?: boolean; extra?: Partial<AuthorityOutputs> } = {}) {
     const s = await evaluatePlatformAlerts({
       now: at(h),
-      gatherAuthorities: async () => authorities(jobHealth),
+      gatherAuthorities: async () => authorities(jobHealth, opts.extra),
       loadSettings: async () => new Map(),
       loadRecentRuns: async (limit) => runs.slice(0, limit),
       resolveDestination: () => destination,
@@ -67,7 +72,7 @@ function harness() {
     if (opts.persist !== false) runs.unshift(s);
     return s;
   }
-  const firingMails = () => mail.filter((m) => !m.data.resolved);
+  const firingMails = () => mail.filter((m) => !m.data.resolved && !m.data.flapping);
   const recoveryMails = () => mail.filter((m) => m.data.resolved);
   return { runs, mail, cycle, firingMails, recoveryMails, setDestination: (d: string | null) => { destination = d; } };
 }
@@ -151,9 +156,12 @@ async function main() {
     check("…and opens a new episode", refire.open?.length === 1 && refire.open[0].firstFiredAtISO === at(3).toISOString());
     await t.cycle(4, failing);
     check("while it persists it is suppressed again", t.firingMails().length === 2);
-    await t.cycle(5, healthy); await t.cycle(6, healthy);
+    // Keep it firing past the flap window (FLAP_WINDOW_MS) so the next recovery is an ordinary one.
+    for (let h = 5; h <= 27; h++) await t.cycle(h, failing);
+    await t.cycle(28, healthy); await t.cycle(29, healthy);
     const recs = t.recoveryMails();
-    check("a second recovery, for the new episode, with its own key", recs.length === 2 && recs[1].idempotencyKey === `job-failing:sync-banks:recovered:${at(3).toISOString()}` && recs[1].data.resolved?.durationLabel === "2 h");
+    check("a second recovery OUTSIDE the flap window, for the new episode, with its own key",
+      recs.length === 2 && !recs[1].data.resolved?.variant && recs[1].idempotencyKey === `job-failing:sync-banks:recovered:${at(3).toISOString()}` && recs[1].data.resolved?.durationLabel === "1 d 1 h");
   }
 
   console.log("\n5. no destination → skipped and recorded; delivered once one exists");
@@ -243,6 +251,98 @@ async function main() {
     const fire = t.runs.flatMap((s) => s.fired)[0];
     const rec = recoveryAfter(fire, recs);
     check("the alerts view can say 'recovered at …' for the fire", recs.length === 1 && rec?.recoveredAtISO === at(2).toISOString());
+  }
+
+  console.log(`\n9. FLAP BOUND: K = ${FLAP_RECOVERIES} recoveries / ${FLAP_WINDOW_MS / HOUR} h ⇒ one flapping email; a 24 h flap sends ≤ 4`);
+  {
+    const t = harness();
+    const Q = 0.25; // the evaluator's 15-min wake
+    // fire → clean → clean → fire … for 24 h.
+    for (let i = 0; i < 96; i++) await t.cycle(i * Q, i % 3 === 0 ? failing : healthy);
+    const flapMails = t.mail.filter((m) => m.data.flapping);
+    check("at most 4 emails across a 24 h flap (fire, recovery, re-fire, flapping)", t.mail.length <= 4, String(t.mail.length));
+    check("…exactly: 2 firing, 1 recovery, 1 flapping", t.firingMails().length === 2 && t.mail.filter((m) => m.data.resolved).length === 1 && flapMails.length === 1);
+    check("the flapping email names the rule, the count and the stable bound",
+      flapMails[0]?.data.flapping?.ruleId === "job-failing" && flapMails[0].data.flapping.recoveries === 2 && flapMails[0].data.flapping.stableAfterEvaluations === FLAP_STABLE_EVALUATIONS);
+    const flapState = t.runs[0].flap?.find((f) => f.identity === "job-failing:sync-banks");
+    check("the identity is recorded as flapping in the summary", flapState?.flappingSinceISO != null);
+    check("…and its firing signals are counted suppressed, not delivered", t.runs[0].counts.delivered === 0);
+    // Now stable: FLAP_STABLE_EVALUATIONS consecutive clean evaluations since the last fire ⇒ ONE "stable again".
+    // The 24 h loop ended on two clean evaluations (i = 94, 95), so 5 more make 7.
+    const start = 96 * Q;
+    check("fixture: the loop ended two clean evaluations after the last fire", t.runs[0].flap?.find((f) => f.flappingSinceISO)?.cleanEvaluations === 2);
+    for (let i = 0; i < FLAP_STABLE_EVALUATIONS - 3; i++) await t.cycle(start + i * Q, healthy);
+    check(`${FLAP_STABLE_EVALUATIONS - 1} clean evaluations ⇒ not yet stable`, !t.mail.some((m) => m.data.resolved?.variant === "stable"));
+    // An unavailable cycle does not count toward stable.
+    await t.cycle(start + 7 * Q, null);
+    check("an unavailable evaluation does not complete the stable streak", !t.mail.some((m) => m.data.resolved?.variant === "stable"));
+    await t.cycle(start + 8 * Q, healthy);
+    const stable = t.mail.filter((m) => m.data.resolved?.variant === "stable");
+    check("the 8th clean evaluation ⇒ exactly ONE 'stable again' email", stable.length === 1 && stable[0].idempotencyKey?.includes(":stable:") === true);
+    check("…and the flap state is cleared", !(t.runs[0].flap ?? []).some((f) => f.flappingSinceISO));
+    await t.cycle(start + 9 * Q, healthy); await t.cycle(start + 10 * Q, healthy);
+    check("no further stable emails", t.mail.filter((m) => m.data.resolved?.variant === "stable").length === 1);
+    const refire = await t.cycle(start + 11 * Q, failing);
+    check("after stable, a re-fire is emailed again", refire.counts.delivered === 1);
+    // The flapping notice is sent through the same gates.
+    const n = harness();
+    for (let i = 0; i < 5; i++) await n.cycle(i * Q, i % 3 === 0 ? failing : healthy);
+    n.setDestination(null);
+    const s = await n.cycle(5 * Q, healthy);
+    check("a flapping notice with no destination ⇒ not sent, recorded, not flapping yet", s.recoveryUndelivered?.reason === "NO_DESTINATION" && !(s.flap ?? []).some((f) => f.flappingSinceISO));
+  }
+
+  console.log("\n10. notEvaluable (anomaly rules) is UNKNOWN: never a recovery");
+  {
+    const plaid = (current: number | null, baseline: number[]): PlaidCallAnomalyFacts => ({
+      checkedAt: at(0).toISOString(), dayISO: "2026-11-02",
+      current: current === null ? { kind: "IDLE" } : { kind: "VALUE", value: current },
+      baseline: baseline.map((v) => ({ kind: "VALUE" as const, value: v })),
+    }) as PlaidCallAnomalyFacts;
+    const firingFacts = plaid(400, [50, 50, 50, 50, 50, 50, 50]);
+    const shortFacts = plaid(5, []); // no history ⇒ not evaluable
+    const det = evaluateAlertRulesDetailed(authorities(null, { plaidCallAnomaly: shortFacts }), () => true);
+    check("fixture: short history is notEvaluable", det.notEvaluable.has("plaid-call-anomaly"));
+    const t = harness();
+    const s0 = await t.cycle(0, null, { extra: { plaidCallAnomaly: firingFacts } });
+    check("fixture: the anomaly fired and was delivered", s0.fired.some((f) => f.ruleId === "plaid-call-anomaly"));
+    for (let h = 1; h <= RECOVERY_ABSENT_EVALUATIONS + 3; h++) await t.cycle(h, null, { extra: { plaidCallAnomaly: shortFacts } });
+    check(`notEvaluable for ${RECOVERY_ABSENT_EVALUATIONS + 3} cycles ⇒ NO recovery, count never advanced`,
+      t.recoveryMails().length === 0 && t.runs[0].open?.find((o) => o.ruleId === "plaid-call-anomaly")?.absentEvaluations === 0);
+    for (let h = 10; h <= 12; h++) await t.cycle(h, null, { extra: { plaidCallAnomaly: null } });
+    check("…nor when the anomaly source did not load", t.recoveryMails().length === 0);
+    await t.cycle(13, null, { extra: { plaidCallAnomaly: plaid(50, [50, 50, 50, 50, 50, 50, 50]) } });
+    await t.cycle(14, null, { extra: { plaidCallAnomaly: plaid(50, [50, 50, 50, 50, 50, 50, 50]) } });
+    check("two genuinely NORMAL evaluations ⇒ the one recovery", t.recoveryMails().length === 1 && t.recoveryMails()[0].data.resolved?.ruleId === "plaid-call-anomaly");
+  }
+
+  console.log("\n11. the 7-day drop: keyed on clearedAt, never on a still-firing episode");
+  {
+    const t = harness();
+    await t.cycle(0, failing);
+    for (let h = 1; h <= 24 * 8; h += 12) await t.cycle(h, failing); // a week-long outage
+    const s = t.runs[0];
+    check("a breach firing for 8 days keeps its open state (never expired)", s.open?.length === 1 && (s.counts.recoveryExpired ?? 0) === 0);
+    const u = harness();
+    await u.cycle(0, failing);
+    for (let h = 1; h <= 24 * 8; h += 12) await u.cycle(h, null); // unknown for a week: never cleared
+    check("unknown for 8 days (never cleared) keeps its state", u.runs[0].open?.length === 1);
+    const d = harness();
+    await d.cycle(0, failing);
+    d.setDestination(null);
+    await d.cycle(1, healthy); await d.cycle(2, healthy);
+    const H = RECOVERY_STATE_MAX_AGE_MS / HOUR;
+    const before = await d.cycle(1 + H - 1, healthy);
+    check("cleared and undelivered for < 7 days ⇒ still tracked", before.open?.length === 1 && (before.counts.recoveryExpired ?? 0) === 0);
+    const after = await d.cycle(1 + H + 1, healthy);
+    check("cleared and undelivered for > 7 days ⇒ dropped, counts.recoveryExpired = 1, reason EXPIRED",
+      after.open?.length === 0 && after.counts.recoveryExpired === 1 && after.recoveryUndelivered?.reason === "EXPIRED" && after.recoveryUndelivered.breaches === 1);
+    check("no email was sent for it", d.recoveryMails().length === 0);
+    const latest = latestAlertEvaluation([after]);
+    check("the latest evaluation projects it", latest?.recoveryUndelivered?.reason === "EXPIRED" && /could not be delivered within 7 days/.test(undeliveredSentence(latest.recoveryUndelivered)));
+    const view = { destinationConfigured: false, lastEvaluatedAt: after.evaluatedAtISO, rules: [], history: [], historyRuns: 1, latest, latestRecoveryExpired: 1 };
+    check("the Alerts widget says 'N recoveries could not be delivered within 7 days'",
+      expiredRecoveries(view) === 1 && expiredRecoveriesSentence(1) === "1 recovery could not be delivered within 7 days" && expiredRecoveriesSentence(3) === "3 recoveries could not be delivered within 7 days");
   }
 
   console.log(failures === 0 ? "\nAll alert-recovery checks passed." : `\n${failures} failure(s).`);
