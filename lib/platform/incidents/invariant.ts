@@ -22,7 +22,9 @@
  * THE CONTRACT
  * ------------
  *   CONDITION, active     resolved=false · resolvedAt=null · kind=null · exec=null
- *   CONDITION, recovered  resolved=true  · resolvedAt SET  · kind=AUTOMATIC_RECOVERY
+ *   CONDITION, resolved   resolved=true  · resolvedAt SET  · kind ∈ RESOLUTION_KINDS
+ *                         OPERATOR_RESOLVED ⇒ resolvedById + resolutionAuditId (PB-1 S2)
+ *                         SUBJECT_REMOVED   ⇒ resolutionEvidence.subject, no execution
  *   EVENT                 resolved=true  · resolvedAt=null · kind=null · exec=null
  *                         incidentKey=null (events never converge)
  *
@@ -35,13 +37,48 @@
 
 import type { SyncIssueNature } from "@/lib/platform/sync-issue-semantics";
 
-/** The lifecycle-bearing fields of one episode row. */
+/**
+ * PB-1 S2 — every resolution kind a CONDITION may be closed with. Declared here
+ * (the pure contract) and re-exported by lifecycle.ts, which is the only writer.
+ *
+ *   AUTOMATIC_RECOVERY  evidence that the same operation succeeded for the same subject
+ *   OPERATOR_RESOLVED   an operator closed it, with a reason (writer: S6)
+ *   SUBJECT_REMOVED     the account / item it observed was removed — NEVER a recovery
+ */
+export const RESOLUTION_KINDS = ["AUTOMATIC_RECOVERY", "OPERATOR_RESOLVED", "SUBJECT_REMOVED"] as const;
+export type ResolutionKindValue = (typeof RESOLUTION_KINDS)[number];
+
+/** §12 P3 — the five PERSISTED lifecycle states (REOPENED is display-only). Mirrors the migration CHECK. */
+export const LIFECYCLE_STATES = ["ACTIVE", "ACKNOWLEDGED", "RECOVERING", "STALE", "RESOLVED"] as const;
+export type LifecycleState = (typeof LIFECYCLE_STATES)[number];
+
+/** §5 — how a removed subject was observed. */
+export const REMOVED_SUBJECT_STATES = ["DELETED", "REVOKED", "MISSING"] as const;
+export type RemovedSubjectState = (typeof REMOVED_SUBJECT_STATES)[number];
+
+/** The lifecycle-bearing fields of one episode row. PB-1 S2 fields are optional (absent ≡ null). */
 export interface LifecycleFields {
   resolved: boolean;
   resolvedAt: Date | null;
   resolutionKind: string | null;
   resolvingExecutionId: string | null;
   incidentKey: string | null;
+  lifecycleState?: string | null;
+  resolvedById?: string | null;
+  resolutionAuditId?: string | null;
+  resolutionEvidence?: unknown;
+}
+
+/** True when `evidence.subject` is a well-formed §5 removed-subject record. */
+export function isRemovedSubjectEvidence(evidence: unknown): boolean {
+  if (typeof evidence !== "object" || evidence === null) return false;
+  const subject = (evidence as { subject?: unknown }).subject;
+  if (typeof subject !== "object" || subject === null) return false;
+  const s = subject as Record<string, unknown>;
+  return (s.kind === "PLAID_ITEM" || s.kind === "FINANCIAL_ACCOUNT")
+    && typeof s.id === "string" && s.id !== ""
+    && (REMOVED_SUBJECT_STATES as readonly unknown[]).includes(s.state)
+    && typeof s.observedAt === "string" && Number.isFinite(Date.parse(s.observedAt));
 }
 
 /**
@@ -63,8 +100,15 @@ export function lifecycleViolation(
     if (f.resolvingExecutionId !== null) return "EVENT must not carry a resolvingExecutionId";
     if (f.incidentKey !== null)          return "EVENT must not carry an incidentKey (events never converge)";
     if (f.resolved !== true)             return "EVENT must be stored terminal (resolved=true)";
+    if ((f.lifecycleState ?? null) !== null) return "EVENT must not carry a lifecycleState (events are not episodes)";
+    if ((f.resolvedById ?? null) !== null || (f.resolutionAuditId ?? null) !== null) return "EVENT must not carry an operator resolution";
+    if ((f.resolutionEvidence ?? null) !== null) return "EVENT must not carry resolutionEvidence";
     return null;
   }
+
+  const state = f.lifecycleState ?? null;
+  if (state !== null && !(LIFECYCLE_STATES as readonly string[]).includes(state)) return `unknown lifecycleState "${state}"`;
+  if (state !== null && (state === "RESOLVED") !== f.resolved) return "lifecycleState RESOLVED must move with resolved";
 
   // CONDITION — here `resolved` and `resolvedAt` genuinely do move together.
   if (f.resolved && f.resolvedAt === null)  return "recovered CONDITION must carry resolvedAt";
@@ -72,6 +116,21 @@ export function lifecycleViolation(
   if (!f.resolved && f.resolutionKind !== null) return "active CONDITION must not carry a resolutionKind";
   if (!f.resolved && f.resolvingExecutionId !== null) return "active CONDITION must not carry a resolvingExecutionId";
   if (f.resolved && f.resolutionKind === null)  return "recovered CONDITION must name its resolution kind";
+  if (!f.resolved && ((f.resolvedById ?? null) !== null || (f.resolutionAuditId ?? null) !== null)) {
+    return "active CONDITION must not carry an operator resolution";
+  }
+  if (f.resolved && !(RESOLUTION_KINDS as readonly string[]).includes(f.resolutionKind!)) {
+    return `unknown resolution kind "${f.resolutionKind}"`;
+  }
+  if (f.resolutionKind === "OPERATOR_RESOLVED") {
+    if (!f.resolvedById)      return "OPERATOR_RESOLVED must carry resolvedById";
+    if (!f.resolutionAuditId) return "OPERATOR_RESOLVED must carry resolutionAuditId";
+  }
+  if (f.resolutionKind === "SUBJECT_REMOVED") {
+    // A removal is not evidence that anything recovered, so it names no run.
+    if (f.resolvingExecutionId !== null)                return "SUBJECT_REMOVED must not carry a resolvingExecutionId";
+    if (!isRemovedSubjectEvidence(f.resolutionEvidence)) return "SUBJECT_REMOVED must carry resolutionEvidence.subject {kind,id,state,observedAt}";
+  }
   return null;
 }
 

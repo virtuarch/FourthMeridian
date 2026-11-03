@@ -63,6 +63,10 @@ import { accountDeletedAlert } from "@/lib/email/security-alerts";
 import { recipientHash } from "@/lib/notifications/delivery/record";
 import { AuditAction } from "@/lib/audit-actions";
 import { plaidClient } from "@/lib/plaid/client";
+import { resolveIncidentsForRemovedSubjects } from "@/lib/plaid/syncIssues";
+import {
+  purgeIncidentSet, resolveIncidentPurgeSet, type IncidentPurgeReader, type IncidentPurgeTx,
+} from "@/lib/platform/incidents/purge";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { getPlaidErrorCode, redactedErrorForLog } from "@/lib/plaid/errors";
 import {
@@ -108,7 +112,7 @@ export interface PurgeResult {
 
 type UserSnapshot = { id: string; email: string; deletionScheduledAt: Date | null; purgeStartedAt: Date | null };
 
-export interface PurgeTxClient {
+export interface PurgeTxClient extends IncidentPurgeTx {
   user: {
     updateMany(args: { where: Prisma.UserWhereInput; data: Prisma.UserUpdateManyMutationInput }): Promise<{ count: number }>;
     delete(args: { where: { id: string } }): Promise<unknown>;
@@ -157,6 +161,8 @@ export interface PurgeClient extends PurgeTxClient {
   };
   plaidItem: {
     findMany(args: { where: Prisma.PlaidItemWhereInput; select: { id: true; encryptedToken: true; institutionName: true } }): Promise<{ id: string; encryptedToken: string; institutionName: string }[]>;
+    /** PB-1 Phase 1 — every Item of the user (any status), to resolve the incident purge set. */
+    findMany(args: { where: Prisma.PlaidItemWhereInput; select: { id: true } }): Promise<{ id: string }[]>;
     update(args: { where: { id: string }; data: Prisma.PlaidItemUpdateInput }): Promise<unknown>;
   };
   auditLog: PurgeTxClient["auditLog"] & {
@@ -172,10 +178,14 @@ export interface PurgeClient extends PurgeTxClient {
   };
   financialAccount: PurgeTxClient["financialAccount"] & {
     update(args: { where: { id: string }; data: Prisma.FinancialAccountUpdateInput }): Promise<unknown>;
+    /** PB-1 S3 — the accounts the tail deletes, captured first so their incidents can close. */
+    findMany(args: { where: Prisma.FinancialAccountWhereInput; select: { id: true } }): Promise<{ id: string }[]>;
   };
   space: PurgeTxClient["space"] & {
     findMany(args: { where: Prisma.SpaceWhereInput; select: { id: true } }): Promise<{ id: string }[]>;
   };
+  syncIssue: PurgeTxClient["syncIssue"] & IncidentPurgeReader["syncIssue"];
+  syncIssueArchive: PurgeTxClient["syncIssueArchive"] & IncidentPurgeReader["syncIssueArchive"];
   $transaction<T>(fn: (tx: PurgeTxClient) => Promise<T>, options?: { timeout?: number; maxWait?: number }): Promise<T>;
 }
 
@@ -188,6 +198,8 @@ export interface PurgeDeps {
   sendEmail?: typeof sendEmail;
   revokeSessions?: (userId: string) => Promise<unknown>;
   now?: () => Date;
+  /** PB-1 S3 — the incident closure (SUBJECT_REMOVED); injected so a unit test never reaches a real database. */
+  resolveRemovedSubjects?: (scope: { plaidItemIds?: string[]; financialAccountIds?: string[] }) => Promise<number>;
 }
 
 /** The where-clause of the claim — exported so the test can assert its shape. */
@@ -220,6 +232,7 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
   const email = deps.sendEmail ?? sendEmail;
   const revokeSessions = deps.revokeSessions ?? revokeAllUserSessions;
   const clock = deps.now ?? (() => new Date());
+  const closeRemovedIncidents = deps.resolveRemovedSubjects ?? resolveIncidentsForRemovedSubjects;
 
   const base: PurgeResult = {
     userId, purged: false, providerRevoked: 0, providerFailed: 0,
@@ -308,6 +321,13 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
       retryableFailures.push({ itemId: item.id, institution: item.institutionName, reason: failure.reason });
     }
   }
+
+  // PB-1 S3 — every item CONFIRMED revoked above closes its open incidents as
+  // SUBJECT_REMOVED now, even if the deletion is then held. Outside any
+  // transaction (OPS-2D-TX-1); never throws. The subjects are re-read, so an
+  // item whose REVOKED write failed closes nothing.
+  const confirmedItemIds = items.map((i) => i.id).filter((id) => !retryableFailures.some((f) => f.itemId === id));
+  if (confirmedItemIds.length > 0) await closeRemovedIncidents({ plaidItemIds: confirmedItemIds });
 
   // ── Bounded-attempt decision ───────────────────────────────────────────────
   // Attempts are counted in DISTINCT CALENDAR DAYS of prior failure, not audit
@@ -448,6 +468,17 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
 
   const emailHash = createHash("sha256").update(user.email.toLowerCase()).digest("hex");
 
+  // PB-1 Phase 1 — the customer's incident data (lib/platform/incidents/purge.ts).
+  // RESOLVED HERE, before the tail deletes the Item and account rows the match
+  // needs (legacy rows carry no subjectUserId), and DELETED inside the tail, so
+  // a cancelled purge deletes nothing and a committed one leaves nothing.
+  const doomedAccountIds = (await client.financialAccount.findMany({
+    where: { OR: [{ ownerUserId: userId }, { ownerSpaceId: { in: dyingSpaceIds } }] },
+    select: { id: true },
+  })).map((a) => a.id);
+  const userItemIds = (await client.plaidItem.findMany({ where: { userId }, select: { id: true } })).map((i) => i.id);
+  const incidentSet = await resolveIncidentPurgeSet(client, { userId, plaidItemIds: userItemIds, financialAccountIds: doomedAccountIds });
+
   // ── 5–8. The destructive tail — ONE transaction, fenced on the claim ───────
   let committed = false;
   await client.$transaction(async (tx) => {
@@ -471,6 +502,10 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
       where: { OR: [{ ownerUserId: userId }, { ownerSpaceId: { in: dyingSpaceIds } }] },
     });
     base.deletedAccounts = deleted.count;
+
+    // 5c. PB-1 Phase 1 — the customer's incidents, occurrences (cascade),
+    //     events, relation edges and archive summaries (set resolved above).
+    const incidentCounts = await purgeIncidentSet(tx, incidentSet);
 
     // 6. Delete the Spaces (existing cascade: SpaceMember, SpaceInvite, AiAgent,
     //    AiAdvice, SpaceGoal, SpaceDashboardSection, SpaceSnapshot,
@@ -545,6 +580,12 @@ export async function purgeUser(userId: string, deps: PurgeDeps = {}): Promise<P
           soleMemberSharedSpaces: base.soleMemberSharedSpaces,
           providerRevoked:        base.providerRevoked,
           providerFailed:         base.providerFailed,
+          // PB-1 Phase 1 — counts only (ids never leave the tail).
+          incidentsDeleted:       incidentCounts.incidents,
+          incidentArchivesDeleted: incidentCounts.archives,
+          // The deletion is complete in the live database; encrypted backups
+          // are not rewritten — they age out on their own retention schedule.
+          backups:                "AGE_OUT_ON_BACKUP_RETENTION",
         },
       },
     });

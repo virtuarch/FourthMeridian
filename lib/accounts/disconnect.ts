@@ -64,6 +64,7 @@ import { assertEveryObservedRowWasWritten } from "@/lib/db/conditional-write";
 import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
 import { disconnectPlaidItemIfOrphaned } from "@/lib/plaid/disconnect";
 import { revokeAccountLinksEverywhere } from "@/lib/accounts/links-everywhere";
+import { resolveIncidentsForRemovedSubjects } from "@/lib/plaid/syncIssues";
 
 export interface DisconnectAccountsResult {
   disconnectedAccountIds: string[];
@@ -231,6 +232,12 @@ export async function disconnectAccounts(
   for (const plaidItemDbId of plaidItemDbIds) {
     await disconnectPlaidItemIfOrphaned(plaidItemDbId);
   }
+
+  // PB-1 S3 — close the incidents of what was just removed (SUBJECT_REMOVED,
+  // never a recovery). After every transaction above (OPS-2D-TX-1); never
+  // throws. The ids are candidates: only subjects that now read removed close,
+  // so a partly-disconnected item's live accounts keep their incidents open.
+  await resolveIncidentsForRemovedSubjects({ financialAccountIds: provenIds, plaidItemIds: plaidItemDbIds });
 
   return { disconnectedAccountIds: provenIds, affectedSpaceIds, plaidItemDbIds, newlyDisconnectedCount };
 }

@@ -3752,15 +3752,62 @@ model SyncIssue {
   firstOccurredAt      DateTime?
   lastOccurredAt       DateTime?
   resolvedAt           DateTime?
-  /// AUTOMATIC_RECOVERY is the only kind any current code path can produce.
+  /// AUTOMATIC_RECOVERY | OPERATOR_RESOLVED | SUBJECT_REMOVED (PB-1 S2) —
+  /// lib/platform/incidents/lifecycle.ts RESOLUTION_KINDS.
   resolutionKind       String?
   /// RefreshExecution.id of the run that proved recovery. Soft reference (the
   /// ledger is append-only and must survive item deletion), null when the
   /// resolving path had no execution — never fabricated.
   resolvingExecutionId String?
 
+  // ── Lifecycle (PB-1 S2 — docs/plans/PB1-INCIDENT-LIFECYCLE.md §3.3) ─────────
+  // All additive. NOT in the fm_app column grant (20261002000500); written by
+  // lib/platform/incidents/lifecycle.ts only.
+  /// ACTIVE | ACKNOWLEDGED | RECOVERING | STALE | RESOLVED (TEXT + CHECK). NULL on
+  /// legacy rows, where readers derive the state from `resolved`.
+  lifecycleState        String?
+  /// OBSERVATION | RECURRENCE | OPERATOR_REOPEN (TEXT + CHECK).
+  openedBy              String?
+  acknowledgedAt        DateTime?
+  /// Operator userId (soft reference).
+  acknowledgedById      String?
+  /// AuditLog.id from recordOperatorAction.
+  acknowledgedAuditId   String?
+  recoveringSince       DateTime?
+  recoveryEvidenceCount Int       @default(0)
+  /// Lazily persisted, for display only — STALE is derived at read time.
+  staleSince            DateTime?
+  lastEvidenceCheckedAt DateTime?
+  /// Operator, for OPERATOR_RESOLVED (invariant.ts requires it).
+  resolvedById          String?
+  /// OPERATOR_REASON_CODES value or a resolver rule id.
+  resolutionReasonCode  String?
+  /// AuditLog.id, for OPERATOR_RESOLVED (invariant.ts requires it).
+  resolutionAuditId     String?
+  /// Frozen, size-capped (≤ 4096 B, DB CHECK) proof summary built ONLY by
+  /// lib/platform/incidents/evidence.ts. SUBJECT_REMOVED requires `.subject`.
+  resolutionEvidence    Json?
+
+  // ── Phase-1 data model (owner directive 2026-11-03) ───────────────────────
+  /// Archived from the operator history view; the row survives until the
+  /// 90-day prune moves its summary to SyncIssueArchive. No writer yet.
+  archivedAt            DateTime?
+  /// The customer the subject belonged to AT OBSERVATION, from the
+  /// authoritative owner (PlaidItem.userId / FinancialAccount owner) — never
+  /// parsed from detail. Soft reference: survives SUBJECT removal, deleted
+  /// with the customer by the account-deletion purge.
+  subjectUserId         String?
+  /// CURRENT cause projection only — the history is SyncIssueEvent.
+  /// HYPOTHESIS | CONFIRMED (TEXT + CHECK); causeCode is a registry code.
+  causeStatus           String?
+  causeCode             String?
+  causeConfirmedById    String?
+  causeConfirmedAuditId String?
+
   occurrences SyncIssueOccurrence[]
 
+  @@index([lifecycleState, lastOccurredAt])
+  @@index([subjectUserId])
   @@index([financialAccountId, resolved])
   @@index([plaidItemId, kind])
   @@index([incidentKey])
@@ -3791,9 +3838,110 @@ model SyncIssueOccurrence {
   /// Per-occurrence technical evidence. The episode keeps the first detail; this
   /// keeps every one, so a 40-failure page is 40 occurrences, not 40 incidents.
   detail             Json?
+  /// PB-1 S2 — frozen summary of the failing execution/stage at observation
+  /// time (§8), so the context outlives the 60-day ledger. Written by a later slice.
+  evidenceSummary    Json?
+  /// Phase-1 — structured subjects (soft refs), set at observation from the
+  /// producer's typed facts, so per-subject rules never parse `detail`.
+  subjectAccountId   String?
+  securityId         String?
+  /// The JobRun the observation ran under (ambient, soft ref) — survives the
+  /// 60-day RefreshExecution retention that `refreshExecutionId` does not.
+  jobRunId           String?
+  jobName            String?
 
   @@index([syncIssueId, observedAt])
   @@index([refreshExecutionId])
+}
+
+/// PB-1 Phase 1 — an explicit link between two episodes. Soft references (no
+/// FK): either end may survive only in SyncIssueArchive. Recurrence stays
+/// derived from SyncIssue.previousIncidentId; RECURRENCE_OF is written only
+/// for explicit operator links. Symmetric kinds (SAME_ROOT_CAUSE, RELATED) are
+/// stored once with fromIncidentId < toIncidentId (DB CHECK). fm_system-only.
+model SyncIssueRelation {
+  id             String   @id @default(cuid())
+  fromIncidentId String
+  toIncidentId   String
+  /// RECURRENCE_OF | SAME_ROOT_CAUSE | RELATED (TEXT + CHECK)
+  kind           String
+  /// SYSTEM | OPERATOR (TEXT + CHECK); OPERATOR requires auditId.
+  createdBy      String
+  /// Operator userId (soft ref) when createdBy = OPERATOR.
+  createdById    String?
+  auditId        String?
+  createdAt      DateTime @default(now())
+
+  @@unique([fromIncidentId, toIncidentId, kind])
+  @@index([toIncidentId])
+  @@index([createdAt])
+}
+
+/// PB-1 Phase 1 — append-only chronology of one episode. CODES AND REFS ONLY:
+/// no free text, no provider message, no `detail`. A cause confirmed later is
+/// an event at the time it was confirmed, so it is never presented as known
+/// at detection. SyncIssue.causeStatus/causeCode are the current projection.
+/// fm_system-only. Soft reference to the incident (may be archived).
+model SyncIssueEvent {
+  id                 String   @id @default(cuid())
+  incidentId         String
+  /// Stamped by the DATABASE (dbgenerated, so Prisma never sends it): the
+  /// fm_system INSERT grant excludes this column — no backdating.
+  at                 DateTime @default(dbgenerated("clock_timestamp()"))
+  /// OBSERVED | STATE_CHANGED | CAUSE_HYPOTHESIZED | CAUSE_CONFIRMED |
+  /// CAUSE_RETRACTED | ACTION_TAKEN | ACTION_OUTCOME | NOTE_CODE (TEXT + CHECK)
+  type               String
+  /// SYSTEM | OPERATOR (TEXT + CHECK)
+  actorKind          String
+  actorId            String?
+  auditId            String?
+  fromState          String?
+  toState            String?
+  causeCode          String?
+  actionCode         String?
+  outcomeCode        String?
+  /// CAUSE_RETRACTED names the event it retracts (DB CHECK).
+  refEventId         String?
+  occurrenceId       String?
+  refreshExecutionId String?
+  jobRunId           String?
+
+  @@index([incidentId, at])
+}
+
+/// PB-1 Phase 1 — the durable, summary-only record of a resolved episode once
+/// the 90-day prune removes its SyncIssue row. ALLOWLIST: ids, registry codes,
+/// timestamps, counts, the size-capped typed resolutionEvidence and a capped
+/// code-only event timeline. No `detail`, no provider message, no free text.
+/// Retained 13 months; deleted with the customer by the account-deletion purge.
+model SyncIssueArchive {
+  id                   String    @id @default(cuid())
+  /// The pruned SyncIssue.id (unique — the archive write is an idempotent upsert).
+  incidentId           String    @unique
+  incidentKey          String?
+  provider             String
+  kind                 String
+  operation            String?
+  plaidItemId          String?
+  financialAccountId   String?
+  subjectUserId        String?
+  previousIncidentId   String?
+  firstOccurredAt      DateTime?
+  lastOccurredAt       DateTime?
+  resolvedAt           DateTime?
+  resolutionKind       String?
+  resolutionReasonCode String?
+  causeStatus          String?
+  causeCode            String?
+  occurrenceCount      Int
+  resolutionEvidence   Json?
+  /// Capped (≤ 8192 B, DB CHECK), code-only: [{type, at, fromState?, toState?, causeCode?, actionCode?, outcomeCode?}]
+  eventTimeline        Json?
+  archivedAt           DateTime  @default(now())
+
+  @@index([archivedAt])
+  @@index([subjectUserId, resolvedAt])
+  @@index([provider, kind, resolvedAt])
 }
 
 enum SyncIssueKind {

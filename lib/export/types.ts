@@ -108,4 +108,6 @@ export interface ExportData {
   aiMemory: Record<string, unknown>[];
   /** PRIV-006 — the user's own Daily Briefs (generated content only). */
   dailyBriefs: Record<string, unknown>[];
+  /** PB-1 Phase 1 — sync incidents about the user (live + 13-month archive), allowlisted fields only. */
+  syncIncidents: { live: Record<string, unknown>[]; archived: Record<string, unknown>[] };
 }

@@ -43,6 +43,7 @@ import { PlaidItemStatus } from "@prisma/client";
 import { plaidClient } from "@/lib/plaid/client";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { resolveIncidentsForRemovedSubjects } from "@/lib/plaid/syncIssues";
 
 /**
  * A narrow injection seam, defaulting to the real singletons so production is
@@ -60,6 +61,8 @@ export type DisconnectDeps = {
   plaid?: Pick<typeof plaidClient, "itemRemove">;
   /** The health chokepoint. Injected only so the test can observe the write. */
   setHealth?: typeof setPlaidItemHealth;
+  /** PB-1 S3 — the incident closure, injected so a unit test never reaches a real database. */
+  resolveRemovedSubjects?: (scope: { plaidItemIds: string[] }) => Promise<number>;
 };
 
 export async function disconnectPlaidItemIfOrphaned(
@@ -136,6 +139,10 @@ export async function disconnectPlaidItemIfOrphaned(
   // fixed once. The thing that was missing was never the status; it was any
   // record of whether cleanup is still owed.
   await setHealth(plaidItemDbId, { status: PlaidItemStatus.REVOKED });
+
+  // PB-1 S3 — the item is REVOKED, so its open incidents close as
+  // SUBJECT_REMOVED (never a recovery). Outside any transaction; never throws.
+  await (deps.resolveRemovedSubjects ?? resolveIncidentsForRemovedSubjects)({ plaidItemIds: [plaidItemDbId] });
 
   // PRIV-004 — once Plaid has CONFIRMED the Item is gone (removed, or already
   // absent), the access token is dead ciphertext with no remaining use, so it

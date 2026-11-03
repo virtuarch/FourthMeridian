@@ -50,16 +50,28 @@ import {
 import { redactedErrorForLog } from "@/lib/plaid/errors";
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import { buildIncidentKey, INCIDENT_KEY_VERSION, type ConnectionScope } from "./identity";
-import { lifecycleViolation } from "./invariant";
+import { lifecycleViolation, RESOLUTION_KINDS, type ResolutionKindValue } from "./invariant";
+import { subjectVerdict } from "./subjects-core";
+import { loadOccurrenceAccounts, loadSubjectFacts, ownerOf } from "./subjects";
+import { buildOccurrenceEvidenceSummary, buildResolutionEvidence } from "./evidence";
+import { isRegistryCode, type IncidentEventType, type ResolutionReasonCode } from "./codes";
 import { resolveOperationKey } from "./operation-key";
 // The ledger is reached through the canonical row seam — never directly. The
 // OPS-2B read-boundary ratchet enforces this, and caught an earlier version of
 // this module reading RefreshExecution itself.
 import { getExecutionIdByRunId } from "@/lib/platform/refresh/execution-query";
 
-/** The ONLY resolution kind any current code path can produce. */
+/**
+ * The resolution kinds (PB-1 S2). Each has exactly one writer:
+ *   AUTOMATIC_RECOVERY  resolveByAutomaticRecovery (evidence of the same operation succeeding)
+ *   SUBJECT_REMOVED     resolveBySubjectRemoval (S3) — the subject is gone; NEVER a recovery
+ *   OPERATOR_RESOLVED   declared for the invariant; its writer (applyOperatorTransition) is S6
+ */
 export const RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY" as const;
-export type ResolutionKind = typeof RESOLUTION_KIND_AUTOMATIC;
+export const RESOLUTION_KIND_OPERATOR = "OPERATOR_RESOLVED" as const;
+export const RESOLUTION_KIND_SUBJECT_REMOVED = "SUBJECT_REMOVED" as const;
+export { RESOLUTION_KINDS };
+export type ResolutionKind = ResolutionKindValue;
 
 /** Typed failure evidence a producer submits. */
 export interface IncidentObservation {
@@ -85,6 +97,15 @@ export interface IncidentObservation {
    */
   walletId?: string | null;
   detail?: Prisma.InputJsonValue;
+  // ── PB-1 Phase 1 — typed facts, resolved by the facade, never parsed here ──
+  /** The subject's authoritative owner (PlaidItem.userId / FinancialAccount owner). Set on a NEW episode only. */
+  subjectUserId?: string | null;
+  /** Structured occurrence subjects (soft refs). */
+  subjectAccountId?: string | null;
+  securityId?: string | null;
+  /** The JobRun this observation ran under (ambient), when any. */
+  jobRunId?: string | null;
+  jobName?: string | null;
 }
 
 /**
@@ -126,7 +147,13 @@ export interface IncidentObservation {
  * `refreshExecution` is read-only here (correlator lookup); the ledger is never
  * written from this module.
  */
-export type IncidentClient = Pick<typeof systemDb, "syncIssue" | "syncIssueOccurrence" | "$transaction">;
+export type IncidentClient = Pick<typeof systemDb, "syncIssue" | "syncIssueOccurrence" | "$transaction">
+  /**
+   * PB-1 Phase 1 — the append-only chronology. OPTIONAL in the type only so the
+   * pre-existing test fakes need not model it; the real client always has it.
+   * A client without it writes no event (and says so in the log).
+   */
+  & Partial<Pick<typeof systemDb, "syncIssueEvent">>;
 type Client = IncidentClient;
 
 /**
@@ -322,6 +349,15 @@ export async function recordIncidentObservation(
             runId: obs.runId ?? null,
             observedAt: now,
             detail: obs.detail,
+            // PB-1 Phase 1 — structured subjects + job link, from typed facts.
+            subjectAccountId: obs.subjectAccountId ?? null,
+            securityId: obs.securityId ?? null,
+            jobRunId: obs.jobRunId ?? null,
+            jobName: obs.jobName ?? null,
+            evidenceSummary: buildOccurrenceEvidenceSummary({
+              executionId, runId: obs.runId ?? null, jobRunId: obs.jobRunId ?? null,
+              jobName: obs.jobName ?? null, stage,
+            }) as unknown as Prisma.InputJsonValue,
           },
           select: { id: true },
         });
@@ -397,12 +433,25 @@ export async function recordIncidentObservation(
       const bad = lifecycleViolation("condition", fields);
       if (bad) { console.error(`[incidents] refusing invalid condition write: ${bad}`); return null; }
       const incident = await client.syncIssue.create({
-        data: { ...baseData, ...fields, previousIncidentId: prior?.id ?? null },
+        data: {
+          ...baseData, ...fields, previousIncidentId: prior?.id ?? null,
+          // PB-1 Phase 1 — the owner at observation, and how the episode opened.
+          // lifecycleState stays NULL (derived from `resolved`) until the state
+          // machine lands; no reader depends on it yet.
+          subjectUserId: obs.subjectUserId ?? null,
+          openedBy: prior ? "RECURRENCE" : "OBSERVATION",
+        },
         select: { id: true },
       });
+      const occurrenceId = await appendOccurrence(incident.id);
+      // OBSERVED — once, at episode open; occurrences are never mirrored.
+      await appendEvent(client, {
+        incidentId: incident.id, type: "OBSERVED", actorKind: "SYSTEM",
+        occurrenceId, refreshExecutionId: executionId, jobRunId: obs.jobRunId ?? null,
+      }, observers);
       return {
         incidentId: incident.id,
-        occurrenceId: await appendOccurrence(incident.id),
+        occurrenceId,
         incidentKey,
         created: true,
         refreshExecutionId: executionId,
@@ -563,5 +612,210 @@ export async function resolveByAutomaticRecovery(
     captureLedgerWriteFailure("SyncIssue", "resolution", e);
     reportWriteFailure(observers, "SyncIssue", "resolution");
     return { resolved: 0, resolvingExecutionId: null };
+  }
+}
+
+// ── The chronology (PB-1 Phase 1) ────────────────────────────────────────────
+
+/** One SyncIssueEvent. Codes and refs only — the type has no free-text field. */
+export interface IncidentEventInput {
+  incidentId: string;
+  type: IncidentEventType;
+  actorKind: "SYSTEM" | "OPERATOR";
+  actorId?: string | null;
+  auditId?: string | null;
+  fromState?: string | null;
+  toState?: string | null;
+  causeCode?: string | null;
+  actionCode?: string | null;
+  outcomeCode?: string | null;
+  refEventId?: string | null;
+  occurrenceId?: string | null;
+  refreshExecutionId?: string | null;
+  jobRunId?: string | null;
+}
+
+type EventWriter = Partial<Pick<typeof systemDb, "syncIssueEvent">>;
+
+/** The event row, validated against the DB CHECKs before it is sent. `at` is never sent (the DB stamps it). */
+export function eventData(e: IncidentEventInput): Prisma.SyncIssueEventUncheckedCreateInput {
+  for (const k of ["fromState", "toState", "causeCode", "actionCode", "outcomeCode"] as const) {
+    const v = e[k];
+    if (v != null && !isRegistryCode(v)) throw new Error(`SyncIssueEvent.${k} is not a registry code`);
+  }
+  if (e.actorKind === "OPERATOR" && (!e.actorId || !e.auditId)) throw new Error("an OPERATOR event needs actorId and auditId");
+  if (e.actorKind === "SYSTEM" && e.actorId) throw new Error("a SYSTEM event carries no actorId");
+  if (e.type === "CAUSE_RETRACTED" && !e.refEventId) throw new Error("CAUSE_RETRACTED must name refEventId");
+  return {
+    incidentId: e.incidentId, type: e.type, actorKind: e.actorKind,
+    actorId: e.actorId ?? null, auditId: e.auditId ?? null,
+    fromState: e.fromState ?? null, toState: e.toState ?? null,
+    causeCode: e.causeCode ?? null, actionCode: e.actionCode ?? null, outcomeCode: e.outcomeCode ?? null,
+    refEventId: e.refEventId ?? null, occurrenceId: e.occurrenceId ?? null,
+    refreshExecutionId: e.refreshExecutionId ?? null, jobRunId: e.jobRunId ?? null,
+  };
+}
+
+/**
+ * Append a TELEMETRY-side event (OBSERVED). Never throws: a lost event is
+ * reported on the observer and never fails the observation it describes.
+ * Transition events are NOT written here — they ride the CAS transaction.
+ */
+async function appendEvent(client: EventWriter, e: IncidentEventInput, observers?: LifecycleObservers): Promise<void> {
+  if (!client.syncIssueEvent) {
+    console.warn("[incidents] client has no syncIssueEvent accessor (a test fake) — event not written");
+    return;
+  }
+  try {
+    await client.syncIssueEvent.create({ data: eventData(e), select: { id: true } });
+  } catch (err) {
+    console.error("[incidents] failed to append incident event (non-fatal):", redactedErrorForLog(err));
+    captureLedgerWriteFailure("SyncIssue", "incident", err);
+    reportWriteFailure(observers, "SyncIssue", "incident");
+  }
+}
+
+/** A CAS that matched nothing — the silent-refusal hazard, raised (lib/db/conditional-write.ts doctrine). */
+export class IncidentTransitionConflictError extends Error {
+  constructor(readonly incidentId: string, readonly expected: string | null) {
+    super(`incident ${incidentId}: the transition CAS matched 0 rows (expected lifecycleState ${expected ?? "NULL"}, resolved=false)`);
+    this.name = "IncidentTransitionConflictError";
+  }
+}
+
+// ── Subject removal (PB-1 S3 — design §5) ────────────────────────────────────
+
+/**
+ * The subjects a removal path just removed. Either or both; ids are CANDIDATES,
+ * not verdicts — every one is re-read here, and only an incident whose subject
+ * actually reads DELETED / REVOKED / MISSING is closed. A caller that names a
+ * live subject closes nothing.
+ */
+export interface SubjectRemovalScope {
+  plaidItemIds?: readonly string[];
+  financialAccountIds?: readonly string[];
+}
+
+/** The incident accessors plus the two subject tables the removal rule reads. */
+export type RemovalClient = IncidentClient & Pick<typeof systemDb, "financialAccount" | "plaidItem">;
+
+/**
+ * Close the open CONDITION episodes whose subject has been removed:
+ * `RESOLVED / SUBJECT_REMOVED`, with `resolutionEvidence.subject`
+ * `{kind, id, state: DELETED|REVOKED|MISSING, observedAt}`.
+ *
+ * NEVER `AUTOMATIC_RECOVERY`: a removed connection did not recover, and the UI
+ * says "Closed — connection removed". Item-scoped episodes follow §12 P2.2 —
+ * every account subject named across the occurrences must be removed (S3 has no
+ * proof resolvers, so "proven" never applies here).
+ *
+ * Same contract as the other two authorities: NEVER THROWS, refuses a
+ * transaction-scoped client (OPS-2D-TX-1 — the removal paths call this AFTER
+ * their own transactions committed), reports a failed write on the
+ * listen-only observer. A restore later does NOT reopen what this closed; the
+ * next failure opens a new generation linked by previousIncidentId.
+ *
+ * Compare-and-set per row (`resolved: false` in the WHERE): a concurrent
+ * recurrence or resolution that got there first is contention, not a defect,
+ * so a zero-row write here is simply not counted.
+ */
+export async function resolveBySubjectRemoval(
+  scope: SubjectRemovalScope,
+  client: RemovalClient = systemDb,
+  observers?: LifecycleObservers,
+): Promise<{ resolved: number }> {
+  if (isTransactionScoped(client)) {
+    refuseTransactionScopedClient("resolveBySubjectRemoval");
+    reportWriteFailure(observers, "SyncIssue", "resolution");
+    return { resolved: 0 };
+  }
+  const itemIds = [...new Set(scope.plaidItemIds ?? [])].filter(Boolean);
+  const accountIds = [...new Set(scope.financialAccountIds ?? [])].filter(Boolean);
+  if (itemIds.length === 0 && accountIds.length === 0) return { resolved: 0 };
+  try {
+    const candidates = await client.syncIssue.findMany({
+      where: {
+        resolved: false,
+        OR: [
+          ...(itemIds.length ? [{ plaidItemId: { in: itemIds } }] : []),
+          ...(accountIds.length ? [{ financialAccountId: { in: accountIds } }] : []),
+          // §12 P2.2 — an item-scoped episode whose occurrences name a removed account.
+          ...(accountIds.length ? [{ occurrences: { some: { subjectAccountId: { in: accountIds } } } }] : []),
+        ],
+      },
+      select: {
+        id: true, kind: true, provider: true, detail: true, plaidTransactionId: true,
+        plaidItemId: true, financialAccountId: true, lifecycleState: true, subjectUserId: true,
+      },
+    });
+    const conditions = candidates.filter((c) => classifySyncIssue({
+      kind: c.kind, provider: c.provider, detail: c.detail, plaidTransactionId: c.plaidTransactionId,
+    }).nature === "condition");
+    if (conditions.length === 0) return { resolved: 0 };
+
+    // §12 P2.2 — the persisting rule reads EVERY item-scoped episode's
+    // occurrence subjects, not only the first observation's.
+    const occAccounts = await loadOccurrenceAccounts(conditions.filter((c) => c.plaidItemId).map((c) => c.id), client);
+    // The subjects are soft-deleted / revoked, not gone, so their owner is
+    // still readable here — captured on the row BEFORE any later hard delete.
+    const facts = await loadSubjectFacts(conditions, client, [...new Set([...occAccounts.values()].flat())]);
+
+    const now = new Date();
+    let resolved = 0;
+    for (const c of conditions) {
+      const v = subjectVerdict(c, facts, occAccounts.get(c.id) ?? []);
+      if (v.verdict !== "SUBJECT_REMOVED") continue;
+      const reason: ResolutionReasonCode =
+        v.subject.state === "DELETED" ? "SUBJECT_DELETED" : v.subject.state === "REVOKED" ? "SUBJECT_REVOKED" : "SUBJECT_MISSING";
+      const evidence = buildResolutionEvidence({
+        rule: "SUBJECT_REMOVED_V1", subject: v.subject, observedAt: now,
+        subjects: v.subjects.map((x) => ({ kind: x.kind, id: x.id, state: x.state })),
+      });
+      const data = {
+        resolved: true, resolvedAt: now,
+        resolutionKind: RESOLUTION_KIND_SUBJECT_REMOVED as string,
+        resolvingExecutionId: null,
+        lifecycleState: "RESOLVED",
+        resolutionReasonCode: reason,
+        resolutionEvidence: evidence as unknown as Prisma.InputJsonValue,
+        // Owner captured if the row predates subjectUserId — never overwritten.
+        ...(c.subjectUserId ? {} : { subjectUserId: ownerOf(c, facts.owners) }),
+      };
+      const bad = lifecycleViolation("condition", { ...data, incidentKey: null });
+      if (bad) { console.error(`[incidents] refusing invalid subject-removal write: ${bad}`); continue; }
+      try {
+        // ONE transaction: compare-and-set on the state this call READ, then the
+        // event. A 0-row CAS THROWS (and rolls back) — never a silent "nothing to do".
+        await client.$transaction(async (tx) => {
+          const { count } = await tx.syncIssue.updateMany({
+            where: { id: c.id, resolved: false, lifecycleState: c.lifecycleState },
+            data,
+          });
+          if (count !== 1) throw new IncidentTransitionConflictError(c.id, c.lifecycleState);
+          await tx.syncIssueEvent.create({
+            data: eventData({
+              incidentId: c.id, type: "STATE_CHANGED", actorKind: "SYSTEM",
+              fromState: c.lifecycleState ?? "ACTIVE", toState: "RESOLVED", outcomeCode: null,
+            }),
+            select: { id: true },
+          });
+        });
+        resolved += 1;
+      } catch (e) {
+        // Per row: one refused transition must not strand the rest. Reported, never silent.
+        console.error(`[incidents] subject-removal transition for ${c.id} refused (non-fatal):`, redactedErrorForLog(e));
+        captureLedgerWriteFailure("SyncIssue", "resolution", e);
+        reportWriteFailure(observers, "SyncIssue", "resolution");
+      }
+    }
+    if (resolved > 0) {
+      console.log(`[incidents] closed ${resolved} incident(s) as SUBJECT_REMOVED (connection removed — not a recovery)`);
+    }
+    return { resolved };
+  } catch (e) {
+    console.error("[incidents] subject-removal closure failed (non-fatal):", redactedErrorForLog(e));
+    captureLedgerWriteFailure("SyncIssue", "resolution", e);
+    reportWriteFailure(observers, "SyncIssue", "resolution");
+    return { resolved: 0 };
   }
 }
