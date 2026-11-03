@@ -18,6 +18,7 @@ import { liveSessionWhere } from "@/lib/auth/session-proof";
 import { CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { METRICS } from "@/lib/platform/intelligence/metrics/registry";
 import { countAccountsWithLiveSession, countLiveSessions, type LiveSessionReadClient } from "./live-sessions";
+import { toPlatformSessionRow } from "./session-rows";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -121,6 +122,21 @@ async function main(): Promise<void> {
     check("accounts-with-live-session@1: route → countAccountsWithLiveSession → liveSessionWhere",
       acc.path.map((h) => h.calls).join(" → ") === "countAccountsWithLiveSession → liveSessionWhere" && acc.path[1].file === "lib/platform/security/live-sessions.ts");
     check("compute stays THE live rule (liveSessionWhere in session-proof)", [ls, acc].every((m) => m.compute.module === "lib/auth/session-proof.ts" && m.compute.symbol === "liveSessionWhere"));
+  }
+
+  console.log("\n4. the recent-sessions list is identity-free (registry live-sessions@1 drill note)");
+  {
+    const row = toPlatformSessionRow({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36", lastActiveAt: new Date("2026-11-01T12:00:00Z") });
+    check("a row carries exactly device · browser · os · at", JSON.stringify(Object.keys(row).sort()) === JSON.stringify(["at", "browser", "device", "os"]));
+    const ser = JSON.stringify(row);
+    check("a row has no id key and no cuid-shaped value", !/"id"/.test(ser) && !/\bc[a-z0-9]{24}\b/.test(ser));
+    const route = code("app/api/platform/security-ops/sessions/route.ts");
+    check("the route maps rows through toPlatformSessionRow", /recent\.map\(toPlatformSessionRow\)/.test(route));
+    check("the route never selects or emits a session id", !/\bid:\s*true/.test(route) && !/\bid:\s*s\./.test(route));
+    const drill = METRICS.find((m) => m.id === "live-sessions")!.drill;
+    const note = (drill && "note" in drill ? drill.note : undefined) ?? "";
+    check("the registry drill note states the contract this pins", /never a session id/.test(note));
+    check("the widget keys rows without an id", !/key=\{s\.id\}/.test(code("components/platform/widgets/SecSessionsWidget.tsx")));
   }
 
   if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

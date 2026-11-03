@@ -98,7 +98,7 @@ const operators: OperatorActionsResponse = { events: [
   { id: "o1", action: "CUSTOMER_POLICY_ASSIGNED", at: AGO(1).toISOString(), operator: "chris", target: "bob", reasonCode: "SUPPORT_REQUEST", result: "SUCCESS", execution: null },
   { id: "o2", action: "CONNECTION_RESYNC_TRIGGERED", at: AGO(4).toISOString(), operator: "chris", target: "plaid item …abc123", reasonCode: null, result: "REFUSED", execution: { refreshExecutionId: "exec_zz1234" } },
 ] };
-const sessions: PlatformSessionsResponse = { totalActive: 5, distinctUsers: 3, recent: [{ id: "s1", device: "Desktop", browser: "Chrome", os: "macOS", at: AGO(0.5).toISOString() }] };
+const sessions: PlatformSessionsResponse = { totalActive: 5, distinctUsers: 3, recent: [{ device: "Desktop", browser: "Chrome", os: "macOS", at: AGO(0.5).toISOString() }] };
 
 const ok = <T,>(data: T): Fetched<T> => ({ data, loading: false, error: null });
 const LOADING: Fetched<never> = { data: null, loading: true, error: null };
