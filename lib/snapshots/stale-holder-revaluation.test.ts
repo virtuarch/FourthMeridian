@@ -361,8 +361,13 @@ async function main() {
     check("the binding executes planDayPersistence's clearStamp as a metadata-only NULL stamp (so a pending stamp is never stranded)",
       /else if \(applyWrites && plan\.clearStamp\) metadataOnlyStamps\.push\(\{ date: d, status: null \}\);/.test(src)
         && /where: \{ spaceId, date: m\.date, isEstimated: true \},\s*data:  \{ cryptoValuationStatus: m\.status \}/.test(src));
-    check("the binding computes the missing holders from the SAME accounts it values, and hands them to the day decision",
-      /cryptoHoldersMissing = cryptoHoldersNotValued\(\{ accounts: cryptoDayAccounts \}, cryptoDayValuation\);/.test(src)
+    // FM-AUDIT-022 follow-up re-pin: the guard still receives EVERY account it
+    // values (cryptoDayAccounts, spread first), PLUS the wallets with no native
+    // quantity, which can never be valued and so are always "not valued" holders
+    // inside their existence interval.
+    check("the binding computes the missing holders from the SAME accounts it values (+ unquantified wallets), and hands them to the day decision",
+      /cryptoHoldersMissing = cryptoHoldersNotValued\(\{\s*accounts: \[\s*\.\.\.cryptoDayAccounts,\s*\.\.\.unquantifiedCryptoAccounts\.map\(/.test(src)
+        && /\}, cryptoDayValuation\);/.test(src)
         && /valueCryptoDay\(\{\s*accounts: cryptoDayAccounts,/.test(src) && /cryptoHoldersNotValued: cryptoHoldersMissing,/.test(src));
     const pg = readFileSync("lib/prices/price-gap.ts", "utf8");
     check("production revaluation reads the evidence-keyed holders and clamps to the CHUNK, not to the earliest snapshot",

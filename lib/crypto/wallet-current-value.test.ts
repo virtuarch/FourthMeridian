@@ -162,8 +162,9 @@ const DETAIL    = code(read("app", "api", "spaces", "[id]", "accounts", "detail"
       && (detailBody.match(/loadWalletCurrentValues\(/g) ?? []).length === 1);
   // A wallet's value IS a balance, so the tier that discloses balances gets it.
   // FM-AUDIT-022 — re-pinned: through the one totals classification.
+  // FIN-A2 re-pin: the call now also passes balanceObserved (same balance read).
   check("BALANCE_ONLY receives the corrected balance, not the zero column",
-    /balance:     walletBalance\(r\.balance, r\.id\)\.balance/.test(ACCOUNTS));
+    /balance:     walletBalance\(r\.balance, r\.id, r\.balanceObserved\)\.balance/.test(ACCOUNTS));
   // W6b — a stale reading is disclosed, never discarded.
   check("a STALE wallet keeps its number rather than falling back to the column",
     /state === "VALUED" \|\| v\.state === "STALE"/.test(code(read("lib", "crypto", "wallet-current-value.ts"))),

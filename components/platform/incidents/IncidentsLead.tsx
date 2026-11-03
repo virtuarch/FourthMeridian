@@ -246,7 +246,7 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
             <dt className="text-[var(--text-muted)]">Subjects recorded</dt><dd className="tabular-nums sm:col-span-2">{d.evidence.subjectCount}{d.evidence.subjectsTruncated ? "+" : ""}</dd>
           </dl>
         ) : (
-          <p className="text-[11px] text-[var(--text-muted)]">{`No resolution evidence recorded. Attempt evidence: last attempt ${whenText(r.recovery.lastAttemptAt)}, last skip ${whenText(r.recovery.lastSkipAt)}${r.recovery.evidenceKnown ? "" : " (unreadable)"}.`}</p>
+          <p className="text-[11px] text-[var(--text-muted)]">{`No resolution evidence recorded. Attempt evidence: last attempt ${whenText(r.recovery.lastAttemptAt)}, last skip ${whenText(r.recovery.lastSkipAt)}${r.recovery.evidenceBasis === "unreadable" ? " (unreadable)" : r.recovery.evidenceBasis === "unsupported" ? " (not tracked for this provider yet)" : r.recovery.evidenceBasis === "not-needed" ? " (not needed: inside its window)" : ""}.`}</p>
         )}
       </Section>
 

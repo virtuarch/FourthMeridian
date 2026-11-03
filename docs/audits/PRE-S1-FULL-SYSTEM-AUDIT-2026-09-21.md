@@ -1035,8 +1035,8 @@ Node 24 is documented consistently.
 
 **Status update (2026-11-03).** Statuses below are re-checked against `develop`; the original findings text is kept as audited.
 - **FM-AUDIT-023:** **PARTIAL** — refresh (FIN-011) + exchange existing-row (#295) fixed; exchange new-row **OPEN** (FIN-A2, queued).
-- **FM-AUDIT-022:** **PARTIAL:** live totals FIXED (#301); today's-snapshot incomplete stamp IN PROGRESS (#302); history backfill + CSV export IN PROGRESS (FIN-B2). Flips to FIXED once both land.
-- **FM-AUDIT-021:** confirmed live; **QUEUED** for a builder.
+- **FM-AUDIT-022:** **FIXED** on `develop`: live totals (#301), history backfill + CSV export (#307), today's-snapshot incomplete stamp (#302). Re-running the backfill over rows already written is owner-gated.
+- **FM-AUDIT-021:** **FIXED** on `develop` (#302). Re-opening past rows already frozen as observed over stale balances is owner-gated.
 - **FM-AUDIT-025:** parser **FIXED** on `develop` (#300). Repair of rows already in the archive is **OWNER-GATED**.
 - **FM-AUDIT-053:** **FIXED** on `develop` (#300).
 
@@ -1190,7 +1190,7 @@ Node 24 is documented consistently.
 - **Remediation:** mark the live row non-observed (e.g. `completenessTier:'estimated'`) or skip when a material balance is STALE.
 - **When:** AFTER-S1.
 - **Pin:** a Space with a STALE Plaid balance gets a non-observed row from sync-crypto.
-- **Status (2026-11-03):** still live on `develop` (`lib/snapshots/regenerate.ts:247,279`; freeze `regenerate-history.core.ts:364-368`). **QUEUED** for a builder.
+- **Status (2026-11-03): FIXED on `develop` (#302).** When a bank balance is stale, today's row is written as an estimate (`isEstimated: true`, tier `estimated`), so the frozen-row guard in `regenerate-history.core.ts` (which skips only `isEstimated === false`) lets regeneration correct it after a reconnect. Both jobs write only through `regenerateSnapshotsForAccounts`. **Past rows already frozen as observed over stale balances stay frozen;** re-opening them is a PB-8-class data repair and is **owner-gated**.
 
 **FM-AUDIT-022 — Unpriced / unobserved wallet summed as the legacy balance column ($0 for ETH/SOL/BNB/AVAX, stale for BTC)**
 - **Sev/Conf:** P2 / HIGH
@@ -1199,7 +1199,7 @@ Node 24 is documented consistently.
 - **Remediation:** carry `state` on the DTO, exclude from sums, disclose (`cryptoUnpriced`), stamp the snapshot.
 - **When:** AFTER-S1.
 - **Pin:** force NO_PRICE ⇒ totals exclude it and disclose.
-- **Status (2026-11-03): PARTIAL:** live totals FIXED (#301); today's-snapshot incomplete stamp IN PROGRESS (#302); history backfill + CSV export IN PROGRESS (FIN-B2). Flips to FIXED once both land. Every reader resolves a wallet through one helper (`resolveWalletBalance`): an unpriced or never-observed wallet is excluded from totals rather than summed from the stored column, and surfaces disclose how many are not yet valued. Until #302 lands, today's row excludes the wallet but is not stamped partial.
+- **Status (2026-11-03): FIXED on `develop` (#301 + #307 + #302).** Live totals (#301), history backfill + CSV export (#307), and today's snapshot stamped `incomplete` when a wallet is unvalued (#302). Re-running the backfill over rows already written is owner-gated. Every reader resolves a wallet through one helper (`resolveWalletBalance`): an unpriced or never-observed wallet is excluded from totals rather than summed from the stored column, and surfaces disclose how many are not yet valued. 
 
 **FM-AUDIT-023 — Plaid null current balance keeps the old value but stamps it freshly verified; connect-time null → $0**
 - **Sev/Conf:** P2 / HIGH (code), MEDIUM (frequency)

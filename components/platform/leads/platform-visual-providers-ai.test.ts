@@ -311,7 +311,8 @@ console.log("3. Render — compact default screens, drawers host every former wi
   const unknownHtml = text(renderToStaticMarkup(createElement(AiCostsLeadSurface, aiProps({ trend: ok(trendData({ pricingConfigured: false })), inv7: failed("x"), budget: failed("x") }) as never)));
   check("AI: unpriced ⇒ the hero says Unknown and prints no dollar figure", /AI spend · 30 d Unknown/.test(unknownHtml) && /Spend Unknown — no AI rate card configured/.test(unknownHtml));
 
-  const aiView = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.find((w) => w.workspaceId === "platform-ai")!.views![0];
+  // PLATFORM ECONOMICS — re-pinned: AI & Costs is now the "ai" VIEW of Economics (same lead, same hosted keys).
+  const aiView = PLATFORM_AREA_WORKSPACES.PLATFORM_OPS.find((w) => w.workspaceId === "platform-economics")!.views!.find((v) => v.id === "ai")!;
   const drawerKeys = AI_DRAWERS.flatMap((d) => d.keys);
   check("AI: every hosted key is in exactly one drawer", (aiView.hosted ?? []).every((k) => drawerKeys.filter((x) => x === k).length === 1) && drawerKeys.length === (aiView.hosted ?? []).length);
   for (const d of AI_DRAWERS) {

@@ -83,6 +83,19 @@ export function incidentAudienceFor(auth: AudienceAuth): CsToken | OpsToken | nu
   return null;
 }
 
+/**
+ * DOWNGRADE ONLY — the same reader at the identity-free PLATFORM_OPS tier.
+ * For a Platform Ops route: a System Admin's break-glass mints CUSTOMER_SUCCESS
+ * (lead decision 2026-11-03), and an Ops surface must never receive the
+ * identity-bearing tier. Takes only a token this module minted (refused
+ * otherwise); never raises a tier; null stays null.
+ */
+export function atOpsTier(token: CsToken | OpsToken | null): OpsToken | null {
+  if (token === null) return null;
+  const audience = assertAudienceToken(token, ["CUSTOMER_SUCCESS", "PLATFORM_OPS"] as const);
+  return audience === "PLATFORM_OPS" ? (token as OpsToken) : mint("PLATFORM_OPS");
+}
+
 /** The alert engine's token. lib/alerts/ only (statically pinned). */
 export function systemIncidentAudience(): SystemToken {
   return mint("SYSTEM");

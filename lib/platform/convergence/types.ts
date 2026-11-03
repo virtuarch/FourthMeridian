@@ -80,5 +80,11 @@ export interface ConvergenceResult {
   eventCount: number;
   /** Ledgers that participated at all. */
   participants: readonly string[];
+  /**
+   * PB-1 R3 (D5) — the incident scan behind the sync-issue events: `truncated`
+   * when it hit its cap (story counts are then a FLOOR). Null when the
+   * sync-issue participant did not run.
+   */
+  incidentScan: { truncated: boolean; scanned: number; cap: number } | null;
   checkedAt: string;
 }

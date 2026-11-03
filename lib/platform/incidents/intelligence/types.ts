@@ -121,10 +121,21 @@ export interface SubjectFactsInput {
  * lastOccurredAt (the STALE rule, §12 P2.1). `known: false` = not looked up or
  * unreadable — never hides a row.
  */
+/**
+ * Why attempt evidence is what it is (operator wording keys off this, never off `known` alone):
+ *   read         looked up and read (incl. "the ledger records no attempt of this operation")
+ *   not-needed   the row is inside its window (or closed): the STALE rule never reads it
+ *   unsupported  the row names no subject the refresh ledger can be keyed on
+ *   unreadable   the read failed — still never hides the row
+ */
+export type AttemptEvidenceBasis = "read" | "not-needed" | "unsupported" | "unreadable";
+
 export interface AttemptEvidence {
   known: boolean;
   lastAttemptAt: Date | null;
   lastSkipAt: Date | null;
+  /** Absent ⇒ inferred: known ⇒ "read", else "unreadable". */
+  basis?: AttemptEvidenceBasis;
 }
 
 export interface RelationFacts {
@@ -212,6 +223,8 @@ export interface RecoveryVerdict {
   lastAttemptAt: string | null;
   lastSkipAt: string | null;
   evidenceKnown: boolean;
+  /** Why `evidenceKnown` is what it is — see AttemptEvidenceBasis. Unknown never hides a row. */
+  evidenceBasis: AttemptEvidenceBasis;
 }
 
 /** The identity-free verdict (PLATFORM_OPS tier, and the base of every tier). */
@@ -357,6 +370,8 @@ export type VerdictForToken<T> = T extends AudienceToken<infer A> ? VerdictFor<A
  *   forCustomer        one customer's incidents — CUSTOMER_SUCCESS token only
  *   alertable          brokenNow ∩ alertable — SYSTEM token only (lib/alerts/)
  *   detail             one episode — tiered by token
+ *   window             PB-1 R3: every row touching [from, to] (seen, created or resolved in it)
+ *                      PLUS every NOT-closed row whatever its dates (D6) — tiered by token
  *   search             PB-1 2B: filtered, paged search over one status preset — tiered by token
  *   investigate        PB-1 2B: one episode with timeline, evidence digest, links — tiered by token
  */
@@ -367,6 +382,7 @@ export interface IncidentAccessors extends IncidentInvestigationAccessors {
   forCustomer(token: CsToken, userId: string, opts?: ListOptions): Promise<VerdictList<CsIncidentVerdict>>;
   alertable(token: SystemToken, opts?: ListOptions): Promise<VerdictList<IncidentVerdict>>;
   detail<T extends CsToken | OpsToken>(token: T, id: string, opts?: ListOptions): Promise<VerdictForToken<T> | null>;
+  window<T extends CsToken | OpsToken>(token: T, range: { from: Date; to: Date }, opts?: ListOptions): Promise<VerdictList<VerdictForToken<T>>>;
 }
 
 // ── PB-1 Phase 2B — investigation (search · detail · timeline) ──────────────

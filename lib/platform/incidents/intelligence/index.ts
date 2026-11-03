@@ -27,7 +27,7 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
-import { listSubjectStageAttempts } from "@/lib/platform/refresh/execution-query";
+import { latestStageAttemptsBySubject } from "@/lib/platform/refresh/projections";
 import { EVIDENCE_DIGEST_SELECT, evidenceDigestOf } from "../evidence";
 import { loadOccurrenceAccounts, loadSubjectFacts } from "../subjects";
 import { assertAudienceToken, type CsToken, type OpsToken, type SystemToken } from "./audience";
@@ -64,10 +64,10 @@ import type {
   VerdictList,
 } from "./types";
 
+/** Row cap for a window scan (convergence); D5 — reported as `truncated`, never silent. */
+export const WINDOW_SCAN_LIMIT = 500;
 /** Default row cap for one scan (D5 — reported, never silent). */
 export const DEFAULT_SCAN_LIMIT = 200;
-/** Cap on the attempt-evidence scan; hitting it makes EVERY row's evidence UNKNOWN (never hides a row). */
-export const ATTEMPT_SCAN_CAP = 2000;
 
 type Db = typeof systemDb;
 export type IncidentFactsReader = {
@@ -79,8 +79,8 @@ export type IncidentFactsReader = {
   syncIssueEvent: Pick<Db["syncIssueEvent"], "findMany">;
   financialAccount: Pick<Db["financialAccount"], "findMany">;
   plaidItem: Pick<Db["plaidItem"], "findMany">;
-  /** Stage attempts on subjects — the refresh ledger's ROW SEAM (never the ledger directly). */
-  stageAttempts: typeof listSubjectStageAttempts;
+  /** Latest stage attempt / skip per subject — the refresh ledger's PROJECTION SEAM (never the ledger directly). */
+  latestAttempts: typeof latestStageAttemptsBySubject;
 };
 
 const ROW_SELECT = {
@@ -118,57 +118,63 @@ export interface LoadOptions {
  */
 export async function loadAttemptEvidence(
   rows: readonly IncidentRowFacts[],
-  client: Pick<IncidentFactsReader, "stageAttempts">,
+  client: Pick<IncidentFactsReader, "latestAttempts">,
   now: Date,
 ): Promise<Map<string, AttemptEvidence>> {
   const out = new Map<string, AttemptEvidence>();
-  type Need = { id: string; subject: { item?: string; account?: string } | null; endpoints: readonly string[]; since: Date };
+  type Need = { id: string; subject: { item: string } | { account: string }; endpoints: readonly string[]; since: Date };
   const needs: Need[] = [];
   for (const r of rows) {
     if (r.resolved) continue;
     const op = operationOf(r);
     const since = r.lastOccurredAt ?? r.createdAt;
+    // Inside its window: the STALE rule never reads evidence (the core reports "not-needed").
     if (!isPastStaleWindow({ operation: op, provider: r.provider, lastOccurredAt: since, now })) continue;
     const endpoints = attemptEndpointsFor(op, r.provider);
+    // The ledger records no attempt of this operation at all: "neither attempted nor skipped" is literal.
+    if (endpoints.length === 0) { out.set(r.id, { known: true, lastAttemptAt: null, lastSkipAt: null, basis: "read" }); continue; }
+    // Subject keys: a wallet (or any non-Plaid source) is its FinancialAccount (RefreshExecution.sourceRef);
+    // a Plaid incident is its item (RefreshExecution.plaidItemId).
     const subject = r.provider === "WALLET"
       ? (r.financialAccountId ? { account: r.financialAccountId } : null)
       : (r.plaidItemId ? { item: r.plaidItemId } : null);
+    if (!subject) { out.set(r.id, { ...UNKNOWN_EVIDENCE, basis: "unsupported" }); continue; }
     needs.push({ id: r.id, subject, endpoints, since });
   }
-  for (const n of needs) {
-    // The ledger records no attempt of this operation at all: "neither attempted nor skipped" is literal.
-    if (n.endpoints.length === 0) out.set(n.id, { known: true, lastAttemptAt: null, lastSkipAt: null });
-    else if (!n.subject) out.set(n.id, UNKNOWN_EVIDENCE);
-  }
-  const scoped = needs.filter((n) => n.endpoints.length > 0 && n.subject);
-  if (scoped.length === 0) return out;
+  if (needs.length === 0) return out;
 
-  const itemIds = [...new Set(scoped.map((n) => n.subject!.item).filter((x): x is string => !!x))];
-  const accountIds = [...new Set(scoped.map((n) => n.subject!.account).filter((x): x is string => !!x))];
-  const endpoints = [...new Set(scoped.flatMap((n) => n.endpoints))];
-  const minSince = new Date(Math.min(...scoped.map((n) => n.since.getTime())));
-  let results: Awaited<ReturnType<typeof listSubjectStageAttempts>>;
-  try {
-    results = await client.stageAttempts({ plaidItemIds: itemIds, sourceRefs: accountIds, endpoints, after: minSince, take: ATTEMPT_SCAN_CAP });
-  } catch {
-    for (const n of scoped) out.set(n.id, UNKNOWN_EVIDENCE);
-    return out;
+  // One aggregate per endpoint set (a handful), each uncapped (one row per subject).
+  const bySignature = new Map<string, Need[]>();
+  for (const n of needs) {
+    const sig = [...n.endpoints].sort().join(",");
+    bySignature.set(sig, [...(bySignature.get(sig) ?? []), n]);
   }
-  if (results.length >= ATTEMPT_SCAN_CAP) {
-    for (const n of scoped) out.set(n.id, UNKNOWN_EVIDENCE);
-    return out;
-  }
-  for (const n of scoped) {
-    let lastAttemptAt: Date | null = null;
-    let lastSkipAt: Date | null = null;
-    for (const x of results) {
-      const onSubject = n.subject!.item ? x.plaidItemId === n.subject!.item : x.sourceRef === n.subject!.account;
-      if (!onSubject || !n.endpoints.includes(x.endpoint) || x.startedAt.getTime() <= n.since.getTime()) continue;
-      if (x.status === "SKIPPED") { if (!lastSkipAt || x.startedAt > lastSkipAt) lastSkipAt = x.startedAt; }
-      else if (!lastAttemptAt || x.startedAt > lastAttemptAt) lastAttemptAt = x.startedAt;
+  await Promise.all([...bySignature.values()].map(async (group) => {
+    const itemIds = [...new Set(group.flatMap((n) => ("item" in n.subject ? [n.subject.item] : [])))];
+    const accountIds = [...new Set(group.flatMap((n) => ("account" in n.subject ? [n.subject.account] : [])))];
+    const after = new Date(Math.min(...group.map((n) => n.since.getTime())));
+    let latest: Awaited<ReturnType<IncidentFactsReader["latestAttempts"]>>;
+    try {
+      latest = await client.latestAttempts({ plaidItemIds: itemIds, sourceRefs: accountIds, endpoints: group[0].endpoints, after });
+    } catch (e) {
+      // Logged without ids or query text; the rows stay visible (unknown never hides a row).
+      console.warn("[incident-intelligence] attempt evidence unreadable:", e instanceof Error ? e.name : "unknown error");
+      for (const n of group) out.set(n.id, { ...UNKNOWN_EVIDENCE, basis: "unreadable" });
+      return;
     }
-    out.set(n.id, { known: true, lastAttemptAt, lastSkipAt });
-  }
+    for (const n of group) {
+      // groupBy keys on the (plaidItemId, sourceRef) PAIR, so one subject can own several rows:
+      // take the max over ALL of them. Then apply THIS row's `since` — the read used the group's
+      // earliest one — and a `_max` not after it means nothing after it exists.
+      const mine = latest.filter((x) => ("item" in n.subject ? x.plaidItemId === n.subject.item : x.sourceRef === n.subject.account));
+      const maxOf = (pick: (x: (typeof latest)[number]) => Date | null): Date | null => {
+        let best: Date | null = null;
+        for (const x of mine) { const t = pick(x); if (t && (!best || t > best)) best = t; }
+        return best && best.getTime() > n.since.getTime() ? best : null;
+      };
+      out.set(n.id, { known: true, lastAttemptAt: maxOf((x) => x.lastAttemptAt), lastSkipAt: maxOf((x) => x.lastSkipAt), basis: "read" });
+    }
+  }));
   return out;
 }
 
@@ -243,6 +249,23 @@ export async function loadIncidentFacts(client: IncidentFactsReader, o: LoadOpti
     attempts,
     relations,
     scanTruncated: raw.length >= o.limit,
+  };
+}
+
+/** Two disjoint loads as one fact set (rows, subjects, evidence, relations). */
+function mergeFacts(a: IncidentFacts, b: IncidentFacts): IncidentFacts {
+  const merge = <K, V>(x: ReadonlyMap<K, V> | undefined, y: ReadonlyMap<K, V> | undefined) => new Map([...(x ?? []), ...(y ?? [])]);
+  return {
+    rows: [...a.rows, ...b.rows],
+    archived: [...(a.archived ?? []), ...(b.archived ?? [])],
+    subjects: {
+      items: merge(a.subjects.items, b.subjects.items),
+      accounts: merge(a.subjects.accounts, b.subjects.accounts),
+      occurrenceAccounts: merge(a.subjects.occurrenceAccounts, b.subjects.occurrenceAccounts),
+    },
+    attempts: merge(a.attempts, b.attempts),
+    relations: [...(a.relations ?? []), ...(b.relations ?? [])],
+    scanTruncated: a.scanTruncated || b.scanTruncated,
   };
 }
 
@@ -334,6 +357,28 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
       const audience = assertAudienceToken(token, READERS);
       const { set } = await derive(audience, { id }, { ...opts, limit: 1 }, false);
       return (set.all.find((v) => v.id === id) ?? null) as VerdictForToken<T> | null;
+    },
+    async window<T extends CsToken | OpsToken>(token: T, range: { from: Date; to: Date }, opts?: ListOptions) {
+      const audience = assertAudienceToken(token, READERS);
+      const now = opts?.now ?? new Date();
+      const cap = opts?.limit ?? WINDOW_SCAN_LIMIT;
+      const inRange = { gte: range.from, lte: range.to };
+      // OPEN-FIRST (D5 + D6): every not-closed row whatever its dates gets the cap first,
+      // so a long-open incident is never the one a busy window cuts; closed rows that
+      // touched the window take the remainder.
+      const open = await loadIncidentFacts(client, { where: { resolved: false }, limit: cap, now });
+      const remainder = cap - open.rows.length;
+      const closed = remainder > 0
+        ? await loadIncidentFacts(client, {
+          where: { resolved: true, OR: [{ createdAt: inRange }, { firstOccurredAt: inRange }, { lastOccurredAt: inRange }, { resolvedAt: inRange }] },
+          limit: remainder, now,
+        })
+        : null;
+      const facts = closed ? mergeFacts(open, closed) : { ...open, scanTruncated: true };
+      // Truncated when either scan hit its share, or the open scan alone used the whole cap.
+      facts.scanTruncated = open.scanTruncated || (closed?.scanTruncated ?? true);
+      const set = deriveIncidentVerdicts(facts, { now, audience });
+      return list(facts, set.all) as VerdictList<VerdictForToken<T>>;
     },
     async search<T extends CsToken | OpsToken>(token: T, query: IncidentSearchQuery, opts?: ListOptions) {
       const audience = assertAudienceToken(token, READERS);
@@ -444,7 +489,7 @@ export function incidentReaderFor(client: Db): IncidentFactsReader {
     syncIssueEvent: client.syncIssueEvent,
     financialAccount: client.financialAccount,
     plaidItem: client.plaidItem,
-    stageAttempts: listSubjectStageAttempts,
+    latestAttempts: latestStageAttemptsBySubject,
   };
 }
 

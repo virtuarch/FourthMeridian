@@ -75,7 +75,7 @@ import { resolvePerspectiveEnvelope, type PerspectiveEnvelope } from "@/lib/pers
 import { presentFigureEnvelope } from "@/components/space/trust/figure-envelope";
 import { useSpaceSectionsPublisher, type SpaceChromeSection } from "@/lib/space/space-chrome-context";
 import { convertLiquiditySpaceData } from "@/lib/liquidity/display-conversion";
-import { clipCashHistory, convertCashHistory } from "@/lib/liquidity/cash-history";
+import { allCashChangeComparableToCurrent, clipCashHistory, convertCashHistory } from "@/lib/liquidity/cash-history";
 import { periodLabel, type CashFlowPeriod } from "@/lib/transactions/cash-flow";
 import type { TransactionsCoverage } from "@/lib/transactions/coverage-note";
 import { Surface, Block } from "@/components/atlas/Surface";
@@ -358,7 +358,11 @@ export function LiquidityWorkspace({
             // The headline uses reachable cash whenever ANY account supplied a
             // current-state claim; the window delta is computed from the ledger
             // snapshot series, so the two bases diverge exactly then.
-            deltaBasisDiffers={reach.coveredCount > 0 && cashNow !== classification.totalLiquid}
+            // FIN-005 — and whenever restricted cash exists: the snapshot series is
+            // ALL cash (restricted included) while the headline excludes it.
+            deltaBasisDiffers={(reach.coveredCount > 0 && cashNow !== classification.totalLiquid)
+              || !allCashChangeComparableToCurrent(classification.totalRestrictedCash)}
+            deltaBasisReason={!allCashChangeComparableToCurrent(classification.totalRestrictedCash) ? "RESTRICTED_CASH" : "REACHABLE"}
             envelope={figureEnvelope}
             verdict={verdict}
             verdictAsOf={verdictAsOf}
@@ -367,7 +371,7 @@ export function LiquidityWorkspace({
         </div>
       )}
 
-      {/* ② Balance history — accessible cash over time, the SHARED TrendChart.
+      {/* ② Balance history — ALL cash over time (restricted included, FIN-005), the SHARED TrendChart.
            Embedded, the unified Assets chart above already slices to this SAME
            series (WealthChartPoint.cash === totalCash + totalSavings), so a second
            identical chart is not drawn; the as-of retry affordance stays. */}

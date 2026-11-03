@@ -36,6 +36,7 @@ import { convertMoney } from "@/lib/money/convert";
 import { yesterdayUTCISO } from "@/lib/fx/config";
 import type { ConversionContext } from "@/lib/money/types";
 import { formatAggregateMoney } from "@/components/space/widgets/display-money";
+import { unvaluedBalanceLabel } from "@/lib/account-classifier";
 
 /**
  * v2.7 currency toggle — a shared account's balance in the Space display
@@ -205,7 +206,10 @@ export function FinancesPanel({
                       <p className="text-sm text-[var(--text-primary)] truncate">{a.name}</p>
                       <p className="text-xs text-[var(--text-muted)] truncate">{a.institution}</p>
                     </div>
-                    {(() => {
+                    {a.valuationUnknown ? (
+                      // FM-AUDIT-022 / FIN-A2 — no value is not $0.00.
+                      <p className="shrink-0 text-right text-sm text-[var(--text-muted)]">{unvaluedBalanceLabel(a)}</p>
+                    ) : (() => {
                       const d = accountBalanceDisplay(a.balance, a.currency, ctx);
                       return (
                         <div className="shrink-0 text-right">

@@ -1,6 +1,6 @@
 # Platform Intelligence: governed operational and business intelligence
 
-> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-03 · **PRs:** #255, #257
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-03 · **PRs:** #255, #257, feat/platform-metric-registry (foundation step 1)
 
 **Owner directives (2026-11-03).** One extensible, permissioned intelligence system for every Fourth Meridian domain. It answers questions nobody listed in advance, navigates the operator to the right record, and never acts without explicit authorization. The order is fixed: **data model → deterministic intelligence → conversation and navigation.** Incidents are the first domain ([PB1-INCIDENT-LIFECYCLE](PB1-INCIDENT-LIFECYCLE.md)). Every important KPI leads to the records behind it.
 
@@ -39,6 +39,30 @@
 ## Smallest coherent foundation (after PB-1 Phase 2)
 
 1. **A versioned metric-definition registry in code,** following the pattern of `lib/usage/pricing.ts`. Each entry records: id, version, definition, source, reader, area and level, retention cap, and whether identifiers are allowed.
+   **Status: LANDED (definitions only, no values).**
+   - **Registry:** `lib/platform/intelligence/metrics/registry.ts`. Each `MetricDefinition` carries:
+     - `id@version` and domain;
+     - window and timezone (UTC);
+     - numerator and denominator, each pointing at its code;
+     - `compute` (the one function) and `path` (route → reader → function);
+     - inclusion and exclusion;
+     - freshness source;
+     - provenance (MEASURED / ESTIMATED / UNAVAILABLE + reason);
+     - coverage gaps;
+     - permission entries (area, level, identity tier OPS or CUSTOMER_SUCCESS, guarded route);
+     - the tiles that show it, and the drill records route.
+   - **Registered:** ten existing authorities, with no new metric and no changed maths: `provider-outcome@1`, `provider-connection@1`, `ai-fleet-spend-status@1` (24 h), `presence-state@1` and `engaged-users@1` (PB-10), `incident-broken-now@1` and `incident-alertable@1` (PB-1), `merchant-identity-linked@1` (PB-9), `cs-needs-help@1` (PB-4) and `growth-registrations@1`.
+   - **Accessor:** `lib/platform/intelligence/metrics/access.ts`. `describeMetric(token, id)` and `listMetrics(token, { domain, area })` are permission-filtered by a token minted from the caller's own `requirePlatformAccess` result (the incident audience-token idiom). A forged token is refused; an invisible metric reads like an unknown one; only the caller's own permission entry is returned.
+   - **Pins:** `registry.test.ts` checks, per metric:
+     - every symbol is exported where named;
+     - each route → reader hop calls the next, and the compute function is the one the chain or its tile calls;
+     - every tile reads the figure;
+     - every permission route guards with exactly its area and level;
+     - the drill route exists;
+     - code-carried versions and windows agree with the registry.
+
+     It also checks that ids are unique, versions explicit, every metric has a permission and an identity tier, and an UNAVAILABLE provenance carries a reason.
+   - **Next:** Phase 3 retrieval contracts, which return values through the same readers. Then the remaining step-2 metrics, which need either a canonical definition (one "active", replacing the four) or a reader that doesn't exist yet.
 2. **First metrics, each wrapping an existing permissioned reader:**
    - signups and verified users;
    - beta funnel conversion;

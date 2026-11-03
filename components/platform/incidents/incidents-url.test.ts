@@ -76,7 +76,7 @@ const row = (o: Partial<IncidentRowDTO> = {}): IncidentRowDTO => ({
   severity: "critical", effectiveSeverity: "critical", operation: "transaction-persist", label: "Transaction persistence failed", operationLabel: "Storing bank transactions",
   firstSeenAt: "2026-11-01T10:00:00.000Z", lastSeenAt: "2026-11-02T10:00:00.000Z", resolvedAt: null, occurrenceCount: 4, correlatedOccurrenceCount: 2,
   duplicateOf: null, subjectState: "LIVE", brokenNow: true, alertable: true, spread: { groupKey: "PLAID::transactions::transaction-persist", spread: "isolated", affectedSubjects: 1 },
-  generation: 1, recovery: { proofCount: 0, mayAdvance: false, lastAttemptAt: null, lastSkipAt: null, evidenceKnown: true }, causeStatus: null, causeCode: null, ...o,
+  generation: 1, recovery: { proofCount: 0, mayAdvance: false, lastAttemptAt: null, lastSkipAt: null, evidenceKnown: true, evidenceBasis: "read" }, causeStatus: null, causeCode: null, ...o,
 });
 const ev = (id: string, at: string, type: string, extra: Record<string, unknown> = {}) => ({
   id, at, type, actorKind: "SYSTEM" as const, audited: false, fromState: null, toState: null, causeCode: null, actionCode: null, outcomeCode: null,

@@ -127,8 +127,13 @@ export const BRIEF_GENERATION_VERSION = 'brief-generation-5';
  * balance-history floor arrives as `recentChanges.<w>.unavailable.<metric>` (the
  * reason, never a figure) and is said as "history is partial before <date>"; an
  * estimated change is called estimated.
+ *
+ * restricted-cash-1 (FIN-005 part 1): a liquid change withheld because the cash
+ * history includes restricted cash (HSA, retirement) that today's unrestricted
+ * liquid excludes arrives as `recentChanges.<w>.unavailable.liquid` with that
+ * reason; the two are different measures and are never compared.
  */
-export const BRIEF_PROMPT_REVISION = 'partial-history-1';
+export const BRIEF_PROMPT_REVISION = 'restricted-cash-1';
 
 /**
  * The generation version a stored `promptVersion` was written under. Stored as

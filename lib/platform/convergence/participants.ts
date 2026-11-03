@@ -12,7 +12,7 @@
  * nothing here writes.
  */
 
-import { classifySyncIssue, syncIssueState, stageOf } from "@/lib/platform/sync-issue-semantics";
+import type { IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import type { AlertRunSummary } from "@/lib/alerts/evaluate";
 import type { ConvergenceEvent } from "@/lib/platform/convergence/types";
 
@@ -25,20 +25,32 @@ export interface ConvJobRun {
   trigger: string | null;
   errorSummary: string | null;
 }
+/**
+ * PB-1 Phase 2 (R3) — one incident row AS THE INTELLIGENCE MODULE JUDGED IT
+ * (Platform Ops tier, identity-free). Convergence no longer reads SyncIssue
+ * or re-derives state: D1/D2/D2b/D3/D10 are the module's. No `detail`.
+ */
 export interface ConvSyncIssue {
+  id: string;
   provider: string;
   kind: string;
   plaidItemId: string | null;
-  createdAt: Date;
-  /** Phase 4 — lifecycle + semantics inputs. `detail` is read for classification
-   *  and correlation ONLY; it is never placed in a projected event. */
-  resolved: boolean;
   financialAccountId: string | null;
-  detail: unknown;
-  /** Operator-safe label resolved by the reader (institution / account name). */
+  rowClass: IncidentVerdict["rowClass"];
+  state: IncidentVerdict["state"];
+  closure: IncidentVerdict["closure"];
+  severity: IncidentVerdict["severity"];
+  domain: string;
+  /** Registered operation key, or null (never a raw stage). */
+  operation: string | null;
+  /** D8 — episode identity (incidentKey, shared across recurrence generations). */
+  episodeKey: string;
+  /** D7 — since / recency, ISO. */
+  firstSeenAt: string;
+  lastSeenAt: string;
+  resolvedAt: string | null;
+  /** Operator-safe label resolved by the reader (institution / opaque account ref). */
   subjectLabel: string | null;
-  /** False when the referenced account/item no longer exists (⇒ orphaned). */
-  referentExists: boolean;
 }
 export interface ConvTransition {
   at: Date;
@@ -62,6 +74,8 @@ export interface ConvergenceReaders {
   jobRuns(from: Date, to: Date): Promise<ConvJobRun[]>;
   alertRuns(limit: number): Promise<AlertRunSummary[]>;
   syncIssues(from: Date, to: Date): Promise<ConvSyncIssue[]>;
+  /** PB-1 R3 (D5) — the last syncIssues scan's completeness; absent/null ⇒ not reported. */
+  incidentScan?(): { truncated: boolean; scanned: number; cap: number } | null;
   statusTransitions(from: Date, to: Date): Promise<ConvTransition[]>;
   /** OPS-6E — beta/account lifecycle AuditLog rows in the window. */
   lifecycleEvents(from: Date, to: Date): Promise<ConvLifecycleEvent[]>;
@@ -81,12 +95,26 @@ export interface ConvergenceParticipant {
  * rows) still correlates only with other rows for the SAME PlaidItem, and one
  * with no item at all correlates only with itself.
  */
+/**
+ * D8 — one operational story per incident EPISODE (incidentKey, which a
+ * recurrence shares), scoped to its subject so a key can never span two
+ * subjects. Replaces the item + detail.runId key (detail is never read here).
+ */
 function correlationKeyFor(r: ConvSyncIssue): string {
-  const runId = r.detail && typeof r.detail === "object" && !Array.isArray(r.detail)
-    ? (r.detail as Record<string, unknown>).runId
-    : undefined;
-  const item = r.plaidItemId ?? r.financialAccountId ?? `provider:${r.provider}`;
-  return `plaidItem:${item}|run:${typeof runId === "string" ? runId : "legacy"}`;
+  const subject = r.plaidItemId ?? r.financialAccountId ?? `provider:${r.provider}`;
+  return `plaidItem:${subject}|episode:${r.episodeKey}`;
+}
+
+/** The event outcome, read off the MODULE's verdict (harness MODULE_OPEN for convergence ⇔ state === "active"). */
+export function syncIssueOutcome(r: Pick<ConvSyncIssue, "rowClass" | "state" | "closure">): "degraded" | "recovery" | "action" {
+  if (r.rowClass === "incident" && r.state === "active") return "degraded";
+  if (r.rowClass === "incident" && r.state === "resolved" && r.closure !== "connection-removed") return "recovery";
+  return "action";
+}
+
+/** Where a row sits on the timeline: closed rows at their resolution, open ones at their latest occurrence (D7). */
+export function convergenceInstant(r: Pick<ConvSyncIssue, "state" | "resolvedAt" | "lastSeenAt">): string {
+  return (r.state === "resolved" || r.state === "archived") && r.resolvedAt ? r.resolvedAt : r.lastSeenAt;
 }
 
 function startOfDay(iso: string): Date { return new Date(`${iso}T00:00:00.000Z`); }
@@ -151,43 +179,30 @@ const syncIssueParticipant: ConvergenceParticipant = {
   async project(readers, window) {
     const rows = await readers.syncIssues(startOfDay(window.from), endOfDay(window.to));
     return rows.map((r) => {
-      const cls   = classifySyncIssue({ kind: r.kind, provider: r.provider, detail: r.detail });
-      const state = syncIssueState(
-        { kind: r.kind, provider: r.provider, detail: r.detail },
-        { referentExists: r.referentExists, resolved: r.resolved },
-      );
+      const outcome = syncIssueOutcome(r);
 
-      // Phase 4 — outcome now reflects SEMANTICS, not the mere existence of a
-      // row. Previously every sync issue projected as "degraded" forever: a
-      // recovered incident, an expected pending→posted tombstone and a live
-      // persistence failure were rendered identically, so 15 rows of mostly
-      // historical evidence read as 15 active problems.
-      const outcome =
-        state === "active"    ? ("degraded" as const)
-      : state === "recovered" ? ("recovery" as const)
-      :                         ("action" as const);   // evidence / superseded / orphaned
-
-      // Human-first subject: institution or account name where we could resolve
+      // Human-first subject: institution or account reference where we could resolve
       // one, never a bare cuid and never the literal string "PLAID".
       const subject = r.subjectLabel ?? r.plaidItemId ?? r.provider;
 
-      const stage = stageOf({ kind: r.kind, provider: r.provider, detail: r.detail });
       const note =
-        state === "recovered"  ? " — recovered"
-      : state === "superseded" ? " — superseded (produced by a retired rule)"
-      : state === "orphaned"   ? " — orphaned (its account no longer exists)"
-      : state === "evidence"   ? " — expected provider lifecycle"
+        r.rowClass === "evidence"   ? " — expected provider lifecycle"
+      : r.rowClass === "superseded" ? " — superseded (produced by a retired rule)"
+      : r.state === "acknowledged"  ? " — acknowledged"
+      : r.state === "recovering"    ? " — recovering"
+      : r.state === "stale-unverified" ? " — stale (needs verification)"
+      : r.closure === "connection-removed" ? " — connection removed"
+      : r.state === "resolved" || r.state === "archived" ? " — recovered"
       : "";
 
       return {
-        at: r.createdAt.toISOString(), ledger: "syncIssue", kind: "sync-issue",
+        at: convergenceInstant(r), ledger: "syncIssue", kind: "sync-issue",
         subject,
         outcome,
-        // `detail` (the Json blob) is NEVER interpolated — only the derived
-        // severity/domain/stage vocabulary, which carries no customer data.
-        detail: `${cls.severity} · ${cls.domain} · ${r.kind.replace(/_/g, " ").toLowerCase()}${stage ? ` (${stage})` : ""}${note}`,
+        // Derived vocabulary only (severity · domain · kind · operation) — no customer data, no detail.
+        detail: `${r.severity} · ${r.domain} · ${r.kind.replace(/_/g, " ").toLowerCase()}${r.operation ? ` (${r.operation})` : ""}${note}`,
         tier: "observed" as const,
-        // Same item + same sync run = same operational story.
+        // Same incident episode on the same subject = same operational story (D8).
         correlationKey: correlationKeyFor(r),
       };
     });
