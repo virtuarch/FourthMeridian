@@ -12,9 +12,14 @@
  *
  * Uses the free/Demo API (`x-cg-demo-api-key`): the /coins/{id}/market_chart/range
  * endpoint returns a price time-series for a window in ONE call (fewer calls than
- * per-day /history for a 30-day backfill). CoinGecko auto-selects granularity —
- * for a ≤90-day range it's ~hourly — so we bucket points by UTC calendar date and
- * take the LAST point of each day as that day's "close" (crypto trades 24/7).
+ * per-day /history for a 30-day backfill). CoinGecko auto-selects granularity:
+ * a ≤90-day range is ~hourly, a longer one is DAILY with every point stamped
+ * exactly 00:00:00Z. Either way a 00:00:00.000Z point is the BOUNDARY price —
+ * the end of the PREVIOUS UTC day — so it is filed under that previous date
+ * (FM-AUDIT-025: filing it under its own date shifted every daily close one day
+ * late). Other points are bucketed by their UTC date and the LAST point of each
+ * day is its "close" (crypto trades 24/7). The request's upper bound is the
+ * midnight AFTER toISO, so toISO's own boundary close is included.
  *
  * Failure (429 / non-2xx / network / no key) is a normal, non-fatal outcome:
  * returns []. The caller (lib/crypto/btc-price.ts) writes whatever it gets through
@@ -242,7 +247,7 @@ export async function fetchCoinDailyClosesUsd(
   // effectiveRequestFromISO.
   const effectiveFromISO = effectiveRequestFromISO(fromISO, opts.deploymentFloorISO);
   const fromSec = Math.floor(Date.parse(`${effectiveFromISO}T00:00:00Z`) / 1000);
-  const toSec   = Math.floor(Date.parse(`${toISO}T23:59:59Z`) / 1000);
+  const toSec   = marketChartToSec(toISO);
 
   const url =
     `${baseUrl}/coins/${encodeURIComponent(coinId)}/market_chart/range` +
@@ -286,8 +291,33 @@ export async function fetchCoinDailyClosesUsd(
 }
 
 /**
+ * The request's upper bound: the midnight (00:00:00Z) AFTER toISO, in seconds.
+ * That point is toISO's close (a boundary point files under the previous date);
+ * a later bound would add nothing the parser keeps, an earlier one (the former
+ * 23:59:59Z) dropped toISO's close in daily mode.
+ */
+export function marketChartToSec(toISO: string): number {
+  return Math.floor((Date.parse(`${toISO}T00:00:00Z`) + 86_400_000) / 1000);
+}
+
+/**
+ * The UTC date a market-chart point closes. A point at exactly 00:00:00.000Z is
+ * the boundary price — the close of the PREVIOUS day (daily data is stamped
+ * there; in hourly data it is the true end of the prior day). Any other instant
+ * belongs to its own UTC date.
+ */
+export function closeDateOf(tsMs: number): string {
+  const d = new Date(tsMs);
+  if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0) {
+    return new Date(tsMs - 86_400_000).toISOString().slice(0, 10);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+/**
  * `market_chart/range` body → one close per UTC day in [fromISO, toISO]: points
- * bucketed by UTC date, the LAST point of each day is its close. Shared by the
+ * bucketed by their close date (closeDateOf — a 00:00:00Z point closes the
+ * previous day), the LAST point of each day is its close. Shared by the
  * coin-id path and the contract-addressed token path, so a token's daily close
  * means exactly what a native coin's does. Non-positive / non-finite points are
  * dropped (never a price of zero).
@@ -296,13 +326,14 @@ export function parseMarketChartCloses(body: unknown, fromISO: string, toISO: st
   const prices = (body as { prices?: unknown })?.prices;
   if (!Array.isArray(prices)) return [];
 
-  // Bucket [tsMs, price] points by UTC date; last point of each day = close.
+  // Bucket [tsMs, price] points by close date; last point of each day = close.
   const lastByDate = new Map<string, number>();
   for (const point of prices as [number, number][]) {
     if (!Array.isArray(point) || point.length < 2) continue;
     const [tsMs, price] = point;
     if (typeof tsMs !== "number" || typeof price !== "number" || !Number.isFinite(price) || price <= 0) continue;
-    const dateISO = new Date(tsMs).toISOString().slice(0, 10);
+    if (!Number.isFinite(tsMs)) continue;
+    const dateISO = closeDateOf(tsMs);
     if (dateISO < fromISO || dateISO > toISO) continue;
     lastByDate.set(dateISO, price); // points are chronological → last write wins = close
   }
@@ -618,7 +649,7 @@ export async function fetchCoinGeckoTokenDailyClosesUsd(
   const address = platform === "ethereum" ? contract.trim().toLowerCase() : contract.trim();
   const effectiveFromISO = effectiveRequestFromISO(fromISO, opts.deploymentFloorISO);
   const fromSec = Math.floor(Date.parse(`${effectiveFromISO}T00:00:00Z`) / 1000);
-  const toSec   = Math.floor(Date.parse(`${toISO}T23:59:59Z`) / 1000);
+  const toSec   = marketChartToSec(toISO);
   const url = `${baseUrl}/coins/${platform}/contract/${encodeURIComponent(address)}/market_chart/range?vs_currency=usd&from=${fromSec}&to=${toSec}`;
   const metric = `market_chart/range:${platform}`;
   if (opts.meter) opts.meter[metric] = (opts.meter[metric] ?? 0) + 1;
