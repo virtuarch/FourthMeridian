@@ -174,7 +174,7 @@ Legacy KD tickets still carried:
 | **KD-23** | **Cross-turn temporal continuity (successor to KD-16).** A follow-up turn must either answer over the same window as the reply it follows, or state that the window changed and what it is now. The runtime is stateless by design (the sealed carrier holds the scenario, not the answered window), so nothing today measures or pins this. | **OPEN — NOT STARTED. Measurement before code.** Ticket: [`docs/plans/KD-23-CROSS-TURN-TEMPORAL-CONTINUITY.md`](docs/plans/KD-23-CROSS-TURN-TEMPORAL-CONTINUITY.md). Owner ruling 2026-10-14: create the ticket, do not implement. |
 | FM-AUDIT-066 | `docs/systems/ai-foundation.md` describes the deleted conversation layer | Open; banner in place. |
 | OPS-004 | Per-provider circuit-breaker (trip) flag | **Open, deferred.** Transport timeouts are fixed and pinned (`92b2139`); the per-provider trip flag needs a PlatformSetting design and sign-off. Carried from `E-observability-ops.md` (2026-11-03) before that file's removal. |
-| UI-021 | Three CONTROL routes share the `platform-policy` rate-limit bucket | **Open.** A burst of cadence edits can lock the AI kill switch for ≤ 60 s. Fix: give `ai-cost-controls` its own bucket and move the pin in `lib/platform/ai/cost-controls.test.ts` in the same change. Carried from `E-observability-ops.md` (2026-11-03). |
+| UI-021 | Three CONTROL routes shared the `platform-policy` rate-limit bucket | **FIXED, in Production** (`40c7a5e`, on main and develop): the AI kill-switch route uses its own bucket `platform-policy-ai-cost-controls`, pinned in `lib/platform/ai/cost-controls.test.ts:259`. The audit file that listed it as open was stale (corrected 2026-11-03). |
 
 ## 11. Database and migration status
 
