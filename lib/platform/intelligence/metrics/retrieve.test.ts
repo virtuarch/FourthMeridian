@@ -12,7 +12,8 @@
  *   5. honest absence — a failing reader ⇒ null + reason, per metric; never 0;
  *   6. aggregates only — identity scan of every envelope (CS tier and
  *      break-glass on an Ops surface); the aggregate guard;
- *   7. drill = the registry's records route, a descriptor only;
+ *   7. drill = the registry's records route, a descriptor only, and only on the
+ *      surface whose area gates that route (else null + drillReason);
  *   8. static — no mint path, surface literals at every call site, no writes
  *      or caching, importers bounded.
  *
@@ -25,7 +26,7 @@ import { UserRole } from "@prisma/client";
 import { METRICS, metricKey } from "./registry";
 import { metricAccessFor, type MetricAccessToken } from "./access";
 import {
-  READER_SYMBOL, RETRIEVAL, atSurface, isAggregate, retrieveWith,
+  NO_DRILL_ON_SURFACE, READER_SYMBOL, RETRIEVAL, atSurface, drillRouteArea, isAggregate, retrieveWith,
   type MetricEnvelope, type RetrievalContext, type RetrievalReaders,
 } from "./retrieve-core";
 import { incidentAudienceFor, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
@@ -356,6 +357,33 @@ await (async () => {
       ok && Object.keys(d!).every((x) => ["figure", "window", "href", "page", "unavailable"].includes(x)));
     check(`${metricKey(m)}: basis names the registry's code refs`, e?.basis.compute === `${m.compute.module}#${m.compute.symbol}` && e.basis.reader === m.path[0].calls && e.basis.definition === metricKey(m));
   }
+
+  // The drill exists only where the EFFECTIVE surface satisfies the drill route's own gate.
+  for (const m of METRICS) {
+    if (!("api" in m.drill)) continue;
+    const area = drillRouteArea(m.drill.api);
+    const route = path.join("app", m.drill.api.split("?")[0], "route.ts");
+    check(`${metricKey(m)}: drill route ${m.drill.api} is gated by its segment's area (${area})`,
+      !!area && new RegExp(`require(?:Fresh)?PlatformAccess\\(\\s*"${area}"`).test(code(src(route))), route);
+    for (const p of m.permission) {
+      if (RETRIEVAL[metricKey(m)]?.kind !== "RETRIEVABLE") continue;
+      const e = await retrieveWith(p.area, R, SA, metricKey(m), {}, NOW);
+      check(`${metricKey(m)} on ${p.area}: drill ${p.area === area ? "given" : "null + reason"} (drill route gated by ${area})`,
+        p.area === area ? (!!e?.drill && e.drillReason === null) : (e?.drill === null && e.drillReason === NO_DRILL_ON_SURFACE));
+    }
+  }
+  const csInc = await retrieveWith("CUSTOMER_SUCCESS", R, CS, "incident-broken-now", {}, NOW);
+  const opsInc = await retrieveWith("PLATFORM_OPS", R, OPS, "incident-broken-now", {}, NOW);
+  check("incident-broken-now on CUSTOMER_SUCCESS ⇒ drill null, drillReason 'no drill on this surface' (the drill route is Platform Ops)",
+    csInc?.drill === null && csInc.drillReason === "no drill on this surface" && csInc.value === 3);
+  check("incident-broken-now on PLATFORM_OPS ⇒ drill non-null, the registry's route",
+    !!opsInc?.drill && "href" in opsInc.drill && opsInc.drill.href === "/api/platform/platform-ops/incidents" && opsInc.drillReason === null);
+  check("break-glass gets the same answer (the drill follows the surface, not the token)",
+    (await retrieveWith("CUSTOMER_SUCCESS", R, SA, "incident-broken-now", {}, NOW))?.drill === null);
+  const po = METRICS.find((m) => m.id === "provider-outcome")!;
+  check("provider-outcome: the ProviderCall attempt-verdict gap is stated in the registry's coverageGaps (and so in the envelope)",
+    po.coverageGaps.some((g) => /ProviderCall attempt verdict/.test(g) && /provider-health/.test(g))
+    && ((await retrieveWith("PLATFORM_OPS", R, OPS, "provider-outcome", {}, NOW))?.coverage.gaps ?? []).some((g) => /ProviderCall attempt verdict/.test(g)));
 })();
 
 // ── 8. static pins ───────────────────────────────────────────────────────────

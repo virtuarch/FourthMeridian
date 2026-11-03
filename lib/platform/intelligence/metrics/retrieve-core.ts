@@ -53,7 +53,10 @@
  *   reason, never 0 or $0.
  *
  * DRILL = a descriptor, never data (S2 condition 5): `{ figure, window, href, page }`
- * pointing at the registry's existing permissioned records route.
+ * pointing at the registry's existing permissioned records route — and only
+ * when the drill route's own gate is the surface the value is read on. On any
+ * other surface `drill` is null with `drillReason: "no drill on this surface"`
+ * (e.g. incident-broken-now on Customer Success: its drill is a Platform Ops route).
  *
  * NO SIDE EFFECTS (S2 condition 8): no writes, no caching, no module state.
  *
@@ -120,7 +123,10 @@ export interface MetricEnvelope {
   freshness: { asOf: string | null; source: string };
   coverage: { gaps: readonly string[]; missing: readonly string[] };
   basis: { definition: `${string}@${number}`; compute: string; reader: string; answerClass: MetricDefinition["answerClass"] };
-  drill: MetricDrillDescriptor;
+  /** null when the drill route's own gate is not this surface (the caller could not open it here) — see drillReason. */
+  drill: MetricDrillDescriptor | null;
+  /** Why `drill` is null; null when a drill is given. */
+  drillReason: string | null;
 }
 
 // ── Readers (bound to the real functions in ./retrieve.ts) ──────────────────
@@ -408,9 +414,35 @@ export function isAggregate(v: unknown): v is AggregateValue {
 const iso = (d: Date | string | null | undefined): string | null =>
   d instanceof Date ? (Number.isFinite(d.getTime()) ? d.toISOString() : null) : typeof d === "string" ? d : null;
 
-function drillOf(m: MetricDefinition, window: number | null): MetricDrillDescriptor {
+/**
+ * The Platform area that gates a records route, from its path segment
+ * (/api/platform/<segment>/…). retrieve.test.ts pins, per registered drill,
+ * that the route file guards with requirePlatformAccess(<this area>, …).
+ */
+const DRILL_SEGMENT_AREA: Readonly<Record<string, MetricSurface>> = {
+  "platform-ops": "PLATFORM_OPS",
+  "security-ops": "SECURITY_OPS",
+  "growth-revenue": "GROWTH_REVENUE",
+  "customer-success": "CUSTOMER_SUCCESS",
+  "merchant-ops": "MERCHANT_OPS",
+};
+export const drillRouteArea = (api: string): MetricSurface | null => DRILL_SEGMENT_AREA[/^\/api\/platform\/([^/?]+)/.exec(api)?.[1] ?? ""] ?? null;
+
+export const NO_DRILL_ON_SURFACE = "no drill on this surface";
+
+/**
+ * A drill only where the effective surface satisfies the drill route's own gate:
+ * the route's area IS the surface the value is read on (that is the grant the
+ * effective tier was derived from). Otherwise null + reason — never a link the
+ * caller cannot open, and never a link from an identity-free surface into an
+ * identity-bearing one.
+ */
+function drillOf(scope: SurfaceScope, window: number | null): Pick<MetricEnvelope, "drill" | "drillReason"> {
+  const m = scope.definition;
   const figure = metricKey(m);
-  return "unavailable" in m.drill ? { figure, unavailable: m.drill.unavailable } : { figure, window, href: m.drill.api, page: m.drill.page };
+  if ("unavailable" in m.drill) return { drill: { figure, unavailable: m.drill.unavailable }, drillReason: null };
+  if (drillRouteArea(m.drill.api) !== scope.surface) return { drill: null, drillReason: NO_DRILL_ON_SURFACE };
+  return { drill: { figure, window, href: m.drill.api, page: m.drill.page }, drillReason: null };
 }
 
 function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected): MetricEnvelope {
@@ -436,7 +468,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     freshness: { asOf: p.asOf, source: m.freshnessSource },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
     basis: { definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
-    drill: drillOf(m, days),
+    ...drillOf(scope, days),
   };
 }
 
