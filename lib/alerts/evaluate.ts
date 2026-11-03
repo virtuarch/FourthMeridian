@@ -182,9 +182,10 @@ export function evaluateProviderUnhealthy(rule: AlertRuleDefinition, conn: Conne
 }
 
 /**
- * OBS-004 — active sync incidents → one critical signal PER PLAID ITEM (or per
- * episode when the episode names no Item). The semantic authority decided
- * "active" and "critical" upstream; this reads those verdicts and groups them
+ * OBS-004 — alertable sync incidents → one critical signal PER PLAID ITEM (or per
+ * episode when the episode names no Item). The incident-intelligence module
+ * decided `alertable` and the severity upstream (PB-1 R5: the fold keeps only
+ * alertable verdicts); this keeps severity "critical" and groups them
  * so one Item with several critical episodes is one breach, and two Items are
  * two. The dedupe key carries the opaque Item id, so a second customer's
  * incident inside the re-notify window pages on its own clock. No `detail`,

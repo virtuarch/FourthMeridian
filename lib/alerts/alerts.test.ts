@@ -30,7 +30,7 @@ import {
 import { evaluatePlatformAlerts } from "@/lib/alerts/run";
 import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@/lib/connections/health";
 import type { AlertSyncIncident, SyncIncidentHealth } from "@/lib/alerts/authorities";
-import { foldSyncIncidents } from "@/lib/alerts/sync-incidents";
+import { foldSyncIncidents, type AlertFoldVerdict } from "@/lib/alerts/sync-incidents";
 import type { ResourceFreshnessResult, ResourceFreshnessReport, FreshnessHealthState } from "@/lib/platform/resource-freshness";
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
@@ -221,14 +221,25 @@ console.log("engine · sync-incident-critical (OBS-004)");
   check("a truncated scan is said in the summary", /may be a floor/.test(sig(health([inc("a")], true))[0].summary));
   check("legacy UPSERT_ERROR on the transactions domain reads by the same operator label", /Transaction persistence failed/.test(sig(health([inc("e", { kind: "UPSERT_ERROR" })]))[0].summary));
 
-  // The fold from the projection: state-filtered, opaque, nothing from detail.
+  // PB-1 R5 — the fold from the module's verdicts: alertable-filtered, opaque, nothing from detail.
+  const fv = (id: string, over: Partial<AlertFoldVerdict> = {}): AlertFoldVerdict => ({
+    id, kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", domain: "transactions", severity: "critical",
+    alertable: true, lastSeenAt: "2026-07-16T07:00:00.000Z", occurrenceCount: 1, ...over,
+  });
   const folded = foldSyncIncidents([
-    { id: "x1", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", state: "active", classification: { domain: "transactions", severity: "critical", nature: "condition", customerActionable: true, cursorBlocking: true }, lastOccurredAt: "2026-07-16T07:00:00.000Z", occurrenceCount: 1 },
-    { id: "x2", kind: "TRANSACTION_PERSISTENCE_FAILED", plaidItemId: "item_1", state: "recovered", classification: { domain: "transactions", severity: "critical", nature: "condition", customerActionable: true, cursorBlocking: true }, lastOccurredAt: null, occurrenceCount: 1 },
-    { id: "x3", kind: "BALANCE_TX_MISMATCH", plaidItemId: null, state: "evidence", classification: { domain: "reconciliation", severity: "warning", nature: "event", customerActionable: false, cursorBlocking: false }, lastOccurredAt: null, occurrenceCount: 0 },
+    fv("x1"),
+    fv("x2", { alertable: false, lastSeenAt: "2026-07-16T06:00:00.000Z" }), // recovering / stale / removed — the module said not alertable
+    fv("x3", { kind: "BALANCE_TX_MISMATCH", plaidItemId: null, domain: "reconciliation", severity: "warning", alertable: false, occurrenceCount: 0 }),
   ], true, NOW);
-  check("fold keeps ACTIVE only, carries scanTruncated", folded.active.length === 1 && folded.active[0].id === "x1" && folded.scanTruncated);
-  check("fold carries no classification object, no detail, no label", !("classification" in folded.active[0]) && !("detail" in folded.active[0]) && !("label" in folded.active[0]));
+  check("fold keeps the module's ALERTABLE verdicts only, carries scanTruncated", folded.active.length === 1 && folded.active[0].id === "x1" && folded.scanTruncated);
+  check("fold carries the module's severity / domain / lastSeenAt verbatim", folded.active[0].severity === "critical" && folded.active[0].domain === "transactions" && folded.active[0].lastOccurredAt === "2026-07-16T07:00:00.000Z");
+  check("fold carries no classification object, no detail, no label, no alertable flag", !("classification" in folded.active[0]) && !("detail" in folded.active[0]) && !("label" in folded.active[0]) && !("alertable" in folded.active[0]));
+  {
+    // Extra verdict fields (label, subjectUserId on a wider tier) never cross the fold.
+    const wide = { ...fv("x4"), label: "Some Bank — failed", subjectUserId: "u_1" } as AlertFoldVerdict;
+    const out = foldSyncIncidents([wide], false, NOW).active[0];
+    check("fold copies an allowlist: a wider verdict's label / customer id never reach the slice", !JSON.stringify(out).includes("Some Bank") && !JSON.stringify(out).includes("u_1"));
+  }
 }
 
 // ── Engine: ai-failing ───────────────────────────────────────────────────────────
@@ -533,8 +544,11 @@ console.log("doctrine");
   check("orchestrator consumes the AI spend authority (BETA C7)", /getAiSpendHealth\(24\)/.test(runSrc));
   // PB-1 R4 — DELIBERATE PIN UPDATE (was: /getActiveIncidentPage\(/). The engine now reads the
   // intelligence module's alertable set with the SYSTEM token; the "never a SyncIssue row" half is unchanged.
-  check("orchestrator consumes the incident intelligence module's alertable set (OBS-004, PB-1 R4) — never a SyncIssue row",
-    /incidentAccessors\.alertable\(systemIncidentAudience\(\)/.test(runSrc) && /incidentViewOf/.test(runSrc) && !/db\.syncIssue/.test(runSrc) && !/syncIssue/.test(evaluateSrc));
+  // PB-1 R5 — TIGHTENED (was: required /incidentViewOf/). The fold reads the module's verdicts directly:
+  // no projection view, no IncidentView `state`, so nothing in lib/alerts can re-derive open/closed.
+  check("orchestrator consumes the incident intelligence module's alertable set (OBS-004, PB-1 R4/R5) — never a SyncIssue row",
+    /incidentAccessors\.alertable\(systemIncidentAudience\(\)/.test(runSrc) && /foldSyncIncidents\(page\.items, page\.truncated/.test(runSrc)
+    && !/incidentViewOf|incidents\/projections/.test(runSrc) && !/db\.syncIssue/.test(runSrc) && !/syncIssue/.test(evaluateSrc));
   check("the engine judges against the thresholds the authority carried, never a literal of its own",
     /spend\.thresholds\.fleetUsd/.test(evaluateSrc) && /spend\.thresholds\.userUsd/.test(evaluateSrc) && !/ai_spend_alert/.test(evaluateSrc));
   check("the thresholds are resolved through the platform-settings descriptors (validated, default on missing or invalid)",

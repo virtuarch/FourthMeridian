@@ -14,7 +14,7 @@
 import { classifySyncIssue } from "@/lib/platform/sync-issue-semantics";
 import type { CsIncidentVerdict, IncidentVerdict } from "@/lib/platform/incidents/intelligence/types";
 import { buildWorld } from "./world";
-import { convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionBaselineReader, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
+import { alertsReader, convergenceBaselineReader, csPanelBaselineReader, LEGACY_READERS, projectionBaselineReader, projectionReader, type ReaderId, type Verdict } from "./legacy-readers";
 import { moduleVerdicts } from "./module-adapter";
 
 let failures = 0;
@@ -98,8 +98,8 @@ export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> 
   convergence: [],
   // cut over in R4; any divergence from module brokenNow is now a defect
   projection: [],
-  // feed cut over in R4 (the SYSTEM token reads the module's alertable set); any divergence from
-  // module alertable && critical is now a defect. R5 cuts the pure evaluate/fold over the same set.
+  // cut over in R4 (feed) + R5 (fold + evaluate read module verdicts only); any divergence from
+  // module alertable && critical is now a defect
   alerts: [],
   "ops-attention": ["D2", "D2b", "D10"],
   "cs-attention": ["D2", "D2b", "D4", "D10"],
@@ -116,6 +116,19 @@ for (const id of Object.keys(LEGACY_READERS) as ReaderId[]) {
   const unlisted = diff.filter((x) => !row(x).exercises.some((e) => ALLOWED_DIVERGENCES[id].includes(e)));
   check(`module vs ${id}: ${diff.length} divergence(s), all owner-approved`, unlisted.length === 0,
     unlisted.map((x) => ({ row: x, legacyOpen: theirs.has(x), moduleOpen: mod.has(x) })));
+}
+
+console.log("R5 — the alert fold + evaluator read module verdicts only");
+{
+  const narrow = run("alerts");
+  const wide = alertsReader(w, "all");
+  const same = (a: Verdict[], b: Verdict[]) => JSON.stringify(a.map((x) => [x.rowId, x.open, x.groupKey])) === JSON.stringify(b.map((x) => [x.rowId, x.open, x.groupKey]));
+  check("handed EVERY verdict (not just the alertable page), the fold drops the non-alertable ones itself", same(narrow, wide), { narrow, wide });
+  check("every row the alert reader carries is module-alertable (no state / resolved re-derivation)",
+    narrow.every((x) => byId.get(x.rowId)?.alertable === true));
+  check("the world exercises the alert rule: at least one critical alertable row fires", narrow.some((x) => x.open));
+  check("…and at least one module-broken-now row is NOT alerted (D10 unverified / recovering / non-critical)",
+    verdicts.some((x) => x.brokenNow && !openIds(narrow).has(x.id)));
 }
 
 console.log("the module's corrections hold (not merely allowed)");
