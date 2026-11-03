@@ -57,6 +57,7 @@
 import { readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { failedCheckLines } from "./lib/failed-check-lines";
 import { runChild } from "./lib/test-child";
 
 const ROOT = process.cwd();
@@ -216,7 +217,10 @@ async function main(): Promise<void> {
     console.error(`\nrun-tests: ${failures.length} file(s) FAILED\n`);
     for (const { file, output } of failures) {
       console.error(`──────── ${file} ────────`);
-      // Last lines carry the assertion/summary for these standalone scripts.
+      // Every failed check first (with the section header it sits under), so a
+      // long suite never truncates the one line that names what broke…
+      console.error(failedCheckLines(output).join("\n"));
+      // …then the last lines, which carry the assertion/summary.
       console.error(output.split("\n").slice(-30).join("\n"));
       console.error("");
     }
