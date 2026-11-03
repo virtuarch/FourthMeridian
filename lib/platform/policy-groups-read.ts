@@ -29,6 +29,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { CUSTOMER_WHERE, OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import {
   COHORTS, DIMENSION_KEYS, ENTITLEMENT_CATEGORIES, ENTITLEMENT_DIMENSIONS, OVERLAYS,
   type EntitlementDimensionKey, type EntitlementValue,
@@ -84,8 +85,8 @@ export async function readPolicyGroups(catalogue?: PolicyGroupCatalogue): Promis
     systemDb.customerPolicyAssignment.groupBy({ by: ["policyGroup"], _count: { _all: true } }),
     systemDb.customerPolicyAssignment.groupBy({ by: ["policyGroup", "overlay"], where: { overlay: { not: null } }, _count: { _all: true } }),
     systemDb.customerCohort.groupBy({ by: ["cohort"], _count: { _all: true } }),
-    systemDb.user.count({ where: { role: "USER" } }),
-    systemDb.user.count({ where: { role: "USER", deactivatedAt: null, policyAssignment: { is: null } } }),
+    systemDb.user.count({ where: CUSTOMER_WHERE }),
+    systemDb.user.count({ where: { ...OPEN_CUSTOMER_WHERE, policyAssignment: { is: null } } }),
   ]);
   const groupCount = new Map(byGroup.map((g) => [g.policyGroup, g._count._all] as const));
   const overlayCount = new Map<string, number>();

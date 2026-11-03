@@ -143,7 +143,7 @@ function main() {
     check("a too-young cohort reads not yet measurable", rows[2].d7Window.text === NOT_YET_MEASURABLE && rows[2].d7Strict.text === NOT_YET_MEASURABLE && t.includes(NOT_YET_MEASURABLE));
     check("no denominator is an em-dash with its reason, never 0%", rows[1].d1.text === "—" && rows[1].d1.qualifier === "no denominator" && !/\b0%/.test(t.slice(t.indexOf("week of 2026-10-05"), t.indexOf("week of 2026-10-12"))));
     check("a measured 0 is 0% (a fact), distinct from unmeasured", rows[0].d7Strict.text === "0%" && retentionCell(0).text === "0%");
-    check("returning ever renders count and share", t.includes("Returning ever") && t.includes("50% of users engaged on a day after their first visit"));
+    check("returning ever renders count and share", t.includes("Returned (ever)") && t.includes("50% of users engaged on a day after their first visit"));
     for (const h of ["First-visit week", "Cohort", "D1", "D7 window", "D7 strict"]) check(`column "${h}"`, t.includes(h));
   }
 

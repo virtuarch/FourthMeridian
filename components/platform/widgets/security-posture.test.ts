@@ -249,7 +249,7 @@ function main() {
     check("operator actions: an execution handle is opaque", t.includes("Resynced a connection chris → plaid item …abc123 · refresh …zz1234"), t);
     check("operator actions: the result is a WORD in its tone; success is not badged", badgeWords(html).includes("refused") && !badgeWords(html).includes("succeeded"), badgeWords(html).join(","));
     check("operator actions: depth stated; never the note", t.includes(feedDepthText(2, "operator actions")) && !/\.note\b/.test(strip("components/platform/widgets/SecOperatorActionsWidget.tsx")));
-    check("sessions: counts with their derivation", t.includes("Active sessions 5") && t.includes("Distinct users with a session 3") && t.includes("UserSession.revokedAt IS NULL"));
+    check("sessions: counts with their derivation", t.includes("Live sessions 5") && t.includes("Distinct users with a session 3") && t.includes("revokedAt IS NULL, inside the SEC-010 idle and absolute lifetime"));
     check("sessions: browser · device · OS, depth stated", t.includes("Chrome · Desktop · macOS") && t.includes(feedDepthText(1, "recently active sessions")));
     const emptyFeeds = feeds(ok({ events: [] }), ok({ events: [] }));
     const emptyHost = render(sources({ sessions: ok({ totalActive: 0, distinctUsers: 0, recent: [] }) }));

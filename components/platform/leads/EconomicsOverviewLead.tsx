@@ -12,8 +12,8 @@
  *
  *   ≥ lg (12-col)
  *     A  Operating cost · this cycle (12)   lower bound + split KPIs (AI · Providers ·
- *                                           Infrastructure · Cost / active customer)
- *     B  Revenue · Margin · Active customers (3 tiles; revenue + margin UNAVAILABLE)
+ *                                           Infrastructure · Cost per engaged customer)
+ *     B  Revenue · Margin · Engaged customers (3 tiles; revenue + margin UNAVAILABLE)
  *     C  AI cost trend (8)                  7 / 30 / 90 d, gaps never drawn as $0
  *        Cost split (4)                     AI / Providers / Infrastructure shares
  *   < lg  the same stack, one column (tiles 2-up).

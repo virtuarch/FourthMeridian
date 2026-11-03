@@ -24,6 +24,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { AuditAction } from "@/lib/audit-actions";
 import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
 import { loadImportsForOwners } from "@/lib/platform/onboarding/import-facts";
@@ -36,7 +37,7 @@ export async function listRecentlyJoined(opts: { days?: number; now?: Date } = {
   const now = opts.now ?? new Date();
   const days = Math.min(90, Math.max(1, Math.floor(opts.days ?? RECENTLY_JOINED_DAYS)));
   const since = new Date(now.getTime() - days * 86_400_000);
-  const where = { role: "USER" as const, deactivatedAt: null, createdAt: { gte: since } };
+  const where = { ...OPEN_CUSTOMER_WHERE, createdAt: { gte: since } };
 
   const [total, users] = await Promise.all([
     client.user.count({ where }),
