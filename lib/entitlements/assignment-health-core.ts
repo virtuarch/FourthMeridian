@@ -15,9 +15,10 @@
  * BEFORE the switch is turned on.
  *
  * IDENTITY MINIMISATION: a customer is named only by the opaque reference every
- * operator surface uses (`user …abc123` — lib/platform/ai/spend-health.ts
- * opaqueUserRef; pinned equal in fail-closed.test.ts). Never an email, a name,
- * a username or a whole id. The unknown key text IS shown: it is a catalogue
+ * operator surface uses (`user #3fa9c21b` — lib/platform/opaque-user-ref.ts,
+ * a keyed digest computed on the server and INJECTED as `facts.refOf`, so this
+ * pure, client-reachable fold holds no key). Never an email, a name, a username,
+ * a whole id or a slice of one. The unknown key text IS shown: it is a catalogue
  * key an operator wrote, not customer data, and the operator needs it to fix
  * the row.
  *
@@ -32,13 +33,9 @@ export const POLICY_ASSIGNMENT_ISSUE_CAP = 25;
 /** The longest unknown-key text carried (a key is short; anything longer is cut, never trusted). */
 const UNKNOWN_KEY_MAX = 64;
 
-/** The opaque per-customer reference — the same format as opaqueUserRef (spend-health.ts). */
-export function customerRef(userId: string): string {
-  return `user …${userId.slice(-6)}`;
-}
 
 export interface PolicyAssignmentIssue {
-  /** Opaque `user …abc123` — never an email, name or whole id. */
+  /** Opaque `user #3fa9c21b` — never an email, name or whole id. */
   ref: string;
   reason: FailClosedReason;
   /** The unknown key as stored (cut to 64 chars) for UNKNOWN_POLICY_GROUP; null for UNASSIGNED. */
@@ -68,16 +65,18 @@ export interface PolicyAssignmentFacts {
   unknownCount: number;
   unknownRows: readonly { userId: string; policyGroup: string; assignedAt: Date | null }[];
   enforced: boolean;
+  /** THE opaque reference (lib/platform/opaque-user-ref.ts opaqueUserRef), injected by the server reader. */
+  refOf: (userId: string) => string;
 }
 
 export function buildPolicyAssignmentHealth(facts: PolicyAssignmentFacts, now: Date, cap: number = POLICY_ASSIGNMENT_ISSUE_CAP): PolicyAssignmentHealth {
   const issues: PolicyAssignmentIssue[] = [
     ...facts.unknownRows.map((r) => ({
-      ref: customerRef(r.userId), reason: "UNKNOWN_POLICY_GROUP" as const,
+      ref: facts.refOf(r.userId), reason: "UNKNOWN_POLICY_GROUP" as const,
       unknownKey: r.policyGroup.slice(0, UNKNOWN_KEY_MAX), since: r.assignedAt?.toISOString() ?? null,
     })),
     ...facts.unassignedRows.map((r) => ({
-      ref: customerRef(r.userId), reason: "UNASSIGNED" as const, unknownKey: null, since: r.createdAt?.toISOString() ?? null,
+      ref: facts.refOf(r.userId), reason: "UNASSIGNED" as const, unknownKey: null, since: r.createdAt?.toISOString() ?? null,
     })),
   ];
   issues.sort((a, b) => {

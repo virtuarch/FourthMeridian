@@ -21,6 +21,10 @@
 
 import { readFileSync } from "node:fs";
 import { AuditAction } from "@/lib/audit-actions";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -90,8 +94,8 @@ async function main(): Promise<void> {
     );
     check("exactly one item is owed", r.owedCount === 1 && r.owed.length === 1);
     const o = r.owed[0];
-    check("it names the item, institution and an OPAQUE owner ref (last 6 only)",
-      o.plaidItemId === "i1" && o.institution === "Amex" && o.ownerRef === "123456",
+    check("it names the item, institution and an OPAQUE owner ref (the keyed digest, never the id tail)",
+      o.plaidItemId === "i1" && o.institution === "Amex" && o.ownerRef === opaqueUserRef("user_zzzz123456") && /^user #[0-9a-f]{8}$/.test(o.ownerRef) && !o.ownerRef.includes("123456"),
       JSON.stringify(o));
     check("the age is whole hours since the obligation began", o.owedForHours === 30, `${o.owedForHours}`);
     check("the oldest-outstanding summary matches it",
@@ -199,7 +203,7 @@ async function main(): Promise<void> {
     check("NEEDLE CONTROL: the secret needle fires on a module that legitimately decrypts",
       SECRET.test(readFileSync("lib/plaid/disconnect.ts", "utf8")));
     check("the reader exposes an OPAQUE owner ref and never an email",
-      /userId\.slice\(-6\)/.test(READER) && !/\bemail\b/i.test(strip(READER)));
+      /opaqueUserRef\(row\.userId\)/.test(READER) && !/userId\.slice\(/.test(READER) && !/\bemail\b/i.test(strip(READER)));
 
     // ⚠️ THE FORBIDDEN INFERENCE. `status === REVOKED` must never be read as
     // proof that the provider removal happened — that is the vacuous check

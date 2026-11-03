@@ -14,7 +14,11 @@ import path from "node:path";
 import { AI_RATES, type AiRate } from "@/lib/usage/pricing";
 import { buildAiSpendBySurface, isCustomerSurface, priceSpendGroup, type SpendGroup } from "./spend-by-surface-core";
 import { getAiSpendOverview } from "./spend-by-surface";
-import { buildAiSpendHealth, getAiSpendHealth, opaqueUserRef, type UserSpendGroup } from "./spend-health";
+import { buildAiSpendHealth, getAiSpendHealth, type UserSpendGroup } from "./spend-health";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+
+// PRIV-ref — a fixed test secret makes the keyed reference deterministic.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
 import { AI_SPEND_THRESHOLD_KEYS, loadAiSpendThresholds, resolveAiSpendThreshold } from "./spend-thresholds";
 import { allowanceDimensionView, getCostSafeguards } from "./cost-safeguards";
 import { readCustomerSpendGroupsToday, utcDayStart } from "./customer-spend-today";
@@ -101,7 +105,7 @@ async function main() {
       u({ userId: "user_000000beta22", model: "gpt-7-preview", invocations: 2 }), // unpriced
     ], th, 24, NOW);
     check("fleet USD sums every priced customer-surface group, attributed or not", close(h.fleetUsd, 8.5));
-    check("max per customer is the largest priced per-user sum, as an OPAQUE ref", close(h.maxUserUsd, 5) && h.maxUserRef === "user …beta22" && !/user_000000/.test(JSON.stringify(h)));
+    check("max per customer is the largest priced per-user sum, as an OPAQUE ref", close(h.maxUserUsd, 5) && h.maxUserRef === opaqueUserRef("user_000000beta22") && /^user #[0-9a-f]{8}$/.test(h.maxUserRef ?? "") && !/user_000000/.test(JSON.stringify(h)));
     check("customers counted distinct; invocations include the unpriced", h.customers === 2 && h.customerInvocations === 9);
     check("how many customers are at or over the per-customer threshold ($3): beta22 only", h.customersAtOrOverThreshold === 1);
     check("…and when two are, both are counted (the rule names the largest, this says it is not alone)",
@@ -110,7 +114,7 @@ async function main() {
     check("thresholds and window carried for the engine", h.thresholds.fleetUsd === 10 && h.thresholds.userUsd === 3 && h.windowHours === 24 && h.checkedAt === NOW.toISOString());
     const quiet = buildAiSpendHealth([], th, 24, NOW);
     check("an empty window is null spend, not $0", quiet.fleetUsd === null && quiet.maxUserUsd === null && quiet.maxUserRef === null && quiet.customersAtOrOverThreshold === 0);
-    check("the opaque ref is the last six characters", opaqueUserRef("cmabc123xyz789") === "user …xyz789");
+    check("the opaque ref is a keyed digest, never the id's tail", /^user #[0-9a-f]{8}$/.test(opaqueUserRef("cmabc123xyz789")) && !opaqueUserRef("cmabc123xyz789").includes("xyz789"));
 
     const got = await getAiSpendHealth(24, {
       now: NOW,

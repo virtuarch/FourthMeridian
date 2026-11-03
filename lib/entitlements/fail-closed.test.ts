@@ -25,16 +25,21 @@ import {
 import { explainEntitlement, loadEffectiveEntitlements, resolveEffectiveEntitlements, type AssignmentFacts } from "./resolve";
 import { CODE_CATALOGUE, buildPolicyGroupCatalogue } from "./policy-groups";
 import { countLimit, refuseIfDisabled, refuseIfFailClosed, PLAN_NEEDS_ATTENTION_CODE } from "./consume";
-import { buildPolicyAssignmentHealth, customerRef, describePolicyAssignmentIssue, POLICY_ASSIGNMENT_ISSUE_CAP } from "./assignment-health-core";
+import { buildPolicyAssignmentHealth, describePolicyAssignmentIssue, POLICY_ASSIGNMENT_ISSUE_CAP } from "./assignment-health-core";
 import { loadPolicyAssignmentHealth, type PolicyAssignmentReadClient } from "@/lib/platform/policy-assignment-health";
 import { buildAttention, ATTENTION_AUTHORITIES } from "@/lib/platform/ops/attention-core";
 import { ALERT_RULES } from "@/lib/alerts/rules";
 import { evaluateAlertRules, evaluatePolicyAssignmentInvalid } from "@/lib/alerts/evaluate";
-import { opaqueUserRef } from "@/lib/platform/ai/spend-health";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
+
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+const REF_Z1 = () => opaqueUserRef("cuserzzzz01");
 import { isKnownRefusalSentence, planNeedsAttentionSentence, CONVERSATIONS_LABEL } from "@/lib/ai/conversation/refusal-sentences";
 import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections/connection-cap";
 import { isManualRefreshEntitled } from "@/lib/refresh/refresh-all";
-import { opaqueRefTail } from "@/lib/platform/customer/customers";
+import { opaqueRefSearchToken, opaqueRefTail } from "@/lib/platform/customer/customers";
 import { projectPolicy, FAIL_CLOSED_POLICY_LABEL } from "@/lib/platform/customer/customer-core";
 
 let failures = 0;
@@ -244,7 +249,7 @@ async function main(): Promise<void> {
 
   console.log("7. assignment-health read, attention item, alert rule");
   {
-    check("customerRef is the SAME opaque format as opaqueUserRef", customerRef("cmabcdef123456") === opaqueUserRef("cmabcdef123456") && customerRef("cmabcdef123456") === "user …123456");
+    check("the assignment reader injects THE opaque reference (opaque-user-ref.ts), not a local copy", /refOf:\s*opaqueUserRef/.test(strip("lib/platform/policy-assignment-health.ts")) && !/slice\(-6\)/.test(strip("lib/entitlements/assignment-health-core.ts")));
     const fake: PolicyAssignmentReadClient & { calls: string[] } = {
       calls: [],
       user: {
@@ -274,9 +279,9 @@ async function main(): Promise<void> {
         fake.calls.some((c) => c.includes(`"notIn":${JSON.stringify([DEFAULT_POLICY_GROUP, "PRO_V1"].sort())}`)));
     }
     check("health: exact counts, capped list, truncated", h.total === 32 && h.unassigned === 30 && h.unknown === 2 && h.items.length === POLICY_ASSIGNMENT_ISSUE_CAP && h.truncated && h.enforced);
-    check("health: oldest first — the two unknown keys lead", h.items[0].reason === "UNKNOWN_POLICY_GROUP" && h.items[0].unknownKey === "RETIRED_GROUP_V0" && h.items[0].ref === "user …zzzz01");
+    check("health: oldest first — the two unknown keys lead", h.items[0].reason === "UNKNOWN_POLICY_GROUP" && h.items[0].unknownKey === "RETIRED_GROUP_V0" && h.items[0].ref === REF_Z1());
     check("health: an over-long unknown key is cut to 64 chars", h.items[1].unknownKey?.length === 64);
-    check("health: every ref is opaque (`user …` + 6)", h.items.every((i) => /^user …[A-Za-z0-9_-]{6}$/.test(i.ref)));
+    check("health: every ref is the keyed digest (`user #` + 8 hex), never an id tail", h.items.every((i) => /^user #[0-9a-f]{8}$/.test(i.ref) && !i.ref.includes("zzzz0") && !i.ref.includes("0000")));
 
     // Attention
     const base = { connections: null, jobs: null, providers: null, resources: null, alerts: null, incidents: null };
@@ -284,9 +289,9 @@ async function main(): Promise<void> {
     const rows = on.items.filter((i) => i.entity.kind === "customer");
     check("attention: policy-assignments is a named authority", ATTENTION_AUTHORITIES.includes("policy-assignments") && on.authorities.checked.includes("policy-assignments"));
     check("attention: one row per listed customer, severity error when enforced", rows.length === POLICY_ASSIGNMENT_ISSUE_CAP && rows.every((r) => r.severity === "error"));
-    const first = rows.find((r) => r.entity.label === "user …zzzz01")!;
+    const first = rows.find((r) => r.entity.label === REF_Z1())!;
     check("attention: row names the opaque ref, the reason and the unknown key, and the CS fix",
-      !!first && /"RETIRED_GROUP_V0" is not in the catalogue/.test(first.problem) && /Customer Success › Customers, search "user …zzzz01"/.test(first.problem) && /fail closed/.test(first.problem));
+      !!first && /"RETIRED_GROUP_V0" is not in the catalogue/.test(first.problem) && first.problem.includes(`Customer Success › Customers, search "${REF_Z1()}"`) && /fail closed/.test(first.problem));
     check("attention: row has no ref field (never a customer id) and a Policies doorway",
       first.entity.ref === undefined && first.actions.some((a) => a.kind === "open-workspace" && a.workspace === "platform-policies:groups") && first.evidence.workspace === "platform-policies:groups");
     check("attention: floor caption states the exact total beyond the cap", on.floors.some((f) => /Policy assignments: 25 of 32 affected customers shown/.test(f)), on.floors.join(" | "));
@@ -296,9 +301,9 @@ async function main(): Promise<void> {
     check("attention: severity warning when the switch is off (exposure before enforcement)", off.items.filter((i) => i.entity.kind === "customer").every((r) => r.severity === "warning")
       && /Beta default today/.test(off.items.find((i) => i.entity.kind === "customer")!.problem));
     check("attention: an unread authority is NAMED as failed (absent ≡ null)", buildAttention(base, now).authorities.failed.includes("policy-assignments"));
-    const clean = buildAttention({ ...base, policyAssignments: buildPolicyAssignmentHealth({ unassignedCount: 0, unassignedRows: [], unknownCount: 0, unknownRows: [], enforced: true }, now) }, now);
+    const clean = buildAttention({ ...base, policyAssignments: buildPolicyAssignmentHealth({ unassignedCount: 0, unassignedRows: [], unknownCount: 0, unknownRows: [], enforced: true, refOf: opaqueUserRef }, now) }, now);
     check("attention: nothing affected ⇒ checked, no rows, no floor", clean.authorities.checked.includes("policy-assignments") && clean.items.length === 0 && clean.floors.length === 0);
-    check("describe: unassigned wording", /No policy-group assignment recorded/.test(describePolicyAssignmentIssue({ ref: "user …abc123", reason: "UNASSIGNED", unknownKey: null, since: null }, true)));
+    check("describe: unassigned wording", /No policy-group assignment recorded/.test(describePolicyAssignmentIssue({ ref: "user #3fa9c21b", reason: "UNASSIGNED", unknownKey: null, since: null }, true)));
 
     // Alert rule
     const rule = ALERT_RULES.find((r) => r.id === "policy-assignment-invalid");
@@ -308,8 +313,8 @@ async function main(): Promise<void> {
     check("alert: one breach per listed customer + one :unlisted remainder", sig.length === POLICY_ASSIGNMENT_ISSUE_CAP + 1 && sig.at(-1)!.dedupeKey === "policy-assignment-invalid:critical:unlisted");
     // Review fix: severity is part of the dedupe key, so a state change is never
     // suppressed by an older breach inside the re-notify window.
-    check("alert: critical when enforced, dedupe on severity + the opaque tail", sig.every((s) => s.severity === "critical") && sig[0].dedupeKey === "policy-assignment-invalid:critical:zzzz01");
-    check("alert: summaries carry opaque refs only", !/@|cuserzzzz01|cuser000000/.test(JSON.stringify(sig)) && /user …zzzz01/.test(sig[0].summary));
+    check("alert: critical when enforced, dedupe on severity + the opaque token", sig.every((s) => s.severity === "critical") && sig[0].dedupeKey === `policy-assignment-invalid:critical:${opaqueRefToken(REF_Z1())}`);
+    check("alert: summaries carry opaque refs only", !/@|cuserzzzz01|cuser000000/.test(JSON.stringify(sig)) && sig[0].summary.includes(REF_Z1()));
     // Review fix: no EMAIL while the switch is off (nothing is refused; legacy
     // unassigned accounts would page daily) — the Attention item carries the warning.
     check("alert: no breach while the switch is off", evaluatePolicyAssignmentInvalid(rule!, { ...h, enforced: false }).length === 0);
@@ -322,6 +327,9 @@ async function main(): Promise<void> {
     check("CS search: `user …abc123` ⇒ id tail", opaqueRefTail("user …zzzz01") === "zzzz01" && opaqueRefTail("…zzzz01") === "zzzz01" && opaqueRefTail("zzzz01") === "zzzz01");
     check("CS search: an email is not an id tail", opaqueRefTail("a@b.co") === null);
     check("CS search: the list query ORs an id endsWith clause", /\{\s*id:\s*\{\s*endsWith:\s*idTail\s*\}\s*\}/.test(strip("lib/platform/customer/customers.ts")));
+    check("CS search: a pasted keyed reference resolves (server-side digest of ids, bounded)",
+      opaqueRefSearchToken(REF_Z1()) === opaqueRefToken(REF_Z1()) && opaqueRefSearchToken("3FA9C21B") === "3fa9c21b" && opaqueRefSearchToken("a@b.co") === null
+        && /\{\s*id:\s*\{\s*in:\s*refIds\s*\}\s*\}/.test(strip("lib/platform/customer/customers.ts")) && /take:\s*REF_SEARCH_SCAN_CAP/.test(strip("lib/platform/customer/customers.ts")));
   }
 
   console.log("8. no write / delete in the new code paths");

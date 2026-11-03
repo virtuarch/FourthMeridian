@@ -18,6 +18,7 @@
  * report the most recent snapshot's recency so an operator can see staleness.
  */
 
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { db } from "@/lib/db";
 import { ProviderType, ShareStatus, PlaidItemStatus, ConnectionStatus } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
@@ -91,9 +92,9 @@ export interface ConnectionDiagnostic {
 
 const DEFAULT_CAP = 50;
 
-/** Opaque owner reference: correlates, never identifies. */
+/** Opaque owner reference (the keyed digest, opaque-user-ref.ts): correlates, never identifies. */
 function ownerRefOf(userId: string | null | undefined): string {
-  return userId ? `user …${userId.slice(-6)}` : "—";
+  return userId ? opaqueUserRef(userId) : "—";
 }
 
 // PB-5 — the wallet label lives with the removed-connections fold so the live

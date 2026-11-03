@@ -33,7 +33,7 @@
  *
  * ══ PRIVACY ════════════════════════════════════════════════════════════════
  * The DTO carries the same opaque owner reference connection diagnostics does
- * (`user …<last6>`) and NO customer identity. The owner's display label is
+ * (`user #<8 hex>`, a keyed digest — lib/platform/opaque-user-ref.ts) and NO customer identity. The owner's display label is
  * resolved by the UI through the ONE Customer Success–gated route
  * (/api/platform/customer-success/connection-owners, owner decision D4) —
  * exactly how the connection-health table shows owners — so a PLATFORM_OPS-only
@@ -45,6 +45,7 @@
  * Pure: no DB, no clock (`now` is handed in).
  */
 
+import { OPAQUE_USER_REF_TOKEN, opaqueRefOfToken } from "@/lib/platform/opaque-user-ref-format";
 import { AuditAction } from "@/lib/audit-actions";
 import { cleanupVerdicts, isRemovalInProgress, type CleanupVerdict, type MarkerRow } from "@/lib/platform/plaid/provider-cleanup.core";
 
@@ -106,7 +107,7 @@ export interface RemovedConnectionRow {
   source: string;
   /** Distinct accounts the connection held. */
   accountCount: number;
-  /** PLATFORM OPS PRIVACY — opaque, as connection diagnostics: `user …<last6>`, "—" when unknown. */
+  /** PLATFORM OPS PRIVACY — opaque, as connection diagnostics: `user #<8 hex>` (keyed digest, opaque-user-ref.ts), "customer" without a key, "—" when unknown. */
   ownerRef: string;
   removedAtISO: string | null;
   removedBy: RemovedBy;
@@ -165,6 +166,8 @@ export interface RemovedConnectionsInputs {
   operatorActs: AuditFact[];
   /** Operator id → display label (username → name → opaque), null when unresolved. */
   operatorLabel: (userId: string) => string | null;
+  /** THE opaque customer reference (lib/platform/opaque-user-ref.ts), injected by the server reader — this core is client-reachable and holds no key. */
+  refOf: (userId: string) => string;
   /** The clock for the PRE_PROVIDER grace window. Default: now. */
   now?: Date;
 }
@@ -174,9 +177,9 @@ export interface RemovedConnectionsInputs {
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
 const meta = (r: { metadata: unknown }) => (r.metadata ?? {}) as Record<string, unknown>;
 
-/** Opaque owner reference — the connection-diagnostics form, character for character. */
-export function ownerRefOf(userId: string | null | undefined): string {
-  return userId ? `user …${userId.slice(-6)}` : "—";
+/** Opaque owner reference through the injected server digest (opaque-user-ref.ts) — "—" without an owner. */
+function ownerRefVia(input: Pick<RemovedConnectionsInputs, "refOf">, userId: string | null | undefined): string {
+  return userId ? input.refOf(userId) : "—";
 }
 
 /** The wallet label connection diagnostics shows. Never the address. */
@@ -311,7 +314,7 @@ export function foldRemovedConnections(input: RemovedConnectionsInputs): Removed
     rows.push({
       id: p.id, provider: "PLAID", source,
       accountCount: distinctAccounts(p.links),
-      ownerRef: ownerRefOf(p.userId),
+      ownerRef: ownerRefVia(input, p.userId),
       removedAtISO: removedAt?.toISOString() ?? null,
       removedBy: deriveRemovedBy({
         connectionId: p.id, provider: "PLAID", ownerUserId: p.userId, source, removedAt,
@@ -359,7 +362,7 @@ export function foldRemovedConnections(input: RemovedConnectionsInputs): Removed
     rows.push({
       id: w.id, provider: "WALLET", source,
       accountCount: distinctAccounts(w.links),
-      ownerRef: ownerRefOf(w.userId),
+      ownerRef: ownerRefVia(input, w.userId),
       removedAtISO: removedAt?.toISOString() ?? null,
       removedBy: deriveRemovedBy({
         connectionId: w.id, provider: "WALLET", ownerUserId: w.userId, source, removedAt,
@@ -383,11 +386,11 @@ export function foldRemovedConnections(input: RemovedConnectionsInputs): Removed
 
 export const REMOVED_PAGE_SIZE_DEFAULT = 25;
 export const REMOVED_PAGE_SIZE_MAX = 100;
-/** The owner filter is the opaque reference's six characters — the only owner token this surface holds. */
-const OWNER_REF_SHAPE = /^[A-Za-z0-9_-]{6}$/;
+/** The owner filter is the opaque reference's 8 hex — the only owner token this surface holds. */
+const OWNER_REF_SHAPE = OPAQUE_USER_REF_TOKEN;
 
 export interface RemovedConnectionsQuery {
-  /** The six characters of an `ownerRef` (`user …<these>`). */
+  /** The 8 hex of an `ownerRef` (`user #<these>`). */
   owner: string | null;
   provider: RemovedProvider | null;
   outcome: RemovedOutcome | null;
@@ -398,7 +401,7 @@ export interface RemovedConnectionsQuery {
 /** Parse untrusted query params. Returns the query or the reason it is malformed (400). */
 export function parseRemovedConnectionsQuery(params: URLSearchParams): { query: RemovedConnectionsQuery } | { error: string } {
   const owner = params.get("owner")?.trim() || null;
-  if (owner !== null && !OWNER_REF_SHAPE.test(owner)) return { error: "owner must be the six characters of an owner reference" };
+  if (owner !== null && !OWNER_REF_SHAPE.test(owner)) return { error: "owner must be the 8 hex characters of an owner reference" };
   const providerRaw = params.get("provider")?.trim() || null;
   if (providerRaw !== null && !(REMOVED_PROVIDERS as readonly string[]).includes(providerRaw)) return { error: `provider must be one of ${REMOVED_PROVIDERS.join(", ")}` };
   const outcomeRaw = params.get("outcome")?.trim() || null;
@@ -440,7 +443,7 @@ export function queryRemovedConnections(all: readonly RemovedConnectionRow[], q:
   const matched = all.filter((r) =>
     (q.provider === null || r.provider === q.provider)
     && (q.outcome === null || r.outcome === q.outcome)
-    && (q.owner === null || r.ownerRef === `user …${q.owner}`));
+    && (q.owner === null || r.ownerRef === opaqueRefOfToken(q.owner)));
   const start = (q.page - 1) * q.pageSize;
   return {
     rows: matched.slice(start, start + q.pageSize),

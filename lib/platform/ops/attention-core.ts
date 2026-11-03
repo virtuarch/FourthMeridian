@@ -36,6 +36,7 @@
  * PURE: no DB, no clock read (`now` is a parameter), no I/O.
  */
 
+import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import type { ConnectionHealthResult, ConnectionHealthRow, HealthState } from "@/lib/connections/health";
 import type { JobHealthStatus } from "@/lib/jobs/health";
 import type { ProviderHealthResult, ProviderTrust } from "@/lib/platform/provider-health";
@@ -71,7 +72,7 @@ export type AttentionEntityKind = "connection" | "job" | "provider" | "resource"
 export interface AttentionEntity {
   kind: AttentionEntityKind;
   /** Institution / job name / provider label / resource label / rule title / subject label /
-   *  a customer's OPAQUE `user …abc123` reference (never an email, name or whole id). */
+   *  a customer's OPAQUE `user #3fa9c21b` reference (never an email, name or whole id). */
   label: string;
   /** An OPAQUE reference the actions need (a connection id). Never a customer id. */
   ref?: string;
@@ -356,8 +357,9 @@ function incidentItems(i: NonNullable<AttentionInputs["incidents"]>): AttentionI
 
 function policyAssignmentItems(p: PolicyAssignmentHealth): AttentionItem[] {
   const severity = SEVERITY_OF.policyAssignment[p.enforced ? "enforced" : "dormant"];
-  return p.items.map((i) => ({
-    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${i.ref.slice(-6)}`,
+  // The row id carries the reference's token; with no key (every ref "customer") the position keeps ids unique.
+  return p.items.map((i, n) => ({
+    id: `policy-assignment:${i.reason === "UNASSIGNED" ? "unassigned" : "unknown"}:${opaqueRefToken(i.ref) ?? `customer-${n}`}`,
     severity,
     entity: { kind: "customer" as const, label: i.ref },
     problem: describePolicyAssignmentIssue(i, p.enforced),

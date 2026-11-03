@@ -14,7 +14,7 @@
  * never $0. An unpriced RETURNED call is "unpriced", never $0.
  *
  * IDENTITY — Platform Ops is identity-free: a row carries the opaque customer
- * reference (`user …abc123`, opaqueUserRef) or null, never an email, name or
+ * reference (`user #3fa9c21b`, lib/platform/opaque-user-ref.ts) or null, never an email, name or
  * full id. No prompt, message, conversation id or request id is selected.
  */
 
@@ -23,8 +23,8 @@ import type { FleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
 
 export const BUDGET_CALLS_PAGE_SIZE = 25;
 export const BUDGET_CALLS_MAX_PAGE = 400;
-/** How far back a deep-linked window end may sit (a stale link past this reads "now"). */
-export const BUDGET_CALLS_MAX_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+/** How far back a deep-linked window end may sit (a stale link past this reads "now"). 48 h: the link only ever carries the KPI's recent checkedAt. */
+export const BUDGET_CALLS_MAX_LOOKBACK_MS = 48 * 60 * 60 * 1000;
 /** Clock skew tolerated on a window end from the client. */
 const FUTURE_SKEW_MS = 60 * 1000;
 

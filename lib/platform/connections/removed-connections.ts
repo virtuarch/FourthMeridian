@@ -15,6 +15,7 @@
  */
 
 import "server-only";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { systemDb } from "@/lib/db";
 import { PlaidItemStatus, ConnectionStatus, ProviderType } from "@prisma/client";
 import { AuditAction } from "@/lib/audit-actions";
@@ -116,6 +117,7 @@ export async function loadRemovedConnections(client = systemDb): Promise<Removed
     customerActs,
     operatorActs,
     operatorLabel: (id) => label.get(id) ?? null,
+    refOf: opaqueUserRef,
   });
 }
 

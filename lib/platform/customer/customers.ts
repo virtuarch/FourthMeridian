@@ -28,6 +28,8 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { opaqueRefOfToken } from "@/lib/platform/opaque-user-ref-format";
 import { AuditAction } from "@/lib/audit-actions";
 import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-catalogue";
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
@@ -72,6 +74,29 @@ export function opaqueRefTail(search: string): string | null {
   return m ? m[1] : null;
 }
 
+/** The 8-hex token of a pasted opaque reference (`user #3fa9c21b`), else null. A bare 8 hex is also a token. */
+export function opaqueRefSearchToken(search: string): string | null {
+  const t = search.trim().toLowerCase();
+  const m = /^(?:user\s*)?#?\s*([0-9a-f]{8})$/.exec(t);
+  return m ? m[1] : null;
+}
+
+/** How many accounts the reference search digests at most (beta-scale fleet; a bound, not a fleet scan). */
+export const REF_SEARCH_SCAN_CAP = 5000;
+
+/**
+ * PRIV-ref — resolve an opaque reference back to an account, for CUSTOMER_SUCCESS
+ * only (the area that may resolve identity). The reference is a keyed digest
+ * (lib/platform/opaque-user-ref.ts), so it cannot be matched in SQL: the ids are
+ * digested here, server-side, bounded by REF_SEARCH_SCAN_CAP. Ids never leave
+ * this function except as the matched set the list query already returns.
+ */
+async function idsForOpaqueRef(token: string, client: typeof systemDb): Promise<string[]> {
+  const ref = opaqueRefOfToken(token);
+  const rows = await client.user.findMany({ select: { id: true }, orderBy: { createdAt: "desc" }, take: REF_SEARCH_SCAN_CAP });
+  return rows.filter((r) => opaqueUserRef(r.id) === ref).map((r) => r.id);
+}
+
 export async function listCustomers(
   opts: { search?: string; limit?: number; now?: Date; attention?: AttentionFilter | null } = {}, client = systemDb,
 ): Promise<CustomerList> {
@@ -79,16 +104,22 @@ export async function listCustomers(
   const search = (opts.search ?? "").trim();
   const limit = Math.min(CUSTOMER_LIST_MAX, Math.max(1, Math.floor(opts.limit ?? 50)));
   // Owner ruling (2026-10-30) — operator surfaces that minimise identity (Platform
-  // Ops Attention, the alert email) name a customer as `user …abc123`; searching
-  // that reference here (or its bare 6+ character tail) finds the account by its
-  // id suffix, so the policy-assignment alert is actionable in Customer Success.
+  // Ops Attention, the alert email) name a customer by an opaque reference;
+  // searching that reference here finds the account, so the policy-assignment
+  // alert stays actionable in Customer Success. Since PRIV-ref the reference is
+  // a keyed digest (`user #3fa9c21b`, resolved by idsForOpaqueRef); a bare 6+
+  // character id fragment still matches the id suffix (CS may see ids).
   const idTail = opaqueRefTail(search);
+  // PRIV-ref — the operator surfaces now show a keyed digest (`user #3fa9c21b`), not an id tail; a pasted one is resolved here.
+  const refToken = opaqueRefSearchToken(search);
+  const refIds = refToken ? await idsForOpaqueRef(refToken, client) : [];
   const searchWhere = search
     ? { OR: [
         { email: { contains: search, mode: "insensitive" as const } },
         { name: { contains: search, mode: "insensitive" as const } },
         { username: { contains: search, mode: "insensitive" as const } },
         ...(idTail ? [{ id: { endsWith: idTail } }] : []),
+        ...(refIds.length > 0 ? [{ id: { in: refIds } }] : []),
       ] }
     : {};
   // PB-4 — the attention fold is read for every page (the row chips need it);

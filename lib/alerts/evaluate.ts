@@ -20,6 +20,7 @@
  * split idiom (OPS-4 S5), applied to alerting.
  */
 
+import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import { ALERT_RULES, type AlertRuleDefinition, type AlertSeverity, type AlertSignal } from "@/lib/alerts/rules";
 import type { AuthorityOutputs, AlertJobHealth, SyncIncidentHealth } from "@/lib/alerts/authorities";
 import { incidentLabel, type SyncIssueDomain } from "@/lib/platform/sync-issue-semantics";
@@ -288,7 +289,7 @@ const usd = (n: number) => `$${n.toFixed(2)}`;
  *                          figures above are partial and the summary says so.
  *    ai-spend-user-high
  *      :user:<day>:<ref>   the largest per-customer estimated USD ≥ user threshold —
- *                          same two levels; the key carries the OPAQUE "user …abc123"
+ *                          same two levels; the key carries the OPAQUE "user #3fa9c21b"
  *                          reference, never an email.
  *  Every summary names the estimated USD and the threshold it was judged
  *  against, and carries the unpriced line as its own sentence. */
@@ -330,7 +331,7 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
   if (spend.maxUserUsd !== null && spend.maxUserRef && spend.maxUserUsd >= spend.thresholds.userUsd) {
     out.push({
       ruleId: rule.id, kind: rule.kind, severity: spendLevel(spend.maxUserUsd, spend.thresholds.userUsd),
-      dedupeKey: `${rule.id}:user:${day}:${spend.maxUserRef.slice(-6)}`,
+      dedupeKey: `${rule.id}:user:${day}:${opaqueRefToken(spend.maxUserRef) ?? spend.maxUserRef}`,
       summary: `One customer (${spend.maxUserRef}) caused an estimated ${usd(spend.maxUserUsd)} of AI spend in the last ${spend.windowHours}h — at or above the per-customer threshold of $${spend.thresholds.userUsd}`
         + (spend.customersAtOrOverThreshold > 1 ? ` (${spend.customersAtOrOverThreshold} customers are at or above it; the largest is named)` : "")
         + ` (estimate, not a bill).${unpricedLine}`,
@@ -344,7 +345,7 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
  *  on its own clock), plus one `:unlisted` breach when the authority's capped list is a
  *  floor. Critical while the fail-closed switch is enforced (the customer is being
  *  refused now); warning while it is off. The authority decided who is affected; this
- *  only words it. Opaque `user …abc123` references only — never an email or a name. */
+ *  only words it. Opaque `user #3fa9c21b` references only — never an email or a name. */
 export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: PolicyAssignmentHealth): AlertSignal[] {
   if (p.total <= 0) return [];
   // Review fix: while the switch is OFF nothing is refused, and legacy accounts
@@ -358,7 +359,7 @@ export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: Po
     ruleId: rule.id, kind: rule.kind, severity,
     // Severity in the key, so a state change is never suppressed by an older,
     // lower-severity breach inside the re-notify window.
-    dedupeKey: `${rule.id}:${severity}:${i.ref.slice(-6)}`,
+    dedupeKey: `${rule.id}:${severity}:${opaqueRefToken(i.ref) ?? i.ref}`,
     summary: i.reason === "UNASSIGNED"
       ? `Customer ${i.ref} has no policy-group assignment — ${state}. Assign a valid policy group in Customer Success.`
       : `Customer ${i.ref} is assigned unknown policy group "${i.unknownKey ?? ""}" — ${state}. Assign a valid policy group in Customer Success.`,

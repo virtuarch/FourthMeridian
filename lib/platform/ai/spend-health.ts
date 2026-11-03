@@ -15,9 +15,9 @@
  * bill grows (owner rule, 2026-10-15).
  *
  * ── Identity minimisation ───────────────────────────────────────────────────
- * The per-user maximum carries an OPAQUE reference (`user …` + the id's last
- * six characters) — enough for a dedupe key and for Customer Success to find
- * the account, never an email, a name or a full id. Customer surfaces only:
+ * The per-user maximum carries an OPAQUE reference — the keyed digest from
+ * lib/platform/opaque-user-ref.ts (`user #3fa9c21b`) — enough for a dedupe key,
+ * never an email, a name, a full id or a slice of one. Customer surfaces only:
  * harness traffic has no customer and is overhead by definition.
  *
  * fm_system: AiInvocation is REVOKED from fm_app.
@@ -28,6 +28,7 @@ import { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
 import { AI_RATES, type AiRate } from "@/lib/usage/pricing";
 import { CUSTOMER_SURFACES, priceSpendGroup, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { loadAiSpendThresholds, type AiSpendThresholds } from "@/lib/platform/ai/spend-thresholds";
 
 /** One (userId, provider, model, UTC day) group of RETURNED customer-surface rows. */
@@ -42,7 +43,7 @@ export interface AiSpendHealth {
   fleetUsd: number | null;
   /** The largest estimated USD one customer caused, or null when no per-user figure could be priced. */
   maxUserUsd: number | null;
-  /** Opaque reference to that customer — "user …abc123" — never an email or full id. */
+  /** Opaque reference to that customer — "user #3fa9c21b" (opaque-user-ref.ts) — never an email, an id or a slice of one. */
   maxUserRef: string | null;
   /** Distinct customers with at least one priced invocation in the window. */
   customers: number;
@@ -57,10 +58,6 @@ export interface AiSpendHealth {
   checkedAt: string;
 }
 
-/** The opaque per-user reference every operator surface uses for a customer. */
-export function opaqueUserRef(userId: string): string {
-  return `user …${userId.slice(-6)}`;
-}
 
 /** Pure: fold per-user groups into the health report. */
 export function buildAiSpendHealth(

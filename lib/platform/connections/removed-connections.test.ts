@@ -22,6 +22,11 @@ import {
 } from "./removed-connections.core";
 import { __foldForTest as foldCleanupStatus } from "@/lib/platform/plaid/provider-cleanup";
 import { ownerTokenOf, removedByLabel, removedConnectionsUrl, removeConfirmMessage, EMPTY_FILTERS, PROVIDER_CLEANUP_RETRY_ROUTE, canConfirmRemoval, removeConsequenceLine } from "@/components/platform/widgets/removed-connections-view";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
+// PRIV-ref — the opaque reference is a keyed digest; a fixed test secret makes it deterministic here.
+process.env.NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "test-opaque-ref-secret";
+
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -96,6 +101,7 @@ function fixture(): RemovedConnectionsInputs {
         metadata: { result: "FAILURE", target: { kind: "PLAID_ITEM", id: "p-system" }, connectionId: "p-system", removalReason: "cost" } },
     ],
     operatorLabel: (id) => (id === OPERATOR ? "opsadmin" : null),
+    refOf: opaqueUserRef,
   };
 }
 
@@ -119,7 +125,7 @@ console.log("2. the DTO");
 {
   const op = byId(rows, "p-op")!;
   check("source = institution label; account count = distinct accounts", op.source === "Chase" && op.accountCount === 2);
-  check("owner = the OPAQUE reference connection diagnostics shows (never an id or email)", op.ownerRef === "user …aaaaaa");
+  check("owner = the OPAQUE reference connection diagnostics shows (never an id or email)", op.ownerRef === opaqueUserRef(OWNER_A) && !op.ownerRef.includes("aaaaaa"));
   check("removed at = the → REVOKED transition", op.removedAtISO === at(5).toISOString());
   check("removed at falls back to the FIRST marker (not the newest retry)", byId(rows, "p-cust")!.removedAtISO === at(30).toISOString());
   check("a wallet's removed at = its latest link soft-delete", byId(rows, "w-removed")!.removedAtISO === at(3).toISOString());
@@ -206,19 +212,20 @@ console.log("5. filters, paging, parsing");
     queryRemovedConnections(rows, { owner: null, provider: null, outcome: null, page: 1, pageSize: 25, ...o });
   check("provider filter", q({ provider: "WALLET" }).rows.every((r) => r.provider === "WALLET") && q({ provider: "WALLET" }).total === 2);
   check("outcome filter", q({ outcome: "CLEANUP_OWED" }).total === 2);
-  check("owner filter (the opaque reference's six characters)", q({ owner: "bbbbbb" }).rows.every((r) => r.ownerRef === "user …bbbbbb") && q({ owner: "bbbbbb" }).total === 4);
+  const tokB = opaqueRefToken(opaqueUserRef(OWNER_B))!;
+  check("owner filter (the opaque reference's 8 hex)", q({ owner: tokB }).rows.every((r) => r.ownerRef === opaqueUserRef(OWNER_B)) && q({ owner: tokB }).total === 4);
   check("totals are over the WHOLE population, not the filter", q({ provider: "WALLET" }).totals.all === rows.length);
   const p1 = q({ pageSize: 4 }), p3 = q({ pageSize: 4, page: 3 });
   check("paging: page 1 = first 4, page 3 = the remainder, total unchanged",
     p1.rows.length === 4 && p3.rows.length === rows.length - 8 && p1.total === rows.length && p1.rows[0].id === rows[0].id && p3.rows[0].id === rows[8].id);
   const parse = (s: string) => parseRemovedConnectionsQuery(new URLSearchParams(s));
   check("defaults: page 1, pageSize 25, no filters", JSON.stringify(parse("")) === JSON.stringify({ query: { owner: null, page: 1, pageSize: 25, provider: null, outcome: null } }));
-  check("bad provider / outcome / owner / page / pageSize → error", ["provider=BANK", "outcome=GONE", "owner=abc", "owner=user_owner_bbbbbb", "page=0", "pageSize=101", "page=x"]
+  check("bad provider / outcome / owner / page / pageSize → error", ["provider=BANK", "outcome=GONE", "owner=abc", "owner=user_owner_bbbbbb", "owner=bbbbbb", "owner=3FA9C21B", "page=0", "pageSize=101", "page=x"]
     .every((s) => "error" in parse(s)));
   check("the view's url round-trips through the parser",
-    JSON.stringify(parse(removedConnectionsUrl({ ...EMPTY_FILTERS, provider: "PLAID", outcome: "CLEANUP_OWED", owner: "aaaaaa", page: 2 }, 3).split("?")[1]))
-      === JSON.stringify({ query: { owner: "aaaaaa", page: 2, pageSize: 25, provider: "PLAID", outcome: "CLEANUP_OWED" } }));
-  check("ownerTokenOf: only the opaque form yields a token", ownerTokenOf("user …aaaaaa") === "aaaaaa" && ownerTokenOf("—") === null && ownerTokenOf("alice") === null);
+    JSON.stringify(parse(removedConnectionsUrl({ ...EMPTY_FILTERS, provider: "PLAID", outcome: "CLEANUP_OWED", owner: "3fa9c21b", page: 2 }, 3).split("?")[1]))
+      === JSON.stringify({ query: { owner: "3fa9c21b", page: 2, pageSize: 25, provider: "PLAID", outcome: "CLEANUP_OWED" } }));
+  check("ownerTokenOf: only the opaque form yields a token", ownerTokenOf("user #3fa9c21b") === "3fa9c21b" && ownerTokenOf("user …aaaaaa") === null && ownerTokenOf("customer") === null && ownerTokenOf("—") === null && ownerTokenOf("alice") === null);
   check("confirm copy names the customer AND the institution",
     /Chase/.test(removeConfirmMessage({ owner: "alice", source: "Chase", provider: "PLAID" })) && /alice's account/.test(removeConfirmMessage({ owner: "alice", source: "Chase", provider: "PLAID" })));
 }

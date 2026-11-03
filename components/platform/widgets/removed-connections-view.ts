@@ -9,6 +9,7 @@
  * never a reader, never the database client.
  */
 
+import { opaqueRefToken } from "@/lib/platform/opaque-user-ref-format";
 import {
   REMOVED_OUTCOME_LABEL,
   type RemovedBy,
@@ -46,10 +47,9 @@ export function removedConnectionsUrl(f: RemovedFilters, nonce = 0): string {
   return `${REMOVED_CONNECTIONS_ROUTE}?${p.toString()}`;
 }
 
-/** "user …abc123" → "abc123" (the owner filter's token); null for anything else. */
+/** "user #3fa9c21b" → "3fa9c21b" (the owner filter's token); null for "customer", "—" or anything else. */
 export function ownerTokenOf(ownerRef: string): string | null {
-  const m = /^user …([A-Za-z0-9_-]{6})$/.exec(ownerRef);
-  return m ? m[1] : null;
+  return opaqueRefToken(ownerRef);
 }
 
 export function outcomeLabel(o: RemovedOutcome): string {

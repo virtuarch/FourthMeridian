@@ -52,7 +52,7 @@ import { latestAlertEvaluation } from "@/lib/alerts/latest-evaluation";
 import { findAlertRule } from "@/lib/alerts/rules";
 import { ENTITLEMENT_DIMENSIONS, BETA_FULL_ACCESS_V1 } from "@/lib/entitlements/catalogue";
 import { resolveAiDailyAllowance } from "@/lib/entitlements/ai-allowance";
-import { opaqueUserRef } from "@/lib/platform/ai/spend-health";
+import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
 import { AI_PAUSED_CUSTOMER_MESSAGE } from "@/lib/platform/ai/paid-requests-admission";
 import { RESERVE_USD } from "@/lib/ai/allowance-core";
 import {
