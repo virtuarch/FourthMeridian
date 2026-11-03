@@ -15,6 +15,12 @@
  *              operator-resolved or legacy-resolved)
  * A stale-unverified incident (D10) is still an incident: it opened; it has not resolved.
  *
+ * D2 RETROACTIVITY (vs the legacy fold, which marked EVERY row on a removed subject
+ * "orphaned" at read time): an OPEN incident later closed by its subject's removal
+ * still vanishes from both series retroactively — same as before. A RECOVERED
+ * incident whose subject is removed AFTERWARDS now stays counted (opened and
+ * resolved): its persisted recovery is the module's closure, not "connection-removed".
+ *
  * PURE: no I/O, no clock. Instants only — no id, account, item, label or customer leaves it.
  */
 

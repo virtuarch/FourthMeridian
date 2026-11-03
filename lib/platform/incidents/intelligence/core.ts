@@ -42,7 +42,7 @@ import type {
   CsIncidentVerdict,
   DeriveOptions,
   Freshness,
-  IncidentAudience,
+  CoreAudience,
   IncidentFacts,
   IncidentRowFacts,
   IncidentState,
@@ -279,7 +279,7 @@ function archivedDraft(a: ArchivedIncidentFacts): Draft {
  * THE pure core. Every row (incident or not) gets one verdict; archived
  * summaries follow (a live row wins over its own archive copy).
  */
-export function deriveIncidentVerdicts<A extends IncidentAudience>(
+export function deriveIncidentVerdicts<A extends CoreAudience>(
   facts: IncidentFacts,
   opts: DeriveOptions & { audience: A },
 ): IncidentVerdictSet<VerdictFor<A>> {

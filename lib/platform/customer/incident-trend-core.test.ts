@@ -65,6 +65,23 @@ console.log("1. the owner's case on module verdicts — events, superseded and r
     incidentTrendInstants(verdicts([row("removed1", "MISSING_ACCOUNT", { plaidItemId: "item_gone", detail: {} })])).length === 0);
 }
 
+console.log("1b. D2 retroactivity vs the legacy fold (S2 ask)");
+{
+  // Legacy: syncIssueState with referentExists=false ⇒ "orphaned" for EVERY row on a removed subject, evaluated at
+  // READ time — so an incident vanished retroactively from BOTH series once its connection was removed.
+  const legacyOrphaned = (r: IncidentRowFacts) =>
+    syncIssueState({ kind: r.kind, provider: r.provider, detail: r.detail, plaidTransactionId: r.plaidTransactionId }, { referentExists: false, resolved: r.resolved }) === "orphaned";
+  const openRemoved = row("open_removed", "TRANSACTION_PERSISTENCE_FAILED", { plaidItemId: "item_gone" });
+  const recoveredRemoved = row("recovered_removed", "TRANSACTION_PERSISTENCE_FAILED", {
+    plaidItemId: "item_gone", resolved: true, resolutionKind: "AUTOMATIC_RECOVERY", resolvedAt: at("2026-11-02T06:00:00Z"),
+  });
+  check("SAME as legacy: an OPEN incident later closed by subject removal vanishes retroactively from opened (legacy: orphaned too)",
+    legacyOrphaned(openRemoved) && incidentTrendInstants(verdicts([openRemoved])).length === 0);
+  const [kept] = incidentTrendInstants(verdicts([recoveredRemoved]));
+  check("D2 VISIBLE CHANGE: a RECOVERED incident whose subject was LATER removed stays counted (opened + resolved); legacy dropped it",
+    legacyOrphaned(recoveredRemoved) && !!kept && kept.resolvedAt?.toISOString() === "2026-11-02T06:00:00.000Z");
+}
+
 console.log("2. D10 — a stale-unverified incident still opened, has not resolved");
 {
   const v = verdicts([row("stale", "TRANSACTION_PERSISTENCE_FAILED", { lastOccurredAt: at("2026-08-01T00:00:00Z"), firstOccurredAt: at("2026-08-01T00:00:00Z") })]);

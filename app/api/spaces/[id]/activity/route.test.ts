@@ -104,9 +104,13 @@ check(
   routeSrc.includes("select: { id: true, kind: true, resolved: true, createdAt: true, plaidTransactionId: true }"),
 );
 // The member gate is DERIVED by the one authority, never re-guessed from `kind`.
+// PB-1 Phase 3 — DELIBERATE PIN UPDATE (was: the route called classifySyncIssue
+// itself). Open/closed AND member-actionability are now the intelligence module's
+// pure core over the tenant rows (lib/activity/member-incidents.ts, which calls the
+// same semantics authority); the route classifies nothing itself.
 check(
-  "member visibility is gated by the semantics authority",
-  routeSrc.includes("classifySyncIssue({ kind: row.kind, plaidTransactionId }).customerActionable"),
+  "member visibility is decided by the module's pure core over the tenant rows",
+  routeSrc.includes("memberIncidentEvents(syncIssues, new Date())") && !routeSrc.includes("classifySyncIssue("),
 );
 
 // ── Report ────────────────────────────────────────────────────────────────────

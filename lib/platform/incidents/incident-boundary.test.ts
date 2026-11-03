@@ -340,13 +340,28 @@ function main() {
       "lib/crypto/wallet-refresh.ts": "failure clock (no state)",
       // PERMANENT EXCEPTION (S2 ruling, 2026-11-03) — shape pinned below.
       "lib/plaid/backgroundHistorySync.ts": "EXCEPTION: control gate, not a display read (MISSING_ACCOUNT persisted-open COUNT gates recovery)",
-      // Formerly KNOWN RESIDUALS (PB-1 Phase 3, S2 rulings 2026-11-03) — each now names why it may stay.
       // PB-1 Phase 3 — the CS daily trend moved to module verdicts (incident-trend-core.ts); what remains is
       // getIncidentDetail's IncidentView, KEPT by S2 ruling: execution evidence only; state ignored (pinned below).
       "lib/platform/incidents/projections.ts": "KEPT: getIncidentDetail — execution evidence only; state ignored",
       "lib/platform/incidents/episodes-core.ts": "KEPT: episodeStateOf for getIncidentDetail's view only — state ignored by its consumer",
-      "app/api/spaces/[id]/activity/route.ts": "RESIDUAL: member activity feed (resolved=false, bank-transaction rows only) — design under S2 review",
+      // PB-1 Phase 3 (S2-approved design a) — fm_app tenant read of the RLS-16 columns; the open/closed
+      // decision is the module's PURE core (lib/activity/member-incidents.ts, audience MEMBER).
+      "app/api/spaces/[id]/activity/route.ts": "raw read; open/closed decision from module core",
     };
+    // S2 (PB-1 Phase 3 close) — the census splits into NON-READER entries (writers, the authority, the export,
+    // a clock, a helper) and RESIDUAL READERS (display-path / raw-read paths outside the module). Both counts are
+    // pinned: exactly THREE residual readers — the control gate, getIncidentDetail's execution evidence and the
+    // member tenant read — and ten entries in all. Any growth is a reviewed change to these numbers.
+    const RESIDUAL_READERS = new Set([
+      "lib/plaid/backgroundHistorySync.ts",      // control gate (permanent exception)
+      "lib/platform/incidents/projections.ts",   // getIncidentDetail — execution evidence only
+      "app/api/spaces/[id]/activity/route.ts",   // member tenant read — open/closed from the module core
+    ]);
+    check("exactly THREE residual readers, all censused", RESIDUAL_READERS.size === 3 && [...RESIDUAL_READERS].every((f) => f in CENSUS));
+    const nonReaders = Object.keys(CENSUS).filter((f) => !RESIDUAL_READERS.has(f));
+    check("…and SEVEN non-reader entries (lifecycle writer, purge, retention, semantics authority, subject export, wallet clock, episodes-core helper)",
+      nonReaders.length === 7, nonReaders.join(", "));
+    check("the census holds TEN entries in all", Object.keys(CENSUS).length === 10, String(Object.keys(CENSUS).length));
     const found = [...walk("lib"), ...walk("app"), ...walk("components")]
       .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) => !f.startsWith("lib/platform/incidents/intelligence/") && !f.startsWith("lib/platform/incidents/parity/"))
