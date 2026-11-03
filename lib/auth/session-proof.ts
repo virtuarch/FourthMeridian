@@ -165,9 +165,14 @@ export async function factsFromRow(
   if (typeof user.role !== "string" || !KNOWN_ROLES.includes(user.role)) return null;
   if (typeof user.totpEnabled !== "boolean") return null;
   // ACCOUNT LOCKOUT — a deactivated or deletion-scheduled account proves no
-  // session, revoked or not. (Any non-null value is a lockout; SESSION_ROW_SELECT
-  // always selects both, so absence only occurs in a row built without it.)
-  if (user.deactivatedAt != null || user.deletionScheduledAt != null) return null;
+  // session, revoked or not. STRICT, like every other fact here: both keys must
+  // be PRESENT (SESSION_ROW_SELECT selects them) and each must be null or a Date.
+  // A row without them is malformed and refused — the lockout is never the one
+  // fact that fails open.
+  if (!("deactivatedAt" in user) || !("deletionScheduledAt" in user)) return null;
+  const isLockStamp = (v: unknown) => v === null || v instanceof Date;
+  if (!isLockStamp(user.deactivatedAt) || !isLockStamp(user.deletionScheduledAt)) return null;
+  if (user.deactivatedAt !== null || user.deletionScheduledAt !== null) return null;
   return {
     userId:           row.userId,
     role:             user.role,

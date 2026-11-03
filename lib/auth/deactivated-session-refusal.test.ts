@@ -64,7 +64,11 @@ async function main() {
   assert.equal(await lookup(), null, "deletion-scheduled ⇒ refused");
   account.deactivatedAt = new Date();
   assert.equal(await lookup(), null, "deletion request (both stamps) ⇒ refused");
-  ok("deactivated / deletion-scheduled account with an UNREVOKED session ⇒ refused (not-live)");
+  // STRICT: a user without the lockout keys is malformed, never "not locked out".
+  const { deactivatedAt: _d, deletionScheduledAt: _s, ...bare } = row().user;
+  void _d; void _s;
+  assert.equal(await factsFromRow({ ...row(), user: bare }, noTotpAll), null, "lockout fields absent ⇒ refused");
+  ok("deactivated / deletion-scheduled account with an UNREVOKED session ⇒ refused (not-live); absent fields ⇒ refused");
 
   // ── within the existing revocation-cache TTL, never longer ─────────────────
   clearAllSessions();
