@@ -35,6 +35,12 @@ function check(name: string, ok: boolean, detail = ""): void {
 const ROOT = process.cwd();
 const SCAN_DIRS = ["app", "lib", "jobs", "scripts", "prisma", "components"];
 const DEFINITION = "lib/plaid/encryption.ts";
+/**
+ * The FROZEN copy of the previous release's module (a test fixture, never
+ * imported by application code): it DEFINES encryptWithPurpose/sealWithPurpose
+ * and writes no column. Pinned by hash in lib/plaid/encryption-b9-compat.test.ts.
+ */
+const FROZEN_DEFINITIONS = new Set(["lib/plaid/__fixtures__/encryption-b9.ts"]);
 
 /** The classified writers. `field` is a registry label, or "NON_STORED" for a carrier. */
 const WRITER_SITES: ReadonlyArray<{ file: string; purpose: keyof typeof EncryptionPurpose; count: number; field: string }> = [
@@ -56,7 +62,7 @@ const WRITER_SITES: ReadonlyArray<{ file: string; purpose: keyof typeof Encrypti
  */
 const GENERIC_SITES: ReadonlyArray<{ file: string; count: number; purposeExpr: RegExp; mustImport?: string }> = [
   { file: "scripts/lib/rotate-encryption-key.core.ts", count: 2, purposeExpr: /^\s*(encryptWithPurpose|sealWithPurpose)\s*\(\s*plaintext\s*,\s*f\.purpose\s*\)/, mustImport: "ENCRYPTED_FIELDS" },
-  { file: "scripts/encryption-key-rotation-acceptance.ts", count: 2, purposeExpr: /^\s*(encryptWithPurpose|sealWithPurpose)\s*\(\s*plain\s*,\s*purpose\s*\)/ },
+  { file: "scripts/encryption-key-rotation-acceptance.ts", count: 3, purposeExpr: /^\s*(encryptWithPurpose|sealWithPurpose)\s*\(\s*plain\s*,\s*purpose\s*\)/ },
 ];
 
 function walk(dir: string, out: string[]): void {
@@ -82,7 +88,7 @@ const genericFound = new Map<string, number>(); // GENERIC_SITES file -> count
 const unattributed: string[] = [];
 for (const abs of files) {
   const rel = path.relative(ROOT, abs).split(path.sep).join("/");
-  if (rel === DEFINITION) continue;
+  if (rel === DEFINITION || FROZEN_DEFINITIONS.has(rel)) continue;
   const src = stripComments(readFileSync(abs, "utf8"));
   const call = /\b(encryptWithPurpose|sealWithPurpose)\s*\(/g;
   const generic = GENERIC_SITES.find((g) => g.file === rel);
@@ -96,6 +102,9 @@ for (const abs of files) {
   }
 }
 check(`scanned ${files.length} source files`, files.length > 100, String(files.length));
+check("the frozen B9 fixture is not imported by any application source",
+  files.every((abs) => /\.test\.tsx?$/.test(abs) || !/__fixtures__\/encryption-b9/.test(readFileSync(abs, "utf8"))
+    || FROZEN_DEFINITIONS.has(path.relative(ROOT, abs).split(path.sep).join("/"))));
 check("every call names its purpose as an EncryptionPurpose constant", unattributed.length === 0, unattributed.join(", "));
 const classified = new Map(WRITER_SITES.map((w) => [`${w.file}|${w.purpose}`, w]));
 const unclassified = [...found.keys()].filter((k) => !classified.has(k));

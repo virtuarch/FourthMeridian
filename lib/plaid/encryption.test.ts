@@ -15,7 +15,11 @@
  * Covers: v1/v2/v3 detection, malformed detection, round-trip, dual-format
  * (legacy) reads, tamper detection, and the keyring: current, previous, unknown
  * kid throws, legacy v1/v2 under current AND previous, tampered tag throws,
- * PREVIOUS unset = the pre-keyring behaviour, compact seals across a rotation.
+ * PREVIOUS unset = the pre-keyring behaviour (v2 writes), the write format
+ * following the rotation state (S2 ruling: v2 unless a DISTINCT PREVIOUS is
+ * set), compact seals across a rotation, and v3 written during a rotation still
+ * reading after step (d). The B9 reader itself is exercised by
+ * lib/plaid/encryption-b9-compat.test.ts.
  */
 
 import crypto from "crypto";
@@ -99,13 +103,15 @@ function withKeys<T>(current: string, previous: string | undefined, fn: () => T)
 
 const freshKey = () => crypto.randomBytes(32).toString("hex");
 const kidOfHex = (hex: string) => keyIdOf(Buffer.from(hex, "hex"));
+/** Run `fn` as during a rotation whose CURRENT key is `current` (a distinct throwaway PREVIOUS). */
+const duringRotation = <T>(current: string, fn: () => T): T => withKeys(current, freshKey(), fn);
 
 // ── detectCiphertextVersion ──────────────────────────────────────────────────
 
-console.log("detectCiphertextVersion — v3 detection (the current write format)");
+console.log("detectCiphertextVersion — v3 detection (the write format DURING a rotation)");
 {
-  const v3 = encryptWithPurpose("hello", EncryptionPurpose.TOTP_SECRET);
-  check("a fresh encryptWithPurpose value is 'v3'", detectCiphertextVersion(v3) === "v3");
+  const v3 = duringRotation(KEY_A, () => encryptWithPurpose("hello", EncryptionPurpose.TOTP_SECRET));
+  check("an encryptWithPurpose value written during a rotation is 'v3'", detectCiphertextVersion(v3) === "v3");
   check("v3 value carries the v3: prefix", v3.startsWith("v3:"));
   check("v3 value has 5 colon-segments", v3.split(":").length === 5);
   check("v3 segment 2 is the current key id (8 lowercase hex = sha256(key)[0..8])",
@@ -159,7 +165,7 @@ console.log("detectCiphertextVersion — idempotent / deterministic");
 {
   const v1 = makeV1Fixture("payload");
   const v2 = makeV2Fixture("payload", EncryptionPurpose.DATE_OF_BIRTH);
-  const v3 = encryptWithPurpose("payload", EncryptionPurpose.DATE_OF_BIRTH);
+  const v3 = duringRotation(KEY_A, () => encryptWithPurpose("payload", EncryptionPurpose.DATE_OF_BIRTH));
   check("v1 classification is stable across calls",
     detectCiphertextVersion(v1) === detectCiphertextVersion(v1));
   check("v2 classification is stable across calls",
@@ -194,7 +200,7 @@ console.log("round-trip — encryptWithPurpose / decryptWithPurpose");
 
   // v3 keeps v2's per-purpose derivation: the body after the kid is decryptable
   // with exactly the v2 subkey, and a v3 value under the wrong purpose fails.
-  const v3 = encryptWithPurpose("derivation", EncryptionPurpose.TOTP_SECRET);
+  const v3 = duringRotation(KEY_A, () => encryptWithPurpose("derivation", EncryptionPurpose.TOTP_SECRET));
   const [, , iv, tag, body] = v3.split(":");
   check("v3 body opens as a v2 value under the same key (derivation unchanged: HKDF-SHA-256, empty salt, purpose label)",
     decryptWithPurpose(["v2", iv, tag, body].join(":"), EncryptionPurpose.TOTP_SECRET) === "derivation");
@@ -235,7 +241,7 @@ console.log("decryptWithPurpose — legacy (v1 + v2) compatibility");
 
 console.log("integrity — tampered ciphertext is rejected");
 {
-  const v3 = encryptWithPurpose("intact", EncryptionPurpose.CONNECTION_CREDENTIAL);
+  const v3 = duringRotation(KEY_A, () => encryptWithPurpose("intact", EncryptionPurpose.CONNECTION_CREDENTIAL));
   const p3 = v3.split(":");
   const badTag = crypto.randomBytes(16).toString("hex");
   check("tampered auth tag on a v3 value causes decrypt to throw",
@@ -248,7 +254,7 @@ console.log("integrity — tampered ciphertext is rejected");
 
 // ── KEYRING matrix (PRIV-004) ────────────────────────────────────────────────
 
-console.log("keyring — PREVIOUS unset is the pre-keyring behaviour (only new writes change, to v3)");
+console.log("keyring — PREVIOUS unset is the pre-keyring behaviour (v2 writes; nothing changes)");
 {
   const K = freshKey();
   withKeys(K, undefined, () => {
@@ -258,8 +264,19 @@ console.log("keyring — PREVIOUS unset is the pre-keyring behaviour (only new w
     const v1 = makeV1Fixture("older-row", K);
     check("an existing v2 value still decrypts", decryptWithPurpose(v2, EncryptionPurpose.TOTP_SECRET) === "old-row");
     check("an existing v1 value still decrypts", decryptWithPurpose(v1, EncryptionPurpose.TOTP_SECRET) === "older-row");
-    const v3 = encryptWithPurpose("new-row", EncryptionPurpose.TOTP_SECRET);
-    check("a new write is v3 under the current kid", detectCiphertextVersion(v3) === "v3" && ciphertextKeyId(v3) === kidOfHex(K));
+    const w = encryptWithPurpose("new-row", EncryptionPurpose.TOTP_SECRET);
+    check("a new write is v2 (kid-less, 4 segments) — the pre-keyring format", detectCiphertextVersion(w) === "v2" && w.startsWith("v2:") && w.split(":").length === 4 && ciphertextKeyId(w) === null);
+    const [, wIv, wTag, wBody] = w.split(":");
+    check("…byte-compatible with the pre-keyring v2: 16-byte IV, 16-byte tag, HKDF(current, purpose) subkey",
+      wIv.length === 32 && wTag.length === 32 && (() => {
+        const sub = Buffer.from(crypto.hkdfSync("sha256", Buffer.from(K, "hex"), Buffer.alloc(0), EncryptionPurpose.TOTP_SECRET, 32));
+        const d = crypto.createDecipheriv("aes-256-gcm", sub, Buffer.from(wIv, "hex"));
+        d.setAuthTag(Buffer.from(wTag, "hex"));
+        return d.update(Buffer.from(wBody, "hex")).toString("utf8") + d.final("utf8") === "new-row";
+      })());
+    check("…and reads back, reported under the current kid", JSON.stringify(decryptWithPurposeReportingKey(w, EncryptionPurpose.TOTP_SECRET)) === JSON.stringify({ plaintext: "new-row", kid: kidOfHex(K) }));
+    check("every purpose writes v2 with PREVIOUS unset",
+      Object.values(EncryptionPurpose).every((p) => detectCiphertextVersion(encryptWithPurpose("x", p)) === "v2"));
     // Pre-keyring failure surface: a value under another key fails GCM authentication.
     const foreignV2 = makeV2Fixture("x", EncryptionPurpose.TOTP_SECRET, freshKey());
     check("a v2 value under a key not in the keyring still fails GCM authentication (same error class as before)",
@@ -269,8 +286,13 @@ console.log("keyring — PREVIOUS unset is the pre-keyring behaviour (only new w
     check("an empty ENCRYPTION_KEY_PREVIOUS is the same as unset",
       withKeys(K, "", () => keyringKeyIds().previous === null && decryptWithPurpose(v2, EncryptionPurpose.TOTP_SECRET) === "old-row"));
     check("a PREVIOUS EQUAL to the current key collapses to no previous (a copy-paste slip never breaks reads)",
-      withKeys(K, K, () => keyringKeyIds().previous === null && decryptWithPurpose(v2, EncryptionPurpose.TOTP_SECRET) === "old-row"
-        && ciphertextKeyId(encryptWithPurpose("w", EncryptionPurpose.TOTP_SECRET)) === kidOfHex(K)));
+      withKeys(K, K, () => keyringKeyIds().previous === null && decryptWithPurpose(v2, EncryptionPurpose.TOTP_SECRET) === "old-row"));
+    check("…and its writes stay v2 (no rotation in progress), not v3",
+      withKeys(K, K, () => {
+        const e = encryptWithPurpose("w", EncryptionPurpose.TOTP_SECRET);
+        return detectCiphertextVersion(e) === "v2" && ciphertextKeyId(e) === null && decryptWithPurpose(e, EncryptionPurpose.TOTP_SECRET) === "w";
+      }));
+    check("…an empty PREVIOUS writes v2 too", withKeys(K, "", () => detectCiphertextVersion(encryptWithPurpose("w", EncryptionPurpose.TOTP_SECRET)) === "v2"));
     check("…is not a validation problem, but IS the boot warning (value-free)",
       previousKeyProblem({ ENCRYPTION_KEY: K, ENCRYPTION_KEY_PREVIOUS: K } as unknown as NodeJS.ProcessEnv) === null
         && previousKeyWarning({ ENCRYPTION_KEY: K, ENCRYPTION_KEY_PREVIOUS: K } as unknown as NodeJS.ProcessEnv) === "ENCRYPTION_KEY_PREVIOUS equals ENCRYPTION_KEY — ignored; rotation not in progress"
@@ -283,11 +305,17 @@ console.log("keyring — current and previous during a rotation");
 {
   const OLD = freshKey();
   const NEW = freshKey();
-  // Values written before the rotation, under OLD only.
-  const before = withKeys(OLD, undefined, () => ({
-    v3: encryptWithPurpose("plaid-token", EncryptionPurpose.PLAID_ACCESS_TOKEN),
-    seal: sealWithPurpose("evidence", EncryptionPurpose.BETA_ABUSE_EVIDENCE),
-  }));
+  // Values written before this rotation under OLD: a v3 left by an EARLIER
+  // rotation whose current key was OLD, the application's ordinary (v2) write
+  // with OLD alone, and a compact seal.
+  const before = {
+    v3: duringRotation(OLD, () => encryptWithPurpose("plaid-token", EncryptionPurpose.PLAID_ACCESS_TOKEN)),
+    ...withKeys(OLD, undefined, () => ({
+      app: encryptWithPurpose("app-written", EncryptionPurpose.CONNECTION_CREDENTIAL),
+      seal: sealWithPurpose("evidence", EncryptionPurpose.BETA_ABUSE_EVIDENCE),
+    })),
+  };
+  check("precondition: the pre-rotation application write under OLD is v2 (kid-less)", detectCiphertextVersion(before.app) === "v2");
   const legacyV2Old = makeV2Fixture("totp-seed", EncryptionPurpose.TOTP_SECRET, OLD);
   const legacyV1Old = makeV1Fixture("dob", OLD);
   const legacyV2New = makeV2Fixture("totp-seed-2", EncryptionPurpose.TOTP_SECRET, NEW);
@@ -297,7 +325,12 @@ console.log("keyring — current and previous during a rotation");
     const ids = keyringKeyIds();
     check("keyring reports both kids (current = new, previous = old)", ids.current === kidOfHex(NEW) && ids.previous === kidOfHex(OLD));
     const fresh = encryptWithPurpose("fresh", EncryptionPurpose.PLAID_ACCESS_TOKEN);
-    check("new writes are under the CURRENT kid", ciphertextKeyId(fresh) === kidOfHex(NEW));
+    check("a DISTINCT PREVIOUS makes new writes v3 under the CURRENT kid",
+      detectCiphertextVersion(fresh) === "v3" && ciphertextKeyId(fresh) === kidOfHex(NEW));
+    check("every purpose writes v3 under the current kid during a rotation",
+      Object.values(EncryptionPurpose).every((p) => ciphertextKeyId(encryptWithPurpose("x", p)) === kidOfHex(NEW)));
+    check("the pre-rotation application (v2) write under OLD opens under PREVIOUS, reported as the previous kid",
+      JSON.stringify(decryptWithPurposeReportingKey(before.app, EncryptionPurpose.CONNECTION_CREDENTIAL)) === JSON.stringify({ plaintext: "app-written", kid: kidOfHex(OLD) }));
     check("current: a v3 value under the current kid decrypts and reports that kid",
       JSON.stringify(decryptWithPurposeReportingKey(fresh, EncryptionPurpose.PLAID_ACCESS_TOKEN)) === JSON.stringify({ plaintext: "fresh", kid: kidOfHex(NEW) }));
     check("previous: a v3 value under the previous kid decrypts and reports the previous kid",
@@ -320,7 +353,7 @@ console.log("keyring — current and previous during a rotation");
 
     // Unknown kid: fail closed — never tried against the keys that exist.
     const STRANGER = freshKey();
-    const foreign = withKeys(STRANGER, undefined, () => encryptWithPurpose("x", EncryptionPurpose.PLAID_ACCESS_TOKEN));
+    const foreign = duringRotation(STRANGER, () => encryptWithPurpose("x", EncryptionPurpose.PLAID_ACCESS_TOKEN));
     check("unknown kid THROWS (fail closed)",
       throws(() => decryptWithPurpose(foreign, EncryptionPurpose.PLAID_ACCESS_TOKEN), /key id is not in the keyring/));
     // Same bytes, kid rewritten to the current kid: the kid is not trusted as a hint — GCM still decides.
@@ -344,8 +377,18 @@ console.log("keyring — current and previous during a rotation");
       throws(() => decryptWithPurpose([p1[0], badTag, p1[2]].join(":"), EncryptionPurpose.TOTP_SECRET)));
   });
 
+  // v3 values written DURING the rotation (current = NEW), kept for after step (d).
+  const duringV3 = withKeys(NEW, OLD, () => Object.fromEntries(Object.values(EncryptionPurpose).map((p) => [p, encryptWithPurpose(`during-${p}`, p)])));
+
   // After the rotation completes and PREVIOUS is removed: old-kid values are gone for good.
   withKeys(NEW, undefined, () => {
+    check("after (d): every v3 value written DURING the rotation is still v3 and still reads under the new key alone",
+      Object.entries(duringV3).every(([p, c]) => detectCiphertextVersion(c) === "v3" && ciphertextKeyId(c) === kidOfHex(NEW)
+        && decryptWithPurpose(c, p as EncryptionPurpose) === `during-${p}`));
+    const after = encryptWithPurpose("after-d", EncryptionPurpose.TOTP_SECRET);
+    check("after (d): writes revert to v2 under the new key",
+      detectCiphertextVersion(after) === "v2" && decryptWithPurposeReportingKey(after, EncryptionPurpose.TOTP_SECRET).kid === kidOfHex(NEW)
+        && withKeys(OLD, undefined, () => throws(() => decryptWithPurpose(after, EncryptionPurpose.TOTP_SECRET))));
     check("PREVIOUS removed: a previous-kid v3 value now fails closed (unknown kid)",
       throws(() => decryptWithPurpose(before.v3, EncryptionPurpose.PLAID_ACCESS_TOKEN), /key id is not in the keyring/));
     check("PREVIOUS removed: a legacy value under the old key no longer decrypts",
@@ -357,7 +400,7 @@ console.log("keyring — current and previous during a rotation");
 console.log("integrity — the GCM tag length is pinned to 16 bytes (v1, v2, v3)");
 {
   const short = (hex: string) => hex.slice(0, 16); // 8 bytes
-  const v3 = encryptWithPurpose("intact", EncryptionPurpose.TOTP_SECRET).split(":");
+  const v3 = duringRotation(KEY_A, () => encryptWithPurpose("intact", EncryptionPurpose.TOTP_SECRET)).split(":");
   const v2 = makeV2Fixture("intact", EncryptionPurpose.TOTP_SECRET).split(":");
   const v1 = makeV1Fixture("intact").split(":");
   check("a v3 value with an 8-byte (truncated) tag is refused",

@@ -11,9 +11,12 @@
  *   SCAN   id-ordered keyset pages of (id, value). Each value is classified:
  *            empty          NULL / "" (incl. PlaidItem's revoked-token sentinel)
  *            unrecognised   not a ciphertext of the field's format — never touched
- *            current        v3 under the current kid / a seal the current key opens
- *            candidate      v3 under the previous kid, ANY legacy v1/v2 (no kid),
- *                           or a seal only the previous key opens
+ *            current        v3 under the current kid / a seal the current key opens /
+ *                           OUTSIDE a rotation (PREVIOUS unset), a kid-less v1/v2
+ *                           value the current key opens
+ *            candidate      v3 under the previous kid, a kid-less v1/v2 value or
+ *                           a seal only the previous key opens, and DURING a
+ *                           rotation every kid-less v1/v2 value (re-encrypted to v3)
  *            unreadable     an unknown kid, or no key in the keyring authenticates it
  *          Candidates are trial-decrypted in the scan, so a dry run proves every
  *          one of them CAN be rotated before anything is written.
@@ -26,6 +29,14 @@
  *          After every write the row is READ BACK and decrypted; it must yield
  *          the same plaintext under the current kid, or the old ciphertext is
  *          put back (CAS on the value just written) and the run ABORTS.
+ *
+ * Re-encryption writes v3 under the current kid: a candidate exists only while a
+ * DISTINCT ENCRYPTION_KEY_PREVIOUS is set, and that is exactly when
+ * encryptWithPurpose() writes v3 (lib/plaid/encryption.ts). Outside a rotation
+ * the application writes v2, and a kid-less value the current key opens is NOT
+ * a candidate — so an apply with PREVIOUS unset writes nothing (it can never turn
+ * a value the previous release reads into one it cannot), and after step (d)
+ * the new key's v2 writes never churn.
  *
  * Idempotent: a value already under the current kid is never a candidate, so a
  * second apply writes nothing.
@@ -64,7 +75,7 @@ export interface FieldReport {
   current: number;
   /** v3 / sealed values by the kid that names (or opened) them — current kid included. */
   byKid: Record<string, number>;
-  /** Kid-less legacy values, by format. Always candidates. */
+  /** Kid-less v1/v2 values, by format. Candidates during a rotation; under the current key outside one. */
   legacy: { v1: number; v2: number };
   /** Values that need re-encryption under the current key. */
   candidates: number;
@@ -123,17 +134,21 @@ type Classified =
   | { kind: "empty" }
   | { kind: "unrecognised" }
   | { kind: "unreadable"; kid: string | null }
-  | { kind: "current"; kid: string }
+  | { kind: "current"; kid: string; legacy: "v1" | "v2" | null }
   | { kind: "candidate"; kid: string; legacy: "v1" | "v2" | null; plaintext: string };
 
-/** Classify one stored value. Decrypts in memory only; never returns ciphertext. */
-export function classifyValue(f: EncryptedField, value: string | null, currentKid: string): Classified {
+/**
+ * Classify one stored value. Decrypts in memory only; never returns ciphertext.
+ * `previousKid` is null outside a rotation: a kid-less value the current key
+ * opens is then "current" (it is exactly what the application writes).
+ */
+export function classifyValue(f: EncryptedField, value: string | null, currentKid: string, previousKid: string | null): Classified {
   if (value === null || value === "") return { kind: "empty" };
   if (f.format === "sealed") {
     if (!value.startsWith("c1.")) return { kind: "unrecognised" };
     try {
       const { plaintext, kid } = openWithPurposeReportingKey(value, f.purpose);
-      return kid === currentKid ? { kind: "current", kid } : { kind: "candidate", kid, legacy: null, plaintext };
+      return kid === currentKid ? { kind: "current", kid, legacy: null } : { kind: "candidate", kid, legacy: null, plaintext };
     } catch {
       return { kind: "unreadable", kid: null };
     }
@@ -143,12 +158,17 @@ export function classifyValue(f: EncryptedField, value: string | null, currentKi
   const declared = ciphertextKeyId(value);
   if (version === "v3" && declared === currentKid) {
     // Named current: still authenticate it, so a dry run's "current" is a proof.
-    try { decryptWithPurposeReportingKey(value, f.purpose); return { kind: "current", kid: currentKid }; }
+    try { decryptWithPurposeReportingKey(value, f.purpose); return { kind: "current", kid: currentKid, legacy: null }; }
     catch { return { kind: "unreadable", kid: declared }; }
   }
   try {
     const { plaintext, kid } = decryptWithPurposeReportingKey(value, f.purpose);
-    return { kind: "candidate", kid, legacy: version === "v3" ? null : version, plaintext };
+    const legacy = version === "v3" ? null : version;
+    // No rotation in progress: a kid-less value under the current key is what the
+    // application writes (v2) — not a candidate. (A v3 under a non-current kid
+    // cannot reach here without PREVIOUS: its kid is unknown and the read throws.)
+    if (legacy && kid === currentKid && previousKid === null) return { kind: "current", kid, legacy };
+    return { kind: "candidate", kid, legacy, plaintext };
   } catch {
     return { kind: "unreadable", kid: declared };
   }
@@ -195,18 +215,23 @@ async function* pages(client: RotationClient, f: EncryptedField, batchSize: numb
   }
 }
 
-async function scanField(client: RotationClient, f: EncryptedField, currentKid: string, batchSize: number,
+async function scanField(client: RotationClient, f: EncryptedField, keyIds: { current: string; previous: string | null }, batchSize: number,
   onCandidate?: (id: string, oldValue: string, c: Extract<Classified, { kind: "candidate" }>) => Promise<"stop" | void>): Promise<FieldReport> {
   const r = emptyFieldReport(f);
   for await (const rows of pages(client, f, batchSize)) {
     for (const row of rows) {
       r.scanned++;
-      const c = classifyValue(f, row.v, currentKid);
+      const currentKid = keyIds.current;
+      const c = classifyValue(f, row.v, currentKid, keyIds.previous);
       switch (c.kind) {
         case "empty": r.empty++; break;
         case "unrecognised": r.unrecognised++; break;
         case "unreadable": r.unreadable++; r.blocking++; if (c.kid) r.byKid[c.kid] = (r.byKid[c.kid] ?? 0) + 1; break;
-        case "current": r.current++; r.byKid[c.kid] = (r.byKid[c.kid] ?? 0) + 1; break;
+        case "current":
+          r.current++;
+          if (c.legacy) r.legacy[c.legacy]++;
+          else r.byKid[c.kid] = (r.byKid[c.kid] ?? 0) + 1;
+          break;
         case "candidate":
           r.candidates++;
           if (c.kid !== currentKid) r.blocking++;
@@ -256,7 +281,7 @@ export async function runKeyRotation(client: RotationClient, opts: RotationOptio
 
   // 1. The plan: a full read-only scan (this IS the dry run).
   const plan: FieldReport[] = [];
-  for (const f of fields) plan.push(await scanField(client, f, keyIds.current, batchSize));
+  for (const f of fields) plan.push(await scanField(client, f, keyIds, batchSize));
   const planTotals = totalsOf(plan);
   const base = { keyIds };
   if (opts.verifyComplete) {
@@ -279,7 +304,7 @@ export async function runKeyRotation(client: RotationClient, opts: RotationOptio
     const T = q(f.model), C = q(f.field);
     const conflicts: string[] = [];
     let rotated = 0;
-    const r = await scanField(client, f, keyIds.current, batchSize, async (id, oldValue, c) => {
+    const r = await scanField(client, f, keyIds, batchSize, async (id, oldValue, c) => {
       const next = reencrypt(f, c.plaintext);
       if (opts.beforeWrite) await opts.beforeWrite(f, id);
       const n = await client.$executeRawUnsafe(`UPDATE ${T} SET ${C} = $1 WHERE "id" = $2 AND ${C} = $3`, next, id, oldValue);
@@ -341,7 +366,7 @@ async function writeAuditRow(client: RotationClient, r: RotationReport, audit: R
 export function summarizeRotation(r: RotationReport, env: string | null): string {
   const L: string[] = [];
   L.push(`ENCRYPTION KEY ROTATION — ${r.mode === "DRY_RUN" ? "DRY RUN (no writes)" : r.mode === "VERIFY" ? "VERIFY COMPLETE (no writes)" : "APPLY"}${env ? ` · env=${env}` : ""}`);
-  L.push(`  current kid: ${r.keyIds.current}   previous kid: ${r.keyIds.previous ?? "(unset — only legacy values under the current key can be rotated)"}`);
+  L.push(`  current kid: ${r.keyIds.current}   previous kid: ${r.keyIds.previous ?? "(unset — no rotation in progress: kid-less values under the current key are current; nothing to re-encrypt)"}`);
   for (const f of r.fields) {
     L.push("");
     L.push(`  ${f.field}   scanned ${f.scanned} · empty ${f.empty} · unrecognised ${f.unrecognised}`);

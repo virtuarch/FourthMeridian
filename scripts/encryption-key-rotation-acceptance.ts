@@ -67,7 +67,11 @@ async function main(): Promise<number> {
     const e = Buffer.concat([c.update(plain, "utf8"), c.final()]);
     return [iv.toString("hex"), c.getAuthTag().toString("hex"), e.toString("hex")].join(":");
   };
-  const v3Under = (key: string, plain: string, purpose: typeof P[keyof typeof P]) => withKeys(key, undefined, () => enc.encryptWithPurpose(plain, purpose));
+  // v3 is written only DURING a rotation (a distinct PREVIOUS set); outside one the
+  // application writes v2 (B10 rollback safety). v3Under = a write made while `key`
+  // was the current key of some rotation; appUnder = the application's ordinary write.
+  const v3Under = (key: string, plain: string, purpose: typeof P[keyof typeof P]) => withKeys(key, randomBytes(32).toString("hex"), () => enc.encryptWithPurpose(plain, purpose));
+  const appUnder = (key: string, plain: string, purpose: typeof P[keyof typeof P]) => withKeys(key, undefined, () => enc.encryptWithPurpose(plain, purpose));
   const sealUnder = (key: string, plain: string, purpose: typeof P[keyof typeof P]) => withKeys(key, undefined, () => enc.sealWithPurpose(plain, purpose));
 
   // ── fixtures: every registered column, every format, plus what must NOT be touched ──
@@ -80,7 +84,7 @@ async function main(): Promise<number> {
   };
   const fixture = {
     u1t: v3Under(OLD, plain.u1t, P.TOTP_SECRET),         // v3 under the previous kid
-    u2t: v2Under(OLD, plain.u2t, P.TOTP_SECRET),         // legacy v2 under previous
+    u2t: appUnder(OLD, plain.u2t, P.TOTP_SECRET),        // the app's own pre-rotation write (kid-less v2) under previous
     u3t: v1Under(OLD, plain.u3t),                         // legacy v1 under previous
     u4t: v3Under(NEW, plain.u4t, P.TOTP_SECRET),         // already current — must not be rewritten
     u1d: v2Under(NEW, plain.u1d, P.DATE_OF_BIRTH),       // legacy v2 under CURRENT — re-encrypted to v3
@@ -106,6 +110,9 @@ async function main(): Promise<number> {
     ('c3','u3','MANUAL',NULL,now());
   insert into "BetaAbuseEvidence" (id,"sourceRequestId","sealedPayload","capturedById",
     "reasonCode","retainUntil") values ('e1','req-1',${sqlStr(fixture.ev)},'u1','TEST',now() + interval '1 day');`);
+
+  check(0, "[fixture] the application's pre-rotation write is kid-less v2 and v3Under is v3 (the write rule holds before any assertion)",
+    enc.detectCiphertextVersion(fixture.u2t) === "v2" && enc.ciphertextKeyId(fixture.u1t) === kid(OLD) && enc.ciphertextKeyId(fixture.u4t) === kid(NEW));
 
   const snapshot = () => one(`select string_agg(t, E'\\n' order by t) from (
       select 'User.'||id||'.t='||coalesce("totpSecret",'<null>') t from "User"
@@ -205,6 +212,8 @@ async function main(): Promise<number> {
     const allV3New = Object.entries(rows).every(([k, r2]) => r2.kid === kid(NEW) && r2.plain === plain[k as keyof typeof plain]);
     check(3, "[cli] every rotated cipher column is v3 under the NEW kid and decrypts to its original plaintext with PREVIOUS unset", allV3New,
       JSON.stringify(Object.fromEntries(Object.entries(rows).map(([k, r2]) => [k, r2.kid]))));
+    check(3, "[cli] the kid-less values that opened ONLY under PREVIOUS (app v2 + legacy v1) were re-encrypted to v3 under the NEW kid",
+      rows.u2t.kid === kid(NEW) && rows.u3t.kid === kid(NEW) && rows.u2t.plain === plain.u2t && rows.u3t.plain === plain.u3t);
     const ev = withKeys(NEW, undefined, () => enc.openWithPurposeReportingKey(val(`select "sealedPayload" from "BetaAbuseEvidence" where id='e1'`), P.BETA_ABUSE_EVIDENCE));
     check(3, "[cli] the sealed evidence opens under the NEW key alone with its original payload", ev.kid === kid(NEW) && ev.plaintext === plain.ev);
     check(3, "[cli] the already-current value was NOT rewritten (byte-identical)", val(`select "totpSecret" from "User" where id='u4'`) === fixture.u4t);
@@ -292,6 +301,23 @@ async function main(): Promise<number> {
     check(8, "[cli] audit-ciphertext-versions exits 0 and counts Connection.credential WITHOUT the WALLET row: 1 v3, 0 invalid, 1 null, 2 total",
       r.status === 0 && JSON.stringify(nums) === JSON.stringify([0, 0, 1, 0, 1, 2]) && /provider≠WALLET/.test(line), `${r.status} ${line} ${o.slice(-400)}`);
     check(8, "[cli] …and reports no invalid value anywhere", /TOTAL(\s+\d+){3}\s+0\s/.test(o) && !/WARNING: \d+ value\(s\) are neither/.test(o), o.slice(-600));
+  }
+
+  // ── 9. [cli] AFTER (d): writes revert to v2 under the new key; verify accepts them; nothing churns ──
+  {
+    const after = appUnder(NEW, "totp-seed-after-d", P.TOTP_SECRET);
+    one(`insert into "User" (id,email,name,"updatedAt","totpSecret") values ('u9','u9@example.test','U9',now(),${sqlStr(after)});`);
+    check(9, "[fixture] with PREVIOUS removed the application writes v2", enc.detectCiphertextVersion(after) === "v2");
+    const before = snapshot();
+    const v = cli(["--env=local", "--verify-complete"], { current: NEW });
+    check(9, "[cli] --verify-complete with the new key alone exits 0 with a kid-less v2 present (the current key opens it)",
+      v.status === 0 && out(v).includes("VERIFIED COMPLETE") && out(v).includes("legacy v2 (no kid)") && out(v).includes("blocking 0"), `${v.status} ${out(v).slice(-700)}`);
+    const a = cli(["--env=local", "--apply"], { current: NEW });
+    check(9, "[cli] an apply with PREVIOUS unset rotates 0 and leaves every column byte-identical (v2 is never churned to v3)",
+      a.status === 0 && out(a).includes("to re-encrypt 0") && out(a).includes("rotated 0 · conflicts 0") && snapshot() === before, `${a.status} ${out(a).slice(-700)}`);
+    const u1 = withKeys(NEW, undefined, () => enc.decryptWithPurposeReportingKey(val(`select "totpSecret" from "User" where id='u1'`), P.TOTP_SECRET));
+    check(9, "[cli] a v3 value written during the rotation is still v3 and reads under the new key alone after (d)",
+      enc.detectCiphertextVersion(val(`select "totpSecret" from "User" where id='u1'`)) === "v3" && u1.kid === kid(NEW) && u1.plaintext === plain.u1t);
   }
 
   return report("ENCRYPTION KEY ROTATION ACCEPTANCE");
