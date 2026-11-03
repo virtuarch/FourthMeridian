@@ -1224,8 +1224,6 @@ Checklist additions:
 | #258 | `db:regrant`: restore GRANTs after a `--no-privileges` restore | Adds a script only. Running it against Production is gated separately by the owner |
 | #262 | PB-9: Merchant Identity KPIs drill into their records | Read-only tables behind the existing MERCHANT_OPS permission |
 | #265 | PB-9 follow-up: rate-limit Reconsider; records search stays letters-only | Adds a rate limit; no data change |
-| #275 | PB-11: investments correctness (attribution FX, hero % gate, one allocation authority) | Presentation-side conversion fixes |
-| #277 | PB-11b: investments display conversion fails closed on a rate miss | Presentation-side; shows "unavailable" rather than mixing currencies |
 | #281 | AI & Costs: one authority for fleet spend status | Presentation-side tile wording |
 | #283 | AI & Costs: budget KPI drills into its 24 h calls | New read-only, PLATFORM_OPS READ route |
 | #282 | Ops: environment-aware job verdicts + provider-outcome@1 | Verdict rules only. On Production the job output is byte-identical (the scheduler reads as present) |
@@ -1249,6 +1247,8 @@ Checklist additions:
 | #266 | PB-8b: change-since never compares across a partial-history floor | Builds on #232's floors; travels with PB-8 |
 | #267 | PB-8c: server-side change claims (AI, launcher, Brief) respect the floor | Builds on #232/#266; travels with PB-8 |
 | #272 | PB-8d: AI history points before the floor are withheld | Builds on #267; travels with PB-8 |
+| #275 | PB-11: investments correctness (attribution FX, hero % gate, one allocation authority) | **Travels with PB-8 (code dependency).** Presentation-side itself, but `InvestmentsHero` imports `ESTIMATED_CHANGE_SUFFIX` from `lib/connections/balance-coverage.core`, a module created by #232 (PB-8) with the constant added by #266 (PB-8b). It promotes only with PB-8, or on a release branch that inlines the suffix (a rebuilt tree, S2-reviewed) |
+| #277 | PB-11b: investments display conversion fails closed on a rate miss | **Travels with PB-8 (code dependency).** Stacked on #275's files, so it inherits #275's dependency on PB-8 |
 | #274 | PB-10: presence and engagement | **PB-10 migration.** `20261103130000_pb10_session_presence` must be applied before the deploy (B10.2) |
 | #276 | PB-10 follow-ups: carry refused interactions; Content-Length precheck | Builds on #274; no schema change of its own |
 | #278 | PB-10 F3+F4: background reads don't extend the SEC-010 idle deadline | Builds on #274; no schema change of its own |
@@ -1257,7 +1257,9 @@ Checklist additions:
 
 **Docs-only** (they ship with whichever tree is promoted and need no gate): #236, #237 (also adds the docs-structure test), #241, #242, #243, #244, #245, #246 (also ignores `docs/invoices/`), #247, #248, #249, #250, #251, #253, #257, #260, #261, #273, #279.
 
-**Counts:** 16 safe, 14 gated, 19 docs-only (49 PRs), plus #288 (gated, PB-1) expected before the cut. Promoting only the safe subset is not a clean cut, because develop is linear and the gated PRs are interleaved with the safe ones. The simplest tree is develop at a pinned SHA after both migrations and the PB-8 decision are approved. Excluding any gated group means building a release branch with reverts, which needs a fresh S2 review of that exact tree.
+**Counts:** 14 safe, 16 gated, 19 docs-only (49 PRs), plus #288 (gated, PB-1) expected before the cut.
+
+**Recommended release tree (S2's advice).** The simplest reviewable tree is **develop at the B10 cut, with BOTH migrations applied first** (B10.2). That promotes everything above, except #225 if its live removal test has not run, and it requires the owner's PB-8 decision because PB-8 is in that tree. Any subset (excluding PB-8, PB-1, PB-10 or #225) means a release branch with reverts, and S2 reviews that exact tree before promotion. Develop is linear and the gated PRs are interleaved with the safe ones, so no subset is a clean cut.
 
 ### B10.2 Migration order
 
@@ -1283,7 +1285,7 @@ Each note was checked against its PR description and the develop code.
   - Every tile now shows the rule and the counts behind its word.
 - **Preview only: jobs read "Not scheduled in this environment" (#282).** Crons don't run on Preview, so jobs there read neutral instead of Failed; a job whose newest run failed still reads failing. Production output is unchanged.
 - **Customer Success presence labels (PB-10, #274/#276).** Customer Success now shows **Active now / Online, idle / Offline / Unknown**, a coarse last-active bucket (for example "within 5 min" or "active today"), last login, and signed-in sessions. It no longer reads the "session last used" clock. The new columns have no backfill, so every customer reads **Unknown** until their first heartbeat after the deploy. Growth "returning" and active-in-7-days now count meaningful engagement only, so those figures may drop.
-- **Other visible changes:** single-use TOTP codes at login (#256); Merchant Identity KPI drilldowns (#262); AI & Costs budget tiles agree and drill into their calls (#281/#283); investments show "unavailable" rather than mixed currencies on a rate miss (#275/#277). If gated groups ship: the PB-8 partial-history wording ("Change unavailable: history is partial before …") and the removed-connections list (#225).
+- **Other visible changes:** single-use TOTP codes at login (#256); Merchant Identity KPI drilldowns (#262); AI & Costs budget tiles agree and drill into their calls (#281/#283); investments show "unavailable" rather than mixed currencies on a rate miss (#275/#277; ships only with PB-8). If gated groups ship: the PB-8 partial-history wording ("Change unavailable: history is partial before …") and the removed-connections list (#225).
 
 ### B10.4 Rollback notes
 
@@ -1298,7 +1300,7 @@ Each note was checked against its PR description and the develop code.
 | #225 PB-5 (if promoted) | The list and button disappear. **Removals an operator made in the meantime are not undone**: the provider-side revocation is external and permanent | **Not trivial** for any removal made |
 | #256 TOTP | The replay window reopens. Claim rows in `RateLimit` are harmless | Yes |
 | #233/#234 | The skipped-webhook defect returns; no data change | Yes |
-| Verdict and label changes (#282/#285/#286, #281/#283, #262/#265, #275/#277, presence labels) | Presentation-only; old wording returns. Attention items that depend on provider trust revert with it | Yes |
+| Verdict and label changes (#282/#285/#286, #281/#283, #262/#265, presence labels); #275/#277 roll back with PB-8's code | Presentation-only; old wording returns. Attention items that depend on provider trust revert with it | Yes |
 | #258, #238, #239, docs | No runtime effect | Yes |
 
 **Unverified here:** whether #225's live removal test has run.
