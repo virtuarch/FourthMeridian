@@ -11,6 +11,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { CLOSED_ACCOUNT_WHERE, CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { getConnectionHealth } from "@/lib/connections/health";
 import { getIncidentsDailySeries } from "./incidents-daily";
 import { loadAttention } from "./attention";
@@ -24,7 +25,7 @@ export async function getCsOverview(windowDays: 30 | 90, incidentToken: CsToken,
   const client = systemDb;
   const [attention, deactivated, health, daily] = await Promise.all([
     loadAttention(incidentToken, now, client),
-    client.user.count({ where: { role: "USER", deactivatedAt: { not: null } } }),
+    client.user.count({ where: { ...CUSTOMER_WHERE, ...CLOSED_ACCOUNT_WHERE } }),
     getConnectionHealth(0),
     getIncidentsDailySeries(incidentToken, now, windowDays),
   ]);

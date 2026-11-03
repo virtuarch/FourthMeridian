@@ -92,7 +92,7 @@ function ActiveUsersCard({ pa }: { pa: Fetched<ProductAnalyticsResponse> }) {
   return (
     <Block id="growth-active" label="Active accounts" className="min-w-0 lg:col-span-7"
       hint={<ProvenanceChip kind="MEASURED" />}
-      action={<Segmented label="Activity" value={series} onChange={setSeries} options={[{ id: "engaged", label: "Engaged" }, { id: "present", label: "Signed in" }]} />}>
+      action={<Segmented label="Activity" value={series} onChange={setSeries} options={[{ id: "engaged", label: "Engaged" }, { id: "present", label: "Present" }]} />}>
       <Surface className="flex-1 p-4 sm:p-5">
         {p ? (
           <>

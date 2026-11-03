@@ -26,6 +26,7 @@ import { readSpendGroups } from "@/lib/platform/ai/spend-by-surface";
 import type { SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 import { loadEngagedUserIdsSince } from "@/lib/platform/growth/product-analytics";
 import { opaqueUserRef } from "@/lib/platform/opaque-user-ref";
+import { economicsEngagementStart, type UndecidedPopulationPolicy } from "@/lib/platform/customer/population";
 import { buildPlaidUsage, realPlaidUsageReaders, TRANSITIONS_LIMIT, type PlaidUsageReaders } from "@/lib/platform/plaid/usage";
 import type { PlaidItemFact, PlaidItemTransition } from "@/lib/platform/plaid/item-months";
 import { isPricingConfigured, PLAID_RATES, type PlaidRate } from "@/lib/usage/pricing";
@@ -41,6 +42,8 @@ export interface EconomicsDeps {
   aiPricingConfigured?: boolean;
   plaidRates?: readonly PlaidRate[];
   ref?: (userId: string) => string;
+  /** OD-1 — the engaged-customer window policy (default UNDECIDED = the cycle start, as today). */
+  windowPolicy?: UndecidedPopulationPolicy<"OD-1">;
 }
 
 /** The inputs plus the raw Plaid census they were folded from (PR B attributes Items to customers). */
@@ -60,7 +63,7 @@ export async function loadEconomicsFacts(untilMs: number, deps: EconomicsDeps = 
     (deps.groups ?? readSpendGroups)(readSince(untilMs), until),
     plaid.items(),
     plaid.transitions(TRANSITIONS_LIMIT),
-    (deps.engagedSince ?? ((s: Date) => loadEngagedUserIdsSince(systemDb, s)))(cycleStart),
+    (deps.engagedSince ?? ((s: Date) => loadEngagedUserIdsSince(systemDb, s)))(economicsEngagementStart(cycleStart, deps.windowPolicy)),
   ]);
   const usage = buildPlaidUsage(items, transitions, until.toISOString().slice(0, 10), rates);
   const current = usage.cycles.find((c) => c.label === "current") ?? null;

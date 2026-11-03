@@ -54,6 +54,7 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
+import { CLOSED_ACCOUNT_WHERE, CUSTOMER_WHERE, OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { AuditAction } from "@/lib/audit-actions";
 import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import { DEFAULT_POLICY_GROUP } from "@/lib/entitlements/catalogue";
@@ -63,8 +64,8 @@ import { loadPolicyGroupCatalogue } from "./policy-group-catalogue";
 // ── The populations (one definition each; the read and the apply share them) ──
 
 /** Eligible: an ACTIVE customer account with NO assignment row. */
-export const ELIGIBLE_WHERE = { role: "USER" as const, deactivatedAt: null, policyAssignment: { is: null } };
-const DEACTIVATED_UNASSIGNED_WHERE = { role: "USER" as const, deactivatedAt: { not: null }, policyAssignment: { is: null } };
+export const ELIGIBLE_WHERE = { ...OPEN_CUSTOMER_WHERE, policyAssignment: { is: null } };
+const DEACTIVATED_UNASSIGNED_WHERE = { ...CUSTOMER_WHERE, ...CLOSED_ACCOUNT_WHERE, policyAssignment: { is: null } };
 const NON_CUSTOMER_UNASSIGNED_WHERE = { role: { not: "USER" as const }, policyAssignment: { is: null } };
 
 // ── The DTOs ──────────────────────────────────────────────────────────────────

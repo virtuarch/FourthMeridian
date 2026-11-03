@@ -41,6 +41,7 @@ import { connectionCapForUser, connectionLimitResponse } from "@/lib/connections
 import { isManualRefreshEntitled } from "@/lib/refresh/refresh-all";
 import { opaqueRefSearchToken, opaqueRefTail } from "@/lib/platform/customer/customers";
 import { projectPolicy, FAIL_CLOSED_POLICY_LABEL } from "@/lib/platform/customer/customer-core";
+import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -357,7 +358,12 @@ async function main(): Promise<void> {
   check("an investments-consent link token is refused when fail-closed (plain update mode still repairs)",
     /if \(consentParam === "investments"\) \{[\s\S]{0,200}refuseIfFailClosed\(/.test(lt));
   const ah = code("lib/platform/policy-assignment-health.ts");
-  check("affected parties exclude deactivated / non-customer accounts", /deactivatedAt: null, policyAssignment: \{ is: null \}/.test(ah) && /user: \{ role: "USER" as const, deactivatedAt: null \}/.test(ah));
+  // The predicate now lives in lib/platform/customer/population.ts (one definition); the source must use
+  // it for BOTH reads, and its value must still be exactly role USER ∧ not deactivated.
+  check("affected parties exclude deactivated / non-customer accounts",
+    /UNASSIGNED_CUSTOMER_WHERE = \{ \.\.\.OPEN_CUSTOMER_WHERE, policyAssignment: \{ is: null \} \}/.test(ah)
+      && /user: OPEN_CUSTOMER_WHERE \}/.test(ah)
+      && JSON.stringify(OPEN_CUSTOMER_WHERE) === JSON.stringify({ role: "USER", deactivatedAt: null }));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

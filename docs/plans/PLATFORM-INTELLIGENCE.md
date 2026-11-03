@@ -125,10 +125,12 @@ Read from develop `8083b7b` (code and labels only; no database read). It unblock
 | X6 | **The same predicate has two names:** "Returning ever" and "Returned". "Returning (7d)" is a different predicate with the same root word. | `pac:308,339` vs `growth.ts:136` |
 | X7 | **Populations disagree.** Engagement counts (A1–A7) include operators and since-deactivated users. CS (A12) excludes both. "open accounts" (A13) excludes deactivated users but keeps operators, and it divides an all-roles numerator. A role-USER holder of a `PlatformGrant` counts as a customer everywhere, because only SYSTEM_ADMIN is distinguished (`lib/platform/authorize.ts:98`). | `pa:47-62`, `attention.ts:73`, `growth-model.ts:64` |
 | X8 | **"Live" session counts ignore the SEC-010 lifetime.** Expired, unrevoked rows read as active or signed in. | A16 sites vs `session-proof.ts:102-104` |
-| X9 | **Window constants are duplicated.** `ENGAGEMENT_WINDOW_DAYS` is unused by code, `PRODUCT_ANALYTICS_WINDOW_DAYS` restates its 30, and literals 1/7/30 sit in four files. | `defs:105`, `pac:52,505-506`, `activity.ts:140-153`, `signups/route.ts:37-38`, `growth.ts:204` |
-| X10 | **The "account active" predicate is inline in at least six places.** It is consistent today but not shared. | A14 sites, `attention.ts:73`, `security/analytics.ts:65` |
+| X9 | **Window constants are duplicated.** `ENGAGEMENT_WINDOW_DAYS` is unused by code, `PRODUCT_ANALYTICS_WINDOW_DAYS` restates its 30, and literals 1/7/30 sit in four files. **DONE** (#PRNUM): `ENGAGEMENT_WINDOW_DAYS` is the only source; the rolling reads keep their clock (X5) and are marked in code. | `defs:105`, `pac:52,505-506`, `activity.ts:140-153`, `signups/route.ts:37-38`, `growth.ts:204` |
+| X10 | **The "account active" predicate is inline in at least six places.** It is consistent today but not shared. **DONE** (#PRNUM): one `OPEN_ACCOUNT_WHERE` / `OPEN_CUSTOMER_WHERE` in `lib/platform/customer/population.ts` (11 readers), census-pinned by `population.test.ts`. | A14 sites, `attention.ts:73`, `security/analytics.ts:65` |
 
 **Canonical vocabulary — PROPOSED.** No surface keeps the bare word "active" except "Active now".
+
+Pending decisions in code: `lib/platform/customer/population.ts` names OD-1..OD-4 as policies whose only status is `UNDECIDED`; every predicate that depends on one takes it as an injected default that keeps today's behaviour, and CS / Economics captions and the registry notes say the definition is pending.
 
 | Name | One definition | One constant | Owning module | Replaces |
 |---|---|---|---|---|
@@ -144,17 +146,17 @@ Read from develop `8083b7b` (code and labels only; no database read). It unblock
 | **Returning (7 d)** / **Returned (ever)** | as A3 (UTC days) / A18 | `ENGAGEMENT_WINDOW_DAYS.wau` | `pac` | A3, A18 ("Returning ever") |
 | **Cost per engaged customer** | operating cost ÷ Engaged (OD-1 window) | the OD-1 window | `snap` (one figure) | A5 and A6 (one survives, per OD-1) |
 
-**Minimal renames — ENGINEERING (no owner input; PROPOSED):**
-- `OpsActivityWidget` DAU/WAU/MAU → "Sign-ins · 1 d / 7 d / 30 d".
-- GrowthLead "Signed in" → "Present".
-- CS "Signed-in sessions", Security "Active sessions" and Growth "With a live session" → "Live sessions" (apply the lifetime rule to their reads).
-- "active this week" → "Engaged · 7 d".
-- Economics "Active customers · this cycle" → "Engaged customers · this cycle" (or · 30 d, per OD-1); "Cost per active customer" → "Cost per engaged customer".
-- CS "active customers" → "open customer accounts".
-- Growth "open accounts" → use the Customer ∧ Open-account population.
-- "Returning ever" → "Returned (ever)"; CS "Last active" → "Last interaction".
-- Constants: `ENGAGEMENT_WINDOW_DAYS` becomes the only window source (`PRODUCT_ANALYTICS_WINDOW_DAYS = ENGAGEMENT_WINDOW_DAYS.mau`; drop the literals); rolling 7 × 24 h reads move to UTC days. Changing those reads changes their numbers, so they get new metric versions, not edits.
-- Registry: add `open-customers@1` and `live-sessions@1`; register the economics figures after OD-1. `engaged-users@1` keeps its id.
+**Minimal renames — ENGINEERING (no owner input).** Status per item; copy only, populations and numbers unchanged (pinned):
+- `OpsActivityWidget` DAU/WAU/MAU → "Sign-ins · 1 d / 7 d / 30 d". **DONE** (#PRNUM)
+- GrowthLead "Signed in" → "Present". **DONE** (#PRNUM)
+- CS "Signed-in sessions", Security "Active sessions" and Growth "With a live session" → "Live sessions" (apply the lifetime rule to their reads). **DONE** (#PRNUM) (the reads already used `liveSessionWhere` since #345; Security's stated derivation now says so).
+- "active this week" → "Engaged · 7 d". **DONE** (#PRNUM)
+- Economics "Active customers · this cycle" → "Engaged customers · this cycle" (or · 30 d, per OD-1); "Cost per active customer" → "Cost per engaged customer". **DONE** (#PRNUM) (cycle kept; both figures' basis states the OD-1..OD-4 definition is pending).
+- CS "active customers" → "open customer accounts". **DONE** (#PRNUM) (with an OD-2 / OD-4 "pending the owner's definition" caption).
+- Growth "open accounts" → use the Customer ∧ Open-account population. **NOT DONE** — waits on OD-2.
+- "Returning ever" → "Returned (ever)"; CS "Last active" → "Last interaction". **DONE** (#PRNUM)
+- Constants: `ENGAGEMENT_WINDOW_DAYS` becomes the only window source (`PRODUCT_ANALYTICS_WINDOW_DAYS = ENGAGEMENT_WINDOW_DAYS.mau`; drop the literals) — **DONE** (#PRNUM); rolling 7 × 24 h reads move to UTC days — **NOT DONE** (changes numbers: new metric versions; each read carries a `rolling — see PLATFORM-INTELLIGENCE X5` note). Changing those reads changes their numbers, so they get new metric versions, not edits.
+- Registry: add `open-customers@1` and `live-sessions@1` — **DONE** (#PRNUM); register the economics figures after OD-1 (not done). `engaged-users@1` keeps its id.
 
 **Decision split**
 
@@ -164,4 +166,4 @@ Read from develop `8083b7b` (code and labels only; no database read). It unblock
 | **OD-2.** Do operators count as customers: SYSTEM_ADMIN, and role-USER `PlatformGrant` holders using personal Spaces? | **OWNER DECISION** |
 | **OD-3.** Does an account deactivated or scheduled for deletion **now** still count in a window in which it was engaged? | **OWNER DECISION** |
 | **OD-4.** Should a test or internal account be marked (a new flag means schema and instrumentation), and should it be excluded? | **OWNER DECISION** |
-| All labels, metric keys and versions, constant consolidation, the shared population module, and the lifetime check on live-session counts | **ENGINEERING** |
+| All labels, metric keys and versions, constant consolidation, the shared population module, and the lifetime check on live-session counts | **ENGINEERING** — done in #345 (lifetime) and #PRNUM, except the rolling→UTC moves and the Growth open-accounts population |

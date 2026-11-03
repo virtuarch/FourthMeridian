@@ -23,6 +23,7 @@
 
 import "server-only";
 import { systemDb } from "@/lib/db";
+import { OPEN_CUSTOMER_WHERE } from "@/lib/platform/customer/population";
 import { env } from "@/lib/env";
 import { lifecycleRestrictionOf, type LifecycleRestriction, type PolicyGroupEndedTransitionKind, type PolicyGroupLifecycleState, type PolicyGroupTransitionKindName } from "@/lib/entitlements/lifecycle";
 import { operatorDisplayName } from "@/lib/platform/customer/identity-label";
@@ -84,7 +85,7 @@ export async function readPolicyGroupLifecycle(key: string, now: Date = new Date
     systemDb.customerPolicyAssignment.count({ where: { policyGroup: key } }),
     systemDb.customerPolicyAssignment.count({ where: { policyGroup: key, overlay: { not: null } } }),
     row.isDefault && !enforced
-      ? systemDb.user.count({ where: { role: "USER", deactivatedAt: null, policyAssignment: { is: null } } })
+      ? systemDb.user.count({ where: { ...OPEN_CUSTOMER_WHERE, policyAssignment: { is: null } } })
       : Promise.resolve(0),
     systemDb.policyGroupTransition.findMany({
       where: { groupKey: key }, orderBy: { createdAt: "desc" }, take: TRANSITION_HISTORY_CAP + 1,
