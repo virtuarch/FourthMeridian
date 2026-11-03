@@ -467,7 +467,9 @@ export const findInBalanceHistory: ToolDefinition = {
     // S2 sweep — the coverage read FAILED, so no floor is known: any day found
     // may lie before the history of some accounts. The answer is WITHHELD with
     // the reason (the series tool withholds its `change` the same way).
-    if (isBalanceCoverageUnavailable(balanceCoverage)) {
+    // Only for a metric balance coverage governs: investments / digitalAssets have no
+    // balance sides, so a coverage outage changes nothing about their answer.
+    if (isBalanceCoverageUnavailable(balanceCoverage) && balanceCoverageSidesFor(POINT_METRIC_SERIES[metric]).length > 0) {
       return { metric, operation, ...(threshold !== undefined ? { threshold } : {}),
         result: null, unavailable: 'BALANCE_HISTORY_COMPLETENESS_UNREADABLE',
         coverage: { ...coverage, ...unreadableCoverageBlock(balanceCoverage) } };

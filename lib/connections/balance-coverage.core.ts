@@ -299,8 +299,11 @@ export const ESTIMATED_CHANGE_SUFFIX = " · estimated";
 export function changeComparability(
   covRead: BalanceCoverageRead, sides: readonly BalanceCoverageSide[], e: ChangeEndpoints,
 ): ChangeComparability {
-  // A FAILED read is never "comparable": withhold, whatever the sides (fail closed).
+  // A FAILED read is never "comparable" for a series coverage governs (fail closed).
+  // A series composed of neither cash nor debt (investments, crypto: sides = [])
+  // was never gated by balance coverage, so an outage does not withhold it either.
   if (isBalanceCoverageUnavailable(covRead)) {
+    if (sides.length === 0) return { state: "comparable" };
     return { state: "withheld", coveredFromISO: null, message: BALANCE_COVERAGE_UNREADABLE_MESSAGE, unreadable: true };
   }
   const cov = covRead;

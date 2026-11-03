@@ -288,11 +288,14 @@ const section4 = async () => {
   // Null ("nothing to cover") gates nothing — as before.
   assert.deepEqual(gateWindowChange({ fromDate: "2026-06-17", toDate: TODAY }, null, ["liability"]),
     { change: { fromDate: "2026-06-17", toDate: TODAY }, withheld: null });
-  // A FAILED read withholds every change, on every side, with the unreadable reason.
-  for (const sides of [["liability"], ["asset"], ["asset", "liability"], []] as const) {
+  // A FAILED read withholds every change coverage governs, with the unreadable reason…
+  for (const sides of [["liability"], ["asset"], ["asset", "liability"]] as const) {
     assert.deepEqual(gateWindowChange({ fromDate: "2026-06-17", toDate: TODAY }, BALANCE_COVERAGE_UNAVAILABLE, sides),
       { change: null, withheld: { reason: "BALANCE_HISTORY_UNREADABLE", coveredFrom: null, message: BALANCE_COVERAGE_UNREADABLE_MESSAGE } });
   }
+  // …and leaves a series of neither cash nor debt (investments, crypto) as it was: coverage never governed it.
+  assert.deepEqual(gateWindowChange({ fromDate: "2026-06-17", toDate: TODAY }, BALANCE_COVERAGE_UNAVAILABLE, []),
+    { change: { fromDate: "2026-06-17", toDate: TODAY }, withheld: null });
   ok("§4 coverage read failure: fails CLOSED (every change withheld), one counts-only line per surface (no ids / amounts / error text)");
 };
 

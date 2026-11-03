@@ -103,7 +103,11 @@ async function main() {
         assert.ok(!(m in ch!), `${mode}: ${m} change withheld`);
         assert.ok(typeof ch!.unavailable![m] === "string", `${mode}: ${m} carries its reason`);
       }
-      assert.ok(!/"pct"/.test(JSON.stringify(ch)), `${mode}: no % anywhere in the change`);
+      for (const m of ["netWorth", "liquid", "checking", "debt"]) assert.ok(!JSON.stringify(ch).includes(`"${m}":{`), `${mode}: no ${m} figure or % in the change`);
+      // Scoping (S2): investments / digitalAssets have no balance sides — coverage never governed them,
+      // so an outage leaves their change MEASURED.
+      const inv = (ch as Record<string, unknown>).investments as { abs?: number } | undefined;
+      assert.ok(inv && typeof inv.abs === "number" && !("investments" in (ch!.unavailable ?? {})), `${mode}: the investments change stays measured`);
       assert.ok(ch!.unavailableMeaning!.includes(BALANCE_COVERAGE_UNREADABLE_NOTE), `${mode}: the meaning carries the note`);
       assert.equal(out.coverage.balanceHistoryCompleteness, "UNAVAILABLE", `${mode}: completeness UNAVAILABLE`);
       assert.equal(out.coverage.balanceHistoryNote, BALANCE_COVERAGE_UNREADABLE_NOTE, `${mode}: the owner's note, verbatim`);
@@ -123,7 +127,14 @@ async function main() {
       assert.equal(out.coverage.balanceHistoryNote, BALANCE_COVERAGE_UNREADABLE_NOTE, `${mode}: the note`);
       assert.ok(![PRE_DEBT, 1_100].some((v) => JSON.stringify(out.result ?? null).includes(String(v))) && !("match" in out), `${mode}: no pre-floor value is stated as the answer`);
     }
-    ok("§2 find_in_balance_history: a failed coverage read ⇒ the answer withheld with its reason and the note");
+    // Scoping (S2): a metric coverage does not govern still answers under UNAVAILABLE.
+    for (const mode of ["throwing-provider", "no-phase-throwing-loader", "phase-without-provider"] as const) {
+      const out = (await findInBalanceHistory.run({ metric: "digitalAssets", operation: "maximum" }, ctx(mode))) as Record<string, unknown> & { coverage: Record<string, unknown> };
+      assert.ok(out.result !== null && out.unavailable === undefined && !("balanceHistoryNote" in out.coverage), `${mode}: find(digitalAssets, maximum) still answers`);
+      const inv = (await findInBalanceHistory.run({ metric: "investments", operation: "minimum" }, ctx(mode))) as Record<string, unknown>;
+      assert.ok(inv.result !== null, `${mode}: find(investments, minimum) still answers`);
+    }
+    ok("§2 find_in_balance_history: a failed coverage read ⇒ the answer withheld with its reason and the note (governed metrics only)");
 
     // ── §3 the normal paths are byte-identical ──────────────────────────────
     // "Nothing to cover" and a READ coverage carry no new key, and match the shape the tools always returned.
