@@ -446,6 +446,13 @@ console.log("\n8. static — no mint path, literal surfaces, no side effects, bo
 {
   const core = code(src("lib/platform/intelligence/metrics/retrieve-core.ts"));
   const bind = code(src("lib/platform/intelligence/metrics/retrieve.ts"));
+  // The navigation registry (foundation step 3) sits under the SAME no-mint pin (S2 #365).
+  const navReg = code(src("lib/platform/intelligence/navigation/registry.ts"));
+  const navAcc = code(src("lib/platform/intelligence/navigation/access.ts"));
+  for (const [name, s] of [["navigation/registry.ts", navReg], ["navigation/access.ts", navAcc]] as const) {
+    check(`${name}: no issue( / mint( / incidentAudienceFor( / metricAccessFor( / SYSTEM token`,
+      !/\bissue\(|\bmint\(|incidentAudienceFor\(|metricAccessFor\(|systemIncidentAudience|ISSUED|MINTED/.test(s));
+  }
   for (const [name, s] of [["retrieve-core.ts", core], ["retrieve.ts", bind]] as const) {
     check(`${name}: no issue( / mint( / incidentAudienceFor( / metricAccessFor( / SYSTEM token`,
       !/\bissue\(|\bmint\(|incidentAudienceFor\(|metricAccessFor\(|systemIncidentAudience|ISSUED|MINTED/.test(s));

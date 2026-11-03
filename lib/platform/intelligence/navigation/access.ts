@@ -77,6 +77,7 @@ function scopeOf(surface: NavigationSurface, token: MetricAccessToken): Scope | 
   if (!isMetricAccessToken(token)) return null;
   if (!(ALL_PLATFORM_AREAS as readonly string[]).includes(surface)) return null;
   // Exactly the caller's own page grant; break-glass (every area) reaches no destination here.
+  // Definitions describe; navigation must work — area pages redirect a null grant and proxy.ts sends SYSTEM_ADMIN off /dashboard.
   if (token.grants.length !== 1) return null;
   return { token, grant: token.grants[0], tierRank: TIER_RANK[tokenTierOnSurface(surface, token)] };
 }
