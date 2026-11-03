@@ -22,10 +22,21 @@ import { reconsiderDismissedPair, ReconsiderIneligibleError } from "@/lib/platfo
 import { OperatorActionValidationError, parseOperatorReason } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
+import { limitByUser } from "@/lib/rate-limit";
+
+/**
+ * Per-operator pace, on its OWN bucket (UI-021: never shared with another
+ * route, so a burst here cannot lock out a different control, and vice versa).
+ * 30 / minute, like the other platform WRITE routes.
+ */
+const RECONSIDER_BUCKET = "merchant-ops-reconsider";
+const RECONSIDER_PER_OPERATOR_PER_MINUTE = 30;
 
 export async function POST(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("MERCHANT_OPS", "WRITE");
   if (err) return err;
+  const limited = await limitByUser(auth.user.id, RECONSIDER_BUCKET, { limit: RECONSIDER_PER_OPERATOR_PER_MINUTE, windowSec: 60 });
+  if (limited) return limited;
 
   let body: Record<string, unknown>;
   try {
