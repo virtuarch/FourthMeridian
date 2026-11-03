@@ -25,7 +25,7 @@
 
 import { SCHEDULED_JOBS } from "@/lib/jobs/registry";
 import { classifyJobHealth, type JobRunHealthRow, type JobHealthStatus } from "@/lib/jobs/health";
-import type { SchedulerPresence } from "@/lib/jobs/scheduler-presence.core";
+import { jobScheduledIn, type SchedulerPresence } from "@/lib/jobs/scheduler-presence.core";
 import { classifyResourceFreshness, RESOURCE_FRESHNESS, type RefreshLedgerFacts } from "@/lib/platform/resource-freshness";
 import { SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { nearestOnOrBefore } from "@/lib/data/nearest-on-or-before";
@@ -257,7 +257,9 @@ const freshnessSource: OperationalHistorySource = {
       expectedUnits: SUPPORTED_QUOTES.length,
       observedUnits: newest ? newest.observedUnits : 0,
     };
-    const report = classifyResourceFreshness(fxDescriptor, obs, NO_LEDGER, endOfDay(at));
+    // The same scheduler-presence rule as the live freshness reader (absent ⇒ present: unchanged).
+    const scheduled = fxDescriptor.producingJob ? jobScheduledIn(readers.scheduler ?? "present", fxDescriptor.producingJob) : true;
+    const report = classifyResourceFreshness(fxDescriptor, obs, NO_LEDGER, endOfDay(at), scheduled);
     return {
       sourceId: "freshness", label: "Resource Freshness", at,
       tier: newest ? "derived" : "unknown",

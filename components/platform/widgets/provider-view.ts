@@ -93,7 +93,7 @@ export const PROVIDER_WORKSPACE: Record<string, string> = {
 };
 
 const FRESHNESS_WORD: Record<ProviderHealth["freshness"]["state"], string> = {
-  fresh: "Fresh", stale: "Stale", empty: "Empty", idle: "Idle", unknown: "Unknown",
+  fresh: "Fresh", stale: "Stale", empty: "Empty", idle: "Idle", unknown: "Unknown", "not-refreshed": "Not refreshed in this environment",
 };
 
 export function providerHealthRow(p: ProviderHealth): ProviderRowView {

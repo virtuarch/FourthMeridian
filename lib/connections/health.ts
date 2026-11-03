@@ -132,6 +132,21 @@ export interface ConnectionHealthResult {
    * pending deletion (nothing syncs it, so nothing can heal it).
    */
   retired:   { revoked: number; ownerInactive: number };
+  /**
+   * Per-source tallies over the SAME population (unbounded, unlike `unhealthy`).
+   * Provider trust needs a denominator (lib/platform/verdicts/provider-connection.ts).
+   * `active` is the source's live population, `revoked` its REVOKED connections
+   * (outside `active`), and `faults` its non-HEALTHY rows grouped by health state
+   * and error code. Codes and counts only: no id, label or customer identity.
+   * Optional so older fixtures and payloads still type-check. The loader always sets it.
+   */
+  bySource?: Record<string, ConnectionSourceTally>;
+}
+
+export interface ConnectionSourceTally {
+  active: number;
+  revoked: number;
+  faults: { healthState: HealthState; errorCode: string | null; count: number }[];
 }
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -238,6 +253,29 @@ async function loadBrokenSince(): Promise<Map<string, string>> {
 }
 
 /**
+ * Per-source tallies over the live population (`rows`) plus REVOKED counts by
+ * source (outside the population). Unbounded: the denominator provider trust
+ * needs. Pure; exported for tests.
+ */
+export function tallyBySource(
+  rows: readonly Pick<ConnectionHealthRow, "source" | "healthState" | "errorCode">[],
+  revokedBySource: ReadonlyMap<string, number>,
+): Record<string, ConnectionSourceTally> {
+  const bySource: Record<string, ConnectionSourceTally> = {};
+  const tallyOf = (src: string): ConnectionSourceTally => (bySource[src] ??= { active: 0, revoked: revokedBySource.get(src) ?? 0, faults: [] });
+  for (const src of revokedBySource.keys()) tallyOf(src);
+  for (const r of rows) {
+    const t = tallyOf(r.source);
+    t.active++;
+    if (r.healthState === "HEALTHY") continue;
+    const f = t.faults.find((x) => x.healthState === r.healthState && x.errorCode === r.errorCode);
+    if (f) f.count++;
+    else t.faults.push({ healthState: r.healthState, errorCode: r.errorCode, count: 1 });
+  }
+  return bySource;
+}
+
+/**
  * Normalized connection-health snapshot across the LIVE fleet (REVOKED and
  * owner-inactive connections are `retired`, not members). `cap` bounds the
  * returned non-healthy list (default 20); `counts` and `total` are unbounded.
@@ -274,14 +312,16 @@ export async function getConnectionHealth(
   const rows: ConnectionHealthRow[] = [];
   const retired = { revoked: 0, ownerInactive: 0 };
   /** True when the connection is a former one and must leave the population. */
-  const isRetired = (c: { status: string; user: { deactivatedAt: Date | null } | null }): boolean => {
+  const revokedBySource = new Map<string, number>();
+  const isRetired = (c: { status: string; user: { deactivatedAt: Date | null } | null }, source: string): boolean => {
+    if (c.status === "REVOKED") revokedBySource.set(source, (revokedBySource.get(source) ?? 0) + 1);
     if (c.status === "REVOKED") { retired.revoked++; return true; }
     if (c.user?.deactivatedAt != null) { retired.ownerInactive++; return true; }
     return false;
   };
 
   for (const it of plaidItems) {
-    if (isRetired(it)) continue;
+    if (isRetired(it, "PLAID")) continue;
     const healthState = deriveConnectionHealthState(it.status, it.errorCode, it.lastSyncedAt, plaidStaleMs, now);
     rows.push({
       source:       "PLAID",
@@ -302,7 +342,7 @@ export async function getConnectionHealth(
   }
 
   for (const c of connections) {
-    if (isRetired(c)) continue;
+    if (isRetired(c, c.provider)) continue;
     const healthState = deriveConnectionHealthState(c.status, c.errorCode, c.lastSyncedAt, walletStaleMs, now);
     const network = walletNetwork(c.accountConnections.map((a) => a.financialAccount.walletChain));
     rows.push({
@@ -340,8 +380,10 @@ export async function getConnectionHealth(
     })
     .slice(0, cap);
 
+  const bySource = tallyBySource(rows, revokedBySource);
+
   return {
-    total: rows.length, counts, unhealthy, retired,
+    total: rows.length, counts, unhealthy, retired, bySource,
     checkedAt: new Date(now).toISOString(), cap, listedScope: "unhealthy",
   };
 }

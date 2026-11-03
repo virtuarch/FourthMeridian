@@ -91,8 +91,10 @@ export interface ProviderEntity {
   label: string;
   status: { word: string; tone: StatusTone };
   healthClass: HealthClass;
-  /** Which authority the status word is from (or why there is none). */
+  /** The rule and counts behind the status word (or why there is none). Every tile shows it. */
   statusBasis: string;
+  /** Neutral connection facts that never drive the verdict ("4 connections need the customer to reconnect"). */
+  connectionFacts: readonly string[];
   /** ApiUsageCounter calls, or null when the provider is not metered there. */
   usage: { today: number; d7: number; d30: number } | null;
   /** Never a number today: no reader exposes a provider cap. */
@@ -188,8 +190,9 @@ export function providerEntities(inp: ProviderInputs): ProviderEntity[] {
     let statusBasis: string;
     if (h) {
       status = trustBadge(h.trust); healthClass = classOfTrust(h.trust);
-      // The execution half traces to its run counts and the rule (absent on an older payload).
-      statusBasis = h.execution ? `provider-health verdict · ${h.execution.basis} (${h.execution.definition})` : "provider-health verdict";
+      // The rule and the counts that decided the verdict (provider-outcome@1 / provider-connection@1);
+      // an older payload without one falls back to the execution half, then to the authority's name.
+      statusBasis = h.trustBasis ?? (h.execution ? `${h.execution.basis} (${h.execution.definition})` : "provider-health verdict");
     }
     else if ((HEALTH_REGISTRY as readonly string[]).includes(key)) { status = { word: inp.health.loading ? "Reading" : "Unavailable", tone: "muted" }; healthClass = "not-assessed"; statusBasis = healthReason; }
     else { status = { word: NOT_ASSESSED, tone: "muted" }; healthClass = "not-assessed"; statusBasis = key === "RESEND" ? "delivery counts, no verdict" : "no health authority on a Platform Operations route"; }
@@ -212,6 +215,7 @@ export function providerEntities(inp: ProviderInputs): ProviderEntity[] {
 
     return {
       key, label: labelOf(key), status, healthClass, statusBasis,
+      connectionFacts: h?.connections?.facts ?? [],
       usage: u ? { today: u.callsToday, d7: u.calls7d, d30: u.calls30d } : null,
       cap: CAP_UNKNOWN,
       failures7d,

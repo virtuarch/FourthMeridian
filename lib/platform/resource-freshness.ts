@@ -41,6 +41,14 @@
  *           archive holds none (the incident's cold-archive shape).
  *   idle    nothing is being tracked yet (no held instruments, etc.) — the
  *           archive is legitimately empty; not a problem, vacuously healthy.
+ *   not-refreshed  (Preview) the data is behind or absent because this
+ *           deployment never SCHEDULES its producing job, and no refresh was
+ *           attempted here within the stale window. NEUTRAL: no attention item,
+ *           no alert, not a stale verdict. A source that WAS refreshed (any attempt
+ *           inside the stale window, even a manual one) and is still behind
+ *           stays `stale` / `empty`. So is a source whose producing job is
+ *           scheduled. Decided server-side (lib/jobs/scheduler-presence.ts). With
+ *           a scheduler present, classification is byte-identical.
  *
  * PURE + INJECTABLE: classifyResourceFreshness is a pure function of
  * (descriptor, observation, ledger facts, clock). checkResourceFreshness runs
@@ -57,12 +65,14 @@ import { PriceBasis } from "@prisma/client";
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { defaultPriceRegistry } from "@/lib/prices/registry";
 import { NOT_TOKEN_INSTRUMENT } from "@/lib/crypto/token-asset";
+import { deploymentSchedulerPresence } from "@/lib/jobs/scheduler-presence";
+import { NOT_REFRESHED_LABEL, jobScheduledIn, type SchedulerPresence } from "@/lib/jobs/scheduler-presence.core";
 
 const HOUR_MS = 60 * 60 * 1000;
 
 // ── Public shapes ─────────────────────────────────────────────────────────────
 
-export type FreshnessHealthState = "fresh" | "stale" | "empty" | "idle";
+export type FreshnessHealthState = "fresh" | "stale" | "empty" | "idle" | "not-refreshed";
 export type FreshnessTrustLevel = "high" | "medium" | "low" | "unknown";
 
 /** Frontier completeness: of the units expected on the newest observed date,
@@ -231,6 +241,32 @@ function defaultStaleAfterHours(cadenceHours: number): number {
  * ledger contributes caveats (and the false-green flag) but never the state.
  */
 export function classifyResourceFreshness(
+  d: ResourceFreshnessDescriptor,
+  obs: FreshnessObservation,
+  ledger: RefreshLedgerFacts,
+  now: Date,
+  /** Whether the producing job is scheduled on this deployment (default true: the original classification). */
+  producerScheduled = true,
+): ResourceFreshnessReport {
+  const report = classifyWithProducer(d, obs, ledger, now);
+  if (producerScheduled || !d.producingJob) return report;
+  if (report.healthState !== "stale" && report.healthState !== "empty") return report;
+  if (report.healthState === "empty" && report.trust.level === "unknown") return report; // blocked pipeline: its own honest words
+  // Refreshed here inside the stale window (any attempt) and still behind ⇒ a real verdict.
+  const attemptedAt = ledger.lastAttemptedAt?.getTime() ?? null;
+  if (attemptedAt !== null && now.getTime() - attemptedAt <= d.staleAfterHours * HOUR_MS) return report;
+  return {
+    ...report,
+    healthState: "not-refreshed",
+    trust: {
+      level: "unknown",
+      caveats: [`${NOT_REFRESHED_LABEL} — its producing job (${d.producingJob}) is not scheduled on this deployment`, ...report.trust.caveats],
+    },
+  };
+}
+
+/** The classification with the producing job scheduled (the original, unchanged rule). */
+function classifyWithProducer(
   d: ResourceFreshnessDescriptor,
   obs: FreshnessObservation,
   ledger: RefreshLedgerFacts,
@@ -485,16 +521,20 @@ export async function checkResourceFreshness(
   client: FreshnessReadClient = db as unknown as FreshnessReadClient,
   now: Date = new Date(),
   descriptors: readonly ResourceFreshnessDescriptor[] = RESOURCE_FRESHNESS,
+  opts: { scheduler?: SchedulerPresence } = {},
 ): Promise<ResourceFreshnessResult> {
   const resources: ResourceFreshnessReport[] = [];
+  // Server-side only: the deployment environment decides (tests inject it).
+  const scheduler = opts.scheduler ?? deploymentSchedulerPresence();
   for (const d of descriptors) {
     const obs = await d.probe(client, now);
     const ledger = d.producingJob ? await readRefreshLedger(client, d.producingJob) : NO_LEDGER;
-    resources.push(classifyResourceFreshness(d, obs, ledger, now));
+    resources.push(classifyResourceFreshness(d, obs, ledger, now, d.producingJob ? jobScheduledIn(scheduler, d.producingJob) : true));
   }
   return {
     checkedAt: now,
-    allFresh: resources.every((r) => r.healthState === "fresh" || r.healthState === "idle"),
+    // not-refreshed is neutral (Preview only): nothing is wrong with the resource itself.
+    allFresh: resources.every((r) => r.healthState === "fresh" || r.healthState === "idle" || r.healthState === "not-refreshed"),
     resources,
   };
 }

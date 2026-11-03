@@ -42,6 +42,14 @@
  * traces to the rule and to the records that produced it.
  */
 
+/**
+ * THE failing share shared by every provider verdict definition (provider-outcome@1
+ * failed outcomes, provider-connection@1 connections in provider-side ERROR, and
+ * its reauth-wave share): at or above half, the evidence says the provider — not
+ * one customer — is the problem. One constant, so the rules cannot drift apart.
+ */
+export const PROVIDER_FAILING_SHARE = 0.5;
+
 export const PROVIDER_OUTCOME_DEFINITION = {
   id: "provider-outcome",
   version: 1,
@@ -53,8 +61,8 @@ export const PROVIDER_OUTCOME_DEFINITION = {
     /** ProviderCall attempts in the 7-day roll-up (the dashboard's long-standing floor). */
     calls: 20,
   },
-  /** Failed share at or above which a sufficient sample is FAILING. */
-  failingRatio: 0.5,
+  /** Failed share at or above which a sufficient sample is FAILING (the shared constant). */
+  failingRatio: PROVIDER_FAILING_SHARE,
   /** The last N outcomes all failing is FAILING regardless of the ratio (ordered evidence only). */
   recentFailingRun: 3,
 } as const;

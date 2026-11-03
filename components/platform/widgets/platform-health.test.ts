@@ -163,8 +163,8 @@ function resource(over: Partial<ResourceFreshnessReport> & { resource: string; l
 }
 
 function freshnessResponse(list: ResourceFreshnessReport[]): ResourceFreshnessResponse {
-  const counts = { fresh: 0, stale: 0, empty: 0, idle: 0 };
-  for (const r of list) counts[r.healthState]++;
+  const counts: ResourceFreshnessResponse["counts"] = { fresh: 0, stale: 0, empty: 0, idle: 0 };
+  for (const r of list) counts[r.healthState] = (counts[r.healthState] ?? 0) + 1;
   return { checkedAt: AGO(1), allFresh: counts.stale === 0 && counts.empty === 0, counts, resources: list };
 }
 
