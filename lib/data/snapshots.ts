@@ -29,6 +29,7 @@ import { Snapshot } from "@/types";
 import { loadRealAssetBasisByDate } from "@/lib/snapshots/real-asset-basis";
 import { isRealAssetsModeled } from "@/lib/snapshots/real-asset-basis.core";
 import { todayUTCISO } from "@/lib/time/clock";
+import type { BalanceCoverage, WithheldChange } from "@/lib/connections/balance-coverage.core";
 
 /**
  * Resolve the stamp-conversion context for a set of snapshot rows against the
@@ -336,7 +337,15 @@ export interface SpaceNetWorthSummary {
      * it was given rather than assuming which one it received.
      */
     preset: TimePreset;
+    /** PB-8c — an endpoint includes a held-flat debt estimate: the card marks it. */
+    estimated?: true;
   } | null;
+  /**
+   * PB-8c — present when `change` is null because the month crosses the Space's
+   * balance-history floor (balance-coverage.core `changeComparability`, the rule
+   * the inside-Space hero uses). The card says "history is partial", never a %.
+   */
+  changeWithheld?: WithheldChange;
 }
 
 /**
@@ -350,6 +359,12 @@ export interface SpaceNetWorthSummary {
 export async function getSpaceNetWorthSummaries(
   client: ReadClient,
   spaceIds: string[],
+  /**
+   * PB-8c — each Space's balance-history floors (loadBalanceCoverageBySpace),
+   * read by the caller in a phase of its own. A Space absent from the map, or
+   * mapped to null, keeps its change exactly as before (fail-open).
+   */
+  balanceCoverage?: ReadonlyMap<string, BalanceCoverage | null>,
 ): Promise<Record<string, SpaceNetWorthSummary>> {
   if (spaceIds.length === 0) return {};
 
@@ -405,7 +420,8 @@ export async function getSpaceNetWorthSummaries(
     // genuine rate misses are omitted — never rendered as plain numbers, never
     // native magnitudes relabelled. No admissible point ⇒ the card's explicit
     // "no figure" state (netWorth 0, trend [], asOf null).
-    const summary = summarizeNetWorthSeries(admissibleNetWorthSeries(series, target, stampCtx));
+    const summary = summarizeNetWorthSeries(
+      admissibleNetWorthSeries(series, target, stampCtx), balanceCoverage?.get(id) ?? null);
     result[id] = { currency: target, ...summary };
   }
   return result;

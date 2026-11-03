@@ -46,6 +46,19 @@
  * use. It also refuses the shape that caused the defect: `spanDays` must never
  * simply equal `snapshotCount` unless the points really are daily and contiguous.
  *
+ * PB-8c — A WITHHELD CHANGE IS A REFUSAL, NOT A DIFFERENT NUMBER. Every
+ * consumer of `canonicalChange` (AI snapshot, launcher card, Brief) now passes
+ * it through `gateWindowChange` (balance-coverage.core): across the
+ * balance-history floor it becomes null plus a typed reason; otherwise it is the
+ * SAME figure (at most marked estimated). So the invariant above still holds as
+ * written — when present, the change is reproducible by the canonical authority —
+ * and this audit additionally asserts, on every real window it measures, that
+ * the gate never alters a figure: no coverage ⇒ identical; a floor after the
+ * opening ⇒ null with PARTIAL_BALANCE_HISTORY and the floor date, never a
+ * re-anchored number. (The per-Space floors need the server-only loader, which
+ * this plain-tsx runner cannot reach; their behaviour is pinned on the exact
+ * Preview shape in lib/connections/server-change-claims.test.ts.)
+ *
  * Run: npx tsx --env-file=.env.local scripts/audit-snapshot-window-claims.ts
  */
 
@@ -60,6 +73,7 @@
 // asserted honestly.
 import { db } from "@/lib/db";
 import { canonicalWindowChange, seriesSpanDays } from "@/lib/data/snapshot-window";
+import { gateWindowChange, type BalanceCoverage } from "@/lib/connections/balance-coverage.core";
 
 /** The row cap the snapshot assembler applies. Mirrored, not imported. */
 const SNAPSHOT_HISTORY_LIMIT = 90;
@@ -146,6 +160,24 @@ async function main(): Promise<void> {
       "the opening value comes from a point at or before the window's opening date",
       points.some((p) => p.date.toISOString().slice(0, 10) <= change.fromDate && p.value === change.fromValue),
       `no point at or before ${change.fromDate} carries ${change.fromValue}`,
+    );
+
+    // PB-8c — the gate is a refusal or the identical figure, never another number.
+    const open = gateWindowChange(change, null, ["asset", "liability"]);
+    check(
+      "no coverage ⇒ the gated change is the canonical change, unaltered",
+      open.withheld === null && JSON.stringify(open.change) === JSON.stringify(change),
+    );
+    const floorAfterOpening: BalanceCoverage = {
+      liabilityFloors: [change.toDate], assetFloors: [], estimatedLiabilityFloors: [],
+    };
+    const shut = gateWindowChange(change, floorAfterOpening, ["asset", "liability"]);
+    check(
+      "a floor after the opening ⇒ withheld: null + PARTIAL_BALANCE_HISTORY at that floor, no figure",
+      change.fromDate < change.toDate
+        ? shut.change === null && shut.withheld?.reason === "PARTIAL_BALANCE_HISTORY" && shut.withheld.coveredFrom === change.toDate
+        : shut.change !== null,
+      JSON.stringify(shut),
     );
   }
 

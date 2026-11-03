@@ -36,6 +36,7 @@ import { projectActivity, projectRollup, type CustomerRollup } from "./customer-
 import { ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, idsForAttention, type AttentionFold } from "./attention-core";
 import { loadAttention } from "./attention";
 import type { AttentionFilter, AttentionKey } from "./overview-types";
+import type { LastActiveBucket, PresenceState } from "@/lib/presence/definitions";
 
 export const CUSTOMER_LIST_MAX = 200;
 export const ROLLUP_WINDOW_DAYS = 30;
@@ -43,7 +44,8 @@ export const ROLLUP_WINDOW_DAYS = 30;
 export interface CustomerListRow extends CustomerRollup {
   id: string; email: string; name: string | null; username: string | null; role: string;
   createdAt: string; deactivatedAt: string | null;
-  lastActiveAt: string | null; lastActiveSource: "SESSION" | "LOGIN" | "NONE";
+  /** PB-10 — coarse presence + last-active buckets (lib/presence/definitions.ts); never a raw beat time. */
+  presence: PresenceState; presenceLabel: string; lastActive: { bucket: LastActiveBucket; label: string };
   policyGroup: string; policyAssigned: boolean; overlay: string | null;
   cohorts: string[];
   connectionCount: number;
@@ -111,11 +113,13 @@ export async function listCustomers(
   const since = new Date(now.getTime() - ROLLUP_WINDOW_DAYS * 86_400_000);
   const [
     assignments, cohorts, sessions, logins, plaidCounts, connCounts,
-    invocations, lastEngagements, plaidFirst, walletFirst, manualFirst, firstAiTurns, firstBriefViews,
+    invocations, lastEngagements, plaidFirst, walletFirst, manualFirst, firstAiTurns, firstBriefViews, presenceSessions,
   ] = await Promise.all([
     client.customerPolicyAssignment.findMany({ where: { userId: { in: ids } }, select: { userId: true, policyGroup: true, overlay: true } }),
     client.customerCohort.findMany({ where: { userId: { in: ids } }, select: { userId: true, cohort: true } }),
-    client.userSession.groupBy({ by: ["userId"], where: { userId: { in: ids } }, _max: { lastActiveAt: true }, _min: { createdAt: true } }),
+    // PB-10 — presence clocks, NOT lastActiveAt (session last used ≠ activity). Interaction over
+    // every session; presence over live sessions only (presenceSessions below).
+    client.userSession.groupBy({ by: ["userId"], where: { userId: { in: ids } }, _max: { lastInteractionAt: true }, _min: { createdAt: true } }),
     client.auditLog.groupBy({ by: ["userId"], where: { userId: { in: ids }, action: AuditAction.LOGIN }, _max: { createdAt: true } }),
     client.plaidItem.groupBy({ by: ["userId"], where: { userId: { in: ids }, status: { not: "REVOKED" } }, _count: { _all: true } }),
     client.connection.groupBy({ by: ["userId"], where: { userId: { in: ids }, provider: { notIn: ["PLAID", "MANUAL", "CSV"] }, status: { not: "REVOKED" } }, _count: { _all: true } }),
@@ -132,11 +136,13 @@ export async function listCustomers(
     client.financialAccount.groupBy({ by: ["createdByUserId"], where: { createdByUserId: { in: ids }, syncStatus: "manual", deletedAt: null }, _min: { createdAt: true } }),
     client.aiInvocation.groupBy({ by: ["userId"], where: { userId: { in: ids }, surface: "chat" }, _min: { occurredAt: true } }),
     client.auditLog.groupBy({ by: ["userId"], where: { userId: { in: ids }, action: AuditAction.BRIEF_VIEWED }, _min: { createdAt: true } }),
+    client.userSession.groupBy({ by: ["userId"], where: { userId: { in: ids }, revokedAt: null }, _max: { lastPresenceAt: true } }),
   ]);
   const assignBy = new Map(assignments.map((a) => [a.userId, a] as const));
   const cohortsBy = new Map<string, string[]>();
   for (const c of cohorts) cohortsBy.set(c.userId, [...(cohortsBy.get(c.userId) ?? []), c.cohort]);
-  const sessBy = new Map(sessions.map((s) => [s.userId, s._max.lastActiveAt] as const));
+  const interactionBy = new Map(sessions.map((s) => [s.userId, s._max.lastInteractionAt] as const));
+  const presenceBy = new Map(presenceSessions.map((s) => [s.userId, s._max.lastPresenceAt] as const));
   const firstSessionBy = new Map(sessions.map((s) => [s.userId, s._min.createdAt] as const));
   const loginBy = new Map(logins.map((l) => [l.userId, l._max.createdAt] as const));
   const plaidBy = new Map(plaidCounts.map((p) => [p.userId, p._count._all] as const));
@@ -163,7 +169,10 @@ export async function listCustomers(
     attentionFloor: att.fold.floor,
     customers: users.map((u) => {
       const a = assignBy.get(u.id);
-      const act = projectActivity({ lastSessionActiveAt: sessBy.get(u.id) ?? null, lastLoginAt: loginBy.get(u.id) ?? null, activeSessions: 0 });
+      const act = projectActivity({
+        presence: { lastPresenceAt: presenceBy.get(u.id) ?? null, lastInteractionAt: interactionBy.get(u.id) ?? null },
+        lastLoginAt: loginBy.get(u.id) ?? null, activeSessions: 0, now,
+      });
       const rollup = projectRollup({
         invocations30d: invocationsBy.get(u.id) ?? [],
         plaidItemCount: plaidBy.get(u.id) ?? 0,
@@ -177,7 +186,7 @@ export async function listCustomers(
       return {
         id: u.id, email: u.email, name: u.name, username: u.username, role: u.role,
         createdAt: u.createdAt.toISOString(), deactivatedAt: u.deactivatedAt?.toISOString() ?? null,
-        lastActiveAt: act.lastActiveAt, lastActiveSource: act.lastActiveSource,
+        presence: act.presence, presenceLabel: act.presenceLabel, lastActive: act.lastActive,
         // POLICY EDITOR — an unassigned row names the catalogue DEFAULT (policyAssigned false says so).
         policyGroup: a?.policyGroup ?? defaultPolicyGroup, policyAssigned: a !== undefined, overlay: a?.overlay ?? null,
         cohorts: cohortsBy.get(u.id) ?? [],

@@ -48,6 +48,11 @@ import {
 import { authoriseAggregates, type AggregateAuthorisationMap } from "@/lib/snapshots/aggregate-authorisation.core";
 import { canonicalWindowChange, type CanonicalWindowChange } from "@/lib/data/snapshot-window";
 import type { ConversionContext } from "@/lib/money/types";
+// PB-8c — the launcher's 1M change obeys the SAME partial-history floor as the
+// inside-Space hero (PB-8b): one rule, `changeComparability`, via gateWindowChange.
+import {
+  balanceCoverageSidesFor, gateWindowChange, type BalanceCoverage, type WithheldChange,
+} from "@/lib/connections/balance-coverage.core";
 
 /** The stored columns the row authority reads. Structural — no Prisma import. */
 export interface RawSnapshotRow {
@@ -145,6 +150,12 @@ export interface AdmissibleNetWorthPoint {
   value: number;
   /** Row reconstruction OR display-conversion estimation — the card's marker. */
   estimated: boolean;
+  /**
+   * PB-8c — the stored row is a reconstruction (`isEstimated`). Separate from
+   * `estimated` (which also covers display conversion): only a reconstructed
+   * day can include a held-flat debt estimate. Absent on an observed row.
+   */
+  reconstructed?: true;
 }
 
 /**
@@ -174,7 +185,8 @@ export function admissibleNetWorthSeries(
 
     const stamp = r.reportingCurrency ?? "USD";
     if (!stampCtx || stamp === target) {
-      points.push({ date: r.date, value: r.netWorth, estimated: rowUncertain });
+      points.push({ date: r.date, value: r.netWorth, estimated: rowUncertain,
+        ...(r.isEstimated ? { reconstructed: true as const } : {}) });
       continue;
     }
     // Rule 1b — off-stamp: convert at THIS point's own date. A genuine rate
@@ -187,6 +199,7 @@ export function admissibleNetWorthSeries(
     points.push({
       date: r.date, value: conv.values.v,
       estimated: rowUncertain || conv.estimated,
+      ...(r.isEstimated ? { reconstructed: true as const } : {}),
     });
   }
   return points;
@@ -202,17 +215,41 @@ export interface NetWorthSeriesSummary {
   asOf:     string | null;
   /** True when the value shown is reconstructed/estimated (rule 3's marker). */
   estimated: boolean;
-  change:   CanonicalWindowChange | null;
+  /** `estimated: true` (PB-8c) when an endpoint includes a held-flat debt estimate. */
+  change:   (CanonicalWindowChange & { estimated?: true }) | null;
+  /**
+   * PB-8c — present when `change` is null because the month crosses the Space's
+   * balance-history floor; the card says why instead of showing a figure.
+   */
+  changeWithheld?: WithheldChange;
 }
 
-/** Rules 2, 4 and 5: summarize an admissible series for one launcher card. */
-export function summarizeNetWorthSeries(points: readonly AdmissibleNetWorthPoint[]): NetWorthSeriesSummary {
+/**
+ * Rules 2, 4 and 5: summarize an admissible series for one launcher card.
+ *
+ * Rule 6 (PB-8c): the 1M change is never measured across the balance-history
+ * floor — withheld with its reason, or marked estimated (gateWindowChange).
+ * No coverage ⇒ byte-identical to before.
+ */
+export function summarizeNetWorthSeries(
+  points: readonly AdmissibleNetWorthPoint[],
+  balanceCoverage: BalanceCoverage | null = null,
+): NetWorthSeriesSummary {
   const latest = points[points.length - 1];
+  const raw = canonicalWindowChange(points.map((p) => ({ date: p.date, value: p.value })));
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const opening = raw ? points.filter((p) => iso(p.date) <= raw.fromDate).at(-1) ?? null : null;
+  const gated = gateWindowChange(raw, balanceCoverage, balanceCoverageSidesFor("netWorth"), {
+    openingISO:    opening ? iso(opening.date) : null,
+    fromEstimated: opening?.reconstructed === true,
+    toEstimated:   latest?.reconstructed === true,
+  });
   return {
     netWorth:  latest?.value ?? 0,
     trend:     points.slice(-LAUNCHER_SPARKLINE_POINTS).map((p) => p.value),
     asOf:      latest?.date.toISOString() ?? null,
     estimated: latest?.estimated ?? false,
-    change:    canonicalWindowChange(points.map((p) => ({ date: p.date, value: p.value }))),
+    change:    gated.change,
+    ...(gated.withheld ? { changeWithheld: gated.withheld } : {}),
   };
 }

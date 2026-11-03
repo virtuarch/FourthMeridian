@@ -3656,7 +3656,14 @@ model UserSession {
   sessionToken String    @unique // random opaque identifier (not the JWT itself)
   ipAddress    String?
   userAgent    String?
-  lastActiveAt DateTime  @default(now())
+  lastActiveAt DateTime  @default(now()) // SESSION LAST USED — any authenticated request; feeds the SEC-010 idle cut-off
+  // PB-10 — presence, NOT activity. Written ONLY by the visible-tab heartbeat
+  // (POST /api/user/presence, lib/auth/presence-activity.ts) on the server clock.
+  // Last value only (no history); goes with the row (session reaper, account purge).
+  // lastInteractionAt is CLIENT-ASSERTED (low trust): presence buckets and the
+  // Customer Success "last active ~" display only — never engagement, never security.
+  lastPresenceAt    DateTime?
+  lastInteractionAt DateTime?
   revokedAt    DateTime?
   revokedById  String? // admin userId who revoked this session
   createdAt    DateTime  @default(now())

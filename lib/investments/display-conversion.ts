@@ -42,6 +42,7 @@ import type { CurrentPositionRow } from "./current-positions-core";
 import type { AllocationResult, AllocationSlice } from "./investments-allocation-core";
 import type { PeriodFlows } from "./investment-flows-core";
 import type { InvestmentsTrustSummary } from "./investments-trust";
+import { REFUSAL_COPY, type PeriodAttribution } from "./period-attribution.core";
 
 /** A converter bound to one (source reporting currency, rate date, context). */
 type Conv = (amount: number) => number;
@@ -145,9 +146,52 @@ function convTrust(t: InvestmentsTrustSummary, c: Conv): InvestmentsTrustSummary
   return { ...t, residual: t.residual == null ? t.residual : c(t.residual) };
 }
 
-function convHistorical(h: InvestmentsTimeMachineResult, c: Conv, target: string): InvestmentsTimeMachineResult {
+/**
+ * PB-11 M4 — the period verdict's money, through the SAME converter (same rate,
+ * same `dateISO`) as the reconciliation and portfolio totals it sits beside.
+ * It used to ride through `...h` untouched, so a converted Space showed its
+ * opening / money in / money out / change in the reporting currency next to
+ * display-currency totals.
+ *
+ * ⚠️ A RATE MISS IS NEVER SHOWN UNCONVERTED HERE. The totals' converter keeps
+ * the source figure on a miss (a defensive edge, see makeConv); a period claim
+ * instead follows the honest-unavailable idiom: every figure the verdict states
+ * is withheld (null), the percentage is refused, and the refusal says why. Only
+ * `closingValue` stays — it IS the portfolio total the headline already shows,
+ * converted by the very same converter, so it can never disagree with it.
+ */
+function convAttribution(a: PeriodAttribution, c: Conv, target: string, rateMissing: boolean): PeriodAttribution {
+  const n = (v: number | null) => (v == null ? v : c(v));
+  if (rateMissing) {
+    return {
+      ...a,
+      kind: "NOT_ATTRIBUTABLE",
+      reportingCurrency: target,
+      closingValue: c(a.closingValue),
+      openingValue: null, moneyIn: null, moneyOut: null,
+      portfolioChange: null, unattributedChange: null,
+      mayShowReturnPercentage: false,
+      refusals: [{ code: "DISPLAY_RATE_UNAVAILABLE", copy: REFUSAL_COPY.DISPLAY_RATE_UNAVAILABLE,
+        detail: `no ${a.reportingCurrency}→${target} rate` }, ...a.refusals],
+      headline: "This period cannot be shown in the display currency.",
+    };
+  }
+  return {
+    ...a,
+    reportingCurrency:  target,
+    closingValue:       c(a.closingValue),
+    openingValue:       n(a.openingValue),
+    moneyIn:            n(a.moneyIn),
+    moneyOut:           n(a.moneyOut),
+    portfolioChange:    n(a.portfolioChange),
+    unattributedChange: n(a.unattributedChange),
+  };
+}
+
+function convHistorical(h: InvestmentsTimeMachineResult, c: Conv, target: string, rateMissing: boolean): InvestmentsTimeMachineResult {
   return {
     ...h,
+    ...(h.attribution ? { attribution: convAttribution(h.attribution, c, target, rateMissing) } : {}),
     holdings:       h.holdings.map((r) => convRow(r, c, target)),
     portfolio:      convPortfolio(h.portfolio, c, target),
     flows:          h.flows ? convFlows(h.flows, c, target) : h.flows,
@@ -184,16 +228,20 @@ export function convertInvestmentsSpaceData(
   const from = data.current.reportingCurrency;
   if (from === ctx.target) return data; // identity fast-path — no conversion, no relabel
   const c = makeConv(from, dateISO, ctx);
+  // PB-11 M4 — one rate for the whole contract: does it exist at all?
+  const rateMissing = convertMoney({ amount: 1, currency: from }, dateISO, ctx).amount === null;
 
   return {
     current:    convCurrent(data.current, c, ctx.target),
-    ...(data.historical ? { historical: convHistorical(data.historical, c, ctx.target) } : {}),
+    ...(data.historical ? { historical: convHistorical(data.historical, c, ctx.target, rateMissing) } : {}),
     // `activity` IS `historical.flows` re-surfaced — convert it identically so the two
     // can never disagree.
     ...(data.activity ? { activity: convFlows(data.activity, c, ctx.target) } : {}),
     ...(data.trust ? { trust: convTrust(data.trust, c) } : {}),
     ...(data.scopeDivergence ? { scopeDivergence: data.scopeDivergence } : {}),
     ...(data.accounts ? { accounts: convAccounts(data.accounts, c, ctx.target) } : {}),
+    // PB-11 M7 — the historical allocation (server-computed) converts like current's.
+    ...(data.historicalAllocation ? { historicalAllocation: convAllocation(data.historicalAllocation, c) } : {}),
   };
 }
 

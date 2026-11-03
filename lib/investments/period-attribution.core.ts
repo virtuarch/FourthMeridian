@@ -47,6 +47,10 @@ export const ATTRIBUTION_REFUSALS = [
   "HOLDING_UNIVERSE_CHANGED",
   "FLOW_COVERAGE_INCOMPLETE",
   "RECONSTRUCTION_CONFLICT",
+  // PB-11 M4 — set only by the DISPLAY conversion (display-conversion.ts), never
+  // by `assessPeriodAttribution`: the period's figures cannot be expressed in the
+  // display currency, so none of them is shown rather than one shown unconverted.
+  "DISPLAY_RATE_UNAVAILABLE",
 ] as const;
 export type AttributionRefusal = (typeof ATTRIBUTION_REFUSALS)[number];
 
@@ -67,6 +71,8 @@ export const REFUSAL_COPY: Record<AttributionRefusal, string> = {
     "Deposits and withdrawals for this period are not fully imported, so money in and out cannot be stated as complete.",
   RECONSTRUCTION_CONFLICT:
     "A holding carries a reconstruction conflict across this period.",
+  DISPLAY_RATE_UNAVAILABLE:
+    "No conversion rate to the display currency is available for this period, so its change can't be shown in it.",
 };
 
 /** Everything the assessment needs. Deliberately plain data — no view objects. */
@@ -250,5 +256,45 @@ export function heroComparison(a: PeriodAttribution): {
     showChange: true, changeAmount: change,
     showPercentage: pct !== null, percentage: pct,
     suppressedReason: pct === null ? (a.refusals[0]?.copy ?? null) : null,
+  };
+}
+
+/**
+ * PB-11 M5 — the hero's comparison when a payload carries NO period verdict
+ * (`attribution` absent) but does carry the reconciliation. Not a second rule:
+ * it reads the evidence the reconciliation authority (buildReconciliation)
+ * already decided — `endpointIncomplete`, `coverageConsistent`,
+ * `changeInterpretation`, `completeness` — and applies the SAME refusal copy
+ * the verdict uses, in PB-8b's three states:
+ *   withheld   an endpoint is partial / unpriced → no change, the reason said;
+ *   estimated  the basis is not fully observed → the value change, labelled
+ *              estimated, never a percentage;
+ *   comparable a like-for-like, flow-free, observed period → change + return %.
+ * A value change with external flows keeps its amount but never a percentage.
+ */
+export function reconciliationComparison(r: {
+  openingValue: number; closingValue: number; totalChange: number;
+  endpointIncomplete: boolean; coverageConsistent: boolean;
+  changeInterpretation: "return" | "value-change" | "incomparable";
+  completeness: CompletenessTier; conflict: boolean;
+  openingCoverage: { unavailableCount: number };
+}): ReturnType<typeof heroComparison> & { estimated: boolean } {
+  if (r.endpointIncomplete || !r.coverageConsistent || r.changeInterpretation === "incomparable") {
+    return {
+      showChange: false, changeAmount: null, showPercentage: false, percentage: null, estimated: false,
+      suppressedReason: r.openingCoverage.unavailableCount > 0
+        ? REFUSAL_COPY.OPENING_ENDPOINT_INCOMPLETE : REFUSAL_COPY.CLOSING_ENDPOINT_INCOMPLETE,
+    };
+  }
+  const estimated = !OBSERVED_TIERS.has(r.completeness);
+  const mayShowPct = !estimated && !r.conflict && r.changeInterpretation === "return" && r.openingValue !== 0;
+  return {
+    showChange: true, changeAmount: r.totalChange,
+    showPercentage: mayShowPct, percentage: mayShowPct ? (r.totalChange / r.openingValue) * 100 : null,
+    estimated,
+    suppressedReason: mayShowPct ? null
+      : estimated ? REFUSAL_COPY.OPENING_NOT_OBSERVED
+      : r.conflict ? REFUSAL_COPY.RECONSTRUCTION_CONFLICT
+      : "Money moved in or out during this period, so this is a value change, not a return.",
   };
 }

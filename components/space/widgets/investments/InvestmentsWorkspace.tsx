@@ -135,6 +135,9 @@ export function InvestmentsWorkspace({
   // the server's — around midnight the same date sat on both sides at once.
   const historicalMode = !!data && isHistoricalDay(asOf, serverToday ?? today) && data.historical != null;
   const primary = data ? (historicalMode && data.historical ? data.historical : data.current) : null;
+  // PB-11 M7 — THE server-computed allocation for the mode on screen (one
+  // computation site, lib/investments/space-data-core); never re-reduced here.
+  const allocation = data ? (historicalMode && data.historical ? data.historicalAllocation ?? null : data.current.allocation) : null;
 
   // Publish section anchors to the sidebar once real holdings exist (cleared on unmount).
   const publishSections = useSpaceSectionsPublisher();
@@ -283,11 +286,12 @@ export function InvestmentsWorkspace({
             the donut, exactly as Net Worth's "Where it sits" card does. */}
         <Block label="Allocation" action={<Dropdown options={ALLOCATION_GROUPINGS} value={allocationDimension} onChange={setAllocationDimension} ariaLabel="Allocation grouping" />}>
           <DataCard>
-            <InvestmentAllocationPanel
+            {allocation && <InvestmentAllocationPanel
+              allocation={allocation}
               holdings={primary.holdings} accounts={accounts}
               reportingCurrency={reportingCurrency} showConcentrationInsight={false}
               dimension={allocationDimension}
-            />
+            />}
           </DataCard>
         </Block>
       </div>
@@ -305,7 +309,7 @@ export function InvestmentsWorkspace({
       {/* ⑤ Concentration — "how exposed am I?" (largest / top-5 / sector). */}
       <div id="investments-concentration" className="scroll-mt-20">
         <Block label="Concentration">
-          <HoldingsConcentration holdings={primary.holdings} accounts={accounts} />
+          <HoldingsConcentration allocation={allocation} />
         </Block>
       </div>
 
