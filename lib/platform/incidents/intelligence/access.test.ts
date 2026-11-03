@@ -81,7 +81,7 @@ const client: IncidentFactsReader = {
       return ITEMS;
     }) as never,
   },
-  stageAttempts: (async () => { reads++; return []; }) as never,
+  latestAttempts: (async () => { reads++; return []; }) as never,
 };
 const acc = createIncidentAccessors(client);
 const opts = { now: NOW };

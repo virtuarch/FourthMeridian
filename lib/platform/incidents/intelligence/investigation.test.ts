@@ -134,7 +134,7 @@ const client: IncidentFactsReader = {
   },
   financialAccount: { findMany: (async (a: { where?: W }) => { reads++; return ACCOUNTS.filter((x) => matches(a.where, x)); }) as never },
   plaidItem: { findMany: (async (a: { where?: W }) => { reads++; return ITEMS.filter((i) => matches(a.where, i)); }) as never },
-  stageAttempts: (async () => { reads++; return []; }) as never,
+  latestAttempts: (async () => { reads++; return []; }) as never,
 };
 const acc = createIncidentAccessors(client);
 const opts = { now: NOW };
