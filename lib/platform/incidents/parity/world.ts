@@ -19,6 +19,13 @@ export interface WorldRow {
   firstOccurredAt: Date | null;
   lastOccurredAt: Date | null;
   incidentKey: string | null;
+  /**
+   * The STALE rule's attempt evidence (§12 P2.1), as the Phase-2 loader would
+   * supply it: "known-empty" = looked up, neither attempted nor skipped since
+   * lastOccurredAt; absent = UNKNOWN (not looked up / unreadable). Legacy
+   * readers ignore it.
+   */
+  attempts?: "known-empty";
   /** Which §13.2 divergence(s) this row is here to exercise. */
   exercises: string[];
 }
@@ -90,7 +97,11 @@ export function buildWorld(): World {
       row("r_recur_2", { incidentKey: "k_recur", createdAt: ago(3), firstOccurredAt: ago(3), lastOccurredAt: ago(1), exercises: ["D8"] }),
       // Introduced by the Phase-2 module (API review 2026-11-03), not by today's readers:
       row("r_revoked_item", { plaidItemId: "item_revoked", exercises: ["D2b"] }),
-      row("r_stale_open", { createdAt: ago(30), firstOccurredAt: ago(30), lastOccurredAt: ago(30), exercises: ["D10"] }),
+      // D10: past its window and KNOWN to have had no attempt since ⇒ stale-unverified, not broken now.
+      row("r_stale_open", { createdAt: ago(30), firstOccurredAt: ago(30), lastOccurredAt: ago(30), attempts: "known-empty", exercises: ["D10"] }),
+      // Its sibling with UNKNOWN evidence: unverified, STILL broken now (unknown never hides a row,
+      // never escalates); it only loses alert eligibility. Created before convergence's window (D6).
+      row("r_stale_unknown", { createdAt: ago(30), firstOccurredAt: ago(30), lastOccurredAt: ago(30), exercises: ["D10", "D6"] }),
     ],
   };
 }
