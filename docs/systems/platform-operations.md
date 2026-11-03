@@ -82,7 +82,7 @@ not a tenant capability, and mixing the two would be a confused-deputy risk. The
 in the pure policy. Platform refusals are recorded as one bounded anomaly row per user,
 area and window (`lib/platform/ops/access-denied.ts`). Server routes live under
 `app/api/platform/{platform-ops,security-ops,growth-revenue,customer-success,merchant-ops}/`
-and gate through `requirePlatformAccess(area, level)`.
+and gate through `requirePlatformAccess` / `requireFreshPlatformAccess`.
 
 ## Execution and observability
 
@@ -121,12 +121,14 @@ phases: [PB1-INCIDENT-LIFECYCLE](../plans/PB1-INCIDENT-LIFECYCLE.md).
 |---|---|
 | `SyncIssue` | One **episode** per `incidentKey` (`v1::provider::scope::domain::operation`, `lib/platform/incidents/identity.ts`). A partial unique index allows only one open episode per key. Carries `lifecycleState`, the resolution fields, `subjectUserId` and the cause fields. |
 | `SyncIssueOccurrence` | Each observation, with structured soft references (account, security, `jobRunId`). |
-| `SyncIssueEvent` | **Append-only** event history. The database stamps `at`, and the column-level INSERT excludes it, so events cannot be backdated. No UPDATE grant. |
+| `SyncIssueEvent` | **Append-only** event history. The database stamps `at`, and the column-level INSERT excludes it, so events cannot be backdated. No UPDATE grant. fm_system's DELETE on events is used only by retention and account purge. |
 | `SyncIssueRelation` | Soft-reference links between incidents. They can point at an archived incident. |
 | `SyncIssueArchive` | A summary-only record of a pruned incident: ids, registry codes, timestamps, counts, and a code-only event timeline of at most 8 KB. |
 
-The three new tables have forced RLS and are reachable only by `fm_system`. `fm_app`
-gets nothing.
+The three new tables have FORCE RLS: fm_system reads and writes, fm_backup has SELECT only,
+and fm_app and fm_auth get nothing. fm_app's existing column grant on `SyncIssue` (id, kind,
+resolved, createdAt, financialAccountId, plaidTransactionId) is unchanged, so it cannot read
+the new lifecycle or subject columns. Proven by rls:accept cases 42–48.
 
 **States** (`LIFECYCLE_STATES`, `lib/platform/incidents/invariant.ts`, enforced by a DB
 CHECK): `ACTIVE · ACKNOWLEDGED · RECOVERING · STALE · RESOLVED`. `RESOLVED` must move
@@ -180,7 +182,7 @@ with no customer subject is kept.
   intelligence second, conversation and navigation last.
 - **IN PROGRESS: PR #264** (draft) publishes the incident-intelligence API first
   (`lib/platform/incidents/intelligence/types.ts`, `audience.ts`), so the Phase-2 parity
-  harness (PR #263, draft) can be built against it. Session 2's canonical rules D1–D8 are
+  harness (PR #263, draft) can be built against it. Session 2's canonical rules D1–D10, incl. D2b (PB-1 §13.2), are
   adopted. There is no migration, and the STALE windows are one constant set (owner
   question pending). Each later reader cutover is its own PR, gated on the harness.
   Today about six readers compete over incident state, and this layer replaces them with
