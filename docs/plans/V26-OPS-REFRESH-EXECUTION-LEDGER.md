@@ -14,7 +14,7 @@ Status vocabulary (a slice may hold several; the last one reached is its real st
 ## 0 · Arc status
 
 **OPS-REFRESH-1 (investigation)** — complete, read-only.
-`docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md`. Five drifts found.
+Durable findings now in [connections.md → Refresh paths and execution traceability](../systems/connections.md#refresh-paths-and-execution-traceability) (the investigation itself is in git history). Five drifts found.
 
 **OPS-REFRESH-1A** — **committed · locally verified against a live refresh**.
 DRIFT-1 closed and observed closed. See §OPS-REFRESH-1A-V.
@@ -34,7 +34,7 @@ the local dev database and made real Plaid calls, by design.
 | | |
 |---|---|
 | **Status** | **investigated** — read-only; no code, schema, route, job, or ledger touched |
-| **Artifact** | `docs/plans/V26-INVESTIGATION-MANUAL-REFRESH-TRACEABILITY.md` |
+| **Artifact** | extracted into `docs/systems/connections.md` (original in git history) |
 | **Presenting symptom** | One confirmed user-initiated manual refresh wrote 25 `Transaction`, 49 `PositionObservation` (incl. `origin: DERIVED` / `source: "reconstruction"`), 9 `InvestmentEvent`, 1 `SpaceSnapshot` — with **no** `RefreshExecution` and **no** `JobRun` |
 | **Root cause** | `POST /api/plaid/refresh` forks on `body.plaidItemId`. The per-connection branch runs under `runFullRefresh` (DF-2A). The **no-body branch** — the global topbar Refresh button and sidebar "Refresh Data", via `components/plaid/useManualRefresh.ts` — calls `refreshAllActiveItemsForUser`, which called `refreshPlaidItem(id, { deferSnapshot: true })` with **no recorder, no runId, no envelope**. |
 | **Verdict** | **Implementation drift**, not an intended exemption. Doctrine §C requires one execution per attempt; §J exempts only the reconnect *inline* fast slice, a different function in a different file. |
@@ -146,7 +146,7 @@ the local dev database and made real Plaid calls, by design.
 | **Status** | **locally verified** — a real all-items manual refresh was executed and observed. **NOT** `production behavior verified`; production remains unobserved. |
 | **When** | 2026-08-01T00:15:09Z (cutoff) → 00:16:22Z |
 | **Path exercised** | The actual topbar `RefreshButton` in Chrome on `localhost:3000` → `useManualRefresh` → `POST /api/plaid/refresh` **with no body** — Branch B, the exact path that previously produced no ledger record. Not a synthetic POST. |
-| **Scope** | User `chr.hogan1997@gmail.com`; 4 ACTIVE items (American Express, Chase, Charles Schwab, Robinhood), all eligible. Real Plaid calls, real local writes. |
+| **Scope** | the owner's local user; 4 ACTIVE items (institutions redacted), all eligible. Real Plaid calls, real local writes. |
 
 ### Before → after
 
