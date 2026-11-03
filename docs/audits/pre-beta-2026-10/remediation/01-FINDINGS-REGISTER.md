@@ -65,7 +65,7 @@ Counts at baseline: P0 0 · P1 34 · P2 77 · P3 73 (static); runtime reclassifi
 | PRIV-013 / PRIV-015 | P2 | — | sub-processors; Sentry breadcrumbs | A | `beforeBreadcrumb` scrub; sub-processor list copy | PARTIAL (PRIV-015 done; PRIV-013 counsel) | 4adc094 | counsel for copy |
 | FIN-003 | P2 | CONFIRMED | `cash-flow.ts` | B | sign-aware income | RESOLVED | 66ed6bf, b04e4f1 |  |
 | FIN-004 | P2 | SUPPORTED | Cash Flow page vs AI | B | document split; UTC boundaries if cheap | DEFERRED (owner convention) | documented in 08 |  |
-| FIN-005 | P2 | CONFIRMED | `backfill-core.ts`, `cash-history.ts` | B | history basis from `totalLiquid` | PARTIAL (split computed; column deferred) | dad72a6 |  |
+| FIN-005 | P2 | CONFIRMED | `backfill-core.ts`, `cash-history.ts` | B | history basis from `totalLiquid` | **PARTIAL (2026-11-03):** part 1 FIXED on `develop` (#311: cash history labelled all-cash incl. restricted; the Brief and AI never present a change between the all-cash history and unrestricted cash now); part 2 (`SpaceSnapshot.restrictedCash` column, then the owner-gated past-row repair) IN PROGRESS | dad72a6, #311 |  |
 | FIN-006 | P2 | — | holdings refresh | — | DEFERRED (consent-gated pipeline stage; design) | DEFERRED | | |
 | FIN-007 | P2 | — | webhook health codes | C | map `ITEM/ERROR`, `PENDING_EXPIRATION`, `USER_PERMISSION_REVOKED` to health transitions | RESOLVED | 5e59c89, 7cad17e |  |
 | FIN-008 | P2 | — | Brief unconverted | — | DEFERRED (non-USD only) | DEFERRED | | |
