@@ -27,7 +27,7 @@ This is the one part of the July AI-5 acceptance criterion ("no reply silently c
 
 ## 4. Order of work when it is picked up
 
-1. **Measure first.** Add a follow-up corpus to the conversation harness (`docs/plans/AI-CONVERSATION-BASELINE-HARNESS.md`) and record how often the live runtime (a) keeps the window, (b) changes it and says so, (c) changes it silently. The ticket's severity is re-graded from that number before any design.
+1. **Measure first.** Add a follow-up corpus to the conversation harness ([`docs/systems/ai-foundation.md` §8](../systems/ai-foundation.md#8-conversation-harness)) and record how often the live runtime (a) keeps the window, (b) changes it and says so, (c) changes it silently. The ticket's severity is re-graded from that number before any design.
 2. **Prefer a contract over a carrier.** The repository's own evidence is that tool *contracts* move behaviour where prompt rules do not (`bca5119`: a prohibition in a tool description took a 0/5 to 5/5; `7859d6c`: the tool's leading sentence decided routing). The first candidate is therefore a `window` statement in the tool results plus a disclosure rule, measured against the corpus — not a new field in the sealed carrier.
 3. **Only if measurement demands it,** carry the last answered window in the sealed carrier (same `{assumptions, result}` discipline as the active scenario: one literal, cleared on failure) and have the runtime disclose a change.
 4. Pin whatever ships in the harness and in a unit test over the pure pieces; record the before/after rates in the closure document.

@@ -150,7 +150,7 @@ export function duplicateInstitutionMessage(institutionName: string, existingSta
  * database. ANY non-REVOKED Item of the same institution blocks a FRESH link:
  * before this it was ACTIVE-only, so a customer re-linking a NEEDS_REAUTH or
  * ERROR bank minted a SECOND billable Item while the first kept billing until
- * someone revoked it (growth vector 1, AI-PLAID-COST-ECONOMICS-ASSESSMENT §6.2).
+ * someone revoked it (docs/systems/billing-and-provider-costs.md, "Plaid growth controls").
  * A REVOKED Item is the one case a fresh link is the right answer: the user
  * removed it, and a relink legitimately creates a new Item.
  */

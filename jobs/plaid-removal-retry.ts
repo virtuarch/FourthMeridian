@@ -8,8 +8,8 @@
  * still exists at Plaid with a valid access_token, and Plaid bills a
  * subscription "as long as a valid access_token exists for the Item". Until
  * now the only retry was an operator pressing Retry on the Provider cleanup
- * widget; nothing scheduled it (AI-PLAID-COST-ECONOMICS-ASSESSMENT §6.2,
- * growth vector 2). This job is that schedule. Daily, fixed cadence
+ * widget; nothing scheduled it (docs/systems/billing-and-provider-costs.md,
+ * "Plaid growth controls"). This job is that schedule. Daily, fixed cadence
  * (lib/jobs/registry.core.ts), executed through the dispatcher + runJob(),
  * which writes the returned result into the JobRun ledger as the run summary —
  * the same way sweep-rate-limits and evaluate-alerts record theirs.
