@@ -90,7 +90,8 @@ const MODULE_OPEN: Readonly<Record<ReaderId, (v: IncidentVerdict) => boolean>> =
   convergence: (v) => v.state === "active",
 };
 export const ALLOWED_DIVERGENCES: Readonly<Record<ReaderId, readonly string[]>> = {
-  "cs-panel": ["D1", "D2", "D2b", "D4", "D10"],
+  // cut over in R1; any divergence from module brokenNow is now a defect
+  "cs-panel": [],
   convergence: ["D2", "D2b", "D3", "D6", "D7", "D10"],
   projection: ["D2", "D2b", "D10"],
   // D2: alerts select from the projection's active set, which does not honour a soft-deleted account.
