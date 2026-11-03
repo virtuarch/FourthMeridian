@@ -237,8 +237,11 @@ function main() {
   // ── 8. PB-1 Phase 1 — provenance is append-only, evidence is typed ─────────
   console.log("8. the chronology, the archive and the evidence have one writer each");
   {
+    // Disposable-PG harnesses (scripts/test-*.ts) reset their own throwaway
+    // database and refuse any other; they are fixtures, not product code.
     const prod = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")]
-      .filter((f) => !/\.test\.tsx?$/.test(f));
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !/^scripts\/test-[\w-]+\.ts$/.test(f));
     const touching = (re: RegExp) => prod.filter((f) => re.test(code(f)));
     check("SyncIssueEvent is never updated anywhere (append-only)",
       touching(/syncIssueEvent\.(update|updateMany|upsert)\(|UPDATE\s+"?SyncIssueEvent/i).length === 0);
@@ -258,7 +261,7 @@ function main() {
     // the builder, or exported read-only; the write forms are pinned in place.
     const EVIDENCE_FILES = new Set([
       LIFECYCLE, "lib/platform/incidents/evidence.ts", "lib/platform/incidents/archive-core.ts",
-      "lib/platform/incidents/retention.ts", "lib/platform/incidents/invariant.ts", "lib/export/incidents.ts",
+      "lib/platform/incidents/retention.ts", "lib/platform/incidents/invariant.ts", "lib/platform/incidents/subject-export.ts",
     ]);
     const evidenceNamers = touching(/\bresolutionEvidence\b/).filter((f) => !EVIDENCE_FILES.has(f));
     check("resolutionEvidence is touched only by its builder, the archive copy and the export",

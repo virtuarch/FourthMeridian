@@ -35,14 +35,20 @@ const db = systemDb;
 const U = "u_phase1", OTHER = "u_phase1_other";
 
 async function main() {
-  for (const t of ["SyncIssueEvent", "SyncIssueRelation", "SyncIssueArchive", "SyncIssue"]) await db.$executeRawUnsafe(`DELETE FROM "${t}"`);
-  await db.$executeRawUnsafe(`DELETE FROM "FinancialAccount" WHERE id IN ('fa_p1','fa_p1_other')`);
-  await db.$executeRawUnsafe(`DELETE FROM "PlaidItem" WHERE id = 'pi_p1'`);
-  await db.$executeRawUnsafe(`DELETE FROM "User" WHERE id IN ('${U}','${OTHER}')`);
-  await db.$executeRawUnsafe(`INSERT INTO "User"(id,email,"updatedAt") VALUES ('${U}','p1@example.test',now()),('${OTHER}','p1o@example.test',now())`);
-  await db.$executeRawUnsafe(`INSERT INTO "PlaidItem"(id,"userId","externalItemId","institutionId","institutionName","encryptedToken","updatedAt") VALUES ('pi_p1','${U}','ext','ins','A brokerage','',now())`);
-  await db.$executeRawUnsafe(`INSERT INTO "FinancialAccount"(id,name,institution,type,"ownerType","ownerUserId","updatedAt") VALUES
-    ('fa_p1','Wallet','Self-custody','crypto','USER','${U}',now()), ('fa_p1_other','Other','Self-custody','crypto','USER','${OTHER}',now())`);
+  // Reset (throwaway only) through the delegates — no raw SQL touches an account FK.
+  await db.syncIssueEvent.deleteMany({});
+  await db.syncIssueRelation.deleteMany({});
+  await db.syncIssueArchive.deleteMany({});
+  await db.syncIssue.deleteMany({});
+  await db.financialAccount.deleteMany({ where: { id: { in: ["fa_p1", "fa_p1_other"] } } });
+  await db.plaidItem.deleteMany({ where: { id: "pi_p1" } });
+  await db.user.deleteMany({ where: { id: { in: [U, OTHER] } } });
+  await db.user.createMany({ data: [{ id: U, email: "p1@example.test" }, { id: OTHER, email: "p1o@example.test" }] });
+  await db.plaidItem.create({ data: { id: "pi_p1", userId: U, externalItemId: "ext", institutionId: "ins", institutionName: "A brokerage", encryptedToken: "" } });
+  await db.financialAccount.createMany({ data: [
+    { id: "fa_p1", name: "Wallet", institution: "Self-custody", type: "crypto", ownerType: "USER", ownerUserId: U },
+    { id: "fa_p1_other", name: "Other", institution: "Self-custody", type: "crypto", ownerType: "USER", ownerUserId: OTHER },
+  ] });
 
   console.log("1. observation stamps the authoritative owner and structured subjects");
   await recordSyncIssue({ kind: "WALLET_SYNC_FAILED", provider: "WALLET", financialAccountId: "fa_p1", detail: { stage: "price" } });
@@ -57,12 +63,12 @@ async function main() {
   const observed = await db.syncIssueEvent.findMany({ where: { incidentId: wallet!.id } });
   check("one OBSERVED event, stamped by the database", observed.length === 1 && observed[0].type === "OBSERVED" && observed[0].at instanceof Date);
   // A LEGACY row (pre-Phase-1 shape): no owner, no key, on the user's Item.
-  await db.$executeRawUnsafe(`INSERT INTO "SyncIssue"(id,kind,"plaidItemId","updatedAt",resolved) VALUES ('si_legacy','UPSERT_ERROR','pi_p1',now(),false)`);
+  await db.syncIssue.create({ data: { id: "si_legacy", kind: "UPSERT_ERROR", plaidItemId: "pi_p1", resolved: false } });
   // Provider-wide history with no customer subject.
-  await db.$executeRawUnsafe(`INSERT INTO "SyncIssue"(id,kind,provider,"updatedAt",resolved) VALUES ('si_provider_wide','UPSERT_ERROR','PLAID',now(),false)`);
+  await db.syncIssue.create({ data: { id: "si_provider_wide", kind: "UPSERT_ERROR", provider: "PLAID", resolved: false } });
 
   console.log("\n2. removal closes as SUBJECT_REMOVED (CAS + event in one transaction)");
-  await db.$executeRawUnsafe(`UPDATE "FinancialAccount" SET "deletedAt"=now() WHERE id='fa_p1'`);
+  await db.financialAccount.update({ where: { id: "fa_p1" }, data: { deletedAt: new Date() } });
   const closed = await resolveIncidentsForRemovedSubjects({ financialAccountIds: ["fa_p1"] });
   const after = await db.syncIssue.findUnique({ where: { id: wallet!.id } });
   check("the wallet incident closed", closed >= 1 && after?.resolved === true && after.resolutionKind === "SUBJECT_REMOVED" && after.lifecycleState === "RESOLVED");

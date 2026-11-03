@@ -1,5 +1,5 @@
 /**
- * lib/export/incidents.ts  (PB-1 Phase 1 — incident data in the subject-access export)
+ * lib/platform/incidents/subject-export.ts  (PB-1 Phase 1 — incident data in the subject-access export)
  *
  * A customer's data export (DSAR) carries the sync incidents ABOUT them — the
  * live episodes and the 13-month archive summaries — matched by the SAME rule
@@ -10,7 +10,8 @@
  * Never `detail`, never a provider message, never another customer's data.
  *
  * The incident tables are fm_system-only (operator forensics), so this reads
- * through `systemDb` — and only ever with this user's own ids, resolved here
+ * through `systemDb` (which is why it lives with the incident authority, not
+ * under lib/export/) — and only ever with this user's own ids, resolved here
  * from the ownership lens (Items they connected, accounts they own).
  */
 

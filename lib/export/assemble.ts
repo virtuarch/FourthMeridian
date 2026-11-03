@@ -91,7 +91,7 @@ import { getRecentSnapshots } from "@/lib/data/snapshots";
 import { resolvePersonalSpaceId } from "@/lib/accounts/space-account-link";
 import { SECURITY_HISTORY_ACTIONS, securityHistoryLabel } from "@/lib/security-history";
 import { decryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { readExportIncidents } from "@/lib/export/incidents";
+import { readExportIncidents } from "@/lib/platform/incidents/subject-export";
 import {
   capTransactions,
   EXPORT_TRANSACTION_CAP,
@@ -425,7 +425,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       spaceId: b.spaceId, briefDay: iso(b.briefDay), content: b.content, generatedAt: iso(b.generatedAt),
     })),
     // PB-1 Phase 1 — after every tenant phase, on the incident tables' own
-    // authority (fm_system), with this user's ids only (lib/export/incidents.ts).
+    // authority (fm_system), with this user's ids only (lib/platform/incidents/subject-export.ts).
     syncIncidents: await readExportIncidents(userId),
   };
 
