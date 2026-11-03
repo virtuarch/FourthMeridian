@@ -92,10 +92,44 @@ export interface AiInvocationWriteClient extends LedgerHealthWriteClient {
 const whole = (n: unknown): number =>
   typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 
-/** Clip an identifier-shaped value; the ledger never carries free text. */
-const code = (v: unknown): string | null =>
-  typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, 64)
+/**
+ * The ONLY shape an error code may have on the ledger: a short identifier. A
+ * provider that puts prose in `err.code` (a sentence, a prompt fragment, a URL
+ * with a query) must never reach `AiInvocation.errorCode` — truncation alone
+ * kept 64 characters of that prose (#331 fixed only the display).
+ */
+export const AI_LEDGER_ERROR_CODE_SHAPE = /^[A-Za-z0-9_.:-]{1,64}$/;
+/** What the ledger stores when a code was supplied but is not code-shaped. */
+export const AI_LEDGER_ERROR_CODE_FALLBACK = 'error';
+
+/** The trimmed text of a string or finite number, or null when absent/blank. */
+const textOf = (v: unknown): string | null =>
+  typeof v === 'string' && v.trim() !== '' ? v.trim()
     : typeof v === 'number' && Number.isFinite(v) ? String(v) : null;
+
+/** A code-shaped value, or null (absent OR not code-shaped) — lets classification fall through. */
+const shaped = (v: unknown): string | null => {
+  const t = textOf(v);
+  return t !== null && AI_LEDGER_ERROR_CODE_SHAPE.test(t) ? t : null;
+};
+
+/**
+ * The ledger error-code gate. Absent/blank → null (nothing written); a
+ * code-shaped value → itself; anything else (prose, over-long, punctuation) →
+ * `"error"`. Every write of `AiInvocation.errorCode` goes through this
+ * (pinned by lib/ai/invocation-error-code.test.ts).
+ */
+export function code(v: unknown): string | null {
+  const t = textOf(v);
+  if (t === null) return null;
+  return AI_LEDGER_ERROR_CODE_SHAPE.test(t) ? t : AI_LEDGER_ERROR_CODE_FALLBACK;
+}
+
+/** Clip an identifier-like value (a provider request id); unchanged pre-existing behaviour. */
+const clip = (v: unknown): string | null => {
+  const t = textOf(v);
+  return t === null ? null : t.slice(0, 64);
+};
 
 /** The attribution columns, from the ambient context. Shared by both writers. */
 function attributionOf(ctx: AiInvocationContext | undefined): Record<string, unknown> {
@@ -122,12 +156,13 @@ function attributionOf(ctx: AiInvocationContext | undefined): Record<string, unk
 export function classifyAiFailure(err: unknown): { outcome: Exclude<AiInvocationOutcome, 'RETURNED'>; errorCode: string | null } {
   const e = (typeof err === 'object' && err !== null ? err : {}) as { code?: unknown; status?: unknown; name?: unknown };
   const name = typeof e.name === 'string' ? e.name : '';
-  if (isQuotaExhaustedError(err)) return { outcome: 'QUOTA', errorCode: code(e.code) ?? 'insufficient_quota' };
-  if (isRateLimitError(err))      return { outcome: 'RATE_LIMITED', errorCode: code(e.code) ?? code(e.status) ?? '429' };
+  // `shaped` (not `code`) so a prose `e.code` falls through to the status / class name.
+  if (isQuotaExhaustedError(err)) return { outcome: 'QUOTA', errorCode: shaped(e.code) ?? 'insufficient_quota' };
+  if (isRateLimitError(err))      return { outcome: 'RATE_LIMITED', errorCode: shaped(e.code) ?? shaped(e.status) ?? '429' };
   if (/abort|timeout/i.test(name) || /^StructuredOutputTimeoutError$/.test(name)) {
-    return { outcome: 'TIMEOUT', errorCode: code(e.code) ?? 'abort' };
+    return { outcome: 'TIMEOUT', errorCode: shaped(e.code) ?? 'abort' };
   }
-  return { outcome: 'FAILED', errorCode: code(e.code) ?? code(e.status) ?? (name || null) };
+  return { outcome: 'FAILED', errorCode: shaped(e.code) ?? shaped(e.status) ?? (name ? code(name) : null) };
 }
 
 // ⚠️ fm_system, NOT the tenant role and NOT the migration principal. AiInvocation
@@ -164,7 +199,7 @@ export async function recordAiInvocation(
         latencyMs:     whole(input.latencyMs),
         toolCallCount: whole(input.toolCallCount),
         ...(input.finishReason ? { finishReason: input.finishReason } : {}),
-        ...(input.providerRequestId ? { providerRequestId: code(input.providerRequestId) } : {}),
+        ...(input.providerRequestId ? { providerRequestId: clip(input.providerRequestId) } : {}),
         environment: deploymentEnvironment(),
         ...attributionOf(ctx),
       },
@@ -206,7 +241,7 @@ export async function recordAiInvocationFailure(
         // SEC-AI-003 — the attempt number of this hop, so cost exposure is
         // countable per row (a RETURNED row's finishReason is the provider's).
         ...(typeof ctx?.attempt === 'number' && ctx.attempt > 0 ? { finishReason: `attempt:${Math.floor(ctx.attempt)}` } : {}),
-        ...(input.providerRequestId ? { providerRequestId: code(input.providerRequestId) } : {}),
+        ...(input.providerRequestId ? { providerRequestId: clip(input.providerRequestId) } : {}),
         environment: deploymentEnvironment(),
         ...attributionOf(ctx),
       },
