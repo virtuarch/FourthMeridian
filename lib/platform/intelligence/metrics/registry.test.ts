@@ -199,6 +199,8 @@ console.log("accessor (definitions only, permission-filtered, token-minted)");
   for (const d of ["app", "lib", "components", "jobs"]) if (existsSync(path.join(ROOT, d))) walk(path.join(ROOT, d));
   const badImporters = importers.filter((f) => !f.endsWith(".test.ts")
     && !(f.startsWith("app/api/") && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8"))));
+  check("metric access tokens are issued in exactly one module (access.ts)",
+    /ISSUED\.add\(/.test(code(src("lib/platform/intelligence/metrics/access.ts") ?? "")) && importers.every((f) => !/ISSUED\.add\(/.test(code(src(f) ?? ""))));
   check("access.ts is imported only by tests or by API routes that mint from their own requirePlatformAccess result", badImporters.length === 0, badImporters.join(", "));
 }
 

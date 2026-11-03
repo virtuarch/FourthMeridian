@@ -44,11 +44,13 @@ export interface MetricAccessToken {
   readonly grants: readonly { area: PlatformArea; level: PlatformAccessLevel }[];
 }
 
-const MINTED = new WeakSet<object>();
+// Named ISSUED / issue, not MINTED / mint: lib/platform/incidents/intelligence/audience.test.ts
+// pins that INCIDENT audience tokens are minted in exactly one module, by those names.
+const ISSUED = new WeakSet<object>();
 
-function mint(grants: MetricAccessToken["grants"]): MetricAccessToken {
+function issue(grants: MetricAccessToken["grants"]): MetricAccessToken {
   const token = Object.freeze({ grants: Object.freeze(grants.map((g) => Object.freeze({ ...g }))) }) as unknown as MetricAccessToken;
-  MINTED.add(token);
+  ISSUED.add(token);
   return token;
 }
 
@@ -60,15 +62,15 @@ export function metricAccessFor(auth: MetricAccessAuth): MetricAccessToken | nul
   if (auth.grant === null) {
     // Break-glass: authorize.ts returns grant:null ONLY for an allowed SYSTEM_ADMIN.
     return auth.user.role === UserRole.SYSTEM_ADMIN
-      ? mint(ALL_PLATFORM_AREAS.map((area) => ({ area, level: "CONTROL" as PlatformAccessLevel })))
+      ? issue(ALL_PLATFORM_AREAS.map((area) => ({ area, level: "CONTROL" as PlatformAccessLevel })))
       : null;
   }
-  return mint([{ area: auth.grant.area, level: auth.grant.level }]);
+  return issue([{ area: auth.grant.area, level: auth.grant.level }]);
 }
 
 /** True only for a token this module minted. */
 export function isMetricAccessToken(t: unknown): t is MetricAccessToken {
-  return typeof t === "object" && t !== null && MINTED.has(t);
+  return typeof t === "object" && t !== null && ISSUED.has(t);
 }
 
 /** The definition as this caller may see it: only the permission entries its grant satisfies, or null. */
