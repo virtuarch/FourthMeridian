@@ -552,7 +552,7 @@ console.log("\n8. static — no mint, literal surfaces, bounded importers");
   // result); the AI core takes only TYPES from the registry. Nothing else may import it.
   const typeOnly = (f: string) => [...readFileSync(path.join(ROOT, f), "utf8").matchAll(/^import\s+(type\s+)?[^;]*?from\s+"@\/lib\/platform\/intelligence\/navigation\/(?:registry|access)";/gm)]
     .every((m) => !!m[1]);
-  // PB-1 related navigation: the guarded Ops incident detail route resolves the drawer's "Related" links
+  // PB-1 related navigation: the guarded Ops incident detail route resolves the drawer's "Go to" links
   // (lib/platform/incidents/related-navigation.ts takes only its resolver closure, never the registry).
   const GUARDED_ROUTES = ["app/api/platform/ai/ask/route.ts", "app/api/platform/platform-ops/incidents/[id]/route.ts"];
   const strayNav = importers.filter((f) => f !== "lib/platform/intelligence/navigation/access.ts"
