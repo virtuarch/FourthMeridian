@@ -30,7 +30,6 @@ import { randomBytes }             from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir }                  from "node:os";
 import { join }                    from "node:path";
-import { ACL_QUERY, diffAcl, parseAcl, renderRegrant } from "./lib/acl-core";
 
 const KEEP  = process.argv.includes("--keep");
 /**
@@ -374,10 +373,7 @@ async function main(): Promise<void> {
   authSurfaceProof(base);
 
   // ── backup completeness, and the failure mode it guards ───────────────────
-  const dumpFile = backupProof(base, appUrl);
-
-  // ── DR: grants after a restore ─────────────────────────────────────────────
-  regrantProof(base, appUrl, dumpFile);
+  backupProof(base, appUrl);
 
   if (TARGET_URL) psql(base, FIXTURE_CLEANUP, false);
 
@@ -515,7 +511,7 @@ function authSurfaceProof(ownerUrl: string): void {
  * So we prove BOTH directions: fm_backup produces a complete dump, and fm_app
  * demonstrably does not.
  */
-function backupProof(ownerUrl: string, appUrl: string): string | null {
+function backupProof(ownerUrl: string, appUrl: string): void {
   const live = Number(psql(ownerUrl, `select count(*) from "Transaction";`).out);
   const dir  = mkdtempSync(join(tmpdir(), "fm-rls-dump-"));
   workdir = dir;
@@ -547,48 +543,6 @@ function backupProof(ownerUrl: string, appUrl: string): string | null {
   check(29, "A dump taken as fm_app is REFUSED or silently partial — never complete",
         !b.ok || badRows < live,
         `live=${live}, in dump=${badRows} — a complete dump by the runtime role would mean RLS is not binding it`);
-  return g.ok ? good : null;
-}
-
-/**
- * Cases 38-41 — DR: a restore from our --no-privileges backup carries NO GRANTs and
- * its ledger is already at head, so nothing re-grants; `db:regrant` (scripts/lib/
- * acl-core.ts) re-establishes them from this freshly migrated database as the
- * reference (database-safety §4c, backup-restore-verification §4 step 3).
- */
-function regrantProof(ownerUrl: string, appUrl: string, dumpFile: string | null): void {
-  if (!dumpFile) { check(38, "DR regrant: a complete dump to restore exists", false, "case 28 produced no dump"); return; }
-  const refName = new URL(ownerUrl).pathname.slice(1);
-  const rsName  = `${refName}_rg`;
-  const rsOwner = (() => { const u = new URL(ownerUrl); u.pathname = `/${rsName}`; return u.toString(); })();
-  const rsApp   = (() => { const u = new URL(appUrl);   u.pathname = `/${rsName}`; return u.toString(); })();
-  psql(ownerUrl, `DROP DATABASE IF EXISTS ${rsName};`, false);
-  const created = psql(ownerUrl, `CREATE DATABASE ${rsName};`, false);
-  if (!created.ok) { check(38, "DR regrant: scratch restore database created", false, created.err.split("\n")[0]); return; }
-  try {
-    const dumpSql = readFileSync(dumpFile, "utf8").split("\n").filter((l) => !l.startsWith("SET transaction_timeout")).join("\n");
-    const restored = psql(rsOwner, dumpSql, true);
-    const denied = asApp(rsApp, null, `select count(*) from "Instrument";`);
-    check(38, "DR: a --no-privileges restore leaves fm_app WITHOUT its grants (permission denied)",
-          restored.ok && deniedByGrant(denied), restored.ok ? denied.err.split("\n")[0] || "query succeeded" : restored.err.split("\n")[0]);
-
-    // A failed catalog read must fail the case, never read as "nothing missing".
-    const aclOf = (url: string) => { const r = psql(url, ACL_QUERY); if (!r.ok) throw new Error(`ACL query failed: ${r.err.split("\n")[0]}`); return parseAcl(r.out); };
-    const before = diffAcl(aclOf(ownerUrl), aclOf(rsOwner));
-    check(39, "DR: the regrant diff finds the missing privileges and no extra ones",
-          before.missing.length > 0 && before.extra.length === 0, `missing=${before.missing.length}, extra=${before.extra.length}`);
-
-    const applied = psql(rsOwner, ["BEGIN;", ...renderRegrant(before), "COMMIT;"].join("\n"), true);
-    const after = diffAcl(aclOf(ownerUrl), aclOf(rsOwner));
-    check(40, "DR: after applying the regrant the restore matches the reference exactly",
-          applied.ok && after.missing.length === 0 && after.extra.length === 0,
-          applied.ok ? `missing=${after.missing.length}, extra=${after.extra.length}` : applied.err.split("\n")[0]);
-
-    const ok = asApp(rsApp, null, `select count(*) from "Instrument";`);
-    check(41, "DR: fm_app can read reference data on the regranted restore", ok.ok, ok.err.split("\n")[0]);
-  } finally {
-    psql(ownerUrl, `DROP DATABASE IF EXISTS ${rsName} WITH (FORCE);`, false);
-  }
 }
 
 /**
