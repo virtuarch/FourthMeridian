@@ -420,7 +420,8 @@ export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => 
 // fresh read happens while rendering. After the placeholders are taken out, ANY
 // digit left in the prose replaces the answer with the fallback (C2); the only
 // exemptions are digits inside a registry label this turn's tools returned and
-// an ISO date equal to an envelope's freshness date. A malformed placeholder, an
+// an ISO date equal to an envelope's freshness date or EXACTLY its reader-supplied
+// window start. A malformed placeholder, an
 // unknown key, a window or part mismatch, or a model-written unit beside a
 // placeholder ⇒ the fallback too (C5: no extra model round). This closes v0's
 // attribution gap: a figure can only be the figure of the metric it names.
@@ -667,13 +668,13 @@ const envelopeHours = (e: MetricEnvelope): number | null => {
  * retrieval from days / hours, else the registry's window.label — never the
  * description, never model text. A date is added ONLY when the reader gave an
  * explicit window start (`window.start`); nothing is inferred. null = point in time.
- *   "in the last 30 days" · "in the last 24 hours" · "this calendar month to date (UTC)"
+ *   "in the last 30 days" · "in the last 24 hours" · "this UTC calendar month to date" ("…, since 2026-11-01" with a reader start)
  */
 export function envelopeWindowText(e: MetricEnvelope): string | null {
   const w = e.window;
   const label = w.label ?? (w.days !== null ? daysWindowLabel(w.days) : w.hours !== null ? hoursWindowLabel(w.hours) : null);
   if (!label) return null;
-  return w.start ? `${label}, from ${w.start}` : label;
+  return w.start ? `${label}, since ${w.start}` : label;
 }
 
 /** What an envelope's window covers, as the object of "covers …" in a server note. */
@@ -736,6 +737,7 @@ export function renderPlaceholder(e: MetricEnvelope, part: string | null, estima
 /**
  * WHICH of THIS turn's envelopes a placeholder names (S2 ruling 2026-11-04; one
  * named function so the rule is reviewable in one place). The key match is EXACT.
+ *   · (the same key + window read twice ⇒ the LAST read renders)
  *   · no envelope for the key this turn                        ⇒ UNREAD (unresolved)
  *   · NO |window: resolves iff the key was read with exactly ONE window this
  *     turn, whatever it is (the same window read twice counts once); two or more
@@ -750,11 +752,11 @@ export function matchPlaceholderEnvelope(envelopes: readonly MetricEnvelope[], k
   const same = envelopes.filter((e) => e.metric === key);
   if (same.length === 0) return { kind: "UNREAD" };
   if (window !== null) {
-    const e = same.find((x) => x.window.days !== null && x.window.days === window);
+    const e = same.filter((x) => x.window.days !== null && x.window.days === window).pop();
     return e ? { kind: "MATCH", envelope: e } : { kind: "MISMATCH" };
   }
   const windows = new Set(same.map((x) => `${x.window.days}|${x.window.hours}`));
-  return windows.size === 1 ? { kind: "MATCH", envelope: same[0] } : { kind: "MISMATCH" };
+  return windows.size === 1 ? { kind: "MATCH", envelope: same[same.length - 1] } : { kind: "MISMATCH" };
 }
 
 export interface PlaceholderOutcome {
@@ -773,7 +775,7 @@ export interface PlaceholderOutcome {
  * Resolve every placeholder in the sanitised segments (text and link labels;
  * hrefs are never touched) and apply the leftover-digit rule. `labels` are the
  * registry labels this turn's tools returned (the ONLY digit allowlist besides
- * envelope freshness dates).
+ * envelope freshness dates and exact window-start dates).
  */
 export function resolvePlaceholders(
   segments: readonly AnswerSegment[], envelopes: readonly MetricEnvelope[], labels: ReadonlySet<string>, scrubbedQuestion = "",
@@ -788,6 +790,8 @@ export function resolvePlaceholders(
   const malformedBy: ReasonCounts<MalformedReason> = {};
   const why = (r: UnresolvedReason) => { unresolvedBy[r] = (unresolvedBy[r] ?? 0) + 1; unresolved++; return " "; };
   const asOfDays = envelopes.map((e) => e.freshness.asOf).filter((x): x is string => typeof x === "string").map((a) => a.slice(0, 10));
+  // An envelope's explicit window start (reader-supplied ISO date) — allowed ONLY as that exact date token.
+  const windowStarts = envelopes.map((e) => e.window.start).filter((x): x is string => typeof x === "string");
   const labelList = [...labels].filter((l) => /\d/.test(l)).sort((a, b) => b.length - a.length);
 
   const resolveText = (text: string): string => {
@@ -820,7 +824,7 @@ export function resolvePlaceholders(
       for (const [r, n] of Object.entries(malformedShapes(prose)) as [MalformedReason, number][]) malformedBy[r] = (malformedBy[r] ?? 0) + n;
     }
     for (const l of labelList) prose = prose.split(l).join(" ");
-    prose = prose.replace(/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?\b/g, (d) => (asOfDays.includes(d.slice(0, 10)) ? " " : d));
+    prose = prose.replace(/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?\b/g, (d) => (asOfDays.includes(d.slice(0, 10)) || windowStarts.includes(d) ? " " : d));
     const u = admitUserNumerals(prose, scrubbedQuestion, envelopes);
     prose = u.prose; admitted += u.admitted; if (u.collision) collision = true;
     if (/\d/.test(prose)) digit = true;

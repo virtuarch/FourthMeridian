@@ -133,7 +133,7 @@ export interface MetricWindow {
   days?: readonly number[];
   /**
    * The short server phrase a renderer states beside a figure (S2, 2026-11-04),
-   * e.g. "in the last 7 days", "this calendar month to date (UTC)". Required for
+   * e.g. "in the last 7 days", "this UTC calendar month to date". Required for
    * every kind except POINT_IN_TIME. For a metric with `days`, it is the DEFAULT
    * window's phrase (a read with another window states that window's phrase). Any
    * number in it must equal the envelope's days / hours (pinned).
@@ -301,7 +301,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Estimated operating cost this cycle (by category)",
     summary: "What the platform is costing this billing cycle, estimated: the total and its categories — AI, providers (Plaid) and infrastructure — exactly as the Economics Overview shows them. PARTIAL while any component is unmetered (other providers, infrastructure), so a ranking of categories covers only the measured ones.",
     answerClass: "CALCULATED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window.", label: "this calendar month to date (UTC)" },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window.", label: "this UTC calendar month to date" },
     numerator: { description: "Σ of the operating-cost components that could be priced: AI (customer, overhead, Platform AI) and Plaid Item-months; the parts are the Overview's AI / Providers / Infrastructure split figures.", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "operatingCostRows" } },
     denominator: null,
     compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "economicsFigure" },
@@ -327,7 +327,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Estimated provider cost this cycle (Plaid)",
     summary: "Estimated third-party provider cost this billing cycle: Plaid Item-months × the invoice-derived rate. PARTIAL whenever another provider is unmetered (always today), never $0 for an unknown part.",
     answerClass: "CALCULATED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window.", label: "this calendar month to date (UTC)" },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window.", label: "this UTC calendar month to date" },
     numerator: { description: "Σ priced Plaid product Item-months present during the cycle (Transactions; Investments only when evidenced as billed).", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "providerCostRows" } },
     denominator: null,
     compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "economicsFigure" },
