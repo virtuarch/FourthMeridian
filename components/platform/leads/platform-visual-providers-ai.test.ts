@@ -161,14 +161,14 @@ console.log("1. Providers — health classes, verdict, distribution, KPIs, hones
   check("every provider says 'cap unknown' and never prints a cap number", ents.every((e) => e.cap === CAP_UNKNOWN && usageText(e).endsWith(CAP_UNKNOWN) || e.key === "RESEND"));
 }
 
-// ── 1b. Every tile shows its verdict basis (provider-connection@1 / provider-outcome@1) ──
+// ── 1b. Every tile shows its verdict basis (provider-connection@2 / provider-outcome@1) ──
 console.log("1b. Providers — the tile shows the rule and counts behind its word; reconnects are a neutral fact");
 {
-  const conn = { definition: "provider-connection@1", verdict: null, rule: "none", tally: { active: 10, error: 0, reauth: 4, unclassified: 0, revoked: 0 }, basis: null, facts: ["4 connections need the customer to reconnect"] };
+  const conn = { definition: "provider-connection@2", verdict: null, rule: "none", concentration: null, tally: { active: 10, error: 0, reauth: 4, unclassified: 0, revoked: 0 }, basis: null, facts: ["4 connections need the customer to reconnect"] };
   const ents = providerEntities(inputs({
     health: ok({ checkedAt: AGO(1), counts: {}, providers: [
       health("PLAID", "Plaid", "INSUFFICIENT_DATA", { trustBasis: "2 runs with an outcome — 3 needed for a verdict (provider-outcome@1)", connections: conn }),
-      health("OPEN_EXCHANGE_RATES", "Open Exchange Rates", "FAILING", { trustBasis: "4 of 4 connections in provider-side error (provider-connection@1)" }),
+      health("OPEN_EXCHANGE_RATES", "Open Exchange Rates", "FAILING", { trustBasis: "4 of 4 connections in provider-side error across 3 institutions (provider-connection@2)" }),
     ] }) as never,
     operations: ok({ ...(inputs().operations.data as object), operations: [opsRow("PLAID", 20, 1)] }) as never,
   }));
@@ -176,12 +176,12 @@ console.log("1b. Providers — the tile shows the rule and counts behind its wor
   check("the Preview Plaid case: reauth never Failing — degraded only by its own 1 of 20 calls, the basis says which rule",
     plaid.status.word === "Degraded" && /^1 of 20 provider calls failed in 7 d/.test(plaid.statusBasis) && plaid.connectionFacts[0] === "4 connections need the customer to reconnect", plaid.statusBasis);
   const oxr = ents.find((e) => e.key === "OPEN_EXCHANGE_RATES")!;
-  check("statusBasis is the read-model's trustBasis (rule + counts)", oxr.statusBasis === "4 of 4 connections in provider-side error (provider-connection@1)");
+  check("statusBasis is the read-model's trustBasis (rule + counts)", oxr.statusBasis === "4 of 4 connections in provider-side error across 3 institutions (provider-connection@2)");
   const tile = text(renderToStaticMarkup(createElement(ProviderTile, { e: plaid, onSelect: () => {} })));
   check("tile renders the basis beside the word, and the reconnects as a neutral fact",
     tile.includes("Degraded") && tile.includes("1 of 20 provider calls failed in 7 d") && tile.includes("4 connections need the customer to reconnect"), tile);
   const oxrTile = text(renderToStaticMarkup(createElement(ProviderTile, { e: oxr, onSelect: () => {} })));
-  check("a Failing tile names its rule, never left beside an unrelated failure count", oxrTile.includes("Failing") && oxrTile.includes("(provider-connection@1)"), oxrTile);
+  check("a Failing tile names its rule, never left beside an unrelated failure count", oxrTile.includes("Failing") && oxrTile.includes("(provider-connection@2)"), oxrTile);
 }
 
 // ── 2. AI & Costs model ──────────────────────────────────────────────────────

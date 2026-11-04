@@ -196,9 +196,11 @@ export const METRICS: readonly MetricDefinition[] = [
     drill: { api: "/api/platform/platform-ops/provider-health", page: page(PO) },
   },
   {
-    id: "provider-connection", version: 1, domain: "providers",
+    // v2 (S2 P8 item 5) supersedes v1: an ERROR share one institution explains
+    // DEGRADES instead of failing. v1 is retired (no code computes it), so it has no entry.
+    id: "provider-connection", version: 2, domain: "providers",
     label: "Provider connection verdict",
-    summary: "Whether a provider's live connection population says the PROVIDER is failing (a provider-side ERROR share), not one customer.",
+    summary: "Whether a provider's live connection population says the PROVIDER is failing (a provider-side ERROR share that holds with its worst institution set aside), not one customer or one institution.",
     answerClass: "CALCULATED",
     window: { kind: "POINT_IN_TIME", timezone: "UTC", description: "Current connection health state (no window)." },
     numerator: { description: "Live connections in provider-side ERROR (PROVIDER_SIDE_ERROR_CODES).", source: { module: "lib/platform/verdicts/provider-connection.ts", symbol: "connectionTrustState" } },
@@ -209,10 +211,10 @@ export const METRICS: readonly MetricDefinition[] = [
       { file: "lib/platform/provider-health.ts", calls: "assessConnections" },
     ],
     inclusion: ["PlaidItem and wallet Connection rows of the provider"],
-    exclusion: ["REVOKED connections (reported as a neutral fact)", "Connections whose owner is inactive or pending deletion", "NEEDS_REAUTH never FAILS a provider (only a reauth wave DEGRADES it)"],
+    exclusion: ["REVOKED connections (reported as a neutral fact)", "Connections whose owner is inactive or pending deletion", "NEEDS_REAUTH never FAILS a provider (only a reauth wave DEGRADES it)", "An ERROR share one institution explains never FAILS a provider (institution-concentrated ⇒ DEGRADED; the basis counts institutions, never names one)"],
     freshnessSource: "The connection health authority (lib/connections/health.ts) — live columns",
     provenance: { class: "MEASURED" },
-    coverageGaps: ["Without the authority's per-source tally the population is unknown and no share is computed", "No per-institution concentration rule (all of one institution failing while the provider is fine)"],
+    coverageGaps: ["Without the authority's per-source tally the population is unknown and no share is computed", "Connections with no recorded institution are never assumed to share one; with no institution split at all, concentration is not assessed and the share alone decides", "A provider whose whole live fleet is at one institution cannot be failed by connections (only by its execution verdict)"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/provider-health/route.ts" }],
     tiles: [{ component: "components/platform/widgets/provider-view.ts", reads: "trustBadge(p.trust)" }],
     drill: { api: "/api/platform/platform-ops/provider-health", page: page(PO) },
