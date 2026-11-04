@@ -24,9 +24,8 @@ node scripts/ui-hardening/visual-viewport.mjs
 Set `FM_UI_BROWSER_TOOLS` to change the external tool directory;
 `FM_UI_BROWSER_OUTPUT` changes the generated fixture directory. The browser runner
 uses localhost port 4179. `FM_UI_CHROME` optionally selects an installed Chromium
-executable. Results and screenshots are written under `tmp/ui-hardening-evidence/`
-(gitignored; override with `FM_UI_EVIDENCE_DIR`). Generated output is not committed.
-Attach what a review needs to the PR instead (documentation lifecycle, ADR-008).
+executable. Results and screenshots are written under
+`docs/plans/ui-hardening-evidence/`.
 
 The build extracts only the existing reason-code vocabulary from `lib/audit.ts`.
 It does not bundle or mock audit operations: that server module's unrelated Node
