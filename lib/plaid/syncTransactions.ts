@@ -99,6 +99,7 @@ import { recordSyncIssue, resolveCursorBlockingIssues } from "@/lib/plaid/syncIs
 import { activeLedger } from "@/lib/plaid/refresh-ledger";
 import { retireItemSyncFailure } from "@/lib/plaid/sync-notifications";
 import { setPlaidItemHealth } from "@/lib/connections/health-transitions";
+import { settleIncompleteMarker } from "@/lib/plaid/sync-lock";
 import { resolveFingerprint } from "@/lib/transactions/fingerprint";
 import { assertAccountFkUnchanged } from "@/lib/accounts/account-reparenting";
 // Pure Plaid → TransactionCategory mapping, extracted to a Prisma-free module so
@@ -1277,8 +1278,10 @@ export async function syncTransactionsForItem(
   // connection (syncIncompleteAt === null) never re-arms it, so this can only
   // ever extend a first run, never resurrect a finished one.
   const nextCompletedSyncCount = (item.completedSyncCount ?? 0) + 1;
-  const stillFirstRun = item.syncIncompleteAt !== null && nextCompletedSyncCount < 2;
-  const settledSyncIncompleteAt = stillFirstRun ? item.syncIncompleteAt : null;
+  // P2 follow-up — FENCED. Under a held lock the marker is never overwritten
+  // with null (or an older value) once a losing claim may have stamped it
+  // mid-run; see settleIncompleteMarker in lib/plaid/sync-lock.ts.
+  const markerSettle = settleIncompleteMarker(item, nextCompletedSyncCount);
 
   // CH-2 — the success/recovery health flip (ACTIVE, errorCode cleared) goes
   // through the chokepoint: it writes the same live columns and appends a
@@ -1291,10 +1294,21 @@ export async function syncTransactionsForItem(
     plaidItemDbId,
     { status: PlaidItemStatus.ACTIVE, errorCode: null },
     { cursor: cursor ?? null, syncOriginCursor: cursor ?? null, lastSyncedAt: new Date(),
-      syncIncompleteAt: settledSyncIncompleteAt, completedSyncCount: nextCompletedSyncCount,
+      ...(markerSettle.mode === "inline" ? { syncIncompleteAt: markerSettle.value } : {}),
+      completedSyncCount: nextCompletedSyncCount,
       syncImportedCount: importedSoFar() },
     database,
   );
+  if (markerSettle.mode === "clear-if-older") {
+    // Separate, conditional, and AFTER the health flip: a crash between the two
+    // leaves the marker set — the item reads "importing" and the resume
+    // machinery re-drives it — never the reverse. REVOKED is excluded to match
+    // setPlaidItemHealth, which drops the whole success write for a revoked item.
+    await database.plaidItem.updateMany({
+      where: { id: plaidItemDbId, status: { not: PlaidItemStatus.REVOKED }, syncIncompleteAt: { lt: markerSettle.anchor } },
+      data:  { syncIncompleteAt: null },
+    });
+  }
 
   // Phase 4 — the run completed, so the cursor advanced past every page. Under
   // the Phase 1 invariant that is PROOF every obligation was discharged, which

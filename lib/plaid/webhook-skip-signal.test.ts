@@ -277,6 +277,33 @@ async function main(): Promise<void> {
     check("LOCK_TTL_MS is unchanged (6 min)", /export const LOCK_TTL_MS = 360_000;/.test(lock));
   }
 
+  console.log("6. clock domains — accepted skew between app instances (P3)");
+  {
+    // The loser's clock runs BEHIND the holder's by δ: its stamp reads as pre-claim.
+    const SKEW_MS = 25;
+    const { row, client } = makeRow();
+    const claimedAt = await claimPlaidItemSyncLockAt("item", client);
+    row.syncIncompleteAt = new Date(claimedAt!.getTime() + 10 - SKEW_MS); // landed 10 ms after the claim, stamped 25 ms slow
+    const r = await quiet(() => releasePlaidItemSyncLock("item", true, client, claimedAt!));
+    check("loser BEHIND by δ, skip within δ of the claim ⇒ cleared, no follow-up (= pre-P2 behaviour; precedes the holder's first pull)",
+      row.syncIncompleteAt === null && !r.pendingSignal);
+  }
+  {
+    // The marker-writer's clock runs AHEAD: a marker written just BEFORE the claim reads as post-claim.
+    const SKEW_MS = 25;
+    const { row, client } = makeRow();
+    const claimedAt = await claimPlaidItemSyncLockAt("item", client);
+    row.syncIncompleteAt = new Date(claimedAt!.getTime() - 10 + SKEW_MS); // written 10 ms before the claim, stamped 25 ms fast
+    const r = await quiet(() => releasePlaidItemSyncLock("item", true, client, claimedAt!));
+    check("writer AHEAD by δ ⇒ a pre-claim marker is kept: one harmless extra pull", row.syncIncompleteAt !== null && r.pendingSignal);
+  }
+  {
+    const lock = readFileSync("lib/plaid/sync-lock.ts", "utf8");
+    check("the accepted-skew decision is documented at the fence", lock.includes("CLOCK DOMAINS — ACCEPTED SKEW (P3, 2026-11-02)"));
+    check("…and the fence still compares app-clock instants (no DB-clock claim was introduced)",
+      /const now = new Date\(\);[\s\S]*data:\s+\{ syncLockedAt: now \}/.test(lock) && !/\$executeRaw|\$queryRaw/.test(lock));
+  }
+
   if (failures > 0) { console.error(`\n❌ webhook skip signal: ${failures} check(s) failed`); process.exit(1); }
   console.log("\n✅ webhook skip signal: all checks passed");
   process.exit(0);
