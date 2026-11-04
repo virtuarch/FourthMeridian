@@ -48,7 +48,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  admitUserNumerals, drillPageOf, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -427,7 +427,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("no figure and no placeholder ⇒ kept (NONE)", R("Providers look fine.").summary.verdict === "NONE");
 
   // C5 malformed ⇒ fallback with NO extra model round.
-  for (const bad of ["{{m:incident-broken-now}} incidents", "{{ m:incident-broken-now@1 | window=7 }}", "{{m:incident-broken-now@1} broken", "{{incident-broken-now@1}}", "{m:incident-broken-now@1}}"]) {
+  for (const bad of ["{{ m:incident-broken-now@1 | window=7 }}", "{{m:incident-broken-now@1} broken", "{{incident-broken-now@1}}", "{m:incident-broken-now@1}}"]) {
     const sc = script([...two, { content: bad }]);
     const r = await run("x", b, sc);
     check(`MALFORMED ${JSON.stringify(bad)} ⇒ fallback, no extra round`, r.result.grounding.replaced && ["MALFORMED_PLACEHOLDER", "UNGROUNDED_DIGIT"].includes(r.result.grounding.verdict) && r.result.usage.rounds === 2 && sc.seen.length === 2, { g: r.result.grounding, rounds: r.result.usage.rounds });
@@ -442,7 +442,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
 
   // The trace: counts only — never values, never unresolved keys.
   const line = traceLine(notRead.result) + traceLine(good.result);
-  check("traceLine carries claims=n resolved=n unresolved=n", traceLine(good.result).endsWith("claims=4 resolved=4 unresolved=0 admitted=0 verdict=RESOLVED") && traceLine(notRead.result).endsWith("claims=1 resolved=0 unresolved=1 admitted=0 verdict=UNRESOLVED_PLACEHOLDER"), line);
+  check("traceLine carries claims=n resolved=n unresolved=n", traceLine(good.result).endsWith("claims=4 resolved=4 unresolved=0 admitted=0 verdict=RESOLVED") && traceLine(notRead.result).endsWith("claims=1 resolved=0 unresolved=1 admitted=0 verdict=UNRESOLVED_PLACEHOLDER unresolvedBy=NOT_READ:1"), line);
   check("…and never a value or an unresolved key", !/\$|12\.5|\b40\b|25%|provider-outcome/.test(line), line);
   const counted: unknown[][] = [];
   const traced: string[] = [];
@@ -455,6 +455,41 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("the prompt and get_metric's description teach the syntax (guidance; enforcement is the server)",
     /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\{\{m:<metric>\}\}/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
     && JSON.stringify(platformAiToolSchemas([])).includes("{{m:<metric>}}"));
+}
+
+// ── 4e. DIAGNOSIS (2026-11-04): why a placeholder did not resolve — reason CODES, counts only ──
+console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (codes and counts only)");
+{
+  const b = opsBinding(OPS);
+  const reads = [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "ai-fleet-spend-status" } }, { name: "get_metric", args: { id: "economics-operating-cost" } }] }];
+  const turn = (content: string) => run("x", b, script([...reads, { content }]));
+  const why = async (content: string) => { const r = await turn(content); return { v: r.result.grounding.verdict, u: r.result.grounding.unresolvedBy, m: r.result.grounding.malformedBy, line: traceLine(r.result) }; };
+  const is = (x: Awaited<ReturnType<typeof why>>, v: string, u: object, m: object = {}) => x.v === v && JSON.stringify(x.u) === JSON.stringify(u) && JSON.stringify(x.m) === JSON.stringify(m);
+
+  const cases: [string, string, string, object, object?][] = [
+    ["a guessed part name ⇒ UNKNOWN_PART", "{{m:ai-fleet-spend-status@1|part=spend}} spent.", "UNRESOLVED_PLACEHOLDER", { UNKNOWN_PART: 1 }],
+    ["a part on a scalar ⇒ UNKNOWN_PART", "{{m:incident-broken-now@1|part=total}} broken.", "UNRESOLVED_PLACEHOLDER", { UNKNOWN_PART: 1 }],
+    ["no |part on a multi-part object ⇒ MISSING_PART", "{{m:economics-operating-cost@1}} total.", "UNRESOLVED_PLACEHOLDER", { MISSING_PART: 1 }],
+    ["a registry key not read this turn ⇒ NOT_READ", "{{m:provider-outcome@1|part=failing}} failing.", "UNRESOLVED_PLACEHOLDER", { NOT_READ: 1 }],
+    ["a version that does not exist ⇒ VERSION", "{{m:incident-broken-now@2}} broken.", "UNRESOLVED_PLACEHOLDER", { VERSION: 1 }],
+    ["a slug that is no registry id ⇒ UNKNOWN_KEY", "{{m:estimated-ai-cost@1}} spent.", "UNRESOLVED_PLACEHOLDER", { UNKNOWN_KEY: 1 }],
+    ["the label instead of the key ⇒ MALFORMED (NOT_A_KEY)", "{{m:Estimated AI cost}} spent.", "MALFORMED_PLACEHOLDER", {}, { NOT_A_KEY: 1 }],
+    ["a snake_case part ⇒ MALFORMED (BAD_OPTION)", "{{m:ai-fleet-spend-status@1|part=priced_usd}} spent.", "MALFORMED_PLACEHOLDER", {}, { BAD_OPTION: 1 }],
+    ["no m: prefix ⇒ MALFORMED (NO_PREFIX)", "{{incident-broken-now@1}} broken.", "MALFORMED_PLACEHOLDER", {}, { NO_PREFIX: 1 }],
+    ["an unclosed placeholder ⇒ MALFORMED (STRAY_BRACES)", "{{m:incident-broken-now@1} broken.", "MALFORMED_PLACEHOLDER", {}, { STRAY_BRACES: 1 }],
+  ];
+  for (const [name, content, v, u, m] of cases) { const x = await why(content); check(`diagnosis: ${name}`, is(x, v, u, m ?? {}), x); }
+  const mixed = await why("{{m:ai-fleet-spend-status@1|part=spend}}, {{m:ai-fleet-spend-status@1|part=cost}}, {{m:provider-outcome@1|part=failing}} and {{m:incident-broken-now@1}}.");
+  check("…several in one answer are COUNTED per reason (resolved ones are not reasons)", is(mixed, "UNRESOLVED_PLACEHOLDER", { UNKNOWN_PART: 2, NOT_READ: 1 }), mixed);
+  check("…the trace carries the reason codes in enum order: unresolvedBy=UNKNOWN_PART:2,NOT_READ:1 — never a key or part text",
+    mixed.line.endsWith("verdict=UNRESOLVED_PLACEHOLDER unresolvedBy=UNKNOWN_PART:2,NOT_READ:1") && !/spend\b|cost\b|failing|provider-outcome/.test(mixed.line.replace(/get_metric:[A-Z]+\([^)]*\)/g, "")), mixed.line);
+  const mal = await why("{{m:Estimated AI cost}} {{incident-broken-now@1}}");
+  check("…malformed shapes trace as malformedBy=NO_PREFIX:1,NOT_A_KEY:1", mal.line.endsWith("verdict=MALFORMED_PLACEHOLDER malformedBy=NO_PREFIX:1,NOT_A_KEY:1") && !/Estimated/.test(mal.line), mal.line);
+  check("…a resolved answer carries no reason fields in the trace", !(await why("{{m:incident-broken-now@1}} broken.")).line.includes("By="));
+  check("the reason enums are exactly the S2-approved codes", JSON.stringify(UNRESOLVED_REASONS) === JSON.stringify(["UNKNOWN_KEY", "VERSION", "MISSING_PART", "UNKNOWN_PART", "NOT_READ"])
+    && JSON.stringify(MALFORMED_REASONS) === JSON.stringify(["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"]));
+  const h = await handlePlatformAiAsk({ question: "x" }, askDeps({ generate: script([...reads, { content: "{{m:ai-fleet-spend-status@1|part=spend}}" }]).generate }));
+  check("…and the HTTP body's grounding carries the codes only", JSON.stringify((h.body as { grounding: unknown }).grounding) === JSON.stringify({ replaced: true, verdict: "UNRESOLVED_PLACEHOLDER", unresolvedBy: { UNKNOWN_PART: 1 }, malformedBy: {} }), h.body.grounding);
 }
 
 // ── 4c. UNITS PIN (S2 fix 2): every registered metric's figures carry an EXPLICIT unit ──

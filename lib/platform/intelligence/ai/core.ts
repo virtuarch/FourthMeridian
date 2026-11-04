@@ -426,7 +426,7 @@ export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => 
 // attribution gap: a figure can only be the figure of the metric it names.
 
 /** One well-formed placeholder. Anything else that opens `{{` or closes `}}` is MALFORMED. */
-const PLACEHOLDER = /\{\{\s*m:([a-z0-9][a-z0-9-]{0,80}@\d{1,4})((?:\|[a-z]+=[A-Za-z0-9]{1,40}){0,2})\s*\}\}/g;
+const PLACEHOLDER = /\{\{\s*m:([a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?)((?:\|[a-z]+=[A-Za-z0-9]{1,40}){0,2})\s*\}\}/g;
 
 /** The options of one placeholder, or null when malformed (unknown / repeated option, bad window). */
 function placeholderOptions(raw: string): { part: string | null; window: number | null } | null {
@@ -463,6 +463,86 @@ export type PlaceholderVerdict = (typeof PLACEHOLDER_VERDICTS)[number];
 
 /** Counts and a code only — never a value, a key or model text (C5). */
 export interface ClaimsSummary { claims: number; resolved: number; unresolved: number; admitted: number; verdict: PlaceholderVerdict }
+
+/**
+ * WHY a well-formed placeholder did not resolve (diagnosis, 2026-11-04; trace COUNTS only —
+ * never the key or part text the model wrote):
+ *   UNKNOWN_KEY  — the metric id is in no registry definition
+ *   VERSION      — the id is known (or was read this turn) but not at the written / an unambiguous version
+ *   MISSING_PART — an object value and no |part (and it is not a one-part object, safety net 2)
+ *   UNKNOWN_PART — a part the value does not have (or a part on a scalar, or a part with no declared unit)
+ *   NOT_READ     — a registry key that no get_metric of THIS turn returned
+ */
+export const UNRESOLVED_REASONS = ["UNKNOWN_KEY", "VERSION", "MISSING_PART", "UNKNOWN_PART", "NOT_READ"] as const;
+export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
+/**
+ * The SHAPE of a malformed placeholder (counts only):
+ *   NO_PREFIX     — {{…}} without the "m:" prefix
+ *   NOT_A_KEY     — the text after "m:" is not a metric-key shape (e.g. a label, capitals, spaces)
+ *   BAD_OPTION    — the key is well-shaped but an option is unknown, repeated or badly valued
+ *   STRAY_BRACES  — an unmatched "{{" or "}}"
+ */
+export const MALFORMED_REASONS = ["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"] as const;
+export type MalformedReason = (typeof MALFORMED_REASONS)[number];
+export type ReasonCounts<R extends string> = Partial<Record<R, number>>;
+
+const KNOWN_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
+const KNOWN_IDS: ReadonlySet<string> = new Set(METRICS.map((m) => m.id));
+const idOfKey = (k: string) => { const at = k.lastIndexOf("@"); return at >= 0 ? k.slice(0, at) : k; };
+
+/**
+ * The EXACT envelope key a placeholder's written key names — or why none. The key
+ * match is exact: a written "<id>@N" names only that key. A BARE "<id>" (no @N) is
+ * resolved only by safety net (1) (bareKeyNet). Never a fuzzy / label match.
+ */
+export type PlaceholderKeyMatch = { kind: "KEY"; key: string } | { kind: "UNRESOLVED"; reason: "UNKNOWN_KEY" | "VERSION" | "NOT_READ" };
+export function placeholderKeyOf(envelopes: readonly MetricEnvelope[], written: string): PlaceholderKeyMatch {
+  const versioned = written.includes("@");
+  const id = idOfKey(written);
+  const readOfId = [...new Set(envelopes.map((e) => e.metric as string))].filter((k) => idOfKey(k) === id);
+  if (versioned) {
+    if (readOfId.includes(written)) return { kind: "KEY", key: written };
+    if (readOfId.length > 0) return { kind: "UNRESOLVED", reason: "VERSION" };
+  } else {
+    const net = bareKeyNet(readOfId);
+    if (net !== null) return { kind: "KEY", key: net };
+    if (readOfId.length > 0) return { kind: "UNRESOLVED", reason: "VERSION" };
+  }
+  if (versioned ? KNOWN_KEYS.has(written) : KNOWN_IDS.has(id)) return { kind: "UNRESOLVED", reason: "NOT_READ" };
+  return { kind: "UNRESOLVED", reason: KNOWN_IDS.has(id) ? "VERSION" : "UNKNOWN_KEY" };
+}
+
+/** SAFETY NET (1) placeholder — replaced in the next step; without it a bare key is VERSION. */
+export function bareKeyNet(_readKeysOfId: readonly string[]): string | null { return null; }
+
+/**
+ * The part a placeholder renders from ONE envelope — or why none. An UNAVAILABLE
+ * envelope renders "unavailable — reason" whatever the part (no figure exists).
+ */
+export function placeholderPartOf(e: MetricEnvelope, part: string | null): { kind: "PART"; part: string | null } | { kind: "UNRESOLVED"; reason: "MISSING_PART" | "UNKNOWN_PART" } {
+  if (e.status === "UNAVAILABLE" || e.value === null) return { kind: "PART", part };
+  if (typeof e.value === "number") return part === null ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
+  const units = e.valueUnits;
+  if (units === null || typeof units === "string") return { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
+  if (part === null) return { kind: "UNRESOLVED", reason: "MISSING_PART" };
+  const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+  return own(e.value, part) && own(units, part) ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
+}
+
+/** The shape of each malformed placeholder left in the prose (counts only). */
+export function malformedShapes(prose: string): ReasonCounts<MalformedReason> {
+  const out: ReasonCounts<MalformedReason> = {};
+  const add = (r: MalformedReason) => { out[r] = (out[r] ?? 0) + 1; };
+  const rest = prose.replace(/\{\{([^{}]*)\}\}/g, (_m, inner: string) => {
+    const t = inner.trim();
+    if (!/^m:/.test(t)) { add("NO_PREFIX"); return " "; }
+    const key = t.slice(2).split("|")[0].trim();
+    add(/^[a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?$/.test(key) ? "BAD_OPTION" : "NOT_A_KEY");
+    return " ";
+  });
+  for (const _ of rest.matchAll(/\{\{|\}\}/g)) add("STRAY_BRACES");
+  return out;
+}
 
 // ── The user-numeral allowance (S2-approved 2026-11-04; one named, pinned function) ──
 //
@@ -632,6 +712,9 @@ export interface PlaceholderOutcome {
   figures: Map<string, string[]>;
   /** The envelopes the resolved placeholders rendered from (for the requested-window check). */
   placed: MetricEnvelope[];
+  /** Diagnosis (counts only): why placeholders were unresolved / malformed. */
+  unresolvedBy: ReasonCounts<UnresolvedReason>;
+  malformedBy: ReasonCounts<MalformedReason>;
 }
 
 /**
@@ -649,29 +732,41 @@ export function resolvePlaceholders(
   let malformed = false, unit = false, digit = false, windowMismatch = false, collision = false;
   const figures = new Map<string, string[]>();
   const placed: MetricEnvelope[] = [];
+  const unresolvedBy: ReasonCounts<UnresolvedReason> = {};
+  const malformedBy: ReasonCounts<MalformedReason> = {};
+  const why = (r: UnresolvedReason) => { unresolvedBy[r] = (unresolvedBy[r] ?? 0) + 1; unresolved++; return " "; };
   const asOfDays = envelopes.map((e) => e.freshness.asOf).filter((x): x is string => typeof x === "string").map((a) => a.slice(0, 10));
   const labelList = [...labels].filter((l) => /\d/.test(l)).sort((a, b) => b.length - a.length);
 
   const resolveText = (text: string): string => {
-    const out = text.replace(PLACEHOLDER, (m, key: string, rawOpts: string, offset: number) => {
+    const out = text.replace(PLACEHOLDER, (m, written: string, rawOpts: string, offset: number) => {
       claims++;
       const opts = placeholderOptions(rawOpts);
-      if (!opts) { malformed = true; unresolved++; return " "; }
+      if (!opts) { malformed = true; malformedBy.BAD_OPTION = (malformedBy.BAD_OPTION ?? 0) + 1; unresolved++; return " "; }
       const before = text.slice(0, offset), after = text.slice(offset + m.length);
       if (UNIT_BEFORE.test(before) || UNIT_AFTER.test(after)) { unit = true; unresolved++; return " "; }
+      const k = placeholderKeyOf(envelopes, written);
+      if (k.kind === "UNRESOLVED") return why(k.reason);
+      const key = k.key;
       const match = matchPlaceholderEnvelope(envelopes, key, opts.window);
       if (match.kind === "MISMATCH") { windowMismatch = true; unresolved++; return " "; }
-      const e = match.kind === "MATCH" ? match.envelope : null;
-      const fig = e ? renderPlaceholder(e, opts.part, isEstimated(key)) : null;
-      if (fig === null) { unresolved++; return " "; }
+      if (match.kind === "UNREAD") return why("NOT_READ");
+      const e = match.envelope;
+      const p = placeholderPartOf(e, opts.part);
+      if (p.kind === "UNRESOLVED") return why(p.reason);
+      const fig = renderPlaceholder(e, p.part, isEstimated(key));
+      if (fig === null) return why("UNKNOWN_PART");
       resolved++;
-      if (!placed.includes(e!)) placed.push(e!);
+      if (!placed.includes(e)) placed.push(e);
       figures.set(key, [...(figures.get(key) ?? []), fig]);
       return `${SENTINEL}${fig}${SENTINEL}`;
     });
     // The model's own prose: placeholders out, then the allowlist, then no digit may remain.
     let prose = out.replace(new RegExp(`${SENTINEL}[^${SENTINEL}]*${SENTINEL}`, "g"), " ");
-    if (/\{\{|\}\}/.test(prose)) malformed = true;
+    if (/\{\{|\}\}/.test(prose)) {
+      malformed = true;
+      for (const [r, n] of Object.entries(malformedShapes(prose)) as [MalformedReason, number][]) malformedBy[r] = (malformedBy[r] ?? 0) + n;
+    }
     for (const l of labelList) prose = prose.split(l).join(" ");
     prose = prose.replace(/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?\b/g, (d) => (asOfDays.includes(d.slice(0, 10)) ? " " : d));
     const u = admitUserNumerals(prose, scrubbedQuestion, envelopes);
@@ -686,7 +781,7 @@ export function resolvePlaceholders(
   const out: AnswerSegment[] = segments.map((x) => (x.kind === "link" ? { ...x, text: resolveText(x.text) } : { kind: "text", text: resolveText(x.text) }));
   const verdict: PlaceholderVerdict = malformed ? "MALFORMED_PLACEHOLDER" : unit ? "UNIT_MISMATCH" : windowMismatch ? "WINDOW_MISMATCH"
     : unresolved > 0 ? "UNRESOLVED_PLACEHOLDER" : collision ? "USER_NUMERAL_COLLISION" : digit ? "UNGROUNDED_DIGIT" : claims > 0 ? "RESOLVED" : "NONE";
-  return { segments: out, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed };
+  return { segments: out, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed, unresolvedBy, malformedBy };
 }
 
 /** The verdicts that keep the answer; every other one is replaced by the fallback. */
@@ -717,7 +812,11 @@ export interface PlatformAiAnswer {
   /** Deterministic notes (code-written, never model text). */
   notes: string[];
   /** replaced ⇔ the placeholder verdict refused the answer (the fallback was shown). */
-  grounding: { replaced: boolean; verdict: PlaceholderVerdict };
+  grounding: {
+    replaced: boolean; verdict: PlaceholderVerdict;
+    /** Diagnosis: why placeholders did not resolve / were malformed — reason CODES and counts, never text. */
+    unresolvedBy: ReasonCounts<UnresolvedReason>; malformedBy: ReasonCounts<MalformedReason>;
+  };
   /** Placeholder counts (C5): how many the model wrote, resolved and unresolved. Never values or keys. */
   claims: Omit<ClaimsSummary, "verdict">;
   /** What the sanitiser stripped: a total and counts by category (never the stripped text). */
@@ -734,11 +833,16 @@ const removedKinds = (s: { removed: number; kinds?: Partial<Record<SanitiseKind,
   return s.removed > 0 && parts.length ? `(${parts.join(",")})` : "";
 };
 
+/** "MISSING_PART:2,NOT_READ:1" in enum order — reason codes and counts only. */
+const reasonCounts = <R extends string>(order: readonly R[], c: ReasonCounts<R> | undefined) => order.filter((k) => (c?.[k] ?? 0) > 0).map((k) => `${k}:${c![k]}`).join(",");
+
 /** The trace as ONE metadata line (codes and registry ids only) for the route's log. */
 export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" | "sanitised" | "grounding" | "claims">): string {
   const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}`);
   const links = r.answer.filter((s) => s.kind === "link").length;
-  return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`;
+  return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
+    + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")
+    + (reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy) ? ` malformedBy=${reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy)}` : "");
 }
 
 export const UNVERIFIED_FALLBACK = "I couldn't verify that figure";
@@ -843,7 +947,7 @@ export async function runPlatformAiTurn(input: {
     result: {
       surface: binding.surfaceLabel,
       answer, citations, notes,
-      grounding: { replaced, verdict },
+      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy },
       claims: { claims: placed.summary.claims, resolved: placed.summary.resolved, unresolved: placed.summary.unresolved, admitted: placed.summary.admitted },
       sanitised: { removed, kinds },
       usage: { rounds, toolCalls, tokens },
