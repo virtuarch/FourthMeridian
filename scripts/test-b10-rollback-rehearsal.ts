@@ -160,6 +160,16 @@ function seedSql(F: Record<string, string>, pwHash: string): string {
   insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"updatedAt") values
     ('${F.faChecking}_l','${F.space1}','${F.faChecking}','HOME','ACTIVE',now()),
     ('${F.faHsa}_l','${F.space1}','${F.faHsa}','HOME','ACTIVE',now());
+  -- FIN-E parity Spaces (B10 phase; no transactions, so every day's true balances are today's)
+  insert into "Space" (id,name,type,"updatedAt") values ('${F.spaceHsa}','Parity HSA Space','PERSONAL',now()), ('${F.spacePlain}','Parity Plain Space','PERSONAL',now());
+  insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","createdByUserId",balance,currency,"providerSubtype","updatedAt") values
+    ('${F.spaceHsa}_c','Parity checking','checking','Synthetic Bank','USER','${F.u1}','${F.u1}',1000,'USD','checking',now()),
+    ('${F.spaceHsa}_h','Parity HSA','savings','Synthetic Bank','USER','${F.u1}','${F.u1}',${F.parityHsaBalance},'USD','hsa',now()),
+    ('${F.spacePlain}_c','Parity plain checking','checking','Synthetic Bank','USER','${F.u1}','${F.u1}',700,'USD','checking',now()),
+    ('${F.spacePlain}_s','Parity plain savings','savings','Synthetic Bank','USER','${F.u1}','${F.u1}',300,'USD','savings',now());
+  insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"updatedAt") values
+    ('${F.spaceHsa}_lc','${F.spaceHsa}','${F.spaceHsa}_c','HOME','ACTIVE',now()), ('${F.spaceHsa}_lh','${F.spaceHsa}','${F.spaceHsa}_h','HOME','ACTIVE',now()),
+    ('${F.spacePlain}_lc','${F.spacePlain}','${F.spacePlain}_c','HOME','ACTIVE',now()), ('${F.spacePlain}_ls','${F.spacePlain}','${F.spacePlain}_s','HOME','ACTIVE',now());
   insert into "SpaceSnapshot" (id,"spaceId",date,cash,savings,"netWorth","totalAssets") values
     ('${F.space1}_s1','${F.space1}', current_date - 3, 1000, 500, 1500, 1500);
 
@@ -271,7 +281,7 @@ async function main(): Promise<number> {
   const { base32Encode } = await import("@/lib/totp");
   const F: Record<string, string> = {
     u1: id("ua"), u2: id("ub"), operator: id("op"), u1Name: "rehearsal_one", u2Name: "rehearsal_two", password: `rh-${randomBytes(8).toString("hex")}`,
-    space1: id("sp"), faChecking: id("fc"), faHsa: id("fh"),
+    space1: id("sp"), faChecking: id("fc"), faHsa: id("fh"), spaceHsa: id("ph"), spacePlain: id("pp"), parityHsaBalance: "400",
     item0: "rh-item-0", itemA: "rh-item-a", itemB: "rh-item-b", itemC: "rh-item-c", itemE: "rh-item-e",
     agedBetaCount: "3", agedProductCount: "3", unobservedStoredBalance: "250", expectedCashB10: "1000",
     totpSecret: base32Encode(totpSecretBytes),
@@ -432,6 +442,7 @@ async function main(): Promise<number> {
     evidence.dataEffects = inventory;
     evidence.space1Snapshots = snaps;
     evidence.b10Snapshot = state.b10Snapshot;
+    evidence.finEParity = state.finEParity;
     for (const [k, v] of Object.entries(inventory)) console.log(`    ${k}: ${v}`);
     console.log(`    aged operator-resolved incident under B9 retention (row|archive|events): ${agedIssue}`);
     console.log(`    rehearsal Space snapshots (date|restrictedCash|cash): ${snaps.join("  ")}`);
