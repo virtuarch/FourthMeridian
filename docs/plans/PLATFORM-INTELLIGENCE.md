@@ -1,6 +1,6 @@
 # Platform Intelligence: governed operational and business intelligence
 
-> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #255, #257, feat/platform-metric-registry (foundation step 1), docs/active-definitions, feat/metric-retrieval-contracts (Phase 3 slice 1)
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #255, #257, feat/platform-metric-registry (foundation step 1), docs/active-definitions, feat/metric-retrieval-contracts (Phase 3 slice 1), feat/navigation-registry (foundation step 3)
 
 **Owner directives (2026-11-03).** One extensible, permissioned intelligence system for every Fourth Meridian domain. It answers questions nobody listed in advance, navigates the operator to the right record, and never acts without explicit authorization. The order is fixed: **data model → deterministic intelligence → conversation and navigation.** Incidents are the first domain ([PB1-INCIDENT-LIFECYCLE](PB1-INCIDENT-LIFECYCLE.md)). Every important KPI leads to the records behind it.
 
@@ -84,6 +84,38 @@
    - job and refresh health by trigger;
    - login failures by reason.
 3. **The navigation registry derived from the existing workspace and section registry plus `space-url`** (typed targets, required permission, deep-link parameters), validated in CI against real routes.
+   - **Step 3 — LANDED** (`feat/navigation-registry`; no route, no UI, no AI wiring, no schema change).
+     - **Registry:** `lib/platform/intelligence/navigation/registry.ts`. The targets are generated, not written: the two Platform pages (Overview, AI) from `lib/platform/nav.ts`, and every area × workspace × view from `PLATFORM_AREA_WORKSPACES` / `PLATFORM_WORKSPACES`. That gives 31 targets: 2 pages, Platform Ops 15, Security Ops 3, Growth 1, Customer Success 9, Merchant Ops 1. Each target carries:
+       - its id and kind;
+       - the UI's own label and workspace label;
+       - its area and the destination page's own guard (`[area]` page: `requirePlatformAccess(area, "READ")`; Overview and AI: any active grant);
+       - its identity tier (CUSTOMER_SUCCESS for every Customer Success destination, OPS otherwise);
+       - the deep-link keys it allows;
+       - the section keys it composes;
+       - the metric ids whose tile renders there.
+
+       Sections are not targets: their labels are DB text and they have no URL of their own. Personal-Space and tenant destinations are out of scope.
+     - **Params:** an allowlist per target, in five groups, each owned by its existing URL module. A group's validator is that module's own read → update round trip (`readIncidentsUrl`, `readAiBudgetCallsUrl`, `readEconomicsDrillUrl`, `readMerchantRecordsUrl`, `readAttentionParam`), so the owning parser decides and nothing is re-implemented. A value is accepted only if the parser keeps it byte-for-byte.
+     - **Accessor:** `navigation/access.ts`. `listNavigationTargets(surface, token, filter)` and `resolveNavigationTarget(surface, token, id, params)` → `{ href } | null`.
+       - **Token:** the caller's existing `MetricAccessToken`. Nothing is minted.
+       - **Surface:** a string literal, passed as the first argument (pinned).
+       - **Visibility:** a target is visible only when the token's one grant satisfies the page's own guard, and the target's tier is no higher than `tokenTierOnSurface` (the downgrade-only helper `atSurface` now shares). A Customer Success destination is therefore invisible on every other surface.
+       - **Break-glass sees nothing**, because every destination refuses it: the `[area]` page redirects when the grant is null, and `proxy.ts` sends a System Admin away from `/dashboard`.
+       - **One failure shape:** a forged token, an unknown or invisible id, or any bad param (unknown key, a `workspace`/`view` key, a non-canonical value, `..`, `//`, `\`, `@`, `%`, a scheme, a control character) all give the same `null`.
+       - **Output:** a same-origin relative path on the target's fixed pathname, built through `buildSpaceUrl`.
+       - **Future AI and chat consumers** get hrefs only from `resolveNavigationTarget` and never compose URLs.
+     - **Pins:** `registry.test.ts` checks:
+       - sources ⇄ targets in both directions, covering workspaces, views and retired aliases;
+       - Platform deep-link params ⇄ groups, with every other `space-url` key declared personal-Space-only;
+       - each group's homes are exactly the leads or widgets that read it;
+       - labels match the view control, the rail (`platformMountContext`) and the nav;
+       - every href resolves to its `app/**/page.tsx` route (a filesystem scan) and equals `platformWorkspaceHref`;
+       - guards match each page's source;
+       - permission filtering for every area × level × surface, break-glass, forged tokens, and no existence oracle;
+       - param injection, plus a fuzzed `new URL(href, origin)` same-origin check;
+       - metric links: ids exist, tile homes are real, and every metric drill page resolves through this registry to the same href;
+       - no mint path, literal surfaces, and bounded importers.
+     - **Metric ↔ target links:** all 13 registered metrics link to at least one target. One tile module (`customer-core.ts`, a server reader) is declared unhomed, with its reason.
 4. **`AiInvocation.surface = platform_ai`**, counted as overhead.
 5. **Minimal new instrumentation, each item needing owner approval:**
    - a deployment-event row;
