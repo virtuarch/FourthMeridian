@@ -26,6 +26,8 @@ import { PROVIDER_OUTCOME_DEFINITION } from "@/lib/platform/verdicts/provider-ou
 import { PROVIDER_CONNECTION_DEFINITION } from "@/lib/platform/verdicts/provider-connection";
 import { ENGAGEMENT_WINDOW_DAYS } from "@/lib/presence/definitions";
 import { PRODUCT_ANALYTICS_WINDOW_DAYS } from "@/lib/platform/growth/product-analytics-core";
+import { TREND_WINDOWS } from "@/lib/platform/economics/snapshot-core";
+import { AI_WINDOWS } from "@/lib/platform/ai/invocations-core";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -71,7 +73,8 @@ console.log("structure");
   check("every definition is structurally sound (explicit version, permission + identity tier, provenance reason, tile, drill)",
     problems.length === 0, problems.join("; "));
   const REQUIRED = ["provider-outcome@1", "provider-connection@2", "ai-fleet-spend-status@1", "presence-state@1", "engaged-users@1",
-    "incident-broken-now@1", "incident-alertable@1", "merchant-identity-linked@1", "cs-needs-help@1", "growth-registrations@1"];
+    "incident-broken-now@1", "incident-alertable@1", "merchant-identity-linked@1", "cs-needs-help@1", "growth-registrations@1",
+    "economics-ai-cost@1", "economics-operating-cost@1", "economics-provider-cost@1", "ai-call-outcomes@1", "ai-cost-per-call@1"];
   check("the required existing authorities are all registered", REQUIRED.every((k) => keys.includes(k)), REQUIRED.filter((k) => !keys.includes(k)).join(", "));
 
   // The validator itself refuses what the rules forbid (the registry holds no UNAVAILABLE entry today).
@@ -145,6 +148,11 @@ console.log("definition versions and windows agree with the code");
     by("provider-connection").version === (PROVIDER_CONNECTION_DEFINITION as { version: number }).version);
   check("engaged-users: Growth's 30-day window is PB-10's MAU window (ENGAGEMENT_WINDOW_DAYS.mau = PRODUCT_ANALYTICS_WINDOW_DAYS)",
     ENGAGEMENT_WINDOW_DAYS.mau === PRODUCT_ANALYTICS_WINDOW_DAYS && ENGAGEMENT_WINDOW_DAYS.dau === 1 && ENGAGEMENT_WINDOW_DAYS.wau === 7);
+  check("economics-ai-cost: the declared windows are the Economics trend windows (TREND_WINDOWS 7d / 30d / 90d)",
+    JSON.stringify([...(by("economics-ai-cost").window.days ?? [])].sort((a, b) => a - b)) === JSON.stringify(TREND_WINDOWS.map((w) => Number(w.replace("d", "")))));
+  check("ai-call-outcomes / ai-cost-per-call: the declared windows are the ai-invocations route's day windows (AI_WINDOWS 7d / 30d)",
+    ["ai-call-outcomes", "ai-cost-per-call"].every((id) => JSON.stringify([...(by(id).window.days ?? [])].sort((a, b) => a - b))
+      === JSON.stringify(AI_WINDOWS.filter((w) => w.endsWith("d")).map((w) => Number(w.replace("d", ""))))));
   check("ai-fleet-spend-status: the registered 24 h window is BUDGET_WINDOW_HOURS",
     /export const BUDGET_WINDOW_HOURS = 24;/.test(src("lib/platform/ai/ai-budget.ts") ?? "") && by("ai-fleet-spend-status").label.includes("24 h"));
 }

@@ -74,6 +74,23 @@
        - `incident-alertable@1`: the search reader pages its items, and the alertable accessor is SYSTEM-only.
      - **Pins:** `retrieve.test.ts` checks registry coverage, reader binding against each registry path, parity with each tile's own function on the same fixtures, authority and tiering, honest absence for each metric, the identity scan, the drill, no mint path, literal surfaces, no writes or caching, and bounded importers.
      - **A future route** is GET with `no-store`, guarded by the metric's own permission entry for the surface. AI and chat callers use this same contract and `atSurface`, with no bypass.
+   - **Cost metrics — LANDED** (`feat/platform-ai-cost-metrics`, PR A2; owner test "What's costing me the most money?"). Before this, the only cost metric was `ai-fleet-spend-status@1` (a 24 h budget check), so the Platform AI could not see the Economics figures. Five Economics / AI & Costs figures are now registered and retrievable. None depends on OD-1, and each wraps the reader its tile reads (no parallel query):
+
+     | Metric | Windows | Reader → tile | Status semantics |
+     |---|---|---|---|
+     | `economics-ai-cost@1` | 30 (default) · 7 · 90 UTC days | `getEconomicsSnapshot` → Overview AI trend card (`s.trend.windows[win]`, `aiCostFigure`) | `{ spendUsd }`; ESTIMATED; PARTIAL when a day has unpriced calls; UNAVAILABLE with no rate card, no calls or nothing priced |
+     | `economics-operating-cost@1` | fixed: the current cycle | `getEconomicsSnapshot` → Overview hero + split tiles | value `{ totalUsd, aiUsd, providersUsd, infrastructureUsd }`; PARTIAL while any component is unmetered (always today: other providers and infrastructure are null, never $0) |
+     | `economics-provider-cost@1` | fixed: the current cycle | `getEconomicsSnapshot` → Overview Providers tile (`f.provider_cost`) | `{ costUsd }`; ESTIMATED Plaid Item-months; PARTIAL while another provider is unmetered |
+     | `ai-call-outcomes@1` | 7 (default) · 30 days | `getAiOperations` → AI & Costs "Calls" / "Error rate" (`aiCallStats`) | `{ calls, returned, failed, errorRatePct }`; MEASURED counts; `errorRatePct` (0–100) null with no calls (never 0%) |
+     | `ai-cost-per-call@1` | 7 (default) · 30 days | `getAiOperations` → AI & Costs "Est. cost / call" (`aiCostPerCall`) | `{ costPerCallUsd, pricedUsd, returnedCalls }`; ESTIMATED; PARTIAL with unpriced tokens; UNAVAILABLE with no rate card / no calls / nothing priced |
+
+     - **Permission:** every one is PLATFORM_OPS READ (the guard on `/api/platform/platform-ops/economics` and `/ai-invocations`), identity tier OPS, aggregates only. No new grant and no CS exposure. Drill pages are navigation-registry hrefs (Economics › Overview, Economics › AI & Costs), so the #408 byte-equality rule links them.
+     - **Not registered (on purpose):** per-customer and cost-per-customer figures (OD-1 pending), revenue and margin (no billing source), top customers by cost, and entitlement / policy-group costs.
+     - **One function per KPI:** the AI & Costs KPIs now call `lib/platform/ai/call-stats.ts` (`aiCallStats`, `aiCostPerCall`), the same functions retrieval projects through. Tile parity tests in `retrieve.test.ts` compare each envelope with its tile on the same fixture world (the real `getEconomicsSnapshot` over synthetic ledger deps; `aiKpis` / `costPerCall` over one `AiOperations` payload).
+     - **Envelope additions:** `unit: "usd"` (dollars); value parts are named `…Usd` (dollars) and `…Pct` (0–100) for the placeholder renderer (#418), and no cost metric returns a bare top-level dollar number; `basis.kind` = `"estimated"` (provenance ESTIMATED, every dollar figure, PARTIAL included) or `"measured"`.
+     - **Windows are declared:** `MetricWindow.days` in the registry equals the retrieval contract's `windows` (pinned for every retrievable metric), and `list_metrics` shows it as `windows`. Any other window gets an UNAVAILABLE envelope that names the declared ones, or says the window is fixed, before the reader runs.
+     - **Tool guidance (prompt only; enforcement stays server-side):** `list_metrics` names domain `economics` for cost questions; the prompt says to call `basis.kind: "estimated"` figures estimated (never billed), and, when a comparison rests on PARTIAL figures or null parts, to say it is the largest of the measured categories and that a full ranking can't be verified.
+     - **Provider-outcome faithfulness (owner test "How are we looking today?"):** `provider-outcome@1`'s envelope used to be MEASURED even when no provider had an evaluable verdict, as on Preview where crons don't run, so it read "0 healthy, 0 degraded, 0 failing". The verdict rule is unchanged (no version bump). The envelope-status rule, now written into the registry's coverage gaps: MEASURED only when every provider is evaluable; PARTIAL, with the counts, when some have no runs or not enough data; UNAVAILABLE ("no evaluable job runs in the window (scheduled jobs may not run in this environment)") when none is. `provider-connection@2` follows the same rule for providers with no connection population. The Providers tile's "Providers healthy" KPI now shows "—" with the same reason when no provider is assessed, instead of "0/N" (parity test in `retrieve.test.ts`).
 2. **First metrics, each wrapping an existing permissioned reader:**
    - signups and verified users;
    - beta funnel conversion;
@@ -115,7 +132,7 @@
        - param injection, plus a fuzzed `new URL(href, origin)` same-origin check;
        - metric links: ids exist, tile homes are real, and every metric drill page resolves through this registry to the same href;
        - no mint path, literal surfaces, and bounded importers.
-     - **Metric ↔ target links:** all 13 registered metrics link to at least one target. One tile module (`customer-core.ts`, a server reader) is declared unhomed, with its reason.
+     - **Metric ↔ target links:** all registered metrics (18 since PR A2) link to at least one target. One tile module (`customer-core.ts`, a server reader) is declared unhomed, with its reason.
      - **Follow-up (`refactor/workspace-href-single-source`):**
        - **One link builder:** `platformWorkspaceHref` now lives in the server-safe `lib/platform/workspace-href.ts`. The client navigation hook re-exports it and the registry calls the same function, pinned by identity rather than an equality test.
        - **One param list:** `econ`/`econuntil` join `SPACE_URL_PARAMS`, and `PLATFORM_WORKSPACE_SCOPED_PARAMS` moves into `space-url.ts`, typed as a subset of it. The hook and the registry's param groups both take their keys from that one list.
@@ -205,7 +222,7 @@ Pending decisions in code: `lib/platform/customer/population.ts` names OD-1..OD-
 - "Returning ever" → "Returned (ever)"; CS "Last active" → "Last interaction". **DONE** (#350). The bucket label "active today" → "today" (the Last-interaction words; none says "active") **DONE** (#353).
 - GrowthLead "… this week" subline → "… in 7 d · … in 30 d (UTC days)". **DONE** (#353)
 - Constants: `ENGAGEMENT_WINDOW_DAYS` becomes the only window source (`PRODUCT_ANALYTICS_WINDOW_DAYS = ENGAGEMENT_WINDOW_DAYS.mau`; drop the literals) — **DONE** (#350); rolling 7 × 24 h reads move to UTC days — **NOT DONE** (changes numbers: new metric versions; each read carries a `rolling — see PLATFORM-INTELLIGENCE X5` note). Changing those reads changes their numbers, so they get new metric versions, not edits.
-- Registry: add `open-customers@1` and `live-sessions@1` — **DONE** (#350); `live-sessions@1` is the SESSION count and `accounts-with-live-session@1` the account count — **DONE** (#353); register the economics figures after OD-1 (not done). `engaged-users@1` keeps its id.
+- Registry: add `open-customers@1` and `live-sessions@1` — **DONE** (#350); `live-sessions@1` is the SESSION count and `accounts-with-live-session@1` the account count — **DONE** (#353); the economics cost figures that don't depend on OD-1 are registered (PR A2: `economics-ai-cost@1`, `economics-operating-cost@1`, `economics-provider-cost@1`, `ai-call-outcomes@1`, `ai-cost-per-call@1`); the per-customer figures wait on OD-1 (not done). `engaged-users@1` keeps its id.
 
 **Decision split**
 

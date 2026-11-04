@@ -23,6 +23,8 @@ import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
 import { getMerchantOverview } from "@/lib/platform/merchant/overview";
 import { getCsOverview } from "@/lib/platform/customer/overview";
 import { countAccountsWithLiveSession, countLiveSessions } from "@/lib/platform/security/live-sessions";
+import { getEconomicsSnapshot } from "@/lib/platform/economics/snapshot";
+import { getAiOperations } from "@/lib/platform/ai/invocations";
 import { systemDb } from "@/lib/db";
 import {
   retrieveWith,
@@ -43,6 +45,10 @@ const READERS: RetrievalReaders = {
   // The shared live-session readers take their client: the Platform's fm_system authority.
   liveSessions: (now) => countLiveSessions(systemDb, now),
   accountsWithLiveSession: (now) => countAccountsWithLiveSession(systemDb, now),
+  // The Economics Overview route's reader, at the retrieval's now (the route passes Date.now()).
+  economicsSnapshot: (nowMs) => getEconomicsSnapshot(nowMs),
+  // The ai-invocations route with ?window=7d|30d and no other filter — exactly what the AI & Costs tile fetches.
+  aiOperations: (window) => getAiOperations({ window }),
 };
 
 /**
