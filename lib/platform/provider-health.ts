@@ -383,7 +383,7 @@ export function freshnessFromConnections(source: string, rows: readonly Connecti
 export function connectionAssessmentFor(source: string, rows: readonly ConnectionHealthRow[], tally?: ConnectionSourceTally | null): ConnectionAssessment {
   if (tally) return assessConnections(tallyConnections(tally.faults, tally.active, tally.revoked));
   const mine = rows.filter((r) => r.source === source);
-  return assessConnections(tallyConnections(mine, 0, mine.filter((r) => connectionTrustState(r.healthState, r.errorCode) === "REVOKED").length));
+  return assessConnections(tallyConnections(mine, 0, mine.filter((r) => connectionTrustState(r.healthState, r.errorCode) === "REVOKED").length, { populationUnknown: true }));
 }
 
 // ── Trust roll-up (the ONE judgement — pure) ──────────────────────────────────

@@ -35,6 +35,12 @@
  *   3. REAUTH WAVE    reauth ≥ FAILING_SHARE × active, with active ≥ 4  ⇒ DEGRADED
  *                     ("possible provider-side reauth wave"; reauth NEVER fails a provider)
  *   4. UNCLASSIFIED   unclassified > 0                                  ⇒ DEGRADED
+ *                     (the basis names the codes, sorted and capped at
+ *                     UNCLASSIFIED_CODES_SHOWN; codes only, a non-code value is never echoed)
+ *
+ * Without the authority's per-source tally the population is unknown: no share
+ * is computed, and the basis says "connection population unavailable — share
+ * not computed".
  *   5. NONE           ⇒ no connection verdict (neutral facts only)
  *
  * Facts that never drive trust are reported as neutral words: customers who must
@@ -113,7 +119,16 @@ export interface ConnectionTally {
   unclassified: number;
   /** REVOKED connections — outside `active`, reported only. */
   revoked: number;
+  /** The distinct error CODES behind `unclassified` (codes only, never messages); "no code" for a null code. */
+  unclassifiedCodes?: readonly string[];
+  /** True when the live population is unknown (no per-source tally): no share is computed. */
+  populationUnknown?: boolean;
 }
+
+/** At most this many codes are named in an unclassified basis; the rest are counted ("+2 more"). */
+export const UNCLASSIFIED_CODES_SHOWN = 3;
+/** The words for a code-less unclassified error. */
+export const NO_CODE = "no code";
 
 export type ConnectionVerdict = "FAILING" | "DEGRADED" | null;
 
@@ -142,7 +157,7 @@ export function assessConnections(t: ConnectionTally): ConnectionAssessment {
   if (t.reauth > 0) facts.push(`${conns(t.reauth)} need${t.reauth === 1 ? "s" : ""} the customer to reconnect`);
   if (t.revoked > 0) facts.push(`${conns(t.revoked)} revoked by the customer`);
   const out = (verdict: ConnectionVerdict, rule: ConnectionAssessment["rule"], basis: string | null): ConnectionAssessment =>
-    ({ definition: PROVIDER_CONNECTION_DEFINITION_ID, verdict, rule, tally, basis, facts });
+    ({ definition: PROVIDER_CONNECTION_DEFINITION_ID, verdict, rule, tally, basis: basis && t.populationUnknown ? `${basis} — connection population unavailable — share not computed` : basis, facts });
 
   if (active >= d.minActiveForErrorShare && t.error >= d.failingShare * active) {
     return out("FAILING", "error-share", `${of(t.error)} in provider-side error`);
@@ -151,19 +166,44 @@ export function assessConnections(t: ConnectionTally): ConnectionAssessment {
   if (active >= d.minActiveForReauthWave && t.reauth >= d.failingShare * active) {
     return out("DEGRADED", "reauth-wave", `${of(t.reauth)} need reconnecting — possible provider-side reauth wave`);
   }
-  if (t.unclassified > 0) return out("DEGRADED", "unclassified", `${of(t.unclassified)} with an unclassified error`);
+  if (t.unclassified > 0) return out("DEGRADED", "unclassified", `${of(t.unclassified)} with an unclassified error${codesWords(t.unclassifiedCodes)}`);
   return out(null, "none", null);
 }
 
+/** The words for a value in errorCode that is not code-shaped (it may be free text): never echoed. */
+export const NOT_A_CODE = "non-code value";
+/** Codes only, never messages: an errorCode is named only when it is code-shaped (UPPER_SNAKE, ≤ 64 chars). */
+export function codeWord(errorCode: string | null): string {
+  if (errorCode == null || errorCode === "") return NO_CODE;
+  return /^[A-Z0-9_]{1,64}$/.test(errorCode) ? errorCode : NOT_A_CODE;
+}
+
+/** " (FOO, BAR, BAZ +2 more)" — sorted codes, capped; "" when none are known. */
+function codesWords(codes: readonly string[] | undefined): string {
+  if (!codes || codes.length === 0) return "";
+  const sorted = [...codes].sort();
+  const shown = sorted.slice(0, UNCLASSIFIED_CODES_SHOWN).join(", ");
+  const more = sorted.length - UNCLASSIFIED_CODES_SHOWN;
+  return ` (${shown}${more > 0 ? ` +${more} more` : ""})`;
+}
+
 /** Tally rows (state + code) into the rule's counts. `active` is supplied by the caller (the live population). */
-export function tallyConnections(rows: readonly { healthState: string; errorCode: string | null; count?: number }[], active: number, revoked: number): ConnectionTally {
+export function tallyConnections(
+  rows: readonly { healthState: string; errorCode: string | null; count?: number }[],
+  active: number,
+  revoked: number,
+  opts: { populationUnknown?: boolean } = {},
+): ConnectionTally {
+  const codes = new Set<string>();
   const t: ConnectionTally = { active, error: 0, reauth: 0, unclassified: 0, revoked };
   for (const r of rows) {
     const k = r.count ?? 1;
     const s = connectionTrustState(r.healthState, r.errorCode);
     if (s === "ERROR") t.error += k;
     else if (s === "NEEDS_REAUTH") t.reauth += k;
-    else if (s === "UNCLASSIFIED") t.unclassified += k;
+    else if (s === "UNCLASSIFIED") { t.unclassified += k; codes.add(codeWord(r.errorCode)); }
   }
+  if (codes.size > 0) t.unclassifiedCodes = [...codes];
+  if (opts.populationUnknown) t.populationUnknown = true;
   return t;
 }
