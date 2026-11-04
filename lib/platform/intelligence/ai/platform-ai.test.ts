@@ -688,6 +688,9 @@ console.log("\n11. UI — the question box, citations with status chips, 375 px"
     html.includes(answeringFrom("Platform Operations")) && html.includes("Answering from Platform Operations data") && /data-platform-ai-area/.test(html), html.slice(0, 600));
   const answered = renderToStaticMarkup(createElement(PlatformAiAsk, { areaLabel: "Customer Success" }));
   check("…and states whichever area it is given (no hard-coded label)", answered.includes("Answering from Customer Success data") && !answered.includes("Platform Operations"));
+  check("the page tells the OPERATOR not to enter personal details (D4), tied to the question box",
+    /data-platform-ai-privacy-hint/.test(html) && /Don&#x27;t enter customer names, emails, account numbers or other personal details|Don’t enter customer names, emails, account numbers or other personal details/.test(html)
+    && /aria-describedby="platform-ai-privacy-hint"/.test(html) && /Questions are sent to our AI provider/.test(html), html.slice(0, 900));
   check("a question box capped at 500 characters and an Ask button", /<textarea[^>]*maxLength="500"/i.test(html) && /<button[^>]*type="submit"/.test(html));
   check("375 px: no fixed width wider than the screen, min-w-0 on the columns", !/\b(?:w|min-w)-\[(?:3[8-9]\d|[4-9]\d\d|\d{4,})px\]/.test(html) && (html.match(/min-w-0/g) ?? []).length >= 3);
   const cites = renderToStaticMarkup(createElement(AnswerCitations, { citations: [
