@@ -14,7 +14,13 @@
  *   1. a session must exist                    → else /login
  *   2. at least one ACTIVE PlatformGrant        → else /dashboard/spaces
  *   3. operator 2FA, when enforced              → else the enrolment screen
- * It reads no Platform data at all; there is nothing behind it yet.
+ * It reads no Platform data at all.
+ *
+ * Platform AI v0 — behind PLATFORM_AI_ENABLED (lib/env.ts, default OFF). Off,
+ * the page is EXACTLY the placeholder above; on, it renders the question box
+ * (components/platform/PlatformAiAsk), whose API (POST /api/platform/ai/ask)
+ * re-applies every gate server-side. The flag is read after the gates, so the
+ * gate order is unchanged either way.
  */
 
 import { getServerSession } from "next-auth";
@@ -25,6 +31,8 @@ import { loadPlatformDirectory, operatorHasTotp } from "@/lib/platform/directory
 import { OPERATOR_TOTP_ENROLMENT_PATH } from "@/lib/platform/authorize";
 import { env } from "@/lib/env";
 import { PlatformAiPlaceholder } from "@/components/platform/PlatformAiPlaceholder";
+import { PlatformAiAsk } from "@/components/platform/PlatformAiAsk";
+import { platformAiAreaFor, platformAiAreaLabel } from "@/lib/platform/intelligence/ai/core";
 
 export const runtime = "nodejs";
 
@@ -36,5 +44,9 @@ export default async function PlatformAiPage() {
   if (spaces.length === 0) redirect("/dashboard/spaces");
   if (env.isOperatorTotpEnforced && !(await operatorHasTotp(session.user.id))) redirect(OPERATOR_TOTP_ENROLMENT_PATH);
 
-  return <PlatformAiPlaceholder />;
+  if (!env.isPlatformAiEnabled) return <PlatformAiPlaceholder />;
+  // The ONE area the API answers from (the same function the route uses), stated on the page.
+  const area = platformAiAreaFor(spaces);
+  if (!area) redirect("/dashboard/spaces");
+  return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;
 }

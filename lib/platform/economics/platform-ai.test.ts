@@ -23,6 +23,7 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { COMMS_AUTHORING_SURFACE } from "@/lib/notifications/content/ai-allowance";
+import { PLATFORM_AI_ASK_SURFACE } from "@/lib/platform/intelligence/ai/core";
 import { PLATFORM_AI_SURFACES, buildAiSpendBySurface, type SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
 import {
   REASON_NO_AI_RATE_CARD, REASON_NO_PLATFORM_AI, buildEconomicsDrill, buildEconomicsSnapshot, type EconomicsInputs,
@@ -59,7 +60,7 @@ function* walk(dir: string): Generator<string> {
 async function main() {
   // ── 1. The surface ───────────────────────────────────────────────────────────
   console.log("1. the Platform AI surface");
-  check("PLATFORM_AI_SURFACES is exactly the operator path's recorded surface", JSON.stringify(PLATFORM_AI_SURFACES) === JSON.stringify([COMMS_AUTHORING_SURFACE]));
+  check("PLATFORM_AI_SURFACES is exactly the operator path's recorded surface", JSON.stringify(PLATFORM_AI_SURFACES) === JSON.stringify([COMMS_AUTHORING_SURFACE, PLATFORM_AI_ASK_SURFACE]));
   const operatorCallers: string[] = [];
   // S2 (#331): operator AI can also run from jobs and alert evaluation — scanned too. Customer surfaces stay out of scope.
   for (const root of ["lib/platform", "lib/notifications", "app/api/platform", "jobs", "lib/alerts"]) {
@@ -69,7 +70,7 @@ async function main() {
     }
   }
   check("ratchet: every operator AI call site records a Platform AI surface (add a new one to PLATFORM_AI_SURFACES)",
-    operatorCallers.length > 0 && operatorCallers.every((f) => /COMMS_AUTHORING_SURFACE/.test(readFileSync(path.join(process.cwd(), f), "utf8"))), operatorCallers.join(", "));
+    operatorCallers.length > 0 && operatorCallers.every((f) => /COMMS_AUTHORING_SURFACE|PLATFORM_AI_ASK_SURFACE/.test(readFileSync(path.join(process.cwd(), f), "utf8"))), operatorCallers.join(", "));
 
   // ── 2. The split ─────────────────────────────────────────────────────────────
   console.log("2. the split");

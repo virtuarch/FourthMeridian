@@ -519,10 +519,14 @@ console.log("\n8. static — no mint path, literal surfaces, no side effects, bo
   const importers = files.filter((f) => /intelligence\/metrics\/retrieve(-core)?["']/.test(readFileSync(path.join(ROOT, f), "utf8")));
   // The navigation registry imports only pure tiering helpers (access.ts: tokenTierOnSurface / TIER_RANK;
   // registry.ts: SURFACE_TIER) — pinned in navigation/registry.test.ts.
+  // Platform AI v0 core (lib/platform/intelligence/ai/) takes TYPES only from the contract; the guarded route binds it.
+  const typeOnlyImp = (f: string) => [...readFileSync(path.join(ROOT, f), "utf8").matchAll(/^import\s+(type\s+)?[^;]*?from\s+"@\/lib\/platform\/intelligence\/metrics\/retrieve(?:-core)?";/gm)]
+    .every((m) => !!m[1]);
   const strayImp = importers.filter((f) => f !== "lib/platform/intelligence/metrics/retrieve.ts"
     && f !== "lib/platform/intelligence/navigation/access.ts" && f !== "lib/platform/intelligence/navigation/registry.ts"
+    && !(f.startsWith("lib/platform/intelligence/ai/") && typeOnlyImp(f))
     && !(f.startsWith("app/api/") && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8"))));
-  check("the contract is imported only by retrieve.ts, the navigation registry (tiering only), tests, or guarded API routes (none in this slice)", strayImp.length === 0, strayImp.join(", "));
+  check("the contract is imported only by retrieve.ts, the navigation registry (tiering only), the AI core (types only), tests, or guarded API routes", strayImp.length === 0, strayImp.join(", "));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

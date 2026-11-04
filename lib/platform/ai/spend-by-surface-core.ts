@@ -32,13 +32,16 @@ export function isCustomerSurface(surface: string | null | undefined): surface i
 
 /**
  * PLATFORM AI — surfaces where the model is invoked for an OPERATOR, not a
- * customer. Today exactly one is instrumented: Comms Center authoring ("Polish
- * with Fourth Meridian AI", lib/notifications/content/deps.ts, which records
- * COMMS_AUTHORING_SURFACE from lib/notifications/content/ai-allowance.ts — the
- * equality is pinned in lib/platform/economics/platform-ai.test.ts). Overhead,
- * never customer spend; reported as its own bucket instead of "Unattributed".
+ * customer. Two are instrumented: Comms Center authoring ("Polish with Fourth
+ * Meridian AI", lib/notifications/content/deps.ts, which records
+ * COMMS_AUTHORING_SURFACE from lib/notifications/content/ai-allowance.ts) and
+ * Platform AI v0 operational Q&A (lib/platform/intelligence/ai/ledger.ts, which
+ * records PLATFORM_AI_ASK_SURFACE from lib/platform/intelligence/ai/core.ts) —
+ * both equalities are pinned in lib/platform/economics/platform-ai.test.ts.
+ * Overhead, never customer spend; reported as its own bucket instead of
+ * "Unattributed".
  */
-export const PLATFORM_AI_SURFACES = ["comms_authoring"] as const;
+export const PLATFORM_AI_SURFACES = ["comms_authoring", "platform_ai"] as const;
 export function isPlatformAiSurface(surface: string | null | undefined): boolean {
   return (PLATFORM_AI_SURFACES as readonly string[]).includes(surface ?? "");
 }

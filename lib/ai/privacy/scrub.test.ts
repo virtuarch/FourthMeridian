@@ -11,7 +11,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { scrubDescriptor, scrubDescriptorText, MAX_SCRUBBED_CHARS, UNNAMED_DESCRIPTOR } from './scrub';
+import { scrubDescriptor, scrubDescriptorText, scrubOperatorText, MAX_SCRUBBED_CHARS, UNNAMED_DESCRIPTOR } from './scrub';
 import {
   buildMerchantRollup, buildRecurringCandidates, buildIncomeSourceRollup, type RollupRow,
 } from '@/lib/ai/assemblers/transactions';
@@ -73,6 +73,17 @@ console.log('\n3. source — every emitting site goes through the one scrub, and
   const brief = strip('lib/ai/brief/recent-activity.ts');
   check('the Brief delegates to the same function', /return scrubDescriptor\(value\);/.test(brief));
   check('the scrub module is pure (no server-only, no imports)', !/import/.test(strip('lib/ai/privacy/scrub.ts')));
+}
+
+// Platform AI v0 — an operator's free text, before it reaches the model provider (S2 binding 3).
+{
+  const q = 'Why is jane.doe+x@example.co.uk failing? Card 4111 1111 1111 1111, acct 000123456789, user ckq1x2y3z4a5b6c7d8e9f0g1h, id 3f2504e0-4f89-11d3-9a0c-0305e82c3301, ref AB12CD34EF56GH78IJ90KL in the last 7 days';
+  const out = scrubOperatorText(q, 500);
+  check('operator text: email → [email]', !out.includes('example.co.uk') && out.includes('[email]'), out);
+  check('operator text: card and account numbers → [number]', !/4111|000123456789/.test(out) && out.includes('[number]'), out);
+  check('operator text: cuid, uuid and long opaque refs → [id]', !/ckq1x2y3|3f2504e0|AB12CD34/.test(out) && (out.match(/\[id\]/g) ?? []).length === 3, out);
+  check('operator text: ordinary words and short numbers survive', out.startsWith('Why is') && out.endsWith('in the last 7 days'), out);
+  check('operator text: clipped to the limit, control characters removed', scrubOperatorText('a'.repeat(900), 500).length === 500 && !/\u0007/.test(scrubOperatorText('a\u0007b', 500)));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
