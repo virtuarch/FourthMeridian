@@ -71,7 +71,7 @@
 
 import type { PlatformArea } from "@prisma/client";
 import { describeMetric, isMetricAccessToken, type MetricAccessToken } from "./access";
-import { drillLinkOn, metricKey, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
+import { daysWindowLabel, drillLinkOn, hoursWindowLabel, metricKey, type IdentityTier, type MetricDefinition, type MetricPermission } from "./registry";
 import { assertAudienceToken, atOpsTier, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
 import { DEFAULT_SEARCH } from "@/lib/platform/incidents/intelligence/search-core";
 import type { IncidentSearchQuery, IncidentSearchResult } from "@/lib/platform/incidents/intelligence/types";
@@ -115,6 +115,14 @@ export type ValueUnits = FigureUnit | Readonly<Record<string, FigureUnit>>;
  */
 export type EstimatedParts = readonly string[];
 
+/**
+ * CONFIGURATION parts (S2, 2026-11-04): a value that is not measured over the
+ * metric's window (e.g. a configured threshold). A renderer gives it its unit but
+ * NO window label; it is an estimate only if listed in EstimatedParts. Every
+ * listed part exists in valueUnits (pinned).
+ */
+export type UnwindowedParts = readonly string[];
+
 /** The Platform area whose surface shows the value. A server-side literal at every call site (pinned). */
 export type MetricSurface = PlatformArea;
 
@@ -152,12 +160,21 @@ export interface MetricEnvelope {
   valueUnits: ValueUnits | null;
   /** The parts that are estimates (EstimatedParts); null = not declared (the usd-parts default applies). */
   estimatedParts: EstimatedParts | null;
+  /** Configuration parts rendered with no window label (UnwindowedParts); null = none. */
+  unwindowedParts: UnwindowedParts | null;
   /** null ⇔ UNAVAILABLE. A floor / lower bound when PARTIAL. Never a stand-in 0. */
   value: AggregateValue | null;
   status: RetrievalStatus;
   /** Why there is no figure (UNAVAILABLE) or why it is a floor (PARTIAL); null otherwise. */
   reason: string | null;
-  window: { kind: MetricDefinition["window"]["kind"]; description: string; days: number | null; hours: number | null };
+  /**
+   * `label` is the short SERVER phrase a renderer states beside a figure: built from
+   * `days` / `hours` when the read carries them, else the registry's window.label;
+   * null only for POINT_IN_TIME. `start` is an explicit window start FROM THE READER
+   * (never inferred: today only the economics cycle metrics, from the snapshot's
+   * s.cycle.start); null when the reader gives none.
+   */
+  window: { kind: MetricDefinition["window"]["kind"]; description: string; days: number | null; hours: number | null; label: string | null; start: string | null };
   freshness: { asOf: string | null; source: string };
   coverage: { gaps: readonly string[]; missing: readonly string[] };
   /**
@@ -221,6 +238,8 @@ interface Projected {
   asOf: string | null;
   days?: number | null;
   hours?: number | null;
+  /** An EXPLICIT window start the reader itself holds (ISO date, YYYY-MM-DD) — never inferred. */
+  start?: string | null;
 }
 
 interface ReadInput {
@@ -240,6 +259,8 @@ interface Retrievable {
   valueUnits: ValueUnits;
   /** The parts that are estimates — see EstimatedParts. */
   estimatedParts?: EstimatedParts;
+  /** Configuration parts rendered without a window label — see UnwindowedParts. */
+  unwindowedParts?: UnwindowedParts;
   /** Windows the metric accepts, the first being the tile's default; [] = no window parameter. */
   windows: readonly number[];
   /** Needs an incident token at the effective tier. */
@@ -336,6 +357,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
     valueUnits: { pricedUsd: "usd", utilisationPct: "pct", thresholdUsd: "usd", invocations: "count", unpricedInvocations: "count" },
     // utilisationPct = estimated spend ÷ threshold ⇒ estimated; thresholdUsd is a configured figure and the counts are counted.
     estimatedParts: ["pricedUsd", "utilisationPct"],
+    unwindowedParts: ["thresholdUsd"],
     async read({ readers }) {
       const b = await readers.aiBudget();
       // THE tile function (ai-budget-view.ts / ai-costs-model.ts read fleetSpendStatus(b)).
@@ -376,7 +398,8 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
     async read({ readers, now }) {
       const s = await readers.economicsSnapshot(now.getTime());
       const op = s.figures.operating_cost;
-      const p = fromFigure(op, s.checkedAt);
+      // window.start = the snapshot's OWN billing cycle start (s.cycle.start), never derived here.
+      const p = { ...fromFigure(op, s.checkedAt), start: s.cycle.start };
       if (op.value === null) return p;
       // Each part is the split tile's own figure: null = unmetered / unpriced (never $0).
       return { ...p, value: { totalUsd: op.value, aiUsd: s.figures.ai_cost.value, providersUsd: s.figures.provider_cost.value, infrastructureUsd: s.figures.infra_cost.value } };
@@ -387,7 +410,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
     valueUnits: { costUsd: "usd" }, estimatedParts: ["costUsd"],
     async read({ readers, now }) {
       const s = await readers.economicsSnapshot(now.getTime());
-      const p = fromFigure(s.figures.provider_cost, s.checkedAt);
+      const p = { ...fromFigure(s.figures.provider_cost, s.checkedAt), start: s.cycle.start };
       return { ...p, value: p.value === null ? null : { costUsd: p.value as number } };
     },
   },
@@ -646,6 +669,9 @@ function unitsMatch(value: AggregateValue, units: ValueUnits | null): boolean {
   return a.length === b.length && a.every((k, i) => k === b[i]);
 }
 
+/** The reader's window start, kept only when it is exactly an ISO date (YYYY-MM-DD); anything else ⇒ null. */
+const isoDateOrNull = (s: string | null | undefined): string | null => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
+
 function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null, estimatedParts: EstimatedParts | null = null): MetricEnvelope {
   const m = scope.definition;
   const base: MetricEnvelope["status"] = m.provenance.class === "ESTIMATED" ? "ESTIMATED" : "MEASURED";
@@ -658,6 +684,9 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
   if (status === "UNAVAILABLE") { value = null; reason = reason ?? "no figure"; }
   if (status === "PARTIAL" && !reason) reason = "a floor";
   const days = p.days ?? null;
+  const hours = p.hours ?? null;
+  const entry = RETRIEVAL[metricKey(m)];
+  const unwindowedParts = entry?.kind === "RETRIEVABLE" ? entry.unwindowedParts ?? null : null;
   return {
     metric: metricKey(m),
     surface: scope.surface,
@@ -665,10 +694,11 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     unit,
     valueUnits,
     estimatedParts,
+    unwindowedParts,
     value,
     status,
     reason,
-    window: { kind: m.window.kind, description: m.window.description, days, hours: p.hours ?? null },
+    window: { kind: m.window.kind, description: m.window.description, days, hours, label: days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null, start: isoDateOrNull(p.start) },
     freshness: { asOf: p.asOf, source: m.freshnessSource },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
     basis: { kind: m.provenance.class === "ESTIMATED" ? "estimated" : "measured", definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
