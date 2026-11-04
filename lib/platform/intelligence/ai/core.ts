@@ -213,6 +213,8 @@ export interface PlatformAiTraceStep {
   count?: number;
   /** get_metric: true when the envelope's drill page became a link candidate. */
   drillLink?: boolean;
+  /** get_metric: true when a `window` was sent for a fixed-window metric and ignored (isFixedWindow) — a flag, never the value. */
+  windowIgnored?: boolean;
   /**
    * get_metric UNAVAILABLE: WHICH path refused (the envelope's UnavailableCode — a
    * closed enum set by retrieval, never the reason text). Rendered as
@@ -253,6 +255,18 @@ export function drillPageOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, 
   const resolved = binding.listPages({ metric: e.metric }).some((t) => binding.resolvePage(t.id)?.href === page);
   return resolved ? page : null;
 }
+
+/**
+ * A FIXED-window metric (S2 option (a), 2026-11-04): its definition offers no day
+ * windows (window.days absent / empty — the billing cycle, a 24 h status, a point
+ * in time). A model-sent `window` on one is IGNORED — treated as absent — so the
+ * real read happens and every figure states the envelope's own window; a window
+ * the OPERATOR asked for is still stated by the RESOLVED_WITH_WINDOW_NOTE note.
+ * Nothing is substituted. A DAY-window metric (window.days listed) keeps refusing
+ * a window it does not offer (UNAVAILABLE[WINDOW_NOT_OFFERED]). An unknown /
+ * invisible id is not fixed here (the read decides: NOT_FOUND, no oracle).
+ */
+export const isFixedWindow = (def: MetricDefinition | null): boolean => def !== null && (def.window.days?.length ?? 0) === 0;
 
 /** null and undefined both mean "not given" for an OPTIONAL argument (models often send null). */
 const given = (v: unknown) => v !== undefined && v !== null;
@@ -295,12 +309,13 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       const a = plainArgs(rawArgs, ["id", "window"]);
       if (!a || typeof a.id !== "string" || !ID_SHAPE.test(a.id)) return invalid();
       if (given(a.window) && !(typeof a.window === "number" && Number.isInteger(a.window) && a.window > 0 && a.window <= 366)) return invalid();
-      const e = await binding.readMetric(a.id, given(a.window) ? { window: a.window as number } : {});
+      const windowIgnored = given(a.window) && isFixedWindow(binding.describeMetric(a.id));
+      const e = await binding.readMetric(a.id, given(a.window) && !windowIgnored ? { window: a.window as number } : {});
       if (!e) { step("NOT_FOUND"); return NOT_FOUND; }
       ev.envelopes.push(e);
       const drill = drillPageOf(e, binding);
       if (drill) ev.hrefs.add(drill);
-      step(e.status, { refs: [e.metric], drillLink: drill !== null, ...unavailableCodeOf(e) });
+      step(e.status, { refs: [e.metric], drillLink: drill !== null, ...(windowIgnored ? { windowIgnored: true } : {}), ...unavailableCodeOf(e) });
       return { ...e, ...placeholdersFor(e) };
     }
     case "find_page": {
@@ -905,7 +920,7 @@ const reasonCounts = <R extends string>(order: readonly R[], c: ReasonCounts<R> 
 
 /** The trace as ONE metadata line (codes and registry ids only) for the route's log. */
 export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" | "sanitised" | "grounding" | "claims">): string {
-  const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.unavailable ? `[${t.unavailable}]` : ""}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}`);
+  const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.unavailable ? `[${t.unavailable}]` : ""}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}${t.windowIgnored ? "+windowIgnored" : ""}`);
   const links = r.answer.filter((s) => s.kind === "link").length;
   return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
     + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")
