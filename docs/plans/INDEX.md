@@ -21,6 +21,7 @@ Current state of the system: [`/STATUS.md`](../../STATUS.md).
 | [PRE-BETA-READINESS-AND-RELEASE-PLAN-2026-11-01](PRE-BETA-READINESS-AND-RELEASE-PLAN-2026-11-01.md) | Session 1 | ACTIVE | Beta release batches. B1–B9 released; B10 paused, scope frozen |
 | [PB1-INCIDENT-LIFECYCLE](PB1-INCIDENT-LIFECYCLE.md) | Session 1 | ACTIVE | Platform alertness: S1 merged (#222); S2–S7 open (stale/removed-connection closure, operator ack/resolve/reopen, incident detail + history UI, recovery signal). S2–S3 owner-approved to start 2026-11-03 |
 | [PLATFORM-INTELLIGENCE](PLATFORM-INTELLIGENCE.md) | Session 1 | ACTIVE | Governed Platform AI: inventory done; metric registry + navigation registry after PB-1 Phase 2; conversation last |
+| [PLATFORM-AI-CONVERSATIONS-DESIGN](PLATFORM-AI-CONVERSATIONS-DESIGN.md) | Session 1 | DRAFT | Platform AI persistent conversations: design for S2 review (B1–B11, R1–R6); retention 90 d tentative; tables in B11; owner decisions OD-3–OD-9 open |
 | [BETA-REQUEST-RISK-ASSESSMENT-2026-10-31](BETA-REQUEST-RISK-ASSESSMENT-2026-10-31.md) | Session 2 | ACTIVE | Detection/block live (B9); PB-6 review UI ships with B10 |
 | [BETA-GROUP-PARITY-AND-LIFECYCLE-AUDIT-2026-10-31](BETA-GROUP-PARITY-AND-LIFECYCLE-AUDIT-2026-10-31.md) | Session 1 | ACTIVE | Owner decision: remove Plaid Items when a beta ends |
 | [COMMS-CENTER-NOTIFICATION-ARCHITECTURE-AUDIT-2026-10-31](COMMS-CENTER-NOTIFICATION-ARCHITECTURE-AUDIT-2026-10-31.md) | Session 1 | ACTIVE | Automations ACTIVATION_DISABLED in Production; Resend webhook inert |
