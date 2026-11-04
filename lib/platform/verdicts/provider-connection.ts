@@ -82,6 +82,11 @@
  * DEGRADED). A real provider outage that also hits a large institution still
  * FAILS (the rest still meets the share), and so do two institutions down
  * side by side (neither holds a majority).
+ *
+ * A single-institution fleet can never reach FAILING on the connection half; a
+ * genuine provider outage also fails the producing job's runs, so
+ * provider-outcome@1 raises FAILING through the execution half.
+ * 'Degraded (institution-concentrated)' does NOT mean the provider is fine.
  */
 
 import { PROVIDER_FAILING_SHARE } from "./provider-outcome";
