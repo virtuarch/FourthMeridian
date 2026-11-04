@@ -368,6 +368,13 @@ export interface ListOptions {
    * the scan narrows. Ignored by accessors that already scan open rows.
    */
   openOnly?: boolean;
+  /**
+   * brokenNow only — the cap of a bounded SECOND scan of OPEN rows of the
+   * classifier's critical kinds outside the recent scan (S2 ruling, R6a), merged
+   * de-duplicated by id. Absent / 0 ⇒ the single scan, unchanged. Its cap reached
+   * ⇒ `truncated`, like the first scan's.
+   */
+  criticalOpenLimit?: number;
 }
 
 /** The verdict shape a token entitles. A PLATFORM_OPS / SYSTEM verdict has NO `subjectUserId` key. */

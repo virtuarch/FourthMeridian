@@ -77,6 +77,17 @@ export function classifyRow(r: Pick<IncidentRowFacts, "kind" | "provider" | "det
   return classifySyncIssue({ kind: r.kind, provider: r.provider, detail: r.detail, plaidTransactionId: r.plaidTransactionId });
 }
 
+/**
+ * The kinds the classifier can rank `critical`, from `kinds` (the schema enum).
+ * Probed with no stage / detail: that is every kind's MOST severe posture (the
+ * conservative stage-less fallback — a stage only ever narrows a kind away from
+ * `critical`), so no kind that can be critical is missed. Pure; the classifier
+ * stays the one authority (no hand list of kinds).
+ */
+export function criticalCapableKinds(kinds: readonly string[]): string[] {
+  return kinds.filter((kind) => classifyRow({ kind, provider: "PLAID", detail: null, plaidTransactionId: null }).severity === "critical");
+}
+
 /** D1 — evidence (an EVENT) and superseded rows are never incidents, whatever `resolved` says. */
 export function rowClassOf(r: Pick<IncidentRowFacts, "kind" | "provider" | "detail" | "plaidTransactionId">, c: SyncIssueClassification): RowClass {
   if (isSupersededMismatch({ kind: r.kind, provider: r.provider, detail: r.detail })) return "superseded";

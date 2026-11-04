@@ -339,8 +339,8 @@ function alertItems(a: NonNullable<AttentionInputs["alerts"]>): AttentionItem[] 
 }
 
 function incidentItems(i: NonNullable<AttentionInputs["incidents"]>): AttentionItem[] {
-  // KNOWN LIMIT: `i.items` is a page of the module's 200-most-recent open-row scan (ATTENTION_INCIDENT_SCAN
-  // in ./attention.ts — an older critical behind 200 newer open rows is not scanned; the floor shows "+").
+  // `i.items` is a page of the module's 200-most-recent open-row scan plus its bounded critical-kind second
+  // scan (ATTENTION_INCIDENT_SCAN / ATTENTION_CRITICAL_SCAN in ./attention.ts); either cap reached ⇒ "+".
   // PB-1 R6a — open/closed and rank are the module's verdicts, never re-derived here:
   // `brokenNow` (D1/D2/D2b/D10 decided in lib/platform/incidents/intelligence) and
   // `effectiveSeverity` (one notch lower for an unverified incident — D10).
