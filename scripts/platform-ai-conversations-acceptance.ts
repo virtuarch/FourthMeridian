@@ -29,6 +29,9 @@
  *   [restore] PR D — the DR rehearsal step: a backup restored into a second
  *           throwaway database brings purged rows back; the pre-enable check and
  *           the purge dispatch against the RESTORED copy remove them, counted
+ *   [expiry] expiry on read (20261105120000): expired rows invisible to every
+ *           fm_app path (SQL, read, history, list, append, export, settle,
+ *           soft delete) before any purge; the definer purge still deletes them
  *   [pre-disable] PR D — the S2 disable order: the counts-only check FAILS
  *           while rows remain, FAILS CLOSED for a non-bypass reader, PASSES empty
  *
@@ -526,19 +529,20 @@ async function main(): Promise<number> {
   }
 
   // ── the read-only pre-enable check, against this throwaway target ─────────
-  const { PRECHECK_FUNCTIONS_SQL, PRECHECK_TABLES_SQL, evaluatePrecheck } = await import("./lib/platform-ai-conversations-precheck.core");
+  const { PRECHECK_FUNCTIONS_SQL, PRECHECK_POLICIES_SQL, PRECHECK_TABLES_SQL, evaluatePrecheck } = await import("./lib/platform-ai-conversations-precheck.core");
   type Pre = typeof import("./lib/platform-ai-conversations-precheck.core");
   type FnRows = Parameters<Pre["evaluatePrecheck"]>[0];
   type TabRows = Parameters<Pre["evaluatePrecheck"]>[1];
+  type PolRows = Parameters<Pre["evaluatePrecheck"]>[2];
   const { db } = await import("@/lib/db");
   const pre = await db.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
-    return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL));
+    return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL), await tx.$queryRawUnsafe<PolRows>(PRECHECK_POLICIES_SQL));
   });
   setOwner("fm_aiconv_nobypass");
   const preBad = await db.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
-    return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL));
+    return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL), await tx.$queryRawUnsafe<PolRows>(PRECHECK_POLICIES_SQL));
   });
   setOwner("fm_aiconv_owner");
   check(68, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
@@ -596,6 +600,69 @@ async function main(): Promise<number> {
         && psql(at(owner), `select string_agg(id, ',' order by id) from "PlatformAiMessage" where id like 'dr%';`).out === "dr2a,dr2u", `${purge.status} removed=${removedR} audit=${auditR} ${purge.stderr.slice(0, 300)}`);
     dx("rm", "-f", "/tmp/aiconv-backup.dump");
     psql(owner, `drop database if exists ${RESTORED};`, false);
+  }
+
+  // ── [expiry] expiry on read (migration 20261105120000; OD-7, S2 C1) ─────────
+  console.log("\n[expiry] an expired message is invisible on EVERY fm_app path before the purge runs; the purge still removes it\n");
+  {
+    const D = "aiconv_op_d";
+    one(`insert into "User" (id,email,name,"updatedAt") values ('${D}','aiconv-d@example.test','Operator D',now()); select 'ok';`);
+    const answer = (t: string) => ({ status: "COMPLETE" as const, answer: { v: 1 as const, segments: [{ kind: "text" as const, text: t }], citations: [], notes: [], stop: "ANSWERED" as const }, evidenceRefs: [] });
+    // Fixture only, as the migration principal: back-date the rows (the settle trigger is suspended inside this one
+    // transaction because settled rows are otherwise immutable; fm_app can write neither column).
+    const expire = (ids: string[]) => one(`begin;
+      alter table "PlatformAiMessage" disable trigger platform_ai_message_settle;
+      update "PlatformAiMessage" set "createdAt" = (now() at time zone 'UTC') - interval '91 days', "purgeAfter" = (now() at time zone 'UTC') - interval '1 day' where id in (${ids.map((i) => `'${i}'`).join(",")});
+      alter table "PlatformAiMessage" enable trigger platform_ai_message_settle;
+      commit; select 'ok';`);
+    // X: an expired exchange then a live one. Y: one exchange, all expired. Z: a PENDING turn, expired.
+    const x = await store.createConversation({ operatorId: D, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "EXPIRED-QUESTION-X1" });
+    const y = await store.createConversation({ operatorId: D, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "EXPIRED-QUESTION-Y1" });
+    const z = await store.createConversation({ operatorId: D, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "pending then expired" });
+    if (x.kind !== "CREATED" || y.kind !== "CREATED" || z.kind !== "CREATED") throw new Error("expiry fixtures: create failed");
+    await store.settleTurn(D, x.conversation.id, x.pair.assistant.id, answer("EXPIRED-ANSWER-X1"));
+    const x2 = await store.appendTurn({ operatorId: D, conversationId: x.conversation.id, clientRequestId: randomUUID(), scrubbedQuestion: "live question x2", now: NOW() });
+    if (x2.kind !== "APPENDED") throw new Error(`expiry fixtures: append ${x2.kind}`);
+    await store.settleTurn(D, x.conversation.id, x2.pair.assistant.id, answer("live answer x2"));
+    await store.settleTurn(D, y.conversation.id, y.pair.assistant.id, answer("EXPIRED-ANSWER-Y1"));
+    const pairSame = one(`select bool_and(a."purgeAfter" = u."purgeAfter")::text from "PlatformAiMessage" a join "PlatformAiMessage" u on u.id = a."replyToId" where a."conversationId" in ('${x.conversation.id}','${y.conversation.id}','${z.conversation.id}');`);
+    check(82, "a question and its answer share ONE purgeAfter (inserted in one transaction: one now()), so an answer never outlives its question", pairSame === "true", pairSame);
+    expire([x.pair.user.id, x.pair.assistant.id, y.pair.user.id, y.pair.assistant.id, z.pair.user.id, z.pair.assistant.id]);
+    const xs = x.conversation.id, ys = y.conversation.id;
+    const appSel = asApp(D, `select count(*) from "PlatformAiMessage" where "conversationId"='${xs}'; select count(*) from "PlatformAiMessage" where "conversationId"='${ys}';`);
+    const ownerSees = one(`select count(*) from "PlatformAiMessage" where "conversationId" in ('${xs}','${ys}');`);
+    check(83, "SQL as fm_app: the expired rows are INVISIBLE (X: 2 live of 4, Y: 0 of 2) though the table still holds them (6)",
+      appSel.ok && appSel.out.split("\n").join(",") === "2,0" && ownerSees === "6", `${appSel.out || appSel.err} owner=${ownerSees}`);
+    const appUpd = asApp(D, `with w as (update "PlatformAiMessage" set "failureCode" = 'PROVIDER', status = 'FAILED' where id='${z.pair.assistant.id}' returning 1) select count(*) from w;`);
+    check(84, "SQL as fm_app: UPDATE of an expired row affects 0 rows (USING carries the predicate)", appUpd.ok && appUpd.out.trim() === "0", appUpd.out || appUpd.err);
+    const rx = await store.readConversation(D, xs, NOW());
+    check(85, "store.readConversation: only the live exchange, no expired text", !!rx && rx.messages.length === 2 && rx.messages.every((m) => m.id === x2.pair.user.id || m.id === x2.pair.assistant.id)
+      && !JSON.stringify(rx.messages).includes("EXPIRED-"), JSON.stringify(rx?.messages.map((m) => m.id)));
+    const hx = await store.loadConversationHistory(D, xs);
+    check(86, "store.loadConversationHistory (follow-up context sent to the provider): only the live pair replays", !!hx && hx.length === 2 && !JSON.stringify(hx).includes("EXPIRED-"), JSON.stringify(hx?.map((m) => m.id)));
+    const listD = (await store.listLiveConversations(D)).map((c) => c.id);
+    const ay = await store.appendTurn({ operatorId: D, conversationId: ys, clientRequestId: randomUUID(), scrubbedQuestion: "revive?", now: NOW() });
+    check(87, "an ALL-expired conversation is not live: not listed, findLive/read/history null, append NOT_FOUND (answered as a deleted one)",
+      listD.includes(xs) && !listD.includes(ys) && (await store.findLiveConversation(D, ys)) === null && (await store.readConversation(D, ys, NOW())) === null
+        && (await store.loadConversationHistory(D, ys)) === null && ay.kind === "NOT_FOUND", `${JSON.stringify(listD)} ${ay.kind}`);
+    const exHeld = await store.readConversationsForExport(D, new Set(["PLATFORM_OPS"] as const));
+    const exLost = await store.readConversationsForExport(D, new Set([] as const));
+    check(88, "export: a held area drops the expired messages and the all-expired conversation; a lost area's COUNT is live conversations only",
+      !JSON.stringify(exHeld).includes("EXPIRED-") && !exHeld.conversations.some((c) => c.id === ys)
+        && exHeld.conversations.find((c) => c.id === xs)?.messages.length === 2
+        && JSON.stringify(exLost.omitted) === JSON.stringify([{ area: "PLATFORM_OPS", count: exHeld.conversations.length }]), JSON.stringify(exLost.omitted));
+    const settledExpired = await store.settleTurn(D, z.conversation.id, z.pair.assistant.id, answer("too late"));
+    const delY = await store.softDeleteConversation(D, ys);
+    check(89, "settle of an expired PENDING row ⇒ false (0 rows); soft delete of an all-expired conversation still succeeds, messageCount = live = 0",
+      !settledExpired && delY.deleted && delY.messageCount === 0, `${settledExpired} ${JSON.stringify(delY)}`);
+    const capPin = readFileSync(path.join(process.cwd(), "lib/platform/intelligence/ai/conversations/store.ts"), "utf8");
+    check(90, "the 50-conversation cap counts LIVE conversations (an all-expired one never blocks a create)",
+      /platformAiConversation\.count\(\{ where: \{ operatorUserId: operatorId, \.\.\.LIVE \} \}\)/.test(capPin));
+    const purged = asSys(`select messages from public.fm_purge_platform_ai_conversations(500);`);
+    const leftExpired = one(`select count(*) from "PlatformAiMessage" m join "PlatformAiConversation" c on c.id = m."conversationId" where c."operatorUserId"='${D}' and m."purgeAfter" < (now() at time zone 'UTC');`);
+    const leftLive = one(`select count(*) from "PlatformAiMessage" where "conversationId"='${xs}';`);
+    check(91, "NOT a substitute for the purge: the definer purge (fm_system) still physically deletes every expired row; the live exchange stays",
+      purged.ok && Number(purged.out.trim()) >= 6 && leftExpired === "0" && leftLive === "2", `${purged.out || purged.err} expiredLeft=${leftExpired} live=${leftLive}`);
   }
 
   // ── [pre-disable] PR D — the S2 disable order: never the purge flag while rows remain ──

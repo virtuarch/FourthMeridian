@@ -114,7 +114,12 @@ A restore brings back rows that retention had already removed as of the backup p
 
 On a target without the B11 migration, step 1 reports the functions as absent and this section does not apply.
 
+**Expiry on read (migration `20261105120000`, S2 C1).** Once that migration is applied, fm_app sees a message only while `purgeAfter` is in the future, by the database clock. A restored expired message is therefore invisible on every app path (list, open, follow-up history, export) even before the purge runs. The purge is still required, because the ciphertext stays in the table until it runs. Two limits:
+- A backup taken **before** that migration restores **without** the expiry policy. Step 1 applies migrations to head first, and the pre-enable check FAILs on its two expiry lines until they are applied.
+- **Residual, not caught by the purge or by expiry on read:** a conversation an operator deleted **after** the backup point comes back **not deleted**, because its `deletedAt` and its audit row are lost with it. Record the backup point. Treat conversations deleted between the backup point and the restore as a known disclosure item; the restore record notes the window.
+
 1. **Prove the purge can see the rows.**
+   - First apply migrations to head through the guarded `npm run db:migrate:safe`. A backup that predates `20261105120000` lacks the expiry policy, and the check below FAILs on it until it is applied.
    - A `--no-owner` restore re-owns the two `SECURITY DEFINER` functions to the restoring role. Under FORCE RLS, a definer whose owner lacks BYPASSRLS deletes 0 rows **silently**.
    - Run the read-only pre-enable check against the restored target: `npm run report:platform-ai-conversations-precheck -- --env=local` for a scratch database.
    - On FAIL, the functions must be re-owned to a BYPASSRLS principal before you go on. That is an **OWNER** step.

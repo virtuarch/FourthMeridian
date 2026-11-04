@@ -15,7 +15,7 @@ import path from "node:path";
 import {
   PRECHECK_FUNCTIONS, PRECHECK_FUNCTIONS_SQL, PRECHECK_READ_ONLY_STATEMENT, PRECHECK_TABLES, PRECHECK_TABLES_SQL, PREDISABLE_SQL,
   evaluatePrecheck, evaluatePredisable, parsePrecheckPhase, renderPrecheck, renderPredisable,
-  type FunctionRow, type TableRow,
+  type FunctionRow, type PolicyRow, type TableRow,
 } from "./lib/platform-ai-conversations-precheck.core";
 
 let failures = 0;
@@ -30,22 +30,29 @@ const goodFn = (signature: string, definer: boolean): FunctionRow => ({
   system_exec: signature.startsWith("public.fm_purge_"), app_exec: false, auth_exec: false, api_exec: false, public_exec: false,
 });
 const goodFns = (): FunctionRow[] => PRECHECK_FUNCTIONS.map((f) => goodFn(f.signature, f.definer));
+const EXPIRY_QUAL = `(("purgeAfter" > (now() AT TIME ZONE 'UTC'::text)) AND (EXISTS ( SELECT 1 FROM "PlatformAiConversation" c WHERE ((c.id = "PlatformAiMessage"."conversationId") AND (c."operatorUserId" = current_fm_user_id())))))`;
+const goodPolicies = (): PolicyRow[] => [{ name: "fm_app_sel", qual: EXPIRY_QUAL }, { name: "fm_app_upd", qual: EXPIRY_QUAL }];
 const goodTables = (): TableRow[] => PRECHECK_TABLES.map((name) => ({ name, present: true, rls: true, forced: true, system_any: false, app_delete: false }));
 
 console.log("\npre-enable — evaluatePrecheck\n");
 {
-  const v = evaluatePrecheck(goodFns(), goodTables());
+  const v = evaluatePrecheck(goodFns(), goodTables(), goodPolicies());
   check("the migration's intended shape PASSES (every line)", v.ok && v.lines.every((l) => l.ok), v.lines.filter((l) => !l.ok));
   const noBypass = goodFns().map((f) => (f.definer ? { ...f, owner_bypassrls: false } : f));
-  const nb = evaluatePrecheck(noBypass, goodTables());
+  const nb = evaluatePrecheck(noBypass, goodTables(), goodPolicies());
   check("a definer owned by a NON-bypass role FAILS on exactly the two OWNER lines", !nb.ok && nb.lines.filter((l) => !l.ok).length === 2 && nb.lines.filter((l) => !l.ok).every((l) => /OWNER bypasses RLS/.test(l.text)));
   const superOwner = noBypass.map((f) => (f.definer ? { ...f, owner_super: true } : f));
-  check("a superuser owner counts as bypassing (local PostgreSQL shape)", evaluatePrecheck(superOwner, goodTables()).ok);
-  check("a missing function FAILS (the migration is not applied)", !evaluatePrecheck(goodFns().slice(1), goodTables()).ok);
-  check("fm_app EXECUTE on the purge FAILS", !evaluatePrecheck(goodFns().map((f) => (f.signature.startsWith("public.fm_purge_") ? { ...f, app_exec: true } : f)), goodTables()).ok);
-  check("a table without FORCE RLS FAILS", !evaluatePrecheck(goodFns(), goodTables().map((t) => ({ ...t, forced: false }))).ok);
-  check("any fm_system table privilege FAILS", !evaluatePrecheck(goodFns(), goodTables().map((t) => ({ ...t, system_any: true }))).ok);
-  check("a wrong search_path FAILS", !evaluatePrecheck(goodFns().map((f) => ({ ...f, config: "search_path=public" })), goodTables()).ok);
+  check("a superuser owner counts as bypassing (local PostgreSQL shape)", evaluatePrecheck(superOwner, goodTables(), goodPolicies()).ok);
+  check("a missing function FAILS (the migration is not applied)", !evaluatePrecheck(goodFns().slice(1), goodTables(), goodPolicies()).ok);
+  check("fm_app EXECUTE on the purge FAILS", !evaluatePrecheck(goodFns().map((f) => (f.signature.startsWith("public.fm_purge_") ? { ...f, app_exec: true } : f)), goodTables(), goodPolicies()).ok);
+  check("a table without FORCE RLS FAILS", !evaluatePrecheck(goodFns(), goodTables().map((t) => ({ ...t, forced: false })), goodPolicies()).ok);
+  check("any fm_system table privilege FAILS", !evaluatePrecheck(goodFns(), goodTables().map((t) => ({ ...t, system_any: true })), goodPolicies()).ok);
+  check("a wrong search_path FAILS", !evaluatePrecheck(goodFns().map((f) => ({ ...f, config: "search_path=public" })), goodTables(), goodPolicies()).ok);
+  const old = goodPolicies().map((p) => ({ ...p, qual: p.qual.replace(/\("purgeAfter" > \(now\(\) AT TIME ZONE 'UTC'::text\)\) AND /, "") }));
+  const pre = evaluatePrecheck(goodFns(), goodTables(), old);
+  check("a policy WITHOUT the expiry predicate FAILS on exactly the two expiry lines (a restore of a pre-20261105120000 backup)",
+    !pre.ok && pre.lines.filter((l) => !l.ok).length === 2 && pre.lines.filter((l) => !l.ok).every((l) => /expiry on read/.test(l.text)), pre.lines.filter((l) => !l.ok));
+  check("a MISSING expiry policy FAILS", !evaluatePrecheck(goodFns(), goodTables(), goodPolicies().slice(1)).ok);
   const out = renderPrecheck("preview", "2026-01-01T00:00:00.000Z", nb);
   check("the FAIL render tells the reader not to enable either flag", /RESULT: FAIL — do NOT enable PLATFORM_AI_CONVERSATIONS_ENABLED or PLATFORM_AI_PURGE_ENABLED/.test(out));
 }

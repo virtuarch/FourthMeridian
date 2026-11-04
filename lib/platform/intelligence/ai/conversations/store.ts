@@ -130,10 +130,25 @@ const violated = (e: Prisma.PrismaClientKnownRequestError, name: string) => JSON
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 
+/**
+ * LIVE = not soft-deleted AND at least one message still VISIBLE. Expiry on read
+ * (migration 20261105120000): fm_app's PlatformAiMessage policies admit a row only
+ * while "purgeAfter" > now() (the database clock), so a conversation whose every
+ * message has expired has no visible message and is not live: it is never listed,
+ * opened, continued, used as history or exported, whether the purge has run yet
+ * or a restore brought it back. The conversation policy cannot express this
+ * itself (a message sub-select there recurses into the message policy, S2), so it
+ * is this relation filter, evaluated under the same RLS. Soft delete keeps the
+ * plain predicate: deleting an all-expired conversation still succeeds (S2).
+ * Physical removal stays the purge's (OD-7); this only makes expiry authoritative
+ * for every read.
+ */
+const LIVE = { deletedAt: null, messages: { some: {} } } as const;
+
 /** The live (not soft-deleted) conversation the operator owns, or null. */
 export async function findLiveConversation(operatorId: string, id: string): Promise<ConversationRecord | null> {
   return withTenantDb(operatorId, (tx) => tx.platformAiConversation.findFirst({
-    where: { id, operatorUserId: operatorId, deletedAt: null },
+    where: { id, operatorUserId: operatorId, ...LIVE },
     select: CONVERSATION_SELECT,
   }));
 }
@@ -147,7 +162,7 @@ export interface ConversationSummary extends ConversationRecord {
 /** The operator's live conversations, most recent activity first. */
 export async function listLiveConversations(operatorId: string): Promise<ConversationSummary[]> {
   const rows = await withTenantDb(operatorId, (tx) => tx.platformAiConversation.findMany({
-    where: { operatorUserId: operatorId, deletedAt: null },
+    where: { operatorUserId: operatorId, ...LIVE },
     orderBy: [{ lastActivityAt: "desc" }, { id: "asc" }],
     take: PLATFORM_AI_CONVERSATIONS_MAX,
     select: {
@@ -178,7 +193,7 @@ async function abandonStale(tx: TenantClient, conversationId: string, now: Date)
 /** The live conversation and its messages (oldest first), with a stale PENDING turn abandoned first. Null when not the operator's / deleted. */
 export async function readConversation(operatorId: string, id: string, now: Date): Promise<{ conversation: ConversationRecord; messages: MessageRecord[] } | null> {
   return withTenantDb(operatorId, async (tx) => {
-    const conversation = await tx.platformAiConversation.findFirst({ where: { id, operatorUserId: operatorId, deletedAt: null }, select: CONVERSATION_SELECT });
+    const conversation = await tx.platformAiConversation.findFirst({ where: { id, operatorUserId: operatorId, ...LIVE }, select: CONVERSATION_SELECT });
     if (!conversation) return null;
     await abandonStale(tx, id, now);
     const rows = await tx.platformAiMessage.findMany({ where: { conversationId: id }, orderBy: MESSAGE_ORDER, select: MESSAGE_SELECT });
@@ -189,7 +204,7 @@ export async function readConversation(operatorId: string, id: string, now: Date
 /** The decrypted messages of ONE conversation for history assembly (./history.ts). Null when not the operator's / deleted. */
 export async function loadConversationHistory(operatorId: string, conversationId: string): Promise<HistoryMessage[] | null> {
   const read = await withTenantDb(operatorId, async (tx) => {
-    const c = await tx.platformAiConversation.findFirst({ where: { id: conversationId, operatorUserId: operatorId, deletedAt: null }, select: { id: true } });
+    const c = await tx.platformAiConversation.findFirst({ where: { id: conversationId, operatorUserId: operatorId, ...LIVE }, select: { id: true } });
     if (!c) return null;
     return tx.platformAiMessage.findMany({ where: { conversationId, status: "COMPLETE" }, orderBy: MESSAGE_ORDER, select: MESSAGE_SELECT });
   });
@@ -233,7 +248,7 @@ export async function readConversationsForExport(
 ): Promise<ExportConversationsRead> {
   const read = await withTenantDb(operatorId, async (tx) => {
     const metas = await tx.platformAiConversation.findMany({
-      where: { operatorUserId: operatorId, deletedAt: null },
+      where: { operatorUserId: operatorId, ...LIVE },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       select: CONVERSATION_SELECT,
     });
@@ -291,7 +306,7 @@ async function existingPair(tx: TenantClient, conversationId: string, clientRequ
  */
 export async function findTurnPair(operatorId: string, conversationId: string, clientRequestId: string): Promise<TurnPair | null> {
   return withTenantDb(operatorId, async (tx) => {
-    const c = await tx.platformAiConversation.findFirst({ where: { id: conversationId, operatorUserId: operatorId, deletedAt: null }, select: { id: true } });
+    const c = await tx.platformAiConversation.findFirst({ where: { id: conversationId, operatorUserId: operatorId, ...LIVE }, select: { id: true } });
     return c ? existingPair(tx, conversationId, clientRequestId) : null;
   });
 }
@@ -345,7 +360,7 @@ export async function createConversation(input: {
       await lockKey(tx, `platform-ai-conversation-create:${operatorId}`);
       const prior = await replay(tx);
       if (prior) return prior;
-      const used = await tx.platformAiConversation.count({ where: { operatorUserId: operatorId, deletedAt: null } });
+      const used = await tx.platformAiConversation.count({ where: { operatorUserId: operatorId, ...LIVE } });
       if (used >= PLATFORM_AI_CONVERSATIONS_MAX) return { kind: "LIMIT", used };
       const conversation = await tx.platformAiConversation.create({
         data: { operatorUserId: operatorId, area, createRequestId },
@@ -393,7 +408,7 @@ export async function appendTurn(input: {
   const { operatorId, conversationId, clientRequestId } = input;
   try {
     return await withTenantDb(operatorId, async (tx) => {
-      const c = await tx.platformAiConversation.findFirst({ where: { id: conversationId, operatorUserId: operatorId, deletedAt: null }, select: { id: true } });
+      const c = await tx.platformAiConversation.findFirst({ where: { id: conversationId, operatorUserId: operatorId, ...LIVE }, select: { id: true } });
       if (!c) return { kind: "NOT_FOUND" };
       await abandonStale(tx, conversationId, input.now);
       const prior = await existingPair(tx, conversationId, clientRequestId);
@@ -452,6 +467,7 @@ export async function softDeleteConversation(operatorId: string, id: string): Pr
   return withTenantDb(operatorId, async (tx) => {
     const c = await tx.platformAiConversation.findFirst({ where: { id, operatorUserId: operatorId, deletedAt: null }, select: { id: true, area: true } });
     if (!c) return { deleted: false };
+    // Counts the VISIBLE (unexpired) messages only: expired rows are outside fm_app's policy (migration 20261105120000).
     const messageCount = await tx.platformAiMessage.count({ where: { conversationId: id } });
     const r = await tx.platformAiConversation.updateMany({ where: { id, operatorUserId: operatorId, deletedAt: null }, data: { deletedAt: new Date() } });
     if (r.count !== 1) return { deleted: false };

@@ -76,6 +76,25 @@ SELECT t.name AS name,
   LEFT JOIN pg_class c ON c.oid = to_regclass('public."' || t.name || '"')
  ORDER BY t.name`;
 
+/**
+ * Expiry on read (migration 20261105120000; S2 addition 1): fm_app's SELECT and
+ * UPDATE policies on PlatformAiMessage must carry the "purgeAfter" > now()
+ * predicate. A backup taken before that migration restores WITHOUT it, so this
+ * check FAILS until migrations are applied to head (restore runbook §4.1).
+ */
+export const PRECHECK_POLICIES_SQL = `
+SELECT p.policyname AS name, coalesce(p.qual, '') AS qual
+  FROM pg_policies p
+ WHERE p.schemaname = 'public' AND p.tablename = 'PlatformAiMessage' AND p.policyname IN ('fm_app_sel', 'fm_app_upd')
+ ORDER BY p.policyname`;
+
+export const PRECHECK_EXPIRY_POLICIES = ["fm_app_sel", "fm_app_upd"] as const;
+
+/** The predicate as PostgreSQL deparses it: ("purgeAfter" > (now() AT TIME ZONE 'UTC'::text)). */
+const EXPIRY_PREDICATE = /"purgeAfter" > \(now\(\) AT TIME ZONE 'UTC'::text\)/;
+
+export interface PolicyRow { name: string; qual: string }
+
 export interface FunctionRow {
   signature: string; present: boolean; definer: boolean; config: string;
   owner_bypassrls: boolean; owner_super: boolean;
@@ -88,7 +107,7 @@ export interface PrecheckLine { ok: boolean; text: string }
 const SEARCH_PATH = /(^|,)search_path=pg_catalog, ?public(,|$)/;
 
 /** PURE — the verdict lines for the catalog rows. Every check must pass before any flag is enabled. */
-export function evaluatePrecheck(fns: readonly FunctionRow[], tables: readonly TableRow[]): { ok: boolean; lines: PrecheckLine[] } {
+export function evaluatePrecheck(fns: readonly FunctionRow[], tables: readonly TableRow[], policies: readonly PolicyRow[]): { ok: boolean; lines: PrecheckLine[] } {
   const lines: PrecheckLine[] = [];
   const add = (ok: boolean, text: string) => lines.push({ ok, text });
   for (const spec of PRECHECK_FUNCTIONS) {
@@ -109,6 +128,10 @@ export function evaluatePrecheck(fns: readonly FunctionRow[], tables: readonly T
     add(t.rls && t.forced, `${name}: row-level security ENABLED and FORCED`);
     add(!t.system_any, `${name}: fm_system holds no table privilege (the purge function is its only path)`);
     add(!t.app_delete, `${name}: fm_app holds no DELETE`);
+  }
+  for (const name of PRECHECK_EXPIRY_POLICIES) {
+    const p = policies.find((x) => x.name === name);
+    add(!!p && EXPIRY_PREDICATE.test(p.qual), `PlatformAiMessage ${name}: expiry on read ("purgeAfter" > now(), migration 20261105120000)`);
   }
   return { ok: lines.every((l) => l.ok), lines };
 }

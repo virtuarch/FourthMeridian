@@ -40,6 +40,9 @@ const ROOT = process.cwd();
 const NAME = "20261104120000_platform_ai_conversations";
 const raw = readFileSync(path.join(ROOT, "prisma/migrations", NAME, "migration.sql"), "utf8");
 const sql = raw.replace(/--[^\n]*/g, "");
+const EXPIRY_NAME = "20261105120000_platform_ai_message_expiry_on_read";
+const expiryRaw = readFileSync(path.join(ROOT, "prisma/migrations", EXPIRY_NAME, "migration.sql"), "utf8");
+const expiry = expiryRaw.replace(/--[^\n]*/g, "").replace(/\s+/g, " ");
 const flat = sql.replace(/\s+/g, " ");
 
 /** The full CREATE FUNCTION … END $$; statement for `name`. */
@@ -56,8 +59,9 @@ console.log("0. the batch and the place in history");
 {
   check("the header says \"B11 batch — not part of B10\"", raw.split("\n").slice(0, 3).join("\n").includes("B11 batch — not part of B10"));
   const names = readdirSync(path.join(ROOT, "prisma/migrations")).filter((n) => /^\d{14}_/.test(n)).sort();
-  check("it is the LAST migration (after every B10 migration, last B10 = 20261103160000_fin_e_restricted_cash)",
-    names[names.length - 1] === NAME && NAME > "20261103160000_fin_e_restricted_cash", names.slice(-3).join(", "));
+  check("it sorts after every B10 migration (last B10 = 20261103160000_fin_e_restricted_cash), and only B11 migrations follow it",
+    NAME > "20261103160000_fin_e_restricted_cash"
+      && JSON.stringify(names.slice(names.indexOf(NAME))) === JSON.stringify([NAME, EXPIRY_NAME]), names.slice(-3).join(", "));
   check("lock_timeout bounds the FK lock on \"User\" (transaction-local)", /SET LOCAL lock_timeout = '5s';/.test(sql));
   check("no session-level SET (only SET LOCAL; a function-level search_path is not a session SET)", !/^\s*SET (?!LOCAL|search_path = pg_catalog, public$)/m.test(sql));
 }
@@ -188,6 +192,22 @@ console.log("7. S2 REQUIRED 1 — the grants");
   check("the composite reply FK (S2 Q6)", flat.includes(`FOREIGN KEY ("conversationId", "replyToId") REFERENCES "PlatformAiMessage"("conversationId", "id") ON DELETE CASCADE`));
   check("User → conversation cascades (S2 REQUIRED 3)", flat.includes(`FOREIGN KEY ("operatorUserId") REFERENCES "User"("id") ON DELETE CASCADE`));
   check("the FAILED ⇔ failureCode CHECK", flat.includes(`CHECK ((status = 'FAILED') = ("failureCode" IS NOT NULL))`));
+}
+
+console.log("9. expiry on read (20261105120000, OD-7 + S2 C1)");
+{
+  const pred = `"purgeAfter" > (now() AT TIME ZONE 'UTC'::text)`;
+  check("the header says \"B11 batch — not part of B10\"", expiryRaw.split("\n").slice(0, 3).join("\n").includes("B11 batch — not part of B10"));
+  check("SET LOCAL lock_timeout, and no session-level SET", /SET LOCAL lock_timeout = '5s';/.test(expiry) && !/(^|; )SET (?!LOCAL)/.test(expiry));
+  const sel = /CREATE POLICY fm_app_sel ON public\."PlatformAiMessage" FOR SELECT TO fm_app USING \(([^;]*)\);/.exec(expiry)?.[1] ?? "";
+  const upd = /CREATE POLICY fm_app_upd ON public\."PlatformAiMessage" FOR UPDATE TO fm_app USING \(([^;]*)\) WITH CHECK/.exec(expiry)?.[1] ?? "";
+  check("message SELECT policy: the DB-clock expiry predicate AND the owner sub-select", sel.startsWith(pred) && sel.includes(`c."operatorUserId" = current_fm_user_id()`), sel);
+  check("message UPDATE policy USING: the same predicate AND the owner sub-select", upd.startsWith(pred) && upd.includes(`c."operatorUserId" = current_fm_user_id()`), upd);
+  check("the predicate is the purge's clock form (UTC, strict >, no app-supplied time)", flat.includes("now() AT TIME ZONE 'UTC'") && !/\$\d|current_setting\('app\./.test(expiry));
+  check("exactly the two message policies are replaced; the conversation policies and every grant are untouched",
+    (expiry.match(/DROP POLICY/g) ?? []).length === 2 && (expiry.match(/CREATE POLICY/g) ?? []).length === 2
+      && !/PlatformAiConversation" FOR|GRANT|REVOKE|ALTER TABLE|CREATE FUNCTION|DELETE/.test(expiry.replace(/FROM public\."PlatformAiConversation" c/g, "")));
+  check("the INSERT policy is not changed (a new row's default purgeAfter passes SELECT for RETURNING)", !/fm_app_ins/.test(expiry));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

@@ -34,9 +34,9 @@
 
 import { decideRepairEnvGuard, redactConnectionDetails } from "./lib/repair-env-guard";
 import {
-  PRECHECK_FUNCTIONS_SQL, PRECHECK_READ_ONLY_STATEMENT, PRECHECK_TABLES_SQL, PREDISABLE_SQL,
+  PRECHECK_FUNCTIONS_SQL, PRECHECK_POLICIES_SQL, PRECHECK_READ_ONLY_STATEMENT, PRECHECK_TABLES_SQL, PREDISABLE_SQL,
   evaluatePrecheck, evaluatePredisable, parsePrecheckPhase, renderPrecheck, renderPredisable,
-  type FunctionRow, type PredisableRow, type TableRow,
+  type FunctionRow, type PolicyRow, type PredisableRow, type TableRow,
 } from "./lib/platform-ai-conversations-precheck.core";
 
 const KNOWN_FLAGS = new Set(["env", "acknowledge-production-read", "phase"]);
@@ -83,14 +83,15 @@ async function main(): Promise<void> {
       process.exitCode = v.ok ? 0 : 3;
       return;
     }
-    const { fns, tables } = await db.$transaction(async (tx) => {
+    const { fns, tables, policies } = await db.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(PRECHECK_READ_ONLY_STATEMENT);
       return {
         fns: await tx.$queryRawUnsafe<FunctionRow[]>(PRECHECK_FUNCTIONS_SQL),
         tables: await tx.$queryRawUnsafe<TableRow[]>(PRECHECK_TABLES_SQL),
+        policies: await tx.$queryRawUnsafe<PolicyRow[]>(PRECHECK_POLICIES_SQL),
       };
     }, { maxWait: 10_000, timeout: 60_000 });
-    const verdict = evaluatePrecheck(fns, tables);
+    const verdict = evaluatePrecheck(fns, tables, policies);
     console.log(`\n${renderPrecheck(gate.env ?? envFlag!, new Date().toISOString(), verdict)}\n`);
     process.exitCode = verdict.ok ? 0 : 3;
   } finally {
