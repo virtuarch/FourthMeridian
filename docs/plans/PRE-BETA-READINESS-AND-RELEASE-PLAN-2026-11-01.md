@@ -1522,7 +1522,7 @@ npm run report:b10-5 -- all --env=production --acknowledge-production-read
 
 **Owner item (visible semantics, before Production; #382):** accept that a Plaid outage confined to one institution reads Degraded (institution-concentrated), not Failing, on the Providers tile, Ops posture and attention severity.
 
-**Owner decision (repository history; S2 framing):** Git history (and any existing clones/forks) contains personal-looking payroll fixtures and real institution/card names, now removed from the tree. Options: (a) accept; (b) rewrite history (disruptive: breaks clones, open PRs and SHAs pinned in docs; doesn't reach copies already taken); (c) make the repository private (pending SEC-018), the most effective mitigation going forward. **Recommendation: (c).** Related tree-side work: payroll-like fixture de-identification (PR to follow).
+**Owner decision (repository history; S2 framing):** Git history (and any existing clones/forks) contains personal-looking payroll fixtures and real institution/card names: institution and card names removed from the tree (#387/#389); payroll-like fixtures being removed (de-identification PR pending). Options: (a) accept; (b) rewrite history (disruptive: breaks clones, open PRs and SHAs pinned in docs; doesn't reach copies already taken); (c) make the repository private (pending SEC-018), the most effective mitigation going forward. **Recommendation: (c).** Related tree-side work: payroll-like fixture de-identification (PR to follow).
 
 **Owner decision (billing, not a data step):** auto-holdings for consented-but-uninitialized Investments Items would **start** Plaid Investments billing per Item-month. #312 deliberately does not auto-initialize them; enabling it is an owner decision.
 
