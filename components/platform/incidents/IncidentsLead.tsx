@@ -194,17 +194,40 @@ function LinkedRow({ id, r, prefix, onSelect }: { id: string; r: IncidentRowDTO 
 const isRelativePath = (href: string) => href.startsWith("/") && !href.startsWith("//") && !href.includes("\\");
 
 /**
- * The "Related" links. Every href is the route's resolveNavigationTarget
+ * The "Go to" links (titled apart from "Related and recurring", which lists
+ * linked incidents). Every href is the route's resolveNavigationTarget
  * output, rendered VERBATIM — this component builds none (pinned by a source
  * scan). A link the route did not resolve is not in the list: nothing renders
- * in its place. An in-workspace incident link opens the incident in place on a
- * plain click (the drawer's REPLACE idiom); a modified click follows the href.
+ * in its place.
+ *
+ * IN PLACE ONLY WHEN THE URL WOULD BE THE HREF: a plain click on an incident
+ * link whose view IS the current view opens it in place (`onOpenInPlace`: that
+ * view, filters cleared, iid — exactly the href's URL, REPLACE idiom). A link
+ * to another view (e.g. the previous episode → History), a modified click, or
+ * no `onOpenInPlace` follows the href itself, so the URL always matches it.
  */
-export function IncidentRelatedNavigation({ links, onSelect }: { links: readonly IncidentNavigationLinkDTO[]; onSelect: (id: string) => void }) {
+export const NAVIGATION_SECTION_TITLE = "Go to";
+
+/** True when a click on `l` opens in place: an incident link on the CURRENT view, a plain primary click. Otherwise the href is followed. */
+export function opensInPlace(
+  l: Pick<IncidentNavigationLinkDTO, "incidentId" | "viewId">,
+  viewId: string | null | undefined,
+  e: { defaultPrevented: boolean; button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean },
+): boolean {
+  if (!l.incidentId || !l.viewId || !viewId || l.viewId !== viewId) return false;
+  return !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+}
+
+export function IncidentRelatedNavigation({ links, viewId, onOpenInPlace }: {
+  links: readonly IncidentNavigationLinkDTO[];
+  /** The drawer's current incidents view. */
+  viewId?: string | null;
+  onOpenInPlace?: (id: string) => void;
+}) {
   const shown = links.filter((l) => isRelativePath(l.href));
   if (shown.length === 0) return null;
   return (
-    <Section title="Related">
+    <Section title={NAVIGATION_SECTION_TITLE}>
       <ul className="flex min-w-0 flex-col" data-incident-navigation>
         {shown.map((l) => (
           <li key={`${l.kind}:${l.href}`} className="min-w-0">
@@ -213,9 +236,9 @@ export function IncidentRelatedNavigation({ links, onSelect }: { links: readonly
               data-navigation-kind={l.kind}
               className={`${ROW_BTN} py-1.5`}
               onClick={(e) => {
-                if (!l.incidentId || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                if (!onOpenInPlace || !l.incidentId || !opensInPlace(l, viewId, e)) return;
                 e.preventDefault();
-                onSelect(l.incidentId);
+                onOpenInPlace(l.incidentId);
               }}
             >
               <span className="min-w-0 flex-1">
@@ -231,10 +254,13 @@ export function IncidentRelatedNavigation({ links, onSelect }: { links: readonly
   );
 }
 
-export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle }: {
+export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle, viewId, onOpenInPlace }: {
   d: IncidentDetailDTO;
   canWrite: boolean;
   onSelect: (id: string) => void;
+  /** The current incidents view, and the in-place opener for a "Go to" link on it (IncidentRelatedNavigation). */
+  viewId?: string | null;
+  onOpenInPlace?: (id: string) => void;
   onExecution?: (id: string) => void;
   onRecover: (a: RecoveryActionDTO) => void;
   /** PB-1 S6 — opens the acknowledge / resolve confirmation (Ops tier only; the server decides). */
@@ -318,7 +344,7 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
         {"subjectUserId" in r && <p className="break-all font-mono text-[11px] text-[var(--text-muted)]">{r.subjectUserId ? `Customer ${r.subjectUserId}` : "No attributed customer"}</p>}
       </Section>
 
-      <IncidentRelatedNavigation links={d.navigation ?? []} onSelect={onSelect} />
+      <IncidentRelatedNavigation links={d.navigation ?? []} viewId={viewId} onOpenInPlace={onOpenInPlace} />
 
       <Section title="Related and recurring">
         {d.related.length === 0 && d.recurrences.length === 0 ? (
@@ -401,7 +427,10 @@ export function LifecycleFormFields({ action, form, onChange, disabled }: { acti
   );
 }
 
-function IncidentDetail({ tier, id, canWrite, onSelect, onChanged }: { tier: IncidentTier; id: string; canWrite: boolean; onSelect: (id: string) => void; onChanged?: () => void }) {
+function IncidentDetail({ tier, id, canWrite, onSelect, onChanged, viewId, onOpenInPlace }: {
+  tier: IncidentTier; id: string; canWrite: boolean; onSelect: (id: string) => void; onChanged?: () => void;
+  viewId?: string | null; onOpenInPlace?: (id: string) => void;
+}) {
   const [generation, setGeneration] = useState(0);
   const [lifecyclePending, setLifecyclePending] = useState<LifecycleActionDTO | null>(null);
   const [form, setForm] = useState<LifecycleForm>(EMPTY_LIFECYCLE_FORM);
@@ -472,7 +501,7 @@ function IncidentDetail({ tier, id, canWrite, onSelect, onChanged }: { tier: Inc
   return (
     <>
       {notice && <p role="status" className="mb-3 text-xs text-[var(--text-secondary)]">{notice}</p>}
-      <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} onExecution={tier === "ops" ? setExecution : undefined} onRecover={setPending}
+      <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} viewId={viewId} onOpenInPlace={onOpenInPlace} onExecution={tier === "ops" ? setExecution : undefined} onRecover={setPending}
         onLifecycle={tier === "ops" ? openLifecycle : undefined} />
       {lifecyclePending && (
         <ConfirmDialog icon={lifecyclePending === "resolve" ? CheckCircle2 : UserCheck} title={LIFECYCLE_CONFIRM[lifecyclePending].title}
@@ -511,6 +540,8 @@ function IncidentsWorkspace({ tier, viewId, access }: { tier: IncidentTier } & P
   const list = useKeyedJson<IncidentListDTO>(incidentsApiPath(tier, state.query), listGeneration);
   const select = (id: string | null) => apply({ ...state, selectedId: id });
   const title = list.data?.items.find((r) => r.id === state.selectedId);
+  /** A "Go to" link on THIS view: its href's state — this view's bare preset (no filters) + iid. */
+  const openInPlace = (id: string) => apply({ query: { ...DEFAULT_SEARCH, status }, selectedId: id, fromClamped: false });
 
   return (
     <div className="flex min-w-0 flex-col gap-4" data-incidents-workspace={tier}>
@@ -527,7 +558,8 @@ function IncidentsWorkspace({ tier, viewId, access }: { tier: IncidentTier } & P
       </Surface>
       <DetailDrawer open={state.selectedId !== null} onClose={() => select(null)} eyebrow={tier === "ops" ? "Platform Ops · Incident" : "Customer Success · Incident"}
         title={title ? incidentTitle(title) : "Incident"} size="xl">
-        {state.selectedId ? <IncidentDetail tier={tier} id={state.selectedId} canWrite={access?.canWrite === true} onSelect={(id) => select(id)} onChanged={() => setListGeneration((g) => g + 1)} /> : null}
+        {state.selectedId ? <IncidentDetail tier={tier} id={state.selectedId} canWrite={access?.canWrite === true} onSelect={(id) => select(id)} onChanged={() => setListGeneration((g) => g + 1)}
+          viewId={viewId ?? null} onOpenInPlace={openInPlace} /> : null}
       </DetailDrawer>
     </div>
   );

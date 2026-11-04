@@ -101,7 +101,7 @@ export interface IncidentDetailDTO {
   /** PB-1 S6 — lifecycle actions offered (ops tier only; always [] on cs). */
   lifecycleActions: LifecycleActionDTO[];
   /**
-   * The "Related" links (./related-navigation.ts): hrefs the ROUTE resolved
+   * The "Go to" links (./related-navigation.ts): hrefs the ROUTE resolved
    * through the navigation registry for its own token and surface. Absent ⇒
    * none rendered. The client never builds one.
    */
