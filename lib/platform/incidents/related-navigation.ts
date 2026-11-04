@@ -40,6 +40,7 @@
  */
 
 import type { IncidentVerdict } from "./intelligence/types";
+import type { IncidentDetailDTO } from "./investigation-dto";
 
 export type IncidentNavigationKind = "provider-health" | "connection-health" | "previous-episode" | "same-subject-open" | "customer-success";
 
@@ -117,6 +118,55 @@ export function incidentNavigationLinks(input: IncidentNavigationInput, resolve:
   if (input.itemCount === 1) {
     const r = resolve(INCIDENT_NAVIGATION_TARGETS.csIncidentsOpen, { iid: v.id });
     if (r) out.push({ kind: "customer-success", label: "1 affected customer — open in Customer Success", note: null, href: r.href, incidentId: null, viewId: null });
+  }
+  return out;
+}
+
+// ── The Customer Success drawer ─────────────────────────────────────────────
+
+/**
+ * CS-tier targets ONLY (the CS route resolves on the literal surface
+ * "CUSTOMER_SUCCESS"; pinned: every id here is a CUSTOMER_SUCCESS-tier target).
+ * No Providers / connection-health link: those are Platform Ops destinations,
+ * invisible to a CS token. No "open in Customer Success" link: on the CS
+ * surface it would be a link to the drawer the operator is already in.
+ */
+export const CS_INCIDENT_NAVIGATION_TARGETS = {
+  incidentsOpen: "CUSTOMER_SUCCESS:platform-incidents:open",
+  incidentsHistory: "CUSTOMER_SUCCESS:platform-incidents:history",
+} as const;
+const CS_TARGET_IDS: ReadonlySet<string> = new Set(Object.values(CS_INCIDENT_NAVIGATION_TARGETS));
+
+/**
+ * The CS drawer's "Go to" links, built from the CS-tier DTO ITSELF — so a link
+ * can reference only an id that DTO already exposes to this reader:
+ *   previous-episode   the DTO's `related` entry of kind PREVIOUS_EPISODE (the
+ *                      previousIncidentId chain neighbour) → CS History · iid;
+ *   same-subject-open  the DTO's `recurrences` rows that are open → CS Broken now · iid.
+ * Never the incident itself, never a customer / connection id, never a
+ * non-CS target (refused here before the resolver is asked).
+ */
+export function csIncidentNavigationLinks(
+  d: Pick<IncidentDetailDTO, "incident" | "related" | "recurrences">,
+  resolve: IncidentNavigationResolver,
+): IncidentNavigationLinkDTO[] {
+  const self = d.incident.id;
+  const out: IncidentNavigationLinkDTO[] = [];
+  const push = (kind: IncidentNavigationKind, label: string, target: string, incidentId: string) => {
+    if (!CS_TARGET_IDS.has(target) || incidentId === self) return;
+    const r = resolve(target, { iid: incidentId });
+    if (r) out.push({ kind, label, note: null, href: r.href, incidentId, viewId: target.slice(target.lastIndexOf(":") + 1) });
+  };
+  const prev = d.related.find((l) => l.kind === "PREVIOUS_EPISODE");
+  if (prev) push("previous-episode", "Previous episode", CS_INCIDENT_NAVIGATION_TARGETS.incidentsHistory, prev.id);
+  const seen = new Set<string>([self]);
+  let n = 0;
+  for (const r of d.recurrences) {
+    if (n >= SAME_SUBJECT_LINK_CAP) break;
+    if (seen.has(r.id) || !OPEN_STATES.has(r.state)) continue;
+    seen.add(r.id);
+    n++;
+    push("same-subject-open", `Episode ${r.generation} · open, same subject`, CS_INCIDENT_NAVIGATION_TARGETS.incidentsOpen, r.id);
   }
   return out;
 }

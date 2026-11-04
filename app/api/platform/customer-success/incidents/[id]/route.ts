@@ -12,6 +12,13 @@
  * verifies the minted token before any read. PRIVACY: projected at the "cs"
  * tier (investigation-dto.ts) — never `detail`, provider text or the stored
  * evidence.
+ *
+ * "GO TO" NAVIGATION: resolved HERE through the navigation registry's accessor
+ * only — `resolveNavigationTarget` with the literal surface "CUSTOMER_SUCCESS"
+ * and a MetricAccessToken minted from this function's own guard result — and
+ * built from the projected CS DTO itself, so a link names only an id that DTO
+ * already exposes (lib/platform/incidents/related-navigation.ts
+ * csIncidentNavigationLinks). Any failure ⇒ no links, never a hidden incident.
  */
 
 import { NextResponse } from "next/server";
@@ -19,6 +26,9 @@ import { requirePlatformAccess } from "@/lib/platform/authorize";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { incidentAccessors } from "@/lib/platform/incidents/intelligence";
 import { incidentDetailDTO, type IncidentDetailDTO } from "@/lib/platform/incidents/investigation-dto";
+import { csIncidentNavigationLinks, navigationOrEmpty } from "@/lib/platform/incidents/related-navigation";
+import { metricAccessFor } from "@/lib/platform/intelligence/metrics/access";
+import { resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
 
 export const runtime = "nodejs";
 
@@ -38,5 +48,13 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   try { inv = await incidentAccessors.investigate(token, id, { now }); }
   catch { return NextResponse.json({ error: "Incident read failed." }, { status: 500, headers: NO_STORE }); }
   if (!inv) return NextResponse.json({ error: "Incident not found." }, { status: 404, headers: NO_STORE });
-  return NextResponse.json(incidentDetailDTO(inv, "cs", now) satisfies CsIncidentDetailResponse, { headers: NO_STORE });
+  const dto = incidentDetailDTO(inv, "cs", now);
+  // A navigation failure never hides the incident: any throw (mint, registry, builder) ⇒ no links.
+  const navigation = navigationOrEmpty(() => {
+    const navToken = metricAccessFor(auth);
+    return navToken
+      ? csIncidentNavigationLinks(dto, (target, params) => resolveNavigationTarget("CUSTOMER_SUCCESS", navToken, target, params, { now }))
+      : [];
+  });
+  return NextResponse.json({ ...dto, navigation } satisfies CsIncidentDetailResponse, { headers: NO_STORE });
 }
