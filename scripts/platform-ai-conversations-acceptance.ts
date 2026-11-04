@@ -1,0 +1,439 @@
+/**
+ * scripts/platform-ai-conversations-acceptance.ts  (B11 — Platform AI conversations on REAL PostgreSQL roles)
+ *
+ * Design: docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §2.4, §7.2, §12 (S2
+ * REQUIRED 1–3, S2 B4 / B6 / Q6, and S2's post-approval additions).
+ *
+ * The rls:accept pattern: a throwaway Postgres carrying the committed
+ * migration history (scripts/lib/rls-harness.ts — removed with
+ * `docker rm -f -v`), real fm_app / fm_system / fm_auth logins, plain SQL for
+ * the boundary itself, and then the REAL data module (store.ts through
+ * lib/db's fm_app tenant client) and the REAL retention job. Synthetic data
+ * only; every key is generated per run.
+ *
+ *   [sql]   PostgreSQL's boundary: grants, policies, triggers, the definer
+ *   [owner] the definer functions owned by a BYPASSRLS NON-superuser (as on
+ *           Supabase), and the negative control: a NON-bypass owner ⇒ (0, 0)
+ *   [app]   store.ts as fm_app: idempotency, one in-flight turn, caps, abandon,
+ *           R2 (only an append moves lastActivityAt), audit without content
+ *   [job]   jobs/data-retention.ts with PLATFORM_AI_PURGE_ENABLED: the audited
+ *           count equals the rows actually removed
+ *   [dispatch] the manual purge dispatch (Preview runs no crons — S2 REQUIRED 2
+ *           on #424): the same rule once, as fm_system, audited counts every
+ *           run (zero included); --env=production refused before any contact
+ *
+ *   npm run rls:accept:ai-conversations [-- --keep]
+ */
+
+import { spawnSync } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { prepareHarness, assertTenantClientBound, teardownHarness, psql, makeRecorder, deniedByGrant, deniedByRls } from "./lib/rls-harness";
+
+const KEEP = process.argv.includes("--keep");
+const { check, report } = makeRecorder();
+
+process.env.ENCRYPTION_KEY = randomBytes(32).toString("hex");
+delete process.env.ENCRYPTION_KEY_PREVIOUS;
+// The job case runs the REAL rule; its flag must be on in THIS process only (read at lib/env import).
+process.env.PLATFORM_AI_PURGE_ENABLED = "true";
+
+const A = "aiconv_op_a", B = "aiconv_op_b", C = "aiconv_op_c";
+const first = (r: { out: string; err: string }) => r.out.trim() || r.err.split("\n")[0];
+const errLine = (r: { err: string }) => r.err.split("\n").find((l) => /ERROR/.test(l)) ?? r.err.split("\n")[0] ?? "";
+
+async function main(): Promise<number> {
+  console.log("\n=== PLATFORM AI CONVERSATIONS — REAL-ROLE ACCEPTANCE ===\n");
+  const h = prepareHarness("aiconv");
+  const owner = h.ownerUrl;
+  const one = (sql: string) => { const r = psql(owner, sql); if (!r.ok) throw new Error(`fixture SQL failed: ${r.err}`); return r.out.trim(); };
+  const asApp = (user: string, sql: string) => psql(h.appUrl, `BEGIN;\nSET LOCAL app.user_id = '${user}';\n${sql}\nCOMMIT;`, false);
+  const asSys = (sql: string) => psql(h.systemUrl, sql, false);
+  const asAuth = (sql: string) => psql(h.authUrl, sql, false);
+
+  one(`insert into "User" (id,email,name,"updatedAt") values
+    ('${A}','aiconv-a@example.test','Operator A',now()), ('${B}','aiconv-b@example.test','Operator B',now()), ('${C}','aiconv-c@example.test','Operator C',now());`);
+
+  // ── [sql] REQUIRED 1: writers never choose time ────────────────────────────
+  console.log("[sql] grants, policies and triggers (as fm_app / fm_system / fm_auth)\n");
+  const insA = asApp(A, `insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_a1','${A}','PLATFORM_OPS','k-a1');`);
+  check(1, "fm_app inserts its OWN conversation naming only id / operatorUserId / area / createRequestId", insA.ok, insA.err);
+  const ts = one(`select ("createdAt" is not null and "lastActivityAt" = "createdAt")::text from "PlatformAiConversation" where id='cv_a1';`);
+  check(2, "createdAt and lastActivityAt are the database's defaults", ts === "true", ts);
+  const insForB = asApp(A, `insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_evil','${B}','PLATFORM_OPS','k-evil');`);
+  check(3, "fm_app inserting a conversation for ANOTHER operator ⇒ denied by WITH CHECK", deniedByRls(insForB), errLine(insForB));
+  const named = [
+    [`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId","createdAt") values ('cv_t1','${A}','PLATFORM_OPS','k-t1', now() - interval '1 year');`, "conversation createdAt"],
+    [`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId","lastActivityAt") values ('cv_t2','${A}','PLATFORM_OPS','k-t2', now() + interval '1 year');`, "conversation lastActivityAt"],
+    [`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId","deletedAt") values ('cv_t3','${A}','PLATFORM_OPS','k-t3', now());`, "conversation deletedAt"],
+    [`insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","createdAt") values ('m_t1','cv_a1','USER','COMPLETE','r-t1', now() - interval '1 year');`, "message createdAt"],
+    [`insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","purgeAfter") values ('m_t2','cv_a1','USER','COMPLETE','r-t2', now() + interval '10 years');`, "message purgeAfter"],
+    [`insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","completedAt") values ('m_t3','cv_a1','USER','COMPLETE','r-t3', now());`, "message completedAt"],
+  ] as const;
+  const leaks = named.map(([q, what]) => (deniedByGrant(asApp(A, q)) ? null : what)).filter(Boolean);
+  check(4, "fm_app INSERT naming createdAt / lastActivityAt / deletedAt / purgeAfter / completedAt ⇒ permission denied (each)", leaks.length === 0, leaks.join(", "));
+
+  const u1 = asApp(A, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","contentEncrypted") values ('m_a1u','cv_a1','USER','COMPLETE','r-a1','cipher-a1');`);
+  const a1 = asApp(A, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId") values ('m_a1a','cv_a1','ASSISTANT','PENDING','m_a1u');`);
+  check(5, "fm_app appends a USER row and its PENDING ASSISTANT reply", u1.ok && a1.ok, `${u1.err} ${a1.err}`);
+  const pa = one(`select ("purgeAfter" = "createdAt" + interval '90 days')::text from "PlatformAiMessage" where id='m_a1u';`);
+  check(6, "purgeAfter = createdAt + 90 days (DB default; R1 option (b))", pa === "true", pa);
+  const moved = one(`select ("lastActivityAt" > "createdAt")::text from "PlatformAiConversation" where id='cv_a1';`);
+  check(7, "the USER insert moved lastActivityAt (the DEFINER touch trigger) — fm_app holds no grant on it", moved === "true", moved);
+  const upd = [
+    [`update "PlatformAiConversation" set "lastActivityAt" = now() + interval '1 year' where id='cv_a1';`, "conversation lastActivityAt"],
+    [`update "PlatformAiConversation" set "createdAt" = now() where id='cv_a1';`, "conversation createdAt"],
+    [`update "PlatformAiConversation" set area = 'SECURITY_OPS' where id='cv_a1';`, "conversation area"],
+    [`update "PlatformAiMessage" set "purgeAfter" = now() + interval '10 years' where id='m_a1u';`, "message purgeAfter"],
+    [`update "PlatformAiMessage" set "createdAt" = now() where id='m_a1u';`, "message createdAt"],
+    [`update "PlatformAiMessage" set "completedAt" = now() where id='m_a1a';`, "message completedAt"],
+  ] as const;
+  const updLeaks = upd.map(([q, what]) => (deniedByGrant(asApp(A, q)) ? null : what)).filter(Boolean);
+  check(8, "fm_app UPDATE of any timestamp / retention column (or area) ⇒ permission denied (each)", updLeaks.length === 0, updLeaks.join(", "));
+  const pend2 = asApp(A, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('m_a2u','cv_a1','USER','COMPLETE','r-a2');
+    insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId") values ('m_a2a','cv_a1','ASSISTANT','PENDING','m_a2u');`);
+  check(9, "a second PENDING turn in one conversation ⇒ the partial unique index refuses it", /one_pending_per_conversation/.test(pend2.err), errLine(pend2));
+  const settle = asApp(A, `update "PlatformAiMessage" set status='COMPLETE', "contentEncrypted"='cipher-ans', "evidenceRefs"='[{"k":"m","id":"provider-outcome@1","w":7}]'::jsonb where id='m_a1a';`);
+  const done = one(`select status || '|' || ("completedAt" is not null)::text from "PlatformAiMessage" where id='m_a1a';`);
+  check(10, "settling PENDING → COMPLETE as fm_app works, and completedAt is the database's", settle.ok && done === "COMPLETE|true", `${errLine(settle)} ${done}`);
+  const reSettle = asApp(A, `update "PlatformAiMessage" set "contentEncrypted"='tampered' where id='m_a1a';`);
+  const reStatus = asApp(A, `update "PlatformAiMessage" set status='FAILED', "failureCode"='PROVIDER' where id='m_a1a';`);
+  check(11, "a settled message is immutable to fm_app — contentEncrypted alone or status ⇒ 'settled message is immutable'",
+    /settled message is immutable/.test(reSettle.err) && /settled message is immutable/.test(reStatus.err) && one(`select "contentEncrypted" from "PlatformAiMessage" where id='m_a1a';`) === "cipher-ans", `${errLine(reSettle)} | ${errLine(reStatus)}`);
+
+  // Ownership.
+  const readOwn = asApp(A, `select count(*) from "PlatformAiConversation"; select count(*) from "PlatformAiMessage";`);
+  const readB = asApp(B, `select count(*) from "PlatformAiConversation"; select count(*) from "PlatformAiMessage";`);
+  check(12, "the OWNER reads their conversation and messages (1, 2)", readOwn.ok && readOwn.out.split("\n").join(",") === "1,2", readOwn.out || readOwn.err);
+  check(13, "ANOTHER operator ⇒ 0 conversations and 0 messages, with no predicate at all", readB.ok && readB.out.split("\n").join(",") === "0,0", readB.out || readB.err);
+  const bById = asApp(B, `select count(*) from "PlatformAiMessage" where "conversationId"='cv_a1';`);
+  const bUpd = asApp(B, `with w as (update "PlatformAiConversation" set "deletedAt" = now() where id='cv_a1' returning 1) select count(*) from w;`);
+  const bIns = asApp(B, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('m_evil','cv_a1','USER','COMPLETE','r-evil');`);
+  check(14, "another operator naming the id: SELECT 0 rows, UPDATE 0 rows, INSERT into it denied (no existence oracle)",
+    bById.out === "0" && bUpd.ok && bUpd.out === "0" && deniedByRls(bIns) && one(`select ("deletedAt" is null)::text from "PlatformAiConversation" where id='cv_a1';`) === "true", `${bById.out} ${bUpd.out || bUpd.err} ${errLine(bIns)}`);
+  const noId = psql(h.appUrl, `select count(*) from "PlatformAiConversation";`, false);
+  check(15, "no app.user_id ⇒ 0 rows (fail closed)", noId.ok && noId.out.trim() === "0", first(noId));
+  const appDel = asApp(A, `delete from "PlatformAiMessage" where id='m_a1u';`);
+  const appDelC = asApp(A, `delete from "PlatformAiConversation" where id='cv_a1';`);
+  check(16, "fm_app has NO DELETE on either table (hard deletion is the purge's alone)", deniedByGrant(appDel) && deniedByGrant(appDelC), `${errLine(appDel)} | ${errLine(appDelC)}`);
+
+  // fm_system and fm_auth: nothing.
+  const sysProbes = ["select count(*) from \"PlatformAiConversation\";", "select count(*) from \"PlatformAiMessage\";",
+    "delete from \"PlatformAiConversation\";", "delete from \"PlatformAiMessage\";", "update \"PlatformAiMessage\" set status='FAILED';",
+    `insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_sys','${A}','PLATFORM_OPS','k-sys');`];
+  const sysOpen = sysProbes.filter((q) => !deniedByGrant(asSys(q)));
+  check(17, "fm_system SELECT / INSERT / UPDATE / DELETE on both tables ⇒ permission denied (S2 B4)", sysOpen.length === 0, sysOpen.join(" | "));
+  const authOpen = ["select count(*) from \"PlatformAiConversation\";", "select count(*) from \"PlatformAiMessage\";"].filter((q) => !deniedByGrant(asAuth(q)));
+  check(18, "fm_auth cannot read either table", authOpen.length === 0, authOpen.join(" | "));
+  const appPurge = asApp(A, `select * from fm_purge_platform_ai_conversations(10);`);
+  const authPurge = asAuth(`select * from fm_purge_platform_ai_conversations(10);`);
+  check(19, "fm_app (and fm_auth) cannot EXECUTE the purge function ⇒ permission denied", deniedByGrant(appPurge) && deniedByGrant(authPurge), `${errLine(appPurge)} | ${errLine(authPurge)}`);
+  const privs = one(`select string_agg(r || ':' || has_function_privilege(r, 'public.fm_platform_ai_touch_conversation()', 'EXECUTE')::text, ',' order by r) from unnest(array['fm_app','fm_auth','fm_system']) r;`);
+  check(20, "nobody (fm_app, fm_auth, fm_system) may EXECUTE the touch trigger function directly (REVOKE ALL FROM PUBLIC)", privs === "fm_app:false,fm_auth:false,fm_system:false", privs);
+  const sysLimit = asSys(`select * from fm_purge_platform_ai_conversations(501);`);
+  check(21, "fm_system may EXECUTE the purge, and p_limit is bounded (501 ⇒ refused)", /p_limit out of range/.test(sysLimit.err), errLine(sysLimit));
+
+  // Soft delete.
+  asApp(A, `insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_a2','${A}','PLATFORM_OPS','k-a2');`);
+  const sd = asApp(A, `update "PlatformAiConversation" set "deletedAt" = now() - interval '30 days' where id='cv_a2';`);
+  const sdAt = one(`select (abs(extract(epoch from ("deletedAt" - (now() at time zone 'UTC')))) < 60)::text from "PlatformAiConversation" where id='cv_a2';`);
+  check(22, "a soft delete sending a PAST deletedAt stores now() (the trigger's value, not the writer's)", sd.ok && sdAt === "true", `${errLine(sd)} ${sdAt}`);
+  const sd2 = asApp(A, `update "PlatformAiConversation" set "deletedAt" = now() where id='cv_a2';`);
+  const undel = asApp(A, `update "PlatformAiConversation" set "deletedAt" = null where id='cv_a2';`);
+  check(23, "a second delete and an un-delete ⇒ 'conversation already deleted'", /already deleted/.test(sd2.err) && /already deleted/.test(undel.err), `${errLine(sd2)} | ${errLine(undel)}`);
+  const appendDeleted = asApp(A, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('m_dead','cv_a2','USER','COMPLETE','r-dead');`);
+  check(24, "a deleted conversation cannot be appended to (the INSERT policy requires a live parent)", deniedByRls(appendDeleted), errLine(appendDeleted));
+
+  // Q6 + shapes.
+  asApp(B, `insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_b1','${B}','PLATFORM_OPS','k-b1');
+    insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('m_b1u','cv_b1','USER','COMPLETE','r-b1');`);
+  one(`insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('m_a3u','cv_a1','USER','COMPLETE','r-a3'); select 'ok';`);
+  const cross = psql(owner, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId") values ('m_x','cv_b1','ASSISTANT','PENDING','m_a3u');`, false);
+  check(25, "Q6: a reply whose replyToId names a message in ANOTHER conversation ⇒ FK violation (even for the owner)", /foreign key/i.test(cross.err), errLine(cross));
+  const noCode = psql(owner, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId") values ('m_y','cv_b1','ASSISTANT','FAILED','m_b1u');`, false);
+  const badCode = psql(owner, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId","failureCode") values ('m_z','cv_b1','ASSISTANT','FAILED','m_b1u','the provider said: secret');`, false);
+  check(26, "Q6: a FAILED row without a code ⇒ CHECK; a code outside the enum ⇒ refused", /failure_shape/.test(noCode.err) && /invalid input value for enum/.test(badCode.err), `${errLine(noCode)} | ${errLine(badCode)}`);
+  const shape = psql(owner, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","replyToId") values ('m_s','cv_b1','USER','COMPLETE','r-s','m_b1u');`, false);
+  const orphanA = psql(owner, `insert into "PlatformAiMessage" (id,"conversationId",role,status) values ('m_o','cv_b1','ASSISTANT','PENDING');`, false);
+  check(27, "the role shape: a USER row with a reply link, or an ASSISTANT row answering nothing ⇒ CHECK (every reply is reachable by the purge)", /role_shape/.test(shape.err) && /role_shape/.test(orphanA.err), `${errLine(shape)} | ${errLine(orphanA)}`);
+
+  // ── [owner] the definers on a BYPASSRLS NON-superuser, then the negative control ──
+  console.log("\n[owner] the definer functions owned as on Supabase (BYPASSRLS, NOT superuser)\n");
+  one(`create role fm_aiconv_owner nologin bypassrls nosuperuser; create role fm_aiconv_nobypass nologin nobypassrls nosuperuser;
+       grant usage, create on schema public to fm_aiconv_owner, fm_aiconv_nobypass;`);
+  const setOwner = (role: string) => one(`alter table "PlatformAiConversation" owner to ${role}; alter table "PlatformAiMessage" owner to ${role};
+       alter function public.fm_purge_platform_ai_conversations(integer) owner to ${role};
+       alter function public.fm_platform_ai_touch_conversation() owner to ${role};
+       select 'ok';`);
+  setOwner("fm_aiconv_owner");
+  const who = one(`select r.rolname || '|' || r.rolbypassrls::text || '|' || r.rolsuper::text from pg_proc p join pg_roles r on r.oid = p.proowner where p.oid = 'public.fm_purge_platform_ai_conversations(integer)'::regprocedure;`);
+  check(28, "the purge function's owner is a BYPASSRLS non-superuser (the Preview shape)", who === "fm_aiconv_owner|true|false", who);
+  const doBlock = /DO \$\$\s*BEGIN\s*IF NOT \(SELECT rolbypassrls[\s\S]*?END \$\$;/.exec(readFileSync(path.join(process.cwd(), "prisma/migrations/20261104120000_platform_ai_conversations/migration.sql"), "utf8"))?.[0] ?? "";
+  const asNoBypass = psql(owner, `BEGIN; SET LOCAL ROLE fm_aiconv_nobypass; ${doBlock} ROLLBACK;`, false);
+  const asBypass = psql(owner, `BEGIN; SET LOCAL ROLE fm_aiconv_owner; ${doBlock} ROLLBACK;`, false);
+  check(29, "the migration's DO block ABORTS for a non-bypass principal and passes for a BYPASSRLS one",
+    doBlock.length > 0 && /must have BYPASSRLS/.test(asNoBypass.err) && asBypass.ok, `${errLine(asNoBypass)} | ${errLine(asBypass)}`);
+
+  // Two operators' expired and unexpired rows (seeded as the owner — the only role that can set time).
+  const seedExchange = (cid: string, n: string, ageSql: string) => `
+    insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","contentEncrypted","createdAt","purgeAfter")
+      values ('${n}u','${cid}','USER','COMPLETE','${n}-k','c-${n}', (now() at time zone 'UTC') - ${ageSql}, (now() at time zone 'UTC') - ${ageSql} + interval '90 days');
+    insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId","contentEncrypted","evidenceRefs","createdAt","purgeAfter","completedAt")
+      values ('${n}a','${cid}','ASSISTANT','COMPLETE','${n}u','c-${n}a','[]'::jsonb, (now() at time zone 'UTC') - ${ageSql}, (now() at time zone 'UTC') - ${ageSql} + interval '90 days', (now() at time zone 'UTC') - ${ageSql});`;
+  one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_pa','${A}','PLATFORM_OPS','k-pa'), ('cv_pb','${B}','SECURITY_OPS','k-pb');
+    ${seedExchange("cv_pa", "px_a_old1", "interval '91 days'")} ${seedExchange("cv_pa", "px_a_old2", "interval '120 days'")} ${seedExchange("cv_pa", "px_a_new", "interval '10 days'")}
+    ${seedExchange("cv_pb", "px_b_old1", "interval '95 days'")} ${seedExchange("cv_pb", "px_b_new", "interval '1 day'")}
+    select 'ok';`);
+  const total = () => Number(one(`select count(*) from "PlatformAiMessage";`));
+  const before = total();
+  const r30 = asSys(`select conversations || '|' || messages from fm_purge_platform_ai_conversations(500);`);
+  const removed = before - total();
+  const left = one(`select string_agg(id, ',' order by id) from "PlatformAiMessage" where id like 'px_%';`);
+  check(30, "fm_system purges BOTH operators' expired exchanges (3 exchanges = 6 rows) under FORCE RLS; unexpired rows remain",
+    left === "px_a_newa,px_a_newu,px_b_newa,px_b_newu", left);
+  check(31, "the returned `messages` count equals the rows ACTUALLY removed (parents locked FOR UPDATE, replies counted in the same window) — and the seeded expired count",
+    r30.ok && r30.out.trim().split("|")[1] === String(removed) && removed === 6 + /* cv_a2 (deleted, grace 0) holds 0 rows */ 0, `${first(r30)} removed=${removed}`);
+  check(32, "…and the deleted conversation (grace 0, OD-10 default IMMEDIATE) was purged with it", r30.out.trim().split("|")[0] === "1" && one(`select count(*) from "PlatformAiConversation" where id='cv_a2';`) === "0", first(r30));
+
+  // R6 boundary — 90 d + 1 s purged, 89 d kept, exactly 90 d kept (strict <, the same-transaction clock).
+  one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_bd','${A}','PLATFORM_OPS','k-bd');
+    insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","createdAt","purgeAfter") values
+      ('bd_over','cv_bd','USER','COMPLETE','bd-1', (now() at time zone 'UTC') - interval '90 days 1 second', (now() at time zone 'UTC') - interval '1 second'),
+      ('bd_89','cv_bd','USER','COMPLETE','bd-2', (now() at time zone 'UTC') - interval '89 days', (now() at time zone 'UTC') - interval '89 days' + interval '90 days');
+    select 'ok';`);
+  const exact = psql(owner, `BEGIN;
+    insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","createdAt","purgeAfter") values
+      ('bd_exact','cv_bd','USER','COMPLETE','bd-3', (now() at time zone 'UTC') - interval '90 days', (now() at time zone 'UTC'));
+    SET LOCAL ROLE fm_system;
+    SELECT messages FROM fm_purge_platform_ai_conversations(500);
+    RESET ROLE;
+    SELECT string_agg(id, ',' order by id) FROM "PlatformAiMessage" WHERE "conversationId" = 'cv_bd';
+    ROLLBACK;`, false);
+  const [, after] = exact.out.split("\n");
+  check(33, "R6 boundary: 90 d + 1 s ⇒ purged; 89 d ⇒ kept; EXACTLY 90 d ⇒ kept (strict <, same clock)", exact.ok && after === "bd_89,bd_exact", `${exact.out.replace(/\n/g, " / ")} ${errLine(exact)}`);
+  // Shells.
+  one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId","createdAt") values ('cv_shell_old','${B}','PLATFORM_OPS','k-so', (now() at time zone 'UTC') - interval '2 days'),
+    ('cv_shell_new','${B}','PLATFORM_OPS','k-sn', (now() at time zone 'UTC') - interval '1 hour'); select 'ok';`);
+  const r34 = asSys(`select conversations || '|' || messages from fm_purge_platform_ai_conversations(500);`);
+  const shells = one(`select string_agg(id, ',' order by id) from "PlatformAiConversation" where id like 'cv_shell_%' or id = 'cv_bd';`);
+  check(34, "an empty shell older than a day is purged; a just-created one is kept (a create in flight is never raced)",
+    r34.ok && shells === "cv_bd,cv_shell_new", `${first(r34)} ${shells}`);
+
+  // Negative control: a NON-bypass owner sees and deletes NOTHING under FORCE RLS.
+  one(`${seedExchange("cv_pb", "nc_old", "interval '100 days'")} select 'ok';`);
+  setOwner("fm_aiconv_nobypass");
+  const nc = asSys(`select conversations || '|' || messages from fm_purge_platform_ai_conversations(500);`);
+  const stillThere = one(`select count(*) from "PlatformAiMessage" where id like 'nc_old%';`);
+  check(35, "NEGATIVE CONTROL: owned by a role WITHOUT BYPASSRLS the purge returns (0, 0) and deletes nothing — the fail-open the DO block prevents",
+    nc.ok && nc.out.trim() === "0|0" && stillThere === "2", `${first(nc)} left=${stillThere}`);
+  const tBefore = one(`select "lastActivityAt"::text from "PlatformAiConversation" where id='cv_b1';`);
+  asApp(B, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('m_b2u','cv_b1','USER','COMPLETE','r-b2');`);
+  const tAfter = one(`select "lastActivityAt"::text from "PlatformAiConversation" where id='cv_b1';`);
+  check(36, "NEGATIVE CONTROL: the touch trigger owned by a non-bypass role silently updates 0 rows (lastActivityAt unchanged)", tBefore === tAfter, `${tBefore} → ${tAfter}`);
+  setOwner("fm_aiconv_owner");
+  const t2 = asApp(B, `insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId") values ('m_b3u','cv_b1','USER','COMPLETE','r-b3');`);
+  const tAfter2 = one(`select "lastActivityAt"::text from "PlatformAiConversation" where id='cv_b1';`);
+  const ncAgain = asSys(`select messages from fm_purge_platform_ai_conversations(500);`);
+  check(37, "…and back under the BYPASSRLS owner both work again (touch moves it; the purge removes the 2 rows)",
+    t2.ok && tAfter2 > tAfter && ncAgain.out.trim() === "2" && one(`select count(*) from "PlatformAiMessage" where id like 'nc_old%';`) === "0", `${tAfter2} ${first(ncAgain)}`);
+
+  // The rotation's narrow path, both directions, on a settled row (design §2.3).
+  const rotOk = psql(owner, `BEGIN; SET LOCAL ROLE fm_aiconv_owner; UPDATE "PlatformAiMessage" SET "contentEncrypted" = 'rotated-v3' WHERE id = 'm_a1a'; COMMIT;`, false);
+  const rotVal = one(`select "contentEncrypted" from "PlatformAiMessage" where id='m_a1a';`);
+  check(38, "ROTATION: a BYPASSRLS principal changes contentEncrypted ALONE on a settled row", rotOk.ok && rotVal === "rotated-v3", `${errLine(rotOk)} ${rotVal}`);
+  const rotStatus = psql(owner, `BEGIN; SET LOCAL ROLE fm_aiconv_owner; UPDATE "PlatformAiMessage" SET status = 'FAILED', "failureCode" = 'PROVIDER' WHERE id = 'm_a1a'; COMMIT;`, false);
+  const rotRefs = psql(owner, `BEGIN; SET LOCAL ROLE fm_aiconv_owner; UPDATE "PlatformAiMessage" SET "contentEncrypted" = 'x', "evidenceRefs" = '[]'::jsonb WHERE id = 'm_a1a'; COMMIT;`, false);
+  const rotTime = psql(owner, `BEGIN; SET LOCAL ROLE fm_aiconv_owner; UPDATE "PlatformAiMessage" SET "purgeAfter" = "purgeAfter" - interval '1 day' WHERE id = 'm_a1a'; COMMIT;`, false);
+  check(39, "ROTATION: the BYPASSRLS principal changing status, evidenceRefs or a retention column ⇒ 'settled message is immutable'",
+    [rotStatus, rotRefs, rotTime].every((r) => /settled message is immutable/.test(r.err)) && one(`select "contentEncrypted" from "PlatformAiMessage" where id='m_a1a';`) === "rotated-v3",
+    [rotStatus, rotRefs, rotTime].map(errLine).join(" | "));
+  const rotApp = asApp(A, `update "PlatformAiMessage" set "contentEncrypted" = 'app-rotate' where id='m_a1a';`);
+  check(40, "ROTATION: fm_app cannot use the path (contentEncrypted alone on a settled row ⇒ refused)", /settled message is immutable/.test(rotApp.err), errLine(rotApp));
+
+  // ── [app] the REAL data module through lib/db's fm_app client ──────────────
+  console.log("\n[app] store.ts through the bound fm_app tenant client\n");
+  await assertTenantClientBound();
+  const store = await import("@/lib/platform/intelligence/ai/conversations/store");
+  const enc = await import("@/lib/plaid/encryption");
+  const NOW = () => new Date();
+  const k1 = randomUUID();
+  const q1 = "How many provider incidents are broken right now?";
+  const c1 = await store.createConversation({ operatorId: A, area: "PLATFORM_OPS", createRequestId: k1, scrubbedQuestion: q1 });
+  check(41, "createConversation ⇒ CREATED with a USER row and a PENDING reply", c1.kind === "CREATED" && c1.pair.user.status === "COMPLETE" && c1.pair.assistant.status === "PENDING", c1.kind);
+  if (c1.kind !== "CREATED") return report("PLATFORM AI CONVERSATIONS ACCEPTANCE");
+  const cid = c1.conversation.id;
+  const rowsAfterCreate = total();
+  const c1r = await store.createConversation({ operatorId: A, area: "PLATFORM_OPS", createRequestId: k1, scrubbedQuestion: "different text" });
+  check(42, "a replay of the same createRequestId ⇒ REPLAY, the SAME ids, nothing written", c1r.kind === "REPLAY" && c1r.conversation.id === cid && c1r.pair.user.id === c1.pair.user.id && total() === rowsAfterCreate);
+  const stored = one(`select "contentEncrypted" from "PlatformAiMessage" where id='${c1.pair.user.id}';`);
+  check(43, "content is stored ENCRYPTED (v2 outside a rotation) under PLATFORM_AI_MESSAGE, and decrypts to the scrubbed question exactly",
+    stored.startsWith("v2:") && !stored.includes("provider") && enc.decryptWithPurpose(stored, enc.EncryptionPurpose.PLATFORM_AI_MESSAGE) === q1);
+  const audit = one(`select count(*) || '|' || coalesce(max(metadata::text), '') from "AuditLog" where action='PLATFORM_AI_CONVERSATION_CREATED' and metadata->'target'->>'id' = '${cid}';`);
+  check(44, "the CREATED audit row is written in the same transaction, with area and NO content", audit.startsWith("1|") && audit.includes("PLATFORM_OPS") && !audit.includes("provider incidents"), audit);
+  const inflight = await store.appendTurn({ operatorId: A, conversationId: cid, clientRequestId: randomUUID(), scrubbedQuestion: "next?", now: NOW() });
+  check(45, "appendTurn while the first turn is PENDING ⇒ IN_FLIGHT", inflight.kind === "IN_FLIGHT", inflight.kind);
+  const settled = await store.settleTurn(A, cid, c1.pair.assistant.id, {
+    status: "COMPLETE",
+    answer: { v: 1, segments: [{ kind: "text", text: "There are " }, { kind: "figure", text: "2", metric: "incident-broken-now@1", window: null }, { kind: "text", text: " broken now." }], citations: [{ metric: "incident-broken-now@1", label: "Broken now", window: "now" }], notes: [], stop: "ANSWERED" },
+    evidenceRefs: [{ k: "m", id: "incident-broken-now@1", w: null }],
+  });
+  const settleTwice = await store.settleTurn(A, cid, c1.pair.assistant.id, { status: "FAILED", failureCode: "PROVIDER" });
+  check(46, "settleTurn COMPLETE once (true), and a second settle is a no-op (false) — no overwrite", settled && !settleTwice);
+  const lastAct0 = one(`select "lastActivityAt"::text from "PlatformAiConversation" where id='${cid}';`);
+  await store.listLiveConversations(A);
+  await store.readConversation(A, cid, NOW());
+  await store.createConversation({ operatorId: A, area: "PLATFORM_OPS", createRequestId: k1, scrubbedQuestion: q1 });
+  check(47, "R2: a list, a read and a replay never move lastActivityAt", one(`select "lastActivityAt"::text from "PlatformAiConversation" where id='${cid}';`) === lastAct0);
+  const kA = randomUUID(), kB = randomUUID();
+  const [p1, p2] = await Promise.all([
+    store.appendTurn({ operatorId: A, conversationId: cid, clientRequestId: kA, scrubbedQuestion: "first concurrent", now: NOW() }),
+    store.appendTurn({ operatorId: A, conversationId: cid, clientRequestId: kB, scrubbedQuestion: "second concurrent", now: NOW() }),
+  ]);
+  check(48, "two concurrent appends ⇒ exactly one APPENDED and one IN_FLIGHT (one in-flight turn, on real PG)",
+    [p1.kind, p2.kind].sort().join() === "APPENDED,IN_FLIGHT", `${p1.kind}/${p2.kind}`);
+  check(49, "R2: the append (a USER insert) DID move lastActivityAt", one(`select "lastActivityAt"::text from "PlatformAiConversation" where id='${cid}';`) > lastAct0);
+  const appended = p1.kind === "APPENDED" ? p1 : p2;
+  const winnerKey = p1.kind === "APPENDED" ? kA : kB;
+  const replay = await store.appendTurn({ operatorId: A, conversationId: cid, clientRequestId: winnerKey, scrubbedQuestion: "x", now: NOW() });
+  check(50, "an append replay of a known clientRequestId ⇒ REPLAY of the same pair (PENDING ⇒ the route answers 409)",
+    replay.kind === "REPLAY" && appended.kind === "APPENDED" && replay.pair.user.id === appended.pair.user.id && replay.pair.assistant.status === "PENDING");
+  // Abandon: age the PENDING reply past 2 × the turn timeout (owner; a PENDING row may change).
+  if (appended.kind === "APPENDED") one(`update "PlatformAiMessage" set "createdAt" = "createdAt" - interval '5 minutes', "purgeAfter" = "purgeAfter" - interval '5 minutes' where id='${appended.pair.assistant.id}'; select 'ok';`);
+  const readBack = await store.readConversation(A, cid, NOW());
+  const ab = readBack?.messages.find((m) => appended.kind === "APPENDED" && m.id === appended.pair.assistant.id);
+  check(51, "a PENDING turn older than 2 × the turn timeout is marked FAILED / ABANDONED on the next read (completedAt set)",
+    ab?.status === "FAILED" && ab.failureCode === "ABANDONED" && ab.completedAt !== null, JSON.stringify(ab ?? null));
+  const answerMsg = readBack?.messages.find((m) => m.id === c1.pair.assistant.id);
+  check(52, "the settled answer reads back as the typed stored answer (figure kept typed) with its evidence refs",
+    !!answerMsg && typeof answerMsg.content === "object" && answerMsg.content !== null && (answerMsg.content as { segments: Array<{ kind: string }> }).segments.some((s) => s.kind === "figure") && answerMsg.evidenceRefs.length === 1);
+  check(53, "another operator reads NOTHING of it through the module (findLive / read / history ⇒ null, list excludes it)",
+    (await store.findLiveConversation(B, cid)) === null && (await store.readConversation(B, cid, NOW())) === null && (await store.loadConversationHistory(B, cid)) === null
+      && !(await store.listLiveConversations(B)).some((c) => c.id === cid));
+  const hist = await store.loadConversationHistory(A, cid);
+  check(54, "loadConversationHistory returns ONE conversation's COMPLETE messages only", !!hist && hist.length > 0 && hist.every((m) => m.conversationId === cid && m.status === "COMPLETE"));
+  const listed = (await store.listLiveConversations(A)).find((c) => c.id === cid);
+  check(55, "the list's label source is the earliest USER message, decrypted (already scrubbed)", listed?.firstQuestion === q1, listed?.firstQuestion ?? "none");
+
+  // The message cap (40, FAILED rows count) and the conversation cap (50).
+  const capConv = await store.createConversation({ operatorId: C, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "cap" });
+  if (capConv.kind === "CREATED") {
+    await store.settleTurn(C, capConv.conversation.id, capConv.pair.assistant.id, { status: "FAILED", failureCode: "TIMEOUT" });
+    let fill = "";
+    for (let i = 0; i < 18; i++) fill += seedExchange(capConv.conversation.id, `cap${i}`, `interval '${i + 1} minutes'`);
+    one(`${fill} select 'ok';`);
+    const at38 = await store.appendTurn({ operatorId: C, conversationId: capConv.conversation.id, clientRequestId: randomUUID(), scrubbedQuestion: "39th and 40th", now: NOW() });
+    if (at38.kind === "APPENDED") await store.settleTurn(C, capConv.conversation.id, at38.pair.assistant.id, { status: "FAILED", failureCode: "PROVIDER" });
+    const at40 = await store.appendTurn({ operatorId: C, conversationId: capConv.conversation.id, clientRequestId: randomUUID(), scrubbedQuestion: "41st", now: NOW() });
+    check(56, "the 40-message cap: 38 rows (FAILED counted) ⇒ one more exchange; 40 ⇒ FULL", at38.kind === "APPENDED" && at40.kind === "FULL", `${at38.kind}/${at40.kind}`);
+  } else check(56, "the 40-message cap", false, capConv.kind);
+  let created = 1;
+  for (; created < 51; created++) {
+    const r = await store.createConversation({ operatorId: C, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: `q${created}` });
+    if (r.kind !== "CREATED") break;
+  }
+  const over = await store.createConversation({ operatorId: C, area: "PLATFORM_OPS", createRequestId: randomUUID(), scrubbedQuestion: "51st" });
+  check(57, "the 50-conversation cap: the 51st live create ⇒ LIMIT", created === 50 && over.kind === "LIMIT", `${created} ${over.kind}`);
+
+  // Soft delete through the module.
+  const del = await store.softDeleteConversation(A, cid);
+  const delAudit = one(`select coalesce(max(metadata::text), '') from "AuditLog" where action='PLATFORM_AI_CONVERSATION_DELETED' and metadata->'target'->>'id' = '${cid}';`);
+  check(58, "softDeleteConversation hides it at once (findLive null, list excludes) and audits area + messageCount, no content",
+    del.deleted && (await store.findLiveConversation(A, cid)) === null && !(await store.listLiveConversations(A)).some((c) => c.id === cid)
+      && /"messageCount":\s*\d+/.test(delAudit) && !delAudit.includes("provider incidents"), delAudit);
+  check(59, "a second soft delete through the module ⇒ not deleted (invisible)", !(await store.softDeleteConversation(A, cid)).deleted);
+
+  // ── REQUIRED 3: account purge by FK cascade, as the account purge's role (fm_system) ──
+  const cBefore = one(`select count(*) from "PlatformAiConversation" where "operatorUserId"='${C}';`);
+  const userDel = asSys(`delete from "User" where id='${C}';`);
+  const cAfter = one(`select count(*) || '|' || (select count(*) from "PlatformAiMessage" m where not exists (select 1 from "PlatformAiConversation" c where c.id = m."conversationId")) from "PlatformAiConversation" where "operatorUserId"='${C}';`);
+  check(60, "REQUIRED 3: deleting the User as fm_system (the account purge's role) under FORCE RLS cascades — 0 conversations, 0 messages left",
+    Number(cBefore) >= 50 && userDel.ok && cAfter === "0|0", `${cBefore} ${errLine(userDel)} ${cAfter}`);
+
+  // ── [job] the REAL retention rule: audited count == rows actually removed ──
+  console.log("\n[job] jobs/data-retention.ts with PLATFORM_AI_PURGE_ENABLED=true (this process only)\n");
+  one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_job','${B}','PLATFORM_OPS','k-job');
+    ${seedExchange("cv_job", "job1", "interval '91 days'")} ${seedExchange("cv_job", "job2", "interval '200 days'")} ${seedExchange("cv_job", "job3", "interval '5 days'")}
+    select 'ok';`);
+  // What the run must remove: the 2 expired exchanges (4 rows) + every message of a conversation
+  // soft-deleted above (grace 0) — computed from the data, then compared with the audit.
+  const expected = 4 + Number(one(`select count(*) from "PlatformAiMessage" m join "PlatformAiConversation" c on c.id = m."conversationId" where c."deletedAt" is not null;`));
+  const jobBefore = total();
+  const { runDataRetention } = await import("../jobs/data-retention");
+  const orig = { log: console.log, error: console.error };
+  console.log = () => {}; console.error = () => {};
+  let jr: Awaited<ReturnType<typeof runDataRetention>>;
+  try { jr = await runDataRetention(); } finally { console.log = orig.log; console.error = orig.error; }
+  const jobRemoved = jobBefore - total();
+  const jobAudit = one(`select coalesce(max(metadata::text), '') from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED';`);
+  const meta = jobAudit ? JSON.parse(jobAudit) as Record<string, unknown> : {};
+  const jobLeft = one(`select string_agg(id, ',' order by id) from "PlatformAiMessage" where id like 'job%';`);
+  check(61, "the job's audited `messages` equals the rows actually removed (the expired exchanges + the deleted conversation's messages), counts only, no userId",
+    jr.platformAiConversations?.error === undefined && jr.platformAiConversations?.messages === jobRemoved && jobRemoved === expected && meta.messages === jobRemoved
+      && jobLeft === "job3a,job3u" && one(`select count(*) from "PlatformAiConversation" where id='${cid}';`) === "0"
+      && Object.keys(meta).sort().join() === "actorType,batches,conversations,exhausted,messages"
+      && one(`select count(*) from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and "userId" is not null;`) === "0", `${JSON.stringify(jr.platformAiConversations)} removed=${jobRemoved} audit=${jobAudit}`);
+
+  // ── [dispatch] the manual purge dispatch — the job's own rule, once, audited ──
+  console.log("\n[dispatch] scripts/platform-ai-conversations-purge-dispatch.ts (a child process; PLATFORM_AI_PURGE_ENABLED UNSET there)\n");
+  const dispatch = (...args: string[]) => {
+    const env = { ...process.env, FM_PRODUCTION_DB_REF: "prodprojectref0000001" } as NodeJS.ProcessEnv;
+    delete env.PLATFORM_AI_PURGE_ENABLED; delete env.VERCEL_ENV;
+    return spawnSync(process.execPath, [...process.execArgv, path.join(process.cwd(), "scripts/platform-ai-conversations-purge-dispatch.ts"), ...args], { encoding: "utf8", env });
+  };
+  const auditRows = () => Number(one(`select count(*) from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED';`));
+  const lastManual = () => one(`select coalesce((select metadata::text from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and metadata->>'trigger'='MANUAL_DISPATCH' order by "createdAt" desc, id desc limit 1), '');`);
+  const auditsBefore = auditRows();
+  const refusedRun = dispatch("--env=production");
+  check(62, "the dispatch with --env=production ⇒ exit 2, REFUSED before any contact, no audit row",
+    refusedRun.status === 2 && /nothing was contacted/.test(refusedRun.stderr) && auditRows() === auditsBefore, `${refusedRun.status} ${refusedRun.stderr.slice(0, 200)}`);
+  one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_dsp','${B}','PLATFORM_OPS','k-dsp');
+    ${seedExchange("cv_dsp", "dsp1", "interval '95 days'")} ${seedExchange("cv_dsp", "dsp2", "interval '3 days'")}
+    select 'ok';`);
+  const dspBefore = total();
+  const run1 = dispatch("--env=local");
+  const dspRemoved = dspBefore - total();
+  const m1 = lastManual() ? JSON.parse(lastManual()) as Record<string, unknown> : {};
+  check(63, "the dispatch with --env=local (flag UNSET in its process) purges the expired exchange as fm_system: removed == audited `messages` == printed count, counts only",
+    run1.status === 0 && dspRemoved === 2 && m1.messages === 2 && m1.trigger === "MANUAL_DISPATCH" && m1.actorType === "SYSTEM"
+      && Object.keys(m1).sort().join() === "actorType,batches,conversations,exhausted,messages,trigger"
+      && /messages removed:\s+2\b/.test(run1.stdout) && one(`select string_agg(id, ',' order by id) from "PlatformAiMessage" where id like 'dsp%';`) === "dsp2a,dsp2u",
+    `${run1.status} removed=${dspRemoved} audit=${JSON.stringify(m1)} ${run1.stderr.slice(0, 300)}`);
+  const n1 = auditRows();
+  const run2 = dispatch("--env=local");
+  const m2 = lastManual() ? JSON.parse(lastManual()) as Record<string, unknown> : {};
+  check(64, "a second dispatch with nothing expired ⇒ exit 0 and STILL one counts-only audit row (zeros) — proof of the daily cadence; no userId on any",
+    run2.status === 0 && auditRows() === n1 + 1 && m2.messages === 0 && m2.conversations === 0
+      && one(`select count(*) from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and "userId" is not null;`) === "0",
+    `${run2.status} ${JSON.stringify(m2)} ${run2.stderr.slice(0, 300)}`);
+
+  // ── the read-only pre-enable check, against this throwaway target ─────────
+  const { PRECHECK_FUNCTIONS_SQL, PRECHECK_TABLES_SQL, evaluatePrecheck } = await import("./lib/platform-ai-conversations-precheck.core");
+  type Pre = typeof import("./lib/platform-ai-conversations-precheck.core");
+  type FnRows = Parameters<Pre["evaluatePrecheck"]>[0];
+  type TabRows = Parameters<Pre["evaluatePrecheck"]>[1];
+  const { db } = await import("@/lib/db");
+  const pre = await db.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
+    return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL));
+  });
+  setOwner("fm_aiconv_nobypass");
+  const preBad = await db.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
+    return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL));
+  });
+  setOwner("fm_aiconv_owner");
+  check(65, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
+    pre.ok && !preBad.ok && preBad.lines.filter((l) => !l.ok).every((l) => /OWNER bypasses RLS/.test(l.text)) && preBad.lines.filter((l) => !l.ok).length === 2,
+    JSON.stringify(preBad.lines.filter((l) => !l.ok)));
+  await db.$disconnect();
+  const { tenantDb, systemDb } = await import("@/lib/db");
+  await (tenantDb as unknown as { $disconnect(): Promise<void> }).$disconnect();
+  await (systemDb as unknown as { $disconnect(): Promise<void> }).$disconnect();
+
+  return report("PLATFORM AI CONVERSATIONS ACCEPTANCE");
+}
+
+main()
+  .then((failed) => { teardownHarness(KEEP); process.exit(failed ? 1 : 0); })
+  .catch((e) => { console.error(e instanceof Error ? e.message : e); teardownHarness(KEEP); process.exit(1); });

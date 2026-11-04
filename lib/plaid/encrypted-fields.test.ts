@@ -54,6 +54,8 @@ const WRITER_SITES: ReadonlyArray<{ file: string; purpose: keyof typeof Encrypti
   { file: "scripts/test-b10-rehearsal-b10-probe.ts",  purpose: "TOTP_SECRET",           count: 1, field: "User.totpSecret" },
   { file: "lib/platform/growth/beta-abuse-evidence.ts", purpose: "BETA_ABUSE_EVIDENCE", count: 1, field: "BetaAbuseEvidence.sealedPayload" },
   { file: "lib/ai/conversation/runtime-state.ts",     purpose: "AI_RUNTIME_STATE",      count: 1, field: "NON_STORED" },
+  // B11 — the ONE Platform AI conversation data module: the USER question (insertPair) and the ASSISTANT completion (settleTurn).
+  { file: "lib/platform/intelligence/ai/conversations/store.ts", purpose: "PLATFORM_AI_MESSAGE", count: 2, field: "PlatformAiMessage.contentEncrypted" },
 ];
 
 /**
@@ -157,8 +159,8 @@ for (const p of Object.values(EncryptionPurpose)) {
   const carrier = NON_STORED_PURPOSES.includes(p);
   check(`purpose ${p} is exactly one of: a registered field, a non-stored carrier`, stored !== carrier);
 }
-check("the registry is the five known columns",
-  labels.slice().sort().join() === ["BetaAbuseEvidence.sealedPayload", "Connection.credential", "PlaidItem.encryptedToken", "User.dateOfBirthEncrypted", "User.totpSecret"].join(),
+check("the registry is the six known columns",
+  labels.slice().sort().join() === ["BetaAbuseEvidence.sealedPayload", "Connection.credential", "PlaidItem.encryptedToken", "PlatformAiMessage.contentEncrypted", "User.dateOfBirthEncrypted", "User.totpSecret"].join(),
   labels.join(", "));
 
 // ── 3b. the format census honours the registry's scope ──────────────────────

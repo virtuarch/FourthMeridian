@@ -28,7 +28,7 @@ export type EncryptedFieldFormat = "cipher" | "sealed";
 
 export interface EncryptedField {
   /** Prisma model == table name (none of these models is @@map-ped). */
-  readonly model: "PlaidItem" | "User" | "Connection" | "BetaAbuseEvidence";
+  readonly model: "PlaidItem" | "User" | "Connection" | "BetaAbuseEvidence" | "PlatformAiMessage";
   /** Prisma field == column name. */
   readonly field: string;
   readonly purpose: EncryptionPurpose;
@@ -44,6 +44,10 @@ export const ENCRYPTED_FIELDS: readonly EncryptedField[] = [
   { model: "Connection",        field: "credential",           purpose: EncryptionPurpose.CONNECTION_CREDENTIAL, format: "cipher",
     scope: { column: "provider", notEqual: "WALLET" } },
   { model: "BetaAbuseEvidence", field: "sealedPayload",        purpose: EncryptionPurpose.BETA_ABUSE_EVIDENCE,   format: "sealed" },
+  // B11 — Platform AI conversations. Settled rows are immutable except the
+  // rotation's contentEncrypted-only UPDATE by a role that bypasses RLS (the
+  // settle trigger's one exception; migration 20261104120000).
+  { model: "PlatformAiMessage", field: "contentEncrypted",     purpose: EncryptionPurpose.PLATFORM_AI_MESSAGE,   format: "cipher" },
 ] as const;
 
 /**

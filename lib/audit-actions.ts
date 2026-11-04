@@ -373,6 +373,18 @@ export const AuditAction = {
   SYNC_INCIDENT_ACKNOWLEDGED:  "SYNC_INCIDENT_ACKNOWLEDGED",
   SYNC_INCIDENT_RESOLVED:      "SYNC_INCIDENT_RESOLVED",
 
+  // B11 — Platform AI conversations (docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §7.5).
+  // CREATED / DELETED: the operator's own conversation, written through
+  // recordOperatorAction inside the same tenant transaction (target
+  // PLATFORM_AI_CONVERSATION; detail = area, and messageCount on delete).
+  // PURGED: the retention job (fm_system), counts only, no userId. NEVER a
+  // question, an answer, a derived label or a message id. Reads and individual
+  // messages are not audited (S2 B8). Deliberately absent from every operator
+  // feed: another operator must not learn when a colleague talks to the AI.
+  PLATFORM_AI_CONVERSATION_CREATED:  "PLATFORM_AI_CONVERSATION_CREATED",
+  PLATFORM_AI_CONVERSATION_DELETED:  "PLATFORM_AI_CONVERSATION_DELETED",
+  PLATFORM_AI_CONVERSATIONS_PURGED:  "PLATFORM_AI_CONVERSATIONS_PURGED",
+
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
   // token, exchange a public_token into a new PlaidItem under the OWNER's

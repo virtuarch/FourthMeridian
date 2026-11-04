@@ -20,8 +20,21 @@ import crypto from "crypto";
 import { readFileSync } from "fs";
 import path from "path";
 import * as current from "./encryption";
-import * as b9 from "./__fixtures__/encryption-b9";
+import * as b9Frozen from "./__fixtures__/encryption-b9";
 import { ENCRYPTED_FIELDS, NON_STORED_PURPOSES, fieldLabel } from "./encrypted-fields";
+
+/**
+ * B9's frozen module, typed to accept ANY purpose string. Its EncryptionPurpose
+ * union predates purposes added since (B11 platform_ai_message); at runtime a
+ * purpose is only an HKDF info string, so B9 derives the same subkey for it.
+ */
+const b9 = b9Frozen as unknown as {
+  encryptWithPurpose(plaintext: string, purpose: string): string;
+  decryptWithPurpose(ciphertext: string, purpose: string): string;
+  sealWithPurpose(plaintext: string, purpose: string): string;
+  openWithPurpose(sealed: string, purpose: string): string;
+  detectCiphertextVersion(ciphertext: string): string;
+};
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -131,6 +144,26 @@ console.log("3. a DISTINCT PREVIOUS (rotation in progress) writes v3 — the doc
     const s = current.sealWithPurpose("rot", current.EncryptionPurpose.BETA_ABUSE_EVIDENCE);
     check("a compact seal written during a rotation is still opened by B9 under the same key (c1 format unchanged)",
       withKeys(NEW, undefined, () => b9.openWithPurpose(s, current.EncryptionPurpose.BETA_ABUSE_EVIDENCE)) === "rot");
+  });
+}
+
+// ── 4. B11: the Platform AI conversation purpose under B9's frozen code ──────
+console.log("4. B11 — PlatformAiMessage.contentEncrypted (purpose platform_ai_message): B9's frozen code decrypts the v2 the current code writes");
+{
+  const K = freshKey();
+  withKeys(K, undefined, () => {
+    const P = current.EncryptionPurpose.PLATFORM_AI_MESSAGE;
+    check("the purpose string is exactly \"platform_ai_message\"", P === "platform_ai_message");
+    check("the field is registered as cipher under that purpose",
+      ENCRYPTED_FIELDS.some((f) => fieldLabel(f) === "PlatformAiMessage.contentEncrypted" && f.purpose === P && f.format === "cipher"));
+    const samples = ["How many incidents are broken now?", JSON.stringify({ v: 1, segments: [{ kind: "text", text: "ok" }], citations: [], notes: [], stop: "ANSWERED" })];
+    const ok = samples.every((t) => {
+      const c = current.encryptWithPurpose(t, P);
+      return c.startsWith("v2:") && b9.detectCiphertextVersion(c) === "v2" && b9.decryptWithPurpose(c, P) === t;
+    });
+    check("outside a rotation the current code writes v2, and B9's frozen decryptWithPurpose opens it under the new purpose", ok);
+    check("the purpose isolates: B9 cannot open it under another purpose",
+      throws(() => b9.decryptWithPurpose(current.encryptWithPurpose("x", P), current.EncryptionPurpose.TOTP_SECRET)));
   });
 }
 

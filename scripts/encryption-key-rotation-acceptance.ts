@@ -327,6 +327,57 @@ async function main(): Promise<number> {
       enc.detectCiphertextVersion(val(`select "totpSecret" from "User" where id='u1'`)) === "v3" && u1.kid === kid(NEW) && u1.plaintext === plain.u1t);
   }
 
+  // ── 10. [cli] B11: PlatformAiMessage.contentEncrypted — rotated through the settle trigger's ONE exception ──
+  {
+    const pq = "How many incidents are broken now?";
+    const pa = JSON.stringify({ v: 1, segments: [{ kind: "text", text: "ok" }], citations: [], notes: [], stop: "ANSWERED" });
+    const pn = "a question written after the new key";
+    const m1u = v3Under(OLD, pq, P.PLATFORM_AI_MESSAGE);    // v3 under the previous kid
+    const m1a = appUnder(OLD, pa, P.PLATFORM_AI_MESSAGE);   // the app's own v2 write under the previous key (a SETTLED answer)
+    const m2u = v3Under(NEW, pn, P.PLATFORM_AI_MESSAGE);    // already current — must not be rewritten
+    one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('pac1','u1','PLATFORM_OPS','k-pac1');
+      insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","contentEncrypted") values ('pm1u','pac1','USER','COMPLETE','r1',${sqlStr(m1u)});
+      insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId","contentEncrypted","evidenceRefs","completedAt") values ('pm1a','pac1','ASSISTANT','COMPLETE','pm1u',${sqlStr(m1a)},'[{"k":"m","id":"provider-outcome@1","w":7}]'::jsonb, now() at time zone 'UTC');
+      insert into "PlatformAiMessage" (id,"conversationId",role,status,"clientRequestId","contentEncrypted") values ('pm2u','pac1','USER','COMPLETE','r2',${sqlStr(m2u)});
+      insert into "PlatformAiMessage" (id,"conversationId",role,status,"replyToId") values ('pm2a','pac1','ASSISTANT','PENDING','pm2u');`);
+    const settledRow = () => val(`select status || '|' || "evidenceRefs"::text || '|' || "completedAt"::text || '|' || "purgeAfter"::text from "PlatformAiMessage" where id='pm1a'`);
+    const settledBefore = settledRow();
+    const d = cli(["--env=local"], { current: NEW, previous: OLD });
+    check(10, "[cli] the dry run covers PlatformAiMessage.contentEncrypted: 4 scanned (1 PENDING empty), 2 to re-encrypt, 2 blocking",
+      d.status === 0 && /PlatformAiMessage\.contentEncrypted\s+scanned 4 · empty 1 /.test(out(d))
+        && /PlatformAiMessage\.contentEncrypted[\s\S]*?→ to re-encrypt under the current key\s+2\n[\s\S]*?blocking \(lost if PREVIOUS removed now\)\s+2\n/.test(out(d)), out(d).slice(-1500));
+    const v = cli(["--env=local", "--verify-complete"], { current: NEW, previous: OLD });
+    check(10, "[cli] --verify-complete exits 3 NOT COMPLETE while a conversation message opens only under PREVIOUS", v.status === 3 && out(v).includes("NOT COMPLETE"), `${v.status} ${out(v).slice(-500)}`);
+    const a = cli(["--env=local", "--apply"], { current: NEW, previous: OLD });
+    const m = JSON.parse(lastAudit()) as { outcome: string; fields: Record<string, { rotated: number; conflicts: number }> };
+    check(10, "[cli] apply COMPLETE: both conversation values rotated (the settled ANSWER through the settle trigger's contentEncrypted-only exception), 0 conflicts",
+      a.status === 0 && m.outcome === "COMPLETE" && m.fields["PlatformAiMessage.contentEncrypted"]?.rotated === 2 && m.fields["PlatformAiMessage.contentEncrypted"]?.conflicts === 0, `${a.status} ${out(a).slice(-900)}`);
+    const readPm = (id: string) => withKeys(NEW, undefined, () => {
+      const c = val(`select "contentEncrypted" from "PlatformAiMessage" where id='${id}'`);
+      return { c, kid: enc.ciphertextKeyId(c), plain: enc.decryptWithPurpose(c, P.PLATFORM_AI_MESSAGE) };
+    });
+    const r1 = readPm("pm1u"), r2 = readPm("pm1a");
+    check(10, "[cli] both are v3 under the NEW kid and decrypt to their original plaintext with PREVIOUS unset",
+      r1.kid === kid(NEW) && r1.plain === pq && r2.kid === kid(NEW) && r2.plain === pa);
+    check(10, "[cli] the settled row's status, evidenceRefs, completedAt and purgeAfter are byte-identical (contentEncrypted ALONE changed)", settledRow() === settledBefore, `${settledBefore} → ${settledRow()}`);
+    check(10, "[cli] the already-current value was not rewritten and the PENDING row is untouched (NULL, PENDING)",
+      val(`select "contentEncrypted" from "PlatformAiMessage" where id='pm2u'`) === m2u && val(`select coalesce("contentEncrypted",'<null>') || '|' || status from "PlatformAiMessage" where id='pm2a'`) === "<null>|PENDING");
+    check(10, "[cli] the output leaks no key, plaintext or ciphertext", !leaks(out(a)) && ![pq, pa, pn, m1u, m1a, m2u].some((x) => out(a).includes(x)));
+    const vAfter = cli(["--env=local", "--verify-complete"], { current: NEW });
+    check(10, "[cli] --verify-complete with the new key alone ⇒ VERIFIED COMPLETE (0 blocking in PlatformAiMessage.contentEncrypted)",
+      vAfter.status === 0 && /PlatformAiMessage\.contentEncrypted[\s\S]*?blocking \(lost if PREVIOUS removed now\)\s+0\n/.test(out(vAfter)), `${vAfter.status} ${out(vAfter).slice(-700)}`);
+    // The narrow path, both directions, on the settled row (design §2.3).
+    const bad = [
+      [`update "PlatformAiMessage" set status = 'FAILED', "failureCode" = 'PROVIDER' where id = 'pm1a';`, "status"],
+      [`update "PlatformAiMessage" set "contentEncrypted" = 'x', "evidenceRefs" = '[]'::jsonb where id = 'pm1a';`, "evidenceRefs"],
+    ] as const;
+    const notRefused = bad.filter(([q]) => !/settled message is immutable/.test(psql(owner, q, false).err)).map(([, w]) => w);
+    check(10, "[sql] the rotation principal (bypasses RLS) changing status or evidenceRefs on a settled row ⇒ 'settled message is immutable'", notRefused.length === 0, notRefused.join(", "));
+    const app = psql(h.appUrl, `BEGIN; SET LOCAL app.user_id = 'u1'; update "PlatformAiMessage" set "contentEncrypted" = 'app-rotate' where id = 'pm1a'; COMMIT;`, false);
+    check(10, "[sql] fm_app cannot take the rotation path (contentEncrypted alone on its OWN settled row ⇒ refused)",
+      /settled message is immutable/.test(app.err) && readPm("pm1a").plain === pa, app.err.split("\n")[0]);
+  }
+
   return report("ENCRYPTION KEY ROTATION ACCEPTANCE");
 }
 

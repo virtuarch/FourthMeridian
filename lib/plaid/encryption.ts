@@ -91,6 +91,14 @@ export const EncryptionPurpose = {
    * SYSTEM_ADMIN read that is audited (lib/platform/growth/beta-abuse-evidence.ts).
    */
   BETA_ABUSE_EVIDENCE:   "beta_abuse_evidence",
+  /**
+   * PlatformAiMessage.contentEncrypted — one operator's Platform AI message
+   * (B11; docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §2.3): the SCRUBBED
+   * question, or the rendered answer as versioned segment JSON. Cipher format
+   * (v2 outside a rotation, v3 during one — #364); written only by
+   * lib/platform/intelligence/ai/conversations/store.ts.
+   */
+  PLATFORM_AI_MESSAGE:   "platform_ai_message",
 } as const;
 
 export type EncryptionPurpose = typeof EncryptionPurpose[keyof typeof EncryptionPurpose];

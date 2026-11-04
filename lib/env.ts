@@ -171,6 +171,10 @@ const _e = {
   // Platform AI v0 — the operator Q&A kill switch (lib/platform/intelligence/ai).
   // Strict `=== "true"`; unset / anything else = OFF (placeholder page, 404 API).
   PLATFORM_AI_ENABLED: process.env.PLATFORM_AI_ENABLED,
+  // Platform AI conversations (B11) — persistent operator conversations, and the
+  // retention purge that must accompany them. Strict `=== "true"`; unset = OFF.
+  PLATFORM_AI_CONVERSATIONS_ENABLED: process.env.PLATFORM_AI_CONVERSATIONS_ENABLED,
+  PLATFORM_AI_PURGE_ENABLED: process.env.PLATFORM_AI_PURGE_ENABLED,
   // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
   // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
   // Unset/anything else = today's behaviour (the catalogue default).
@@ -873,6 +877,23 @@ export const env = {
    * surface platform_ai) — an owner decision per environment.
    */
   get isPlatformAiEnabled() { return _e.PLATFORM_AI_ENABLED === "true"; },
+  /**
+   * Platform AI conversations (B11; docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md
+   * §3.1 step 1) are ON only when PLATFORM_AI_ENABLED === "true" AND
+   * PLATFORM_AI_CONVERSATIONS_ENABLED === "true" AND PLATFORM_AI_PURGE_ENABLED
+   * === "true" (S2 REQUIRED on #424: storage is COUPLED to the purge in code —
+   * storage with no purge would violate retention by configuration). Any of the
+   * three unset ⇒ OFF: every /api/platform/ai/conversations route answers 404
+   * NOT_AVAILABLE before any session, grant or database read. Still never
+   * enabled without S2's retention clearance (design §13).
+   */
+  get isPlatformAiConversationsEnabled() { return _e.PLATFORM_AI_ENABLED === "true" && _e.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ENABLED === "true"; },
+  /**
+   * The Platform AI conversation retention purge (jobs/data-retention.ts) runs
+   * only when PLATFORM_AI_PURGE_ENABLED === "true". Unset ⇒ OFF: the rule makes
+   * no database contact. Switched on together with storage (design §13).
+   */
+  get isPlatformAiPurgeEnabled() { return _e.PLATFORM_AI_PURGE_ENABLED === "true"; },
   /**
    * Owner ruling (2026-10-30) — a missing or invalid customer policy-group
    * assignment FAILS CLOSED only when POLICY_ASSIGNMENT_FAIL_CLOSED === "enforce"

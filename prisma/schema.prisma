@@ -487,6 +487,9 @@ model User {
   // (lib/entitlements/catalogue.ts); only the ASSIGNMENT is data.
   policyAssignment            CustomerPolicyAssignment?
   cohorts                     CustomerCohort[]
+  // Platform AI conversations (B11; docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md).
+  // OPERATOR-PRIVATE: owner-only RLS, no fm_system path. Cascade on account purge.
+  platformAiConversations     PlatformAiConversation[] @relation("PlatformAiConversationOwner")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5196,4 +5199,107 @@ model PolicyGroupVersion {
   createdAt     DateTime    @default(now())
 
   @@unique([groupKey, version])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM AI CONVERSATIONS (B11 — docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md)
+//
+// One operator's private, persistent Platform AI conversations. Migration
+// 20261104120000_platform_ai_conversations (B11 batch — not part of B10).
+// S2 REQUIRED 1: writers never choose retention or timestamps — every timestamp
+// is a DATABASE default (dbgenerated, omitted from Prisma's INSERT), excluded
+// from fm_app's column-level INSERT grant, and every derived timestamp is set
+// by a trigger. RLS: fm_app owner-only (current_fm_user_id()); NO fm_system
+// grant — retention runs through fm_purge_platform_ai_conversations only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One operator's private Platform AI conversation. OPERATOR-SCOPED: no spaceId
+/// and no tenant column. No title column (S2 Q1): the list label is derived at
+/// read time. Content lives only in PlatformAiMessage.contentEncrypted.
+model PlatformAiConversation {
+  id              String       @id @default(cuid())
+  /// The ONLY owner. RLS: operatorUserId = current_fm_user_id().
+  operatorUserId  String
+  operator        User         @relation("PlatformAiConversationOwner", fields: [operatorUserId], references: [id], onDelete: Cascade)
+  /// The authorized area at creation (platformAiAreaFor). Immutable (no UPDATE
+  /// grant). Every read and append re-checks a FRESH grant for it.
+  area            PlatformArea
+  /// Idempotency of the CREATE call (create = first question). Unique per operator.
+  createRequestId String
+  /// DB default only; not in the INSERT grant.
+  createdAt       DateTime     @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// The last operator APPEND. DB default on insert; afterwards set ONLY by the
+  /// AFTER INSERT trigger on a USER message. Not in any fm_app grant.
+  lastActivityAt  DateTime     @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Soft delete: hidden from every read immediately. fm_app may UPDATE this
+  /// column only; the trigger overwrites the value with now() and forbids
+  /// un-deleting or re-dating.
+  deletedAt       DateTime?
+
+  messages        PlatformAiMessage[]
+
+  @@unique([operatorUserId, createRequestId])
+  @@index([operatorUserId, deletedAt, lastActivityAt])
+  @@index([deletedAt])
+  @@index([createdAt])
+}
+
+enum PlatformAiMessageRole {
+  USER
+  ASSISTANT
+}
+
+enum PlatformAiMessageStatus {
+  PENDING
+  COMPLETE
+  FAILED
+}
+
+/// S2 Q6: a closed set of codes, never provider text.
+enum PlatformAiFailureCode {
+  TIMEOUT
+  PROVIDER
+  KILL_SWITCH
+  ABANDONED
+}
+
+model PlatformAiMessage {
+  id               String                  @id @default(cuid())
+  conversationId   String
+  conversation     PlatformAiConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role             PlatformAiMessageRole
+  /// USER: the SCRUBBED question, exactly the string the provider received.
+  /// ASSISTANT: the RENDERED answer as versioned segment JSON.
+  /// encryptWithPurpose(…, PLATFORM_AI_MESSAGE). Null only while PENDING, or
+  /// for a FAILED assistant row.
+  contentEncrypted String?
+  /// ASSISTANT only: what the turn READ — metric keys, windows and page ids
+  /// ONLY, never a value, status, reason, href or argument the model wrote.
+  evidenceRefs     Json?
+  /// USER only: the client's idempotency key. UNIQUE(conversationId, clientRequestId).
+  clientRequestId  String?
+  /// ASSISTANT only: the USER message it answers (1:1). The composite FK
+  /// (conversationId, replyToId) → (conversationId, id) makes a reply into
+  /// another conversation impossible at the database.
+  replyToId        String?                 @unique
+  replyTo          PlatformAiMessage?      @relation("PlatformAiReply", fields: [conversationId, replyToId], references: [conversationId, id], onDelete: Cascade)
+  reply            PlatformAiMessage?      @relation("PlatformAiReply")
+  status           PlatformAiMessageStatus
+  failureCode      PlatformAiFailureCode?
+  /// DB default only; not in the INSERT grant.
+  createdAt        DateTime                @default(dbgenerated("(now() AT TIME ZONE 'UTC'::text)"))
+  /// Set by the BEFORE UPDATE trigger when a PENDING row settles; not in any fm_app grant.
+  completedAt      DateTime?
+  /// R1 option (b) (S2's recommendation; OD-7 pending): per-message expiry.
+  /// DB default createdAt + 90 days; not in any fm_app grant. The USER and
+  /// ASSISTANT rows of a turn are inserted in ONE transaction (now() is the
+  /// transaction's start), so a pair always expires together.
+  purgeAfter       DateTime                @default(dbgenerated("((now() AT TIME ZONE 'UTC'::text) + '90 days'::interval)"))
+
+  @@unique([conversationId, id])
+  /// Prisma requires the composite FK fields of a 1:1 relation to be unique together.
+  @@unique([conversationId, replyToId])
+  @@unique([conversationId, clientRequestId])
+  @@index([conversationId, createdAt])
+  @@index([purgeAfter])
 }
