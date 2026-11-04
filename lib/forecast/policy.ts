@@ -247,7 +247,7 @@ export interface EventInclusionAssumption extends AssumptionBase {
  * ⚠️ THIS CANNOT REACTIVATE ANYTHING. `include: true` against a stream that
  * FORECAST-2 did not make projection-eligible is rejected outright — not
  * downgraded to a hypothetical, not permitted with a COUNTERFACTUAL stance.
- * "I still work at Abacus" is a claim about the world and has a door of its own
+ * "I still work at Employer B" is a claim about the world and has a door of its own
  * (`UserAssertion` on FORECAST-2's resolver); letting a continuation policy
  * serve as a second door would make the licence decorative.
  *

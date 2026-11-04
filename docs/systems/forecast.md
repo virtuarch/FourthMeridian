@@ -191,7 +191,7 @@ ones to recognise in a failure message:
 liquid cash        $10,228.74
 debt owed             $549.75
 investments        $24,021.19   of which $19,014.63 crypto
-payroll (Vectrus)   $5,286.645  biweekly, NET
+payroll (Employer A) $5,500.015 biweekly, NET
 ```
 
 The half-cent is not a typo. It is why `_num.ts` holds the only `toFixed` in the

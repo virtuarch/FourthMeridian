@@ -15,7 +15,7 @@ data layer cannot support today.
 
 **The fixture.** Numbers are drawn from Chris' real Space as measured on 2026-09-07
 (net worth $36,340.24 · cash $12,382.81 · BTC $18,977.04 · investments $5,005.85 ·
-liabilities $25.46 · biweekly Vectrus payroll ~$5,286.64 · 4,382 transactions back to
+liabilities $25.46 · biweekly Employer A payroll ~$5,500.01 · 4,382 transactions back to
 2023) so the transcripts are realistic rather than invented. They are still illustrative:
 a golden is about the *shape* of the answer.
 
@@ -69,7 +69,7 @@ a golden is about the *shape* of the answer.
 > **4M:** Sure:
 >
 > - **Start:** $12,382 in cash today
-> - **In:** ~$31.7K — 6 Vectrus paychecks (Sep 11, Sep 25, Oct 9, Oct 23, Nov 6, Nov 20)
+> - **In:** ~$33.0K — 6 Employer A paychecks (one every 14 days across the window)
 > - **Out:** ~$12.4K — spending at $4.3K/mo across 84 days
 > - **End:** ~$31.7K
 >
@@ -194,10 +194,10 @@ a golden is about the *shape* of the answer.
 
 > **Chris:** how many checks in october
 
-> **4M:** Three — Oct 9, Oct 23, and one more that would land around Nov 6, so October
-> itself gets **two**… actually let me redo that. From your Aug 28 anchor, biweekly gives
-> you **Sep 11, Sep 25, Oct 9, Oct 23, Nov 6**. So September and October each get **two**.
-> November gets two as well.
+> **4M:** Three — two in the second month and one more that would land early in the third, so
+> the second month itself gets **two**… actually let me redo that. From your anchor, biweekly gives
+> you **five dates, 14 days apart**. So the first and second months each get **two**.
+> The third gets two as well.
 >
 > ⟨A good assistant catches itself mid-answer rather than committing to a wrong count. If
 > the dates come from a deterministic generator this never happens — which is an argument
@@ -500,7 +500,7 @@ a golden is about the *shape* of the answer.
 
 > **Chris:** yeah exactly, i get paid every two weeks
 
-> **4M:** Right, that matches what I see — every 14 days from a Vectrus payroll deposit,
+> **4M:** Right, that matches what I see — every 14 days from an Employer A payroll deposit,
 > about $5,286 each. So the months that look like income spikes are just calendar months
 > with a third payday in them. January and March did the same thing this year.
 >

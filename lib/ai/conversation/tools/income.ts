@@ -44,8 +44,8 @@ export const getIncome: ToolDefinition = {
         { transactionWindow: { startDate: from, endDate: to, label: `income ${from}..${to}` } }),
       // ⚠️ THE CEILING REACHES THE CADENCE AUTHORITY TOO, and this is the half that
       // matters. `loadForecastIncomeStreams(asOf)` reconstructs the income world as
-      // it WAS: at 2026-01-01 the Abacus payroll is CURRENT and Vectrus does not
-      // exist yet; at 2026-09-07 Vectrus is CURRENT and Abacus is SILENT. Passing
+      // it WAS: at 2015-01-01 the Employer B payroll is CURRENT and Employer A does not
+      // exist yet; at 2015-09-07 Employer A is CURRENT and Employer B is SILENT. Passing
       // today's date here while windowing the totals to last year would describe an
       // old year with this year's employer.
       loadForecastIncomeStreams(ctx.readClient, ctx.spaceId, ceiling),

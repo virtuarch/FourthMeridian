@@ -11,7 +11,7 @@ Every figure the AI quoted was a real tool output (reproduced to the cent). The 
 | # | Where | Defect |
 |---|---|---|
 | RC-1 | `lib/forecast/periodic-amount.ts` (backward walk) | The walk seeded its level from the NEWEST payment. One paycheck +28% above an 11-payment level (2026-10-09) became the "level", the older payments read as a 2-run break, and the payroll's amount was refused. The same spike mid-series was correctly an outlier. |
-| RC-2 | `lib/forecast/projection.ts` fold → `project_cash` | A CURRENT payroll with no amount was silently excluded: projected income fell from $31,720.50 to $0.65, still labelled `EVIDENCE_BASED_ESTIMATE`, with the hard-coded sentence "future payroll is inferred from the observed deposit cadence". |
+| RC-2 | `lib/forecast/projection.ts` fold → `project_cash` | A CURRENT payroll with no amount was silently excluded: projected income fell from $33,000.72 to $0.65, still labelled `EVIDENCE_BASED_ESTIMATE`, with the hard-coded sentence "future payroll is inferred from the observed deposit cadence". |
 | RC-3 | `tools.ts` `incomeEventsCounted: f.events.length` | Counted generated events (12) beside $0.65 of income. |
 | RC-4 | `reconcile_projection` | Returned the −$21,197.12 variance with a basis diff (spending rate unlabelled, a count, opening cash) in which nothing explained it. "+$178.79 daily drift" was the **spending** rate. |
 | RC-5 | Model | Consequence: no tool output carried a quantified cause, so its explanations were unsupported, and asking for income was its only fallback. Payroll was present, correctly classified, and CURRENT throughout. |
@@ -38,21 +38,21 @@ Not causes (checked): payroll classification, transfers, card payments, duplicat
 
 ## 4. Mathematical reconciliation (Dev data, read-only)
 
-Stored 2026-10-03: 15,925.25 + 31,720.50 − 230.548 × 89 = **27,126.97**.
-Today, after the fixes: 19,517.62 + 26,433.85 − 0 − 178.795 × 76 = **32,363.05** (5 paychecks × 5,286.64 + 0.65 interest).
+Stored 2026-10-03: 15,925.25 + 33,000.72 − 230.548 × 89 = **28,407.20**.
+Today, after the fixes: 19,517.62 + 27,500.70 − 0 − 178.795 × 76 = **33,429.90** (5 paychecks × 5,500.01 + 0.65 interest).
 
 `reconcile_projection` attribution (residual **0.00**):
 
 | Line | Amount |
 |---|---:|
-| INCOME_TIMING: the Oct 3–16 paycheck arrived and is now in opening cash | −5,286.65 |
+| INCOME_TIMING: the Oct 3–16 paycheck arrived and is now in opening cash | −5,500.02 |
 | OPENING_CASH | +3,592.37 |
 | INCOME_NET_OF_OUTFLOWS (remainder) | 0.00 |
 | SPENDING_RATE (230.55 → 178.79 per day; window length changed from 2 to 3 months) | +4,606.03 |
 | HORIZON_DAYS (89 → 76 days) | +2,324.33 |
 | **Variance** | **+5,236.08 (AHEAD)** |
 
-If the $6,770.32 paycheck is the new level: **39,781.45** (`latestPaymentDeviates`). With the pre-fix amount logic but the new safeguards, the same data yields `INCOMPLETE_ESTIMATE` 5,929.85, bound 39,781.45, and attribution `INCOME_NET_OF_OUTFLOWS −31,719.85`, also exact.
+If the $7,043.55 paycheck is the new level: **41,147.60** (`latestPaymentDeviates`). With the pre-fix amount logic but the new safeguards, the same data yields `INCOMPLETE_ESTIMATE` 5,929.85, bound 41,147.60, and attribution `INCOME_NET_OF_OUTFLOWS −33,000.06`, also exact.
 
 ## 5. Live AI behaviour (real model, read-only Dev DB, writes refused)
 
@@ -100,7 +100,7 @@ Production build (`next build` + `next start`, same route): cold **0.063 s**, wa
 ## 10. Remaining limitations & risks
 
 - **The allowance is bounded, not absolute** (§6). **Fail-closed (owner-directed 2026-10-16, follow-up commit):** with enforcement ON, or the flag unreadable, a turn the reservation cannot judge is refused `503 AI_ALLOWANCE / RESERVATION_UNAVAILABLE` with `retryable: true` and `Retry-After: 15`. With enforcement explicitly OFF, the plain check decides as before. Real-PG suite: 15/15, and 8 concurrent turns with the transaction unavailable admit 0.
-- **Latest-payment ambiguity:** whether $6,770.32 is a one-off or a raise is unknown until the next paycheck. The established level is used and the alternative is disclosed. A low newest payment is treated symmetrically, which could overstate income if pay really fell; it is disclosed with its sign.
+- **Latest-payment ambiguity:** whether $7,043.55 is a one-off or a raise is unknown until the next paycheck. The established level is used and the alternative is disclosed. A low newest payment is treated symmetrically, which could overstate income if pay really fell; it is disclosed with its sign.
 - **The materiality threshold** (1% of opening cash + counted income, $50 floor) is a measured policy constant. Immaterial omissions are always listed.
 - **Legacy checkpoints** attribute income as one net line. Timing is split using today's engine standing at the statement's date, and any approximation lands in the remainder line.
 - **Model disclosure is not guaranteed**: the latest-deviation and lower-bound wording depend on the model reading fields that are always present. Prompt text was changed only in tool descriptions.

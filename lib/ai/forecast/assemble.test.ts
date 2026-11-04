@@ -46,7 +46,7 @@ function check(name: string, ok: boolean, detail?: string): void {
   else { failures++; console.log(`[FAIL] ${name}`); if (detail) console.log(`        ${detail}`); }
 }
 
-const AS_OF = '2026-08-28';
+const AS_OF = '2015-08-28';
 
 // ── The real Space ──────────────────────────────────────────────────────────
 
@@ -62,50 +62,50 @@ const ctx = {
   domains: { [FinanceDomains.ACCOUNTS]: { data: realAccounts } },
 } as unknown as SpaceContext_AI;
 
-const vecCadence: Cadence = {
-  kind: CadenceKind.BIWEEKLY, anchorISO: '2026-08-14', sourceKey: 'vectrus',
+const empACadence: Cadence = {
+  kind: CadenceKind.BIWEEKLY, anchorISO: '2015-08-14', sourceKey: 'employer-a',
   provenance: CadenceProvenance.DERIVED, observationCount: 19, confidence: 1,
   reason: 'biweekly payroll', toleranceDays: 2,
 } as unknown as Cadence;
-const vecActivity = resolveStreamActivity({
-  cadence: vecCadence, settlements: ['2026-07-17', '2026-07-31', '2026-08-14'],
+const empAActivity = resolveStreamActivity({
+  cadence: empACadence, settlements: ['2015-07-17', '2015-07-31', '2015-08-14'],
   observedThroughISO: AS_OF, asOfISO: AS_OF,
 });
 // The dormant payroll: a clean semimonthly schedule and no recent settlement.
-const abaCadence = { ...vecCadence, kind: CadenceKind.SEMIMONTHLY, sourceKey: 'abacus' } as Cadence;
-const abaActivity = resolveStreamActivity({
-  cadence: abaCadence, settlements: ['2025-10-24', '2025-11-10', '2025-11-25'],
+const empBCadence = { ...empACadence, kind: CadenceKind.SEMIMONTHLY, sourceKey: 'employer-b' } as Cadence;
+const empBActivity = resolveStreamActivity({
+  cadence: empBCadence, settlements: ['2014-10-24', '2014-11-10', '2014-11-25'],
   observedThroughISO: AS_OF, asOfISO: AS_OF,
 });
 
-const VECTRUS: ResolvedIncomeStream = {
-  sourceKey: 'vectrus', label: 'Vectrus', role: FlowRole.INCOME, cadence: vecCadence,
-  activity: vecActivity,
+const EMPLOYER_A: ResolvedIncomeStream = {
+  sourceKey: 'employer-a', label: 'Employer A', role: FlowRole.INCOME, cadence: empACadence,
+  activity: empAActivity,
   amount: {
-    assertable: true, value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED,
-    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2026-04-10',
+    assertable: true, value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
+    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2015-04-10',
     observationCount: 6, spread: 0.0016, verdicts: [], reason: 'six observations hold a level',
   },
-  projectionEligible: vecActivity.mayGenerateExpectedOccurrences,
+  projectionEligible: empAActivity.mayGenerateExpectedOccurrences,
   settledDepository: true,
   observationCount: 19, truncated: false,
 } as unknown as ResolvedIncomeStream;
-const ABACUS: ResolvedIncomeStream = {
-  sourceKey: 'abacus', label: 'Abacus', role: FlowRole.INCOME, cadence: abaCadence,
-  activity: abaActivity,
+const EMPLOYER_B: ResolvedIncomeStream = {
+  sourceKey: 'employer-b', label: 'Employer B', role: FlowRole.INCOME, cadence: empBCadence,
+  activity: empBActivity,
   amount: {
-    assertable: true, value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED,
-    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2025-10-24',
+    assertable: true, value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
+    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2014-10-24',
     observationCount: 4, spread: 0.001, verdicts: [], reason: 'four observations',
   },
-  projectionEligible: abaActivity.mayGenerateExpectedOccurrences,
+  projectionEligible: empBActivity.mayGenerateExpectedOccurrences,
   settledDepository: true,
   observationCount: 10, truncated: false,
 } as unknown as ResolvedIncomeStream;
-const STREAMS = [VECTRUS, ABACUS];
+const STREAMS = [EMPLOYER_A, EMPLOYER_B];
 
 const HORIZON: ForecastHorizon = {
-  fromISO: AS_OF, toISO: '2026-11-28',
+  fromISO: AS_OF, toISO: '2015-11-28',
   origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'over the next 3 months',
 } as unknown as ForecastHorizon;
 
@@ -132,9 +132,9 @@ console.log('A. no statements');
     a.policy.assumptions.every((p) => p.origin !== AssumptionOrigin.USER_REQUESTED),
     JSON.stringify(a.policy.assumptions.map((p) => p.origin)));
   check('A3 the licensed cadence still generates the live stream\'s events',
-    a.events.some((e) => e.id.includes('vectrus')));
+    a.events.some((e) => e.id.includes('employer-a')));
   check('A4 …and generates none for the dormant one — FORECAST-2\'s licence, carried',
-    !a.events.some((e) => e.id.includes('abacus')),
+    !a.events.some((e) => e.id.includes('employer-b')),
     a.events.map((e) => e.id).join(','));
   check('A5 the assembly is available on a Space with accounts', a.unavailable === null);
 }
@@ -177,9 +177,9 @@ console.log('B. fact vs supposition');
   // refuses — correctly — and the evidence-based projection answers instead.
   // Add the basis and the licensed path itself produces a closing figure.
   const netBasis: UserStatement = {
-    mode: StatementMode.ASSERTS_FACT, statedAs: 'my Vectrus paycheck is take-home',
+    mode: StatementMode.ASSERTS_FACT, statedAs: 'my Employer A paycheck is take-home',
     asOfISO: AS_OF,
-    subject: { kind: 'STREAM_AMOUNT_BASIS', sourceKey: 'vectrus', basis: AmountBasis.NET },
+    subject: { kind: 'STREAM_AMOUNT_BASIS', sourceKey: 'employer-a', basis: AmountBasis.NET },
   };
   const both = build([
     spendingStatement(4000, StatementMode.ASSERTS_FACT, 'my normal spending is $4,000 a month'),
@@ -225,21 +225,21 @@ console.log('C. corrections');
 console.log('D. amount basis');
 {
   const net = build([{
-    mode: StatementMode.ASSERTS_FACT, statedAs: 'my Vectrus paycheck is take-home',
+    mode: StatementMode.ASSERTS_FACT, statedAs: 'my Employer A paycheck is take-home',
     asOfISO: AS_OF,
-    subject: { kind: 'STREAM_AMOUNT_BASIS', sourceKey: 'vectrus', basis: AmountBasis.NET },
+    subject: { kind: 'STREAM_AMOUNT_BASIS', sourceKey: 'employer-a', basis: AmountBasis.NET },
   }]);
   check('D1 an asserted NET basis is applied to the named stream',
-    net.appliedFacts.some((f) => f.startsWith('vectrus basis NET')),
+    net.appliedFacts.some((f) => f.startsWith('employer-a basis NET')),
     JSON.stringify(net.appliedFacts));
   check('D2 …and reaches the OPERATING STATE, not just a label',
-    net.state.incomeStreams.find((s) => s.sourceKey === 'vectrus')?.basis === AmountBasis.NET,
+    net.state.incomeStreams.find((s) => s.sourceKey === 'employer-a')?.basis === AmountBasis.NET,
     JSON.stringify(net.state.incomeStreams.map((s) => `${s.sourceKey}:${s.basis}`)));
 
   const unknown = build([{
     mode: StatementMode.ASSERTS_FACT, statedAs: 'I do not know if it is net or gross',
     asOfISO: AS_OF,
-    subject: { kind: 'STREAM_AMOUNT_BASIS', sourceKey: 'vectrus', basis: AmountBasis.UNKNOWN },
+    subject: { kind: 'STREAM_AMOUNT_BASIS', sourceKey: 'employer-a', basis: AmountBasis.UNKNOWN },
   }]);
   check('D3 UNKNOWN is dropped rather than downgraded into a basis',
     unknown.appliedFacts.length === 0, JSON.stringify(unknown.appliedFacts));
@@ -264,7 +264,7 @@ console.log('E. one-off events');
     mode, statedAs, asOfISO: AS_OF,
     subject: {
       kind: 'ONE_OFF_EVENT', amount, currency: 'USD', basis: AmountBasis.NET,
-      direction: 'INFLOW', role: FlowRole.INCOME, dateISO: '2026-10-15',
+      direction: 'INFLOW', role: FlowRole.INCOME, dateISO: '2015-10-15',
     },
   });
 
@@ -280,7 +280,7 @@ console.log('E. one-off events');
   check('E2 a supposed event carries HYPOTHETICAL provenance and never USER_ASSERTED',
     sup.length === 1 && sup[0].timingProvenance === EventProvenance.HYPOTHETICAL
       && !supposed.events.some((e) => e.id.startsWith('user:')),
-    JSON.stringify(supposed.events.filter((e) => !e.id.includes('vectrus'))
+    JSON.stringify(supposed.events.filter((e) => !e.id.includes('employer-a'))
       .map((e) => `${e.id}/${e.timingProvenance}`)));
 
   // ⚠️ THE MEASURED DEFECT. Same day, same role, different amounts: two
@@ -301,22 +301,22 @@ console.log('E. one-off events');
 console.log('F. pay dates');
 {
   const next = resolvePayDates(STREAMS, AS_OF, { ask: PayDateAsk.NEXT_ONE });
-  const vec = next.streams.find((s) => s.sourceKey === 'vectrus')!;
-  check('F1 NEXT_ONE yields exactly one licensed date', vec.dates.length === 1,
-    JSON.stringify(vec.dates));
+  const empA = next.streams.find((s) => s.sourceKey === 'employer-a')!;
+  check('F1 NEXT_ONE yields exactly one licensed date', empA.dates.length === 1,
+    JSON.stringify(empA.dates));
   check('F2 the dormant payroll yields none however clean its cadence',
-    next.streams.find((s) => s.sourceKey === 'abacus')!.dates.length === 0);
+    next.streams.find((s) => s.sourceKey === 'employer-b')!.dates.length === 0);
 
   const upcoming = resolvePayDates(STREAMS, AS_OF, { ask: PayDateAsk.UPCOMING });
   check('F3 UPCOMING caps on OCCURRENCES, not on months',
-    upcoming.streams.find((s) => s.sourceKey === 'vectrus')!.dates.length === 5);
+    upcoming.streams.find((s) => s.sourceKey === 'employer-a')!.dates.length === 5);
 
   const stated = resolvePayDates(STREAMS, AS_OF,
-    { ask: PayDateAsk.UPCOMING, stated: { toISO: '2026-09-30', statedAs: 'through September' } });
+    { ask: PayDateAsk.UPCOMING, stated: { toISO: '2015-09-30', statedAs: 'through September' } });
   check('F4 a stated window replaces the cap rather than being capped by it',
-    stated.toISO === '2026-09-30' && stated.horizonStatedAs === 'through September'
-      && stated.streams.find((s) => s.sourceKey === 'vectrus')!.dates
-        .every((d) => d <= '2026-09-30'));
+    stated.toISO === '2015-09-30' && stated.horizonStatedAs === 'through September'
+      && stated.streams.find((s) => s.sourceKey === 'employer-a')!.dates
+        .every((d) => d <= '2015-09-30'));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

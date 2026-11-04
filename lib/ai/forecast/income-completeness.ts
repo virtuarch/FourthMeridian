@@ -68,7 +68,7 @@ import { round2 } from '@/lib/money/round';
  * ordinary late paycheck (holiday shift, employer delay, provider lag past the
  * 3-day settlement tolerance); the second covers a biweekly stream a month
  * late or a monthly one skipped once. From the third the stream is behaving
- * like the measured discontinued case (Abacus: 15 unpaid slots), and the honest
+ * like the measured discontinued case (Employer B: 15 unpaid slots), and the honest
  * reading is LAPSED — disclosed, not counted, not blocking.
  */
 export const RECENT_SILENCE = { MAX_UNSATISFIED_OCCURRENCES: 2 } as const;
@@ -183,7 +183,7 @@ export interface IncomeCompletenessInput {
  * observed amount reaches this share of the cash the projection works with
  * (opening cash + counted income), or when it cannot be sized at all.
  *
- * MEASURED on the live Space (2026-10-16): the dropped payroll was 5 × $6,770.32
+ * MEASURED on the live Space (2026-10-16): the dropped payroll was 5 × $7,043.55
  * against ~$19.5k of opening cash — far above any threshold — while an
  * interest-like deposit with varying amounts adds $57.68 against ~$46k (0.13%).
  * A rule that flagged the second would mark nearly every projection incomplete

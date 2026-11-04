@@ -90,7 +90,7 @@ export interface PayDateResult {
  * ⚠️ EVERY DATE COMES FROM `expectedOccurrencesBetween`, which consults
  * FORECAST-2's `mayGenerateExpectedOccurrences` before producing one. A SILENT,
  * ENDED or UNKNOWN stream yields an empty array however good its cadence — the
- * dormant Abacus payroll has a clean semimonthly schedule and contributes
+ * dormant Employer B payroll has a clean semimonthly schedule and contributes
  * nothing, which is the whole point of the licence.
  */
 export function resolvePayDates(

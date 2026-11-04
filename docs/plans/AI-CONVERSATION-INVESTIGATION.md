@@ -87,7 +87,7 @@ Plus, outside the AI namespace and **never wired to it**:
 | Chains with claimed history | BTC (2023-03-18→), ETH (2021-04-27→), SOL (2022-03-26→) |
 | Net worth | $36,340.24 · cash $12,382.81 · BTC $18,977.04 · brokerage $5,005.85 |
 | Liabilities | **$25.46** (one card at $25.46, one at **−$15.35** — issuer owes Chris) |
-| Payroll | Vectrus, **biweekly**, $5,286.64/check |
+| Payroll | Employer A, **biweekly**, $5,500.01/check |
 
 ### 3.2 What `buildContext` produces, measured
 
@@ -127,8 +127,8 @@ month?" is a solved problem today** — it needs a window, not an abstraction.
 
 | Stream | Cadence | Activity | Eligible | Amount |
 |---|---|---|---|---|
-| Vectrus Systems Payroll | **BIWEEKLY** | CURRENT | ✅ | $5,286.64 |
-| Abacus Technolog Payroll | SEMIMONTHLY | **SILENT** | ❌ | $5,015.68 |
+| Employer A Payroll | **BIWEEKLY** | CURRENT | ✅ | $5,500.01 |
+| Employer B Payroll | SEMIMONTHLY | **SILENT** | ❌ | $5,200.00 |
 | Interest Deposit | MONTHLY | CURRENT | ✅ | $0.21 |
 | Interest Payment ×2 | MONTHLY | CURRENT | ✅ | null |
 
@@ -297,11 +297,11 @@ The ground truth, from the ledger:
 
 | 2026 | Jan | Feb | Mar | Apr | May | Jun | Jul | Aug |
 |---|---|---|---|---|---|---|---|---|
-| Vectrus checks | **3** | 2 | **3** | 2 | 2 | 2 | **3** | 2 |
+| Employer A checks | **3** | 2 | **3** | 2 | 2 | 2 | **3** | 2 |
 | Total | $17,903 | $11,399 | $11,555 | $10,632 | $10,534 | $11,562 | **$15,860** | $10,554 |
 
-*Partially inferable:* `recurringCandidates` shows `vectrus…, occurrences: 6,
-typicalAmount: 5448.08` over a 90-day window, and $15,860 ÷ $5,448 ≈ 2.9. A capable model
+*Partially inferable:* `recurringCandidates` shows `employer-a…, occurrences: 6,
+typicalAmount: 5667.93` over a 90-day window, and $16,500 ÷ $5,668 ≈ 2.9. A capable model
 could get there. **Whether it does is the single best test of the model-first hypothesis**
 (§12, probe C).
 

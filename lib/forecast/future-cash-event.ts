@@ -191,8 +191,8 @@ export interface EventAmount {
    * resolve — that distinction belongs to a STATED payroll figure.
    *
    * Measured, this is the whole of the income blocker on the real Space: 20
-   * settled Vectrus deposits into `CHASE COLLEGE` (type `checking`), a level of
-   * $5,286.64 held within 1.29% across 11 of them, and every projected
+   * settled Employer A deposits into a checking account, a level of
+   * $5,500.01 held within 1.29% across 11 of them, and every projected
    * occurrence refused for want of a basis assertion about money that had
    * already arrived.
    *
@@ -301,22 +301,22 @@ export function observedCashContribution(event: FutureCashEvent): NetContributio
  * AMOUNT AUTHORITY — measured, and found insufficient.
  *
  * The question §6 asks is whether a current periodic amount can be derived from
- * the ledger. Measured on the real Vectrus payroll, 19 payments:
+ * the ledger. Measured on the real Employer A payroll, 19 payments:
  *
- *   full series      min 923.50  max 6275.07  median 5306.12  CV 24.6%
- *   last six         5286.64 · 6275.07 · 5286.65 · 5286.63 · 5286.40 · 5306.12
+ *   full series      min 960.77  max 6528.32  median 5520.26  CV 24.6%
+ *   last six         5500.01 · 6528.32 · 5500.02 · 5500.00 · 5499.75 · 5520.26
  *
  * A stable current regime is visible — five of the last six sit inside a $19.72
  * band, 0.16% apart — and it is NOT derivable without policy. Reaching it means
- * excluding a partial first period ($2,306.42, started mid-cycle), excluding an
- * off-cycle payment ($923.50), excluding a high outlier ($6,275.07), and
+ * excluding a partial first period ($2,399.50, started mid-cycle), excluding an
+ * off-cycle payment ($960.77), excluding a high outlier ($6,528.32), and
  * detecting a regime change: the series steps down from ~$5,950 in January to
  * ~$5,290 from April onward. Each exclusion is a judgement about what counts as
  * a normal paycheck, and the naive alternatives are all wrong — the mean is
- * $5,108, the median $5,306, the most recent $5,306.12, and none of them is
+ * $5,314, the median $5,520, the most recent $5,520.26, and none of them is
  * "the amount" without someone deciding the outlier rule first.
  *
- * Abacus is worse and confirms the shape: CV 24.1%, with a $10,668.74 payment
+ * Employer B is worse and confirms the shape: CV 24.1%, with a $11,060.80 payment
  * sitting in an otherwise ~$4,400 series.
  *
  * So this slice does NOT establish an amount from observation. Cadence-derived

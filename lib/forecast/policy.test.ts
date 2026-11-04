@@ -79,7 +79,7 @@ function stripLiterals(t: string): string {
   return out;
 }
 const codeOnly = stripLiterals(src);
-const AS_OF = '2026-08-28';
+const AS_OF = '2015-08-28';
 
 // ── The real Space, exactly as FORECAST-7 pinned it ─────────────────────────
 
@@ -90,16 +90,16 @@ const realAccounts = () => ({
   counts: { liquid: 4, liabilities: 2, investments: 3, digitalAssets: 4, realAssets: 0 },
 } as unknown as AccountsSectionData);
 
-const VECTRUS = {
-  sourceKey: 'vectrus', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
+const EMPLOYER_A = {
+  sourceKey: 'employer-a', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
   activity: ActivityState.CURRENT, projectionEligible: true,
-  amount: { value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
-const ABACUS = {
-  sourceKey: 'abacus', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
+const EMPLOYER_B = {
+  sourceKey: 'employer-b', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
   activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 const INTEREST = {
@@ -117,7 +117,7 @@ const state = (o: Partial<OperatingStateInput> = {}): CurrentOperatingState => {
       redactedCount: acc.redactedCount, totalsUnconverted: acc.totalsUnconverted, asOfISO: AS_OF,
     },
     investments: composeInvestments(acc),
-    incomeStreams: [VECTRUS, ABACUS, INTEREST],
+    incomeStreams: [EMPLOYER_A, EMPLOYER_B, INTEREST],
     obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
     baseline: { assertable: false, reason: 'recent spending does not repeat closely enough' },
     ...o,
@@ -134,9 +134,9 @@ const SPEND_4K: PolicyAssumption = {
   origin: AssumptionOrigin.USER_REQUESTED, stance: AssumptionStance.SUPPOSED,
   statedAs: 'assume $4,000/month of normal spending',
 };
-const VECTRUS_NET: PolicyAssumption = {
+const EMPLOYER_A_NET: PolicyAssumption = {
   id: 'a2', dimension: AssumptionDimension.INCOME_BASIS,
-  sourceKey: 'vectrus', basis: AmountBasis.NET,
+  sourceKey: 'employer-a', basis: AmountBasis.NET,
   origin: AssumptionOrigin.USER_REQUESTED, stance: AssumptionStance.SUPPOSED,
   statedAs: 'assume that paycheck is net for this forecast',
 };
@@ -146,7 +146,7 @@ const SPEND_10K: PolicyAssumption = {
   origin: AssumptionOrigin.USER_REQUESTED, stance: AssumptionStance.COUNTERFACTUAL,
   statedAs: 'show me a scenario where I spend $10,000/month',
 };
-const HORIZON = { fromISO: AS_OF, toISO: '2026-11-30',
+const HORIZON = { fromISO: AS_OF, toISO: '2015-11-30',
   origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'through the end of November' };
 
 const policy = (assumptions: PolicyAssumption[], horizon = null as ForecastPolicy['horizon']):
@@ -234,13 +234,13 @@ eq('B18 and nominal monthly income', statusOf(B, Conclusion.NOMINAL_MONTHLY_INCO
 // C. TWO ASSUMPTIONS — dependencies stay minimal and named
 // ═══════════════════════════════════════════════════════════════════════════
 
-const C = apply(policy([SPEND_4K, VECTRUS_NET]));
-const CH = apply(policy([SPEND_4K, VECTRUS_NET], HORIZON));
+const C = apply(policy([SPEND_4K, EMPLOYER_A_NET]));
+const CH = apply(policy([SPEND_4K, EMPLOYER_A_NET], HORIZON));
 
-eq('C1 the authoritative basis on vectrus is still UNKNOWN',
-  C.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.authorityBasis, AmountBasis.UNKNOWN);
+eq('C1 the authoritative basis on employer-a is still UNKNOWN',
+  C.incomeStreams.find((s) => s.sourceKey === 'employer-a')!.authorityBasis, AmountBasis.UNKNOWN);
 eq('C2 the NET treatment is recorded as assumed, separately',
-  C.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.assumedBasis, AmountBasis.NET);
+  C.incomeStreams.find((s) => s.sourceKey === 'employer-a')!.assumedBasis, AmountBasis.NET);
 eq('C3 the STATE object itself never gained a NET stream',
   REAL.incomeStreams.every((s) => s.basis === AmountBasis.UNKNOWN), true);
 
@@ -280,7 +280,7 @@ eq('C18 next pay dates do NOT become assumption-dependent from an income-basis s
 eq('C19 nor the debt balance', depsOf(C, Conclusion.CURRENT_DEBT_BALANCE), []);
 
 // Degenerate attribution: two suppositions that each independently suffice.
-const SECOND_NET: PolicyAssumption = { ...(VECTRUS_NET as never) as typeof VECTRUS_NET,
+const SECOND_NET: PolicyAssumption = { ...(EMPLOYER_A_NET as never) as typeof EMPLOYER_A_NET,
   id: 'a3', sourceKey: 'interest-10th' };
 check('C20 a NET supposition over a stream with no established amount is REJECTED', (() => {
   const v = validatePolicy(REAL, [], policy([SECOND_NET]));
@@ -325,7 +325,7 @@ check('D7 an assumption cannot be built without the user\'s own words',
 
 const spendSubject = { kind: 'SPENDING_LEVEL' as const, amount: 4000, currency: 'USD',
   periodBasis: PeriodBasis.MONTHLY };
-const basisSubject = { kind: 'STREAM_AMOUNT_BASIS' as const, sourceKey: 'vectrus',
+const basisSubject = { kind: 'STREAM_AMOUNT_BASIS' as const, sourceKey: 'employer-a',
   basis: AmountBasis.NET };
 
 const factSpend = routeStatement({ mode: StatementMode.ASSERTS_FACT, subject: spendSubject,
@@ -346,7 +346,7 @@ check('E5 the two are NOT the same object shape — one is a fact, one is a supp
   factSpend.destination !== assumeSpend.destination);
 
 const factBasis = routeStatement({ mode: StatementMode.ASSERTS_FACT, subject: basisSubject,
-  statedAs: 'my $5,286.645 paycheck is take-home', asOfISO: AS_OF }, 'r3');
+  statedAs: 'my $5,500.02 paycheck is take-home', asOfISO: AS_OF }, 'r3');
 const assumeBasis = routeStatement({ mode: StatementMode.REQUESTS_ASSUMPTION, subject: basisSubject,
   statedAs: 'assume that paycheck is net for this forecast', asOfISO: AS_OF }, 'r4');
 
@@ -368,7 +368,7 @@ eq('E9 "assume it is net" DOES become a policy assumption', assumeBasis.destinat
 check('E10 no fact-mode statement EVER produces a policy assumption', (() => {
   const subjects = [spendSubject, basisSubject,
     { kind: 'EVENT_AMOUNT_BASIS' as const, eventId: 'e1', basis: AmountBasis.NET },
-    { kind: 'STREAM_CONTINUES' as const, sourceKey: 'abacus', continues: true }];
+    { kind: 'STREAM_CONTINUES' as const, sourceKey: 'employer-b', continues: true }];
   return subjects.every((subject) => routeStatement(
     { mode: StatementMode.ASSERTS_FACT, subject, statedAs: 'x', asOfISO: AS_OF }, 'r')
     .destination !== 'FORECAST_POLICY');
@@ -395,8 +395,8 @@ check('E13 the module parses no prose — the user\'s words are carried, never i
 // ═══════════════════════════════════════════════════════════════════════════
 
 const restart = (stance: typeof AssumptionStance[keyof typeof AssumptionStance]): PolicyAssumption => ({
-  id: 'f1', dimension: AssumptionDimension.STREAM_CONTINUATION, sourceKey: 'abacus', include: true,
-  origin: AssumptionOrigin.USER_REQUESTED, stance, statedAs: 'carry abacus forward',
+  id: 'f1', dimension: AssumptionDimension.STREAM_CONTINUATION, sourceKey: 'employer-b', include: true,
+  origin: AssumptionOrigin.USER_REQUESTED, stance, statedAs: 'carry employer-b forward',
 });
 const F1 = validatePolicy(REAL, [], policy([restart(AssumptionStance.SUPPOSED)]));
 const F2 = validatePolicy(REAL, [], policy([restart(AssumptionStance.COUNTERFACTUAL)]));
@@ -409,12 +409,12 @@ check('F3 the refusal points at the activity authority',
   /belongs to the activity authority as an assertion about the world/.test(F1.rejected[0].reason));
 eq('F4 "assume I still work there" is UNROUTABLE, not a policy assumption',
   routeStatement({ mode: StatementMode.REQUESTS_ASSUMPTION,
-    subject: { kind: 'STREAM_CONTINUES', sourceKey: 'abacus', continues: true },
-    statedAs: 'assume I still work at abacus', asOfISO: AS_OF }, 'f2').destination, 'UNROUTABLE');
+    subject: { kind: 'STREAM_CONTINUES', sourceKey: 'employer-b', continues: true },
+    statedAs: 'assume I still work at employer-b', asOfISO: AS_OF }, 'f2').destination, 'UNROUTABLE');
 check('F5 excluding a CURRENT stream is permitted, and is a real dependency', (() => {
   const drop: PolicyAssumption = { id: 'f3', dimension: AssumptionDimension.STREAM_CONTINUATION,
-    sourceKey: 'vectrus', include: false, origin: AssumptionOrigin.USER_REQUESTED,
-    stance: AssumptionStance.SUPPOSED, statedAs: 'leave the vectrus paycheck out' };
+    sourceKey: 'employer-a', include: false, origin: AssumptionOrigin.USER_REQUESTED,
+    stance: AssumptionStance.SUPPOSED, statedAs: 'leave the employer-a paycheck out' };
   const r = apply(policy([drop]));
   return statusOf(r, Conclusion.NEXT_PAY_DATES) === ConclusionStatus.ASSUMPTION_DEPENDENT
     && depsOf(r, Conclusion.NEXT_PAY_DATES).includes('f3')
@@ -430,9 +430,9 @@ check('F6 the one system default is disclosed, not implicit', (() => {
     && r.accepted.some((a) => a.id === d.id)
     && r.accepted.find((a) => a.id === d.id)!.statedAs.length > 0;
 })());
-check('F7 the system default reactivates nothing — abacus stays excluded', (() => {
+check('F7 the system default reactivates nothing — employer-b stays excluded', (() => {
   const r = apply(policy([continueLicensedCadence()]));
-  return r.incomeStreams.find((s) => s.sourceKey === 'abacus')!.included === false;
+  return r.incomeStreams.find((s) => s.sourceKey === 'employer-b')!.included === false;
 })());
 check('F8 the system-default inventory is exactly one',
   (src.match(/origin: AssumptionOrigin\.SYSTEM_POLICY/g) ?? []).length === 1);
@@ -442,13 +442,13 @@ check('F8 the system-default inventory is exactly one',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const BONUS: FutureCashEvent = {
-  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2026-10-15' },
+  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
   amount: { value: 15500, currency: 'USD', basis: AmountBasis.GROSS,
     provenance: EventProvenance.USER_ASSERTED },
 };
 const VACATION: FutureCashEvent = {
-  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2026-10-15' },
+  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
   amount: { value: 1500, currency: 'USD', basis: AmountBasis.UNKNOWN,
     provenance: EventProvenance.USER_ASSERTED },
@@ -513,25 +513,25 @@ check('G20 no ratio transformation exists — no percentage field, no rate',
 check('G21 the module estimates no deduction', !/tax|withhold/i.test(codeOnly));
 
 check('G22 a stream-level NET supposition reaches that stream\'s UNKNOWN-basis events', (() => {
-  const payslip: FutureCashEvent = { id: 'vectrus@2026-09-11',
-    timing: { kind: 'EXACT', dateISO: '2026-09-11' }, timingProvenance: EventProvenance.DERIVED,
-    direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'vectrus',
-    amount: { value: 5286.645, currency: 'USD', basis: AmountBasis.UNKNOWN,
+  const payslip: FutureCashEvent = { id: 'employer-a@2015-09-11',
+    timing: { kind: 'EXACT', dateISO: '2015-09-11' }, timingProvenance: EventProvenance.DERIVED,
+    direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'employer-a',
+    amount: { value: 5500.015, currency: 'USD', basis: AmountBasis.UNKNOWN,
       provenance: EventProvenance.DERIVED } };
-  const r = applyPolicy(REAL, [payslip, BONUS], policy([VECTRUS_NET]));
-  const pay = r.events.find((e) => e.id === 'vectrus@2026-09-11')!;
+  const r = applyPolicy(REAL, [payslip, BONUS], policy([EMPLOYER_A_NET]));
+  const pay = r.events.find((e) => e.id === 'employer-a@2015-09-11')!;
   const bonus = r.events.find((e) => e.id === 'bonus')!;
   return pay.assumedBasis === AmountBasis.NET && pay.basisAssumptionId === 'a2'
     // ⚠️ and does NOT reach an event whose basis is already established.
     && bonus.assumedBasis === null;
 })());
 check('G23 nor an event belonging to a different stream', (() => {
-  const other: FutureCashEvent = { id: 'abacus@2026-09-15',
-    timing: { kind: 'EXACT', dateISO: '2026-09-15' }, timingProvenance: EventProvenance.DERIVED,
-    direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'abacus',
-    amount: { value: 5015.68, currency: 'USD', basis: AmountBasis.UNKNOWN,
+  const other: FutureCashEvent = { id: 'employer-b@2015-09-15',
+    timing: { kind: 'EXACT', dateISO: '2015-09-15' }, timingProvenance: EventProvenance.DERIVED,
+    direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'employer-b',
+    amount: { value: 5200.00, currency: 'USD', basis: AmountBasis.UNKNOWN,
       provenance: EventProvenance.DERIVED } };
-  return applyPolicy(REAL, [other], policy([VECTRUS_NET])).events[0].assumedBasis === null;
+  return applyPolicy(REAL, [other], policy([EMPLOYER_A_NET])).events[0].assumedBasis === null;
 })());
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -577,7 +577,7 @@ eq('I2 and the conclusion it would have unlocked is REFUSED, not approximated',
   statusOf(bad, Conclusion.MONTHLY_BURN_RATE), ConclusionStatus.REFUSED);
 eq('I3 an invalid policy reproduces the no-policy matrix exactly', countBy(bad), countBy(A));
 check('I4 a bad horizon is dropped and disclosed', (() => {
-  const r = applyPolicy(REAL, [], { horizon: { fromISO: '2026-11-30', toISO: AS_OF,
+  const r = applyPolicy(REAL, [], { horizon: { fromISO: '2015-11-30', toISO: AS_OF,
     origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'backwards' }, assumptions: [] });
   return r.horizon === null && r.rejected[0].code === PolicyIssue.INVALID_HORIZON;
 })());
@@ -588,7 +588,7 @@ check('I5 duplicate ids are rejected, so no dependency is ambiguous', (() => {
 check('I6 nothing is silently dropped — every rejection carries a reason',
   bad.rejected.every((r) => r.reason.length > 0));
 eq('I7 a GROSS supposition licenses nothing and is rejected', (() => {
-  const v = validatePolicy(REAL, [], policy([{ ...VECTRUS_NET, id: 'i7', basis: AmountBasis.GROSS }]));
+  const v = validatePolicy(REAL, [], policy([{ ...EMPLOYER_A_NET, id: 'i7', basis: AmountBasis.GROSS }]));
   return v.rejected[0]?.code;
 })(), PolicyIssue.NOT_A_NET_ASSUMPTION);
 
@@ -597,7 +597,7 @@ eq('I7 a GROSS supposition licenses nothing and is rejected', (() => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const snapshot = JSON.stringify(REAL);
-const CJ = apply(policy([SPEND_4K, VECTRUS_NET], HORIZON));
+const CJ = apply(policy([SPEND_4K, EMPLOYER_A_NET], HORIZON));
 eq('J1 applying a policy leaves the state byte-identical', JSON.stringify(REAL), snapshot);
 check('J2 and returns the very same object, not a copy that could drift', CJ.state === REAL);
 check('J3 the shadow state used for licensing is never exported',
@@ -682,15 +682,15 @@ check('J11 nor any CF-era retrieval or prompt surface',
 // and the missing one was the fact.
 
 const netAmount = assertedAmountBasis(
-  assertedPeriodicAmount(5286.645, 'USD', AS_OF), AmountBasis.NET, AS_OF);
-const FACT_VECTRUS = { ...VECTRUS, amount: {
+  assertedPeriodicAmount(5500.015, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+const FACT_EMPLOYER_A = { ...EMPLOYER_A, amount: {
   value: netAmount.value, currency: netAmount.currency, provenance: netAmount.provenance,
   basis: netAmount.basis, basisProvenance: netAmount.basisProvenance } };
-const FACTUAL = state({ incomeStreams: [FACT_VECTRUS, ABACUS, INTEREST] });
+const FACTUAL = state({ incomeStreams: [FACT_EMPLOYER_A, EMPLOYER_B, INTEREST] });
 
 const RA = apply(EMPTY_POLICY);
 const RB = applyPolicy(FACTUAL, [], EMPTY_POLICY);
-const RC = apply(policy([VECTRUS_NET]));
+const RC = apply(policy([EMPLOYER_A_NET]));
 
 eq('R1 A · no assertion, no policy → net monthly inflow REFUSED',
   statusOf(RA, Conclusion.NET_MONTHLY_INFLOW), ConclusionStatus.REFUSED);
@@ -705,8 +705,8 @@ eq('R6 the three cases are genuinely three, not two',
   new Set([statusOf(RA, Conclusion.NET_MONTHLY_INFLOW), statusOf(RB, Conclusion.NET_MONTHLY_INFLOW),
     statusOf(RC, Conclusion.NET_MONTHLY_INFLOW)]).size, 3);
 eq('R7 under the fact, the AUTHORITY basis is NET — not an assumption sitting beside UNKNOWN',
-  RB.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.authorityBasis, AmountBasis.NET);
-eq('R8 with no assumed basis at all', RB.incomeStreams.find((s) => s.sourceKey === 'vectrus')!.assumedBasis, null);
+  RB.incomeStreams.find((s) => s.sourceKey === 'employer-a')!.authorityBasis, AmountBasis.NET);
+eq('R8 with no assumed basis at all', RB.incomeStreams.find((s) => s.sourceKey === 'employer-a')!.assumedBasis, null);
 // R9 deleted with `explainPolicy`; R7 and R8 above pin the same fact on the
 // resolution — an ESTABLISHED authority basis with no assumed basis beside it.
 eq('R10 policy is no longer more expressive than a fact — both reach the same conclusion',
@@ -715,7 +715,7 @@ eq('R10 policy is no longer more expressive than a fact — both reach the same 
 
 // §13 — a supposition may not overwrite the established fact.
 const supposeGross: PolicyAssumption = { id: 'r1', dimension: AssumptionDimension.INCOME_BASIS,
-  sourceKey: 'vectrus', basis: AmountBasis.GROSS, origin: AssumptionOrigin.USER_REQUESTED,
+  sourceKey: 'employer-a', basis: AmountBasis.GROSS, origin: AssumptionOrigin.USER_REQUESTED,
   stance: AssumptionStance.SUPPOSED, statedAs: 'treat the paycheck as gross' };
 const R11 = validatePolicy(FACTUAL, [], policy([supposeGross]));
 eq('R11 supposing GROSS over an established NET is CONTRADICTS_ESTABLISHED_FACT',
@@ -733,11 +733,11 @@ check('R14 declared counterfactual, it is accepted and WITHDRAWS the conclusion'
       === ConclusionStatus.REFUSED;
 })());
 check('R15 a NET supposition restating the established fact contradicts nothing', (() => {
-  const v = validatePolicy(FACTUAL, [], policy([VECTRUS_NET]));
+  const v = validatePolicy(FACTUAL, [], policy([EMPLOYER_A_NET]));
   return v.accepted.length === 1 && v.rejected.length === 0;
 })());
 eq('R16 and adds no dependency, because it changed nothing', (() => {
-  const r = applyPolicy(FACTUAL, [], policy([VECTRUS_NET]));
+  const r = applyPolicy(FACTUAL, [], policy([EMPLOYER_A_NET]));
   return depsOf(r, Conclusion.NET_MONTHLY_INFLOW);
 })(), []);
 
@@ -772,8 +772,8 @@ async function mutations(): Promise<void> {
   await mutate('M2 promoting an assumed basis onto the authority is caught',
     'authorityBasis: s.basis,',
     'authorityBasis: net ? net.basis : s.basis,',
-    (m) => m.applyPolicy(REAL, [], policy([VECTRUS_NET]))
-      .incomeStreams.find((s) => s.sourceKey === 'vectrus')!.authorityBasis === AmountBasis.UNKNOWN);
+    (m) => m.applyPolicy(REAL, [], policy([EMPLOYER_A_NET]))
+      .incomeStreams.find((s) => s.sourceKey === 'employer-a')!.authorityBasis === AmountBasis.UNKNOWN);
 
   // 3. A scenario amount acquires a default origin instead of the user's.
   await mutate('M3 a system-defaulted origin on a user scenario is caught',
@@ -816,7 +816,7 @@ async function mutations(): Promise<void> {
   await mutate('M7 erasing the dependency list is caught',
     'return { conclusion: c, status, dependencies: deps, missing: [] };',
     'return { conclusion: c, status, dependencies: [], missing: [] };',
-    (m) => m.applyPolicy(REAL, [], policy([SPEND_4K, VECTRUS_NET]))
+    (m) => m.applyPolicy(REAL, [], policy([SPEND_4K, EMPLOYER_A_NET]))
       .conclusions.filter((c) => c.status !== m.ConclusionStatus.FACTUALLY_LICENSED
         && c.status !== m.ConclusionStatus.REFUSED)
       .every((c) => c.dependencies.length > 0));
