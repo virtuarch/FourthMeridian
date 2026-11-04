@@ -290,7 +290,7 @@ our side cites code), D2 (provider facts only from the provider's current publis
 with URL and retrieval date; anything about our account is OWNER-VERIFY), D3 (internal operators
 only; no public-policy edit), D4 (no "no customer data is sent" claim), R5 (provider retention
 kept separate from ours). Code verified on `develop` at `7ab96db` (2026-11-04), covering Platform
-AI v0 (PRs #395 and #408). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/env.ts:875`). Enabled on Preview (develop) only since 2026-11-04 for operator acceptance; Production prohibited.
+AI v0 (PRs #395 and #408); section 2 verified on `develop` at `8acb690` (#424, B11 storage). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/env.ts:875`). Enabled on Preview (develop) only since 2026-11-04 for operator acceptance; Production prohibited.
 
 ### 1. Current behaviour (v0, verified in code)
 
@@ -358,9 +358,9 @@ AI v0 (PRs #395 and #408). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/en
 
 #### 1a. Our retention (Fourth Meridian side)
 
-- Question and answer text: **not stored** (above).
+- Question and answer text: **not stored** by v0 (above); B11 storage, while off, changes nothing (section 2).
 - AiInvocation metadata rows: 90 days, the AI ledger's existing policy
-  (`docs/operations/data-retention.md`, `AiInvocation` row). AiInvocation `userId` is set to null on account purge (same row). Platform AI adds no new table.
+  (`docs/operations/data-retention.md`, `AiInvocation` row). AiInvocation `userId` is set to null on account purge (same row). Platform AI v0 adds no new table (B11 adds two, off everywhere; section 2).
 - Server log lines (the per-turn trace and the counter): kept for the hosting provider's log
   retention window. **OWNER-VERIFY** (the plan's log retention is not recorded in code).
 
@@ -388,23 +388,40 @@ Both retrieved **2026-11-04**. The guide shows no last-updated date.
 `openai.com/enterprise-privacy` and `openai.com/policies/business-terms` returned HTTP 403 to the
 fetcher on 2026-11-04 and were not used.
 
-### 2. Planned with persistent history (NOT YET IMPLEMENTED; finalise when the storage PR merges)
+### 2. Persistent history (implemented on `develop` for B11 by #424; OFF everywhere)
 
-Conversation storage for Platform AI is being designed for batch B11. **Every sentence in this
-section is PENDING-IMPLEMENTATION.** None of it is true of `develop` today, and this section is
-re-verified against the storage PR's code, with file:line evidence, before anything is published.
+Conversation storage merged to `develop` in #424 (`8acb690`) and is **off in every environment**.
+It runs only when `PLATFORM_AI_ENABLED`, `PLATFORM_AI_CONVERSATIONS_ENABLED` and
+`PLATFORM_AI_PURGE_ENABLED` are all `"true"`, so storage cannot be on without the retention purge
+(`lib/env.ts:890`); otherwise every conversations route answers 404 before any read. The text below
+is verified against that code. It becomes true for operators only once storage is enabled, and it
+is not published until the owner approves it.
 
-> - PENDING-IMPLEMENTATION: Your Platform AI conversations are stored encrypted at rest, with
->   application-level encryption under a key specific to this purpose.
-> - PENDING-IMPLEMENTATION: Only you, the operator who asked, can see your stored conversations.
-> - PENDING-IMPLEMENTATION: Questions are scrubbed before storage as well as before sending; the
->   scrub reduces what is kept and does not guarantee it.
-> - PENDING-IMPLEMENTATION: Stored conversations are deleted after 90 days (TENTATIVE: pending S2
->   review and the owner's choice between per-message and per-conversation expiry).
-> - PENDING-IMPLEMENTATION: Database backups may hold a deleted conversation for up to the
->   backup window, which is **OWNER-VERIFY** (no backup or PITR window is recorded:
+> - Your Platform AI conversations (your questions and the answers) are stored encrypted at rest
+>   in our application database, under a subkey derived for this purpose from the platform
+>   encryption key (`lib/plaid/encryption.ts:101`, `:202`;
+>   `lib/platform/intelligence/ai/conversations/store.ts:206`, `:341`).
+> - Only you, the operator who asked, can see your stored conversations: database row-level
+>   security limits every conversation and message to its owner (migration
+>   `20261104120000_platform_ai_conversations`, lines 121–160).
+> - Your question is scrubbed once, and that same scrubbed text is both stored and sent to the
+>   provider (`lib/platform/intelligence/ai/conversations/handlers.ts:251-253`). The scrub reduces
+>   what is kept and sent; it does not guarantee that nothing sensitive remains.
+> - Each message is removed from our application database at the next run of the retention purge
+>   after it turns 90 days old, counted from when it was created (OD-7;
+>   `lib/platform/intelligence/ai/conversations/constants.ts:20`, migration line 94). An answer is
+>   removed together with its question. The purge's run cadence is **OWNER-VERIFY**.
+> - When you delete a conversation, it is hidden from your view immediately and removed from our
+>   application database at the next run of the retention purge.
+> - Database backups may retain a removed message or conversation for up to the backup window,
+>   which is **OWNER-VERIFY** (OD-9; no backup or PITR window is recorded:
 >   `docs/operations/backup-restore-verification.md` §5 records PITR as UNVERIFIED).
-> - PENDING-IMPLEMENTATION: Audit and ledger records continue to carry no question or answer text.
+> - Copies held by the AI provider are governed by the provider's terms, not by us (under standard
+>   API terms, abuse-monitoring logs are kept for up to 30 days; see 1b). We make no deletion claim
+>   for systems we do not control.
+> - Audit records carry no question, answer, conversation label or message id: creating and
+>   deleting a conversation record its area (and, on delete, a message count); the purge records
+>   counts only; reads are not audited (`lib/audit-actions.ts`, B11 block).
 
 ### 3. Owner decision: the public policy does not cover this flow
 
