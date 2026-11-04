@@ -11,8 +11,8 @@ Space: the owner's personal Space (`cmrrm846…`). Merchant/employer names and a
 Every figure the AI reported is a real tool output, reproduced to the cent. **$5,929.85 is `project_cash`
 to 2026-12-31 as of 2026-10-16** and it is wrong in a specific, deterministic way: **the primary biweekly
 payroll stream (CURRENT, projection-eligible) was dropped from the projection** because the amount
-authority refused to state its level after the latest paycheck (2026-10-09, $6,770.32) came in 28% above
-the established $5,286.64 level. Projected income fell from $31,720.50 to **$0.65** (interest only), while
+authority refused to state its level after the latest paycheck ($7,043.55) came in 28% above
+the established $5,500.01 level. Projected income fell from $33,000.72 to **$0.65** (interest only), while
 the tool still labelled the result an `EVIDENCE_BASED_ESTIMATE` whose qualification text says "future
 payroll is inferred from the observed deposit cadence". **$27,126.97 is a stored checkpoint (SpaceMemory)
 from 2026-10-03**, computed under a spending-window definition that changed the next day (67be59a).
@@ -51,11 +51,11 @@ Stored 2026-10-03 basis (SpaceMemory payload): openingCash 15,925.25; dailyRate 
 | | Oct 3, code of Oct 3 (stored) | Oct 3, today's code (retrospective) | Oct 16, today's code |
 |---|---:|---:|---:|
 | Opening liquid | 15,925.25 | 15,925.25 | 19,517.62 |
-| + projected income | 31,720.50 | 31,720.50 | **0.65** |
+| + projected income | 33,000.72 | 33,000.72 | **0.65** |
 | − spending (rate × days) | 20,518.78 (230.548 × 89) | 15,912.75 (178.795 × 89) | 13,588.42 (178.795 × 76) |
 | **= year-end** | **27,126.97** | **31,733.00** | **5,929.85** |
 
-Income 31,720.50 = 6 × 5,286.64 (payroll, 31,719.84) + 0.66 interest. Income 0.65 = interest only.
+Income 33,000.72 = 6 × 5,500.01 (payroll, 33,000.06) + 0.66 interest. Income 0.65 = interest only.
 
 Attribution of −21,197.12 (sums exactly):
 
@@ -64,11 +64,11 @@ Attribution of −21,197.12 (sums exactly):
 | A. Spending-window definition change (2 → 3 months, 67be59a, 2026-10-04) | **+4,606.03** |
 | B. Opening cash rose (includes the 10-09 paycheck) | **+3,592.37** |
 | C. 13 fewer days of spending (89 → 76) | **+2,324.33** |
-| D. **Payroll stream dropped from projected income** | **−31,719.85** |
+| D. **Payroll stream dropped from projected income** | **−33,000.06** |
 | Total | **−21,197.12** |
 
-Without defect D, the Oct 16 figure would have been ≈ 19,517.62 + 5 × 5,286.64 + 0.65 − 13,588.42 =
-**32,363.05** at the established level, or ≈ 39,781.45 if the $6,770.32 level persists (which level is
+Without defect D, the Oct 16 figure would have been ≈ 19,517.62 + 5 × 5,500.01 + 0.65 − 13,588.42 =
+**33,429.90** at the established level, or ≈ 41,147.60 if the $7,043.55 level persists (which level is
 current is genuinely unknown after one paycheck — see §4). Either way the user is roughly **on or ahead of**
 the Oct 3 statement, not $21k behind it.
 
@@ -81,8 +81,8 @@ point "deviates" from it, the run reaches `BREAK_RUN = 2`, and the regime is tru
 `assertable: false` ("the most recent 1 observation(s) form a stable level, and 3 are required").
 This contradicts the module's documented intent (`REGIME.BREAK_RUN`, :160-168): "One deviation is an outlier;
 two in a row is a new level. This is what lets a strong regime survive a single supplemental payment" —
-the identical situation mid-series (06-18, $6,275.07) IS classified OUTLIER and the 13-point regime survives.
-Measured: as of 10-03 the stream asserts 5,286.64 (13 obs, 1 outlier); as of 10-16 it refuses.
+the identical situation mid-series (mid-series, $6,528.32) IS classified OUTLIER and the 13-point regime survives.
+Measured: as of 10-03 the stream asserts 5,500.01 (13 obs, 1 outlier); as of 10-16 it refuses.
 
 **RC-2 (projection-integrity defect) — a CURRENT income stream with no assertable amount is silently dropped,
 and the result is still presented as a complete estimate.** `foldWindow` excludes the occurrences
@@ -107,7 +107,7 @@ and no dollar evidence; it improvised (income events, spending patterns, "daily 
 asked for income. The system instruction has a general rule (`EVIDENCE_RULE`, `turn.ts:56`: "use its output
 and never fill in values it did not return") but nothing requires a variance explanation to be backed by an
 attribution, and no tool output tells it that payroll exists and is current but unpriced — so "ask the user"
-was the only honest move it could see. **The data the model needed (11 paychecks at ~$5,286, one at $6,770,
+was the only honest move it could see. **The data the model needed (11 paychecks at ~$5,500, one at $7,044,
 cadence CURRENT) was in the platform; the tools did not surface it.** Labelled inference: the actual
 transcript is client-cached and not stored server-side (AiInvocation stores no payloads), so the model's
 exact wording could not be read; the tool outputs above were reproduced deterministically and match the
@@ -119,9 +119,9 @@ reported figures to the cent.
   Income, into a depository account (`settledDepository: true`), cadence BIWEEKLY anchored 2026-10-09,
   activity CURRENT, 0 missed occurrences, `projectionEligible: true`. Visible to the engine — not a
   classification, transfer, pending, or detection-window problem.
-- Last 12 amounts: 5,267–5,316 (within 1.3%) except 06-18 6,275.07 (outlier, correctly) and **10-09 6,770.32**.
-  Whether 6,770.32 is a raise or a one-off is **not established** by the data (one observation).
-- A second payroll stream is SILENT since 2025-12-24 (18 missed occurrences) — correctly lapsed, not projected.
+- Last 12 amounts: 5,480–5,530 (within 1.3%) except one mid-series 6,528.32 (outlier, correctly) and **the newest, 7,043.55**.
+  Whether 7,043.55 is a raise or a one-off is **not established** by the data (one observation).
+- A second payroll stream is SILENT (18 missed occurrences) — correctly lapsed, not projected.
 - One interest stream is unassertable (variable amounts) — immaterial (cents).
 - Page truncation (`truncated: true`, 100-row cap, newest-first) did not affect the verdict: the regime is
   well inside the page.

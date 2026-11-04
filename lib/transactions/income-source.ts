@@ -8,12 +8,12 @@
  *
  * ── The problem, measured (live corpus, 2026-08-04) ─────────────────────────
  *
- * "Income: $274,198.40" is one number standing for four different things:
+ * One "Income" total stands for four different things:
  *
- *     INCOME_SALARY           54 rows   $255,648.69   payroll
- *     INCOME_CONTRACTOR        8 rows    $18,435.75   contract work
- *     INCOME_GIG_ECONOMY       1 row         $45.09   gig work
- *     INCOME_INTEREST_EARNED  45 rows        $68.63   ← NOT earned income
+ *     INCOME_SALARY           payroll
+ *     INCOME_CONTRACTOR       contract work
+ *     INCOME_GIG_ECONOMY      gig work
+ *     INCOME_INTEREST_EARNED  ← NOT earned income
  *     (no provider family)    28 rows         $0.24   ← "Bitcoin received"
  *
  * Interest is presented today as though it were earned. It is not: $68.63 of
@@ -31,8 +31,8 @@
  *
  * ── Why the provider FAMILY and never a descriptor ─────────────────────────
  *
- * Same doctrine as the liability-inflow authority: "VECTRUS SYSTEMS PAYROLL PPD
- * ID: 22215228" is one employer's ACH descriptor, and matching on it would
+ * Same doctrine as the liability-inflow authority: "EMPLOYER A PAYROLL PPD
+ * ID: 0000000000" is one employer's ACH descriptor, and matching on it would
  * encode a payroll processor's string format as a financial rule. The provider's
  * classification detail (INCOME_SALARY, INCOME_INTEREST_EARNED, …) carries the
  * same information in a vocabulary that survives a change of employer.

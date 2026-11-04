@@ -481,7 +481,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   // read `status === FACTUALLY_LICENSED`, which treated ASSUMPTION_DEPENDENT as
   // no answer at all — and ASSUMPTION_DEPENDENT is the ordinary result whenever
   // the user supplies a spending level or a payroll basis. Measured on the
-  // conformance corpus: "Assume I spend $4,000/month and that my Vectrus
+  // conformance corpus: "Assume I spend $4,000/month and that my Employer A
   // paycheck is net" produced a licensed ASSUMPTION_DEPENDENT closing of
   // $35,144.66, and a projection then computed the SAME $35,144.66 and overlaid
   // it as the answer. Two harms, both real:
