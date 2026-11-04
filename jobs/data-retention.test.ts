@@ -535,8 +535,8 @@ async function main() {
     {
       const { readFileSync } = await import("node:fs");
       const src = readFileSync("jobs/purge-trash.ts", "utf8");
-      check("purge-trash throws the purge failure ONLY after runDataRetention returned (every rule has run)",
-        /const retention = await runDataRetention\([^;]*\);\s*(\/\/[^\n]*\n\s*)*const purgeFailure = platformAiPurgeJobFailure\(retention\.platformAiConversations\);\s*if \(purgeFailure\) throw new Error\(purgeFailure\);/.test(src));
+      check("purge-trash throws the purge failure ONLY after runDataRetention returned (every rule has run), carrying the counts summary (S2 N1)",
+        /const retention = await runDataRetention\([^;]*\);\s*(\/\/[^\n]*\n\s*)*const result: PurgeTrashResult = \{ purgedGoals: 0, retention \};\s*const purgeFailure = platformAiPurgeJobFailure\(retention\.platformAiConversations\);\s*if \(purgeFailure\) throw new JobFailedWithSummaryError\(purgeFailure, result\);\s*return result;/.test(src));
       const envSrc = readFileSync("lib/env.ts", "utf8");
       check("the misorder getter is a FACT (conversations set AND purge not), never an enable",
         /get isPlatformAiConversationsFlagSetWithoutPurge\(\) \{ return _e\.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e\.PLATFORM_AI_PURGE_ENABLED !== "true"; \}/.test(envSrc));

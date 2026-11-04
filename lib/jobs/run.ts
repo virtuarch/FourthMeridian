@@ -149,6 +149,19 @@ export class JobAlreadyRunningError extends Error {
   }
 }
 
+/**
+ * A job body that did its work but must still FAIL its run (e.g. purge-trash when
+ * the Platform AI purge failed after every other retention rule ran) throws this,
+ * so the failed JobRun keeps the run's counts-only `summary` beside its errorSummary.
+ * The summary goes through toJsonSummary like a success; the message stays a fixed code.
+ */
+export class JobFailedWithSummaryError extends Error {
+  constructor(message: string, public readonly summary: unknown) {
+    super(message);
+    this.name = "JobFailedWithSummaryError";
+  }
+}
+
 /** Thrown when the start row could not be written for any other reason. The body did not run. */
 export class JobLedgerUnavailableError extends Error {
   constructor(public readonly jobName: string, cause: unknown) {
@@ -329,6 +342,7 @@ export async function runJob<T>(
       completedAt: new Date(),
       durationMs: Date.now() - t0,
       errorSummary: summarizeError(err),
+      ...(err instanceof JobFailedWithSummaryError ? { summary: toJsonSummary(err.summary) } : {}),
     });
     // The ledger has the fact; the error monitor gets the error. Static
     // identifiers only — the job name and this run's execution id.

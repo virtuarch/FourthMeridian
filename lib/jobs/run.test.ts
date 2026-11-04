@@ -28,6 +28,7 @@ import {
   toJsonSummary,
   finalizeStaleRuns,
   JobAlreadyRunningError,
+  JobFailedWithSummaryError,
   JobLedgerUnavailableError,
   STALE_RUNNING_AFTER_MS,
   STALE_RUN_ERROR_SUMMARY,
@@ -186,6 +187,19 @@ async function main(): Promise<void> {
       done.status === "failed" && done.errorSummary === "provider exploded" && done.summary === undefined,
     );
     check("failure: still timed", typeof done.durationMs === "number" && done.completedAt instanceof Date);
+  }
+
+  // ── 2b. Failure WITH a summary (S2 N1: purge-trash keeps its counts) ──────
+  {
+    const { client, updates } = makeFake();
+    const err = new JobFailedWithSummaryError("fixed failure code", { deleted: 3, when: new Date(0) });
+    let thrown: unknown = null;
+    try { await runJob("test-job", async () => { throw err; }, { client }); } catch (e) { thrown = e; }
+    const done = updates[0].data;
+    check("failure+summary: original error rethrown unchanged", thrown === err);
+    check("failure+summary: failed + fixed errorSummary + the JSON-safe summary",
+      done.status === "failed" && done.errorSummary === "fixed failure code"
+        && JSON.stringify(done.summary) === JSON.stringify(toJsonSummary({ deleted: 3, when: new Date(0) })));
   }
 
   // ── 3. Default trigger ─────────────────────────────────────────────────────
