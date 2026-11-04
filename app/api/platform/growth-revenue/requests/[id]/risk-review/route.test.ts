@@ -149,7 +149,7 @@ async function main() {
       if (locked !== undefined) return locked;
       if (/"ipAddress"\s*(AS|,|\n\s*FROM)/.test(sql) || /"userAgent"\s*(AS|,|\n\s*FROM)/.test(sql)) sawIp = true;
       if (sql.includes('"BetaAccessRequestEvent"')) return [{ k, at: new Date(now - 60_000), source: null }];
-      if (sql.includes('"AuditLog"')) return [{ h: auditEmailHash(email), at: new Date(now - 60_000), net: "salted-digest", ua: "script" }];
+      if (sql.includes('"AuditLog"')) return [{ h: auditEmailHash(email), at: new Date(now - 60_000), ip: "192.0.2.10", nd: "ab".repeat(32), ndv: "v1", ua: "script" }];
       throw new Error("unexpected raw query");
     };
     await post(s.cookie, w.req.id as string, { status: "SUSPICIOUS", reason: { code: "ABUSE" } });
@@ -162,7 +162,7 @@ async function main() {
     t.check("the raw SQL never selects ipAddress / userAgent as a column", !sawIp);
     const inv = ((q.body.invitations ?? []) as Record<string, unknown>[]).find((r) => r.id === direct.id);
     t.check("a direct invitation (no public-form event, no forensic row) carries NO risk block — not 'insufficient'", !!inv && !("risk" in inv), inv);
-    t.check("the risk block carries no digest, hash or user-agent", !JSON.stringify(risk).includes("salted-digest") && !JSON.stringify(risk).includes(auditEmailHash(email)) && !JSON.stringify(risk).includes(k) && !/script"/.test(JSON.stringify(risk)), risk);
+    t.check("the risk block carries no IP, digest, hash or user-agent", !JSON.stringify(risk).includes("192.0.2.10") && !JSON.stringify(risk).includes("ab".repeat(32)) && !JSON.stringify(risk).includes(auditEmailHash(email)) && !JSON.stringify(risk).includes(k) && !/script"/.test(JSON.stringify(risk)), risk);
   }
 
   t.done();

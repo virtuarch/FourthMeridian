@@ -1,7 +1,7 @@
 /**
  * scripts/b10-5-decision-report.ts — B10.5 OWNER-DECISION PREP (READ-ONLY)
  *
- * Counts for the four pending B10.5 data-repair decisions
+ * Counts for the pending B10.5 data-repair decisions
  * (docs/plans/PRE-BETA-READINESS-AND-RELEASE-PLAN-2026-11-01.md § B10.5), as a
  * markdown table for the owner's report. It WRITES NOTHING: there is no apply
  * mode. Each report runs in its own transaction that opens with
@@ -11,9 +11,11 @@
  *   fin-a2      FIN-A2        Plaid accounts holding a $0 never observed since exchange
  *   fin-e       FIN-E         snapshot days a regeneration would give a restrictedCash
  *   audit-021   FM-AUDIT-021  frozen observed days that rested on a stale bank balance
+ *   frozen-restricted  FIN-E     frozen observed NULL-restrictedCash days whose split a
+ *               walk-back could derive (report only; any fill is a separate owner-gated repair)
  *   expired-sessions  DB-009 + S2 (#374)  the dry run of the expired-session reaper:
  *               sessions it will delete (counts + expiry-age bands), before that release
- *   all         all five, in that order
+ *   all         all six, in that order
  *
  * ── Who may run it ───────────────────────────────────────────────────────────
  *   Preview/clone: engineering; Production: owner-run or owner-approved.
@@ -36,7 +38,7 @@
  *   UNAVAILABLE with the reason; nothing is guessed. Heuristics print beside
  *   their numbers. Logic: scripts/lib/b10-5-decision-report.core.ts.
  *
- *   npm run report:b10-5 -- <coingecko|fin-a2|fin-e|audit-021|expired-sessions|all> --env=preview [--coingecko-fixed-from=YYYY-MM-DD]
+ *   npm run report:b10-5 -- <coingecko|fin-a2|fin-e|audit-021|frozen-restricted|expired-sessions|all> --env=preview [--coingecko-fixed-from=YYYY-MM-DD]
  *
  * Exit: 0 printed · 2 refused (nothing read) · 1 could not run.
  */
