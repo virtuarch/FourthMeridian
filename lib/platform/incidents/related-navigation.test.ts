@@ -1,0 +1,184 @@
+/**
+ * lib/platform/incidents/related-navigation.test.ts  (PB-1 — from an incident, navigate to its related records)
+ *
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/incidents/related-navigation.test.ts
+ *
+ *   1. targets — every link names a real registry target; iid is an allowed
+ *      param on the incidents targets; the Providers and connection-health
+ *      targets take NO param (so their links are unfiltered and say so — the
+ *      day a filter param exists this fails and the link should use it);
+ *   2. each link's href IS resolveNavigationTarget's output for the Ops token
+ *      on the Ops surface (nothing composed locally);
+ *   3. an Ops-only token sees no Customer Success link; a break-glass token and
+ *      a forged token see nothing; an invisible target is simply absent;
+ *   4. no raw user / connection id reaches an href (only workspace, view, iid);
+ *   5. the previous-episode link exists only when previousIncidentId is set;
+ *      same-subject links are the OPEN other episodes, capped;
+ *   6. rendering — verbatim hrefs, no ghost rows, nothing when empty; 375px classes;
+ *   7. source scan — the drawer and the builder build no href; the route resolves
+ *      with a literal "PLATFORM_OPS" surface and a token from its own guard.
+ */
+
+import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { UserRole, type PlatformArea } from "@prisma/client";
+import { metricAccessFor, type MetricAccessToken } from "@/lib/platform/intelligence/metrics/access";
+import { resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
+import { NAVIGATION_TARGETS } from "@/lib/platform/intelligence/navigation/registry";
+import { IncidentRelatedNavigation } from "@/components/platform/incidents/IncidentsLead";
+import {
+  INCIDENT_NAVIGATION_TARGETS, SAME_SUBJECT_LINK_CAP, incidentNavigationLinks,
+  type IncidentNavigationInput, type IncidentNavigationLinkDTO, type IncidentNavigationResolver,
+} from "./related-navigation";
+
+let failures = 0;
+function check(name: string, cond: boolean, detail?: unknown): void {
+  if (cond) console.log(`  ✓ ${name}`);
+  else { failures++; console.error(`  ✗ ${name}${detail === undefined ? "" : ` — ${JSON.stringify(detail)}`}`); }
+}
+
+const NOW = new Date("2026-11-04T12:00:00.000Z");
+const tokenFor = (area: PlatformArea): MetricAccessToken => metricAccessFor({ user: { role: UserRole.USER }, grant: { area, level: "READ" } as never })!;
+const PO = tokenFor("PLATFORM_OPS");
+const CS = tokenFor("CUSTOMER_SUCCESS");
+const SA = metricAccessFor({ user: { role: UserRole.SYSTEM_ADMIN }, grant: null })!;
+const opsResolver = (t: MetricAccessToken): IncidentNavigationResolver => (id, p) => resolveNavigationTarget("PLATFORM_OPS", t, id, p, { now: NOW });
+const csResolver = (t: MetricAccessToken): IncidentNavigationResolver => (id, p) => resolveNavigationTarget("CUSTOMER_SUCCESS", t, id, p, { now: NOW });
+
+const USER_ID = "usr_cust0000000000000001";
+const ITEM_ID = "item_conn000000000000001";
+const input = (o: Partial<IncidentNavigationInput["verdict"]> = {}, rest: Partial<Omit<IncidentNavigationInput, "verdict">> = {}): IncidentNavigationInput => ({
+  // A CS-shaped verdict (carries a customer id and a connection id) — the builder must never forward either.
+  verdict: { id: "inc_cur", provider: "PLAID", state: "active", recurrence: { previousIncidentId: "inc_prev" }, subjectUserId: USER_ID, plaidItemId: ITEM_ID, ...o } as IncidentNavigationInput["verdict"],
+  itemCount: 1,
+  recurrences: [
+    { id: "inc_cur", state: "active", recurrence: { generation: 3 } },
+    { id: "inc_open2", state: "acknowledged", recurrence: { generation: 2 } },
+    { id: "inc_prev", state: "resolved", recurrence: { generation: 1 } },
+  ] as IncidentNavigationInput["recurrences"],
+  ...rest,
+});
+const kinds = (ls: readonly IncidentNavigationLinkDTO[]) => ls.map((l) => l.kind);
+
+console.log("1. targets");
+{
+  const T = INCIDENT_NAVIGATION_TARGETS;
+  const byId = (id: string) => NAVIGATION_TARGETS.find((t) => t.id === id);
+  check("every link names a real registry target", Object.values(T).every((id) => !!byId(id)), Object.values(T).filter((id) => !byId(id)));
+  check("iid is an allowed (incidents-group) param on every incidents target",
+    [T.opsIncidentsOpen, T.opsIncidentsHistory, T.csIncidentsOpen].every((id) => byId(id)!.params.includes("iid") && byId(id)!.paramGroups.includes("incidents")));
+  check("the Providers view hosts provider health and takes NO param (no per-provider filter exists ⇒ unfiltered link)",
+    byId(T.providerHealth)!.sections.includes("ops_provider_health") && byId(T.providerHealth)!.params.length === 0);
+  check("the Pipeline view hosts connection health and takes NO param (no per-connection filter exists ⇒ unfiltered link)",
+    byId(T.connectionHealth)!.sections.includes("ops_connection_health") && byId(T.connectionHealth)!.params.length === 0);
+  check("the Ops targets are OPS-tier; the CS incidents target is CUSTOMER_SUCCESS-tier",
+    [T.providerHealth, T.connectionHealth, T.opsIncidentsOpen, T.opsIncidentsHistory].every((id) => byId(id)!.tier === "OPS") && byId(T.csIncidentsOpen)!.tier === "CUSTOMER_SUCCESS");
+  check("no customer-detail target was added (no target names a customer)", NAVIGATION_TARGETS.every((t) => !/customer-detail|\[userId\]/.test(t.id + t.pathname)));
+}
+
+console.log("\n2. every href is the registry's");
+{
+  const links = incidentNavigationLinks(input(), opsResolver(PO));
+  check("Ops token, Ops surface: provider · connection · previous episode · one open same-subject episode",
+    kinds(links).join() === "provider-health,connection-health,previous-episode,same-subject-open", kinds(links));
+  const expect: Record<string, string | null> = {
+    "provider-health": resolveNavigationTarget("PLATFORM_OPS", PO, INCIDENT_NAVIGATION_TARGETS.providerHealth, undefined, { now: NOW })?.href ?? null,
+    "connection-health": resolveNavigationTarget("PLATFORM_OPS", PO, INCIDENT_NAVIGATION_TARGETS.connectionHealth, undefined, { now: NOW })?.href ?? null,
+    "previous-episode": resolveNavigationTarget("PLATFORM_OPS", PO, INCIDENT_NAVIGATION_TARGETS.opsIncidentsHistory, { iid: "inc_prev" }, { now: NOW })?.href ?? null,
+    "same-subject-open": resolveNavigationTarget("PLATFORM_OPS", PO, INCIDENT_NAVIGATION_TARGETS.opsIncidentsOpen, { iid: "inc_open2" }, { now: NOW })?.href ?? null,
+  };
+  check("each href equals resolveNavigationTarget's output byte-for-byte", links.every((l) => expect[l.kind] !== null && l.href === expect[l.kind]), links.map((l) => [l.kind, l.href]));
+  const prev = links.find((l) => l.kind === "previous-episode")!;
+  const u = new URL(prev.href, "https://x");
+  check("previous episode opens the Ops incidents History view on that incident (iid) and nothing else",
+    u.searchParams.get("workspace") === "platform-incidents" && u.searchParams.get("view") === "history" && u.searchParams.get("iid") === "inc_prev" && [...u.searchParams.keys()].length === 3, prev.href);
+  check("in-workspace incident links carry the incident for in-place open; the others carry none",
+    links.every((l) => (l.kind === "previous-episode" || l.kind === "same-subject-open") ? l.incidentId !== null : l.incidentId === null));
+  check("the unfiltered links say so", links.filter((l) => l.kind === "provider-health" || l.kind === "connection-health").every((l) => !!l.note && /no per-/.test(l.note)));
+}
+
+console.log("\n3. permission-filtered per token and surface");
+{
+  const ops = incidentNavigationLinks(input(), opsResolver(PO));
+  check("an Ops-only token sees NO Customer Success link (and no href into the CS area)",
+    !ops.some((l) => l.kind === "customer-success") && ops.every((l) => !l.href.includes("CUSTOMER_SUCCESS") && !l.href.includes("customer-success")), ops.map((l) => l.href));
+  check("break-glass sees nothing (every destination refuses it)", incidentNavigationLinks(input(), opsResolver(SA)).length === 0);
+  check("a forged token sees nothing", incidentNavigationLinks(input(), opsResolver({ grants: [{ area: "PLATFORM_OPS", level: "CONTROL" }] } as unknown as MetricAccessToken)).length === 0);
+  check("a CS token on the Ops surface sees nothing (no Ops grant; CS tier hidden off its surface)", incidentNavigationLinks(input(), opsResolver(CS)).length === 0);
+  const cs = incidentNavigationLinks(input(), csResolver(CS));
+  check("a CS token on the CS surface sees ONLY the CS incidents link (the Ops targets are invisible, not ghosted)",
+    kinds(cs).join() === "customer-success", kinds(cs));
+  const c = new URL(cs[0].href, "https://x");
+  check("…which opens CS incidents on THIS incident (iid = the incident id, an opaque record ref)",
+    c.searchParams.get("workspace") === "platform-incidents" && c.searchParams.get("view") === "open" && c.searchParams.get("iid") === "inc_cur", cs[0].href);
+  const partial = incidentNavigationLinks(input(), (id, p) => id === INCIDENT_NAVIGATION_TARGETS.providerHealth ? null : opsResolver(PO)(id, p));
+  check("a refused target is simply absent — no placeholder, the rest unchanged",
+    kinds(partial).join() === "connection-health,previous-episode,same-subject-open", kinds(partial));
+  check("no connection subject ⇒ no connection-health and no customer link",
+    !incidentNavigationLinks(input({}, { itemCount: 0 }), () => ({ href: "/x" })).some((l) => l.kind === "connection-health" || l.kind === "customer-success"));
+}
+
+console.log("\n4. no raw ids in hrefs");
+{
+  const all: IncidentNavigationLinkDTO[] = [
+    ...incidentNavigationLinks(input(), opsResolver(PO)),
+    ...incidentNavigationLinks(input(), csResolver(CS)),
+  ];
+  const seen: Record<string, string>[] = [];
+  const spy: IncidentNavigationResolver = (id, p) => { seen.push({ ...(p ?? {}) }); return { href: `/p?${id}` }; };
+  incidentNavigationLinks(input(), spy);
+  check("no href carries the customer id or the connection id", all.every((l) => !l.href.includes(USER_ID) && !l.href.includes(ITEM_ID) && !l.href.includes("usr_") && !l.href.includes("item_")), all.map((l) => l.href));
+  check("hrefs carry only workspace / view / iid", all.every((l) => [...new URL(l.href, "https://x").searchParams.keys()].every((k) => ["workspace", "view", "iid"].includes(k))));
+  check("the builder passes the resolver no param but iid, and iid only incident ids",
+    seen.every((p) => Object.keys(p).every((k) => k === "iid")) && seen.every((p) => !p.iid || p.iid.startsWith("inc_")), seen);
+}
+
+console.log("\n5. episodes");
+{
+  const none = incidentNavigationLinks(input({ recurrence: { previousIncidentId: null } }), opsResolver(PO));
+  check("no previousIncidentId ⇒ no previous-episode link", !none.some((l) => l.kind === "previous-episode"), kinds(none));
+  check("previousIncidentId set ⇒ exactly one previous-episode link", incidentNavigationLinks(input(), opsResolver(PO)).filter((l) => l.kind === "previous-episode").length === 1);
+  const many = incidentNavigationLinks(input({}, {
+    recurrences: Array.from({ length: SAME_SUBJECT_LINK_CAP + 3 }, (_, i) => ({ id: `inc_o${i}`, state: "active", recurrence: { generation: i + 2 } })) as IncidentNavigationInput["recurrences"],
+  }), opsResolver(PO));
+  check(`same-subject open episodes are capped at ${SAME_SUBJECT_LINK_CAP}`, many.filter((l) => l.kind === "same-subject-open").length === SAME_SUBJECT_LINK_CAP);
+  const same = incidentNavigationLinks(input(), opsResolver(PO)).filter((l) => l.kind === "same-subject-open");
+  check("…never the incident itself, never a closed episode", same.length === 1 && same[0].incidentId === "inc_open2");
+}
+
+console.log("\n6. rendering");
+{
+  const links = incidentNavigationLinks(input(), opsResolver(PO));
+  const html = renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links, onSelect: () => {} }));
+  const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
+  check("one anchor per link, href verbatim", hrefs.length === links.length && hrefs.every((h, i) => h === links[i].href), hrefs);
+  check("a Related section heading", html.includes(">Related</h3>"));
+  check("no links ⇒ nothing rendered (no empty section, no ghost)", renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links: [], onSelect: () => {} })) === "");
+  const bad = renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links: [{ kind: "provider-health", label: "x", note: null, href: "//evil.example/x", incidentId: null }], onSelect: () => {} }));
+  check("a non-relative href is refused, not rendered", bad === "");
+  check("375px: rows shrink (min-w-0), labels wrap (break-words), no fixed width", /min-w-0/.test(html) && /break-words/.test(html) && !/\bw-\[\d|min-w-\[\d|whitespace-nowrap/.test(html));
+  check("no disabled / aria-disabled links", !/disabled/.test(html));
+}
+
+console.log("\n7. source scan");
+{
+  const code = (s: string) => s.replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1").replace(/\/\*[\s\S]*?\*\//g, "");
+  const lead = code(readFileSync("components/platform/incidents/IncidentsLead.tsx", "utf8"));
+  const hrefAttrs = [...lead.matchAll(/\bhref=\{([^}]*)\}/g)].map((m) => m[1].trim());
+  check("the drawer's only href attribute is the resolved link's href", hrefAttrs.join() === "l.href", hrefAttrs);
+  check("the drawer imports no URL builder (workspace-href / space-url / navigation registry or accessor)",
+    !/workspace-href|space\/space-url|intelligence\/navigation|buildSpaceUrl|platformWorkspaceHref|platformAreaHref/.test(lead));
+  check("the drawer writes no Platform page path or workspace query literal", !/["'`]\/dashboard|[?&]workspace=|[?&]iid=/.test(lead));
+  const builder = code(readFileSync("lib/platform/incidents/related-navigation.ts", "utf8"));
+  check("the builder composes no URL and imports no navigation module (it only calls its resolver)",
+    !/\/dashboard|URLSearchParams|buildSpaceUrl|platformWorkspaceHref|intelligence\/navigation|`\/|"\/[a-z]/.test(builder));
+  const route = readFileSync("app/api/platform/platform-ops/incidents/[id]/route.ts", "utf8");
+  check("the Ops route resolves with a literal PLATFORM_OPS surface and a token minted from its own guard result",
+    /resolveNavigationTarget\("PLATFORM_OPS", navToken,/.test(route) && /const navToken = metricAccessFor\(auth\)/.test(route) && /const \[auth, err\] = await requirePlatformAccess\("PLATFORM_OPS", "READ"\)/.test(route));
+  const csRoute = readFileSync("app/api/platform/customer-success/incidents/[id]/route.ts", "utf8");
+  check("the CS route adds no navigation (Ops drawer only)", !/navigation/i.test(code(csRoute)));
+}
+
+if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
+console.log("\nall checks passed");
