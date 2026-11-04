@@ -7,9 +7,9 @@
  *
  * ── The failure ─────────────────────────────────────────────────────────────
  * FORECAST-3 measured a payroll stream (fixture below) and declined to name an amount, because
- * every naive answer is wrong differently: the mean ($5,314) averages in a
- * superseded regime, the median ($5,520) is right by luck on a series holding
- * $960.77 and $6,528.32, and the latest is one payment from being anything.
+ * every naive answer is wrong differently: the mean ($4,767) averages in a
+ * superseded regime, the median ($4,947) is right by luck on a series holding
+ * $874.11 and $5,855.82, and the latest is one payment from being anything.
  *
  * ── What is pinned ──────────────────────────────────────────────────────────
  *   old regimes are never averaged into the current one;
@@ -55,22 +55,22 @@ const AS_OF = '2039-10-27';
 // ── Synthetic streams (date, amount), shaped like the production case ──────
 // fixture-census: synthetic-dates — biweekly series moved by a whole-week offset that is not a calendar repeat
 const EMPLOYER_A: [string, number][] = [
-  ['2039-02-18', 2399.50], ['2039-03-03', 6182.69], ['2039-03-18', 6167.91], ['2039-04-01', 6274.50],
-  ['2039-04-15', 6044.69], ['2039-04-29', 5814.80], ['2039-05-13', 5489.85], ['2039-05-14', 960.77],
-  ['2039-05-27', 5571.02], ['2039-06-10', 5530.44], ['2039-06-24', 5530.44], ['2039-07-08', 5479.67],
-  ['2039-07-22', 5479.70], ['2039-08-05', 5500.01], ['2039-08-18', 6528.32], ['2039-09-01', 5500.02],
-  ['2039-09-16', 5500.00], ['2039-09-30', 5499.75], ['2039-10-14', 5520.26],
+  ['2039-02-18', 2185.16], ['2039-03-03', 5547.11], ['2039-03-18', 5533.66], ['2039-04-01', 5633.60],
+  ['2039-04-15', 5427.19], ['2039-04-29', 5214.93], ['2039-05-13', 4919.15], ['2039-05-14', 874.11],
+  ['2039-05-27', 4994.81], ['2039-06-10', 4956.45], ['2039-06-24', 4956.45], ['2039-07-08', 4909.93],
+  ['2039-07-22', 4909.96], ['2039-08-05', 4928.41], ['2039-08-18', 5855.82], ['2039-09-01', 4928.42],
+  ['2039-09-16', 4928.40], ['2039-09-30', 4928.15], ['2039-10-14', 4946.78],
 ];
 const EMPLOYER_B: [string, number][] = [
-  ['2038-01-25', 5667.26], ['2038-02-10', 4231.09], ['2038-02-25', 4231.11], ['2038-03-10', 4231.11],
-  ['2038-03-25', 4231.10], ['2038-04-10', 4231.11], ['2038-04-25', 4231.10], ['2038-05-10', 4231.11],
-  ['2038-05-25', 4231.10], ['2038-06-10', 4231.11], ['2038-06-25', 4550.22], ['2038-07-10', 4550.22],
-  ['2038-07-25', 4550.23], ['2038-08-10', 11060.80], ['2038-08-25', 4550.23], ['2038-09-10', 4550.22],
-  ['2038-09-25', 4550.23], ['2038-10-10', 4556.57], ['2038-10-25', 4652.29], ['2038-11-10', 4652.30],
-  ['2038-11-25', 4652.30], ['2038-12-10', 4170.78], ['2038-12-25', 4010.29], ['2039-01-10', 4652.30],
-  ['2039-01-25', 6088.44], ['2039-02-10', 4652.30], ['2039-02-25', 4652.29], ['2039-03-10', 4652.30],
-  ['2039-03-25', 4652.30], ['2039-04-10', 5747.74], ['2039-04-25', 5200.00], ['2039-05-10', 5200.00],
-  ['2039-05-25', 5200.00], ['2039-06-10', 4875.76], ['2039-06-25', 5252.55],
+  ['2038-01-25', 5081.19], ['2038-02-10', 3761.16], ['2038-02-25', 3761.18], ['2038-03-10', 3761.18],
+  ['2038-03-25', 3761.17], ['2038-04-10', 3761.18], ['2038-04-25', 3761.17], ['2038-05-10', 3761.18],
+  ['2038-05-25', 3761.17], ['2038-06-10', 3761.18], ['2038-06-25', 4041.63], ['2038-07-10', 4041.63],
+  ['2038-07-25', 4041.64], ['2038-08-10', 9964.06], ['2038-08-25', 4041.64], ['2038-09-10', 4041.63],
+  ['2038-09-25', 4041.64], ['2038-10-10', 4047.36], ['2038-10-25', 4140.28], ['2038-11-10', 4140.29],
+  ['2038-11-25', 4140.29], ['2038-12-10', 3703.62], ['2038-12-25', 3551.30], ['2039-01-10', 4140.29],
+  ['2039-01-25', 5466.31], ['2039-02-10', 4140.29], ['2039-02-25', 4140.28], ['2039-03-10', 4140.29],
+  ['2039-03-25', 4140.29], ['2039-04-10', 5156.60], ['2039-04-25', 4656.53], ['2039-05-10', 4656.53],
+  ['2039-05-25', 4656.53], ['2039-06-10', 4343.39], ['2039-06-25', 4701.43],
 ];
 /** Synthetic mid-month interest, shaped like a balance-tracking stream: varies 0.01–0.05. */
 const INTEREST: [string, number][] = [
@@ -120,7 +120,7 @@ const derive = (amounts: number[]) =>
 
 check('A1 the payroll fixture yields an assertable current amount', empA.assertable, JSON.stringify(empA).slice(0, 200));
 if (empA.assertable) {
-  eq('A2 the amount is the recent level, not the history', empA.value, (5500.01 + 5500.02) / 2);
+  eq('A2 the amount is the recent level, not the history', empA.value, (4928.41 + 4928.42) / 2);
   eq('A3 the regime starts after the step down', empA.regimeStartISO, '2039-05-27');
   eq('A4 on ten observations', empA.observationCount, 10);
   check('A5 within a tight spread', empA.spread < 0.02, String(empA.spread));
@@ -129,9 +129,9 @@ if (empA.assertable) {
 
 // The four candidate answers must be semantically distinct.
 const empAVals = EMPLOYER_A.map((r) => r[1]);
-eq('A7 all-history mean is $5,314.44', Number(mean(empAVals).toFixed(2)), 5314.44);
-eq('A8 all-history median is $5,520.26', median(empAVals), 5520.26);
-eq('A9 the latest observation is $5,520.26', empAVals[empAVals.length - 1], 5520.26);
+eq('A7 all-history mean is $4,767.29', Number(mean(empAVals).toFixed(2)), 4767.29);
+eq('A8 all-history median is $4,946.78', median(empAVals), 4946.78);
+eq('A9 the latest observation is $4,946.78', empAVals[empAVals.length - 1], 4946.78);
 check('A10 the derived amount differs from ALL THREE naive answers',
   empA.assertable && empA.value !== Number(mean(empAVals).toFixed(2))
   && empA.value !== median(empAVals) && empA.value !== empAVals[empAVals.length - 1],
@@ -143,13 +143,13 @@ check('A10 the derived amount differs from ALL THREE naive answers',
 
 const verdictFor = (a: PeriodicAmount, dateISO: string) => a.verdicts.find((v) => v.dateISO === dateISO);
 
-eq('B1 the superseded ~$6,190 regime is OUTSIDE_REGIME, not outliers',
+eq('B1 the superseded ~$5,554 regime is OUTSIDE_REGIME, not outliers',
   ['2039-03-03', '2039-03-18', '2039-04-01', '2039-04-15', '2039-04-29']
     .map((d) => verdictFor(empA, d)!.excludedBecause),
   Array(5).fill(ExclusionReason.OUTSIDE_REGIME));
-eq('B2 the $6,528.32 supplemental is an OUTLIER inside the regime',
+eq('B2 the $5,855.82 supplemental is an OUTLIER inside the regime',
   verdictFor(empA, '2039-08-18')!.excludedBecause, ExclusionReason.OUTLIER);
-eq('B3 the $960.77 off-cycle payment is caught by SLOT CONTENTION',
+eq('B3 the $874.11 off-cycle payment is caught by SLOT CONTENTION',
   verdictFor(empA, '2039-05-14')!.excludedBecause, ExclusionReason.SLOT_CONTESTED);
 eq('B4 and so is the payment it shares the occurrence with — neither is guessed at',
   verdictFor(empA, '2039-05-13')!.excludedBecause, ExclusionReason.SLOT_CONTESTED);
@@ -159,7 +159,7 @@ eq('B5 they share one scheduled occurrence',
 check('B6 contention is detected from the SCHEDULE, never from magnitude — no amount comparison decides it',
   !/value <|value >|Math\.min|Math\.max\(.*value/.test(
     code.slice(code.indexOf('SLOT_CONTESTED'), code.indexOf('const eligible'))));
-eq('B7 the $2,399.50 opening payment is OUTSIDE_REGIME — no PARTIAL claim is made',
+eq('B7 the $2,185.16 opening payment is OUTSIDE_REGIME — no PARTIAL claim is made',
   verdictFor(empA, '2039-02-18')!.excludedBecause, ExclusionReason.OUTSIDE_REGIME);
 check('B8 there is no PARTIAL category at all — it cannot be proven from this data',
   !/PARTIAL/.test(code));
@@ -175,16 +175,16 @@ eq('B11 the exclusion summary is inspectable',
 // C. Old regimes are never averaged in
 // ═══════════════════════════════════════════════════════════════════════════
 
-const twoRegimes = derive([5950, 5940, 5960, 5955, 5290, 5285, 5295, 5288]);
+const twoRegimes = derive([5340, 5331, 5349, 5344, 4738, 4733, 4743, 4736]);
 check('C1 a two-regime series resolves to the RECENT level', twoRegimes.assertable);
 if (twoRegimes.assertable) {
-  check('C2 near the new level, nowhere near the blend', Math.abs(twoRegimes.value - 5290) < 20,
+  check('C2 near the new level, nowhere near the blend', Math.abs(twoRegimes.value - 4738) < 20,
     String(twoRegimes.value));
   eq('C3 on four observations', twoRegimes.observationCount, 4);
   check('C4 the old regime is excluded FOR REGIME REASON',
     twoRegimes.verdicts.slice(0, 4).every((v) => v.excludedBecause === ExclusionReason.OUTSIDE_REGIME));
   check('C5 the blended mean is a different number entirely',
-    Math.abs(twoRegimes.value - mean([5950, 5940, 5960, 5955, 5290, 5285, 5295, 5288])) > 300);
+    Math.abs(twoRegimes.value - mean([5340, 5331, 5349, 5344, 4738, 4733, 4743, 4736])) > 300);
 }
 check('C6 the walk runs backward from the newest observation',
   /for \(let i = eligible\.length - 1; i >= 0; i--\)/.test(code));
@@ -193,14 +193,14 @@ check('C6 the walk runs backward from the newest observation',
 // D. The latest observation does not win
 // ═══════════════════════════════════════════════════════════════════════════
 
-const latestSpike = derive([5290, 5285, 5295, 5288, 5292, 9000]);
+const latestSpike = derive([4738, 4733, 4743, 4736, 4740, 9000]);
 check('D1 a stable regime with one unusual LATEST payment withholds rather than chasing it',
   !latestSpike.assertable
-  || (latestSpike.assertable && Math.abs(latestSpike.value - 5290) < 30),
+  || (latestSpike.assertable && Math.abs(latestSpike.value - 4738) < 30),
   JSON.stringify(latestSpike).slice(0, 260));
 check('D2 the spike never becomes the amount',
   !latestSpike.assertable || latestSpike.value !== 9000);
-const twoNew = derive([5290, 5285, 5295, 5288, 9000, 9010]);
+const twoNew = derive([4738, 4733, 4743, 4736, 9000, 9010]);
 eq('D3 two observations at a new level are not yet a licensed regime', twoNew.assertable, false);
 check('D4 and it says the level changed too recently',
   !twoNew.assertable && /changed too recently/.test(twoNew.reason), (twoNew as {reason:string}).reason);
@@ -210,29 +210,29 @@ check('D4 and it says the level changed too recently',
 // paycheck became the level, the eleven before it "deviated" as a run, and the
 // stream's amount was refused — the projection then counted $0 of payroll. The
 // production shape (synthesised here): an eleven-payment level within ~1.3%, then one payment +28%.
-const PAYROLL_HEAD = [5479.67, 5479.70, 5500.01, 5500.02, 5500.00, 5499.75, 5520.26, 5500.01, 5500.01, 5500.01, 5500.01, 7043.55];
+const PAYROLL_HEAD = [4909.93, 4909.96, 4928.41, 4928.42, 4928.40, 4928.15, 4946.78, 4928.41, 4928.41, 4928.41, 4928.41, 6300.71];
 const headSpike = derive(PAYROLL_HEAD);
 check('D5 one deviating NEWEST payment on a stable regime is a provisional OUTLIER — the level stands',
-  headSpike.assertable && Math.abs(headSpike.value - 5500.01) < 0.01 && headSpike.observationCount === 11,
+  headSpike.assertable && Math.abs(headSpike.value - 4928.41) < 0.01 && headSpike.observationCount === 11,
   JSON.stringify(headSpike).slice(0, 300));
 if (headSpike.assertable) {
   eq('D6 and it is DISCLOSED as latestDeviation, never silently dropped',
     headSpike.latestDeviation && [headSpike.latestDeviation.value, headSpike.latestDeviation.pctFromLevel > 25],
-    [7043.55, true]);
+    [6300.71, true]);
   eq('D7 its verdict says OUTLIER', headSpike.verdicts.at(-1)!.excludedBecause, ExclusionReason.OUTLIER);
   check('D8 the reason says the new level is NOT established', /not established until the next payment/.test(headSpike.reason));
 }
-const headSpikeMid = derive([...PAYROLL_HEAD.slice(0, 5), 7043.55, ...PAYROLL_HEAD.slice(5, 11)]);
+const headSpikeMid = derive([...PAYROLL_HEAD.slice(0, 5), 6300.71, ...PAYROLL_HEAD.slice(5, 11)]);
 check('D9 the SAME spike mid-series gives the same level — the walk is now symmetric',
   headSpike.assertable && headSpikeMid.assertable && headSpikeMid.value === headSpike.value && headSpikeMid.latestDeviation === undefined);
-const headDip = derive([...PAYROLL_HEAD.slice(0, 11), 2399.50]);
+const headDip = derive([...PAYROLL_HEAD.slice(0, 11), 2185.16]);
 check('D10 a single LOW newest payment is held out the same way, and disclosed with its sign',
   headDip.assertable && headDip.latestDeviation !== undefined && headDip.latestDeviation.pctFromLevel < 0);
-const twoHeads = derive([...PAYROLL_HEAD.slice(0, 10), 7043.55, 7043.55]);
+const twoHeads = derive([...PAYROLL_HEAD.slice(0, 10), 6300.71, 6300.71]);
 check('D11 TWO deviating newest payments are a new level — still refused as too young (BREAK_RUN unchanged)',
   !twoHeads.assertable && /changed too recently/.test(twoHeads.reason), (twoHeads as { reason: string }).reason);
 check('D12 a regime too short to judge the head (3 points) is not rescued by the head rule',
-  !derive([5290, 5288, 9000]).assertable);
+  !derive([4738, 4736, 9000]).assertable);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // E. Thresholds and minimum evidence
@@ -241,27 +241,27 @@ check('D12 a regime too short to judge the head (3 points) is not rescued by the
 eq('E1 the band is 5%', REGIME.BAND, 0.05);
 eq('E2 three observations minimum', REGIME.MIN_OBSERVATIONS, 3);
 eq('E3 two consecutive departures end a regime', REGIME.BREAK_RUN, 2);
-eq('E4 one observation is never enough', derive([5290]).assertable, false);
-eq('E5 two are never enough', derive([5290, 5288]).assertable, false);
-eq('E6 three stable observations suffice', derive([5290, 5288, 5292]).assertable, true);
+eq('E4 one observation is never enough', derive([4738]).assertable, false);
+eq('E5 two are never enough', derive([4738, 4736]).assertable, false);
+eq('E6 three stable observations suffice', derive([4738, 4736, 4740]).assertable, true);
 check('E7 the band sits in a PLATEAU, not on an edge — 1%..12% give the same fixture answer',
-  empA.assertable && empA.value === (5500.01 + 5500.02) / 2,
-  'the measured within-regime spread is 1.29% and the regime step is 12.5%');
+  empA.assertable && empA.value === (4928.41 + 4928.42) / 2,
+  'the measured within-regime spread is 1.29% and the regime step is 12.7%');
 check('E8 the threshold was not widened to rescue a second stream — high volatility stays UNKNOWN',
-  !derive([5000, 5600, 4700, 5400, 4900, 5500, 4800]).assertable);
+  !derive([5000, 5600, 4700, 5400, 4900, 4928, 4800]).assertable);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // F. Outliers
 // ═══════════════════════════════════════════════════════════════════════════
 
-const oneOutlier = derive([5290, 5285, 9000, 5295, 5288, 5292]);
+const oneOutlier = derive([4738, 4733, 9000, 4743, 4736, 4740]);
 check('F1 a single mid-regime outlier does NOT destroy the regime', oneOutlier.assertable);
 if (oneOutlier.assertable) {
   eq('F2 it is excluded as an OUTLIER', oneOutlier.verdicts.find((v) => v.value === 9000)!.excludedBecause,
     ExclusionReason.OUTLIER);
   eq('F3 the regime keeps the other five', oneOutlier.observationCount, 5);
 }
-const manyOutliers = derive([5290, 9000, 5285, 9100, 5295, 8900, 5288]);
+const manyOutliers = derive([4738, 9000, 4733, 9100, 4743, 8900, 4736]);
 eq('F4 outliers outnumbering the band is variation, not a level', manyOutliers.assertable, false);
 eq('F5 an old outlier is attributed to the old regime, not to this one',
   empA.verdicts.filter((v) => v.excludedBecause === ExclusionReason.OUTLIER).length, 1);
@@ -272,7 +272,7 @@ eq('F5 an old outlier is attributed to the old regime, not to this one',
 
 check('G1 the dead payroll HAS a derivable current amount', empB.assertable, JSON.stringify(empB).slice(0, 200));
 if (empB.assertable) {
-  eq('G2 at $5,200.00 from 2039-04-25', [empB.value, empB.regimeStartISO], [5200.00, '2039-04-25']);
+  eq('G2 at $4,656.53 from 2039-04-25', [empB.value, empB.regimeStartISO], [4656.53, '2039-04-25']);
   eq('G3 on four observations', empB.observationCount, 4);
 }
 eq('G4 and the stream is nevertheless SILENT', empBAct.state, ActivityState.SILENT);
@@ -311,7 +311,7 @@ check('H5 the module ASSIGNS no NET or GROSS basis — it only carries a caller\
 check('H6 every basis it writes of its own is UNKNOWN, on both amount paths',
   (code.match(/basis: AmountBasis\.UNKNOWN/g) ?? []).length === 2);
 eq('H7 the stated nominal total is still visible',
-  composeFutureCash(empAEvents).nominalInflow, ((5500.01 + 5500.02) / 2) * 9);
+  composeFutureCash(empAEvents).nominalInflow, ((4928.41 + 4928.42) / 2) * 9);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // I. Monthly equivalent
@@ -320,8 +320,8 @@ eq('H7 the stated nominal total is still visible',
 if (empA.assertable) {
   eq('I1 biweekly monthly equivalent uses 26/12, via FORECAST-1',
     monthlyEquivalent(empA.value, CadenceKind.BIWEEKLY), empA.value * 26 / 12);
-  eq('I2 which is $11,916.70 nominal',
-    Number(monthlyEquivalent(empA.value, CadenceKind.BIWEEKLY).toFixed(2)), 11916.70);
+  eq('I2 which is $10,678.23 nominal',
+    Number(monthlyEquivalent(empA.value, CadenceKind.BIWEEKLY).toFixed(2)), 10678.23);
   check('I3 and is NOT what "twice a month" would give',
     monthlyEquivalent(empA.value, CadenceKind.BIWEEKLY) !== empA.value * 2);
   eq('I4 the module does not compute monthly equivalence itself', /monthlyEquivalent/.test(code), false);
@@ -333,7 +333,7 @@ eq('I5 annual factor still comes from the cadence', annualFactor(CadenceKind.BIW
 // ═══════════════════════════════════════════════════════════════════════════
 
 const mixed = deriveCurrentPeriodicAmount(
-  [...obs(stream([5290, 5285, 5295]).slice(0, 2)), { dateISO: '2039-10-14', value: 5292, currency: 'EUR' }],
+  [...obs(stream([4738, 4733, 4743]).slice(0, 2)), { dateISO: '2039-10-14', value: 4740, currency: 'EUR' }],
   biweeklyAt());
 eq('J1 a mixed-currency stream is UNKNOWN', mixed.assertable, false);
 check('J2 and says a regime must be single-currency',
@@ -351,7 +351,7 @@ eq('K1 an assertion is assertable with USER_ASSERTED provenance',
 eq('K2 at the stated value', userSays.value, 5250);
 check('K3 it does NOT rewrite the derived evidence', userSays.verdicts.length === EMPLOYER_A.length);
 check('K4 and the reason names both figures',
-  /user stated/.test(userSays.reason) && /5500\.01/.test(userSays.reason), userSays.reason);
+  /user stated/.test(userSays.reason) && /4928\.41/.test(userSays.reason), userSays.reason);
 eq('K5 derived and asserted are distinguishable by provenance alone',
   empA.assertable && empA.provenance !== userSays.provenance, true);
 check('K6 an assertion is never persisted', !/\.create\(|\.upsert\(|\.update\(/i.test(code));
@@ -428,25 +428,25 @@ check('M7 the result is never a naked scalar',
 // N. Regression corpus A–M
 // ═══════════════════════════════════════════════════════════════════════════
 
-eq('N-A stable biweekly is ASSERTABLE', derive([5290, 5285, 5295, 5288]).assertable, true);
+eq('N-A stable biweekly is ASSERTABLE', derive([4738, 4733, 4743, 4736]).assertable, true);
 check('N-B regime A → regime B yields B only', twoRegimes.assertable
-  && Math.abs((twoRegimes as {value:number}).value - 5290) < 20);
+  && Math.abs((twoRegimes as {value:number}).value - 4738) < 20);
 eq('N-C one old outlier: current regime survives', oneOutlier.assertable, true);
 check('N-D one latest outlier does not redefine the regime',
   !latestSpike.assertable || (latestSpike as {value:number}).value !== 9000);
-eq('N-E two observations only → UNKNOWN', derive([5290, 5288]).assertable, false);
+eq('N-E two observations only → UNKNOWN', derive([4738, 4736]).assertable, false);
 eq('N-F irregular freelance income → UNKNOWN',
   deriveCurrentPeriodicAmount(obs([['2038-07-04', 45], ['2038-09-16', 151], ['2039-08-01', 18]]),
     biweeklyAt('2039-08-01')).assertable, false);
 eq('N-G same cadence, high volatility → UNKNOWN',
-  derive([5000, 5600, 4700, 5400, 4900, 5500, 4800]).assertable, false);
+  derive([5000, 5600, 4700, 5400, 4900, 4928, 4800]).assertable, false);
 eq('N-H semimonthly payroll → ASSERTABLE historical amount', empB.assertable, true);
 eq('N-I stale Employer B: amount assertable, activity SILENT, zero events',
   [empB.assertable, empBAct.state, periodicCashEvents(empBAct, empBCad, empB, AS_OF, '2040-02-29', FlowRole.INCOME).length],
   [true, ActivityState.SILENT, 0]);
 eq('N-J current Employer A: dates + nominal amounts + UNKNOWN basis',
   [empAEvents.length, empAEvents[0].amount!.value, empAEvents[0].amount!.basis],
-  [9, (5500.01 + 5500.02) / 2, AmountBasis.UNKNOWN]);
+  [9, (4928.41 + 4928.42) / 2, AmountBasis.UNKNOWN]);
 eq('N-K user assertion is distinctly represented', userSays.provenance, EventProvenance.USER_ASSERTED);
 eq('N-L currency mismatch → no averaging', mixed.assertable, false);
 eq('N-M interest keeps its role and gets no amount', interest.assertable, false);

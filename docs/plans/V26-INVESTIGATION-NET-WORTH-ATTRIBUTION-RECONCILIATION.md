@@ -92,7 +92,7 @@ Verified: `stocks ≥ 0` for all 737 snapshots in the real Space; `real` is addi
 
 ## 4 · Reconstructed period — real data only
 
-The database mixes real Plaid data with seeded demo data. Partitioning on `plaidAccountId IS NOT NULL`, the real Space is **"Chris' Space"** (737 snapshots, 2024-07-21 → 2026-07-27) — the only Space whose window matches the real Plaid history. All seeded Spaces ("John's", "Jane's", "Smith-Doe Household", "Debt Payoff Tracker") were excluded from every conclusion.
+The database mixes real Plaid data with seeded demo data. Partitioning on `plaidAccountId IS NOT NULL`, the real Space is **"Jules' Space"** (737 snapshots, 2024-07-21 → 2026-07-27) — the only Space whose window matches the real Plaid history. All seeded Spaces ("John's", "Jane's", "Smith-Doe Household", "Debt Payoff Tracker") were excluded from every conclusion.
 
 **Endpoints:**
 

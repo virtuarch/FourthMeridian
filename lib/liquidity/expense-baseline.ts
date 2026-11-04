@@ -20,7 +20,7 @@
  * number, so two baselines are two answers under one set of words — and neither
  * surface said which one it had used, so a user could not reconcile them.
  * Measured across the corpus (scripts/audit-coverage-fraction-divergence.ts):
- * 0 Spaces declared a baseline, 6 had a measured one, and on Chris' Space the
+ * 0 Spaces declared a baseline, 6 had a measured one, and on Jules' Space the
  * product therefore showed NO coverage at all while the assessment engine was
  * telling the AI "1.6 months" — a WARNING-grade position the product never
  * mentioned.

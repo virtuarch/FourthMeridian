@@ -192,7 +192,7 @@ export interface EventAmount {
    *
    * Measured, this is the whole of the income blocker on the real Space: 20
    * settled Employer A deposits into a checking account, a level of
-   * $5,500.01 held within 1.29% across 11 of them, and every projected
+   * $4,928.41 held within 1.29% across 11 of them, and every projected
    * occurrence refused for want of a basis assertion about money that had
    * already arrived.
    *
@@ -303,20 +303,20 @@ export function observedCashContribution(event: FutureCashEvent): NetContributio
  * The question §6 asks is whether a current periodic amount can be derived from
  * the ledger. Measured on the real Employer A payroll, 19 payments:
  *
- *   full series      min 960.77  max 6528.32  median 5520.26  CV 24.6%
- *   last six         5500.01 · 6528.32 · 5500.02 · 5500.00 · 5499.75 · 5520.26
+ *   full series      min 874.11  max 5855.82  median 4946.78  CV 24.6%
+ *   last six         4928.41 · 5855.82 · 4928.42 · 4928.40 · 4928.15 · 4946.78
  *
  * A stable current regime is visible — five of the last six sit inside a $19.72
  * band, 0.16% apart — and it is NOT derivable without policy. Reaching it means
- * excluding a partial first period ($2,399.50, started mid-cycle), excluding an
- * off-cycle payment ($960.77), excluding a high outlier ($6,528.32), and
- * detecting a regime change: the series steps down from ~$5,950 in January to
- * ~$5,290 from April onward. Each exclusion is a judgement about what counts as
+ * excluding a partial first period ($2,185.16, started mid-cycle), excluding an
+ * off-cycle payment ($874.11), excluding a high outlier ($5,855.82), and
+ * detecting a regime change: the series steps down from ~$5,340 in January to
+ * ~$4,738 from April onward. Each exclusion is a judgement about what counts as
  * a normal paycheck, and the naive alternatives are all wrong — the mean is
- * $5,314, the median $5,520, the most recent $5,520.26, and none of them is
+ * $4,767, the median $4,947, the most recent $4,946.78, and none of them is
  * "the amount" without someone deciding the outlier rule first.
  *
- * Employer B is worse and confirms the shape: CV 24.1%, with a $11,060.80 payment
+ * Employer B is worse and confirms the shape: CV 24.1%, with a $9,964.06 payment
  * sitting in an otherwise ~$4,400 series.
  *
  * So this slice does NOT establish an amount from observation. Cadence-derived

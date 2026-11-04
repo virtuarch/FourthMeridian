@@ -26,9 +26,9 @@
  *                                      gate AND ignores account/link createdAt
  *                                      floors so up to 30 days reconstruct.
  *   --dev-seed-target-spaces-30d --apply    Write missing estimated rows for them.
- *   --repair-july2-christian           Surgical one-off — show the bad 2026-07-02
- *                                      LIVE row for Christian's Space.
- *   --repair-july2-christian --apply   Delete only that one LIVE row, then
+ *   --repair-july2-owner           Surgical one-off — show the bad 2026-07-02
+ *                                      LIVE row for Jules' Space.
+ *   --repair-july2-owner --apply   Delete only that one LIVE row, then
  *                                      recreate July 2 as an estimated row.
  *   --rollback                         Dry run — count isEstimated rows to delete.
  *   --rollback --apply                 Delete all isEstimated (backfilled) rows.
@@ -55,9 +55,9 @@ const APPLY = process.argv.includes("--apply");
 const ROLLBACK = process.argv.includes("--rollback");
 const FORCE_ALL = process.argv.includes("--force-missing-estimated-all");
 const DEV_SEED = process.argv.includes("--dev-seed-target-spaces-30d");
-const REPAIR_JULY2 = process.argv.includes("--repair-july2-christian");
+const REPAIR_JULY2 = process.argv.includes("--repair-july2-owner");
 
-// Surgical one-off repair: Christian's Space had a partial/incomplete LIVE
+// Surgical one-off repair: Jules' Space had a partial/incomplete LIVE
 // snapshot on 2026-07-02 (cash ~1152 vs ~6439 on adjacent days). This mode
 // deletes ONLY that one LIVE row, then reruns the backfill so July 2 is
 // recreated as isEstimated=true. Never deletes estimated rows; never touches
@@ -242,8 +242,8 @@ function fmtRow(r: { date: Date; cash: number; debt: number; totalAssets: number
   return `date=${d} cash=${r.cash} debt=${r.debt} totalAssets=${r.totalAssets} netWorth=${r.netWorth} isEstimated=${r.isEstimated}`;
 }
 
-async function repairJuly2Christian(): Promise<void> {
-  console.log(`Repair July 2 — Christian's Space — ${APPLY ? "APPLY" : "DRY RUN"}`);
+async function repairJuly2Owner(): Promise<void> {
+  console.log(`Repair July 2 — Jules' Space — ${APPLY ? "APPLY" : "DRY RUN"}`);
   console.log(`  spaceId=${REPAIR_SPACE_ID}  date=2026-07-02\n`);
 
   const SELECT = { id: true, date: true, cash: true, debt: true, totalAssets: true, netWorth: true, isEstimated: true };
@@ -295,7 +295,7 @@ async function repairJuly2Christian(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (REPAIR_JULY2) await repairJuly2Christian();
+  if (REPAIR_JULY2) await repairJuly2Owner();
   else if (ROLLBACK) await rollback();
   else if (DEV_SEED) await devSeedTargetSpaces30d();
   else if (FORCE_ALL) await forceMissingEstimatedAll();

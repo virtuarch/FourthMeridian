@@ -94,20 +94,20 @@ const baseAccounts = () => ({
   counts: { liquid: 4, liabilities: 2, investments: 3, digitalAssets: 4, realAssets: 0 },
 } as unknown as AccountsSectionData);
 
-const DERIVED_AMOUNT = { value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
+const DERIVED_AMOUNT = { value: 4928.415, currency: 'USD', provenance: EventProvenance.DERIVED,
   basis: AmountBasis.UNKNOWN, basisProvenance: null };
 const EMPLOYER_A: IncomeStreamInput = { sourceKey: 'employer-a', role: FlowRole.INCOME,
   cadence: CadenceKind.BIWEEKLY, activity: ActivityState.CURRENT, projectionEligible: true,
   amount: DERIVED_AMOUNT };
 const EMPLOYER_B: IncomeStreamInput = { sourceKey: 'employer-b', role: FlowRole.INCOME,
   cadence: CadenceKind.SEMIMONTHLY, activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 4656.53, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null } };
 const INTEREST: IncomeStreamInput = { sourceKey: 'interest-10th', role: FlowRole.INTEREST,
   cadence: CadenceKind.MONTHLY, activity: ActivityState.CURRENT, projectionEligible: true, amount: null };
 
 const netFactAmount = assertedAmountBasis(
-  assertedPeriodicAmount(5500.015, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+  assertedPeriodicAmount(4928.415, 'USD', AS_OF), AmountBasis.NET, AS_OF);
 /** The same stream after the user asserts the basis. Events and state must agree. */
 const NET_EMPLOYER_A: IncomeStreamInput = { sourceKey: 'employer-a', role: FlowRole.INCOME,
   cadence: CadenceKind.BIWEEKLY, activity: ActivityState.CURRENT, projectionEligible: true,
@@ -151,7 +151,7 @@ const empAActivity = resolveStreamActivity({
 const payEvents = (basis: typeof AmountBasis[keyof typeof AmountBasis],
   prov: typeof EventProvenance[keyof typeof EventProvenance] = EventProvenance.DERIVED) =>
   cadenceDerivedEvents(empAActivity, empACadence, HORIZON.fromISO, HORIZON.toISO, FlowRole.INCOME,
-    { value: 5500.015, currency: 'USD', basis, provenance: prov });
+    { value: 4928.415, currency: 'USD', basis, provenance: prov });
 const PAY_UNKNOWN = payEvents(AmountBasis.UNKNOWN);
 const PAY_NET = payEvents(AmountBasis.NET, EventProvenance.USER_ASSERTED);
 
@@ -195,7 +195,7 @@ eq('A6 and is liquidity ONLY — not the $25,000.02 of investments', A.openingCa
 eq('A7 the licensed pay dates are still exposed',
   A.events.map((e) => e.dateISO),
   ['2008-03-28', '2008-04-11', '2008-04-25', '2008-05-09', '2008-05-23', '2008-06-06', '2008-06-20']);
-eq('A8 with their nominal amounts visible', A.events[0].authoritativeAmount!.value, 5500.015);
+eq('A8 with their nominal amounts visible', A.events[0].authoritativeAmount!.value, 4928.415);
 eq('A9 but NO cash contribution, because the basis is unestablished', A.events[0].cashDelta, null);
 check('A10 and FORECAST-3\'s own words say why',
   /whether it is gross or net was never established/.test(A.events[0].refusalReason ?? ''),
@@ -213,7 +213,7 @@ const A_NET_EVENTS = run(state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST]
 eq('A15 with NET events, the known-event path computes while spending is unknown',
   A_NET_EVENTS.knownEventPath.status, ConclusionStatus.FACTUALLY_LICENSED);
 near('A16 opening cash plus seven paychecks', A_NET_EVENTS.knownEventPath.closing,
-  12000.00 + 5500.015 * 7);
+  12000.00 + 4928.415 * 7);
 eq('A17 and the FULL path is still REFUSED — it is not the same question',
   A_NET_EVENTS.fullCashPath.status, ConclusionStatus.REFUSED);
 check('A18 the known-event path is never called ending cash',
@@ -256,12 +256,12 @@ eq('C2 over SEVEN licensed occurrences — not 2 x 3 months, and not 26/12 x 3',
   C.events.filter((e) => e.included).length, 7);
 check('C3 which is what two-checks-a-month arithmetic would have got wrong',
   C.events.length !== 2 * 3 && C.events.length === 7);
-near('C4 income total is 7 x 5500.015, at full precision',
-  C.events.reduce((t, e) => t + (e.cashDelta ?? 0), 0), 38500.105);
+near('C4 income total is 7 x 4928.415, at full precision',
+  C.events.reduce((t, e) => t + (e.cashDelta ?? 0), 0), 34498.905);
 near('C5 baseline consumption is 94 days x the daily rate',
   C.points.reduce((t, p) => t + (p.discretionarySpend ?? 0), 0), (4000 / MEAN_MONTH_DAYS) * 94);
 near('C6 ending cash = opening + income - accrual', C.fullCashPath.closing,
-  12000.00 + 5500.015 * 7 - (4000 / MEAN_MONTH_DAYS) * 94);
+  12000.00 + 4928.415 * 7 - (4000 / MEAN_MONTH_DAYS) * 94);
 eq('C7 the dependencies are exactly the two assumptions the user made',
   [...C.fullCashPath.dependencies].sort(), ['a1', 'a2']);
 check('C7b one sentence about the stream reaches all seven of its occurrences — '
@@ -277,10 +277,10 @@ eq('C9 with no number attached to it', C.withoutAssumptions!.closing, null);
 // ⚠️ THE DIRECT REGRESSION for live failures #3/#4.
 const monthsInHorizon = 94 / MEAN_MONTH_DAYS;
 check('C10 two-checks-a-month would have produced a different, wrong income total',
-  Math.abs(2 * Math.round(monthsInHorizon) * 5500.015 - 5500.015 * 7) > 1,
+  Math.abs(2 * Math.round(monthsInHorizon) * 4928.415 - 4928.415 * 7) > 1,
   `two-a-month=${2 * Math.round(monthsInHorizon)} vs licensed=7`);
 check('C11 and monthlyEquivalent x months likewise',
-  Math.abs((5500.015 * 26 / 12) * monthsInHorizon - 5500.015 * 7) > 1);
+  Math.abs((4928.415 * 26 / 12) * monthsInHorizon - 4928.415 * 7) > 1);
 eq('C12 the engine performs NO cadence arithmetic of its own',
   /\b26\b|\/\s*12\b|BIWEEKLY|SEMIMONTHLY|occurrencesBetween|annualFactor|monthlyEquivalent/
     .test(codeOnly), false);
@@ -522,8 +522,8 @@ check('K6a and the spending assumption joins only once time has elapsed',
 // L. MONEY, ROUNDING AND SERIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-const sixExact = 5500.015 * 7;
-const sixRounded = Number((5500.015).toFixed(2)) * 7;
+const sixExact = 4928.415 * 7;
+const sixRounded = Number((4928.415).toFixed(2)) * 7;
 check('L1 the half-cent level is carried at full precision, per D-4',
   Math.abs((C.events.reduce((t, e) => t + (e.cashDelta ?? 0), 0)) - sixExact) < 1e-9);
 check('L2 rounding each occurrence first would have drifted',

@@ -232,7 +232,7 @@ export function auditRows(events: readonly PlatformAuditEvent[], nowMs: number):
 export const OPERATOR_RESULT_WORD: Record<NonNullable<OperatorActionEvent["result"]>, string> = { SUCCESS: "succeeded", FAILURE: "failed", REFUSED: "refused" };
 export const OPERATOR_RESULT_TONE: Record<NonNullable<OperatorActionEvent["result"]>, StatusTone> = { SUCCESS: "ok", FAILURE: "bad", REFUSED: "warn" };
 
-/** "chris → alice · support request · run …a1b2c3" — operator, target when distinct, reason CODE, execution handle. Never the note. */
+/** "jules → alice · support request · run …a1b2c3" — operator, target when distinct, reason CODE, execution handle. Never the note. */
 export function operatorLine(e: OperatorActionEvent, reasonWord: (code: string) => string): string {
   const parts: string[] = [e.operator];
   if (e.target && e.target !== e.operator) parts[0] = `${e.operator} → ${e.target}`;

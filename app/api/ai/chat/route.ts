@@ -331,7 +331,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // rather than left holding a scenario the conversation has moved past.
       // FM-AUDIT-018 — state too large to carry is replaced by a sealed continuity
       // marker (never silently dropped), and the response SAYS so.
-      // The product's possessive convention ("Chris'", lib/format.ts), applied to
+      // The product's possessive convention ("Jules'", lib/format.ts), applied to
       // the model's prose once, here — the seal's tail and the body must carry the
       // SAME text, because the client echoes this reply back as history.
       const answer = applyPossessiveConvention(turn.answer);

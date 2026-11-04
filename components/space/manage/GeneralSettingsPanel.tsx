@@ -10,8 +10,8 @@
  *
  * v2.7 P1:
  *   - NAME: the field edits the name customers SEE. Legacy rows still store
- *     "X's Dashboard" / "Chris's Space", which every customer surface renders
- *     through displaySpaceName() ("Chris' Space") — the field used to show the
+ *     "X's Dashboard" / "Jules's Space", which every customer surface renders
+ *     through displaySpaceName() ("Jules' Space") — the field used to show the
  *     raw stored string, so General disagreed with the header. The field now
  *     starts from the displayed name, and `name` is sent ONLY when the customer
  *     changes it (an untouched legacy row is never silently rewritten). A rename

@@ -79,7 +79,7 @@ Production runs on Vercel + Supabase; the steps below spin up a local Postgres (
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/virtuarch/fintracker.git
+git clone https://github.com/<owner>/fintracker.git
 cd fintracker
 npm install
 ```

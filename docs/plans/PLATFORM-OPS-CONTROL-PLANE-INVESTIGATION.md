@@ -32,7 +32,7 @@ The product principle holds up under evidence: configuration (PlatformSetting), 
 - Branch `v2.6`, HEAD `891458f`. Tracked tree clean.
 - Ten untracked peer files, untouched: nine `docs/audits/status-drift/STATUS-DRIFT-AUDIT-2026-09-*.md` and `scripts/audit-visibility-levels.ts`.
 - One stash from another branch (`feature/phase-2-architecture`), not touched.
-- `f54a62b` (REFRESH POLICY, 25 files) and `891458f` (INCREMENTAL ETH HISTORY, 14 files) verified as the two most recent commits; both authored by Chris on 2026-09-13.
+- `f54a62b` (REFRESH POLICY, 25 files) and `891458f` (INCREMENTAL ETH HISTORY, 14 files) verified as the two most recent commits; both authored by Jules on 2026-09-13.
 - No stash, reset, clean, or checkout was performed. Probe queries were read-only `psql` against `localhost:5432/fintracker`.
 
 ---

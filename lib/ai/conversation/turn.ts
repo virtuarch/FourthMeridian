@@ -105,7 +105,7 @@ export const GUIDANCE_RULE =
  *
  * ⚠️ MEASURED, NOT ASSUMED — exported, like the other two rules, for the A/B arm.
  * Each sentence answers a recorded failure: a Call of Duty loadout offered in
- * full; "the orientation you pasted"; "Chris' Space (id <another tenant's Space>)
+ * full; "the orientation you pasted"; "Jules' Space (id <another tenant's Space>)
  * is your space"; after a tool-computed answer, "you suck" drew "I made numbers
  * up"; and, asked whether an HSA or a 401(k) could be withdrawn, the model stated
  * "before age 65… income tax plus a 20% penalty" and "under 59½… 10% federally"

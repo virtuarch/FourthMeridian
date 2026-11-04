@@ -1,6 +1,6 @@
 # Agent F — Release engineering, dependencies, CI gates, testing infrastructure
 
-**Branch:** `remediation/f-release-eng` from `cde8fa0` · **worktree:** `/Users/chrstn/dev/FourthMeridian-remediation/f` · **Node:** 24.21.0 · **Date:** 2026-10-22 · **Commits:** 12, local only (nothing pushed, no remote setting changed, no live database touched).
+**Branch:** `remediation/f-release-eng` from `cde8fa0` · **worktree:** `/Users/devuser/dev/FourthMeridian-remediation/f` · **Node:** 24.21.0 · **Date:** 2026-10-22 · **Commits:** 12, local only (nothing pushed, no remote setting changed, no live database touched).
 
 Everything below was verified in this worktree. Claims about GitHub CI are not made: no run exists for these commits until they are pushed. The full local contract run (`npm run ci`) on the final committed HEAD is in §3.
 
@@ -124,9 +124,9 @@ Deferred to the orchestrator: the full `npm run ci` runs once on the integrated 
 1. **Push and read CI.** `git push origin remediation/f-release-eng` (or the integrated branch) and read the three jobs on the exact SHA; the new `test` step is `Dependency audit (production, high+)`. First `post-deploy-smoke` run on the next Preview deployment proves Vercel emits `deployment_status` here.
 2. **Rulesets (G2)** — `docs/operations/branching-and-protection.md` §4:
    ```sh
-   gh api --method POST -H "Accept: application/vnd.github+json" /repos/virtuarch/FourthMeridian/rulesets --input /tmp/ruleset-main.json
-   gh api --method POST -H "Accept: application/vnd.github+json" /repos/virtuarch/FourthMeridian/rulesets --input /tmp/ruleset-v26.json
-   gh api /repos/virtuarch/FourthMeridian/rulesets | jq '.[] | {id, name, enforcement}'
+   gh api --method POST -H "Accept: application/vnd.github+json" /repos/{owner}/{repo}/rulesets --input /tmp/ruleset-main.json
+   gh api --method POST -H "Accept: application/vnd.github+json" /repos/{owner}/{repo}/rulesets --input /tmp/ruleset-v26.json
+   gh api /repos/{owner}/{repo}/rulesets | jq '.[] | {id, name, enforcement}'
    ```
    Decisions left open there: PRs on `v2.6` (§4.2), admin bypass on `main` vs merge commits (§4.3), repository visibility (SEC-018).
 3. **Dependabot** needs no action beyond the file; it starts proposing PRs on the default branch once pushed. Confirm "Dependabot version updates" is enabled in repository settings → Code security.

@@ -31,7 +31,7 @@
 
 | Question | Evidence | Answer |
 |---|---|---|
-| Plan and backup entitlement | Org **VirtuArch**: **Pro Plan**, 2 projects (`fourth-meridian-preview` Nano, `fourth-meridian-production` Micro, both ap-southeast-1). Spend cap ON. | Pro: daily backups |
+| Plan and backup entitlement | Org **the team**: **Pro Plan**, 2 projects (`fourth-meridian-preview` Nano, `fourth-meridian-production` Micro, both ap-southeast-1). Spend cap ON. | Pro: daily backups |
 | Most recent completed backup | Scheduled backups: **21 Oct 2026 22:53:42 UTC, PHYSICAL**. The "Restore to new project" list shows it COMPLETED. | about 15 h before this read |
 | Retention | 7 listed: 15 → 21 Oct, one per day | **7 days** |
 | PITR | Database → Backups → Point in time: "available as an add-on"; Add-ons: **Point in time recovery: DISABLED** | **No PITR** |
@@ -102,8 +102,8 @@ So the design splits in two:
 
 | Option | Cost / plan | Why not done autonomously |
 |---|---|---|
-| A. New project in the Free org "chrhogan1997-2301's projects" (0 projects; **managed via Vercel Marketplace**) | free (Free tier: pauses when idle, 500 MB) | Creation requires setting a database password in Supabase's form, which I don't enter. A Marketplace-managed org can also **inject database env vars into linked Vercel projects**, which is the "silent move" risk to `preview-app` and Production. |
-| B. Third project in VirtuArch (Pro) | Pro compute credit already used by 2 Micro-class projects (projected $34.95 this cycle); a third adds about $10/month | unplanned paid infrastructure |
+| A. New project in the Free org "example-owner's projects" (0 projects; **managed via Vercel Marketplace**) | free (Free tier: pauses when idle, 500 MB) | Creation requires setting a database password in Supabase's form, which I don't enter. A Marketplace-managed org can also **inject database env vars into linked Vercel projects**, which is the "silent move" risk to `preview-app` and Production. |
+| B. Third project in the team (Pro) | Pro compute credit already used by 2 Micro-class projects (projected $34.95 this cycle); a third adds about $10/month | unplanned paid infrastructure |
 | C. Supabase branching on Pro | billed per branch-hour | paid |
 
 **Interim (applied): least privilege for branch builds, proven not to touch `v2.6`.**

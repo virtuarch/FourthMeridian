@@ -64,7 +64,7 @@ const ACCOUNTS = [{ id: "chk", type: "checking" }, { id: "card", type: "debt" }]
 
 const RENDERS: Record<string, () => string> = {
   "SpaceShell (customer, Overview)": () => renderToStaticMarkup(createElement(SpaceShell, {
-    title: "Chris's Space", subtitle: "Personal", currencyControl: null, onManage: () => {},
+    title: "Jules's Space", subtitle: "Personal", currencyControl: null, onManage: () => {},
     railOptions: RAIL, activeTab: "OVERVIEW", onSelectTab: () => {}, mobileOptimized: true,
     children: createElement("p", null, "content"),
   } as never)),

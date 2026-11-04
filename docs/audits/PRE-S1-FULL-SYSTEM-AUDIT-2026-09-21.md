@@ -96,7 +96,7 @@ No rewrite is warranted. Every Gate A item is a local correction.
 |---|---|---|
 | Branch | v2.6 | ✔ `v2.6` |
 | local = origin | 8ceafec | ✔ `8ceafec15a0e…` both |
-| Worktrees | one | ✔ one (`/Users/chrstn/dev/FourthMeridian`) |
+| Worktrees | one | ✔ one (`/Users/devuser/dev/FourthMeridian`) |
 | Untracked | status-drift file only | ✔ only `docs/audits/status-drift/STATUS-DRIFT-AUDIT-2026-09-21.md` (not touched, not claimed) |
 | `.nvmrc` / `engines.node` | 24 / 24.x | ✔ |
 | Global Node | 26 (must not be used) | ✔ v26.0.0 present. The gate ran on **v24.21.0** (npx cache), npm 11.12.1 |

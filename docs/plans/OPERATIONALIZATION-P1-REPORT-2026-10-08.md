@@ -193,7 +193,7 @@ _Root cause (FACT for the server side, INFERENCE for the client side):_ the tab 
 
 ## O. First-five beta operational verdict
 
-**"With five real beta users in Fourth Meridian, can Chris understand each customer's state, understand what they are entitled to, safely change those entitlements, understand provider/sync health, change platform execution cadence, invoke appropriate operational actions, and let a customer refresh all eligible financial authorities without requiring Claude Code, SQL, Supabase, Vercel or provider-console archaeology for routine operation?"**
+**"With five real beta users in Fourth Meridian, can Jules understand each customer's state, understand what they are entitled to, safely change those entitlements, understand provider/sync health, change platform execution cadence, invoke appropriate operational actions, and let a customer refresh all eligible financial authorities without requiring Claude Code, SQL, Supabase, Vercel or provider-console archaeology for routine operation?"**
 
 | Routine operation | Where it lives now | Proven |
 |---|---|---|

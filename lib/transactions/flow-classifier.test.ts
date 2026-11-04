@@ -101,12 +101,12 @@ expectFlow('SR-1: Other credit is UNKNOWN, not REFUND', { category: 'Other', amo
 check('SR-1: Other credit reason is AMBIGUOUS_UNKNOWN (not SIGN_DEFAULT_INFLOW)',
   classifyFlow({ category: 'Other', amount: 80 }).reason === 'AMBIGUOUS_UNKNOWN');
 check('SR-1: Other credit is NEVER REFUND (pending paycheck root cause)',
-  classifyFlow({ category: 'Other', amount: 5500.00 }).flowType !== 'REFUND');
+  classifyFlow({ category: 'Other', amount: 4928.40 }).flowType !== 'REFUND');
 // The pending-payroll shape verbatim (Other / OTHER_OTHER / positive): the
 // unrecognized PFC falls through, and Other-positive resolves UNKNOWN — never the
 // old REFUND → INCOME fabrication. (Descriptor rescue to INCOME happens upstream.)
 expectFlow('SR-1: pending Employer A payroll shape (Other/OTHER_OTHER/+) → UNKNOWN',
-  { category: 'Other', amount: 5500.00, pfcPrimary: 'OTHER', pfcDetailed: 'OTHER_OTHER' },
+  { category: 'Other', amount: 4928.40, pfcPrimary: 'OTHER', pfcDetailed: 'OTHER_OTHER' },
   'UNKNOWN', 'INFLOW');
 // Zero-amount Other is unchanged — a non-economic ADJUSTMENT, not the UNKNOWN valve.
 expectFlow('SR-1: Other zero-amount stays ADJUSTMENT', { category: 'Other', amount: 0 }, 'ADJUSTMENT', 'UNKNOWN');

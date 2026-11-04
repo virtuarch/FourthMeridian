@@ -5,7 +5,7 @@
 
 **Scope.** This audit covers the notification infrastructure that a centralized Communications Center (inside Customer Success) would sit on: email, in-app, operator and banner channels; preferences; jobs; delivery records. It is Phase A input for Session 1, which owns the infrastructure. Session 2 owns the Customer Success UI, and this document designs no UI.
 
-**Basis.** Worktree `/Users/chrstn/dev/FM-comms`, `develop` at `bbfb2e0`, branch `docs/comms-center-contract`. PR #164 (`origin/feat/email-migration`, head `8adbe41`, not merged) was read through `git show`.
+**Basis.** Worktree `/Users/devuser/dev/FM-comms`, `develop` at `bbfb2e0`, branch `docs/comms-center-contract`. PR #164 (`origin/feat/email-migration`, head `8adbe41`, not merged) was read through `git show`.
 
 **Method.** Static reading only. No source was edited, no database was touched, no email was sent, and no tsc, build or test suite was run. Every fact cites `file:line`. **INFERRED** marks a conclusion that was not read directly. **UNVERIFIED** marks something that needs a live environment. No env values are printed, only env names.
 

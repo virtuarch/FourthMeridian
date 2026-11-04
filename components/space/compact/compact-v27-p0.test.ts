@@ -100,7 +100,7 @@ console.log("\n2. the compact time control");
   const html = render({});
   check("server markup holds exactly one lens trigger", (html.match(/data-timeline-period="true"/g) ?? []).length === 1);
   const shellHtml = renderToStaticMarkup(createElement(SpaceShell, {
-    title: "Chris's Space", subtitle: "Personal", currencyControl: null, onManage: () => {}, compactTitleOnly: true,
+    title: "Jules's Space", subtitle: "Personal", currencyControl: null, onManage: () => {}, compactTitleOnly: true,
     railOptions: [{ id: "OVERVIEW", label: "Overview" }], activeTab: "OVERVIEW", onSelectTab: () => {}, children: createElement("p", null, "x"),
   } as never));
   check("the compact header carries no time control any more", !/data-timeline-period|fm-compact-time-slot/.test(shellHtml));

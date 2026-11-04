@@ -25,7 +25,7 @@ function check(name: string, ok: boolean, detail?: string): void {
 const SHA = "1e697a6c2900ecd54c8d2800da41cb244a5c25a1";
 const SSO_302 = {
   status: 302,
-  headers: { location: "https://vercel.com/sso-api?url=https%3A%2F%2Ffintracker1-alrkntl0t-virtuarchs-projects.vercel.app%2Fapi%2Fhealth&nonce=fbdf", "set-cookie": "_vercel_sso_nonce=6524; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax", server: "Vercel" },
+  headers: { location: "https://vercel.com/sso-api?url=https%3A%2F%2Ffintracker1-alrkntl0t-example-team-projects.vercel.app%2Fapi%2Fhealth&nonce=fbdf", "set-cookie": "_vercel_sso_nonce=6524; Max-Age=3600; Path=/; Secure; HttpOnly; SameSite=Lax", server: "Vercel" },
   body: "Protected by Vercel Authentication\nTo access this deployment with an authenticated Vercel CLI, run: vercel curl <deployment-url>",
 };
 const SSO_401 = { status: 401, headers: { "set-cookie": "_vercel_sso_nonce=d954; Path=/", server: "Vercel" }, body: "Protected by Vercel Authentication" };
@@ -61,7 +61,7 @@ console.log("the app is HEALTHY only when /api/health says so and the commit mat
   check("commit mismatch ⇒ UNHEALTHY (alias serving another build)", classifyProbe({ kind: "app", ...health({ status: "ok", db: "ok", commit: "cde8fa0" }), deployedSha: SHA }).verdict === VERDICT.UNHEALTHY);
   // The current route (OPS-014) publishes no commit at all.
   const current = { status: "ok", db: "ok", scheduler: { overdueJobs: 0 }, time: "2026-10-22T13:40:00.000Z" };
-  const onDeployment = classifyProbe({ kind: "app", ...health(current), deployedSha: SHA, url: "https://fintracker1-alrkntl0t-virtuarchs-projects.vercel.app/api/health" });
+  const onDeployment = classifyProbe({ kind: "app", ...health(current), deployedSha: SHA, url: "https://fintracker1-alrkntl0t-example-team-projects.vercel.app/api/health" });
   check("no commit on the per-deployment URL ⇒ HEALTHY, identity by immutable URL",
     onDeployment.verdict === VERDICT.HEALTHY && /immutable per-deployment URL/.test(onDeployment.reason), onDeployment.reason);
   const onAlias = classifyProbe({ kind: "app", ...health(current), deployedSha: SHA, url: "https://preview-app.fourthmeridian.com/api/health" });
@@ -82,7 +82,7 @@ console.log("the public site is probed at / (it has no API by design)");
 
 console.log("the bypass secret is only ever sent to our own hosts over https");
 {
-  check("*.vercel.app", mayCarryBypass("https://fintracker1-alrkntl0t-virtuarchs-projects.vercel.app/api/health"));
+  check("*.vercel.app", mayCarryBypass("https://fintracker1-alrkntl0t-example-team-projects.vercel.app/api/health"));
   check("preview-app.fourthmeridian.com", mayCarryBypass("https://preview-app.fourthmeridian.com/api/health"));
   check("not http", !mayCarryBypass("http://x.vercel.app/"));
   check("not a look-alike", !mayCarryBypass("https://fourthmeridian.com.evil.test/") && !mayCarryBypass("https://evilvercel.app/"));

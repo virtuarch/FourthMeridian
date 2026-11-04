@@ -148,7 +148,7 @@ proxy).
 
 ## 4. Browser verification
 
-Local dev, authenticated, Chris' Space.
+Local dev, authenticated, Jules' Space.
 
 | check | result |
 |---|---|

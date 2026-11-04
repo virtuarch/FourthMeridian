@@ -75,7 +75,7 @@ for (let i = 0; i < 150; i++) {
 // The CURRENT regime: 15 biweekly payroll settlements ending on the as-of date.
 // The last six carry a raised amount, so FORECAST-5 has a regime to find and
 // date/amount pairing is observable in the result.
-const PAY_OLD = 4_000, PAY_NOW = 5_500.02;
+const PAY_OLD = 4_000, PAY_NOW = 4_928.42;
 const payDates: string[] = [];
 for (let i = 14; i >= 0; i--) {
   const d = iso(at(AS_OF) - i * 14 * DAY);

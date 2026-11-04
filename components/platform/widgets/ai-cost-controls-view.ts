@@ -133,7 +133,7 @@ export function originChip(origin: ControlOrigin): OriginChipWord {
   }
 }
 
-/** "Platform default" · "Set 14 Oct 2026, 09:00 UTC by Chris" · "Default in force — stored value is invalid". */
+/** "Platform default" · "Set 14 Oct 2026, 09:00 UTC by Jules" · "Default in force — stored value is invalid". */
 export function controlProvenance(view: Pick<AnyControlView, "origin" | "updatedAt" | "updatedByName">, formatDate: (iso: string) => string): string {
   switch (view.origin) {
     case "DEFAULT": return "Platform default";
@@ -146,7 +146,7 @@ export function controlProvenance(view: Pick<AnyControlView, "origin" | "updated
   }
 }
 
-/** "Last updated 14 Oct 2026, 09:00 UTC by Chris" · "Never set". */
+/** "Last updated 14 Oct 2026, 09:00 UTC by Jules" · "Never set". */
 export function lastUpdatedText(view: Pick<AnyControlView, "updatedAt" | "updatedByName">, formatDate: (iso: string) => string): string {
   if (!view.updatedAt) return "Never set";
   const by = view.updatedByName ? ` by ${view.updatedByName}` : "";

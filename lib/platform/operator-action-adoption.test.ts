@@ -108,9 +108,9 @@ console.log("feed — projects the envelope, never the note, never email");
       reason: { code: "BETA_ONBOARDING", note: "SECRET NOTE someone@example.com" }, execution: { jobRunId: "jr_abcdef123456" }, email: "leak@example.com" },
     subjectUsername: null,
   };
-  const e = projectOperatorActionEvent(row, "chris");
+  const e = projectOperatorActionEvent(row, "jules");
   const json = JSON.stringify(e);
-  check("operator name projected", e.operator === "chris");
+  check("operator name projected", e.operator === "jules");
   check("USER target rendered opaquely from the envelope", e.target === "user …456789");
   check("reason code projected", e.reasonCode === "BETA_ONBOARDING");
   check("the NOTE is never projected", !json.includes("SECRET NOTE") && !json.includes("example.com"));
@@ -119,7 +119,7 @@ console.log("feed — projects the envelope, never the note, never email");
   const legacy = projectOperatorActionEvent({ id: "a2", action: "CONNECTION_RESYNC_TRIGGERED", createdAt: new Date(), performedByAdminId: null,
     metadata: { connectionId: "x", institution: "Example Bank", outcome: "synced" }, subjectUsername: null }, null);
   check("legacy rows fall back to the non-PII token and 'operator'", legacy.target === "Example Bank" && legacy.operator === "operator" && legacy.reasonCode === null);
-  const subj = projectOperatorActionEvent({ ...row, subjectUsername: "alice" }, "chris");
+  const subj = projectOperatorActionEvent({ ...row, subjectUsername: "alice" }, "jules");
   check("a subject username wins over the opaque label", subj.target === "alice");
   const fr = strip(FEED_ROUTE), fw = src(FEED_WIDGET);
   check("feed route projects through the pure core", /projectOperatorActionEvent\(/.test(fr));

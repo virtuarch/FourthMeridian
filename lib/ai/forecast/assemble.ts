@@ -483,7 +483,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   // the user supplies a spending level or a payroll basis. Measured on the
   // conformance corpus: "Assume I spend $4,000/month and that my Employer A
   // paycheck is net" produced a licensed ASSUMPTION_DEPENDENT closing of
-  // $35,144.66, and a projection then computed the SAME $35,144.66 and overlaid
+  // $35,000.00, and a projection then computed the SAME $35,000.00 and overlaid
   // it as the answer. Two harms, both real:
   //
   //   · the authority was misattributed — a result resting on the user's own
@@ -491,7 +491,7 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
   //     is observed-continuation framing for a conclusion no observation
   //     supports on its own; and
   //   · the assumption provenance disappeared with it. The user's "my paycheck
-  //     is net" is what licenses $37,006.51 as cash, and the projection block
+  //     is net" is what licenses $37,000.00 as cash, and the projection block
   //     lists OBSERVED_CONTINUATION assumptions instead, so the one input that
   //     materially changes the result stopped being visible.
   //

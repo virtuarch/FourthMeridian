@@ -38,7 +38,7 @@ feature/*, fix/*, sec/*  ──PR──▶  v2.6 (15e6172)  ──Vercel──�
 
 | | `fintracker1` (SaaS app) | `fourth-meridian-site` (marketing) |
 |---|---|---|
-| Git | `virtuarch/FourthMeridian`, **productionBranch `main`** | Same repo, **productionBranch `main`**, rootDirectory `site` |
+| Git | `<owner>/FourthMeridian`, **productionBranch `main`** | Same repo, **productionBranch `main`**, rootDirectory `site` |
 | Production domain | `app.fourthmeridian.com` | `fourthmeridian.com` (+ `fourth-meridian-site.vercel.app`) |
 | Preview domain | `preview-app.fourthmeridian.com`, **`gitBranch: v2.6`** | `preview.fourthmeridian.com`, **`gitBranch: v2.6`** |
 | Ignored Build Step | none: every push builds | `git diff --quiet $VERCEL_GIT_PREVIOUS_SHA HEAD -- .`: **cancels** builds when `site/` is unchanged (most `v2.6` site deploys show CANCELED) |

@@ -145,7 +145,7 @@ Runtime vs static: #1, #2, #3 carry runtime evidence (dev DB, one live provider 
 
 ## I. Beta verdict
 
-**"If Chris invited the first five real beta users now, what routine product operation or understanding would still force him into Claude Code, SQL, Supabase, Vercel, Plaid, OpenAI, Resend, Sentry, or another external console?"**
+**"If Jules invited the first five real beta users now, what routine product operation or understanding would still force him into Claude Code, SQL, Supabase, Vercel, Plaid, OpenAI, Resend, Sentry, or another external console?"**
 
 | Dependency | Where it still lives | Class |
 |---|---|---|

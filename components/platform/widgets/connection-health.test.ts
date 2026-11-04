@@ -112,10 +112,10 @@ console.log("4. identity never reaches the row; the owner column exists only whe
   const without = renderToStaticMarkup(createElement(ConnectionHealthTable, { rows, owners: null, checkedAt: CHECKED, nowMs: NOW, onSelect: () => {} }));
   check("no Owner heading without resolution", !without.includes(">Owner<"));
   check("no 'owner not resolved' placeholder without resolution (absent, not blank)", !without.includes("owner not resolved"));
-  const owners = ownersByRow([{ source: "PLAID", id: "item1", owner: { label: "chris" } }]);
+  const owners = ownersByRow([{ source: "PLAID", id: "item1", owner: { label: "jules" } }]);
   const withOwners = renderToStaticMarkup(createElement(ConnectionHealthTable, { rows, owners, checkedAt: CHECKED, nowMs: NOW, onSelect: () => {} }));
   check("Owner heading when resolved", withOwners.includes(">Owner<"));
-  check("the resolved label renders (username, never email)", withOwners.includes("chris") && !withOwners.includes("@"));
+  check("the resolved label renders (username, never email)", withOwners.includes("jules") && !withOwners.includes("@"));
   check("an unresolved row says so rather than guessing", withOwners.includes("owner not resolved"));
   check("headings differ by exactly the Owner column", connectionHeadings(true).length === connectionHeadings(false).length + 1 && connectionHeadings(true).includes("Owner") && !connectionHeadings(false).includes("Owner"));
   check("ownersUrl keys on source:id pairs and is bounded", ownersUrl(rows) === `/api/platform/customer-success/connection-owners?ids=${encodeURIComponent("PLAID:item1,WALLET:w1")}` && ownersUrl([]) === null);
@@ -124,7 +124,7 @@ console.log("4. identity never reaches the row; the owner column exists only whe
   check("rowKey is source:id", rowKey(rows[1]) === "WALLET:w1");
 
   const detail = renderToStaticMarkup(createElement(ConnectionRowDetail, { row: rows[0], owners, checkedAt: CHECKED, onOpen: () => {} }));
-  check("the below-md expansion carries stale-for, threshold, owner and action", ["Stale for", "Threshold", "Owner", "Action", "1d 2h", "24 h policy", "chris"].every((s) => detail.includes(s)));
+  check("the below-md expansion carries stale-for, threshold, owner and action", ["Stale for", "Threshold", "Owner", "Action", "1d 2h", "24 h policy", "jules"].every((s) => detail.includes(s)));
   const facts = renderToStaticMarkup(createElement(ConnectionFacts, { row: rows[1], owner: undefined, checkedAt: CHECKED, nowMs: NOW }));
   check("facts: a wallet names its network and judged-as policy", facts.includes("Wallet · ETH") && facts.includes("wallet (WALLET policy)"));
   check("facts: no Owner row when no owner was resolved", !facts.includes(">Owner<"));

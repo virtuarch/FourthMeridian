@@ -879,7 +879,7 @@ function seamFlowType(row: {
 // Case 1 — pending payroll (Other / OTHER_OTHER / +) → INCOME after descriptor
 // resolution, and NEVER REFUND. The real Employer A shape.
 {
-  const t = seamFlowType({ category: "Other", amount: 5500.00, merchant: "EMPLOYER A",
+  const t = seamFlowType({ category: "Other", amount: 4928.40, merchant: "EMPLOYER A",
     description: "EMPLOYER A PAYROLL SEC:PPD", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
     accountType: "checking" });
   check("SR Case 1: pending payroll → INCOME (never REFUND)", t === "INCOME", `got ${t}`);
@@ -913,10 +913,10 @@ function seamFlowType(row: {
 // Case 5 — settlement invariance: pending (Other/OTHER_OTHER) and posted
 // (INCOME/INCOME_WAGES) snapshots of the SAME event agree on the economic kind.
 {
-  const pending = seamFlowType({ category: "Other", amount: 5500.00, merchant: "EMPLOYER A",
+  const pending = seamFlowType({ category: "Other", amount: 4928.40, merchant: "EMPLOYER A",
     description: "EMPLOYER A PAYROLL", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER",
     accountType: "checking" });
-  const posted = seamFlowType({ category: "Income", amount: 5500.00, merchant: "EMPLOYER A",
+  const posted = seamFlowType({ category: "Income", amount: 4928.40, merchant: "EMPLOYER A",
     description: "EMPLOYER A PAYROLL", pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES",
     accountType: "checking" });
   check("SR Case 5: pending kind === posted kind (settlement invariance)",

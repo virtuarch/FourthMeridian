@@ -242,7 +242,7 @@ export function formatNumber(value: number): string {
 // ── Possessive ────────────────────────────────────────────────────────────────
 
 /**
- * Proper English possessive of a name: "Chris" → "Chris'", "Sarah" → "Sarah's".
+ * Proper English possessive of a name: "Jules" → "Jules'", "Sarah" → "Sarah's".
  * Names already ending in s/S take a bare trailing apostrophe; everything else
  * takes 's. Centralizes this so call sites stop hardcoding `${name}'s` (which
  * is wrong for any name ending in s) — e.g. default Space names, shared
@@ -255,12 +255,12 @@ export function possessive(name: string): string {
 /**
  * The same convention applied to prose a MODEL wrote. possessive() governs
  * every string the product builds, but Conversations' prose is composed by the
- * model, which wrote "Chris's account" (Preview dogfood, 2026-10-07) — a style
+ * model, which wrote "Jules's account" (Preview dogfood, 2026-10-07) — a style
  * instruction is something it can forget; this is not.
  *
  * Rewrites `Name's` → `Name'` (and `Name’s` → `Name’`) only where Name is a
  * Capitalized word whose last letter is a lowercase s — a proper name like
- * Chris or James. Untouched: names not ending in s ("Brandon's", "Alex's"),
+ * Jules or James. Untouched: names not ending in s ("Brandon's", "Alex's"),
  * lowercase words ("the bus's"), and all-caps tokens ("US's").
  */
 export function applyPossessiveConvention(text: string): string {
@@ -277,9 +277,9 @@ export function applyPossessiveConvention(text: string): string {
  *     still literally store a trailing " Dashboard" suffix.
  *  2. Possessive-grammar bug — rows created before possessive() existed
  *     hardcoded `${name}'s Space` / `${name}'s Dashboard` unconditionally,
- *     which is wrong for any base name ending in s/S ("Chris's Space"
- *     instead of "Chris' Space"). A row can have either issue alone
- *     ("Chris's Space", "John's Dashboard") or both at once ("Chris's
+ *     which is wrong for any base name ending in s/S ("Jules's Space"
+ *     instead of "Jules' Space"). A row can have either issue alone
+ *     ("Jules's Space", "John's Dashboard") or both at once ("Jules's
  *     Dashboard") — LEGACY_DEFAULT_NAME matches either apostrophe form
  *     ('s or bare ') in front of either suffix (Space or Dashboard),
  *     recovers the base name, and rebuilds the suffix from scratch with
@@ -289,7 +289,7 @@ export function applyPossessiveConvention(text: string): string {
  * Deliberately narrow: only matches when the *entire* trailing segment is
  * an apostrophe immediately followed by "Space" or "Dashboard" and nothing
  * else. A user could legitimately name a Space "Dashboard Redesign Project"
- * or "Chris's Book Club" — neither matches this pattern, so both render
+ * or "Jules's Book Club" — neither matches this pattern, so both render
  * untouched. The plain "X Dashboard" (no apostrophe) case still falls
  * through to the simple vocabulary swap below.
  *

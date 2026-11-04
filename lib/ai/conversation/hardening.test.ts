@@ -163,9 +163,9 @@ async function main(): Promise<void> {
     check('it cannot move money or trade', CANNOT.some((c) => /move money/.test(c) && /trade/.test(c)));
     check('disconnect is described as the route implements it (history kept, links removed, owner only)',
       /History is kept/.test(DISCONNECT) && /removes\s+the accounts from every Space/.test(DISCONNECT) && /Only the person who connected/.test(DISCONNECT));
-    const out = await describeFourthMeridian.run({}, { spaceCtx: { space: { name: 'Chris\' Space' } } } as never) as Record<string, unknown>;
+    const out = await describeFourthMeridian.run({}, { spaceCtx: { space: { name: 'Jules\' Space' } } } as never) as Record<string, unknown>;
     const blob = JSON.stringify(out);
-    check('the record names this Space and only this Space', /the Space \\"Chris' Space\\"/.test(blob));
+    check('the record names this Space and only this Space', /the Space \\"Jules' Space\\"/.test(blob));
     check('it calls itself a personal finance workspace where the decisions stay the user\'s, never a "financial operating system"',
       /a personal finance workspace; the decisions stay yours/.test(blob) && !/operating system/i.test(blob));
     check('…and no longer a "wealth management" platform', !/wealth management/i.test(blob));

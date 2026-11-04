@@ -36,7 +36,7 @@
 |---|---|---|
 | Serving deployment | `dpl_JcZ52DcQdMgCbZvS9zRGSSxhzKxp` (`fintracker1-32omlyc5y`), created 2026-07-27 19:33Z | `vercel inspect https://fourthmeridian.com` |
 | Deployed SHA | `87e4df7`, which is `origin/main` HEAD | GitHub deployment 5628710178 → that URL |
-| Aliases | `fourthmeridian.com`, `fintracker1-virtuarchs-projects.vercel.app`, `fintracker1-git-main-…` | inspect |
+| Aliases | `fourthmeridian.com`, `fintracker1-example-team-projects.vercel.app`, `fintracker1-git-main-…` | inspect |
 | Production branch | `main`. A push to `main` builds Production **and auto-aliases it** | git-main alias on the prod deployment |
 | `main` vs `v2.6` | `main` has exactly **one** commit not on `v2.6` (`87e4df7`). Its content is identical to `v2.6`'s `146a0dd` (cherry-pick). `git merge-tree origin/v2.6 87e4df7` gives **exactly the v2.6 tree** (`dff2152b…`) | git |
 | Domain stage | Apex served by the app (`fintracker1`). `www`/`app.` not configured. `v2.6` still serves the landing page at `/`. Write-origin derives "self" from the request host, with no env dependency | inspect, curl, code |

@@ -27,14 +27,14 @@
  * carries it — see `USER_OVERRIDE` in the result's `supersededBy`.
  *
  * ⚠️ IT PROJECTS NO DEBT PAYDOWN, and that is a finding rather than an omission.
- * Measured on the real Space, DEBT_PAYMENT since 2026-06-01 totals $55,710 —
- * but every payment appears TWICE, once as a debit on `CHASE COLLEGE` and once
+ * Measured on the real Space, DEBT_PAYMENT over a few months totals a five-figure sum —
+ * but every payment appears TWICE, once as a debit on the checking account and once
  * as a credit on the card, so the economic total is about half that. Of what
  * remains, the part matching card purchases is already counted as SPENDING (the
- * cards carry $16,854 of the period's $17,012 of spending; checking carries
- * $157), so projecting both would double-count every purchase. The excess over
- * card spending was balance PAYDOWN, and the balances are now $11.09 and
- * -$86.19 — there is nothing left to pay down, so extrapolating it would project
+ * cards carry nearly all of the period's spending; checking carries
+ * a sliver), so projecting both would double-count every purchase. The excess over
+ * card spending was balance PAYDOWN, and the balances are now roughly
+ * zero — there is nothing left to pay down, so extrapolating it would project
  * an outflow against a debt that no longer exists.
  */
 
@@ -245,13 +245,13 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   }
 
   // ⚠️ THE LABELS SAY PROJECTED, BECAUSE THAT IS WHAT THEY ARE. This figure is
-  // the sum of FUTURE occurrences — 8 x $5,500.01 on the real Space — generated
+  // the sum of FUTURE occurrences — e.g. 8 x $5,000 on a biweekly stream — generated
   // from an observed pattern. Calling it "observed income" was measured in the
   // live UI and is a semantic error of exactly the kind this programme exists to
   // prevent: it renames a projection into a measurement, which is the same move
   // as calling a historical average "normal".
-  // ⚠️ MAGNITUDES, NOT SIGNED VALUES. The renderer used to print "USD -16672.27";
-  // the model quoted "$16,672.27" and `output-validator`'s NUMBER_RE captures the
+  // ⚠️ MAGNITUDES, NOT SIGNED VALUES. The renderer used to print "USD -15000.00";
+  // the model quoted "$15,000.00" and `output-validator`'s NUMBER_RE captures the
   // minus, so the licensed figure and the quoted figure did not reconcile and a
   // correct answer collected "could not be automatically verified". Direction is
   // carried by the label, where a reader gets it too.
@@ -306,7 +306,7 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
  * ⚠️ THE MISSING HALF OF A WINDOW WAS ITS START. The projection has always owned
  * forward spending — `dailyRate × days` — but only FROM TODAY, so "how much will
  * I spend during 2027?" took two cumulative runs and a subtraction the model
- * performed (66,733.35 − 14,575.59). That subtraction is this function. It is
+ * performed (e.g. 60,000 − 15,000). That subtraction is this function. It is
  * not an annual-spending figure and knows nothing about years: any `[from, to]`
  * after today, over the same events and the same rate the cumulative run used.
  *

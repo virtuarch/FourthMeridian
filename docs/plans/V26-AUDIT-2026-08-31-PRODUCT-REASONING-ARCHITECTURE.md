@@ -16,7 +16,7 @@ But three structural facts, all verifiable, mean the system cannot behave like "
 
 **(a) The model is given prose and asked for prose, and everything else is compensation for that.** The typed truth exists — `CashForecast`, `FinancialAssessment`, `LicensedFigure{value, role, label, horizon}`, `ungraded[]` with machine-readable reason codes. It is flattened to English at the prompt boundary. Then `numerical-guard.ts` — ~450 of its 774 lines are regex vocabulary and stateful section-scope tracking — tries to *reconstruct those types from the model's English on the way out*. The file says so itself: `licensedFigures()` reads "FROM THE TYPED RESULT, NEVER FROM THE RENDERED PROSE" (`:293-297`) — but it must match that against prose, "because prose is all the model was ever given." You have a hand-written discourse parser standing in for structured output.
 
-**(b) There is no cross-domain composition layer, and every symptom you listed is a shadow of its absence.** `forecastCash` reads `state.liquidity` and nothing else — `engine.ts:378-380`: *"`state.investments` is right there on the same object, holding $24,021.19 of which $19,014.63 is crypto, and it is not cash."* `Conclusion` has 14 members; none is `PROJECTED_NET_WORTH`, `PROJECTED_INVESTMENT_VALUE`, or `PROJECTED_DEBT_BALANCE`. So when you ask "what would my net worth be?", the system hands the model a cash path, a *current* net worth, and a current portfolio total, and the model does the only thing available: it improvises a composition. Ending cash becomes net worth. Current investments become future investments. Then every guard fires. **These are not prompt bugs. They are the sound of a missing layer.**
+**(b) There is no cross-domain composition layer, and every symptom you listed is a shadow of its absence.** `forecastCash` reads `state.liquidity` and nothing else — `engine.ts:378-380`: *"`state.investments` is right there on the same object, holding $25,000 of which $20,000 is crypto, and it is not cash."* `Conclusion` has 14 members; none is `PROJECTED_NET_WORTH`, `PROJECTED_INVESTMENT_VALUE`, or `PROJECTED_DEBT_BALANCE`. So when you ask "what would my net worth be?", the system hands the model a cash path, a *current* net worth, and a current portfolio total, and the model does the only thing available: it improvises a composition. Ending cash becomes net worth. Current investments become future investments. Then every guard fires. **These are not prompt bugs. They are the sound of a missing layer.**
 
 **(c) Sixteen independent mechanisms read the user's message, in six mutually incompatible taxonomies, and they disagree.** Not "several parallel systems" — sixteen, built across at least eight work programmes, ~44 keyword/regex vocabularies, ~130 regexes. On *"what are my projections?"* the intent classifier returns `UNKNOWN`, confidence **0.2**, `answerStyle: CLARIFY`, and prints into the prompt: *"If the question is ambiguous, briefly ask what the user wants to focus on rather than guessing"* — directly above a fully computed deterministic forecast. Two verdicts, one prompt. That is your "broad questions don't work" symptom, verbatim, in the source.
 
@@ -94,7 +94,7 @@ That table is the whole diagnosis.
 
 3. **Provenance decomposed per field, not per record.** `amountProvenance` independent of `basisProvenance`; `timingProvenance` independent of both. `AmountBasis.GROSS ≠ UNKNOWN` — "the same for spendability, different for truthfulness" (`future-cash-event.ts:51-53`). Almost everyone gets this wrong. You got it right.
 
-4. **Deterministic arithmetic, everywhere it matters.** `computeAverageMonthlySpending`, `classifyAccounts`, `computeConcentration` shared with the Allocation panel, `canonicalWindowChange` shared with the Space launcher. The "one number, one authority" instinct is correct and has already caught real bugs (CF-7's $18,936.74 / 79% double-count).
+4. **Deterministic arithmetic, everywhere it matters.** `computeAverageMonthlySpending`, `classifyAccounts`, `computeConcentration` shared with the Allocation panel, `canonicalWindowChange` shared with the Space launcher. The "one number, one authority" instinct is correct and has already caught real bugs (CF-7's spending double-count).
 
 5. **Measurement culture.** Every regex window in `numerical-guard.ts` cites the incident that set it. `FORECAST-15` measured shadow 8/8 vs repair 0/10 before deciding. The gpt-4.1 tier experiment answered *no* and was recorded as *no*. This is the single best thing about the project and it must survive the simplification.
 
@@ -171,7 +171,7 @@ Only the **horizon** survives (`for-request.ts:91-102`). This single rule breaks
 
 ### G2 — No cross-domain composition. "Projected net worth" is not expressible.
 
-Nothing in `lib/forecast/` reads `state.debt` or `state.investments` forward. The system can *police* a net-worth forecast (`for-request.ts:232` registers `a.netWorth` as a CURRENT authority so the guard can tell "your current net worth is $40,986.53" from "would be $75,022.17") — **it can police it but it cannot produce it.**
+Nothing in `lib/forecast/` reads `state.debt` or `state.investments` forward. The system can *police* a net-worth forecast (`for-request.ts:232` registers `a.netWorth` as a CURRENT authority so the guard can tell "your current net worth is $40,000" from "would be $75,000") — **it can police it but it cannot produce it.**
 
 Missing, structurally: a return authority (no `AmountBasis` analogue for asset growth); a debt-balance authority (`obligation.ts` models a payment, never a trajectory); a shared double-count guard (card spending vs card payment, documented independently in two files); a `Requirement` axis that can express "this conclusion needs a *projected* value of X"; and a currency guard on `forecastCash`'s own summation — `cashDeltaOf` discards `c.currency` (`engine.ts:298`).
 
@@ -187,13 +187,13 @@ Domains are serialized independently and the joining is left to the model (`cont
 
 ### G5 — The known-bad arithmetic is *not* being repaired in production.
 
-`AI_FORECAST_GUARD_MODE` defaults to `shadow` and is set **nowhere** — not in `.env.local`, not in `.env.example`, not in `lib/env.ts`. FORECAST-15's own acceptance measured **shadow: 8 raw authority violations → 8 reach the user; repair: 10 → 0**, and concluded *"Controlled active should launch with repair enabled."* The `$5K × 3` symptom you observed is the D/I premise echo: 30 samples, `$30,000` printed 30×, the deterministic `$30,226.49` cited 0×. **The boundary that catches it is off.**
+`AI_FORECAST_GUARD_MODE` defaults to `shadow` and is set **nowhere** — not in `.env.local`, not in `.env.example`, not in `lib/env.ts`. FORECAST-15's own acceptance measured **shadow: 8 raw authority violations → 8 reach the user; repair: 10 → 0**, and concluded *"Controlled active should launch with repair enabled."* The `$5K × 3` symptom you observed is the D/I premise echo: 30 samples, `$30,000` printed 30×, the deterministic figure (about `$30,000`, to the cent) cited 0×. **The boundary that catches it is off.**
 
 Meanwhile `AI_FORECAST_PROJECTION` defaults **ON**, and `assemble.ts:129-135` states that ten scenarios of the accepted corpus *"now fail BY DESIGN"* — 32/35 flag-off vs ~21/35 flag-on.
 
 ### G6 — Knowledge gaps are ungated in the prompt.
 
-`context-serializer.ts:698-710` emits the gaps block unconditionally — no intent, no plan reaches it. `extractKnowledgeGaps` reads `ctx.domains.accounts.data.knowledgeGaps` *outside* the domain loop, so `omitDomainJson` cannot suppress it. The only intent gating (`filterGapsByIntent`) applies to the response card and **never filters APR** — `gap-intent.ts:35`: *"APR is always included."* Your cash-projection question shipped `[Chase Freedom] APR not set — affects payoff calculations and interest cost` because it always does.
+`context-serializer.ts:698-710` emits the gaps block unconditionally — no intent, no plan reaches it. `extractKnowledgeGaps` reads `ctx.domains.accounts.data.knowledgeGaps` *outside* the domain loop, so `omitDomainJson` cannot suppress it. The only intent gating (`filterGapsByIntent`) applies to the response card and **never filters APR** — `gap-intent.ts:35`: *"APR is always included."* Your cash-projection question shipped `[Example Card] APR not set — affects payoff calculations and interest cost` because it always does.
 
 ---
 
@@ -238,7 +238,7 @@ Three properties this buys you that the current shape cannot have:
 
 - **Broad questions become the easy case, not the hard case.** "How am I doing?" is `measures: [everything relevant], horizon: none`. The composition happens in layer 2, deterministically, not in the model's head.
 - **The guard becomes trivial.** Today it is a discourse parser with stateful section scoping. Under structured output it is `claims.every(c => measures.has(c.measureId) && figureMatches(c))`. Delete ~450 lines of regex.
-- **Uncertainty becomes a property carried into narration, not a veto applied to it.** A measure with `standing: OBSERVED_CONTINUATION` and `missing: ['net basis for income']` narrates as *"probably around $43K if your recent income and spending continue — I can't verify whether your paycheck figure is gross or net, so treat it as a range."* That is exactly the register you asked for, and it falls out of the type rather than out of doctrine.
+- **Uncertainty becomes a property carried into narration, not a veto applied to it.** A measure with `standing: OBSERVED_CONTINUATION` and `missing: ['net basis for income']` narrates as *"probably around $45K if your recent income and spending continue — I can't verify whether your paycheck figure is gross or net, so treat it as a range."* That is exactly the register you asked for, and it falls out of the type rather than out of doctrine.
 
 **Forecast is one operation.** `forecastCash` collapses into "evaluate `net_worth`, `liquid_cash`, `debt_balance` at t=horizon under scenario S." The 14-member `Conclusion` matrix becomes "which measures have a licence at which t." The `EVIDENCE_BASED_PROJECTION` vs `FACTUALLY_LICENSED` two-answer-path problem dissolves, because they become one measure with two standings, not two competing sections.
 
@@ -315,7 +315,7 @@ ConversationState {
 
 Rules that make it safe — and these are the ones that answer your "without becoming dangerous global state":
 
-1. **Every active assumption is visible in the answer.** *"Assuming $5K/month, you'd be around $39K."* An assumption the user cannot see is the dangerous one; an assumption named in every sentence it prices is not.
+1. **Every active assumption is visible in the answer.** *"Assuming $5K/month, you'd be around $40K."* An assumption the user cannot see is the dangerous one; an assumption named in every sentence it prices is not.
 2. **Deltas have effective dates and supersession**, never overwrite.
 3. **"What's realistic though?" is a first-class operation** — `dismiss all scenario deltas, evaluate BASE`. It is not a keyword; the planner emits it.
 4. **Assumptions never mutate a measure's provenance.** `assemble.ts` already gets this right: a supposition licenses a calculation, it does not rewrite a fact. Keep that invariant exactly.
@@ -529,7 +529,7 @@ Properties:
 
 **5. Risk: deleting the intent classifier removes a working suppression signal for narrow questions.** Some narrow routes are genuinely well-tuned. Mitigation: sequence it after Slice 1, keep the conformance corpus running as a regression net during the swap, and accept a temporary regression on narrow questions in exchange for broad ones working at all. Given the product you described, that is the right trade.
 
-**6. Risk in something you asked for.** "Do not have it constantly ask me for information derivable from the data" is right — but `spending-baseline.ts:16-26` records that *this user's* discretionary spending has **no current regime**: calendar months ranging $2,290 to $14,061, a 6.1× spread. The honest answer there is not an average and it is not a refusal — it is *"your spending swings a lot month to month, so I'd give you a range rather than a number: somewhere between $X and $Y depending on the month."* **Make sure "stop refusing" does not become "always produce a point estimate."** Ranges and volatility disclosure are the product, not a fallback from it.
+**6. Risk in something you asked for.** "Do not have it constantly ask me for information derivable from the data" is right — but `spending-baseline.ts:16-26` records that *this user's* discretionary spending has **no current regime**: calendar months ranging from roughly $2,000 to $12,000, a six-fold spread. The honest answer there is not an average and it is not a refusal — it is *"your spending swings a lot month to month, so I'd give you a range rather than a number: somewhere between $X and $Y depending on the month."* **Make sure "stop refusing" does not become "always produce a point estimate."** Ranges and volatility disclosure are the product, not a fallback from it.
 
 **7. Governance risk, and it is real.** Fourteen days, ~35 modules, two new subsystems, two new env flags, one schema migration — and zero committed documentation. STATUS.md is 14 days stale and cites a file deleted seven cycles ago. Two production defaults contradict their own acceptance decisions. **The audit series is excellent and uncommitted.** The simplification below will be much harder to do safely if the next fourteen days look like the last fourteen.
 

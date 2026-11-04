@@ -65,7 +65,7 @@ This is the bridge table: what changed in **user-facing copy**, and what changed
 
 Rule of thumb going forward for anything not yet renamed: **rename in sentences first; a code/schema rename only follows as its own controlled, explicitly-approved step.** `WorkspaceAccountShare` is the current example — its UI-facing concept ("which Spaces can see this account") already says "Space," but the model itself stays `WorkspaceAccountShare` until that step is separately approved.
 
-Compatibility-sensitive identifiers left unchanged in the naming cleanup pass (intentionally, not oversights): the local Postgres database/user name (`fintracker`), the `fintracker_space` cookie name read by `lib/space.ts` and `components/ui/Sidebar.tsx`, and the `virtuarch/fintracker` GitHub repo name (an external rename, not a file change). See §8.
+Compatibility-sensitive identifiers left unchanged in the naming cleanup pass (intentionally, not oversights): the local Postgres database/user name (`fintracker`), the `fintracker_space` cookie name read by `lib/space.ts` and `components/ui/Sidebar.tsx`, and the `<owner>/fintracker` GitHub repo name (an external rename, not a file change). See §8.
 
 ---
 
@@ -125,7 +125,7 @@ Don't: exclamation points, emoji, growth-hacker enthusiasm.
 
 ## 6. Naming Conventions & Grammar
 
-* **Space names are user-chosen**, title case, no required suffix: "Personal," "The Hogan Family," "Debt Payoff," "123 Maple St." Don't force a "Space" suffix into the name itself — the word "Space" comes from UI chrome (e.g., a label or icon), not the name string.
+* **Space names are user-chosen**, title case, no required suffix: "Personal," "The Example Family," "Debt Payoff," "123 Maple St." Don't force a "Space" suffix into the name itself — the word "Space" comes from UI chrome (e.g., a label or icon), not the name string.
 * Refer to **"a Space"** generically, **"your [Name] Space"** when specific: "your Personal Space," "the Family Space." Avoid "a workspace" anywhere in UI copy.
 * **Space Template names are fixed product nouns** (FinTracker, TaxFlow, Heritage, Crypto) — never localized, pluralized, or used as verbs ("FinTracker it" is not a thing). AI is named separately — see §2, §4 — and follows the same rule but is not itself a template.
 * Capitalize **Space** and **Fourth Meridian** when referring to the product concepts; lowercase "space" only in generic, non-product usage (rare — prefer rewording).
@@ -153,6 +153,6 @@ Short platform description (for app store / about copy):
 * Phase 1 (complete): `Workspace` → `Space`, `WorkspaceMember` → `SpaceMember`, `WorkspaceSnapshot` → `SpaceSnapshot` renamed at the Prisma model/client layer via `@@map`/`@map` — zero DDL, physical Postgres tables/columns unchanged, no API/auth/business-logic changes beyond the naming itself. `PlaidItem` stays exactly as it is in code (no rename proposed).
 * `WorkspaceAccountShare` is explicitly **not** renamed — model name, Prisma accessor, and its own `workspaceId` field/relation all stay as-is for compatibility. Any future rename of it (e.g. into a consolidated `SpaceAccountLink`, per `docs/architecture/DATABASE_ARCHITECTURE_REVIEW.md`) is a separate, not-yet-approved milestone.
 * No new backend architecture (`ProviderCatalog`, `Connection`, `SpaceAccountLink`) is in scope until separately approved.
-* FinTracker is no longer the app/package name (renamed `fintracker` → `fourth-meridian` in the naming cleanup pass) but remains a valid Space Template name — the default one. This doc does not rename the GitHub repo (`virtuarch/fintracker`) — that's an external rename, done outside the codebase if/when desired.
+* FinTracker is no longer the app/package name (renamed `fintracker` → `fourth-meridian` in the naming cleanup pass) but remains a valid Space Template name — the default one. This doc does not rename the GitHub repo (`<owner>/fintracker`) — that's an external rename, done outside the codebase if/when desired.
 * The local Postgres database/user name, the `fintracker_space` cookie, and any other compatibility-sensitive identifiers stay as `fintracker*` until a separately-approved migration — see §3.
 * Nothing here authorizes touching the Refresh pipeline, reconciliation logic, or archive/trash lifecycle beyond the naming pass — business logic is unchanged.

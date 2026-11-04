@@ -9,13 +9,13 @@
  * FORECAST-3 measured the real payroll and declined to name an amount, because
  * every naive answer is wrong in a different way:
  *
- *   all-history mean     $5,314   averages a superseded regime into the answer
- *   all-history median   $5,520   right by luck, on a series that contains
- *                                 $960.77 and $6,528.32
- *   latest observation   $5,520   one payment away from being anything
+ *   all-history mean     $4,767   averages a superseded regime into the answer
+ *   all-history median   $4,947   right by luck, on a series that contains
+ *                                 $874.11 and $5,855.82
+ *   latest observation   $4,947   one payment away from being anything
  *
- * The series is not one amount with noise. It is ~$5,950 through February,
- * ~$5,290 from late March, plus a partial first period, a supplemental
+ * The series is not one amount with noise. It is ~$5,340 through February,
+ * ~$4,738 from late March, plus a partial first period, a supplemental
  * payment, and a high outlier. Averaging that is not a measurement.
  *
  * The question this module answers is "what does the CURRENT regime support",
@@ -116,7 +116,7 @@ export interface AssertablePeriodicAmount {
    * makes `{ provenance: DERIVED, basis: NET }` unrepresentable rather than
    * merely discouraged.
    *
-   * The two can honestly differ. The ledger derives $5,500.015 and the user
+   * The two can honestly differ. The ledger derives $4,928.412 and the user
    * says "that figure is take-home": the amount stays DERIVED, the basis
    * becomes USER_ASSERTED, and a reader can still tell which half came from
    * where — including which half to re-ask about when it turns out wrong.
@@ -157,12 +157,12 @@ export const REGIME = {
    *
    * MEASURED, and it sits in a wide gap rather than on a tuned edge. On the one
    * real stream with a clean regime, within-regime variation is 0.37% (the four
-   * most recent payments span $5,499.75–$5,520.26) and the step between regimes
-   * is 12.5% ($5,950 → $5,290). Any band between roughly 1% and 12% separates
+   * most recent payments span $4,928.15–$4,946.78) and the step between regimes
+   * is 12.7% ($5,340 → $4,738). Any band between roughly 1% and 12% separates
    * those two facts identically; 5% sits in the middle of that plateau.
    *
    * ⚠️ This band was NOT widened to make a second stream pass. Employer B payroll
-   * drifts continuously — its recent payments span $4,875.76 to $5,747.74 with
+   * drifts continuously — its recent payments span $4,343.39 to $5,156.60 with
    * no gap anywhere — so no band separates noise from level there, and it
    * resolves UNKNOWN. That is the correct answer, not a threshold problem.
    */
@@ -172,7 +172,7 @@ export const REGIME = {
    *
    * One deviation is an outlier; two in a row is a new level. This is what lets
    * a strong regime survive a single supplemental payment — measured need: the
-   * real payroll's $6,528.32 sits in the middle of ten otherwise-flat payments,
+   * real payroll's $5,855.82 sits in the middle of ten otherwise-flat payments,
    * and a stricter rule truncates a 10-observation regime to 4.
    */
   BREAK_RUN: 2,
@@ -205,7 +205,7 @@ export const REGIME = {
  *   SLOT CONTENTION    two payments on one occurrence. Detected from the
  *                      SCHEDULE, never from the amount.
  *
- * A partial first period is deliberately NOT a category. The $2,399.50 opening
+ * A partial first period is deliberately NOT a category. The $2,185.16 opening
  * payment is almost certainly a part-period, and this module cannot PROVE that
  * — nothing records when employment started, and a small payment is equally
  * consistent with a correction or a separate deposit. It falls outside the
@@ -392,7 +392,7 @@ export function assertedPeriodicAmount(
   return {
     assertable: true, value, currency,
     provenance: EventProvenance.USER_ASSERTED,
-    // ⚠️ AN AMOUNT IS NOT A BASIS. "My paycheck is $5,500.015" states one fact,
+    // ⚠️ AN AMOUNT IS NOT A BASIS. "My paycheck is $4,928.412" states one fact,
     // and reading a second one out of it is the whole error this program has
     // been closing since FORECAST-3. A user who also said "take-home" reaches
     // NET through `assertedAmountBasis`, which composes with this.
@@ -418,8 +418,8 @@ export function assertedPeriodicAmount(
  * ⚠️ IT TAKES AN AMOUNT RATHER THAN A NUMBER, which is what makes the mixed
  * case work without a general override framework. Two sentences, one function:
  *
- *   "My paycheck is $5,500.015 take-home."
- *     assertedAmountBasis(assertedPeriodicAmount(5500.015, 'USD', asOf), NET, asOf)
+ *   "My paycheck is $4,928.412 take-home."
+ *     assertedAmountBasis(assertedPeriodicAmount(4928.415, 'USD', asOf), NET, asOf)
  *     → amount USER_ASSERTED, basis USER_ASSERTED
  *
  *   "That figure the ledger shows is take-home."
@@ -478,7 +478,7 @@ export function scheduleSlots(cadence: Cadence, fromISO: string, toISO: string):
  * requires someone to establish it.
  *
  * ⚠️ THE ACTIVITY LICENCE IS ABSOLUTE. Amount quality cannot substitute for it:
- * Employer B has a clean four-observation regime at $5,200.00 and a job that ended,
+ * Employer B has a clean four-observation regime at $4,656.53 and a job that ended,
  * and it produces zero events. A good number about a dead stream is still a
  * number about a dead stream.
  *

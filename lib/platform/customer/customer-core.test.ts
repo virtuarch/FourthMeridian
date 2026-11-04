@@ -191,8 +191,8 @@ console.log("BETA — per-user roll-up (projectRollup)");
 
 console.log("operator identity label — username first, never email");
 {
-  check("username wins", operatorDisplayName({ id: "abcdefgh123456", username: "chrstn", name: "Chris" }) === "chrstn");
-  check("name when the username is missing", operatorDisplayName({ id: "abcdefgh123456", username: null, name: "Chris" }) === "Chris");
+  check("username wins", operatorDisplayName({ id: "abcdefgh123456", username: "devuser", name: "Jules" }) === "devuser");
+  check("name when the username is missing", operatorDisplayName({ id: "abcdefgh123456", username: null, name: "Jules" }) === "Jules");
   check("opaque reference when both are missing", operatorDisplayName({ id: "abcdefgh123456", username: "  ", name: null }) === "user …123456");
   check("never derived from an email", !/@/.test(operatorDisplayName({ id: "x1y2z3", username: null, name: null, ...({ email: "someone@example.com" } as object) })));
 }

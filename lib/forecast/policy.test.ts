@@ -93,13 +93,13 @@ const baseAccounts = () => ({
 const EMPLOYER_A = {
   sourceKey: 'employer-a', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
   activity: ActivityState.CURRENT, projectionEligible: true,
-  amount: { value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 4928.415, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 const EMPLOYER_B = {
   sourceKey: 'employer-b', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
   activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 4656.53, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 const INTEREST = {
@@ -346,7 +346,7 @@ check('E5 the two are NOT the same object shape — one is a fact, one is a supp
   factSpend.destination !== assumeSpend.destination);
 
 const factBasis = routeStatement({ mode: StatementMode.ASSERTS_FACT, subject: basisSubject,
-  statedAs: 'my $5,500.02 paycheck is take-home', asOfISO: AS_OF }, 'r3');
+  statedAs: 'my $4,928.42 paycheck is take-home', asOfISO: AS_OF }, 'r3');
 const assumeBasis = routeStatement({ mode: StatementMode.REQUESTS_ASSUMPTION, subject: basisSubject,
   statedAs: 'assume that paycheck is net for this forecast', asOfISO: AS_OF }, 'r4');
 
@@ -516,7 +516,7 @@ check('G22 a stream-level NET supposition reaches that stream\'s UNKNOWN-basis e
   const payslip: FutureCashEvent = { id: 'employer-a@2008-04-11',
     timing: { kind: 'EXACT', dateISO: '2008-04-11' }, timingProvenance: EventProvenance.DERIVED,
     direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'employer-a',
-    amount: { value: 5500.015, currency: 'USD', basis: AmountBasis.UNKNOWN,
+    amount: { value: 4928.415, currency: 'USD', basis: AmountBasis.UNKNOWN,
       provenance: EventProvenance.DERIVED } };
   const r = applyPolicy(REAL, [payslip, BONUS], policy([EMPLOYER_A_NET]));
   const pay = r.events.find((e) => e.id === 'employer-a@2008-04-11')!;
@@ -529,7 +529,7 @@ check('G23 nor an event belonging to a different stream', (() => {
   const other: FutureCashEvent = { id: 'employer-b@2008-04-15',
     timing: { kind: 'EXACT', dateISO: '2008-04-15' }, timingProvenance: EventProvenance.DERIVED,
     direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'employer-b',
-    amount: { value: 5200.00, currency: 'USD', basis: AmountBasis.UNKNOWN,
+    amount: { value: 4656.53, currency: 'USD', basis: AmountBasis.UNKNOWN,
       provenance: EventProvenance.DERIVED } };
   return applyPolicy(REAL, [other], policy([EMPLOYER_A_NET])).events[0].assumedBasis === null;
 })());
@@ -682,7 +682,7 @@ check('J11 nor any CF-era retrieval or prompt surface',
 // and the missing one was the fact.
 
 const netAmount = assertedAmountBasis(
-  assertedPeriodicAmount(5500.015, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+  assertedPeriodicAmount(4928.415, 'USD', AS_OF), AmountBasis.NET, AS_OF);
 const FACT_EMPLOYER_A = { ...EMPLOYER_A, amount: {
   value: netAmount.value, currency: netAmount.currency, provenance: netAmount.provenance,
   basis: netAmount.basis, basisProvenance: netAmount.basisProvenance } };

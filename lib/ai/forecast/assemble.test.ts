@@ -83,7 +83,7 @@ const EMPLOYER_A: ResolvedIncomeStream = {
   sourceKey: 'employer-a', label: 'Employer A', role: FlowRole.INCOME, cadence: empACadence,
   activity: empAActivity,
   amount: {
-    assertable: true, value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
+    assertable: true, value: 4928.415, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2002-11-08',
     observationCount: 6, spread: 0.0016, verdicts: [], reason: 'six observations hold a level',
   },
@@ -95,7 +95,7 @@ const EMPLOYER_B: ResolvedIncomeStream = {
   sourceKey: 'employer-b', label: 'Employer B', role: FlowRole.INCOME, cadence: empBCadence,
   activity: empBActivity,
   amount: {
-    assertable: true, value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
+    assertable: true, value: 4656.53, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2002-05-25',
     observationCount: 4, spread: 0.001, verdicts: [], reason: 'four observations',
   },

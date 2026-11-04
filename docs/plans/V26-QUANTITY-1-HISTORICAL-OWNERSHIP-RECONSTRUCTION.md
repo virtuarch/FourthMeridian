@@ -137,7 +137,7 @@ resurrection is untouched.
 
 ## 3 · Local data audit (Part 3)
 
-**Real vs seeded, partitioned:** real data is **Chris' Space only** (Plaid
+**Real vs seeded, partitioned:** real data is **Jules' Space only** (Plaid
 institutions `ins_11`, `ins_54`). The `demo_ins_*` accounts across Jane's Space,
 John's Space and Investment Club have **zero** `PositionObservation` and **zero**
 `InvestmentEvent` rows — they are balance-only seeds and are excluded from every
