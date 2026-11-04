@@ -14,18 +14,48 @@
  *                 immediately before the B9 rollback phase so B9 can present
  *                 the same code inside its window.
  *
+ * Refuses to run (exit 1, nothing read) outside the orchestrator: see
+ * scripts/lib/b10-rehearsal-guard.ts.
+ *
  * Output: ONE line `@@B10REH <json>` on stdout. Synthetic data only.
  */
 
-import { authOptions } from "@/lib/auth";
-import { activeDbRoles, authDb, db, systemDb } from "@/lib/db";
-import { recordPresenceBeat } from "@/lib/auth/presence-activity";
-import { applyOperatorTransition, recordIncidentObservation } from "@/lib/platform/incidents/lifecycle";
-import { auditInsert, buildAuditData } from "@/lib/audit";
-import { AuditAction } from "@/lib/audit-actions";
-import { regenerateSpaceSnapshot } from "@/lib/snapshots/regenerate";
-import { detectCiphertextVersion, encryptWithPurpose, EncryptionPurpose } from "@/lib/plaid/encryption";
-import { generateTOTP } from "@/lib/totp";
+// ⚠️ THE GUARD RUNS FIRST (S2). It is the only static import: every application
+// module — and so lib/db, which binds its clients at load — is imported
+// DYNAMICALLY in loadApp(), after the guard has accepted the environment.
+import { guardRehearsalProbe } from "./lib/b10-rehearsal-guard";
+
+const GUARDED = guardRehearsalProbe();
+
+// Type-only references (erased at runtime; no module is loaded by them).
+let authOptions!: typeof import("@/lib/auth")["authOptions"];
+let activeDbRoles!: typeof import("@/lib/db")["activeDbRoles"];
+let authDb!: typeof import("@/lib/db")["authDb"];
+let db!: typeof import("@/lib/db")["db"];
+let systemDb!: typeof import("@/lib/db")["systemDb"];
+let recordPresenceBeat!: typeof import("@/lib/auth/presence-activity")["recordPresenceBeat"];
+let applyOperatorTransition!: typeof import("@/lib/platform/incidents/lifecycle")["applyOperatorTransition"];
+let recordIncidentObservation!: typeof import("@/lib/platform/incidents/lifecycle")["recordIncidentObservation"];
+let auditInsert!: typeof import("@/lib/audit")["auditInsert"];
+let buildAuditData!: typeof import("@/lib/audit")["buildAuditData"];
+let AuditAction!: typeof import("@/lib/audit-actions")["AuditAction"];
+let regenerateSpaceSnapshot!: typeof import("@/lib/snapshots/regenerate")["regenerateSpaceSnapshot"];
+let detectCiphertextVersion!: typeof import("@/lib/plaid/encryption")["detectCiphertextVersion"];
+let encryptWithPurpose!: typeof import("@/lib/plaid/encryption")["encryptWithPurpose"];
+let EncryptionPurpose!: typeof import("@/lib/plaid/encryption")["EncryptionPurpose"];
+let generateTOTP!: typeof import("@/lib/totp")["generateTOTP"];
+
+async function loadApp(): Promise<void> {
+  ({ authOptions } = await import("@/lib/auth"));
+  ({ activeDbRoles, authDb, db, systemDb } = await import("@/lib/db"));
+  ({ recordPresenceBeat } = await import("@/lib/auth/presence-activity"));
+  ({ applyOperatorTransition, recordIncidentObservation } = await import("@/lib/platform/incidents/lifecycle"));
+  ({ auditInsert, buildAuditData } = await import("@/lib/audit"));
+  ({ AuditAction } = await import("@/lib/audit-actions"));
+  ({ regenerateSpaceSnapshot } = await import("@/lib/snapshots/regenerate"));
+  ({ detectCiphertextVersion, encryptWithPurpose, EncryptionPurpose } = await import("@/lib/plaid/encryption"));
+  ({ generateTOTP } = await import("@/lib/totp"));
+}
 
 type Check = { id: string; claim: string; ok: boolean; detail: string };
 const checks: Check[] = [];
@@ -40,8 +70,8 @@ async function attempt<T>(fn: () => Promise<T>): Promise<{ ok: true; value: T } 
   try { return { ok: true, value: await fn() }; } catch (e) { return { ok: false, error: errText(e) }; }
 }
 
-const FIX = JSON.parse(process.env.B10REH_FIX ?? "{}") as Record<string, string>;
-const STATE = JSON.parse(process.env.B10REH_STATE ?? "{}") as { incidents?: Record<string, string> };
+const FIX = GUARDED.fix;
+const STATE = GUARDED.state as { incidents?: Record<string, string> };
 const phase = process.argv[2];
 
 type Authorize = (c: Record<string, string>, r: { headers: Record<string, string> }) => Promise<{ id: string; sessionToken: string } | null>;
@@ -156,6 +186,7 @@ async function totpClaim(): Promise<void> {
 
 async function main() {
   console.log(`\n--- B10 probe: ${phase} ---`);
+  await loadApp();
   if (phase === "smoke") await smoke();
   else if (phase === "totp-claim") await totpClaim();
   else throw new Error(`unknown phase ${phase}`);
@@ -165,6 +196,6 @@ main()
   .catch((e) => { check("FATAL", `B10 probe ${phase} crashed`, false, errText(e)); })
   .finally(async () => {
     console.log(`@@B10REH ${JSON.stringify({ side: "B10", phase, checks, out })}`);
-    await Promise.allSettled([db, authDb, systemDb].map((c) => c.$disconnect()));
+    await Promise.allSettled([db, authDb, systemDb].filter(Boolean).map((c) => c.$disconnect()));
     process.exit(0);
   });

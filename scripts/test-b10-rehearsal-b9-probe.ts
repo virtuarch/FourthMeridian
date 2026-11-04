@@ -17,11 +17,17 @@
  *   rollback  — B10 SCHEMA (kept), B9 code: the app-rollback claims of B10.2a/B10.4.
  *
  * Input: env B10REH_FIX (fixture ids, JSON) and B10REH_STATE (values earlier
- * phases handed over). Output: ONE line `@@B10REH <json>` on stdout. Synthetic
+ * phases handed over), both REQUIRED; refuses (exit 1, nothing read) outside the
+ * orchestrator — scripts/lib/b10-rehearsal-guard.ts. Output: ONE line `@@B10REH <json>` on stdout. Synthetic
  * data only; no figures from any real environment.
  */
 
-export {}; // a module, not a global script (its helpers must not collide with other script-scope files)
+// ⚠️ THE GUARD RUNS FIRST (S2), before any application module (and so lib/db)
+// is imported — every app import below is dynamic. The orchestrator copies the
+// guard into the B9 tree at scripts/lib/b10-rehearsal-guard.ts beside this file.
+import { guardRehearsalProbe } from "./lib/b10-rehearsal-guard";
+
+const GUARDED = guardRehearsalProbe();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -40,8 +46,8 @@ async function attempt(fn: () => Promise<Any>): Promise<{ ok: true; value: Any }
   try { return { ok: true, value: await fn() }; } catch (e) { return { ok: false, error: errText(e) }; }
 }
 
-const FIX = JSON.parse(process.env.B10REH_FIX ?? "{}") as Record<string, string>;
-const STATE = JSON.parse(process.env.B10REH_STATE ?? "{}") as Record<string, Any>;
+const FIX = GUARDED.fix;
+const STATE = GUARDED.state as Record<string, Any>;
 const phase = process.argv[2];
 
 async function signIn(identifier: string, password: string, extra: Record<string, string> = {}) {

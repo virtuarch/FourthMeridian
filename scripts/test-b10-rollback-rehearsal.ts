@@ -47,6 +47,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import bcrypt from "bcryptjs";
 import { IMAGE, psql } from "./lib/rls-harness";
+import { REHEARSAL_CONTAINER_PREFIX, REHEARSAL_DB_PREFIX } from "./lib/b10-rehearsal-guard";
 
 const ROOT = process.cwd();
 const arg = (name: string) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -93,9 +94,9 @@ const migrationDirs = (tree: string) => readdirSync(path.join(tree, "prisma", "m
 // ── the database ──────────────────────────────────────────────────────────────
 function startPostgres(): { ownerUrl: string; base: string; dbName: string } {
   if (!sh("docker", ["info", "--format", "{{.ServerVersion}}"]).ok) throw new Error("Docker is not available — this rehearsal builds its own throwaway Postgres and never falls back to a configured database.");
-  const dbName = `fm_b10reh_${process.pid}`;
+  const dbName = `${REHEARSAL_DB_PREFIX}${process.pid}`;
   const pw = randomBytes(18).toString("hex");
-  container = `fm-b10reh-${process.pid}-${Date.now().toString(36)}`;
+  container = `${REHEARSAL_CONTAINER_PREFIX}${process.pid}-${Date.now().toString(36)}`;
   const run = sh("docker", ["run", "-d", "--rm", "--name", container, "-e", "POSTGRES_USER=fmowner", "-e", `POSTGRES_PASSWORD=${pw}`,
     "-e", `POSTGRES_DB=${dbName}`, "-p", "127.0.0.1::5432", IMAGE, "-c", "log_lock_waits=on", "-c", "deadlock_timeout=100ms"]);
   if (!run.ok) throw new Error(`could not start ${IMAGE}: ${run.err || run.out}`);
@@ -119,6 +120,8 @@ const withRole = (url: string, role: string, password: string) => { const u = ne
 // ── probes ────────────────────────────────────────────────────────────────────
 type ProbeResult = { side: string; phase: string; checks: Omit<Check, "side">[]; out: Record<string, unknown> };
 const B9_PROBE_DEST = () => path.join(B9_TREE, "scripts", ".b10reh-b9-probe.ts");
+/** The guard the B9 probe imports as ./lib/b10-rehearsal-guard (B9 has no such file; removed afterwards). */
+const B9_GUARD_DEST = () => path.join(B9_TREE, "scripts", "lib", "b10-rehearsal-guard.ts");
 
 function runProbe(side: "B9" | "B10", phase: string, env: Record<string, string>): ProbeResult {
   const tree = side === "B9" ? B9_TREE : ROOT;
@@ -284,12 +287,15 @@ async function main(): Promise<number> {
     DATABASE_URL_APP: withRole(owner, "fm_app", pw.app), DATABASE_URL_AUTH: withRole(owner, "fm_auth", pw.auth), DATABASE_URL_SYSTEM: withRole(owner, "fm_system", pw.system),
     FM_RLS_STRICT: "true", ENCRYPTION_KEY: randomBytes(32).toString("hex"), NEXTAUTH_SECRET: randomBytes(24).toString("hex"),
     B10REH_FIX: JSON.stringify(F),
+    B10REH_ORCHESTRATED: container ?? "",
   };
   let state: Record<string, unknown> = {};
   const merge = (r: ProbeResult) => { state = { ...state, ...r.out }; };
 
   // 3. B9-code smoke on the B9 schema
+  if (existsSync(B9_GUARD_DEST())) throw new Error("the B9 tree already has scripts/lib/b10-rehearsal-guard.ts — refusing to overwrite it");
   copyFileSync(path.join(ROOT, "scripts", "test-b10-rehearsal-b9-probe.ts"), B9_PROBE_DEST());
+  copyFileSync(path.join(ROOT, "scripts", "lib", "b10-rehearsal-guard.ts"), B9_GUARD_DEST());
   try {
     console.log("\n[3] B9 code on the B9 schema");
     merge(runProbe("B9", "pre", { ...env, B10REH_STATE: JSON.stringify(state) }));
@@ -448,6 +454,7 @@ async function main(): Promise<number> {
     evidence.findings = findings;
   } finally {
     rmSync(B9_PROBE_DEST(), { force: true });
+    rmSync(B9_GUARD_DEST(), { force: true });
   }
   return 0;
 }
