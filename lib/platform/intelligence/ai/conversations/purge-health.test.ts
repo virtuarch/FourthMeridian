@@ -9,7 +9,8 @@
 
 import { readFileSync } from "node:fs";
 import {
-  PLATFORM_AI_PURGE_STALE_HOURS, evaluatePlatformAiPurgeHealth, isSuccessfulDispatchAudit, isSuccessfulPurgeSummary,
+  PLATFORM_AI_PURGE_ON_DEMAND_JOB, PLATFORM_AI_PURGE_STALE_HOURS, evaluatePlatformAiPurgeHealth, isSuccessfulDispatchAudit,
+  isSuccessfulOnDemandSummary, isSuccessfulPurgeRun, isSuccessfulPurgeSummary,
 } from "./purge-health";
 import { getPlatformAiPurgeHealth, type PurgeHealthReads } from "./purge-health.server";
 import { ALERT_RULES, findAlertRule } from "@/lib/alerts/rules";
@@ -44,23 +45,31 @@ console.log("1. the verdict");
     isSuccessfulDispatchAudit({ conversations: 0, messages: 0, batches: 1, exhausted: true, actorType: "SYSTEM", trigger: "MANUAL_DISPATCH" })
       && !isSuccessfulDispatchAudit({ conversations: 2, messages: 4, batches: 1, exhausted: true, trigger: "MANUAL_DISPATCH", failed: true })
       && !isSuccessfulDispatchAudit({ conversations: 2, messages: 4, batches: 1, exhausted: true, actorType: "SYSTEM" }));
+  // 2026-11-05 — an ON-DEMAND success counts as a purge run (GET /api/jobs/dispatch?only=platform-ai-purge).
+  check("an on-demand JobRun summary (the counts shape, zero included) is a success; failed / disabled / misordered / errored / null are not",
+    isSuccessfulOnDemandSummary(ZERO) && !isSuccessfulOnDemandSummary({ ...ZERO, failed: true }) && !isSuccessfulOnDemandSummary({ ...ZERO, enabled: false })
+      && !isSuccessfulOnDemandSummary({ ...ZERO, enabled: false, misordered: true }) && !isSuccessfulOnDemandSummary({ ...ZERO, error: "x" }) && !isSuccessfulOnDemandSummary(null));
+  check("isSuccessfulPurgeRun judges each job by ITS summary shape; any other job name is never a purge run",
+    isSuccessfulPurgeRun({ jobName: "purge-trash", summary: runSummary(ZERO) }) && isSuccessfulPurgeRun({ jobName: PLATFORM_AI_PURGE_ON_DEMAND_JOB, summary: ZERO })
+      && !isSuccessfulPurgeRun({ jobName: "purge-trash", summary: ZERO }) && !isSuccessfulPurgeRun({ jobName: PLATFORM_AI_PURGE_ON_DEMAND_JOB, summary: runSummary(ZERO) })
+      && !isSuccessfulPurgeRun({ jobName: "sync-banks", summary: ZERO }) && PLATFORM_AI_PURGE_ON_DEMAND_JOB === "platform-ai-purge-on-demand");
 }
 
 async function sections(): Promise<void> {
   console.log("2. the authority (injected ledger reads)");
   {
     let reads = 0;
-    const R = (runs: Array<{ startedAt: Date; completedAt: Date | null; summary: unknown }>, audits: Array<{ createdAt: Date; metadata: unknown }> = []): PurgeHealthReads => ({
+    const R = (runs: Array<{ jobName: string; startedAt: Date; completedAt: Date | null; summary: unknown }>, audits: Array<{ createdAt: Date; metadata: unknown }> = []): PurgeHealthReads => ({
       succeededPurgeRuns: async () => { reads++; return runs; },
       recentDispatchAudits: async () => { reads++; return audits; },
     });
-    const off = await getPlatformAiPurgeHealth(NOW, { conversationsOn: false, reads: R([{ startedAt: hoursAgo(100), completedAt: hoursAgo(100), summary: runSummary(ZERO) }]) });
+    const off = await getPlatformAiPurgeHealth(NOW, { conversationsOn: false, reads: R([{ jobName: "purge-trash", startedAt: hoursAgo(100), completedAt: hoursAgo(100), summary: runSummary(ZERO) }]) });
     check("OFF ⇒ state OFF and the ledgers are NOT READ", off.state === "OFF" && reads === 0);
-    const fresh = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([{ startedAt: hoursAgo(10), completedAt: hoursAgo(10), summary: runSummary(ZERO) }]) });
+    const fresh = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([{ jobName: "purge-trash", startedAt: hoursAgo(10), completedAt: hoursAgo(10), summary: runSummary(ZERO) }]) });
     check("ON + a zero-count scheduled run 10 h ago ⇒ OK", fresh.state === "OK" && fresh.lastSuccessAt === hoursAgo(10).toISOString());
     const stale = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([
-      { startedAt: hoursAgo(5), completedAt: hoursAgo(5), summary: runSummary({ ...ZERO, enabled: false }) },   // purge was off
-      { startedAt: hoursAgo(40), completedAt: hoursAgo(40), summary: runSummary(ZERO) },
+      { jobName: "purge-trash", startedAt: hoursAgo(5), completedAt: hoursAgo(5), summary: runSummary({ ...ZERO, enabled: false }) },   // purge was off
+      { jobName: "purge-trash", startedAt: hoursAgo(40), completedAt: hoursAgo(40), summary: runSummary(ZERO) },
     ]) });
     check("ON + the newest run had the purge disabled and the last real purge 40 h ago ⇒ LATE", stale.state === "LATE" && stale.lastSuccessAt === hoursAgo(40).toISOString());
     const viaDispatch = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([], [
@@ -68,12 +77,24 @@ async function sections(): Promise<void> {
       { createdAt: hoursAgo(20), metadata: { conversations: 0, messages: 0, batches: 1, exhausted: true, trigger: "MANUAL_DISPATCH" } },
     ]) });
     check("Preview shape (no JobRun): the newest NON-failed manual dispatch counts (20 h ago ⇒ OK); a failed one does not", viaDispatch.state === "OK" && viaDispatch.lastSuccessAt === hoursAgo(20).toISOString());
+    const onDemand = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([
+      { jobName: PLATFORM_AI_PURGE_ON_DEMAND_JOB, startedAt: hoursAgo(3), completedAt: hoursAgo(3), summary: ZERO },
+      { jobName: "purge-trash", startedAt: hoursAgo(40), completedAt: hoursAgo(40), summary: runSummary(ZERO) },
+    ]) });
+    check("ON + the scheduled purge last succeeded 40 h ago but an ON-DEMAND run succeeded 3 h ago ⇒ OK (the on-demand success counts)",
+      onDemand.state === "OK" && onDemand.lastSuccessAt === hoursAgo(3).toISOString());
+    const onDemandBad = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([
+      { jobName: PLATFORM_AI_PURGE_ON_DEMAND_JOB, startedAt: hoursAgo(3), completedAt: hoursAgo(3), summary: { ...ZERO, enabled: false } },
+      { jobName: "purge-trash", startedAt: hoursAgo(40), completedAt: hoursAgo(40), summary: runSummary(ZERO) },
+    ]) });
+    check("…an on-demand row whose purge was not enabled does NOT count ⇒ LATE", onDemandBad.state === "LATE" && onDemandBad.lastSuccessAt === hoursAgo(40).toISOString());
     const never = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([]) });
     check("ON + nothing recorded ⇒ LATE", never.state === "LATE");
     const src = readFileSync("lib/platform/intelligence/ai/conversations/purge-health.server.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    check("the authority reads ONLY JobRun (purge-trash) and the purge AuditLog rows, through systemDb (fm_system) — never the global db, a conversation table or content",
+    check("the authority reads ONLY JobRun (purge-trash + platform-ai-purge-on-demand, succeeded) and the purge AuditLog rows, through systemDb (fm_system) — never the global db, a conversation table or content",
       !/platformAiConversation|platformAiMessage|contentEncrypted/.test(src) && /systemDb\.jobRun\.findMany/.test(src) && /systemDb\.auditLog\.findMany/.test(src) && !/\bdb\./.test(src) && !/import \{ db \}/.test(src)
-        && /select: \{ startedAt: true, completedAt: true, summary: true \}/.test(src) && /select: \{ createdAt: true, metadata: true \}/.test(src));
+        && /select: \{ jobName: true, startedAt: true, completedAt: true, summary: true \}/.test(src)
+        && /where: \{ jobName: \{ in: \[PLATFORM_AI_PURGE_JOB_NAME, PLATFORM_AI_PURGE_ON_DEMAND_JOB\] \}, status: "succeeded" \}/.test(src) && /select: \{ createdAt: true, metadata: true \}/.test(src));
     check("ON = the conversations flag set (fully enabled OR misordered without the purge)", /env\.isPlatformAiConversationsEnabled \|\| env\.isPlatformAiConversationsFlagSetWithoutPurge/.test(src));
   }
 

@@ -12,6 +12,13 @@
  *     conversations, messages, batches, exhausted } — counts only, ZERO-COUNT
  *     runs included. A `succeeded` row whose purge was enabled and reported no
  *     error is a successful purge run (zero removed is still a success).
+ *   · JobRun (`platform-ai-purge-on-demand`, the on-demand trigger — GET
+ *     /api/jobs/dispatch?only=platform-ai-purge, ./purge-on-demand.ts): its
+ *     summary IS the purge's counts { enabled, conversations, messages, batches,
+ *     exhausted } (`failed: true` on an errored run, which is also a FAILED
+ *     JobRun). A `succeeded` row with an enabled, unfailed purge counts exactly
+ *     like a successful scheduled run (decided 2026-11-05: an on-demand success
+ *     IS a purge run — the same definer function, the same fixed predicates).
  *   · AuditLog `PLATFORM_AI_CONVERSATIONS_PURGED` with trigger MANUAL_DISPATCH:
  *     the manual dispatch (Preview, no crons) writes one counts-only row EVERY
  *     run, zero included; a row WITHOUT `failed: true` is a successful purge run.
@@ -28,6 +35,12 @@
 export const PLATFORM_AI_PURGE_STALE_HOURS = 36;
 /** The registered job the scheduled purge runs inside (lib/jobs/registry.core.ts). */
 export const PLATFORM_AI_PURGE_JOB_NAME = "purge-trash";
+/**
+ * The JobRun name of the on-demand trigger. Defined HERE (this file is pure, the
+ * on-demand module is not) and re-exported by ./purge-on-demand.ts as
+ * PLATFORM_AI_PURGE_ON_DEMAND_JOB — one literal, two readers.
+ */
+export const PLATFORM_AI_PURGE_ON_DEMAND_JOB = "platform-ai-purge-on-demand";
 
 const HOUR_MS = 3_600_000;
 
@@ -58,6 +71,24 @@ export function isSuccessfulPurgeSummary(summary: unknown): boolean {
   if (!p || typeof p !== "object") return false;
   const r = p as { enabled?: unknown; error?: unknown; misordered?: unknown };
   return r.enabled === true && r.error === undefined && r.misordered === undefined;
+}
+
+/**
+ * PURE. True when a `platform-ai-purge-on-demand` JobRun summary records an
+ * ENABLED purge that did not fail and was not misordered. Counts are not read:
+ * a zero-count run is a success.
+ */
+export function isSuccessfulOnDemandSummary(summary: unknown): boolean {
+  if (!summary || typeof summary !== "object") return false;
+  const r = summary as { enabled?: unknown; failed?: unknown; error?: unknown; misordered?: unknown };
+  return r.enabled === true && r.failed === undefined && r.error === undefined && r.misordered === undefined;
+}
+
+/** PURE. A succeeded JobRun of either purge job → whether it is a successful purge run (any other job name ⇒ false). */
+export function isSuccessfulPurgeRun(run: { jobName: string; summary: unknown }): boolean {
+  if (run.jobName === PLATFORM_AI_PURGE_JOB_NAME) return isSuccessfulPurgeSummary(run.summary);
+  if (run.jobName === PLATFORM_AI_PURGE_ON_DEMAND_JOB) return isSuccessfulOnDemandSummary(run.summary);
+  return false;
 }
 
 /** PURE. True for a manual-dispatch purge audit row that did not fail (counts are not read: zero is a success). */

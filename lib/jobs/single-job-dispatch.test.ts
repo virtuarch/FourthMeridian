@@ -44,11 +44,12 @@ async function main(): Promise<void> {
 
   // ── the parser ─────────────────────────────────────────────────────────────
   console.log("1. ?only= accepts ONLY the hard-coded allowlist");
-  check("the allowlist is exactly [comms-automations]", D.SINGLE_JOB_DISPATCH_ALLOWLIST.join() === "comms-automations");
+  check("the allowlist is exactly [comms-automations, platform-ai-purge]", D.SINGLE_JOB_DISPATCH_ALLOWLIST.join() === "comms-automations,platform-ai-purge");
   const p = D.parseSingleJobDispatch;
   check("absent ⇒ no narrowing (the ordinary wake)", (p([]) as any).ok && (p([]) as any).only === null);
   check("comms-automations ⇒ narrowed to it", (p(["comms-automations"]) as any).only === "comms-automations");
-  for (const bad of [["sync-banks"], ["sync-crypto"], ["fetch-fx-rates"], [""], ["Comms-Automations"], [" comms-automations"], ["comms-automations,sync-banks"], ["comms-automations", "comms-automations"], ["comms-automations", "sync-banks"]]) {
+  check("platform-ai-purge ⇒ narrowed to it (the route's on-demand purge branch)", (p(["platform-ai-purge"]) as any).only === "platform-ai-purge");
+  for (const bad of [["platform-ai-purge", "platform-ai-purge"], ["Platform-AI-Purge"], ["platform-ai-purge-on-demand"], ["purge-trash"], ["platform-ai-purge "], ["platform-ai-purge,comms-automations"], ["sync-banks"], ["sync-crypto"], ["fetch-fx-rates"], [""], ["Comms-Automations"], [" comms-automations"], ["comms-automations,sync-banks"], ["comms-automations", "comms-automations"], ["comms-automations", "sync-banks"]]) {
     check(`refused: ${JSON.stringify(bad)}`, p(bad).ok === false);
   }
   check("every real registry job other than comms-automations is refused", SCHEDULED_JOBS.filter((j) => j.name !== "comms-automations").every((j) => !p([j.name]).ok));
@@ -89,6 +90,19 @@ async function main(): Promise<void> {
     const { ran, runner } = recorder();
     const r = await quiet(() => D.dispatchDueJobs(NOW, { only: "sync-banks" as any, jobs: SCHEDULED_JOBS, facts: NEVER, policies, runner }));
     check("a caller that bypasses the parser with a non-allowlisted key runs NOTHING", ran.length === 0 && r.dispatched.length === 0, r);
+  }
+  {
+    // platform-ai-purge is the route's own branch: dispatchDueJobs handed it runs no scheduled job and reads no ledger.
+    const { ran, runner } = recorder();
+    const touched: any[] = [];
+    const client = { jobRun: {
+      updateMany: async (a: any) => { touched.push(a); return { count: 0 }; },
+      findMany: async (a: any) => { touched.push(a); return []; },
+    } } as any;
+    const r = await quiet(() => D.dispatchDueJobs(NOW, { only: "platform-ai-purge", jobs: SCHEDULED_JOBS, facts: NEVER, policies, runner }));
+    const r2 = await quiet(() => D.dispatchDueJobs(NOW, { only: "platform-ai-purge", jobs: SCHEDULED_JOBS, client, policies, runner }));
+    check("dispatchDueJobs({ only: platform-ai-purge }) runs NO scheduled job (every job due) and touches no ledger",
+      ran.length === 0 && r.dispatched.length === 0 && r.skipped.length === 0 && r2.dispatched.length === 0 && touched.length === 0, { ran, r, touched });
   }
   {
     const { ran, runner } = recorder();

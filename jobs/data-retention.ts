@@ -96,6 +96,7 @@ import {
   PLATFORM_AI_PURGE_AUDIT_ACTION, PLATFORM_AI_PURGE_SQL, parsePurgeRow, runPlatformAiConversationPurge,
   type PlatformAiPurgeDeps, type PlatformAiPurgeResult,
 } from "@/lib/platform/intelligence/ai/conversations/purge";
+import type { PlatformAiPurgeOnDemandDeps } from "@/lib/platform/intelligence/ai/conversations/purge-on-demand";
 
 const DAY_MS = 86_400_000;
 export const RETENTION_BATCH = 1000;
@@ -449,21 +450,29 @@ export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date)
  *                    definer's predicates are fixed, so it can only remove what
  *                    retention already requires), and an audit row EVERY run,
  *                    zero included, tagged trigger: "MANUAL_DISPATCH".
+ *   ON_DEMAND        GET /api/jobs/dispatch?only=platform-ai-purge — the on-demand
+ *                    trigger for an environment that runs crons (Production),
+ *                    behind PLATFORM_AI_PURGE_ON_DEMAND_ENABLED (purge-on-demand.ts).
+ *                    `enabled` = PLATFORM_AI_PURGE_ENABLED, exactly as SCHEDULED
+ *                    (NOT forced on: the route is a trigger, not an override);
+ *                    misordered reported as for SCHEDULED; an audit row EVERY run,
+ *                    zero included, tagged trigger: "ON_DEMAND".
  */
 export async function platformAiPurgeDeps(
-  trigger: "SCHEDULED" | "MANUAL_DISPATCH",
+  trigger: "SCHEDULED" | "MANUAL_DISPATCH" | "ON_DEMAND",
   /** Test seam only: the two env facts (default: lib/env, read at call time). */
   flags?: { isPlatformAiPurgeEnabled: boolean; isPlatformAiConversationsFlagSetWithoutPurge: boolean },
 ): Promise<PlatformAiPurgeDeps> {
   const manual = trigger === "MANUAL_DISPATCH";
   const env = flags ?? (await import("@/lib/env")).env;
   const enabled = manual ? true : env.isPlatformAiPurgeEnabled;
+  const tag = trigger === "SCHEDULED" ? null : trigger;
   return {
     enabled,
     // PR D — the S2 disable-order hazard (purge off, conversations flag still set):
     // reported, never acted on — it enables nothing (platformAiPurgeJobFailure).
     misordered: !manual && env.isPlatformAiConversationsFlagSetWithoutPurge,
-    auditEveryRun: manual,
+    auditEveryRun: tag !== null,
     call: async (limit) => {
       const { systemDb } = await import("@/lib/db");
       return parsePurgeRow(await systemDb.$queryRawUnsafe(PLATFORM_AI_PURGE_SQL, limit));
@@ -473,9 +482,27 @@ export async function platformAiPurgeDeps(
       const { auditInsert } = await import("@/lib/audit");
       await auditInsert(systemDb, {
         action: PLATFORM_AI_PURGE_AUDIT_ACTION,
-        metadata: { ...detail, actorType: "SYSTEM", ...(manual ? { trigger: "MANUAL_DISPATCH" } : {}) },
+        metadata: { ...detail, actorType: "SYSTEM", ...(tag ? { trigger: tag } : {}) },
       }).write;
     },
+  };
+}
+
+/**
+ * The on-demand trigger's deps (lib/platform/intelligence/ai/conversations/
+ * purge-on-demand.ts), so GET /api/jobs/dispatch stays thin. `enabled` =
+ * env.isPlatformAiPurgeOnDemandEnabled (BOTH flags), read at call time; the
+ * purge seams are built only inside the ledgered body, so a disabled trigger
+ * touches nothing.
+ */
+export async function platformAiPurgeOnDemandDeps(
+  /** Test seam only: the env facts (default: lib/env, read at call time). */
+  flags?: { isPlatformAiPurgeOnDemandEnabled: boolean; isPlatformAiPurgeEnabled: boolean; isPlatformAiConversationsFlagSetWithoutPurge: boolean },
+): Promise<PlatformAiPurgeOnDemandDeps> {
+  const env = flags ?? (await import("@/lib/env")).env;
+  return {
+    enabled: env.isPlatformAiPurgeOnDemandEnabled,
+    purgeDeps: () => platformAiPurgeDeps("ON_DEMAND", flags),
   };
 }
 

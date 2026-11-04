@@ -174,8 +174,13 @@ export type JobRunner = (
  * narrowed to with `?only=` on GET /api/jobs/dispatch. Hard-coded: on Preview (no crons) an operator
  * must be able to wake the automation executor WITHOUT also running the due bank / wallet / FX jobs
  * (Preview's Plaid Items are legacy sandbox and must never be called). Anything else is refused (400).
+ *
+ * `platform-ai-purge` (2026-11-05) is NOT a registry job and never reaches the due logic: the route
+ * branches it, after the same CRON_SECRET check, to the on-demand Platform AI conversation purge
+ * (lib/platform/intelligence/ai/conversations/purge-on-demand.ts — its own flag, its own JobRun).
+ * dispatchDueJobs handed it runs NOTHING.
  */
-export const SINGLE_JOB_DISPATCH_ALLOWLIST = ["comms-automations"] as const;
+export const SINGLE_JOB_DISPATCH_ALLOWLIST = ["comms-automations", "platform-ai-purge"] as const;
 export type SingleJobDispatchKey = (typeof SINGLE_JOB_DISPATCH_ALLOWLIST)[number];
 
 /**
@@ -289,6 +294,8 @@ async function dispatchSingleJob(now: Date, only: SingleJobDispatchKey, opts: Di
   const runner: JobRunner = opts.runner ?? runJob;
   const slot = wakeLabel(now);
   if (!(SINGLE_JOB_DISPATCH_ALLOWLIST as readonly string[]).includes(only)) return { slot, skipped: [], dispatched: [], failures: 0, finalized: [] };
+  // The on-demand purge key is the route's own branch, never a scheduled job: no ledger read, nothing run.
+  if (only === "platform-ai-purge") return { slot, skipped: [], dispatched: [], failures: 0, finalized: [] };
   const jobs = (opts.jobs ?? SCHEDULED_JOBS).filter((j) => j.name === only);
   if (jobs.length === 0) return { slot, skipped: [], dispatched: [], failures: 0, finalized: [] };
   const client = opts.client ?? (opts.facts ? null : (systemDb as unknown as JobLedgerClient));

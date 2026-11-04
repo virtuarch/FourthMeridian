@@ -516,6 +516,10 @@ async function main() {
         middle.enabled === true && middle.misordered === false);
       const manual = await platformAiPurgeDeps("MANUAL_DISPATCH", f(false, true));
       check("the manual dispatch is never 'misordered' (it is the remedy) and always enabled", manual.misordered === false && manual.enabled === true);
+      const onDemand = await platformAiPurgeDeps("ON_DEMAND", f(false, true));
+      const onDemandOn = await platformAiPurgeDeps("ON_DEMAND", f(true, false));
+      check("the on-demand trigger is NOT forced on: enabled = the purge flag, misordered as for SCHEDULED, an audit row every run",
+        onDemand.enabled === false && onDemand.misordered === true && onDemandOn.enabled === true && onDemandOn.misordered === false && onDemandOn.auditEveryRun === true && shipped.auditEveryRun === false);
     }
     {
       // S2 / OD-7 activation (a): EVERY scheduled run leaves evidence — the JobRun summary IS the

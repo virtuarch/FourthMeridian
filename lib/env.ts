@@ -175,6 +175,9 @@ const _e = {
   // retention purge that must accompany them. Strict `=== "true"`; unset = OFF.
   PLATFORM_AI_CONVERSATIONS_ENABLED: process.env.PLATFORM_AI_CONVERSATIONS_ENABLED,
   PLATFORM_AI_PURGE_ENABLED: process.env.PLATFORM_AI_PURGE_ENABLED,
+  // The on-demand purge trigger (GET /api/jobs/dispatch?only=platform-ai-purge) —
+  // a second, independent switch over the purge flag. Strict `=== "true"`; unset = OFF.
+  PLATFORM_AI_PURGE_ON_DEMAND_ENABLED: process.env.PLATFORM_AI_PURGE_ON_DEMAND_ENABLED,
   // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
   // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
   // Unset/anything else = today's behaviour (the catalogue default).
@@ -894,6 +897,14 @@ export const env = {
    * no database contact. Switched on together with storage (design §13).
    */
   get isPlatformAiPurgeEnabled() { return _e.PLATFORM_AI_PURGE_ENABLED === "true"; },
+  /**
+   * The ON-DEMAND purge trigger (GET /api/jobs/dispatch?only=platform-ai-purge,
+   * lib/platform/intelligence/ai/conversations/purge-on-demand.ts) is ON only when
+   * PLATFORM_AI_PURGE_ENABLED === "true" AND PLATFORM_AI_PURGE_ON_DEMAND_ENABLED
+   * === "true". Either unset ⇒ OFF: the route answers 409 PURGE_ON_DEMAND_DISABLED
+   * with no database contact (no JobRun either). Production enablement is owner-gated.
+   */
+  get isPlatformAiPurgeOnDemandEnabled() { return _e.PLATFORM_AI_PURGE_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ON_DEMAND_ENABLED === "true"; },
   /**
    * PR D — the S2 DISABLE-ORDER hazard, as a fact (NEVER an enable): the
    * conversations flag is set while the purge flag is not. Storage is already OFF
