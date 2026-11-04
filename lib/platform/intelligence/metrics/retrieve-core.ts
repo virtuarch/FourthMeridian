@@ -92,6 +92,17 @@ export type RetrievalStatus = "MEASURED" | "ESTIMATED" | "PARTIAL" | "UNAVAILABL
 /** A number, or a small fixed object of numbers (null = that part has no figure, never 0). */
 export type AggregateValue = number | Readonly<Record<string, number | null>>;
 
+/**
+ * THE EXPLICIT UNIT of a figure — what a renderer (Platform AI's placeholder
+ * grounding) prints beside it. Never inferred from a name at render time.
+ *   count — a plain count (no unit);  usd — US dollars;  pct — a percent on the 0–100 scale.
+ * A scalar value declares one unit; an object value declares one per part, and
+ * the projection's parts must be EXACTLY the declared ones (else UNAVAILABLE,
+ * never an unlabelled figure). Pinned: platform-ai.test.ts ("units").
+ */
+export type FigureUnit = "count" | "usd" | "pct";
+export type ValueUnits = FigureUnit | Readonly<Record<string, FigureUnit>>;
+
 /** The Platform area whose surface shows the value. A server-side literal at every call site (pinned). */
 export type MetricSurface = PlatformArea;
 
@@ -117,6 +128,8 @@ export interface MetricEnvelope {
   /** The identity tier the value was read at (after the downgrade). */
   tier: IdentityTier;
   unit: "count" | "usd-and-counts" | "counts";
+  /** The explicit unit of the value (scalar) or of each part (object); null when no retrieval contract declares one. */
+  valueUnits: ValueUnits | null;
   /** null ⇔ UNAVAILABLE. A floor / lower bound when PARTIAL. Never a stand-in 0. */
   value: AggregateValue | null;
   status: RetrievalStatus;
@@ -192,6 +205,8 @@ interface Retrievable {
   kind: "RETRIEVABLE";
   reader: ReaderKey;
   unit: MetricEnvelope["unit"];
+  /** The explicit unit(s) of the projected value — see FigureUnit. */
+  valueUnits: ValueUnits;
   /** Windows the metric accepts, the first being the tile's default; [] = no window parameter. */
   windows: readonly number[];
   /** Needs an incident token at the effective tier. */
@@ -212,6 +227,7 @@ const plural = (n: number, w: string) => `${n.toLocaleString("en-US")} ${w}${n =
 export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   "provider-outcome@1": {
     kind: "RETRIEVABLE", reader: "providerHealth", unit: "counts", windows: [],
+    valueUnits: { healthy: "count", degraded: "count", failing: "count", notEnoughData: "count", noRuns: "count" },
     async read({ readers }) {
       const r = await readers.providerHealth();
       const v = { healthy: 0, degraded: 0, failing: 0, notEnoughData: 0, noRuns: 0 };
@@ -229,6 +245,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "provider-connection@2": {
     kind: "RETRIEVABLE", reader: "providerHealth", unit: "counts", windows: [],
+    valueUnits: { failing: "count", degraded: "count", institutionConcentrated: "count", noVerdict: "count", noConnections: "count" },
     async read({ readers }) {
       const r = await readers.providerHealth();
       // institutionConcentrated ⊂ degraded (v2): the error share one institution explains.
@@ -251,6 +268,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "ai-fleet-spend-status@1": {
     kind: "RETRIEVABLE", reader: "aiBudget", unit: "usd-and-counts", windows: [],
+    valueUnits: { pricedUsd: "usd", utilisationPct: "pct", thresholdUsd: "usd", invocations: "count", unpricedInvocations: "count" },
     async read({ readers }) {
       const b = await readers.aiBudget();
       // THE tile function (ai-budget-view.ts / ai-costs-model.ts read fleetSpendStatus(b)).
@@ -279,6 +297,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "engaged-users@1": {
     kind: "RETRIEVABLE", reader: "productAnalytics", unit: "count", windows: [30, 7, 1],
+    valueUnits: "count",
     async read({ readers, window }) {
       const p = await readers.productAnalytics();
       const w = window === 1 ? p.active.daily : window === 7 ? p.active.weekly : p.active.monthly;
@@ -288,6 +307,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   "growth-registrations@1": {
     // The route's default window is 90 (`raw === "30" ? 30 : 90`).
     kind: "RETRIEVABLE", reader: "acquisition", unit: "count", windows: [90, 30],
+    valueUnits: "count",
     async read({ readers, window }) {
       const a = await readers.acquisition(window === 30 ? 30 : 90);
       const unknownDays = a.registrations.perDay.filter((d) => d.count === null).length;
@@ -307,6 +327,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "incident-broken-now@1": {
     kind: "RETRIEVABLE", reader: "incidentSearch", unit: "count", windows: [], incidentScoped: "ANY",
+    valueUnits: "count",
     async read({ readers, incident, now }) {
       const r = await readers.incidentSearch(incident!, { ...DEFAULT_SEARCH, status: "broken-now" }, { now });
       // The Incidents KPI and list header print `total` (+ when truncated): incidentTotalText.
@@ -321,6 +342,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "merchant-identity-linked@1": {
     kind: "RETRIEVABLE", reader: "merchantOverview", unit: "counts", windows: [],
+    valueUnits: { linked: "count", live: "count" },
     async read({ readers }) {
       const m = await readers.merchantOverview();
       // The tile: formatCoveragePct(m.transactions.resolved, m.transactions.total) (merchant-model.ts).
@@ -330,6 +352,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "cs-needs-help@1": {
     kind: "RETRIEVABLE", reader: "csOverview", unit: "count", windows: [], incidentScoped: "CUSTOMER_SUCCESS_ONLY",
+    valueUnits: "count",
     async read({ readers, incident }) {
       const o = await readers.csOverview(incident as CsToken);
       // The tile: atLeast(o.attention.customers, o.attention.floor) (customer-success-model.ts).
@@ -340,6 +363,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "open-customers@1": {
     kind: "RETRIEVABLE", reader: "csOverview", unit: "count", windows: [], incidentScoped: "CUSTOMER_SUCCESS_ONLY",
+    valueUnits: "count",
     async read({ readers, incident }) {
       const o = await readers.csOverview(incident as CsToken);
       // The tile: o.customers.active — counted from the same capped attention read (overview-core.ts).
@@ -353,6 +377,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
     // per-customer detail route (customers/[userId]) — a per-customer figure, never
     // served as a fleet value (isFleetEntry; pinned in retrieve.test.ts).
     kind: "RETRIEVABLE", reader: "liveSessions", unit: "counts", windows: [],
+    valueUnits: { sessions: "count", distinctUsers: "count" },
     async read({ readers, now }) {
       // The tile: d.totalActive / d.distinctUsers, which the route sets from this reader.
       const c = await readers.liveSessions(now);
@@ -361,6 +386,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   },
   "accounts-with-live-session@1": {
     kind: "RETRIEVABLE", reader: "accountsWithLiveSession", unit: "count", windows: [],
+    valueUnits: "count",
     async read({ readers, now }) {
       // The tile: data.withLiveSession, which the Growth users route sets from this reader.
       return { value: await readers.accountsWithLiveSession(now), asOf: now.toISOString() };
@@ -482,13 +508,23 @@ function drillOf(scope: SurfaceScope, window: number | null): Pick<MetricEnvelop
   return { drill: { figure, window, href: link.api, page: link.page }, drillReason: null };
 }
 
-function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected): MetricEnvelope {
+/** The projection's shape EXACTLY matches the declared units (a scalar ⇔ one unit; an object ⇔ the same parts). */
+function unitsMatch(value: AggregateValue, units: ValueUnits | null): boolean {
+  if (units === null) return false;
+  if (typeof value === "number") return typeof units === "string";
+  if (typeof units === "string") return false;
+  const a = Object.keys(value).sort(), b = Object.keys(units).sort();
+  return a.length === b.length && a.every((k, i) => k === b[i]);
+}
+
+function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null): MetricEnvelope {
   const m = scope.definition;
   const base: MetricEnvelope["status"] = m.provenance.class === "ESTIMATED" ? "ESTIMATED" : "MEASURED";
   let value = p.value;
   let status: RetrievalStatus = p.status ?? base;
   let reason = p.reason ?? null;
   if (value !== null && !isAggregate(value)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: not an aggregate"; }
+  if (value !== null && !unitsMatch(value, valueUnits)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: its parts do not match the declared units"; }
   if (value === null && status !== "UNAVAILABLE") status = "UNAVAILABLE";
   if (status === "UNAVAILABLE") { value = null; reason = reason ?? "no figure"; }
   if (status === "PARTIAL" && !reason) reason = "a floor";
@@ -498,6 +534,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     surface: scope.surface,
     tier: scope.tier,
     unit,
+    valueUnits,
     value,
     status,
     reason,
@@ -527,8 +564,8 @@ export async function retrieveWith(
   const scope = atSurface(surface, ctx?.metricToken, id);
   if (!scope) return null;
   const entry = RETRIEVAL[metricKey(scope.definition)];
-  const unavailable = (reason: string, unit: MetricEnvelope["unit"] = "count") =>
-    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null });
+  const unavailable = (reason: string, unit: MetricEnvelope["unit"] = "count", units: ValueUnits | null = null) =>
+    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null }, units);
 
   if (!entry) return unavailable("not retrievable: this metric version has no retrieval contract");
   if (entry.kind === "NOT_RETRIEVABLE") return unavailable(`not retrievable: ${entry.reason}`);
@@ -544,16 +581,16 @@ export async function retrieveWith(
   let window: number | null = null;
   if (params.window !== undefined) {
     if (!entry.windows.includes(params.window)) {
-      return unavailable(entry.windows.length === 0 ? "this metric takes no window" : `window must be one of ${entry.windows.join(", ")}`, entry.unit);
+      return unavailable(entry.windows.length === 0 ? "this metric takes no window" : `window must be one of ${entry.windows.join(", ")}`, entry.unit, entry.valueUnits);
     }
     window = params.window;
   } else if (entry.windows.length > 0) window = entry.windows[0];
 
   try {
     const p = await entry.read({ readers, tier: scope.tier, incident, window, now });
-    return envelope(scope, entry.unit, p);
+    return envelope(scope, entry.unit, p, entry.valueUnits);
   } catch {
     // The reader's error text never enters the envelope (it could carry identifiers).
-    return unavailable(`the reader (${READER_SYMBOL[entry.reader]}) failed — no figure, never 0`, entry.unit);
+    return unavailable(`the reader (${READER_SYMBOL[entry.reader]}) failed — no figure, never 0`, entry.unit, entry.valueUnits);
   }
 }

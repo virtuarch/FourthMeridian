@@ -34,9 +34,11 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UserRole } from "@prisma/client";
+import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
+import { METRICS, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import { metricAccessFor, describeMetric, listMetrics } from "@/lib/platform/intelligence/metrics/access";
-import { retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import { RETRIEVAL, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import { listNavigationTargets, resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM_AI_SURFACES } from "@/lib/platform/ai/spend-by-surface-core";
@@ -283,17 +285,17 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   // A correct placement ⇒ the server's figures, units and the chips pair label ↔ figure.
   const good = await turn("{{m:incident-broken-now@1}} incidents are broken; the fleet made {{m:ai-fleet-spend-status@1|part=invocations}} AI calls costing {{m:ai-fleet-spend-status@1|part=pricedUsd}} ({{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold).");
   check("a correct placement renders the server's figures with server units", !good.result.grounding.replaced && good.result.grounding.verdict === "RESOLVED"
-    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made 40 AI calls costing $12.50 (25% of the threshold).", segmentsText(good.result.answer));
+    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made about 40 (estimated) AI calls costing about $12.50 (estimated) (about 25% (estimated) of the threshold).", segmentsText(good.result.answer));
   check("…counted: claims 4, resolved 4, unresolved 0", JSON.stringify(good.result.claims) === JSON.stringify({ claims: 4, resolved: 4, unresolved: 0, admitted: 0 }), good.result.claims);
   const chip = (r: typeof good, m: string) => r.result.citations.find((c) => c.metric === m)?.figures.join("|");
-  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "40|$12.50|25%", good.result.citations);
+  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "about 40 (estimated)|about $12.50 (estimated)|about 25% (estimated)", good.result.citations);
 
   // C7 the swap: two metrics, values exchanged. v0 passed this (both values exist this turn); v1 refuses it.
   const swap = await turn("40 incidents are broken; the fleet made 3 AI calls.");
   check("SWAP (literal): two real values exchanged between two metrics ⇒ fallback (the model may not type a figure)", swap.result.grounding.replaced && swap.result.grounding.verdict === "UNGROUNDED_DIGIT" && segmentsText(swap.result.answer).startsWith(UNVERIFIED_FALLBACK), swap.result.answer);
   const swapP = await turn("{{m:ai-fleet-spend-status@1|part=invocations}} AI calls; {{m:incident-broken-now@1}} incidents broken.");
   check("SWAP (placeholders): a figure is always the figure of the metric its placeholder names — the chips show each pairing",
-    segmentsText(swapP.result.answer) === "40 AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "40");
+    segmentsText(swapP.result.answer) === "about 40 (estimated) AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "about 40 (estimated)");
   check("SWAP (claimed under the wrong key): X's value cannot be stated as Y — {{m:Y}} renders Y's own figure", !segmentsText((await turn("Broken: {{m:incident-broken-now@1}}.")).result.answer).includes("40"));
 
   // C3: same key AND window, read THIS turn; unknown key / part mismatch.
@@ -311,7 +313,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     [noPart, badPart, partOnScalar].every((r) => r.result.grounding.verdict === "UNRESOLVED_PLACEHOLDER" && r.result.grounding.replaced));
 
   // Windows, on envelopes of the shape retrieveMetric returns (synthetic, so every window case is exact).
-  const base = { surface: "GROWTH_REVENUE", tier: "OPS", unit: "count", reason: null, freshness: { asOf: "2026-11-04T12:00:00.000Z", source: "s" }, coverage: { gaps: [], missing: [] }, drill: null, drillReason: null } as const;
+  const base = { surface: "GROWTH_REVENUE", tier: "OPS", unit: "count", valueUnits: "count", reason: null, freshness: { asOf: "2026-11-04T12:00:00.000Z", source: "s" }, coverage: { gaps: [], missing: [] }, drill: null, drillReason: null } as const;
   const w7 = { ...base, metric: "engaged-users@1", value: 6, status: "MEASURED", window: { kind: "UTC_DAYS", description: "Trailing 1 / 7 / 30 UTC days", days: 7, hours: null } } as unknown as MetricEnvelope;
   const w30 = { ...w7, value: 11, window: { ...w7.window, days: 30 } } as MetricEnvelope;
   const part = { ...w7, metric: "growth-registrations@1", value: 5, status: "PARTIAL", reason: "a floor", window: { ...w7.window, days: 90 } } as MetricEnvelope;
@@ -320,11 +322,36 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("WINDOW MISMATCH: a window not read this turn, or none on a windowed envelope ⇒ UNRESOLVED",
     R("{{m:engaged-users@1|window=1}}").summary.verdict === "WINDOW_MISMATCH" && R("{{m:engaged-users@1}}").summary.verdict === "WINDOW_MISMATCH");
   check("options in either order; a repeated or unknown option is MALFORMED",
-    segmentsText(R("{{m:x@1|window=7|part=n}}", [{ ...w7, metric: "x@1", value: { n: 4 } } as unknown as MetricEnvelope]).segments) === "4 (last 7 days)"
+    segmentsText(R("{{m:x@1|window=7|part=n}}", [{ ...w7, metric: "x@1", value: { n: 4 }, valueUnits: { n: "count" } } as unknown as MetricEnvelope]).segments) === "4 (last 7 days)"
     && R("{{m:engaged-users@1|window=7|window=7}}").summary.verdict === "MALFORMED_PLACEHOLDER" && R("{{m:engaged-users@1|unit=usd}}").summary.verdict === "MALFORMED_PLACEHOLDER");
   check("PARTIAL wording: \"at least\" is written by the server", segmentsText(R("{{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups");
-  const nullPart = resolvePlaceholders([{ kind: "text", text: "{{m:x@1|part=utilisationPct}}" }], [{ ...w7, metric: "x@1", value: { utilisationPct: null }, window: { ...w7.window, days: null } } as unknown as MetricEnvelope], new Set());
+  const nullPart = resolvePlaceholders([{ kind: "text", text: "{{m:x@1|part=utilisationPct}}" }], [{ ...w7, metric: "x@1", value: { utilisationPct: null }, valueUnits: { utilisationPct: "pct" }, window: { ...w7.window, days: null } } as unknown as MetricEnvelope], new Set());
   check("a null part renders \"unavailable\", never 0", segmentsText(nullPart.segments) === "unavailable" && nullPart.summary.verdict === "RESOLVED");
+
+  // S2 fix 1: ESTIMATED renders a qualifier; PARTIAL stays "at least"; an estimated floor says both.
+  const usdEnv = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "s@1", status, value: { pricedUsd: 12.5 }, valueUnits: { pricedUsd: "usd" }, window: { ...w7.window, days: null }, ...over }) as unknown as MetricEnvelope;
+  const Rs = (status: string, est = false) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv(status)], new Set(), "", () => est).segments);
+  check("ESTIMATED ⇒ \"about $12.50 (estimated)\"", Rs("ESTIMATED") === "about $12.50 (estimated)", Rs("ESTIMATED"));
+  check("MEASURED ⇒ \"$12.50\" (no qualifier)", Rs("MEASURED") === "$12.50");
+  check("PARTIAL ⇒ \"at least $12.50\"", Rs("PARTIAL") === "at least $12.50");
+  check("PARTIAL of an ESTIMATED metric (registry provenance) ⇒ \"at least $12.50 (estimated)\"", Rs("PARTIAL", true) === "at least $12.50 (estimated)", Rs("PARTIAL", true));
+  check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "about 6 (last 7 days, estimated)");
+  const estFloor = await run("x", opsBinding(OPS, readers({ aiBudget: async () => ({ ...(await readers().aiBudget()), unpriced: { invocations: 2, models: ["m"] }, bySurface: [{ surface: "chat", customer: true, unpricedInvocations: 2 }] }) as never })),
+    script([{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }, { content: "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd}}." }]));
+  const efStatus = estFloor.result.citations[0]?.status;
+  check("…through a real turn: the ESTIMATED metric's PARTIAL floor renders \"at least … (estimated)\"",
+    efStatus === "PARTIAL" && /^Spend: at least \$[\d,.]+ \(estimated\)\.$/.test(segmentsText(estFloor.result.answer)), { efStatus, a: segmentsText(estFloor.result.answer) });
+  // Non-blocking S2 note: a model-written qualifier the server also writes collapses to one.
+  check("\"at least {{m:PARTIAL}}\" ⇒ \"at least 5\" once, never \"at least at least\"",
+    segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups" && segmentsText(R("about {{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "about 6 (last 7 days, estimated)");
+  check("…\"at least\" before a MEASURED figure stays the model's words (no figure invented)", segmentsText(R("at least {{m:engaged-users@1|window=7}}").segments) === "at least 6 (last 7 days)");
+
+  // S2 fix 2: units are EXPLICIT (valueUnits), never inferred from a part name.
+  const named = (u: unknown) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv("MEASURED", { valueUnits: u })], new Set()).segments);
+  check("the renderer uses the DECLARED unit: a part named …Usd declared count prints no $", named({ pricedUsd: "count" }) === "12.5");
+  check("…a part with no declared unit, or an envelope with no units ⇒ UNRESOLVED (never an unlabelled figure)",
+    resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv("MEASURED", { valueUnits: { other: "usd" } })], new Set()).summary.verdict === "UNRESOLVED_PLACEHOLDER"
+    && resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv("MEASURED", { valueUnits: null })], new Set()).summary.verdict === "UNRESOLVED_PLACEHOLDER");
 
   // C1 units: the server writes them; a model-written unit next to a placeholder ⇒ fallback.
   const dollar = await turn("The fleet spent ${{m:ai-fleet-spend-status@1|part=invocations}}.");
@@ -374,13 +401,56 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     && JSON.stringify(platformAiToolSchemas([])).includes("{{m:<metric>}}"));
 }
 
+// ── 4c. UNITS PIN (S2 fix 2): every registered metric's figures carry an EXPLICIT unit ──
+console.log("\n4c. units — every registered metric declares valueUnits; the suffix rule; pct on 0–100");
+{
+  const keys = METRICS.map(metricKey);
+  const retrievable = keys.filter((k) => RETRIEVAL[k]?.kind === "RETRIEVABLE");
+  check("every registered metric has a retrieval entry (retrievable, or NOT_RETRIEVABLE with a reason)", keys.every((k) => !!RETRIEVAL[k]), keys.filter((k) => !RETRIEVAL[k]));
+  for (const k of retrievable) {
+    const e = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
+    const u = e.valueUnits;
+    const ok = typeof u === "string"
+      ? u === "count"
+      : Object.keys(u).length > 0 && Object.entries(u).every(([part, unit]) => (/Usd$/.test(part) ? unit === "usd" : /Pct$/.test(part) ? unit === "pct" : unit === "count"));
+    check(`${k}: declared units — a top-level number is a unitless count; every part follows …Usd ⇔ usd, …Pct ⇔ pct, else count`, ok, u);
+  }
+  // Retrieve every retrievable metric (every window) on every surface the fixtures can read it on.
+  const seen = new Set<string>();
+  const pcts: { k: string; part: string; v: number }[] = [];
+  for (const area of ALL_PLATFORM_AREAS) {
+    const ctx = ctxFor(UserRole.USER, grant(area));
+    for (const k of retrievable) {
+      const entry = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
+      for (const w of entry.windows.length ? entry.windows : [undefined]) {
+        const env = await retrieveWith(area, readers(), ctx, k, w === undefined ? {} : { window: w }, NOW);
+        if (!env || env.status === "UNAVAILABLE" || env.value === null) continue;
+        seen.add(k);
+        const shapeOk = typeof env.value === "number" ? env.valueUnits === "count" : typeof env.valueUnits === "object" && env.valueUnits !== null
+          && Object.keys(env.value).sort().join() === Object.keys(env.valueUnits).sort().join();
+        if (!shapeOk) check(`${k} on ${area}: the envelope's value shape matches its declared units`, false, { value: env.value, units: env.valueUnits });
+        if (typeof env.value === "object" && typeof env.valueUnits === "object" && env.valueUnits) {
+          for (const [part, unit] of Object.entries(env.valueUnits)) {
+            const v = (env.value as Record<string, number | null>)[part];
+            if (unit === "pct" && typeof v === "number") pcts.push({ k, part, v });
+          }
+        }
+      }
+    }
+  }
+  check("every retrievable metric was read with a figure on some surface (so the shape pin covered it)", retrievable.every((k) => seen.has(k)), retrievable.filter((k) => !seen.has(k)));
+  check("pct figures are on the 0–100 scale: the fixture's 25% utilisation reads 25 (not 0.25), and every pct is in [0, 100]",
+    pcts.length > 0 && pcts.every((p) => p.v >= 0 && p.v <= 100) && pcts.some((p) => p.k === "ai-fleet-spend-status@1" && p.part === "utilisationPct" && p.v === 25), pcts);
+  check("the renderer reads units ONLY from valueUnits (no name inference in core.ts)", !/\/Usd\$\/|\/Pct\$\//.test(code(src("lib/platform/intelligence/ai/core.ts"))));
+}
+
 // ── 4b. the user-numeral allowance (S2-approved) + unsupported windows + the owner's questions ──
 console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never substituted), owner regressions");
 {
   const b = opsBinding(OPS);
   const spend = [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }];
   const ask = (q: string, content: string, steps: Step[] = spend) => run(q, b, script([...steps, { content }]));
-  const env30 = { surface: "PLATFORM_OPS", tier: "OPS", unit: "count", reason: null, status: "MEASURED", metric: "x@1", value: 30,
+  const env30 = { surface: "PLATFORM_OPS", tier: "OPS", unit: "count", valueUnits: "count", reason: null, status: "MEASURED", metric: "x@1", value: 30,
     window: { kind: "UTC_DAYS", description: "d", days: 30, hours: null }, freshness: { asOf: null, source: "s" }, coverage: { gaps: [], missing: [] }, drill: null, drillReason: null } as unknown as MetricEnvelope;
   const env11 = { ...env30, value: 11 } as MetricEnvelope;
   const P = (text: string, q: string, envs: MetricEnvelope[]) => resolvePlaceholders([{ kind: "text", text }], envs, new Set(), q).summary;
@@ -411,9 +481,9 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
   // OWNER REGRESSIONS (exact strings; a fake model with realistic outputs).
   const today = await ask("How are we looking today?", "Right now {{m:incident-broken-now@1}} incidents are broken and {{m:provider-outcome@1|part=failing}} provider is failing; AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} over the trailing window.",
     [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "provider-outcome" } }, { name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }]);
-  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 provider is failing; AI spend is $12.50"), segmentsText(today.result.answer));
+  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 provider is failing; AI spend is about $12.50 (estimated)"), segmentsText(today.result.answer));
   const most = await ask("What's costing me the most money?", "AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} across {{m:ai-fleet-spend-status@1|part=invocations}} customer calls, {{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold.");
-  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is $12.50 across 40 customer calls, 25% of the threshold.", segmentsText(most.result.answer));
+  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (estimated) across about 40 (estimated) customer calls, about 25% (estimated) of the threshold.", segmentsText(most.result.answer));
   const q30 = "What's costing me the most money in the past 30 days";
   const v0 = await ask(q30, "Over the past 30 days, AI spend was {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
   const v0t = segmentsText(v0.result.answer);

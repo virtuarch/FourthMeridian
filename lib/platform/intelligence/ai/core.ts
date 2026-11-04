@@ -61,7 +61,7 @@ import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
 import type { PlatformArea } from "@prisma/client";
 import { METRICS, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
-import type { MetricEnvelope, RetrievalParams } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import type { FigureUnit, MetricEnvelope, RetrievalParams } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
@@ -518,32 +518,46 @@ function windowPhrase(e: MetricEnvelope, declared: string | null): string {
   return `its declared window (${(declared ?? e.window.description).replace(/\.\s*$/, "")})`;
 }
 
-const fmtNumber = (n: number, part: string | null): string => {
-  if (part && /Usd$/.test(part)) return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  if (part && /Pct$/.test(part)) return `${n.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
+/** A figure in its EXPLICIT unit (the envelope's valueUnits — never inferred from a name). */
+const fmtNumber = (n: number, unit: FigureUnit): string => {
+  if (unit === "usd") return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (unit === "pct") return `${n.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 };
+const FIGURE_UNITS: readonly FigureUnit[] = ["count", "usd", "pct"];
 
 /**
  * The text a placeholder renders to, from ONE envelope — or null (unresolvable:
- * a part on a scalar, no part / an unknown part on an object value).
- * PARTIAL ⇒ "at least <v>"; UNAVAILABLE ⇒ "unavailable — <reason>"; a null part ⇒ "unavailable".
+ * a part on a scalar, no part / an unknown part on an object value, or no
+ * declared unit for the figure).
+ * Status wording (server-written):
+ *   MEASURED                      "<v>"
+ *   ESTIMATED                     "about <v> (estimated)"
+ *   PARTIAL                       "at least <v>"
+ *   PARTIAL of an estimated metric "at least <v> (estimated)"   (`estimated`: the definition's provenance)
+ *   UNAVAILABLE                   "unavailable — <reason>";  a null part ⇒ "unavailable" (never 0)
  */
-export function renderPlaceholder(e: MetricEnvelope, part: string | null): string | null {
+export function renderPlaceholder(e: MetricEnvelope, part: string | null, estimated = false): string | null {
   if (e.status === "UNAVAILABLE" || e.value === null) return `unavailable — ${e.reason ?? "no figure"}`;
+  const units = e.valueUnits ?? null;
   let n: number | null;
+  let unit: FigureUnit | undefined;
   if (typeof e.value === "number") {
-    if (part !== null) return null;
-    n = e.value;
+    if (part !== null || typeof units !== "string") return null;
+    n = e.value; unit = units;
   } else {
-    if (part === null || !Object.prototype.hasOwnProperty.call(e.value, part)) return null;
+    if (part === null || units === null || typeof units === "string" || !Object.prototype.hasOwnProperty.call(e.value, part)) return null;
+    unit = Object.prototype.hasOwnProperty.call(units, part) ? units[part] : undefined;
     n = e.value[part] ?? null;
     if (n === null) return "unavailable";
   }
-  if (typeof n !== "number" || !Number.isFinite(n)) return null;
+  if (!unit || !FIGURE_UNITS.includes(unit) || typeof n !== "number" || !Number.isFinite(n)) return null;
+  const isEstimate = estimated || e.status === "ESTIMATED";
   const days = e.window.days;
-  const fig = `${fmtNumber(n, part)}${days !== null ? ` (last ${days} day${days === 1 ? "" : "s"})` : ""}`;
-  return e.status === "PARTIAL" ? `at least ${fig}` : fig;
+  const notes = [...(days !== null ? [`last ${days} day${days === 1 ? "" : "s"}`] : []), ...(isEstimate ? ["estimated"] : [])];
+  const fig = `${fmtNumber(n, unit)}${notes.length ? ` (${notes.join(", ")})` : ""}`;
+  if (e.status === "PARTIAL") return `at least ${fig}`;
+  return e.status === "ESTIMATED" ? `about ${fig}` : fig;
 }
 
 /** THIS turn's envelope for the key AND window (no window ⇔ the envelope carries no day window). */
@@ -565,7 +579,11 @@ export interface PlaceholderOutcome {
  * registry labels this turn's tools returned (the ONLY digit allowlist besides
  * envelope freshness dates).
  */
-export function resolvePlaceholders(segments: readonly AnswerSegment[], envelopes: readonly MetricEnvelope[], labels: ReadonlySet<string>, scrubbedQuestion = ""): PlaceholderOutcome {
+export function resolvePlaceholders(
+  segments: readonly AnswerSegment[], envelopes: readonly MetricEnvelope[], labels: ReadonlySet<string>, scrubbedQuestion = "",
+  /** The metric's DEFINITION is an estimate (registry provenance) — so a PARTIAL floor still says "(estimated)". */
+  isEstimated: (key: string) => boolean = () => false,
+): PlaceholderOutcome {
   let claims = 0, resolved = 0, unresolved = 0, admitted = 0;
   let malformed = false, unit = false, digit = false, windowMismatch = false, collision = false;
   const figures = new Map<string, string[]>();
@@ -582,7 +600,7 @@ export function resolvePlaceholders(segments: readonly AnswerSegment[], envelope
       if (UNIT_BEFORE.test(before) || UNIT_AFTER.test(after)) { unit = true; unresolved++; return " "; }
       const e = envelopeFor(envelopes, key, opts.window);
       if (!e && envelopes.some((x) => x.metric === key)) { windowMismatch = true; unresolved++; return " "; }
-      const fig = e ? renderPlaceholder(e, opts.part) : null;
+      const fig = e ? renderPlaceholder(e, opts.part, isEstimated(key)) : null;
       if (fig === null) { unresolved++; return " "; }
       resolved++;
       if (!placed.includes(e!)) placed.push(e!);
@@ -597,7 +615,10 @@ export function resolvePlaceholders(segments: readonly AnswerSegment[], envelope
     const u = admitUserNumerals(prose, scrubbedQuestion, envelopes);
     prose = u.prose; admitted += u.admitted; if (u.collision) collision = true;
     if (/\d/.test(prose)) digit = true;
-    return out.split(SENTINEL).join("");
+    // A model-written qualifier the server already wrote ("at least at least 5", "about about $1") collapses to one.
+    return out
+      .replace(new RegExp(`\\b(at least|about)\\s+${SENTINEL}(?=\\1\\b)`, "gi"), SENTINEL)
+      .split(SENTINEL).join("");
   };
 
   const out: AnswerSegment[] = segments.map((x) => (x.kind === "link" ? { ...x, text: resolveText(x.text) } : { kind: "text", text: resolveText(x.text) }));
@@ -716,7 +737,7 @@ export async function runPlatformAiTurn(input: {
   for (const c of citations) if (c.status === "PARTIAL") notes.push(`${c.label} is a lower bound${c.reason ? `: ${c.reason}` : ""}.`);
 
   const { segments: sanitised, removed } = sanitiseAnswer(raw ?? BUDGET_FALLBACK, ev.hrefs);
-  const placed = resolvePlaceholders(sanitised, ev.envelopes, ev.labels, question);
+  const placed = resolvePlaceholders(sanitised, ev.envelopes, ev.labels, question, (key) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
   let answer = placed.segments;
   let verdict = placed.summary.verdict;
   // The operator asked for a window a placed metric does not cover ⇒ say so; never substitute.
