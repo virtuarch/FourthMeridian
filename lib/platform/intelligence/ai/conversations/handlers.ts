@@ -38,7 +38,7 @@ import {
   PLATFORM_AI_MESSAGE_MAX,
 } from "./constants";
 import type { HistoryMessage } from "./history";
-import type { AppendOutcome, ConversationRecord, ConversationSummary, CreateOutcome, CreateReplay, MessageRecord, SettleOutcome, TurnPair } from "./store";
+import type { AppendOutcome, ConversationRecord, ConversationSummary, CreateOutcome, CreateReplayLookup, MessageRecord, SettleOutcome, TurnPair } from "./store";
 import type { ConversationTurnOutcome } from "./turn";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
@@ -73,7 +73,8 @@ export interface ConversationStoreSeam {
 
 /** The turn seams of the store (B11 turn integration). */
 export interface ConversationTurnStoreSeam {
-  findCreateReplay(operatorId: string, createRequestId: string): Promise<CreateReplay | null>;
+  /** Metadata only — reads no message and decrypts nothing (the area guard runs before any content read). */
+  findCreateConversation(operatorId: string, createRequestId: string): Promise<CreateReplayLookup | null>;
   findTurnPair(operatorId: string, conversationId: string, clientRequestId: string): Promise<TurnPair | null>;
   appendTurn(input: { operatorId: string; conversationId: string; clientRequestId: string; scrubbedQuestion: string; now: Date }): Promise<AppendOutcome>;
   settleTurn(operatorId: string, conversationId: string, assistantId: string, outcome: SettleOutcome): Promise<boolean>;
@@ -290,7 +291,16 @@ type TurnDeps = ConversationDeps & TurnAdmissionDeps & TurnRunDeps & { store: Co
 /**
  * POST /conversations `{ clientRequestId, question }` — create = the first
  * question. The area is the server's (platformAiAreaFor, via the viewer gate).
- *   · a REPLAY of a known createRequestId is answered first, from the store: no
+ *
+ * GATE ORDER (pinned in turn.test.ts; S2 on #431). The route has run: the flag
+ * (404) → the session → the fresh route guard → the #352 limiter. Then here:
+ *   1. body validation (400);
+ *   2. replay lookup, METADATA ONLY (findCreateConversation: no message read,
+ *      nothing decrypted); a known key ⇒ the conversation's OWN area fresh check
+ *      (refused ⇒ the ONE 404) and only THEN the stored pair (findTurnPair);
+ *   3. admission gates: kill switch → freeze → daily cap;
+ *   4. the area guard for the new conversation's area, then create + the turn.
+ *   · a REPLAY of a known createRequestId is answered from the store: no
  *     admission gate, no model call, no daily turn (§5.1);
  *   · v0's gates, then the area's FRESH guard (its binding) — every refusal
  *     BEFORE anything is stored (§5.3);
@@ -301,13 +311,15 @@ type TurnDeps = ConversationDeps & TurnAdmissionDeps & TurnRunDeps & { store: Co
 export async function handleCreateConversation(v: Viewer, body: unknown, deps: TurnDeps): Promise<ConversationHttp> {
   const parsed = parseTurnBody(body);
   if (!parsed) return VALIDATION();
-  const prior = await deps.store.findCreateReplay(v.operatorId, parsed.clientRequestId);
+  const prior = await deps.store.findCreateConversation(v.operatorId, parsed.clientRequestId);
   if (prior) {
     if (prior.kind === "DELETED") return notFound();
-    // The replayed conversation's OWN area, fresh (step 6) — its area may differ from today's first area.
+    // The replayed conversation's OWN area, fresh (step 6) — BEFORE any content is read or decrypted.
     const access = await deps.areaAccess(prior.conversation.area, v.operatorId);
     if (!access) return notFound();
-    return pairResponse(200, prior.conversation, prior.pair, access);
+    const pair = await deps.store.findTurnPair(v.operatorId, prior.conversation.id, parsed.clientRequestId);
+    if (!pair) return notFound();
+    return pairResponse(200, prior.conversation, pair, access);
   }
   const refused = await admit(v, deps);
   if (refused) return refused;
@@ -337,6 +349,12 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: T
 /**
  * POST /conversations/[id]/messages `{ clientRequestId, question }` — the next
  * question of a live conversation (design §10).
+ *
+ * GATE ORDER (pinned in turn.test.ts; S2 on #431). The route has run: the flag
+ * (404) → the session → the fresh route guard → the #352 limiter. Then here:
+ * id shape → the live OWNED conversation (metadata only) → the conversation's
+ * OWN area fresh check (404) → body validation → replay lookup (the only read
+ * of stored content) → admission gates (kill → freeze → cap) → append / turn.
  *   steps 5–6  owner-scoped lookup, then the conversation's OWN area FRESH; any
  *              refusal (not found, not the operator's, deleted, area revoked
  *              between turns) ⇒ the ONE 404, and no turn runs;

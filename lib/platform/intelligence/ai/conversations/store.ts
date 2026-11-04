@@ -236,18 +236,21 @@ export async function findTurnPair(operatorId: string, conversationId: string, c
   });
 }
 
-/** READ-ONLY create-replay lookup (same purpose): the conversation + pair a createRequestId produced, DELETED, or null. */
-export type CreateReplay = { kind: "REPLAY"; conversation: ConversationRecord; pair: TurnPair } | { kind: "DELETED" };
+/**
+ * READ-ONLY create-replay lookup, CONVERSATION METADATA ONLY (S2 on #431): the
+ * live conversation a createRequestId produced (id, area, timestamps), DELETED,
+ * or null. It reads NO message row and decrypts nothing, so the caller can run
+ * the conversation's OWN area guard first and only then read the pair
+ * (findTurnPair) — a revoked area never reaches stored content.
+ */
+export type CreateReplayLookup = { kind: "FOUND"; conversation: ConversationRecord } | { kind: "DELETED" };
 
-export async function findCreateReplay(operatorId: string, createRequestId: string): Promise<CreateReplay | null> {
+export async function findCreateConversation(operatorId: string, createRequestId: string): Promise<CreateReplayLookup | null> {
   return withTenantDb(operatorId, async (tx) => {
     const c = await tx.platformAiConversation.findFirst({ where: { operatorUserId: operatorId, createRequestId }, select: { ...CONVERSATION_SELECT, deletedAt: true } });
     if (!c) return null;
     if (c.deletedAt) return { kind: "DELETED" as const };
-    const pair = await existingPair(tx, c.id, createRequestId);
-    return pair
-      ? { kind: "REPLAY" as const, conversation: { id: c.id, area: c.area, createdAt: c.createdAt, lastActivityAt: c.lastActivityAt }, pair }
-      : { kind: "DELETED" as const };
+    return { kind: "FOUND" as const, conversation: { id: c.id, area: c.area, createdAt: c.createdAt, lastActivityAt: c.lastActivityAt } };
   });
 }
 

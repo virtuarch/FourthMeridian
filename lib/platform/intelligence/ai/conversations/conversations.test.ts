@@ -184,7 +184,7 @@ console.log("4. the handlers over a fake store and a fake FRESH area guard");
   const settled = new Map<string, SettleOutcome>();
   let lastPair: TurnPair | null = null;
   const turnStore: ConversationTurnStoreSeam = {
-    findCreateReplay: async () => null,
+    findCreateConversation: async () => null,
     findTurnPair: async () => {
       if (!lastPair) return null;
       const o = settled.get(lastPair.assistant.id);

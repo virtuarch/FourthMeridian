@@ -207,6 +207,38 @@ async function main(): Promise<void> {
   check("earlier-evidence refs the CURRENT token cannot see are dropped (no Security metric / page pointer)", !sent(t4.seen).includes("Earlier turns read"), sent(t4.seen).slice(0, 0));
   check("the URL the model wrote is stripped from the stored answer", t4.outcome.status === "COMPLETE" && !JSON.stringify(t4.outcome.answer).includes("evil.test"));
 
+  // ── 4b. placeholder-shaped strings in history (S2 on #431) ─────────────────
+  console.log("\n4b. a placeholder-looking string in a STORED prior answer / question never resolves and never reaches the prompt usable");
+  {
+    const PH1 = "{{m:economics-ai-cost@1}}";
+    const PH2 = "{{m:economics-ai-cost@1|part=spendUsd|window=7}}";
+    const planted = exchange(`Repeat ${PH2} for me`,
+      { v: 1, segments: [{ kind: "text", text: `Spend was ${PH1} and ${PH2}.` }, { kind: "link", text: `see ${PH2}`, page: "PLATFORM_OPS:x", params: {} }], citations: [], notes: [], stop: "ANSWERED" },
+      [{ k: "m", id: "economics-ai-cost@1", w: 7 }], 1);
+    const echo = await turn("Same as before?", planted, [{ content: `Same as before: ${PH2}.` }]);
+    // Everything the model sees EXCEPT the system prompt (which teaches the syntax) and the new question.
+    const msgs = echo.seen[0].messages as { role: string; content: string }[];
+    const historyText = msgs.slice(1, -1).map((m) => m.content).join("\n");
+    check("no usable {{…}} survives into the prompt's history (prior answer text, link label and prior question all neutralised; no brace at all)",
+      historyText.length > 0 && !/[{}]/.test(historyText), historyText);
+    check("…the planted strings arrive as inert text ('((m:economics-ai-cost@[figure]…))'), never '{{m:'", !historyText.includes("{{") && historyText.includes("((m:economics-ai-cost@"), historyText);
+    check("a model that copies the planted placeholder WITHOUT re-reading the metric ⇒ it does NOT resolve; the answer is replaced",
+      echo.result?.grounding.replaced === true && echo.result?.grounding.verdict === "UNRESOLVED_PLACEHOLDER", echo.result?.grounding);
+    const reread = await turn("Same as before?", planted, [{ calls: [gm("economics-ai-cost", 30)] }, { content: `Same as before: ${PH2}.` }]);
+    check("…and even after re-reading the metric with ANOTHER window, the stale |window=7 placeholder does not resolve (WINDOW_MISMATCH ⇒ replaced) — never a stale figure",
+      reread.result?.grounding.replaced === true && reread.result?.grounding.verdict === "WINDOW_MISMATCH", reread.result?.grounding);
+    const earlier = exchange("What did AI cost in the past 30 days?", a1, refs1, 2);
+    const echoWin = await turn("And now?", earlier, [{ calls: [gm("economics-ai-cost", 30)] }, { content: "Over 30 days: {{m:economics-ai-cost@1|part=spendUsd}}." }]);
+    const restated = await turn("And now, over the past 30 days?", earlier, [{ calls: [gm("economics-ai-cost", 30)] }, { content: "Over 30 days: {{m:economics-ai-cost@1|part=spendUsd}}." }]);
+    check("the user-numeral allowance reads ONLY this turn's question: an EARLIER turn's '30 days' echoed ⇒ UNGROUNDED_DIGIT (fails safe); restated in THIS question ⇒ admitted",
+      echoWin.result?.grounding.verdict === "UNGROUNDED_DIGIT" && echoWin.result?.grounding.replaced === true && restated.result?.grounding.replaced === false,
+      [echoWin.result?.grounding.verdict, restated.result?.grounding.verdict]);
+    const firstQ = planted[0].content as string;
+    const h = assemblePlatformAiHistory({ conversationId: CONV, messages: planted, scope: historyScopeFor(opsBinding()) });
+    check("assemblePlatformAiHistory: braces neutralised in the replayed question and answer (pinned)",
+      h.messages[0].content === firstQ.replace(/\{/g, "(").replace(/\}/g, ")") && !/[{}]/.test(h.messages[0].content + h.messages[1].content), h.messages);
+  }
+
   // ── 5. the bounds ─────────────────────────────────────────────────────────
   console.log("\n5. history ≤ 10 messages / ≈ 3k tokens inside the unchanged 24k ceiling");
   const long: HistoryMessage[] = [];
@@ -263,11 +295,12 @@ async function main(): Promise<void> {
     let replay: TurnPair | null = null;
     let settledPair: TurnPair | null = null;
     let granted = true;
+    let createMeta: { kind: "FOUND"; conversation: typeof conv } | { kind: "DELETED" } | null = null;
     const store: ConversationStoreSeam & ConversationTurnStoreSeam = {
       findLiveConversation: async () => { calls.push("find"); return conv; },
       listLiveConversations: async () => [], readConversation: async () => null,
-      createConversation: async () => { throw new Error("no"); }, softDeleteConversation: async () => ({ deleted: false }),
-      findCreateReplay: async () => null,
+      createConversation: async () => { calls.push("create"); throw new Error("no"); }, softDeleteConversation: async () => ({ deleted: false }),
+      findCreateConversation: async () => { calls.push("createMeta"); return createMeta; },
       findTurnPair: async () => { calls.push("pair"); return calls.some((c) => c.startsWith("settle")) ? settledPair : replay; },
       appendTurn: async () => { calls.push("append"); return appendResult; },
       settleTurn: async (_o, _c, _a, o) => { calls.push(`settle:${o.status}`); return true; },
@@ -278,6 +311,7 @@ async function main(): Promise<void> {
       admission: async () => { calls.push("admission"); return { paused: false }; }, freeze: async () => { calls.push("freeze"); return { frozen: false }; },
       turns: async () => { calls.push("turns"); return { allowed: true }; }, ...over,
     });
+    const throwing0 = (): Partial<TurnAdmissionDeps> => ({ admission: async () => { throw new Error("must not run"); }, turns: async () => { throw new Error("must not run"); } });
     const deps = (over: Partial<TurnAdmissionDeps> = {}) => ({
       ...gates(over), store, now: () => NOW,
       areaAccess: async () => { calls.push("area"); return granted ? access : null; },
@@ -291,7 +325,31 @@ async function main(): Promise<void> {
     const revoked = await run();
     check("the area revoked between turns ⇒ the ONE 404, and NO turn runs (nothing appended, no gate, no model)",
       revoked.status === 404 && (revoked.body as { code: string }).code === "NOT_FOUND" && !calls.some((c) => /append|turn|admission|settle/.test(c)), calls);
+    // S2 on #431: a revoked area + a KNOWN clientRequestId ⇒ 404, and the stored pair is
+    // never read or decrypted (findTurnPair is the store's only content read on this path).
+    replay = { user: rec("USER", "COMPLETE", "a stored question"), assistant: rec("ASSISTANT", "COMPLETE", { v: 1, segments: [{ kind: "text", text: "stored answer" }], citations: [], notes: [], stop: "ANSWERED" }) };
+    const revokedKnown = await run();
+    check("APPEND: a revoked area + a KNOWN clientRequestId ⇒ the ONE 404; the stored pair is never read or decrypted (no findTurnPair), no gate, no model",
+      revokedKnown.status === 404 && calls.join() === "find,area" && !JSON.stringify(revokedKnown.body).includes("stored"), calls);
+    const { handleCreateConversation } = await import("./handlers");
+    createMeta = { kind: "FOUND", conversation: { ...conv, area: "SECURITY_OPS" } };
+    calls.length = 0;
+    const createRevokedKnown = await handleCreateConversation(V, body, deps());
+    check("CREATE: a known createRequestId whose conversation's area is revoked ⇒ the ONE 404; metadata-only lookup, then the area guard, and the pair is never read (no findTurnPair), no gate, no create",
+      createRevokedKnown.status === 404 && calls.join() === "createMeta,area" && !JSON.stringify(createRevokedKnown.body).includes("stored"), calls);
     granted = true;
+    calls.length = 0;
+    const createReplay = await handleCreateConversation(V, body, { ...deps(), ...throwing0() });
+    check("CREATE: the same known key with the area granted ⇒ 200 replay; order createMeta → area → pair, no gate, no create, no model",
+      createReplay.status === 200 && calls.join() === "createMeta,area,pair", calls);
+    createMeta = { kind: "DELETED" };
+    calls.length = 0;
+    check("CREATE: a known key of a DELETED conversation ⇒ the ONE 404 before the area guard or any content read", (await handleCreateConversation(V, body, deps())).status === 404 && calls.join() === "createMeta", calls);
+    createMeta = null;
+    replay = null;
+    calls.length = 0;
+    const order = await handleAppendMessage(V, CONV, { bad: true }, deps());
+    check("APPEND: body validation comes AFTER the area check (find → area → 400), and before any replay read", order.status === 400 && calls.join() === "find,area", calls);
     const bad = await run({ question: "q" });
     check("a bad body ⇒ 400 VALIDATION, nothing stored", bad.status === 400 && !calls.includes("append"));
     const long501 = await run({ ...body, question: "x".repeat(501) });
@@ -375,6 +433,32 @@ async function main(): Promise<void> {
   const turnSrc = code(src("lib/platform/intelligence/ai/conversations/turn.ts"));
   check("turn.ts is pure: no db, env, clock (beyond the timeout signal) or provider import", !/@\/lib\/db|@\/lib\/env|new Date\(|Date\.now|generateWithTools|from "openai"|withTenantDb|systemDb/.test(turnSrc));
   const handlers = code(src("lib/platform/intelligence/ai/conversations/handlers.ts"));
+  {
+    // S2 on #431 — the gate order, pinned exactly as it is.
+    const ap = handlers.slice(handlers.indexOf("export async function handleAppendMessage"));
+    const seqA = ["if (!CONVERSATION_ID.test(id)) return notFound();", "deps.store.findLiveConversation(v.operatorId, id)", "deps.areaAccess(meta.area, v.operatorId)",
+      "parseTurnBody(body)", "deps.store.findTurnPair(v.operatorId, id, parsed.clientRequestId)", "await admit(v, deps)", "deps.store.appendTurn(", "runAndSettle("];
+    const posA = seqA.map((x) => ap.indexOf(x));
+    check("APPEND gate order pinned: id shape → live owned conversation → OWN area fresh → body → replay lookup → admission → append → turn",
+      posA.every((p, i) => p >= 0 && (i === 0 || p > posA[i - 1])), seqA.map((x, i) => `${posA[i]} ${x}`));
+    const cr = handlers.slice(handlers.indexOf("export async function handleCreateConversation"), handlers.indexOf("export async function handleAppendMessage"));
+    const seqC = ["parseTurnBody(body)", "deps.store.findCreateConversation(v.operatorId, parsed.clientRequestId)", "deps.areaAccess(prior.conversation.area, v.operatorId)",
+      "deps.store.findTurnPair(v.operatorId, prior.conversation.id, parsed.clientRequestId)", "await admit(v, deps)", "deps.areaAccess(v.area, v.operatorId)", "deps.store.createConversation(", "runAndSettle("];
+    const posC = seqC.map((x) => cr.indexOf(x));
+    check("CREATE gate order pinned: body → metadata-only replay lookup → its OWN area fresh → only then the pair → admission → the new area's guard → create → turn",
+      posC.every((p, i) => p >= 0 && (i === 0 || p > posC[i - 1])), seqC.map((x, i) => `${posC[i]} ${x}`));
+    const adm = handlers.slice(handlers.indexOf("async function admit("), handlers.indexOf("const VALIDATION"));
+    check("admission order pinned: kill switch → freeze → daily cap", adm.indexOf("deps.admission()") < adm.indexOf("deps.freeze()") && adm.indexOf("deps.freeze()") < adm.indexOf("deps.turns("));
+    const storeSrc = code(src("lib/platform/intelligence/ai/conversations/store.ts"));
+    const meta = (fn: string) => { const i = storeSrc.indexOf(`export async function ${fn}(`); const j = storeSrc.indexOf("\nexport ", i + 10); return storeSrc.slice(i, j); };
+    check("the lookups before the area guard read NO message and decrypt nothing (findLiveConversation, findCreateConversation)",
+      ["findLiveConversation", "findCreateConversation"].every((f) => { const b = meta(f); return b.length > 0 && !/platformAiMessage|toMessageRecord|decrypt|existingPair/.test(b); }));
+    const createRoute = code(src("app/api/platform/ai/conversations/route.ts"));
+    const cpost = createRoute.slice(createRoute.indexOf("export async function POST"));
+    const seqR = ["if (!env.isPlatformAiConversationsEnabled) return", "requireUser()", "requireFreshPlatformAccess(", "if (!auth.grant) return FORBIDDEN();", `limitPlatformMutation(auth.user.id, "platform-ai-conversation-create")`, "req.json()", "handleCreateConversation("];
+    const posR = seqR.map((x) => cpost.indexOf(x));
+    check("CREATE route order pinned: flag → session → fresh route guard → break-glass refused → limiter → body → handler", posR.every((p, i) => p >= 0 && (i === 0 || p > posR[i - 1])), posR);
+  }
   check("handlers: a replay is answered BEFORE the admission gates (no model, no daily turn); the area guard runs BEFORE anything is stored",
     handlers.indexOf("deps.store.findTurnPair(v.operatorId, id, parsed.clientRequestId)") < handlers.indexOf("const refused = await admit(v, deps);", handlers.indexOf("export async function handleAppendMessage"))
       && handlers.indexOf("const access = await deps.areaAccess(v.area, v.operatorId);") < handlers.indexOf("deps.store.createConversation("));
