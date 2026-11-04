@@ -35,11 +35,11 @@ import { hashSecurityIdentifier } from "@/lib/security/identifier-hash";
 import { auditInsert, buildAuditData } from "@/lib/audit";
 import { requiresTotpEnrollment } from "@/lib/auth-totp-policy";
 import { PlatformSettingKey } from "@/lib/platform-settings";
-import { verifyTOTP } from "@/lib/totp";
+import { matchTOTPStep } from "@/lib/totp";
 import { sendEmail } from "@/lib/email/send";
 import { accountReactivatedAlert, accountDeletionCancelledAlert } from "@/lib/email/security-alerts";
 import { createNotification } from "@/lib/notifications/create";
-import { UserRole } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
 import { resolveRevocation, invalidateSession, setCachedRevocation } from "@/lib/session-cache";
 import { readSessionClaims, factsFromRow, judgeSession, SESSION_ROW_SELECT, SESSION_TOKEN_SHAPE } from "@/lib/auth/session-proof";
 import { clientTokenPatch } from "@/lib/auth/token-update";
@@ -458,7 +458,20 @@ export const authOptions: NextAuthOptions = {
             catch {
               return null; // corrupted secret — fail safe
             }
-            if (!verifyTOTP(totpCode, secret, 1)) {
+            const step = matchTOTPStep(totpCode, secret, 1);
+            // SEC-012 — single-use per step. Claim the matched 30 s step (same
+            // primitive as the 2FA-disable route, B4): a second login presenting a
+            // code from an already-claimed step hits the (key, windowStart) unique
+            // index and is refused, so a captured code cannot be replayed inside
+            // its validity window. fm_auth holds INSERT on RateLimit (pre-identity).
+            const claimed = step !== null && await db.rateLimit.create({
+              data:   { key: `user:totp-login-step:${user.id}`, windowStart: new Date(step * 30_000), count: 1 },
+              select: { id: true },
+            }).then(() => true, (e: unknown) => {
+              if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return false;
+              throw e;
+            });
+            if (!claimed) {
               await recordLoginFailure({
                 reason: "totp_invalid", identifier, ipAddress, userAgent,
                 userId: user.id, role: user.role, userEmail: user.email,
