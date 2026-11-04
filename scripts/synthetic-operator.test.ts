@@ -180,6 +180,9 @@ check("S2 Fix B: the ONE raw read is the principal assertion, a read-only pg_rol
 check("S2 Fix A: cleanup shreds EVERY secret file (credentials.json, totp.json)",
   /for \(const f of SECRET_FILES\) shredFile\(path\.join\(recordDir, f\)\);/.test(src)
     && /export const SECRET_FILES = \[CREDENTIALS_FILE, TOTP_FILE\] as const;/.test(readFileSync("scripts/lib/synthetic-operator.files.ts", "utf8")));
+check("every interactive transaction carries the remote-target bounds (TX_OPTIONS: maxWait 10 s, timeout 60 s)",
+  /const TX_OPTIONS = \{ maxWait: 10_000, timeout: 60_000 \} as const;/.test(src)
+    && (src.match(/db\.\$transaction\(/g) ?? []).length === 3 && (src.match(/\}, TX_OPTIONS\)/g) ?? []).length === 3);
 check("the purge dispatch is printed, never run", /ops:platform-ai-conversations-purge -- --env=preview/.test(src) && !/spawn|execSync|exec\(/.test(src));
 check("the role written is SYNTHETIC_ROLE and no SYSTEM_ADMIN appears", /role: SYNTHETIC_ROLE/.test(src) && !/SYSTEM_ADMIN/.test(src));
 check("no session-level SET is issued", !/\bSET\s+(SESSION|LOCAL|default_transaction|role)/i.test(src));
