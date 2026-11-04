@@ -48,8 +48,9 @@
  *   PHASE Z (one)        the ownership lens — rows FK'd to the user
  *   PHASE AI (two)       B11 PR D — the operator's own LIVE Platform AI
  *                        conversations: one directory read (the areas held
- *                        today), then one read of the conversations; the decrypt
- *                        and the S2 Q5 projection run after both close
+ *                        today), then one read of the conversations (messages
+ *                        of HELD areas only); the decrypt and the projection run
+ *                        after both close
  *
  * ⚠️ DO NOT "SIMPLIFY" THIS INTO A SINGLE `withTenantDb`. The things that happen
  * BETWEEN the phases are exactly what the split exists for, and they are not
@@ -345,22 +346,24 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
   ] as const));
 
   // ── PHASE AI — the operator's own Platform AI conversations (B11 PR D) ─────
-  // Design §7.3 (S2 B6, Q5 RULED; REQUIRED 4). Inside THIS export's authorization
-  // path only (POST /api/user/export → requireFreshUser → the subject's own id):
+  // Design §7.3 (S2 B6; REQUIRED 4; the S2 STRICT export ruling, superseding Q5).
+  // Inside THIS export's authorization path only (POST /api/user/export →
+  // requireFreshUser → the subject's own id):
   //   · readConversationsForExport — the ONE data module, withTenantDb, owner-only
-  //     RLS; SOFT-DELETED conversations are EXCLUDED; decrypted after its
-  //     transaction closes;
+  //     RLS; SOFT-DELETED conversations are EXCLUDED; only HELD areas' messages are
+  //     ever read, and they are decrypted after its transaction closes;
   //   · the areas held today = ONE directory read (ACTIVE grants — the list
   //     route's rule; no per-area fresh guard, so no false OBS-009 denial rows),
   //     and NONE when operator 2FA is enforced and the operator has no second
   //     factor (the guard's own SEC-PLAT-1 decision);
   //   · a held area exports questions and rendered answers; a lost area exports
-  //     questions plus timestamps only, with the omission noted.
+  //     NO content — one line "N conversations in <area> omitted: you no longer
+  //     have access" and a manifest count per area.
   // Not gated on the conversations flags: subject access covers what is STORED,
   // and with the flags off nothing is (a flag-off environment has 0 rows).
   const totpRefused = decideOperatorTotpRefusal({ role: user.role, totpEnabled: user.totpEnabled, enforced: env.isOperatorTotpEnforced });
   const heldAreas = totpRefused ? new Set<never>() : grantedAreasFrom(await loadPlatformDirectory(userId));
-  const platformAi = projectPlatformAiConversationsForExport(await readConversationsForExport(userId), heldAreas);
+  const platformAi = projectPlatformAiConversationsForExport(await readConversationsForExport(userId, heldAreas), heldAreas);
 
   const auditHistory = auditRows.map((r) => {
     const meta = (r.metadata ?? null) as { reason?: unknown } | null;
@@ -461,6 +464,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     // authority (fm_system), with this user's ids only (lib/platform/incidents/subject-export.ts).
     syncIncidents: await readExportIncidents(userId),
     platformAiConversations: platformAi.conversations,
+    platformAiConversationsOmitted: platformAi.omitted,
   };
 
   const counts: Record<string, number> = {
@@ -479,6 +483,8 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
     syncIncidentArchives: data.syncIncidents.archived.length,
     sessions: data.security.sessions.length,
     platformAiConversations: data.platformAiConversations.length,
+    // S2 STRICT — the count per LOST area (no content of those conversations is exported).
+    ...Object.fromEntries(data.platformAiConversationsOmitted.map((o) => [`platformAiConversationsOmitted:${o.area}`, o.count])),
   };
 
   const notes = [
@@ -503,12 +509,7 @@ export async function assembleUserExport(userId: string): Promise<ExportData> {
       "Answers are as they were shown when written; their figures are as of then.",
     );
   }
-  if (platformAi.answersOmittedCount > 0) {
-    notes.push(
-      `${platformAi.answersOmittedCount} Platform AI conversation(s) are in an area you no longer have access to: ` +
-      `their questions and times are included, their answers are omitted (see answersOmitted on each).`,
-    );
-  }
+  for (const o of data.platformAiConversationsOmitted) notes.push(`Platform AI: ${o.note}.`);
   if (truncated) {
     notes.push(`Transactions were capped at the newest ${data.transactions.length} rows (KD-7 5,000-row limit).`);
   }

@@ -518,6 +518,21 @@ async function main() {
       check("the manual dispatch is never 'misordered' (it is the remedy) and always enabled", manual.misordered === false && manual.enabled === true);
     }
     {
+      // S2 / OD-7 activation (a): EVERY scheduled run leaves evidence — the JobRun summary IS the
+      // purge-trash result, so the zero-count section is stored, and the staleness authority reads it as a success.
+      const { toJsonSummary } = await import("@/lib/jobs/run");
+      const { isSuccessfulPurgeSummary } = await import("@/lib/platform/intelligence/ai/conversations/purge-health");
+      const stored = toJsonSummary({ purgedGoals: 0, retention: zero }) as { retention?: { platformAiConversations?: Record<string, unknown> } };
+      check("a ZERO-count enabled run is stored in the JobRun summary with its counts (no content) and reads as a successful purge",
+        JSON.stringify(stored.retention?.platformAiConversations) === JSON.stringify({ enabled: true, conversations: 0, messages: 0, batches: 1, exhausted: true })
+          && isSuccessfulPurgeSummary(stored));
+      check("…a misordered or errored run is NOT read as a success", !isSuccessfulPurgeSummary(toJsonSummary({ purgedGoals: 0, retention: mis })) && !isSuccessfulPurgeSummary(toJsonSummary({ purgedGoals: 0, retention: bad })));
+      calls.length = 0; audits.length = 0;
+      await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(true, [{ conversations: 500, messages: 5 }, new Error("mid-run")]) }));
+      check("a run that ERRORS after removing rows still writes its counts-only audit row, marked failed: true (never read as a successful purge)",
+        audits.length === 1 && JSON.stringify(audits[0]) === JSON.stringify({ conversations: 500, messages: 5, batches: 1, exhausted: false, failed: true }), JSON.stringify(audits));
+    }
+    {
       const { readFileSync } = await import("node:fs");
       const src = readFileSync("jobs/purge-trash.ts", "utf8");
       check("purge-trash throws the purge failure ONLY after runDataRetention returned (every rule has run)",

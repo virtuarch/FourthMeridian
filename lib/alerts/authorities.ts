@@ -19,6 +19,7 @@ import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
 import type { AnomalyWindow } from "@/lib/alerts/anomaly";
+import type { PlatformAiPurgeHealth } from "@/lib/platform/intelligence/ai/conversations/purge-health";
 
 /** The authority a rule reads. `provider-quota` names the not-yet-shipped
  *  OPS-5 S3 authority the dormant `quota-low` rule will bind to.
@@ -35,6 +36,7 @@ export type AlertAuthority =
   | "sync-incidents"
   | "policy-assignments"
   | "provider-usage"
+  | "platform-ai-purge"
   | "provider-quota";
 
 /**
@@ -135,4 +137,6 @@ export interface AuthorityOutputs {
   aiSpendAnomaly?: AiSpendAnomalyFacts | null;
   /** Quota/cost anomaly — Plaid calls per day. Optional: absent = did not gather. */
   plaidCallAnomaly?: PlaidCallAnomalyFacts | null;
+  /** B11 PR D — Platform AI conversation purge staleness. Optional: absent = did not gather. */
+  platformAiPurge?: PlatformAiPurgeHealth | null;
 }

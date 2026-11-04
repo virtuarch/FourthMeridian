@@ -1,10 +1,11 @@
 /**
  * lib/platform/intelligence/ai/conversations/export.test.ts  (B11 PR D — the subject-access export, S2 Q5)
  *
- * The pure projection (held area ⇒ everything; lost area ⇒ questions plus
- * timestamps, answers omitted and noted), and the pins on where the export
- * reads, decrypts and decides (lib/export/assemble.ts + the data module). The
- * real read is proven on real PostgreSQL roles in
+ * The pure projection under the S2 STRICT ruling (held area ⇒ everything;
+ * lost area ⇒ a COUNT and a fixed line, no content), and the pins on where the
+ * export reads, decrypts and decides (lib/export/assemble.ts + the data
+ * module). The real read — including a decrypt SPY proving nothing of a lost
+ * area is decrypted — is proven on real PostgreSQL roles in
  * scripts/platform-ai-conversations-acceptance.ts ([export]).
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/platform/intelligence/ai/conversations/export.test.ts
@@ -13,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { PlatformArea } from "@prisma/client";
-import { answersOmittedNote, projectPlatformAiConversationsForExport, renderAnswerText } from "./export";
+import { omittedConversationsNote, projectPlatformAiConversationsForExport, renderAnswerText } from "./export";
 import type { StoredAnswerV1 } from "./answer";
 import type { ExportConversationRecord, MessageRecord } from "./store";
 
@@ -63,28 +64,32 @@ const unreadable = conv("cvbad", "PLATFORM_OPS", [
   msg({ id: "a5", role: "ASSISTANT", replyToId: "u5", content: null, unreadable: true }),
 ]);
 
-console.log("1. the projection (S2 Q5)");
+console.log("1. the projection (S2 STRICT export ruling)");
 {
-  const out = projectPlatformAiConversationsForExport([held, lost, unreadable], new Set<PlatformArea>(["PLATFORM_OPS"]));
-  const [h, l, u] = out.conversations;
+  const held2 = new Set<PlatformArea>(["PLATFORM_OPS"]);
+  // What the data module hands back: held conversations read in full, lost areas as counts only.
+  const out = projectPlatformAiConversationsForExport({ conversations: [held, unreadable], omitted: [{ area: "SECURITY_OPS", count: 2 }] }, held2);
+  const [h, u] = out.conversations;
   check("a HELD area exports every message, in order, with the answer as rendered text",
-    h.answersIncluded && h.answersOmitted === null && h.messages.length === 6 && h.messages[1].text === "There are 3 open incidents — see the incident list.", h.messages[1]);
+    out.conversations.length === 2 && h.messages.length === 6 && h.messages[1].text === "There are 3 open incidents — see the incident list.", h.messages[1]);
   check("…with its citations and code-written notes", JSON.stringify(h.messages[1].citations) === JSON.stringify(ANSWER.citations) && h.messages[1].notes?.[0] === ANSWER.notes[0]);
   check("links are exported as TEXT only (no href, no page id, no params)", !JSON.stringify(h).includes("PLATFORM_OPS:platform-incidents") && !JSON.stringify(h).includes("href") && !JSON.stringify(h).includes("\"status\":\"open\""));
   check("evidence refs and message ids are not exported", !JSON.stringify(out).includes("evidenceRefs") && !/"(u1|a1|u9|a9)"/.test(JSON.stringify(out)));
   check("a FAILED reply exports its code and no text; a PENDING one exports no text",
     h.messages[3].status === "FAILED" && h.messages[3].failureCode === "TIMEOUT" && h.messages[3].text === null && h.messages[5].status === "PENDING" && h.messages[5].text === null);
   check("timestamps are ISO strings", h.createdAt === T(0).toISOString() && h.lastActivityAt === T(5).toISOString() && h.messages[3].completedAt === T(4).toISOString());
-  check("a LOST area exports QUESTIONS plus timestamps only — every ASSISTANT message omitted",
-    !l.answersIncluded && l.messages.length === 1 && l.messages[0].role === "USER" && l.messages[0].text === "Any failed logins spike?" && l.messages[0].createdAt === T(0).toISOString());
-  check("…the answer text never appears anywhere in the bundle", !JSON.stringify(out).includes("SECRET-SECURITY-ANSWER"));
-  check("…and the omission is noted with the area's label (S2 Q5 wording)", l.answersOmitted === answersOmittedNote("SECURITY_OPS") && /^Answers omitted: you no longer have access to .+\.$/.test(l.answersOmitted ?? "") && !l.answersOmitted!.includes("SECURITY_OPS"));
-  check("answersOmittedCount counts the lost conversations", out.answersOmittedCount === 1);
+  check("a LOST area is a COUNT and the S2 line only — area, label, count, note; nothing else",
+    out.omitted.length === 1 && Object.keys(out.omitted[0]).sort().join() === "area,areaLabel,count,note" && out.omitted[0].count === 2
+      && out.omitted[0].note === omittedConversationsNote(2, "SECURITY_OPS") && /^2 conversations in .+ omitted: you no longer have access$/.test(out.omitted[0].note) && !out.omitted[0].note.includes("SECURITY_OPS"));
   check("an unreadable stored value is exported as unavailable, never as text", u.messages.every((m) => m.unavailable && m.text === null));
-  const none = projectPlatformAiConversationsForExport([held], new Set());
-  check("NO held area (e.g. operator 2FA refused) ⇒ every conversation is questions-only", none.conversations[0].messages.every((m) => m.role === "USER") && none.answersOmittedCount === 1);
+  const leaked = projectPlatformAiConversationsForExport({ conversations: [held, lost], omitted: [] }, held2);
+  check("DEFENCE IN DEPTH: a lost-area conversation handed in anyway is DROPPED and counted — no question, answer, id or label",
+    leaked.conversations.length === 1 && leaked.omitted.length === 1 && leaked.omitted[0].count === 1
+      && !/Any failed logins spike|SECRET-SECURITY-ANSWER|cvlost/.test(JSON.stringify(leaked)));
+  const none = projectPlatformAiConversationsForExport({ conversations: [], omitted: [{ area: "PLATFORM_OPS", count: 3 }, { area: "SECURITY_OPS", count: 1 }] }, new Set());
+  check("NO held area (e.g. operator 2FA refused) ⇒ nothing but per-area counts", none.conversations.length === 0 && none.omitted.map((o) => `${o.area}:${o.count}`).join() === "PLATFORM_OPS:3,SECURITY_OPS:1");
   check("renderAnswerText concatenates every span's text", renderAnswerText(ANSWER) === "There are 3 open incidents — see the incident list.");
-  check("no conversation ⇒ an empty section", projectPlatformAiConversationsForExport([], new Set()).conversations.length === 0);
+  check("nothing stored ⇒ an empty section", (() => { const e = projectPlatformAiConversationsForExport({ conversations: [], omitted: [] }, new Set()); return e.conversations.length === 0 && e.omitted.length === 0; })());
 }
 
 console.log("2. pins: where the export reads, decrypts and decides");
@@ -93,19 +98,24 @@ console.log("2. pins: where the export reads, decrypts and decides");
   const at = store.indexOf("export async function readConversationsForExport");
   const fn = store.slice(at, store.indexOf("async function", at + 30));
   check("the export read is in the ONE data module, through withTenantDb, owner-scoped AND live-only (soft-deleted EXCLUDED)",
-    /withTenantDb\(operatorId, \(tx\) => tx\.platformAiConversation\.findMany\(\{\s*where: \{ operatorUserId: operatorId, deletedAt: null \}/.test(fn), fn.slice(0, 300));
+    /withTenantDb\(operatorId, async \(tx\) => \{\s*const metas = await tx\.platformAiConversation\.findMany\(\{\s*where: \{ operatorUserId: operatorId, deletedAt: null \},[\s\S]*?select: CONVERSATION_SELECT,/.test(fn), fn.slice(0, 400));
+  check("S2 STRICT: messages are selected ONLY for HELD conversations (lost areas are never read past metadata)",
+    /const held = metas\.filter\(\(c\) => heldAreas\.has\(c\.area\)\);/.test(fn) && /tx\.platformAiMessage\.findMany\(\{\s*where: \{ conversationId: \{ in: held\.map\(\(c\) => c\.id\) \}/.test(fn)
+      && (fn.match(/platformAiMessage\./g) ?? []).length === 1 && !/messages: \{/.test(fn));
   check("…it writes nothing (no abandon, no update) and decrypts AFTER the transaction (toMessageRecord outside withTenantDb)",
-    !/updateMany|update\(|create\(|abandonStale|\$executeRaw/.test(fn) && fn.indexOf("toMessageRecord") > fn.indexOf("}));"));
+    !/updateMany|update\(|create\(|abandonStale|\$executeRaw/.test(fn) && fn.indexOf("toMessageRecord") > fn.indexOf("return { metas, held, messages };"));
   const exp = code(read("lib/platform/intelligence/ai/conversations/export.ts"));
   check("the projection is pure (no db, env, key, clock or I/O)", !/@\/lib\/db|@\/lib\/env|encryption|new Date\(\)|Date\.now|console\./.test(exp));
   const asm = code(read("lib/export/assemble.ts"));
   check("assemble.ts reads the conversations ONLY through the data module's export reader (never a model or systemDb)",
-    /readConversationsForExport\(userId\)/.test(asm) && !/\.platformAiConversation\.|\.platformAiMessage\.|PLATFORM_AI_MESSAGE|systemDb/.test(asm));
+    /readConversationsForExport\(userId, heldAreas\)/.test(asm) && !/\.platformAiConversation\.|\.platformAiMessage\.|PLATFORM_AI_MESSAGE|systemDb/.test(asm));
   check("the held areas = ONE directory read of the SUBJECT (no per-area fresh guard ⇒ no false OBS-009 rows)",
     /grantedAreasFrom\(await loadPlatformDirectory\(userId\)\)/.test(asm) && !/requireFreshPlatformAccess|requirePlatformAccess|conversationAreaAccess/.test(asm));
   check("operator 2FA enforced and missing ⇒ NO held area (the guard's own SEC-PLAT-1 decision)",
     /const totpRefused = decideOperatorTotpRefusal\(\{ role: user\.role, totpEnabled: user\.totpEnabled, enforced: env\.isOperatorTotpEnforced \}\);\s*const heldAreas = totpRefused \? new Set<never>\(\) :/.test(asm));
-  check("the section reaches data.json and the manifest counts", /platformAiConversations: platformAi\.conversations/.test(asm) && /platformAiConversations: data\.platformAiConversations\.length/.test(asm));
+  check("the section reaches data.json and the manifest counts — with a count PER LOST AREA",
+    /platformAiConversations: platformAi\.conversations/.test(asm) && /platformAiConversationsOmitted: platformAi\.omitted/.test(asm)
+      && /platformAiConversations: data\.platformAiConversations\.length/.test(asm) && /`platformAiConversationsOmitted:\$\{o\.area\}`, o\.count/.test(asm));
   const route = code(read("app/api/user/export/route.ts"));
   check("the ONE caller is the subject's own fresh-session export (requireFreshUser → assembleUserExport(user.id))",
     /const \[user, err\] = await requireFreshUser\(\);/.test(route) && /assembleUserExport\(user\.id\)/.test(route));

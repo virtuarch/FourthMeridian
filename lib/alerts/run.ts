@@ -50,6 +50,7 @@ import {
 import { captureAlertDeliveryFailure } from "@/lib/alerts/delivery-capture";
 import { latestAlertEvaluation, type AlertLatestEvaluation } from "@/lib/alerts/latest-evaluation";
 import { currentJobRun } from "@/lib/jobs/run";
+import { getPlatformAiPurgeHealth } from "@/lib/platform/intelligence/ai/conversations/purge-health.server";
 import {
   FLAP_RECOVERIES, FLAP_STABLE_EVALUATIONS, FLAP_WINDOW_MS,
   advanceFlapping, advanceRecovery, cleanlyEvaluatedRules, clearRecoveredSuppression, deliveredFlapNotices, deliveredRecoveryKeys,
@@ -112,7 +113,7 @@ function captureIsExpected(environment: string | undefined): boolean {
 // ── Real default I/O ─────────────────────────────────────────────────────────────
 
 async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
-  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly] = await Promise.all([
+  const [jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly, platformAiPurge] = await Promise.all([
     checkScheduledJobHealth().catch((e) => (warn("job-health", e), null)),
     getConnectionHealth().catch((e) => (warn("connection-health", e), null)),
     checkResourceFreshness().catch((e) => (warn("resource-freshness", e), null)),
@@ -137,8 +138,10 @@ async function gatherAuthoritiesDefault(): Promise<AuthorityOutputs> {
     // windows, and Plaid calls per UTC day from the usage ledger.
     getAiSpendAnomalyFacts().catch((e) => (warn("ai-spend-anomaly", e), null)),
     getPlaidCallAnomalyFacts().catch((e) => (warn("plaid-call-anomaly", e), null)),
+    // B11 PR D — the Platform AI conversation purge's staleness (reads nothing while conversations are off).
+    getPlatformAiPurgeHealth().catch((e) => (warn("platform-ai-purge", e), null)),
   ]);
-  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly };
+  return { jobHealth, connectionHealth, resourceFreshness, aiFailures, aiSpend, syncIncidents, policyAssignments, aiSpendAnomaly, plaidCallAnomaly, platformAiPurge };
 }
 
 /** Unresolved SyncIssue rows scanned per cycle (the projection's default page). */

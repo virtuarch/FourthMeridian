@@ -57,8 +57,12 @@ export interface PlatformAiPurgeDeps {
   enabled: boolean;
   /** One call of the definer function: `SELECT * FROM fm_purge_platform_ai_conversations($limit)`. */
   call(limit: number): Promise<PlatformAiPurgeCounts>;
-  /** One AuditLog row (fm_system INSERT): counts only. */
-  audit(detail: { conversations: number; messages: number; batches: number; exhausted: boolean }): Promise<void>;
+  /**
+   * One AuditLog row (fm_system INSERT): counts only. `failed: true` is present
+   * exactly when the run errored part-way (PR D: so a failed run's row is never
+   * read as a successful purge by the staleness signal, ./purge-health.ts).
+   */
+  audit(detail: { conversations: number; messages: number; batches: number; exhausted: boolean; failed?: true }): Promise<void>;
   /**
    * Write the counts-only audit row even when nothing was purged. The manual
    * dispatch (scripts/platform-ai-conversations-purge-dispatch.ts — Preview runs
@@ -121,7 +125,10 @@ export async function runPlatformAiConversationPurge(deps: PlatformAiPurgeDeps):
   }
   if (out.conversations > 0 || out.messages > 0 || deps.auditEveryRun) {
     try {
-      await deps.audit({ conversations: out.conversations, messages: out.messages, batches: out.batches, exhausted: out.exhausted });
+      await deps.audit({
+        conversations: out.conversations, messages: out.messages, batches: out.batches, exhausted: out.exhausted,
+        ...(out.error !== undefined ? { failed: true as const } : {}),
+      });
     } catch {
       console.error("[data-retention] platform-ai-conversations purge audit row failed");
     }

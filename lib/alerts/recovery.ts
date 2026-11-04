@@ -167,6 +167,7 @@ export function cleanlyEvaluatedRules(
       case "ai-spend-anomaly":
       case "ai-spend-user-anomaly": ok = authorities.aiSpendAnomaly != null; break;
       case "plaid-call-anomaly": ok = authorities.plaidCallAnomaly != null; break;
+      case "platform-ai-purge-late": ok = authorities.platformAiPurge != null; break;
       default:                   ok = false; // dormant kinds have no authority
     }
     if (ok) out.add(rule.id);

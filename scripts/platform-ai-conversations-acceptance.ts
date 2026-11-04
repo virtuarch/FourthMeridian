@@ -22,8 +22,13 @@
  *           on #424): the same rule once, as fm_system, audited counts every
  *           run (zero included); --env=production refused before any contact
  *   [export] PR D — the subject-access export: live conversations only
- *           (soft-deleted excluded), read-only, S2 Q5 by the areas held today,
- *           through the REAL assembleUserExport
+ *           (soft-deleted excluded), read-only; S2 STRICT: a lost area is a
+ *           COUNT only, and a decrypt SPY proves none of its rows is decrypted;
+ *           through the REAL assembleUserExport (no grant / grant / revoked / regrant)
+ *   [purge-health] PR D — the staleness authority over the REAL ledgers
+ *   [restore] PR D — the DR rehearsal step: a backup restored into a second
+ *           throwaway database brings purged rows back; the pre-enable check and
+ *           the purge dispatch against the RESTORED copy remove them, counted
  *   [pre-disable] PR D — the S2 disable order: the counts-only check FAILS
  *           while rows remain, FAILS CLOSED for a non-bypass reader, PASSES empty
  *
@@ -365,46 +370,58 @@ async function main(): Promise<number> {
     const cp = await store.createConversation({ operatorId: A, area: "SECURITY_OPS", createRequestId: randomUUID(), scrubbedQuestion: "Export pending question" });
     if (cp.kind === "CREATED") one(`update "PlatformAiMessage" set "createdAt" = "createdAt" - interval '5 minutes', "purgeAfter" = "purgeAfter" - interval '5 minutes' where id='${cp.pair.assistant.id}'; select 'ok';`);
     const liveA = one(`select string_agg(id, ',' order by id) from "PlatformAiConversation" where "operatorUserId"='${A}' and "deletedAt" is null;`);
+    const opsA = one(`select string_agg(id, ',' order by id) from "PlatformAiConversation" where "operatorUserId"='${A}' and "deletedAt" is null and area='PLATFORM_OPS';`);
+    const secCount = Number(one(`select count(*) from "PlatformAiConversation" where "operatorUserId"='${A}' and "deletedAt" is null and area='SECURITY_OPS';`));
+    const secCipher = new Set(one(`select coalesce(string_agg(m."contentEncrypted", E'\\n'), '') from "PlatformAiMessage" m join "PlatformAiConversation" c on c.id = m."conversationId" where c."operatorUserId"='${A}' and c.area='SECURITY_OPS' and m."contentEncrypted" is not null;`).split("\n").filter(Boolean));
     const beforeRows = total();
     const actBefore = one(`select string_agg("lastActivityAt"::text, ',' order by id) from "PlatformAiConversation";`);
-    const ex = await store.readConversationsForExport(A);
-    check(66, "readConversationsForExport = EXACTLY the operator's LIVE conversations (the soft-deleted one EXCLUDED)",
-      ex.map((c) => c.id).sort().join(",") === liveA && !ex.some((c) => c.id === cid) && cx.kind === "CREATED", `${ex.map((c) => c.id).sort().join(",")} vs ${liveA}`);
-    const mine = ex.find((c) => cx.kind === "CREATED" && c.id === cx.conversation.id);
-    check(67, "…decrypted inside the module: the scrubbed question and the typed answer read back",
+    const seen: string[] = [];
+    const spy = (c: string) => { seen.push(c); return enc.decryptWithPurpose(c, enc.EncryptionPurpose.PLATFORM_AI_MESSAGE); };
+    const held = new Set(["PLATFORM_OPS"] as const);
+    const ex = await store.readConversationsForExport(A, held, { decrypt: spy });
+    check(66, "readConversationsForExport = EXACTLY the operator's LIVE conversations of the HELD area in full (the soft-deleted one EXCLUDED); the lost area a COUNT",
+      ex.conversations.map((c) => c.id).sort().join(",") === opsA && !ex.conversations.some((c) => c.id === cid) && cx.kind === "CREATED"
+        && JSON.stringify(ex.omitted) === JSON.stringify([{ area: "SECURITY_OPS", count: secCount }]) && secCount > 0 && liveA.split(",").length === ex.conversations.length + secCount,
+      `${ex.conversations.map((c) => c.id).sort().join(",")} vs ${opsA}; omitted=${JSON.stringify(ex.omitted)} sec=${secCount}`);
+    const mine = ex.conversations.find((c) => cx.kind === "CREATED" && c.id === cx.conversation.id);
+    check(67, "…the held conversations decrypt inside the module: the scrubbed question and the typed answer read back",
       mine?.messages[0]?.content === qx && typeof mine?.messages[1]?.content === "object", JSON.stringify(mine?.messages.map((m) => m.role)));
-    check(68, "the export WROTE nothing: no row added or removed, no lastActivityAt moved, the stale PENDING reply still PENDING",
+    check(68, "S2 STRICT — the decrypt SPY: NOT ONE lost-area (SECURITY_OPS) ciphertext reached the decrypt; only held-area rows did",
+      secCipher.size > 0 && seen.length > 0 && !seen.some((c) => secCipher.has(c)), `seen=${seen.length} lostCiphers=${secCipher.size}`);
+    check(69, "the export WROTE nothing: no row added or removed, no lastActivityAt moved, the stale PENDING reply still PENDING",
       total() === beforeRows && one(`select string_agg("lastActivityAt"::text, ',' order by id) from "PlatformAiConversation";`) === actBefore
         && (cp.kind !== "CREATED" || one(`select status::text from "PlatformAiMessage" where id='${cp.pair.assistant.id}';`) === "PENDING"));
-    const exB = await store.readConversationsForExport(B);
-    check(69, "another operator's export carries NONE of these conversations (owner-only RLS + the owner predicate)",
-      !exB.some((c) => ex.some((x) => x.id === c.id)) && exB.every((c) => one(`select "operatorUserId" from "PlatformAiConversation" where id='${c.id}';`) === B));
-    const heldOps = projectPlatformAiConversationsForExport(ex, new Set(["PLATFORM_OPS"] as const));
-    const j = JSON.stringify(heldOps);
-    check(70, "Q5 on real rows: the held area carries the rendered answer; the lost area (SECURITY_OPS) carries its question only, noted",
-      j.includes("EXPORT-ANSWER-TEXT 4") && heldOps.conversations.filter((c) => c.area === "SECURITY_OPS").every((c) => !c.answersIncluded && c.messages.every((m) => m.role === "USER") && !!c.answersOmitted)
-        && heldOps.answersOmittedCount === heldOps.conversations.filter((c) => c.area !== "PLATFORM_OPS").length, j.slice(0, 300));
+    const exB = await store.readConversationsForExport(B, new Set(["PLATFORM_OPS", "SECURITY_OPS"] as const));
+    check(70, "another operator's export carries NONE of A's conversations (owner-only RLS + the owner predicate)",
+      !exB.conversations.some((c) => ex.conversations.some((x) => x.id === c.id)) && exB.conversations.every((c) => one(`select "operatorUserId" from "PlatformAiConversation" where id='${c.id}';`) === B));
 
-    // The REAL assembler, end to end (POST /api/user/export's body): A holds NO grant yet ⇒ every answer omitted.
+    // The REAL assembler, end to end (POST /api/user/export's body): A holds NO grant yet ⇒ counts only.
     const { assembleUserExport } = await import("@/lib/export/assemble");
     const quietly = async <T,>(f: () => Promise<T>): Promise<T> => { const o = { log: console.log, error: console.error, warn: console.warn }; console.log = () => {}; console.error = () => {}; console.warn = () => {}; try { return await f(); } finally { Object.assign(console, o); } };
+    const allLive = liveA.split(",").length;
     const noGrant = await quietly(() => assembleUserExport(A));
-    const ng = JSON.stringify(noGrant.platformAiConversations);
-    check(71, "assembleUserExport: the section is present and counted; soft-deleted excluded; NO grant ⇒ questions only, answers omitted + the manifest note",
-      noGrant.platformAiConversations.length === ex.length && noGrant.manifest.counts.platformAiConversations === ex.length && !ng.includes(cid)
-        && !ng.includes("EXPORT-ANSWER-TEXT") && ng.includes(qx) && noGrant.manifest.notes.some((n) => /no longer have access/.test(n)), ng.slice(0, 300));
+    const ng = JSON.stringify({ c: noGrant.platformAiConversations, o: noGrant.platformAiConversationsOmitted, n: noGrant.manifest.notes });
+    check(71, "assembleUserExport, NO grant: NO conversation content at all (no question, answer or label) — per-area counts + the S2 line + manifest counts",
+      noGrant.platformAiConversations.length === 0 && noGrant.platformAiConversationsOmitted.reduce((n, o) => n + o.count, 0) === allLive
+        && !ng.includes(qx) && !ng.includes("EXPORT-ANSWER-TEXT") && !ng.includes("Export pending question") && !ng.includes(cid)
+        && noGrant.manifest.counts["platformAiConversationsOmitted:SECURITY_OPS"] === secCount
+        && noGrant.manifest.notes.some((n) => new RegExp(`^Platform AI: ${secCount} conversations in .+ omitted: you no longer have access\\.$`).test(n)), ng.slice(0, 400));
     one(`insert into "Space" (id,name,"platformArea","updatedAt") values ('sp_aiconv_ops','Platform Ops','PLATFORM_OPS',now());
       insert into "PlatformGrant" (id,"userId",area,level,"updatedAt") values ('pg_aiconv_a','${A}','PLATFORM_OPS','READ',now()); select 'ok';`);
     const withGrant = await quietly(() => assembleUserExport(A));
-    const wg = withGrant.platformAiConversations;
-    check(72, "…with an ACTIVE PLATFORM_OPS grant: that area's answers are included, SECURITY_OPS (not held) stays questions-only",
-      JSON.stringify(wg).includes("EXPORT-ANSWER-TEXT 4") && wg.filter((c) => c.area === "PLATFORM_OPS").every((c) => c.answersIncluded)
-        && wg.filter((c) => c.area === "SECURITY_OPS").every((c) => !c.answersIncluded && c.messages.every((m) => m.role === "USER")), JSON.stringify(wg.map((c) => [c.area, c.answersIncluded])));
+    const wg = JSON.stringify(withGrant.platformAiConversations);
+    check(72, "…an ACTIVE PLATFORM_OPS grant: that area exports in full; SECURITY_OPS (not held) is a count only, its question absent",
+      wg.includes("EXPORT-ANSWER-TEXT 4") && wg.includes(qx) && withGrant.platformAiConversations.every((c) => c.area === "PLATFORM_OPS")
+        && !JSON.stringify(withGrant).includes("Export pending question") && withGrant.manifest.counts["platformAiConversationsOmitted:SECURITY_OPS"] === secCount, wg.slice(0, 300));
     one(`update "PlatformGrant" set status='REVOKED', "revokedAt"=now() where id='pg_aiconv_a'; select 'ok';`);
     const revoked = await quietly(() => assembleUserExport(A));
-    check(73, "…the grant REVOKED ⇒ the answers are omitted again (a lost area)", !JSON.stringify(revoked.platformAiConversations).includes("EXPORT-ANSWER-TEXT"));
-    const exportedB = await quietly(() => assembleUserExport(B));
-    check(74, "another operator's FULL export never carries A's conversations", !exportedB.platformAiConversations.some((c) => ex.some((x) => x.id === c.id)));
+    check(73, "…the grant REVOKED ⇒ count only again (nothing of that area's content)",
+      revoked.platformAiConversations.length === 0 && !JSON.stringify(revoked).includes(qx) && revoked.manifest.counts["platformAiConversationsOmitted:PLATFORM_OPS"] === opsA.split(",").length);
+    one(`update "PlatformGrant" set status='ACTIVE', "revokedAt"=null where id='pg_aiconv_a'; select 'ok';`);
+    const regranted = await quietly(() => assembleUserExport(A));
+    check(74, "…REGRANTED ⇒ the full export of that area is restored; another operator's full export never carries A's conversations",
+      JSON.stringify(regranted.platformAiConversations).includes("EXPORT-ANSWER-TEXT 4")
+        && !(await quietly(() => assembleUserExport(B))).platformAiConversations.some((c) => ex.conversations.some((x) => x.id === c.id)));
   }
 
   // ── REQUIRED 3: account purge by FK cascade, as the account purge's role (fm_system) ──
@@ -490,6 +507,59 @@ async function main(): Promise<number> {
   check(65, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
     pre.ok && !preBad.ok && preBad.lines.filter((l) => !l.ok).every((l) => /OWNER bypasses RLS/.test(l.text)) && preBad.lines.filter((l) => !l.ok).length === 2,
     JSON.stringify(preBad.lines.filter((l) => !l.ok)));
+
+  // ── [purge-health] PR D — the staleness authority over the REAL ledgers ──
+  console.log("\n[purge-health] the purge-staleness authority over the real JobRun / AuditLog ledgers\n");
+  {
+    const { getPlatformAiPurgeHealth } = await import("@/lib/platform/intelligence/ai/conversations/purge-health.server");
+    const offH = await getPlatformAiPurgeHealth(new Date());   // this process: conversations flag unset ⇒ OFF, nothing read
+    const onH = await getPlatformAiPurgeHealth(new Date(), { conversationsOn: true });
+    const later = await getPlatformAiPurgeHealth(new Date(Date.now() + 37 * 3_600_000), { conversationsOn: true });
+    check(78, "real ledgers: flag OFF ⇒ OFF; ON right after the (zero-count) dispatch ⇒ OK; ON 37 h later with no new run ⇒ LATE",
+      offH.state === "OFF" && onH.state === "OK" && later.state === "LATE" && onH.lastSuccessAt !== null, JSON.stringify({ offH, onH, later }));
+  }
+
+  // ── [restore] PR D — the DR rehearsal step (OD-7 activation (b)): purge BEFORE the restored copy serves ──
+  console.log("\n[restore] a backup restored into a second throwaway database: purge before it serves, record the counts\n");
+  {
+    const src = new URL(owner); const srcDb = src.pathname.slice(1); const ownerUser = src.username;
+    const RESTORED = "aiconv_restored";
+    const at = (url: string) => { const u = new URL(url); u.pathname = `/${RESTORED}`; return u.toString(); };
+    one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_dr','${B}','PLATFORM_OPS','k-dr');
+      ${seedExchange("cv_dr", "dr1", "interval '100 days'")} ${seedExchange("cv_dr", "dr2", "interval '2 days'")} select 'ok';`);
+    const dx = (...a: string[]) => spawnSync("docker", ["exec", h.containerName, ...a], { encoding: "utf8" });
+    const dump = dx("pg_dump", "-U", ownerUser, "-d", srcDb, "-Fc", "-f", "/tmp/aiconv-backup.dump");
+    // Production moves on: the scheduled purge removes the expired exchange from the SOURCE.
+    asSys(`select * from fm_purge_platform_ai_conversations(500);`);
+    const goneAtSource = one(`select count(*) from "PlatformAiMessage" where id like 'dr1%';`) === "0";
+    const created = dx("createdb", "-U", ownerUser, RESTORED);
+    const restore = dx("pg_restore", "-U", ownerUser, "-d", RESTORED, "--no-owner", "/tmp/aiconv-backup.dump");
+    const back = psql(at(owner), `select count(*) from "PlatformAiMessage" where id like 'dr1%';`, false);
+    check(79, "RESTORE: a --no-owner restore of the backup brings back the exchange the source had already purged",
+      dump.status === 0 && created.status === 0 && goneAtSource && back.ok && back.out.trim() === "2", `${dump.stderr} ${created.stderr} ${restore.stderr.slice(0, 200)} back=${back.out}${back.err}`);
+    const childEnv = (): NodeJS.ProcessEnv => {
+      const env = { ...process.env, FM_PRODUCTION_DB_REF: "prodprojectref0000001",
+        DATABASE_URL: `${at(owner)}?schema=public`, DIRECT_URL: `${at(owner)}?schema=public`,
+        DATABASE_URL_APP: at(h.appUrl), DATABASE_URL_AUTH: at(h.authUrl), DATABASE_URL_SYSTEM: at(h.systemUrl) } as NodeJS.ProcessEnv;
+      delete env.PLATFORM_AI_PURGE_ENABLED; delete env.VERCEL_ENV;
+      return env;
+    };
+    const child = (script: string, ...args: string[]) => spawnSync(process.execPath, [...process.execArgv, path.join(process.cwd(), script), ...args], { encoding: "utf8", env: childEnv() });
+    const pre = child("scripts/platform-ai-conversations-precheck.ts", "--env=local");
+    check(80, "RESTORE: the pre-enable check against the RESTORED copy PASSES (the --no-owner restore re-owned the definers to a principal that bypasses RLS)",
+      pre.status === 0 && /RESULT: PASS/.test(pre.stdout), `${pre.status} ${pre.stdout.slice(-300)} ${pre.stderr.slice(0, 200)}`);
+    const restoredTotal = () => Number(psql(at(owner), `select count(*) from "PlatformAiMessage";`).out);
+    const beforeR = restoredTotal();
+    const purge = child("scripts/platform-ai-conversations-purge-dispatch.ts", "--env=local");
+    const removedR = beforeR - restoredTotal();
+    const auditR = psql(at(owner), `select coalesce((select metadata::text from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and metadata->>'trigger'='MANUAL_DISPATCH' order by "createdAt" desc, id desc limit 1), '');`).out;
+    const metaR = auditR ? JSON.parse(auditR) as Record<string, unknown> : {};
+    check(81, "RESTORE: the purge dispatch against the RESTORED copy removes what retention already required (the resurrected exchange), the counts recorded in ITS AuditLog; the unexpired one stays",
+      purge.status === 0 && removedR >= 2 && metaR.messages === removedR
+        && psql(at(owner), `select string_agg(id, ',' order by id) from "PlatformAiMessage" where id like 'dr%';`).out === "dr2a,dr2u", `${purge.status} removed=${removedR} audit=${auditR} ${purge.stderr.slice(0, 300)}`);
+    dx("rm", "-f", "/tmp/aiconv-backup.dump");
+    psql(owner, `drop database if exists ${RESTORED};`, false);
+  }
 
   // ── [pre-disable] PR D — the S2 disable order: never the purge flag while rows remain ──
   console.log("\n[pre-disable] the read-only pre-disable check (counts only; fail-closed on a non-bypass reader)\n");

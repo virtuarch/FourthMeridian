@@ -1,6 +1,6 @@
 # Platform AI conversations: persistent, multi-turn, operator-private
 
-> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #416 (this design; S2 CLEARED for PR B with REQUIRED 1–4, folded in) · #424 (PR B) · PR D (lifecycle, draft, stacked on #424)
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #416 (this design; S2 CLEARED for PR B with REQUIRED 1–4, folded in) · #424 (PR B) · #435 (PR D, lifecycle, draft, stacked on #424)
 
 **What this is.** The owner approved persistent, multi-turn conversations for Platform AI. This document is the design for S2 security review. No schema change, migration or route ships with it. The parent plan is [PLATFORM-INTELLIGENCE](PLATFORM-INTELLIGENCE.md) (foundation step 4).
 
@@ -580,22 +580,25 @@ All three columns are database-written, so the writer still chooses nothing.
   - A deletion request starts the existing grace window (`GRACE_DAYS` in `lib/account-deletion/preflight.ts`), during which sessions are revoked, so the conversations are unreachable.
   - At the account purge, the FK cascade from `User` removes every conversation and message (CASCADE in `purge-census.test.ts`), with no retention wait.
   - **Proven on real PG under FORCE RLS:** delete the User as the account purge's own role, then 0 conversation and 0 message rows remain (§12).
-- **Data export (S2 B6, Q5 ruled).** `lib/export/assemble.ts` gains one `withTenantDb(userId)` phase over the operator's **live** conversations:
+- **Data export (S2 B6; the S2 STRICT export ruling, 2026-11-04, supersedes Q5).** `lib/export/assemble.ts` gains one `withTenantDb(userId)` phase over the operator's **live** conversations:
   - **Soft-deleted conversations are EXCLUDED** (S2 REQUIRED 4). The operator deleted them, and they are hidden everywhere.
-  - **Areas the operator currently holds** (a fresh READ grant): exported in full, with questions and rendered answers.
-  - **Areas the operator has lost: QUESTIONS plus timestamps only, answers omitted.** The bundle notes the omission: "Answers omitted: you no longer have access to <area label>." The answers are platform data the operator may no longer read.
+  - **Areas the operator currently holds:** exported in full, with questions and rendered answers.
+  - **Areas the operator has lost: NO content.** That means no questions, no answers, no titles and no derived labels. The bundle carries one line per area, "N conversations in <area label> omitted: you no longer have access", and the manifest carries the count per area (`platformAiConversationsOmitted:<AREA>`). The earlier Q5 rule (questions plus timestamps) is withdrawn.
   - **As built (PR D).**
-    - **The read.** `readConversationsForExport` in the one data module (`store.ts`) runs one `withTenantDb` read, owner-scoped and `deletedAt: null`. It writes nothing: a stale PENDING turn is not abandoned. The decrypt runs after the transaction closes.
+    - **The read.** `readConversationsForExport(userId, heldAreas)` in the one data module (`store.ts`) runs one `withTenantDb` read, owner-scoped and `deletedAt: null`. It first reads the conversations' metadata only. It then reads messages **only for held-area conversations**, so a lost area's rows are never read past metadata and **never decrypted**. A decrypt spy proves this on real PG (`rls:accept` case 68). The read writes nothing: a stale PENDING turn is not abandoned. The decrypt runs after the transaction closes.
     - **The projection.** `export.ts` (pure) decides what the bundle carries. A held area exports its answers as **rendered text**, with citations and the code-written notes. A link exports as its text only, with no href or page id. Message ids and evidence refs are not exported.
     - **"Held".** Held means an ACTIVE grant in **one** directory read, the list route's rule. There is no per-area fresh guard, so no false OBS-009 denial rows. When operator 2FA is enforced and the operator has none, no area is held (the guard's own SEC-PLAT-1 decision).
     - **Flags.** The phase is not gated on the flags: subject access covers what is stored, and with the flags off nothing is.
-    - **The bundle.** It lands in `data.json` as `platformAiConversations` and in the manifest counts, with a manifest note.
+    - **The bundle.** Held conversations land in `data.json` as `platformAiConversations`. Lost areas land as `platformAiConversationsOmitted` (`{ area, areaLabel, count, note }` only), with a manifest count per area and the S2 line in the manifest notes. As defence in depth, the projection also drops and counts any lost-area conversation handed to it.
     - **Authorization.** The only authorization path is `POST /api/user/export` (`requireFreshUser`, the subject's own id).
 - **Backups mean erasure is not immediate (R4). Stated plainly:** a conversation is removed from active systems within one day of expiring or being deleted (the daily purge, §7.4 R6), and from backups within **M** days.
   - **M = the database provider's backup and point-in-time-recovery retention. OWNER-VERIFY.** `docs/operations/backup-restore-verification.md` lists the provider's backup cadence and PITR status as UNVERIFIED. The owner reads M from the provider dashboard (Database → Backups) and records it there and in `docs/operations/data-retention.md` before any disclosure states it.
   - **Manual dumps are a second, unbounded copy.** `db:backup` dumps follow the local-dump policy (encrypt at rest or delete within 24 h), which sets no deletion date for an **encrypted** dump. Until the owner sets one, M doesn't bound those: **OWNER-VERIFY**.
   - Backup copies hold **ciphertext** (`fm_backup` reads the column as stored). The root key that opens them persists until a rotation removes `ENCRYPTION_KEY_PREVIOUS`.
-  - A restore from backup would bring purged rows back, so any restore runbook must run the purge before the database serves traffic. **PR D:** written as `docs/operations/backup-restore-verification.md` §4.1. First prove the definer owner bypasses RLS on the restored target, because `--no-owner` re-owns the functions. Then purge until nothing more is removed. On a Production target, hold traffic until one `purge-trash` run has succeeded. No on-demand Production trigger exists for that job, which is an owner gap noted with OD-9.
+  - A restore from backup would bring purged rows back, so any restore runbook must run the purge before the database serves traffic. **PR D (OD-7 activation (b)):** written as `docs/operations/backup-restore-verification.md` §4.1, which says: "after restoring any environment holding the B11 tables, run the purge (dispatch or job) BEFORE the app or flags are enabled, and record the counts".
+    - First prove the definer owner bypasses RLS on the restored target, because `--no-owner` re-owns the functions. Then purge until nothing more is removed.
+    - The sequence is rehearsed on throwaway databases by `rls:accept` cases 79–81: dump, purge the source, restore (which brings the rows back), run the pre-enable check, then the dispatch.
+    - **OWNER-GATED GAP:** there is no on-demand Production trigger for `purge-trash` (`/api/jobs/dispatch?only=` admits `comms-automations` only). PR D deliberately adds none. Until the owner rules, a Production restore holds traffic, with the flags off, until one scheduled run has succeeded.
 - **The provider's copy (R5).** Our purge does not reach what the AI provider kept of each call. OpenAI's API retention is governed by its own terms, which Fourth Meridian doesn't control, as `content/marketing/legal-ai.md` already says for the customer AI. The operator disclosure (OD-5) must say the same for Platform AI.
 
 ### 7.4 Retention: 90 days per message, APPROVED (owner OD-7, 2026-11-04)
@@ -769,7 +772,9 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 | Caps: 50 conversations, 40 messages, 500 chars → the stated 409 / 400 | handler unit |
 | Audit rows: create, delete, purge; no content keys | handler unit + `audit` shape pin |
 | Account deletion removes both tables (CASCADE bucket) | `purge-census.test.ts` + `deletion-safety.test.ts` |
-| Export: current areas in full; lost areas questions + timestamps with the omission note; soft-deleted excluded (Q5 ruled) | `conversations/export.test.ts` (pure + pins) + `rls:accept:ai-conversations` cases 66–74 (real PG, the REAL `assembleUserExport`: no grant, an ACTIVE grant, a revoked grant; read-only) |
+| Export (S2 STRICT): current areas in full; a lost area is a COUNT per area plus the S2 line, with no content; a decrypt spy proves no lost-area row is decrypted; regrant restores the full export; soft-deleted excluded | `conversations/export.test.ts` (pure + pins) + `rls:accept:ai-conversations` cases 66–74 (real PG, the REAL `assembleUserExport`: no grant, ACTIVE grant, revoked, regranted; read-only) |
+| **OD-7 activation (a), retention proven operational:** every scheduled run's counts are in its JobRun summary (zero included) and read as a success. A failed run's audit row carries `failed: true`. `platform-ai-purge-late` fires (critical) after more than 36 h without a successful run while conversations are on; off gives no signal; a zero-count run is a success. | `conversations/purge-health.test.ts` (verdict, authority, the REAL alert engine) + `jobs/data-retention.test.ts` + `rls:accept` case 78 (real ledgers) |
+| **OD-7 activation (b), restores:** a restored backup brings purged rows back; the pre-enable check and the dispatch against the restored copy remove them, and the counts are recorded | `rls:accept` cases 79–81 (two throwaway databases; never Preview or Production) |
 | **PR D, the S2 disable order:** with the purge off and the conversations flag set, the job contacts nothing, reports `misordered` and fails its `JobRun`. The pre-disable check FAILS while rows remain, FAILS CLOSED for a non-bypass reader (who sees 0), and PASSES only when empty. | `jobs/data-retention.test.ts` + `scripts/platform-ai-conversations-precheck.test.ts` (pure) + `rls:accept` cases 75–77 (real PG) |
 | Flags: either flag off → 404 before any read | `route.test.ts`-style |
 | UI at 375 px and desktop rail; stale chip; no Markdown parser | component tests (PR C) |
@@ -784,7 +789,7 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 | *(prereq)* | `feat/platform-ai-structured-claims` plus emitting `figure` segments (§2.5) | S2 C-rulings | develop |
 | **B: schema + server** | The migration (§2.4, §7.2 function); Prisma models; the `PLATFORM_AI_MESSAGE` purpose plus `ENCRYPTED_FIELDS`; column grants and triggers (REQUIRED 1); the BYPASSRLS assertion (REQUIRED 2); the conversation data module (`withTenantDb` only); history assembly; the turn wrapper (§5); routes (§10) behind `PLATFORM_AI_CONVERSATIONS_ENABLED` (off); audit actions; purge-census bucket; tests §12 except UI and export | A **cleared by S2 for PR B** (2026-11-04, with REQUIRED 1–4); the prereq; **OD-7** (R1 shape: columns and purge variant); **OD-10** (grace constant) | develop, then Preview (migration), then **B11** (OD-2) |
 | **C: UX** | Page, sheet and rail, thread, stale chips, disclosure line (OD-5 wording), 375 px pins | B | develop / Preview |
-| **D: lifecycle** | Purge job wiring in `jobs/data-retention.ts` (batches, audit row), **disabled** behind `PLATFORM_AI_PURGE_ENABLED`; export phase (Q5 ruled; soft-deleted excluded); the Preview pre-enable BYPASSRLS check; `docs/operations/data-retention.md` row (M after OWNER-VERIFY); restore-runbook note (§7.3) | B (function exists) | develop, then B11 with B |
+| **D: lifecycle** | Purge job wiring in `jobs/data-retention.ts` (batches, audit row), **disabled** behind `PLATFORM_AI_PURGE_ENABLED`; export phase (S2 STRICT ruling, superseding Q5; soft-deleted excluded); the Preview pre-enable BYPASSRLS check; `docs/operations/data-retention.md` row (M after OWNER-VERIFY); restore-runbook note (§7.3) | B (function exists) | develop, then B11 with B |
 
 **PR D as built (draft, stacked on #424; nothing enabled).**
 - **Already in #424.** The job wiring (batches, a counts-only audit row), the manual dispatch and the pre-enable check shipped there.
@@ -792,8 +797,13 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
   - **The disable-order guard.** `env.isPlatformAiConversationsFlagSetWithoutPurge` is a fact and never an enable. The rule reports `misordered` and `purge-trash` fails its `JobRun`.
   - **The `--phase=pre-disable` check.** It reads counts only and fails closed on a non-bypass reader.
   - **The JobRun failure** for an errored purge (§7.4 R6).
-  - **The export phase** (§7.3).
-  - **The docs:** the `data-retention.md` row and the restore note (`backup-restore-verification.md` §4.1).
+  - **The export phase** (§7.3), under the S2 STRICT ruling: lost areas are counts only and are never decrypted.
+  - **Retention proven operational (OD-7 activation (a)):**
+    - every scheduled run leaves its counts in the `purge-trash` JobRun summary, zero included;
+    - the manual dispatch writes an audit row on every run, and an errored run's row carries `failed: true`;
+    - a new authority (`purge-health.server.ts`, which reads JobRun and AuditLog only) feeds a new alert rule, **`platform-ai-purge-late`** (critical, on Platform Ops' alert surfaces). It fires after more than 36 h with no successful purge while the conversations flag is on, and never while it is off.
+  - **Restores (OD-7 activation (b)):** the §4.1 runbook step, rehearsed by `rls:accept` cases 79–81. No Production dispatch was added (owner-gated).
+  - **The docs:** the `data-retention.md` row ("90 days per message from creation (OD-7)", M pending OWNER-VERIFY (OD-9), provider copies governed by the provider's terms) and the restore note (`backup-restore-verification.md` §4.1).
 - **No migration, no schema change.** No flag default changes. No env var is set anywhere.
 
 **Activation order.**
@@ -816,7 +826,7 @@ Storage is never on without the purge, **and the code enforces it**: `env.isPlat
   - A missed day is a retention breach on Preview: record it and run the dispatch at once.
 - [ ] **Preview conversations are test data only** (synthetic questions; no real customer or operator-sensitive content). **At the end of acceptance, disable** (unset `PLATFORM_AI_CONVERSATIONS_ENABLED`) **and purge**: soft-delete the remaining conversations, then run the dispatch (grace 0 removes soft-deleted conversations and their messages) until it reports nothing more to remove; record the counts.
 - [ ] Production: the scheduled data-retention cron is live and the purge flag is set **before** or with the conversations flag; separate owner enable.
-- [ ] **Retention proven operational before history is on (S2, OD-7 activation (a)).** The purge leaves evidence on EVERY run, zero-count runs included (the job-run ledger row with counts, no content; on Preview the manual dispatch's always-audit row). Platform Ops flags the job as late if there has been no successful purge run in more than 36 h while the conversations flag is on. **One successful purge run is recorded BEFORE the flag flips.**
+- [ ] **Retention proven operational before history is on (S2, OD-7 activation (a)).** The purge leaves evidence on EVERY run, zero-count runs included (the job-run ledger row with counts, no content; on Preview the manual dispatch's always-audit row). Platform Ops flags the job as late if there has been no successful purge run in more than 36 h while the conversations flag is on. **One successful purge run is recorded BEFORE the flag flips.** *Built in PR D:* the `purge-trash` JobRun summary carries the counts; the alert rule `platform-ai-purge-late` (authority `lib/platform/intelligence/ai/conversations/purge-health.server.ts`) does the flagging. On Preview no alert cron runs, so the daily dispatch audit row is the evidence there.
 - [ ] **Restores (S2, OD-7 activation (b)).** After restoring any environment that holds the B11 tables, run the purge (dispatch or job) BEFORE the app or flags are enabled, and record the counts. The restore runbook and the DR rehearsal carry this step.
 - [ ] **Disclosure accuracy (S2, OD-7 activation (c)).** The OD-5 and #415 §2 wording says: each message is deleted from our database within about a day after it turns 90 days old; backups may retain it for up to M days (OD-9, OWNER-VERIFY); copies held by the AI provider are governed by its terms (up to 30 days for abuse monitoring under standard API terms). Never "permanently deleted everywhere".
 
@@ -888,7 +898,7 @@ S2 cleared the design for PR B subject to these four changes. Each is folded in 
   - no dynamic SQL;
   - the body is parse-pinned;
   - no ids returned (§7.2).
-- **Q5: a lost-area export = questions plus timestamps only,** answers omitted with the omission noted. Current areas export everything (§7.3).
+- **Q5: a lost-area export = questions plus timestamps only,** answers omitted with the omission noted. Current areas export everything (§7.3). **SUPERSEDED (S2 STRICT export ruling, 2026-11-04):** a lost area exports NO content, only a count per area and the line "N conversations in <area> omitted: you no longer have access". Built in PR D.
 - **Q6: the extra columns are OK.** `failureCode` is an ENUM (`PlatformAiFailureCode`), never provider text. `replyToId` points into the same conversation, enforced by a composite FK (§2.1).
 - **Q7:** the stale label goes by `createdAt`, with no stored status.
 - **Q8: moot** (no rename).

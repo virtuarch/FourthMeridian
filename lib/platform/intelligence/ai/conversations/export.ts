@@ -1,24 +1,24 @@
 /**
  * lib/platform/intelligence/ai/conversations/export.ts  (PR D — the subject-access projection, PURE)
  *
- * Design §7.3 "Data export" (S2 B6, Q5 RULED; S2 REQUIRED 4). The operator's
- * own data export (lib/export/assemble.ts) carries their LIVE Platform AI
- * conversations. The rows arrive already decrypted from the one data module
- * (./store.ts readConversationsForExport — soft-deleted conversations never
- * leave the database); this file only decides what of them the bundle carries:
+ * Design §7.3 (S2 B6; S2 REQUIRED 4; the S2 STRICT export ruling, which
+ * supersedes Q5). The operator's own data export (lib/export/assemble.ts)
+ * carries their LIVE Platform AI conversations. The rows arrive from the one
+ * data module (./store.ts readConversationsForExport), which has ALREADY split
+ * them by the areas the operator holds today:
  *
- *   · an area the operator HOLDS today  ⇒ every message: the questions, and the
- *     answers as rendered text with their citations and code-written notes;
- *   · an area the operator has LOST     ⇒ QUESTIONS plus timestamps only. Every
- *     answer is omitted (the answers are platform data the operator may no
- *     longer read), and the conversation says so in `answersOmitted`.
+ *   · a HELD area   ⇒ every message: the questions, and the answers as rendered
+ *     text with their citations and code-written notes;
+ *   · a LOST area   ⇒ NO content at all — no question, answer, title or derived
+ *     label. Its messages were never read; the bundle carries one line per
+ *     area: "N conversations in <area> omitted: you no longer have access",
+ *     and the manifest a count per area.
+ *   · soft-deleted conversations never leave the database.
  *
- * "Holds" is decided by the caller from ONE directory read (ACTIVE grants, the
+ * "Held" is decided by the caller from ONE directory read (ACTIVE grants, the
  * list route's rule — no per-area fresh guard, so no false OBS-009 denial rows),
  * and is EMPTY when operator 2FA is enforced and the operator has none (the
- * guard's own SEC-PLAT-1 rule). Stored links are exported as their TEXT only:
- * an href is a live-app navigation, never part of a bundle (and a page id is a
- * registry key, not the operator's data).
+ * guard's own SEC-PLAT-1 rule). Stored links are exported as their TEXT only.
  *
  * No database, no key, no env, no clock, no I/O.
  */
@@ -26,7 +26,7 @@
 import type { PlatformArea } from "@prisma/client";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
 import type { StoredAnswerV1 } from "./answer";
-import type { ExportConversationRecord, MessageRecord } from "./store";
+import type { ExportConversationRecord, ExportConversationsRead, MessageRecord } from "./store";
 
 export interface ExportPlatformAiMessage {
   role: "USER" | "ASSISTANT";
@@ -50,30 +50,34 @@ export interface ExportPlatformAiConversation {
   areaLabel: string;
   createdAt: string;
   lastActivityAt: string;
-  /** False ⇒ the area was lost: questions and timestamps only. */
-  answersIncluded: boolean;
-  /** Set exactly when answers were omitted (S2 Q5 wording). */
-  answersOmitted: string | null;
   messages: ExportPlatformAiMessage[];
+}
+
+/** One line per LOST area: a count and the S2 wording — never any content. */
+export interface ExportPlatformAiOmission {
+  area: PlatformArea;
+  areaLabel: string;
+  count: number;
+  note: string;
 }
 
 export interface PlatformAiExportSection {
   conversations: ExportPlatformAiConversation[];
-  /** Conversations whose answers were omitted (a lost area). */
-  answersOmittedCount: number;
+  omitted: ExportPlatformAiOmission[];
 }
 
 const areaLabel = (area: PlatformArea) => PLATFORM_AREAS[area]?.label ?? area;
 
-/** The S2 Q5 omission note, per conversation. */
-export const answersOmittedNote = (area: PlatformArea) => `Answers omitted: you no longer have access to ${areaLabel(area)}.`;
+/** The S2 STRICT omission line, per lost area. */
+export const omittedConversationsNote = (count: number, area: PlatformArea) =>
+  `${count} conversations in ${areaLabel(area)} omitted: you no longer have access`;
 
 /** A stored answer as plain rendered text: text, figure and link spans in order (links by their text only). */
 export function renderAnswerText(a: StoredAnswerV1): string {
   return a.segments.map((s) => s.text).join("");
 }
 
-function exportMessage(m: MessageRecord, withAnswer: boolean): ExportPlatformAiMessage {
+function exportMessage(m: MessageRecord): ExportPlatformAiMessage {
   const base = {
     role: m.role, status: m.status,
     createdAt: m.createdAt.toISOString(),
@@ -82,7 +86,7 @@ function exportMessage(m: MessageRecord, withAnswer: boolean): ExportPlatformAiM
     failureCode: m.failureCode,
   };
   if (m.role === "USER") return { ...base, text: typeof m.content === "string" ? m.content : null };
-  const answer = withAnswer && m.content !== null && typeof m.content !== "string" ? m.content : null;
+  const answer = m.content !== null && typeof m.content !== "string" ? m.content : null;
   return {
     ...base,
     text: answer ? renderAnswerText(answer) : null,
@@ -91,28 +95,35 @@ function exportMessage(m: MessageRecord, withAnswer: boolean): ExportPlatformAiM
   };
 }
 
+const exportConversation = (c: ExportConversationRecord): ExportPlatformAiConversation => ({
+  id: c.id,
+  area: c.area,
+  areaLabel: areaLabel(c.area),
+  createdAt: c.createdAt.toISOString(),
+  lastActivityAt: c.lastActivityAt.toISOString(),
+  messages: c.messages.map(exportMessage),
+});
+
 /**
- * PURE. The export section for `rows` (the operator's live conversations) given
- * the areas the operator holds today. A lost area keeps its USER messages only.
+ * PURE. The export section for what the data module read: held conversations
+ * in full, lost areas as counts. Defence in depth: a conversation whose area is
+ * not held is DROPPED here too (counted, never exported), even if a caller
+ * passed one.
  */
 export function projectPlatformAiConversationsForExport(
-  rows: readonly ExportConversationRecord[],
+  read: ExportConversationsRead,
   heldAreas: ReadonlySet<PlatformArea>,
 ): PlatformAiExportSection {
-  let answersOmittedCount = 0;
-  const conversations = rows.map((c): ExportPlatformAiConversation => {
-    const held = heldAreas.has(c.area);
-    if (!held) answersOmittedCount++;
-    return {
-      id: c.id,
-      area: c.area,
-      areaLabel: areaLabel(c.area),
-      createdAt: c.createdAt.toISOString(),
-      lastActivityAt: c.lastActivityAt.toISOString(),
-      answersIncluded: held,
-      answersOmitted: held ? null : answersOmittedNote(c.area),
-      messages: c.messages.filter((m) => held || m.role === "USER").map((m) => exportMessage(m, held)),
-    };
-  });
-  return { conversations, answersOmittedCount };
+  const counts = new Map<PlatformArea, number>();
+  for (const o of read.omitted) counts.set(o.area, (counts.get(o.area) ?? 0) + o.count);
+  const conversations: ExportPlatformAiConversation[] = [];
+  for (const c of read.conversations) {
+    if (heldAreas.has(c.area)) conversations.push(exportConversation(c));
+    else counts.set(c.area, (counts.get(c.area) ?? 0) + 1);
+  }
+  const omitted = [...counts]
+    .filter(([, n]) => n > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([area, count]) => ({ area, areaLabel: areaLabel(area), count, note: omittedConversationsNote(count, area) }));
+  return { conversations, omitted };
 }

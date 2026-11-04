@@ -106,15 +106,31 @@ A rehearsal is **PASSED** when: sha256 matches, restore ran with `ON_ERROR_STOP`
 
 ### 4.1 Before a restored database serves traffic: re-apply retention (Platform AI conversations, B11)
 
-A restore brings back rows that retention had already removed. For Platform AI conversations (`docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md` §7.3), that means conversations an operator deleted, and messages older than the retention window (90 days, **TENTATIVE** pending S2), as of the backup point. **The restored database must not serve traffic until the purge has run against it.** This applies only to a target that carries the B11 migration. On an older target, the check in step 1 reports the functions as absent, and the section does not apply.
+**Rule (S2, OD-7 activation (b)).** After restoring any environment that holds the B11 tables (`PlatformAiConversation`, `PlatformAiMessage`), run the purge, by dispatch or by the job, **BEFORE the app or any flag is enabled**, and **record the counts**.
 
-1. **Prove the purge can see the rows.** A `--no-owner` restore re-owns the two `SECURITY DEFINER` functions to the restoring role. Under FORCE RLS, a definer whose owner lacks BYPASSRLS deletes 0 rows **silently**. Run the read-only pre-enable check against the restored target: `npm run report:platform-ai-conversations-precheck -- --env=local` for a scratch database. On FAIL, the functions must be re-owned to a BYPASSRLS principal before you go on, and that is an **OWNER** step.
-2. **Purge until nothing more is removed.**
-   - **Scratch or local target:** `npm run ops:platform-ai-conversations-purge -- --env=local`. Repeat while it prints "more remain".
-   - **A target that is or will become Production:** the manual dispatch always refuses Production, and the purge runs only as the scheduled `purge-trash` job (07:30 UTC), with `PLATFORM_AI_PURGE_ENABLED=true` on that environment. **OWNER:** hold traffic (deny-all firewall or maintenance) until one `purge-trash` run has succeeded against the restored database. There is no on-demand Production trigger for that job today: `/api/jobs/dispatch?only=` admits `comms-automations` only. Adding one is an owner decision that belongs with **OD-9**.
-3. **Record** the purge counts (the `PLATFORM_AI_CONVERSATIONS_PURGED` audit row) in the §6 row's notes. The counts stay in the record, not in this file's prose.
+A restore brings back rows that retention had already removed as of the backup point:
+- messages more than 90 days old (per message, from creation; OD-7);
+- conversations an operator deleted (`docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md` §7.3).
 
-The same applies to any copy restored from a provider backup or PITR point. Until the purge runs, the copy also holds content that retention had already removed. See `docs/operations/data-retention.md`: "removed from backups within M days" is still **OWNER-VERIFY (OD-9)**.
+On a target without the B11 migration, step 1 reports the functions as absent and this section does not apply.
+
+1. **Prove the purge can see the rows.**
+   - A `--no-owner` restore re-owns the two `SECURITY DEFINER` functions to the restoring role. Under FORCE RLS, a definer whose owner lacks BYPASSRLS deletes 0 rows **silently**.
+   - Run the read-only pre-enable check against the restored target: `npm run report:platform-ai-conversations-precheck -- --env=local` for a scratch database.
+   - On FAIL, the functions must be re-owned to a BYPASSRLS principal before you go on. That is an **OWNER** step.
+2. **Purge until nothing more is removed, before the app or flags are enabled.**
+   - **Scratch, local or Preview-shaped target:** run `npm run ops:platform-ai-conversations-purge -- --env=local` (or `--env=preview`). Repeat while it prints "more remain".
+   - **A target that is or will become Production:** the manual dispatch always refuses Production, and the purge runs only as the scheduled `purge-trash` job (07:30 UTC). **OWNER-GATED GAP:** there is no on-demand Production trigger for that job today (`/api/jobs/dispatch?only=` admits `comms-automations` only). Until the owner decides how to provide one, hold traffic (deny-all firewall or maintenance), keep the conversations flag **off**, and do not open the app until one `purge-trash` run has succeeded against the restored database. This PR deliberately adds no Production dispatch.
+3. **Record** the counts in the §6 row's notes: `conversations removed` and `messages removed` from the dispatch output, or the `PLATFORM_AI_CONVERSATIONS_PURGED` audit row / the `purge-trash` JobRun summary. Keep the counts in the record, not in this file's prose.
+
+**Rehearsed:** `npm run rls:accept:ai-conversations` cases 79–81 run this exact sequence on throwaway databases only (never Preview or Production):
+- a `pg_dump` "backup";
+- the source purges its expired exchange;
+- a `--no-owner` `pg_restore` into a second database brings the exchange back;
+- the pre-enable check against the restored copy PASSES;
+- the dispatch against the restored copy removes the exchange, and its audit row records the counts.
+
+**Backups themselves still hold the rows** until the provider's retention removes them: "removed from backups within M days" is **pending OWNER-VERIFY (OD-9)**. Copies held by the AI provider are governed by the provider's terms. Our purge does not reach them, and no document may claim it does.
 
 ## 5. Supabase-side backups (OWNER, read-only)
 
