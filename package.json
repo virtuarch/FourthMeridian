@@ -103,7 +103,9 @@
     "report:b10-5": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/b10-5-decision-report.ts",
     "rls:accept:ai-conversations": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-conversations-acceptance.ts",
     "report:platform-ai-conversations-precheck": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-conversations-precheck.ts",
-    "ops:platform-ai-conversations-purge": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-conversations-purge-dispatch.ts"
+    "ops:platform-ai-conversations-purge": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/platform-ai-conversations-purge-dispatch.ts",
+    "ops:synthetic-operator": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/synthetic-operator.ts",
+    "rls:accept:synthetic-operator": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/synthetic-operator-acceptance.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

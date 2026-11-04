@@ -58,6 +58,67 @@ enforced). It is **not a customer Space.**
   (`requireFreshPlatformAccess`) and audited — the machinery exists ahead of its first
   shipped write action.
 
+## Synthetic Preview operator (acceptance testing)
+
+One fabricated Platform operator for acceptance testing on **Preview** (or a
+local / throwaway database). It is never used on Production. The owner authorized
+it and S2 approved the method. Script: `scripts/synthetic-operator.ts`. The rules
+are in `scripts/lib/synthetic-operator.core.ts` and are pinned by
+`scripts/synthetic-operator.test.ts`.
+
+```
+npm run ops:synthetic-operator -- --env=preview --provision
+npm run ops:synthetic-operator -- --env=preview --revoke-area=GROWTH_REVENUE
+npm run ops:synthetic-operator -- --env=preview --cleanup --record=<private dir>
+```
+
+- **Gate (before any contact):** the repair env guard runs in apply mode, the
+  same way the Platform AI purge dispatch uses it. `--env=preview` requires
+  `FM_PRODUCTION_DB_REF`, and the target's ref must not be that ref.
+  `--env=production` is always refused. So are `VERCEL_ENV=production`, a
+  DATABASE_URL/DIRECT_URL mismatch and any unknown flag. Refusals name the rule
+  only.
+- **Account:** one `USER` with the fabricated name "Synthetic Operator" and a
+  reserved `@example.test` address. Its email is pre-verified and TOTP is
+  enabled. The account has the same shape registration creates: Personal Space,
+  OWNER membership, agent, default policy group and a `REGISTER` audit row. It
+  has no other Space, no provider connection and no customer data. The password
+  is hashed the way registration does it (bcryptjs, cost 12). The TOTP seed comes
+  from `lib/totp` `generateSecret`, sealed with
+  `encryptWithPurpose(…, TOTP_SECRET)`, the same as `/api/user/totp/setup`.
+  Preview's `ENCRYPTION_KEY` must be in the operator's env, or login cannot open
+  the seed.
+- **Grants (hard-coded allowlist):** `PLATFORM_OPS` READ and `GROWTH_REVENUE`
+  READ. It never grants CUSTOMER_SUCCESS, MERCHANT_OPS, WRITE/CONTROL or
+  SYSTEM_ADMIN. Each grant or revocation is written in one transaction with its
+  canonical audit row (`PLATFORM_GRANT_CREATED` / `PLATFORM_GRANT_REVOKED`).
+  The actor is null, `actorType: SYSTEM`, and the reason is
+  "synthetic acceptance operator". It never calls the admin grant routes or any
+  notification or e-mail module.
+- **Secrets:** they go only to
+  `~/FourthMeridian-private/synthetic-operator-<UTC stamp>/credentials.json`
+  (umask 077, dir 0700, file 0600): the password, TOTP seed, otpauth URI, user
+  and grant ids, and the cleanup deadline. The deadline is
+  min(provision + 14 days, 2026-11-19T23:59:59Z). Stdout prints PASS lines, the
+  private directory and the deadline only. If a synthetic operator already
+  exists, provisioning is refused and nothing changes.
+- **Cleanup, in order:** (1) revoke the remaining ACTIVE grants, audited.
+  (2) Delete the account through the account-deletion path. This writes the
+  deletion-request stamp with a **zero** grace window (a deviation from the
+  7-day user path: the account has a hard deadline and nobody to cancel it) plus
+  `ACCOUNT_DELETION_REQUESTED`. Then it calls `purgeUser()`, the function
+  `jobs/process-deletions.ts` calls. Sessions, TOTP, grants, Space,
+  conversations and messages cascade, and one `ACCOUNT_DELETED` row is written.
+  The purge's after-commit e-mail and its Plaid call are injected as no-ops, so
+  nothing is sent. (3) Print the purge-dispatch instruction for the operator to
+  run: `npm run ops:platform-ai-conversations-purge -- --env=preview`.
+  (4) Shred `credentials.json` (overwrite, then unlink). (5) Write a counts-only
+  `cleanup.json` (0600). Removal means our app database only. Backups age out on
+  their own schedule.
+- **Acceptance:** `npm run rls:accept:synthetic-operator` runs the real CLI on a
+  throwaway Docker Postgres (`docker rm -f -v`): provision, refused re-provision,
+  revoke, cleanup, then zero rows left.
+
 ## Related runbooks
 
 - [key-rotation](./key-rotation.md) · [incident-response](./incident-response.md) ·
