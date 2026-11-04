@@ -1479,7 +1479,7 @@ npm run report:b10-5 -- all --env=production --acknowledge-production-read
 
 **Owner decision (security; PRIV-004):** encryption key rotation. Approve steps b–d after the clone + Preview drill. **Approving step (b) makes B10 roll-forward-only.** (b) set the new key as `ENCRYPTION_KEY` and the old one as `ENCRYPTION_KEY_PREVIOUS`; (c) `rotate-encryption-key` dry run, then apply; (d) only after `--verify-complete` exits 0, remove `ENCRYPTION_KEY_PREVIOUS`. Drill a→d end to end on a restored backup clone first, then on Preview, with a full verified backup before Production (see `docs/operations/key-rotation.md`).
 
-**B10.5 decision report (#370):** Preview counts: produced (S1, 11-04), pending S2 sign-off; Production run is owner-run or owner-approved. (The guard's Production reference is configured outside the repo; it is never committed.)
+**B10.5 decision report (#370):** Preview counts: produced (S1, 11-04), signed off by S2 (Preview framing: test data; scale and method, not Production impact); Production run is owner-run or owner-approved. (The guard's Production reference is configured outside the repo; it is never committed.)
 
 **Tracked follow-ups (FM-AUDIT-053):** a balance-basis column plus a labelled unconfirmed fallback (schema change; owner); a keyed or self-hosted Esplora.
 
