@@ -70,6 +70,15 @@ export const PROVIDER_OUTCOME_DEFINITION = {
 /** "provider-outcome@1" — the stamp a verdict carries. */
 export const PROVIDER_OUTCOME_DEFINITION_ID = `${PROVIDER_OUTCOME_DEFINITION.id}@${PROVIDER_OUTCOME_DEFINITION.version}` as const;
 
+/**
+ * The words for "no provider has an evaluable verdict" — every provider has no run
+ * in the window, or too few decided outcomes. Shared by the Providers tile
+ * (providers-model.ts providerKpis) and provider-outcome@1's retrieval envelope
+ * (UNAVAILABLE), so neither shows a measured "0 healthy". Wording only: the verdict
+ * rule above is unchanged.
+ */
+export const NO_EVALUABLE_PROVIDER = "no evaluable job runs in the window (scheduled jobs may not run in this environment)";
+
 export type OutcomeEvidenceKind = keyof typeof PROVIDER_OUTCOME_DEFINITION.minSample;
 
 export type OutcomeVerdict = "HEALTHY" | "DEGRADED" | "FAILING" | "NOT_ENOUGH_DATA";

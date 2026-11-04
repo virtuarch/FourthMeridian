@@ -121,6 +121,12 @@ export interface MetricWindow {
   timezone: "UTC";
   /** The constant that sets the window, when one exists. */
   source?: CodeRef;
+  /**
+   * The windows (in days) a caller may ask for, the first being the tile's default.
+   * Absent = a fixed window (no `window` parameter). Pinned equal to the retrieval
+   * contract's declared windows (retrieve.test.ts); any other window is refused.
+   */
+  days?: readonly number[];
 }
 
 export interface MetricDefinition {
@@ -187,7 +193,8 @@ export const METRICS: readonly MetricDefinition[] = [
     exclusion: ["In-flight runs and calls (no outcome yet)"],
     freshnessSource: "JobRun rows (90-day retention) and ProviderCall rows (60-day retention)",
     provenance: { class: "MEASURED" },
-    coverageGaps: ["A small sample never reads Healthy (NOT_ENOUGH_DATA)", "ProviderCall roll-ups carry no order, so a recent failure streak is only visible in job runs", "The provider-health route carries the job-run execution verdict only; the ProviderCall attempt verdict is folded by the Providers tile from the provider-operations payload (callsAssessment), so a retrieval through provider-health does not see it"],
+    coverageGaps: ["A small sample never reads Healthy (NOT_ENOUGH_DATA)", "ProviderCall roll-ups carry no order, so a recent failure streak is only visible in job runs", "The provider-health route carries the job-run execution verdict only; the ProviderCall attempt verdict is folded by the Providers tile from the provider-operations payload (callsAssessment), so a retrieval through provider-health does not see it",
+      "Envelope status rule (the verdict rule is unchanged): MEASURED only when every provider has an evaluable verdict (Healthy / Degraded / Failing); PARTIAL, with the counts, when some providers have no runs or not enough data; UNAVAILABLE when none does — no evaluable job runs in the window (scheduled jobs may not run in this environment). Zero healthy is never reported as a measurement when nothing was evaluated"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/provider-health/route.ts" }],
     tiles: [
       { component: "components/platform/leads/providers-model.ts", reads: "assessOutcomes(" },
@@ -214,7 +221,8 @@ export const METRICS: readonly MetricDefinition[] = [
     exclusion: ["REVOKED connections (reported as a neutral fact)", "Connections whose owner is inactive or pending deletion", "NEEDS_REAUTH never FAILS a provider (only a reauth wave DEGRADES it)", "An ERROR share one institution explains never FAILS a provider (institution-concentrated ⇒ DEGRADED; the basis counts institutions, never names one)"],
     freshnessSource: "The connection health authority (lib/connections/health.ts) — live columns",
     provenance: { class: "MEASURED" },
-    coverageGaps: ["Without the authority's per-source tally the population is unknown and no share is computed", "Connections with no recorded institution are never assumed to share one; with no institution split at all, concentration is not assessed and the share alone decides", "A single-institution fleet can never reach FAILING on the connection half; a genuine provider outage also fails the producing job's runs, so provider-outcome@1 raises FAILING through the execution half. 'Degraded (institution-concentrated)' does NOT mean the provider is fine."],
+    coverageGaps: ["Without the authority's per-source tally the population is unknown and no share is computed", "Connections with no recorded institution are never assumed to share one; with no institution split at all, concentration is not assessed and the share alone decides", "A single-institution fleet can never reach FAILING on the connection half; a genuine provider outage also fails the producing job's runs, so provider-outcome@1 raises FAILING through the execution half. 'Degraded (institution-concentrated)' does NOT mean the provider is fine.",
+      "Envelope status rule: UNAVAILABLE when no provider reports a connection population (nothing to assess); PARTIAL when some providers report none, or a population is unknown; MEASURED otherwise"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/provider-health/route.ts" }],
     tiles: [{ component: "components/platform/widgets/provider-view.ts", reads: "trustBadge(p.trust)" }],
     drill: { api: "/api/platform/platform-ops/provider-health", page: page(PO) },
@@ -224,7 +232,7 @@ export const METRICS: readonly MetricDefinition[] = [
   {
     id: "ai-fleet-spend-status", version: 1, domain: "economics",
     label: "AI fleet spend vs budget (24 h)",
-    summary: "How priced the fleet's rolling 24-hour customer AI spend is, and what share of the fleet alert threshold it uses.",
+    summary: "How priced the fleet's rolling 24-hour customer AI spend is, and what share of the fleet alert threshold it uses. A budget check over 24 hours, not a cost breakdown: for what the platform is costing, read economics-operating-cost@1 and economics-ai-cost@1.",
     answerClass: "CALCULATED",
     window: { kind: "ROLLING", timezone: "UTC", description: "Trailing BUDGET_WINDOW_HOURS (24 h) from the reader's now.", source: { module: "lib/platform/ai/ai-budget.ts", symbol: "BUDGET_WINDOW_HOURS" } },
     numerator: { description: "Σ rate-card-priced spend of customer-surface AiInvocations in the window (a lower bound when some are unpriced).", source: { module: "lib/platform/ai/fleet-spend-status.ts", symbol: "fleetSpendStatus" } },
@@ -246,6 +254,127 @@ export const METRICS: readonly MetricDefinition[] = [
       { component: "components/platform/leads/ai-costs-model.ts", reads: "fleetSpendStatus(b)" },
     ],
     drill: { api: "/api/platform/platform-ops/ai-budget/calls", page: page(PO) },
+  },
+
+  // Economics › Overview and AI & Costs figures (Platform AI cost metrics). Each one
+  // wraps the reader its tile reads; none depends on OD-1 (the engaged-customer
+  // definition): per-customer and cost-per-customer figures are NOT registered, and
+  // revenue / margin stay unregistered (no billing source). Every dollar is a
+  // rate-card ESTIMATE, never a bill.
+  {
+    id: "economics-ai-cost", version: 1, domain: "economics",
+    label: "Estimated AI cost (7 / 30 / 90 d)",
+    summary: "Estimated AI spend (cost) over the last 7, 30 or 90 UTC days, every surface: the invocation ledger's RETURNED calls priced by the code-owned rate card. An estimate, never a bill.",
+    answerClass: "CALCULATED",
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The last 7, 30 or 90 UTC calendar days ending today (window=30 default, or 7 or 90).", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "TREND_WINDOWS" }, days: [30, 7, 90] },
+    numerator: { description: "Σ rate-card-priced cost of RETURNED AiInvocation rows per (model, UTC day) in the window; days with unpriced calls make it a lower bound.", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "aiDayRows" } },
+    denominator: null,
+    compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "aiCostFigure" },
+    path: [
+      { file: "app/api/platform/platform-ops/economics/route.ts", calls: "getEconomicsSnapshot" },
+      { file: "lib/platform/economics/snapshot.ts", calls: "buildEconomicsSnapshot" },
+      { file: "lib/platform/economics/snapshot-core.ts", calls: "aiCostFigure" },
+    ],
+    inclusion: ["RETURNED AiInvocation rows on every surface (Conversations, Daily Brief, evaluation, Platform AI, unattributed)"],
+    exclusion: ["Failed calls (they cost nothing)", "Unpriced calls are named in coverage, never priced at $0"],
+    freshnessSource: "AiInvocation rows (90-day retention), read on request",
+    provenance: { class: "ESTIMATED", note: "Rate-card estimate (tokens × code-owned rates). No AI invoice is read anywhere, so no AI dollar figure is ever billed or MEASURED." },
+    coverageGaps: ["UNAVAILABLE (no figure, never $0) with no rate card, no calls, or nothing priced in the window", "PARTIAL figures are lower bounds: some days carry unpriced calls", "AI only: Plaid, other providers and infrastructure are not in this figure (economics-operating-cost@1 holds the cycle total)"],
+    permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/economics/route.ts" }],
+    tiles: [{ component: "components/platform/leads/EconomicsOverviewLead.tsx", reads: "s.trend.windows[win]" }],
+    drill: { api: "/api/platform/platform-ops/economics/drill?figure=ai_cost", page: `${page(PO)}?workspace=platform-economics`, note: "The figure's per-UTC-day rows (window=7d|30d|90d)." },
+  },
+  {
+    id: "economics-operating-cost", version: 1, domain: "economics",
+    label: "Estimated operating cost this cycle (by category)",
+    summary: "What the platform is costing this billing cycle, estimated: the total and its categories — AI, providers (Plaid) and infrastructure — exactly as the Economics Overview shows them. PARTIAL while any component is unmetered (other providers, infrastructure), so a ranking of categories covers only the measured ones.",
+    answerClass: "CALCULATED",
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window." },
+    numerator: { description: "Σ of the operating-cost components that could be priced: AI (customer, overhead, Platform AI) and Plaid Item-months; the parts are the Overview's AI / Providers / Infrastructure split figures.", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "operatingCostRows" } },
+    denominator: null,
+    compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "economicsFigure" },
+    path: [
+      { file: "app/api/platform/platform-ops/economics/route.ts", calls: "getEconomicsSnapshot" },
+      { file: "lib/platform/economics/snapshot.ts", calls: "buildEconomicsSnapshot" },
+      { file: "lib/platform/economics/snapshot-core.ts", calls: "economicsFigure" },
+    ],
+    inclusion: ["AI (OpenAI, every surface) this cycle", "Plaid Transactions Item-months this cycle"],
+    exclusion: ["Revenue and margin (no billing source — not registered)", "Per-customer and cost-per-customer figures (pending owner definition OD-1 — not registered)", "Consented Plaid Investments Item-months not evidenced as billed (named, never priced)"],
+    freshnessSource: "AiInvocation rows and the PlaidItem census, read on request",
+    provenance: { class: "ESTIMATED", note: "Rate-card estimates (AI tokens × rate card; Plaid Item-months × invoice-derived rate). No invoice is read: never a bill." },
+    coverageGaps: ["Always PARTIAL today: other providers and infrastructure (hosting, database) are not metered — their parts are null, never $0", "A ranking of categories is a ranking of the MEASURED ones; the unmetered parts could be larger", "UNAVAILABLE when no component could be priced"],
+    permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/economics/route.ts" }],
+    tiles: [
+      { component: "components/platform/leads/EconomicsOverviewLead.tsx", reads: "s.figures.operating_cost" },
+      { component: "components/platform/leads/economics-model.ts", reads: "SPLIT_KEYS.map((k) => s.figures[k])" },
+    ],
+    drill: { api: "/api/platform/platform-ops/economics/drill?figure=operating_cost&window=cycle", page: `${page(PO)}?workspace=platform-economics`, note: "One row per component: priced, or null with why." },
+  },
+  {
+    id: "economics-provider-cost", version: 1, domain: "economics",
+    label: "Estimated provider cost this cycle (Plaid)",
+    summary: "Estimated third-party provider cost this billing cycle: Plaid Item-months × the invoice-derived rate. PARTIAL whenever another provider is unmetered (always today), never $0 for an unknown part.",
+    answerClass: "CALCULATED",
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window." },
+    numerator: { description: "Σ priced Plaid product Item-months present during the cycle (Transactions; Investments only when evidenced as billed).", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "providerCostRows" } },
+    denominator: null,
+    compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "economicsFigure" },
+    path: [
+      { file: "app/api/platform/platform-ops/economics/route.ts", calls: "getEconomicsSnapshot" },
+      { file: "lib/platform/economics/snapshot.ts", calls: "buildEconomicsSnapshot" },
+      { file: "lib/platform/economics/snapshot-core.ts", calls: "economicsFigure" },
+    ],
+    inclusion: ["PlaidItem census, present during the cycle (sandbox and seeded Items excluded)"],
+    exclusion: ["AI (economics-ai-cost@1)", "Other providers — not metered (named, never $0)"],
+    freshnessSource: "The PlaidItem census, read on request",
+    provenance: { class: "ESTIMATED", note: "Item-months × invoice-derived rate. No provider invoice is read: never a bill." },
+    coverageGaps: ["PARTIAL while any provider is unmetered (other providers are not metered today)", "UNAVAILABLE with no Plaid rate card, no cycle census, or nothing priced", "Census caveats (incomplete census, unevidenced product, disagreeing readings) are named in coverage"],
+    permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/economics/route.ts" }],
+    tiles: [{ component: "components/platform/leads/EconomicsOverviewLead.tsx", reads: "f.provider_cost" }],
+    drill: { api: "/api/platform/platform-ops/economics/drill?figure=provider_cost&window=cycle", page: `${page(PO)}?workspace=platform-economics` },
+  },
+  {
+    id: "ai-call-outcomes", version: 1, domain: "economics",
+    label: "AI calls and error rate (7 / 30 d)",
+    summary: "Fleet AI provider calls over the last 7 or 30 days: calls, returned, failed, and the error rate (failed ÷ calls). Counted, not priced.",
+    answerClass: "CALCULATED",
+    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing 7 or 30 days (7 × 24 h or 30 × 24 h) from the reader's now (window=7 default, or 30).", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "AI_WINDOWS" }, days: [7, 30] },
+    numerator: { description: "Failed calls: non-RETURNED AiInvocation rows (FAILED, TIMEOUT, RATE_LIMITED, QUOTA).", source: { module: "lib/platform/ai/invocations.ts", symbol: "buildAiFailureCounts" } },
+    denominator: { description: "Every call in the window: RETURNED + failed. No call ⇒ the error rate is null, never 0%.", source: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCallStats" } },
+    compute: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCallStats" },
+    path: [
+      // The route serves the AiOperations payload; the AI & Costs tile folds it through aiCallStats (the same pure function).
+      { file: "app/api/platform/platform-ops/ai-invocations/route.ts", calls: "getAiOperations" },
+    ],
+    inclusion: ["AiInvocation rows of every surface in the window, RETURNED and failed"],
+    exclusion: ["No per-user, per-Space or per-customer dimension (the fleet reader exposes none)"],
+    freshnessSource: "AiInvocation rows (90-day retention), read on request",
+    provenance: { class: "MEASURED" },
+    coverageGaps: ["Failures are recorded since 2026-10-07; a window reaching before then undercounts them"],
+    permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/ai-invocations/route.ts" }],
+    tiles: [{ component: "components/platform/leads/ai-costs-model.ts", reads: "aiCallStats(i)" }],
+    drill: { api: "/api/platform/platform-ops/ai-invocations", page: `${page(PO)}?workspace=platform-economics&view=ai`, note: "The newest invocations (window=7d|30d)." },
+  },
+  {
+    id: "ai-cost-per-call", version: 1, domain: "economics",
+    label: "Estimated AI cost per call (7 / 30 d)",
+    summary: "Estimated AI cost per RETURNED call over the last 7 or 30 days, fleet-wide: priced spend ÷ returned calls. An aggregate estimate, never per customer and never a bill.",
+    answerClass: "CALCULATED",
+    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing 7 or 30 days (7 × 24 h or 30 × 24 h) from the reader's now (window=7 default, or 30).", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "AI_WINDOWS" }, days: [7, 30] },
+    numerator: { description: "Σ rate-card-priced spend of RETURNED calls in the window.", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "buildAiOperations" } },
+    denominator: { description: "RETURNED calls in the window (failures cost nothing and are not in the denominator).", source: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCostPerCall" } },
+    compute: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCostPerCall" },
+    path: [
+      { file: "app/api/platform/platform-ops/ai-invocations/route.ts", calls: "getAiOperations" },
+    ],
+    inclusion: ["RETURNED AiInvocation rows of every surface in the window"],
+    exclusion: ["Failed calls", "No per-user, per-Space or per-customer dimension"],
+    freshnessSource: "AiInvocation rows (90-day retention), read on request",
+    provenance: { class: "ESTIMATED", note: "Tokens × code-owned rate card ÷ returned calls. No AI invoice is read: never a bill." },
+    coverageGaps: ["UNAVAILABLE with no rate card, no returned calls, or nothing priced", "PARTIAL (a lower bound) when some tokens had no rate"],
+    permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/ai-invocations/route.ts" }],
+    tiles: [{ component: "components/platform/leads/ai-costs-model.ts", reads: "aiCostPerCall(i)" }],
+    drill: { api: "/api/platform/platform-ops/ai-invocations", page: `${page(PO)}?workspace=platform-economics&view=ai` },
   },
 
   // ── engagement (PB-10) ─────────────────────────────────────────────────────
@@ -277,7 +406,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Engaged users (DAU / WAU / MAU)",
     summary: "Distinct users with at least one MEANINGFUL ENGAGEMENT fact (server-side product events or customer AI turns) in the trailing 1 / 7 / 30 UTC days.",
     answerClass: "OBSERVED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "Trailing 1 / 7 / 30 UTC calendar days (ENGAGEMENT_WINDOW_DAYS); Growth's tile shows the 30-day figure.", source: { module: "lib/presence/definitions.ts", symbol: "ENGAGEMENT_WINDOW_DAYS" } },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "Trailing 1 / 7 / 30 UTC calendar days (ENGAGEMENT_WINDOW_DAYS); Growth's tile shows the 30-day figure.", source: { module: "lib/presence/definitions.ts", symbol: "ENGAGEMENT_WINDOW_DAYS" }, days: [30, 7, 1] },
     numerator: { description: "Distinct users with an engagement day inside the window.", source: { module: "lib/platform/growth/product-analytics-core.ts", symbol: "engagementDays" } },
     denominator: null,
     compute: { module: "lib/platform/growth/product-analytics-core.ts", symbol: "activeUsers" },
@@ -302,7 +431,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Registrations",
     summary: "Accounts created per UTC day in the selected 30- or 90-day window, and their total.",
     answerClass: "OBSERVED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The last 30 or 90 UTC days (?window=30|90)." },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The last 30 or 90 UTC days (?window=30|90).", days: [90, 30] },
     numerator: { description: "User rows by User.createdAt UTC day inside the window.", source: { module: "lib/platform/growth/acquisition-core.ts", symbol: "buildAcquisition" } },
     denominator: null,
     compute: { module: "lib/platform/growth/acquisition-core.ts", symbol: "buildAcquisition" },

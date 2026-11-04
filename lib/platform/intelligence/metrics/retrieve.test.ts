@@ -43,6 +43,15 @@ import type { ProductAnalyticsResponse } from "@/lib/platform/growth/product-ana
 import type { MerchantOverviewResponse } from "@/lib/platform/merchant/overview-types";
 import type { CsOverviewResponse } from "@/lib/platform/customer/overview-types";
 import type { ProviderHealthResult } from "@/lib/platform/provider-health";
+import type { AiOperations } from "@/lib/platform/ai/invocations";
+import type { SpendGroup } from "@/lib/platform/ai/spend-by-surface-core";
+import type { PlaidItemFact } from "@/lib/platform/plaid/item-months";
+import { PLAID_RATES } from "@/lib/usage/pricing";
+import { getEconomicsSnapshot, type EconomicsDeps } from "@/lib/platform/economics/snapshot";
+import { splitFigures } from "@/components/platform/leads/economics-model";
+import { aiKpis, costPerCall, usd } from "@/components/platform/leads/ai-costs-model";
+import { providerEntities, providerKpis } from "@/components/platform/leads/providers-model";
+import { NO_EVALUABLE_PROVIDER } from "@/lib/platform/verdicts/provider-outcome";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -114,10 +123,34 @@ const searchFx = (truncated = false): SearchResult => ({
   total: 3, page: 1, pageSize: 25, truncated, scanned: 500, facets: { providers: [], operations: [], codes: [] },
 } as unknown as SearchResult);
 
+// Economics: the REAL snapshot reader (getEconomicsSnapshot) over synthetic ledger deps — the same world the Overview tile reads.
+const ecoGroup = (day: string, surface: string | null, o: Partial<SpendGroup> = {}): SpendGroup => ({
+  provider: "OPENAI", model: "gpt-5-mini", surface, day, invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000, ...o,
+});
+const ECO_GROUPS: SpendGroup[] = [ecoGroup("2026-11-01", "chat"), ecoGroup("2026-11-02", "brief"), ecoGroup("2026-11-04", "harness"), ecoGroup("2026-10-20", "chat"), ecoGroup("2026-09-10", "chat")];
+const ecoItem = (id: string): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production" } as PlaidItemFact);
+const ecoDeps = (o: { groups?: SpendGroup[]; aiPricingConfigured?: boolean; plaidRates?: EconomicsDeps["plaidRates"] } = {}): EconomicsDeps => ({
+  groups: async () => o.groups ?? ECO_GROUPS,
+  plaidReaders: { items: async () => [ecoItem("p1"), ecoItem("p2")], transitions: async () => [] },
+  engagedSince: async () => new Set([CUID]),
+  aiPricingConfigured: o.aiPricingConfigured ?? true,
+  plaidRates: o.plaidRates ?? PLAID_RATES,
+  ref: () => "user #00x",
+});
+
+// AI & Costs: the ai-invocations payload (AiOperations) the tile's aiKpis folds.
+const aiOpsFx = (over: { invocations?: number; usd?: number | null; unpricedTokens?: number; failed?: number; pricing?: boolean } = {}): AiOperations => ({
+  totals: { invocations: over.invocations ?? 58, usd: over.usd === undefined ? 1.45 : over.usd, unpricedTokens: over.unpricedTokens ?? 0 },
+  failures: { failed: over.failed ?? 2, timeouts: 0, rateLimited: 0, quota: 0, total: over.failed ?? 2 },
+  pricingConfigured: over.pricing ?? true,
+  recent: [{ correlationId: CUID, subSurface: `user #4 ${EMAIL}` }],
+  checkedAt: NOW.toISOString(),
+} as unknown as AiOperations);
+
 const LIVE_FX = { sessions: 7, distinctUsers: 3 };
 const ACCOUNTS_FX = 2;
 
-interface Recorder { incidentAudiences: string[]; csAudiences: string[]; windows: number[] }
+interface Recorder { incidentAudiences: string[]; csAudiences: string[]; windows: number[]; aiWindows: string[] }
 function readers(rec: Recorder, over: Partial<RetrievalReaders> = {}): RetrievalReaders {
   return {
     providerHealth: async () => providerFx(),
@@ -129,10 +162,12 @@ function readers(rec: Recorder, over: Partial<RetrievalReaders> = {}): Retrieval
     csOverview: async (t) => { rec.csAudiences.push(t.audience); return csFx(); },
     liveSessions: async () => ({ ...LIVE_FX }),
     accountsWithLiveSession: async () => ACCOUNTS_FX,
+    economicsSnapshot: (nowMs) => getEconomicsSnapshot(nowMs, ecoDeps()),
+    aiOperations: async (w) => { rec.aiWindows.push(w); return aiOpsFx(); },
     ...over,
   };
 }
-const newRec = (): Recorder => ({ incidentAudiences: [], csAudiences: [], windows: [] });
+const newRec = (): Recorder => ({ incidentAudiences: [], csAudiences: [], windows: [], aiWindows: [] });
 
 // ── tokens, from the same guard-result shapes the routes pass ────────────────
 const user = (role: UserRole) => ({ role });
@@ -206,12 +241,50 @@ await (async () => {
   const byVerdict = (v: string | null) => pf.providers.filter((p) => (p.execution?.verdict ?? null) === v).length;
   check("provider-outcome: counts = the reader's own execution verdicts (the tile's per-row verdict, tallied)",
     JSON.stringify(po?.value) === JSON.stringify({ healthy: byVerdict("HEALTHY"), degraded: byVerdict("DEGRADED"), failing: byVerdict("FAILING"), notEnoughData: byVerdict("NOT_ENOUGH_DATA"), noRuns: byVerdict(null) })
-    && po?.status === "MEASURED", JSON.stringify(po?.value));
+    && po?.status === "PARTIAL", JSON.stringify(po?.value));
+  check("provider-outcome: SOME providers unevaluated (no runs / not enough data) ⇒ PARTIAL with the counts and why, never MEASURED",
+    po?.status === "PARTIAL" && /only 4 providers of 6 could be evaluated/.test(po.reason ?? "")
+    && po.coverage.missing.join("|") === "1 provider with no run in the window|1 provider with not enough data for a verdict", JSON.stringify(po?.coverage.missing));
+  const allEval = { checkedAt: NOW, providers: providerFx().providers.filter((p) => p.execution && p.execution.verdict !== "NOT_ENOUGH_DATA") } as Pick<ProviderHealthResult, "checkedAt" | "providers">;
+  const poM = await retrieveWith("PLATFORM_OPS", readers(newRec(), { providerHealth: async () => allEval }), OPS, "provider-outcome", {}, NOW);
+  check("provider-outcome: every provider evaluable ⇒ MEASURED", poM?.status === "MEASURED" && (poM.value as Record<string, number>).healthy === 2, JSON.stringify(poM));
+  // The Preview world: crons do not run, so every provider has no run or too few.
+  const noneEval = { checkedAt: NOW, providers: [
+    { key: "PLAID", label: "Plaid", execution: { verdict: "NOT_ENOUGH_DATA" }, connections: null, notes: [] },
+    { key: "OPEN_EXCHANGE_RATES", label: "Open Exchange Rates", execution: null, connections: null, notes: [] },
+  ] } as unknown as Pick<ProviderHealthResult, "checkedAt" | "providers">;
+  const poU = await retrieveWith("PLATFORM_OPS", readers(newRec(), { providerHealth: async () => noneEval }), OPS, "provider-outcome", {}, NOW);
+  check("provider-outcome: NO provider evaluable ⇒ UNAVAILABLE (value null, never '0 healthy'), reason names the environment",
+    poU?.status === "UNAVAILABLE" && poU.value === null && (poU.reason ?? "").includes(NO_EVALUABLE_PROVIDER)
+    && poU.coverage.missing.length === 2, JSON.stringify(poU));
+  check("provider-outcome: the envelope-status rule is written into the registry definition (and so the envelope)",
+    (poU?.coverage.gaps ?? []).some((g) => /^Envelope status rule/.test(g) && /UNAVAILABLE when none does/.test(g)));
+  // Tile parity (same world): the Providers "Providers healthy" KPI shows no count either.
+  const provInputs = (providers: unknown[]) => ({
+    health: fetched({ checkedAt: NOW.toISOString(), counts: {}, providers }), apiUsage: fetched(null), email: fetched(null), plaid: fetched(null),
+    operations: fetched(null), trend: fetched(null), nowMs: NOW.getTime(),
+  }) as never;
+  const tileProviders = [
+    { key: "PLAID", label: "Plaid", trust: "INSUFFICIENT_DATA", notes: [], freshness: { state: "not-refreshed" } },
+    { key: "OPEN_EXCHANGE_RATES", label: "Open Exchange Rates", trust: "UNKNOWN", notes: [], freshness: { state: "unknown" } },
+  ];
+  const tileKpi = providerKpis(providerEntities(provInputs(tileProviders)), provInputs(tileProviders)).find((k) => k.key === "healthy")!;
+  check("Providers tile parity: nothing assessed ⇒ 'Providers healthy' reads '—' with the same reason (never '0/2')",
+    tileKpi.value === "—" && tileKpi.sub.includes(NO_EVALUABLE_PROVIDER) && tileKpi.tone === "muted", JSON.stringify(tileKpi));
+  const tileOk = [{ ...tileProviders[0], trust: "OPERATIONAL" }, tileProviders[1]];
+  const tileKpiOk = providerKpis(providerEntities(provInputs(tileOk)), provInputs(tileOk)).find((k) => k.key === "healthy")!;
+  check("…and once one provider is assessed the tile counts again (1/2 · 1 not assessed)", tileKpiOk.value === "1/2" && tileKpiOk.sub === "1 not assessed", JSON.stringify(tileKpiOk));
   // Re-pinned (provider-connection@2): the key is @2, and the institution-concentrated
   // DEGRADED verdicts are counted inside `degraded` AND named on their own.
   const pc = await get("PLATFORM_OPS", OPS, "provider-connection@2");
   check("provider-connection@2: counts = the reader's own connection verdicts (institutionConcentrated ⊂ degraded)",
-    JSON.stringify(pc?.value) === JSON.stringify({ failing: 1, degraded: 2, institutionConcentrated: 1, noVerdict: 1, noConnections: 2 }) && pc?.status === "MEASURED", JSON.stringify(pc?.value));
+    JSON.stringify(pc?.value) === JSON.stringify({ failing: 1, degraded: 2, institutionConcentrated: 1, noVerdict: 1, noConnections: 2 }) && pc?.status === "PARTIAL", JSON.stringify(pc?.value));
+  check("provider-connection@2: some providers without a connection population ⇒ PARTIAL, named", pc?.coverage.missing.includes("2 providers with no connection population") === true, JSON.stringify(pc?.coverage.missing));
+  const pcU = await retrieveWith("PLATFORM_OPS", readers(newRec(), { providerHealth: async () => noneEval }), OPS, "provider-connection@2", {}, NOW);
+  check("provider-connection@2: no provider reports a connection population ⇒ UNAVAILABLE, never measured zeros", pcU?.status === "UNAVAILABLE" && pcU.value === null && !!pcU.reason, JSON.stringify(pcU));
+  const allConn = { checkedAt: NOW, providers: providerFx().providers.filter((p) => p.connections) } as Pick<ProviderHealthResult, "checkedAt" | "providers">;
+  check("provider-connection@2: every provider assessed ⇒ MEASURED",
+    (await retrieveWith("PLATFORM_OPS", readers(newRec(), { providerHealth: async () => allConn }), OPS, "provider-connection@2", {}, NOW))?.status === "MEASURED");
   check("provider-connection@1 is retired: no longer retrievable", (await get("PLATFORM_OPS", OPS, "provider-connection@1")) === null);
 
   const ai = await get("PLATFORM_OPS", OPS, "ai-fleet-spend-status");
@@ -283,6 +356,94 @@ await (async () => {
     acc?.value === ACCOUNTS_FX && acc.status === "MEASURED" && acc.tier === "OPS");
   check("…a measured 0 stays 0 (a real count of no accounts, not missing data)",
     (await retrieveWith("GROWTH_REVENUE", readers(newRec(), { accountsWithLiveSession: async () => 0 }), GR, "accounts-with-live-session", {}, NOW))?.value === 0);
+})();
+
+// ── 3c. Economics / AI & Costs cost metrics — parity with their tiles ────────
+console.log("\n3c. cost metrics — envelope = the Economics / AI & Costs tile, same world");
+await (async () => {
+  const rec = newRec();
+  const R = readers(rec);
+  const get = (id: string, params = {}, r: RetrievalReaders = R) => retrieveWith("PLATFORM_OPS", r, OPS, id, params, NOW);
+  const snap = await getEconomicsSnapshot(NOW.getTime(), ecoDeps());
+
+  // economics-ai-cost@1 — the Overview AI trend card: s.trend.windows[win].
+  for (const [w, key] of [[30, "30d"], [7, "7d"], [90, "90d"]] as const) {
+    const e = await get("economics-ai-cost", w === 30 ? {} : { window: w });
+    const f = snap.trend.windows[key];
+    check(`economics-ai-cost @ ${w} d: value / status / reason = the tile's figure (${f.status} ${f.value})`,
+      e?.value === f.value && e.status === f.status && e.reason === f.reason && e.window.days === w && e.unit === "usd" && e.basis.kind === "estimated", JSON.stringify(e?.value));
+  }
+  const bad = await get("economics-ai-cost", { window: 14 });
+  check("economics-ai-cost: an undeclared window (14) ⇒ UNAVAILABLE naming the declared ones",
+    bad?.status === "UNAVAILABLE" && bad.value === null && /window must be one of 30, 7, 90 \(days\) — 14 is not offered/.test(bad.reason ?? ""), bad?.reason ?? "");
+  const noRate = await get("economics-ai-cost", {}, readers(newRec(), { economicsSnapshot: (n) => getEconomicsSnapshot(n, ecoDeps({ aiPricingConfigured: false })) }));
+  check("economics-ai-cost: no AI rate card ⇒ UNAVAILABLE with the tile's reason (never $0)", noRate?.status === "UNAVAILABLE" && noRate.value === null && noRate.reason === "no AI rate card configured", JSON.stringify(noRate));
+  const unpricedGroups = [...ECO_GROUPS, ecoGroup("2026-11-03", "chat", { model: "not-a-rated-model" })];
+  const snapP = await getEconomicsSnapshot(NOW.getTime(), ecoDeps({ groups: unpricedGroups }));
+  const partial = await get("economics-ai-cost", {}, readers(newRec(), { economicsSnapshot: (n) => getEconomicsSnapshot(n, ecoDeps({ groups: unpricedGroups })) }));
+  check("economics-ai-cost: an unpriced day ⇒ PARTIAL (lower bound), missing parts = the tile's coverage.missing",
+    partial?.status === "PARTIAL" && snapP.trend.windows["30d"].status === "PARTIAL" && partial.value === snapP.trend.windows["30d"].value
+    && JSON.stringify(partial.coverage.missing) === JSON.stringify(snapP.trend.windows["30d"].coverage.missing) && partial.basis.kind === "estimated", JSON.stringify(partial));
+
+  // economics-operating-cost@1 — the Overview hero + its AI / Providers / Infrastructure split tiles.
+  const op = await get("economics-operating-cost");
+  const opv = op?.value as Record<string, number | null>;
+  const split = splitFigures(snap);
+  check("economics-operating-cost: total = the hero figure, parts = the split tiles (AI, Providers, Infrastructure null — never $0)",
+    opv?.totalUsd === snap.figures.operating_cost.value && opv.aiUsd === split[0].value && opv.providersUsd === split[1].value
+    && opv.infrastructureUsd === null && split[2].value === null, JSON.stringify(opv));
+  check("economics-operating-cost: PARTIAL while any component is unmetered (other providers, infrastructure), with the tile's reason and missing parts",
+    op?.status === "PARTIAL" && snap.figures.operating_cost.status === "PARTIAL" && op.reason === snap.figures.operating_cost.reason
+    && op.coverage.missing.some((m) => /not metered/.test(m)) && op.basis.kind === "estimated" && op.unit === "usd", JSON.stringify(op?.coverage.missing));
+  const opW = await get("economics-operating-cost", { window: 30 });
+  check("economics-operating-cost: any window ⇒ UNAVAILABLE, the window is fixed (the current cycle)", opW?.status === "UNAVAILABLE" && /takes no window — its window is fixed: The current billing cycle/.test(opW.reason ?? ""), opW?.reason ?? "");
+
+  // economics-provider-cost@1 — the Overview Providers tile (f.provider_cost).
+  const pv = await get("economics-provider-cost");
+  check("economics-provider-cost: value / status = the Providers tile (PARTIAL: other providers unmetered, never $0)",
+    pv?.value === snap.figures.provider_cost.value && pv.status === "PARTIAL" && snap.figures.provider_cost.status === "PARTIAL"
+    && pv.coverage.missing.some((m) => /other providers are not metered/.test(m)), JSON.stringify(pv));
+  const pvU = await get("economics-provider-cost", {}, readers(newRec(), { economicsSnapshot: (n) => getEconomicsSnapshot(n, ecoDeps({ plaidRates: [] })) }));
+  check("economics-provider-cost: no Plaid rate card ⇒ UNAVAILABLE with the tile's reason", pvU?.status === "UNAVAILABLE" && pvU.value === null && pvU.reason === "no Plaid rate card configured", JSON.stringify(pvU));
+
+  // ai-call-outcomes@1 — the AI & Costs KPIs "Calls · 7 d" / "Error rate · 7 d" (aiKpis over the same payload).
+  const kp = aiKpis({ budget: fetched(aiFx()) as never, inv7: fetched(aiOpsFx()) as never });
+  const co = await get("ai-call-outcomes");
+  const cov = co?.value as Record<string, number | null>;
+  check("ai-call-outcomes: calls / error rate = the AI & Costs KPIs (60 calls, 3.3%)",
+    kp.find((k) => k.key === "calls")!.value === (cov.calls as number).toLocaleString("en-US") && cov.calls === 60 && cov.returned === 58 && cov.failed === 2
+    && kp.find((k) => k.key === "errors")!.value === `${(cov.errorRatePct as number).toFixed(1)}%` && co?.status === "MEASURED" && co.basis.kind === "measured" && co.window.days === 7, JSON.stringify(cov));
+  await get("ai-call-outcomes", { window: 30 });
+  check("ai-call-outcomes: the tile's 7 d by default, 30 d on request (the route's ?window=7d|30d)", rec.aiWindows.join() === "7d,30d", rec.aiWindows.join());
+  const coBad = await get("ai-call-outcomes", { window: 1 });
+  check("ai-call-outcomes: an undeclared window ⇒ refused before the reader runs", coBad?.status === "UNAVAILABLE" && /window must be one of 7, 30/.test(coBad.reason ?? "") && rec.aiWindows.length === 2);
+  const co0 = await get("ai-call-outcomes", {}, readers(newRec(), { aiOperations: async () => aiOpsFx({ invocations: 0, failed: 0, usd: null }) }));
+  check("ai-call-outcomes: no calls ⇒ a measured 0 calls, error rate null (never 0%), and the tile says '—'",
+    (co0?.value as Record<string, number | null>).calls === 0 && (co0?.value as Record<string, number | null>).errorRatePct === null
+    && aiKpis({ budget: fetched(aiFx()) as never, inv7: fetched(aiOpsFx({ invocations: 0, failed: 0, usd: null })) as never }).find((k) => k.key === "errors")!.value === "—");
+
+  // ai-cost-per-call@1 — the AI & Costs KPI "Est. cost / call" (costPerCall over the same payload).
+  const cpc = await get("ai-cost-per-call");
+  const tileCpc = costPerCall(aiOpsFx());
+  check("ai-cost-per-call: value = the tile's estimate ($0.03 per returned call), ESTIMATED",
+    tileCpc.kind === "ESTIMATED" && (cpc?.value as Record<string, number>).usdPerCall === tileCpc.usd && kp.find((k) => k.key === "per-call")!.value === usd((cpc?.value as Record<string, number>).usdPerCall)
+    && cpc?.status === "ESTIMATED" && cpc.basis.kind === "estimated" && cpc.unit === "usd-and-counts", JSON.stringify(cpc?.value));
+  const cpcP = await get("ai-cost-per-call", {}, readers(newRec(), { aiOperations: async () => aiOpsFx({ unpricedTokens: 900 }) }));
+  check("ai-cost-per-call: unpriced tokens ⇒ PARTIAL (the tile's 'estimated · partial')", cpcP?.status === "PARTIAL" && (costPerCall(aiOpsFx({ unpricedTokens: 900 })) as { partial: boolean }).partial);
+  const cpcU = await get("ai-cost-per-call", {}, readers(newRec(), { aiOperations: async () => aiOpsFx({ pricing: false }) }));
+  check("ai-cost-per-call: no rate card ⇒ UNAVAILABLE with the tile's reason", cpcU?.status === "UNAVAILABLE" && cpcU.value === null && cpcU.reason === "no rate card");
+
+  // E5 — aggregates only: no cost metric carries a per-user / per-Space / per-customer part.
+  const COST = ["economics-ai-cost@1", "economics-operating-cost@1", "economics-provider-cost@1", "ai-call-outcomes@1", "ai-cost-per-call@1"];
+  const envs = await Promise.all(COST.map((k) => get(k)));
+  check("cost metrics: every one is served on PLATFORM_OPS only, at the OPS tier (no CS exposure, no new grant)",
+    COST.every((k) => { const m = METRICS.find((d) => metricKey(d) === k)!; return m.permission.length === 1 && m.permission[0].area === "PLATFORM_OPS" && m.permission[0].level === "READ" && m.permission[0].identityTier === "OPS"; })
+    && envs.every((e) => e?.tier === "OPS"));
+  check("cost metrics: value parts are fleet aggregates only (no customer / user / space / group key)",
+    envs.every((e) => e?.value === null || typeof e?.value === "number" || Object.keys(e!.value).every((k) => !/customer|user|space|group|member/i.test(k))));
+  check("OD-1 / no billing: no per-customer, cost-per-customer, revenue or margin metric is registered",
+    !METRICS.some((m) => /per-customer|per-active|active-customer|revenue|margin|entitlement|group-cost/.test(m.id)));
+  check("cost metrics are discoverable under domain \"economics\"", COST.every((k) => METRICS.find((d) => metricKey(d) === k)!.domain === "economics"));
 })();
 
 // ── 3b. fleet vs per-subject (S2) ────────────────────────────────────────────
@@ -367,7 +528,7 @@ await (async () => {
   const boom = async () => { throw new Error(`db down for ${EMAIL} ${CUID}`); };
   const failing: RetrievalReaders = {
     providerHealth: boom, aiBudget: boom, acquisition: boom, productAnalytics: boom, incidentSearch: boom, merchantOverview: boom, csOverview: boom,
-    liveSessions: boom, accountsWithLiveSession: boom,
+    liveSessions: boom, accountsWithLiveSession: boom, economicsSnapshot: boom, aiOperations: boom,
   };
   for (const m of retrievable) {
     const surface = m.permission[0].area;
@@ -417,6 +578,12 @@ await (async () => {
     check(`${metricKey(m)}: drill = registry (${link ? link.api : "unavailable"}), keys only figure/window/href/page`,
       ok && Object.keys(d!).every((x) => ["figure", "window", "href", "page", "unavailable"].includes(x)));
     check(`${metricKey(m)}: basis names the registry's code refs`, e?.basis.compute === `${m.compute.module}#${m.compute.symbol}` && e.basis.reader === m.path[0].calls && e.basis.definition === metricKey(m));
+    check(`${metricKey(m)}: basis.kind = "${m.provenance.class === "ESTIMATED" ? "estimated" : "measured"}" (from the registry's provenance)`,
+      e?.basis.kind === (m.provenance.class === "ESTIMATED" ? "estimated" : "measured"));
+    // E2 — the registry declares exactly the windows retrieval accepts.
+    const entry = RETRIEVAL[metricKey(m)];
+    if (entry.kind === "RETRIEVABLE") check(`${metricKey(m)}: registry window.days = the retrieval contract's declared windows (${entry.windows.join(",") || "fixed"})`,
+      JSON.stringify(m.window.days ?? []) === JSON.stringify(entry.windows));
   }
 
   // The drill exists only where the EFFECTIVE surface satisfies the drill route's own gate.

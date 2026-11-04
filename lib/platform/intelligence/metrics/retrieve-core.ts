@@ -83,6 +83,10 @@ import type { ProductAnalyticsResponse } from "@/lib/platform/growth/product-ana
 import type { MerchantOverviewResponse } from "@/lib/platform/merchant/overview-types";
 import type { CsOverviewResponse } from "@/lib/platform/customer/overview-types";
 import type { LiveSessionCounts } from "@/lib/platform/security/live-sessions";
+import type { EconomicsFigure, EconomicsSnapshot, TrendWindow } from "@/lib/platform/economics/snapshot-core";
+import type { AiOperations } from "@/lib/platform/ai/invocations";
+import { aiCallStats, aiCostPerCall } from "@/lib/platform/ai/call-stats";
+import { NO_EVALUABLE_PROVIDER } from "@/lib/platform/verdicts/provider-outcome";
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 
@@ -103,7 +107,11 @@ export interface RetrievalContext {
 }
 
 export interface RetrievalParams {
-  /** Only for metrics that declare windows (growth-registrations: 30 | 90; engaged-users: 1 | 7 | 30). */
+  /**
+   * Days, only for metrics that declare windows (growth-registrations: 30 | 90;
+   * engaged-users: 1 | 7 | 30; economics-ai-cost: 30 | 7 | 90; ai-call-outcomes and
+   * ai-cost-per-call: 7 | 30). Any other value is refused with the declared list.
+   */
   window?: number;
 }
 
@@ -116,7 +124,8 @@ export interface MetricEnvelope {
   surface: MetricSurface;
   /** The identity tier the value was read at (after the downgrade). */
   tier: IdentityTier;
-  unit: "count" | "usd-and-counts" | "counts";
+  /** "usd" = US dollars (a number, or an object of dollar parts); "usd-and-counts" = dollars beside counts. */
+  unit: "count" | "usd" | "usd-and-counts" | "counts";
   /** null ⇔ UNAVAILABLE. A floor / lower bound when PARTIAL. Never a stand-in 0. */
   value: AggregateValue | null;
   status: RetrievalStatus;
@@ -125,7 +134,12 @@ export interface MetricEnvelope {
   window: { kind: MetricDefinition["window"]["kind"]; description: string; days: number | null; hours: number | null };
   freshness: { asOf: string | null; source: string };
   coverage: { gaps: readonly string[]; missing: readonly string[] };
-  basis: { definition: `${string}@${number}`; compute: string; reader: string; answerClass: MetricDefinition["answerClass"] };
+  /**
+   * `kind` is "estimated" for a rate-card figure (provenance ESTIMATED: every dollar
+   * here — never a bill) and "measured" for a counted one. A PARTIAL estimate is
+   * still "estimated" (a lower bound of an estimate).
+   */
+  basis: { kind: "estimated" | "measured"; definition: `${string}@${number}`; compute: string; reader: string; answerClass: MetricDefinition["answerClass"] };
   /** null when the drill route's own gate is not this surface (the caller could not open it here) — see drillReason. */
   drill: MetricDrillDescriptor | null;
   /** Why `drill` is null; null when a drill is given. */
@@ -149,6 +163,8 @@ export interface RetrievalReaders {
   csOverview(token: CsToken): Promise<CsOverviewResponse>;
   liveSessions(now: Date): Promise<LiveSessionCounts>;
   accountsWithLiveSession(now: Date): Promise<number>;
+  economicsSnapshot(nowMs: number): Promise<EconomicsSnapshot>;
+  aiOperations(window: "7d" | "30d"): Promise<AiOperations>;
 }
 export type ReaderKey = keyof RetrievalReaders;
 
@@ -163,6 +179,8 @@ export const READER_SYMBOL: Readonly<Record<ReaderKey, string>> = {
   csOverview: "getCsOverview",
   liveSessions: "countLiveSessions",
   accountsWithLiveSession: "countAccountsWithLiveSession",
+  economicsSnapshot: "getEconomicsSnapshot",
+  aiOperations: "getAiOperations",
 };
 
 // ── The per-metric table ─────────────────────────────────────────────────────
@@ -206,6 +224,17 @@ export type RetrievalEntry = Retrievable | NotRetrievable;
 const plural = (n: number, w: string) => `${n.toLocaleString("en-US")} ${w}${n === 1 ? "" : "s"}`;
 
 /**
+ * An Economics figure as the tile shows it: its value, status (ESTIMATED /
+ * PARTIAL / UNAVAILABLE — the same vocabulary), reason and missing parts, read
+ * from the snapshot the Overview tile reads. Nothing is recomputed.
+ */
+function fromFigure(f: EconomicsFigure, asOf: string, days: number | null = null): Projected {
+  return { value: f.value, status: f.status, reason: f.reason, missing: [...f.coverage.missing], asOf, days };
+}
+
+const TREND_OF: Readonly<Record<number, TrendWindow>> = { 7: "7d", 30: "30d", 90: "90d" };
+
+/**
  * EVERY registered metric appears here exactly once (pinned): retrievable, or
  * NOT_RETRIEVABLE with the reason. Never silently omitted.
  */
@@ -224,7 +253,18 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
         else if (e === "NOT_ENOUGH_DATA") v.notEnoughData++;
         else throw new Error("unknown execution verdict"); // never guessed into a bucket ⇒ UNAVAILABLE
       }
-      return { value: v, asOf: iso(r.checkedAt) };
+      // The envelope-status rule (registry coverageGaps; the verdict rule is unchanged):
+      // zero evaluable providers is not a measurement of "0 healthy".
+      const evaluable = v.healthy + v.degraded + v.failing;
+      const unevaluated = v.noRuns + v.notEnoughData;
+      const asOf = iso(r.checkedAt);
+      const why = [
+        ...(v.noRuns > 0 ? [`${plural(v.noRuns, "provider")} with no run in the window`] : []),
+        ...(v.notEnoughData > 0 ? [`${plural(v.notEnoughData, "provider")} with not enough data for a verdict`] : []),
+      ];
+      if (evaluable === 0) return { value: null, status: "UNAVAILABLE", reason: `no provider has an evaluable verdict: ${NO_EVALUABLE_PROVIDER}`, missing: why, asOf };
+      if (unevaluated > 0) return { value: v, status: "PARTIAL", reason: `only ${plural(evaluable, "provider")} of ${r.providers.length} could be evaluated`, missing: why, asOf };
+      return { value: v, asOf };
     },
   },
   "provider-connection@2": {
@@ -242,9 +282,19 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
         else if (c.verdict === "DEGRADED") { v.degraded++; if (c.rule === "institution-concentrated") v.institutionConcentrated++; }
         else v.noVerdict++;
       }
+      // The envelope-status rule (registry coverageGaps): nothing to assess is not a measured zero.
+      if (r.providers.length === 0 || v.noConnections === r.providers.length) {
+        return { value: null, status: "UNAVAILABLE", reason: "no provider reports a connection population to assess", asOf: iso(r.checkedAt) };
+      }
+      const missing = [
+        ...(unknownPopulation > 0 ? [`${plural(unknownPopulation, "provider")}: connection population unavailable — share not computed`] : []),
+        ...(v.noConnections > 0 ? [`${plural(v.noConnections, "provider")} with no connection population`] : []),
+      ];
       if (unknownPopulation > 0) {
-        const missing = [`${plural(unknownPopulation, "provider")}: connection population unavailable — share not computed`];
         return { value: v, status: "PARTIAL", reason: "the error-share rule could not be applied to every provider", missing, asOf: iso(r.checkedAt) };
+      }
+      if (v.noConnections > 0) {
+        return { value: v, status: "PARTIAL", reason: "not every provider reports a connection population", missing, asOf: iso(r.checkedAt) };
       }
       return { value: v, asOf: iso(r.checkedAt) };
     },
@@ -271,6 +321,60 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
       return s.status === "PARTIAL"
         ? { ...base, value, status: "PARTIAL", reason: "lower bound — some customer invocations are unpriced", missing }
         : { ...base, value, status: "ESTIMATED", reason: null, missing };
+    },
+  },
+  "economics-ai-cost@1": {
+    // The Overview's AI trend card: s.trend.windows[win] (EconomicsOverviewLead.tsx) — the snapshot's own figure.
+    kind: "RETRIEVABLE", reader: "economicsSnapshot", unit: "usd", windows: [30, 7, 90],
+    async read({ readers, window, now }) {
+      const s = await readers.economicsSnapshot(now.getTime());
+      return fromFigure(s.trend.windows[TREND_OF[window ?? 30]], s.checkedAt, window);
+    },
+  },
+  "economics-operating-cost@1": {
+    // The Overview's hero (s.figures.operating_cost) and its split tiles (SPLIT_KEYS: AI / Providers / Infrastructure).
+    kind: "RETRIEVABLE", reader: "economicsSnapshot", unit: "usd", windows: [],
+    async read({ readers, now }) {
+      const s = await readers.economicsSnapshot(now.getTime());
+      const op = s.figures.operating_cost;
+      const p = fromFigure(op, s.checkedAt);
+      if (op.value === null) return p;
+      // Each part is the split tile's own figure: null = unmetered / unpriced (never $0).
+      return { ...p, value: { totalUsd: op.value, aiUsd: s.figures.ai_cost.value, providersUsd: s.figures.provider_cost.value, infrastructureUsd: s.figures.infra_cost.value } };
+    },
+  },
+  "economics-provider-cost@1": {
+    kind: "RETRIEVABLE", reader: "economicsSnapshot", unit: "usd", windows: [],
+    async read({ readers, now }) {
+      const s = await readers.economicsSnapshot(now.getTime());
+      return fromFigure(s.figures.provider_cost, s.checkedAt);
+    },
+  },
+  "ai-call-outcomes@1": {
+    // The AI & Costs KPIs "Calls · 7 d" / "Error rate · 7 d": aiCallStats(i) (ai-costs-model.ts aiKpis).
+    kind: "RETRIEVABLE", reader: "aiOperations", unit: "counts", windows: [7, 30],
+    async read({ readers, window }) {
+      const i = await readers.aiOperations(window === 30 ? "30d" : "7d");
+      const st = aiCallStats(i);
+      return {
+        value: { calls: st.calls, returned: st.returned, failed: st.failed, errorRatePct: st.errorRatePct },
+        missing: st.calls === 0 ? ["no calls recorded in the window — the error rate is undefined (never 0%)"] : [],
+        asOf: i.checkedAt, days: window,
+      };
+    },
+  },
+  "ai-cost-per-call@1": {
+    // The AI & Costs KPI "Est. cost / call": aiCostPerCall(i) (ai-costs-model.ts costPerCall).
+    kind: "RETRIEVABLE", reader: "aiOperations", unit: "usd-and-counts", windows: [7, 30],
+    async read({ readers, window }) {
+      const i = await readers.aiOperations(window === 30 ? "30d" : "7d");
+      const c = aiCostPerCall(i);
+      const base = { asOf: i.checkedAt, days: window };
+      if (c.kind === "UNKNOWN") return { ...base, value: null, status: "UNAVAILABLE", reason: c.reason };
+      const value = { usdPerCall: c.usd, pricedUsd: c.pricedUsd, returnedCalls: c.returned };
+      return c.partial
+        ? { ...base, value, status: "PARTIAL", reason: "lower bound — some tokens had no rate", missing: ["tokens the rate card could not price (counted, never $0)"] }
+        : { ...base, value, status: "ESTIMATED", reason: null };
     },
   },
   "presence-state@1": {
@@ -504,7 +608,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     window: { kind: m.window.kind, description: m.window.description, days, hours: p.hours ?? null },
     freshness: { asOf: p.asOf, source: m.freshnessSource },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
-    basis: { definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
+    basis: { kind: m.provenance.class === "ESTIMATED" ? "estimated" : "measured", definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
     ...drillOf(scope, days),
   };
 }
@@ -544,7 +648,9 @@ export async function retrieveWith(
   let window: number | null = null;
   if (params.window !== undefined) {
     if (!entry.windows.includes(params.window)) {
-      return unavailable(entry.windows.length === 0 ? "this metric takes no window" : `window must be one of ${entry.windows.join(", ")}`, entry.unit);
+      return unavailable(entry.windows.length === 0
+        ? `this metric takes no window — its window is fixed: ${scope.definition.window.description}`
+        : `window must be one of ${entry.windows.join(", ")} (days) — ${params.window} is not offered`, entry.unit);
     }
     window = params.window;
   } else if (entry.windows.length > 0) window = entry.windows[0];

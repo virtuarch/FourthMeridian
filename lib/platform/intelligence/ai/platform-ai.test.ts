@@ -268,6 +268,17 @@ console.log("\n3. an UNAVAILABLE metric is SAID as unavailable");
   check("the system prompt states the rule too", /UNAVAILABLE, say it is unavailable/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never present an unavailable figure as 0/.test(PLATFORM_AI_SYSTEM_PROMPT));
 }
 
+// ── 4c. cost-question guidance (PR A2; prompt only — enforcement stays server-side) ──
+console.log("\n4c. cost questions — discoverable economics metrics, estimates labelled, partial rankings hedged");
+{
+  const schemas = platformAiToolSchemas([]) as { function: { name: string; description: string } }[];
+  const lm = schemas.find((x) => x.function.name === "list_metrics")!.function.description;
+  check("list_metrics points cost / 'costing the most' questions at domain \"economics\"", /"economics"/.test(lm) && /costing the most/.test(lm), lm);
+  check("the prompt: estimated figures are called estimated, never billed", /basis\.kind is "estimated"/.test(PLATFORM_AI_SYSTEM_PROMPT) && /never billed/.test(PLATFORM_AI_SYSTEM_PROMPT));
+  check("the prompt: a ranking over PARTIAL / null parts is 'the largest of the measured categories' and unverifiable in full",
+    /largest of the measured categories/.test(PLATFORM_AI_SYSTEM_PROMPT) && /full ranking can't be verified/.test(PLATFORM_AI_SYSTEM_PROMPT));
+}
+
 // ── 4. numeric grounding ─────────────────────────────────────────────────────
 console.log("\n4. numeric grounding — only this turn's available values");
 {
