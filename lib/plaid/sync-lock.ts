@@ -145,33 +145,89 @@ export async function claimPlaidItemSyncLockAt(
 }
 
 /**
+ * What a release found. `pendingSignal` is true iff this holder's run SUCCEEDED
+ * and a skip landed WHILE it held the lease (a losing claim stamped
+ * syncIncompleteAt after `claimedAt`) — so the marker was deliberately left in
+ * place and more work is pending. Always false on a failed run (the marker
+ * stands anyway), on an un-fenced release, and on a release that lost its lease.
+ */
+export interface SyncLockReleaseResult { pendingSignal: boolean }
+
+/**
  * Release the per-item sync lock. `clearIncomplete` must be true ONLY when the
  * caller's own run genuinely completed the full history — a losing duplicate
  * can stamp syncIncompleteAt via claimPlaidItemSyncLock's skip branch WHILE
  * this run is still finishing (see b871093); only the winning run's
  * SUCCESSFUL completion should clear it. Best-effort: never throws.
+ *
+ * P2 (2026-11-02, Production 2026-11-01) — A SKIP THAT LANDED MID-RUN IS NOT
+ * STALE. b871093 cleared syncIncompleteAt unconditionally on success, on the
+ * reasoning that the loser's stamp was a stale duplicate of work this run had
+ * already done. That holds for a duplicate delivery of the SAME signal; it is
+ * false for a NEW signal. A card's HISTORICAL_UPDATE ("history is ready")
+ * arrived 9 s into a 15 s RECONNECT run, lost the claim, stamped the marker —
+ * and the holder's success erased it, so nothing pulled the history until the
+ * user pressed Refresh (otherwise ~8 h, the next scheduled sync).
+ *
+ * So with a fencing token the success-clear is now CONDITIONAL on the marker
+ * being OLDER than this holder's own claim: a marker from before the claim
+ * (the connect stamp, a prior failed run) is this run's to discharge and is
+ * cleared exactly as before; a marker stamped at or after it is a signal this
+ * run may not have seen (a tie errs toward the follow-up, which is merely an
+ * extra incremental pull), and it survives for the holder's one follow-up
+ * (webhook-sync) or the resume-stale-imports backstop. The lock itself is
+ * released either way. A loser can only stamp while the lease is held, and the
+ * lease is held until the second statement below, so no stamp falls between
+ * the two writes.
  */
 export async function releasePlaidItemSyncLock(
   plaidItemId: string,
   clearIncomplete: boolean,
   client: PlaidItemSyncLockClient = db,
   claimedAt?: Date,
-): Promise<void> {
-  // IDEMP-005 — with a fencing token the release only matches while THIS
-  // holder still owns the lease. Without one (the two legacy callers that use
-  // the primitives directly — reported), the release is unconditional as before.
-  const res = await client.plaidItem
-    .updateMany({
-      where: claimedAt ? { id: plaidItemId, syncLockedAt: claimedAt } : { id: plaidItemId },
-      data:  clearIncomplete ? { syncLockedAt: null, syncIncompleteAt: null } : { syncLockedAt: null },
-    })
-    .catch((e) => {
-      console.error(`[plaid sync-lock] failed to release lock for item ${plaidItemId}:`, redactedErrorForLog(e));
-      return null;
-    });
-  if (claimedAt && res && res.count === 0) {
+): Promise<SyncLockReleaseResult> {
+  const fail = (e: unknown) => {
+    console.error(`[plaid sync-lock] failed to release lock for item ${plaidItemId}:`, redactedErrorForLog(e));
+    return null;
+  };
+  const leaseLost = () =>
     console.warn(`[plaid sync-lock] lease for item ${plaidItemId} was taken over before release (run outlived ${LOCK_TTL_MS} ms) — left the new holder's lock intact.`);
+
+  // Legacy un-fenced release (no caller in tree passes none today): unconditional, as before.
+  if (!claimedAt) {
+    await client.plaidItem
+      .updateMany({
+        where: { id: plaidItemId },
+        data:  clearIncomplete ? { syncLockedAt: null, syncIncompleteAt: null } : { syncLockedAt: null },
+      })
+      .catch(fail);
+    return { pendingSignal: false };
   }
+
+  // IDEMP-005 — with a fencing token the release only matches while THIS
+  // holder still owns the lease.
+  const fence = { id: plaidItemId, syncLockedAt: claimedAt };
+  if (clearIncomplete) {
+    const cleared = await client.plaidItem
+      .updateMany({
+        where: { ...fence, OR: [{ syncIncompleteAt: null }, { syncIncompleteAt: { lt: claimedAt } }] },
+        data:  { syncLockedAt: null, syncIncompleteAt: null },
+      })
+      .catch(fail);
+    if (!cleared) return { pendingSignal: false };
+    if (cleared.count > 0) return { pendingSignal: false };
+    // Zero rows: either the marker is newer than our claim (a skip landed mid-run)
+    // or the lease was taken over. The lock-only release below tells them apart.
+  }
+  const released = await client.plaidItem
+    .updateMany({ where: fence, data: { syncLockedAt: null } })
+    .catch(fail);
+  if (released && released.count === 0) { leaseLost(); return { pendingSignal: false }; }
+  if (released && clearIncomplete) {
+    console.log(`[plaid sync-lock] item ${plaidItemId}: a sync was skipped while this run held the lock — its pending marker was kept, not cleared.`);
+    return { pendingSignal: true };
+  }
+  return { pendingSignal: false };
 }
 
 export type SyncLockResult<T> = { ok: true; result: T } | { ok: false; reason: "in-flight" };
@@ -181,7 +237,8 @@ export type SyncLockResult<T> = { ok: true; result: T } | { ok: false; reason: "
  * failed (leave syncIncompleteAt as fn's own error handling set it — this
  * wrapper does not catch, the exception propagates to the caller after the
  * lock is released); fn() resolving means it succeeded (clear syncIncompleteAt
- * at release). If another sync already holds the lock, fn is NEVER called and
+ * at release — unless a skip landed during fn, whose marker survives for the
+ * resume-stale-imports backstop; see releasePlaidItemSyncLock). If another sync already holds the lock, fn is NEVER called and
  * the caller gets { ok: false, reason: "in-flight" } instead of silently
  * racing it — every caller must handle this explicitly.
  *
