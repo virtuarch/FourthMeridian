@@ -586,7 +586,7 @@ console.log("\n4f. get_metric hands the model the exact placeholder strings — 
   const A = await owner("Are any providers failing, and what are they costing us?", [[gm("provider-outcome"), gm("economics-operating-cost")]],
     (ph) => `Provider outcomes are ${ph("provider-outcome@1")}. Providers cost ${ph("economics-operating-cost@1", "providersUsd")} of an estimated operating cost of ${ph("economics-operating-cost@1", "totalUsd")}.`);
   check("OWNER A (copied placeholders: provider-outcome UNAVAILABLE + operating-cost PARTIAL) ⇒ answer KEPT, every placeholder resolved",
-    ok(A) && /^Provider outcomes are unavailable — .+\. Providers cost at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\) of an estimated operating cost of at least \$[\d,.]+/.test(segmentsText(A.result.answer)),
+    ok(A) && /^Provider outcomes are unavailable — .+\. Providers cost at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of an estimated operating cost of at least \$[\d,.]+/.test(segmentsText(A.result.answer)),
     { g: A.result.grounding, c: A.result.claims, t: segmentsText(A.result.answer) });
   const B = await owner("What's costing me the most money?", [[ls], [gm("economics-operating-cost"), gm("economics-ai-cost")]],
     (ph) => `AI is the largest of the measured categories at ${ph("economics-operating-cost@1", "aiUsd")} of ${ph("economics-operating-cost@1", "totalUsd")}; infrastructure is ${ph("economics-operating-cost@1", "infrastructureUsd")}, so a full ranking can't be verified. Estimated AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`);
@@ -596,8 +596,19 @@ console.log("\n4f. get_metric hands the model the exact placeholder strings — 
   const C = await owner("Break down what we're spending on AI and providers this month.", [[ls], [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
     (ph) => `This billing cycle AI is ${ph("economics-operating-cost@1", "aiUsd")} and providers are ${ph("economics-provider-cost@1", "costUsd")}. Over the recent window AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`);
   check("OWNER C (copied placeholders: operating-cost + ai-cost + provider-cost PARTIAL) ⇒ answer KEPT, every placeholder resolved",
-    ok(C) && /providers are at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)/.test(segmentsText(C.result.answer)),
+    ok(C) && /providers are at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(segmentsText(C.result.answer)),
     { g: C.result.grounding, c: C.result.claims, t: segmentsText(C.result.answer) });
+  // S2 (after #426): the two CYCLE metrics carry window.start; their emitted placeholders must round-trip against their own envelopes.
+  for (const key of ["economics-operating-cost@1", "economics-provider-cost@1"]) {
+    const e = (await eb.readMetric(key, {}))!;
+    const p = placeholdersFor(e);
+    const strings = "placeholder" in p ? [p.placeholder] : Object.values(p.placeholders);
+    const rs = strings.map((str) => resolvePlaceholders([{ kind: "text", text: str }], [e], new Set()));
+    check(`ROUND-TRIP (cycle metric ${key}, window.start ${e.window.start}): every emitted placeholder resolves against its own envelope, stating "since <start>", no |window`,
+      e.window.start === "2026-11-01" && e.status !== "UNAVAILABLE" && strings.length === Object.keys(e.valueUnits as object).length && strings.every((x) => !x.includes("|window="))
+      && rs.every((r) => r.summary.verdict === "RESOLVED" && r.summary.claims === 1 && !/\{\{|\}\}/.test(segmentsText(r.segments)))
+      && rs.some((r) => segmentsText(r.segments).includes("since 2026-11-01")), { strings, out: rs.map((r) => [r.summary.verdict, segmentsText(r.segments)]) });
+  }
   check("…the owner replays' traces carry no reason codes (nothing unresolved)", [A, B, C].every((r) => !traceLine(r.result).includes("By=")), [A, B, C].map((r) => traceLine(r.result)));
 }
 
