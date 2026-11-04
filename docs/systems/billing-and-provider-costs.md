@@ -164,6 +164,19 @@ Conversations and the Daily Brief.
   1,500 completion tokens, uncached (≈ $0.37 at the list prices above). **Guarantee, stated
   honestly:** admitted spend ≤ allowance + Σ(actual turn cost − reserve) over concurrently
   admitted turns. It is a bounded overshoot, **not an absolute hard cap**.
+- **The lock is taken with `$executeRaw`, never `$queryRaw`**
+  (`lib/platform/ai/allowance-reservation.ts`, pinned by its unit test).
+  `pg_advisory_xact_lock()` returns `void`, which Prisma's `$queryRaw` cannot
+  deserialize (P2010). Until the fix (`89a46ad`) the reservation threw on every real database,
+  so every turn took the plain fallback check and concurrent-turn protection never
+  existed in any environment. The unit test passed because its fake `$queryRaw`
+  returned `[]`: a fake client cannot catch a driver-level deserialization failure.
+  The guard is therefore a real-Postgres suite, `npm run rls:accept:allowance`
+  (`scripts/ai-allowance-acceptance.ts`), a required step in CI's architecture job
+  (`scripts/lib/ci-contract.ts`). It covers single reservation and release, N
+  concurrent turns for one customer (bounded admissions), no cross-customer blocking,
+  exhaustion, the override path, the enforcement and pause flags, and revoked lock or
+  counter privileges (rolled back and refused).
 - **Fail closed:** if the reservation cannot be taken while enforcement is on, the turn is refused
   `RESERVATION_UNAVAILABLE` (503, `Retry-After: 15`); if the ledger has been failing writes,
   `LEDGER_UNTRUSTED` (503). Both are retryable and nothing is spent.

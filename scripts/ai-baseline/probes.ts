@@ -7,8 +7,9 @@
  * order against a growing transcript, because continuity is a large part of what
  * is being tested — "February?" only means anything after "assume I spend 6k".
  *
- * ⚠️ THE GOLDENS' ANSWERS ARE NOT IN HERE, and must never be. `docs/plans/
- * AI-CONVERSATION-GOLDENS.md` evaluates behaviour; leaking its wording into the
+ * ⚠️ THE GOLDENS' ANSWERS ARE NOT IN HERE, and must never be. The goldens (kept
+ * in private records; `docs/plans/AI-CONVERSATION-GOLDENS.md` is a stub)
+ * evaluate behaviour; leaking their wording into the
  * prompt would test whether a model can copy rather than whether it can reason.
  * `whatItDiscriminates` is a note for the human reader of the transcript — it is
  * never sent to the model, and a test pins that.
