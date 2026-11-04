@@ -42,6 +42,8 @@
 
 import type { ToolTurnResult } from "@/lib/ai/provider";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
+import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
+import type { PlatformArea } from "@prisma/client";
 import { METRICS, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
 import type { MetricEnvelope, RetrievalParams } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
@@ -73,6 +75,21 @@ export const PLATFORM_AI_TURN_TIMEOUT_MS = 45_000;
 export const PLATFORM_AI_DENIED_PARAMS: readonly string[] = ["iid", "rid", "rq"];
 const MAX_PAGES = 8;
 const ID_SHAPE = /^[A-Za-z0-9_:@.-]{1,120}$/;
+
+// ── The single area (v0) ────────────────────────────────────────────────────
+
+/**
+ * THE ONE AREA a v0 turn answers from: the operator's FIRST area in registry
+ * order (ALL_PLATFORM_AREAS) among their directory rows. The route guards and
+ * binds exactly this area; the page states it ("Answering from <label> data")
+ * with the same function, so a multi-grant operator is never left guessing.
+ */
+export function platformAiAreaFor(rows: readonly { area: string }[]): PlatformArea | null {
+  return ALL_PLATFORM_AREAS.find((a) => rows.some((r) => r.area === a)) ?? null;
+}
+
+/** The area's display label, from the registry (lib/platform/policy PLATFORM_AREAS). */
+export const platformAiAreaLabel = (area: PlatformArea): string => PLATFORM_AREAS[area].label;
 
 // ── The binding (built by the route from its own guard result) ──────────────
 

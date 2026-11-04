@@ -41,7 +41,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  checkGrounding, handlePlatformAiAsk, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  checkGrounding, handlePlatformAiAsk, platformAiAreaFor, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -437,7 +437,7 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
   }
   const coreImports = [...src(`${dir}/core.ts`).matchAll(/^import\s+(type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`).sort();
   check("core.ts imports: the scrub, the metric registry (definitions), and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+    coreImports.join() === ["@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   const ledger = src(`${dir}/ledger.ts`);
   check("ledger.ts calls the ONE provider chokepoint (generateWithTools) inside runWithAiInvocationContext with surface platform_ai — no parallel AI client",
     /runWithAiInvocationContext\(\s*\{[^}]*surface: PLATFORM_AI_ASK_SURFACE/.test(ledger) && /generateWithTools\(/.test(ledger) && !/from "openai"|new OpenAI/.test(ledger));
@@ -459,8 +459,23 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
 // ── 11. UI ───────────────────────────────────────────────────────────────────
 console.log("\n11. UI — the question box, citations with status chips, 375 px");
 {
-  const { PlatformAiAsk, AnswerCitations } = await import("@/components/platform/PlatformAiAsk");
-  const html = renderToStaticMarkup(createElement(PlatformAiAsk));
+  const { PlatformAiAsk, AnswerCitations, answeringFrom } = await import("@/components/platform/PlatformAiAsk");
+  const html = renderToStaticMarkup(createElement(PlatformAiAsk, { areaLabel: platformAiAreaLabel("PLATFORM_OPS") }));
+
+  // The single area (v0), STATED: the same function picks it for the route and the page.
+  const multi = [{ area: "MERCHANT_OPS" }, { area: "CUSTOMER_SUCCESS" }, { area: "PLATFORM_OPS" }];
+  check("a multi-grant operator answers from the FIRST area in registry order (one function for route and page)",
+    platformAiAreaFor(multi) === "PLATFORM_OPS" && platformAiAreaFor([{ area: "MERCHANT_OPS" }, { area: "CUSTOMER_SUCCESS" }]) === "CUSTOMER_SUCCESS" && platformAiAreaFor([]) === null && platformAiAreaFor([{ area: "nope" }]) === null);
+  check("the route and the page both use platformAiAreaFor; the page passes the registry label",
+    /const area = platformAiAreaFor\(rows\);/.test(code(src("app/api/platform/ai/ask/route.ts")))
+    && /const area = platformAiAreaFor\(spaces\);/.test(code(src("app/(shell)/dashboard/platform/ai/page.tsx")))
+    && /<PlatformAiAsk areaLabel=\{platformAiAreaLabel\(area\)\} \/>/.test(src("app/(shell)/dashboard/platform/ai/page.tsx")));
+  check("the label is the registry's display label (PLATFORM_AREAS), the same one the route's binding reports",
+    platformAiAreaLabel("PLATFORM_OPS") === "Platform Operations" && /surfaceLabel: label/.test(src("app/api/platform/ai/ask/route.ts")) && /common\(PLATFORM_AREAS\.PLATFORM_OPS\.label\)/.test(src("app/api/platform/ai/ask/route.ts")));
+  check("the page STATES the area before any question: 'Answering from Platform Operations data'",
+    html.includes(answeringFrom("Platform Operations")) && html.includes("Answering from Platform Operations data") && /data-platform-ai-area/.test(html), html.slice(0, 600));
+  const answered = renderToStaticMarkup(createElement(PlatformAiAsk, { areaLabel: "Customer Success" }));
+  check("…and states whichever area it is given (no hard-coded label)", answered.includes("Answering from Customer Success data") && !answered.includes("Platform Operations"));
   check("a question box capped at 500 characters and an Ask button", /<textarea[^>]*maxLength="500"/i.test(html) && /<button[^>]*type="submit"/.test(html));
   check("375 px: no fixed width wider than the screen, min-w-0 on the columns", !/\b(?:w|min-w)-\[(?:3[8-9]\d|[4-9]\d\d|\d{4,})px\]/.test(html) && (html.match(/min-w-0/g) ?? []).length >= 3);
   const cites = renderToStaticMarkup(createElement(AnswerCitations, { citations: [

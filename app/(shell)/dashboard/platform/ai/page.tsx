@@ -32,6 +32,7 @@ import { OPERATOR_TOTP_ENROLMENT_PATH } from "@/lib/platform/authorize";
 import { env } from "@/lib/env";
 import { PlatformAiPlaceholder } from "@/components/platform/PlatformAiPlaceholder";
 import { PlatformAiAsk } from "@/components/platform/PlatformAiAsk";
+import { platformAiAreaFor, platformAiAreaLabel } from "@/lib/platform/intelligence/ai/core";
 
 export const runtime = "nodejs";
 
@@ -44,5 +45,8 @@ export default async function PlatformAiPage() {
   if (env.isOperatorTotpEnforced && !(await operatorHasTotp(session.user.id))) redirect(OPERATOR_TOTP_ENROLMENT_PATH);
 
   if (!env.isPlatformAiEnabled) return <PlatformAiPlaceholder />;
-  return <PlatformAiAsk />;
+  // The ONE area the API answers from (the same function the route uses), stated on the page.
+  const area = platformAiAreaFor(spaces);
+  if (!area) redirect("/dashboard/spaces");
+  return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;
 }

@@ -33,8 +33,7 @@ import { requireUser } from "@/lib/session";
 import { requireFreshPlatformAccess } from "@/lib/platform/authorize";
 import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 import { loadPlatformDirectory } from "@/lib/platform/directory.server";
-import { isPlatformAreaValue } from "@/lib/platform/nav";
-import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
+import { PLATFORM_AREAS } from "@/lib/platform/policy";
 import { env } from "@/lib/env";
 import { metricAccessFor, describeMetric, listMetrics, type MetricAccessToken } from "@/lib/platform/intelligence/metrics/access";
 import { retrieveMetric, type RetrievalContext } from "@/lib/platform/intelligence/metrics/retrieve";
@@ -43,7 +42,7 @@ import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audie
 import { readPaidRequestsAdmission } from "@/lib/platform/ai/paid-requests-admission";
 import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
 import { readPlatformAiTurns } from "@/lib/platform/ai/platform-ai-turns";
-import { handlePlatformAiAsk, NOT_AVAILABLE_BODY, PLATFORM_AI_ROUTE_KEY, type PlatformAiBinding } from "@/lib/platform/intelligence/ai/core";
+import { handlePlatformAiAsk, NOT_AVAILABLE_BODY, PLATFORM_AI_ROUTE_KEY, platformAiAreaFor, type PlatformAiBinding } from "@/lib/platform/intelligence/ai/core";
 import { classifyPlatformAiFailure, makePlatformAiGenerate, platformAiModel } from "@/lib/platform/intelligence/ai/ledger";
 import type { PlatformArea } from "@prisma/client";
 
@@ -107,7 +106,7 @@ export async function POST(req: NextRequest) {
   const [user, uerr] = await requireUser();
   if (uerr) return uerr;
   const rows = await loadPlatformDirectory(user.id);
-  const area = ALL_PLATFORM_AREAS.find((a) => rows.some((r) => r.area === a && isPlatformAreaValue(r.area)));
+  const area = platformAiAreaFor(rows);
   if (!area) return NextResponse.json({ error: "Forbidden" }, { status: 403, headers: NO_STORE });
 
   // 3. The area's own guard, FRESH (grant, operator 2FA, live revocation) — the scope's only source.

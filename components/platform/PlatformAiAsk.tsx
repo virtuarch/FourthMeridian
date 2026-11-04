@@ -79,7 +79,10 @@ export function AnswerCitations({ citations }: { citations: PlatformAiAnswer["ci
   );
 }
 
-export function PlatformAiAsk() {
+/** The sentence that states the single area a v0 answer comes from. */
+export const answeringFrom = (areaLabel: string) => `Answering from ${areaLabel} data`;
+
+export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
   const [question, setQuestion] = useState("");
   const [pending, setPending] = useState(false);
   const [answer, setAnswer] = useState<PlatformAiAnswer | null>(null);
@@ -114,6 +117,9 @@ export function PlatformAiAsk() {
         <h1 className="text-base font-semibold leading-tight text-[var(--text-primary)]">{PLATFORM_AI_TITLE}</h1>
         <ToneBadge word="Read-only" tone="info" />
       </header>
+      <p data-platform-ai-area="" className="min-w-0 break-words text-xs text-[var(--text-secondary)]">
+        {answeringFrom(areaLabel)} only. Other areas you can open are not included in v0.
+      </p>
       <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-1 flex-col gap-4 py-4">
         <form onSubmit={ask} className="flex min-w-0 flex-col gap-2">
           <label htmlFor="platform-ai-question" className="text-sm text-[var(--text-secondary)]">
@@ -145,7 +151,7 @@ export function PlatformAiAsk() {
               </ul>
             ) : null}
             <AnswerCitations citations={answer.citations} />
-            <p className="mt-3 text-[11px] text-[var(--text-muted)]">Answered for {answer.surface}. Nothing here is saved.</p>
+            <p className="mt-3 text-[11px] text-[var(--text-muted)]">{answeringFrom(answer.surface)}. Nothing here is saved.</p>
           </section>
         ) : null}
       </div>
