@@ -12,7 +12,7 @@
  *      a disabled-admin probe, the global count) over the detector's windows.
  *   2. Run the PURE threshold functions (lib/security/anomalies.ts).
  *   3. For each tripped anomaly, SUPPRESS-WHILE-OPEN: if a SECURITY_ANOMALY_
- *      DETECTED audit row with the same `metadata.key` already exists within the
+ *      DETECTED audit row with the same `metadata.keyHash` already exists within the
  *      window, do nothing (the burst is already surfaced — one row, not one per
  *      attempt). Otherwise write the trip row and fan out THREE ways:
  *        (a) createNotification to every ACTIVE SECURITY_OPS grant holder +
@@ -67,15 +67,27 @@ function reasonsOf(rows: { metadata: unknown }[]): string[] {
 }
 
 /**
- * The SECURITY_ANOMALY_DETECTED trip row's metadata (AuditLog). Keeps the RAW
- * key — the detector's dedupe lock and the operators' forensic record, read
- * under the audit log's access controls (unchanged by Comms Center A-2b) — and
- * adds `keyHash`, the exact value the staff bell carries, so a bell can be
- * matched to its trip row without the bell ever holding the raw value. Pure.
+ * The key a trip row STORES in metadata.key. OWNER DECISION O-8 (S2 ruling on
+ * #374, forward-only): an `ip:<address>` key is stored as its salted digest
+ * (`ip:h<32 hex>`, === keyHash) — the raw address is no longer written. Other
+ * kinds (identifier / recovery / platform-denied / system_admin_disabled) keep
+ * the raw key as before. Existing rows are not touched. Pure.
+ */
+export function storedAnomalyKey(rawKey: string, env: IdentifierHashEnv = process.env): string {
+  return rawKey.startsWith("ip:") ? hashedAnomalyKey(rawKey, env) : rawKey;
+}
+
+/**
+ * The SECURITY_ANOMALY_DETECTED trip row's metadata (AuditLog). `key` is
+ * storedAnomalyKey(): the raw key for identifier-type keys (the operators'
+ * forensic record, read under the audit log's access controls), the DIGEST for
+ * an IP key (O-8). `keyHash` is the exact value the staff bell carries, so a
+ * bell can be matched to its trip row without the bell ever holding the raw
+ * value — and it is the detector's dedupe lock (fanOutIfFresh). Pure.
  */
 export function anomalyAuditMetadata(anomaly: DetectedAnomaly, env: IdentifierHashEnv = process.env) {
   return {
-    key:           anomaly.key,
+    key:           storedAnomalyKey(anomaly.key, env),
     keyHash:       hashedAnomalyKey(anomaly.key, env),
     type:          anomaly.type,
     count:         anomaly.count,
@@ -173,11 +185,13 @@ export async function reportLoginFailureAnomalies(ctx: LoginFailureAnomalyContex
  */
 async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyContext): Promise<void> {
   // Dedupe: a trip row for this key within the window means it's already open.
+  // Matched on keyHash (O-8): every trip row since Comms Center A-2b carries it,
+  // whether its metadata.key is raw (rows written before O-8) or the digest.
   const existing = await db.auditLog.findFirst({
     where: {
       action:    AuditAction.SECURITY_ANOMALY_DETECTED,
       createdAt: { gte: windowStart(anomaly.windowMinutes) },
-      metadata:  { path: ["key"], equals: anomaly.key },
+      metadata:  { path: ["keyHash"], equals: hashedAnomalyKey(anomaly.key) },
     },
     select: { id: true },
   });
@@ -213,8 +227,9 @@ async function fanOutIfFresh(anomaly: DetectedAnomaly, ctx: LoginFailureAnomalyC
 
   // (b) Direct security-alert email to the Security Ops inbox.
   try {
-    // The raw identifier / IP is withheld from email (it stays on the audit
-    // row's metadata.key only; the in-app bell carries its salted hash).
+    // The raw identifier / IP is withheld from email (an identifier stays on the
+    // audit row's metadata.key; an IP key is stored as its digest since O-8; the
+    // in-app bell carries the salted hash).
     await sendEmail("security-alert", env.SECURITY_ALERTS_EMAIL, { ...securityOpsAnomalyAlert(anomaly) }, { key: "SECURITY_ANOMALY_INBOX", recipientUserId: null });
   } catch (err) {
     console.warn("[security/anomaly-alerts] security@ email failed (non-fatal):", err);

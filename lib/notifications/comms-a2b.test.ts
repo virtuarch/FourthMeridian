@@ -50,7 +50,8 @@ import {
 import { decideStorm, PendingSends, type StormCounter } from "@/lib/notifications/delivery/storm";
 import { SUPPRESSION_REASONS, type CommsDeliveryRow, type LedgerWriter } from "@/lib/notifications/delivery/types";
 import { FALLBACK_SALT_LABEL, hashSecurityIdentifier, hashedAnomalyKey, isHashedAnomalyKey } from "@/lib/security/identifier-hash";
-import { anomalyAuditMetadata, anomalyNotificationData } from "@/lib/security/anomaly-alerts";
+import { anomalyAuditMetadata, anomalyNotificationData, storedAnomalyKey } from "@/lib/security/anomaly-alerts";
+import { anomalyKeyKind } from "@/lib/platform/security/anomalies-core";
 import { detectIdentifierAnomalies, detectIpAnomaly, detectSystemAdminAnomaly } from "@/lib/security/anomalies";
 
 let failures = 0;
@@ -260,6 +261,16 @@ async function hashedIdentifiers(): Promise<void> {
   check("audit trip row keeps the RAW key (unchanged forensic record + the detector's lock)", audit.key === idAnomaly.key);
   check("…and carries keyHash === the bell's anomalyKey (bell → trip-row correlation)", audit.keyHash === anomalyNotificationData(idAnomaly, SALTED).anomalyKey);
 
+  // OWNER DECISION O-8 (forward-only): an IP key is written as its digest only.
+  const ipAudit = anomalyAuditMetadata(ipAnomaly, SALTED);
+  check("O-8: an IP trip row's metadata.key is the digest (=== keyHash === the bell's anomalyKey)",
+    ipAudit.key === ipAudit.keyHash && ipAudit.key === anomalyNotificationData(ipAnomaly, SALTED).anomalyKey && /^ip:h[0-9a-f]{32}$/.test(ipAudit.key), ipAudit);
+  check("O-8: the IP trip row's metadata holds no raw address anywhere", !JSON.stringify(ipAudit).includes(ip), ipAudit);
+  check("O-8: the kind is still readable from the stored key (Security Ops projection)", anomalyKeyKind(ipAudit.key) === "ip");
+  check("O-8: storedAnomalyKey keeps non-IP kinds raw and is idempotent on a digest",
+    storedAnomalyKey(idAnomaly.key, SALTED) === idAnomaly.key && storedAnomalyKey("system_admin_disabled", SALTED) === "system_admin_disabled"
+      && storedAnomalyKey(ipAudit.key, SALTED) === ipAudit.key);
+
   // End to end through the chokepoint: two trips on the same identifier ⇒ one open bell; stored row has no plaintext.
   const s = store();
   const first = await createNotification({ type: "SECURITY_ANOMALY_DETECTED", userId: "staff_1", data: anomalyNotificationData(idAnomaly, SALTED) }, { client: s.client, ledger: ledgerSink().writer });
@@ -273,6 +284,10 @@ async function hashedIdentifiers(): Promise<void> {
   const src = readFileSync("lib/security/anomaly-alerts.ts", "utf8");
   check("anomaly-alerts.ts sends anomalyNotificationData(…) to the bell and anomalyAuditMetadata(…) to the trip row",
     /data:\s*anomalyNotificationData\(anomaly\)/.test(src) && /metadata:\s*anomalyAuditMetadata\(anomaly\)/.test(src) && !/anomalyKey:\s*anomaly\.key/.test(src));
+  check("O-8: the suppress-while-open lock matches on keyHash (old raw-key rows and new digest rows alike), never on the raw key",
+    /path:\s*\["keyHash"\],\s*equals:\s*hashedAnomalyKey\(anomaly\.key\)/.test(src) && !/path:\s*\["key"\],\s*equals:\s*anomaly\.key/.test(src));
+  check("O-8: the trip row writes key via storedAnomalyKey (no raw anomaly.key in the metadata builder)",
+    /key:\s*storedAnomalyKey\(anomaly\.key, env\)/.test(src) && !/key:\s+anomaly\.key,/.test(src));
 }
 
 // ── 3. O-7 owner ruling: connection-failure email independent of in-app ───────

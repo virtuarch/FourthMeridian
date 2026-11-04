@@ -34,11 +34,14 @@
  * Production while SECURITY_IDENTIFIER_HASH_SALT is unset (lib/env.ts); nothing
  * on the login path throws over it.
  *
- * OPERATOR CORRELATION: the raw key stays on the SECURITY_ANOMALY_DETECTED
- * AuditLog row (`metadata.key`), unchanged, and that row now also carries
+ * OPERATOR CORRELATION: the SECURITY_ANOMALY_DETECTED AuditLog row carries
  * `metadata.keyHash` — the exact value in the bell's anomalyKey — so an
- * operator holding a bell finds its trip row by keyHash, and from there the
- * raw identifier/IP under the audit log's own access controls.
+ * operator holding a bell finds its trip row by keyHash. For identifier-type
+ * keys the row's `metadata.key` is the raw key, read under the audit log's own
+ * access controls. OWNER DECISION O-8 (S2 ruling on #374, forward-only): for
+ * an IP key (`ip:<address>`) the row's `metadata.key` is the digest itself
+ * (`ip:h<32 hex>`, === keyHash) — the raw address is no longer written there.
+ * Rows written before O-8 keep their raw `ip:<address>` key (no backfill).
  *
  * Pure apart from reading the injected env and the one-time random fallback.
  */

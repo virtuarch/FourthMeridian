@@ -28,6 +28,7 @@ type Row = Record<string, unknown>;
 function matches(row: Row, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([k, cond]) => {
     if (k === "AND") return (cond as Record<string, unknown>[]).every((w) => matches(row, w));
+    if (k === "NOT") return !matches(row, cond as Record<string, unknown>);
     const v = row[k];
     if (typeof cond !== "object" || cond === null || cond instanceof Date) return v === cond;
     const c = cond as { not?: unknown; startsWith?: string; lte?: Date; gt?: Date; path?: string[]; string_starts_with?: string };
@@ -67,6 +68,8 @@ const DATA = {
     { action: "SESSION_ACTIVE_DAY", ipAddress: null, userAgent: null, metadata: {}, createdAt: daysAgo(2) },
     { action: "SECURITY_ANOMALY_DETECTED", ipAddress: null, userAgent: null, metadata: { key: "ip:198.51.100.7", keyHash: "ip:h0" }, createdAt: daysAgo(100) },
     { action: "SECURITY_ANOMALY_DETECTED", ipAddress: null, userAgent: null, metadata: { key: "identifier:someone" }, createdAt: daysAgo(100) },
+    // O-8: a digest-only IP key (`ip:h<32 hex>`) is not a raw value.
+    { action: "SECURITY_ANOMALY_DETECTED", ipAddress: null, userAgent: null, metadata: { key: `ip:h${"a".repeat(32)}`, keyHash: `ip:h${"a".repeat(32)}` }, createdAt: daysAgo(100) },
   ],
   userSession: [
     { ipAddress: "203.0.113.5", userAgent: "Mozilla/5.0", createdAt: daysAgo(10) },
@@ -114,7 +117,7 @@ async function main() {
     const c = (id: string) => JSON.stringify(by[id].counts);
     check("AuditLog.ipAddress bands", c("AuditLog.ipAddress") === JSON.stringify({ "<30d": 1, "30-90d": 1, "90-180d": 0, ">180d": 1 }), c("AuditLog.ipAddress"));
     check("AuditLog.userAgent bands", c("AuditLog.userAgent") === JSON.stringify({ "<30d": 1, "30-90d": 0, "90-180d": 0, ">180d": 1 }), c("AuditLog.userAgent"));
-    check("AuditLog.metadata.key counts only ip: anomaly keys", c("AuditLog.metadata.key") === JSON.stringify({ "<30d": 0, "30-90d": 0, "90-180d": 1, ">180d": 0 }), c("AuditLog.metadata.key"));
+    check("AuditLog.metadata.key counts only RAW ip: anomaly keys (not the O-8 digest form)", c("AuditLog.metadata.key") === JSON.stringify({ "<30d": 0, "30-90d": 0, "90-180d": 1, ">180d": 0 }), c("AuditLog.metadata.key"));
     check("UserSession.ipAddress: the expired-never-revoked session shows in >180d", c("UserSession.ipAddress") === JSON.stringify({ "<30d": 1, "30-90d": 0, "90-180d": 0, ">180d": 1 }), c("UserSession.ipAddress"));
     check("RateLimit.key counts only ip: buckets", c("RateLimit.key") === JSON.stringify({ "<30d": 1, "30-90d": 0, "90-180d": 0, ">180d": 0 }), c("RateLimit.key"));
     check("the input data is unchanged", DATA.auditLog[0].ipAddress === "192.0.2.1" && DATA.rateLimit[0].key === "ip:pre-login:192.0.2.9");

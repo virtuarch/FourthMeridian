@@ -71,7 +71,11 @@ export function rawPresenceWhere(f: NetworkIdentifierField): Record<string, unkn
     case "AuditLog.userAgent":
       return { userAgent: { not: null } } satisfies Prisma.AuditLogWhereInput;
     case "AuditLog.metadata.key":
-      return { action: "SECURITY_ANOMALY_DETECTED", metadata: { path: ["key"], string_starts_with: "ip:" } } satisfies Prisma.AuditLogWhereInput;
+      // O-8: `ip:h<32 hex>` is the stored digest, not a raw address ("h" is not an IP character).
+      return { action: "SECURITY_ANOMALY_DETECTED", AND: [
+        { metadata: { path: ["key"], string_starts_with: "ip:" } },
+        { NOT: { metadata: { path: ["key"], string_starts_with: "ip:h" } } },
+      ] } satisfies Prisma.AuditLogWhereInput;
     case "UserSession.ipAddress":
       return { ipAddress: { not: null } } satisfies Prisma.UserSessionWhereInput;
     case "UserSession.userAgent":

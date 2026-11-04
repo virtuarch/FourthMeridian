@@ -25,7 +25,7 @@ import { generateSecret, generateTOTP } from "@/lib/totp";
 import { generateRecoveryCodes } from "@/lib/recovery-codes";
 import { capturedEmails, clearCapturedEmails } from "@/lib/email/providers/capture";
 import { LOGIN_ID_LIMIT } from "@/lib/login-limits";
-import { hashSecurityIdentifier } from "@/lib/security/identifier-hash";
+import { hashSecurityIdentifier, hashedAnomalyKey } from "@/lib/security/identifier-hash";
 
 const t = makeChecker("NextAuth credentials sign-in / sign-out (TEST-004)");
 const fake = new FakePrisma();
@@ -345,6 +345,20 @@ async function main() {
     const trips = fake.rows("AuditLog", { action: "SECURITY_ANOMALY_DETECTED" })
       .filter((r) => (r.metadata as Record<string, unknown>)?.type === "failed_login_identifier");
     t.check("5 wrong passwords on one identifier still trip the per-identifier burst (exactly one trip row)", trips.length === 1, trips);
+  }
+
+  t.section("12. OWNER DECISION O-8 — an IP burst's trip row stores the digest only; suppress-while-open still holds");
+  {
+    await world();
+    const IP = "192.0.2.77";
+    // 10 credential guesses from one IP (distinct identifiers, so no identifier burst) trip it; 3 more stay suppressed.
+    for (let i = 0; i < 13; i++) await signIn({ identifier: `stuffer${i}`, password: "nope" }, IP);
+    const trips = fake.rows("AuditLog", { action: "SECURITY_ANOMALY_DETECTED" })
+      .filter((r) => (r.metadata as Record<string, unknown>)?.type === "failed_login_ip");
+    const m = (trips[0]?.metadata ?? {}) as Record<string, unknown>;
+    t.check("exactly one failed_login_ip trip row for the burst (dedupe on keyHash)", trips.length === 1, trips);
+    t.check("its metadata.key is the digest ip:h<32 hex>, === keyHash", m.key === hashedAnomalyKey(`ip:${IP}`) && m.keyHash === m.key && /^ip:h[0-9a-f]{32}$/.test(String(m.key)), m);
+    t.check("the raw address appears nowhere in the trip row's metadata", !JSON.stringify(m).includes(IP), m);
   }
 
   t.done();

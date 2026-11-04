@@ -84,8 +84,8 @@ export const NETWORK_IDENTIFIER_FIELDS: readonly NetworkIdentifierField[] = [
   },
   {
     id: "AuditLog.metadata.key", model: "AuditLog", field: "metadata", jsonPath: ["key"], kind: "IP_KEY", keyShape: "ANOMALY",
-    rows: "SECURITY_ANOMALY_DETECTED rows of type failed_login_ip: metadata.key = `ip:<address>` (raw; the row also carries the salted metadata.keyHash).",
-    currentRetention: "Indefinite (security audit rows are not deleted, by decision).",
+    rows: "SECURITY_ANOMALY_DETECTED rows of type failed_login_ip written BEFORE owner decision O-8: metadata.key = `ip:<address>` (raw; the row also carries the salted metadata.keyHash). Since O-8 (forward-only) new rows store the digest `ip:h<32 hex>` (=== keyHash) and no raw address in metadata.key.",
+    currentRetention: "Indefinite for rows written before O-8 (security audit rows are not deleted, by decision). New rows: the raw address is never written to metadata.key (O-8); the row's AuditLog.ipAddress column is a separate entry.",
     methods: ["DIGEST", "TRUNCATE"], ageColumn: "createdAt",
     writers: ["lib/security/anomalies.ts", "lib/security/anomaly-alerts.ts"],
     applyBlockedBy: "DB_010",
