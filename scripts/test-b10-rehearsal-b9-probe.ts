@@ -1,8 +1,8 @@
 /**
- * scripts/lib/b10-rehearsal/b9-probe.ts  (B10.6 rollback rehearsal — the B9-CODE side)
+ * scripts/test-b10-rehearsal-b9-probe.ts  (B10.6 rollback rehearsal — the B9-CODE side)
  *
  * ⚠️ THIS FILE RUNS AGAINST B9's CODE, NOT develop's. The orchestrator
- * (scripts/b10-rollback-rehearsal.ts) copies it into a worktree of origin/main
+ * (scripts/test-b10-rollback-rehearsal.ts) copies it into a worktree of origin/main
  * (B9) that has its OWN `npm ci` + `prisma generate`, and runs it there with
  * that tree's tsx, so `@/…` resolves to B9's modules and `@prisma/client` is
  * B9's generated client — i.e. exactly what an app rollback would serve.
@@ -135,8 +135,8 @@ async function rollback(): Promise<void> {
 
   const { decryptWithPurpose, detectCiphertextVersion, EncryptionPurpose } = await imp("@/lib/plaid/encryption");
   const v = detectCiphertextVersion(STATE.b10Ciphertext);
-  const dec = await attempt(async () => decryptWithPurpose(STATE.b10Ciphertext, EncryptionPurpose.CONNECTION_CREDENTIAL));
-  check("R2", "v2 ciphertext: a value B10 encrypted (no rotation in progress) is v2 and B9 decrypts it", v === "v2" && dec.ok && dec.value === STATE.b10Plaintext, { version: v, decrypted: dec.ok ? dec.value === STATE.b10Plaintext : dec.error });
+  const dec = await attempt(async () => decryptWithPurpose(STATE.b10Ciphertext, EncryptionPurpose.TOTP_SECRET));
+  check("R2", "v2 ciphertext: the TOTP secret B10 encrypted (no rotation in progress) is v2 and B9 decrypts it", v === "v2" && dec.ok && dec.value === STATE.b10Plaintext, { version: v, decrypted: dec.ok ? dec.value === STATE.b10Plaintext : dec.error });
 
   // ── sign-in + sessions with the PB-10 columns present ──
   const login = await attempt(() => signIn(FIX.u1Name, FIX.password));

@@ -1,5 +1,5 @@
 /**
- * scripts/b10-rollback-rehearsal.ts  (B10.6 — Production-like upgrade + app-rollback rehearsal)
+ * scripts/test-b10-rollback-rehearsal.ts  (B10.6 — Production-like upgrade + app-rollback rehearsal)
  *
  * Proves, on a THROWAWAY Postgres with SYNTHETIC data only, that the B10
  * upgrade path and the app-rollback path behave as the release plan claims
@@ -13,7 +13,7 @@
  *   2. Synthetic seed: users, a Space, accounts, snapshots, incidents (+
  *      occurrences), sessions, audit rows; bulk rows so lock/duration figures
  *      mean something (--scale).
- *   3. B9-code smoke (scripts/lib/b10-rehearsal/b9-probe.ts `pre`, run INSIDE
+ *   3. B9-code smoke (scripts/test-b10-rehearsal-b9-probe.ts `pre`, run INSIDE
  *      the B9 tree with its own node_modules + generated client).
  *   4. Preflight: tree − ledger = exactly the five B10 migrations, ledger −
  *      tree = ∅. Lock inventory: each migration replayed in ONE transaction on
@@ -23,17 +23,22 @@
  *      then `prisma migrate deploy` (develop), while a sampler records blocked
  *      lock requests and a B9-shaped incident writer measures its latency.
  *      Per-migration durations come from _prisma_migrations.
- *   6. B10-code smoke (b10-probe.ts `smoke`).
- *   7. APP ROLLBACK: B9 code against the B10 schema (b9-probe.ts `rollback`,
- *      preceded by b10-probe.ts `totp-claim`), plus owner-side truth checks.
+ *   6. B10-code smoke (scripts/test-b10-rehearsal-b10-probe.ts `smoke`).
+ *   7. APP ROLLBACK: B9 code against the B10 schema (test-b10-rehearsal-b9-probe.ts `rollback`,
+ *      preceded by test-b10-rehearsal-b10-probe.ts `totp-claim`), plus owner-side truth checks.
  *   8. Data-effects inventory: what B10 wrote that persists after the rollback.
  *   9. `docker rm -f -v`.
  *
- *   npx tsx --require ./scripts/lib/server-only-preload.cjs scripts/b10-rollback-rehearsal.ts \
+ *   npx tsx --require ./scripts/lib/server-only-preload.cjs scripts/test-b10-rollback-rehearsal.ts \
  *     --b9-tree=<worktree of origin/main with its own npm ci + prisma generate> \
  *     [--scale=1] [--evidence=<file.json>] [--keep]
  *
  * Heavy: run it under the shared heavy-job lock. Exit 0 only when every check passes.
+ *
+ * Named `test-*.ts` (with its two probes) like the other live-database dev harnesses:
+ * it is not a unit test (scripts/run-tests.ts never runs it) and, writing incidents
+ * and presence only into its own throwaway database, it sits outside the runtime
+ * source scans that exclude that convention.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -117,7 +122,7 @@ const B9_PROBE_DEST = () => path.join(B9_TREE, "scripts", ".b10reh-b9-probe.ts")
 
 function runProbe(side: "B9" | "B10", phase: string, env: Record<string, string>): ProbeResult {
   const tree = side === "B9" ? B9_TREE : ROOT;
-  const file = side === "B9" ? "scripts/.b10reh-b9-probe.ts" : "scripts/lib/b10-rehearsal/b10-probe.ts";
+  const file = side === "B9" ? "scripts/.b10reh-b9-probe.ts" : "scripts/test-b10-rehearsal-b10-probe.ts";
   const t0 = process.hrtime.bigint();
   const r = sh(path.join(tree, "node_modules", ".bin", "tsx"), ["--require", "./scripts/lib/server-only-preload.cjs", file, phase],
     { cwd: tree, timeout: 300_000, env: env as unknown as NodeJS.ProcessEnv });
@@ -284,7 +289,7 @@ async function main(): Promise<number> {
   const merge = (r: ProbeResult) => { state = { ...state, ...r.out }; };
 
   // 3. B9-code smoke on the B9 schema
-  copyFileSync(path.join(ROOT, "scripts", "lib", "b10-rehearsal", "b9-probe.ts"), B9_PROBE_DEST());
+  copyFileSync(path.join(ROOT, "scripts", "test-b10-rehearsal-b9-probe.ts"), B9_PROBE_DEST());
   try {
     console.log("\n[3] B9 code on the B9 schema");
     merge(runProbe("B9", "pre", { ...env, B10REH_STATE: JSON.stringify(state) }));

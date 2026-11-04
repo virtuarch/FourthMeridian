@@ -115,6 +115,10 @@ async function main() {
       "lib/platform/customer/customer-detail.ts", // CS detail → buckets
       "lib/platform/customer/customer-core.ts",   // CS projection → buckets
       "lib/export/assemble.ts",               // the subject's own data export
+      // B10.6 rollback rehearsal (throwaway database only; asserts the columns, never buckets them)
+      "scripts/test-b10-rollback-rehearsal.ts",
+      "scripts/test-b10-rehearsal-b10-probe.ts",
+      "scripts/test-b10-rehearsal-b9-probe.ts",
     ]);
     const readers = sourceFiles().filter((f) => /lastInteractionAt|lastPresenceAt/.test(strip(read(f))));
     const extra = readers.filter((f) => !READERS_ALLOWED.has(f));

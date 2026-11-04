@@ -1,8 +1,8 @@
 /**
- * scripts/lib/b10-rehearsal/b10-probe.ts  (B10.6 rollback rehearsal — the B10-CODE side)
+ * scripts/test-b10-rehearsal-b10-probe.ts  (B10.6 rollback rehearsal — the B10-CODE side)
  *
  * Runs in the develop tree against the throwaway database AFTER the five B10
- * migrations. The orchestrator (scripts/b10-rollback-rehearsal.ts) spawns it
+ * migrations. The orchestrator (scripts/test-b10-rollback-rehearsal.ts) spawns it
  * with the role URLs in the environment, so lib/db binds fm_app / fm_auth /
  * fm_system at module load exactly as production does.
  *
@@ -135,14 +135,13 @@ async function smoke(): Promise<void> {
   out.b10Snapshot = today ? { date: today.date.toISOString().slice(0, 10), cash: today.cash, savings: today.savings, restrictedCash: today.restrictedCash } : null;
 
   // ── v2 ciphertext (no rotation in progress ⇒ B10 writes v2) ──
-  const plaintext = `synthetic-credential-${FIX.u1.slice(-6)}`;
-  const ct = encryptWithPurpose(plaintext, EncryptionPurpose.CONNECTION_CREDENTIAL);
-  check("B15", "B10 encryption with no ENCRYPTION_KEY_PREVIOUS writes v2 (rollback-readable format)", detectCiphertextVersion(ct) === "v2", detectCiphertextVersion(ct));
-  out.b10Ciphertext = ct;
-  out.b10Plaintext = plaintext;
+  // ONE registered writer (User.totpSecret, lib/plaid/encrypted-fields.test.ts): the same value
+  // proves the format here and is decrypted by B9 twice (directly, and by B9's TOTP sign-in).
   const secretCt = encryptWithPurpose(FIX.totpSecret, EncryptionPurpose.TOTP_SECRET);
   await db.user.update({ where: { id: FIX.u2 }, data: { totpEnabled: true, totpSecret: secretCt } });
-  check("B16", "B10 wrote the TOTP user's secret as v2", detectCiphertextVersion(secretCt) === "v2", detectCiphertextVersion(secretCt));
+  check("B15", "B10 encryption with no ENCRYPTION_KEY_PREVIOUS writes v2 (rollback-readable): the TOTP user's secret", detectCiphertextVersion(secretCt) === "v2", detectCiphertextVersion(secretCt));
+  out.b10Ciphertext = secretCt;
+  out.b10Plaintext = FIX.totpSecret;
 }
 
 async function totpClaim(): Promise<void> {
