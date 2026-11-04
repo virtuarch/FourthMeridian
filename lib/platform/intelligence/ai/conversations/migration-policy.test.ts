@@ -143,6 +143,7 @@ console.log("6. the purge function (S2 Q4 conditions + the post-approval countin
   check("…their replies are LOCKED and COUNTED in the same window, before the parents are deleted",
     b.indexOf(`SELECT id FROM public."PlatformAiMessage" WHERE "replyToId" = ANY (v_users) FOR UPDATE`) > 0
       && b.indexOf(`SELECT id FROM public."PlatformAiMessage" WHERE "replyToId" = ANY (v_users) FOR UPDATE`) < b.indexOf(`DELETE FROM public."PlatformAiMessage" WHERE id = ANY (v_users);`));
+  check("OD-7 (per-message, owner 2026-11-04): lastActivityAt is in NO purge or expiry predicate (ordering only)", !b.includes("lastActivityAt"));
   check("…and the parents' count is the DELETE's own ROW_COUNT", b.includes(`DELETE FROM public."PlatformAiMessage" WHERE id = ANY (v_users); GET DIAGNOSTICS v_parents = ROW_COUNT;`));
   check("step 2 predicate: deleted past the grace OR an empty shell older than the shell age",
     b.includes(`WHERE c."deletedAt" < v_now - interval`) && b.includes(`OR (c."createdAt" < v_now - interval`) && b.includes(`AND NOT EXISTS (SELECT 1 FROM public."PlatformAiMessage" m WHERE m."conversationId" = c.id))`)
