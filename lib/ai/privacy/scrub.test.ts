@@ -86,5 +86,25 @@ console.log('\n3. source — every emitting site goes through the one scrub, and
   check('operator text: clipped to the limit, control characters removed', scrubOperatorText('a'.repeat(900), 500).length === 500 && !/\u0007/.test(scrubOperatorText('a\u0007b', 500)));
 }
 
+// S2 ruling A′ (2026-11-05): a year that names a PERIOD survives; every other four-digit run stays [number].
+{
+  const keep = ['October 2026', 'Oct 4 2026', 'Oct 4, 2026', 'Q3 2026', 'FY2026', 'FY 2026', 'year 2026', 'Sept. 2027'];
+  const kept = keep.filter((t) => scrubOperatorText(`AI cost for ${t}`, 500) !== `AI cost for ${t}`);
+  check('operator text A′: a period year survives (month [day], Qn, FY, "year")', kept.length === 0, kept.join(' | '));
+  const scrub = [
+    'card ending 2045', 'ending in 2045', 'card 2045', 'acct 2031',
+    'born 2003', 'born in 2003', 'DOB 2003', 'October 2003',
+    '2045 Main St',
+    '2026-11-04', '11/2026', '2026/11', 'Oct 2026.5', 'Oct 02026',
+    'in 2026', 'PIN 2026', '12026', '20261', 'Oct 4 2019', 'Q3 2019', 'Q3-2026',
+  ];
+  const leaked = scrub.filter((t) => /\d{4}/.test(scrubOperatorText(t, 500)));
+  check('operator text A′: last-4s, birth years, street numbers, dates and other digit runs stay [number]', leaked.length === 0,
+    leaked.map((t) => `${t} → ${scrubOperatorText(t, 500)}`).join(' | '));
+  const grouped = scrubOperatorText('Oct 2026 1234 5678 9012', 500);
+  check('operator text A′: the ≥ 8-digit grouped rule runs first (a month-year inside a card-shaped group is removed)', !/\d{4}/.test(grouped) && grouped.startsWith('Oct [number]'), grouped);
+  check('A′ is operator text only: scrubDescriptor still removes a period year', scrubDescriptor('ACME INV October 2026') === 'ACME INV October', String(scrubDescriptor('ACME INV October 2026')));
+}
+
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log('\nall checks passed');
