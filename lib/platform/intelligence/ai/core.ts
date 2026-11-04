@@ -542,8 +542,15 @@ export function placeholderKeyOf(envelopes: readonly MetricEnvelope[], written: 
   return { kind: "UNRESOLVED", reason: KNOWN_IDS.has(id) ? "VERSION" : "UNKNOWN_KEY" };
 }
 
-/** SAFETY NET (1) placeholder — replaced in the next step; without it a bare key is VERSION. */
-export function bareKeyNet(_readKeysOfId: readonly string[]): string | null { return null; }
+/**
+ * SAFETY NET (1), S2-approved 2026-11-04: a BARE id (no @N) resolves iff exactly
+ * ONE version of that id was read this turn — it then names that exact key. Two
+ * versions read ⇒ null (VERSION: ambiguous); none read ⇒ null (NOT_READ / UNKNOWN_KEY).
+ * Dropping this net = `return null`.
+ */
+export function bareKeyNet(readKeysOfId: readonly string[]): string | null {
+  return readKeysOfId.length === 1 ? readKeysOfId[0] : null;
+}
 
 /**
  * The part a placeholder renders from ONE envelope — or why none. An UNAVAILABLE

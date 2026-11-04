@@ -601,6 +601,32 @@ console.log("\n4f. get_metric hands the model the exact placeholder strings — 
   check("…the owner replays' traces carry no reason codes (nothing unresolved)", [A, B, C].every((r) => !traceLine(r.result).includes("By=")), [A, B, C].map((r) => traceLine(r.result)));
 }
 
+// ── 4g. SAFETY NET (1), S2-approved: a bare id resolves iff exactly ONE version of it was read ──
+console.log("\n4g. safety net (1) — a bare key without @N");
+{
+  const b = opsBinding(OPS);
+  const reads = [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }];
+  const t = async (content: string) => (await run("x", b, script([...reads, { content }]))).result;
+  const pos = await t("{{m:incident-broken-now}} incidents are broken.");
+  check("net (1) +: {{m:incident-broken-now}} with incident-broken-now@1 read ⇒ RESOLVED, the figure of that exact key",
+    pos.grounding.verdict === "RESOLVED" && segmentsText(pos.answer) === "3 incidents are broken." && pos.citations.find((c) => c.metric === "incident-broken-now@1")?.figures.join() === "3", { g: pos.grounding, t: segmentsText(pos.answer) });
+  const v = (envs: MetricEnvelope[], text: string) => resolvePlaceholders([{ kind: "text", text }], envs, new Set());
+  const k1 = { metric: "k@1", surface: "PLATFORM_OPS", value: 4, valueUnits: "count", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: null, source: "s" } } as unknown as MetricEnvelope;
+  const k2 = { ...k1, metric: "k@2", value: 9 } as MetricEnvelope;
+  const two = v([k1, k2], "{{m:k}} things");
+  check("net (1) −: TWO versions of the id read + a bare key ⇒ still unresolved (VERSION)", two.summary.verdict === "UNRESOLVED_PLACEHOLDER" && JSON.stringify(two.unresolvedBy) === JSON.stringify({ VERSION: 1 }), two.unresolvedBy);
+  check("…with two versions read, each EXACT key still resolves to its own figure", segmentsText(v([k1, k2], "{{m:k@1}} and {{m:k@2}}").segments) === "4 and 9");
+  check("…the same key read twice is ONE version (resolves)", v([k1, k1], "{{m:k}}").summary.verdict === "RESOLVED");
+  const notRead = await t("{{m:provider-outcome|part=failing}} failing.");
+  const unknown = await t("{{m:no-such-metric}} things.");
+  check("net (1) −: a bare REGISTRY id not read ⇒ NOT_READ; a bare non-registry id ⇒ UNKNOWN_KEY (never a fresh read)",
+    JSON.stringify(notRead.grounding.unresolvedBy) === JSON.stringify({ NOT_READ: 1 }) && JSON.stringify(unknown.grounding.unresolvedBy) === JSON.stringify({ UNKNOWN_KEY: 1 })
+    && notRead.trace.every((s) => s.refs.join() !== "provider-outcome@1"), [notRead.grounding, unknown.grounding]);
+  check("net (1) −: no prefix match — a bare id names only ITS id (incident-broken does not match incident-broken-now@1)",
+    JSON.stringify((await t("{{m:incident-broken}} broken.")).grounding.unresolvedBy) === JSON.stringify({ UNKNOWN_KEY: 1 }));
+  check("…the window rule still applies after the net (a bare key with a wrong |window ⇒ WINDOW_MISMATCH)", (await t("{{m:incident-broken-now|window=7}} broken.")).grounding.verdict === "WINDOW_MISMATCH");
+}
+
 // ── 4c. UNITS PIN (S2 fix 2): every registered metric's figures carry an EXPLICIT unit ──
 console.log("\n4c. units — every registered metric declares valueUnits; the suffix rule; pct on 0–100");
 {
