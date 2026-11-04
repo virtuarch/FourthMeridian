@@ -3,9 +3,9 @@
  *
  * MODEL-FIRST CONVERSATION BASELINE — CLI.
  *
- * The experiment from docs/plans/AI-CONVERSATION-INVESTIGATION.md §12: how LITTLE
- * architecture does Fourth Meridian need to produce the conversations in
- * docs/plans/AI-CONVERSATION-GOLDENS.md? Full contract:
+ * The conversation-baseline experiment (its investigation and golden
+ * conversations are kept in private records): how LITTLE architecture does
+ * Fourth Meridian need to produce the golden conversations? Full contract:
  * docs/systems/ai-foundation.md §8 (conversation harness).
  *
  *   npm run ai:chat                                 # interactive operator mode

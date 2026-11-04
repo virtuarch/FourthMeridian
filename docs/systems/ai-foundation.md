@@ -449,6 +449,59 @@ last assistant reply, so a new chat or another Space opens to nothing).
   tab; the conversation-tail binding stops two tabs reading each other's hypothetical,
   but the last tab to answer owns the cookie.
 
+### 2.3 Cash projection honesty (`project_cash` and `reconcile_projection`) — IMPLEMENTED
+
+*From the AI reliability investigation, fixed in `89a46ad` (`lib/ai/conversation/tools/projection.ts`,
+`lib/ai/conversation/reconcile.ts`).* Every figure the model quoted was a real tool
+output. The defects were in the engine and the tools: a payroll stream's amount was
+refused after one unusual newest paycheck
+([Forecast: periodic-amount](./forecast.md#periodic-amountts-the-newest-payment-is-judged-like-every-other-one)),
+the projection silently counted that stream at zero under a "complete" label, and the
+reconciliation tool returned a large variance with nothing that explained it. With no
+quantified cause in any tool output, the model invented causes and then asked the user
+for income the platform already held. Payroll classification, transfers, card
+payments, duplicates, the detection window and page truncation were checked and were
+not causes.
+
+- **`project_cash` states what its income term holds.** `kind` is
+  `INCOMPLETE_ESTIMATE` (not `EVIDENCE_BASED_ESTIMATE`) when a current stream was
+  materially omitted, with the bound beside it (`income-completeness.ts`).
+  `basis.recurringIncome` reports per stream what was counted. `latestPaymentDeviates`
+  gives the figure if the newest deviating payment is the new level.
+  `incomeEventsCounted` / `incomeEventsExcluded` are the fold's real counts (the old
+  field counted *generated* events, so it reported events beside near-zero income).
+  `qualification` is built from what actually contributed and never claims payroll was
+  inferred when it added nothing. `rangeMeaning` says the range varies spending only,
+  because the model had read it as income uncertainty.
+- **`reconcile_projection` attributes the variance exactly.**
+  `attributeInFlightVariance` (pure) returns lines with causes `OPENING_CASH`,
+  `INCOME_TIMING` (payments that arrived and are now in opening cash),
+  `PROJECTED_INCOME` / `DATED_OUTFLOWS` or one `INCOME_NET_OF_OUTFLOWS` line,
+  `SPENDING_RATE` and `HORIZON_DAYS`. The lines sum to the variance with a zero
+  residual (`UNATTRIBUTED` appears only when they do not). The daily spending rate is
+  labelled as an outflow, because the model had read it as positive drift. A
+  checkpoint stated under an older spending-window definition is attributable too,
+  and the definition change is visible as a rate line rather than unexplained.
+  Legacy checkpoints attribute income as one net line, never split by a guess.
+  Pinned by `reconcile-attribution.test.ts`.
+- **An incomplete figure is never checkpointed** (`memory-tools.ts`: an
+  `INCOMPLETE_ESTIMATE` returns no checkpoint), and new checkpoint bases record
+  `incomeProjected` / `outflowsProjected` so later attribution is exact.
+- **Tool descriptions, not the instruction, carry the rule.** Each tool gained one
+  sentence: a variance may be explained only by the returned attribution lines, and an
+  `INCOMPLETE_ESTIMATE` is presented only beside its omission. **Not guaranteed:**
+  disclosure of the latest deviation and the lower bound depends on the model reading
+  fields that are always present.
+
+**Latency, measured at the same time (no optimisation implemented).** Model time is
+over 90% of a turn: tool selection, answer and the guidance label are three sequential
+calls, and answer time scales with completion tokens. Tool execution and the prologue
+are sub-second. The large cold-start figure seen in development is `next dev` route
+compilation; a production build serves the same route in milliseconds. **PROPOSED**,
+highest yield first: stream the answer (time to first token), take the guidance
+labeller off the critical path, confirm prompt-cache hits on the stable prefix
+(`cachedPromptTokens` on `AiInvocation`), warm routes after `next dev` starts.
+
 ## 3. Enforcement — what referees model output today
 
 The pre-reset prose validator is gone (§9). Enforcement now sits where a figure is
@@ -691,7 +744,7 @@ experiment around a turn — probe, evidence arm, model, artifact.
 | `scripts/ai-baseline/artifacts.ts` | Artifact shape (`INDEX.md`, `index.json`, one JSON per case with blank human-review fields). |
 | `scripts/ai-baseline/baseline.test.ts` | **Pure, runs in CI.** Pins the structural contract: one turn loop, no harness import from product code, the instruction's size and content rules, the arm contract, the write census. |
 | `scripts/ai-baseline/*.check.ts` | **Live checks**, one per capability (`ai:measures-check`, `ai:memory-check`, `ai:chat-route-check`, `ai:brief-check`, …; full list in `package.json`). Real database and real model calls; **not run by CI**. Run the relevant one when that path changes. Each derives its as-of, horizon and expected figures from the run, never from pinned dates. |
-| `docs/plans/AI-CONVERSATION-GOLDENS.md` | The 21 golden conversations the probes are drawn from. Kept in place: `baseline.test.ts` reads it to assert no sentence of the system instruction appears in it. |
+| `docs/plans/AI-CONVERSATION-GOLDENS.md` | A stub: the 21 golden conversations the probes are drawn from were written against a personal Space and are kept in private records. Their product requirements are in §8.5. `baseline.test.ts` asserts no sentence of the system instruction appears in the in-tree probe conversations. |
 
 ### 8.2 Evidence arms (`lib/ai/conversation/evidence.ts`)
 
@@ -750,6 +803,65 @@ Rules (IMPLEMENTED in the CLI):
   turn loop has two durable write paths.
 - **A prompt change is one measured sentence** with an A/B check committed beside it.
   Prompt-only rules often move nothing; fix the tool contract first.
+
+### 8.5 Findings from the pre-runtime investigation and the goldens
+
+*From the conversation investigation that followed the reset (§9; run read-only against
+the surviving code) and the 21 golden conversations written before it. These are
+the findings that chose the shipped design. Re-measure before treating any gap below
+as still open.*
+
+- **The working line:** the model owns meaning and language; code owns financial truth
+  and every calculation that must not vary between two identical questions. That covers
+  net worth, sums, currency conversion, category and merchant totals, monthly rollups,
+  cash projection, pay dates, cadence, baselines, interest and net-worth attribution.
+  **Visibility is a security boundary, never a model judgment.** Tools enforce it
+  internally, and no tool may take a "show hidden" flag.
+- **Facts, not verdicts.** `computeAssessment` is materiality-blind and
+  sample-size-blind. A trivially small debt with a null APR produced several warnings
+  and blocked recommendations, and two complete months produced a "worsening"
+  trajectory. Handed to a model, a pre-committed verdict argues with the model's
+  judgment instead of informing it. The assessment stays for the Daily Brief and is
+  measured in the conversation as a hypothesis (arms A0 vs A1, §8.2).
+- **Why tool-calling over a router.** The full assembled context for a broad question
+  was cheap in tokens and latency, so token budget was never the argument for
+  retrieval; answer quality was. Deterministic domain retrieval (option C) was
+  rejected because it *is* `resolveDomains`, and measured, `resolveDomains` excluded
+  investments from plainly broad questions. The
+  surviving retrieval surfaces were already tool-shaped (explicit parameters, fast,
+  bounded, visibility-enforcing), so the shipped runtime is a thin orientation plus
+  tools (A2).
+- **Conversation state: the null hypothesis first.** Keep prior tool calls and their
+  JSON results in the transcript (answer memory for free) before building anything.
+  Escalate only to typed `UserStatement[]`, never to a scenario state machine (that is
+  what the reset deleted). "What's realistic" is the discriminating turn: it needs the
+  user's suppositions kept apart from the evidence.
+- **A correct number read at the wrong scope is a defect.** The holdings concentration
+  statistic was arithmetically right about a tiny priced subset and silent about it.
+  The fix attaches the population to the statistic
+  ([Investments: Invariants](./investments.md#invariants)). Never add a prose guard
+  for it.
+- **Memory is testimony, never a balance.** Financial data is the authority for what
+  happened; memory is the authority for what the user said and intends. A remembered
+  figure loses to the ledger, always (§5.1). Corrections are typed statements, and
+  durability ("keep excluding those, or just this conversation?") is an explicit
+  product moment, never an inference.
+- **Surface truncation; do not silence it.** Every forecast stream read is a capped page
+  (`truncated: true`).
+- **Do not over-fit one Space.** Run probes against a thin Space too.
+
+**What the goldens require** (the product contract the probes are drawn from; a golden
+is never weakened to match the code): (1) materiality, so trivial debt raises no
+warnings; (2) payroll cadence in evidence, with per-month paycheck counts and dates,
+so a three-paycheck month is never an income drop; (3) investments as one concept,
+crypto and brokerage together with unvalued positions disclosed; (4) card payments
+framed as transfers, not debt burden; (5) net-worth history beyond the 90-row context
+cap (`SNAPSHOT_HISTORY_LIMIT`); (6) answer memory, so "break it down" explains *that*
+figure; (7) an assumption stack (add, carry, retract one, "realistic" drops the
+user's); (8) scenario arithmetic on investments; (9) sample-size honesty, since a
+two-month trend is not a trajectory; (10) the correction-durability question asked;
+(11) write-back of a category correction (a data-layer action, where conversation
+stops being read-only); (12) a projection that answers.
 
 ## 9. History: the 2026-09-07 conversation reset — DEPRECATED machinery
 

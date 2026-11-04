@@ -115,10 +115,14 @@ console.log('2. system instruction');
   check('no worked example', !/for example|e\.g\.|example:/i.test(SYSTEM_INSTRUCTION));
   check('no phrase table', !/say "|respond with "|use the phrase/i.test(SYSTEM_INSTRUCTION));
   // The goldens evaluate behaviour; their wording must not become the prompt.
-  const goldens = read('docs/plans/AI-CONVERSATION-GOLDENS.md');
+  // The golden conversations themselves are kept in private records (they were
+  // written against a personal Space; docs/plans/AI-CONVERSATION-GOLDENS.md is a
+  // stub), so the hermetic guard runs against what the tree keeps of them: the
+  // probe conversations drawn from them.
+  const probeText = read('scripts/ai-baseline/probes.ts');
   const sentences = SYSTEM_INSTRUCTION.split('\n').filter((l) => l.trim().length > 30);
-  check('no sentence of the instruction appears in the goldens',
-    sentences.every((s) => !goldens.includes(s.trim())));
+  check('no sentence of the instruction appears in the probe conversations',
+    sentences.every((s) => !probeText.includes(s.trim())));
   check('names no financial figure', !/\$|\d{3,}/.test(SYSTEM_INSTRUCTION));
 }
 

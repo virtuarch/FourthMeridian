@@ -63,8 +63,8 @@ fixture and what stops "the model saw it" from becoming "the model may say it."
 | `_num.ts` | the ONE rounding edge (`money`), `median` | a median of an empty sample |
 | `cadence.ts` | when money arrives: WEEKLY · BIWEEKLY · SEMIMONTHLY · MONTHLY · UNKNOWN | a schedule from fewer than 6 observations |
 | `stream-activity.ts` | whether a stream is still LIVE, and which occurrence a settlement satisfied | treating a business-day shift as a schedule change |
-| `periodic-amount.ts` | the amount the *current regime* supports | a level when the recent window disagrees with itself |
-| `spending-baseline.ts` | the discretionary level, per period | a "normal" for a user whose months run $2,290–$14,061 |
+| `periodic-amount.ts` | the amount the *current regime* supports (median of the regime; one deviating payment, including the newest, is an outlier — see below) | a level when the recent window disagrees with itself |
+| `spending-baseline.ts` | the discretionary level, per period | a "normal" for a user whose months swing several-fold |
 | `observed-spending.ts` | a monthly/daily spend rate over complete months | a rate from an incomplete month |
 | `future-cash-event.ts` | a dated future movement and its composition | calling a GROSS or unknown-basis amount *spendable* |
 | `obligation.ts` | what is owed, and when — **evidence-gated, not wired** | inventing a due date; see below |
@@ -79,6 +79,65 @@ A figure carries its own standing. `FACTUALLY_LICENSED` · `ASSUMPTION_DEPENDENT
 · `HYPOTHETICAL` · `REFUSED` are not severity labels — they say what may be
 written next to the number. A refusal always names what is missing, because
 "I can't" without "because" is indistinguishable from a bug.
+
+### `periodic-amount.ts`: the newest payment is judged like every other one
+
+**IMPLEMENTED** (AI reliability fix, `89a46ad`). The backward walk used to seed its
+level from the NEWEST payment. One deviating paycheck at the head (a bonus-sized or
+otherwise unusual deposit) therefore became the level, every older payment read as a
+deviation from it, the run hit `BREAK_RUN`, and the regime was truncated to one point,
+so the stream's amount was refused. The same payment mid-series was correctly an
+outlier. Now the head is tested against the `MIN_OBSERVATIONS` points behind it: when
+those agree and the head does not, the head is ONE deviation, held out as a
+provisional outlier, the established level is asserted, and the deviation is
+disclosed as `latestDeviation` (date, value, level, signed percentage). A low head is
+treated the same way, with its sign. Two deviating heads are still a new level
+(`BREAK_RUN` unchanged) and are refused as too young; a regime too short to judge the
+head is not rescued. Pinned by `periodic-amount.test.ts` D5–D12 (D5, D9, D10 fail on
+the old code). Whether a deviating newest payment is a one-off or a new level is
+genuinely unknown until the next one arrives; the consumer discloses both readings
+(see `income-completeness.ts` below).
+
+### Income evidence: what deposits can and cannot establish
+
+Durable conclusions from the v2.6 income-truth investigation (read-only; no figures
+are carried here):
+
+- **Robust statistics only.** A stream's level is a median over its current regime,
+  never a mean. A single bonus-sized payment under a mean manufactures a phantom pay
+  rise. (`lib/ai/assemblers/transactions.ts` `buildRecurringCandidates` still uses a
+  mean and ignores dates; it is a spending rollup and must not be read as income
+  cadence.)
+- **Cadence is decided by date shape, not by "two payments most months".** BIWEEKLY
+  needs a dominant 14-day gap and a stable weekday, and produces three-payment months;
+  SEMIMONTHLY lands on two days of the month with the weekday scattered and gaps of
+  roughly 13–18 days. `cadence.ts` breaks the 14–15-day tie on day-of-month spread.
+- **A change of payer is two streams, never one.** An old stream ending as a new one
+  starts, with no shared entity-like tokens in the descriptors, is a handover between
+  two streams. Streams are keyed `<canonical merchant key>@<accountId>`
+  (`lib/ai/forecast/streams.ts` `sourceKey`, via `normalizeMerchant`). The
+  investigation recommended keying on the raw descriptor instead, because the enriched
+  merchant drifts (the reason DF-4 keys the dedupe fingerprint on the raw descriptor,
+  `lib/transactions/fingerprint.ts`). That recommendation is **not implemented**.
+  There is no payer-identity resolution for income.
+- **Net deposits only.** Gross pay is not observable. A step in net pay cannot be
+  separated from a withholding, benefits or contribution change, so code may say "the
+  level changed on this date", never "a raise". A changed descriptor, cadence and
+  weekday anchor are observations; a job or employer change is an inference (a payroll
+  provider migration produces the same three signals).
+- **The date is the bank's posting date** at day precision (`@db.Date`), not the
+  employer's payday. A "Friday" pattern is a posting pattern.
+- **Absence is not evidence.** Income into an unconnected institution is invisible, and
+  history starts where the connection starts, not where the stream started.
+- **PROPOSED, not built:** a first-class income-stream truth object (interval
+  histogram retained as evidence, level segments with competing explanations and a
+  required `unknowns` list) inside sealed truth, and a separate expected-income
+  artifact with its own model version and invalidation conditions. An expectation is
+  falsifiable by the passage of time, so it must not be sealed inside truth. A
+  forward-looking recommendation ("after your next paycheck you could put X toward
+  debt") also needs an obligations model, a confirmed runway floor and invalidation
+  conditions, none of which exist; the observed pattern and the next expected payment
+  are the only honest parts of that sentence today.
 
 ### `obligation.ts` is deliberately unreachable
 
@@ -98,7 +157,7 @@ a no-op with a false air of capability.
 **This is the actual unlock, and it costs one entry in a mechanism that already
 exists.** `lib/ai/assemblers/accounts.ts` builds KnowledgeGaps for `apr` and
 `minimumPayment` only. So the system asks the user for an APR — which it can
-partly live without, since interest is a second-order term on a $549.75 balance —
+partly live without, since interest is a second-order term on a small card balance —
 and never asks for the one field that is the binding constraint on every dated
 outflow the product could compute.
 
@@ -152,6 +211,27 @@ each statement belongs by calling FORECAST-8's `routeStatement`, so an
 `PolicyAssumption`. It parses nothing, and a test pins that it declares no regular
 expression at all.
 
+### `income-completeness.ts`: an unpriced paycheck is never a silent zero
+
+**IMPLEMENTED** (AI reliability fix `89a46ad`; FIN-001 sibling `07d59a8`).
+`projectCash` drops, inside `foldWindow`, any future occurrence whose amount is not
+assertable, and this is correct: the licence stays with the authorities. The defect
+was what happened next. A CURRENT, projection-eligible payroll stream whose amount had
+been refused contributed $0, and the result was still labelled a complete
+evidence-based estimate with a fixed sentence saying payroll was inferred from cadence.
+`lib/ai/forecast/income-completeness.ts` (pure) now says, per stream, what reached the
+projected total. A material omission of a FlowRole.INCOME stream makes the projection
+INCOMPLETE, with the evidence the platform holds and one stated consequence: the
+ending figure if the omitted occurrences arrived at the last observed amount. The
+statuses `AMOUNT_UNESTABLISHED`, `RECENTLY_SILENT` (schedule intact, at most
+`RECENT_SILENCE.MAX_UNSATISFIED_OCCURRENCES` due slots unpaid) and `UNKNOWN` block when
+material. `LAPSED` is disclosed and never blocks. An INTEREST stream never makes a
+projection incomplete. Materiality is `MATERIALITY` (1% of opening cash plus counted
+income, $50 floor), a measured policy constant, and immaterial omissions are still
+listed. Nothing here picks which level is right. Pinned by `income-completeness.test.ts`.
+The tool surface is in
+[AI foundation §2.3](./ai-foundation.md#23-cash-projection-honesty-project_cash-and-reconcile_projection--implemented).
+
 ### What produced those statements, and what must produce them next
 
 The licence machinery that used to sit here — `numerical-guard.ts`, keyed on ROLE
@@ -184,13 +264,14 @@ half is unit-tested without a model.
 
 ## The fixture
 
-Every forecast corpus runs against one real Space, and the numbers below are the
-ones to recognise in a failure message:
+The forecast tests run against one synthetic fixture. The values below are
+invented fixture values (no real Space's figures), and they are the ones to
+recognise in a failure message:
 
 ```
-liquid cash        $10,228.74
-debt owed             $549.75
-investments        $24,021.19   of which $19,014.63 crypto
+liquid cash        $12,000.00
+debt owed             $600.00
+investments        $25,000.02   of which $20,000.01 crypto
 payroll (Employer A) $5,500.015 biweekly, NET
 ```
 
