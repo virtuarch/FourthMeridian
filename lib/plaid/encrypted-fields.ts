@@ -55,4 +55,14 @@ export const ENCRYPTED_FIELDS: readonly EncryptedField[] = [
  */
 export const NON_STORED_PURPOSES: readonly EncryptionPurpose[] = [EncryptionPurpose.AI_RUNTIME_STATE];
 
+/**
+ * Prisma `where` fragment selecting only the rows of `f` that hold ciphertext
+ * (honours `scope`; `{}` when the whole column is ciphertext). Used by the
+ * read-only format census (scripts/audit-ciphertext-versions.ts), so a WALLET
+ * descriptor stored in clear by design is never counted as "invalid".
+ */
+export function scopeWhere(f: EncryptedField): Record<string, unknown> {
+  return f.scope ? { [f.scope.column]: { not: f.scope.notEqual } } : {};
+}
+
 export const fieldLabel = (f: Pick<EncryptedField, "model" | "field">): string => `${f.model}.${f.field}`;
