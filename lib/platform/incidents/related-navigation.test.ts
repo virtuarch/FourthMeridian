@@ -14,7 +14,9 @@
  *   4. no raw user / connection id reaches an href (only workspace, view, iid);
  *   5. the previous-episode link exists only when previousIncidentId is set;
  *      same-subject links are the OPEN other episodes, capped;
- *   6. rendering — verbatim hrefs, no ghost rows, nothing when empty; 375px classes;
+ *   6. rendering — the "Go to" title, verbatim hrefs, no ghost rows, nothing when empty; 375px classes;
+ *      6b. a plain click opens in place ONLY on the link's own view (else the href is followed);
+ *      6c. a navigation failure (mint, registry, builder) yields [] and never hides the incident;
  *   7. source scan — the drawer and the builder build no href; the route resolves
  *      with a literal "PLATFORM_OPS" surface and a token from its own guard.
  */
@@ -26,9 +28,9 @@ import { UserRole, type PlatformArea } from "@prisma/client";
 import { metricAccessFor, type MetricAccessToken } from "@/lib/platform/intelligence/metrics/access";
 import { resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
 import { NAVIGATION_TARGETS } from "@/lib/platform/intelligence/navigation/registry";
-import { IncidentRelatedNavigation } from "@/components/platform/incidents/IncidentsLead";
+import { IncidentRelatedNavigation, NAVIGATION_SECTION_TITLE, opensInPlace } from "@/components/platform/incidents/IncidentsLead";
 import {
-  INCIDENT_NAVIGATION_TARGETS, SAME_SUBJECT_LINK_CAP, incidentNavigationLinks,
+  INCIDENT_NAVIGATION_TARGETS, SAME_SUBJECT_LINK_CAP, incidentNavigationLinks, navigationOrEmpty,
   type IncidentNavigationInput, type IncidentNavigationLinkDTO, type IncidentNavigationResolver,
 } from "./related-navigation";
 
@@ -150,15 +152,53 @@ console.log("\n5. episodes");
 console.log("\n6. rendering");
 {
   const links = incidentNavigationLinks(input(), opsResolver(PO));
-  const html = renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links, onSelect: () => {} }));
+  const html = renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links, viewId: "open", onOpenInPlace: () => {} }));
   const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
   check("one anchor per link, href verbatim", hrefs.length === links.length && hrefs.every((h, i) => h === links[i].href), hrefs);
-  check("a Related section heading", html.includes(">Related</h3>"));
-  check("no links ⇒ nothing rendered (no empty section, no ghost)", renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links: [], onSelect: () => {} })) === "");
-  const bad = renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links: [{ kind: "provider-health", label: "x", note: null, href: "//evil.example/x", incidentId: null }], onSelect: () => {} }));
+  check("the section is titled \"Go to\" (never confused with \"Related and recurring\")",
+    NAVIGATION_SECTION_TITLE === "Go to" && html.includes(">Go to</h3>") && !html.includes(">Related</h3>"));
+  check("no links ⇒ nothing rendered (no empty section, no ghost)", renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links: [] })) === "");
+  const bad = renderToStaticMarkup(createElement(IncidentRelatedNavigation, { links: [{ kind: "provider-health", label: "x", note: null, href: "//evil.example/x", incidentId: null, viewId: null }] }));
   check("a non-relative href is refused, not rendered", bad === "");
   check("375px: rows shrink (min-w-0), labels wrap (break-words), no fixed width", /min-w-0/.test(html) && /break-words/.test(html) && !/\bw-\[\d|min-w-\[\d|whitespace-nowrap/.test(html));
   check("no disabled / aria-disabled links", !/disabled/.test(html));
+}
+
+console.log("\n6b. in-place open follows the link's view");
+{
+  const links = incidentNavigationLinks(input(), opsResolver(PO));
+  const byKind = (k: string) => links.find((l) => l.kind === k)!;
+  const viewOfHref = (h: string) => new URL(h, "https://x").searchParams.get("view") ?? "open"; // no ?view= ⇒ the default view (open)
+  check("each incident link names the view its href opens; the others none",
+    links.every((l) => l.incidentId ? l.viewId === viewOfHref(l.href) : l.viewId === null), links.map((l) => [l.kind, l.viewId, l.href]));
+  check("previous episode → history, same-subject → open", byKind("previous-episode").viewId === "history" && byKind("same-subject-open").viewId === "open");
+  const plain = { defaultPrevented: false, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false };
+  check("on the Broken now view, the previous-episode link (History) FOLLOWS its href — never opened in place under the wrong view",
+    !opensInPlace(byKind("previous-episode"), "open", plain));
+  check("on the History view it opens in place (the in-place URL is the href's)", opensInPlace(byKind("previous-episode"), "history", plain));
+  check("a same-view same-subject link opens in place", opensInPlace(byKind("same-subject-open"), "open", plain));
+  check("modified / non-primary clicks always follow the href",
+    [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }, { defaultPrevented: true }].every((m) => !opensInPlace(byKind("same-subject-open"), "open", { ...plain, ...m })));
+  check("a non-incident link and an unknown current view never open in place",
+    !opensInPlace(byKind("provider-health"), "open", plain) && !opensInPlace(byKind("same-subject-open"), undefined, plain));
+  const lead = readFileSync("components/platform/incidents/IncidentsLead.tsx", "utf8");
+  check("the in-place opener writes exactly the href's state: this view's bare preset (no filters) + iid",
+    /const openInPlace = \(id: string\) => apply\(\{ query: \{ \.\.\.DEFAULT_SEARCH, status \}, selectedId: id, fromClamped: false \}\)/.test(lead));
+}
+
+console.log("\n6c. a navigation failure never hides the incident");
+{
+  check("a throwing build ⇒ [] (no throw)", (() => { try { return navigationOrEmpty(() => { throw new Error("registry bug"); }).length === 0; } catch { return false; } })());
+  const boom: IncidentNavigationResolver = () => { throw new Error("resolver bug"); };
+  check("a throwing resolver inside the builder ⇒ []", navigationOrEmpty(() => incidentNavigationLinks(input(), boom)).length === 0);
+  check("a working build passes through unchanged", navigationOrEmpty(() => incidentNavigationLinks(input(), opsResolver(PO))).length === 4);
+  const route = readFileSync("app/api/platform/platform-ops/incidents/[id]/route.ts", "utf8");
+  const guarded = route.match(/const navigation = navigationOrEmpty\(\(\) => \{([\s\S]*?)\n {2}\}\);/);
+  check("the Ops route mints AND builds inside navigationOrEmpty (nothing navigation-related outside it)",
+    !!guarded && /metricAccessFor\(auth\)/.test(guarded[1]) && /incidentNavigationLinks\(/.test(guarded[1])
+    && (route.match(/metricAccessFor\(/g) ?? []).length === 1 && (route.match(/incidentNavigationLinks\(/g) ?? []).length === 1);
+  check("…and the incident is still served with navigation: [] on failure (the response spreads the DTO + navigation)",
+    /\{ \.\.\.incidentDetailDTO\(inv, "ops", now\), navigation \}/.test(route));
 }
 
 console.log("\n7. source scan");

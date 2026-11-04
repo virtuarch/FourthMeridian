@@ -1,7 +1,7 @@
 /**
  * lib/platform/incidents/related-navigation.ts  (PB-1 — from an incident, navigate to its related records)
  *
- * The "Related" links of the Platform Ops incident drawer. PURE + client-safe:
+ * The "Go to" links of the Platform Ops incident drawer (titled apart from "Related and recurring"). PURE + client-safe:
  * it builds NO href. Every href comes from the caller's `resolve`, which the
  * guarded route binds to `resolveNavigationTarget("<LITERAL SURFACE>", token, …)`
  * (lib/platform/intelligence/navigation/access.ts) with the token it minted
@@ -52,6 +52,13 @@ export interface IncidentNavigationLinkDTO {
   href: string;
   /** For an in-workspace incident link (same surface): the incident it opens, so a plain click can open it in place. */
   incidentId: string | null;
+  /**
+   * The incidents VIEW that link opens (the target's view id), or null. A plain
+   * click opens in place ONLY when this is the drawer's current view — then the
+   * in-place state (that view, no filters, iid) IS the href's URL. Any other
+   * view: the click follows the href, so the URL always matches the link.
+   */
+  viewId: string | null;
 }
 
 /** The resolver the route binds (string-literal surface + its own token). Null = not rendered. */
@@ -86,7 +93,8 @@ export function incidentNavigationLinks(input: IncidentNavigationInput, resolve:
   const out: IncidentNavigationLinkDTO[] = [];
   const push = (kind: IncidentNavigationKind, label: string, note: string | null, target: string, incidentId: string | null) => {
     const r = resolve(target, incidentId ? { iid: incidentId } : undefined);
-    if (r) out.push({ kind, label, note, href: r.href, incidentId });
+    // The view id is the target id's last segment ("<AREA>:<workspace>:<view>"; pinned against the registry).
+    if (r) out.push({ kind, label, note, href: r.href, incidentId, viewId: incidentId ? target.slice(target.lastIndexOf(":") + 1) : null });
   };
 
   push("provider-health", `${v.provider} provider health`, "Opens the Providers view (it has no per-provider filter).", INCIDENT_NAVIGATION_TARGETS.providerHealth, null);
@@ -108,7 +116,21 @@ export function incidentNavigationLinks(input: IncidentNavigationInput, resolve:
 
   if (input.itemCount === 1) {
     const r = resolve(INCIDENT_NAVIGATION_TARGETS.csIncidentsOpen, { iid: v.id });
-    if (r) out.push({ kind: "customer-success", label: "1 affected customer — open in Customer Success", note: null, href: r.href, incidentId: null });
+    if (r) out.push({ kind: "customer-success", label: "1 affected customer — open in Customer Success", note: null, href: r.href, incidentId: null, viewId: null });
   }
   return out;
+}
+
+/**
+ * The route's guard against a navigation failure: a registry / builder bug
+ * must never hide the incident itself, so any throw yields no links (logged
+ * without detail — no ids, no message text).
+ */
+export function navigationOrEmpty(build: () => IncidentNavigationLinkDTO[]): IncidentNavigationLinkDTO[] {
+  try {
+    return build();
+  } catch {
+    console.error("[incidents] related navigation failed; serving the incident without links");
+    return [];
+  }
 }
