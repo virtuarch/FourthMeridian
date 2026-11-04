@@ -552,13 +552,13 @@ console.log("\n8. static — no mint, literal surfaces, bounded importers");
   // result); the AI core takes only TYPES from the registry. Nothing else may import it.
   const typeOnly = (f: string) => [...readFileSync(path.join(ROOT, f), "utf8").matchAll(/^import\s+(type\s+)?[^;]*?from\s+"@\/lib\/platform\/intelligence\/navigation\/(?:registry|access)";/gm)]
     .every((m) => !!m[1]);
-  // PB-1 related navigation: the guarded Ops incident detail route resolves the drawer's "Go to" links
+  // PB-1 related navigation: the guarded Ops and CS incident detail routes resolve the drawer's "Go to" links
   // (lib/platform/incidents/related-navigation.ts takes only its resolver closure, never the registry).
-  const GUARDED_ROUTES = ["app/api/platform/ai/ask/route.ts", "app/api/platform/platform-ops/incidents/[id]/route.ts"];
+  const GUARDED_ROUTES = ["app/api/platform/ai/ask/route.ts", "app/api/platform/platform-ops/incidents/[id]/route.ts", "app/api/platform/customer-success/incidents/[id]/route.ts"];
   const strayNav = importers.filter((f) => f !== "lib/platform/intelligence/navigation/access.ts"
     && !(GUARDED_ROUTES.includes(f) && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8")))
     && !(f.startsWith("lib/platform/intelligence/ai/") && typeOnly(f)));
-  check("the navigation registry is imported only by its accessor, the guarded routes (Platform AI, Ops incident detail), and type-only by the AI core",
+  check("the navigation registry is imported only by its accessor, the guarded routes (Platform AI, Ops + CS incident detail), and type-only by the AI core",
     strayNav.length === 0 && importers.includes("lib/platform/intelligence/navigation/access.ts"), strayNav.join() || importers.join());
   for (const f of GUARDED_ROUTES) {
     const s = readFileSync(path.join(ROOT, f), "utf8");
