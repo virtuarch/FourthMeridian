@@ -61,7 +61,7 @@ import type { ToolTurnResult } from "@/lib/ai/provider";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
 import type { PlatformArea } from "@prisma/client";
-import { METRICS, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
+import { METRICS, daysWindowLabel, hoursWindowLabel, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
 import type { FigureUnit, MetricEnvelope, RetrievalParams } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
 
@@ -521,39 +521,34 @@ export function requestedWindows(scrubbedQuestion: string): { n: number; unit: s
   return out;
 }
 
-const envelopeHours = (e: MetricEnvelope): number | null => (e.window.days !== null ? e.window.days * 24 : e.window.hours);
+/** The span an envelope covers, in hours: days / hours, else the "in the last N days|hours" of its server label (pinned consistent). */
+const envelopeHours = (e: MetricEnvelope): number | null => {
+  if (e.window.days !== null) return e.window.days * 24;
+  if (e.window.hours !== null) return e.window.hours;
+  const m = /^in the last (\d+) (day|hour)s?$/.exec(e.window.label ?? "");
+  return m ? Number(m[1]) * (m[2] === "day" ? 24 : 1) : null;
+};
 
 /**
- * The window an envelope ACTUALLY covers, in words — SERVER text only (window.days /
- * hours / kind, the declared description and the freshness date; never model text).
- * S2 ruling (c) 2026-11-04: every rendered figure states it. null = point in time.
- *   days      "last 30 days"
- *   hours     "last 24 hours"
- *   cycle     "this billing cycle from 2026-11-01" (declared "calendar month to date"; UTC month of asOf)
- *   other     the declared description's first clause
+ * The window an envelope ACTUALLY covers, as the short SERVER phrase stated beside
+ * its figures (S2 rulings 2026-11-04): the envelope's `window.label` — built by
+ * retrieval from days / hours, else the registry's window.label — never the
+ * description, never model text. A date is added ONLY when the reader gave an
+ * explicit window start (`window.start`); nothing is inferred. null = point in time.
+ *   "in the last 30 days" · "in the last 24 hours" · "this calendar month to date (UTC)"
  */
 export function envelopeWindowText(e: MetricEnvelope): string | null {
-  const { days, hours, kind, description } = e.window;
-  if (days !== null) return `last ${days} day${days === 1 ? "" : "s"}`;
-  if (hours !== null) return `last ${hours} hour${hours === 1 ? "" : "s"}`;
-  if (kind === "POINT_IN_TIME") return null;
-  if (/\bbilling cycle\b/i.test(description)) {
-    const asOf = e.freshness.asOf ? new Date(e.freshness.asOf) : null;
-    const from = /calendar month to date/i.test(description) && asOf && Number.isFinite(asOf.getTime())
-      ? `${asOf.getUTCFullYear()}-${String(asOf.getUTCMonth() + 1).padStart(2, "0")}-01` : null;
-    return from ? `this billing cycle from ${from}` : "this billing cycle";
-  }
-  const clause = description.split(/;|\s\(|\.(?:\s|$)/)[0].trim();
-  if (!clause) return null;
-  return /^[A-Z][a-z]/.test(clause) ? clause.charAt(0).toLowerCase() + clause.slice(1) : clause;
+  const w = e.window;
+  const label = w.label ?? (w.days !== null ? daysWindowLabel(w.days) : w.hours !== null ? hoursWindowLabel(w.hours) : null);
+  if (!label) return null;
+  return w.start ? `${label}, from ${w.start}` : label;
 }
 
 /** What an envelope's window covers, as the object of "covers …" in a server note. */
-function windowPhrase(e: MetricEnvelope, declared: string | null): string {
-  if (e.window.days !== null || e.window.hours !== null) return `the ${envelopeWindowText(e)}`;
-  if (e.window.kind === "POINT_IN_TIME") return "the current state (no time window)";
-  if (/\bbilling cycle\b/i.test(e.window.description)) return envelopeWindowText(e)!;
-  return `its declared window (${(declared ?? e.window.description).replace(/\.\s*$/, "")})`;
+function windowPhrase(e: MetricEnvelope): string {
+  const t = envelopeWindowText(e);
+  if (t === null) return "the current state (no time window)";
+  return t.replace(/^in the /, "the ");
 }
 
 /** A figure in its EXPLICIT unit (the envelope's valueUnits — never inferred from a name). */
@@ -598,7 +593,8 @@ export function renderPlaceholder(e: MetricEnvelope, part: string | null, estima
   const metricIsEstimate = estimated || e.status === "ESTIMATED" || e.basis?.kind === "estimated";
   const listed = e.estimatedParts ?? null;
   const isEstimate = metricIsEstimate && (listed !== null ? part !== null && listed.includes(part) : unit === "usd");
-  const win = envelopeWindowText(e);
+  // A configuration part (unwindowedParts, e.g. a threshold) is not measured over the window: no window label.
+  const win = part !== null && (e.unwindowedParts ?? []).includes(part) ? null : envelopeWindowText(e);
   const notes = [...(win !== null ? [win] : []), ...(isEstimate ? ["estimated"] : [])];
   const fig = `${fmtNumber(n, unit)}${notes.length ? ` (${notes.join(", ")})` : ""}`;
   if (e.status === "PARTIAL") return `at least ${fig}`;
@@ -828,7 +824,7 @@ export async function runPlatformAiTurn(input: {
     const seenKeys = new Set<string>();
     const lines = unsupported.filter((e) => !seenKeys.has(e.metric) && seenKeys.add(e.metric)).map((e) => {
       const def = binding.describeMetric(e.metric);
-      return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e, def?.window.description ?? null)}, not the ${want} you asked about.`;
+      return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.`;
     });
     answer = [...answer, { kind: "text", text: ` ${lines.join(" ")}` }];
   } else if (replaced) {
