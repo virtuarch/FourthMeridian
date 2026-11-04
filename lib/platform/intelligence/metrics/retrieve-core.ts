@@ -93,6 +93,20 @@ import { NO_EVALUABLE_PROVIDER } from "@/lib/platform/verdicts/provider-outcome"
 /** The Economics status vocabulary (lib/platform/economics/snapshot-core.ts EconomicsStatus). */
 export type RetrievalStatus = "MEASURED" | "ESTIMATED" | "PARTIAL" | "UNAVAILABLE";
 
+/**
+ * WHY an envelope is UNAVAILABLE — a CLOSED enum, one code per path in
+ * retrieveWith / envelope() that yields UNAVAILABLE (pinned path by path in
+ * retrieve.test.ts). A code, never text: the reason TEXT stays in `reason`.
+ *   NOT_RETRIEVABLE    — no retrieval contract, or the metric is listed NOT_RETRIEVABLE
+ *   WINDOW_FIXED       — a window was passed to a metric that takes none (its window is fixed)
+ *   WINDOW_NOT_OFFERED — a window outside the metric's declared windows
+ *   READER_FAILED      — the reader threw (its error text never enters the envelope)
+ *   PROJECTION_REFUSED — the projection was not an aggregate, or its parts differ from the declared units
+ *   NO_FIGURE          — the reader ran and gave no figure (its own UNAVAILABLE verdict, or a null value)
+ */
+export const UNAVAILABLE_CODES = ["NOT_RETRIEVABLE", "WINDOW_FIXED", "WINDOW_NOT_OFFERED", "READER_FAILED", "PROJECTION_REFUSED", "NO_FIGURE"] as const;
+export type UnavailableCode = (typeof UNAVAILABLE_CODES)[number];
+
 /** A number, or a small fixed object of numbers (null = that part has no figure, never 0). */
 export type AggregateValue = number | Readonly<Record<string, number | null>>;
 
@@ -167,6 +181,8 @@ export interface MetricEnvelope {
   status: RetrievalStatus;
   /** Why there is no figure (UNAVAILABLE) or why it is a floor (PARTIAL); null otherwise. */
   reason: string | null;
+  /** The UNAVAILABLE path as a code (UnavailableCode); null ⇔ status is not UNAVAILABLE. */
+  unavailableCode: UnavailableCode | null;
   /**
    * `label` is the short SERVER phrase a renderer states beside a figure: built from
    * `days` / `hours` when the read carries them, else the registry's window.label;
@@ -672,14 +688,14 @@ function unitsMatch(value: AggregateValue, units: ValueUnits | null): boolean {
 /** The reader's window start, kept only when it is exactly an ISO date (YYYY-MM-DD); anything else ⇒ null. */
 const isoDateOrNull = (s: string | null | undefined): string | null => (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 
-function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null, estimatedParts: EstimatedParts | null = null): MetricEnvelope {
+function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projected, valueUnits: ValueUnits | null = null, estimatedParts: EstimatedParts | null = null, code: UnavailableCode | null = null): MetricEnvelope {
   const m = scope.definition;
   const base: MetricEnvelope["status"] = m.provenance.class === "ESTIMATED" ? "ESTIMATED" : "MEASURED";
   let value = p.value;
   let status: RetrievalStatus = p.status ?? base;
   let reason = p.reason ?? null;
-  if (value !== null && !isAggregate(value)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: not an aggregate"; }
-  if (value !== null && !unitsMatch(value, valueUnits)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: its parts do not match the declared units"; }
+  if (value !== null && !isAggregate(value)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: not an aggregate"; code = "PROJECTION_REFUSED"; }
+  if (value !== null && !unitsMatch(value, valueUnits)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: its parts do not match the declared units"; code = "PROJECTION_REFUSED"; }
   if (value === null && status !== "UNAVAILABLE") status = "UNAVAILABLE";
   if (status === "UNAVAILABLE") { value = null; reason = reason ?? "no figure"; }
   if (status === "PARTIAL" && !reason) reason = "a floor";
@@ -698,6 +714,7 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     value,
     status,
     reason,
+    unavailableCode: status === "UNAVAILABLE" ? code ?? "NO_FIGURE" : null,
     window: { kind: m.window.kind, description: m.window.description, days, hours, label: days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null, start: isoDateOrNull(p.start) },
     freshness: { asOf: p.asOf, source: m.freshnessSource },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
@@ -724,11 +741,11 @@ export async function retrieveWith(
   const scope = atSurface(surface, ctx?.metricToken, id);
   if (!scope) return null;
   const entry = RETRIEVAL[metricKey(scope.definition)];
-  const unavailable = (reason: string, unit: MetricEnvelope["unit"] = "count", units: ValueUnits | null = null, est: EstimatedParts | null = null) =>
-    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null }, units, est);
+  const unavailable = (code: UnavailableCode, reason: string, unit: MetricEnvelope["unit"] = "count", units: ValueUnits | null = null, est: EstimatedParts | null = null) =>
+    envelope(scope, unit, { value: null, status: "UNAVAILABLE", reason, asOf: null }, units, est, code);
 
-  if (!entry) return unavailable("not retrievable: this metric version has no retrieval contract");
-  if (entry.kind === "NOT_RETRIEVABLE") return unavailable(`not retrievable: ${entry.reason}`);
+  if (!entry) return unavailable("NOT_RETRIEVABLE", "not retrievable: this metric version has no retrieval contract");
+  if (entry.kind === "NOT_RETRIEVABLE") return unavailable("NOT_RETRIEVABLE", `not retrievable: ${entry.reason}`);
   // A per-subject permission entry (a /[param]/ records route) is never served as a fleet value.
   if (!isFleetEntry(scope.entry)) return null;
 
@@ -741,7 +758,7 @@ export async function retrieveWith(
   let window: number | null = null;
   if (params.window !== undefined) {
     if (!entry.windows.includes(params.window)) {
-      return unavailable(entry.windows.length === 0
+      return unavailable(entry.windows.length === 0 ? "WINDOW_FIXED" : "WINDOW_NOT_OFFERED", entry.windows.length === 0
         ? `this metric takes no window — its window is fixed: ${scope.definition.window.description}`
         : `window must be one of ${entry.windows.join(", ")} (days) — ${params.window} is not offered`, entry.unit, entry.valueUnits, entry.estimatedParts ?? null);
     }
@@ -753,6 +770,6 @@ export async function retrieveWith(
     return envelope(scope, entry.unit, p, entry.valueUnits, entry.estimatedParts ?? null);
   } catch {
     // The reader's error text never enters the envelope (it could carry identifiers).
-    return unavailable(`the reader (${READER_SYMBOL[entry.reader]}) failed — no figure, never 0`, entry.unit, entry.valueUnits, entry.estimatedParts ?? null);
+    return unavailable("READER_FAILED", `the reader (${READER_SYMBOL[entry.reader]}) failed — no figure, never 0`, entry.unit, entry.valueUnits, entry.estimatedParts ?? null);
   }
 }

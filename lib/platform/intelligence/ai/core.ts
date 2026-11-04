@@ -49,7 +49,8 @@
  *   7. persistence — none: no prompt, answer or history is stored (the ledger
  *                   keeps metadata only, as for every AI call).
  *   8. trace      — the answer carries a METADATA-ONLY tool trace (tool name,
- *                   outcome code, registry ids the server itself returned) so an
+ *                   outcome code, for an UNAVAILABLE read its retrieval
+ *                   UnavailableCode, registry ids the server itself returned) so an
  *                   operator or reviewer can see what the turn read; never an
  *                   argument the model wrote, never prompt or answer text.
  *
@@ -62,7 +63,7 @@ import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
 import type { PlatformArea } from "@prisma/client";
 import { METRICS, daysWindowLabel, hoursWindowLabel, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
-import type { FigureUnit, MetricEnvelope, RetrievalParams } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import type { FigureUnit, MetricEnvelope, RetrievalParams, UnavailableCode } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
@@ -212,7 +213,19 @@ export interface PlatformAiTraceStep {
   count?: number;
   /** get_metric: true when the envelope's drill page became a link candidate. */
   drillLink?: boolean;
+  /** get_metric: true when a `window` was sent for a fixed-window metric and ignored (isFixedWindow) — a flag, never the value. */
+  windowIgnored?: boolean;
+  /**
+   * get_metric UNAVAILABLE: WHICH path refused (the envelope's UnavailableCode — a
+   * closed enum set by retrieval, never the reason text). Rendered as
+   * `get_metric:UNAVAILABLE[<code>](<key>)` by traceLine.
+   */
+  unavailable?: UnavailableCode;
 }
+
+/** The envelope's UNAVAILABLE code for the trace (set by retrieval from its closed enum — never text). */
+const unavailableCodeOf = (e: MetricEnvelope): { unavailable?: UnavailableCode } =>
+  e.status === "UNAVAILABLE" && e.unavailableCode ? { unavailable: e.unavailableCode } : {};
 
 /**
  * The drill page of an envelope get_metric returned IN THIS TURN, as a link
@@ -242,6 +255,18 @@ export function drillPageOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, 
   const resolved = binding.listPages({ metric: e.metric }).some((t) => binding.resolvePage(t.id)?.href === page);
   return resolved ? page : null;
 }
+
+/**
+ * A FIXED-window metric (S2 option (a), 2026-11-04): its definition offers no day
+ * windows (window.days absent / empty — the billing cycle, a 24 h status, a point
+ * in time). A model-sent `window` on one is IGNORED — treated as absent — so the
+ * real read happens and every figure states the envelope's own window; a window
+ * the OPERATOR asked for is still stated by the RESOLVED_WITH_WINDOW_NOTE note.
+ * Nothing is substituted. A DAY-window metric (window.days listed) keeps refusing
+ * a window it does not offer (UNAVAILABLE[WINDOW_NOT_OFFERED]). An unknown /
+ * invisible id is not fixed here (the read decides: NOT_FOUND, no oracle).
+ */
+export const isFixedWindow = (def: MetricDefinition | null): boolean => def !== null && (def.window.days?.length ?? 0) === 0;
 
 /** null and undefined both mean "not given" for an OPTIONAL argument (models often send null). */
 const given = (v: unknown) => v !== undefined && v !== null;
@@ -284,12 +309,13 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       const a = plainArgs(rawArgs, ["id", "window"]);
       if (!a || typeof a.id !== "string" || !ID_SHAPE.test(a.id)) return invalid();
       if (given(a.window) && !(typeof a.window === "number" && Number.isInteger(a.window) && a.window > 0 && a.window <= 366)) return invalid();
-      const e = await binding.readMetric(a.id, given(a.window) ? { window: a.window as number } : {});
+      const windowIgnored = given(a.window) && isFixedWindow(binding.describeMetric(a.id));
+      const e = await binding.readMetric(a.id, given(a.window) && !windowIgnored ? { window: a.window as number } : {});
       if (!e) { step("NOT_FOUND"); return NOT_FOUND; }
       ev.envelopes.push(e);
       const drill = drillPageOf(e, binding);
       if (drill) ev.hrefs.add(drill);
-      step(e.status, { refs: [e.metric], drillLink: drill !== null });
+      step(e.status, { refs: [e.metric], drillLink: drill !== null, ...(windowIgnored ? { windowIgnored: true } : {}), ...unavailableCodeOf(e) });
       return { ...e, ...placeholdersFor(e) };
     }
     case "find_page": {
@@ -406,6 +432,50 @@ export function sanitiseAnswer(raw: string, allowed: ReadonlySet<string>): { seg
 }
 
 export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => x.text).join("");
+
+/**
+ * DIAGNOSIS ONLY (2026-11-04, Preview finding: every turn logs removed=1(link:1)):
+ * WHAT KIND of target each Markdown link the sanitiser strips as category "link"
+ * pointed at — a closed enum and counts, never the target text. It does not change
+ * what is stripped or shown (sanitiseAnswer is unchanged and alone decides); it
+ * re-reads the same raw text with the sanitiser's own pre-steps and link pattern.
+ *   DRILL_HREF        — exactly the drill.href (API route) of an envelope get_metric returned this turn
+ *   API_PATH          — another /api/ path
+ *   PAGE_VARIANT      — a root-relative path whose pathname is a returned link's, with a different query / suffix
+ *   PAGE_NOT_RETURNED — another root-relative path (a page this turn never returned)
+ *   ABSOLUTE_URL      — a scheme, protocol-relative or www. target
+ *   PLACEHOLDER       — a {{…}} placeholder written as the target
+ *   METRIC_ID         — a registry metric id / key written as the target
+ *   EMPTY             — no target
+ *   OTHER             — anything else (e.g. a page id, a word)
+ */
+export const LINK_TARGET_KINDS = ["DRILL_HREF", "API_PATH", "PAGE_VARIANT", "PAGE_NOT_RETURNED", "ABSOLUTE_URL", "PLACEHOLDER", "METRIC_ID", "EMPTY", "OTHER"] as const;
+export type LinkTargetKind = (typeof LINK_TARGET_KINDS)[number];
+
+export function strippedLinkTargets(raw: string, allowed: ReadonlySet<string>, envelopes: readonly MetricEnvelope[]): Partial<Record<LinkTargetKind, number>> {
+  const out: Partial<Record<LinkTargetKind, number>> = {};
+  const add = (k: LinkTargetKind) => { out[k] = (out[k] ?? 0) + 1; };
+  const drillHrefs = new Set(envelopes.flatMap((e) => (e.drill && "href" in e.drill && typeof e.drill.href === "string" ? [e.drill.href] : [])));
+  const pathOf = (h: string) => h.split(/[?#]/)[0];
+  const allowedPaths = new Set([...allowed].map(pathOf));
+  // The sanitiser's own steps before its link step (same patterns, same order), so the links seen are the ones it sees.
+  let s = String(raw ?? "").split(SENTINEL).join("");
+  s = s.replace(/<!--[\s\S]*?-->/g, "").replace(/<\/?[A-Za-z!][^>]*>/g, "");
+  s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/!\[[^\]]*\]\[[^\]]*\]/g, "").replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, "");
+  for (const m of s.matchAll(/\[([^\]]*)\]\(\s*<?([^)\s>]*)>?(?:\s+["'][^"']*["'])?\s*\)/g)) {
+    const href = m[2];
+    if (allowed.has(href)) continue;
+    if (href === "") add("EMPTY");
+    else if (drillHrefs.has(href)) add("DRILL_HREF");
+    else if (/\{\{/.test(href)) add("PLACEHOLDER");
+    else if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|www\.)/i.test(href)) add("ABSOLUTE_URL");
+    else if (href.startsWith("/api/")) add("API_PATH");
+    else if (href.startsWith("/")) add(allowedPaths.has(pathOf(href)) ? "PAGE_VARIANT" : "PAGE_NOT_RETURNED");
+    else if (KNOWN_KEYS.has(href) || KNOWN_IDS.has(href)) add("METRIC_ID");
+    else add("OTHER");
+  }
+  return out;
+}
 
 // ── Placeholder grounding (S2 binding 4; v1 = S2 rulings C1–C5) ─────────────
 //
@@ -876,7 +946,7 @@ export interface PlatformAiAnswer {
   /** Placeholder counts (C5): how many the model wrote, resolved and unresolved. Never values or keys. */
   claims: Omit<ClaimsSummary, "verdict">;
   /** What the sanitiser stripped: a total and counts by category (never the stripped text). */
-  sanitised: { removed: number; kinds: Partial<Record<SanitiseKind, number>> };
+  sanitised: { removed: number; kinds: Partial<Record<SanitiseKind, number>>; /** Diagnosis: the stripped Markdown links' target kinds (strippedLinkTargets) — codes and counts only. */ linkTargets?: Partial<Record<LinkTargetKind, number>> };
   usage: { rounds: number; toolCalls: number; tokens: number };
   stop: "ANSWERED" | "ROUND_LIMIT" | "TOKEN_CEILING";
   /** Metadata only — what this turn's tools did (PlatformAiTraceStep). */
@@ -894,9 +964,10 @@ const reasonCounts = <R extends string>(order: readonly R[], c: ReasonCounts<R> 
 
 /** The trace as ONE metadata line (codes and registry ids only) for the route's log. */
 export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" | "sanitised" | "grounding" | "claims">): string {
-  const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}`);
+  const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.unavailable ? `[${t.unavailable}]` : ""}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}${t.windowIgnored ? "+windowIgnored" : ""}`);
   const links = r.answer.filter((s) => s.kind === "link").length;
-  return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
+  const linkTo = reasonCounts(LINK_TARGET_KINDS, r.sanitised.linkTargets);
+  return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)}${linkTo ? ` linkTo=${linkTo}` : ""} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
     + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")
     + (reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy) ? ` malformedBy=${reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy)}` : "");
 }
@@ -1005,7 +1076,7 @@ export async function runPlatformAiTurn(input: {
       answer, citations, notes,
       grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy },
       claims: { claims: placed.summary.claims, resolved: placed.summary.resolved, unresolved: placed.summary.unresolved, admitted: placed.summary.admitted },
-      sanitised: { removed, kinds },
+      sanitised: { removed, kinds, linkTargets: strippedLinkTargets(raw ?? BUDGET_FALLBACK, ev.hrefs, ev.envelopes) },
       usage: { rounds, toolCalls, tokens },
       stop,
       trace: ev.trace,

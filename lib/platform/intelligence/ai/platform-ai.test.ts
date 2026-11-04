@@ -41,14 +41,14 @@ import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 import { METRICS, daysWindowLabel, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import { metricAccessFor, describeMetric, listMetrics } from "@/lib/platform/intelligence/metrics/access";
-import { RETRIEVAL, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import { RETRIEVAL, UNAVAILABLE_CODES, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import { listNavigationTargets, resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM_AI_SURFACES } from "@/lib/platform/ai/spend-by-surface-core";
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -808,9 +808,12 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
     v0.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !v0.result.grounding.replaced
     && v0t === "Over the past 30 days, AI spend was about $12.50 (in the last 24 hours, estimated). Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about.", v0t);
   check("…the chip shows the rendered figure (nothing substituted: never another window's figure)", JSON.stringify(v0.result.citations.map((c) => c.figures)) === JSON.stringify([["about $12.50 (in the last 24 hours, estimated)"]]), v0.result.citations);
-  const forced = await ask(q30, "Over the past 30 days: {{m:ai-fleet-spend-status@1}}.", [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }]);
-  check("…a window the metric does not take (get_metric window=30) ⇒ the note states its registry window label, never another window's figure",
-    forced.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && /Note: .* covers the last 24 hours, not the 30 days you asked about\.$/.test(segmentsText(forced.result.answer)) && !segmentsText(forced.result.answer).includes("12.50"), segmentsText(forced.result.answer));
+  const forced = await ask(q30, "Over the past 30 days: {{m:ai-fleet-spend-status@1|part=pricedUsd}}.", [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }]);
+  // Changed by S2 option (a) (2026-11-04): a window on a FIXED-window metric is ignored, so the metric's OWN 24 h figure is
+  // read and rendered with its own window, and the note states the mismatch. Before (a) the read was refused (UNAVAILABLE).
+  check("…a window the metric does not take (get_metric window=30 on a fixed 24 h metric) ⇒ ignored: its OWN 24 h figure, stated as such, plus the note — never another window's figure",
+    forced.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && forced.result.trace[0]?.windowIgnored === true
+    && segmentsText(forced.result.answer) === "Over the past 30 days: about $12.50 (in the last 24 hours, estimated). Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about.", segmentsText(forced.result.answer));
   check("trace: the verdict is an ENUM code and admitted a COUNT (no text, no value)",
     traceLine(v0.result).endsWith("admitted=1 verdict=RESOLVED_WITH_WINDOW_NOTE") && (PLACEHOLDER_VERDICTS as readonly string[]).includes(v0.result.grounding.verdict) && !/30 days|12\.5/.test(traceLine(v0.result)), traceLine(v0.result));
 }
@@ -955,11 +958,163 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   check("sanitiser categories: url / html / image / reference / link / path, counts only (the total is their sum)",
     sorted(mixedKinds.kinds) === sorted({ url: 1, html: 2, image: 1, reference: 2, link: 1, path: 1 }) && mixedKinds.removed === 8, mixedKinds.kinds);
 
+  // Finding 2 (Preview: every turn logs removed=1(link:1)) — WHICH target each stripped Markdown link had, as a closed enum.
+  // Offline the category alone cannot tell these apart: each form below is stripped as exactly link:1.
+  check("…the trace names the stripped link's TARGET KIND (linkTo=DRILL_HREF:1), a code — never the target text",
+    JSON.stringify(hrefLink.result.sanitised.linkTargets) === JSON.stringify({ DRILL_HREF: 1 }) && traceLine(hrefLink.result).includes(" removed=1(link:1) linkTo=DRILL_HREF:1 replaced=")
+    && !traceLine(hrefLink.result).includes("/api/"), traceLine(hrefLink.result));
+  const allowedB = new Set([ECON_PAGE]);
+  const envB = [aiEnv!];
+  const FORMS: [string, string, Record<string, number>][] = [
+    ["drill.href as a Markdown link", `See [records](${api}).`, { DRILL_HREF: 1 }],
+    ["another /api/ path", "See [records](/api/platform/platform-ops/providers).", { API_PATH: 1 }],
+    ["the drill page with an extra param", `See [Economics](${ECON_PAGE}&figure=ai_cost).`, { PAGE_VARIANT: 1 }],
+    ["a page path this turn never returned", "See [Economics](/dashboard/platform/economics).", { PAGE_NOT_RETURNED: 1 }],
+    ["an absolute URL", `See [Economics](https://app.example.test${ECON_PAGE}).`, { ABSOLUTE_URL: 1 }],
+    ["a placeholder as the target", "See [cost]({{m:economics-ai-cost@1|part=spendUsd}}).", { PLACEHOLDER: 1 }],
+    ["a metric key as the target", "See [AI cost](economics-ai-cost@1).", { METRIC_ID: 1 }],
+    ["an empty target", "See [Economics Overview]().", { EMPTY: 1 }],
+    ["a page id as the target", "See [Economics](PLATFORM_OPS:platform-economics).", { OTHER: 1 }],
+  ];
+  const formOut = FORMS.map(([what, text, want]) => {
+    const san = sanitiseAnswer(text, allowedB);
+    const got = strippedLinkTargets(text, allowedB, envB);
+    return { what, ok: JSON.stringify(san.kinds) === JSON.stringify({ link: 1 }) && JSON.stringify(got) === JSON.stringify(want), kinds: san.kinds, got };
+  });
+  check("every one of these forms is stripped as exactly link:1 by the (unchanged) sanitiser — and strippedLinkTargets tells them apart",
+    formOut.every((x) => x.ok), formOut.filter((x) => !x.ok));
+  const notLink = ["See [Economics](" + ECON_PAGE + ").", "See " + api + ".", "See https://app.example.test/x.", "![i](/p)"].map((t) => strippedLinkTargets(t, allowedB, envB));
+  check("…a kept link, a raw path, a raw URL or an image is not a stripped Markdown link (no target kind counted)", notLink.every((o) => Object.keys(o).length === 0), notLink);
+  const mixed = "a [x](/q) b [y](https://e.test) c [z](" + ECON_PAGE + ") <b>[w](/api/x)</b> ![i](/p)";
+  check("…the target-kind total equals the sanitiser's link count (same pre-steps, same pattern)",
+    Object.values(strippedLinkTargets(mixed, allowedB, envB)).reduce((a, n) => a + n, 0) === sanitiseAnswer(mixed, allowedB).kinds.link, strippedLinkTargets(mixed, allowedB, envB));
+  check("the sanitiser itself is unchanged by the diagnosis (sanitiseAnswer has no target-kind logic)",
+    !/LINK_TARGET_KINDS|strippedLinkTargets/.test(code(src("lib/platform/intelligence/ai/core.ts")).slice(code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export function sanitiseAnswer"), code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export const segmentsText"))));
+
   // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
   const gmDesc = JSON.stringify(platformAiToolSchemas([]));
   check("the prompt teaches: copy the placeholder (the server built its window); never drill.href",
     /copy its string exactly as given/.test(PLATFORM_AI_SYSTEM_PROMPT) && !/if you read a metric ONCE/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never link drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
     && /copy it, don't build it/.test(gmDesc) && /never drill\.href/.test(gmDesc));
+}
+
+// ── 4i. Owner B UNAVAILABLE diagnosis (Preview 2026-11-04) ───────────────────
+// Preview trace for "What's costing me the most money?" (both runs, list_metrics skipped):
+//   steps=get_metric:UNAVAILABLE(economics-operating-cost@1)+drill,get_metric:UNAVAILABLE(economics-ai-cost@1)+drill,
+//         get_metric:UNAVAILABLE(economics-provider-cost@1)+drill …
+// Replayed OFFLINE through the real tool executor, the route-shaped binding and retrieveWith over a
+// synthetic Economics snapshot: which model calls reproduce THAT step list, and which do not.
+console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate get_metric call");
+{
+  const plaidItem = (id: string, o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
+  const cyc = priceCycleBothReadings([plaidItem("p1"), plaidItem("p2", { investmentsConsent: "ENABLED" })], [] as never, { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const snapshot: RetrievalReaders["economicsSnapshot"] = async (nowMs) => buildEconomicsSnapshot({ nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+    spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }] });
+  const good = opsBinding(OPS, readers({ economicsSnapshot: snapshot }));
+  const failing = opsBinding(OPS, readers({ economicsSnapshot: async () => { throw new Error("snapshot read failed"); } }));
+  const B_IDS = ["economics-operating-cost@1", "economics-ai-cost@1", "economics-provider-cost@1"];
+  const Q_B = "What's costing me the most money?";
+  const bTurn = (b: PlatformAiBinding, args: (id: string) => Record<string, unknown>) =>
+    run(Q_B, b, script([{ calls: B_IDS.map((id) => ({ name: "get_metric", args: args(id) })) }, { content: "Operating cost: {{m:economics-operating-cost@1|part=totalUsd}}." }]));
+  const stepsWithCodes = (r: Awaited<ReturnType<typeof bTurn>>) => traceLine(r.result).split(" ")[0];
+  /** The step list as the Preview build logged it (before the UNAVAILABLE reason code existed). */
+  const steps = (r: Awaited<ReturnType<typeof bTurn>>) => stepsWithCodes(r).replace(/\[[A-Z_]+\]/g, "");
+  const seenReasons = (r: Awaited<ReturnType<typeof bTurn>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => (JSON.parse((m as { content: string }).content) as MetricEnvelope).reason ?? "");
+  const PREVIEW_B = "steps=get_metric:UNAVAILABLE(economics-operating-cost@1)+drill,get_metric:UNAVAILABLE(economics-ai-cost@1)+drill,get_metric:UNAVAILABLE(economics-provider-cost@1)+drill";
+
+  const plain = await bTurn(good, (id) => ({ id }));
+  const bare = await bTurn(good, (id) => ({ id: id.replace(/@\d+$/, "") }));
+  const nullW = await bTurn(good, (id) => ({ id, window: null }));
+  check("NOT the cause: ids with @1, bare ids (no @1), window null, and no list_metrics first ⇒ all three READ (PARTIAL / ESTIMATED / PARTIAL)",
+    [plain, bare, nullW].every((r) => steps(r) === "steps=get_metric:PARTIAL(economics-operating-cost@1)+drill,get_metric:ESTIMATED(economics-ai-cost@1)+drill,get_metric:PARTIAL(economics-provider-cost@1)+drill"),
+    [plain, bare, nullW].map(steps));
+  // The WINDOW candidates at the retrieval layer: before option (a) get_metric passed the model's window
+  // straight to readMetric, so these are exactly the envelopes the Preview build's tool returned.
+  const asBuilt = async (w: number) => Promise.all(B_IDS.map((id) => good.readMetric(id, { window: w })));
+  const statusLine = (es: (MetricEnvelope | null)[]) => es.map((e) => `${e?.status}[${e?.unavailableCode ?? ""}]`).join();
+  const w30 = await asBuilt(30);
+  check("window=30 on all three (an OFFERED window for ai-cost) ⇒ the fixed-window metrics refuse, but ai-cost READS — so this alone does NOT reproduce the Preview trace",
+    statusLine(w30) === "UNAVAILABLE[WINDOW_FIXED],ESTIMATED[],UNAVAILABLE[WINDOW_FIXED]" && /takes no window/.test(w30[0]?.reason ?? ""), statusLine(w30));
+  const unofferedW = [1, 14, 31, 60, 180, 365];
+  const unoffered = await Promise.all(unofferedW.map(asBuilt));
+  check("REPRODUCES (as built): a window ai-cost does NOT offer (∉ 30 / 7 / 90) on all three ⇒ UNAVAILABLE ×3 — fixed-window refusal ×2 + window-not-offered ×1",
+    unoffered.every((es) => statusLine(es) === "UNAVAILABLE[WINDOW_FIXED],UNAVAILABLE[WINDOW_NOT_OFFERED],UNAVAILABLE[WINDOW_FIXED]" && /is not offered/.test(es[1]?.reason ?? "")), unoffered.map(statusLine));
+  const failed = await bTurn(failing, (id) => ({ id }));
+  check("ALSO REPRODUCES: the shared reader (getEconomicsSnapshot) failing ⇒ exactly the Preview step list (codes aside) — indistinguishable in the old trace",
+    steps(failed) === PREVIEW_B && seenReasons(failed).every((x) => /the reader \(getEconomicsSnapshot\) failed/.test(x)), steps(failed));
+
+  // Task 2: the trace now carries the retrieval's UNAVAILABLE CODE (closed enum, never the reason text), so the causes differ.
+  check("REASON CODE: the reader cause logs get_metric:UNAVAILABLE[READER_FAILED] ×3",
+    stepsWithCodes(failed) === "steps=get_metric:UNAVAILABLE[READER_FAILED](economics-operating-cost@1)+drill,get_metric:UNAVAILABLE[READER_FAILED](economics-ai-cost@1)+drill,get_metric:UNAVAILABLE[READER_FAILED](economics-provider-cost@1)+drill",
+    stepsWithCodes(failed));
+  const dayBad = await Promise.all(unofferedW.map((w) => bTurn(good, (id) => ({ id, window: w }))));
+  check("REASON CODE: an un-offered window on the DAY-window metric logs get_metric:UNAVAILABLE[WINDOW_NOT_OFFERED](economics-ai-cost@1)",
+    dayBad.every((r) => stepsWithCodes(r).includes(",get_metric:UNAVAILABLE[WINDOW_NOT_OFFERED](economics-ai-cost@1)+drill,")), dayBad.map(stepsWithCodes));
+  check("…the trace step carries the code as a closed-enum field (UNAVAILABLE_CODES), never the reason text; readable steps carry none",
+    failed.result.trace.every((t) => t.unavailable === "READER_FAILED") && [...dayBad, failed].every((r) => r.result.trace.filter((t) => t.outcome === "UNAVAILABLE").every((t) => (UNAVAILABLE_CODES as readonly string[]).includes(t.unavailable ?? "")))
+    && [plain, ...dayBad].every((r) => r.result.trace.filter((t) => t.outcome !== "UNAVAILABLE").every((t) => !("unavailable" in t)))
+    && !/failed|offered|fixed:/.test(JSON.stringify([failed.result.trace, dayBad[0].result.trace]) + traceLine(failed.result) + traceLine(dayBad[0].result)),
+    failed.result.trace);
+
+  // ── Task 3 — S2 option (a): a `window` on a FIXED-window metric is ignored (treated as absent). ──
+  check("isFixedWindow agrees with retrieval for EVERY registered metric: fixed ⇔ the retrieval contract offers no window",
+    METRICS.every((m) => { const r = RETRIEVAL[metricKey(m)]; return r?.kind !== "RETRIEVABLE" || isFixedWindow(m) === (r.windows.length === 0); })
+    && isFixedWindow(null) === false);
+  const ECON_PAGE = "/dashboard/platform/PLATFORM_OPS?workspace=platform-economics";
+  const fx = await run("What's costing me the most money in the last 30 days?", good, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost", window: 30 } }] },
+    { content: "Operating cost is {{m:economics-operating-cost@1|part=totalUsd}}." }]));
+  const fxT = segmentsText(fx.result.answer);
+  check("FIXED-window + window arg ⇒ the REAL read (PARTIAL, no UNAVAILABLE), the figure states its own window, and the window NOTE states the mismatch",
+    fx.result.trace[0]?.outcome === "PARTIAL" && fx.result.trace[0]?.windowIgnored === true && fx.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
+    && /^Operating cost is at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\.$/.test(fxT), fxT);
+  check("…traceLine flags it (+windowIgnored, a flag — never the value the model sent)",
+    traceLine(fx.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored ") && !/=30\b|window=/.test(traceLine(fx.result).split(" ")[0]), traceLine(fx.result));
+  const fxTool = JSON.parse((fx.transcript.find((m) => (m as { role: string }).role === "tool") as { content: string }).content) as MetricEnvelope;
+  check("…nothing substituted: the envelope is the metric's own cycle read (window.days null, start = the cycle start), its placeholders carry no |window",
+    fxTool.window.days === null && fxTool.window.start === "2026-11-01" && fxTool.unavailableCode === null && !JSON.stringify((fxTool as unknown as { placeholders: unknown }).placeholders).includes("|window="), fxTool.window);
+  const dayW = await run("AI spend?", good, script([{ calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 14 } }] }, { content: "AI spend is {{m:economics-ai-cost@1}}." }]));
+  check("DAY-window + an un-offered window ⇒ STILL refused (UNAVAILABLE[WINDOW_NOT_OFFERED], unchanged; not ignored)",
+    dayW.result.trace[0]?.outcome === "UNAVAILABLE" && dayW.result.trace[0]?.unavailable === "WINDOW_NOT_OFFERED" && !dayW.result.trace[0]?.windowIgnored
+    && /^AI spend is unavailable — window must be one of 30, 7, 90 \(days\) — 14 is not offered\.$/.test(segmentsText(dayW.result.answer)), segmentsText(dayW.result.answer));
+  const dayOk = await run("AI spend?", good, script([{ calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 7 } }] }, { content: "AI spend is {{m:economics-ai-cost@1|part=spendUsd}}." }]));
+  check("…an OFFERED window on a day-window metric is honoured (7 d read, not ignored)", dayOk.result.trace[0]?.outcome === "ESTIMATED" && !dayOk.result.trace[0]?.windowIgnored && /\(in the last 7 days, estimated\)/.test(segmentsText(dayOk.result.answer)), segmentsText(dayOk.result.answer));
+  const hrs = await run("Fleet spend?", good, script([{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }, { content: "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd}}." }]));
+  check("…an HOURS-window metric (24 h, no day windows) is fixed too: the window is ignored and its own 24 h figure is read",
+    hrs.result.trace[0]?.outcome === "ESTIMATED" && hrs.result.trace[0]?.windowIgnored === true && segmentsText(hrs.result.answer) === "Spend: about $12.50 (in the last 24 hours, estimated).", segmentsText(hrs.result.answer));
+  const unknownW = await run("x", good, script([{ calls: [{ name: "get_metric", args: { id: "no-such-metric", window: 30 } }, { name: "get_metric", args: { id: "cs-needs-help", window: 30 } }] }, { content: "x" }]));
+  check("…an unknown or invisible id with a window is still the ONE not-found (no oracle; never flagged)",
+    unknownW.result.trace.map((t) => `${t.outcome}${t.windowIgnored ? "+w" : ""}`).join() === "NOT_FOUND,NOT_FOUND", unknownW.result.trace);
+
+  // OWNER-B REPLAY after (a): the plausible B calls, answer composed by COPYING the placeholders it was handed.
+  const copyB = (args: (id: string) => Record<string, unknown>): PlatformAiGenerate => {
+    let i = 0;
+    return async ({ messages }) => {
+      const u = { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 };
+      if (i++ === 0) {
+        const toolCalls = B_IDS.map((id, k) => ({ id: `b${k}`, name: "get_metric", arguments: JSON.stringify(args(id)) }));
+        return { content: null, toolCalls, raw: { role: "assistant", content: null, tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) }, usage: u };
+      }
+      const seen = (messages as { role: string; content: string }[]).filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
+      const ph = (metric: string, part: string) => { const r = seen.find((x) => x.metric === metric); return r.placeholders?.[part] ?? r.placeholder; };
+      const content = `AI is the largest measured category at ${ph("economics-operating-cost@1", "aiUsd")} of ${ph("economics-operating-cost@1", "totalUsd")}; providers are ${ph("economics-provider-cost@1", "costUsd")}, so a full ranking can't be verified. Estimated AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`;
+      return { content, toolCalls: [], raw: { role: "assistant", content }, usage: u };
+    };
+  };
+  const replayB = (args: (id: string) => Record<string, unknown>) => runPlatformAiTurn({ question: Q_B, binding: good, generate: copyB(args), model: "gpt-4o-mini" });
+  const b30 = await replayB((id) => ({ id, window: 30 }));
+  const b30T = segmentsText(b30.result.answer);
+  check("OWNER-B replay, window=30 on all three ⇒ every figure RESOLVES (operating + provider: window ignored; ai-cost: its 30 d read), answer kept",
+    !b30.result.grounding.replaced && b30.result.grounding.verdict === "RESOLVED" && b30.result.claims.unresolved === 0 && b30.result.claims.resolved === 4
+    && b30.result.trace.every((t) => t.outcome !== "UNAVAILABLE")
+    && traceLine(b30.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored,get_metric:ESTIMATED(economics-ai-cost@1)+drill,get_metric:PARTIAL(economics-provider-cost@1)+drill+windowIgnored ")
+    && /providers are at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(b30T) && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(b30T), { t: b30T, l: traceLine(b30.result) });
+  const b365 = await replayB((id) => ({ id, window: 365 }));
+  const b365T = segmentsText(b365.result.answer);
+  check("OWNER-B replay, an un-offered window (365) on all three ⇒ operating + provider RESOLVE; ai-cost (day-window) stays refused and is SAID as unavailable",
+    !b365.result.grounding.replaced && b365.result.claims.unresolved === 0
+    && traceLine(b365.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored,get_metric:UNAVAILABLE[WINDOW_NOT_OFFERED](economics-ai-cost@1)+drill,get_metric:PARTIAL(economics-provider-cost@1)+drill+windowIgnored ")
+    && /of at least \$[\d,.]+ \(this UTC calendar month to date/.test(b365T) && /Estimated AI spend is unavailable — window must be one of 30, 7, 90 \(days\) — 365 is not offered\.$/.test(b365T), { t: b365T, l: traceLine(b365.result) });
+  check("…both replays keep the drill page as the only link candidate (unchanged)", [b30, b365].every((r) => r.result.trace.every((t) => t.drillLink === true)) && [...good.listPages({ metric: "economics-operating-cost@1" })].some((t) => good.resolvePage(t.id)?.href === ECON_PAGE));
 }
 
 // ── 5. links ────────────────────────────────────────────────────────────────
