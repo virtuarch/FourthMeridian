@@ -652,12 +652,13 @@ const MONEY_FIELD_NAMES: ReadonlySet<string> = new Set(
  * to the digits ("20k" = 20000, "2.5k" = 2500). A separate "k" ("20 k"), a k
  * inside a word ("20kg"), and every other suffix ("20m", "2mm", "1bn") are NOT
  * expanded — such an amount reads only as its bare digits, so it fails binding.
+ * A k after a leftover comma ("1,20k") never expands its tail ("20k").
  * Spelled-out numbers are not read. PURE.
  */
 function digitNumbers(text: string): number[] {
   const flat = text.replace(/\$/g, ' ').replace(/\d{1,3}(?:[,\s]\d{3})+(?!\d)/g, (g) => g.replace(/[,\s]/g, ''));
   const out = [...flat.matchAll(/\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
-  for (const m of flat.matchAll(/(?<![\d.])(\d+(?:\.\d+)?)[kK](?![A-Za-z0-9])/g)) out.push(Math.round(Number(m[1]) * 1000 * 100) / 100);
+  for (const m of flat.matchAll(/(?<![\d.,])(\d+(?:\.\d+)?)[kK](?![A-Za-z0-9])/g)) out.push(Math.round(Number(m[1]) * 1000 * 100) / 100);
   return out.filter(Number.isFinite);
 }
 

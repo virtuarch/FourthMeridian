@@ -140,6 +140,9 @@ async function main() {
     check('"1bn" is NOT expanded', unboundAmount({ targetAmount: 1000000000 }, 'I want 1bn someday ok') !== null);
     check('"20 k" (separated k) does NOT expand', unboundAmount({ amount: 20000 }, 'a car around 20 k in 2027') !== null);
     check('a k inside a word ("20kg") does NOT expand', unboundAmount({ amount: 20000 }, 'a bike of 20kg for me') !== null);
+    check('"1,200k" binds 1,200,000', unboundAmount({ amount: 1200000 }, 'a home near 1,200k in 2030') === null);
+    check('"1,200k" never binds its tail as 200,000', unboundAmount({ amount: 200000 }, 'a home near 1,200k in 2030') !== null);
+    check('a k after a stray comma ("1,20k") does not expand the tail', unboundAmount({ amount: 20000 }, 'a home near 1,20k in 2030') !== null);
     check('"$20k" (currency mark + attached k) binds 20000', unboundAmount({ amount: 20000 }, 'a car around $20k in 2027') === null);
     check('a decimal binds exactly', unboundAmount({ amount: 4200.5 }, 'rent of $4,200.50 monthly') === null);
     check('an amount absent from the quote is unbound', JSON.stringify(unboundAmount({ amount: 4200 }, 'my rent is due monthly')) === '{"field":"amount","value":4200}');
