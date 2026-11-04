@@ -1212,6 +1212,32 @@ Checklist additions:
 
 **Baseline.** Main is still B9 (`dc76711`). The B10a candidate, #268 (`release/batch-10a`, OPEN, not merged), contains develop through PB-7 (`5642bb5`) plus a cherry-pick of #231: #220, #221, #222, #224, #226, #227, #229, #230 and #231. Those PRs are covered by #268 and are not repeated below. If #268 ships first, they are on main and the rollback target moves from B9 to the B10a deployment (not yet recorded). Nothing merged to develop after the cut is on main.
 
+### B10.0 B10a-r2: the migration-free alternative (#385; OWNER APPROVAL REQUIRED)
+
+**What it is.** PR #385 (`release/batch-10a-r2` at `dc81a7e`, draft against `main`) is a release branch that S2 reviewed as an exact tree and **approved**. It is an alternative to promoting the full develop tree. **Never merge #385 without the owner.**
+
+**Contents.** The #268 (B10a) base, plus:
+
+| Tranche | PRs |
+|---|---|
+| B (correctness and safety) | #300, #369, #347, #348, #356, #352, #357, #360, #364, #374, #377 |
+| S (security) | #256, #291 (without its PB-10 test hunk) |
+| C (connections and snapshots) | #233, #234, #295, #301, #302 |
+| V (provider verdicts) | #282, #285, #286 |
+
+**Excluded.** O (#262, which needs #225) and the #284 chain (#284 and everything that depends on it, such as #315, #324, #320 and #329). Every gated group (PB-1, PB-5, PB-8, PB-10, Economics, the metric registry) and all five migrations stay out.
+
+**Visible changes.**
+- V: provider-verdict semantics (provider-outcome@1, provider-connection@1; B10.3).
+- #301: unvalued wallets are left out of totals and counted.
+- #302: today's snapshot may read as an estimate while a bank balance is stale.
+- #256: TOTP codes are single-use.
+- #291: a locked (deactivated or deletion-scheduled) account loses its live sessions.
+
+**No migrations; no non-reversible effects; rollback = redeploy B9.** Verified on the branch: no migration directory beyond `main`; encryption writes stay v2 unless a rotation is in progress (#364), and none is; the session reaper (#378) is not included; IP minimisation (#374) stays off by default.
+
+**The owner's choice:** **(1)** r2 now, then full B10 later; **or (2)** full B10 (B10.1–B10.5).
+
 ### B10.1 Candidate PRs (merged to develop after the B10a cut, `5642bb5..f0405e1`)
 
 **SAFE TO PROMOTE.** These have no migration and no schema change.
