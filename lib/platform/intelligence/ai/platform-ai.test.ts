@@ -327,31 +327,38 @@ console.log("\n5b. drill-page link candidates (S2 rules) and the metadata-only t
   const ops = opsBinding(OPS);
   const linksOf = (segs: readonly { kind: string; href?: string }[]) => segs.filter((x) => x.kind === "link").map((x) => x.href);
 
-  // An answer CITING a metric renders that metric's registry drill page — from THIS turn's envelope only.
-  const pe = await retrieveWith("PLATFORM_OPS", readers(), OPS, "provider-outcome", {}, NOW);
-  const peDrill = pe?.drill && "page" in pe.drill ? pe.drill.page : null;
-  const peNav = listNavigationTargets("PLATFORM_OPS", OPS.metricToken, { metric: "provider-outcome@1" }).map((t) => resolveNavigationTarget("PLATFORM_OPS", OPS.metricToken, t.id)?.href);
-  check("fixture: provider-outcome's drill page is a registry page that is NOT one of its navigation hrefs (so only the drill rule can link it)", !!peDrill && !peNav.includes(peDrill), { peDrill, peNav });
-  const cited = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "provider-outcome@1" } }] }, { content: `Provider B is failing. See [its records](${peDrill}).` }]));
-  check("an answer citing a metric renders THAT metric's drill page as a link (exact, verbatim)", linksOf(cited.result.answer).join() === peDrill, cited.result.answer);
-  check("…and the trace records the read and the drill candidate (metadata only)", JSON.stringify(cited.result.trace) === JSON.stringify([{ tool: "get_metric", outcome: "MEASURED", refs: ["provider-outcome@1"], drillLink: true }]), cited.result.trace);
+  // An answer CITING a metric renders that metric's registry drill page — from THIS turn's envelope only,
+  // and only when it is byte-for-byte a page the navigation registry resolves for THIS token and surface.
+  const cs = csBinding(CS);
+  const csInc = await retrieveWith("CUSTOMER_SUCCESS", readers(), CS, "incident-broken-now", {}, NOW);
+  const csDrill = csInc?.drill && "page" in csInc.drill ? csInc.drill.page : "";
+  const csNav = cs.listPages({ metric: "incident-broken-now@1" }).map((t) => cs.resolvePage(t.id)?.href);
+  check("fixture: CS incident-broken-now's drill page is a CS-resolved page but NOT its citation's page (so only the drill rule links it)",
+    csDrill.includes("/CUSTOMER_SUCCESS?") && csNav.includes(csDrill) && csNav[0] !== csDrill, { csDrill, csNav });
+  const cited = await run("x", cs, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now@1" } }] }, { content: `Open [Broken now](${csDrill}).` }]));
+  check("an answer citing a metric renders THAT metric's drill page as a link (exact, verbatim)", linksOf(cited.result.answer).join() === csDrill, cited.result.answer);
+  check("…and the trace records the read and the drill candidate (metadata only)", JSON.stringify(cited.result.trace) === JSON.stringify([{ tool: "get_metric", outcome: "MEASURED", refs: ["incident-broken-now@1"], drillLink: true }]), cited.result.trace);
   check("…grounding unchanged: no figure, not replaced", !cited.result.grounding.replaced && cited.result.grounding.numbers === 0);
 
-  const copied = await run("x", ops, script([{ calls: [{ name: "list_metrics", args: {} }] }, { content: `See [records](${peDrill}).` }]));
+  const copied = await run("x", cs, script([{ calls: [{ name: "list_metrics", args: {} }] }, { content: `Open [Broken now](${csDrill}).` }]));
   check("a model-written copy of a drill page NOT returned this turn is stripped (no get_metric ⇒ no link)", linksOf(copied.result.answer).length === 0 && copied.result.sanitised.removed >= 1, copied.result.answer);
   const api = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: "See [the list](/api/platform/platform-ops/incidents)." }]));
   check("the envelope's API drill (drill.href) is never a link — only drill.page", linksOf(api.result.answer).length === 0, api.result.answer);
 
-  // Another surface / another token.
-  const cs = csBinding(CS);
-  const csInc = await retrieveWith("CUSTOMER_SUCCESS", readers(), CS, "incident-broken-now", {}, NOW);
-  const csDrill = csInc?.drill && "page" in csInc.drill ? csInc.drill.page : "";
-  const csRun = await run("x", cs, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: `Open [Broken now](${csDrill}).` }]));
-  check("on its own surface (CS) the CS drill page is a link", linksOf(csRun.result.answer).join() === csDrill && csDrill.includes("/CUSTOMER_SUCCESS?"), csRun.result.answer);
+  // Another surface / another token / a token that cannot navigate to the drill's view.
   const cross = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: `Open [Broken now](${csDrill}).` }]));
   check("a drill from ANOTHER surface (the CS page in an Ops turn) is not linkable", linksOf(cross.result.answer).length === 0, cross.result.answer);
-  const sa = await run("x", opsBinding(SA), script([{ calls: [{ name: "get_metric", args: { id: "provider-outcome" } }] }, { content: `See [records](${peDrill}).` }]));
+  const opsDrill = "/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents";
+  const sa = await run("x", opsBinding(SA), script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: `See [records](${opsDrill}).` }]));
   check("another TOKEN: break-glass (navigates nowhere) gets the envelope but no drill link", sa.result.trace[0]?.outcome === "MEASURED" && sa.result.trace[0]?.drillLink === false && linksOf(sa.result.answer).length === 0, sa.result);
+  const narrowed: PlatformAiBinding = { ...ops, listPages: (f) => ops.listPages(f).filter((t) => t.id !== "PLATFORM_OPS:platform-incidents:open") };
+  const nar = await run("x", narrowed, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: `See [records](${opsDrill}).` }]));
+  check("a token whose navigable targets EXCLUDE the drill's view ⇒ drillLink false, the drill page is not a link",
+    nar.result.trace[0]?.outcome === "MEASURED" && nar.result.trace[0]?.drillLink === false && linksOf(nar.result.answer).length === 0 && nar.result.citations[0]?.href !== opsDrill, nar.result);
+  const pe = await retrieveWith("PLATFORM_OPS", readers(), OPS, "provider-outcome", {}, NOW);
+  const peDrill = pe?.drill && "page" in pe.drill ? pe.drill.page : null;
+  check("a drill page that is not byte-for-byte a resolved page of the metric (provider-outcome → the area root) is not a link candidate",
+    peDrill === "/dashboard/platform/PLATFORM_OPS" && drillPageOf(pe!, ops) === null);
 
   // drillPageOf's own rules, on synthetic envelopes (the shape retrieveMetric returns).
   const env = (page: string, surface = "PLATFORM_OPS") => ({ ...pe!, surface, drill: { figure: "provider-outcome@1", window: null, href: "/api/platform/platform-ops/providers", page } }) as MetricEnvelope;
@@ -361,7 +368,9 @@ console.log("\n5b. drill-page link candidates (S2 rules) and the metadata-only t
     [env("/dashboard/platform/CUSTOMER_SUCCESS"), env("https://evil.test/dashboard/platform/PLATFORM_OPS"), env("//evil.test/x"), env("/dashboard/platform/PLATFORM_OPS#x"), env("/dashboard/platform/PLATFORM_OPS/../x")].every((e) => drillPageOf(e, ops) === null));
   check("drillPageOf: no page drill (unavailable / null) ⇒ not eligible",
     drillPageOf({ ...pe!, drill: null } as MetricEnvelope, ops) === null && drillPageOf({ ...pe!, drill: { figure: "x@1", unavailable: "none" } } as unknown as MetricEnvelope, ops) === null);
-  check("drillPageOf: a token that can navigate to no page rendering the metric ⇒ not eligible", drillPageOf(env("/dashboard/platform/PLATFORM_OPS"), { listPages: () => [] }) === null);
+  check("drillPageOf: a token that can navigate to no page rendering the metric ⇒ not eligible", drillPageOf(env("/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"), { ...ops, listPages: () => [] }) === null);
+  check("drillPageOf: byte-for-byte only — a reordered, re-encoded or extended copy of the resolved page ⇒ not eligible",
+    ["/dashboard/platform/PLATFORM_OPS?workspace=platform-providers&", "/dashboard/platform/PLATFORM_OPS?workspace=platform%2Dproviders", "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers&view=health", "/dashboard/platform/PLATFORM_OPS/?workspace=platform-providers"].every((p) => drillPageOf(env(p), ops) === null));
 
   // A figure plus its link: grounding still applies to the figure, the link is not a figure.
   const inc = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "find_page", args: { query: "incidents broken now" } }] },

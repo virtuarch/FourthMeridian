@@ -210,11 +210,15 @@ export interface PlatformAiTraceStep {
  *   · the page is a root-relative path on the envelope's own surface page
  *     (/dashboard/platform/<surface>), with no fragment;
  *   · no denied deep-link param (PLATFORM_AI_DENIED_PARAMS: record ids, free text);
- *   · this token can navigate on the bound surface to a page that renders the
- *     metric (binding.listPages({ metric }) — the navigation registry's own
- *     scope, so break-glass, which navigates nowhere, links nowhere here either).
+ *   · it EXACTLY equals (byte for byte, never normalised) the href the
+ *     navigation registry resolves FOR THIS TOKEN on the bound surface for one
+ *     of the targets that render the metric: `binding.resolvePage(t.id)?.href`
+ *     for some t in `binding.listPages({ metric })` — the same accessor, token
+ *     and surface as find_page / open_page. A token that cannot navigate to the
+ *     drill's view (or break-glass, which navigates nowhere) gets no drill link;
+ *     the model can still call open_page.
  */
-export function drillPageOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, "listPages">): string | null {
+export function drillPageOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, "listPages" | "resolvePage">): string | null {
   const d = e.drill;
   if (!d || !("page" in d) || typeof d.page !== "string") return null;
   const page = d.page;
@@ -222,8 +226,8 @@ export function drillPageOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, 
   const pathname = q >= 0 ? page.slice(0, q) : page;
   if (pathname !== `/dashboard/platform/${e.surface}` || page.includes("#") || /[\\\s]/.test(page)) return null;
   if (q >= 0) for (const k of new URLSearchParams(page.slice(q + 1)).keys()) if (PLATFORM_AI_DENIED_PARAMS.includes(k)) return null;
-  if (binding.listPages({ metric: e.metric }).length === 0) return null;
-  return page;
+  const resolved = binding.listPages({ metric: e.metric }).some((t) => binding.resolvePage(t.id)?.href === page);
+  return resolved ? page : null;
 }
 
 /** null and undefined both mean "not given" for an OPTIONAL argument (models often send null). */
