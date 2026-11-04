@@ -245,7 +245,7 @@ export function projectCash(input: ProjectCashInput): ProjectedCash {
   }
 
   // ⚠️ THE LABELS SAY PROJECTED, BECAUSE THAT IS WHAT THEY ARE. This figure is
-  // the sum of FUTURE occurrences — 8 x $5,286.64 on the real Space — generated
+  // the sum of FUTURE occurrences — 8 x $5,500.01 on the real Space — generated
   // from an observed pattern. Calling it "observed income" was measured in the
   // live UI and is a semantic error of exactly the kind this programme exists to
   // prevent: it renames a projection into a measurement, which is the same move

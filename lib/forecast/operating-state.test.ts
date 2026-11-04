@@ -51,7 +51,7 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
 const src = readFileSync(join(__dirname, 'operating-state.ts'), 'utf8');
 const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 const codeOnly = code.replace(/'(?:[^'\\]|\\.)*'/g, "''").replace(/`(?:[^`\\]|\\.)*`/g, '``');
-const AS_OF = '2026-08-28';
+const AS_OF = '2015-08-28';
 
 /** The real Space's account payload. */
 const realAccounts = (o: Partial<AccountsSectionData> = {}) => ({
@@ -80,18 +80,18 @@ const state = (o: Partial<OperatingStateInput> = {}): CurrentOperatingState => {
   });
 };
 
-/** The real Vectrus stream: CURRENT, biweekly, assertable amount, unknown basis. */
-const VECTRUS = {
-  sourceKey: 'vectrus', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
+/** The real Employer A stream: CURRENT, biweekly, assertable amount, unknown basis. */
+const EMPLOYER_A = {
+  sourceKey: 'employer-a', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
   activity: ActivityState.CURRENT, projectionEligible: true,
-  amount: { value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
-/** The real Abacus stream: SILENT, with a perfectly good amount. */
-const ABACUS = {
-  sourceKey: 'abacus', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
+/** The real Employer B stream: SILENT, with a perfectly good amount. */
+const EMPLOYER_B = {
+  sourceKey: 'employer-b', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
   activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 /** A real interest stream: CURRENT and periodic, with no amount. */
@@ -100,7 +100,7 @@ const INTEREST = {
   activity: ActivityState.CURRENT, projectionEligible: true, amount: null,
 };
 
-const REAL = state({ incomeStreams: [VECTRUS, ABACUS, INTEREST] });
+const REAL = state({ incomeStreams: [EMPLOYER_A, EMPLOYER_B, INTEREST] });
 const licence = (s: CurrentOperatingState, c: ConclusionKind) => conclusionLicence(s, c);
 const refused = (s: CurrentOperatingState, c: ConclusionKind) => !licence(s, c).licensed;
 
@@ -177,22 +177,22 @@ check('C9 the vocabulary is CF-7\'s, not a new synonym set',
 // D. Income composition
 // ═══════════════════════════════════════════════════════════════════════════
 
-const vec = REAL.incomeStreams.find((s) => s.sourceKey === 'vectrus')!;
-const aba = REAL.incomeStreams.find((s) => s.sourceKey === 'abacus')!;
+const empA = REAL.incomeStreams.find((s) => s.sourceKey === 'employer-a')!;
+const empB = REAL.incomeStreams.find((s) => s.sourceKey === 'employer-b')!;
 const int = REAL.incomeStreams.find((s) => s.sourceKey === 'interest-10th')!;
 
-eq('D1 Vectrus has a nominal monthly equivalent', vec.nominalMonthly, monthlyEquivalent(5286.645, CadenceKind.BIWEEKLY));
-eq('D2 which is 26/12, not "twice a month"', vec.annualOccurrences, 26);
-eq('D3 with UNKNOWN basis — never NET', vec.basis, AmountBasis.UNKNOWN);
-eq('D4 Abacus keeps its amount', aba.amount, 5015.68);
-eq('D5 but contributes NO monthly income — a good number about a dead stream', aba.nominalMonthly, null);
-eq('D6 because it is not projection-eligible', aba.projectionEligible, false);
-eq('D7 and its activity is preserved', aba.activity, ActivityState.SILENT);
+eq('D1 Employer A has a nominal monthly equivalent', empA.nominalMonthly, monthlyEquivalent(5500.015, CadenceKind.BIWEEKLY));
+eq('D2 which is 26/12, not "twice a month"', empA.annualOccurrences, 26);
+eq('D3 with UNKNOWN basis — never NET', empA.basis, AmountBasis.UNKNOWN);
+eq('D4 Employer B keeps its amount', empB.amount, 5200.00);
+eq('D5 but contributes NO monthly income — a good number about a dead stream', empB.nominalMonthly, null);
+eq('D6 because it is not projection-eligible', empB.projectionEligible, false);
+eq('D7 and its activity is preserved', empB.activity, ActivityState.SILENT);
 eq('D8 interest is CURRENT and projection-eligible', [int.activity, int.projectionEligible],
   [ActivityState.CURRENT, true]);
 eq('D9 but classified OTHER_PERIODIC, never as payroll', int.incomeClass, IncomeClass.OTHER_PERIODIC);
-eq('D10 while Vectrus is only an OPERATING_CANDIDATE — not a salary claim',
-  vec.incomeClass, IncomeClass.OPERATING_CANDIDATE);
+eq('D10 while Employer A is only an OPERATING_CANDIDATE — not a salary claim',
+  empA.incomeClass, IncomeClass.OPERATING_CANDIDATE);
 check('D11 the state exposes NO aggregate income total',
   !/totalIncome|monthlyIncome *[:=]|aggregateIncome/i.test(codeOnly));
 check('D12 the four stream facts are four separate fields',
@@ -236,7 +236,7 @@ check('F2 no transaction history is an input', !/transactions|Transaction/.test(
 check('F3 no snapshot or historical series is consulted', !/snapshot|history|trailing/i.test(codeOnly));
 check('F4 balances come from the canonical accounts payload',
   /totalLiquid: number;/.test(src) && /totalLiabilities: number;/.test(src));
-eq('F5 a SILENT stream cannot contribute income however strong its history', aba.nominalMonthly, null);
+eq('F5 a SILENT stream cannot contribute income however strong its history', empB.nominalMonthly, null);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // G. Freshness
@@ -252,7 +252,7 @@ check('G3 no new freshness model was invented — the band vocabulary stays in l
 // ═══════════════════════════════════════════════════════════════════════════
 
 const asserted = state({
-  incomeStreams: [VECTRUS, ABACUS, INTEREST],
+  incomeStreams: [EMPLOYER_A, EMPLOYER_B, INTEREST],
   baseline: {
     assertable: true, amount: 4000, periodBasis: PeriodBasis.MONTHLY,
     provenance: EventProvenance.USER_ASSERTED, currency: 'USD',
@@ -283,7 +283,7 @@ check('H8 the module never parses prose — assertions arrive already decided',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const rentEvent: FutureCashEvent = {
-  id: 'rent@2026-09-01', timing: { kind: 'EXACT', dateISO: '2026-09-01' },
+  id: 'rent@2015-09-01', timing: { kind: 'EXACT', dateISO: '2015-09-01' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'OUTFLOW', role: FlowRole.SPENDING,
   amount: { value: 2400, currency: 'USD', basis: AmountBasis.NET, provenance: EventProvenance.USER_ASSERTED },
 };
@@ -365,7 +365,7 @@ check('K5 it dumps no raw transactions', !/merchant|category|transaction/i.test(
 check('K6 nominal income is labelled not-spendable',
   /basis UNKNOWN — not spendable cash/.test(rendered), rendered);
 check('K7 the dead stream is shown as not projection-eligible',
-  /abacus[\s\S]{0,120}NOT projection-eligible/.test(rendered));
+  /employer-b[\s\S]{0,120}NOT projection-eligible/.test(rendered));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // L. Blockers
@@ -387,15 +387,15 @@ eq('L4 a fully-blocked state still licenses next pay dates',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const netAmount = assertedAmountBasis(
-  assertedPeriodicAmount(5286.645, 'USD', AS_OF), AmountBasis.NET, AS_OF);
-const NET_VECTRUS = { ...VECTRUS, amount: {
+  assertedPeriodicAmount(5500.015, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+const NET_EMPLOYER_A = { ...EMPLOYER_A, amount: {
   value: netAmount.value, currency: netAmount.currency, provenance: netAmount.provenance,
   basis: netAmount.basis, basisProvenance: netAmount.basisProvenance } };
-const asserted_net = state({ incomeStreams: [NET_VECTRUS, ABACUS, INTEREST] });
-const vecNet = asserted_net.incomeStreams.find((s) => s.sourceKey === 'vectrus')!;
+const asserted_net = state({ incomeStreams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] });
+const empANet = asserted_net.incomeStreams.find((s) => s.sourceKey === 'employer-a')!;
 
-eq('N1 a user-asserted NET basis reaches the state', vecNet.basis, AmountBasis.NET);
-eq('N2 with its own provenance', vecNet.basisProvenance, EventProvenance.USER_ASSERTED);
+eq('N1 a user-asserted NET basis reaches the state', empANet.basis, AmountBasis.NET);
+eq('N2 with its own provenance', empANet.basisProvenance, EventProvenance.USER_ASSERTED);
 eq('N3 and net monthly inflow becomes FACTUALLY licensed — no policy involved',
   licence(asserted_net, Conclusion.NET_MONTHLY_INFLOW).licensed, true);
 eq('N4 the derived streams are untouched by it',
@@ -407,21 +407,21 @@ eq('N6 and still refuses net monthly inflow', refused(REAL, Conclusion.NET_MONTH
 
 const grossAmount = assertedAmountBasis(
   assertedPeriodicAmount(7000, 'USD', AS_OF), AmountBasis.GROSS, AS_OF);
-const gross = state({ incomeStreams: [{ ...VECTRUS, amount: {
+const gross = state({ incomeStreams: [{ ...EMPLOYER_A, amount: {
   value: grossAmount.value, currency: grossAmount.currency, provenance: grossAmount.provenance,
   basis: grossAmount.basis, basisProvenance: grossAmount.basisProvenance } }] });
 eq('N7 an asserted GROSS amount is factual as a nominal figure',
   licence(gross, Conclusion.NOMINAL_MONTHLY_INCOME).licensed, true);
 eq('N8 but GROSS never satisfies NET', refused(gross, Conclusion.NET_MONTHLY_INFLOW), true);
 eq('N9 nor does an asserted amount with no basis stated', refused(state({
-  incomeStreams: [{ ...VECTRUS, amount: { value: 5250, currency: 'USD',
+  incomeStreams: [{ ...EMPLOYER_A, amount: { value: 5250, currency: 'USD',
     provenance: EventProvenance.USER_ASSERTED, basis: AmountBasis.UNKNOWN, basisProvenance: null } }],
 }), Conclusion.NET_MONTHLY_INFLOW), true);
 
 check('N10 a NET basis on a stream that cannot continue licenses nothing', (() => {
-  // Abacus is SILENT: a perfectly good take-home figure about a job that ended
+  // Employer B is SILENT: a perfectly good take-home figure about a job that ended
   // has no monthly equivalent, so there is no number to state.
-  const s = state({ incomeStreams: [{ ...ABACUS, amount: { value: 5015.68, currency: 'USD',
+  const s = state({ incomeStreams: [{ ...EMPLOYER_B, amount: { value: 5200.00, currency: 'USD',
     provenance: EventProvenance.DERIVED, basis: AmountBasis.NET,
     basisProvenance: EventProvenance.USER_ASSERTED } }] });
   return s.incomeStreams[0].basis === AmountBasis.NET
@@ -459,7 +459,7 @@ const netStateVia = (m: typeof import('./operating-state')) => m.composeOperatin
   asOfISO: AS_OF,
   accounts: { totalLiquid: 10228.74, totalLiabilities: 549.75, counts: { liquid: 4, liabilities: 2 },
     redactedCount: 0, totalsUnconverted: false, asOfISO: AS_OF },
-  investments: null, incomeStreams: [NET_VECTRUS, ABACUS, INTEREST],
+  investments: null, incomeStreams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST],
   obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
   baseline: { assertable: false, reason: 'x' },
 });
@@ -467,7 +467,7 @@ const realStateVia = (m: typeof import('./operating-state')) => m.composeOperati
   asOfISO: AS_OF,
   accounts: { totalLiquid: 10228.74, totalLiabilities: 549.75, counts: { liquid: 4, liabilities: 2 },
     redactedCount: 0, totalsUnconverted: false, asOfISO: AS_OF },
-  investments: null, incomeStreams: [VECTRUS, ABACUS, INTEREST],
+  investments: null, incomeStreams: [EMPLOYER_A, EMPLOYER_B, INTEREST],
   obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
   baseline: { assertable: false, reason: 'x' },
 });
@@ -495,7 +495,7 @@ async function mutations(): Promise<void> {
     '&& !state.incomeStreams.some((s) => s.basis !== AmountBasis.UNKNOWN && s.nominalMonthly !== null)) {',
     (m) => {
       const g = m.composeOperatingState({ asOfISO: AS_OF, accounts: null, investments: null,
-        incomeStreams: [{ ...VECTRUS, amount: { value: 7000, currency: 'USD',
+        incomeStreams: [{ ...EMPLOYER_A, amount: { value: 7000, currency: 'USD',
           provenance: EventProvenance.USER_ASSERTED, basis: AmountBasis.GROSS,
           basisProvenance: EventProvenance.USER_ASSERTED } }],
         obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
@@ -513,7 +513,7 @@ async function mutations(): Promise<void> {
     '(s) => s.basis === AmountBasis.NET)) {',
     (m) => {
       const dead = m.composeOperatingState({ asOfISO: AS_OF, accounts: null, investments: null,
-        incomeStreams: [{ ...ABACUS, amount: { value: 5015.68, currency: 'USD',
+        incomeStreams: [{ ...EMPLOYER_B, amount: { value: 5200.00, currency: 'USD',
           provenance: EventProvenance.DERIVED, basis: AmountBasis.NET,
           basisProvenance: EventProvenance.USER_ASSERTED } }],
         obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },

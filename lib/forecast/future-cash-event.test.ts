@@ -54,7 +54,7 @@ function ev(o: Partial<FutureCashEvent> & { value?: number; basis?: AmountBasisK
   const { value, basis, amountProvenance, currency, observedSettled, ...rest } = o;
   return {
     id: `e${++seq}`,
-    timing: { kind: 'EXACT', dateISO: '2026-10-15' },
+    timing: { kind: 'EXACT', dateISO: '2015-10-15' },
     timingProvenance: EventProvenance.USER_ASSERTED,
     direction: 'INFLOW',
     role: FlowRole.INCOME,
@@ -69,26 +69,26 @@ function ev(o: Partial<FutureCashEvent> & { value?: number; basis?: AmountBasisK
 }
 
 // ── Real streams, verbatim from the live ledger ─────────────────────────────
-const VECTRUS = ['2025-12-19','2026-01-01','2026-01-16','2026-01-30','2026-02-13','2026-02-27',
-  '2026-03-13','2026-03-14','2026-03-27','2026-04-10','2026-04-24','2026-05-08','2026-05-22',
-  '2026-06-05','2026-06-18','2026-07-02','2026-07-17','2026-07-31','2026-08-14'];
-const ABACUS = ['2024-07-25','2024-08-09','2024-08-23','2024-09-10','2024-09-25','2024-10-10',
-  '2024-10-25','2024-11-08','2024-11-23','2024-12-10','2024-12-24','2025-01-10','2025-01-24',
-  '2025-02-08','2025-02-25','2025-03-08','2025-03-25','2025-04-10','2025-04-25','2025-05-09',
-  '2025-05-23','2025-06-10','2025-06-25','2025-07-10','2025-07-25','2025-08-08','2025-08-23',
-  '2025-09-10','2025-09-25','2025-10-10','2025-10-24','2025-11-08','2025-11-25','2025-12-10','2025-12-24'];
-const INT_10 = ['2025-10-10','2025-11-10','2025-12-10','2026-01-10','2026-02-10','2026-03-10',
-  '2026-04-10','2026-05-10','2026-06-10','2026-07-10','2026-08-10'];
-const AS_OF = '2026-08-27', LEDGER = '2026-08-25';
+const EMPLOYER_A = ['2014-12-19','2015-01-01','2015-01-16','2015-01-30','2015-02-13','2015-02-27',
+  '2015-03-13','2015-03-14','2015-03-27','2015-04-10','2015-04-24','2015-05-08','2015-05-22',
+  '2015-06-05','2015-06-18','2015-07-02','2015-07-17','2015-07-31','2015-08-14'];
+const EMPLOYER_B = ['2013-07-25','2013-08-09','2013-08-23','2013-09-10','2013-09-25','2013-10-10',
+  '2013-10-25','2013-11-08','2013-11-23','2013-12-10','2013-12-24','2014-01-10','2014-01-24',
+  '2014-02-08','2014-02-25','2014-03-08','2014-03-25','2014-04-10','2014-04-25','2014-05-09',
+  '2014-05-23','2014-06-10','2014-06-25','2014-07-10','2014-07-25','2014-08-08','2014-08-23',
+  '2014-09-10','2014-09-25','2014-10-10','2014-10-24','2014-11-08','2014-11-25','2014-12-10','2014-12-24'];
+const INT_10 = ['2014-10-10','2014-11-10','2014-12-10','2015-01-10','2015-02-10','2015-03-10',
+  '2015-04-10','2015-05-10','2015-06-10','2015-07-10','2015-08-10'];
+const AS_OF = '2015-08-27', LEDGER = '2015-08-25';
 
 const cadOf = (d: readonly string[], k: string): Cadence => {
   const c = deriveCadence(d, k); if (!isCadence(c)) throw new Error(k); return c;
 };
-const vecCad = cadOf(VECTRUS, 'vectrus'), abaCad = cadOf(ABACUS, 'abacus'), tenCad = cadOf(INT_10, 'interest');
+const empACad = cadOf(EMPLOYER_A, 'employer-a'), empBCad = cadOf(EMPLOYER_B, 'employer-b'), tenCad = cadOf(INT_10, 'interest');
 const act = (c: Cadence, s: readonly string[], reach = LEDGER): StreamActivity =>
   resolveStreamActivity({ cadence: c, settlements: s, observedThroughISO: reach, asOfISO: AS_OF });
-const vecAct = act(vecCad, VECTRUS), abaAct = act(abaCad, ABACUS);
-const tenAct = act(tenCad, INT_10, '2026-08-17');
+const empAAct = act(empACad, EMPLOYER_A), empBAct = act(empBCad, EMPLOYER_B);
+const tenAct = act(tenCad, INT_10, '2015-08-17');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A. THE LIVE FAILURE
@@ -168,10 +168,10 @@ check('B7 nothing promotes a basis — NET is only ever compared, never assigned
   check('B8c the observed gate still refuses GROSS',
     !observedCashContribution(ev({ value: 15500, basis: AmountBasis.GROSS })).assertable);
   check('B8d it refuses UNKNOWN that was NOT observed settling',
-    !observedCashContribution(ev({ value: 5286.64, basis: AmountBasis.UNKNOWN })).assertable);
+    !observedCashContribution(ev({ value: 5500.01, basis: AmountBasis.UNKNOWN })).assertable);
   check('B8e and admits UNKNOWN that WAS',
     observedCashContribution(
-      ev({ value: 5286.64, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
+      ev({ value: 5500.01, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
   check('B8f an observed marker cannot rescue a GROSS amount',
     !observedCashContribution(
       ev({ value: 15500, basis: AmountBasis.GROSS, observedSettled: true })).assertable);
@@ -220,16 +220,16 @@ check('D4 a hypothetical is distinguishable after composition',
 // E. The licensed chain: cadence → activity → event
 // ═══════════════════════════════════════════════════════════════════════════
 
-const abaEvents = cadenceDerivedEvents(abaAct, abaCad, AS_OF, '2026-12-31', FlowRole.INCOME);
-const vecEvents = cadenceDerivedEvents(vecAct, vecCad, AS_OF, '2026-12-31', FlowRole.INCOME);
+const empBEvents = cadenceDerivedEvents(empBAct, empBCad, AS_OF, '2015-12-31', FlowRole.INCOME);
+const empAEvents = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2015-12-31', FlowRole.INCOME);
 
-check('E1 the raw generator still produces Abacus dates',
-  occurrencesBetween(abaCad, AS_OF, '2026-12-31').length === 8);
-eq('E2 the stale stream produces ZERO expected cash events', abaEvents.length, 0);
-eq('E3 and Abacus is SILENT, not ENDED', abaAct.state, ActivityState.SILENT);
-check('E4 the current payroll produces events', vecEvents.length === 9, String(vecEvents.length));
-eq('E5 on deterministic cadence dates', vecEvents.slice(0, 2).map((e) => exactDateOf(e.timing)),
-  ['2026-08-28', '2026-09-11']);
+check('E1 the raw generator still produces Employer B dates',
+  occurrencesBetween(empBCad, AS_OF, '2015-12-31').length === 8);
+eq('E2 the stale stream produces ZERO expected cash events', empBEvents.length, 0);
+eq('E3 and Employer B is SILENT, not ENDED', empBAct.state, ActivityState.SILENT);
+check('E4 the current payroll produces events', empAEvents.length === 9, String(empAEvents.length));
+eq('E5 on deterministic cadence dates', empAEvents.slice(0, 2).map((e) => exactDateOf(e.timing)),
+  ['2015-08-28', '2015-09-11']);
 check('E6 generation routes through the LICENSED api, never the mechanical one',
   /expectedOccurrencesBetween\(activity, cadence, fromISO, toISO\)/.test(code)
   // The strongest form of this pin: the module does not even IMPORT the
@@ -244,9 +244,9 @@ check('E7 an activity decision is a required argument',
 // ═══════════════════════════════════════════════════════════════════════════
 
 check('F1 cadence-derived events carry NO amount by default',
-  vecEvents.every((e) => e.amount === null));
+  empAEvents.every((e) => e.amount === null));
 check('F2 which is not zero — composition counts them as unresolved', (() => {
-  const c = composeFutureCash(vecEvents);
+  const c = composeFutureCash(empAEvents);
   return c.assertableNet === null && c.unresolved.noAmount === 9 && c.nominalInflow === 0;
 })());
 check('F3 no amount is derived from the observation series',
@@ -254,14 +254,14 @@ check('F3 no amount is derived from the observation series',
 check('F4 the module records the measured reason', /CV 24\.6%/.test(src));
 
 // A user-asserted amount attaches, and the DATE stays derived.
-const asserted = cadenceDerivedEvents(vecAct, vecCad, AS_OF, '2026-09-30', FlowRole.INCOME,
+const asserted = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2015-09-30', FlowRole.INCOME,
   { value: 5250, currency: 'USD', basis: AmountBasis.NET, provenance: EventProvenance.USER_ASSERTED });
 eq('F5 asserted amount + derived date is representable',
   [asserted[0].amount!.provenance, asserted[0].timingProvenance],
   [EventProvenance.USER_ASSERTED, EventProvenance.DERIVED]);
 eq('F6 and the net contribution is assertable', composeFutureCash(asserted).assertableNet, 5250 * asserted.length);
 check('F7 the same amount with unstated basis is NOT', (() => {
-  const u = cadenceDerivedEvents(vecAct, vecCad, AS_OF, '2026-09-30', FlowRole.INCOME,
+  const u = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2015-09-30', FlowRole.INCOME,
     { value: 5250, currency: 'USD', basis: AmountBasis.UNKNOWN, provenance: EventProvenance.USER_ASSERTED });
   return composeFutureCash(u).assertableNet === null;
 })());
@@ -270,16 +270,16 @@ check('F7 the same amount with unstated basis is NOT', (() => {
 // G. Timing
 // ═══════════════════════════════════════════════════════════════════════════
 
-const october: EventTiming = { kind: 'RANGE', fromISO: '2026-10-01', toISO: '2026-10-31' };
-eq('G1 "a bonus in October" keeps its range', describeTiming(october), '2026-10');
+const october: EventTiming = { kind: 'RANGE', fromISO: '2015-10-01', toISO: '2015-10-31' };
+eq('G1 "a bonus in October" keeps its range', describeTiming(october), '2015-10');
 eq('G2 and yields NO exact date — no day is invented', exactDateOf(october), null);
 eq('G3 unknown timing stays unknown', exactDateOf({ kind: 'UNKNOWN' }), null);
-eq('G4 an exact date is an exact date', exactDateOf({ kind: 'EXACT', dateISO: '2026-09-11' }), '2026-09-11');
+eq('G4 an exact date is an exact date', exactDateOf({ kind: 'EXACT', dateISO: '2015-09-11' }), '2015-09-11');
 check('G5 nothing picks a midpoint', !/midpoint|\/ 2\b|floor\(\(/.test(code));
 eq('G6 a cross-month range shows both ends',
-  describeTiming({ kind: 'RANGE', fromISO: '2026-10-15', toISO: '2026-11-15' }), '2026-10-15..2026-11-15');
+  describeTiming({ kind: 'RANGE', fromISO: '2015-10-15', toISO: '2015-11-15' }), '2015-10-15..2015-11-15');
 check('G7 an unresolved-timing event still composes',
-  composeFutureCash([ev({ value: 15500, timing: october })]).components[0].timing === '2026-10');
+  composeFutureCash([ev({ value: 15500, timing: october })]).components[0].timing === '2015-10');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // H. Economic role — existing vocabulary, no new taxonomy
@@ -295,7 +295,7 @@ check('H2 no invented roles — no BONUS, VACATION_PAY or PAYROLL taxonomy',
   !/BONUS|VACATION_PAY|PAYROLL|SALARY/.test(code));
 
 // Periodic is not payroll.
-const interestEvents = cadenceDerivedEvents(tenAct, tenCad, AS_OF, '2026-12-31', FlowRole.INTEREST);
+const interestEvents = cadenceDerivedEvents(tenAct, tenCad, AS_OF, '2015-12-31', FlowRole.INTEREST);
 check('H3 monthly interest generates events — it is not suppressed', interestEvents.length === 4,
   String(interestEvents.length));
 check('H4 and keeps the INTEREST role, never INCOME',
@@ -422,7 +422,7 @@ eq('L-D mixed basis keeps both components',
 eq('L-E asserted biweekly paycheck on derived dates',
   [asserted.length > 0, asserted[0].timingProvenance, asserted[0].amount!.provenance],
   [true, EventProvenance.DERIVED, EventProvenance.USER_ASSERTED]);
-eq('L-F stale Abacus generates zero events', abaEvents.length, 0);
+eq('L-F stale Employer B generates zero events', empBEvents.length, 0);
 eq('L-G monthly interest keeps its role', interestEvents[0].role, FlowRole.INTEREST);
 eq('L-H a transfer is not promoted to income', transfer.role, FlowRole.TRANSFER);
 eq('L-I a refund is not promoted to recurring income', refund.role, FlowRole.REFUND);

@@ -79,7 +79,7 @@ import {
 // rather than introducing minor-unit arithmetic that would disagree with every
 // other total in the codebase.
 //
-// The real Space is exactly why it matters. Vectrus derives $5,286.645 — a
+// The real Space is exactly why it matters. Employer A derives $5,500.015 — a
 // genuine half-cent, because the level is the median of two payments a cent
 // apart. Rounding each occurrence to cents and then summing seven of them
 // drifts from the true total; carrying full precision and rounding once, at
@@ -152,7 +152,7 @@ export interface SpendingTreatment {
 /**
  * One dated movement, and every separate fact about it kept separate.
  *
- * ⚠️ THREE PROVENANCES, NOT ONE (§17). A Vectrus paycheck inside a scenario has
+ * ⚠️ THREE PROVENANCES, NOT ONE (§17). An Employer A paycheck inside a scenario has
  * a DERIVED date, a DERIVED amount and a SUPPOSED basis, and flattening those
  * into "assumed paycheck" loses which part the user would have to correct.
  */

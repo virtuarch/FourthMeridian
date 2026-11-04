@@ -37,8 +37,8 @@
 
 | Class | Accounts | Window |
 |---|---|---|
-| **Real (analysed)** | Amex ×3, Chase ×3 (checking/savings/debt) | 2024-07-21 → 2026-07-26 (~24 months) |
-| **Seeded (excluded)** | "Demo Bank", "Beacon Bank", "Example Credit Union", "Alpha/Sample Brokerage", "Summit Business Bank", "Fictional Crypto Exchange" | all begin 2026-03 |
+| **Real (analysed)** | Amex ×3, Chase ×3 (checking/savings/debt) | 2013-07-21 → 2015-07-26 (~24 months) |
+| **Seeded (excluded)** | "Demo Bank", "Beacon Bank", "Example Credit Union", "Alpha/Sample Brokerage", "Summit Business Bank", "Fictional Crypto Exchange" | all begin 2015-03 |
 
 Seeded accounts were excluded from **every** conclusion. Analysing them would have manufactured fictional income streams.
 
@@ -54,10 +54,10 @@ Two dominant streams, both into Chase/checking, both carrying payroll vocabulary
 | | **Stream A** | **Stream B** |
 |---|---|---|
 | Payments observed | 35 | 17 |
-| Observed from | 2024-07-25 | 2025-12-19 |
-| Observed to | 2025-12-24 | 2026-07-17 (last in data) |
-| Median amount | ≈ $4,395 | ≈ $5,316 |
-| Range (excl. outliers) | $3,868 – $5,544 | $5,267 – $6,275 |
+| Observed from | 2013-07-25 | 2014-12-19 |
+| Observed to | 2014-12-24 | 2015-07-17 (last in data) |
+| Median amount | ≈ $4,557 | ≈ $5,531 |
+| Range (excl. outliers) | $4,010 – $5,748 | $5,480 – $6,528 |
 | Destination | Chase/checking | Chase/checking |
 | Descriptor tokens (len>2) | 4 | 4 |
 | Names a known payroll processor? | **No** | **No** |
@@ -82,7 +82,7 @@ Mode 15 days with a 13–18 spread, and weekday **scattered across all five busi
 gap 14 → 12×    (plus one each of 3, 11, 13, 15)
 weekday: Fri 14 of 17
 ```
-Dominant 14-day interval, Friday anchoring, and — the discriminator the brief specifically asks for — **three payments in January 2026 and three in March 2026**, which semi-monthly cannot produce.
+Dominant 14-day interval, Friday anchoring, and — the discriminator the brief specifically asks for — **three payments in January 2015 and three in March 2015**, which semi-monthly cannot produce.
 
 **This is a cadence change, not a continuation.** Stream A was semi-monthly on fixed dates; Stream B is biweekly on Fridays.
 
@@ -94,58 +94,58 @@ Monthly medians, with min/max used to separate level shifts from one-off payment
 
 | Month | n | Median | Note |
 |---|---|---|---|
-| 2024-08 → 2024-11 | 2 each | **4,081** | stable baseline, 4 months |
-| 2024-12 | 2 | 4,235 | transition (min 4,081, max 4,389) |
-| 2025-01 → 2025-03 | 2 each | **4,389** | new level (Feb *min* also 4,389) |
-| 2025-02 | 2 | — | **max 10,669** — outlier |
-| 2025-04 | 2 | 4,441 | transition |
-| 2025-05, 08, 09 | 2 each | **4,487** | new level |
-| 2025-06 | 2 | 3,946 | **dip**, min 3,868 |
-| 2025-07 | 2 | — | max 5,873 — spike |
-| 2025-10 | 2 | 5,280 | transition (min 5,016) |
-| 2025-11 | 2 | **5,016** | new level |
-| 2025-12 | 2 | 4,885 | final month |
+| 2013-08 → 2013-11 | 2 each | **4,231** | stable baseline, 4 months |
+| 2013-12 | 2 | 4,391 | transition (min 4,081, max 4,550) |
+| 2014-01 → 2014-03 | 2 each | **4,550** | new level (Feb *min* also 4,550) |
+| 2014-02 | 2 | — | **max 11,061** — outlier |
+| 2014-04 | 2 | 4,604 | transition |
+| 2014-05, 08, 09 | 2 each | **4,652** | new level |
+| 2014-06 | 2 | 4,091 | **dip**, min 4,010 |
+| 2014-07 | 2 | — | max 6,089 — spike |
+| 2014-10 | 2 | 5,474 | transition (min 5,200) |
+| 2014-11 | 2 | **5,200** | new level |
+| 2014-12 | 2 | 5,065 | final month |
 
-### Transition 1 — ~December 2024
-- Previous ≈ **$4,081** → new ≈ **$4,389** · **+$308 (+7.5%)**
+### Transition 1 — ~December 2013
+- Previous ≈ **$4,231** → new ≈ **$4,550** · **+$319 (+7.5%)**
 - Cadence unchanged · descriptor unchanged · account unchanged
 - **Evidence for:** sustained across Jan/Feb/Mar; the Feb *minimum* is 4,389, so every payment cleared the new level; four months at the old level before it
 - **Evidence against:** none material
 - **Alternatives:** a withholding/deduction reduction at the tax-year boundary would produce the same net step. January is exactly when W-4, benefit elections and contribution rates reset.
 - **Classification: `LIKELY_RAISE`** · Confidence **MEDIUM-HIGH**. The timing is the reason it is not HIGH — a January net-pay step is genuinely ambiguous between a raise and an annual withholding reset.
 
-### Transition 2 — ~April 2025
-- ≈ **$4,389** → ≈ **$4,487** · **+$98 (+2.2%)**
-- **Evidence for:** sustained May, Aug, Sep at exactly 4,487
+### Transition 2 — ~April 2014
+- ≈ **$4,550** → ≈ **$4,652** · **+$102 (+2.2%)**
+- **Evidence for:** sustained May, Aug, Sep at exactly 4,652
 - **Evidence against:** magnitude is within the range a benefits or contribution change produces
 - **Classification: `DEDUCTION_OR_WITHHOLDING_CHANGE` or `POSSIBLE_RAISE`** · Confidence **LOW-MEDIUM**. 2.2% is too small to distinguish from a payroll-deduction adjustment on net-pay evidence alone.
 
-### Transition 3 — ~October 2025
-- ≈ **$4,487** → ≈ **$5,016** · **+$529 (+11.8%)**
-- **Evidence for:** sustained into November at exactly 5,016; the step is large relative to prior variance
+### Transition 3 — ~October 2014
+- ≈ **$4,652** → ≈ **$5,200** · **+$548 (+11.8%)**
+- **Evidence for:** sustained into November at exactly 5,200; the step is large relative to prior variance
 - **Evidence against:** it is followed within ~10 weeks by the stream ending entirely — a late-stage increase preceding departure is also consistent with a promotion/retention adjustment, a role change, or accrued-time payout beginning
 - **Classification: `LIKELY_RAISE`** · Confidence **MEDIUM**. Downgraded from HIGH solely because of its proximity to the stream ending.
 
 ### Explicitly **not** raises
-- **2025-02, ≈$10,669** — a single payment ≈2.4× the prevailing level, with the same month's other payment at exactly the level. **`BONUS_OR_VARIABLE_COMPENSATION`** · Confidence **HIGH**. Had a mean been used instead of a median, this one payment would have manufactured a false 2025-Q1 "raise" — the failure mode the brief warned about, and the reason `buildRecurringCandidates`' mean is unsuitable.
-- **2025-06, ≈$3,868** — a dip *below* the established level. Unpaid leave, a payroll correction, a one-off deduction, or a benefits true-up are all consistent. **`INSUFFICIENT_EVIDENCE`**.
-- **2025-07, ≈$5,873** — a spike. Overtime, commission, or reimbursement routed through payroll. **`INSUFFICIENT_EVIDENCE`**.
+- **2014-02, ≈$11,061** — a single payment ≈2.4× the prevailing level, with the same month's other payment at exactly the level. **`BONUS_OR_VARIABLE_COMPENSATION`** · Confidence **HIGH**. Had a mean been used instead of a median, this one payment would have manufactured a false 2025-Q1 "raise" — the failure mode the brief warned about, and the reason `buildRecurringCandidates`' mean is unsuitable.
+- **2014-06, ≈$4,010** — a dip *below* the established level. Unpaid leave, a payroll correction, a one-off deduction, or a benefits true-up are all consistent. **`INSUFFICIENT_EVIDENCE`**.
+- **2014-07, ≈$6,089** — a spike. Overtime, commission, or reimbursement routed through payroll. **`INSUFFICIENT_EVIDENCE`**.
 
 ---
 
-## 6 · Candidate employer/job transition — ~December 2025
+## 6 · Candidate employer/job transition — ~December 2014
 
 **Five independent signals coincide:**
 
 | Signal | Evidence |
 |---|---|
-| Old stream ends | Stream A final payment 2025-12-24 |
-| New stream begins | Stream B first payment 2025-12-19 — **5 days before A ends** |
+| Old stream ends | Stream A final payment 2014-12-24 |
+| New stream begins | Stream B first payment 2014-12-19 — **5 days before A ends** |
 | Payer identity differs | Descriptors share **2 of 4** tokens, and **both shared tokens are generic payroll vocabulary — zero entity-like tokens in common** |
 | Cadence changes | semi-monthly → biweekly |
 | Weekday anchoring changes | scattered → Friday (14 of 17) |
 | First payment is small | Stream B opens at ≈$2,306, roughly 40% of its later level — consistent with a **prorated first period** |
-| Level then *declines* | B runs ≈$5,943 (Jan) → ≈$5,700 (Feb) → ≈$5,300 (Apr onward) — consistent with **benefit/contribution deductions starting after the first cycles**, a well-known new-employment pattern, **not** a pay cut |
+| Level then *declines* | B runs ≈$6,183 (Jan) → ≈$5,930 (Feb) → ≈$5,514 (Apr onward) — consistent with **benefit/contribution deductions starting after the first cycles**, a well-known new-employment pattern, **not** a pay cut |
 
 **Classification: `LIKELY_JOB_CHANGE`** · Confidence **MEDIUM-HIGH**.
 
@@ -183,10 +183,10 @@ This section is part of the truth contract, not a caveat.
 2. **Employer identity is unresolved.** The descriptor is a string, not an entity. No payer identity resolution exists (§1), and neither descriptor names a known payroll processor — so we cannot even distinguish "employer's own ACH" from "an unrecognised processor".
 3. **Transaction dates have day precision only** (`@db.Date`). Intra-day ordering is impossible.
 4. **The observed date is the bank's posting date, not the employer's scheduled payday.** Early availability, weekend/holiday shifts, and bank processing all move it. A "Friday" pattern is a *posting* pattern.
-5. **History begins 2024-07-21, after employment began.** Stream A's first observed payment is not its first payment. No pre-history exists to establish the original level.
+5. **History begins 2013-07-21, after employment began.** Stream A's first observed payment is not its first payment. No pre-history exists to establish the original level.
 6. **Income outside connected accounts is invisible.** Any deposit to an unconnected institution is absent, and its absence is indistinguishable from non-existence.
-7. **Stream B has no observed end.** The last payment is 2026-07-17; whether it continues is unknown, not assumed.
-8. **The 2025-06 dip and 2025-07 spike are unexplained.** Both have multiple equally-consistent causes.
+7. **Stream B has no observed end.** The last payment is 2015-07-17; whether it continues is unknown, not assumed.
+8. **The 2014-06 dip and 2014-07 spike are unexplained.** Both have multiple equally-consistent causes.
 9. **Only two months of Stream B precede its level stabilising**, so its "typical" amount rests on ~6 months of evidence versus Stream A's ~17.
 10. **No confirmation source exists.** No user-stated fact, no employer field, no income record — nothing can corroborate or refute any inference here (V26-F2 §2.3: zero personal context exists).
 
@@ -199,11 +199,11 @@ This section is part of the truth contract, not a caveat.
 | Two distinct income streams exist | **HIGH** | 35 + 17 payments, distinct descriptors, distinct cadence |
 | Stream A was semi-monthly | **HIGH** | interval mode 15d, scattered weekday, 2/month |
 | Stream B is biweekly on Friday | **HIGH** | 14d ×12, Friday 14/17, three-payment months |
-| A bonus occurred ~Feb 2025 | **HIGH** | single 2.4× payment, level otherwise unchanged |
-| Pay level rose ~Dec 2024 | **MEDIUM-HIGH** | sustained step; January timing admits withholding reset |
-| Pay level rose ~Oct 2025 | **MEDIUM** | sustained step; proximity to stream end |
-| ~Apr 2025 change is a raise | **LOW-MEDIUM** | +2.2% indistinguishable from deduction change |
-| Payer identity changed ~Dec 2025 | **MEDIUM-HIGH** | 5 coincident signals, zero shared entity tokens |
+| A bonus occurred ~Feb 2014 | **HIGH** | single 2.4× payment, level otherwise unchanged |
+| Pay level rose ~Dec 2013 | **MEDIUM-HIGH** | sustained step; January timing admits withholding reset |
+| Pay level rose ~Oct 2014 | **MEDIUM** | sustained step; proximity to stream end |
+| ~Apr 2014 change is a raise | **LOW-MEDIUM** | +2.2% indistinguishable from deduction change |
+| Payer identity changed ~Dec 2014 | **MEDIUM-HIGH** | 5 coincident signals, zero shared entity tokens |
 | **Job/employer** changed | **INFERENCE, MEDIUM** | payroll-migration alternative survives |
 | Gross compensation changed | **UNKNOWN** | not observable |
 
@@ -253,7 +253,7 @@ interface IncomeStream {
 ```
 
 **Design rules forced by this data:**
-- **Median and IQR, never mean.** The Feb-2025 bonus would have created a phantom raise under a mean.
+- **Median and IQR, never mean.** The Feb-2014 bonus would have created a phantom raise under a mean.
 - **`intervalHistogram` is retained, not just the class.** Stream A's 13–18 spread *is* the semi-monthly evidence; collapsing it to "semi-monthly" destroys the ability to re-evaluate.
 - **`levelSegments` belong to truth, not assessment.** "The level changed on this date" is observation. "That was a raise" is interpretation — hence `transitionClass` carries `competingExplanations` and a confidence, and never asserts.
 - **`displayLabel: null` when unresolved.** Following the `amount: null` FX doctrine — no invented employer name.
@@ -291,8 +291,8 @@ interface ExpectedIncomeEvent {
 |---|---|---|
 | **Evidence** | deposit rows + descriptors | 52 payroll-shaped credits |
 | **Income Truth** (in Financial Truth) | streams, cadence, level segments, unknowns | "Stream B: biweekly Friday, median ≈$5,316, 17 payments" |
-| **Expected Financial State** | forward events + probability + invalidation | "Next ≈2026-07-31, $5,267–$5,316, p≈0.85" |
-| **Assessment** | judgment | "income is stable; volatility fell after Dec 2025" |
+| **Expected Financial State** | forward events + probability + invalidation | "Next ≈2015-07-31, $5,480–$5,316, p≈0.85" |
+| **Assessment** | judgment | "income is stable; volatility fell after Dec 2014" |
 | **Decision** | options + constraints | "≈$X allocatable after runway floor" |
 
 ### On your hypothesis
@@ -383,14 +383,14 @@ Deliberately **not** first: persistence. The resolver is a pure function over da
 > "You're usually paid every other Friday — about $5,300, most recently on 17 July. That pattern has held for about six months."
 
 **Supported with explicit uncertainty:**
-> "Your typical pay rose from about $4,080 to about $4,390 around December 2024, and again to about $5,020 around October 2025. Net pay can move for several reasons — a raise, or a change in tax withholding or benefit deductions — and I can only see net deposits, so I can't tell which."
+> "Your typical pay rose from about $4,230 to about $4,551 around December 2013, and again to about $5,204 around October 2014. Net pay can move for several reasons — a raise, or a change in tax withholding or benefit deductions — and I can only see net deposits, so I can't tell which."
 
 **Supported, carefully hedged:**
-> "Your income appears to come from a different source since December 2025 — the payer name, the pay schedule (twice monthly → every two weeks) and the payday all changed at once. That usually means a job or payroll change, but I can't confirm which from banking data alone."
+> "Your income appears to come from a different source since December 2014 — the payer name, the pay schedule (twice monthly → every two weeks) and the payday all changed at once. That usually means a job or payroll change, but I can't confirm which from banking data alone."
 
 **NOT supported — do not ship:**
-> ~~"You got a raise in December 2024."~~ — gross pay is unobservable.
-> ~~"You changed jobs in December 2025."~~ — payer identity changed; the job change is inference.
+> ~~"You got a raise in December 2013."~~ — gross pay is unobservable.
+> ~~"You changed jobs in December 2014."~~ — payer identity changed; the job change is inference.
 > ~~"After your next paycheck you could put $Y toward debt while preserving your runway."~~ — see below.
 
 ### Dependency breakdown of the forward-looking sentence
@@ -398,7 +398,7 @@ Deliberately **not** first: persistence. The resolver is a pure function over da
 | Dependency | Status |
 |---|---|
 | Observed income pattern | **[EXISTS]** — derivable now |
-| Expected next payment | **[EXISTS]** as a derivation — biweekly Friday, next ≈2026-07-31 |
+| Expected next payment | **[EXISTS]** as a derivation — biweekly Friday, next ≈2015-07-31 |
 | Current balance | **[EXISTS]** — but current only, no history (V26-F3) |
 | Upcoming obligations | **[ABSENT]** — no obligations model |
 | Runway requirement | **[ABSENT]** — no confirmed floor (V26-F2 D2 open) |
@@ -414,13 +414,13 @@ Deliberately **not** first: persistence. The resolver is a pure function over da
 ## 17 · Compact answers
 
 **When did typical pay materially change?**
-Three level changes in Stream A: **~Dec 2024** ($4,081→$4,389, +7.5%), **~Apr 2025** ($4,389→$4,487, +2.2%), **~Oct 2025** ($4,487→$5,016, +11.8%). Then the stream ended and a new one began at a different level and cadence in **~Dec 2025**.
+Three level changes in Stream A: **~Dec 2013** ($4,231→$4,389, +7.5%), **~Apr 2014** ($4,550→$4,487, +2.2%), **~Oct 2014** ($4,652→$5,016, +11.8%). Then the stream ended and a new one began at a different level and cadence in **~Dec 2014**.
 
 **Which look like likely raises?**
-**~Dec 2024** and **~Oct 2025** — both sustained multi-month steps where even the minimum payment cleared the new level. The **~Apr 2025** step (+2.2%) is too small to separate from a deduction change. The **Feb 2025** payment of ≈$10,669 is a **bonus, not a raise** — and would have been misread as one by any mean-based detector.
+**~Dec 2013** and **~Oct 2014** — both sustained multi-month steps where even the minimum payment cleared the new level. The **~Apr 2014** step (+2.2%) is too small to separate from a deduction change. The **Feb 2014** payment of ≈$11,061 is a **bonus, not a raise** — and would have been misread as one by any mean-based detector.
 
 **Which could indicate a job or employer transition?**
-**~December 2025**, on five coincident signals: stream ended, new stream began five days earlier, zero shared entity tokens in the descriptors, cadence changed semi-monthly→biweekly, weekday anchoring changed to Friday, first payment prorated, and the early level then declined as deductions began.
+**~December 2014**, on five coincident signals: stream ended, new stream began five days earlier, zero shared entity tokens in the descriptors, cadence changed semi-monthly→biweekly, weekday anchoring changed to Friday, first payment prorated, and the early level then declined as deductions began.
 
 **How confident can Fourth Meridian honestly be?**
 - Cadence classification: **HIGH**
@@ -433,6 +433,6 @@ Three level changes in Stream A: **~Dec 2024** ($4,081→$4,389, +7.5%), **~Apr 
 **Can it forecast the next paycheck well enough for financial decisions?**
 **For the payment, yes. For a decision, no — and the gap is not in the forecasting.**
 
-Stream B supports a defensible forecast: next ≈ **2026-07-31**, amount ≈ **$5,267–$5,316** (the last four payments span only ~$50), probability high on ~6 months of 14-day regularity. Caveat: the date is a *bank posting* date, not the employer's payday.
+Stream B supports a defensible forecast: next ≈ **2015-07-31**, amount ≈ **$5,480–$5,531** (the last four payments span only ~$50), probability high on ~6 months of 14-day regularity. Caveat: the date is a *bank posting* date, not the employer's payday.
 
-But a decision needs nine inputs and **five are absent** — no obligations model, no confirmed runway floor, no decision engine, no invalidation contract, and no balance history to validate the projection against. Fourth Meridian can honestly say *"you're usually paid ~$5,300 every other Friday, next around 31 July."* It cannot yet honestly say what to do with it.
+But a decision needs nine inputs and **five are absent** — no obligations model, no confirmed runway floor, no decision engine, no invalidation contract, and no balance history to validate the projection against. Fourth Meridian can honestly say *"you're usually paid ~$5,514 every other Friday, next around 31 July."* It cannot yet honestly say what to do with it.

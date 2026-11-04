@@ -55,7 +55,7 @@ async function main(): Promise<void> {
     first('2026-09-19', ['2026-09-04', PAYDAY]) === '2026-10-02');
   check('day after payday, deposit late (not observed): yesterday\'s slot is NOT claimed — cash is only claimed forward',
     first('2026-09-19', ['2026-08-21', '2026-09-04']) === '2026-10-02');
-  const semi: Cadence = { kind: CadenceKind.SEMIMONTHLY, anchorISO: '2026-09-10', daysOfMonth: [10, 25], provenance: CadenceProvenance.DERIVED, sourceKey: 'abacus@chk' };
+  const semi: Cadence = { kind: CadenceKind.SEMIMONTHLY, anchorISO: '2026-09-10', daysOfMonth: [10, 25], provenance: CadenceProvenance.DERIVED, sourceKey: 'employer-b@chk' };
   check('paid EARLY (the 24th for the 25th), asOf the 24th: the 25th is not generated',
     first('2026-09-24', ['2026-09-10', '2026-09-24'], semi) === '2026-10-10', first('2026-09-24', ['2026-09-10', '2026-09-24'], semi));
   check('…and on the 25th itself, still not', first('2026-09-25', ['2026-09-10', '2026-09-24'], semi) === '2026-10-10');

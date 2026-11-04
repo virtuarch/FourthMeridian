@@ -364,7 +364,7 @@ export interface Measure {
 
 7. **`dispersion` is a product feature, not a diagnostic.** `spending-baseline.ts:16-26` records that this user's discretionary spending has *no current regime*: months from $2,290 to $14,061, a 6.1× spread. Carry that to narration so the answer is *"your spending swings a lot month to month, so I'd give you a range rather than a number"* — not a point estimate, and not a refusal. **This is the guard against "stop refusing" degrading into "always produce a point estimate."**
 
-**Acceptance:** `lib/reasoning/measure/parity.test.ts` — evaluate every measure at `NOW` and at `+4mo` against the real production fixture (the one the forecast corpus uses: $10,228.74 liquid, $549.75 owed, $24,021.19 investments of which $19,014.63 crypto, biweekly Vectrus payroll at $5,286.645) and assert each equals what the existing authority produces today. **Parity, not novelty.** Any divergence is either a bug in the adapter or a bug you just found in the original — investigate, never paper over.
+**Acceptance:** `lib/reasoning/measure/parity.test.ts` — evaluate every measure at `NOW` and at `+4mo` against the real production fixture (the one the forecast corpus uses: $10,228.74 liquid, $549.75 owed, $24,021.19 investments of which $19,014.63 crypto, biweekly Employer A payroll at $5,500.015) and assert each equals what the existing authority produces today. **Parity, not novelty.** Any divergence is either a bug in the adapter or a bug you just found in the original — investigate, never paper over.
 
 **Not in this slice:** nothing is wired into the chat route. This is substrate with a test harness.
 

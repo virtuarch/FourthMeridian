@@ -999,7 +999,7 @@ console.log('13k. composition is not change — the tool names match the capabil
 // `sort: 'largest'` ranked the newest 100 matching rows and called the winner
 // "your biggest". On a 173-row month that answered from 58% of the data, and on a
 // 144-row spending population it is the difference between a $680 Shein purchase
-// and a $5,306 payroll deposit. Raising the page would move the cliff, not remove
+// and a $5,520 payroll deposit. Raising the page would move the cliff, not remove
 // it — the ranking now pages the keyset cursor to exhaustion.
 // ⚠️ THE ONLY ASYNC SECTION, so it runs inside an IIFE — the house pattern is a
 // top-level script and tsx compiles these to CJS, where top-level await is not

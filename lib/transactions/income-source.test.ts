@@ -21,8 +21,8 @@ const ev = (o: Partial<IncomeEvidence>): IncomeEvidence =>
 
 console.log("v2.6-TRUTH-4 INCOME. Earned income");
 {
-  // "VECTRUS SYSTEMS PAYROLL PPD ID: 22215228" — 54 rows, $255,648.69.
-  const salary = attributeIncome(ev({ providerDetail: "INCOME_SALARY", amount: 5286.64 }));
+  // "EMPLOYER A PAYROLL PPD ID: 0000000000" — the observed payroll rows.
+  const salary = attributeIncome(ev({ providerDetail: "INCOME_SALARY", amount: 5500.01 }));
   check("payroll ⇒ EARNED_INCOME / SALARY",
     salary.incomeClass === "EARNED_INCOME" && salary.subtype === "SALARY");
   check("contractor ⇒ EARNED_INCOME / CONTRACT",

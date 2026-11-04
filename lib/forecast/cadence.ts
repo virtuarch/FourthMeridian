@@ -492,9 +492,9 @@ export function deriveCadence(
  * How many scheduled occurrences have come and gone since the anchor without a
  * confirmed payment.
  *
- * Measured need: the Abacus payroll's cadence is a clean SEMIMONTHLY, and its
- * last confirmed payment is 2025-12-24 — the job ended. Asked on 2026-08-27,
- * generation happily projects 2026-09-10, because a schedule does not know it
+ * Measured need: the Employer B payroll's cadence is a clean SEMIMONTHLY, and its
+ * last confirmed payment is 2014-12-24 — the job ended. Asked on 2015-08-27,
+ * generation happily projects 2015-09-10, because a schedule does not know it
  * has stopped.
  *
  * ⚠️ This does NOT decide whether a stream is active. It reports the size of the

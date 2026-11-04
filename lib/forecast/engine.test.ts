@@ -82,9 +82,9 @@ const codeOnly = stripLiterals(src);
 
 // ── The real Space ──────────────────────────────────────────────────────────
 
-const AS_OF = '2026-08-28';
+const AS_OF = '2015-08-28';
 /** 94 days, and deliberately NOT a whole number of months. */
-const HORIZON = { fromISO: AS_OF, toISO: '2026-11-30',
+const HORIZON = { fromISO: AS_OF, toISO: '2015-11-30',
   origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'through the end of November' };
 
 const realAccounts = () => ({
@@ -94,22 +94,22 @@ const realAccounts = () => ({
   counts: { liquid: 4, liabilities: 2, investments: 3, digitalAssets: 4, realAssets: 0 },
 } as unknown as AccountsSectionData);
 
-const DERIVED_AMOUNT = { value: 5286.645, currency: 'USD', provenance: EventProvenance.DERIVED,
+const DERIVED_AMOUNT = { value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
   basis: AmountBasis.UNKNOWN, basisProvenance: null };
-const VECTRUS: IncomeStreamInput = { sourceKey: 'vectrus', role: FlowRole.INCOME,
+const EMPLOYER_A: IncomeStreamInput = { sourceKey: 'employer-a', role: FlowRole.INCOME,
   cadence: CadenceKind.BIWEEKLY, activity: ActivityState.CURRENT, projectionEligible: true,
   amount: DERIVED_AMOUNT };
-const ABACUS: IncomeStreamInput = { sourceKey: 'abacus', role: FlowRole.INCOME,
+const EMPLOYER_B: IncomeStreamInput = { sourceKey: 'employer-b', role: FlowRole.INCOME,
   cadence: CadenceKind.SEMIMONTHLY, activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5015.68, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null } };
 const INTEREST: IncomeStreamInput = { sourceKey: 'interest-10th', role: FlowRole.INTEREST,
   cadence: CadenceKind.MONTHLY, activity: ActivityState.CURRENT, projectionEligible: true, amount: null };
 
 const netFactAmount = assertedAmountBasis(
-  assertedPeriodicAmount(5286.645, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+  assertedPeriodicAmount(5500.015, 'USD', AS_OF), AmountBasis.NET, AS_OF);
 /** The same stream after the user asserts the basis. Events and state must agree. */
-const NET_VECTRUS: IncomeStreamInput = { sourceKey: 'vectrus', role: FlowRole.INCOME,
+const NET_EMPLOYER_A: IncomeStreamInput = { sourceKey: 'employer-a', role: FlowRole.INCOME,
   cadence: CadenceKind.BIWEEKLY, activity: ActivityState.CURRENT, projectionEligible: true,
   amount: { value: netFactAmount.value, currency: netFactAmount.currency,
     provenance: netFactAmount.provenance, basis: netFactAmount.basis,
@@ -130,28 +130,28 @@ const state = (o: {
       redactedCount: 0, totalsUnconverted: false, asOfISO: AS_OF,
     },
     investments: composeInvestments(acc),
-    incomeStreams: o.streams ?? [VECTRUS, ABACUS, INTEREST],
+    incomeStreams: o.streams ?? [EMPLOYER_A, EMPLOYER_B, INTEREST],
     obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
     baseline: (o.baseline ?? { assertable: false,
       reason: 'recent spending does not repeat closely enough' }) as never,
   });
 };
 
-// ── Licensed Vectrus events, produced by FORECAST-1/2/3 — never by the engine ──
+// ── Licensed Employer A events, produced by FORECAST-1/2/3 — never by the engine ──
 
-const vecCadence: Cadence = {
-  kind: CadenceKind.BIWEEKLY, anchorISO: '2026-08-14', sourceKey: 'vectrus',
+const empACadence: Cadence = {
+  kind: CadenceKind.BIWEEKLY, anchorISO: '2015-08-14', sourceKey: 'employer-a',
   provenance: CadenceProvenance.DERIVED, observationCount: 19, confidence: 1,
   reason: 'biweekly payroll', toleranceDays: 2,
 } as unknown as Cadence;
-const vecActivity = resolveStreamActivity({
-  cadence: vecCadence, settlements: ['2026-07-17', '2026-07-31', '2026-08-14'],
+const empAActivity = resolveStreamActivity({
+  cadence: empACadence, settlements: ['2015-07-17', '2015-07-31', '2015-08-14'],
   observedThroughISO: AS_OF, asOfISO: AS_OF,
 });
 const payEvents = (basis: typeof AmountBasis[keyof typeof AmountBasis],
   prov: typeof EventProvenance[keyof typeof EventProvenance] = EventProvenance.DERIVED) =>
-  cadenceDerivedEvents(vecActivity, vecCadence, HORIZON.fromISO, HORIZON.toISO, FlowRole.INCOME,
-    { value: 5286.645, currency: 'USD', basis, provenance: prov });
+  cadenceDerivedEvents(empAActivity, empACadence, HORIZON.fromISO, HORIZON.toISO, FlowRole.INCOME,
+    { value: 5500.015, currency: 'USD', basis, provenance: prov });
 const PAY_UNKNOWN = payEvents(AmountBasis.UNKNOWN);
 const PAY_NET = payEvents(AmountBasis.NET, EventProvenance.USER_ASSERTED);
 
@@ -161,8 +161,8 @@ const SPEND_4K: PolicyAssumption = { id: 'a1', dimension: AssumptionDimension.SP
   amount: 4000, currency: 'USD', periodBasis: PeriodBasis.MONTHLY,
   origin: AssumptionOrigin.USER_REQUESTED, stance: AssumptionStance.SUPPOSED,
   statedAs: 'assume $4,000/month of normal spending' };
-const VECTRUS_NET: PolicyAssumption = { id: 'a2', dimension: AssumptionDimension.INCOME_BASIS,
-  sourceKey: 'vectrus', basis: AmountBasis.NET, origin: AssumptionOrigin.USER_REQUESTED,
+const EMPLOYER_A_NET: PolicyAssumption = { id: 'a2', dimension: AssumptionDimension.INCOME_BASIS,
+  sourceKey: 'employer-a', basis: AmountBasis.NET, origin: AssumptionOrigin.USER_REQUESTED,
   stance: AssumptionStance.SUPPOSED, statedAs: 'assume that paycheck is net for this forecast' };
 const SPEND_10K: PolicyAssumption = { id: 'h1', dimension: AssumptionDimension.SPENDING_BASELINE,
   amount: 10000, currency: 'USD', periodBasis: PeriodBasis.MONTHLY,
@@ -194,8 +194,8 @@ eq('A6 and is liquidity ONLY — not the $24,021.19 of investments', A.openingCa
   ComponentState.ASSERTABLE);
 eq('A7 the licensed pay dates are still exposed',
   A.events.map((e) => e.dateISO),
-  ['2026-08-28', '2026-09-11', '2026-09-25', '2026-10-09', '2026-10-23', '2026-11-06', '2026-11-20']);
-eq('A8 with their nominal amounts visible', A.events[0].authoritativeAmount!.value, 5286.645);
+  ['2015-08-28', '2015-09-11', '2015-09-25', '2015-10-09', '2015-10-23', '2015-11-06', '2015-11-20']);
+eq('A8 with their nominal amounts visible', A.events[0].authoritativeAmount!.value, 5500.015);
 eq('A9 but NO cash contribution, because the basis is unestablished', A.events[0].cashDelta, null);
 check('A10 and FORECAST-3\'s own words say why',
   /whether it is gross or net was never established/.test(A.events[0].refusalReason ?? ''),
@@ -209,11 +209,11 @@ eq('A14 and no counterfactual path is offered, because none was asked for',
   A.withoutAssumptions, null);
 
 // The partial path IS available when the events themselves are licensed.
-const A_NET_EVENTS = run(state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET, policy());
+const A_NET_EVENTS = run(state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET, policy());
 eq('A15 with NET events, the known-event path computes while spending is unknown',
   A_NET_EVENTS.knownEventPath.status, ConclusionStatus.FACTUALLY_LICENSED);
 near('A16 opening cash plus seven paychecks', A_NET_EVENTS.knownEventPath.closing,
-  10228.74 + 5286.645 * 7);
+  10228.74 + 5500.015 * 7);
 eq('A17 and the FULL path is still REFUSED — it is not the same question',
   A_NET_EVENTS.fullCashPath.status, ConclusionStatus.REFUSED);
 check('A18 the known-event path is never called ending cash',
@@ -248,7 +248,7 @@ eq('B6 and the authoritative baseline underneath is still UNKNOWN',
 // C. SPENDING + NET BASIS — the scenario cash path, and the BIWEEKLY regression
 // ═══════════════════════════════════════════════════════════════════════════
 
-const C = run(state(), PAY_UNKNOWN, policy([SPEND_4K, VECTRUS_NET]));
+const C = run(state(), PAY_UNKNOWN, policy([SPEND_4K, EMPLOYER_A_NET]));
 const CSTATE = state();
 
 eq('C1 the scenario path computes', C.fullCashPath.status, ConclusionStatus.ASSUMPTION_DEPENDENT);
@@ -256,12 +256,12 @@ eq('C2 over SEVEN licensed occurrences — not 2 x 3 months, and not 26/12 x 3',
   C.events.filter((e) => e.included).length, 7);
 check('C3 which is what two-checks-a-month arithmetic would have got wrong',
   C.events.length !== 2 * 3 && C.events.length === 7);
-near('C4 income total is 7 x 5286.645, at full precision',
-  C.events.reduce((t, e) => t + (e.cashDelta ?? 0), 0), 37006.515);
+near('C4 income total is 7 x 5500.015, at full precision',
+  C.events.reduce((t, e) => t + (e.cashDelta ?? 0), 0), 38500.105);
 near('C5 baseline consumption is 94 days x the daily rate',
   C.points.reduce((t, p) => t + (p.discretionarySpend ?? 0), 0), (4000 / MEAN_MONTH_DAYS) * 94);
 near('C6 ending cash = opening + income - accrual', C.fullCashPath.closing,
-  10228.74 + 5286.645 * 7 - (4000 / MEAN_MONTH_DAYS) * 94);
+  10228.74 + 5500.015 * 7 - (4000 / MEAN_MONTH_DAYS) * 94);
 eq('C7 the dependencies are exactly the two assumptions the user made',
   [...C.fullCashPath.dependencies].sort(), ['a1', 'a2']);
 check('C7b one sentence about the stream reaches all seven of its occurrences — '
@@ -277,23 +277,23 @@ eq('C9 with no number attached to it', C.withoutAssumptions!.closing, null);
 // ⚠️ THE DIRECT REGRESSION for live failures #3/#4.
 const monthsInHorizon = 94 / MEAN_MONTH_DAYS;
 check('C10 two-checks-a-month would have produced a different, wrong income total',
-  Math.abs(2 * Math.round(monthsInHorizon) * 5286.645 - 5286.645 * 7) > 1,
+  Math.abs(2 * Math.round(monthsInHorizon) * 5500.015 - 5500.015 * 7) > 1,
   `two-a-month=${2 * Math.round(monthsInHorizon)} vs licensed=7`);
 check('C11 and monthlyEquivalent x months likewise',
-  Math.abs((5286.645 * 26 / 12) * monthsInHorizon - 5286.645 * 7) > 1);
+  Math.abs((5500.015 * 26 / 12) * monthsInHorizon - 5500.015 * 7) > 1);
 eq('C12 the engine performs NO cadence arithmetic of its own',
   /\b26\b|\/\s*12\b|BIWEEKLY|SEMIMONTHLY|occurrencesBetween|annualFactor|monthlyEquivalent/
     .test(codeOnly), false);
 eq('C13 the dates are exactly FORECAST-1\'s, unmodified',
   C.events.map((e) => e.dateISO),
-  occurrencesBetween(vecCadence, HORIZON.fromISO, HORIZON.toISO));
+  occurrencesBetween(empACadence, HORIZON.fromISO, HORIZON.toISO));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // D. USER-ASSERTED FACTS — same arithmetic, different status
 // ═══════════════════════════════════════════════════════════════════════════
 
 const FACT_STATE = state({
-  streams: [NET_VECTRUS, ABACUS, INTEREST],
+  streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST],
   baseline: { assertable: true, amount: 4000, periodBasis: PeriodBasis.MONTHLY,
     provenance: EventProvenance.USER_ASSERTED, currency: 'USD',
     reason: 'the user stated ordinary spending is 4000 USD per month' },
@@ -338,7 +338,7 @@ check('E5 nor are they liquidated to cover a shortfall',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const RENT: FutureCashEvent = {
-  id: 'rent@2026-09-01', timing: { kind: 'EXACT', dateISO: '2026-09-01' },
+  id: 'rent@2015-09-01', timing: { kind: 'EXACT', dateISO: '2015-09-01' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'OUTFLOW', role: FlowRole.SPENDING,
   amount: { value: 2400, currency: 'USD', basis: AmountBasis.NET,
     provenance: EventProvenance.USER_ASSERTED },
@@ -361,20 +361,20 @@ check('F6 known outflows and baseline consumption are separately inspectable',
   && /Known outflows:/.test(explainForecast(F).join('\n'))
   && /Baseline spending over the horizon:/.test(explainForecast(F).join('\n')));
 check('F7 no fabricated discretionary events exist',
-  F.events.every((e) => e.id === 'rent@2026-09-01' || e.id.startsWith('vectrus@')));
+  F.events.every((e) => e.id === 'rent@2015-09-01' || e.id.startsWith('employer-a@')));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // G. BONUS / VACATION — live failure #8
 // ═══════════════════════════════════════════════════════════════════════════
 
 const BONUS: FutureCashEvent = {
-  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2026-10-15' },
+  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
   amount: { value: 15500, currency: 'USD', basis: AmountBasis.GROSS,
     provenance: EventProvenance.USER_ASSERTED },
 };
 const VACATION: FutureCashEvent = {
-  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2026-10-15' },
+  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
   amount: { value: 1500, currency: 'USD', basis: AmountBasis.UNKNOWN,
     provenance: EventProvenance.USER_ASSERTED },
@@ -445,7 +445,7 @@ check('H6 every import is a forecast authority or CF-7\'s concept vocabulary',
 // I. THE $10,000 SCENARIO — live failure #7
 // ═══════════════════════════════════════════════════════════════════════════
 
-const I = run(state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET, policy([SPEND_10K]));
+const I = run(state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET, policy([SPEND_10K]));
 eq('I1 a counterfactual scenario is HYPOTHETICAL', I.fullCashPath.status, ConclusionStatus.HYPOTHETICAL);
 eq('I2 naming the explicit scenario assumption', I.fullCashPath.dependencies.includes('h1'), true);
 eq('I3 the OBSERVED baseline remains UNKNOWN',
@@ -466,7 +466,7 @@ eq('I7 with no such assumption the engine cannot produce that spending',
 
 const BIG_SPEND: PolicyAssumption = { ...SPEND_10K, id: 'j1', amount: 20000,
   stance: AssumptionStance.SUPPOSED, statedAs: 'assume $20,000/month' };
-const J = run(state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET, policy([BIG_SPEND]));
+const J = run(state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET, policy([BIG_SPEND]));
 check('J1 a balance that crosses zero stays negative', (J.fullCashPath.closing as number) < 0,
   String(J.fullCashPath.closing));
 check('J2 and is not clamped at any point',
@@ -522,8 +522,8 @@ check('K6a and the spending assumption joins only once time has elapsed',
 // L. MONEY, ROUNDING AND SERIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-const sixExact = 5286.645 * 7;
-const sixRounded = Number((5286.645).toFixed(2)) * 7;
+const sixExact = 5500.015 * 7;
+const sixRounded = Number((5500.015).toFixed(2)) * 7;
 check('L1 the half-cent level is carried at full precision, per D-4',
   Math.abs((C.events.reduce((t, e) => t + (e.cashDelta ?? 0), 0)) - sixExact) < 1e-9);
 check('L2 rounding each occurrence first would have drifted',
@@ -675,7 +675,7 @@ async function mutations(): Promise<void> {
     // that matters is narrower and exact — unknown spending is not a rate of
     // zero, and it never acquires an amount.
     (m) => {
-      const f = via(m, state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET, policy());
+      const f = via(m, state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET, policy());
       return f.spending.source === m.SpendingSource.UNRESOLVED
         && f.spending.dailyRate === null && f.spending.amount === null
         && f.fullCashPath.closing === null;
@@ -689,21 +689,21 @@ async function mutations(): Promise<void> {
   await mutate('M3 counting two paychecks a month is caught',
     '  const forecastEvents: ForecastEvent[] = inWindow.map((r) => {',
     '  const forecastEvents: ForecastEvent[] = inWindow.filter((_, i) => i % 2 === 0).map((r) => {',
-    (m) => via(m, state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET, policy())
+    (m) => via(m, state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET, policy())
       .events.filter((e) => e.included).length === 7);
 
   await mutate('M4 regenerating pay dates independently is caught',
     "    return d !== null && d >= fromISO && d <= toISO;",
     "    return d !== null && d >= fromISO && d <= toISO && d.endsWith('1');",
-    (m) => JSON.stringify(via(m, state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET,
+    (m) => JSON.stringify(via(m, state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET,
       policy()).events.map((e) => e.dateISO))
-      === JSON.stringify(occurrencesBetween(vecCadence, HORIZON.fromISO, HORIZON.toISO)));
+      === JSON.stringify(occurrencesBetween(empACadence, HORIZON.fromISO, HORIZON.toISO)));
 
   await mutate('M5 crypto added to opening cash is caught',
     '    state: liq.state, amount: liq.state === ComponentState.UNKNOWN ? null : liq.amount,',
     '    state: liq.state, amount: liq.state === ComponentState.UNKNOWN ? null '
     + ': (liq.amount ?? 0) + (state.investments?.combined ?? 0),',
-    (m) => via(m, state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET, policy())
+    (m) => via(m, state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET, policy())
       .openingCash.amount === 10228.74);
 
   await mutate('M6 the debt balance subtracted as an outflow is caught',
@@ -721,13 +721,13 @@ async function mutations(): Promise<void> {
   await mutate('M8 erasing assumption dependencies is caught',
     '    ? { status: rank(fullDeps), closing: last?.closingBalance ?? null, dependencies: fullDeps, missing: [] }',
     '    ? { status: rank(fullDeps), closing: last?.closingBalance ?? null, dependencies: [], missing: [] }',
-    (m) => via(m, CSTATE, PAY_UNKNOWN, policy([SPEND_4K, VECTRUS_NET]))
+    (m) => via(m, CSTATE, PAY_UNKNOWN, policy([SPEND_4K, EMPLOYER_A_NET]))
       .fullCashPath.dependencies.length > 0);
 
   await mutate('M9 a hypothetical result labelled factual is caught',
     "    dependencies.some((d) => counterfactual.has(d)) ? ConclusionStatus.HYPOTHETICAL",
     "    false ? ConclusionStatus.HYPOTHETICAL",
-    (m) => via(m, state({ streams: [NET_VECTRUS, ABACUS, INTEREST] }), PAY_NET,
+    (m) => via(m, state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET,
       policy([SPEND_10K])).fullCashPath.status === ConclusionStatus.HYPOTHETICAL);
 
   await mutate('M10 fabricating discretionary events is caught',
@@ -753,7 +753,7 @@ async function mutations(): Promise<void> {
     () => !/deriveSpendingBaseline|deriveCurrentPeriodicAmount/.test(
       stripLiterals(mutantSource)));
 
-  await mutate('M14 including the SILENT Abacus stream is caught',
+  await mutate('M14 including the SILENT Employer B stream is caught',
     '  const inWindow = res.events.filter((r) => {',
     '  const inWindow = [...res.events, ...res.events].filter((r) => {',
     (m) => via(m, FACT_STATE, PAY_NET, policy()).events.length === 6);
@@ -761,7 +761,7 @@ async function mutations(): Promise<void> {
   await mutate('M15 a scenario assumption mutating the authoritative event is caught',
     '      authoritativeAmount: r.authorityAmount,',
     '      authoritativeAmount: effectiveEventAmount(r),',
-    (m) => via(m, CSTATE, PAY_UNKNOWN, policy([SPEND_4K, VECTRUS_NET]))
+    (m) => via(m, CSTATE, PAY_UNKNOWN, policy([SPEND_4K, EMPLOYER_A_NET]))
       .events[0].authoritativeAmount!.basis === AmountBasis.UNKNOWN);
 
   const NO_AMOUNT: FutureCashEvent = { ...RENT, id: 'nil', amount: null };

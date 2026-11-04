@@ -340,13 +340,13 @@ console.log("19. conservation + invariants");
     ingest(purchase("a", "2026-09-01", 1500)), ingest(labelledRefund("b", "2026-09-02", 500)),
     ingest(purchase("c", "2026-09-03", 90, { pfcPrimary: "FOOD_AND_DRINK", pfcDetailed: "FOOD_AND_DRINK_RESTAURANT", merchant: "Bistro" })),
     ingest(labelledRefund("d", "2026-09-04", 240, { pfcPrimary: "FOOD_AND_DRINK", pfcDetailed: "FOOD_AND_DRINK_RESTAURANT", merchant: "Bistro" })),
-    ingest({ id: "e", date: "2026-09-05", amount: 5306.12, account: "checking", pfcPrimary: "INCOME", pfcDetailed: "INCOME_SALARY", merchant: "ACME PAYROLL" }),
+    ingest({ id: "e", date: "2026-09-05", amount: 5520.26, account: "checking", pfcPrimary: "INCOME", pfcDetailed: "INCOME_SALARY", merchant: "ACME PAYROLL" }),
     ingest({ id: "f", date: "2026-09-06", amount: 2000, account: "card", pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT", merchant: "MOBILE PAYMENT - THANK YOU" }),
   ];
   const tot = economicTotals(rows);
   // gross 1,590 ; refunds 740 ; Travel net 1,000 ; Dining net 0 with 150 unapplied ; headline 850
   check("Σgross − Σrefunds === Σnet − Σunapplied (1,590 − 740 = 1,000 − 150 = 850)", conserved(rows) && eq(tot.spend, 850));
-  check("income is the paycheck alone (5,306.12)", eq(tot.income, 5306.12));
+  check("income is the paycheck alone (5,520.26)", eq(tot.income, 5520.26));
   check("every row is AT MOST one of spending / refund / income",
     rows.every((r) => [isCostFlow(r.flowType), isRefund(r.flowType), isIncome(r.flowType)].filter(Boolean).length <= 1));
   check("a refund is never earned income: the income taxonomy names it REFUND_REVERSAL / NOT_INCOME",
