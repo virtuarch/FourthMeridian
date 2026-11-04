@@ -220,6 +220,11 @@ export async function reconstructBtcHistory(args: {
   //    trusted. If UNCONFIRMED movements exist, that argument is unavailable:
   //    the sums could agree because both include the same unconfirmed value, and
   //    we refuse rather than guess which.
+  //
+  //    FM-AUDIT-053 — xpub balances are now read confirmed-only too (Esplora
+  //    chain_stats per active address; multiaddr decides activity only). The
+  //    guard is KEPT: an anchor observed before that change may still carry the
+  //    old basis, and relaxing a refusal is its own decision.
   const unconfirmed = rows.length - posted.length;
   if (unconfirmed > 0) {
     return { accountId, ok: false, refusal: "BALANCE_BASIS_AMBIGUOUS",
