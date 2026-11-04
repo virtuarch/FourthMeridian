@@ -462,10 +462,13 @@ export function deriveFreshnessPosture(f: PostureInputs["freshness"]): PostureCh
   const blocked = f.resources.filter((r) => r.healthState === "empty" && r.trust.level === "unknown").length;
   const stale = f.resources.filter((r) => r.healthState === "stale").length;
   const notFresh = empty + stale;
-  const count = `${notFresh} of ${f.resources.length} not fresh${blocked ? ` · ${blocked} blocked` : ""}`;
+  // Preview only (no scheduler): neutral, outside "not fresh"; absent ⇒ the count words are unchanged.
+  const notRefreshed = f.resources.filter((r) => r.healthState === "not-refreshed").length;
+  const count = `${notFresh} of ${f.resources.length} not fresh${blocked ? ` · ${blocked} blocked` : ""}${notRefreshed ? ` · ${notRefreshed} not refreshed in this environment` : ""}`;
   if (empty > 0) return { key: "freshness", label: "Freshness", word: "Empty archive", tone: "bad", count, state: "observed", workspace: "platform-providers", basis };
   if (stale > 0) return { key: "freshness", label: "Freshness", word: "Stale", tone: "warn", count, state: "observed", workspace: "platform-providers", basis };
   if (blocked > 0 && blocked === f.resources.length) return { key: "freshness", label: "Freshness", word: "Unknown", tone: "muted", count, state: "unknown", workspace: "platform-providers", basis };
+  if (notRefreshed > 0 && notRefreshed + blocked === f.resources.length) return { key: "freshness", label: "Freshness", word: "Not refreshed here", tone: "muted", count, state: "unknown", workspace: "platform-providers", basis };
   return { key: "freshness", label: "Freshness", word: "Fresh", tone: "ok", count, state: "observed", workspace: "platform-providers", basis };
 }
 

@@ -24,7 +24,8 @@ export const runtime = "nodejs";
 export interface ResourceFreshnessResponse {
   checkedAt: string; // ISO
   allFresh: boolean;
-  counts: { fresh: number; stale: number; empty: number; idle: number };
+  /** "not-refreshed" (Preview, producing job unscheduled) is present only when non-zero: Production answers exactly as before. */
+  counts: { fresh: number; stale: number; empty: number; idle: number; "not-refreshed"?: number };
   resources: ResourceFreshnessReport[];
 }
 
@@ -34,8 +35,8 @@ export async function GET() {
 
   const result = await checkResourceFreshness();
 
-  const counts = { fresh: 0, stale: 0, empty: 0, idle: 0 };
-  for (const r of result.resources) counts[r.healthState]++;
+  const counts: ResourceFreshnessResponse["counts"] = { fresh: 0, stale: 0, empty: 0, idle: 0 };
+  for (const r of result.resources) counts[r.healthState] = (counts[r.healthState] ?? 0) + 1;
 
   return NextResponse.json({
     checkedAt: result.checkedAt.toISOString(),

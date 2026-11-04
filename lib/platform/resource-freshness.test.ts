@@ -339,6 +339,51 @@ async function main(): Promise<void> {
       (src.match(/jobRun\./g) ?? []).every(() => true) && /readRefreshLedger/.test(src));
   }
 
+  // ── Preview: producing job not scheduled (server-side scheduler presence) ──
+  {
+    const H = 3_600_000;
+    const stale = { newestObservedDate: dayUTC("2026-07-01"), expectedUnits: 1, observedUnits: 1 };
+    const empty = { newestObservedDate: null, expectedUnits: 3, observedUnits: 0 };
+    const blocked = { newestObservedDate: null, expectedUnits: 3, observedUnits: 0, blocked: true };
+    const fresh = { newestObservedDate: dayUTC("2026-07-15"), expectedUnits: 1, observedUnits: 1 };
+    const oldAttempt: RefreshLedgerFacts = { lastAttemptedAt: new Date(NOW.getTime() - 400 * H), lastAttemptStatus: "succeeded", lastSuccessfulAt: new Date(NOW.getTime() - 400 * H) };
+    const recentFailed: RefreshLedgerFacts = { lastAttemptedAt: new Date(NOW.getTime() - 3 * H), lastAttemptStatus: "failed", lastSuccessfulAt: null };
+    const fixtures: [FreshnessObservation, RefreshLedgerFacts][] = [
+      [stale, NO_LEDGER], [stale, oldAttempt], [stale, GREEN_NOW], [stale, recentFailed],
+      [empty, NO_LEDGER], [empty, GREEN_NOW], [blocked, NO_LEDGER], [fresh, NO_LEDGER],
+      [{ newestObservedDate: null, expectedUnits: 0, observedUnits: 0 }, NO_LEDGER],
+    ];
+    check("Production (producer scheduled, also the default) is byte-identical across every fixture",
+      fixtures.every(([o, l]) => JSON.stringify(classifyResourceFreshness(DESC, o, l, NOW, true)) === JSON.stringify(classifyResourceFreshness(DESC, o, l, NOW))));
+    const pv = (o: FreshnessObservation, l: RefreshLedgerFacts) => classifyResourceFreshness(DESC, o, l, NOW, false);
+    const nr = pv(stale, NO_LEDGER);
+    check("Preview: behind and never refreshed here → not-refreshed (neutral), worded so",
+      nr.healthState === "not-refreshed" && /^Not refreshed in this environment — its producing job \(t-job\) is not scheduled/.test(nr.trust.caveats[0]), JSON.stringify(nr));
+    check("…a refresh outside the stale window does not count as refreshed here", pv(stale, oldAttempt).healthState === "not-refreshed");
+    check("…an empty archive never refreshed here → not-refreshed", pv(empty, NO_LEDGER).healthState === "not-refreshed");
+    check("Preview: refreshed here (recent success) and still behind → STALE (the false-green stays a verdict)", pv(stale, GREEN_NOW).healthState === "stale");
+    check("Preview: a recent FAILED attempt and behind → STALE", pv(stale, recentFailed).healthState === "stale");
+    check("Preview: refreshed here and still empty → EMPTY", pv(empty, GREEN_NOW).healthState === "empty");
+    check("Preview: a blocked pipeline keeps its own honest words (empty, trust unknown)", pv(blocked, NO_LEDGER).healthState === "empty");
+    check("Preview: fresh data stays fresh; idle stays idle",
+      pv(fresh, NO_LEDGER).healthState === "fresh" && pv({ newestObservedDate: null, expectedUnits: 0, observedUnits: 0 }, NO_LEDGER).healthState === "idle");
+    check("a resource with no producing job is never not-refreshed",
+      classifyResourceFreshness({ ...DESC, producingJob: null }, stale, NO_LEDGER, NOW, false).healthState === "stale");
+
+    const mk = (o: FreshnessObservation): ResourceFreshnessDescriptor => ({ ...DESC, id: "x", producingJob: "x-job", probe: async () => o });
+    const client = fakeClient({ fx: [], prices: [], held: [], jobRuns: [] });
+    const absent = await checkResourceFreshness(client, NOW, [mk(stale)], { scheduler: "absent" });
+    const present = await checkResourceFreshness(client, NOW, [mk(stale)], { scheduler: "present" });
+    const dflt = await checkResourceFreshness(client, NOW, [mk(stale)]);
+    check("driver (absent): not-refreshed, and allFresh (nothing is wrong with the resource itself)",
+      absent.resources[0].healthState === "not-refreshed" && absent.allFresh === true);
+    check("driver (present): stale exactly as before", present.resources[0].healthState === "stale" && present.allFresh === false);
+    check("driver default = the server environment (no VERCEL here ⇒ present), byte-identical",
+      JSON.stringify(dflt) === JSON.stringify(present));
+    const src = readFileSync("lib/platform/resource-freshness.ts", "utf8");
+    check("the presence is read server-side via deploymentSchedulerPresence", /opts\.scheduler \?\? deploymentSchedulerPresence\(\)/.test(src));
+  }
+
   console.log(`\n${failures === 0 ? "PASS" : "FAIL"} — resource-freshness (${failures} failure(s))`);
   if (failures > 0) process.exit(1);
 }

@@ -110,6 +110,11 @@ async function main() {
     const f = res.states.find((s) => s.sourceId === "freshness")!;
     check("stale FX archive reconstructed at as-of reads stale (derived)", f.status === "stale" && f.tier === "derived");
 
+    const asOfF = async (scheduler?: "present" | "absent") => (await getOperationalHistory({ asOf: "2026-07-17", sourceIds: ["freshness"] },
+      { now: NOW, readers: { ...stale, ...(scheduler ? { scheduler } : {}) } })).states[0];
+    check("freshness as-of: Production (present) byte-identical to no presence", JSON.stringify(await asOfF("present")) === JSON.stringify(await asOfF()));
+    check("freshness as-of on Preview (producer unscheduled, nothing refreshed) → not-refreshed, never stale",
+      (await asOfF("absent")).status === "not-refreshed");
     const cold = fakeReaders({ fxNewest: null });
     const res2 = await getOperationalHistory({ asOf: "2026-07-17", sourceIds: ["freshness"] }, { now: NOW, readers: cold });
     check("no FX archive as-of ⇒ unknown (Unknown stays Unknown)", res2.states[0].tier === "unknown");

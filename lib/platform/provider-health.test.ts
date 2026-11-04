@@ -25,13 +25,19 @@ import {
   freshnessFromConnections,
   buildProviderHealth,
   getProviderHealth,
+  connectionAssessmentFor,
   type ProviderJobRun,
   type TrustSignals,
   type ProviderHealthReadClient,
 } from "@/lib/platform/provider-health";
 import type { ResourceFreshnessReport, ResourceFreshnessResult } from "@/lib/platform/resource-freshness";
-import type { ConnectionHealthResult, ConnectionHealthRow } from "@/lib/connections/health";
-import { PROVIDER_OUTCOME_DEFINITION, PROVIDER_OUTCOME_DEFINITION_ID, assessOutcomes } from "@/lib/platform/verdicts/provider-outcome";
+import { tallyBySource, type ConnectionHealthResult, type ConnectionHealthRow } from "@/lib/connections/health";
+import { PROVIDER_OUTCOME_DEFINITION, PROVIDER_OUTCOME_DEFINITION_ID, PROVIDER_FAILING_SHARE, assessOutcomes } from "@/lib/platform/verdicts/provider-outcome";
+import {
+  CUSTOMER_REAUTH_CODES, PROVIDER_CONNECTION_DEFINITION, PROVIDER_CONNECTION_DEFINITION_ID, PROVIDER_SIDE_ERROR_CODES,
+  assessConnections, connectionTrustState,
+} from "@/lib/platform/verdicts/provider-connection";
+import { WEBHOOK_REAUTH_ERROR_CODES } from "@/lib/plaid/webhook-receiver";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -115,21 +121,24 @@ async function main(): Promise<void> {
   {
     const base: TrustSignals = {
       hasExecutionSignal: true, consecutiveFailures: 0, decidedRuns: 10, failedRuns: 0,
-      freshnessState: "fresh", connectionHardFault: false, connectionDegraded: false,
+      freshnessState: "fresh", connections: null,
     };
+    // Re-pinned (provider-connection@1): connection faults now arrive as the rule's assessment.
+    const connFailing = assessConnections({ active: 4, error: 4, reauth: 0, unclassified: 0, revoked: 0 });
+    const connDegraded = assessConnections({ active: 4, error: 1, reauth: 0, unclassified: 0, revoked: 0 });
     check("clean → OPERATIONAL", deriveProviderTrust(base) === "OPERATIONAL");
     check("idle data + clean execution → OPERATIONAL", deriveProviderTrust({ ...base, freshnessState: "idle" }) === "OPERATIONAL");
     check("failure streak → FAILING",
       deriveProviderTrust({ ...base, consecutiveFailures: PROVIDER_FAILING_STREAK, failedRuns: PROVIDER_FAILING_STREAK }) === "FAILING");
     check("high error rate (≥ 50 % of a sufficient sample) → FAILING", deriveProviderTrust({ ...base, failedRuns: 5 }) === "FAILING");
-    check("hard connection fault → FAILING", deriveProviderTrust({ ...base, connectionHardFault: true }) === "FAILING");
+    check("connections FAILING (provider-connection@1: all 4 in provider-side ERROR) → FAILING", deriveProviderTrust({ ...base, connections: connFailing }) === "FAILING");
     check("stale data (green execution) → STALE (false-green catch)",
       deriveProviderTrust({ ...base, freshnessState: "stale" }) === "STALE");
     check("empty archive → STALE", deriveProviderTrust({ ...base, freshnessState: "empty" }) === "STALE");
     check("FAILING beats STALE (execution worse than content)",
       deriveProviderTrust({ ...base, freshnessState: "stale", consecutiveFailures: PROVIDER_FAILING_STREAK, failedRuns: PROVIDER_FAILING_STREAK }) === "FAILING");
     check("some failures (isolated, sufficient sample) → DEGRADED", deriveProviderTrust({ ...base, failedRuns: 2 }) === "DEGRADED");
-    check("degraded connection → DEGRADED", deriveProviderTrust({ ...base, connectionDegraded: true }) === "DEGRADED");
+    check("connections DEGRADED (1 of 4 in provider-side ERROR) → DEGRADED", deriveProviderTrust({ ...base, connections: connDegraded }) === "DEGRADED");
     check("unknown freshness → DEGRADED (has execution)", deriveProviderTrust({ ...base, freshnessState: "unknown" }) === "DEGRADED");
     check("no signal at all → UNKNOWN",
       deriveProviderTrust({ ...base, hasExecutionSignal: false, decidedRuns: 0, freshnessState: "unknown" }) === "UNKNOWN");
@@ -148,7 +157,7 @@ async function main(): Promise<void> {
       deriveProviderTrust({ ...base, hasExecutionSignal: false, decidedRuns: 0 }) === "INSUFFICIENT_DATA");
     check("a recency streak is FAILING even within a small window (3 of 3 failed)",
       deriveProviderTrust({ ...base, decidedRuns: 3, failedRuns: 3, consecutiveFailures: 3 }) === "FAILING");
-    check("a hard connection fault still beats a small sample", deriveProviderTrust({ ...base, decidedRuns: 1, connectionHardFault: true }) === "FAILING");
+    check("connections FAILING still beat a small sample", deriveProviderTrust({ ...base, decidedRuns: 1, connections: connFailing }) === "FAILING");
     const a = executionAssessment({ ...base, decidedRuns: 10, failedRuns: 1 });
     check("execution assessment traces to its counts and the rule id",
       a?.verdict === "DEGRADED" && a.definition === PROVIDER_OUTCOME_DEFINITION_ID && a.evidence.decided === 10 && a.evidence.failed === 1 && a.basis === "1 of 10 runs failed");
@@ -186,6 +195,62 @@ async function main(): Promise<void> {
     check("basis words carry the figures", assessOutcomes({ kind: "calls", decided: 20, failed: 1, recentConsecutiveFailures: null }).basis === "1 of 20 calls failed");
   }
 
+  // ── 2c. provider-connection@1 boundaries (S2 rulings) + the code→state pin ──
+  {
+    const v = (active: number, error: number, reauth = 0, unclassified = 0, revoked = 0) => assessConnections({ active, error, reauth, unclassified, revoked });
+    check("definition is named + versioned, sharing the failing share with provider-outcome@1",
+      PROVIDER_CONNECTION_DEFINITION_ID === "provider-connection@1" && PROVIDER_CONNECTION_DEFINITION.failingShare === PROVIDER_FAILING_SHARE
+        && PROVIDER_OUTCOME_DEFINITION.failingRatio === PROVIDER_FAILING_SHARE && PROVIDER_FAILING_SHARE === 0.5);
+    check("ERROR 1/1 → DEGRADED (a lone connection never fails a provider)", v(1, 1).verdict === "DEGRADED" && v(1, 1).rule === "any-error");
+    check("ERROR 1/2 → FAILING (≥ 50 % of ≥ 2)", v(2, 1).verdict === "FAILING" && v(2, 1).rule === "error-share");
+    check("ERROR 1/3 → DEGRADED", v(3, 1).verdict === "DEGRADED");
+    check("ERROR 2/4 → FAILING; 4/4 → FAILING", v(4, 2).verdict === "FAILING" && v(4, 4).verdict === "FAILING");
+    check("reauth 2/4 → DEGRADED (possible provider-side reauth wave), with the basis",
+      v(4, 0, 2).verdict === "DEGRADED" && v(4, 0, 2).basis === "2 of 4 connections need reconnecting — possible provider-side reauth wave");
+    check("reauth 1/3 → neutral (no verdict), named as a fact", v(3, 0, 1).verdict === null && v(3, 0, 1).facts[0] === "1 connection needs the customer to reconnect");
+    check("reauth 3/3 (below the wave floor of 4) → neutral", v(3, 0, 3).verdict === null);
+    check("reauth alone never FAILS a provider (10/10)", v(10, 0, 10).verdict === "DEGRADED");
+    check("REVOKED 9/9 → neutral", v(0, 0, 0, 0, 9).verdict === null && v(0, 0, 0, 0, 9).facts[0] === "9 connections revoked by the customer");
+    check("unclassified error → DEGRADED, never FAILING", v(2, 0, 0, 2).verdict === "DEGRADED" && v(2, 0, 0, 2).rule === "unclassified");
+    check("no population (active 0) → no share rule: errors degrade, nothing fails", v(0, 5).verdict === "DEGRADED");
+
+    // The classification pin: a code drifting into ERROR must not re-create the bug.
+    check("login-required / pending-expiration codes → NEEDS_REAUTH, even under status ERROR",
+      ["ITEM_LOGIN_REQUIRED", "INVALID_ACCESS_TOKEN", "PENDING_EXPIRATION", "PENDING_DISCONNECT"].every((c) =>
+        connectionTrustState("ERROR", c) === "NEEDS_REAUTH" && connectionTrustState("DEGRADED", c) === "NEEDS_REAUTH" && connectionTrustState("NEEDS_REAUTH", c) === "NEEDS_REAUTH"));
+    check("every code the Plaid webhook treats as reauth is a customer code", [...WEBHOOK_REAUTH_ERROR_CODES].every((c) => CUSTOMER_REAUTH_CODES.has(c)));
+    check("only provider/institution-side codes → ERROR (down, not responding, internal, rate limit)",
+      ["INSTITUTION_DOWN", "INSTITUTION_NOT_RESPONDING", "INTERNAL_SERVER_ERROR", "RATE_LIMIT_EXCEEDED"].every((c) => connectionTrustState("ERROR", c) === "ERROR"));
+    check("no code is both a provider-side and a customer code", [...PROVIDER_SIDE_ERROR_CODES].every((c) => !CUSTOMER_REAUTH_CODES.has(c)));
+    check("the provider-side list is exactly pinned (adding one is a reviewed change)",
+      [...PROVIDER_SIDE_ERROR_CODES].sort().join() === "INSTITUTION_DOWN,INSTITUTION_NOT_AVAILABLE,INSTITUTION_NOT_RESPONDING,INSTITUTION_NO_LONGER_SUPPORTED,INTERNAL_SERVER_ERROR,PLANNED_MAINTENANCE,PRODUCT_NOT_READY,RATE_LIMIT_EXCEEDED");
+    check("an unknown or missing code under ERROR is UNCLASSIFIED (degrades, never fails)",
+      connectionTrustState("ERROR", "SOMETHING_NEW") === "UNCLASSIFIED" && connectionTrustState("ERROR", null) === "UNCLASSIFIED");
+    check("a provider-side code without an ERROR status (DEGRADED) is UNCLASSIFIED", connectionTrustState("DEGRADED", "INSTITUTION_DOWN") === "UNCLASSIFIED");
+    check("REVOKED → REVOKED; STALE / HEALTHY → NONE",
+      connectionTrustState("REVOKED", "INSTITUTION_DOWN") === "REVOKED" && connectionTrustState("STALE", null) === "NONE" && connectionTrustState("HEALTHY", null) === "NONE");
+  }
+
+  // ── 2d. the connection authority's per-source tally (the denominator) ──────
+  {
+    const rows = [
+      { source: "PLAID", healthState: "HEALTHY" as const, errorCode: null },
+      { source: "PLAID", healthState: "NEEDS_REAUTH" as const, errorCode: "ITEM_LOGIN_REQUIRED" },
+      { source: "PLAID", healthState: "NEEDS_REAUTH" as const, errorCode: "ITEM_LOGIN_REQUIRED" },
+      { source: "PLAID", healthState: "ERROR" as const, errorCode: "INSTITUTION_DOWN" },
+      { source: "WALLET", healthState: "HEALTHY" as const, errorCode: null },
+    ];
+    const t = tallyBySource(rows, new Map([["PLAID", 2], ["EXCHANGE", 1]]));
+    check("tally: active = the live population per source; REVOKED outside it",
+      t.PLAID.active === 4 && t.PLAID.revoked === 2 && t.WALLET.active === 1 && t.EXCHANGE.active === 0 && t.EXCHANGE.revoked === 1);
+    check("tally: faults grouped by (state, code), healthy rows omitted",
+      JSON.stringify(t.PLAID.faults) === JSON.stringify([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 2 }, { healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 1 }]));
+    const a = connectionAssessmentFor("PLAID", [], t.PLAID);
+    check("tally → provider-connection@1: 1 of 4 in error ⇒ DEGRADED; 2 reauth + 2 revoked as facts",
+      a.verdict === "DEGRADED" && a.basis === "1 of 4 connections in provider-side error"
+        && a.facts.join(" | ") === "2 connections need the customer to reconnect | 2 connections revoked by the customer", JSON.stringify(a));
+  }
+
   // ── 3. Freshness CONSUMPTION (never recomputed) ────────────────────────────
   {
     const f = freshnessFromResourceReport(freshReport({ healthState: "stale", newestObservedDate: "2026-07-10", ageDays: 5, trust: { level: "low", caveats: ["newest observation is 5d old"] } }));
@@ -198,8 +263,11 @@ async function main(): Promise<void> {
       healthy.state === "fresh" && healthy.source === "connection-health");
     const stale = freshnessFromConnections("PLAID", [connRow({ healthState: "STALE", since: "2026-07-01T00:00:00Z" })]);
     check("stale connection row → stale freshness", stale.state === "stale" && stale.asOf !== null);
+    // Re-pinned (provider-connection@1): faults feed the CONNECTION rule, never recency.
     const errored = freshnessFromConnections("PLAID", [connRow({ healthState: "ERROR" })]);
-    check("hard connection fault → freshness 'unknown' (state feeds trust, not recency)", errored.state === "unknown");
+    check("connection fault → freshness stays 'fresh' (faults feed provider-connection@1, not recency)", errored.state === "fresh");
+    check("a customer who must reconnect never makes freshness 'unknown'",
+      freshnessFromConnections("PLAID", [connRow({ healthState: "NEEDS_REAUTH", status: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED" })]).state === "fresh");
     check("freshness ignores other providers' rows",
       freshnessFromConnections("PLAID", [connRow({ source: "WALLET", healthState: "STALE" })]).state === "fresh");
   }
@@ -215,6 +283,12 @@ async function main(): Promise<void> {
       connectionRows: [], now: NOW,
     });
     check("OXR trust = STALE despite green runs (content beats false-green)", oxr.trust === "STALE");
+    const oxrPreview = buildProviderHealth(oxrSpec, {
+      runs: [], callsToday: null, calls30d: null, connectionRows: [], now: NOW,
+      freshnessReport: freshReport({ healthState: "not-refreshed", newestObservedDate: "2026-07-01", ageDays: 15, trust: { level: "unknown", caveats: ["Not refreshed in this environment — its producing job (fetch-fx-rates) is not scheduled on this deployment"] } }),
+    });
+    check("OXR on Preview (producer unscheduled, data behind) → not STALE: 'Not enough data', basis names the environment",
+      oxrPreview.trust === "INSUFFICIENT_DATA" && oxrPreview.trustBasis === "no run recorded in the window · not refreshed in this environment", oxrPreview.trustBasis);
     check("OXR coverage taken from S1 completeness frontier", oxr.coverage === 8 && oxr.coverageUnit === "currency pairs");
     check("OXR surfaces a false-green note", oxr.notes.some((n) => /job success is not provider health/i.test(n)));
     check("OXR quota honestly null with a caveat",
@@ -233,11 +307,39 @@ async function main(): Promise<void> {
     check("Plaid stale connection → STALE trust", plaid.trust === "STALE");
     check("Plaid call volume from ApiUsageCounter", plaid.callsToday === 12 && plaid.calls30d === 340);
 
+    // Re-pinned (provider-connection@1): ONE ERROR row with no population (rows only) no longer FAILS the provider.
     const plaidError = buildProviderHealth(plaidSpec, {
       runs: [run(6, "succeeded")], callsToday: 0, calls30d: 0, freshnessReport: null,
-      connectionRows: [connRow({ healthState: "ERROR" })], now: NOW,
+      connectionRows: [connRow({ healthState: "ERROR", status: "ERROR", errorCode: "INSTITUTION_DOWN" })], now: NOW,
     });
-    check("Plaid hard connection fault → FAILING", plaidError.trust === "FAILING");
+    check("Plaid: one provider-side ERROR, population unknown → DEGRADED (never FAILING without a denominator)",
+      plaidError.trust === "DEGRADED" && /1 connection in provider-side error \(provider-connection@1\)/.test(plaidError.trustBasis ?? ""), plaidError.trustBasis);
+
+    // ── 4b. provider-connection@1 through the assembly (with the authority's per-source tally) ──
+    const runs3 = [run(6, "succeeded"), run(30, "succeeded"), run(54, "succeeded")];
+    const plaidWith = (faults: { healthState: "ERROR" | "NEEDS_REAUTH" | "DEGRADED" | "STALE"; errorCode: string | null; count: number }[], active: number, revoked = 0, rows: ConnectionHealthRow[] = []) =>
+      buildProviderHealth(plaidSpec, { runs: runs3, callsToday: 0, calls30d: 0, freshnessReport: null, connectionRows: rows, connectionTally: { active, revoked, faults }, now: NOW });
+    const reauthRow = connRow({ healthState: "NEEDS_REAUTH", status: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED" });
+    const oneReauth = plaidWith([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 1 }], 4, 0, [reauthRow]);
+    check("1 NEEDS_REAUTH connection → provider NOT Failing (OPERATIONAL, the reconnect a neutral fact)",
+      oneReauth.trust === "OPERATIONAL" && oneReauth.connections?.verdict === null
+        && oneReauth.connections.facts.includes("1 connection needs the customer to reconnect")
+        && oneReauth.notes.some((n) => /1 connection needs the customer to reconnect \(per-customer; does not affect provider health\)/.test(n)), JSON.stringify(oneReauth.connections));
+    const preview = plaidWith([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 4 }], 10, 0, [reauthRow]);
+    check("the Preview case: 4 reauth of 10 (below the wave share) → neutral, not Failing",
+      preview.trust === "OPERATIONAL" && preview.connections?.facts[0] === "4 connections need the customer to reconnect");
+    const allError = plaidWith([{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 4 }], 4);
+    check("all connections in provider-side ERROR → FAILING, with the basis",
+      allError.trust === "FAILING" && allError.trustBasis === "4 of 4 connections in provider-side error (provider-connection@1)", allError.trustBasis);
+    const oneOfFour = plaidWith([{ healthState: "ERROR", errorCode: "INSTITUTION_NOT_RESPONDING", count: 1 }], 4);
+    check("1 of 4 in provider-side ERROR → DEGRADED, with the basis",
+      oneOfFour.trust === "DEGRADED" && oneOfFour.trustBasis === "1 of 4 connections in provider-side error (provider-connection@1)", oneOfFour.trustBasis);
+    check("an ERROR status whose code is a reauth code counts as reauth, not ERROR",
+      plaidWith([{ healthState: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", count: 4 }], 9).trust === "OPERATIONAL");
+    check("REVOKED connections are a neutral fact only",
+      (() => { const r = plaidWith([], 3, 9); return r.trust === "OPERATIONAL" && r.connections?.facts.includes("9 connections revoked by the customer") === true; })());
+    check("every report carries its basis (clean: the execution counts)",
+      plaidWith([], 4).trustBasis === "no failure in 3 runs (provider-outcome@1)");
   }
 
   // ── 5. The driver over injected authorities ────────────────────────────────
