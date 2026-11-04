@@ -4,10 +4,12 @@
  * SEC-1 / KD-6 — Slice 5a. READ-ONLY audit of encryption-at-rest formats.
  *
  * Scans every field encrypted by lib/plaid/encryption.ts and reports, per
- * table.field, how many stored values are:
+ * table.field, how many stored values are (per-KEY-ID counts and the
+ * re-encryption itself: scripts/rotate-encryption-key.ts):
  *
  *   v1       legacy root-key format   "iv:authTag:ciphertext"      (KD-6 debt)
- *   v2       purpose-derived format   "v2:iv:authTag:ciphertext"   (current)
+ *   v2       purpose-derived format   "v2:iv:authTag:ciphertext"   (legacy, no key id)
+ *   v3       keyring format           "v3:kid:iv:authTag:ciphertext" (current write format, PRIV-004)
  *   invalid  neither of the above (would throw in decryptWithPurpose)
  *   null     column is NULL / empty (nothing stored)
  *
@@ -40,10 +42,10 @@ const db = new PrismaClient({ log: ["error", "warn"] });
 
 const PAGE_SIZE = 1000;
 
-type Counts = { v1: number; v2: number; invalid: number; null: number; total: number };
+type Counts = { v1: number; v2: number; v3: number; invalid: number; null: number; total: number };
 
 function emptyCounts(): Counts {
-  return { v1: 0, v2: 0, invalid: 0, null: 0, total: 0 };
+  return { v1: 0, v2: 0, v3: 0, invalid: 0, null: 0, total: 0 };
 }
 
 function tally(counts: Counts, value: string | null): void {
@@ -53,7 +55,7 @@ function tally(counts: Counts, value: string | null): void {
     return;
   }
   const version: CiphertextVersion = detectCiphertextVersion(value);
-  counts[version]++; // "v1" | "v2" | "invalid"
+  counts[version]++; // "v1" | "v2" | "v3" | "invalid"
 }
 
 /**
@@ -94,7 +96,7 @@ function rjust(s: string, width: number): string {
 async function main(): Promise<void> {
   console.log("");
   console.log("SEC-1 / KD-6 — ciphertext version audit (READ-ONLY, no writes)");
-  console.log("=".repeat(72));
+  console.log("=".repeat(82));
 
   const results = [];
 
@@ -157,9 +159,9 @@ async function main(): Promise<void> {
   console.log("");
   console.log(
     pad("table.field", LABEL_W) +
-      ["v1", "v2", "invalid", "null", "total"].map((h) => rjust(h, 9)).join(""),
+      ["v1", "v2", "v3", "invalid", "null", "total"].map((h) => rjust(h, 9)).join(""),
   );
-  console.log("-".repeat(72));
+  console.log("-".repeat(82));
 
   const grand = emptyCounts();
   for (const { label, counts } of results) {
@@ -167,22 +169,25 @@ async function main(): Promise<void> {
       pad(label, LABEL_W) +
         num(counts.v1, 9) +
         num(counts.v2, 9) +
+        num(counts.v3, 9) +
         num(counts.invalid, 9) +
         num(counts.null, 9) +
         num(counts.total, 9),
     );
     grand.v1 += counts.v1;
     grand.v2 += counts.v2;
+    grand.v3 += counts.v3;
     grand.invalid += counts.invalid;
     grand.null += counts.null;
     grand.total += counts.total;
   }
 
-  console.log("-".repeat(72));
+  console.log("-".repeat(82));
   console.log(
     pad("TOTAL", LABEL_W) +
       num(grand.v1, 9) +
       num(grand.v2, 9) +
+      num(grand.v3, 9) +
       num(grand.invalid, 9) +
       num(grand.null, 9) +
       num(grand.total, 9),
@@ -192,12 +197,12 @@ async function main(): Promise<void> {
   console.log(`Legacy v1 ciphertexts remaining (KD-6 debt): ${grand.v1}`);
   if (grand.invalid > 0) {
     console.log(
-      `WARNING: ${grand.invalid} value(s) are neither v1 nor v2 — investigate ` +
+      `WARNING: ${grand.invalid} value(s) are neither v1, v2 nor v3 — investigate ` +
         `before any re-encryption (Slice 5b).`,
     );
   }
   if (grand.v1 === 0 && grand.invalid === 0) {
-    console.log("All stored ciphertexts are v2. KD-6 re-encryption backlog is empty.");
+    console.log("No v1 and no invalid ciphertexts. KD-6 re-encryption backlog is empty.");
   }
   console.log("");
   console.log("READ-ONLY audit — no rows were read for decryption and none were modified.");
