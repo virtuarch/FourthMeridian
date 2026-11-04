@@ -444,6 +444,15 @@ await (async () => {
     && opsInc.drill.page === "/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents" && opsInc.drillReason === null);
   check("break-glass gets the same answer (the drill follows the surface, not the token)",
     (await retrieveWith("CUSTOMER_SUCCESS", R, SA, "incident-broken-now", {}, NOW))?.drill?.figure === "incident-broken-now@1");
+  {
+    const saOps = await retrieveWith("PLATFORM_OPS", R, SA, "incident-broken-now", {}, NOW);
+    const hrefOf = (e: typeof csInc) => (e?.drill && "href" in e.drill ? e.drill.href : null);
+    check("neither surface gets the other's drill (CS ≠ Ops; break-glass on Ops gets the Ops drill, never the CS one)",
+      hrefOf(csInc) !== hrefOf(opsInc) && hrefOf(saOps) === "/api/platform/platform-ops/incidents");
+    check("an Ops grant reads nothing on CUSTOMER_SUCCESS and a CS grant nothing on PLATFORM_OPS (identity-tier CS drill stays off Ops)",
+      (await retrieveWith("CUSTOMER_SUCCESS", R, OPS, "incident-broken-now", {}, NOW)) === null
+      && (await retrieveWith("PLATFORM_OPS", R, CS, "incident-broken-now", {}, NOW)) === null);
+  }
   const po = METRICS.find((m) => m.id === "provider-outcome")!;
   check("provider-outcome: the ProviderCall attempt-verdict gap is stated in the registry's coverageGaps (and so in the envelope)",
     po.coverageGaps.some((g) => /ProviderCall attempt verdict/.test(g) && /provider-health/.test(g))
