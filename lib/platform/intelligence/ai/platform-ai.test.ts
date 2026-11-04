@@ -41,7 +41,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  checkGrounding, handlePlatformAiAsk, platformAiAreaFor, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  checkGrounding, drillPageOf, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -319,6 +319,76 @@ console.log("\n5. links — only this turn's resolveNavigationTarget hrefs rende
   const cite = await run("x", b, script([{ calls: [{ name: "get_metric", args: { id: "provider-outcome" } }] }, { content: "See the providers page." }]));
   const c = cite.result.citations[0];
   check("a citation's drill link is a resolver href for a page that renders the metric", !!c?.href && listNavigationTargets("PLATFORM_OPS", OPS.metricToken, { metric: "provider-outcome@1" }).some((t) => resolveNavigationTarget("PLATFORM_OPS", OPS.metricToken, t.id)?.href === c.href), c);
+}
+
+// ── 5b. drill-page links + the metadata trace (defect: no links / unread metric) ──
+console.log("\n5b. drill-page link candidates (S2 rules) and the metadata-only trace");
+{
+  const ops = opsBinding(OPS);
+  const linksOf = (segs: readonly { kind: string; href?: string }[]) => segs.filter((x) => x.kind === "link").map((x) => x.href);
+
+  // An answer CITING a metric renders that metric's registry drill page — from THIS turn's envelope only.
+  const pe = await retrieveWith("PLATFORM_OPS", readers(), OPS, "provider-outcome", {}, NOW);
+  const peDrill = pe?.drill && "page" in pe.drill ? pe.drill.page : null;
+  const peNav = listNavigationTargets("PLATFORM_OPS", OPS.metricToken, { metric: "provider-outcome@1" }).map((t) => resolveNavigationTarget("PLATFORM_OPS", OPS.metricToken, t.id)?.href);
+  check("fixture: provider-outcome's drill page is a registry page that is NOT one of its navigation hrefs (so only the drill rule can link it)", !!peDrill && !peNav.includes(peDrill), { peDrill, peNav });
+  const cited = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "provider-outcome@1" } }] }, { content: `Provider B is failing. See [its records](${peDrill}).` }]));
+  check("an answer citing a metric renders THAT metric's drill page as a link (exact, verbatim)", linksOf(cited.result.answer).join() === peDrill, cited.result.answer);
+  check("…and the trace records the read and the drill candidate (metadata only)", JSON.stringify(cited.result.trace) === JSON.stringify([{ tool: "get_metric", outcome: "MEASURED", refs: ["provider-outcome@1"], drillLink: true }]), cited.result.trace);
+  check("…grounding unchanged: no figure, not replaced", !cited.result.grounding.replaced && cited.result.grounding.numbers === 0);
+
+  const copied = await run("x", ops, script([{ calls: [{ name: "list_metrics", args: {} }] }, { content: `See [records](${peDrill}).` }]));
+  check("a model-written copy of a drill page NOT returned this turn is stripped (no get_metric ⇒ no link)", linksOf(copied.result.answer).length === 0 && copied.result.sanitised.removed >= 1, copied.result.answer);
+  const api = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: "See [the list](/api/platform/platform-ops/incidents)." }]));
+  check("the envelope's API drill (drill.href) is never a link — only drill.page", linksOf(api.result.answer).length === 0, api.result.answer);
+
+  // Another surface / another token.
+  const cs = csBinding(CS);
+  const csInc = await retrieveWith("CUSTOMER_SUCCESS", readers(), CS, "incident-broken-now", {}, NOW);
+  const csDrill = csInc?.drill && "page" in csInc.drill ? csInc.drill.page : "";
+  const csRun = await run("x", cs, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: `Open [Broken now](${csDrill}).` }]));
+  check("on its own surface (CS) the CS drill page is a link", linksOf(csRun.result.answer).join() === csDrill && csDrill.includes("/CUSTOMER_SUCCESS?"), csRun.result.answer);
+  const cross = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: `Open [Broken now](${csDrill}).` }]));
+  check("a drill from ANOTHER surface (the CS page in an Ops turn) is not linkable", linksOf(cross.result.answer).length === 0, cross.result.answer);
+  const sa = await run("x", opsBinding(SA), script([{ calls: [{ name: "get_metric", args: { id: "provider-outcome" } }] }, { content: `See [records](${peDrill}).` }]));
+  check("another TOKEN: break-glass (navigates nowhere) gets the envelope but no drill link", sa.result.trace[0]?.outcome === "MEASURED" && sa.result.trace[0]?.drillLink === false && linksOf(sa.result.answer).length === 0, sa.result);
+
+  // drillPageOf's own rules, on synthetic envelopes (the shape retrieveMetric returns).
+  const env = (page: string, surface = "PLATFORM_OPS") => ({ ...pe!, surface, drill: { figure: "provider-outcome@1", window: null, href: "/api/platform/platform-ops/providers", page } }) as MetricEnvelope;
+  check("drillPageOf: the bound surface's page ⇒ eligible, verbatim", drillPageOf(env("/dashboard/platform/PLATFORM_OPS?workspace=platform-providers"), ops) === "/dashboard/platform/PLATFORM_OPS?workspace=platform-providers");
+  check("drillPageOf: a denied param (iid / rid / rq) ⇒ not eligible", ["iid", "rid", "rq"].every((k) => drillPageOf(env(`/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents&${k}=x`), ops) === null));
+  check("drillPageOf: another surface's page, an external / protocol-relative URL, a fragment ⇒ not eligible",
+    [env("/dashboard/platform/CUSTOMER_SUCCESS"), env("https://evil.test/dashboard/platform/PLATFORM_OPS"), env("//evil.test/x"), env("/dashboard/platform/PLATFORM_OPS#x"), env("/dashboard/platform/PLATFORM_OPS/../x")].every((e) => drillPageOf(e, ops) === null));
+  check("drillPageOf: no page drill (unavailable / null) ⇒ not eligible",
+    drillPageOf({ ...pe!, drill: null } as MetricEnvelope, ops) === null && drillPageOf({ ...pe!, drill: { figure: "x@1", unavailable: "none" } } as unknown as MetricEnvelope, ops) === null);
+  check("drillPageOf: a token that can navigate to no page rendering the metric ⇒ not eligible", drillPageOf(env("/dashboard/platform/PLATFORM_OPS"), { listPages: () => [] }) === null);
+
+  // A figure plus its link: grounding still applies to the figure, the link is not a figure.
+  const inc = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "find_page", args: { query: "incidents broken now" } }] },
+    { content: "3 incidents are broken now. See [Broken now](/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents)." }]));
+  check("incident-broken-now: the figure is grounded and the Broken-now page is a link", !inc.result.grounding.replaced && linksOf(inc.result.answer).join() === "/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents", inc.result);
+  const inv = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }, { content: "4 incidents are broken. See [Broken now](/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents)." }]));
+  check("…an invented figure beside a valid link is STILL replaced (grounding unchanged)", inv.result.grounding.replaced && segmentsText(inv.result.answer).startsWith(UNVERIFIED_FALLBACK));
+
+  // Optional arguments sent as null mean "not given" (a common model habit) — never a refusal.
+  const nul = await run("x", ops, script([{ calls: [{ name: "get_metric", args: { id: "incident-broken-now@1", window: null } }, { name: "list_metrics", args: { domain: null } }, { name: "open_page", args: { id: "PLATFORM_OPS:platform-incidents:open", params: null } }] }, { content: "x" }]));
+  check("get_metric / list_metrics / open_page with null optional args ⇒ read as absent",
+    nul.result.trace.map((t) => `${t.tool}:${t.outcome}`).join() === "get_metric:MEASURED,list_metrics:OK,open_page:OK" && nul.result.citations[0]?.metric === "incident-broken-now@1", nul.result.trace);
+  const bad = await run("x", ops, script([{ calls: [
+    { name: "get_metric", args: { id: "incident-broken-now@1", window: 0 } },
+    { name: "get_metric", args: { id: `x ${INJECT}` } },
+    { name: "get_metric", args: { id: "incident-broken-now@1", surface: "CUSTOMER_SUCCESS" } },
+    { name: "get_metric", args: { id: "cs-needs-help" } },
+    { name: `evil ${EMAIL}`, args: {} },
+  ] }, { content: "x" }]));
+  check("trace outcomes: a bad window / id / extra key ⇒ INVALID_ARGS; a scope refusal ⇒ NOT_FOUND; an unknown tool ⇒ unknown:NOT_FOUND",
+    bad.result.trace.map((t) => `${t.tool}:${t.outcome}`).join() === "get_metric:INVALID_ARGS,get_metric:INVALID_ARGS,get_metric:INVALID_ARGS,get_metric:NOT_FOUND,unknown:NOT_FOUND", bad.result.trace);
+  const traceText = JSON.stringify([bad.result.trace, nul.result.trace, cited.result.trace]) + traceLine(bad.result) + traceLine(inc.result);
+  check("the trace never echoes a model argument (no injected text, no unread id, no identity)",
+    !/IGNORE|evil|cs-needs-help|CUSTOMER_SUCCESS/.test(traceText) && identityHits(traceText).length === 0, traceText);
+  check("each refusal is still the ONE not-found shape for the model", (bad.transcript.filter((m) => (m as { role: string }).role === "tool") as { content: string }[]).every((m) => m.content === JSON.stringify(NOT_FOUND)));
+  check("traceLine: one metadata line (codes + registry ids)", traceLine(inc.result) === "steps=get_metric:MEASURED(incident-broken-now@1)+drill,find_page:OK#3 stop=ANSWERED links=1 removed=0 replaced=false", traceLine(inc.result));
+  check("the route logs that line (and only it) per answered turn", /traceTurn: \(line\) => console\.info\(`\[platform-ai\] turn \$\{line\} \(\$\{PLATFORM_AI_ROUTE_KEY\}\)`\)/.test(src("app/api/platform/ai/ask/route.ts")));
 }
 
 // ── 6. ledger and cost ───────────────────────────────────────────────────────

@@ -25,7 +25,9 @@
  * incidentAudienceFor — the guard-provenance pins).
  *
  * NO PERSISTENCE: nothing about the question or the answer is stored; the
- * AiInvocation ledger keeps metadata only (surface platform_ai, overhead).
+ * AiInvocation ledger keeps metadata only (surface platform_ai, overhead). One
+ * log line per answered turn carries the METADATA-ONLY tool trace (traceLine:
+ * tool names, outcome codes, server-returned registry ids — never text).
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -138,6 +140,8 @@ export async function POST(req: NextRequest) {
     now: () => new Date(),
     classify: classifyPlatformAiFailure,
     countUngrounded: (n) => console.warn(`[platform-ai] answer replaced: ${n} ungrounded figure(s) (${PLATFORM_AI_ROUTE_KEY})`),
+    // Metadata only (tool codes + registry ids): what the turn read, for acceptance / incident review.
+    traceTurn: (line) => console.info(`[platform-ai] turn ${line} (${PLATFORM_AI_ROUTE_KEY})`),
   });
   return NextResponse.json(res.body, { status: res.status, headers: { ...NO_STORE, ...(res.headers ?? {}) } });
 }
