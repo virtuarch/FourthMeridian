@@ -30,8 +30,9 @@ name: Post-deploy smoke
 # Secrets: NONE. deployment_status runs the workflow file from the deployed
 # commit, so a repository secret here would be readable by any branch that
 # edits this file; and Vercel creates each GitHub Deployment with ref = the
-# commit SHA, so its branch is GitHub's inference rather than ours to rely on. Protected Previews are therefore UNVERIFIED (red) in
-# this workflow by design; Production is public and is verified for real.
+# commit SHA, so its branch is GitHub's inference rather than ours to rely on. Protected Previews could therefore only be UNVERIFIED
+# here, so this workflow probes Production deployments only (job `if:`);
+# Production is public and is verified for real.
 # Trusted verification through protection: trusted-deployment-health.yml
 # (push to develop/main, `vercel-probe` environment).
 
@@ -58,7 +59,16 @@ jobs:
     # `environment: vercel-probe`, so GitHub records a deployment of its own
     # whose status URL is the Actions run page; probing that answered 404 and
     # read as UNHEALTHY on the first v2.6 push (2026-10-22, run 39846621920).
-    if: github.event.deployment_status.state == 'success' && github.event.deployment.creator.login == 'vercel[bot]'
+    #
+    # Production deployments only (S2 workstream F, 2026-11-05). A protected
+    # Preview can only answer 401 → UNVERIFIED here, by design (no secrets: see
+    # the header), which was ~half of all runs red with no information. develop
+    # and main Previews are verified THROUGH protection by
+    # trusted-deployment-health.yml; feature-branch Previews are deliberately
+    # unverified. A skipped run is grey, never green, so this is not a false
+    # pass, and a Production deployment that 401s is still UNVERIFIED (red).
+    # Vercel names the environment "Production – <project>".
+    if: github.event.deployment_status.state == 'success' && github.event.deployment.creator.login == 'vercel[bot]' && startsWith(github.event.deployment.environment, 'Production')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
