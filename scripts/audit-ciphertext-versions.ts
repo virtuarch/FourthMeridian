@@ -10,8 +10,8 @@
  * re-encryption itself: scripts/rotate-encryption-key.ts):
  *
  *   v1       legacy root-key format   "iv:authTag:ciphertext"      (KD-6 debt)
- *   v2       purpose-derived format   "v2:iv:authTag:ciphertext"   (legacy, no key id)
- *   v3       keyring format           "v3:kid:iv:authTag:ciphertext" (current write format, PRIV-004)
+ *   v2       purpose-derived format   "v2:iv:authTag:ciphertext"   (no key id; the write format outside a rotation)
+ *   v3       keyring format           "v3:kid:iv:authTag:ciphertext" (written only during a key rotation, PRIV-004)
  *   invalid  neither of the above (would throw in decryptWithPurpose)
  *   null     column is NULL / empty (nothing stored)
  *

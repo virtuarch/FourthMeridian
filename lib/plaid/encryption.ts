@@ -15,9 +15,10 @@
  *
  * Ciphertext formats
  * ──────────────────
- *   Legacy (v1):  iv:authTag:ciphertext              root key, no kid
- *   Legacy (v2):  v2:iv:authTag:ciphertext           purpose-derived key, no kid
- *   Current (v3): v3:kid:iv:authTag:ciphertext       purpose-derived key (same
+ *   Legacy (v1):   iv:authTag:ciphertext             root key, no kid
+ *   Default (v2):  v2:iv:authTag:ciphertext          purpose-derived key, no kid
+ *                                                     (every write outside a rotation)
+ *   Rotation (v3): v3:kid:iv:authTag:ciphertext      purpose-derived key (same
  *                                                     HKDF as v2) of the root
  *                                                     key whose kid is `kid`
  *
@@ -30,11 +31,21 @@
  *   v2 / v1 (no kid)  tried under the current key, then the previous one. A
  *       wrong key fails GCM authentication, which is caught and the next key is
  *       tried; if none authenticates, the call throws.
- * Writes (encryptWithPurpose) are always v3 under the current key.
+ * Writes (encryptWithPurpose) are under the current key, and their FORMAT
+ * follows whether a rotation is in progress (S2 ruling, B10 rollback safety):
+ *   no rotation (PREVIOUS unset, or EQUAL to the current key — ignored with a
+ *     boot warning)            → v2, byte-for-byte the pre-keyring write format
+ *   rotation (a DISTINCT PREVIOUS is set) → v3 under the current kid
+ * Why: the release before the keyring reads only v1/v2. While no rotation has
+ * started, every value this module writes stays readable by that release, so
+ * rolling the deploy back loses nothing (lib/plaid/encryption-b9-compat.test.ts
+ * proves it against that release's own frozen code). From step (b) of
+ * docs/operations/key-rotation.md on, writes are v3 and the rollback boundary is
+ * crossed for good.
  *
- * With ENCRYPTION_KEY_PREVIOUS unset the keyring holds one key and the only
- * behaviour change from the pre-keyring module is that new writes are v3: every
- * existing v1/v2 value decrypts exactly as before.
+ * With ENCRYPTION_KEY_PREVIOUS unset the keyring holds one key and the module
+ * behaves exactly as the pre-keyring one did: v2 writes, and every existing
+ * v1/v2 value decrypts exactly as before.
  *
  * ⚠️ Nothing here logs. Key material, the kid→key association and plaintext
  * must never reach a log line, an error message or a report; thrown messages
@@ -229,11 +240,21 @@ function aesgcmDecrypt(key: Buffer, ivHex: string, tagHex: string, encHex: strin
 
 /**
  * Encrypt plaintext with a purpose-derived subkey of the CURRENT root key.
- * Returns v3 ciphertext: "v3:kid:iv:authTag:ciphertext" (all hex-encoded).
+ *
+ *   no rotation in progress (no DISTINCT ENCRYPTION_KEY_PREVIOUS):
+ *     v2 — "v2:iv:authTag:ciphertext", exactly the pre-keyring format, so the
+ *     previous release can still read it (rollback-safe)
+ *   rotation in progress (a DISTINCT ENCRYPTION_KEY_PREVIOUS is set):
+ *     v3 — "v3:kid:iv:authTag:ciphertext" under the current kid, so the
+ *     rotation script can tell it apart from values under the previous key
+ *
+ * All segments hex-encoded. A PREVIOUS equal to the current key is "no previous"
+ * (getKeyring), so it writes v2.
  */
 export function encryptWithPurpose(plaintext: string, purpose: EncryptionPurpose): string {
-  const { current } = getKeyring();
-  return `v3:${current.kid}:` + aesgcmEncrypt(deriveKey(purpose, current.rootKey), plaintext);
+  const { current, previous } = getKeyring();
+  const body = aesgcmEncrypt(deriveKey(purpose, current.rootKey), plaintext);
+  return previous ? `v3:${current.kid}:${body}` : `v2:${body}`;
 }
 
 /**
@@ -274,8 +295,8 @@ export function decryptWithPurposeReportingKey(ciphertext: string, purpose: Encr
 }
 
 /**
- * Decrypt a ciphertext produced by encryptWithPurpose() (v3), its kid-less
- * predecessor (v2) or the retired root-key encrypt() (v1). See
+ * Decrypt a ciphertext produced by encryptWithPurpose() (v2, or v3 during a
+ * rotation) or the retired root-key encrypt() (v1). See
  * decryptWithPurposeReportingKey() for the per-format key rules.
  */
 export function decryptWithPurpose(ciphertext: string, purpose: EncryptionPurpose): string {
