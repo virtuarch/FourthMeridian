@@ -627,6 +627,39 @@ console.log("\n4g. safety net (1) — a bare key without @N");
   check("…the window rule still applies after the net (a bare key with a wrong |window ⇒ WINDOW_MISMATCH)", (await t("{{m:incident-broken-now|window=7}} broken.")).grounding.verdict === "WINDOW_MISMATCH");
 }
 
+// ── 4h. SAFETY NET (2), S2-approved: a ONE-part object resolves without |part ──
+console.log("\n4h. safety net (2) — a one-part object without |part; owner replays with plausible spellings");
+{
+  const v = (envs: MetricEnvelope[], text: string) => resolvePlaceholders([{ kind: "text", text }], envs, new Set());
+  const base = { surface: "PLATFORM_OPS", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: null, source: "s" } };
+  const one = { ...base, metric: "o@1", value: { costUsd: 2.5 }, valueUnits: { costUsd: "usd" } } as unknown as MetricEnvelope;
+  const twoPart = { ...base, metric: "t@1", value: { aUsd: 1, bUsd: 2 }, valueUnits: { aUsd: "usd", bUsd: "usd" } } as unknown as MetricEnvelope;
+  check("net (2) +: a one-part object, no |part ⇒ RESOLVED to its only part", segmentsText(v([one], "{{m:o@1}}").segments) === "$2.50" && v([one], "{{m:o@1}}").summary.verdict === "RESOLVED");
+  const tp = v([twoPart], "{{m:t@1}}");
+  check("net (2) −: a TWO-part object, no |part ⇒ still MISSING_PART (no headline / total is picked)", tp.summary.verdict === "UNRESOLVED_PLACEHOLDER" && JSON.stringify(tp.unresolvedBy) === JSON.stringify({ MISSING_PART: 1 }), tp.unresolvedBy);
+  const up = v([one], "{{m:o@1|part=spend}}");
+  check("net (2) −: an UNKNOWN part on a one-part object ⇒ still UNKNOWN_PART (the net only fills an ABSENT part)", up.summary.verdict === "UNRESOLVED_PLACEHOLDER" && JSON.stringify(up.unresolvedBy) === JSON.stringify({ UNKNOWN_PART: 1 }), up.unresolvedBy);
+  check("…renderPlaceholder itself stays strict (the net lives in the resolver's part step only)", renderPlaceholder(one, null) === null);
+
+  // Owner sequences with the spellings a model most plausibly writes (diagnosed: MISSING_PART on the one-part economics metrics).
+  const econR = readers({ providerHealth: async () => { throw new Error("down"); } });
+  const b = opsBinding(OPS, econR);
+  const gm = (id: string) => ({ name: "get_metric", args: { id } });
+  const ls = [{ name: "list_metrics", args: { domain: "economics" } }];
+  const turn = (q: string, calls: { name: string; args: unknown }[][], content: string) => run(q, b, script([...calls.map((c) => ({ calls: c })), { content }]));
+  const kept = (r: Awaited<ReturnType<typeof turn>>) => !r.result.grounding.replaced && r.result.claims.unresolved === 0 && r.result.claims.resolved === r.result.claims.claims;
+  const A = await turn("Are any providers failing, and what are they costing us?", [[gm("provider-outcome"), gm("economics-operating-cost"), gm("economics-provider-cost")]],
+    "Provider outcomes are {{m:provider-outcome}}. Providers cost {{m:economics-provider-cost@1}} of {{m:economics-operating-cost|part=totalUsd}}.");
+  const B = await turn("What's costing me the most money?", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost")]],
+    "AI is the largest measured category: {{m:economics-operating-cost@1|part=aiUsd}}. Estimated AI spend is {{m:economics-ai-cost@1}}, so a full ranking can't be verified.");
+  const C = await turn("Break down what we're spending on AI and providers this month.", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
+    "AI spend is {{m:economics-ai-cost}} and providers are {{m:economics-provider-cost}}; infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}.");
+  check("OWNER A/B/C with bare keys and part-less one-part placeholders ⇒ all KEPT (nets 1 + 2)", [A, B, C].every(kept), [A, B, C].map((r) => [r.result.grounding, r.result.claims]));
+  const total = await turn("What's costing me the most money?", [[gm("economics-operating-cost")]], "Operating cost is {{m:economics-operating-cost@1}}.");
+  check("…but a part-less placeholder on the FOUR-part operating cost stays refused (MISSING_PART; headlinePart rejected by S2)",
+    total.result.grounding.replaced && JSON.stringify(total.result.grounding.unresolvedBy) === JSON.stringify({ MISSING_PART: 1 }), total.result.grounding);
+}
+
 // ── 4c. UNITS PIN (S2 fix 2): every registered metric's figures carry an EXPLICIT unit ──
 console.log("\n4c. units — every registered metric declares valueUnits; the suffix rule; pct on 0–100");
 {

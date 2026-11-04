@@ -561,9 +561,24 @@ export function placeholderPartOf(e: MetricEnvelope, part: string | null): { kin
   if (typeof e.value === "number") return part === null ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
   const units = e.valueUnits;
   if (units === null || typeof units === "string") return { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
-  if (part === null) return { kind: "UNRESOLVED", reason: "MISSING_PART" };
+  if (part === null) {
+    const only = onePartNet(units);
+    return only !== null ? { kind: "PART", part: only } : { kind: "UNRESOLVED", reason: "MISSING_PART" };
+  }
   const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
   return own(e.value, part) && own(units, part) ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
+}
+
+/**
+ * SAFETY NET (2), S2-approved 2026-11-04: an object value with exactly ONE declared
+ * numeric part (e.g. economics-ai-cost's { spendUsd }) resolves without |part — to
+ * that part. Two or more declared parts ⇒ null (MISSING_PART): a part-less
+ * placeholder never picks a total or a headline for the model (S2 rejected that).
+ * Dropping this net = `return null`.
+ */
+export function onePartNet(units: Readonly<Record<string, FigureUnit>>): string | null {
+  const parts = Object.entries(units).filter(([, u]) => FIGURE_UNITS.includes(u));
+  return parts.length === 1 && Object.keys(units).length === 1 ? parts[0][0] : null;
 }
 
 /** The shape of each malformed placeholder left in the prose (counts only). */
