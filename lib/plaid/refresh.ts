@@ -272,6 +272,38 @@ export interface BalanceWritePlan {
 }
 
 /**
+ * FIN-011 — THE predicate for "Plaid observed a current balance". Shared by the
+ * refresh authority (planBalanceWrite) and the token-exchange authority
+ * (planExchangeBalanceStamp) so the two paths cannot disagree about what a
+ * null, undefined or non-finite `current` means.
+ */
+export function isObservedBalance(current: number | null | undefined): current is number {
+  return typeof current === "number" && Number.isFinite(current);
+}
+
+/**
+ * FM-AUDIT-023 (token-exchange half) — what the exchange may write about the
+ * balance onto an EXISTING FinancialAccount (the resolved/restored row and the
+ * fingerprint-reused canonical row in lib/plaid/exchangeToken.ts).
+ *
+ * Same rule as planBalanceWrite: an observed `current` writes the balance AND
+ * the balance-verified stamp (`lastUpdated`); a null `current` writes NEITHER,
+ * so the prior balance stands with its own, older clock. The exchange has never
+ * written `balanceLastUpdatedAt`, and this does not start to — an observed
+ * balance writes exactly what it wrote before (`balance`, `lastUpdated`).
+ *
+ * A NEW row is not covered here: `balance` is `Float NOT NULL DEFAULT 0` and
+ * there is no unknown-balance representation for a row with no prior value.
+ * See the create site in exchangeToken.ts.
+ */
+export function planExchangeBalanceStamp(
+  current: number | null | undefined,
+  now: Date,
+): { balance?: number; lastUpdated?: Date } {
+  return isObservedBalance(current) ? { balance: current, lastUpdated: now } : {};
+}
+
+/**
  * What ONE accounts/get answer may write onto a FinancialAccount.
  *
  * ⚠️ A NULL `current` IS NOT AN OBSERVATION. Plaid returns `current: null` on a
@@ -295,7 +327,7 @@ export function planBalanceWrite(
   balances: ObservedBalances,
   subtype: string | null | undefined,
 ): BalanceWritePlan {
-  const observed = typeof balances.current === "number" && Number.isFinite(balances.current);
+  const observed = isObservedBalance(balances.current);
   const availableBalance = balances.available ?? undefined;
   const creditLimit       = balances.limit ?? undefined;
   const base = {
