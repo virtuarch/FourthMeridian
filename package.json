@@ -97,7 +97,9 @@
     "rls:accept:plaid": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-plaid-acceptance.ts",
     "rls:accept:foreground": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/rls-foreground-acceptance.ts",
     "rls:accept:allowance": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/ai-allowance-acceptance.ts",
-    "accept:key-rotation": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/encryption-key-rotation-acceptance.ts"
+    "accept:key-rotation": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/encryption-key-rotation-acceptance.ts",
+    "accept:b10-5-report": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/b10-5-decision-report-acceptance.ts",
+    "report:b10-5": "tsx --require ./scripts/lib/server-only-preload.cjs scripts/b10-5-decision-report.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
