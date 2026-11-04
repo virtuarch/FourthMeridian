@@ -198,6 +198,46 @@ export function hasKnownValue(v: WalletCurrentValue | undefined): boolean {
   return v !== undefined && (v.state === "VALUED" || v.state === "STALE") && v.value !== null;
 }
 
+/**
+ * FM-AUDIT-022 — THE classification every TOTALS path reads for a wallet's
+ * balance. One helper, so no read site re-derives "does this wallet have a
+ * value, and if not, what does it contribute?".
+ *
+ *   not a spine wallet (`v` undefined) → the caller's own column, untouched.
+ *                                        Cash, credit, brokerage and any chain
+ *                                        still on the legacy column are not
+ *                                        this module's question.
+ *   VALUED / STALE (`hasKnownValue`)   → the spine value (staleness is
+ *                                        disclosed separately, W6b).
+ *   NO_PRICE / NO_OBSERVATION          → EXCLUDED: a structural 0 flagged
+ *                                        `valuationUnknown`. NEVER the stored
+ *                                        `balance` column — for a new wallet
+ *                                        that column is the schema's DEFAULT 0,
+ *                                        and for an unsynced one it is an
+ *                                        undated, unprovenanced figure.
+ *
+ * The structural 0 is the `balanceRedacted` idiom: it makes any summation
+ * that has not yet learned the flag arithmetically EQUAL to exclusion, while
+ * the flag is what lets `classifyAccounts` count and disclose the exclusion
+ * (`unvaluedCount`) and lets a surface say "not yet valued" instead of $0.00.
+ * A consumer that prints this `balance` without branching on the flag is
+ * making a claim the row explicitly disclaims.
+ */
+export interface WalletTotalsBalance {
+  balance: number;
+  /** Present (and only ever `true`) when the wallet has no value: excluded from every total. */
+  valuationUnknown?: true;
+}
+
+export function resolveWalletBalance(
+  columnBalance: number,
+  v: WalletCurrentValue | undefined,
+): WalletTotalsBalance {
+  if (v === undefined) return { balance: columnBalance };
+  if (hasKnownValue(v)) return { balance: v.value! };
+  return { balance: 0, valuationUnknown: true };
+}
+
 /** May this wallet back a CURRENT claim — freshly observed wealth, now? */
 export function isFreshCurrentValue(v: WalletCurrentValue | undefined): boolean {
   return v !== undefined && v.state === "VALUED";
@@ -258,9 +298,10 @@ export function needsSpineValuation(ref: WalletAccountRef): boolean {
  * which price. Those are settled here and nowhere else.
  *
  * Substitution happens for VALUED and STALE alike — a stale reading is the LAST
- * KNOWN position and beats an unwritten column that always reads zero. NO_PRICE
- * and NO_OBSERVATION fall through to whatever the caller already had, because
- * there is no number to put in its place.
+ * KNOWN position and beats an unwritten column that always reads zero.
+ * FM-AUDIT-022: NO_PRICE and NO_OBSERVATION no longer fall through to whatever
+ * the caller had — they are EXCLUDED (`resolveWalletBalance`), flagged
+ * `valuationUnknown` so the exclusion can be disclosed.
  */
 export async function applyCanonicalWalletBalances<T extends {
   id: string;
@@ -270,7 +311,7 @@ export async function applyCanonicalWalletBalances<T extends {
 }>(
   rows: readonly T[],
   options?: { client?: Client; contextSpaceId?: string | null; reportingCurrency?: string; now?: Date },
-): Promise<Array<T & { cryptoPosition?: WalletCurrentValue }>> {
+): Promise<Array<T & { cryptoPosition?: WalletCurrentValue; valuationUnknown?: true }>> {
   const byAccount = await loadWalletCurrentValues(
     rows.map((r) => ({ id: r.id, walletChain: r.walletChain, lastUpdated: r.lastUpdated })),
     options,
@@ -278,9 +319,11 @@ export async function applyCanonicalWalletBalances<T extends {
   return rows.map((r) => {
     const v = byAccount.get(r.id);
     if (v === undefined) return r;
+    // FM-AUDIT-022 — through THE totals classification: an unvalued wallet is
+    // excluded (structural 0 + `valuationUnknown`), never its stored column.
     return {
       ...r,
-      ...(hasKnownValue(v) ? { balance: v.value! } : {}),
+      ...resolveWalletBalance(r.balance, v),
       cryptoPosition: v,
     };
   });

@@ -132,11 +132,23 @@ export function composeInvestments(
       ? 'at least one balance could not be converted to the reporting currency and was excluded from the totals'
       : null;
 
+  // FM-AUDIT-022 — an unvalued wallet was EXCLUDED from the digital-asset total
+  // (never counted at 0). That total is a partial, so it is not assertable; the
+  // exclusion is attributable to digital assets only, so the other class stands.
+  const unvalued = accounts.totalsUnvaluedCount ?? 0;
+  const digitalIndeterminate = unvalued > 0
+    ? `${unvalued} crypto wallet(s) are not yet valued (no price or no observation) and are excluded from the digital-asset total`
+    : null;
+
   const component = (
     key: string, label: string, amount: number | undefined, accountCount: number,
+    classIndeterminate: string | null = null,
   ): ConceptComponent => {
     if (indeterminate) {
       return { key, label, state: ComponentState.UNKNOWN, amount: null, accountCount, reason: indeterminate };
+    }
+    if (classIndeterminate) {
+      return { key, label, state: ComponentState.UNKNOWN, amount: null, accountCount, reason: classIndeterminate };
     }
     if (accountCount === 0) {
       // Provably empty: the classification found no accounts of this class and
@@ -153,7 +165,7 @@ export function composeInvestments(
     component('TRADITIONAL_INVESTMENTS', 'Traditional investments',
       accounts.totalInvestments, accounts.counts?.investments ?? 0),
     component('DIGITAL_ASSETS', 'Digital assets',
-      accounts.totalDigitalAssets, accounts.counts?.digitalAssets ?? 0),
+      accounts.totalDigitalAssets, accounts.counts?.digitalAssets ?? 0, digitalIndeterminate),
   ];
 
   // Nothing of either kind, and nothing hidden — the concept does not apply and
