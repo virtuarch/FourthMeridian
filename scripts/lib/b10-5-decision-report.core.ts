@@ -7,6 +7,7 @@
  *   fin-a2      FIN-A2        Plaid accounts holding a $0 that was probably never observed
  *   fin-e       FIN-E         snapshot days a regeneration would give a restrictedCash
  *   audit-021   FM-AUDIT-021  frozen "observed" days that rested on a stale bank balance
+ *   frozen-restricted  FIN-E     frozen observed NULL-restrictedCash days whose split a walk-back could derive
  *
  * ── Contract ─────────────────────────────────────────────────────────────────
  *   · READ ONLY. Every report runs in ONE transaction whose first statement is
@@ -22,7 +23,7 @@
  *     counts for a decision, not a repair plan.
  */
 
-export const REPORTS = ["coingecko", "fin-a2", "fin-e", "audit-021"] as const;
+export const REPORTS = ["coingecko", "fin-a2", "fin-e", "audit-021", "frozen-restricted"] as const;
 export type ReportName = (typeof REPORTS)[number];
 
 /** CoinGecko returns DAILY (00:00Z) points for a market_chart/range request longer than 90 days. */
@@ -35,6 +36,16 @@ export const COINGECKO_HOURLY_MAX_DAYS = 90;
 export const COINGECKO_DEFINITE_DAILY_MIN_SPAN = COINGECKO_HOURLY_MAX_DAYS + 2;
 /** lib/freshness/observation.ts STALE_AFTER_DAYS — the stale-bank horizon FM-AUDIT-021 (#302) uses. */
 export const STALE_AFTER_DAYS = 7;
+
+/**
+ * The depository subtypes `liquidityAccess` (lib/account-classifier.ts) calls
+ * "restricted": the only accounts whose balance enters `classifyAccounts
+ * .totalRestrictedCash`, i.e. `SpaceSnapshot.restrictedCash`. Restricted
+ * INVESTMENT subtypes (401k, IRA, …) never enter that column: it splits
+ * checking + savings only. Mirrored, not imported (the classifier pulls the FX
+ * stack); pinned equal to the classifier's set by the unit test.
+ */
+export const RESTRICTED_DEPOSITORY_SUBTYPES: readonly string[] = ["hsa"];
 
 /** The schema facts each report reads. Missing any ⇒ UNAVAILABLE. */
 export const REQUIRED_COLUMNS: Record<ReportName, ReadonlyArray<readonly [table: string, column: string]>> = {
@@ -64,6 +75,12 @@ export const REQUIRED_COLUMNS: Record<ReportName, ReadonlyArray<readonly [table:
     ["RefreshEndpointAccountCoverage", "status"], ["RefreshEndpointAccountCoverage", "freshnessAdvanced"],
     ["RefreshEndpointAccountCoverage", "createdAt"],
   ],
+  "frozen-restricted": [
+    ["SpaceSnapshot", "restrictedCash"], ["SpaceSnapshot", "isEstimated"], ["SpaceSnapshot", "spaceId"], ["SpaceSnapshot", "date"],
+    ["SpaceAccountLink", "spaceId"], ["SpaceAccountLink", "financialAccountId"], ["SpaceAccountLink", "createdAt"], ["SpaceAccountLink", "revokedAt"],
+    ["FinancialAccount", "type"], ["FinancialAccount", "providerSubtype"], ["FinancialAccount", "createdAt"], ["FinancialAccount", "deletedAt"],
+    ["Transaction", "financialAccountId"], ["Transaction", "date"], ["Transaction", "pending"], ["Transaction", "deletedAt"],
+  ],
 };
 
 export const HEURISTICS: Record<ReportName, string> = {
@@ -78,11 +95,20 @@ export const HEURISTICS: Record<ReportName, string> = {
     "Accounts created before the ledger's first BALANCES row are counted separately (the ledger cannot see their earlier refreshes). Before FIN-011 a refresh could mark a null balance as advanced, so the count is a lower bound for that period; a real $0 (a paid-off card) also qualifies, so these are review candidates, not confirmed defects.",
   "fin-e":
     "A row is fillable when `restrictedCash` IS NULL, it is an estimate (`isEstimated = true`, which the automatic regeneration may rewrite), and its Space has at least one ACTIVE account link to a non-deleted account (the inputs regeneration classifies). " +
-    "An upper bound: a day whose cash or savings component the regenerator preserves keeps NULL, and only days inside a regeneration's window are rewritten. Frozen observed rows (`isEstimated = false`) are never rewritten by regeneration and are counted separately.",
+    "An upper bound: a day whose cash or savings component the regenerator preserves keeps NULL, and only days inside a regeneration's window are rewritten. Frozen observed rows (`isEstimated = false`) are never rewritten by regeneration and are counted separately (whether their split is derivable: `frozen-restricted`).",
   "audit-021":
     "A frozen row is a past `SpaceSnapshot` day with `isEstimated = false`. It is a candidate when, at the end of that UTC day, its Space had an active link to a Plaid-fed bank account (checking, savings or debt; not manual) that existed for at least " +
     `${STALE_AFTER_DAYS} days and has NO BALANCES coverage row with \`freshnessAdvanced = true\` in the ${STALE_AFTER_DAYS} days up to that day's end, i.e. its balance was stale under the #302 rule. ` +
     "Materiality (the 1% share) is NOT applied, because no per-day account balance is stored: an upper bound. Days earlier than the ledger's first BALANCES row plus the horizon are undetermined. A balance written at token exchange (reconnect) is not in the ledger, so a reconnect day can read as stale.",
+  "frozen-restricted":
+    "No per-day account balance is stored: the as-of path (lib/data/accounts-asof-window.ts → resolveAccountsOverWindow) WALKS BACK from each account's current posted balance, subtracting the POSTED, non-deleted transactions dated after the day. " +
+    `\`restrictedCash\` is the classifier's restricted share of checking + savings, i.e. accounts of type checking/savings whose \`providerSubtype\` is ${RESTRICTED_DEPOSITORY_SUBTYPES.map((x) => `\`${x}\``).join(", ")} (restricted investment subtypes never enter it). ` +
+    "Among frozen observed rows (`isEstimated = false`) with NULL `restrictedCash`, a restricted-capable account counts for a day when its link to the Space was live at that day's end (created before, not revoked by) and it was not deleted by then. " +
+    "A day is derivable when every such account is still live (its current balance is the walk's anchor) and its posted ledger reaches the day: it has a posted, non-deleted transaction dated on or before that day (the existence evidence lib/data/account-coverage.core.ts uses; the resolver's own floor, max(account created, link created), is always met on a linked day, so it cannot discriminate). " +
+    "Derivable is an UPPER bound: the walk treats a day with no posted rows as no movement, so a gap in the synced transaction history after the day, a pending-to-posted change or an anchor that was never observed (FIN-A2) still yields a number, which may be wrong. " +
+    "A day with no restricted-capable account has a restricted share of 0 (the classification uses the subtype stored today), exact for RETAINED data only: links are revoked (status + revokedAt), never deleted, but a HARD-deleted FinancialAccount cascades its SpaceAccountLink and Transaction rows away while another Space's frozen snapshot rows survive, so a purged HSA that Space linked is invisible here. " +
+    "Account purge after the deletion grace period (lib/account-deletion/purge.ts) is NOT the only hard-delete path that can do this: the operator scripts scripts/purge-plaid-connection.ts (one user's Plaid accounts at one institution) and scripts/dev-reset-test-state.ts (one user's connected accounts) hard-delete accounts too. " +
+    "The permanent manual-account delete cannot (it accepts type `other` only), and a Space delete takes that Space's snapshots with it. The rest are not derivable. REPORT ONLY: no fill and no apply exist; filling frozen rows is a separate owner-gated repair.",
 };
 
 // ── client seam ──────────────────────────────────────────────────────────────
@@ -195,6 +221,51 @@ SELECT verdict, count(*)::int AS rows, count(DISTINCT "spaceId")::int AS spaces,
        to_char(min(date), 'YYYY-MM-DD') AS "fromDate", to_char(max(date), 'YYYY-MM-DD') AS "toDate"
   FROM judged GROUP BY verdict`;
 
+/**
+ * Frozen observed rows with NULL restrictedCash → DERIVABLE | NOT_DERIVABLE |
+ * TRIVIAL_ZERO. The as-of ladder (accounts-asof.core resolveOne +
+ * account-coverage.core BALANCE_WALK) walks cash back from today's posted
+ * balance. Its own floor, max(account created, link created), is always on or
+ * before a day the account was linked, so it cannot tell a covered day from an
+ * uncovered one; the discriminating fact is whether the account's POSTED ledger
+ * reaches the day (a posted, non-deleted row dated on or before it). Links are
+ * judged as of the day's end, the same view the frozen row's own cash had.
+ */
+const RESTRICTED_SUBTYPES_SQL = RESTRICTED_DEPOSITORY_SUBTYPES.map((x) => `'${x.replace(/'/g, "")}'`).join(", ");
+export const FROZEN_RESTRICTED_SQL = `
+WITH frozen AS (
+  SELECT s."spaceId", s.date, (s.date + 1)::timestamp AS "dayEnd"
+    FROM "SpaceSnapshot" s
+   WHERE s."isEstimated" = false AND s."restrictedCash" IS NULL
+), capable AS (
+  SELECT f."spaceId", f.date, fa.id AS "accountId", (fa."deletedAt" IS NULL) AS "liveNow"
+    FROM frozen f
+    JOIN "SpaceAccountLink" l ON l."spaceId" = f."spaceId"
+         AND l."createdAt" < f."dayEnd" AND (l."revokedAt" IS NULL OR l."revokedAt" >= f."dayEnd")
+    JOIN "FinancialAccount" fa ON fa.id = l."financialAccountId"
+   WHERE fa.type::text IN ('checking', 'savings')
+     AND lower(btrim(fa."providerSubtype")) IN (${RESTRICTED_SUBTYPES_SQL})
+     AND (fa."deletedAt" IS NULL OR fa."deletedAt" >= f."dayEnd")
+), posted AS (
+  SELECT t."financialAccountId" AS "accountId", min(t.date) AS "firstPosted"
+    FROM "Transaction" t
+   WHERE t."deletedAt" IS NULL AND t.pending = false
+     AND t."financialAccountId" IN (SELECT "accountId" FROM capable)
+   GROUP BY t."financialAccountId"
+), per_day AS (
+  SELECT c."spaceId", c.date,
+         bool_and(c."liveNow" AND p."firstPosted" IS NOT NULL AND p."firstPosted" <= c.date) AS ok
+    FROM capable c LEFT JOIN posted p ON p."accountId" = c."accountId"
+   GROUP BY c."spaceId", c.date
+), judged AS (
+  SELECT f."spaceId", f.date,
+         CASE WHEN d.ok IS NULL THEN 'TRIVIAL_ZERO' WHEN d.ok THEN 'DERIVABLE' ELSE 'NOT_DERIVABLE' END AS verdict
+    FROM frozen f LEFT JOIN per_day d ON d."spaceId" = f."spaceId" AND d.date = f.date
+)
+SELECT verdict, count(*)::int AS rows, count(DISTINCT "spaceId")::int AS spaces,
+       to_char(min(date), 'YYYY-MM-DD') AS "fromDate", to_char(max(date), 'YYYY-MM-DD') AS "toDate"
+  FROM judged GROUP BY verdict`;
+
 // ── result shapes ────────────────────────────────────────────────────────────
 
 export interface CoinGeckoBatchRow { ticker: string | null; rows: number; minDate: string; maxDate: string; spanDays: number; fetchedDate: string }
@@ -211,13 +282,15 @@ export interface FinEResult {
 }
 export interface Audit021Bucket { rows: number; spaces: number; fromDate: string | null; toDate: string | null }
 export interface Audit021Result { candidate: Audit021Bucket; clear: Audit021Bucket; undetermined: Audit021Bucket }
+export interface FrozenRestrictedResult { derivable: Audit021Bucket; notDerivable: Audit021Bucket; trivialZero: Audit021Bucket; total: Audit021Bucket }
 
 export type ReportOutcome =
   | { report: ReportName; status: "UNAVAILABLE"; reason: string }
   | { report: "coingecko"; status: "OK"; data: CoinGeckoResult }
   | { report: "fin-a2"; status: "OK"; data: FinA2Result }
   | { report: "fin-e"; status: "OK"; data: FinEResult }
-  | { report: "audit-021"; status: "OK"; data: Audit021Result };
+  | { report: "audit-021"; status: "OK"; data: Audit021Result }
+  | { report: "frozen-restricted"; status: "OK"; data: FrozenRestrictedResult };
 
 // ── pure logic ───────────────────────────────────────────────────────────────
 
@@ -254,13 +327,37 @@ export function missingColumns(report: ReportName, present: ReadonlySet<string>)
   return REQUIRED_COLUMNS[report].map(([t, c]) => `${t}.${c}`).filter((k) => !present.has(k));
 }
 
-export function summarizeAudit021(rows: ReadonlyArray<{ verdict: string } & Audit021Bucket>): Audit021Result {
-  const empty = (): Audit021Bucket => ({ rows: 0, spaces: 0, fromDate: null, toDate: null });
-  const pick = (v: string) => {
+const emptyBucket = (): Audit021Bucket => ({ rows: 0, spaces: 0, fromDate: null, toDate: null });
+function bucketPicker(rows: ReadonlyArray<{ verdict: string } & Audit021Bucket>) {
+  return (v: string): Audit021Bucket => {
     const r = rows.find((x) => x.verdict === v);
-    return r ? { rows: r.rows, spaces: r.spaces, fromDate: r.fromDate, toDate: r.toDate } : empty();
+    return r ? { rows: r.rows, spaces: r.spaces, fromDate: r.fromDate, toDate: r.toDate } : emptyBucket();
   };
+}
+
+export function summarizeAudit021(rows: ReadonlyArray<{ verdict: string } & Audit021Bucket>): Audit021Result {
+  const pick = bucketPicker(rows);
   return { candidate: pick("CANDIDATE"), clear: pick("CLEAR"), undetermined: pick("UNDETERMINED") };
+}
+
+/**
+ * Verdict buckets → the frozen-restricted result. The total's row count is the
+ * sum (each frozen row has exactly one verdict); its Space count is the largest
+ * bucket's, a floor (a Space can sit in several buckets), so it is not printed.
+ */
+export function summarizeFrozenRestricted(rows: ReadonlyArray<{ verdict: string } & Audit021Bucket>): FrozenRestrictedResult {
+  const pick = bucketPicker(rows);
+  const derivable = pick("DERIVABLE"), notDerivable = pick("NOT_DERIVABLE"), trivialZero = pick("TRIVIAL_ZERO");
+  const all = [derivable, notDerivable, trivialZero];
+  return {
+    derivable, notDerivable, trivialZero,
+    total: {
+      rows: all.reduce((s, b) => s + b.rows, 0),
+      spaces: Math.max(...all.map((b) => b.spaces)),
+      fromDate: all.reduce<string | null>((m, b) => minDate(m, b.fromDate), null),
+      toDate: all.reduce<string | null>((m, b) => maxDate(m, b.toDate), null),
+    },
+  };
 }
 
 // ── runner ───────────────────────────────────────────────────────────────────
@@ -303,6 +400,10 @@ export async function runReport(client: ReadOnlyClient, report: ReportName, opts
         const rows = await tx.$queryRawUnsafe<Array<{ verdict: string } & Audit021Bucket>>(AUDIT_021_SQL);
         return { report, status: "OK", data: summarizeAudit021(rows) };
       }
+      case "frozen-restricted": {
+        const rows = await tx.$queryRawUnsafe<Array<{ verdict: string } & Audit021Bucket>>(FROZEN_RESTRICTED_SQL);
+        return { report, status: "OK", data: summarizeFrozenRestricted(rows) };
+      }
     }
   });
 }
@@ -320,6 +421,7 @@ const TITLES: Record<ReportName, string> = {
   "fin-a2": "2. Null-balance $0 accounts (FIN-A2)",
   "fin-e": "3. Restricted-cash snapshot fill (FIN-E)",
   "audit-021": "4. Frozen stale-observed snapshot rows (FM-AUDIT-021)",
+  "frozen-restricted": "5. Frozen observed rows: derivable restricted-cash split (FIN-E)",
 };
 
 /**
@@ -332,6 +434,8 @@ export const BOUND = {
   UPPER: "upper bound",
   REVIEW: "review list (includes genuine $0)",
   EXACT: "exact",
+  /** S2 (#376): a hard-deleted account takes its links and transactions with it, so "no restricted-capable account" is exact only over what was retained. */
+  RETAINED: "exact for retained data (purged accounts can't be seen)",
 } as const;
 export const BOUND_LABELS: readonly string[] = Object.values(BOUND);
 
@@ -394,6 +498,16 @@ export function renderReport(o: ReportOutcome): string {
         `| Clear | ${n(d.clear.rows)} | ${n(d.clear.spaces)} | ${range(d.clear.fromDate, d.clear.toDate)} | ${BOUND.LOWER} |`,
         `| Undetermined (before the balance ledger) | ${n(d.undetermined.rows)} | ${n(d.undetermined.spaces)} | ${range(d.undetermined.fromDate, d.undetermined.toDate)} | ${BOUND.EXACT} |`, "",
         "Undetermined is a separate count, never folded into the candidate upper bound.", "");
+      break;
+    }
+    case "frozen-restricted": {
+      const d = o.data;
+      L.push("| Frozen rows | Days (rows) | Spaces | Date range | Bound |", "|---|---:|---:|---|---|",
+        `| **Derivable** (every restricted-capable account linked that day is inside its walk-back coverage) | **${n(d.derivable.rows)}** | **${n(d.derivable.spaces)}** | ${range(d.derivable.fromDate, d.derivable.toDate)} | ${BOUND.UPPER} |`,
+        `| Not derivable (a restricted-capable account's posted ledger does not reach the day, or it is deleted since) | ${n(d.notDerivable.rows)} | ${n(d.notDerivable.spaces)} | ${range(d.notDerivable.fromDate, d.notDerivable.toDate)} | ${BOUND.EXACT} |`,
+        `| No restricted-capable accounts: the split is trivially 0 | ${n(d.trivialZero.rows)} | ${n(d.trivialZero.spaces)} | ${range(d.trivialZero.fromDate, d.trivialZero.toDate)} | ${BOUND.RETAINED} |`,
+        `| All frozen observed rows with NULL restrictedCash (population) | ${n(d.total.rows)} | — | ${range(d.total.fromDate, d.total.toDate)} | ${BOUND.EXACT} |`, "",
+        "REPORT ONLY: this tool has no fill and no apply. Any fill of frozen rows (which regeneration never rewrites) is a separate owner-gated repair.", "");
       break;
     }
   }
