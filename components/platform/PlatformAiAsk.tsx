@@ -4,7 +4,10 @@
  * components/platform/PlatformAiAsk.tsx  (Platform AI v0 — the question box, shown ONLY when enabled)
  *
  * A minimal question box and one answer: the answer's segments, each cited
- * metric with its status chip and drill link, and the deterministic notes.
+ * metric with its status chip, the figure(s) the SERVER rendered for it in the
+ * answer (placeholder grounding — the chip pairs label and figure, so a figure
+ * is always shown beside the metric it belongs to), its drill link, and the
+ * deterministic notes.
  * Nothing is stored — no history, no draft persistence.
  *
  * ⚠️ OUTPUT SINK FOR MODEL TEXT. No Markdown parser runs on the answer: the
@@ -67,6 +70,9 @@ export function AnswerCitations({ citations }: { citations: PlatformAiAnswer["ci
         <li key={c.metric} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <ToneBadge word={STATUS_WORD[c.status]} tone={STATUS_TONE[c.status]} />
           <span className="min-w-0 break-words font-medium text-[var(--text-primary)]">{c.label}</span>
+          {(c.figures ?? []).length > 0
+            ? <span data-platform-ai-figure="" className="min-w-0 break-words tabular-nums text-[var(--text-primary)]">{c.figures.join(" · ")}</span>
+            : null}
           {c.href && isSameOriginPath(c.href)
             ? <a href={c.href} className="shrink-0 underline underline-offset-2 text-[var(--text-secondary)]">Open records</a>
             : null}
