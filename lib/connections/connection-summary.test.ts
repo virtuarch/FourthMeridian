@@ -20,7 +20,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 const code = (rel: string) => readFileSync(path.join(process.cwd(), rel), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 const conn = (over: Partial<SyncConnection> = {}): SyncConnection => ({
-  id: "c1", provider: "PLAID", institution: "Chase", state: "ready", lastSyncedAt: "2026-10-27T10:00:00Z",
+  id: "c1", provider: "PLAID", institution: "Example Bank", state: "ready", lastSyncedAt: "2026-10-27T10:00:00Z",
   errorCode: null, importedCount: null, historyBuild: null, deferredReason: null, investments: null, ...over,
 });
 const intel = (over: Partial<ConnectionIntelligenceStatus> = {}) => ({

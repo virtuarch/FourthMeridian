@@ -114,7 +114,7 @@ function main() {
 
   console.log("CS timeline DTO — counts, kinds, timestamps only");
   {
-    const wf: ImportedItem = { ...item(), institutionName: "Wells Fargo", userId: "u1", verdict: deriveImportStatus(item(), PROD, NOW) };
+    const wf: ImportedItem = { ...item(), institutionName: "Institution D", userId: "u1", verdict: deriveImportStatus(item(), PROD, NOW) };
     const t = buildOnboardingTimeline({
       user: { createdAt: D("2026-11-01T20:30:00Z"), emailVerifiedAt: D("2026-11-01T20:31:00Z") },
       request: { invitedAt: D("2026-10-31T10:00:00Z"), redeemedAt: D("2026-11-01T20:30:00Z") },
@@ -125,7 +125,7 @@ function main() {
       && t.events.map((e) => e.kind).join(",") === "registered,email_verified,first_session,linked,import,wealth_regen");
     // PB-7 Preview nit (a) — pinned wording: the reason is the EARLIER ATTEMPT's, never the import's.
     check("the import event reads 'Recovered after an interruption (earlier attempt: …)' with 1,388 transactions",
-      t.events.some((e) => e.kind === "import" && e.label === "Wells Fargo: Recovered after an interruption (earlier attempt: process ended mid-run) · 1,388 transactions"),
+      t.events.some((e) => e.kind === "import" && e.label === "Institution D: Recovered after an interruption (earlier attempt: process ended mid-run) · 1,388 transactions"),
       t.events.find((e) => e.kind === "import")?.label);
     check("pending names the steps not reached", t.pending.includes("No AI conversation yet") && t.pending.includes("No Brief viewed yet"));
     const json = JSON.stringify(t);

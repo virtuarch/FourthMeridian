@@ -333,12 +333,12 @@ test("F-1 · the $25 Saving 'CREDIT CARD 3333 PAYMENT': unattested ⇒ unresolve
 // Case 1 — card purchase vs card bill payment (both legs; paired & unpaired)
 const C1: Raw[] = [
   { id: "c1Buy", acct: "card", date: "2026-10-02", amount: -640, name: "BEST BUY 0042", pfc: ["GENERAL_MERCHANDISE", "GENERAL_MERCHANDISE_ELECTRONICS"] },
-  { id: "c1PayCash", acct: "chk", date: "2026-10-05", amount: -300, name: "CHASE CREDIT CRD AUTOPAY", pfc: CC_PAY },
+  { id: "c1PayCash", acct: "chk", date: "2026-10-05", amount: -300, name: "EXAMPLE BANK CREDIT CRD AUTOPAY", pfc: CC_PAY },
   { id: "c1PayCard", acct: "card", date: "2026-10-05", amount: 300, name: "Payment Thank You-Mobile", pfc: CC_PAY },
   // Unpaired card-side credit: paid from a bank that is not connected.
   { id: "c1PayCardOnly", acct: "card", date: "2026-10-20", amount: 450, name: "MOBILE PAYMENT - THANK YOU", pfc: CC_PAY },
   // Unpaired cash-side payment to a card that is not connected.
-  { id: "c1PayCashOnly", acct: "chk", date: "2026-10-22", amount: -125, name: "DISCOVER E-PAYMENT", pfc: CC_PAY },
+  { id: "c1PayCashOnly", acct: "chk", date: "2026-10-22", amount: -125, name: "INSTITUTION H E-PAYMENT", pfc: CC_PAY },
 ];
 test("case 1 · card purchase = spending when incurred; bill payment = cash movement + debt settlement, counted once", () => {
   const { dtos } = pipeline(C1);

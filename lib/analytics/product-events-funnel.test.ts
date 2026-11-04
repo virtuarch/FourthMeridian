@@ -52,7 +52,7 @@ function fakeClient(result = 1): { client: ProductEventClient; calls: Call[] } {
 }
 const metaOf = (c: Call) => JSON.parse(String(c.values[4])) as Record<string, unknown>;
 const keysOf = (c: Call) => Object.keys(metaOf(c)).sort().join(",");
-const FORBIDDEN_VALUE = /Chase|error_message|link_session|request_id|\$|@|balance|prompt/i;
+const FORBIDDEN_VALUE = /Example Bank|error_message|link_session|request_id|\$|@|balance|prompt/i;
 
 async function quietly<T>(fn: () => Promise<T>): Promise<T> {
   const warn = console.warn; console.warn = () => {};
@@ -89,13 +89,13 @@ async function main() {
 
     calls.length = 0;
     const bad = [
-      await recordConnectionLinkStarted(client, { userId: "u1", provider: "COINBASE" as never }),
+      await recordConnectionLinkStarted(client, { userId: "u1", provider: "EXAMPLE EXCHANGE" as never }),
       await recordFirstSyncSucceeded(client, { userId: "u1", sourceKind: "MANUAL" as never }),
       await recordAiTurnFailed(client, { userId: "u1", surface: "brief" as never, reason: "failed" }),
       await recordAiTurnFailed(client, { userId: "u1", surface: "chat", reason: "the model said: buy BTC" as never }),
     ];
     check("a provider / source kind / surface / reason outside its vocabulary writes nothing", bad.every((b) => b === false) && calls.length === 0);
-    await recordConnectionLinkExited(client, { userId: "u1", provider: "PLAID", stage: "Chase login page" as never, errorCode: "bad pw for jo@x.com" as never });
+    await recordConnectionLinkExited(client, { userId: "u1", provider: "PLAID", stage: "Example Bank login page" as never, errorCode: "bad pw for jo@x.com" as never });
     check("an exit stage / error code that bypassed the mapper is stored as OTHER, never as itself",
       metaOf(calls[0]).stage === "OTHER" && metaOf(calls[0]).errorCode === "OTHER" && !FORBIDDEN_VALUE.test(String(calls[0].values[4])));
   }
@@ -103,19 +103,19 @@ async function main() {
   console.log("2. the runtime allowlist");
   {
     const out = allowlistedMetadata({
-      provider: "PLAID", institution_name: "Chase", error_message: "bad password", link_session_id: "ls-1",
+      provider: "PLAID", institution_name: "Example Bank", error_message: "bad password", link_session_id: "ls-1",
       amount: 1234.5, reason: "x".repeat(65), stage: { nested: true }, cached: true, prompt: "how much do I have?",
     });
     check("drops unknown keys, numbers, objects and over-long strings; keeps allow-listed strings and booleans",
       JSON.stringify(out) === JSON.stringify({ provider: "PLAID", cached: true }), JSON.stringify(out));
     // Smuggle a forbidden key through a cast: the writer must drop it.
     const { client, calls } = fakeClient();
-    await recordConnectionLinkStarted(client, { userId: "u1", provider: "PLAID", institution: "Chase", email: "jo@x.com" } as never);
+    await recordConnectionLinkStarted(client, { userId: "u1", provider: "PLAID", institution: "Example Bank", email: "jo@x.com" } as never);
     check("a forbidden field smuggled into a writer's input never reaches the row", keysOf(calls[0]) === "actorType,provider,result" && !FORBIDDEN_VALUE.test(String(calls[0].values[4])));
     // A value the types would refuse, reaching an allow-listed key through a cast:
     // the shared writer drops it (an object, a prose-length string).
     calls.length = 0;
-    await recordSpaceViewed(client, { userId: "u1", spaceId: "s1", spaceType: { balance: 1234, name: "Chase" } as never });
+    await recordSpaceViewed(client, { userId: "u1", spaceId: "s1", spaceType: { balance: 1234, name: "Example Bank" } as never });
     await recordBriefViewed(client, { userId: "u1", spaceId: "s1", briefDay: "how much do I have in checking? ".repeat(4), cached: true });
     check("the shared writer drops a non-string / over-long value even on an allow-listed key",
       keysOf(calls[0]) === "actorType,day,result" && keysOf(calls[1]) === "actorType,cached,result"
@@ -127,7 +127,7 @@ async function main() {
   {
     check("Plaid exit statuses map to their upper-case stage", linkExitStage("requires_credentials") === "REQUIRES_CREDENTIALS" && linkExitStage("institution_not_found") === "INSTITUTION_NOT_FOUND");
     check("no status ⇒ NONE", linkExitStage(null) === "NONE" && linkExitStage(undefined) === "NONE" && linkExitStage("") === "NONE");
-    check("an unknown or free-text status ⇒ OTHER", linkExitStage("Chase login page") === "OTHER" && linkExitStage("brand_new_status") === "OTHER" && linkExitStage(42) === "OTHER");
+    check("an unknown or free-text status ⇒ OTHER", linkExitStage("Example Bank login page") === "OTHER" && linkExitStage("brand_new_status") === "OTHER" && linkExitStage(42) === "OTHER");
     check("a literal 'none' from a client is OTHER, not NONE", linkExitStage("none") === "OTHER" && linkExitErrorCode("NONE") === "OTHER");
     check("Plaid error codes map to themselves", linkExitErrorCode("INVALID_CREDENTIALS") === "INVALID_CREDENTIALS" && linkExitErrorCode("institution_down") === "INSTITUTION_DOWN");
     check("no error ⇒ NONE; unknown ⇒ OTHER", linkExitErrorCode(null) === "NONE" && linkExitErrorCode("SOMETHING_NEW") === "OTHER" && linkExitErrorCode({}) === "OTHER");
@@ -220,8 +220,8 @@ async function main() {
       const h = make();
       const bodies = [
         "not json", "[]", "null", '"PLAID"', "{}",
-        '{"provider":"COINBASE"}',
-        '{"provider":"PLAID","institution_name":"Chase"}',
+        '{"provider":"EXAMPLE EXCHANGE"}',
+        '{"provider":"PLAID","institution_name":"Example Bank"}',
         '{"provider":"PLAID","error_message":"bad password"}',
         '{"provider":"PLAID","link_session_id":"ls-123"}',
         '{"provider":"PLAID","stage":42}',
@@ -242,7 +242,7 @@ async function main() {
         && meta.stage === "REQUIRES_CREDENTIALS" && meta.errorCode === "INVALID_CREDENTIALS" && meta.provider === "PLAID"
         && Object.keys(meta).sort().join(",") === "actorType,errorCode,provider,result,stage", JSON.stringify(meta));
       check("the limiter is keyed per user", h.limits[0] === "analytics-link-exit:u1");
-      await h.POST(req('{"provider":"PLAID","stage":"Chase login page","errorCode":"SOME_NEW_CODE"}'));
+      await h.POST(req('{"provider":"PLAID","stage":"Example Bank login page","errorCode":"SOME_NEW_CODE"}'));
       const m2 = JSON.parse(String(h.writes[1].values[4])) as Record<string, unknown>;
       check("unknown stage / error code strings are stored as OTHER", m2.stage === "OTHER" && m2.errorCode === "OTHER");
       await h.POST(req('{"provider":"PLAID","stage":null,"errorCode":null}'));
@@ -303,7 +303,7 @@ async function main() {
     globalThis.fetch = (async (url: string, init: RequestInit) => { sent.push({ url, init }); return new Response(null, { status: 204 }); }) as typeof fetch;
     reportPlaidLinkExit(
       { error_code: "INVALID_CREDENTIALS", error_message: "the password is wrong", display_message: "x", error_type: "ITEM_ERROR" } as never,
-      { status: "requires_credentials", link_session_id: "ls-1", request_id: "r-1", institution: { name: "Chase", institution_id: "ins_3" } } as never,
+      { status: "requires_credentials", link_session_id: "ls-1", request_id: "r-1", institution: { name: "Example Bank", institution_id: "ins_3" } } as never,
     );
     globalThis.fetch = (async () => { throw new Error("offline"); }) as typeof fetch;
     let threw = false;

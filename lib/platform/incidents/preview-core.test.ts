@@ -124,8 +124,8 @@ function main() {
 
     check("an absent subject is null, not a guess", subjectText({ primary: null, secondary: null }) === null);
     check("a blank subject is treated as absent", subjectText({ primary: "  ", secondary: null }) === null);
-    check("both halves join", subjectText({ primary: "Chase", secondary: "Checking" }) === "Chase · Checking");
-    check("one half stands alone", subjectText({ primary: "Chase", secondary: null }) === "Chase");
+    check("both halves join", subjectText({ primary: "Example Bank", secondary: "Checking" }) === "Example Bank · Checking");
+    check("one half stands alone", subjectText({ primary: "Example Bank", secondary: null }) === "Example Bank");
 
     check("no recovery rule is stated plainly", RECOVERY_TEXT.none === "No automatic recovery rule");
     check("there is NO 'recovery in progress' wording — nothing proves it",

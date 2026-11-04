@@ -5,11 +5,11 @@
  *
  * ── The defect ──────────────────────────────────────────────────────────────
  *
- * A $4,000 movement from Chase checking into an American Express HIGH YIELD
+ * A $4,000 movement from Example Bank checking into an Example Card HIGH YIELD
  * SAVINGS account was counted as a debt payment and as household Cash Out.
  *
  * Plaid categorised it `LOAN_PAYMENTS_CREDIT_CARD_PAYMENT` — the descriptor said
- * AMERICANEXPRESS and that institution also issues a card — so the row was
+ * EXAMPLECARD and that institution also issues a card — so the row was
  * persisted `flowType: DEBT_PAYMENT`. `classifyLiquidity` then returned
  * CASH_OUT / DEBT_PAYMENT at confidence **1** from `flowType` and the own
  * account's tier alone, never looking at the destination the transfer authority
@@ -32,9 +32,9 @@ import { isDebtPaymentAttested } from "@/lib/transactions/debt-payment-attestati
 // read them, and probe 4 proves it.
 const TIERS = tierResolver([
   { id: "chk",      type: "checking" },
-  { id: "amexSav",  type: "savings" },   // same institution as amexCard
-  { id: "amexCard", type: "debt" },
-  { id: "chaseCard", type: "debt" },
+  { id: "excardSav",  type: "savings" },   // same institution as excardCard
+  { id: "excardCard", type: "debt" },
+  { id: "exbankCard", type: "debt" },
   { id: "brokerage", type: "investment" },
 ]);
 
@@ -54,9 +54,9 @@ const abs = (t: LiquidityTx) => Math.abs(t.amount);
 // ── 1 ────────────────────────────────────────────────────────────────────────
 
 test("1. the savings transfer enters neither Debt Payments nor Cash Out", () => {
-  // The live row: −$4,000 out of Chase checking, persisted DEBT_PAYMENT because
-  // the PROVIDER said so, destination resolved to an Amex savings account.
-  const t = row({ id: "the4000", own: "chk", amount: -4000, cp: "amexSav" });
+  // The live row: −$4,000 out of Example Bank checking, persisted DEBT_PAYMENT because
+  // the PROVIDER said so, destination resolved to an Example Card savings account.
+  const t = row({ id: "the4000", own: "chk", amount: -4000, cp: "excardSav" });
   const c = classifyLiquidity(t, TIERS);
   assert.equal(c.effect, "NEUTRAL", "a savings transfer must not be household Cash Out");
   assert.equal(c.reason, "INTERNAL_TRANSFER");
@@ -66,8 +66,8 @@ test("1. the savings transfer enters neither Debt Payments nor Cash Out", () => 
 // ── 2 ────────────────────────────────────────────────────────────────────────
 
 test("2. a true checking → card payment enters Debt Payments exactly once", () => {
-  const cash = row({ id: "cash", own: "chk", amount: -650, cp: "chaseCard", eventId: "ev_pay" });
-  const liab = row({ id: "liab", own: "chaseCard", amount: 650, cp: "chk", eventId: "ev_pay2" });
+  const cash = row({ id: "cash", own: "chk", amount: -650, cp: "exbankCard", eventId: "ev_pay" });
+  const liab = row({ id: "liab", own: "exbankCard", amount: 650, cp: "chk", eventId: "ev_pay2" });
   const r = totalDebtPaid([cash, liab], TIERS, abs);
   assert.equal(r.total, 650);
   assert.equal(r.count, 1);
@@ -82,13 +82,13 @@ test("2. a true checking → card payment enters Debt Payments exactly once", ()
 // ── 3 ────────────────────────────────────────────────────────────────────────
 
 test("3. a savings transfer is still a savings transfer when the institution also owns a card", () => {
-  // `amexSav` and `amexCard` are the same institution. The existence of the card
+  // `excardSav` and `excardCard` are the same institution. The existence of the card
   // must not make a deposit into the savings account a payment.
-  const t = row({ id: "s", own: "chk", amount: -2500, cp: "amexSav" });
+  const t = row({ id: "s", own: "chk", amount: -2500, cp: "excardSav" });
   assert.equal(classifyLiquidity(t, TIERS).reason, "INTERNAL_TRANSFER");
   assert.equal(totalDebtPaid([t], TIERS, abs).total, 0);
   // The same amount to that institution's CARD is a debt payment.
-  const p = row({ id: "p", own: "chk", amount: -2500, cp: "amexCard" });
+  const p = row({ id: "p", own: "chk", amount: -2500, cp: "excardCard" });
   assert.equal(totalDebtPaid([p], TIERS, abs).total, 2500);
 });
 
@@ -101,15 +101,15 @@ test("4. institution and merchant names cannot affect debt-payment classificatio
     merchant, description: merchant,
   }) as LiquidityTx;
   const descriptors = [
-    "AMERICANEXPRESS TRANSFER 000320046315336 WEB",
-    "AMERICAN EXPRESS ACH PMT M4082 WEB ID: 2005032111",
-    "Payment to Chase card ending in 0202",
+    "EXAMPLECARD TRANSFER 000320046315336 WEB",
+    "EXAMPLE CARD ACH PMT M4082 WEB ID: 2005032111",
+    "Payment to Example Bank card ending in 0202",
     "zzzz nonsense",
   ];
   for (const d of descriptors) {
-    assert.equal(classifyLiquidity(mk(d, "amexSav"), TIERS).reason, "INTERNAL_TRANSFER",
+    assert.equal(classifyLiquidity(mk(d, "excardSav"), TIERS).reason, "INTERNAL_TRANSFER",
       `descriptor changed the verdict: ${d}`);
-    assert.equal(classifyLiquidity(mk(d, "amexCard"), TIERS).reason, "DEBT_PAYMENT",
+    assert.equal(classifyLiquidity(mk(d, "excardCard"), TIERS).reason, "DEBT_PAYMENT",
       `descriptor changed the verdict: ${d}`);
   }
 
@@ -133,8 +133,8 @@ test("4. institution and merchant names cannot affect debt-payment classificatio
 
 test("5. internal transfers do not alter household net cash flow", () => {
   const legs = [
-    row({ id: "out", own: "chk",     amount: -4000, cp: "amexSav", flowType: "DEBT_PAYMENT" }),
-    row({ id: "in",  own: "amexSav", amount:  4000, cp: "chk",     flowType: "TRANSFER" }),
+    row({ id: "out", own: "chk",     amount: -4000, cp: "excardSav", flowType: "DEBT_PAYMENT" }),
+    row({ id: "in",  own: "excardSav", amount:  4000, cp: "chk",     flowType: "TRANSFER" }),
   ];
   const net = legs.reduce((a, t) => {
     const c = classifyLiquidity(t, TIERS);
@@ -147,9 +147,9 @@ test("5. internal transfers do not alter household net cash flow", () => {
 
 test("6. the card total and its drill-down rows are the SAME set", () => {
   const rows = [
-    row({ id: "a", own: "chk", amount: -650,  cp: "chaseCard" }),
-    row({ id: "b", own: "chk", amount: -4000, cp: "amexSav" }),
-    row({ id: "c", own: "chk", amount: -300,  cp: "amexCard" }),
+    row({ id: "a", own: "chk", amount: -650,  cp: "exbankCard" }),
+    row({ id: "b", own: "chk", amount: -4000, cp: "excardSav" }),
+    row({ id: "c", own: "chk", amount: -300,  cp: "excardCard" }),
   ];
   const selected = selectDebtPaymentCashLegs(rows, TIERS).counted;
   const total = totalDebtPaid(rows, TIERS, abs);
@@ -163,8 +163,8 @@ test("6. the card total and its drill-down rows are the SAME set", () => {
 
 test("7. no event contributes both a transfer amount and a debt-payment amount", () => {
   const rows = [
-    row({ id: "out", own: "chk", amount: -4000, cp: "amexSav", flowType: "DEBT_PAYMENT", eventId: "ev1" }),
-    row({ id: "pay", own: "chk", amount: -650,  cp: "chaseCard", eventId: "ev2" }),
+    row({ id: "out", own: "chk", amount: -4000, cp: "excardSav", flowType: "DEBT_PAYMENT", eventId: "ev1" }),
+    row({ id: "pay", own: "chk", amount: -650,  cp: "exbankCard", eventId: "ev2" }),
   ];
   const debtEvents = new Set(selectDebtPaymentCashLegs(rows, TIERS).counted
     .map((r) => (r as unknown as { transactionEventId: string }).transactionEventId));
@@ -180,8 +180,8 @@ test("7. no event contributes both a transfer amount and a debt-payment amount",
 test("8. pending and posted observations count once through event projection", () => {
   // Both legs of one lifecycle share an event id. Even if a read ever returned
   // both, the projection guard catches it before any total is formed.
-  const pending = row({ id: "pending", own: "chk", amount: -650, cp: "chaseCard", eventId: "ev_life" });
-  const posted  = row({ id: "posted",  own: "chk", amount: -650, cp: "chaseCard", eventId: "ev_life" });
+  const pending = row({ id: "pending", own: "chk", amount: -650, cp: "exbankCard", eventId: "ev_life" });
+  const posted  = row({ id: "posted",  own: "chk", amount: -650, cp: "exbankCard", eventId: "ev_life" });
   assert.equal(findDuplicateEvents([pending, posted] as never).length, 1,
     "a duplicated event must be detectable before it reaches a total");
   // With the projection filter doing its job, only one reaches the authority.
@@ -248,7 +248,7 @@ test("10. an UNRESOLVED transfer verdict cannot satisfy debt-payment admission",
 
 test("11. every admitted debt payment is structurally attested", () => {
   // The two positive forms — and only these.
-  assert.ok(countedAsDebt(attestedRow({ id: "named", own: "chk", amount: -500, cp: "chaseCard" })),
+  assert.ok(countedAsDebt(attestedRow({ id: "named", own: "chk", amount: -500, cp: "exbankCard" })),
     "an owned liability counterparty must admit");
   assert.ok(countedAsDebt(attestedRow({ id: "typed", own: "chk", amount: -500, maturity: "DEBT_PAYMENT" })),
     "a proven liability destination TYPE must admit — an unnameable account is a NAMING limit, not a membership one");
@@ -257,14 +257,14 @@ test("11. every admitted debt payment is structurally attested", () => {
   }
   // The LIABILITY-side leg is untouched: its destination is the own account,
   // structurally certain, needing no counterparty evidence.
-  const leg = classifyLiquidity(attestedRow({ id: "liab", own: "chaseCard", amount: 500 }), TIERS);
+  const leg = classifyLiquidity(attestedRow({ id: "liab", own: "exbankCard", amount: 500 }), TIERS);
   assert.equal(leg.effect, "NEUTRAL");
   assert.equal(leg.reason, "DEBT_PAYMENT", "the liability leg keeps its meaning and stays uncounted");
 });
 
 test("12. descriptor and institution text cannot create a debt payment", () => {
   for (const merchant of [
-    "PAYMENT TO CHASE CARD ENDING IN 0202", "AMERICAN EXPRESS ACH PMT",
+    "PAYMENT TO EXAMPLE BANK CARD ENDING IN 0202", "EXAMPLE CARD ACH PMT",
     "CARD PAYMENT", "Mobile Payment - Thank You", "CREDIT CARD PAYMENT",
   ]) {
     const t = { ...attestedRow({ id: "d", own: "chk", amount: -500, maturity: "UNRESOLVED_TRANSFER" }), merchant } as LiquidityTx;

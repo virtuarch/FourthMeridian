@@ -96,7 +96,7 @@ function main(): void {
   // account's cash from the OTHER account's evidence.
   {
     const facts = new Map<string, HoldingOwnershipFacts>([
-      ["acctA|CUR:USD", own("2025-08-27")], // Robinhood: evidence back to Aug
+      ["acctA|CUR:USD", own("2025-08-27")], // Institution F: evidence back to Aug
       ["acctB|CUR:USD", own("2026-07-19")], // LLC: its own evidence starts later
     ]);
     const set = buildHistoricalHoldings("2025-09-01", [

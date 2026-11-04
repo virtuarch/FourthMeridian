@@ -57,7 +57,7 @@ function makeFakeDb(opts: {
 }) {
   const txns: Row[] = [];
   const item: Record<string, unknown> & { id: string; cursor: string | null } =
-    { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Chase", ...opts.itemExtra };
+    { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Example Bank", ...opts.itemExtra };
   const failPlan = opts.failPlan ?? new Map<string, number>();
   const cursorWrites: (string | null)[] = [];
   /** SyncIssue rows written through the INJECTED client (Phase 2 seam). */

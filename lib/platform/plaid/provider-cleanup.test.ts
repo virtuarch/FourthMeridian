@@ -61,7 +61,7 @@ const marker = (action: string, plaidItemId: string, h: number, extra: Record<st
   ({ action, createdAt: hoursAgo(h), metadata: { provider: "PLAID", plaidItemId, ...extra } });
 
 const item = (id: string, over: Partial<Item> = {}): Item =>
-  ({ id, status: "REVOKED", institutionName: "Chase", userId: `user_abc${id}`, ...over });
+  ({ id, status: "REVOKED", institutionName: "Example Bank", userId: `user_abc${id}`, ...over });
 
 async function load(markers: Marker[], items: Item[]) {
   // The authority resolves `db` at module scope, so the fake is injected by
@@ -90,12 +90,12 @@ async function main(): Promise<void> {
   {
     const r = await load(
       [marker(UNCONFIRMED, "i1", 30, { plaidErrorCode: "INTERNAL_SERVER_ERROR" })],
-      [item("i1", { institutionName: "Amex", userId: "user_zzzz123456" })],
+      [item("i1", { institutionName: "Example Card", userId: "user_zzzz123456" })],
     );
     check("exactly one item is owed", r.owedCount === 1 && r.owed.length === 1);
     const o = r.owed[0];
     check("it names the item, institution and an OPAQUE owner ref (the keyed digest, never the id tail)",
-      o.plaidItemId === "i1" && o.institution === "Amex" && o.ownerRef === opaqueUserRef("user_zzzz123456") && /^user #[0-9a-f]{8}$/.test(o.ownerRef) && !o.ownerRef.includes("123456"),
+      o.plaidItemId === "i1" && o.institution === "Example Card" && o.ownerRef === opaqueUserRef("user_zzzz123456") && /^user #[0-9a-f]{8}$/.test(o.ownerRef) && !o.ownerRef.includes("123456"),
       JSON.stringify(o));
     check("the age is whole hours since the obligation began", o.owedForHours === 30, `${o.owedForHours}`);
     check("the oldest-outstanding summary matches it",

@@ -8,8 +8,8 @@
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs lib/plaid/transfer-authority-sync.test.ts
  *
- * Scenario: an Amex-initiated ACH pull. Plaid tags the CHECKING leg
- * LOAN_PAYMENTS_OTHER_PAYMENT ("ORIG CO NAME:AMERICANEXPRESS CO ENTRY
+ * Scenario: an Example Card-initiated ACH pull. Plaid tags the CHECKING leg
+ * LOAN_PAYMENTS_OTHER_PAYMENT ("ORIG CO NAME:EXAMPLECARD CO ENTRY
  * DESCR:TRANSFER"), so the context-free classifier writes DEBT_PAYMENT/Payment;
  * the matching SAVINGS leg arrives as TRANSFER_IN. A card payment rides along to
  * prove the rule keeps real debt payments.
@@ -76,9 +76,9 @@ function plaidPages(pages: { added?: unknown[]; modified?: unknown[]; removed?: 
   };
 }
 
-const HYSA_OUT = ptx("t_out", "p_chk", 1500, ["LOAN_PAYMENTS", "LOAN_PAYMENTS_OTHER_PAYMENT"], "ORIG CO NAME:AMERICANEXPRESS CO ENTRY DESCR:TRANSFER");
+const HYSA_OUT = ptx("t_out", "p_chk", 1500, ["LOAN_PAYMENTS", "LOAN_PAYMENTS_OTHER_PAYMENT"], "ORIG CO NAME:EXAMPLECARD CO ENTRY DESCR:TRANSFER");
 const HYSA_IN  = ptx("t_in", "p_hysa", -1500, ["TRANSFER_IN", "TRANSFER_IN_ACCOUNT_TRANSFER"], "TRANSFER FROM CHECKING");
-const CARD_OUT = ptx("t_cc_out", "p_chk", 300, ["LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"], "PAYMENT TO CHASE CARD");
+const CARD_OUT = ptx("t_cc_out", "p_chk", 300, ["LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"], "PAYMENT TO EXAMPLE BANK CARD");
 const CARD_IN  = ptx("t_cc_in", "p_card", -300, ["LOAN_PAYMENTS", "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"], "Payment Thank You-Mobile");
 
 const byPlaid = (fake: FakePrisma, id: string) => fake.one("Transaction", { plaidTransactionId: id }) as Record<string, unknown> | undefined;
@@ -89,19 +89,19 @@ async function main(): Promise<void> {
   const res = await syncTransactionsForItem("item_1", { db: client as never, plaid: plaidPages([{ added: [HYSA_OUT, HYSA_IN, CARD_OUT, CARD_IN] }]) as never, restartDelayMs: 0 });
   const out = byPlaid(fake, "t_out");
   check("the sync completed", res.created === 4, JSON.stringify(res));
-  check("the Amex-pull checking leg is TRANSFER", out?.flowType === "TRANSFER", String(out?.flowType));
+  check("the Example Card-pull checking leg is TRANSFER", out?.flowType === "TRANSFER", String(out?.flowType));
   check("…category Transfer", out?.category === "Transfer", String(out?.category));
   check("…owned by TRANSFER_AUTHORITY, classifier version nulled", out?.flowAuthority === "TRANSFER_AUTHORITY" && out?.classifierVersion === null);
   check("…at the certain signature", out?.classificationReason === "ACCOUNT_TYPE_CONTEXT" && out?.classificationConfidence === 1);
   check("…amount and direction untouched", out?.amount === -1500 && out?.flowDirection === "INTERNAL");
   check("the savings leg is untouched (classifier TRANSFER)", byPlaid(fake, "t_in")?.flowAuthority === "CLASSIFIER");
   const ccOut = byPlaid(fake, "t_cc_out");
-  check("the Chase card payment's cash leg stays DEBT_PAYMENT/Payment (classifier)",
+  check("the Example Bank card payment's cash leg stays DEBT_PAYMENT/Payment (classifier)",
     ccOut?.flowType === "DEBT_PAYMENT" && ccOut?.category === "Payment" && ccOut?.flowAuthority === "CLASSIFIER");
   check("the card leg stays DEBT_PAYMENT", byPlaid(fake, "t_cc_in")?.flowType === "DEBT_PAYMENT");
 
   console.log("2. a re-sync of the TRANSFER_AUTHORITY row does not revert it");
-  const modified = { ...HYSA_OUT, name: "ORIG CO NAME:AMERICANEXPRESS CO ENTRY DESCR:TRANSFER v2" };
+  const modified = { ...HYSA_OUT, name: "ORIG CO NAME:EXAMPLECARD CO ENTRY DESCR:TRANSFER v2" };
   await syncTransactionsForItem("item_1", { db: client as never, plaid: plaidPages([{ modified: [modified] }]) as never, restartDelayMs: 0 });
   const again = byPlaid(fake, "t_out");
   check("flowType still TRANSFER", again?.flowType === "TRANSFER", String(again?.flowType));

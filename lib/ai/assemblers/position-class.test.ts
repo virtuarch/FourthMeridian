@@ -36,7 +36,7 @@ function check(name: string, ok: boolean, detail?: string): void {
 const ROWS: CanonicalPositionRow[] = [
   { instrumentId: 'i-btc', symbol: 'BTC', name: 'Bitcoin',  reportingValue: 18_937.58, isCash: false, assetClass: 'CRYPTO' },
   { instrumentId: 'i-vrt', symbol: 'VRT', name: 'Vertiv',   reportingValue: 263.81,    isCash: false, assetClass: 'EQUITY' },
-  { instrumentId: 'i-vgt', symbol: 'VGT', name: 'Vanguard', reportingValue: 235.98,    isCash: false, assetClass: 'ETF' },
+  { instrumentId: 'i-vgt', symbol: 'VGT', name: 'Institution B', reportingValue: 235.98,    isCash: false, assetClass: 'ETF' },
   { instrumentId: 'i-sol', symbol: 'SOL', name: 'Solana',   reportingValue: 74.97,     isCash: false, assetClass: 'CRYPTO' },
   { instrumentId: 'i-cash', symbol: 'CASH', name: 'Cash',   reportingValue: 3_557.74,  isCash: true,  assetClass: 'CASH' },
 ] as CanonicalPositionRow[];

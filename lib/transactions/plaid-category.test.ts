@@ -177,28 +177,27 @@ expectCategory("Transfer row stays Transfer",
   pfc("TRANSFER_IN", "TRANSFER_IN_ACCOUNT_TRANSFER", "Transfer"), "Transfer");
 
 // 6b. isCardPaymentDescriptor — generalized, institution-agnostic phrase match.
-expectBool("descriptor: Chase 'Payment Thank You-Mobile'", isCardPaymentDescriptor("Payment Thank You-Mobile"), true);
-expectBool("descriptor: Amex 'AUTOPAY PAYMENT - THANK YOU'", isCardPaymentDescriptor("AUTOPAY PAYMENT", "AUTOPAY PAYMENT - THANK YOU"), true);
-expectBool("descriptor: Citi 'ONLINE PAYMENT THANK YOU'", isCardPaymentDescriptor("ONLINE PAYMENT, THANK YOU"), true);
+expectBool("descriptor: issuer A 'Payment Thank You-Mobile'", isCardPaymentDescriptor("Payment Thank You-Mobile"), true);
+expectBool("descriptor: issuer B 'AUTOPAY PAYMENT - THANK YOU'", isCardPaymentDescriptor("AUTOPAY PAYMENT", "AUTOPAY PAYMENT - THANK YOU"), true);
+expectBool("descriptor: issuer C 'ONLINE PAYMENT THANK YOU'", isCardPaymentDescriptor("ONLINE PAYMENT, THANK YOU"), true);
 expectBool("descriptor: ordinary merchant 'Uber' → false", isCardPaymentDescriptor("Uber"), false);
 expectBool("descriptor: 'Amazon' → false", isCardPaymentDescriptor("Amazon", "AMAZON MKTP"), false);
 
 // ── CCPAY-2C-2 — COVERAGE DELIBERATELY SURRENDERED ───────────────────────────
 // These two asserted `true` until CCPAY-2C-2 pruned the nine tokens that matched
-// ZERO of 4,334 real rows. Both fixtures were authored from imagination — no
-// Discover or Citi account has ever been connected to this platform, and neither
+// ZERO of 4,334 real rows. Both fixtures were authored from imagination — neither
 // string occurs in any corpus row.
 //
 // They are INVERTED rather than deleted so the surrender stays visible in the
 // suite instead of vanishing with the tokens. The rule that survived is: a
 // payment descriptor SAYING "thank you" still rescues regardless of prefix (the
-// two Citi/Amex cases above still pass via "payment thank you"); one that does
+// two issuer B/C cases above still pass via "payment thank you"); one that does
 // NOT say "thank you" no longer rescues.
 //
-// TO RESTORE: when a real Discover/Citi/Wells row is observed, re-add the token
+// TO RESTORE: when a real row in that shape is observed, re-add the token
 // its descriptor ACTUALLY uses (not a guessed one) and flip these back.
-expectBool("SURRENDERED: Discover 'DISCOVER E-PAYMENT' no longer rescues (token 'e-payment' pruned, 0 real rows)",
-  isCardPaymentDescriptor("DISCOVER E-PAYMENT"), false);
+expectBool("SURRENDERED: 'EXAMPLE CARD E-PAYMENT' no longer rescues (token 'e-payment' pruned, 0 real rows)",
+  isCardPaymentDescriptor("EXAMPLE CARD E-PAYMENT"), false);
 expectBool("SURRENDERED: 'CARDMEMBER SERV WEB PMT' no longer rescues (token 'cardmember serv' pruned, 0 real rows)",
   isCardPaymentDescriptor("CARDMEMBER SERV WEB PMT"), false);
 
@@ -209,7 +208,7 @@ expectBool("SURRENDERED: 'CARDMEMBER SERV WEB PMT' no longer rescues (token 'car
 //     CC-1 correction: the original guard keyed on debtSubtype and matched 0 rows.
 expectBool("guard: Plaid card (type=debt, debtSubtype=null, +1500, descriptor) → true",
   isLiabilityCardPaymentLeg({ accountType: "debt", debtSubtype: null, amount: 1500, merchant: "Payment Thank You-Mobile" }), true);
-expectBool("guard: Amex payment credit (type=debt) → true",
+expectBool("guard: issuer B payment credit (type=debt) → true",
   isLiabilityCardPaymentLeg({ accountType: "debt", amount: 3500, merchant: "AUTOPAY PAYMENT", name: "AUTOPAY PAYMENT - THANK YOU" }), true);
 // SECONDARY signal: manually-entered liability (accountType not "debt" but debtSubtype set) still qualifies.
 expectBool("guard: manual liability (debtSubtype=credit_card) as secondary signal → true",

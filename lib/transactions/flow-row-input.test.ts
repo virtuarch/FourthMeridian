@@ -69,14 +69,14 @@ function row(over: Partial<FlowRowInput> = {}): FlowRowInput {
     row({
       category: "Payment", amount: -300,
       pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD",
-      pfcConfidenceLevel: "HIGH", merchantEntityId: "ent_chase",
+      pfcConfidenceLevel: "HIGH", merchantEntityId: "ent_exbank",
     }),
     { accountType: "checking", debtSubtype: null },
   );
   check("pfcPrimary preserved", input.pfcPrimary === "LOAN_PAYMENTS");
   check("pfcDetailed preserved", input.pfcDetailed === "LOAN_PAYMENTS_CREDIT_CARD");
   check("pfcConfidenceLevel preserved", captured.pfcConfidenceLevel === "HIGH");
-  check("merchantEntityId preserved", captured.merchantEntityId === "ent_chase");
+  check("merchantEntityId preserved", captured.merchantEntityId === "ent_exbank");
   // FIN-002 — a USER category source suppresses the provider taxonomy as a
   // SIGNAL while leaving it on the input (so the write builder persists it).
   check("FIN-002: no categorySource ⇒ not suppressed", input.providerTaxonomySuppressed === undefined);

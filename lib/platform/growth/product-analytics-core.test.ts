@@ -122,7 +122,7 @@ function fixture(): ProductAnalyticsFacts {
     ],
     plaidItems: [
       { id: "pi1", userId: "u_a", externalItemId: "item-real-1", createdAt: T("2026-09-03T09:00:00Z"), status: "ACTIVE", investmentsConsent: null, environment: "production",
-        ...({ encryptedToken: "SECRET-TOKEN", institutionName: "Chase" } as object) },
+        ...({ encryptedToken: "SECRET-TOKEN", institutionName: "Example Bank" } as object) },
       { id: "pi9", userId: "u_a", externalItemId: "demo_item_9", createdAt: T("2026-09-03T09:00:00Z"), status: "ACTIVE", investmentsConsent: null, environment: null },
     ],
     walletConnections: [{ userId: "u_c", createdAt: T("2026-10-08T11:00:00Z"), status: "REVOKED", ...({ walletAddress: "bc1qSECRET" } as object) }],
@@ -283,7 +283,7 @@ console.log("8. privacy and the footnote");
 {
   const json = JSON.stringify(out);
   check("no user id, email, name, token, institution or address reaches the response",
-    !/u_[a-e]|@example|Person |SECRET|Chase|bc1q|item-real|demo_item/.test(json));
+    !/u_[a-e]|@example|Person |SECRET|Example Bank|bc1q|item-real|demo_item/.test(json));
   check("exclusions name jobs/webhooks/operators, harness, prefetch, the presence basis and identity",
     out.exclusions.some((e) => /webhook/.test(e) && /operator/.test(e)) && out.exclusions.some((e) => /harness/.test(e))
     && out.exclusions.some((e) => /prefetch/.test(e)) && out.exclusions.some((e) => /SESSION_ACTIVE_DAY/.test(e)) && out.exclusions.some((e) => /Customer Success/.test(e)));

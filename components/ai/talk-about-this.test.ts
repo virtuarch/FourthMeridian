@@ -88,7 +88,7 @@ check("unknown `period` ⇒ topic kept, period dropped",
   rejectsPeriod.every((p) => { const t = parseTalkTopic({ about: "debt", period: p }); return t?.about === "debt" && t.period === null; }));
 check("repeated `period` (array) ⇒ dropped", parseTalkTopic({ about: "cash", period: ["MTD", "QTD"] })?.period === null);
 check("extra params are ignored, never echoed",
-  !JSON.stringify(suggestedStarter({ about: "debt", q: "$5,000 owed to Chase", amount: "5000" })).match(/5000|Chase|\$/));
+  !JSON.stringify(suggestedStarter({ about: "debt", q: "$5,000 owed to Example Bank", amount: "5000" })).match(/5000|Example Bank|\$/));
 
 // ── 3. templates ─────────────────────────────────────────────────────────────
 console.log("3. templated questions are figure-free");

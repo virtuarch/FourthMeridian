@@ -119,7 +119,7 @@ function makeFake(opts: FakeOpts = {}) {
 
 const okResult: RefreshItemResult = {
   plaidItemId: "item-1",
-  institution: "Chase",
+  institution: "Example Bank",
   ok: true,
   accountsUpdated: 2,
   holdingsUpdated: 0,

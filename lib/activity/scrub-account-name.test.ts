@@ -19,7 +19,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-const REAL = "Real Chase Checking";
+const REAL = "Real Example Bank Checking";
 const checkingHint = { type: "checking", debtSubtype: null };
 const cardHint = { type: "debt", debtSubtype: "credit_card" };
 
@@ -37,7 +37,7 @@ console.log("2. non-FULL redacts to a generic typed label");
   const b = decideScrub({ visibilityLevel: "BALANCE_ONLY", storedName: REAL, hint: checkingHint });
   check("BALANCE_ONLY real name → candidate", b.isCandidate);
   check("BALANCE_ONLY safe value = typed generic", b.safeName === "Checking Account");
-  check("BALANCE_ONLY safe value leaks no real name", !b.safeName.includes("Chase"));
+  check("BALANCE_ONLY safe value leaks no real name", !b.safeName.includes("Example Bank"));
 
   const s = decideScrub({ visibilityLevel: "SUMMARY_ONLY", storedName: REAL, hint: cardHint });
   check("SUMMARY_ONLY real name → candidate", s.isCandidate);

@@ -35,13 +35,13 @@ console.log("\n1. the selector: any non-REVOKED Item of the same institution und
 
 console.log("\n2. the error carries the re-link target, additively");
 {
-  const e = new DuplicateInstitutionError("Chase", "item_abc", "NEEDS_REAUTH");
+  const e = new DuplicateInstitutionError("Example Bank", "item_abc", "NEEDS_REAUTH");
   check("name and code", e.name === "DuplicateInstitutionError" && e.code === "DUPLICATE_INSTITUTION");
   check("existing Item id and status", e.existingItemId === "item_abc" && e.existingStatus === "NEEDS_REAUTH");
-  check("a broken Item points the customer at Reconnect", /Reconnect/.test(e.message) && /Chase/.test(e.message));
+  check("a broken Item points the customer at Reconnect", /Reconnect/.test(e.message) && /Example Bank/.test(e.message));
   check("a healthy Item keeps the original 'refresh it' sentence",
-    duplicateInstitutionMessage("Chase", "ACTIVE") === "You already have Chase connected — refresh it instead of reconnecting.");
-  check("an ERROR Item also points at Reconnect", /Reconnect/.test(duplicateInstitutionMessage("Amex", "ERROR")));
+    duplicateInstitutionMessage("Example Bank", "ACTIVE") === "You already have Example Bank connected — refresh it instead of reconnecting.");
+  check("an ERROR Item also points at Reconnect", /Reconnect/.test(duplicateInstitutionMessage("Example Card", "ERROR")));
 }
 
 console.log("\n3. [source] the gate, the rollback and the 409 contract");

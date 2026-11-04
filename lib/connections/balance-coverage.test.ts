@@ -72,7 +72,7 @@ const debtSlice = {
 const ACCOUNTS = [
   { id: "chk",      type: "checking", balance: CASH,     debtSubtype: null, creditLimit: null,  connection: "2026-10-30", earliestPosted: "2026-07-01" },
   { id: "card",     type: "debt",     balance: CARD,     debtSubtype: null, creditLimit: 5_000, connection: "2026-10-30", earliestPosted: "2026-07-01" },
-  { id: "capone",   type: "debt",     balance: CAPONE,   debtSubtype: null, creditLimit: null,  connection: "2026-10-30", earliestPosted: "2026-08-04" },
+  { id: "instk",   type: "debt",     balance: CAPONE,   debtSubtype: null, creditLimit: null,  connection: "2026-10-30", earliestPosted: "2026-08-04" },
   { id: "mortgage", type: "debt",     balance: MORTGAGE, debtSubtype: null, creditLimit: null,  connection: "2026-10-30", earliestPosted: null },
   { id: "paidoff",  type: "debt",     balance: 0,        debtSubtype: null, creditLimit: null,  connection: "2026-10-30", earliestPosted: null },
   { id: "brokerage", type: "investment", balance: 9_000, debtSubtype: null, creditLimit: null,  connection: "2026-10-30", earliestPosted: null },
@@ -90,7 +90,7 @@ for (const a of ACCOUNTS) {
 }
 const cov = deriveBalanceCoverage(inputs)!;
 {
-  // card walked from its ledger; capone (unwalkable, here WITHOUT a provider
+  // card walked from its ledger; instk (unwalkable, here WITHOUT a provider
   // subtype) floors at its first transaction like the writer; the mortgage at its
   // connection; the zero-balance held-flat debt and the brokerage are not counted.
   assert.deepEqual(cov, {
@@ -103,7 +103,7 @@ const cov = deriveBalanceCoverage(inputs)!;
   assert.equal(deriveBalanceCoverage([]), null);
   assert.deepEqual(balanceCoverageSidesFor("invested"), []);
   assert.deepEqual(balanceCoverageSidesFor("netWorth"), ["asset", "liability"]);
-  assert.ok(!JSON.stringify(cov).includes("capone") && !JSON.stringify(cov).includes(String(MORTGAGE)), "dates only — no ids, no balances");
+  assert.ok(!JSON.stringify(cov).includes("instk") && !JSON.stringify(cov).includes(String(MORTGAGE)), "dates only — no ids, no balances");
   ok("§2 display floors from the one coverage authority; held-flat zero balances + out-of-scope types not counted; dates only");
 }
 

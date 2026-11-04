@@ -42,7 +42,7 @@ async function main() {
     tx('2026-09-14', 9000, { merchantDisplayName: 'After the ceiling' }),
     tx('2026-09-08', -50, { merchantDisplayName: 'Small' }),
     tx('2026-09-10', 4812.66, { merchantDisplayName: 'Acme Payroll', flowType: 'INCOME' as Transaction['flowType'] }),
-    tx('2026-09-12', -3210.55, { merchantDisplayName: undefined, merchant: 'CHASE CREDIT CRD AUTOPAY 1234567890',
+    tx('2026-09-12', -3210.55, { merchantDisplayName: undefined, merchant: 'EXAMPLE BANK CREDIT CRD AUTOPAY 1234567890',
       flowType: 'DEBT_PAYMENT' as Transaction['flowType'], counterpartyAccountId: 'fa_card' } as Partial<Transaction>),
     tx('2026-09-12', 3210.55, { merchantDisplayName: 'Payment Thank You',
       flowType: 'DEBT_PAYMENT' as Transaction['flowType'], counterpartyAccountId: 'fa_checking' } as Partial<Transaction>),

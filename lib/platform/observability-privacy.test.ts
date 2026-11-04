@@ -318,11 +318,11 @@ console.log("runtime · builders emit no customer material even when fed it");
   const plaid = buildPlaidUsage(
     [{ id: "i1", externalItemId: "real-1", createdAt: "2026-07-03", status: "ACTIVE", investmentsConsent: null, environment: "production",
        // extra fields a careless caller might pass through
-       ...({ encryptedToken: "SECRET-TOKEN", institutionName: "Chase", userId: "user-1" } as object) }],
+       ...({ encryptedToken: "SECRET-TOKEN", institutionName: "Example Bank", userId: "user-1" } as object) }],
     [], "2026-09-15",
   );
   const plaidJson = JSON.stringify(plaid);
-  check("plaid usage carries no token, institution or user id", !/SECRET-TOKEN|Chase|user-1|i1/.test(plaidJson), plaidJson.slice(0, 200));
+  check("plaid usage carries no token, institution or user id", !/SECRET-TOKEN|Example Bank|user-1|i1/.test(plaidJson), plaidJson.slice(0, 200));
 
   const fact = {
     id: "e1", runId: "r1", plaidItemId: null, sourceKind: "WALLET" as const, sourceRef: "acct-123456789", network: "BTC",

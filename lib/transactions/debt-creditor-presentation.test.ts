@@ -9,7 +9,7 @@
  * questions with different authorities. Grouping used to answer the second one
  * from the payment DESCRIPTOR, so 18 rows whose creditor account is permanently
  * unknowable — the user paid two cards on the same day for the same amount —
- * appeared beneath confident headings like "American Express Ach".
+ * appeared beneath confident headings like "Example Card Ach".
  *
  * The total was right. The breakdown claimed more than the evidence carried.
  */
@@ -25,10 +25,10 @@ import {
 import { tierResolver, type LiquidityTx } from "./liquidity";
 
 const ACCOUNTS = new Map<string, CreditorAccountRef>([
-  ["chk",       { id: "chk",       name: "CHASE COLLEGE",  type: "checking" }],
-  ["chaseCard", { id: "chaseCard", name: "CREDIT CARD",    type: "debt" }],
-  ["amexCard",  { id: "amexCard",  name: "Platinum Card®", type: "debt" }],
-  ["amexSav",   { id: "amexSav",   name: "High Yield Savings Account", type: "savings" }],
+  ["chk",       { id: "chk",       name: "EXAMPLE BANK COLLEGE",  type: "checking" }],
+  ["exbankCard", { id: "exbankCard", name: "CREDIT CARD",    type: "debt" }],
+  ["excardCard",  { id: "excardCard",  name: "Platinum Card®", type: "debt" }],
+  ["excardSav",   { id: "excardSav",   name: "High Yield Savings Account", type: "savings" }],
 ]);
 const TIERS = tierResolver([...ACCOUNTS.values()].map((a) => ({ id: a.id, type: a.type })));
 
@@ -47,18 +47,18 @@ const row = (o: {
 const abs = (t: { amount: number }) => Math.abs(t.amount);
 
 // The live shapes: 1 nameable creditor, 1 unknowable one.
-const CERTAIN = row({ id: "certain", amount: -650, cp: "chaseCard" });
+const CERTAIN = row({ id: "certain", amount: -650, cp: "exbankCard" });
 const AMBIGUOUS = row({ id: "ambiguous", amount: -2000, cp: null, maturity: "DEBT_PAYMENT",
-                        merchant: "AMERICAN EXPRESS ACH PMT M4082 WEB ID: 2005032111" });
+                        merchant: "EXAMPLE CARD ACH PMT M4082 WEB ID: 2005032111" });
 
 // ── 1 ────────────────────────────────────────────────────────────────────────
 
 test("1. descriptor text never determines creditor identity", () => {
   // Identical evidence, wildly different descriptors — same attribution, always.
   for (const d of [
-    "AMERICAN EXPRESS ACH PMT M4082 WEB ID: 2005032111",
-    "Payment to Chase card ending in 0202 12/24",
-    "AMERICANEXPRESS TRANSFER 000320046315336",
+    "EXAMPLE CARD ACH PMT M4082 WEB ID: 2005032111",
+    "Payment to Example Bank card ending in 0202 12/24",
+    "EXAMPLECARD TRANSFER 000320046315336",
     "Platinum Card payment",
     "zzzz nonsense",
   ]) {
@@ -94,7 +94,7 @@ test("2. account ambiguity never removes a valid debt payment", () => {
 // ── 3 ────────────────────────────────────────────────────────────────────────
 
 test("3. grouping cannot change event membership", () => {
-  const rows = [CERTAIN, AMBIGUOUS, row({ id: "amex", amount: -300, cp: "amexCard" })];
+  const rows = [CERTAIN, AMBIGUOUS, row({ id: "excard", amount: -300, cp: "excardCard" })];
   const selected = selectDebtPaymentCashLegs(rows, TIERS).counted.map((r) => r.id).sort();
   const grouped = groupDebtPaymentsByCreditor(rows, ACCOUNTS, abs).flatMap((g) => g.transactionIds).sort();
   assert.deepEqual(grouped, selected, "grouping added or dropped rows");
@@ -105,7 +105,7 @@ test("3. grouping cannot change event membership", () => {
 // ── 4 ────────────────────────────────────────────────────────────────────────
 
 test("4. group totals equal the drawer rows they hand over", () => {
-  const rows = [CERTAIN, AMBIGUOUS, row({ id: "amex", amount: -300, cp: "amexCard" })];
+  const rows = [CERTAIN, AMBIGUOUS, row({ id: "excard", amount: -300, cp: "excardCard" })];
   const byId = new Map(rows.map((r) => [r.id, r]));
   for (const g of groupDebtPaymentsByCreditor(rows, ACCOUNTS, abs)) {
     const drawerSum = g.transactionIds.reduce((s, id) => s + Math.abs(byId.get(id)!.amount), 0);
@@ -117,7 +117,7 @@ test("4. group totals equal the drawer rows they hand over", () => {
 // ── 5 ────────────────────────────────────────────────────────────────────────
 
 test("5. Σ(groups) equals the canonical total — the card and its breakdown agree", () => {
-  const rows = [CERTAIN, AMBIGUOUS, row({ id: "amex", amount: -300, cp: "amexCard" })];
+  const rows = [CERTAIN, AMBIGUOUS, row({ id: "excard", amount: -300, cp: "excardCard" })];
   const total = totalDebtPaid(rows, TIERS, abs).total;
   const grouped = groupDebtPaymentsByCreditor(rows, ACCOUNTS, abs).reduce((s, g) => s + g.value, 0);
   assert.equal(grouped, total, "the breakdown does not sum to the headline");
@@ -140,7 +140,7 @@ test("6. an unconvertible row leaves BOTH the total and the group, together", ()
 // ── 7 ────────────────────────────────────────────────────────────────────────
 
 test("7. every NAMED creditor group is structurally proven", () => {
-  const rows = [CERTAIN, AMBIGUOUS, row({ id: "amex", amount: -300, cp: "amexCard" })];
+  const rows = [CERTAIN, AMBIGUOUS, row({ id: "excard", amount: -300, cp: "excardCard" })];
   for (const g of groupDebtPaymentsByCreditor(rows, ACCOUNTS, abs)) {
     if (g.creditorAccountId === null) continue;              // the honest bucket
     const acct = ACCOUNTS.get(g.creditorAccountId);
@@ -156,11 +156,11 @@ test("8. ambiguous rows always appear under the unresolved bucket, which sorts l
   // The big unnameable group must not outrank a small named creditor: it is a
   // disclosure, not a creditor.
   const rows = [
-    row({ id: "small", amount: -1, cp: "chaseCard" }),
+    row({ id: "small", amount: -1, cp: "exbankCard" }),
     row({ id: "huge", amount: -99999, maturity: "DEBT_PAYMENT" }),
   ];
   const groups = groupDebtPaymentsByCreditor(rows, ACCOUNTS, abs);
-  assert.equal(groups[0].creditorAccountId, "chaseCard", "the unresolved bucket outranked a real creditor");
+  assert.equal(groups[0].creditorAccountId, "exbankCard", "the unresolved bucket outranked a real creditor");
   assert.equal(groups[groups.length - 1].id, UNRESOLVED_CREDITOR_KEY);
   assert.deepEqual(groups[groups.length - 1].transactionIds, ["huge"]);
 
@@ -185,7 +185,7 @@ test("a SIGNED magnitude converter still produces groups (the authority abs's)",
 test("grouping describes only rows the SELECTION counted", () => {
   // The liability-side leg must never reach a group. Handing grouping the raw
   // scope would fold it in and inflate the breakdown past its own total.
-  const liabilityLeg = row({ id: "liab", amount: 650, own: "chaseCard", cp: "chk" });
+  const liabilityLeg = row({ id: "liab", amount: 650, own: "exbankCard", cp: "chk" });
   const raw = [CERTAIN, liabilityLeg];
   const counted = selectDebtPaymentCashLegs(raw, TIERS).counted;
   const groups = groupDebtPaymentsByCreditor(counted, ACCOUNTS, abs);

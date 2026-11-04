@@ -36,7 +36,7 @@ const DIVIDENDS = [
   { id: "d2", amount: 7.40, instrumentId: "i-jpm", ticker: "JPM" },
   { id: "d3", amount: 12.82, instrumentId: "i-nke", ticker: "NKE" },
 ];
-const LABELS = new Map([["hysa", "High Yield Savings Account"], ["chk", "CHASE SAVINGS"]]);
+const LABELS = new Map([["hysa", "High Yield Savings Account"], ["chk", "EXAMPLE BANK SAVINGS"]]);
 
 console.log("v2.6-TRUTH-5. (1) Broad income EQUALS the sum of its included lines");
 {

@@ -73,7 +73,7 @@ function matches(item: Item, where: Record<string, unknown>): boolean {
 
 function makeWorld(initial: Partial<Item> = {}) {
   const item: Item = {
-    id: "item_1", cursor: "C0", encryptedToken: FAKE_TOKEN, institutionName: "Amex", userId: "u1",
+    id: "item_1", cursor: "C0", encryptedToken: FAKE_TOKEN, institutionName: "Example Card", userId: "u1",
     status: "ACTIVE", errorCode: null, completedSyncCount: 3, syncLockedAt: null, syncIncompleteAt: null, ...initial,
   };
   const updateMany = async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {

@@ -231,7 +231,7 @@ async function run(): Promise<void> {
     const input = {
       type: "SYNC_FAILED" as NotificationTypeId,
       userId: "u1",
-      data: { plaidItemId: "item_1", institutionName: "Chase" },
+      data: { plaidItemId: "item_1", institutionName: "Example Bank" },
     };
     const first = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
     const second = await createNotification(input, { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter });
@@ -390,7 +390,7 @@ async function run(): Promise<void> {
     // with no override rows (dedupe key resolves from data.plaidItemId).
     const fake = makeFakeClient();
     const res = await createNotification(
-      { type: "SYNC_COMPLETED", userId: "u1", data: { plaidItemId: "p", institutionName: "Chase" } },
+      { type: "SYNC_COMPLETED", userId: "u1", data: { plaidItemId: "p", institutionName: "Example Bank" } },
       { client: fake.client, prefClient: defaultPrefs, emailAdapter: silentAdapter },
     );
     check("default-ON type (SYNC_COMPLETED) creates a row with no override rows", res.status === "created" && fake.rows.length === 1);
@@ -505,7 +505,7 @@ async function run(): Promise<void> {
     const fake = makeFakeClient();
     const { adapter, messages } = makeFakeAdapter({ status: "sent", provider: "resend" });
     const emailOnFinancial = makePrefClient([{ category: "FINANCIAL", channel: "EMAIL", enabled: true }]);
-    const syncInput = { type: "SYNC_FAILED" as NotificationTypeId, userId: "u1", data: { plaidItemId: "p1", institutionName: "Chase" } };
+    const syncInput = { type: "SYNC_FAILED" as NotificationTypeId, userId: "u1", data: { plaidItemId: "p1", institutionName: "Example Bank" } };
     const first = await createNotification(syncInput, { client: fake.client, prefClient: emailOnFinancial, emailAdapter: adapter });
     const second = await createNotification(syncInput, { client: fake.client, prefClient: emailOnFinancial, emailAdapter: adapter });
     check("suppressed duplicate ships no second email",

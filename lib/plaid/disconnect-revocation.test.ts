@@ -74,7 +74,7 @@ type AuditRow = { action: string; metadata: Record<string, unknown>; createdAt: 
 
 function makeFakeDb(opts: { liveConnections?: number } = {}) {
   const audits: AuditRow[] = [];
-  const item = { id: "item_1", userId: "u1", encryptedToken: FAKE_TOKEN, status: "ACTIVE", institutionName: "Chase" };
+  const item = { id: "item_1", userId: "u1", encryptedToken: FAKE_TOKEN, status: "ACTIVE", institutionName: "Example Bank" };
   let clock = 0;
   return {
     _audits: audits, _item: item,

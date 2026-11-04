@@ -147,9 +147,9 @@ console.log("\n3. Cash accounts — one row model");
   const state = (reachable: number, pendingSum: number, adjusted: number, basis: string) =>
     ({ reachable, unexplained: null, state: "EXACT", pendingCount: pendingSum ? 1 : 0, pendingSum, adjusted, basis });
   const ACCTS: CashLedgerAccount[] = [
-    { id: "chk", name: "Checking", type: "checking", institution: "Chase", balance: 5000, adjustedBalance: 4900, currency: "USD", lastUpdated: NOW,
+    { id: "chk", name: "Checking", type: "checking", institution: "Example Bank", balance: 5000, adjustedBalance: 4900, currency: "USD", lastUpdated: NOW,
       currentState: state(4900, -100, 4900, "PENDING_EXCLUDED") } as CashLedgerAccount,
-    { id: "unp", name: "No avail", type: "checking", institution: "Ally", balance: 1000, adjustedBalance: 1000, currency: "USD", lastUpdated: NOW,
+    { id: "unp", name: "No avail", type: "checking", institution: "Institution E", balance: 1000, adjustedBalance: 1000, currency: "USD", lastUpdated: NOW,
       currentState: state(950, -50, 1000, "UNPROVEN") } as CashLedgerAccount,
     { id: "agg", name: "Shared accounts", type: "savings", institution: "", balance: 3000, currency: "USD", lastUpdated: NOW,
       aggregate: { memberAccountIds: ["x", "y", "z"], memberCount: 3, owedTotal: 0, creditTotal: 0 } } as CashLedgerAccount,

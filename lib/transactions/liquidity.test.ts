@@ -27,7 +27,7 @@ const ACCOUNTS = [
   { id: "chk",  type: "checking" },   // liquid
   { id: "sav",  type: "savings" },    // liquid
   { id: "brk",  type: "investment" }, // asset
-  { id: "cb",   type: "crypto" },     // asset (Coinbase-like)
+  { id: "cb",   type: "crypto" },     // asset (Example Exchange-like)
   { id: "card", type: "debt" },       // liability
   { id: "loan", type: "debt" },       // liability
 ];
@@ -89,7 +89,7 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
     c.effect === "CASH_IN" && c.reason === "OTHER_INCOME" && c.confidence < 1, JSON.stringify(c));
 }
 
-// Coinbase (asset) → Chase (liquid) : asset liquidation + liquidity in
+// Example Exchange (asset) → Example Bank (liquid) : asset liquidation + liquidity in
 {
   const c = cls({ ownAccount: "chk", amount: 8141.98, flowType: "TRANSFER", counterpartyAccountId: "cb" });
   check("asset → liquid = CASH_IN / ASSET_LIQUIDATION (crypto sale proceeds)",
@@ -97,7 +97,7 @@ const cls = (o: Parameters<typeof tx>[0]) => classifyLiquidity(tx(o), ctx);
   check("asset liquidation is NOT earned income", c.reason !== "EARNED_INCOME");
 }
 
-// Chase (liquid) → brokerage (asset) : asset deployment + liquidity out
+// Example Bank (liquid) → brokerage (asset) : asset deployment + liquidity out
 {
   const c = cls({ ownAccount: "chk", amount: -2000, flowType: "TRANSFER", counterpartyAccountId: "brk" });
   check("liquid → asset = CASH_OUT / ASSET_DEPLOYMENT",

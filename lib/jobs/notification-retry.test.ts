@@ -366,7 +366,7 @@ async function main(): Promise<void> {
       const { client } = makeStore([errorRow("d-label", {
         notification: liveNotification({
           type: "SYNC_FAILED", category: "FINANCIAL", priority: "HIGH",
-          title: "Chase needs you to sign in again", href: "/dashboard/connections", metadata, ...over,
+          title: "Example Bank needs you to sign in again", href: "/dashboard/connections", metadata, ...over,
         }),
       })]);
       const adapter: ChannelAdapter = {
@@ -376,17 +376,17 @@ async function main(): Promise<void> {
       await mute(() => retryNotifications(client, adapter, NOW));
       return seen;
     };
-    const reauth = await labels({ plaidItemId: "i", institutionName: "Chase", connectionState: "reauth-required" });
-    check("retry: reauth row resends 'Reconnect Chase'", reauth.length === 1 && reauth[0] === "Reconnect Chase", JSON.stringify(reauth));
-    const disc = await labels({ plaidItemId: "i", institutionName: "Chase", connectionState: "disconnected" });
+    const reauth = await labels({ plaidItemId: "i", institutionName: "Example Bank", connectionState: "reauth-required" });
+    check("retry: reauth row resends 'Reconnect Example Bank'", reauth.length === 1 && reauth[0] === "Reconnect Example Bank", JSON.stringify(reauth));
+    const disc = await labels({ plaidItemId: "i", institutionName: "Example Bank", connectionState: "disconnected" });
     check("retry: disconnected row resends 'Reconnect'", disc[0] === "Reconnect", JSON.stringify(disc));
-    const legacy = await labels({ plaidItemId: "i", institutionName: "Chase" });
+    const legacy = await labels({ plaidItemId: "i", institutionName: "Example Bank" });
     check("retry: row without a state → conservative 'Review connection'", legacy[0] === "Review connection", JSON.stringify(legacy));
-    const junk = await labels({ plaidItemId: "i", institutionName: "Chase", connectionState: "disconnected!!" });
+    const junk = await labels({ plaidItemId: "i", institutionName: "Example Bank", connectionState: "disconnected!!" });
     check("retry: unknown state → 'Review connection', never a reconnect claim", junk[0] === "Review connection", JSON.stringify(junk));
     const none = await labels(null);
     check("retry: null metadata → 'Review connection'", none[0] === "Review connection", JSON.stringify(none));
-    const noHref = await labels({ connectionState: "reauth-required", institutionName: "Chase" }, { href: null });
+    const noHref = await labels({ connectionState: "reauth-required", institutionName: "Example Bank" }, { href: null });
     check("retry: no href → no label (no CTA to label)", noHref.length === 1 && noHref[0] === undefined, JSON.stringify(noHref));
     const other = await labels({ inviteId: "x" }, { type: "SPACE_INVITE_ACCEPTED", category: "SPACES" });
     check("retry: a type without an actionLabel keeps the generic default", other[0] === undefined, JSON.stringify(other));

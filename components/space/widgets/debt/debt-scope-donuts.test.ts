@@ -56,17 +56,17 @@ const debt = (over: Record<string, unknown>): DebtPerspectiveAccount =>
 
 // Positive balance = owed (lib/debt/balance-semantics amountOwed).
 const ACCOUNTS: DebtPerspectiveAccount[] = [
-  debt({ id: "visa",   name: "Visa",        institution: "Chase",  balance: 1200.11, debtSubtype: "credit_card" }),
-  debt({ id: "gold",   name: "Gold",        institution: "Amex",   balance: 300.27,  providerSubtype: "credit card" }),
-  debt({ id: "loc",    name: "Line",        institution: "Chase",  balance: 99.5,    debtSubtype: "line_of_credit" }),
-  debt({ id: "paid",   name: "Paid card",   institution: "Citi",   balance: 0,       debtSubtype: "credit_card" }),
-  debt({ id: "over",   name: "Overpaid",    institution: "Citi",   balance: -50,     debtSubtype: "credit_card" }),
+  debt({ id: "visa",   name: "Visa",        institution: "Example Bank",  balance: 1200.11, debtSubtype: "credit_card" }),
+  debt({ id: "gold",   name: "Gold",        institution: "Example Card",   balance: 300.27,  providerSubtype: "credit card" }),
+  debt({ id: "loc",    name: "Line",        institution: "Example Bank",  balance: 99.5,    debtSubtype: "line_of_credit" }),
+  debt({ id: "paid",   name: "Paid card",   institution: "Institution C",   balance: 0,       debtSubtype: "credit_card" }),
+  debt({ id: "over",   name: "Overpaid",    institution: "Institution C",   balance: -50,     debtSubtype: "credit_card" }),
   debt({ id: "mort",   name: "Home",        institution: "Wells",  balance: 250000,  debtSubtype: "mortgage" }),
-  debt({ id: "auto",   name: "Car",         institution: "Chase",  balance: 8000.34, providerSubtype: "auto" }),
+  debt({ id: "auto",   name: "Car",         institution: "Example Bank",  balance: 8000.34, providerSubtype: "auto" }),
   debt({ id: "stud",   name: "School",      institution: "Nelnet", balance: 12000,   debtSubtype: "student_loan" }),
   // A credit limit alone is NOT evidence of a card (owner D-5) ⇒ Other, in neither view.
   debt({ id: "iou",    name: "IOU",         institution: "Friend", balance: 500, creditLimit: 1000 }),
-  { id: "chk", name: "Checking", type: "checking", institution: "Chase", balance: 9999, currency: "USD" } as unknown as DebtPerspectiveAccount,
+  { id: "chk", name: "Checking", type: "checking", institution: "Example Bank", balance: 9999, currency: "USD" } as unknown as DebtPerspectiveAccount,
 ];
 
 /** The class ledger's own figure, computed independently (LiabilitiesLedger buildRows: convertMoney at yesterday-UTC, amount ?? 0, then max(·,0)). */

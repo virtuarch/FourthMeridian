@@ -44,7 +44,7 @@ function row(reportingValue: number) {
     reportingValue, currency: "USD", reportingCurrency: "USD",
     quantityTier: "observed", priceTier: "observed", fxTier: "observed", overallTier: "observed",
     basisUsed: "raw-close", priceDate: "2026-07-13", staleDays: 0, reason: "ok", conflicted: false,
-    symbol: "VTI", name: "Vanguard", share: 0.5, assetClass: "US_STOCK", sector: null, isCash: false,
+    symbol: "VTI", name: "Institution B", share: 0.5, assetClass: "US_STOCK", sector: null, isCash: false,
     costBasis: 80,
   };
 }

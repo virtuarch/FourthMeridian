@@ -169,10 +169,10 @@ const previewAttention = {
   items: [
     attItem("job:evaluate-alerts", "job", "evaluate-alerts", "critical", "Dead — no run recorded for several times its 6 h cadence (last started 23d ago)."),
     attItem("job:sol-history-backfill", "job", "sol-history-backfill", "critical", "Dead — no run recorded for several times its 1 h cadence (last started 2d ago)."),
-    attItem("c4", "connection", "Schwab", "error", "Needs reauthorization — the customer must reconnect."),
-    attItem("c1", "connection", "Chase", "warning", "Stale — last success 3 days ago."),
-    attItem("c2", "connection", "Amex", "warning", "Stale — last success 4 days ago."),
-    attItem("c3", "connection", "Citi", "warning", "Stale — last success 5 days ago."),
+    attItem("c4", "connection", "Example Brokerage", "error", "Needs reauthorization — the customer must reconnect."),
+    attItem("c1", "connection", "Example Bank", "warning", "Stale — last success 3 days ago."),
+    attItem("c2", "connection", "Example Card", "warning", "Stale — last success 4 days ago."),
+    attItem("c3", "connection", "Institution C", "warning", "Stale — last success 5 days ago."),
   ],
   counts: { critical: 2, error: 1, warning: 3, info: 0 }, authoritiesChecked: { count: 7, names: [] }, authoritiesFailed: [], floors: [],
   recentFirings: { runs: 0, newestEvaluatedAt: null, oldestEvaluatedAt: null, count: 0, items: [] }, userImpact: {},
@@ -182,7 +182,7 @@ const previewAttention = {
   check("the two dead jobs fold into ONE scheduler group naming the cause", g.filter((x) => x.key === "scheduler-inactive").length === 1 && g[0].title === "15 jobs" && /scheduler not active/.test(g[0].line), `${g[0].title} · ${g[0].line}`);
   check("…counting every job the scheduler has not woken (15), not one row per job", g[0].count === 15 && !/dead/i.test(`${g[0].title} ${g[0].line}`), `${g[0].count} ${g[0].line}`);
   check("three stale connections are ONE group ('3 connections · Stale')", g.some((x) => x.title === "3 connections" && x.line === "Stale" && x.count === 3));
-  check("a lone reauth connection stays its own row", g.some((x) => x.title === "Schwab" && x.count === 1));
+  check("a lone reauth connection stays its own row", g.some((x) => x.title === "Example Brokerage" && x.count === 1));
   check("groups keep the server's (severity-ranked) order — no second ordering authority", g.map((x) => x.severity).join() === "critical,error,warning");
   const gActive = groupAttention(previewAttention, evActive, prodJobs);
   check("with an ACTIVE scheduler, job items are NOT folded into a scheduler group", !gActive.some((x) => x.key === "scheduler-inactive") && gActive.some((x) => x.title === "2 jobs" && x.action.kind === "jobs"));

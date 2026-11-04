@@ -32,12 +32,12 @@ const code = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8").replace
 // ── A ───────────────────────────────────────────────────────────────────────
 console.log("A · account labels");
 {
-  check("minimized: institution · type · ••last4", minimizedAccountLabel({ institution: "Chase", type: "checking", mask: "1234" }) === "Chase · Checking ••1234");
+  check("minimized: institution · type · ••last4", minimizedAccountLabel({ institution: "Example Bank", type: "checking", mask: "1234" }) === "Example Bank · Checking ••1234");
   check("only the last 4 digits of a longer mask, digits only", maskedDigits("00-98765") === "••8765" && maskedDigits("ab") === null && maskedDigits(null) === null);
   check("no mask ⇒ type word alone; unknown type ⇒ 'Account'", minimizedAccountPart({ type: "savings", mask: null }) === "Savings" && minimizedAccountPart({ type: "weird", mask: null }) === "Account");
   check("no institution ⇒ the account part alone", minimizedAccountLabel({ institution: null, type: "debt", mask: "9" }) === "Debt ••9");
-  check("detail label adds the customer's account name", detailAccountLabel({ institution: "Chase", type: "checking", mask: "1234", name: "Rent fund" }) === "Rent fund (Chase · Checking ••1234)");
-  check("detail label without a name is the minimized label", detailAccountLabel({ institution: "Chase", type: "checking", mask: null, name: "  " }) === "Chase · Checking");
+  check("detail label adds the customer's account name", detailAccountLabel({ institution: "Example Bank", type: "checking", mask: "1234", name: "Rent fund" }) === "Rent fund (Example Bank · Checking ••1234)");
+  check("detail label without a name is the minimized label", detailAccountLabel({ institution: "Example Bank", type: "checking", mask: null, name: "  " }) === "Example Bank · Checking");
 }
 
 // ── B ───────────────────────────────────────────────────────────────────────
@@ -97,9 +97,9 @@ console.log("D · full account names only in the audited profile");
   check("…through the detail label", /detailAccountLabel\(a\)/.test(detail));
   const v = projectIncidents(
     [{ id: "i1", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: null, financialAccountId: "a1", firstSeenAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), brokenNow: true, state: "active", freshness: "current" }],
-    [], [], new Map([["a1", "Rent fund (Chase · Checking ••1234)"]]),
+    [], [], new Map([["a1", "Rent fund (Example Bank · Checking ••1234)"]]),
   );
-  check("projectIncidents attaches the label", v.open[0].account === "Rent fund (Chase · Checking ••1234)");
+  check("projectIncidents attaches the label", v.open[0].account === "Rent fund (Example Bank · Checking ••1234)");
   check("…and null without one", projectIncidents(
     [{ id: "i2", provider: "PLAID", kind: "SYNC_FAILED", plaidItemId: "p", financialAccountId: null, firstSeenAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), brokenNow: true, state: "active", freshness: "current" }], [], [],
   ).open[0].account === null);

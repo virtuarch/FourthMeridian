@@ -31,7 +31,7 @@ const cases: [string, string][] = [
   ["the bus's schedule", "the bus's schedule"],
   ["the US's rates", "the US's rates"],
   ["Chris' account (already right)", "Chris' account (already right)"],
-  ["Wells Fargo's fee", "Wells Fargo's fee"],
+  ["Institution D's fee", "Institution D's fee"],
   ["\"It's\" stays; it's lowercase", "\"It's\" stays; it's lowercase"],
 ];
 for (const [input, want] of cases) {

@@ -165,7 +165,7 @@ const itemClient: PlaidItemReadClient = {
   plaidItem: {
     async findUnique({ where }) {
       return where.id === "item_1"
-        ? { userId: "u1", institutionName: "Chase" }
+        ? { userId: "u1", institutionName: "Example Bank" }
         : null;
     },
   },
@@ -387,7 +387,7 @@ async function run(): Promise<void> {
       "condition key + owner + institution from the item row",
       store.rows[0].dedupeKey === "SYNC_FAILED:item:item_1:open" &&
         store.rows[0].userId === "u1" &&
-        (store.rows[0].data.title as string).includes("Chase"),
+        (store.rows[0].data.title as string).includes("Example Bank"),
     );
 
     // …then by the manual refresh route, then by tomorrow's cron: suppressed.
@@ -443,7 +443,7 @@ async function run(): Promise<void> {
     const store = makeStore();
     const sent: string[] = [];
     const res = await createNotification(
-      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
+      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Example Bank" } },
       {
         client: store.writeClient,
         prefClient: prefsWith([{ category: "FINANCIAL", channel: "IN_APP", enabled: false }]),
@@ -458,7 +458,7 @@ async function run(): Promise<void> {
     // FINANCIAL in-app AND email off → nothing at all (the email preference decides the email).
     const store = makeStore();
     const res = await createNotification(
-      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
+      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Example Bank" } },
       { client: store.writeClient, prefClient: prefsWith([
         { category: "FINANCIAL", channel: "IN_APP", enabled: false },
         { category: "FINANCIAL", channel: "EMAIL", enabled: false },
@@ -470,7 +470,7 @@ async function run(): Promise<void> {
     // SYNC_FAILED defaults email ON (actionable) — delivery row via fake adapter.
     const store = makeStore();
     const res = await createNotification(
-      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Chase" } },
+      { type: "SYNC_FAILED", userId: "u1", data: { plaidItemId: "item_1", institutionName: "Example Bank" } },
       {
         client: store.writeClient,
         prefClient: noPrefs,

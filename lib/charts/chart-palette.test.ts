@@ -34,7 +34,7 @@ function main(): void {
   check("every entry is a hex colour", CHART_PALETTE.every((c) => /^#[0-9a-f]{6}$/i.test(c)));
 
   console.log("order independence — the core property");
-  const ids = ["chase", "vanguard", "ally", "fidelity", "schwab"];
+  const ids = ["exbank", "instb", "inste", "instg", "exbroker"];
   const forward = assignStableColors(ids);
   const reversed = assignStableColors([...ids].reverse());
   check(
@@ -42,7 +42,7 @@ function main(): void {
     ids.every((id, i) => forward[i] === reversed[reversed.length - 1 - i]),
   );
 
-  const shuffled = ["schwab", "chase", "fidelity", "ally", "vanguard"];
+  const shuffled = ["exbroker", "exbank", "instg", "inste", "instb"];
   const shuffledColors = assignStableColors(shuffled);
   check(
     "arbitrary reordering does not change any item's colour",
@@ -54,13 +54,13 @@ function main(): void {
   // colliding ids DO trade colours when one leaves (the survivor reclaims its
   // preference). Still strictly better than index assignment, where removing the
   // FIRST item recoloured EVERY item after it.
-  const nonContending = ["chase", "ally", "vanguard"];
+  const nonContending = ["exbank", "inste", "instb"];
   check(
     "fixture ids genuinely do not contend",
     new Set(nonContending.map(preferredSlot)).size === nonContending.length,
   );
   const beforeDrop = assignStableColors(nonContending);
-  const afterDrop = assignStableColors(["chase", "vanguard"]);
+  const afterDrop = assignStableColors(["exbank", "instb"]);
   check(
     "a survivor keeps its colour when a non-contending sibling leaves",
     afterDrop[1] === beforeDrop[2] && afterDrop[0] === beforeDrop[0],
@@ -116,7 +116,7 @@ function main(): void {
   );
   check(
     "hash slot is in range for varied keys",
-    ["", "a", "Chase Bank", "アカウント", "id-with-dashes-123"].every((k) => {
+    ["", "a", "Example Bank Bank", "アカウント", "id-with-dashes-123"].every((k) => {
       const s = preferredSlot(k);
       return Number.isInteger(s) && s >= 0 && s < CHART_PALETTE.length;
     }),

@@ -410,17 +410,17 @@ test("P5: a BARE four-digit token is never a mask", () => {
 
 test("P5: an institution with no registered extractor yields nothing, silently", () => {
   const ctx = { institutionId: "ins_10", maskToAccountIds: new Map(), selfAccountId: "s" };
-  // American Express: 147 measured transfer rows, 0 correlation tokens. The
-  // reference case for graceful degradation.
+  // ins_10 has no registered extractor (its transfer rows carry no correlation
+  // token). The reference case for graceful degradation.
   assert.equal(extractProviderLinks("MOBILE PAYMENT - THANK YOU", ctx).correlation, null);
   assert.equal(extractProviderLinks("transaction#: 30039468383", ctx).correlation, null,
-    "a Chase pattern must not fire for a different institution");
+    "the ins_56 pattern must not fire for a different institution");
 });
 
 test("P5: the raw provider token never leaves the extractor", () => {
   const ctx = { institutionId: "ins_56", maskToAccountIds: new Map(), selfAccountId: "s" };
   const r = extractProviderLinks("Online Transfer to SAV ...9516 transaction#: 30039468383", ctx);
-  assert.ok(r.correlation, "Chase IS registered and should extract");
+  assert.ok(r.correlation, "ins_56 IS registered and should extract");
   assert.ok(!JSON.stringify(r).includes("30039468383"), "the raw token must not appear anywhere in the output");
   assert.ok(!JSON.stringify(r).includes("9516"), "mask digits must not appear anywhere in the output");
 });

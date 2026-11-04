@@ -58,8 +58,8 @@ console.log("1. The copy states the consequence");
   const l = leaveSpaceConfirm("Household");
   check("leave: says shared accounts leave with you", /every account you shared/i.test(l.message));
 
-  const v = revokeAccountConfirm("Chase Checking");
-  check("revoke: names the account", v.title.includes("Chase Checking"));
+  const v = revokeAccountConfirm("Example Bank Checking");
+  check("revoke: names the account", v.title.includes("Example Bank Checking"));
   check("revoke: says it leaves the totals for everyone", /totals/i.test(v.message) && /members/i.test(v.message));
   check("revoke: says the account is NOT deleted", /not deleted/i.test(v.message));
 }

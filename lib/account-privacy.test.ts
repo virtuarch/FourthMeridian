@@ -69,7 +69,7 @@ async function main(): Promise<void> {
       id:             over.id,
       name:           `Real name ${over.id}`,
       type:           over.type ?? "debt",
-      institution:    "Chase",
+      institution:    "Example Bank",
       balance:        over.balance,
       currency:       over.currency ?? "USD",
       lastUpdated:    over.lastUpdated ?? T_NEW,

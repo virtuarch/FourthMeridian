@@ -62,7 +62,7 @@ const INT_MID = ['2024-08-15','2024-09-17','2024-10-16','2024-11-18','2024-12-16
 const INT_10 = ['2025-10-10','2025-11-10','2025-12-10','2026-01-10','2026-02-10','2026-03-10',
   '2026-04-10','2026-05-10','2026-06-10','2026-07-10','2026-08-10'];
 
-/** Both payrolls live on CHASE COLLEGE, whose ledger reaches 2026-08-25. */
+/** Both payrolls live on EXAMPLE BANK COLLEGE, whose ledger reaches 2026-08-25. */
 const PAYROLL_LEDGER = '2026-08-25';
 
 const cadOf = (dates: readonly string[], key: string): Cadence => {

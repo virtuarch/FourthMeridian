@@ -139,7 +139,7 @@ interface SeenOpts {
 function okItemResult(overrides: Partial<RefreshItemResult> = {}): RefreshItemResult {
   return {
     plaidItemId: "item-1",
-    institution: "Chase",
+    institution: "Example Bank",
     ok: true,
     accountsUpdated: 2,
     holdingsUpdated: 3,
@@ -313,11 +313,11 @@ async function main() {
 
     const deps: RefreshAllDeps = {
       listActiveItems: async () => [
-        { id: "ok-1",     institutionName: "Chase" },
+        { id: "ok-1",     institutionName: "Example Bank" },
         { id: "orphan",   institutionName: "Dead Bank" },
-        { id: "locked",   institutionName: "Amex" },
-        { id: "boom",     institutionName: "Schwab" },
-        { id: "ok-2",     institutionName: "Fidelity" },
+        { id: "locked",   institutionName: "Example Card" },
+        { id: "boom",     institutionName: "Example Brokerage" },
+        { id: "ok-2",     institutionName: "Institution G" },
       ],
       hasActiveLinkedAccount: async (id) => id !== "orphan",
       selfHealOrphaned: async (id) => { selfHealed.push(id); },

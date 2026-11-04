@@ -69,7 +69,7 @@ const FULL: OverviewSignals = {
   },
   CUSTOMER_SUCCESS: {
     syncIssues: ok({ activeTotal: 7, truncated: true, severityCounts: { critical: 1 }, items: [
-      { id: "c1", title: "Chase", operationLabel: "Balance refresh", description: "Item login required", severity: "critical" as const, lastOccurredAt: "2026-10-30T09:00:00.000Z" },
+      { id: "c1", title: "Example Bank", operationLabel: "Balance refresh", description: "Item login required", severity: "critical" as const, lastOccurredAt: "2026-10-30T09:00:00.000Z" },
     ] }),
     incidentsDaily: ok({ checkedAt: NOW.toISOString(), floor: false, days: days(14, () => ({ opened: 1, resolved: 0 })) }),
   },
@@ -236,10 +236,10 @@ console.log("R1 review fixes");
 {
   // An incident carried by BOTH Ops attention (incident:<id>) and CS incidents appears once.
   const both = attentionQueue({ ...FULL, PLATFORM_OPS: { ...FULL.PLATFORM_OPS!, attention: ok({ checkedAt: NOW.toISOString(), counts: { critical: 1 }, items: [
-    { id: "incident:c1", severity: "critical" as const, entity: { label: "Chase" }, problem: "Item login required", since: "2026-10-30T09:00:00.000Z", evidence: { workspace: "platform-overview" } },
+    { id: "incident:c1", severity: "critical" as const, entity: { label: "Example Bank" }, problem: "Item login required", since: "2026-10-30T09:00:00.000Z", evidence: { workspace: "platform-overview" } },
   ] }) } }, SPACES, NOW);
-  const chase = both.items.filter((x) => /Chase/.test(x.title));
-  check("a sync incident held by both Ops attention and CS appears exactly once", chase.length === 1, both.items.map((x) => x.title).join(" | "));
+  const exbank = both.items.filter((x) => /Example Bank/.test(x.title));
+  check("a sync incident held by both Ops attention and CS appears exactly once", exbank.length === 1, both.items.map((x) => x.title).join(" | "));
   // Sparse AI series: exactly TREND_DAYS calendar days ending on checkedAt, missing days are gaps.
   const sparse = [{ day: "2026-10-01", calls: 5 }, { day: "2026-10-29", calls: 3 }, { day: "2026-10-30", calls: 2 }];
   const pts = calendarPoints(sparse, (x) => x.calls, "2026-10-30T12:00:00.000Z");

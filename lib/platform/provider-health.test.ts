@@ -81,10 +81,10 @@ function freshReport(over: Partial<ResourceFreshnessReport> = {}): ResourceFresh
 }
 
 const connRow = (over: Partial<ConnectionHealthRow>): ConnectionHealthRow => ({
-  source: "PLAID", id: "i1", label: "Chase", status: "ACTIVE", errorCode: null,
+  source: "PLAID", id: "i1", label: "Example Bank", status: "ACTIVE", errorCode: null,
   healthState: "HEALTHY", lastSyncedAt: "2026-07-16T06:00:00Z", since: null,
   // UX-P1 additive row facts (derivations; see lib/connections/health.ts)
-  kind: "BANK", institution: "Chase", network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["resync", "request-reauth"],
+  kind: "BANK", institution: "Example Bank", network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["resync", "request-reauth"],
   ...over,
 });
 

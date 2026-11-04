@@ -133,7 +133,7 @@ const rowsOf = (html: string) => html.match(/<li[\s\S]*?<\/li>/g) ?? [];
 const TX = view({
   id: "inc-tx",
   kind: "TRANSACTION_PERSISTENCE_FAILED",
-  plaidItemId: "item-chase",
+  plaidItemId: "item-exbank",
   plaidTransactionId: "txn-1",
   // `cursorBlocking` is what makes the ONE proven resolver applicable.
   detail: { stage: "transaction-persist", cursorBlocking: true, merchant: "SECRET_MERCHANT_XYZ", amount: 91.44 },
@@ -143,7 +143,7 @@ const TX = view({
 const INV = view({
   id: "inc-inv",
   kind: "INVESTMENT_DATA_PERSISTENCE_FAILED",
-  financialAccountId: "acct-fidelity",
+  financialAccountId: "acct-instg",
   detail: { stage: "investment-events", message: "SECRET_INTERNAL_TRACE" },
   occurrenceCount: 1,
   lastOccurredAt: MINUTES_AGO(1400),
@@ -155,8 +155,8 @@ function main() {
   {
     const { html } = render({
       data: preview([TX, INV], {
-        "inc-tx":  { primary: "Chase",   secondary: null },
-        "inc-inv": { primary: "Fidelity", secondary: "Brokerage" },
+        "inc-tx":  { primary: "Example Bank",   secondary: null },
+        "inc-inv": { primary: "Institution G", secondary: "Brokerage" },
       }),
     });
     check("two episodes render two rows", rowCount(html) === 2, `got ${rowCount(html)}`);
@@ -220,7 +220,7 @@ function main() {
       !/text-\[var\(--text-faint\)\][^>]*>\s*Affected account unavailable/.test(html) &&
       !html.includes(">Affected account unavailable</span>"), html.slice(0, 600));
     check('does not invent "Unknown bank"', !/unknown bank/i.test(text));
-    check("does not fall back to a raw id", !text.includes("item-chase"), text);
+    check("does not fall back to a raw id", !text.includes("item-exbank"), text);
     check("does not read as healthy", !/healthy|no impact|not applicable/i.test(text), text);
   }
 
@@ -413,12 +413,12 @@ function main() {
 
     // Continuity: a legacy UPSERT_ERROR and the typed kind are ONE incident, so
     // a taxonomy deployment must remain invisible on BOTH wording axes.
-    const txKey = buildIncidentKey({ provider: "PLAID", plaidItemId: "item-chase",
+    const txKey = buildIncidentKey({ provider: "PLAID", plaidItemId: "item-exbank",
                                      domain: "transactions", stage: "transaction-persist" });
     const asLegacy = render({ data: preview([view({ id: "cl", kind: "UPSERT_ERROR", plaidTransactionId: "t",
-      detail: { stage: "transaction-persist" }, plaidItemId: "item-chase", incidentKey: txKey })]) });
+      detail: { stage: "transaction-persist" }, plaidItemId: "item-exbank", incidentKey: txKey })]) });
     const asTyped = render({ data: preview([view({ id: "ct", kind: "TRANSACTION_PERSISTENCE_FAILED",
-      detail: { stage: "transaction-persist" }, plaidItemId: "item-chase", incidentKey: txKey })]) });
+      detail: { stage: "transaction-persist" }, plaidItemId: "item-exbank", incidentKey: txKey })]) });
     check("a legacy and a typed row read identically on the title line",
       asLegacy.text.includes("Transaction persistence failed") &&
       asTyped.text.includes("Transaction persistence failed") &&

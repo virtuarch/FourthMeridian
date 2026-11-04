@@ -3,7 +3,7 @@
  *
  * One account, one name — and the guards that keep it that way.
  *
- * The live defect: a Chase card rendered "CREDIT CARD" on Cash Flow and
+ * The live defect: a Example Bank card rendered "CREDIT CARD" on Cash Flow and
  * "Ultimate Rewards®" on the Credit page. Both were real columns on one row.
  *
  * Also carries the completed-TRUTH-10 authority guards (merged from
@@ -23,7 +23,7 @@ import {
 } from "./display-identity";
 
 /** The exact live row that produced the divergence. */
-const CHASE_CARD = {
+const EXBANK_CARD = {
   name: "CREDIT CARD", plaidName: "CREDIT CARD",
   officialName: "Ultimate Rewards®", displayName: null,
 };
@@ -46,11 +46,11 @@ const walk = (d: string, out: string[] = []): string[] => {
 
 test("1. one account id resolves to exactly one display name", () => {
   // Every surface calls the same function on the same row, so it cannot differ.
-  assert.equal(accountDisplayName(CHASE_CARD), "Ultimate Rewards®");
-  assert.equal(resolveAccountIdentity(CHASE_CARD).basis, "OFFICIAL_NAME");
-  assert.equal(resolveAccountIdentity(CHASE_CARD).isUserNamed, false);
+  assert.equal(accountDisplayName(EXBANK_CARD), "Ultimate Rewards®");
+  assert.equal(resolveAccountIdentity(EXBANK_CARD).basis, "OFFICIAL_NAME");
+  assert.equal(resolveAccountIdentity(EXBANK_CARD).isUserNamed, false);
   // Repeated calls are stable — no clock, no randomness, no order dependence.
-  assert.equal(accountDisplayName(CHASE_CARD), accountDisplayName({ ...CHASE_CARD }));
+  assert.equal(accountDisplayName(EXBANK_CARD), accountDisplayName({ ...EXBANK_CARD }));
 });
 
 test("1b. the precedence is user > official > provider > stored, and records which answered", () => {
@@ -93,7 +93,7 @@ test("3. descriptors never become account names", () => {
 // ── 4 ────────────────────────────────────────────────────────────────────────
 
 test("4. an institution name is never substituted for an account name", () => {
-  // "Chase" names a bank that may hold five accounts. It is context, not identity.
+  // "Example Bank" names a bank that may hold five accounts. It is context, not identity.
   const code = strip(read("lib/accounts/display-identity.ts"));
   assert.ok(!/institution/i.test(code.replace(/institutionName\s+who holds it/g, "")),
     "the authority consults an institution");
@@ -106,11 +106,11 @@ test("4. an institution name is never substituted for an account name", () => {
 
 test("5. a nickname overrides ONLY when explicitly configured", () => {
   // `displayName` IS the nickname — a user-editable override, null until set.
-  assert.equal(accountDisplayName(CHASE_CARD), "Ultimate Rewards®");
-  assert.equal(accountDisplayName({ ...CHASE_CARD, displayName: "Travel card" }), "Travel card");
-  assert.equal(resolveAccountIdentity({ ...CHASE_CARD, displayName: "Travel card" }).isUserNamed, true);
+  assert.equal(accountDisplayName(EXBANK_CARD), "Ultimate Rewards®");
+  assert.equal(accountDisplayName({ ...EXBANK_CARD, displayName: "Travel card" }), "Travel card");
+  assert.equal(resolveAccountIdentity({ ...EXBANK_CARD, displayName: "Travel card" }).isUserNamed, true);
   // Clearing it falls back — it never strands the account nameless.
-  assert.equal(accountDisplayName({ ...CHASE_CARD, displayName: "" }), "Ultimate Rewards®");
+  assert.equal(accountDisplayName({ ...EXBANK_CARD, displayName: "" }), "Ultimate Rewards®");
 });
 
 // ── 6 · 7 · 8 ────────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ test("9. the mask is disambiguation, never identity", () => {
   assert.equal(formatAccountMask(null), null);
   assert.equal(formatAccountMask("  "), null);
   // It is not blended into the name.
-  assert.equal(accountDisplayName(CHASE_CARD), "Ultimate Rewards®");
+  assert.equal(accountDisplayName(EXBANK_CARD), "Ultimate Rewards®");
 });
 
 test("10. the authority has no runtime dependencies", () => {
@@ -215,7 +215,7 @@ test("13. snapshot summation order is NOT re-sorted", () => {
 //                                       AI drilldown, reading a `select` that
 //                                       fetched only those two columns — so the
 //                                       authority was structurally unable to
-//                                       answer even if called. A Chase card the
+//                                       answer even if called. A Example Bank card the
 //                                       whole product calls "Ultimate Rewards®"
 //                                       was narrated to the model as "CREDIT CARD".
 //   lib/investments/connection-import-accounts.ts

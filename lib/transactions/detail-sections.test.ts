@@ -22,7 +22,7 @@ function detail(over: Partial<TransactionDetail> = {}): TransactionDetail {
     paymentChannel: null, paymentMethod: null, settlementState: 'POSTED',
     authorizedAt: null, counterpartyType: null, fxApplied: null,
     pendingTransactionRef: null, tiFactsVersion: 1,
-    account: { id: 'a1', name: 'Everyday Checking', institution: 'Chase', mask: '1234', type: 'checking' },
+    account: { id: 'a1', name: 'Everyday Checking', institution: 'Example Bank', mask: '1234', type: 'checking' },
     provenance: { source: 'plaid' },
     counterparty: null,
     reporting: null,
@@ -234,7 +234,7 @@ test('no section is ever empty', () => {
 //
 // `TransactionDetail.counterparty` carries a KD-15-gated, identity-authority
 // name, and it was rendered by NOTHING: the drawer showed only the provider's
-// counterparty CLASS. Three AMEX savings→checking transfers resolved to
+// counterparty CLASS. Three EXAMPLE CARD savings→checking transfers resolved to
 // "Rewards Checking" and still read "Financial institution".
 //
 // Precedence is most-specific-true-statement-first, and each branch is pinned:
@@ -317,7 +317,7 @@ const relNote = (d: TransactionDetail): string =>
   find(buildTransactionDetailSections(d), 'Relationship Intelligence')!.notes![0];
 
 test('XFER-3: the note names the account, and takes its direction from the sign', () => {
-  // The live AMEX case: −$500 out of High Yield Savings, matched to Rewards Checking.
+  // The live EXAMPLE CARD case: −$500 out of High Yield Savings, matched to Rewards Checking.
   const out = withMatch({
     flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
     counterparty: { visible: true, accountId: 'a2', name: 'Rewards Checking' },

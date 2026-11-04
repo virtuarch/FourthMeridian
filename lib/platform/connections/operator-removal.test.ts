@@ -113,7 +113,7 @@ async function main() {
 
   console.log("2. the SAME disconnect primitive");
   {
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1", "fa2", "fa1"], markerConfirmed: true });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1", "fa2", "fa1"], markerConfirmed: true });
     const r = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
     check("removed", r.kind === "removed", r);
     check("disconnectAccounts called ONCE with the owner's live accounts (deduped) and the OWNER as actor",
@@ -123,7 +123,7 @@ async function main() {
       where.deletedAt === null && where.plaidItemDbId === "p1" && JSON.stringify(where.financialAccount) === JSON.stringify({ deletedAt: null, ownerUserId: OWNER }), where);
     check("the outcome is RE-READ off the marker (CONFIRMED → Confirmed removed)", r.kind === "removed" && r.outcome === "CONFIRMED_REMOVED");
 
-    const owed = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: false });
+    const owed = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1"], markerConfirmed: false });
     const r2 = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, owed.deps);
     check("an UNCONFIRMED marker → Cleanup owed (the obligation lands where the cleanup widget reads it)", r2.kind === "removed" && r2.outcome === "CLEANUP_OWED");
 
@@ -133,7 +133,7 @@ async function main() {
     check("a wallet: keyed by connectionId, outcome Not applicable, opaque label",
       r3.kind === "removed" && wWhere.connectionId === "w1" && r3.outcome === "NOT_APPLICABLE" && r3.institution === "Self-custody wallet …123456", r3);
 
-    const none = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: [] });
+    const none = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: [] });
     const r4 = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, none.deps);
     check("nothing live → already_removed; nothing disconnected, audited, marked or sent",
       r4.kind === "already_removed" && none.calls.disconnect.length === 0 && none.calls.audits.length === 0 && none.calls.notify.length === 0 && none.seen.auditLog.length === 0);
@@ -151,7 +151,7 @@ async function main() {
 
   console.log("3. the operator-action audit");
   {
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1", "fa2"], markerConfirmed: true });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1", "fa2"], markerConfirmed: true });
     await removeConnectionAsOperator({ connectionId: "p1", actor, request: req, ipAddress: "203.0.113.9", userAgent: "UA" }, h.deps);
     const intent = h.calls.audits[0];
     const a = h.calls.audits[1];
@@ -167,12 +167,12 @@ async function main() {
     check("target: the PLAID_ITEM", m.target.kind === "PLAID_ITEM" && m.target.id === "p1");
     check("reason: envelope code + scrubbed note, and the exact PB-5 reason in detail",
       m.reason.code === "SUPPORT_REQUEST" && m.reason.note === req.note && m.removalReason === "customer_request", m);
-    check("owner + outcome + counts recorded", m.ownerUserId === OWNER && m.outcome === "CONFIRMED_REMOVED" && m.accountCount === 2 && m.institution === "Chase" && m.result === "SUCCESS");
+    check("owner + outcome + counts recorded", m.ownerUserId === OWNER && m.outcome === "CONFIRMED_REMOVED" && m.accountCount === 2 && m.institution === "Example Bank" && m.result === "SUCCESS");
     check("no userId subject on the row (a connection action has no USER target)", a.userId === undefined);
     check("ip / user agent carried", a.ipAddress === "203.0.113.9" && a.userAgent === "UA");
     check("the action is reason-REQUIRED in the envelope", (() => { try { buildOperatorActionData({ actor, action: AuditAction.CONNECTION_REMOVED_BY_OPERATOR, target: { kind: "PLAID_ITEM", id: "p1" }, result: "SUCCESS" }); return false; } catch { return true; } })());
 
-    const f = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], disconnectThrows: true });
+    const f = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1"], disconnectThrows: true });
     const origError = console.error; console.error = () => {};
     const rf = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, f.deps);
     console.error = origError;
@@ -185,7 +185,7 @@ async function main() {
 
   console.log("4. the notification goes through the registry chokepoint");
   {
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1"], markerConfirmed: true });
     const r = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
     const n = h.calls.notify[0] as { type: string; userId: string; data: Record<string, unknown>; auditLogId: string };
     check("enqueued once, to the OWNER, as CONNECTION_REMOVED_BY_SUPPORT, anchored to the audit row",
@@ -214,7 +214,7 @@ async function main() {
     check("a registered, WIRED, FINANCIAL, unlocked type whose design default is IN_APP + EMAIL",
       def.status === "WIRED" && def.category === "FINANCIAL" && (def.defaultChannels as readonly string[]).includes("EMAIL") && def.locked === false);
     check("copy says support removed it, names the institution, links to Connections",
-      (() => { const r = def.render({ institutionName: "Chase" }); return r.title === "A connection was removed by support" && /Chase/.test(r.body ?? "") && r.href === "/dashboard/connections"; })());
+      (() => { const r = def.render({ institutionName: "Example Bank" }); return r.title === "A connection was removed by support" && /Example Bank/.test(r.body ?? "") && r.href === "/dashboard/connections"; })());
 
     // The REAL chokepoint over an in-memory client (the create.test.ts pattern).
     const run = async (prefs: PreferenceOverride[], type: "CONNECTION_REMOVED_BY_SUPPORT" | "SYNC_FAILED" = "CONNECTION_REMOVED_BY_SUPPORT") => {
@@ -232,7 +232,7 @@ async function main() {
       const prefClient: PreferenceClient = { notificationPreference: { findMany: async () => prefs, upsert: async () => { throw new Error("unused"); } } } as unknown as PreferenceClient;
       const messages: ChannelMessage[] = [];
       const emailAdapter: ChannelAdapter = { channel: "EMAIL", name: "fake", async deliver(m) { messages.push(m); return { status: "sent", id: "m1", provider: "resend" }; } };
-      const data = type === "SYNC_FAILED" ? { plaidItemId: "p1", institutionName: "Chase" } : { connectionId: "p1", institutionName: "Chase", provider: "PLAID" };
+      const data = type === "SYNC_FAILED" ? { plaidItemId: "p1", institutionName: "Example Bank" } : { connectionId: "p1", institutionName: "Example Bank", provider: "PLAID" };
       const res = await createNotification(
         { type, userId: OWNER, data },
         { client, prefClient, emailAdapter, ledger: async (row) => { ledger.push(row as never); }, content: null },
@@ -259,7 +259,7 @@ async function main() {
 
   console.log("6. ordering — a crash mid-flight leaves a trace the owed-cleanup reader sees");
   {
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1"], markerConfirmed: true });
     await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
     const o = h.calls.order;
     check("INTENT row → primitive (phase 1–2) → pre-provider marker → itemRemove → OUTCOME row",
@@ -275,7 +275,7 @@ async function main() {
     // The crash: the pre-provider marker is the newest (nothing after it).
     const t0 = new Date("2026-11-02T10:00:00Z");
     const pre = { action: AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED, createdAt: t0, metadata: { provider: "PLAID", plaidItemId: "p1", phase: PRE_PROVIDER_PHASE } };
-    const crashed = foldCleanupStatus([pre], [{ id: "p1", status: "ACTIVE", institutionName: "Chase", userId: OWNER }], new Date("2026-11-02T12:00:00Z"));
+    const crashed = foldCleanupStatus([pre], [{ id: "p1", status: "ACTIVE", institutionName: "Example Bank", userId: OWNER }], new Date("2026-11-02T12:00:00Z"));
     check("CRASH: the cleanup widget reads it OWED (and so does plaid-removal-retry, which selects owed items)",
       crashed.owedCount === 1 && crashed.owed[0].plaidItemId === "p1" && crashed.owed[0].owedSinceISO === t0.toISOString(), crashed);
     check("…counted as an obligation, NOT as an attempt (0 attempts, no code)", crashed.owed[0].attemptCount === 0 && crashed.owed[0].latestErrorCode === null);
@@ -300,7 +300,7 @@ async function main() {
 
   console.log("7. the customer's own Security History — no operator identity");
   {
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1"], markerConfirmed: true });
     await removeConnectionAsOperator({ connectionId: "p1", actor, request: { reason: "abuse", note: "Internal note for ops" }, ipAddress: "203.0.113.9", userAgent: "OperatorUA" }, h.deps);
     const row = h.seen.auditLog.find((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_SUPPORT) as Record<string, unknown> | undefined;
     check("ONE customer-facing row on the OWNER", !!row && row.userId === OWNER && h.seen.auditLog.filter((r) => r.action === AuditAction.CONNECTION_REMOVED_BY_SUPPORT).length === 1, row);
@@ -310,9 +310,9 @@ async function main() {
     check("…and its metadata names no operator id, no operator note", !json.includes(ADMIN) && !json.includes("Internal note") && !json.includes("OperatorUA") && !json.includes("203.0.113.9"), json);
     check("it is on the user-facing Security History allowlist", isSecurityHistoryAction(AuditAction.CONNECTION_REMOVED_BY_SUPPORT));
     check("label: \"Removed by Fourth Meridian support · Abuse\"", securityHistoryEventLabel(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, row?.metadata) === "Removed by Fourth Meridian support · Abuse");
-    check("detail: the institution", securityHistoryEventDetail(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, row?.metadata) === "Chase");
+    check("detail: the institution", securityHistoryEventDetail(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, row?.metadata) === "Example Bank");
     // A hostile row (an operator field smuggled into metadata) still renders nothing operator-shaped.
-    const hostile = { reasonCategory: "cost", institution: "Chase", operator: "opsadmin", performedByAdminId: ADMIN, note: "secret" };
+    const hostile = { reasonCategory: "cost", institution: "Example Bank", operator: "opsadmin", performedByAdminId: ADMIN, note: "secret" };
     const dto = securityHistoryEventLabel(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, hostile) + securityHistoryEventDetail(AuditAction.CONNECTION_REMOVED_BY_SUPPORT, hostile);
     check("the label/detail functions read ONLY reasonCategory + institution (a smuggled operator field never surfaces)", !/opsadmin|user_admin|secret/.test(dto), dto);
     check("written whether or not the email sends (the email is shipped off; the row is still written)", CONNECTION_REMOVED_EMAIL_ENABLED === false && !!row);
@@ -327,7 +327,7 @@ async function main() {
   {
     // First call: one live account. Second: the same connection, now nothing live.
     let live = ["fa1"];
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: live, markerConfirmed: true });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: live, markerConfirmed: true });
     const db = h.deps.db as unknown as { accountConnection: { findMany: () => Promise<Array<{ financialAccountId: string }>> } };
     db.accountConnection.findMany = async () => live.map((financialAccountId) => ({ financialAccountId }));
     const first = await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
@@ -348,7 +348,7 @@ async function main() {
     let arrived = 0;
     let release!: () => void;
     const bothPastPrecheck = new Promise<void>((r) => { release = r; });
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1"], markerConfirmed: true });
     const db = h.deps.db as unknown as { accountConnection: { findMany: () => Promise<Array<{ financialAccountId: string }>> } };
     db.accountConnection.findMany = async () => {
       const rows = live ? [{ financialAccountId: "fa1" }] : [];
@@ -395,7 +395,7 @@ async function main() {
     // An account that also hangs off a SECOND item (e.g. after an Expand History
     // relink): the primitive returns both items; p2 is still referenced by
     // another live link, so disconnectPlaidItemIfOrphaned will not call Plaid for it.
-    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Chase" }, liveFa: ["fa1"], markerConfirmed: true, extraItems: ["p2"], remainingAfter: { p1: 0, p2: 3 } });
+    const h = harness({ item: { id: "p1", userId: OWNER, institutionName: "Example Bank" }, liveFa: ["fa1"], markerConfirmed: true, extraItems: ["p2"], remainingAfter: { p1: 0, p2: 3 } });
     await removeConnectionAsOperator({ connectionId: "p1", actor, request: req }, h.deps);
     const markers = h.seen.auditLog.filter((r) => r.action === AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED).map((r) => (r.metadata as Record<string, unknown>).plaidItemId);
     check("the orphaned item gets the marker; the still-referenced item does NOT (no call ⇒ no owed marker)", markers.join() === "p1", markers);

@@ -137,7 +137,7 @@ console.log("4B. Economic date — immutable across the lifecycle transition");
 
 console.log("4B. Economic date — the two 38-day outliers");
 {
-  // Amex Platinum · "AplPay Hunger StatioRIYADH SA" · authorized 2025-04-14, posted 2025-05-22.
+  // Example Card Platinum · "AplPay Hunger StatioRIYADH SA" · authorized 2025-04-14, posted 2025-05-22.
   const r = resolveEconomicDate({ postingDate: "2025-05-22", authorizedAt: "2025-04-14" });
   check("38 days is beyond the bound ⇒ CONTRADICTORY", r.state === "CONTRADICTORY");
   check("the authorization is NOT silently accepted", r.economicDate !== "2025-04-14");
@@ -190,7 +190,7 @@ console.log("4C. Classification — DEBT_PAYMENT rows ENTER the resolver");
 
 console.log("4C. Classification — the least-specific honest default");
 {
-  // The live source leg: pending outflow, descriptor names American Express,
+  // The live source leg: pending outflow, descriptor names Example Card,
   // stored as DEBT_PAYMENT, destination NOT yet established.
   const r = matureClassification({ flowType: "DEBT_PAYMENT", amount: -4000, counterparty: null });
   check("with no destination evidence it is an UNRESOLVED transfer",
@@ -202,11 +202,11 @@ console.log("4C. Classification — the least-specific honest default");
   check("nothing is persistable without evidence", r.persistable === false);
 }
 
-console.log("4D. Transfer maturation — the $4,000 Chase → Amex HYSA case");
+console.log("4D. Transfer maturation — the $4,000 Example Bank → Example Card HYSA case");
 {
   const r = matureClassification({
     flowType: "DEBT_PAYMENT", amount: -4000,
-    counterparty: { accountId: "amex-hysa", accountType: "savings", evidence: "MATCHED_LEG" },
+    counterparty: { accountId: "excard-hysa", accountType: "savings", evidence: "MATCHED_LEG" },
   });
   check("a SAVINGS destination makes it a savings transfer", r.maturity === "SAVINGS_TRANSFER");
   check("it is NOT a debt payment", r.maturity !== "DEBT_PAYMENT");
@@ -215,19 +215,19 @@ console.log("4D. Transfer maturation — the $4,000 Chase → Amex HYSA case");
   check("the reclassification is recorded", r.reclassified === true);
   check("the reason names the discriminator",
     r.reason.includes("SAVINGS") && r.reason.includes("savings"));
-  check("the counterparty is carried", r.counterpartyAccountId === "amex-hysa");
+  check("the counterparty is carried", r.counterpartyAccountId === "excard-hysa");
   check("a uniquely matched leg IS strong enough to persist", r.persistable === true);
   check("the label reads correctly", MATURITY_LABEL[r.maturity] === "Savings transfer");
 }
 
 console.log("4D. Non-regression — a TRUE debt payment stays a debt payment");
 {
-  // Live counter-example: 2026-03-13, CHASE COLLEGE −4,000
-  // "AMERICAN EXPRESS ACH PMT M9576" → Amex Platinum Card® (a LIABILITY).
+  // Live counter-example: 2026-03-13, EXAMPLE BANK COLLEGE −4,000
+  // "EXAMPLE CARD ACH PMT M9576" → Example Card Platinum Card® (a LIABILITY).
   // Same institution, same amount, same direction, similar descriptor.
   const r = matureClassification({
     flowType: "DEBT_PAYMENT", amount: -4000,
-    counterparty: { accountId: "amex-card", accountType: "debt", evidence: "MATCHED_LEG" },
+    counterparty: { accountId: "excard-card", accountType: "debt", evidence: "MATCHED_LEG" },
   });
   check("a LIABILITY destination is a debt payment", r.maturity === "DEBT_PAYMENT");
   check("...and is NOT reclassified", r.reclassified === false);
@@ -323,7 +323,7 @@ console.log("4-AUDIT. Destination evidence levels");
 
   const B = resolveDestinationEvidence([
     leg("l1", "hysa", "savings"),
-    leg("l2", "chase-sav", "savings"),
+    leg("l2", "exbank-sav", "savings"),
   ]);
   check("many candidates, ONE type ⇒ TYPE_CERTAIN_ACCOUNT_AMBIGUOUS",
     B.level === "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS");
@@ -356,7 +356,7 @@ console.log("v2.6-TRUTH-1 PART 2. ACCOUNT_CERTAIN requires MUTUAL uniqueness");
   const leg = (legId: string, accountId: string, accountType: string, competingSourceCount: number) =>
     ({ legId, accountId, accountType, competingSourceCount, superseded: false });
 
-  // The exact R2 defect: forward-unique, reverse-contested. Each matched Amex
+  // The exact R2 defect: forward-unique, reverse-contested. Each matched Example Card
   // card payment had TWO qualifying funding rows, so "one destination account"
   // was never the same claim as "one deterministic pairing".
   const contested = resolveDestinationEvidence([leg("card-leg", "card", "debt", 2)]);

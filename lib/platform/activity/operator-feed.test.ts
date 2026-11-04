@@ -76,7 +76,7 @@ async function main() {
       metadata: { actorType: "PLATFORM_OPERATOR", result: "SUCCESS", target: { kind: "USER", id: "u1" } } };
     check("an admitted action with a non-platform target kind is refused", !admitsFeedRow(wrongKind));
     const legacy: OperatorFeedRowLike = { id: "a5", action: AuditAction.CONNECTION_RESYNC_TRIGGERED, createdAt: at(5), performedByAdminId: "op_000001",
-      metadata: { institution: "Chase", result: "SUCCESS" } };
+      metadata: { institution: "Example Bank", result: "SUCCESS" } };
     check("a pre-envelope resync row (no target) is admitted on its action", admitsFeedRow(legacy));
     const legacyCadence: OperatorFeedRowLike = { id: "a6", action: AuditAction.JOB_CADENCE_CHANGED, createdAt: at(6), performedByAdminId: "op_000001", metadata: {} };
     check("a cadence change without an envelope is refused (the envelope has always existed for it)", !admitsFeedRow(legacyCadence));
@@ -109,10 +109,10 @@ async function main() {
     check("a job run carries jobRunId + the Jobs workspace; result word preserved", ri.evidence.jobRunId === "run_000000abc123" && ri.evidence.workspace === "platform-jobs" && ri.result === "FAILURE" && ri.target === "job …-banks");
 
     const legacy: OperatorFeedRowLike = { id: "r3", action: AuditAction.CONNECTION_RESYNC_TRIGGERED, createdAt: at(3), performedByAdminId: "op_000002",
-      metadata: { institution: "Chase", email: "someone@example.com", result: "SUCCESS" } };
+      metadata: { institution: "Example Bank", email: "someone@example.com", result: "SUCCESS" } };
     const li = projectOperatorFeedItem(legacy, label("op_000002"));
     check("legacy row: institution token as target, the name fallback as operator, and the email in metadata never surfaces",
-      li.target === "Chase" && li.operator === "Dana Ops" && !/@/.test(JSON.stringify(li)));
+      li.target === "Example Bank" && li.operator === "Dana Ops" && !/@/.test(JSON.stringify(li)));
   }
 
   console.log("\n4. the feed: ordering kept, depth stated, refused rows dropped, empty is honest");

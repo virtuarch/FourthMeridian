@@ -111,7 +111,7 @@ console.log("4. Unknown investments and authoritative transitions");
   const manual = { type: "investment", balance: 10_000, providerSubtype: null };
   const base   = [{ type: "checking", balance: 1_000, providerSubtype: "checking" }];
   const nw = (accts: Array<{ type: string; balance: number; providerSubtype: string | null }>) => classifyAccounts(accts);
-  check("unknown manual investment → unverified, indefinitely (no name inference)", liquidityAccess({ ...manual, name: "Vanguard Brokerage" } as never) === "unverified");
+  check("unknown manual investment → unverified, indefinitely (no name inference)", liquidityAccess({ ...manual, name: "Institution B Brokerage" } as never) === "unverified");
   const unknownNW = nw([...base, manual]);
   const toBrokerage = nw([...base, { ...manual, providerSubtype: "brokerage" }]);
   const toRetirement = nw([...base, { ...manual, providerSubtype: "401k" }]);

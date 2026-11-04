@@ -47,7 +47,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 // never be recreated.
 function makeFakeDb(opts: { accounts: Record<string, string>; softDeleted?: Set<string> }) {
   const txns: { id: string; plaidTransactionId: string | null; financialAccountId: string; deletedAt: Date | null }[] = [];
-  const item = { id: "item_1", cursor: null as string | null, encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
+  const item = { id: "item_1", cursor: null as string | null, encryptedToken: FAKE_TOKEN, institutionName: "Example Bank" };
   const cursorWrites: (string | null)[] = [];
   const syncIssues: { kind: string; plaidTransactionId: string | null; detail?: Record<string, unknown>; resolved: boolean }[] = [];
   let seq = 0;
@@ -162,7 +162,7 @@ const runSync = (fdb: ReturnType<typeof makeFakeDb>, fplaid: ReturnType<typeof m
 
 /** A provider account as `accountsGet` returns it. */
 const providerAccount = (id: string) => ({
-  account_id: id, name: "Recovered Checking", official_name: "Chase Total Checking",
+  account_id: id, name: "Recovered Checking", official_name: "Example Bank Total Checking",
   mask: "4321", type: "depository", subtype: "checking",
   balances: { current: 100, available: 90, limit: null, iso_currency_code: "USD" },
 });
@@ -182,7 +182,7 @@ function recoveryDeps(fdb: ReturnType<typeof makeFakeDb>, over: {
   const deps = {
     loadItem: async () => ({
       userId: "u1", ownerDeactivated: over.ownerDeactivated ?? false,
-      accessToken: "plaintext-token", institutionName: "Chase", institutionId: "ins_1",
+      accessToken: "plaintext-token", institutionName: "Example Bank", institutionId: "ins_1",
     }),
     countBlockingIssues: async () => over.blocking ?? 1,
     fetchProviderAccounts: async () => {

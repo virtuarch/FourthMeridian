@@ -34,7 +34,7 @@ for (const k of Object.keys(IMPORT_REASON_LABELS) as ImportReasonCategory[]) {
 }
 {
   const c: OnboardingConnection = {
-    id: "i1", kind: "BANK", label: "Wells Fargo", linkedAt: "2026-11-01T20:44:00.000Z", importStatus: "recovered", interrupted: false,
+    id: "i1", kind: "BANK", label: "Institution D", linkedAt: "2026-11-01T20:44:00.000Z", importStatus: "recovered", interrupted: false,
     reason: "UNKNOWN", reasonLabel: IMPORT_REASON_LABELS.UNKNOWN, transactions: 1388, importCompletedAt: null, firstWealthRegenAt: null, attempts: 2, interruptedAttempts: 1,
   };
   check("the timeline row's status word carries the earlier attempt", connectionStatusWord(c) === "Recovered after an interruption (earlier attempt: unclassified failure)");

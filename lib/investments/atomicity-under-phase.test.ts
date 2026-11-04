@@ -114,7 +114,7 @@ function holdingStore(record: (op: string) => void): Record<string, unknown> {
   return {
     holding: {
       findMany: async () => [
-        { id: "h_vti",   symbol: "VTI", name: "Vanguard Total", quantity: 1,  price: 100, value: 100, change24h: 0, currency: "USD" },
+        { id: "h_vti",   symbol: "VTI", name: "Institution B Total", quantity: 1,  price: 100, value: 100, change24h: 0, currency: "USD" },
         { id: "h_stale", symbol: "OLD", name: "Sold Out",       quantity: 3,  price: 10,  value: 30,  change24h: 0, currency: "USD" },
       ],
       deleteMany: async () => { record("holding.deleteMany"); return { count: 1 }; },
@@ -134,7 +134,7 @@ const HOLDING_PARAMS = {
     // "OLD" is absent from a COMPLETE payload ⇒ DELETE as stale
   ] as never,
   securitiesById: {
-    sec_vti: { security_id: "sec_vti", ticker_symbol: "VTI", name: "Vanguard Total", type: "etf", close_price: 108, iso_currency_code: "USD" },
+    sec_vti: { security_id: "sec_vti", ticker_symbol: "VTI", name: "Institution B Total", type: "etf", close_price: 108, iso_currency_code: "USD" },
     sec_new: { security_id: "sec_new", ticker_symbol: "NEW", name: "New Position",   type: "etf", close_price: 49,  iso_currency_code: "USD" },
   } as never,
   accountCurrency: "USD",

@@ -71,7 +71,7 @@ test("CF-P1: Apple Cash IN (FROM_APPS) is unchanged — still rail PAYMENT_APP",
 });
 
 test("CF-P1: a NON-payment-app ACCOUNT_TRANSFER stays DEPOSITORY (no over-reach)", () => {
-  const ev = plaidTransferEvidence({ pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER", amount: -500, name: "Chase QuickPay to Savings" });
+  const ev = plaidTransferEvidence({ pfcDetailed: "TRANSFER_OUT_ACCOUNT_TRANSFER", amount: -500, name: "Example Bank QuickPay to Savings" });
   assert.equal(ev.venueClass, "DEPOSITORY");
   assert.equal(ev.railType, undefined);
 });

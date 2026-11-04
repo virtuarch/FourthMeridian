@@ -167,7 +167,7 @@ function world(): { fake: FakePrisma; client: CorrectionClient } {
     const date = new Date(`${day}T00:00:00.000Z`);
     fake.seed("Transaction", {
       id, financialAccountId: acctId, date, economicDate: date, amount, currency: "USD",
-      merchant: `M ${id}`, description: "ORIG CO NAME:AMERICANEXPRESS CO ENTRY DESCR:TRANSFER",
+      merchant: `M ${id}`, description: "ORIG CO NAME:EXAMPLECARD CO ENTRY DESCR:TRANSFER",
       category, flowType, flowDirection: amount < 0 ? "INTERNAL" : "INFLOW",
       flowAuthority: "CLASSIFIER", classifierVersion: 5, classificationReason: "PLAID_PFC_PRIMARY", classificationConfidence: 0.8,
       pfcPrimary: pfc[0], pfcDetailed: pfc[1], pending: false, settlementState: "POSTED",
@@ -294,7 +294,7 @@ async function main(): Promise<void> {
       && r.totals.amount === Math.round((r.totals.posted.amount + r.totals.pending.amount) * 100) / 100);
     const json = JSON.stringify(r);
     check("no raw transaction or account id and no descriptor in the report",
-      !/"a_out"|"fa_chk"|AMERICANEXPRESS|ORIG CO/.test(json));
+      !/"a_out"|"fa_chk"|EXAMPLECARD|ORIG CO/.test(json));
     const text = summarizeRepairReport(r, "local");
     check("human summary names the mode, totals and each row", /DRY RUN/.test(text) && text.includes(row.idHash) && /retiring pending/.test(text));
   }

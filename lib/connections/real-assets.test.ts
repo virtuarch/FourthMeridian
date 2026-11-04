@@ -35,7 +35,7 @@ const PROVIDER_WORDS = /\b(sync|synced|syncing|connected|connection|provider|ref
 
 console.log("categories: counts and filtering");
 {
-  const conns = [conn("chase", "PLAID"), conn("btc", "WALLET"), conn("amex", "PLAID"), conn("sol", "WALLET"), conn("eth", "WALLET")];
+  const conns = [conn("exbank", "PLAID"), conn("btc", "WALLET"), conn("excard", "PLAID"), conn("sol", "WALLET"), conn("eth", "WALLET")];
   const assets = [{ id: "home" }, { id: "car" }];
   const c = categoryCounts(conns, assets);
   check("banks = Plaid institutions", c.banks === 2);
@@ -45,7 +45,7 @@ console.log("categories: counts and filtering");
   check("no category is empty-safe broken (zero everything)", JSON.stringify(categoryCounts([], [])) === JSON.stringify({ all: 0, banks: 0, crypto: 0, real_assets: 0 }));
   check("order: All · Banks · Crypto · Real assets", CATEGORY_ORDER.join() === "all,banks,crypto,real_assets");
   check("labels carry a COUNT, never money", categoryOptionLabel("banks", c) === "Banks · 2" && !/\$|€|£/.test(CATEGORY_ORDER.map((k) => categoryOptionLabel(k, c)).join()));
-  check("All keeps every connection in its given order", connectionsInCategory(conns, "all").map((x) => x.id).join() === "chase,btc,amex,sol,eth");
+  check("All keeps every connection in its given order", connectionsInCategory(conns, "all").map((x) => x.id).join() === "exbank,btc,excard,sol,eth");
   check("Banks keeps only Plaid", connectionsInCategory(conns, "banks").every((x) => x.provider === "PLAID") && connectionsInCategory(conns, "banks").length === 2);
   check("Crypto keeps only wallets", connectionsInCategory(conns, "crypto").every((x) => x.provider === "WALLET") && connectionsInCategory(conns, "crypto").length === 3);
   check("Real assets shows no provider connection", connectionsInCategory(conns, "real_assets").length === 0);
@@ -57,10 +57,10 @@ console.log("categories: counts and filtering");
 
 console.log("crypto: grouped by blockchain");
 {
-  const conns = [conn("w-sol", "WALLET"), conn("w-btc", "WALLET"), conn("chase", "PLAID"), conn("w-eth", "WALLET"), conn("w-btc2", "WALLET"), conn("w-x", "WALLET"), conn("w-avax", "WALLET")];
+  const conns = [conn("w-sol", "WALLET"), conn("w-btc", "WALLET"), conn("exbank", "PLAID"), conn("w-eth", "WALLET"), conn("w-btc2", "WALLET"), conn("w-x", "WALLET"), conn("w-avax", "WALLET")];
   const accounts = {
     "w-sol": [{ chain: "SOL" }], "w-btc": [{ chain: "BTC" }], "w-eth": [{ chain: "eth" }], "w-btc2": [{ chain: "BTC" }],
-    "w-x": [{ chain: null }], "w-avax": [{ chain: "AVAX" }], chase: [{ chain: null }],
+    "w-x": [{ chain: null }], "w-avax": [{ chain: "AVAX" }], exbank: [{ chain: null }],
   };
   const g = groupWalletsByChain(conns, accounts);
   check("Bitcoin, Ethereum, Solana first, others after, unknown last", g.map((x) => x.label).join() === "Bitcoin,Ethereum,Solana,Avalanche,Other networks", g.map((x) => x.label).join());

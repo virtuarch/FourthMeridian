@@ -30,7 +30,7 @@ function posRow(over: Partial<CurrentPositionRow>): CurrentPositionRow {
     quantityTier: "observed", priceTier: "observed", fxTier: "estimated", overallTier: "estimated",
     basisUsed: "institution-value", priceDate: "2026-07-15", staleDays: 0,
     reason: "x", conflicted: false,
-    symbol: "VTI", name: "Vanguard", share: 1, assetClass: "EQUITY", sector: null, isCash: false,
+    symbol: "VTI", name: "Institution B", share: 1, assetClass: "EQUITY", sector: null, isCash: false,
     costBasis: 500,
     ...over,
   } as CurrentPositionRow;
