@@ -1,6 +1,6 @@
 /**
  * scripts/lib/b10-5-decision-report.core.ts — the READ-ONLY counts behind the
- * four B10.5 owner data decisions (docs/plans/PRE-BETA-READINESS-AND-RELEASE-PLAN-2026-11-01.md
+ * B10.5 owner data decisions, plus the expired-session reaper dry run (docs/plans/PRE-BETA-READINESS-AND-RELEASE-PLAN-2026-11-01.md
  * § "B10.5 Owner-gated data decisions"). Driven by scripts/b10-5-decision-report.ts.
  *
  *   coingecko   FM-AUDIT-025  archived CoinGecko closes filed one day late
@@ -8,6 +8,8 @@
  *   fin-e       FIN-E         snapshot days a regeneration would give a restrictedCash
  *   audit-021   FM-AUDIT-021  frozen "observed" days that rested on a stale bank balance
  *   frozen-restricted  FIN-E     frozen observed NULL-restrictedCash days whose split a walk-back could derive
+ *   expired-sessions  DB-009 + S2 (#374)  UserSession rows the retention reaper will
+ *               delete once it also reaps EXPIRED sessions (the dry run for that release)
  *
  * ── Contract ─────────────────────────────────────────────────────────────────
  *   · READ ONLY. Every report runs in ONE transaction whose first statement is
@@ -23,7 +25,10 @@
  *     counts for a decision, not a repair plan.
  */
 
-export const REPORTS = ["coingecko", "fin-a2", "fin-e", "audit-021", "frozen-restricted"] as const;
+import { SESSION_ABSOLUTE_LIFETIME_MS, SESSION_IDLE_TIMEOUT_MS } from "@/lib/auth/session-proof";
+import { RETENTION_RULES } from "@/jobs/data-retention";
+
+export const REPORTS = ["coingecko", "fin-a2", "fin-e", "audit-021", "frozen-restricted", "expired-sessions"] as const;
 export type ReportName = (typeof REPORTS)[number];
 
 /** CoinGecko returns DAILY (00:00Z) points for a market_chart/range request longer than 90 days. */
@@ -36,6 +41,8 @@ export const COINGECKO_HOURLY_MAX_DAYS = 90;
 export const COINGECKO_DEFINITE_DAILY_MIN_SPAN = COINGECKO_HOURLY_MAX_DAYS + 2;
 /** lib/freshness/observation.ts STALE_AFTER_DAYS — the stale-bank horizon FM-AUDIT-021 (#302) uses. */
 export const STALE_AFTER_DAYS = 7;
+/** The reaper's grace (days) — read from THE retention rule, never copied. */
+export const SESSION_REAP_GRACE_DAYS: number = RETENTION_RULES.find((r) => r.table === "userSession")!.days;
 
 /**
  * The depository subtypes `liquidityAccess` (lib/account-classifier.ts) calls
@@ -81,6 +88,7 @@ export const REQUIRED_COLUMNS: Record<ReportName, ReadonlyArray<readonly [table:
     ["FinancialAccount", "type"], ["FinancialAccount", "providerSubtype"], ["FinancialAccount", "createdAt"], ["FinancialAccount", "deletedAt"],
     ["Transaction", "financialAccountId"], ["Transaction", "date"], ["Transaction", "pending"], ["Transaction", "deletedAt"],
   ],
+  "expired-sessions": [["UserSession", "revokedAt"], ["UserSession", "createdAt"], ["UserSession", "lastActiveAt"]],
 };
 
 export const HEURISTICS: Record<ReportName, string> = {
@@ -109,6 +117,10 @@ export const HEURISTICS: Record<ReportName, string> = {
     "A day with no restricted-capable account has a restricted share of 0 (the classification uses the subtype stored today), exact for RETAINED data only: links are revoked (status + revokedAt), never deleted, but a HARD-deleted FinancialAccount cascades its SpaceAccountLink and Transaction rows away while another Space's frozen snapshot rows survive, so a purged HSA that Space linked is invisible here. " +
     "Account purge after the deletion grace period (lib/account-deletion/purge.ts) is NOT the only hard-delete path that can do this: the operator scripts scripts/purge-plaid-connection.ts (one user's Plaid accounts at one institution) and scripts/dev-reset-test-state.ts (one user's connected accounts) hard-delete accounts too. " +
     "The permanent manual-account delete cannot (it accepts type `other` only), and a Space delete takes that Space's snapshots with it. The rest are not derivable. REPORT ONLY: no fill and no apply exist; filling frozen rows is a separate owner-gated repair.",
+  "expired-sessions":
+    "A session's expiry instant is the EARLIER of `lastActiveAt` + the SEC-010 idle timeout and `createdAt` + the absolute lifetime (lib/auth/session-proof.ts constants). " +
+    `The reaper (jobs/data-retention.ts sessionReapWhere) deletes a row revoked, or expired, more than ${SESSION_REAP_GRACE_DAYS} days before now; this report counts the same predicate at the database clock. ` +
+    "\"Newly due\" rows are the ones only the expiry arm reaches (the revocation arm already deletes the rest). One run deletes at most the reaper's batch budget; a larger backlog drains over the following days.",
 };
 
 // ── client seam ──────────────────────────────────────────────────────────────
@@ -221,6 +233,34 @@ SELECT verdict, count(*)::int AS rows, count(DISTINCT "spaceId")::int AS spaces,
        to_char(min(date), 'YYYY-MM-DD') AS "fromDate", to_char(max(date), 'YYYY-MM-DD') AS "toDate"
   FROM judged GROUP BY verdict`;
 
+const IDLE = `interval '${SESSION_IDLE_TIMEOUT_MS} milliseconds'`;
+const ABSOLUTE = `interval '${SESSION_ABSOLUTE_LIFETIME_MS} milliseconds'`;
+const GRACE = `interval '${SESSION_REAP_GRACE_DAYS} days'`;
+
+export const EXPIRED_SESSIONS_SQL = `
+WITH s AS (
+  SELECT u."revokedAt" AS revoked,
+         LEAST(u."lastActiveAt" + ${IDLE}, u."createdAt" + ${ABSOLUTE}) AS expires
+    FROM "UserSession" u
+), j AS (
+  SELECT revoked, expires,
+         (revoked IS NOT NULL AND revoked < now() - ${GRACE}) AS "revokedDue",
+         (expires < now() - ${GRACE}) AS "expiredDue"
+    FROM s
+)
+SELECT count(*)::int AS "allRows",
+       count(*) FILTER (WHERE revoked IS NULL AND expires >= now())::int AS "inLifetime",
+       count(*) FILTER (WHERE "revokedDue" OR "expiredDue")::int AS "reapable",
+       count(*) FILTER (WHERE "revokedDue")::int AS "revokedDue",
+       count(*) FILTER (WHERE "expiredDue" AND NOT "revokedDue")::int AS "newlyDue",
+       count(*) FILTER (WHERE revoked IS NULL AND expires < now() AND expires >= now() - ${GRACE})::int AS "inGrace",
+       count(*) FILTER (WHERE "expiredDue" AND NOT "revokedDue" AND expires >= now() - interval '90 days')::int AS "bandGraceTo90",
+       count(*) FILTER (WHERE "expiredDue" AND NOT "revokedDue" AND expires < now() - interval '90 days' AND expires >= now() - interval '180 days')::int AS "band90to180",
+       count(*) FILTER (WHERE "expiredDue" AND NOT "revokedDue" AND expires < now() - interval '180 days' AND expires >= now() - interval '365 days')::int AS "band180to365",
+       count(*) FILTER (WHERE "expiredDue" AND NOT "revokedDue" AND expires < now() - interval '365 days')::int AS "bandOver365",
+       to_char(min(expires) FILTER (WHERE "expiredDue" AND NOT "revokedDue"), 'YYYY-MM-DD') AS "oldestExpiry"
+  FROM j`;
+
 /**
  * Frozen observed rows with NULL restrictedCash → DERIVABLE | NOT_DERIVABLE |
  * TRIVIAL_ZERO. The as-of ladder (accounts-asof.core resolveOne +
@@ -283,6 +323,10 @@ export interface FinEResult {
 export interface Audit021Bucket { rows: number; spaces: number; fromDate: string | null; toDate: string | null }
 export interface Audit021Result { candidate: Audit021Bucket; clear: Audit021Bucket; undetermined: Audit021Bucket }
 export interface FrozenRestrictedResult { derivable: Audit021Bucket; notDerivable: Audit021Bucket; trivialZero: Audit021Bucket; total: Audit021Bucket }
+export interface ExpiredSessionsResult {
+  allRows: number; inLifetime: number; reapable: number; revokedDue: number; newlyDue: number; inGrace: number;
+  bandGraceTo90: number; band90to180: number; band180to365: number; bandOver365: number; oldestExpiry: string | null;
+}
 
 export type ReportOutcome =
   | { report: ReportName; status: "UNAVAILABLE"; reason: string }
@@ -290,7 +334,8 @@ export type ReportOutcome =
   | { report: "fin-a2"; status: "OK"; data: FinA2Result }
   | { report: "fin-e"; status: "OK"; data: FinEResult }
   | { report: "audit-021"; status: "OK"; data: Audit021Result }
-  | { report: "frozen-restricted"; status: "OK"; data: FrozenRestrictedResult };
+  | { report: "frozen-restricted"; status: "OK"; data: FrozenRestrictedResult }
+  | { report: "expired-sessions"; status: "OK"; data: ExpiredSessionsResult };
 
 // ── pure logic ───────────────────────────────────────────────────────────────
 
@@ -404,6 +449,10 @@ export async function runReport(client: ReadOnlyClient, report: ReportName, opts
         const rows = await tx.$queryRawUnsafe<Array<{ verdict: string } & Audit021Bucket>>(FROZEN_RESTRICTED_SQL);
         return { report, status: "OK", data: summarizeFrozenRestricted(rows) };
       }
+      case "expired-sessions": {
+        const [r] = await tx.$queryRawUnsafe<ExpiredSessionsResult[]>(EXPIRED_SESSIONS_SQL);
+        return { report, status: "OK", data: r };
+      }
     }
   });
 }
@@ -422,6 +471,7 @@ const TITLES: Record<ReportName, string> = {
   "fin-e": "3. Restricted-cash snapshot fill (FIN-E)",
   "audit-021": "4. Frozen stale-observed snapshot rows (FM-AUDIT-021)",
   "frozen-restricted": "5. Frozen observed rows: derivable restricted-cash split (FIN-E)",
+  "expired-sessions": "6. Expired sessions the retention reaper will delete (DB-009 + S2 #374)",
 };
 
 /**
@@ -508,6 +558,23 @@ export function renderReport(o: ReportOutcome): string {
         `| No restricted-capable accounts: the split is trivially 0 | ${n(d.trivialZero.rows)} | ${n(d.trivialZero.spaces)} | ${range(d.trivialZero.fromDate, d.trivialZero.toDate)} | ${BOUND.RETAINED} |`,
         `| All frozen observed rows with NULL restrictedCash (population) | ${n(d.total.rows)} | — | ${range(d.total.fromDate, d.total.toDate)} | ${BOUND.EXACT} |`, "",
         "REPORT ONLY: this tool has no fill and no apply. Any fill of frozen rows (which regeneration never rewrites) is a separate owner-gated repair.", "");
+      break;
+    }
+    case "expired-sessions": {
+      const d = o.data;
+      const g = SESSION_REAP_GRACE_DAYS;
+      L.push("| Measure | Sessions | Bound |", "|---|---:|---|",
+        `| Session rows (population) | ${n(d.allRows)} | ${BOUND.EXACT} |`,
+        `| Unrevoked and within their lifetime (lockout not applied) | ${n(d.inLifetime)} | ${BOUND.EXACT} |`,
+        `| **Reapable now** (revoked or expired more than ${g} d ago) | **${n(d.reapable)}** | ${BOUND.EXACT} |`,
+        `| — already reaped by the revocation rule | ${n(d.revokedDue)} | ${BOUND.EXACT} |`,
+        `| — **newly due** (expired more than ${g} d ago, not revoked in time) | **${n(d.newlyDue)}** | ${BOUND.EXACT} |`,
+        `| —— expired ${g}–90 d ago | ${n(d.bandGraceTo90)} | ${BOUND.EXACT} |`,
+        `| —— expired 90–180 d ago | ${n(d.band90to180)} | ${BOUND.EXACT} |`,
+        `| —— expired 180–365 d ago | ${n(d.band180to365)} | ${BOUND.EXACT} |`,
+        `| —— expired more than 365 d ago | ${n(d.bandOver365)} | ${BOUND.EXACT} |`,
+        `| Expired, unrevoked, still inside the ${g}-day grace (kept) | ${n(d.inGrace)} | ${BOUND.EXACT} |`, "",
+        `Oldest newly-due expiry: ${d.oldestExpiry ?? "—"}.`, "");
       break;
     }
   }

@@ -13,7 +13,9 @@
  *   audit-021   FM-AUDIT-021  frozen observed days that rested on a stale bank balance
  *   frozen-restricted  FIN-E     frozen observed NULL-restrictedCash days whose split a
  *               walk-back could derive (report only; any fill is a separate owner-gated repair)
- *   all         the five, in that order
+ *   expired-sessions  DB-009 + S2 (#374)  the dry run of the expired-session reaper:
+ *               sessions it will delete (counts + expiry-age bands), before that release
+ *   all         all six, in that order
  *
  * ── Who may run it ───────────────────────────────────────────────────────────
  *   Preview/clone: engineering; Production: owner-run or owner-approved.
@@ -36,7 +38,7 @@
  *   UNAVAILABLE with the reason; nothing is guessed. Heuristics print beside
  *   their numbers. Logic: scripts/lib/b10-5-decision-report.core.ts.
  *
- *   npm run report:b10-5 -- <coingecko|fin-a2|fin-e|audit-021|frozen-restricted|all> --env=preview [--coingecko-fixed-from=YYYY-MM-DD]
+ *   npm run report:b10-5 -- <coingecko|fin-a2|fin-e|audit-021|frozen-restricted|expired-sessions|all> --env=preview [--coingecko-fixed-from=YYYY-MM-DD]
  *
  * Exit: 0 printed · 2 refused (nothing read) · 1 could not run.
  */

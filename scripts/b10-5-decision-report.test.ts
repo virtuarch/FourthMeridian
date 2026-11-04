@@ -77,6 +77,7 @@ async function runnerSection(): Promise<void> {
             { verdict: "DERIVABLE", rows: 5, spaces: 1, fromDate: "2026-02-01", toDate: "2026-02-05" },
             { verdict: "TRIVIAL_ZERO", rows: 2, spaces: 1, fromDate: "2026-02-06", toDate: "2026-02-07" },
           ] as unknown as T;
+          if (/"UserSession"/.test(sql)) return [{ allRows: 20, inLifetime: 9, reapable: 7, revokedDue: 3, newlyDue: 4, inGrace: 2, bandGraceTo90: 1, band90to180: 1, band180to365: 1, bandOver365: 1, oldestExpiry: "2025-06-01" }] as unknown as T;
           if (/GROUP BY verdict/.test(sql)) return [{ verdict: "CLEAR", rows: 3, spaces: 1, fromDate: "2026-02-01", toDate: "2026-02-03" }] as unknown as T;
           if (/"plaidAccounts"/.test(sql)) return [{ plaidAccounts: 9, candidates: 2, inLedger: 1, preLedger: 1, noInstitutionClock: 2, minCreated: "2026-03-01", maxCreated: "2026-04-01", ledgerStart: "2026-03-15", byType: { checking: 1, debt: 1 } }] as unknown as T;
           return [{ allRows: 10, nullRows: 6, fillableRows: 4, fillableSpaces: 2, fillableFrom: "2026-01-01", fillableTo: "2026-01-04", frozenRows: 2, frozenSpaces: 1, frozenFrom: "2026-01-05", frozenTo: "2026-01-06", noInputRows: 0 }] as unknown as T;
@@ -97,6 +98,8 @@ async function runnerSection(): Promise<void> {
       && doc.includes("Preview/clone: engineering; Production: owner-run or owner-approved.") && /safety rail, NOT approval/.test(doc));
     check("the rendered document passes the leak predicate", outputLeaks(doc).length === 0, outputLeaks(doc).join());
     check("every report prints its heuristic", (doc.match(/\*Heuristic:\*/g) ?? []).length === REPORTS.length);
+    check("expired-sessions: newly-due count and age bands render, labelled exact",
+      /\| — \*\*newly due\*\* .*\| \*\*4\*\* \| exact \|$/m.test(doc) && /\| —— expired more than 365 d ago \| 1 \| exact \|$/m.test(doc) && /Oldest newly-due expiry: 2025-06-01\./.test(doc));
     // S2 (#370): every figure row names its bound kind literally, as its LAST cell.
     const tableRows = doc.split("\n").filter((l) => l.startsWith("| ") && !/^\|\s*(Coin|Measure|Frozen rows)\s*\|/.test(l));
     const unlabelled = tableRows.filter((l) => !BOUND_LABELS.some((b) => l.trimEnd().endsWith(`| ${b} |`)));
@@ -217,6 +220,12 @@ console.log("5. the CLI refuses before any database contact");
 
 console.log("6. source pins");
 {
+  const coreSrc = readFileSync(path.join(ROOT, "scripts", "lib", "b10-5-decision-report.core.ts"), "utf8");
+  check("expired-sessions derives its limits from session-proof and its grace from THE retention rule (no copied numbers)",
+    /interval '\$\{SESSION_IDLE_TIMEOUT_MS\} milliseconds'/.test(coreSrc) && /interval '\$\{SESSION_ABSOLUTE_LIFETIME_MS\} milliseconds'/.test(coreSrc)
+      && /RETENTION_RULES\.find\(\(r\) => r\.table === "userSession"\)!\.days/.test(coreSrc) && !/interval '30 days'/.test(coreSrc));
+  check("expired-sessions selects aggregates only (no id / ipAddress / userAgent / userId)",
+    !/"(ipAddress|userAgent|userId|sessionToken)"|u\.id\b/.test(coreSrc.slice(coreSrc.indexOf("EXPIRED_SESSIONS_SQL"), coreSrc.indexOf("// ── result shapes"))));
   const cli = readFileSync(path.join(ROOT, "scripts", "b10-5-decision-report.ts"), "utf8");
   const core = readFileSync(path.join(ROOT, "scripts", "lib", "b10-5-decision-report.core.ts"), "utf8");
   check("the header states who may run it (S2, verbatim)", cli.includes("Preview/clone: engineering; Production: owner-run or owner-approved."));

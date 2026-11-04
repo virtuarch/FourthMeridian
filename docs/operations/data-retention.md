@@ -5,7 +5,7 @@ Implemented by the daily `purge-trash` job (07:30 UTC) on the beta-1 candidate (
 
 | Table | Kept for | Deleted when | Notes |
 |---|---|---|---|
-| `UserSession` | 30 days after revocation | `revokedAt < now − 30 d` | Live sessions are never touched |
+| `UserSession` | 30 days after revocation or expiry | `revokedAt < now − 30 d`, OR expired (SEC-010: the earlier of `lastActiveAt` + idle timeout and `createdAt` + absolute lifetime) more than 30 d ago | Live sessions are never touched. Expiry uses the `lib/auth/session-proof.ts` constants. Dry run: `npm run report:b10-5 -- expired-sessions --env=preview` |
 | `AiInvocation` | 90 days | `occurredAt < now − 90 d` | `userId` set to null on account purge |
 | `JobRun` | 90 days | `startedAt < now − 90 d` AND status ≠ `running` | |
 | `RefreshExecution` (+ `RefreshEndpointResult`, `ProviderCall`, `RefreshEndpointAccountCoverage` by cascade) | 60 days | `startedAt < now − 60 d` | |
@@ -39,13 +39,15 @@ Trashed Spaces and accounts are restorable and are **not** hard-purged on a time
 | `AuditLog.ipAddress` | IP | Every audit row written with request metadata: login, failed login, 2FA, session and operator actions, `BETA_ACCESS_REQUESTED`. Product events write NULL. | **Indefinite.** `BETA_ACCESS_REQUESTED` rows are nulled at 90 days, with a keyed digest kept in metadata. Product events are deleted at 13 months. | DIGEST, TRUNCATE | DB-010 |
 | `AuditLog.userAgent` | UA | As above. | As above. Beta-intake rows keep `uaFamily`. | UA_FAMILY, NULL | DB-010 |
 | `AuditLog.metadata.key` | IP_KEY | `SECURITY_ANOMALY_DETECTED` rows of type `failed_login_ip`: `ip:<address>` in raw form. The row also carries the salted `keyHash`. | **Indefinite.** | DIGEST, TRUNCATE (or replace with the existing `keyHash`) | DB-010 |
-| `UserSession.ipAddress` | IP | Every session, set at sign-in. | While the session is live, then 30 days after it is revoked. **A session that expires (idle 30 days, or absolute 90 days) without being revoked is never deleted. It is kept until the account is deleted.** | DIGEST, TRUNCATE | owner decision |
+| `UserSession.ipAddress` | IP | Every session, set at sign-in. | While the session is live, then 30 days after it ends: 30 days after it is revoked, or 30 days after it expires (idle or absolute lifetime), whichever comes first. | DIGEST, TRUNCATE | owner decision |
 | `UserSession.userAgent` | UA | As above. | As above. | UA_FAMILY, NULL | owner decision |
 | `RateLimit.key` | IP_KEY | IP-keyed limiter buckets: `ip:<limiter>:<address>`. | 24 hours (`sweep-rate-limits`). | DIGEST, TRUNCATE | owner decision |
 
 The following fields hold no IP or user agent: the comms ledger and provider events, notifications (the staff bell carries the salted hash), `BetaAccessRequestEvent.source`, and the sealed `BetaAbuseEvidence` payload. The `x-forwarded-for` chain and the IP sent for CAPTCHA verification are never stored. The census test pins the first of these.
 
-**Readers that show the raw value today** (they would show the minimised form after a run): the admin audit page and API, the user's security history and session list, the admin security sessions view, the System Admin "last login IP", the data export, and the beta-risk network signal. The beta-risk signal groups by an MD5 of the raw IP, so it would lose correlation on minimised rows unless it read the digest.
+**Readers that show the raw value today** (they would show the minimised form after a run): the admin audit page and API, the user's security history and session list, the admin security sessions view, the System Admin "last login IP", the data export, and the beta-risk network signal. Since #377 the beta-risk signal groups by the beta-intake keyed digest (`networkDigest`, HMAC under `BETA_INTAKE_HASH_KEY_<V>`, as `<version>:<hex>`): computed at read time from raw rows, taken as stored from minimised rows, so a raw and a minimised row of one address group together. With no usable key there is no network grouping at all (never an unkeyed hash).
+
+**Key rotation and beta-risk grouping.** When `BETA_INTAKE_HASH_KEY_VERSION` moves to a new version, digests already stored under the old version stop grouping with new reads: the reader uses a stored digest only when its `networkDigestKeyVersion` equals the current key's version, and otherwise drops it. This is deliberate. It refuses rather than mis-groups: an old-version digest can never equal a new-version one, and the old version's "no address" sentinel digests can no longer be recognised. Rows still holding a raw IP are re-digested under the new key and keep grouping. After a rotation, expect the shared-network signal to stop covering submissions older than the 90-day raw window (already minimised under the old version) until they age out of the 180-day look-back.
 
 ### Methods
 

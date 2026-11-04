@@ -93,7 +93,7 @@ export const NETWORK_IDENTIFIER_FIELDS: readonly NetworkIdentifierField[] = [
   {
     id: "UserSession.ipAddress", model: "UserSession", field: "ipAddress", kind: "IP",
     rows: "Every session row (set at sign-in).",
-    currentRetention: "Live, then 30 days after revocation (jobs/data-retention.ts). A session that expired (idle 30 d / absolute 90 d) without being revoked is never reaped: kept until account deletion.",
+    currentRetention: "Live, then deleted 30 days after it ends: 30 days after revocation (DB-009), or 30 days after it expires (SEC-010 idle / absolute lifetime), whichever comes first (jobs/data-retention.ts sessionReapWhere).",
     methods: ["DIGEST", "TRUNCATE"], ageColumn: "createdAt",
     writers: ["lib/auth.ts"],
     applyBlockedBy: "OWNER_DECISION",
