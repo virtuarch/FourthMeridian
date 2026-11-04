@@ -141,6 +141,13 @@ export interface SnapshotAccount {
    * row, so a valued row stays byte-identical.
    */
   valuationUnknown?: true;
+  /**
+   * FIN-E F1 — `FinancialAccount.providerSubtype`, forwarded so classifyAccounts
+   * can split restricted cash (an HSA checking/savings) out of liquid exactly as
+   * the historical writers do. It never moves an account between net-worth
+   * buckets. OMITTED when null, so a row without a subtype stays byte-identical.
+   */
+  providerSubtype?: string;
 }
 
 /**
@@ -159,9 +166,9 @@ export interface SnapshotAccountsClient {
   spaceAccountLink: {
     findMany(args: {
       where:    Prisma.SpaceAccountLinkWhereInput;
-      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true; availableBalance: true; balanceObserved?: true } } };
+      select:   { visibilityLevel: true; financialAccount: { select: { id: true; type: true; balance: true; currency: true; walletChain: true; lastUpdated: true; availableBalance: true; balanceObserved?: true; providerSubtype?: true } } };
       orderBy:  Prisma.SpaceAccountLinkOrderByWithRelationInput[];
-    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date; availableBalance?: number | null; balanceObserved?: boolean } }>>;
+    }): Promise<Array<{ visibilityLevel: string; financialAccount: { id: string; type: string; balance: number; currency: string; walletChain: string | null; lastUpdated: Date; availableBalance?: number | null; balanceObserved?: boolean; providerSubtype?: string | null } }>>;
   };
   /**
    * v2.7-P0 — the pending-evidence read (lib/balances/pending-evidence.ts, the
@@ -206,7 +213,11 @@ export async function readSpaceAccountsForSnapshot(
         // v2.7-P0 — availableBalance forwarded RAW into lib/balances (the only
         // interpreter) for the adjusted-balance identity; never read as a value.
         // FIN-A2 — balanceObserved feeds the one totals classification below.
-        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true, availableBalance: true, balanceObserved: true },
+        // FIN-E F1 — providerSubtype feeds classifyAccounts' restricted split
+        // (liquidityAccess), the SAME field backfill.ts and regenerate-history.ts
+        // select. Without it today's row recorded restrictedCash = 0 for a Space
+        // holding an HSA, while every reconstructed day recorded the HSA balance.
+        select: { id: true, type: true, balance: true, currency: true, walletChain: true, lastUpdated: true, availableBalance: true, balanceObserved: true, providerSubtype: true },
       },
     },
     // Mirrors getAccountsWithVisibility so summation order — and therefore the
@@ -316,6 +327,8 @@ export async function readSpaceAccountsForSnapshot(
       ...(adj ? { adjustedBalance: adj.adjusted } : {}),
       // FM-AUDIT-022 — OMITTED unless the wallet has no value.
       ...(wb.valuationUnknown ? { valuationUnknown: true as const } : {}),
+      // FIN-E F1 — OMITTED when the account has no provider subtype.
+      ...(typeof fa.providerSubtype === "string" ? { providerSubtype: fa.providerSubtype } : {}),
     };
   });
 }
