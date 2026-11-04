@@ -23,8 +23,8 @@ import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO } from "@/lib/p
 import {
   INCIDENTS_URL_PARAMS, INCIDENTS_WORKSPACE_ID, OPS_BROKEN_NOW_KPI_PATH, incidentsApiPath, incidentsUrlUpdate, readIncidentsUrl, statusOfView,
 } from "./incidents-url";
-import { incidentTotalText, timelineText, whyLines } from "./incidents-model";
-import { IncidentDetailSurface, IncidentListSurface, recoveryPath } from "./IncidentsLead";
+import { EMPTY_LIFECYCLE_FORM, incidentTotalText, lifecycleBody, lifecycleFormValid, lifecyclePath, timelineText, whyLines } from "./incidents-model";
+import { IncidentDetailSurface, IncidentListSurface, LifecycleFormFields, recoveryPath } from "./IncidentsLead";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -93,6 +93,7 @@ const detail = (r: IncidentRowDTO, tier: "ops" | "cs"): IncidentDetailDTO => ({
   related: [], recurrences: [], recurrencesTruncated: false,
   archive: { archived: false, archivedAt: null, archiveDueAt: null, retainedUntil: null },
   recovery: tier === "ops" ? [{ kind: "resync", connectionId: "item_1" }] : [{ kind: "refresh-customer", userId: "u_cust_0000000001" }],
+  lifecycleActions: tier === "ops" ? ["acknowledge", "resolve"] : [],
   checkedAt: "2026-11-03T12:00:00.000Z",
 });
 
@@ -126,6 +127,32 @@ console.log("\n4. Ops renders no identity; CS does");
   check("CS list + detail name the attributed customer (control)", csHtml.includes("u_cust_0000000001") && csDetail.includes("Customer u_cust_0000000001") && csDetail.includes("Refresh all for this customer"));
   const empty = renderToStaticMarkup(createElement(IncidentListSurface, { data: { ...list(row()), items: [], total: 30, page: 3 }, onSelect: () => {}, onPage: () => {} }));
   check("a page past the end says so and keeps the pager", empty.includes("No incidents on this page.") && empty.includes("data-pager"));
+}
+
+console.log("\n5. PB-1 S6 — lifecycle actions: Ops + write only, confirm-first, reason fields, never CS");
+{
+  const noop = () => {};
+  const ops = renderToStaticMarkup(createElement(IncidentDetailSurface, { d: detail(row(), "ops"), canWrite: true, onSelect: noop, onRecover: noop, onLifecycle: noop }));
+  check("Ops + write: Acknowledge… and Resolve… openers (dialog), never an inline commit",
+    /data-lifecycle-action="acknowledge"[^>]*>Acknowledge…</.test(ops) && /data-lifecycle-action="resolve"[^>]*>Resolve…</.test(ops)
+    && (ops.match(/data-lifecycle-action="[a-z]+"[^>]*aria-haspopup="dialog"|aria-haspopup="dialog"[^>]*data-lifecycle-action/g) ?? []).length === 2);
+  const readOnly = renderToStaticMarkup(createElement(IncidentDetailSurface, { d: detail(row(), "ops"), canWrite: false, onSelect: noop, onRecover: noop, onLifecycle: noop }));
+  check("Ops read-only: no buttons, the actions are named with the access they need", !readOnly.includes("data-lifecycle-action") && readOnly.includes("Acknowledge · Resolve — requires write access."));
+  const cs = renderToStaticMarkup(createElement(IncidentDetailSurface, { d: { ...detail(row({ subjectUserId: "u_cust_0000000001" }), "cs"), lifecycleActions: ["acknowledge", "resolve"] }, canWrite: true, onSelect: noop, onRecover: noop }));
+  check("CS: no lifecycle control even if the DTO named one (no handler is passed on the CS tier)", !cs.includes("data-incident-lifecycle") && !cs.includes("Acknowledge"));
+  const ackOnly = renderToStaticMarkup(createElement(IncidentDetailSurface, { d: { ...detail(row(), "ops"), lifecycleActions: ["resolve"] }, canWrite: true, onSelect: noop, onRecover: noop, onLifecycle: noop }));
+  check("only the actions the module offers are rendered", !ackOnly.includes('data-lifecycle-action="acknowledge"') && ackOnly.includes('data-lifecycle-action="resolve"'));
+  const form = renderToStaticMarkup(createElement(LifecycleFormFields, { action: "resolve", form: EMPTY_LIFECYCLE_FORM, onChange: noop }));
+  check("the resolve form asks for a resolution, a reason and a REQUIRED note (≤280)", form.includes("Choose a resolution…") && form.includes("Note (required)") && form.includes('maxLength="280"'));
+  check("acknowledge needs only the reason; resolve needs a resolution code and a note",
+    lifecycleFormValid("acknowledge", EMPTY_LIFECYCLE_FORM) && !lifecycleFormValid("resolve", EMPTY_LIFECYCLE_FORM)
+    && !lifecycleFormValid("resolve", { ...EMPTY_LIFECYCLE_FORM, resolutionReason: "OPERATOR_FIXED" })
+    && lifecycleFormValid("resolve", { ...EMPTY_LIFECYCLE_FORM, resolutionReason: "OPERATOR_FIXED", note: "checked" })
+    && !lifecycleFormValid("acknowledge", { ...EMPTY_LIFECYCLE_FORM, note: "x".repeat(281) }));
+  check("bodies match the route's parser", JSON.stringify(lifecycleBody("acknowledge", EMPTY_LIFECYCLE_FORM)) === '{"reason":{"code":"INCIDENT"}}'
+    && JSON.stringify(lifecycleBody("resolve", { auditReason: "INCIDENT", resolutionReason: "OPERATOR_FIXED", note: " ok " })) === '{"resolutionReasonCode":"OPERATOR_FIXED","reason":{"code":"INCIDENT","note":"ok"}}');
+  check("lifecycle actions post to the two Ops routes", lifecyclePath("acknowledge", "a b") === "/api/platform/platform-ops/incidents/a%20b/acknowledge"
+    && lifecyclePath("resolve", "x") === "/api/platform/platform-ops/incidents/x/resolve");
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

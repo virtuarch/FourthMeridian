@@ -30,8 +30,31 @@ export const RESOLUTION_REASON_CODES = {
   TRANSACTIONS_SYNC_SUCCEEDED: "A later transactions sync for the same connection succeeded",
   /** P8 #1 — AUTOMATIC_RECOVERY: a balance was observed for the account. */
   BALANCE_OBSERVED: "A balance was observed for the account",
+  // ── OPERATOR_RESOLVED (PB-1 S6) — an operator closed the incident, with a note in the audit row ──
+  /** The operator confirmed the underlying problem was fixed. */
+  OPERATOR_FIXED: "An operator confirmed the underlying problem was fixed",
+  /** The operator judged it expected behaviour or not actionable. */
+  OPERATOR_NOT_ACTIONABLE: "An operator judged it not actionable (expected behaviour)",
+  /** The same failure is tracked by another incident. */
+  OPERATOR_DUPLICATE: "An operator closed it as a duplicate of another incident",
+  /** Raised by test or sandbox activity. */
+  OPERATOR_TEST_ACTIVITY: "An operator closed it as test or sandbox activity",
 } as const;
 export type ResolutionReasonCode = keyof typeof RESOLUTION_REASON_CODES;
+
+/**
+ * The ONLY reason codes an operator resolve may carry (a subset of the registry
+ * above). The system codes (subject removal, automatic recovery) are never
+ * accepted from a request: an operator cannot claim evidence they did not show.
+ */
+export const OPERATOR_RESOLUTION_REASON_CODES = [
+  "OPERATOR_FIXED", "OPERATOR_NOT_ACTIONABLE", "OPERATOR_DUPLICATE", "OPERATOR_TEST_ACTIVITY",
+] as const satisfies readonly ResolutionReasonCode[];
+export type OperatorResolutionReasonCode = (typeof OPERATOR_RESOLUTION_REASON_CODES)[number];
+
+export function isOperatorResolutionReasonCode(x: unknown): x is OperatorResolutionReasonCode {
+  return typeof x === "string" && (OPERATOR_RESOLUTION_REASON_CODES as readonly string[]).includes(x);
+}
 
 /**
  * Confirmed / hypothesised causes (SyncIssue.causeCode, SyncIssueEvent.causeCode).
@@ -57,7 +80,7 @@ export const EVENT_TYPES = [
 ] as const;
 export type IncidentEventType = (typeof EVENT_TYPES)[number];
 
-/** Operator actions (SyncIssueEvent.actionCode) — writers are Phase 2+ (S6). */
+/** Operator actions (SyncIssueEvent.actionCode). ACKNOWLEDGE + RESOLVE are written by applyOperatorTransition (S6); the rest are Phase 2+. */
 export const ACTION_CODES = {
   ACKNOWLEDGE: "Operator took ownership",
   RESOLVE: "Operator closed the incident with a reason",

@@ -55,6 +55,23 @@ export interface SubjectRecord {
   state: "LIVE" | RemovedSubjectState;
 }
 
+/**
+ * PB-1 S6 — an OPERATOR_RESOLVED closure's evidence. Design §8: an operator
+ * closure records a REFERENCE, never the reason text — the note lives in the
+ * AuditLog row (never deleted), reached by `auditId`. No operator user id is
+ * copied here either: the live row carries `resolvedById`, and the archive
+ * (which has no such column) keeps only this audit reference, so the actor is
+ * resolved through the audit trail at the tier that may see it.
+ */
+export interface OperatorClosureRecord {
+  /** AuditLog.id of the SYNC_INCIDENT_RESOLVED row (recordOperatorAction). */
+  auditId: string;
+  /** How the operator held authority: a platform grant, or System Admin break-glass. */
+  via: "PLATFORM_GRANT" | "SYSTEM_ADMIN";
+  /** The registry resolution reason (OPERATOR_RESOLUTION_REASON_CODES). */
+  reasonCode: string;
+}
+
 export interface ResolutionEvidence {
   /** Rule id, a registry-shaped code. */
   rule: string;
@@ -68,6 +85,18 @@ export interface ResolutionEvidence {
   /** §12 P2.2 — each subject's basis. */
   subjects?: SubjectRecord[];
   subjectsTruncated?: boolean;
+  /** PB-1 S6 — present on OPERATOR_RESOLVED (rule OPERATOR_RESOLVED_V1). Never proof. */
+  operator?: OperatorClosureRecord;
+}
+
+const OPERATOR_VIA = ["PLATFORM_GRANT", "SYSTEM_ADMIN"] as const;
+function pickOperator(o: unknown): OperatorClosureRecord | undefined {
+  if (typeof o !== "object" || o === null) return undefined;
+  const r = o as Record<string, unknown>;
+  if (typeof r.auditId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(r.auditId)) return undefined;
+  if (!(OPERATOR_VIA as readonly unknown[]).includes(r.via)) return undefined;
+  if (typeof r.reasonCode !== "string" || !/^[A-Z0-9_]{2,64}$/.test(r.reasonCode)) return undefined;
+  return { auditId: r.auditId, via: r.via as OperatorClosureRecord["via"], reasonCode: r.reasonCode };
 }
 
 function pickFact(f: StageFact): StageFact {
@@ -99,6 +128,7 @@ export function buildResolutionEvidence(input: {
   subject?: SubjectRecord & { state: RemovedSubjectState };
   observedAt?: Date;
   subjects?: readonly SubjectRecord[];
+  operator?: OperatorClosureRecord;
 }): ResolutionEvidence {
   const facts = (input.facts ?? []).map(pickFact);
   const proof = facts.filter((f) => f.status === "SUCCEEDED").slice(0, MAX_FACTS);
@@ -111,6 +141,11 @@ export function buildResolutionEvidence(input: {
   if (subjects.length) {
     out.subjects = subjects.slice(0, MAX_SUBJECTS);
     out.subjectsTruncated = subjects.length > MAX_SUBJECTS;
+  }
+  if (input.operator !== undefined) {
+    const op = pickOperator(input.operator);
+    if (!op) throw new Error("operator closure evidence must be {auditId, via, reasonCode} (ids and codes only)");
+    out.operator = op;
   }
   return capped(out, EVIDENCE_MAX_BYTES);
 }
@@ -163,6 +198,7 @@ export function reshapeStoredEvidence(stored: unknown): ResolutionEvidence | nul
       rule: e.rule, facts, subject,
       observedAt: observed && Number.isFinite(observed.getTime()) ? observed : undefined,
       subjects: Array.isArray(e.subjects) ? e.subjects.filter(isSubject) : [],
+      operator: pickOperator(e.operator),
     });
   } catch {
     return null;

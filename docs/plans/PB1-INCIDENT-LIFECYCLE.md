@@ -324,6 +324,35 @@ Add the three routes to the adoption ratchet `lib/platform/operator-action-adopt
 - **After acknowledge**, a new occurrence converges onto the same row: state goes back to ACTIVE, the acknowledgement is kept, and "recurred since acknowledged" is set.
 - **After operator resolve**, a new occurrence opens a new episode (`openedBy='RECURRENCE'`, `previousIncidentId` = the operator-resolved row). It shows as **REOPENED** with "previously resolved by an operator on <date>: <code>".
 
+**Implemented (S6, 2026-11-04) — acknowledge + manual resolve; S2 binding ruling.** The routes moved from Customer Success to Platform Ops; CS incident surfaces stay read-only (state display only).
+
+| Action | Route | Guard | Body |
+|---|---|---|---|
+| acknowledge | `POST /api/platform/platform-ops/incidents/[id]/acknowledge` | `requireFreshPlatformAccess("PLATFORM_OPS","WRITE")` + `limitPlatformMutation` | `{reason:{code, note?}}`, reason required |
+| resolve | `POST /api/platform/platform-ops/incidents/[id]/resolve` | same | `{resolutionReasonCode, reason:{code, note}}`, note required |
+
+- Both routes mint the Ops-tier token from their guard result. They read the incident through the intelligence module, and act only when the verdict's `availableActions` offers the action. A derived closure, an evidence event or a resolved row gets 409 `NOT_AVAILABLE`.
+- The write is `applyOperatorTransition` (`lifecycle.ts`), one transaction:
+  - re-read the row;
+  - `recordOperatorAction(tx, …)` (`SYNC_INCIDENT_ACKNOWLEDGED` / `SYNC_INCIDENT_RESOLVED`, target `SYNC_INCIDENT`, both reason-required);
+  - CAS on `{id, resolved:false, lifecycleState, updatedAt}` as read (0 rows ⇒ throw ⇒ 409 `CONFLICT`, the audit rolls back too);
+  - an OPERATOR `STATE_CHANGED` event (`actionCode` ACKNOWLEDGE / RESOLVE, actor + audit id).
+- **Acknowledge** writes `acknowledgedAt`, `acknowledgedById` and `acknowledgedAuditId` together and **leaves `lifecycleState` NULL**. The intelligence core derives "acknowledged" from those fields. A repeat is an idempotent 200 `changed:false` with no write. Un-acknowledge is not offered: the design has no such transition.
+- **Resolve** writes `lifecycleState` RESOLVED, `resolved=true`, `resolvedAt`, `resolutionKind` OPERATOR_RESOLVED, a registered operator `resolutionReasonCode` (`OPERATOR_FIXED`, `OPERATOR_NOT_ACTIONABLE`, `OPERATOR_DUPLICATE`, `OPERATOR_TEST_ACTIVITY`; `codes.ts`), `resolvedById` and `resolutionAuditId`. It also writes the typed evidence `{rule: OPERATOR_RESOLVED_V1, proof: [], operator: {auditId, via, reasonCode}}`. The note lives only in the AuditLog row. No operator user id is copied into the evidence: the archive reaches the actor through `auditId`.
+- **Reopen by recurrence.** If the subject is still failing, the next observation opens a NEW episode (`openedBy` RECURRENCE, `previousIncidentId` = the operator-resolved row). The new episode shows as REOPENED, and the alert engine treats it like any other recurrence. The resolved row is never mutated. The acknowledgement does not carry across a closure.
+- **Operator reopen** is not built: it would open a new row with `openedBy` OPERATOR_REOPEN and never mutate the closed one.
+
+### 6.1 B9-rollback constraints (S2 ruling, 2026-11-04)
+
+**Lift these only with an owner roll-forward-only decision.**
+
+Production B9 can be rolled back to only while no OPEN row carries a non-NULL `lifecycleState`. B9's automatic resolution sets `resolved=true` without touching `lifecycleState`. That passes `SyncIssue_lifecycleState_resolved_check` only on NULL rows.
+
+- **(a)** No writer sets a non-NULL `lifecycleState` other than RESOLVED. Open incidents keep NULL. ACKNOWLEDGED / RECOVERING are derived from their fields.
+- **(b)** Nothing writes `resolved=false` on an existing row. Every recurrence or reopen is a new episode.
+
+Both are pinned in `incident-boundary.test.ts` §12 and asserted behaviourally in `operator-transition.test.ts`.
+
 Automatic transitions write no AuditLog. They are system facts and are persisted on the row with their evidence. This matches the existing `AUTOMATIC_RECOVERY` behaviour.
 
 **Implemented (P8 #1, 2026-11-03).** `resolveByAutomaticRecovery` now uses the subject-removal shape. Each matching row gets its own small transaction. It runs a CAS on the `lifecycleState` it read, sets `lifecycleState=RESOLVED` with `resolved`, and writes a registry `resolutionReasonCode`, the typed `resolutionEvidence` and a SYSTEM `STATE_CHANGED → RESOLVED` event carrying the resolving execution. Rows are independent incidents. A lost CAS skips only that row: it is logged as a conflict, reported on the observer, and retried by the next success. Any other failure, such as the event insert, also rolls back only its row. The return value counts successes, and a per-row tally asserts that every observed row was either written or reported. The proof fact is synthesised by the resolver, so it is legitimate only because of its call sites. `auto-recovery-callers.test.ts` pins them: the two facades are the only callers, each reachable only after its success condition. The evidence rules are:

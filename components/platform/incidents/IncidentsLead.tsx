@@ -17,13 +17,15 @@
  * subjects, related / recurring incidents, archive state — and ONLY the
  * EXISTING recovery routes (resync / request-reauth for Ops; the customer's
  * Refresh all for CS), each behind a confirmation, rendered only when the
- * operator's descriptive access says WRITE. The server guard decides; each
+ * operator's descriptive access says WRITE. PB-1 S6 — on the OPS tier only,
+ * the lifecycle actions the module offers (Acknowledge / Resolve) open a
+ * confirmation with a reason and a note; Customer Success never gets them. The server guard decides; each
  * route audits through recordOperatorAction. Presentation only: nothing here
  * derives a verdict.
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, KeyRound, RefreshCw, RotateCcw } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, KeyRound, RefreshCw, RotateCcw, UserCheck } from "lucide-react";
 import { ConfirmDialog } from "@/components/atlas/ConfirmDialog";
 import { Surface } from "@/components/atlas/Surface";
 import { useSpaceUrl } from "@/components/space/shell/useSpaceUrl";
@@ -34,13 +36,15 @@ import { ExecutionTimelinePanel } from "../widgets/ExecutionTimelinePanel";
 import type { PlatformViewLeadProps } from "../leads/lead-contract";
 import { DEFAULT_SEARCH, SEVERITY_FILTERS, retentionFloorDay } from "@/lib/platform/incidents/intelligence/search-core";
 import type { IncidentSearchQuery } from "@/lib/platform/incidents/intelligence/types";
-import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, IncidentTier, RecoveryActionDTO } from "@/lib/platform/incidents/investigation-dto";
+import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, IncidentTier, LifecycleActionDTO, RecoveryActionDTO } from "@/lib/platform/incidents/investigation-dto";
 import {
   incidentDetailApiPath, incidentsApiPath, incidentsUrlUpdate, readIncidentsUrl, statusOfView, type IncidentsUrlState,
 } from "./incidents-url";
 import {
   FRESHNESS_WORD, LINK_WORD, RECOVERY_LABEL, SEVERITY_WORD, STATE_TONE, STATE_WORD, STATUS_TITLE,
   affectedLine, archiveLine, closureText, codeText, incidentLine, incidentTotalText, incidentTitle, pageCount, populationLine, timelineText, whenText, whyLines,
+  AUDIT_REASON_OPTIONS, EMPTY_LIFECYCLE_FORM, LIFECYCLE_CONFIRM, LIFECYCLE_LABEL, OPERATOR_NOTE_MAX, RESOLUTION_REASON_OPTIONS,
+  lifecycleBody, lifecycleFormValid, lifecyclePath, type LifecycleForm,
 } from "./incidents-model";
 
 const FIELD = "min-h-11 min-w-0 rounded-[var(--radius-sm)] border border-[var(--border-hairline)] bg-transparent px-2 text-xs text-[var(--text-secondary)] lg:min-h-8";
@@ -185,15 +189,18 @@ function LinkedRow({ id, r, prefix, onSelect }: { id: string; r: IncidentRowDTO 
   );
 }
 
-export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover }: {
+export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle }: {
   d: IncidentDetailDTO;
   canWrite: boolean;
   onSelect: (id: string) => void;
   onExecution?: (id: string) => void;
   onRecover: (a: RecoveryActionDTO) => void;
+  /** PB-1 S6 — opens the acknowledge / resolve confirmation (Ops tier only; the server decides). */
+  onLifecycle?: (a: LifecycleActionDTO) => void;
 }) {
   const r = d.incident;
   const closure = closureText(r);
+  const lifecycle = d.lifecycleActions ?? [];
   return (
     <div className="flex min-w-0 flex-col gap-5" data-incident-detail={r.id}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -203,6 +210,20 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
         {closure && <span className="text-[var(--text-muted)]">{closure}</span>}
       </div>
       <p className="text-[11px] text-[var(--text-muted)]">{incidentLine(r)}{r.resolvedAt ? ` · resolved ${whenText(r.resolvedAt)}` : ""}</p>
+
+      {lifecycle.length > 0 && onLifecycle && (
+        <Section title="Operator actions">
+          {canWrite ? (
+            <div className="flex flex-wrap gap-2" data-incident-lifecycle>
+              {lifecycle.map((a) => (
+                <button key={a} type="button" className={`${FIELD} px-3 text-[var(--text-primary)]`} onClick={() => onLifecycle(a)} aria-haspopup="dialog" data-lifecycle-action={a}>{`${LIFECYCLE_LABEL[a]}…`}</button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-[var(--text-muted)]">{`${lifecycle.map((a) => LIFECYCLE_LABEL[a]).join(" · ")} — requires write access.`}</p>
+          )}
+        </Section>
+      )}
 
       <Section title="Why">
         <ul className="flex list-disc flex-col gap-1 pl-4 text-xs text-[var(--text-secondary)]" data-incident-why>
@@ -304,8 +325,42 @@ const CONFIRM: Readonly<Record<RecoveryActionDTO["kind"], { title: string; messa
   "refresh-customer": { title: "Refresh all of this customer's connections?", message: "Runs the customer's Refresh all through the one orchestrator with operator authority. Nothing is reported as refreshed that was skipped or refused. Audited as an operator action.", icon: RotateCcw },
 };
 
-function IncidentDetail({ tier, id, canWrite, onSelect }: { tier: IncidentTier; id: string; canWrite: boolean; onSelect: (id: string) => void }) {
+const LABEL = "flex min-w-0 flex-col gap-1 text-left text-[11px] text-[var(--text-muted)]";
+
+/** The reason fields inside the lifecycle confirmation. Presentation only; the route validates. */
+export function LifecycleFormFields({ action, form, onChange, disabled }: { action: LifecycleActionDTO; form: LifecycleForm; onChange: (f: LifecycleForm) => void; disabled?: boolean }) {
+  const left = OPERATOR_NOTE_MAX - form.note.trim().length;
+  return (
+    <div className="mt-3 flex min-w-0 flex-col gap-3 text-left" data-lifecycle-form={action}>
+      {action === "resolve" && (
+        <label className={LABEL}>
+          Resolution
+          <select className={`${FIELD} w-full`} value={form.resolutionReason} disabled={disabled} onChange={(e) => onChange({ ...form, resolutionReason: e.target.value as LifecycleForm["resolutionReason"] })}>
+            <option value="">Choose a resolution…</option>
+            {RESOLUTION_REASON_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+      )}
+      <label className={LABEL}>
+        Reason
+        <select className={`${FIELD} w-full`} value={form.auditReason} disabled={disabled} onChange={(e) => onChange({ ...form, auditReason: e.target.value as LifecycleForm["auditReason"] })}>
+          {AUDIT_REASON_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </label>
+      <label className={LABEL}>
+        {action === "resolve" ? "Note (required)" : "Note (optional)"}
+        <textarea className={`${FIELD} min-h-20 w-full resize-y py-1.5`} maxLength={OPERATOR_NOTE_MAX} value={form.note} disabled={disabled}
+          onChange={(e) => onChange({ ...form, note: e.target.value })} placeholder="What was checked. No customer details, emails or account numbers." />
+        <span className={`self-end tabular-nums ${left < 0 ? "text-[var(--status-bad,#c33)]" : "text-[var(--text-faint)]"}`}>{`${left} left`}</span>
+      </label>
+    </div>
+  );
+}
+
+function IncidentDetail({ tier, id, canWrite, onSelect, onChanged }: { tier: IncidentTier; id: string; canWrite: boolean; onSelect: (id: string) => void; onChanged?: () => void }) {
   const [generation, setGeneration] = useState(0);
+  const [lifecyclePending, setLifecyclePending] = useState<LifecycleActionDTO | null>(null);
+  const [form, setForm] = useState<LifecycleForm>(EMPTY_LIFECYCLE_FORM);
   const { data, error, fresh } = useKeyedJson<IncidentDetailDTO>(incidentDetailApiPath(tier, id), generation);
   const [execution, setExecution] = useState<string | null>(null);
   const [pending, setPending] = useState<RecoveryActionDTO | null>(null);
@@ -334,13 +389,53 @@ function IncidentDetail({ tier, id, canWrite, onSelect }: { tier: IncidentTier; 
     }
   }
 
+  function openLifecycle(a: LifecycleActionDTO) {
+    setForm(EMPTY_LIFECYCLE_FORM);
+    setNotice(null);
+    setLifecyclePending(a);
+  }
+
+  async function runLifecycle() {
+    if (!lifecyclePending || !lifecycleFormValid(lifecyclePending, form)) return;
+    const a = lifecyclePending;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const r = await fetch(lifecyclePath(a, id), {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(lifecycleBody(a, form)),
+      });
+      const body = await r.json().catch(() => ({} as Record<string, unknown>));
+      if (!r.ok) {
+        if (r.status === 403) throw new Error("Not authorized (write access with a fresh sign-in is required).");
+        if (r.status === 429) throw new Error("Too many actions — wait a minute and try again.");
+        throw new Error(typeof body.error === "string" ? body.error : `${LIFECYCLE_LABEL[a]} failed (${r.status})`);
+      }
+      setNotice(body.changed === false ? "Already acknowledged — nothing changed." : `${LIFECYCLE_LABEL[a]}: recorded. The timeline shows the event.`);
+      setGeneration((g) => g + 1);
+      onChanged?.();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      setBusy(false);
+      setLifecyclePending(null);
+    }
+  }
+
   if (fresh && error) return <ChartMessage>{`Incident unavailable — ${error}`}</ChartMessage>;
   if (!data || data.incident.id !== id) return <ChartMessage>Reading incident…</ChartMessage>;
   const c = pending ? CONFIRM[pending.kind] : null;
   return (
     <>
       {notice && <p role="status" className="mb-3 text-xs text-[var(--text-secondary)]">{notice}</p>}
-      <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} onExecution={tier === "ops" ? setExecution : undefined} onRecover={setPending} />
+      <IncidentDetailSurface d={data} canWrite={canWrite} onSelect={onSelect} onExecution={tier === "ops" ? setExecution : undefined} onRecover={setPending}
+        onLifecycle={tier === "ops" ? openLifecycle : undefined} />
+      {lifecyclePending && (
+        <ConfirmDialog icon={lifecyclePending === "resolve" ? CheckCircle2 : UserCheck} title={LIFECYCLE_CONFIRM[lifecyclePending].title}
+          message={<>{LIFECYCLE_CONFIRM[lifecyclePending].message}<LifecycleFormFields action={lifecyclePending} form={form} onChange={setForm} disabled={busy} /></>}
+          confirmLabel={LIFECYCLE_LABEL[lifecyclePending]} confirmTone="meridian" busy={busy}
+          confirmDisabled={!lifecycleFormValid(lifecyclePending, form)} onConfirm={runLifecycle} onClose={() => setLifecyclePending(null)} />
+      )}
       {pending && c && (
         <ConfirmDialog icon={c.icon} title={c.title} message={c.message} confirmLabel={RECOVERY_LABEL[pending.kind]} confirmTone="meridian" busy={busy} onConfirm={run} onClose={() => setPending(null)} />
       )}
@@ -368,7 +463,8 @@ function IncidentsWorkspace({ tier, viewId, access }: { tier: IncidentTier } & P
     spaceUrl.commit(incidentsUrlUpdate(next), { history: "replace" });
   }, [spaceUrl]);
 
-  const list = useKeyedJson<IncidentListDTO>(incidentsApiPath(tier, state.query));
+  const [listGeneration, setListGeneration] = useState(0);
+  const list = useKeyedJson<IncidentListDTO>(incidentsApiPath(tier, state.query), listGeneration);
   const select = (id: string | null) => apply({ ...state, selectedId: id });
   const title = list.data?.items.find((r) => r.id === state.selectedId);
 
@@ -387,7 +483,7 @@ function IncidentsWorkspace({ tier, viewId, access }: { tier: IncidentTier } & P
       </Surface>
       <DetailDrawer open={state.selectedId !== null} onClose={() => select(null)} eyebrow={tier === "ops" ? "Platform Ops · Incident" : "Customer Success · Incident"}
         title={title ? incidentTitle(title) : "Incident"} size="xl">
-        {state.selectedId ? <IncidentDetail tier={tier} id={state.selectedId} canWrite={access?.canWrite === true} onSelect={(id) => select(id)} /> : null}
+        {state.selectedId ? <IncidentDetail tier={tier} id={state.selectedId} canWrite={access?.canWrite === true} onSelect={(id) => select(id)} onChanged={() => setListGeneration((g) => g + 1)} /> : null}
       </DetailDrawer>
     </div>
   );

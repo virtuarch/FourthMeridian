@@ -76,6 +76,30 @@ console.log("deactivate / reactivate — reason REQUIRED, change + audit in ONE 
   check("SEC-PLAT-4: gated on CUSTOMER_SUCCESS WRITE (route + widget)", /requireFreshPlatformAccess\("CUSTOMER_SUCCESS", "WRITE"\)/.test(s) && /detail\?\.actions\.deactivate && canWrite &&/.test(w));
 }
 
+console.log("PB-1 S6 — incident acknowledge / resolve: reason REQUIRED, audit inside the transition's transaction");
+{
+  const ACK = "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts";
+  const RES = "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts";
+  const RUNNER = "lib/platform/incidents/operator-route.ts";
+  const LC = strip("lib/platform/incidents/lifecycle.ts");
+  for (const f of [ACK, RES]) {
+    const s = strip(f);
+    check(`${f}: actor derived from the resolved PlatformAuth (operatorActorFrom)`, /operatorActorFrom\(auth, "PLATFORM_OPS"\)/.test(s));
+    check(`${f}: no direct auditLog.create`, !/auditLog\.create\(/.test(s));
+    check(`${f}: fresh PLATFORM_OPS WRITE (S2 ruling)`, /requireFreshPlatformAccess\("PLATFORM_OPS", "WRITE"\)/.test(s));
+  }
+  const r = strip(RUNNER);
+  check("the runner parses the reason (parseOperatorReason) before any read; an invalid one is a 400",
+    r.indexOf("parseOperatorReason(") > -1 && r.indexOf("parseIncidentActionBody(input.action") < r.indexOf("deps.investigate(") && /status: 400/.test(r));
+  check("resolve requires a note", /if \(!reason\.note\) return \{ ok: false, error: RESOLVE_NOTE_REQUIRED \}/.test(r));
+  check("the transition records through the chokepoint, inside its own transaction", /recordOperatorAction\(tx,/.test(LC) && !/auditLog\.create\(/.test(LC));
+  check("target kind SYNC_INCIDENT, before/after change recorded", /target:\s*\{\s*kind:\s*"SYNC_INCIDENT",\s*id:\s*row\.id\s*\}/.test(LC) && /change:\s*\{\s*before:/.test(LC));
+  const audit = src("lib/audit.ts");
+  check("both actions are REASON_REQUIRED", /AuditAction\.SYNC_INCIDENT_ACKNOWLEDGED,\s*AuditAction\.SYNC_INCIDENT_RESOLVED,/.test(audit.slice(audit.indexOf("REASON_REQUIRED_ACTIONS"))));
+  const feed = src("lib/audit-actions.ts");
+  check("both actions are in the operator action feed", /AuditAction\.SYNC_INCIDENT_ACKNOWLEDGED,\s*AuditAction\.SYNC_INCIDENT_RESOLVED,/.test(feed.slice(feed.indexOf("OPERATOR_ACTION_FEED_ACTIONS"))));
+}
+
 console.log("feed — projects the envelope, never the note, never email");
 {
   const row = {
