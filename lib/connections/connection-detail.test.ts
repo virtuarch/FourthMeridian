@@ -35,7 +35,7 @@ console.log("Overview — account groups");
 {
   const groups = groupAccounts([
     { id: "1", name: "Total Checking", type: "checking", mask: "1234" },
-    { id: "2", name: "Sapphire", type: "debt", subtype: "credit card" },
+    { id: "2", name: "Card Product A", type: "debt", subtype: "credit card" },
     { id: "3", name: "Savings", type: "savings" },
     { id: "4", name: "Home loan", type: "debt", subtype: "mortgage" },
     { id: "5", name: "Checking 2", type: "checking" },

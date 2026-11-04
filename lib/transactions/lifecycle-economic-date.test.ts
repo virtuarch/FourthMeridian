@@ -222,8 +222,8 @@ console.log("4D. Transfer maturation — the $4,000 Example Bank → Example Car
 
 console.log("4D. Non-regression — a TRUE debt payment stays a debt payment");
 {
-  // Live counter-example: 2026-03-13, EXAMPLE BANK COLLEGE −4,000
-  // "EXAMPLE CARD ACH PMT M9576" → Example Card Platinum Card® (a LIABILITY).
+  // Live counter-example: 2026-03-13, EXAMPLE BANK EVERYDAY −4,000
+  // "EXAMPLE CARD ACH PMT M9576" → Example Card Card Product C® (a LIABILITY).
   // Same institution, same amount, same direction, similar descriptor.
   const r = matureClassification({
     flowType: "DEBT_PAYMENT", amount: -4000,
@@ -473,7 +473,7 @@ console.log("v2.6-TRUTH-1 PART 1. The CASH veto is structural");
 console.log("4-AUDIT. The row's OWN account settles a liability inflow");
 {
   // The 103-row defect the full-corpus audit exposed: "+$980.48 MOBILE PAYMENT -
-  // THANK YOU" ARRIVING at the Platinum Card®, counterparty a CHECKING account.
+  // THANK YOU" ARRIVING at the Card Product C®, counterparty a CHECKING account.
   // Destination-type alone called it a cash transfer. It is a debt payment.
   const fromChecking = resolveDestinationEvidence([
     { legId: "chk-leg", accountId: "chk", accountType: "checking", competingSourceCount: 1, superseded: false },

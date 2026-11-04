@@ -129,12 +129,12 @@ console.log("3. Cash + liability walks share the posted-only basis");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. Regression fixture — the reported EXAMPLE BANK COLLEGE shape (Part 7).
+// 4. Regression fixture — the reported EXAMPLE BANK EVERYDAY shape (Part 7).
 //    Anchor = today posted balance; a $5,318.61 posted card-payment outflow near
 //    the boundary; a +$5,286.63 PENDING payroll credit near the boundary; the
 //    first observed balance. (Real numbers used as a fixture, never as logic.)
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("4. EXAMPLE BANK COLLEGE regression fixture — posted-only continuity");
+console.log("4. EXAMPLE BANK EVERYDAY regression fixture — posted-only continuity");
 {
   const today = fromISO("2026-07-18");              // anchor day
   const start = fromISO("2026-07-13");

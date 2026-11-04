@@ -2,7 +2,9 @@
  * scripts/fixture-institution-census.test.ts — public-repo hygiene: test and
  * fixture files use obviously fake institution names ("Example Bank",
  * "Example Card", "Example Brokerage", "Example Exchange", "Institution A"…),
- * never a real bank, card issuer, broker or crypto exchange.
+ * never a real bank, card issuer, broker or crypto exchange — and neutral card
+ * product names ("Card Product A", "Example Rewards"), never a real issuer's
+ * card product or rewards programme.
  *
  * SCOPE — every TRACKED file (git ls-files) that is a test or a fixture:
  *   - basename ends in `.test.ts` / `.test.tsx`;
@@ -12,7 +14,7 @@
  * Production code is out of scope: it may legitimately name an institution
  * (an import profile, a provider-specific extractor, a fee rule).
  *
- * MATCHING RULE — each name in INSTITUTION_NAMES matches:
+ * MATCHING RULE — each name in INSTITUTION_NAMES and CARD_PRODUCT_NAMES matches:
  *   - CASE-SENSITIVELY, as written OR in ALL CAPS ("Chase" and "CHASE", never
  *     "chase"), so ordinary lowercase words ("chase the cursor", "discover",
  *     "ally") and provider descriptor casing are told apart;
@@ -53,6 +55,19 @@ const INSTITUTION_NAMES: readonly string[] = [
   "Ally Invest",
   "Coinbase", "Kraken", "Binance", "Binance.US", "Gemini", "Crypto.com", "Bitstamp", "KuCoin",
   "Bitfinex", "OKX", "Bybit", "Bittrex", "Huobi", "Gate.io", "Bitget", "Uphold", "eToro",
+];
+
+const CARD_PRODUCT_NAMES: readonly string[] = [
+  "Sapphire Reserve", "Sapphire Preferred", "Sapphire", "Freedom Unlimited", "Freedom Flex", "Freedom",
+  "Ultimate Rewards", "Ink Business", "Ink Cash", "Ink Preferred", "United Explorer", "MileagePlus",
+  "Rapid Rewards", "Prime Visa", "Amazon Prime Visa", "Platinum Card", "Gold Card", "Green Card",
+  "Blue Cash Preferred", "Blue Cash Everyday", "Blue Cash", "Membership Rewards", "Delta SkyMiles",
+  "SkyMiles", "Hilton Honors", "Marriott Bonvoy", "Bonvoy", "Centurion", "Double Cash", "Custom Cash",
+  "Strata Premier", "ThankYou Points", "ThankYou Rewards", "ThankYou", "Diamond Preferred", "AAdvantage",
+  "Venture X", "VentureOne", "Venture", "Quicksilver", "QuicksilverOne", "SavorOne", "Savor", "Spark Cash",
+  "Discover it", "Cashback Match", "Active Cash", "Autograph", "Bilt", "Customized Cash Rewards",
+  "Unlimited Cash Rewards", "Premium Rewards", "Preferred Rewards", "BankAmericard", "Altitude Reserve",
+  "Altitude Connect", "Apple Card", "Costco Anywhere Visa", "World of Hyatt", "IHG One Rewards", "Slate Edge",
 ];
 
 type AllowEntry = { file: string; names: readonly string[]; reason: string };
@@ -102,7 +117,7 @@ function isTestOrFixture(file: string): boolean {
     || /(^|\.|-)fixtures?\.(ts|tsx|json)$/.test(base);
 }
 
-const RE = institutionMatcher(INSTITUTION_NAMES);
+const RE = institutionMatcher([...INSTITUTION_NAMES, ...CARD_PRODUCT_NAMES]);
 const hits = (text: string) => [...text.matchAll(RE)].map((m) => m[0]);
 
 console.log("1. the matcher");
@@ -110,7 +125,8 @@ check("matches a name as written", hits("institution: \"Chase\"").join() === "Ch
 check("matches the ALL-CAPS form", hits("CHASE CREDIT CRD AUTOPAY").join() === "CHASE");
 check("ignores the lowercase word", hits("we chase the cursor; discover; an ally").length === 0);
 check("respects word boundaries", hits("Purchase · Citizen · SCHWAB_STALE · twoChase · Amexico").length === 0);
-check("prefers the longest name", hits("Charles Schwab").join() === "Charles Schwab");
+check("prefers the longest name", hits("Charles Schwab").join() === "Charles Schwab" && hits("Sapphire Reserve").join() === "Sapphire Reserve");
+check("matches card product names, as written and in ALL CAPS", hits("Ultimate Rewards® · PLATINUM CARD").join() === "Ultimate Rewards,PLATINUM CARD");
 check("punctuated names match literally", hits("E*TRADE and Crypto.com").join() === "E*TRADE,Crypto.com" && hits("CryptoXcom").length === 0);
 check("scope: tests, fixtures dirs and fixture modules only",
   isTestOrFixture("lib/a/b.test.ts") && isTestOrFixture("lib/x/__fixtures__/y.ts") && isTestOrFixture("lib/imports/fixtures/a.csv")
@@ -119,6 +135,9 @@ check("scope: tests, fixtures dirs and fixture modules only",
   && !isTestOrFixture("lib/a/b.ts") && !isTestOrFixture("lib/admin/provider-lifecycle.ts") && !isTestOrFixture("docs/fixtures-notes.md"));
 check("the list is broad (≥ 90 names) and has no duplicates",
   INSTITUTION_NAMES.length >= 90 && new Set(INSTITUTION_NAMES).size === INSTITUTION_NAMES.length);
+check("the card product list is broad (≥ 50 names), has no duplicates and does not overlap the institutions",
+  CARD_PRODUCT_NAMES.length >= 50 && new Set(CARD_PRODUCT_NAMES).size === CARD_PRODUCT_NAMES.length
+  && CARD_PRODUCT_NAMES.every((n) => !INSTITUTION_NAMES.includes(n)));
 
 console.log("2. this checkout");
 {
@@ -148,7 +167,7 @@ console.log("2. this checkout");
       }
     }
   }
-  check("no test or fixture names a real institution (use Example Bank / Example Card / Example Brokerage / Example Exchange / Institution A…)",
+  check("no test or fixture names a real institution or card product (use Example Bank / Example Card / Example Brokerage / Example Exchange / Institution B… / Card Product A…)",
     violations.length === 0, `\n      ${violations.slice(0, 40).join("\n      ")}${violations.length > 40 ? `\n      … ${violations.length - 40} more` : ""}`);
 
   const stale = ALLOWLIST.flatMap((e) => e.names.filter((n) => !seen.get(e.file)?.has(n)).map((n) => `${e.file}: "${n}"`));

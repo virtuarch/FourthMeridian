@@ -18,7 +18,7 @@
  * exists for (a delivered-but-unstored posted row — the July-2 payroll).
  *
  * The two events, from the SyncIssue table:
- *   EXAMPLE BANK COLLEGE (checking): balanceDelta −421.32, txnSumDelta 0, mismatch 421.32
+ *   EXAMPLE BANK EVERYDAY (checking): balanceDelta −421.32, txnSumDelta 0, mismatch 421.32
  *   CREDIT CARD   (debt):     balanceDelta −213.50, txnSumDelta −12.52, mismatch 226.02
  * Both were emitted in the same sync run that tombstoned 8 pending rows and
  * re-created them as posted — i.e. entirely healthy provider churn.
@@ -36,7 +36,7 @@ const approx = (a: number, b: number, eps = 1e-6) => Math.abs(a - b) < eps;
 // ── 1. The two real events — pending→posted churn is NOT a mismatch ──────────
 console.log("1. Real recorded events replayed under the posted-only rule");
 {
-  // EXAMPLE BANK COLLEGE — three pendings (−300, −105, −16.32 = −421.32) posted this run.
+  // EXAMPLE BANK EVERYDAY — three pendings (−300, −105, −16.32 = −421.32) posted this run.
   // Posted basis: they were absent from the BEFORE sum (still pending) and
   // present in the AFTER sum, so the sum moves by exactly what the balance did.
   const cash = evaluateReconciliation({

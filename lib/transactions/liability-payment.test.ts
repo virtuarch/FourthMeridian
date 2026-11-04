@@ -113,14 +113,14 @@ eq("lifecycle: Example Bank pending and posted descriptors agree",
 // 3. The word-boundary contract — the e-payment trap
 // ─────────────────────────────────────────────────────────────────────────────
 // Substring matching over NORMALIZED text is unsafe: "e-payment" normalizes to
-// "e payment", a substring of "mobile payment" and "Zelle payment to Mom".
+// "e payment", a substring of "mobile payment" and "Example payment to Pat".
 // Measured: 156 rows under substring, 0 under word-boundary. These pin that the
 // matcher is word-boundary — they fail loudly if anyone reverts to .includes().
 
-check("word-boundary: 'Zelle payment to Mom' is NOT a card-payment descriptor (the e-payment trap)",
-  isCardPaymentDescriptor("Zelle payment to Mom JPM99b2i991r") === false);
+check("word-boundary: 'Example payment to Pat' is NOT a card-payment descriptor (the e-payment trap)",
+  isCardPaymentDescriptor("Example payment to Pat REF0000000") === false);
 check("word-boundary: a bare 'payment' word does not match a multi-word token",
-  isCardPaymentDescriptor("ABACUS TECHNOLOG Payment 1862 CCD ID: 1521328215") === false);
+  isCardPaymentDescriptor("EXAMPLE PAYEE CO Payment 0000 CCD ID: 0000000000") === false);
 check("word-boundary: '3CPAYMENT*PULLMAN PAPARIS FR' is NOT a payment descriptor ✓real",
   isCardPaymentDescriptor("Pullman Paparis Fr", "3CPAYMENT*PULLMAN PAPARIS FR") === false);
 // A token must not match as a fragment of a longer word.

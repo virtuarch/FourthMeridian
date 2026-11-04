@@ -47,7 +47,7 @@ const accounts = (over: Partial<AccountsSectionData> = {}): AccountsSectionData 
   counts: { liquid: 1, investments: 1, digitalAssets: 1, realAssets: 0, liabilities: 1 },
   health: { errorCount: 1, staleCount: 0, needsReauthCount: 1,
     errorAccountNames: ['Example Bank Checking'], staleAccountNames: [], needsReauthAccountNames: ['Example Bank Checking'] },
-  knowledgeGaps: [{ accountId: 'fa_card_1', accountName: 'Example Bank Sapphire', field: 'apr', label: 'APR', debtSubtype: 'credit_card' }],
+  knowledgeGaps: [{ accountId: 'fa_card_1', accountName: 'Example Bank Card Product A', field: 'apr', label: 'APR', debtSubtype: 'credit_card' }],
   accounts: [
     { id: 'fa_chk_1', name: 'Example Bank Checking', type: 'checking', institution: 'Example Bank Bank', balance: 18920.40,
       currency: 'USD', reportingBalance: 18920.40, lastUpdated: '2026-09-13T06:00:00.000Z',
@@ -101,7 +101,7 @@ const assessment = {
       evidencePopulation: { kind: 'DEBT_ACCOUNTS', unit: 'accounts', count: 1, graded: 0 } },
     burden: { ratedOwed: 0, monthlyInterestIfCarried: null, monthlyIncome: 9620, monthlyExpenses: 6240.35, liquid: 18920.4,
       interestOfMonthlyIncomePct: null, interestOfMonthlyExpensesPct: null, owedOfLiquidPct: 16.97 } },
-  ungraded: [{ section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'APR_MISSING', detail: 'Example Bank Sapphire has no APR ($3,210.55)' }],
+  ungraded: [{ section: 'debt', verdict: 'INSUFFICIENT_DATA', reason: 'APR_MISSING', detail: 'Example Bank Card Product A has no APR ($3,210.55)' }],
 } as unknown as FinancialAssessment;
 
 const holdings = {
@@ -162,7 +162,7 @@ console.log('\n2. freshness and data quality');
     && !('accountsWithSyncErrors' in pkg.freshness) && !('connectionsNeedingAttention' in pkg.freshness));
   check('the band is the OLDEST observation\'s (11 days ⇒ STALE)', pkg.freshness?.band === 'STALE', pkg.freshness?.band);
   check('knowledge gaps are account name + missing label only',
-    JSON.stringify(pkg.dataQuality.knowledgeGaps) === JSON.stringify([{ account: 'Example Bank Sapphire', missing: 'APR' }]));
+    JSON.stringify(pkg.dataQuality.knowledgeGaps) === JSON.stringify([{ account: 'Example Bank Card Product A', missing: 'APR' }]));
   check('ungraded carries section and reason, not prose', JSON.stringify(pkg.dataQuality.ungraded) === '[{"section":"debt","reason":"APR_MISSING"}]');
   check('unvalued positions counted', pkg.dataQuality.unvaluedPositions === 2);
   check('unidentified income share as a rounded percent', pkg.dataQuality.unidentifiedIncomeSharePct === 12.3);

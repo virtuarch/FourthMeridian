@@ -57,7 +57,7 @@ const debt = (over: Record<string, unknown>): DebtPerspectiveAccount =>
 // Positive balance = owed (lib/debt/balance-semantics amountOwed).
 const ACCOUNTS: DebtPerspectiveAccount[] = [
   debt({ id: "visa",   name: "Visa",        institution: "Example Bank",  balance: 1200.11, debtSubtype: "credit_card" }),
-  debt({ id: "gold",   name: "Gold",        institution: "Example Card",   balance: 300.27,  providerSubtype: "credit card" }),
+  debt({ id: "gold",   name: "Card Product D",        institution: "Example Card",   balance: 300.27,  providerSubtype: "credit card" }),
   debt({ id: "loc",    name: "Line",        institution: "Example Bank",  balance: 99.5,    debtSubtype: "line_of_credit" }),
   debt({ id: "paid",   name: "Paid card",   institution: "Institution C",   balance: 0,       debtSubtype: "credit_card" }),
   debt({ id: "over",   name: "Overpaid",    institution: "Institution C",   balance: -50,     debtSubtype: "credit_card" }),

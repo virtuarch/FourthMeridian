@@ -94,7 +94,7 @@ console.log("1. Debt — All · Credit · Loans at every width");
     ({ id, name, type: "debt", institution: "Bank", balance, currency: "USD", ...over });
   // Positive balance = owed (lib/debt/balance-semantics amountOwed).
   const ACCTS: DebtPerspectiveAccount[] = [
-    debt("c1", "Sapphire", 1200, { debtSubtype: "credit_card", creditLimit: 10000 }),
+    debt("c1", "Card Product A", 1200, { debtSubtype: "credit_card", creditLimit: 10000 }),
     debt("l1", "Auto loan", 14000, { debtSubtype: "auto_loan" }),
     debt("l2", "Mortgage", 280000, { debtSubtype: "mortgage" }),
   ];
@@ -118,7 +118,7 @@ console.log("1. Debt — All · Credit · Loans at every width");
   const ledger = renderToStaticMarkup(createElement(LiabilitiesLedger, { accounts: ACCTS, currency: "USD", compactClass: "loans" }));
   const classPart = (h: string) => h.slice(h.indexOf('data-debt-class-ledger="loans"'));
   check("Loans: the class account list renders in both layouts", both(classPart(ledger), "Auto loan") && both(classPart(ledger), "Mortgage")
-    && !/Sapphire/.test(text(classPart(ledger))));
+    && !/Card Product A/.test(text(classPart(ledger))));
   check("…and the combined list is hidden in both (hidden, not max-lg:hidden)", /overflow-hidden hidden"/.test(ledger) && !/max-lg:hidden|lg:hidden/.test(ledger));
 
   const loans = renderToStaticMarkup(createElement(DebtCompositionCard, { accounts: ACCTS, ctx: identityContext("USD"), currency: "USD", scope: "loans" }));

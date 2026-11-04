@@ -25,9 +25,9 @@ import {
 import { tierResolver, type LiquidityTx } from "./liquidity";
 
 const ACCOUNTS = new Map<string, CreditorAccountRef>([
-  ["chk",       { id: "chk",       name: "EXAMPLE BANK COLLEGE",  type: "checking" }],
+  ["chk",       { id: "chk",       name: "EXAMPLE BANK EVERYDAY",  type: "checking" }],
   ["exbankCard", { id: "exbankCard", name: "CREDIT CARD",    type: "debt" }],
-  ["excardCard",  { id: "excardCard",  name: "Platinum Card®", type: "debt" }],
+  ["excardCard",  { id: "excardCard",  name: "Card Product C®", type: "debt" }],
   ["excardSav",   { id: "excardSav",   name: "High Yield Savings Account", type: "savings" }],
 ]);
 const TIERS = tierResolver([...ACCOUNTS.values()].map((a) => ({ id: a.id, type: a.type })));
@@ -59,7 +59,7 @@ test("1. descriptor text never determines creditor identity", () => {
     "EXAMPLE CARD ACH PMT M4082 WEB ID: 2005032111",
     "Payment to Example Bank card ending in 0202 12/24",
     "EXAMPLECARD TRANSFER 000320046315336",
-    "Platinum Card payment",
+    "Card Product C payment",
     "zzzz nonsense",
   ]) {
     const a = attributeCreditor({ counterpartyAccountId: null, transferMaturity: "DEBT_PAYMENT" }, ACCOUNTS);

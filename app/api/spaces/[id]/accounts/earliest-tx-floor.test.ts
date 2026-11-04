@@ -58,7 +58,7 @@ function attachFloors(floors: GroupRow[], normalized: Acct[]): (Acct & { earlies
     { financialAccountId: "acc_nodate",  _min: { date: null } },
   ];
   const normalized: Acct[] = [
-    { id: "acc_exbank",   name: "EXAMPLE BANK COLLEGE" },
+    { id: "acc_exbank",   name: "EXAMPLE BANK EVERYDAY" },
     { id: "acc_bitcoin", name: "Bitcoin Ledger" },
     { id: "acc_nodate",  name: "Empty" },
     { id: "acc_notx",    name: "No transactions at all" }, // absent from groupBy entirely

@@ -7,7 +7,7 @@
  * pending evidence, because the identities are only worth anything if they hold
  * against actual provider data. The three that matter:
  *
- *   EXAMPLE BANK COLLEGE   5,106.77 + (−4,000.00) − 1,106.77 =     0.00  → EXACT
+ *   EXAMPLE BANK EVERYDAY   5,106.77 + (−4,000.00) − 1,106.77 =     0.00  → EXACT
  *   Example Card HYSA       6,315.04 +      0.00   − 2,315.04 = 4,000.00  → a real hold
  *   Example Bank card      562.37 owed + 77.60 charges vs a 33,700 limit → 37.55 residual
  */
@@ -273,7 +273,7 @@ console.log("Reachable totals — unknowns are excluded and COUNTED, never zeroe
 
 console.log("The live Space total — ledger vs reachable");
 {
-  // EXAMPLE BANK COLLEGE, EXAMPLE BANK SAVINGS, Example Card Rewards Checking, Example Card HYSA.
+  // EXAMPLE BANK EVERYDAY, EXAMPLE BANK SAVINGS, Example Card Rewards Checking, Example Card HYSA.
   const ledger = 5_106.77 + 2_000.03 + 252.32 + 6_315.04;
   const t = totalReachableCash([
     { accountId: "1", reachable: 1_106.77, unexplained: 0 },

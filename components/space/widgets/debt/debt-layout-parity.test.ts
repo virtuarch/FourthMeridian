@@ -49,7 +49,7 @@ const debt = (over: Partial<DebtPerspectiveAccount>): DebtPerspectiveAccount =>
 
 const ACCOUNTS: DebtPerspectiveAccount[] = [
   debt({ id: "visa", name: "Visa", institution: "Example Bank", balance: 1200, debtSubtype: "credit_card" } as never),
-  debt({ id: "excard", name: "Gold", institution: "Example Card", balance: 300, debtSubtype: "credit_card" } as never),
+  debt({ id: "excard", name: "Card Product D", institution: "Example Card", balance: 300, debtSubtype: "credit_card" } as never),
   debt({ id: "auto", name: "Auto loan", institution: "Example Bank", balance: 8000, debtSubtype: "auto_loan" } as never),
   debt({ id: "paid", name: "Paid card", institution: "Institution C", balance: 0, debtSubtype: "credit_card" } as never),
   debt({ id: "credit", name: "Overpaid", institution: "Institution C", balance: -50, debtSubtype: "credit_card" } as never),

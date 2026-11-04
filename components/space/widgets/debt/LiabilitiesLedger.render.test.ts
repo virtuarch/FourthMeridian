@@ -61,7 +61,7 @@ console.log("1. MIXED — $2,100 owed · $0 settled · $124.04 credit");
   const accounts = [
     acct("Auto Loan", 2100, { debtSubtype: "auto_loan", interestRate: 6.49, minimumPayment: 287 }),
     acct("Visa", 0, { debtSubtype: "credit_card", creditLimit: 5000, interestRate: 21.99 }),
-    acct("Example Bank Sapphire", -124.04, { debtSubtype: "credit_card", creditLimit: 33700 }),
+    acct("Example Bank Card Product A", -124.04, { debtSubtype: "credit_card", creditLimit: 33700 }),
   ];
   const { html, text } = render(accounts);
   const k = computeDebtKpis(accounts);
@@ -69,7 +69,7 @@ console.log("1. MIXED — $2,100 owed · $0 settled · $124.04 credit");
   check("all three accounts render a row", rowCount(html) === 3, `${rowCount(html)}`);
   check("owed row is present by name", text.includes("Auto Loan"));
   check("settled row is present by name", text.includes("Visa"));
-  check("credit row is present by name", text.includes("Example Bank Sapphire"));
+  check("credit row is present by name", text.includes("Example Bank Card Product A"));
 
   // Owed/settled use the ledger's house whole-dollar rounding; a CREDIT is shown
   // exact, because credits are small enough that rounding would destroy them.
@@ -115,7 +115,7 @@ console.log("2. ALL SETTLED — every card paid off");
 console.log("3. ALL CREDITED — every card carries an issuer credit");
 {
   const accounts = [
-    acct("Example Bank Sapphire", -124.04, { debtSubtype: "credit_card", creditLimit: 33700 }),
+    acct("Example Bank Card Product A", -124.04, { debtSubtype: "credit_card", creditLimit: 33700 }),
     acct("Example Card Platinum", -25.77, { debtSubtype: "credit_card" }),
   ];
   const { html, text } = render(accounts);
