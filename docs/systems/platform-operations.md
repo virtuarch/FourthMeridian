@@ -419,9 +419,12 @@ is not published until the owner approves it.
 > - Copies held by the AI provider are governed by the provider's terms, not by us (under standard
 >   API terms, abuse-monitoring logs are kept for up to 30 days; see 1b). We make no deletion claim
 >   for systems we do not control.
-> - Audit records carry no question, answer, conversation label or message id: creating and
->   deleting a conversation record its area (and, on delete, a message count); the purge records
->   counts only; reads are not audited (`lib/audit-actions.ts`, B11 block).
+> - Creating or deleting a conversation is recorded with who did it, when, the conversation's
+>   internal id and its area (and, on delete, a message count), never a question, answer, label or
+>   message id (`lib/platform/intelligence/ai/conversations/store.ts:264-270`, `:367-373`). The
+>   purge records counts only (`lib/audit-actions.ts`, B11 block). Successful reads are not
+>   audited; a refused access attempt is recorded as a security event, without content
+>   (`lib/platform/intelligence/ai/conversations/handlers.ts:198`).
 
 ### 3. Owner decision: the public policy does not cover this flow
 
