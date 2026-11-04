@@ -121,6 +121,7 @@
        - **One param list:** `econ`/`econuntil` join `SPACE_URL_PARAMS`, and `PLATFORM_WORKSPACE_SCOPED_PARAMS` moves into `space-url.ts`, typed as a subset of it. The hook and the registry's param groups both take their keys from that one list.
        - **Per-surface drills:** a metric's `drill` may be keyed by surface (`{ bySurface }`). `incident-broken-now` drills on PLATFORM_OPS to the Ops incidents route and the Incidents workspace, and on CUSTOMER_SUCCESS to the CS incidents route and the CS "Broken now" view. Its Incidents-lead tile links it to the "Broken now" view on both tiers. `retrieveMetric` keeps its null-drill rule: a drill is given only where the surface's link is gated by that surface.
 4. **`AiInvocation.surface = platform_ai`**, counted as overhead.
+   - **Persistent multi-turn conversations: DESIGN, in S2 review** ([PLATFORM-AI-CONVERSATIONS-DESIGN](PLATFORM-AI-CONVERSATIONS-DESIGN.md)). Owner-private encrypted tables, fm_app owner-only RLS, a fresh area grant on every read, prior figures never ground, 90-day retention (tentative), B11. No schema yet.
 5. **Minimal new instrumentation, each item needing owner approval:**
    - a deployment-event row;
    - an audit row for tenant-route authorization refusals and rate-limit blocks (area and code only), and promotion of platform refusals to a dedicated `PLATFORM_ACCESS_DENIED` action (a one-line canon change);
