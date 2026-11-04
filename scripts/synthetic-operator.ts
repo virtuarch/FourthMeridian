@@ -77,6 +77,14 @@ const pass = (line: string) => console.log(`  PASS  ${line}`);
 
 type Db = typeof import("@/lib/db").db;
 
+/**
+ * Interactive-transaction bounds for a REMOTE target. Prisma's default (5 s) is
+ * shorter than this script's provision transaction over a pooled Supabase link;
+ * the first Preview run timed out and rolled back cleanly (nothing written, the
+ * credentials shredded). Same bounds as the precheck script.
+ */
+const TX_OPTIONS = { maxWait: 10_000, timeout: 60_000 } as const;
+
 /** One read of the connecting principal's RLS posture (S2 Fix B). */
 export const PRINCIPAL_BYPASS_SQL = `SELECT (rolbypassrls OR rolsuper) AS ok FROM pg_roles WHERE rolname = current_user`;
 
@@ -116,7 +124,7 @@ async function revokeGrants(db: Db, userId: string, area: SyntheticArea | null):
       });
     }
     return active.length;
-  });
+  }, TX_OPTIONS);
 }
 
 async function provision(db: Db, env: "local" | "preview", targetHash: string | null): Promise<number> {
@@ -227,7 +235,7 @@ async function provision(db: Db, env: "local" | "preview", targetHash: string | 
         grantIds[g.area] = grant.id;
       }
       return { userId: user.id, grantIds };
-    });
+    }, TX_OPTIONS);
   } catch (e) {
     shredFile(path.join(dir, CREDENTIALS_FILE));
     throw e;
@@ -313,7 +321,7 @@ async function cleanup(db: Db, recordDir: string, targetHash: string | null, env
         metadata: { deletionScheduledAt: stampedAt.toISOString(), graceDays: 0, synthetic: true, actorType: "SYSTEM", reason: SYNTHETIC_REASON },
       },
     });
-  });
+  }, TX_OPTIONS);
   const noEmail: NonNullable<PurgeDeps["sendEmail"]> = async () => ({ status: "skipped", provider: "none", reason: "SYNTHETIC_OPERATOR_NO_SEND" } as never);
   const noProvider: NonNullable<PurgeDeps["plaid"]> = {
     itemRemove: (async () => { throw new Error("the synthetic operator has no provider connection; no provider call is made"); }) as never,
