@@ -15,7 +15,8 @@
  *      incidentTotalText) for the same world and the same operator;
  *   2. an answer citing that metric renders the metric's registry link, and a
  *      link the turn did not return is stripped;
- *   3. the response carries the metadata-only trace, and the route logs it.
+ *   3. the response carries the metadata-only trace, and the route logs it;
+ *   4. (v1) the model writes {{m:<key>}}; the server renders the tile's figure.
  *
  *   npx tsx --require ./scripts/lib/server-only-preload.cjs app/api/platform/ai/ask/route-turn.test.ts
  */
@@ -57,8 +58,9 @@ globalThis.fetch = (async (input: unknown, init?: { body?: unknown }) => {
 
 type Answer = {
   answer: { kind: string; text: string; href?: string }[];
-  citations: { metric: string; status: string; href: string | null }[];
-  grounding: { replaced: boolean };
+  citations: { metric: string; status: string; href: string | null; figures: string[] }[];
+  grounding: { replaced: boolean; verdict: string };
+  claims: { claims: number; resolved: number; unresolved: number; admitted: number };
   trace: { tool: string; outcome: string; refs: string[]; drillLink?: boolean }[];
 };
 
@@ -102,7 +104,7 @@ async function main() {
 
     const r = await ask([
       { calls: [{ name: "get_metric", args: { id: "incident-broken-now@1" } }, { name: "find_page", args: { query: "incidents broken now" } }] },
-      { content: "3 incidents are broken now. See [Broken now](/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents)." },
+      { content: "{{m:incident-broken-now@1}} incidents are broken now. See [Broken now](/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents)." },
     ]);
     const toolMsgs = (sent[1]?.messages ?? []).filter((m) => m.role === "tool");
     const envelope = JSON.parse(String(toolMsgs[0]?.content ?? "{}")) as { metric?: string; surface?: string; tier?: string; value?: unknown; status?: string; drill?: { page?: string } };
@@ -111,6 +113,9 @@ async function main() {
       envelope.metric === "incident-broken-now@1" && envelope.surface === "PLATFORM_OPS" && envelope.tier === "OPS" && envelope.status === "MEASURED", envelope);
     t.check("PARITY: the AI envelope's value equals the tile's figure (incidentTotalText)", `${envelope.value}` === incidentTotalText(tileBody), { ai: envelope.value, tile: incidentTotalText(tileBody) });
     t.check("the envelope is an aggregate: no row, no identifier", typeof envelope.value === "number" && !/subjectUserId|cfake/.test(String(toolMsgs[0]?.content)));
+    t.check("the SERVER rendered the figure from that envelope (the model wrote a placeholder, not a number)",
+      r.body.answer.map((x) => x.text).join("").startsWith(`${incidentTotalText(tileBody)} incidents are broken now.`) && r.body.claims.resolved === 1 && r.body.claims.unresolved === 0, r.body.answer);
+    t.check("…and the citation chip pairs with that figure", r.body.citations[0]?.figures.join() === incidentTotalText(tileBody), r.body.citations);
     t.check("the citation is MEASURED with a registry link", r.body.citations.length === 1 && r.body.citations[0].metric === "incident-broken-now@1" && r.body.citations[0].status === "MEASURED" && r.body.citations[0].href === "/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents", r.body.citations);
 
     t.section("2. an answer citing the metric renders its registry link; nothing else");
@@ -129,7 +134,7 @@ async function main() {
       r.body.trace.map((x) => `${x.tool}:${x.outcome}`).join() === "get_metric:MEASURED,find_page:OK" && r.body.trace[0].drillLink === true, r.body.trace);
     const line = logs.find((l) => l.startsWith("[platform-ai] turn "));
     t.check("the route logs ONE metadata line per answered turn — no question or answer text",
-      logs.filter((l) => l.startsWith("[platform-ai] turn ")).length === 2 && !!line && line.includes("get_metric:MEASURED(incident-broken-now@1)+drill") && !/broken right now|See \[|incidents are broken/.test(logs.join("\n")), logs);
+      logs.filter((l) => l.startsWith("[platform-ai] turn ")).length === 2 && !!line && line.includes("get_metric:MEASURED(incident-broken-now@1)+drill") && line.includes("claims=1 resolved=1 unresolved=0 admitted=0 verdict=RESOLVED") && !/broken right now|See \[|incidents are broken/.test(logs.join("\n")), logs);
   } finally {
     console.info = info;
   }

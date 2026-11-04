@@ -49,7 +49,7 @@ import type { ProviderOperationRollup, ProviderOperationSummary } from "@/lib/pl
 import { trustBadge } from "../widgets/provider-view";
 import type { Fetched, Kpi } from "../ops-visual/ops-visual-model";
 import { openAiCycleSpend, plaidCycleSpend, sumMoney, usd, type Money } from "./ai-costs-model";
-import { assessOutcomes, PROVIDER_OUTCOME_DEFINITION, type OutcomeAssessment } from "@/lib/platform/verdicts/provider-outcome";
+import { assessOutcomes, NO_EVALUABLE_PROVIDER, PROVIDER_OUTCOME_DEFINITION, type OutcomeAssessment } from "@/lib/platform/verdicts/provider-outcome";
 
 /** Display identity for the provider strings the readers emit (ApiUsageCounter.provider, ProviderHealth.key, ProviderCall.provider). */
 const KNOWN_LABEL: Readonly<Record<string, string>> = {
@@ -70,6 +70,7 @@ export const CONNECTION_PROVIDERS: ReadonlySet<string> = new Set(["PLAID", "ALCH
 const RESOURCE_PROVIDERS: ReadonlySet<string> = new Set(["OPEN_EXCHANGE_RATES", "COINGECKO"]);
 
 export const CAP_UNKNOWN = "cap unknown";
+
 export const NOT_ASSESSED = "Not assessed";
 /** The provider-ops downgrade rule's sample floor — provider-outcome@1, restated (see the module header). */
 export const MIN_CALLS_FOR_SHARE = PROVIDER_OUTCOME_DEFINITION.minSample.calls;
@@ -262,11 +263,16 @@ export function cycleSpendTotal(list: readonly ProviderEntity[]): Money {
 export function providerKpis(list: readonly ProviderEntity[], inp: ProviderInputs): Kpi[] {
   const healthy = list.filter((e) => e.healthClass === "healthy").length;
   const unassessed = list.filter((e) => e.healthClass === "not-assessed").length;
+  // Nothing assessed ⇒ no healthy count to show: "0/2" would read as a measured zero.
+  // The same rule as provider-outcome@1's envelope (UNAVAILABLE when no provider is evaluable).
+  const noneAssessed = list.length > 0 && unassessed === list.length;
   const out: Kpi[] = [{
     key: "healthy", label: "Providers healthy",
-    value: inp.health.data ? `${n(healthy)}/${n(list.length)}` : "—",
-    sub: inp.health.data ? (unassessed ? `${n(unassessed)} not assessed` : "all assessed") : inp.health.loading ? "reading…" : "unavailable",
-    tone: inp.health.data ? undefined : "muted",
+    value: inp.health.data && !noneAssessed ? `${n(healthy)}/${n(list.length)}` : "—",
+    sub: inp.health.data
+      ? (noneAssessed ? `unavailable · ${NO_EVALUABLE_PROVIDER}` : unassessed ? `${n(unassessed)} not assessed` : "all assessed")
+      : inp.health.loading ? "reading…" : "unavailable",
+    tone: inp.health.data && !noneAssessed ? undefined : "muted",
   }];
   const ops = inp.operations.data;
   if (ops) {

@@ -27,6 +27,7 @@ import type { AiUsageTrend } from "@/lib/platform/ai/ai-usage";
 import type { AiOperations } from "@/lib/platform/ai/invocations";
 import type { AiBudgetUtilization, CustomerBudgetView } from "@/lib/platform/ai/cost-controls.types";
 import { FLEET_REASON_NO_CALLS, FLEET_REASON_NONE_PRICED, NO_THRESHOLD, fleetSpendStatus, type FleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
+import { aiCallStats, aiCostPerCall } from "@/lib/platform/ai/call-stats";
 import type { ProvenanceKind } from "../ui/ProvenanceChip";
 import type { AiSpendResponse } from "@/app/api/platform/platform-ops/ai-spend/route";
 import type { ApiUsageResponse } from "@/app/api/platform/platform-ops/api-usage/route";
@@ -329,11 +330,12 @@ export function aiKpis(args: { budget: Fetched<AiBudgetUtilization>; inv7: Fetch
     out.push({ key: "per-call", label: "Est. cost / call", value: "—", sub, tone: "muted" });
     return out;
   }
-  const calls = i.totals.invocations + i.failures.total;
-  out.push({ key: "calls", label: "Calls · 7 d", value: n(calls), sub: `${n(i.totals.invocations)} returned · measured` });
-  out.push(calls === 0
+  // THE call KPIs (lib/platform/ai/call-stats.ts) — the same function ai-call-outcomes@1 retrieves through.
+  const st = aiCallStats(i);
+  out.push({ key: "calls", label: "Calls · 7 d", value: n(st.calls), sub: `${n(st.returned)} returned · measured` });
+  out.push(st.errorRatePct === null
     ? { key: "errors", label: "Error rate · 7 d", value: "—", sub: "no calls recorded", tone: "muted" }
-    : { key: "errors", label: "Error rate · 7 d", value: pct1((i.failures.total / calls) * 100), sub: `${n(i.failures.total)} failed · measured`, tone: i.failures.total > 0 ? "warn" : undefined });
+    : { key: "errors", label: "Error rate · 7 d", value: pct1(st.errorRatePct), sub: `${n(st.failed)} failed · measured`, tone: st.failed > 0 ? "warn" : undefined });
   const per = costPerCall(i);
   out.push(per.kind === "ESTIMATED"
     ? { key: "per-call", label: "Est. cost / call", value: usd(per.usd), sub: per.partial ? "estimated · partial" : "estimated · 7 d" }
@@ -343,10 +345,9 @@ export function aiKpis(args: { budget: Fetched<AiBudgetUtilization>; inv7: Fetch
 
 /** Estimated USD per RETURNED invocation (7 d). Partial when some tokens had no rate. */
 export function costPerCall(i: AiOperations): Money {
-  if (!i.pricingConfigured) return { kind: "UNKNOWN", reason: "no rate card" };
-  if (i.totals.invocations === 0) return { kind: "UNKNOWN", reason: "no calls recorded" };
-  if (i.totals.usd === null) return { kind: "UNKNOWN", reason: "nothing priced" };
-  return { kind: "ESTIMATED", usd: i.totals.usd / i.totals.invocations, partial: i.totals.unpricedTokens > 0, basis: "tokens × rate card ÷ returned calls" };
+  // THE per-call estimate (lib/platform/ai/call-stats.ts) — the same function ai-cost-per-call@1 retrieves through.
+  const c = aiCostPerCall(i);
+  return c.kind === "UNKNOWN" ? c : { kind: "ESTIMATED", usd: c.usd, partial: c.partial, basis: "tokens × rate card ÷ returned calls" };
 }
 
 /** "Unknown" or "$12.40" — the words for a Money cell. Never "$0" for unknown. */

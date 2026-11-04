@@ -174,6 +174,8 @@ export const TILE_HOMES: Readonly<Record<string, readonly ComponentHome[] | { no
   "components/platform/widgets/provider-view.ts": [{ section: "ops_provider_health" }],
   "components/platform/widgets/ai-budget-view.ts": [{ section: "ops_ai_budget" }],
   "components/platform/leads/ai-costs-model.ts": [{ lead: "ai-costs" }],
+  "components/platform/leads/EconomicsOverviewLead.tsx": [{ lead: "economics-overview" }],
+  "components/platform/leads/economics-model.ts": [{ lead: "economics-overview" }],
   "components/platform/widgets/CsCustomersWidget.tsx": [{ section: "cs_customers" }],
   "components/platform/leads/growth-model.ts": [{ lead: "growth" }],
   "components/platform/incidents/incidents-model.ts": [{ lead: "incidents-ops" }, { lead: "incidents-cs" }],
