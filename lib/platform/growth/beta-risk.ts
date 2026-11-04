@@ -5,17 +5,25 @@
  * (`systemDb` — an operator reading the fleet's intake is outside every
  * tenancy; lib/platform/ is the allowlisted neighbourhood). Read-only.
  *
- * RAW IP AND USER AGENT NEVER REACH THE APPLICATION. The forensic
- * BETA_ACCESS_REQUESTED audit rows are reduced IN SQL to
- *   · a network digest — md5(<per-read random salt> || ipAddress), so the
- *     digest is only comparable inside this one read and is meaningless (and
- *     not brute-forceable against a known IP list) outside it; NULL when the IP
- *     was absent or the extractor's "unknown";
- *   · a user-agent FAMILY (browser / script / headless / empty / other) by a
- *     CASE over case-insensitive regexes — the UA_*_PATTERN constants of the
- *     core, bound as parameters, so the tested patterns are the ones that run.
- * Neither column appears in a SELECT list; the privacy scan
- * (lib/platform/observability-privacy.test.ts) pins this file.
+ * NETWORK GROUPING IS KEYED (S2 ruling on PR #374). The forensic
+ * BETA_ACCESS_REQUESTED audit rows yield a network GROUP KEY — the beta-intake
+ * keyed digest (HMAC-SHA256 under BETA_INTAKE_HASH_KEY_<V>), see
+ * ./beta-risk-network.ts:
+ *   · a raw row's ipAddress is selected (as `ip`, ONLY when a digest key is
+ *     configured — otherwise SQL returns NULL in its place) and digested at
+ *     the row boundary, in the same loop that reads it; the address is never
+ *     kept in any structure, returned or logged;
+ *   · a minimised row's stored metadata.networkDigest is taken as-is, so
+ *     grouping survives the 90-day minimisation.
+ * No key ⇒ no grouping signal (fail closed) — never an unkeyed hash. HMAC is
+ * computed in JS because pgcrypto is installed by no migration. (Before this,
+ * the key was md5(<per-read random salt> || ipAddress) in SQL: never stored or
+ * returned, but an MD5 of the address, and blind to minimised rows.)
+ * The user agent is still reduced IN SQL to a FAMILY (browser / script /
+ * headless / empty / other) by a CASE over case-insensitive regexes — the
+ * UA_*_PATTERN constants of the core, bound as parameters, so the tested
+ * patterns are the ones that run; userAgent never appears in a SELECT list.
+ * The privacy scan (lib/platform/observability-privacy.test.ts) pins this file.
  *
  * ADDRESSES stay inside this module. Request e-mails are read (the queue is
  * about addresses) only to derive opaque keys — the md5 the event SQL uses, the
@@ -28,8 +36,9 @@
  */
 
 import "server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { systemDb } from "@/lib/db";
+import { resolveNetworkDigestKey, type NetworkDigestKey } from "@/jobs/data-retention";
 import { AuditAction } from "@/lib/audit-actions";
 import { auditEmailHash } from "@/lib/audit";
 import { boundAcquisitionSource } from "@/lib/marketing/acquisition";
@@ -40,6 +49,7 @@ import {
   assessBetaRisk, canonicalEmailKey, emailDomain, noteFingerprint, tally,
   type BetaRiskAuditFact, type BetaRiskRequestFacts, type UaFamily,
 } from "./beta-risk-core";
+import { networkGroupKeyer } from "./beta-risk-network";
 import { BETA_RISK_REVIEW_STATUSES, type BetaRequestRisk, type BetaRiskReviewStatusValue, type BetaRiskReviewSummary } from "./beta-risk-types";
 
 export type BetaRiskDb = typeof systemDb;
@@ -56,7 +66,8 @@ export const BETA_RISK_AUDIT_CAP = 20_000;
 export const BETA_RISK_REVIEW_READ_CAP = 5_000;
 
 const UA_FAMILIES: ReadonlySet<string> = new Set<UaFamily>(["browser", "script", "headless", "empty", "other"]);
-const md5 = (s: string) => createHash("md5").update(s).digest("hex");
+/** Requester-ADDRESS join key; matches the SQL md5(lower(trim("email"))). Never applied to a network identifier. */
+const emailKey = (s: string) => createHash("md5").update(s).digest("hex");
 
 export interface BetaRiskResult {
   byId: Map<string, BetaRequestRisk>;
@@ -72,7 +83,7 @@ export interface BetaRiskResult {
  */
 export async function loadBetaRisk(
   requestIds: readonly string[],
-  deps: { now?: Date; client?: BetaRiskDb } = {},
+  deps: { now?: Date; client?: BetaRiskDb; /** Injected digest key (tests); default resolveNetworkDigestKey(). */ digestKey?: NetworkDigestKey | null } = {},
 ): Promise<BetaRiskResult> {
   const client = deps.client ?? systemDb;
   const now = deps.now ?? new Date();
@@ -81,8 +92,10 @@ export async function loadBetaRisk(
   if (ids.length === 0) return { byId, notes: [] };
 
   const since = new Date(now.getTime() - BETA_RISK_LOOKBACK_DAYS * 86_400_000);
-  // Per-read salt: the network digest is comparable only within this read.
-  const salt = randomBytes(16).toString("hex");
+  // The beta-intake keyed digest; null ⇒ no network grouping (fail closed).
+  const digestKey = deps.digestKey === undefined ? resolveNetworkDigestKey() : deps.digestKey;
+  const groupKey = networkGroupKeyer(digestKey);
+  const keyed = digestKey !== null;
 
   const [fleetRequests, eventRows, auditRows] = await Promise.all([
     client.betaAccessRequest.findMany({
@@ -96,11 +109,12 @@ export async function loadBetaRisk(
        WHERE "receivedAt" >= ${since}
        ORDER BY "receivedAt" DESC
        LIMIT ${BETA_RISK_EVENT_CAP}`,
-    client.$queryRaw<{ h: string | null; at: Date; net: string | null; ua: string | null }[]>`
+    client.$queryRaw<{ h: string | null; at: Date; ip: string | null; nd: string | null; ndv: string | null; ua: string | null }[]>`
       SELECT "metadata"->>'emailHash' AS h,
              "createdAt" AS at,
-             CASE WHEN "ipAddress" IS NULL OR btrim("ipAddress") = '' OR lower(btrim("ipAddress")) = 'unknown' THEN NULL
-                  ELSE md5(${salt}::text || "ipAddress") END AS net,
+             CASE WHEN ${keyed}::boolean THEN "ipAddress" ELSE NULL END AS ip,
+             "metadata"->>'networkDigest' AS nd,
+             "metadata"->>'networkDigestKeyVersion' AS ndv,
              CASE WHEN "userAgent" IS NULL OR btrim("userAgent") = '' THEN 'empty'
                   WHEN "userAgent" ~* ${UA_SCRIPT_PATTERN} THEN 'script'
                   WHEN "userAgent" ~* ${UA_HEADLESS_PATTERN} THEN 'headless'
@@ -129,6 +143,7 @@ export async function loadBetaRisk(
     auditRows.length >= BETA_RISK_AUDIT_CAP ? "forensic rows" : null,
   ].filter((x): x is string => x !== null);
   if (capped.length > 0) notes.push(`Risk read cap reached for ${capped.join(", ")} — fleet counts are a floor.`);
+  if (!keyed) notes.push("Shared-network grouping is off: no network digest key is configured.");
 
   // ── Fold to facts (addresses end here) ─────────────────────────────────────
   const canonical = new Map(requests.map((r) => [r.id, canonicalEmailKey(r.email)] as const));
@@ -148,16 +163,19 @@ export async function loadBetaRisk(
   const auditByKey = new Map<string, BetaRiskAuditFact[]>();
   const network: { auditKey: string; networkDigest: string; at: Date }[] = [];
   for (const a of auditRows) {
+    // The raw address (when selected) ends HERE: reduced to its keyed group key.
+    const net = groupKey({ ip: a.ip, storedDigest: a.nd, storedVersion: a.ndv });
+    a.ip = null;
     if (!a.h) continue;
     const fact: BetaRiskAuditFact = {
       at: a.at,
-      networkDigest: a.net,
+      networkDigest: net,
       uaFamily: a.ua && UA_FAMILIES.has(a.ua) ? (a.ua as UaFamily) : null,
     };
     const list = auditByKey.get(a.h) ?? [];
     list.push(fact);
     auditByKey.set(a.h, list);
-    if (a.net) network.push({ auditKey: a.h, networkDigest: a.net, at: a.at });
+    if (net) network.push({ auditKey: a.h, networkDigest: net, at: a.at });
   }
 
   const wanted = new Set(ids);
@@ -165,7 +183,7 @@ export async function loadBetaRisk(
   for (const r of requests) {
     if (!wanted.has(r.id)) continue;
     wanted.delete(r.id);
-    const requesterKey = md5(r.email.trim().toLowerCase());
+    const requesterKey = emailKey(r.email.trim().toLowerCase());
     const auditKey = auditEmailHash(r.email);
     const events = eventsByKey.get(requesterKey) ?? [];
     const audit = auditByKey.get(auditKey) ?? [];
