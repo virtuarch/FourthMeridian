@@ -355,7 +355,7 @@ Module and R1/R2 cutover IMPLEMENTED; remaining reader cutovers and the rest PLA
 - **Order (owner, fixed):** data model first (Phase 1, above), deterministic
   intelligence second, conversation and navigation last.
 - **IMPLEMENTED: incident-intelligence module** (PR #264; PR #287). Read-only, no
-  migration, no writes, no LLM.
+  migration, no writes, no LLM. **Incident actions are no longer read-only** (PR #388): Platform Ops operators with WRITE access can acknowledge and manually resolve an incident from the drawer (reason required, audited, rate-limited; a recurrence opens a new episode). Customer Success stays read-only.
   - **Pure core** `deriveIncidentVerdicts` (`lib/platform/incidents/intelligence/core.ts`)
     is the one place an incident verdict is decided: row class, state, freshness, closure,
     `brokenNow`, `alertable`, severity, spread (widespread at 2 or more live subjects per
