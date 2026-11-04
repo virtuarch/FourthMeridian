@@ -1590,7 +1590,7 @@ npm run report:b10-5 -- all --env=production --acknowledge-production-read
 - estimated cost about $0.15 per operator per day on the default model (about $2 on a pricier model); worst case = active operators × 20 × the per-turn ceiling;
 - each operator's questions are scoped to a single area;
 - grounding checks values, not attribution;
-- nothing about questions or answers is stored. Since #408, each turn writes a metadata-only trace to the server log: tool names, outcomes and metric/page references, with no question or answer text.
+- nothing about questions or answers is stored. Since #408, each turn writes a metadata-only trace (tool names, outcomes and metric/page references, with no question or answer text) to the server log and returns it to the asking operator with the answer.
 
 Recommended rollout: enable on Preview first (internal operators only), observe real cost and grounding-fallback counts, then decide on Production. **Owner decision 2026-11-04:** prepare and enable on Preview only, after verification; Production activation is prohibited.
 
