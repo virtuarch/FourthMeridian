@@ -78,6 +78,8 @@ export function summaryLine(counts: PlatformJobHealthCounts): string {
   // Counts carry no reasons: worded for both causes (a cost freeze or a plan restriction).
   if ((counts.skipped ?? 0) > 0) parts.push(`${counts.skipped} skipped (cost freeze / plan restriction)`);
   if (counts.running > 0) parts.push(`${counts.running} running`);
+  // Ops env-aware verdicts — present only on a deployment with no scheduler.
+  if ((counts.notScheduled ?? 0) > 0) parts.push(`${counts.notScheduled} not scheduled in this environment`);
   parts.push(`${counts.healthy} healthy`);
   return parts.join(" · ");
 }

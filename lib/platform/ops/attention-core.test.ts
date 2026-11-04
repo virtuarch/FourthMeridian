@@ -77,7 +77,7 @@ function provider(over: Partial<ProviderHealth> & { key: string; label: string }
 }
 const providers: ProviderHealthResult = {
   checkedAt: now,
-  counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 1, UNKNOWN: 0 },
+  counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 1, UNKNOWN: 0, INSUFFICIENT_DATA: 0 },
   providers: [
     provider({ key: "PLAID", label: "Plaid" }),
     provider({ key: "OXR", label: "Open Exchange Rates", kind: "FX", trust: "FAILING", lastFailureAt: AGO(3), freshness: { state: "stale", asOf: "2026-10-10", ageDays: 4, source: "resource-freshness", detail: "4 days stale" }, notes: ["3 consecutive failures"] }),
@@ -186,6 +186,22 @@ console.log("history never becomes a row");
   check("no rule firing in the latest run → no alert rows, whatever was delivered before", !quiet.items.some((i) => i.entity.kind === "alert-rule"));
   const never = buildAttention({ ...full, alerts: { latest: null, titles: {} } }, now);
   check("never evaluated → checked, but no alert rows", never.authorities.checked.includes("alert-evaluation") && !never.items.some((i) => i.entity.kind === "alert-rule"));
+}
+
+console.log("ops env-aware verdicts — not-scheduled jobs are neutral");
+{
+  const preview = buildAttention({ ...full, jobs: { jobs: [
+    ...jobs.jobs.filter((j) => j.job === "sync-banks"),
+    { job: "fetch-fx-rates", status: "not-scheduled", expectedEveryHours: 24, consecutiveFailures: 0, lastStartedAt: AGO(400), lastFailureAt: null, lastFailureSummary: null },
+    { job: "sync-crypto", status: "not-scheduled", expectedEveryHours: 6, consecutiveFailures: 0, lastStartedAt: null, lastFailureAt: null, lastFailureSummary: null },
+  ] } }, now);
+  const jobItems = preview.items.filter((i) => i.entity.kind === "job");
+  check("not-scheduled jobs raise no attention item (excluded from the needs-attention count)",
+    jobItems.length === 1 && jobItems[0].entity.label === "sync-banks");
+  check("a job that ran and failed still raises its item", jobItems[0].severity === "error");
+  check("not-scheduled has no severity in the declared table", (SEVERITY_OF.job as Record<string, unknown>)["not-scheduled"] === undefined);
+  const notEnough = buildAttention({ ...full, providers: { ...providers, providers: [{ ...providers.providers[0], trust: "INSUFFICIENT_DATA" }] } }, now);
+  check("a provider with not enough data raises no attention item", !notEnough.items.some((i) => i.entity.kind === "provider"));
 }
 
 console.log("failed authorities and floors");

@@ -131,6 +131,8 @@ export async function getOperationsOverview(now: Date = new Date()): Promise<Ope
     else if (j.status === "dead") jobs.dead++;
     else if (j.status === "never-ran") jobs.neverRan++;
     else if (j.status === "skipped") jobs.skipped = (jobs.skipped ?? 0) + 1;
+    // Preview (no scheduler) — neutral; present only when non-zero (Production unchanged).
+    else if (j.status === "not-scheduled") jobs.notScheduled = (jobs.notScheduled ?? 0) + 1;
   }
   // P1 — the next DUE instant from the ledger and the execution cadence policy
   // (there are no registry slots left to read a "next slot" from).

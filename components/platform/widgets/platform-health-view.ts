@@ -322,6 +322,7 @@ export const TRUST_WORD: Record<ProviderTrust, string> = {
   STALE:       "Stale data",
   FAILING:     "Failing",
   UNKNOWN:     "Unknown",
+  INSUFFICIENT_DATA: "Not enough data",
 };
 
 /** Ranking of a verdict lib/platform/provider-health.ts already reached. */
@@ -331,6 +332,7 @@ const TRUST_STATUS: Record<ProviderTrust, HealthStatus> = {
   STALE:       "critical",
   FAILING:     "critical",
   UNKNOWN:     "unknown",
+  INSUFFICIENT_DATA: "unknown",
 };
 
 export function providersView(d: ProviderHealthResponse): SourceView {

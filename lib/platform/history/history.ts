@@ -17,6 +17,7 @@
 import "server-only";
 import { todayUTCISO } from "@/lib/time/clock";
 import { db } from "@/lib/db";
+import { deploymentSchedulerPresence } from "@/lib/jobs/scheduler-presence";
 import { FX_BASE, SUPPORTED_QUOTES } from "@/lib/fx/config";
 import { loadRecentAlertRuns } from "@/lib/alerts/run";
 import type { Completeness } from "@/lib/perspective-engine/types";
@@ -65,6 +66,8 @@ function minusDaysISO(dateISO: string, days: number): string {
 function realReaders(now: Date): HistoryReaders {
   return {
     now,
+    // Server-side only: the deployment environment decides (never a client value).
+    scheduler: deploymentSchedulerPresence(),
     async jobRunsInWindow(from, to) {
       const rows = await db.jobRun.findMany({
         where: { startedAt: { gte: from, lte: to } },
