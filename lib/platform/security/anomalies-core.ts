@@ -5,8 +5,9 @@
  * Security Ops posture surface shows for a detector trip.
  *
  * ── THE KEY (the first of V2's two honesty fixes; reworked by Comms Center A-2b) ──
- * The detector (lib/security/anomaly-alerts.ts) records `metadata.key` as its
- * dedupe identity: `identifier:<login identifier>`, `ip:<address>`,
+ * The detector (lib/security/anomaly-alerts.ts) records `metadata.key`:
+ * `identifier:<login identifier>`, `ip:<address>` (since owner decision O-8 an
+ * IP key is stored as its digest `ip:h<32 hex>` instead),
  * `recovery:<login identifier>`, `platform-denied:<area>:<userId>` or the
  * literal `system_admin_disabled`. The raw identifier, IP or user id may not
  * cross the Security Ops boundary ("no email, no IP, no user-agent, no userId").
