@@ -80,6 +80,9 @@ const READERS = [
   // PLATFORM SPACES 2.0 — the Customer Success overview reader + core (counts; ids are joins only).
   "lib/platform/customer/overview.ts",
   "lib/platform/customer/overview-core.ts",
+  // PB-4 — the shared "who needs help" reader + core (ids are joins; the overview emits counts).
+  "lib/platform/customer/attention.ts",
+  "lib/platform/customer/attention-core.ts",
   // PLATFORM SPACES 2.0 — the Merchant Operations overview reader + core (deployment-wide counts; no merchant names).
   "lib/platform/merchant/overview.ts",
   "lib/platform/merchant/overview-core.ts",
@@ -199,19 +202,27 @@ console.log("source · PLATFORM SPACES 2.0 — the acquisition route is a GROWTH
   check("the acquisition DTO declares no identity field", !/^\s*(userId|email|username|name|spaceName|requesterKey)\??\s*:/m.test(dto));
 }
 
-console.log("source · BETA-REQUEST RISK — IP and user agent are reduced in SQL; the risk DTO carries no identity");
+console.log("source · BETA-REQUEST RISK — the IP becomes a KEYED group key at the row boundary, the UA is reduced in SQL; the risk DTO carries no identity");
 {
   const reader = strip("lib/platform/growth/beta-risk.ts");
   check("the risk reader reads through fm_system only", /systemDb/.test(reader) && !/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s*["']@\/lib\/db["']/.test(reader));
   check("the risk reader never selects ipAddress / userAgent through Prisma", !/\b(ipAddress|userAgent)\s*:\s*true/.test(reader));
-  // Every SQL mention of the two columns sits inside a reducing expression
-  // (IS NULL / btrim / lower / md5 / ~* regex); none is a bare select-list item.
-  const mentions = [...reader.matchAll(/"(ipAddress|userAgent)"/g)].map((m) => reader.slice(Math.max(0, m.index! - 40), m.index! + m[0].length + 12));
-  check("ipAddress / userAgent appear only inside reducing SQL expressions",
-    mentions.length > 0 && mentions.every((s) => /(IS NULL|btrim\(|lower\(|md5\(|~\*|\|\|)/.test(s)) && !/"(ipAddress|userAgent)"\s*(AS\b|,\s*$|,\s*"|\s+FROM\b)/m.test(reader), mentions.join(" ¦ "));
-  check("the network digest is salted per read (not a stable, reversible md5 of the IP)",
-    /randomBytes\(/.test(reader) && /md5\(\$\{salt\}::text \|\| "ipAddress"\)/.test(reader));
-  check("the raw SQL aliases are exactly k / at / source and h / at / net / ua", /AS k,\s*"receivedAt" AS at,\s*"source"/.test(reader) && /AS h,[\s\S]*AS at,[\s\S]*AS net,[\s\S]*AS ua\b/.test(reader));
+  // Every SQL mention of userAgent sits inside a reducing expression
+  // (IS NULL / btrim / ~* regex); none is a bare select-list item.
+  const uaMentions = [...reader.matchAll(/"userAgent"/g)].map((m) => reader.slice(Math.max(0, m.index! - 40), m.index! + m[0].length + 12));
+  check("userAgent appears only inside reducing SQL expressions",
+    uaMentions.length > 0 && uaMentions.every((s) => /(IS NULL|btrim\(|~\*)/.test(s)) && !/"userAgent"\s*(AS\b|,\s*$|,\s*"|\s+FROM\b)/m.test(reader), uaMentions.join(" ¦ "));
+  // S2 ruling on PR #374: ipAddress is selected ONCE, only when a digest key is
+  // configured, and reduced to the keyed group key in the loop that reads it.
+  const ipMentions = [...reader.matchAll(/"ipAddress"/g)];
+  check("ipAddress is selected exactly once, gated on a configured digest key",
+    ipMentions.length === 1 && /CASE WHEN \$\{keyed\}::boolean THEN "ipAddress" ELSE NULL END AS ip\b/.test(reader));
+  check("the raw ip is reduced to the keyed group key and cleared at the row boundary",
+    /groupKey\(\{ ip: a\.ip,[^}]*\}\)/.test(reader) && /a\.ip = null;/.test(reader) && (reader.match(/\ba\.ip\b/g) ?? []).length === 2);
+  check("the network key is the beta-intake KEYED digest (no md5 over an IP, no per-read salt)",
+    /resolveNetworkDigestKey\(\)/.test(reader) && /networkGroupKeyer\(digestKey\)/.test(reader)
+      && !/md5\([^)]*ipAddress/i.test(reader) && !/randomBytes/.test(reader) && !/\bsalt\b/.test(reader));
+  check("the raw SQL aliases are exactly k / at / source and h / at / ip / nd / ndv / ua", /AS k,\s*"receivedAt" AS at,\s*"source"/.test(reader) && /AS h,[\s\S]*AS at,[\s\S]*AS ip,[\s\S]*AS nd,[\s\S]*AS ndv,[\s\S]*AS ua\b/.test(reader));
   check("the risk reader is bounded (row caps + look-back)", /BETA_RISK_EVENT_CAP/.test(reader) && /BETA_RISK_AUDIT_CAP/.test(reader) && /BETA_RISK_REQUEST_CAP/.test(reader) && /BETA_RISK_LOOKBACK_DAYS/.test(reader));
   check("the review reader labels operators (username → name → opaque), never by e-mail",
     /operatorDisplayName\(/.test(reader) && /select:\s*\{\s*id:\s*true,\s*username:\s*true,\s*name:\s*true\s*\}/.test(reader));
@@ -255,7 +266,8 @@ console.log("source · PLATFORM SPACES 2.0 — the Customer Success overview is 
     /requirePlatformAccess\(\s*["']CUSTOMER_SUCCESS["']\s*,\s*["']READ["']\s*\)/.test(route) && /if\s*\(\s*err\s*\)\s*return\s+err/.test(route));
   check("the CS overview route never requests WRITE/CONTROL, exports no mutating verb, imports no db, and is no-store",
     !/["'](WRITE|CONTROL)["']/.test(route) && !/export\s+(async\s+)?function\s+(POST|PUT|PATCH|DELETE)/.test(route) && !/@\/lib\/db/.test(route) && /no-store/.test(route));
-  const reader = strip("lib/platform/customer/overview.ts");
+  // PB-4 — the attention facts moved into attention.ts (shared with the Customers list); both are pinned.
+  const reader = strip("lib/platform/customer/overview.ts") + strip("lib/platform/customer/attention.ts");
   check("the CS overview reader selects no name, username, institution or issue detail", !/\b(name|username|institutionName|detail)\s*:\s*true/.test(reader));
   const dto = strip("lib/platform/customer/overview-types.ts");
   check("the CS overview DTO declares no identity field", !/^\s*(userId|email|username|name|userIds)\??\s*:/m.test(dto));

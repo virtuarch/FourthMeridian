@@ -71,6 +71,10 @@ export const ARCHITECTURE_JOB = [
   // `void` result (P2010); this suite runs the production module against a
   // throwaway database, concurrently, and measures the fallback's limit.
   "npm run rls:accept:allowance",
+  // PRIV-004 — the ENCRYPTION_KEY rotation script and engine against a throwaway
+  // database with per-run keys: re-encrypts every registered column, CAS-guarded,
+  // read-back verified, idempotent, fail-closed on an unknown key id.
+  "npm run accept:key-rotation",
 ] as const;
 
 /**

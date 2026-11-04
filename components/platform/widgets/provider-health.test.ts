@@ -49,7 +49,7 @@ function provider(over: Partial<ProviderHealth>): ProviderHealth {
 }
 const providersOk: ProviderHealthResponse = {
   checkedAt: "2026-10-14T11:59:00.000Z",
-  counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 1, FAILING: 0, UNKNOWN: 0 },
+  counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 1, FAILING: 0, UNKNOWN: 0, INSUFFICIENT_DATA: 0 },
   providers: [
     provider({}),
     provider({ key: "OPEN_EXCHANGE_RATES", label: "Open Exchange Rates", kind: "FX", trust: "STALE", lastSuccessAt: null,
@@ -69,7 +69,7 @@ console.log("1. trust tone map is the provider authority's vocabulary");
   check("FAILING bad", TRUST_TONE.FAILING === "bad");
   check("UNKNOWN muted", TRUST_TONE.UNKNOWN === "muted");
   check("every trust has a word", (Object.keys(TRUST_TONE) as (keyof typeof TRUST_WORD)[]).every((k) => TRUST_WORD[k].length > 0));
-  check("segments follow the authority's counts", trustSegments(providersOk.counts).map((s) => `${s.word}:${s.count}`).join(",") === "Operational:1,Degraded:0,Stale data:1,Failing:0,Unknown:0");
+  check("segments follow the authority's counts", trustSegments(providersOk.counts).map((s) => `${s.word}:${s.count}`).join(",") === "Operational:1,Degraded:0,Stale data:1,Failing:0,Unknown:0,Not enough data:0");
 }
 
 console.log("2. rows — one per authority, never merged, never invented");

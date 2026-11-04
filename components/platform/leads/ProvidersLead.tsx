@@ -109,11 +109,16 @@ export function ProviderTile({ e, onSelect, className = "" }: { e: ProviderEntit
           <StatusWord word={e.status.word} tone={e.status.tone} className="shrink-0" />
           <ChevronRight size={14} aria-hidden className="shrink-0 text-[var(--text-faint)] group-hover:text-[var(--text-secondary)]" />
         </span>
+        {/* The verdict's basis: the rule and counts behind the word, never left to an unrelated figure. */}
+        <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]" data-provider-basis>{e.statusBasis}</span>
         <span className="block truncate text-[11px] tabular-nums text-[var(--text-secondary)]">{usageText(e)}</span>
         <span className="flex min-w-0 items-center justify-between gap-3">
           <span className="min-w-0 truncate text-[11px] tabular-nums text-[var(--text-muted)]">{failuresText(e)}</span>
           <SpendChip e={e} />
         </span>
+        {e.connectionFacts.length > 0 && (
+          <span className="block truncate text-[11px] tabular-nums text-[var(--text-muted)]" data-provider-connection-facts>{e.connectionFacts.join(" · ")}</span>
+        )}
       </button>
     </Surface>
   );
@@ -181,6 +186,16 @@ export function ProviderDetail({ e, hasHosted, renderHosted, onOpenWorkspace, on
             <li key={x.id} className="flex flex-col gap-0.5 py-1.5"><span className="truncate text-[var(--text-primary)]">{x.error}</span><span className="text-[11px] text-[var(--text-muted)]">{x.at.slice(0, 16).replace("T", " ")} UTC</span></li>
           ))}
         </ul>
+      )}
+
+      {e.connectionFacts.length > 0 && (
+        <section aria-label="Customer connections" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-provider-connection-facts>
+          <span className="text-[var(--text-secondary)]">{e.connectionFacts.join(" · ")}</span>
+          <span className="text-[11px] text-[var(--text-muted)]">per customer · not a provider fault</span>
+          {hasHosted("ops_connection_diagnostics") && (
+            <button type="button" className={BTN} onClick={() => onOpenFleet("diag:connections")}>View connections</button>
+          )}
+        </section>
       )}
 
       <div className="flex flex-wrap gap-2">

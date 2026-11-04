@@ -84,7 +84,7 @@ console.log("1. Growth & Revenue beta block — write controls only for WRITE");
     ["signup-mode toggle", /setPendingMode\(m\.value\)/g],
     ["Invite user", /setInviteOpen\(true\)/g],
     ["Send invite", /onClick=\{sendInvite\}/g],
-    ["Approve / Deny", /decide\(selectedRequest\.id/g],
+    ["Approve (Deny / Deny and block: BetaRequestReview.tsx, pinned there)", /decide\(selectedRequest\.id/g],
     ["Resend", /resend\(selectedInvitation\.id, selectedInvitation\.invitedAt\)/g],
     ["Revoke", /setRevokeId\(selectedInvitation\.id\)/g],
     ["mode confirm", /changeMode\(pendingMode\)/g],
@@ -165,6 +165,27 @@ console.log("1c. Bulk approval (PR C) — checkboxes, select-all and the bulk pa
     check(`panel ${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);
   }
   check("the panel's only POST goes to the bulk route", (panel.match(/fetch\(/g) ?? []).length === 1 && panel.includes("fetch(BULK_APPROVE_URL"));
+}
+
+console.log("1d. PB-6 request review — Deny / Deny and block / Block / Clear / verdicts only for WRITE");
+{
+  const src = code("components/platform/growth/BetaRequestReview.tsx");
+  const ranges = writeRanges(src);
+  for (const [label, re] of [
+    ["Deny", /data-deny(?!-)/g],
+    ["Deny and block", /data-deny-and-block/g],
+    ["Block address", /data-block-address/g],
+    ["Clear block", /data-clear-block/g],
+    ["Block now", /data-block-now/g],
+    ["Mark Legitimate / Suspicious / Unreviewed", /data-mark=/g],
+    ["confirm dialogs", /<ConfirmDialog/g],
+  ] as const) {
+    const r = allGated(src, re, ranges);
+    check(`${label}: rendered only under canWrite (${r.total} site${r.total === 1 ? "" : "s"})`, r.total > 0 && r.ungated === 0, `${r.ungated} ungated`);
+  }
+  check("READ branch renders the explanatory line", /\{!canWrite && <p[^>]*>\{REVIEW_READ_ONLY_LINE\}/.test(src));
+  check("the review section receives the widget's canWrite (never its own guess)",
+    /<BetaRequestReviewSection requestId=\{selectedRequest\.id\} canWrite=\{canWrite\}/.test(code("components/platform/widgets/GrowthBetaRequestsWidget.tsx")));
 }
 
 console.log("2. Customer Success spine — editors only for WRITE; no fabricated reason");

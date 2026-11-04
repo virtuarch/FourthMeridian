@@ -844,6 +844,7 @@ export function SpaceMode({
   // The list itself is still access-derived (usePlatformDestinations → the same
   // /api/spaces `platform` projection): the route only decides WHETHER to ask.
   const onPlatformAxis = isPlatformSpaceRoute(pathname);
+  const hasWorkspaceNav = !!workspaceNav && workspaceNav.items.length > 0;
 
   // SITE — the same block global mode renders. Fourth Meridian stays on screen;
   // the Space is a place INSIDE it, not a shell that replaces it. In a personal
@@ -873,6 +874,12 @@ export function SpaceMode({
             the host's handler; this is purely the wide mount point. */}
         <SpaceControls currencyControl={currencyControl} onManage={onManage} className="mb-3" />
 
+        {/* PB-3 nit — a single-workspace platform area publishes no workspace nav, so a
+            visible "Workspaces · <access>" heading would sit over nothing. Keep only the
+            accessible name (the access chip already reads in the compact title line). */}
+        {onPlatformAxis && !hasWorkspaceNav ? (
+          <h1 className="sr-only" data-lone-workspace-heading>{identity.name}</h1>
+        ) : (
         <div className="flex items-center gap-2">
           {/* it2 — on the platform axis the Space's name already reads in the
               Space list above, so this block is headed "Workspaces" + the access
@@ -904,6 +911,7 @@ export function SpaceMode({
             </span>
           )}
         </div>
+        )}
         {!onPlatformAxis && <p className="mt-1 text-[11px] text-[var(--text-muted)]">{identity.subtitle}</p>}
         {identity.updatedLabel && (
           <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{identity.updatedLabel}</p>
@@ -923,7 +931,7 @@ export function SpaceMode({
         {/* WORKSPACES — Net Worth · Cash Flow (or a Platform area's Overview ·
             Jobs · …), inside the Space block so they read as THIS Space's
             destinations, attached to its identity. */}
-        {workspaceNav && workspaceNav.items.length > 0 && (
+        {hasWorkspaceNav && (
           <div className={onPlatformAxis ? "mt-2" : "mt-4"}>
             <SpaceWorkspaceNav nav={workspaceNav} />
           </div>

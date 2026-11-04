@@ -38,6 +38,7 @@ import {
   defaultWebhookMigrationDeps,
   inspectItemWebhook,
 } from "@/lib/plaid/webhook-migration";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -71,6 +72,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("PLATFORM_OPS", "CONTROL");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "ops-connection-webhook");
+  if (limited) return limited;
   const { id } = await ctx.params;
 
   const body = await req.json().catch(() => null) as { expectedTarget?: unknown; reason?: unknown } | null;

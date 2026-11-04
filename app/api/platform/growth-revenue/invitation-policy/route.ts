@@ -26,6 +26,7 @@ import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
 import { readInvitationPolicy, resetInvitationValidity, updateInvitationValidity } from "@/lib/platform/growth/invitation-policy";
 import { parseRequiredReason } from "@/lib/platform/growth/invitation-http";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -38,6 +39,8 @@ export async function GET() {
 export async function PUT(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-invitation-policy");
+  if (limited) return limited;
 
   const body = (await req.json().catch(() => ({}))) as { validityDays?: unknown; version?: unknown; reason?: unknown };
   if (!("version" in body) || (body.version !== null && typeof body.version !== "string")) {
@@ -64,6 +67,8 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-invitation-policy");
+  if (limited) return limited;
 
   const body = (await req.json().catch(() => ({}))) as { version?: unknown; reason?: unknown };
   if (typeof body.version !== "string") {

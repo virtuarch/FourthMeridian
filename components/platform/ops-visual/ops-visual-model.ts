@@ -31,6 +31,8 @@ import type { RefreshDailySeries } from "@/lib/platform/refresh/types";
 import type { OperationCommand } from "@/lib/platform/operations/registry";
 import { SCHEDULED_JOB_NAMES, continuationOf, jobLabel, manualAvailability } from "./job-catalog";
 import { skipLabel, skipReasonText } from "@/lib/jobs/skip-label";
+import { NOT_SCHEDULED_LABEL } from "@/lib/jobs/scheduler-presence.core";
+import { unrecoveredFailed } from "@/lib/platform/refresh/recovery-core";
 
 /** A fetched source as the house hooks return it. */
 export interface Fetched<T> { data: T | null; loading: boolean; error: string | null }
@@ -179,7 +181,7 @@ export function registeredExecutions(s: SchedulerObservationResponse): number {
 
 // ── Honest job status ──────────────────────────────────────────────────────────
 
-export type HonestKind = "failed" | "late" | "never-ran" | "unknown" | "not-observed" | "running" | "waiting" | "skipped" | "healthy";
+export type HonestKind = "failed" | "late" | "never-ran" | "unknown" | "not-observed" | "not-scheduled" | "running" | "waiting" | "skipped" | "healthy";
 
 export interface HonestStatus {
   kind: HonestKind;
@@ -191,7 +193,7 @@ export interface HonestStatus {
 
 /** Worst first. */
 const KIND_RANK: Record<HonestKind, number> = {
-  failed: 0, late: 1, "never-ran": 2, unknown: 3, "not-observed": 4, skipped: 5, running: 6, waiting: 7, healthy: 8,
+  failed: 0, late: 1, "never-ran": 2, unknown: 3, "not-observed": 4, "not-scheduled": 4, skipped: 5, running: 6, waiting: 7, healthy: 8,
 };
 
 /**
@@ -204,9 +206,12 @@ const KIND_RANK: Record<HonestKind, number> = {
 export function honestJobStatus(row: PlatformJobRow, evidence: SchedulerEvidence): HonestStatus {
   if (row.status === "running") return { kind: "running", word: "Running", tone: "info", reason: "A run is in progress" };
   if (row.status === "failing") {
-    return { kind: "failed", word: "Failing", tone: "bad", reason: `Last ${row.consecutiveFailures} runs failed` };
+    return { kind: "failed", word: "Failing", tone: "bad", reason: row.consecutiveFailures === 1 ? "Last run failed" : `Last ${row.consecutiveFailures} runs failed` };
   }
   if (row.lastRunStatus === "failed") return { kind: "failed", word: "Failed", tone: "bad", reason: "Last run failed" };
+  // Ops env-aware verdicts — the SERVER decided this deployment has no scheduler
+  // (lib/jobs/health.ts ENVIRONMENT): neutral, never a failure, never healthy.
+  if (row.status === "not-scheduled") return { kind: "not-scheduled", word: NOT_SCHEDULED_LABEL, tone: "muted", reason: "This deployment runs no scheduler" };
   if (row.status === "healthy") return { kind: "healthy", word: "Healthy", tone: "ok", reason: "Ran on schedule" };
   // BETA LIFECYCLE L2 — the job ran on schedule but a cost freeze refused its
   // work: neither healthy nor late. Said as such, with the recorded reason.
@@ -486,7 +491,7 @@ export function refreshDays(series: RefreshDailySeries, nowMs: number, days: num
   return Array.from({ length: days }, (_, i) => addDays(end, i - (days - 1))).map((day) => {
     const d = by.get(day);
     if (!d || day < from) return { day, succeeded: 0, failed: 0, other: 0, observed: false };
-    const failed = d.byStatus.FAILED ?? 0;
+    const failed = unrecoveredFailed(d); // PB-7 — a recovered execution is not a failure (it counts as "other")
     const succeeded = d.byStatus.SUCCEEDED ?? 0;
     return { day, succeeded, failed, other: Math.max(0, d.total - failed - succeeded), observed: true };
   });
@@ -547,7 +552,13 @@ export function healthKpis(args: {
   const { jobs, scheduler, attention, groups, days7 } = args;
   const out: Kpi[] = [];
   const j = jobs.data;
-  out.push(j
+  // Ops env-aware verdicts — jobs the deployment never schedules are outside the
+  // denominator (neutral, not unhealthy); absent on a deployment with a scheduler.
+  const notScheduled = j?.counts.notScheduled ?? 0;
+  const assessed = j ? j.jobs.length - notScheduled : 0;
+  out.push(j && notScheduled > 0
+    ? { key: "healthy", label: "Jobs healthy", value: assessed > 0 ? `${j.counts.healthy}/${assessed}` : "—", sub: `${n(notScheduled)} not scheduled here`, tone: assessed > 0 && j.counts.healthy === assessed ? "ok" : "muted" }
+    : j
     ? { key: "healthy", label: "Jobs healthy", value: `${j.counts.healthy}/${j.jobs.length}`, sub: "by job health", tone: j.counts.healthy === j.jobs.length ? "ok" : undefined }
     : { key: "healthy", label: "Jobs healthy", value: "—", sub: jobs.loading ? "reading" : "unavailable", tone: "muted" });
   out.push(attention.data

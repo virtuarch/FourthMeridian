@@ -95,9 +95,9 @@ const absent = (qs: string, k: string) => !params(qs).has(k);
 // ── the documented Space params are exactly the fifteen known ones ──────────────
 {
   check(
-    "SPACE_URL_PARAMS lists the fifteen Space-scoped params (Markets added `view`; Platform added `workspace`; compact Debt added `section`; v2.7 added the flow group's fasof/fcompareto/fpreset/fperiod)",
+    "SPACE_URL_PARAMS lists the sixteen Space-scoped params (Markets added `view`; Platform added `workspace`; compact Debt added `section`; v2.7 added the flow group's fasof/fcompareto/fpreset/fperiod; PB-4 added Customer Success `attention`)",
     JSON.stringify([...SPACE_URL_PARAMS].sort()) ===
-      JSON.stringify(["account", "asof", "compareto", "fasof", "fcompareto", "fperiod", "fpreset", "metric", "perspective", "preset", "section", "tab", "transaction", "view", "workspace"]),
+      JSON.stringify(["account", "asof", "attention", "compareto", "fasof", "fcompareto", "fperiod", "fpreset", "metric", "perspective", "preset", "section", "tab", "transaction", "view", "workspace"]),
   );
 }
 

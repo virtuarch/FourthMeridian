@@ -51,7 +51,7 @@ const inputs: AttentionInputs = {
     retired: { revoked: 0, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy",
   },
   jobs: { jobs: [{ job: "sync-banks", status: "failing", expectedEveryHours: 24, consecutiveFailures: 3, lastStartedAt: AGO(6), lastFailureAt: AGO(6), lastFailureSummary: "Plaid timed out" }] },
-  providers: { checkedAt: NOW, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0 }, providers: [] },
+  providers: { checkedAt: NOW, counts: { OPERATIONAL: 1, DEGRADED: 0, STALE: 0, FAILING: 0, UNKNOWN: 0, INSUFFICIENT_DATA: 0 }, providers: [] },
   resources: { checkedAt: NOW, allFresh: true, resources: [] },
   alerts: {
     latest: { evaluatedAtISO: AGO(2), deliveryStatus: "sent", counts: { evaluated: 1, live: 1, enabled: 1, firing: 1, delivered: 1, suppressed: 0 },

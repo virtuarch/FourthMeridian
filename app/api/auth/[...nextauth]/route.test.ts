@@ -163,7 +163,7 @@ async function main() {
 
   t.section("4. TOTP — required, rejected, accepted");
   {
-    await world();
+    const u4 = await world();
     const none = await signIn({ identifier: "mfa", password: PW });
     t.check("no code → refused, reason totp_required", none.status === 401 && lastFailure()?.reason === "totp_required");
     const code = generateTOTP(TOTP_SECRET);
@@ -175,6 +175,13 @@ async function main() {
     const ok = await signIn({ identifier: "mfa", password: PW, totpCode: code.slice(0, 3) + " " + code.slice(3) });
     t.check("the current code (spaces tolerated) → signed in, LOGIN mfa: totp",
       ok.status === 200 && !!ok.cookie && (fake.one("AuditLog", { action: "LOGIN" })!.metadata as Record<string, unknown>).mfa === "totp", ok);
+    // SEC-012 — the step is claimed at login: the SAME code inside its validity
+    // window cannot sign in a second time (B4-style replay guard).
+    const replay = await signIn({ identifier: "mfa", password: PW, totpCode: code });
+    t.check("SEC-012 replay: the same code a second time → refused (totp_invalid), no new session",
+      replay.status === 401 && !replay.cookie && lastFailure()?.reason === "totp_invalid", replay);
+    t.check("SEC-012: exactly one login-step claim recorded for the user",
+      fake.rows("RateLimit").filter((r) => String(r.key) === `user:totp-login-step:${u4.mfa.id}`).length === 1);
   }
 
   t.section("5. recovery codes — accepted once, then refused");

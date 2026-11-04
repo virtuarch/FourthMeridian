@@ -6,6 +6,10 @@
  * incident trend. Client-safe (types only). COUNTS ONLY — the actionable
  * per-customer list stays the audited Customers list (cs_customers).
  *
+ * PB-4 — each reason row links to that list FILTERED to the reason
+ * (`attention=<key>`); the reasons themselves are defined once, in
+ * attention-core.ts, for both reads, so a count and its filtered list agree.
+ *
  * Not available, so never shown: support tickets (no ticketing system) and
  * customer health scores (no authoritative model).
  */
@@ -23,6 +27,8 @@ export interface CsOverviewResponse {
   attention: {
     /** Distinct active customers with at least one reason below. */
     customers: number;
+    /** True when a fleet read hit its row cap — every count here is a floor ("≥N"). */
+    floor: boolean;
     reasons: { key: AttentionKey; label: string; count: number }[];
   };
   /** Live connections by health (REVOKED / owner-inactive are retired, not members). */
@@ -40,4 +46,11 @@ export interface CsOverviewResponse {
   notes: string[];
 }
 
-export type AttentionKey = "reconnect" | "incident" | "policy" | "stalled";
+/**
+ * `policy` — an assignment naming an unknown / invalid / retired group.
+ * `unassigned` — no assignment while the fail-closed switch is ENFORCED (the customer is restricted now);
+ * never present otherwise (S2 ruling, 2026-11-02).
+ */
+export type AttentionKey = "reconnect" | "incident" | "policy" | "unassigned" | "stalled";
+/** The Customers list's `attention` filter: one reason, or any reason. */
+export type AttentionFilter = AttentionKey | "any";

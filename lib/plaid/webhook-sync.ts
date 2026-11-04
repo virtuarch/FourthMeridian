@@ -77,6 +77,54 @@ export interface WebhookSyncGate {
   recordDenial?: typeof recordAdmissionDenial;
   /** Replaces the locked pipeline (tests prove it is never reached on a refusal). */
   runPipeline?: () => Promise<WebhookSyncOutcome>;
+  /**
+   * P2 — replaces ONE locked run (claim → pipeline → release) but keeps the
+   * follow-up orchestration around it, so a test can drive the real lock
+   * primitives against a fake row and count how many runs the wrapper starts.
+   */
+  runLockedOnce?: () => Promise<LockedRunResult>;
+}
+
+/**
+ * P2 — what one locked run reports to the orchestrator. `followUp` is true iff
+ * the run SUCCEEDED and a skip landed while it held the lock (the release kept
+ * that skip's marker — releasePlaidItemSyncLock's `pendingSignal`).
+ */
+export interface LockedRunResult {
+  outcome: WebhookSyncOutcome;
+  followUp: boolean;
+  /** Wall-clock of the run, for the follow-up budget check. */
+  elapsedMs: number;
+}
+
+/**
+ * P2 — the in-process follow-up budget. Every caller runs under maxDuration =
+ * 300 s (webhook, exchange-token, resume-sync). A first run that already used
+ * more than this leaves too little room for a second full pipeline, so the
+ * follow-up is not started and the surviving marker is the resume-stale-imports
+ * backstop's to drive instead (every 5 min, once the marker is > 315 s old).
+ * The lock TTL is untouched.
+ */
+export const FOLLOW_UP_MAX_FIRST_RUN_MS = 120_000;
+
+/**
+ * P2 — should the wrapper start its ONE follow-up run? Pure, so the policy is
+ * pinned on its own.
+ *
+ *  · only after a run that succeeded with a skip landing mid-run (`followUp`);
+ *  · never from a follow-up itself (bounded: one extra run, never a loop);
+ *  · never for RESUME — resume-stale-imports drives up to MAX_ITEMS_PER_RUN
+ *    items in one 300 s invocation, so doubling an item's work there would
+ *    spend the batch's budget; the kept marker makes the Item a candidate on
+ *    the next pass instead;
+ *  · never when the first run used more than FOLLOW_UP_MAX_FIRST_RUN_MS.
+ */
+export function shouldRunFollowUp(
+  first: Pick<LockedRunResult, "followUp" | "elapsedMs">,
+  trigger: RefreshTrigger,
+  isFollowUp: boolean,
+): boolean {
+  return first.followUp && !isFollowUp && trigger !== "RESUME" && first.elapsedMs <= FOLLOW_UP_MAX_FIRST_RUN_MS;
 }
 
 /** The billable operation each trigger represents. */
@@ -154,11 +202,43 @@ export async function syncPlaidItemFromWebhook(
   }
   if (gate.runPipeline) return gate.runPipeline();
 
+  // ── P2 — ONE LOCKED RUN, THEN AT MOST ONE FOLLOW-UP ─────────────────────────
+  // A signal that loses the claim while this run holds the lock (Production
+  // 2026-11-01: a card's HISTORICAL_UPDATE, 9 s into the RECONNECT run) is
+  // recorded as a kept syncIncompleteAt marker, and the release reports it. The
+  // follow-up re-uses the verdicts already taken above (seconds old) and goes
+  // through the same claim, so the lock and idempotency guarantees are those
+  // of any run. It is never itself followed up: however many skips land during
+  // either run, the wrapper starts at most two runs, and whatever the follow-up
+  // could not absorb stays on the marker for resume-stale-imports.
+  const runOnce = gate.runLockedOnce ?? (() => runLockedOnce(plaidItemId, trigger, profile));
+  const first = await runOnce();
+  if (shouldRunFollowUp(first, trigger, false)) {
+    console.log(`[plaid webhook] item ${plaidItemId}: a sync was skipped during this run — running ONE follow-up pass now`);
+    await runOnce();
+  } else if (first.followUp) {
+    console.log(`[plaid webhook] item ${plaidItemId}: a sync was skipped during this run — follow-up left to resume-stale-imports (trigger ${trigger}, first run ${first.elapsedMs} ms)`);
+  }
+  return first.outcome;
+}
+
+/**
+ * One claim → full deferred pipeline → release, under one RefreshExecution.
+ * Unchanged from before P2 except that it reports whether the release kept a
+ * mid-run skip's marker.
+ */
+async function runLockedOnce(
+  plaidItemId: string,
+  trigger: RefreshTrigger,
+  profile: RefreshProfile,
+): Promise<LockedRunResult> {
+  const t0 = Date.now();
+  let followUp = false;
   // DF-2C — one immutable RefreshExecution per deferred-sync attempt. The lock
   // claim/release and the never-throws contract are UNCHANGED: they live inside
   // the runner, exactly as before, and runFullRefresh never throws here (the
   // runner never throws). A lock-held attempt records a SKIPPED execution.
-  return runFullRefresh<WebhookSyncOutcome>(
+  const outcome = await runFullRefresh<WebhookSyncOutcome>(
     { itemId: plaidItemId, trigger, profile },
     {
       refresh: async ({ recorder, runId }) => {
@@ -178,17 +258,19 @@ export async function syncPlaidItemFromWebhook(
           return "ran";
         } finally {
           // Release the lock, and on a SUCCESSFUL run also clear syncIncompleteAt in the
-          // same write. A concurrent duplicate delivery that lost the lock race stamps
-          // syncIncompleteAt=now via the skip branch above; because that stamp can only
-          // land while THIS run holds the lock, this lock-holder's successful
-          // completion is the authoritative last write and clears the stale marker —
-          // otherwise the item is stuck "importing" forever despite a fully-synced
-          // history (the marker's own clearer, syncTransactionsForItem, already ran
-          // before the stamp). On failure, leave syncIncompleteAt as runDeferredHistorySync
-          // set it — the history genuinely did not complete.
-          await releasePlaidItemSyncLock(plaidItemId, ok, undefined, claimedAt);
+          // same write — but only a marker from BEFORE this claim (P2). A losing claim
+          // stamps syncIncompleteAt=now via the skip branch above while THIS run holds
+          // the lock; that stamp is a signal this run may not have seen (a
+          // HISTORICAL_UPDATE that landed after the transactions pull), so the release
+          // keeps it and reports `pendingSignal` for the one follow-up. A marker older
+          // than the claim is this run's to discharge and is cleared exactly as
+          // before (b871093). On failure, leave syncIncompleteAt as
+          // runDeferredHistorySync set it — the history genuinely did not complete.
+          const released = await releasePlaidItemSyncLock(plaidItemId, ok, undefined, claimedAt);
+          followUp = released.pendingSignal;
         }
       },
     },
   );
+  return { outcome, followUp, elapsedMs: Date.now() - t0 };
 }

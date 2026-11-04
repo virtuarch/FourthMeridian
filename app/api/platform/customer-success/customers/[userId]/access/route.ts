@@ -37,12 +37,15 @@ import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";
 import { OperatorActionValidationError, parseOperatorReason, recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request, ctx: { params: Promise<{ userId: string }> }): Promise<Response> {
   const [auth, err] = await requireFreshPlatformAccess("CUSTOMER_SUCCESS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "cs-customer-access");
+  if (limited) return limited;
   const { userId } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as { action?: string; reason?: unknown };
   const action = body.action;
@@ -69,7 +72,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ userId: string
   const before = { deactivatedAt: target.deactivatedAt?.toISOString() ?? null };
 
   if (action === "deactivate") {
-    if (target.deactivatedAt) return NextResponse.json({ ok: true, deactivatedAt: target.deactivatedAt.toISOString(), alreadyDeactivated: true });
+    if (target.deactivatedAt) {
+      // Re-run the revocation (idempotent): a first attempt that deactivated and
+      // then failed to revoke must not leave the customer's sessions live.
+      const revoked = await revokeAllUserSessions(userId);
+      return NextResponse.json({ ok: true, deactivatedAt: target.deactivatedAt.toISOString(), alreadyDeactivated: true, revokedSessions: revoked });
+    }
     const now = new Date();
     await systemDb.$transaction(async (tx) => {
       await tx.user.update({ where: { id: userId }, data: { deactivatedAt: now } });

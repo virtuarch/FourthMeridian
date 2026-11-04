@@ -50,6 +50,7 @@ import { resolveAccountByFingerprint, resolvePlaidAccountByExternalId } from "@/
 // PROV-2 — the ONE owner of Plaid type/subtype → AccountType (was defined + exported here).
 import { mapAccountType } from "@/lib/plaid/account-type";
 import { normalizeProviderSubtype } from "@/lib/account-classifier";
+import { planExchangeBalanceStamp } from "@/lib/plaid/refresh";
 // PROV-3 — the shared investments-ingest orchestration (was inline here).
 import { syncInvestmentsForItem } from "@/lib/plaid/sync-investments";
 // PROV-4 — the canonical per-account conn+SAL spine writer (was inline here).
@@ -422,7 +423,11 @@ export async function performPlaidTokenExchange(
       const type             = mapAccountType(acct.type, acct.subtype);
       // 2026-10-07 — the subtype mapAccountType reduces away, kept as evidence.
       const providerSubtype  = normalizeProviderSubtype(acct.subtype);
-      const balance          = acct.balances.current ?? 0;
+      // FM-AUDIT-023 — a null `current` is NOT an observation (FIN-011). On an
+      // existing row the balance AND its verified stamp are written only when
+      // Plaid observed one (`balanceStamp` is empty otherwise), so a reconnect
+      // that got no balance keeps the prior figure under its own, older clock.
+      const balanceStamp     = planExchangeBalanceStamp(acct.balances.current, new Date());
       const availableBalance = acct.balances.available ?? undefined;
       const creditLimit      = acct.balances.limit ?? undefined;
 
@@ -461,11 +466,10 @@ export async function performPlaidTokenExchange(
         fa = await db.financialAccount.update({
           where: { id: fa.id },
           data: {
-            balance,
+            ...balanceStamp,
             availableBalance,
             ...(creditLimit !== undefined && { creditLimit }),
             providerSubtype,
-            lastUpdated: new Date(),
             syncStatus:  "synced",
             deletedAt:   null,
           },
@@ -537,11 +541,10 @@ export async function performPlaidTokenExchange(
             where: { id: resolution.canonical.id },
             data: {
               plaidAccountId:  acct.account_id,
-              balance,
+              ...balanceStamp,
               availableBalance,
               ...(creditLimit !== undefined && { creditLimit }),
               providerSubtype,
-              lastUpdated: new Date(),
               syncStatus:  "synced",
               deletedAt:   null,
             },
@@ -561,7 +564,12 @@ export async function performPlaidTokenExchange(
               institution:     institution_name,
               institutionId:   institution_id,
               mask:            acct.mask ?? undefined,
-              balance,
+              // ⚠️ OPEN (FM-AUDIT-023, new-row half) — `balance` is
+              // `Float NOT NULL DEFAULT 0` and no unknown-balance state exists
+              // for a row with no prior value, so a null `current` on a NEW row
+              // still lands as 0 here (unchanged). Representing it as unknown
+              // and excluding it from totals needs a schema decision.
+              balance:         balanceStamp.balance ?? 0,
               availableBalance,
               creditLimit,
               currency:        acct.balances.iso_currency_code ?? "USD",

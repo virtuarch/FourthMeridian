@@ -53,6 +53,10 @@ function check(name: string, cond: boolean, detail?: string): void {
  *   WRITER-INTERNAL (the regeneration family reading its own storage)
  *     lib/snapshots/backfill.ts           existing-row gate before createMany
  *     lib/snapshots/regenerate-history.ts frozen/partial-day planning + verify
+ *     lib/snapshots/regenerate.ts         findUnique select { isEstimated } on
+ *                                         TODAY's row only — whether a fresh
+ *                                         write supersedes a same-day estimate
+ *                                         (FM-AUDIT-021, S2 review; no value read)
  *     lib/snapshots/historical-work-window.ts  window bounds for regeneration
  *     lib/prices/price-gap.ts             groupBy _min(date) per Space — the
  *                                         earliest-snapshot bound of the
@@ -68,6 +72,7 @@ const ALLOWED_READERS = new Set([
   "lib/data/snapshots.ts",
   "lib/snapshots/backfill.ts",
   "lib/snapshots/regenerate-history.ts",
+  "lib/snapshots/regenerate.ts",
   "lib/snapshots/historical-work-window.ts",
   "lib/prices/price-gap.ts",
   "lib/platform/connection-diagnostics.ts",

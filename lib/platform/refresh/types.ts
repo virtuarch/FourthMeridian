@@ -170,6 +170,12 @@ export interface RefreshSummary extends ProjectionEnvelope {
   byProfile: Readonly<Record<string, number>>;
   /** Executions still RUNNING — the determinism blocker, surfaced not hidden. */
   openExecutions: number;
+  /**
+   * PB-7 — of `byStatus.FAILED`, the reaped (stale) executions a later SUCCEEDED
+   * execution for the same source superseded (lib/platform/refresh/recovery-core.ts).
+   * byStatus stays the ledger's own tally; a reader showing "failed" subtracts this.
+   */
+  recovered?: number;
   /** Executions correlated to a batch parent. Cron correlation is DF-2B.1. */
   withParentJob: number;
   meanDurationMs: number | null;
@@ -330,7 +336,9 @@ export interface PipelineStatus extends ProjectionEnvelope {
   networks: readonly PipelineNetworkRollup[];
   /** Executions still open in the window (RUNNING, or never completed). */
   openExecutions: number;
-  /** The newest failed / partial executions in the window, newest first, bounded. */
+  /** PB-7 — of byStatus.FAILED, reaped executions a later success superseded (recovery-core.ts). */
+  recovered?: number;
+  /** The newest failed / partial executions in the window, newest first, bounded — recovered ones excluded (PB-7). */
   latestFailures: readonly ExecutionFact[];
   tier: OperationalTier;
 }
@@ -372,6 +380,8 @@ export interface RefreshDayBucket {
    * customer-facing cooldown refusal (HTTP 429) writes no row and cannot appear.
    */
   admissionDenied: number;
+  /** PB-7 — of byStatus.FAILED, reaped executions a later success superseded (recovery-core.ts). */
+  recovered?: number;
   settled: boolean;
 }
 

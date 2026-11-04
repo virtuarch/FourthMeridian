@@ -266,6 +266,29 @@ console.log("4. Day series, composition and KPIs");
   check("KPI: success rate falls back to recent runs when 7 days are not covered (labelled so)", k[3].sub === "recent runs");
   const kDown = healthKpis({ jobs: failed("500"), scheduler: failed("500"), attention: failed("500"), groups: [], days7: [] });
   check("KPIs: an unread source is '—', never 0", kDown.every((x) => x.value === "—"));
+
+  // Ops env-aware verdicts — the SERVER's not-scheduled status (Preview, no scheduler).
+  const serverPreview = {
+    healthy: false, checkedAt: AGO_H(0),
+    counts: { healthy: 0, running: 0, overdue: 0, failing: 1, dead: 0, neverRan: 0, notScheduled: SCHEDULED_JOB_NAMES.length - 1 },
+    jobs: SCHEDULED_JOB_NAMES.map((name) => name === "sync-banks"
+      ? job(name, { status: "failing", lastRunStatus: "failed", consecutiveFailures: 1, lastStartedAt: AGO_H(300), totalRuns: 1, failedRuns: 1 })
+      : job(name, { status: "not-scheduled" })),
+  };
+  const ns = honestJobStatus(serverPreview.jobs.find((r) => r.job === "fetch-fx-rates")!, evInactive);
+  check("not-scheduled ⇒ neutral word, muted, never failed / healthy",
+    ns.kind === "not-scheduled" && ns.word === "Not scheduled in this environment" && ns.tone === "muted");
+  check("…the same with an ACTIVE evidence read (the server decided, the client does not re-judge)",
+    honestJobStatus(serverPreview.jobs.find((r) => r.job === "fetch-fx-rates")!, evActive).kind === "not-scheduled");
+  const ranFailed = honestJobStatus(serverPreview.jobs.find((r) => r.job === "sync-banks")!, evInactive);
+  check("a run that failed is still Failed on Preview (single run worded 'Last run failed')", ranFailed.kind === "failed" && ranFailed.reason === "Last run failed");
+  const kPrev = healthKpis({ jobs: ok(serverPreview), scheduler: ok(previewScheduler), attention: ok(previewAttention), groups: [], days7: [] });
+  check("KPI: not-scheduled jobs leave the healthy denominator, named in the qualifier (0/1 · 14 not scheduled here)",
+    kPrev[0].value === `0/1` && kPrev[0].sub === `${SCHEDULED_JOB_NAMES.length - 1} not scheduled here`, `${kPrev[0].value} ${kPrev[0].sub}`);
+  const allNs = { ...serverPreview, counts: { ...serverPreview.counts, failing: 0, notScheduled: SCHEDULED_JOB_NAMES.length }, jobs: SCHEDULED_JOB_NAMES.map((name) => job(name, { status: "not-scheduled" })) };
+  const kAll = healthKpis({ jobs: ok(allNs), scheduler: ok(previewScheduler), attention: ok(previewAttention), groups: [], days7: [] });
+  check("KPI: every job not scheduled ⇒ '—' (muted), never 0/15", kAll[0].value === "—" && kAll[0].tone === "muted");
+  check("KPI (Production, no notScheduled key): unchanged '12/15 · by job health'", k[0].value === "12/15" && k[0].sub === "by job health");
 }
 
 // ── 5. Manual-action reachability ────────────────────────────────────────────

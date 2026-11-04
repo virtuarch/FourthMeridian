@@ -24,12 +24,15 @@ import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
 import { issueBetaInvitation } from "@/lib/platform/growth/invitation-issue";
 import { issueResultResponse, parseOptionalReason } from "@/lib/platform/growth/invitation-http";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-request-approve");
+  if (limited) return limited;
 
   const { id } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as { validityDays?: unknown; reason?: unknown };

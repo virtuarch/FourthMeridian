@@ -142,7 +142,7 @@ export function RefreshSummarySurface({
               derivation={`${data.withParentJob} under a batch parent · ${envelopeCaption(data)}`}
             />
             <div className="grid gap-6 md:grid-cols-2">
-              <DistributionBar label="By status" segments={statusSegments(data.byStatus)} />
+              <DistributionBar label="By status" segments={statusSegments(data.byStatus, data.recovered ?? 0)} />
               <DistributionBar label="By trigger" segments={triggerSegments(data.byTrigger)} />
             </div>
           </div>

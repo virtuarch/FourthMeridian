@@ -68,6 +68,40 @@ async function main() {
     check("a 3-failure streak reads unhealthy (same verdict as live classifier)", jobs.status === "unhealthy" && (jobs.value ?? 0) >= 1);
   }
 
+  // ── Ops env-aware verdicts — the SAME scheduler-presence rule as the live readers ──
+  console.log("jobs source · scheduler presence (Preview neutral, Production byte-identical)");
+  {
+    // Old runs only (no scheduler fired since): dead with a scheduler, not-scheduled without.
+    const fixtures: Record<string, Record<string, HistoryJobRun[]>> = {
+      none: {},
+      oldClean: { "sync-banks": [run("sync-banks", "succeeded", 400)], "fetch-fx-rates": [run("fetch-fx-rates", "succeeded", 300)] },
+      oldSingleFailure: { "sync-banks": [run("sync-banks", "failed", 400), run("sync-banks", "succeeded", 424)], "fetch-fx-rates": [run("fetch-fx-rates", "succeeded", 300)] },
+      streak: { "sync-banks": [run("sync-banks", "failed", 1), run("sync-banks", "failed", 25), run("sync-banks", "failed", 49)] },
+      recentClean: { "sync-banks": [run("sync-banks", "succeeded", 2)] },
+    };
+    const asOf = async (byJob: Record<string, HistoryJobRun[]>, scheduler?: "present" | "absent") =>
+      (await getOperationalHistory({ asOf: "2026-07-17", sourceIds: ["jobs"] },
+        { now: NOW, readers: { ...fakeReaders({ jobRunsByJob: byJob }), ...(scheduler ? { scheduler } : {}) } })).states[0];
+    let identical = true;
+    for (const byJob of Object.values(fixtures)) {
+      if (JSON.stringify(await asOf(byJob)) !== JSON.stringify(await asOf(byJob, "present"))) identical = false;
+    }
+    check("Production (present) is byte-identical to the readers without a presence, across every fixture", identical);
+    const prodOld = await asOf(fixtures.oldClean, "present");
+    check("…with a scheduler, old clean runs still read unhealthy (dead), as before", prodOld.status === "unhealthy" && prodOld.value === 2);
+    const prevOld = await asOf(fixtures.oldClean, "absent");
+    check("Preview: old clean runs are not-scheduled — neutral, never unhealthy, named in the summary",
+      prevOld.status === "not-scheduled" && prevOld.value === 0 && /0 unhealthy, \d+ not scheduled in this environment of/.test(prevOld.summary), JSON.stringify(prevOld));
+    const prevFail = await asOf(fixtures.oldSingleFailure, "absent");
+    check("Preview: a newest-run failure is still failing (unhealthy, counted)", prevFail.status === "unhealthy" && prevFail.value === 1);
+    check("Preview: a 3-failure streak is unhealthy", (await asOf(fixtures.streak, "absent")).status === "unhealthy");
+    const prevRecent = await asOf(fixtures.recentClean, "absent");
+    check("Preview: a recent clean run is healthy beside the not-scheduled rest", prevRecent.status === "healthy" && /^1 healthy, 0 unhealthy, \d+ not scheduled/.test(prevRecent.summary));
+    check("Preview with no runs at all stays unknown", (await asOf(fixtures.none, "absent")).status === "unknown");
+    const histSrc = readFileSync(path.join(process.cwd(), "lib/platform/history/history.ts"), "utf8");
+    check("the real readers take the presence server-side (deploymentSchedulerPresence)", /scheduler: deploymentSchedulerPresence\(\)/.test(histSrc));
+  }
+
   // ── freshness source reuses classifyResourceFreshness at as-of ─────────────────
   console.log("freshness source · reuses classifyResourceFreshness");
   {
@@ -76,6 +110,11 @@ async function main() {
     const f = res.states.find((s) => s.sourceId === "freshness")!;
     check("stale FX archive reconstructed at as-of reads stale (derived)", f.status === "stale" && f.tier === "derived");
 
+    const asOfF = async (scheduler?: "present" | "absent") => (await getOperationalHistory({ asOf: "2026-07-17", sourceIds: ["freshness"] },
+      { now: NOW, readers: { ...stale, ...(scheduler ? { scheduler } : {}) } })).states[0];
+    check("freshness as-of: Production (present) byte-identical to no presence", JSON.stringify(await asOfF("present")) === JSON.stringify(await asOfF()));
+    check("freshness as-of on Preview (producer unscheduled, nothing refreshed) → not-refreshed, never stale",
+      (await asOfF("absent")).status === "not-refreshed");
     const cold = fakeReaders({ fxNewest: null });
     const res2 = await getOperationalHistory({ asOf: "2026-07-17", sourceIds: ["freshness"] }, { now: NOW, readers: cold });
     check("no FX archive as-of ⇒ unknown (Unknown stays Unknown)", res2.states[0].tier === "unknown");

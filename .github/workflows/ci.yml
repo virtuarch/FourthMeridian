@@ -215,6 +215,15 @@ jobs:
       - name: AI allowance reservation suite
         run: npm run rls:accept:allowance
 
+      # PRIV-004 — ENCRYPTION_KEY rotation. Runs scripts/rotate-encryption-key.ts
+      # (dry run, --expect, apply, idempotent re-run) and its engine (the CAS
+      # conflict seam) against its own throwaway database with keys generated
+      # per run: every registered encrypted column re-encrypted under the new
+      # key and readable with the previous key removed, non-ciphertext untouched,
+      # a concurrent write never overwritten, an unknown key id failing closed.
+      - name: Encryption key rotation suite
+        run: npm run accept:key-rotation
+
   site:
     name: Public site (zero-authority boundary)
     runs-on: ubuntu-latest

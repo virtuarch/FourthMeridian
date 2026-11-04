@@ -14,6 +14,14 @@
  * (the same strict fold the Growth funnel uses). `CustomerRollup` in
  * customer-core.ts is the pure projection; this file only fetches.
  *
+ * PB-4 — WHO NEEDS HELP, AND WHY. Every row carries `attention` (the reasons
+ * that active customer needs help, [] when none) and the list accepts
+ * `attention: <key | "any">` to show only those customers. Both come from the
+ * ONE fold the overview counts with (attention-core.ts via attention.ts), so a
+ * reason's count on the dashboard equals this list filtered to it. Identities
+ * stay here, in the audited, identity-resolving list — the overview stays
+ * counts-only.
+ *
  * fm_system: an operator reaching a customer is acting outside their own
  * tenancy by definition (the Platform page header records the same reasoning).
  */
@@ -25,6 +33,9 @@ import { loadPolicyGroupCatalogue } from "@/lib/platform/policies/policy-group-c
 import { ENGAGEMENT_AI_SURFACES } from "@/lib/platform/growth/product-analytics-core";
 import { loadLastEngagements } from "@/lib/platform/growth/product-analytics";
 import { projectActivity, projectRollup, type CustomerRollup } from "./customer-core";
+import { ATTENTION_LABELS, ATTENTION_SHORT, attentionOf, idsForAttention, type AttentionFold } from "./attention-core";
+import { loadAttention } from "./attention";
+import type { AttentionFilter, AttentionKey } from "./overview-types";
 
 export const CUSTOMER_LIST_MAX = 200;
 export const ROLLUP_WINDOW_DAYS = 30;
@@ -36,9 +47,22 @@ export interface CustomerListRow extends CustomerRollup {
   policyGroup: string; policyAssigned: boolean; overlay: string | null;
   cohorts: string[];
   connectionCount: number;
+  /** PB-4 — why this customer needs help, in display order ([] = no reason, or not an active customer). */
+  attention: AttentionKey[];
 }
 
-export interface CustomerList { total: number; customers: CustomerListRow[] }
+export interface CustomerList {
+  total: number;
+  customers: CustomerListRow[];
+  /** PB-4 — the filter this page was read with (null = none). */
+  attention: AttentionFilter | null;
+  /** PB-4 — the reasons that apply now, named by the server (the list's chips and filter options). */
+  attentionReasons: { key: AttentionKey; label: string; short: string }[];
+  /** S2 — true when the attention read hit its row cap: the filtered population is a floor ("≥N"). */
+  attentionFloor: boolean;
+}
+
+const reasonsOf = (fold: AttentionFold) => fold.keys.map((key) => ({ key, label: ATTENTION_LABELS[key], short: ATTENTION_SHORT[key] }));
 
 /** The id tail of an opaque `user …abc123` reference (or a bare 6+ character token), else null. */
 export function opaqueRefTail(search: string): string | null {
@@ -46,7 +70,9 @@ export function opaqueRefTail(search: string): string | null {
   return m ? m[1] : null;
 }
 
-export async function listCustomers(opts: { search?: string; limit?: number; now?: Date } = {}, client = systemDb): Promise<CustomerList> {
+export async function listCustomers(
+  opts: { search?: string; limit?: number; now?: Date; attention?: AttentionFilter | null } = {}, client = systemDb,
+): Promise<CustomerList> {
   const now = opts.now ?? new Date();
   const search = (opts.search ?? "").trim();
   const limit = Math.min(CUSTOMER_LIST_MAX, Math.max(1, Math.floor(opts.limit ?? 50)));
@@ -55,7 +81,7 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
   // that reference here (or its bare 6+ character tail) finds the account by its
   // id suffix, so the policy-assignment alert is actionable in Customer Success.
   const idTail = opaqueRefTail(search);
-  const where = search
+  const searchWhere = search
     ? { OR: [
         { email: { contains: search, mode: "insensitive" as const } },
         { name: { contains: search, mode: "insensitive" as const } },
@@ -63,6 +89,13 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
         ...(idTail ? [{ id: { endsWith: idTail } }] : []),
       ] }
     : {};
+  // PB-4 — the attention fold is read for every page (the row chips need it);
+  // a filter narrows the population BEFORE paging, so `total` is the filtered count.
+  const filter = opts.attention ?? null;
+  const att = await loadAttention(now, client);
+  const where = filter
+    ? { AND: [searchWhere, { id: { in: [...idsForAttention(att.fold, filter)] } }] }
+    : searchWhere;
 
   const defaultPolicyGroup = (await loadPolicyGroupCatalogue()).defaultKey;
   const [total, users] = await Promise.all([
@@ -73,7 +106,7 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
     }),
   ]);
   const ids = users.map((u) => u.id);
-  if (ids.length === 0) return { total, customers: [] };
+  if (ids.length === 0) return { total, customers: [], attention: filter, attentionReasons: reasonsOf(att.fold), attentionFloor: att.fold.floor };
 
   const since = new Date(now.getTime() - ROLLUP_WINDOW_DAYS * 86_400_000);
   const [
@@ -125,6 +158,9 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
 
   return {
     total,
+    attention: filter,
+    attentionReasons: reasonsOf(att.fold),
+    attentionFloor: att.fold.floor,
     customers: users.map((u) => {
       const a = assignBy.get(u.id);
       const act = projectActivity({ lastSessionActiveAt: sessBy.get(u.id) ?? null, lastLoginAt: loginBy.get(u.id) ?? null, activeSessions: 0 });
@@ -146,6 +182,7 @@ export async function listCustomers(opts: { search?: string; limit?: number; now
         policyGroup: a?.policyGroup ?? defaultPolicyGroup, policyAssigned: a !== undefined, overlay: a?.overlay ?? null,
         cohorts: cohortsBy.get(u.id) ?? [],
         connectionCount: (plaidBy.get(u.id) ?? 0) + (connBy.get(u.id) ?? 0),
+        attention: attentionOf(att.fold, u.id),
         ...rollup,
       };
     }),

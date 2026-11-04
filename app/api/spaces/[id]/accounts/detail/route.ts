@@ -83,7 +83,7 @@ import { deriveConnectionState, type SyncConnectionState } from "@/lib/sync/stat
 import { resolveAccountFreshness, type AccountFreshness } from "@/lib/freshness/observation";
 import { resolveAccountBalances, reconcileAccount, adjustedDepositoryBalance, type AccountBalances, type Reconciliation } from "@/lib/balances/account-balances";
 import { loadPendingEvidence, NO_PENDING } from "@/lib/balances/pending-evidence";
-import { loadWalletCurrentValues, hasKnownValue } from "@/lib/crypto/wallet-current-value";
+import { loadWalletCurrentValues, resolveWalletBalance } from "@/lib/crypto/wallet-current-value";
 
 export interface AccountDetailRow {
   id:                 string;      // FinancialAccount.id (FULL) or synthetic (BALANCE_ONLY aggregate)
@@ -95,6 +95,17 @@ export interface AccountDetailRow {
    * post-aggregation row count. Absent on FULL rows (each is one account).
    */
   memberCount?:       number;
+  /**
+   * FM-AUDIT-022 — present (true) only on a FULL row whose account has NO value
+   * (an unpriced or never-observed wallet, `resolveWalletBalance`). `balance` is
+   * a structural 0 EXCLUDED from every total; the row reads "Not yet valued".
+   */
+  valuationUnknown?:  true;
+  /**
+   * FM-AUDIT-022 — on an aggregated BALANCE_ONLY row only: how many members
+   * were excluded as unvalued (already absent from `balance`).
+   */
+  unvaluedMemberCount?: number;
   /**
    * REVIEW-3 B-1 — on an aggregated BALANCE_ONLY DEBT row: Σ per-member issuer
    * credit (a positive magnitude), disclosed beside the owed `balance` and
@@ -392,14 +403,20 @@ export async function GET(
   const fullRows: AccountDetailRow[] = [];
   const balanceOnlyShares: ShareRow[] = [];
 
+  // FM-AUDIT-022 — accounts excluded from every total as unvalued.
+  const unvaluedIds = new Set<string>();
+
   for (const link of links) {
     const raw = link.financialAccount;
     const walletValue = walletValueByAccount.get(raw.id);
     // A wallet with a real number (VALUED or STALE alike — W6b) displaces the
-    // column; an UNKNOWN one falls through to it rather than having a number
-    // invented. W6d put Bitcoin on this path too, through the same registry
-    // predicate and with no chain named here.
-    const a = hasKnownValue(walletValue) ? { ...raw, balance: walletValue!.value! } : raw;
+    // column. FM-AUDIT-022 — an UNKNOWN one (NO_PRICE / NO_OBSERVATION) is
+    // EXCLUDED through the one totals classification, never its stored column.
+    // W6d put Bitcoin on this path too, through the same registry predicate and
+    // with no chain named here.
+    const wb = resolveWalletBalance(raw.balance, walletValue);
+    if (wb.valuationUnknown) unvaluedIds.add(raw.id);
+    const a = walletValue === undefined ? raw : { ...raw, balance: wb.balance };
 
     if (link.visibilityLevel !== "FULL") {
       // Reuse the shared normalizer's exact ShareRow shape (FULL/BALANCE_ONLY).
@@ -499,6 +516,7 @@ export async function GET(
         return adj ? { adjustedBalance: adj.adjusted } : {};
       })(),
       ...(walletValue?.price ? { cryptoPrice: walletValue.price } : {}),
+      ...(wb.valuationUnknown ? { valuationUnknown: true as const } : {}),
     });
   }
 
@@ -515,6 +533,10 @@ export async function GET(
     visibility:         "BALANCE_ONLY",
     ...(r.aggregate ? { memberCount: r.aggregate.memberCount } : {}),
     ...(r.aggregate && r.aggregate.creditTotal > 0 ? { creditTotal: r.aggregate.creditTotal } : {}),
+    ...((): { unvaluedMemberCount?: number } => {
+      const n = r.aggregate ? r.aggregate.memberAccountIds.filter((id) => unvaluedIds.has(id)).length : 0;
+      return n > 0 ? { unvaluedMemberCount: n } : {};
+    })(),
     name:               r.name,
     institution:        "",
     type:               r.type,

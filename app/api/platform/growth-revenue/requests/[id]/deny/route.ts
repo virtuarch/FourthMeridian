@@ -33,6 +33,7 @@ import { operatorActorFrom } from "@/lib/platform/operator-actor";
 import { getClientIp } from "@/lib/api";
 import { BetaAccessRequestStatus } from "@prisma/client";
 import { BlocklistUnavailableError, blockIfConfirmedSuspicious, lockMailbox } from "@/lib/platform/growth/beta-blocklist";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -44,6 +45,8 @@ type Outcome =
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-request-deny");
+  if (limited) return limited;
 
   const { id } = await ctx.params;
   const actor = operatorActorFrom(auth, "GROWTH_REVENUE");

@@ -147,7 +147,9 @@ export function ExecutionRows({
       <ul className="flex flex-col">
         {rows.map((row, i) => {
           const source = describeSource(row);
-          const status = EXECUTION_STATUS_TOKEN[row.overallStatus] ?? TONE_COLOR.muted;
+          // PB-7 — a reaped execution a later success superseded reads Recovered (warn), not Failed.
+          const recovered = row.recoveredByExecutionId != null;
+          const status = recovered ? TONE_COLOR.warn : EXECUTION_STATUS_TOKEN[row.overallStatus] ?? TONE_COLOR.muted;
           const category = describeCategory(row.failureCategory);
           const verdict =
             row.failureStage ? `failed at ${row.failureStage}${category ? ` · ${category}` : ""}`
@@ -182,7 +184,7 @@ export function ExecutionRows({
                 <span className="hidden text-xs text-[var(--text-primary)] md:block">{triggerWord(row.trigger)}</span>
                 <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium" style={{ color: status }}>
                   <span aria-hidden className="rounded-full" style={{ width: 6, height: 6, background: status }} />
-                  {humanizeToken(row.overallStatus)}
+                  {recovered ? "Recovered" : humanizeToken(row.overallStatus)}
                 </span>
                 <span className="shrink-0">
                   <TwoLine value={`${timeAgo(row.startedAt)} ago`} qualifier={`${row.startedAt.slice(0, 16).replace("T", " ")} UTC`} />

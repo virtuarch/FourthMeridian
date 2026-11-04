@@ -565,6 +565,12 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   // equal, text-only columns so every workspace fits a 375 px phone (the icons
   // stay on the desktop sidebar rows, resolved there from the same icon name).
   const railOptions: SpaceShellRailOption[] = available.map((w) => ({ id: w.key, label: w.label }));
+  // PB-3 (owner addendum 2026-11-01) — navigation only where there is somewhere
+  // to go: an operator who can reach ONE workspace of this area (Growth &
+  // Revenue and Merchant Ops have only Overview; a narrower grant can leave any
+  // area with one) gets no single-item rail and no single-row sidebar list. The
+  // URL contract (?workspace= / ?view=) and every deep link are unchanged.
+  const multiWorkspace = available.length > 1;
 
   const active = composition.find((w) => w.workspaceId === activeTab) ?? composition[0];
   // The open VIEW of the active workspace (its default when the hook's view
@@ -621,8 +627,8 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
   );
   const openWorkspaceId = active?.workspaceId ?? activeTab;
   useEffect(() => {
-    publishWorkspaceNav({ items: workspaceItems, activeId: openWorkspaceId, onSelect: setActiveTab });
-  }, [publishWorkspaceNav, workspaceItems, openWorkspaceId, setActiveTab]);
+    publishWorkspaceNav(multiWorkspace ? { items: workspaceItems, activeId: openWorkspaceId, onSelect: setActiveTab } : null);
+  }, [publishWorkspaceNav, multiWorkspace, workspaceItems, openWorkspaceId, setActiveTab]);
   useEffect(() => () => publishWorkspaceNav(null), [publishWorkspaceNav]);
 
   return (
@@ -633,6 +639,7 @@ export function PlatformSpaceDashboard({ area, sections, mountContext, selectedV
       // rail shows only below lg (the exact complement of the sidebar's
       // `hidden … lg:block`), so exactly one switcher shows at any width.
       railVisibility="belowLg"
+      hideLoneRail
       title={spaceName}
       titleAccessory={<PlatformSpaceSwitcher spaces={grantedSpaces} currentArea={area} />}
       // it2 — one compact title line (name · switcher · access chip), no meta

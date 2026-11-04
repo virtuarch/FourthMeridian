@@ -53,6 +53,9 @@ export interface PlatformJobHealthCounts {
   neverRan: number;
   /** BETA LIFECYCLE L2 — jobs whose newest run a cost freeze refused (never counted healthy). */
   skipped?: number;
+  /** Jobs this deployment never schedules (Preview) with no recorded failure — neutral, never healthy or failing.
+   *  Present only when non-zero, so a deployment with a scheduler answers exactly as before. */
+  notScheduled?: number;
 }
 
 export interface PlatformJobHealthResponse {
@@ -77,6 +80,7 @@ export async function GET() {
     else if (j.status === "dead") counts.dead++;
     else if (j.status === "never-ran") counts.neverRan++;
     else if (j.status === "skipped") counts.skipped = (counts.skipped ?? 0) + 1;
+    else if (j.status === "not-scheduled") counts.notScheduled = (counts.notScheduled ?? 0) + 1;
   }
 
   const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
