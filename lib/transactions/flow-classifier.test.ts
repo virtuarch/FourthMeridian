@@ -101,12 +101,12 @@ expectFlow('SR-1: Other credit is UNKNOWN, not REFUND', { category: 'Other', amo
 check('SR-1: Other credit reason is AMBIGUOUS_UNKNOWN (not SIGN_DEFAULT_INFLOW)',
   classifyFlow({ category: 'Other', amount: 80 }).reason === 'AMBIGUOUS_UNKNOWN');
 check('SR-1: Other credit is NEVER REFUND (pending paycheck root cause)',
-  classifyFlow({ category: 'Other', amount: 4928.40 }).flowType !== 'REFUND');
+  classifyFlow({ category: 'Other', amount: 3915.20 }).flowType !== 'REFUND');
 // The pending-payroll shape verbatim (Other / OTHER_OTHER / positive): the
 // unrecognized PFC falls through, and Other-positive resolves UNKNOWN — never the
 // old REFUND → INCOME fabrication. (Descriptor rescue to INCOME happens upstream.)
 expectFlow('SR-1: pending Employer A payroll shape (Other/OTHER_OTHER/+) → UNKNOWN',
-  { category: 'Other', amount: 4928.40, pfcPrimary: 'OTHER', pfcDetailed: 'OTHER_OTHER' },
+  { category: 'Other', amount: 3915.20, pfcPrimary: 'OTHER', pfcDetailed: 'OTHER_OTHER' },
   'UNKNOWN', 'INFLOW');
 // Zero-amount Other is unchanged — a non-economic ADJUSTMENT, not the UNKNOWN valve.
 expectFlow('SR-1: Other zero-amount stays ADJUSTMENT', { category: 'Other', amount: 0 }, 'ADJUSTMENT', 'UNKNOWN');
@@ -192,7 +192,7 @@ function assemblerBucketViaClassifier(category: string, amount: number): Bucket 
 
 let equivalenceMismatch = 0;
 for (const category of BANKING_CATEGORIES) {
-  for (const amount of [-137.42, -0.01, 0, 0.01, 8400]) {
+  for (const amount of [-142.65, -0.01, 0, 0.01, 8400]) {
     const inline = assemblerBucketInline(category, amount);
     const viaClf = assemblerBucketViaClassifier(category, amount);
     const ok = inline === viaClf;
@@ -240,18 +240,18 @@ check('whole-enum NOT byte-identical (investment categories) — deliberate Slic
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CF-4 — a liability-account TRANSFER_OUT_ACCOUNT_TRANSFER outflow is a PURCHASE,
-// not a transfer (Plaid mislabels retail POS on cards, e.g. Harvey Nichols). Uses
+// not a transfer (Plaid mislabels retail POS on cards, e.g. a department store). Uses
 // sanitized representative shapes from the real mislabeled rows.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The exact Harvey Nichols shape: debt account, outflow, Plaid TRANSFER_OUT /
+// The exact department-store shape: debt account, outflow, Plaid TRANSFER_OUT /
 // TRANSFER_OUT_ACCOUNT_TRANSFER → SPENDING (was TRANSFER before CF-4).
-expectFlow('CF-4 card ACCOUNT_TRANSFER outflow → SPENDING (Harvey Nichols)',
-  { category: 'Transfer', amount: -692.97, accountType: 'debt', debtSubtype: 'credit_card',
+expectFlow('CF-4 card ACCOUNT_TRANSFER outflow → SPENDING (department store)',
+  { category: 'Transfer', amount: -615.30, accountType: 'debt', debtSubtype: 'credit_card',
     pfcPrimary: 'TRANSFER_OUT', pfcDetailed: 'TRANSFER_OUT_ACCOUNT_TRANSFER' },
   'SPENDING', 'OUTFLOW');
 check('CF-4 uses ACCOUNT_TYPE_CONTEXT reason',
-  classifyFlow({ category: 'Transfer', amount: -692.97, accountType: 'debt', debtSubtype: 'credit_card',
+  classifyFlow({ category: 'Transfer', amount: -615.30, accountType: 'debt', debtSubtype: 'credit_card',
     pfcPrimary: 'TRANSFER_OUT', pfcDetailed: 'TRANSFER_OUT_ACCOUNT_TRANSFER' }).reason === 'ACCOUNT_TYPE_CONTEXT');
 
 // NOT over-reaching: a cash advance (TRANSFER_OUT_WITHDRAWAL, not ACCOUNT_TRANSFER)
@@ -264,7 +264,7 @@ expectFlow('CF-4 card cash advance stays TRANSFER',
 // NOT on a liquid account: the same Apple-Cash-style ACCOUNT_TRANSFER on CHECKING
 // is untouched (stays TRANSFER) — CF-4 is scoped to the liability tier only.
 expectFlow('CF-4 checking ACCOUNT_TRANSFER unchanged (Apple Cash send)',
-  { category: 'Transfer', amount: -101.47, accountType: 'checking',
+  { category: 'Transfer', amount: -88.15, accountType: 'checking',
     pfcPrimary: 'TRANSFER_OUT', pfcDetailed: 'TRANSFER_OUT_ACCOUNT_TRANSFER' },
   'TRANSFER', 'OUTFLOW');
 
@@ -280,24 +280,24 @@ expectFlow('CF-4 card ACCOUNT_TRANSFER inflow stays TRANSFER',
 //
 // Fixtures are the five REAL posted rows from the live corpus that CCPAY-1 found
 // misclassified as DEBT_PAYMENT: every one is an ordinary card purchase that
-// Plaid tagged with a LOAN_PAYMENTS PFC. $1,482.62 of real spending was being
+// Plaid tagged with a LOAN_PAYMENTS PFC. Real spending was being
 // excluded from the spend ledger. These are adversarial fixtures drawn from
 // production, not invented strings.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The veto fires regardless of which LOAN_PAYMENTS detailed Plaid invented.
-expectFlow('CCPAY-2B: Qlub (restaurant app) tagged LOAN_PAYMENTS_CAR_PAYMENT',
-  { category: 'Payment', amount: -387.24, accountType: 'debt',
+expectFlow('CCPAY-2B: restaurant app tagged LOAN_PAYMENTS_CAR_PAYMENT',
+  { category: 'Payment', amount: -342.80, accountType: 'debt',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_CAR_PAYMENT' },
   'SPENDING', 'OUTFLOW');
 
 expectFlow('CCPAY-2B: Example Card Travel booking tagged LOAN_PAYMENTS_CREDIT_CARD_PAYMENT',
-  { category: 'Payment', amount: -506.98, accountType: 'debt',
+  { category: 'Payment', amount: -455.60, accountType: 'debt',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' },
   'SPENDING', 'OUTFLOW');
 
-expectFlow('CCPAY-2B: DYNEFF fuel tagged LOAN_PAYMENTS_OTHER_PAYMENT',
-  { category: 'Payment', amount: -107.41, accountType: 'debt',
+expectFlow('CCPAY-2B: fuel station tagged LOAN_PAYMENTS_OTHER_PAYMENT',
+  { category: 'Payment', amount: -96.25, accountType: 'debt',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_OTHER_PAYMENT' },
   'SPENDING', 'OUTFLOW');
 
@@ -326,7 +326,7 @@ expectFlow('CCPAY-2B: negative with no account context stays DEBT_PAYMENT',
   'DEBT_PAYMENT', 'INTERNAL');
 // The destination leg: 109 real rows. On a liability, but POSITIVE.
 expectFlow('CCPAY-2B: destination leg on a liability stays DEBT_PAYMENT',
-  { category: 'Payment', amount: 5587.31, accountType: 'debt',
+  { category: 'Payment', amount: 4820.75, accountType: 'debt',
     pfcPrimary: 'LOAN_DISBURSEMENTS', pfcDetailed: 'LOAN_DISBURSEMENTS_OTHER_DISBURSEMENT' },
   'DEBT_PAYMENT', 'INFLOW');
 // amount === 0 is not an outflow — the veto is `< 0`, not `<= 0`.

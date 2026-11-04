@@ -441,7 +441,7 @@ export function CreateSpaceModal({ open, onClose, onCreated }: Props) {
           value={name}
           onChange={(e) => { setName(e.target.value); setError(""); }}
           onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-          placeholder="e.g. Smith Family, Atlanta Duplex"
+          placeholder="e.g. Home, Smith Family"
           maxLength={60}
           className="w-full rounded-[var(--radius-sm)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none transition-colors"
           style={{ background: "var(--surface-muted)", border: "1px solid var(--border-hairline)" }}

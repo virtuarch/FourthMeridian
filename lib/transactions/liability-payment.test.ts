@@ -209,7 +209,7 @@ for (const decided of ["Dining", "Travel", "Shopping", "Income", "Transfer", "In
 // Rescue-only: it may never DEMOTE. The symmetric liability-outflow case is
 // CCPAY-2B's structural veto in the classifier — never duplicated here.
 eq("resolver: never demotes a liability OUTFLOW carrying Payment (that is CCPAY-2B's job)",
-  resolveLiabilityPaymentCategory("Payment", "Payment", { ...CARD, amount: -387.24, merchant: "Qlub", description: "QLUB" }), "Payment");
+  resolveLiabilityPaymentCategory("Payment", "Payment", { ...CARD, amount: -342.80, merchant: "Example Bistro App", description: "EXAMPLE BISTRO APP" }), "Payment");
 // Guards reach the resolver.
 eq("resolver: Other on a DEPOSITORY account is never rescued",
   resolveLiabilityPaymentCategory("Other", "Payment", { accountType: "checking", debtSubtype: null, amount: 5000, merchant: "PAYMENT-THANK YOU", description: "PAYMENT-THANK YOU" }), "Other");
