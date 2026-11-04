@@ -37,6 +37,7 @@ import type { PlatformViewLeadProps } from "../leads/lead-contract";
 import { DEFAULT_SEARCH, SEVERITY_FILTERS, retentionFloorDay } from "@/lib/platform/incidents/intelligence/search-core";
 import type { IncidentSearchQuery } from "@/lib/platform/incidents/intelligence/types";
 import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, IncidentTier, LifecycleActionDTO, RecoveryActionDTO } from "@/lib/platform/incidents/investigation-dto";
+import type { IncidentNavigationLinkDTO } from "@/lib/platform/incidents/related-navigation";
 import {
   incidentDetailApiPath, incidentsApiPath, incidentsUrlUpdate, readIncidentsUrl, statusOfView, type IncidentsUrlState,
 } from "./incidents-url";
@@ -189,6 +190,47 @@ function LinkedRow({ id, r, prefix, onSelect }: { id: string; r: IncidentRowDTO 
   );
 }
 
+/** A resolver href only: a same-origin relative path (the route already validated it; this refuses anything else). */
+const isRelativePath = (href: string) => href.startsWith("/") && !href.startsWith("//") && !href.includes("\\");
+
+/**
+ * The "Related" links. Every href is the route's resolveNavigationTarget
+ * output, rendered VERBATIM — this component builds none (pinned by a source
+ * scan). A link the route did not resolve is not in the list: nothing renders
+ * in its place. An in-workspace incident link opens the incident in place on a
+ * plain click (the drawer's REPLACE idiom); a modified click follows the href.
+ */
+export function IncidentRelatedNavigation({ links, onSelect }: { links: readonly IncidentNavigationLinkDTO[]; onSelect: (id: string) => void }) {
+  const shown = links.filter((l) => isRelativePath(l.href));
+  if (shown.length === 0) return null;
+  return (
+    <Section title="Related">
+      <ul className="flex min-w-0 flex-col" data-incident-navigation>
+        {shown.map((l) => (
+          <li key={`${l.kind}:${l.href}`} className="min-w-0">
+            <a
+              href={l.href}
+              data-navigation-kind={l.kind}
+              className={`${ROW_BTN} py-1.5`}
+              onClick={(e) => {
+                if (!l.incidentId || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                onSelect(l.incidentId);
+              }}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block break-words text-xs text-[var(--text-primary)]">{l.label}</span>
+                {l.note && <span className="block break-words text-[10px] text-[var(--text-muted)]">{l.note}</span>}
+              </span>
+              <ChevronRight size={12} aria-hidden className="mt-1 shrink-0 text-[var(--text-faint)]" />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
 export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRecover, onLifecycle }: {
   d: IncidentDetailDTO;
   canWrite: boolean;
@@ -275,6 +317,8 @@ export function IncidentDetailSurface({ d, canWrite, onSelect, onExecution, onRe
         <p className="break-words text-xs text-[var(--text-secondary)]" data-incident-affected>{affectedLine(d.affected)}</p>
         {"subjectUserId" in r && <p className="break-all font-mono text-[11px] text-[var(--text-muted)]">{r.subjectUserId ? `Customer ${r.subjectUserId}` : "No attributed customer"}</p>}
       </Section>
+
+      <IncidentRelatedNavigation links={d.navigation ?? []} onSelect={onSelect} />
 
       <Section title="Related and recurring">
         {d.related.length === 0 && d.recurrences.length === 0 ? (

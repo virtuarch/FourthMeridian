@@ -34,6 +34,7 @@ import type {
   IncidentVerdict,
   ResolutionEvidenceDigest,
 } from "./intelligence/types";
+import type { IncidentNavigationLinkDTO } from "./related-navigation";
 
 export type IncidentTier = "ops" | "cs";
 
@@ -99,6 +100,12 @@ export interface IncidentDetailDTO {
   recovery: RecoveryActionDTO[];
   /** PB-1 S6 — lifecycle actions offered (ops tier only; always [] on cs). */
   lifecycleActions: LifecycleActionDTO[];
+  /**
+   * The "Related" links (./related-navigation.ts): hrefs the ROUTE resolved
+   * through the navigation registry for its own token and surface. Absent ⇒
+   * none rendered. The client never builds one.
+   */
+  navigation?: IncidentNavigationLinkDTO[];
   checkedAt: string;
 }
 
