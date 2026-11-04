@@ -89,5 +89,13 @@ for (const p of PROBES) {
   check(`${p}: never echoed the password or the host`, !all.includes(DEV_SECRET) && !all.includes(DEV_HOST));
 }
 
+// The evidence file is private: written 0600 and chmod'ed (an existing file keeps its old mode otherwise).
+{
+  const src = readFileSync(path.join(__dirname, "test-b10-rollback-rehearsal.ts"), "utf8");
+  const writes = src.match(/writeFileSync\(EVIDENCE[^;]*;/g) ?? [];
+  check("rehearsal evidence: every write is mode 0o600", writes.length > 0 && writes.every((w) => /mode: 0o600/.test(w)), `${writes.length} write(s)`);
+  check("rehearsal evidence: chmodSync(EVIDENCE, 0o600) after the write", /chmodSync\(EVIDENCE, 0o600\)/.test(src));
+}
+
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
 console.log("\nall checks passed");
