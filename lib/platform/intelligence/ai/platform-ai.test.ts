@@ -48,7 +48,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, isFixedWindow, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -957,6 +957,39 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   const sorted = (o: Record<string, unknown>) => JSON.stringify(Object.fromEntries(Object.entries(o).sort()));
   check("sanitiser categories: url / html / image / reference / link / path, counts only (the total is their sum)",
     sorted(mixedKinds.kinds) === sorted({ url: 1, html: 2, image: 1, reference: 2, link: 1, path: 1 }) && mixedKinds.removed === 8, mixedKinds.kinds);
+
+  // Finding 2 (Preview: every turn logs removed=1(link:1)) — WHICH target each stripped Markdown link had, as a closed enum.
+  // Offline the category alone cannot tell these apart: each form below is stripped as exactly link:1.
+  check("…the trace names the stripped link's TARGET KIND (linkTo=DRILL_HREF:1), a code — never the target text",
+    JSON.stringify(hrefLink.result.sanitised.linkTargets) === JSON.stringify({ DRILL_HREF: 1 }) && traceLine(hrefLink.result).includes(" removed=1(link:1) linkTo=DRILL_HREF:1 replaced=")
+    && !traceLine(hrefLink.result).includes("/api/"), traceLine(hrefLink.result));
+  const allowedB = new Set([ECON_PAGE]);
+  const envB = [aiEnv!];
+  const FORMS: [string, string, Record<string, number>][] = [
+    ["drill.href as a Markdown link", `See [records](${api}).`, { DRILL_HREF: 1 }],
+    ["another /api/ path", "See [records](/api/platform/platform-ops/providers).", { API_PATH: 1 }],
+    ["the drill page with an extra param", `See [Economics](${ECON_PAGE}&figure=ai_cost).`, { PAGE_VARIANT: 1 }],
+    ["a page path this turn never returned", "See [Economics](/dashboard/platform/economics).", { PAGE_NOT_RETURNED: 1 }],
+    ["an absolute URL", `See [Economics](https://app.example.test${ECON_PAGE}).`, { ABSOLUTE_URL: 1 }],
+    ["a placeholder as the target", "See [cost]({{m:economics-ai-cost@1|part=spendUsd}}).", { PLACEHOLDER: 1 }],
+    ["a metric key as the target", "See [AI cost](economics-ai-cost@1).", { METRIC_ID: 1 }],
+    ["an empty target", "See [Economics Overview]().", { EMPTY: 1 }],
+    ["a page id as the target", "See [Economics](PLATFORM_OPS:platform-economics).", { OTHER: 1 }],
+  ];
+  const formOut = FORMS.map(([what, text, want]) => {
+    const san = sanitiseAnswer(text, allowedB);
+    const got = strippedLinkTargets(text, allowedB, envB);
+    return { what, ok: JSON.stringify(san.kinds) === JSON.stringify({ link: 1 }) && JSON.stringify(got) === JSON.stringify(want), kinds: san.kinds, got };
+  });
+  check("every one of these forms is stripped as exactly link:1 by the (unchanged) sanitiser — and strippedLinkTargets tells them apart",
+    formOut.every((x) => x.ok), formOut.filter((x) => !x.ok));
+  const notLink = ["See [Economics](" + ECON_PAGE + ").", "See " + api + ".", "See https://app.example.test/x.", "![i](/p)"].map((t) => strippedLinkTargets(t, allowedB, envB));
+  check("…a kept link, a raw path, a raw URL or an image is not a stripped Markdown link (no target kind counted)", notLink.every((o) => Object.keys(o).length === 0), notLink);
+  const mixed = "a [x](/q) b [y](https://e.test) c [z](" + ECON_PAGE + ") <b>[w](/api/x)</b> ![i](/p)";
+  check("…the target-kind total equals the sanitiser's link count (same pre-steps, same pattern)",
+    Object.values(strippedLinkTargets(mixed, allowedB, envB)).reduce((a, n) => a + n, 0) === sanitiseAnswer(mixed, allowedB).kinds.link, strippedLinkTargets(mixed, allowedB, envB));
+  check("the sanitiser itself is unchanged by the diagnosis (sanitiseAnswer has no target-kind logic)",
+    !/LINK_TARGET_KINDS|strippedLinkTargets/.test(code(src("lib/platform/intelligence/ai/core.ts")).slice(code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export function sanitiseAnswer"), code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export const segmentsText"))));
 
   // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
   const gmDesc = JSON.stringify(platformAiToolSchemas([]));
