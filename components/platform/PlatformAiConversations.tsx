@@ -349,7 +349,7 @@ export function PlatformAiConversationsView(p: PlatformAiConversationsViewProps)
           {p.threadLoading ? <p className="text-xs text-[var(--text-muted)]">Loading…</p> : null}
           {messages.length > 0 || p.sendingQuestion !== null ? (
             <Thread messages={messages} areaLabel={label} now={p.now} sendingQuestion={p.sendingQuestion}
-              earlierExpired={p.selected ? earlierMessagesExpired(p.selected.conversation, messages) : false}
+              earlierExpired={p.selected ? earlierMessagesExpired(p.selected.conversation, messages, p.now) : false}
               onRetryFailed={full || pending ? undefined : p.onRetryFailed} onCheckPending={p.onCheckPending} busy={busy} />
           ) : null}
 

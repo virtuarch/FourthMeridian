@@ -26,7 +26,7 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { env } from "@/lib/env";
-import { PLATFORM_AI_MESSAGE_MAX } from "@/lib/platform/intelligence/ai/conversations/constants";
+import { PLATFORM_AI_MESSAGE_MAX, PLATFORM_AI_RETENTION_DAYS } from "@/lib/platform/intelligence/ai/conversations/constants";
 import { PlatformAiAsk } from "./PlatformAiAsk";
 import {
   AssistantAnswer, ConversationList, PlatformAiComposer, PlatformAiConversations, PlatformAiConversationsView, Thread, TypedAnswerSegments,
@@ -35,7 +35,7 @@ import {
 import {
   CONVERSATION_FULL_COPY, CONVERSATION_LIMIT_COPY, EARLIER_EXPIRED_COPY, FAILURE_COPY, NOT_FOUND_COPY,
   PLATFORM_AI_COMPOSER_MAX, PLATFORM_AI_CONVERSATIONS_DISCLOSURE, PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING, PLATFORM_AI_PRIVACY_HINT,
-  RAIL_COLLAPSED_KEY, REFUSAL_COPY, TURN_IN_FLIGHT_COPY,
+  PLATFORM_AI_RETENTION_DAYS_CLIENT, RAIL_COLLAPSED_KEY, REFUSAL_COPY, TURN_IN_FLIGHT_COPY,
   answeredLine, asOfChip, conversationMessagesUrl, conversationUrl, earlierMessagesExpired, hasPendingTurn,
   parseList, parseMessage, parsePair, parseThread, problemFor, questionBefore, relativeTime, utcStamp,
   type ClientConversation, type ClientMessage,
@@ -168,8 +168,22 @@ console.log("\n2. client model — defensive parsing, copy, time");
   check("relative time", relativeTime("2026-01-10T11:59:30Z", NOW) === "just now" && relativeTime("2026-01-10T11:55:00Z", NOW) === "5 min ago"
     && relativeTime(H3, NOW) === "3 h ago" && relativeTime("2026-01-09T12:00:00Z", NOW) === "1 day ago" && relativeTime("2026-01-07T12:00:00Z", NOW) === "3 days ago" && relativeTime("nope", NOW) === "earlier");
   check("UTC stamp", utcStamp(H3) === "2026-01-10 09:00 UTC" && utcStamp("nope") === "");
-  check("expired: first remaining message well after the conversation's creation ⇒ true; same transaction ⇒ false",
-    earlierMessagesExpired({ createdAt: "2025-10-01T00:00:00Z" }, [{ createdAt: H3 }]) && !earlierMessagesExpired({ createdAt: H3 }, [{ createdAt: H3 }]) && !earlierMessagesExpired({ createdAt: H3 }, []));
+  check("the client's retention constant = the server's PLATFORM_AI_RETENTION_DAYS (duplicated; the migration-pin pattern)",
+    PLATFORM_AI_RETENTION_DAYS_CLIENT === PLATFORM_AI_RETENTION_DAYS && PLATFORM_AI_RETENTION_DAYS === 90, [PLATFORM_AI_RETENTION_DAYS_CLIENT, PLATFORM_AI_RETENTION_DAYS]);
+  const DAY = 24 * 60 * 60 * 1000;
+  const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+  const gapAfter = (createdAt: string) => [{ createdAt: new Date(Date.parse(createdAt) + 2 * DAY).toISOString() }];
+  const twoDays = ago(2 * DAY), ninetyOne = ago(91 * DAY), exactly = ago(90 * DAY), justUnder = ago(90 * DAY - 1);
+  check("S2 on #434: a 2-day-old conversation WITH a gap ⇒ no 'expired' copy (retention cannot have acted yet)",
+    !earlierMessagesExpired({ createdAt: twoDays }, [{ createdAt: ago(60 * 60 * 1000) }], NOW));
+  check("a 91-day-old conversation with a gap ⇒ the copy", earlierMessagesExpired({ createdAt: ninetyOne }, gapAfter(ninetyOne), NOW));
+  check("boundary: exactly 90 days old ⇒ the copy (≥); 90 days − 1 ms ⇒ none",
+    earlierMessagesExpired({ createdAt: exactly }, gapAfter(exactly), NOW) && !earlierMessagesExpired({ createdAt: justUnder }, gapAfter(justUnder), NOW));
+  check("old enough but no gap (same transaction), or no messages ⇒ no copy",
+    !earlierMessagesExpired({ createdAt: ninetyOne }, [{ createdAt: ninetyOne }], NOW) && !earlierMessagesExpired({ createdAt: ninetyOne }, [], NOW)
+    && !earlierMessagesExpired({ createdAt: "nope" }, gapAfter(ninetyOne), NOW));
+  check("the view passes the render clock (p.now) to the age condition",
+    /earlierMessagesExpired\(p\.selected\.conversation, messages, p\.now\)/.test(code(COMPONENT)));
   check("pending + retry question helpers",
     hasPendingTurn([user("u", "q"), answer("a", { status: "PENDING", content: null })]) && !hasPendingTurn([user("u", "q"), answer("a")])
     && questionBefore([user("u", "the question"), answer("a")], 1) === "the question" && questionBefore([answer("a")], 0) === null);
@@ -221,6 +235,8 @@ console.log("\n5. the disclosure line (OD-5 placeholder) and the v0 privacy hint
     PLATFORM_AI_CONVERSATIONS_DISCLOSURE.includes(PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING) && /OD-5 WORDING PENDING OWNER/.test(src(MODEL)));
   check("…and states no retention period, provider term or policy commitment (placeholder, not legal text)",
     !/\d|days?|retain|retention|OpenAI|policy|privacy|legal|deleted after|encrypt/i.test(PLATFORM_AI_CONVERSATIONS_DISCLOSURE.replace(PLATFORM_AI_CONVERSATIONS_DISCLOSURE_PENDING, "")));
+  check("SHIP GUARD (S2 on #434): the disclosure STILL contains 'pending owner' — when the owner's OD-5 wording lands, this pin is updated in the same PR, never by accident",
+    PLATFORM_AI_CONVERSATIONS_DISCLOSURE.includes("pending owner"));
   const literalUses: string[] = [];
   for (const rel of [COMPONENT, PAGE, "components/platform/PlatformAiAsk.tsx"]) if (src(rel).includes("Conversations are saved")) literalUses.push(rel);
   check("the wording lives only in the model constant (no second copy)", literalUses.length === 0, literalUses);
@@ -271,6 +287,19 @@ console.log("\n6. thread — failed / pending / full / limit / expired");
   check("Try again on a FAILED turn sends a NEW clientRequestId; a transport retry resends the SAME pending send",
     /onRetryFailed=\{\(q\) => \{ void send\(\{ conversationId: selected\?\.conversation\.id \?\? null, clientRequestId: crypto\.randomUUID\(\), question: q \}\); \}\}/.test(cmp)
     && /onRetrySend=\{\(\) => \{ if \(retry\) void send\(retry\); \}\}/.test(cmp));
+  // S2 on #434: which sends mint a clientRequestId, and which never do.
+  const sendBody = cmp.slice(cmp.indexOf("async function send(s: PendingSend)"), cmp.indexOf("function onSend()"));
+  check("send() itself NEVER mints a clientRequestId (it sends the PendingSend it is given)",
+    sendBody.length > 200 && !/randomUUID/.test(sendBody) && /clientRequestId: s\.clientRequestId/.test(sendBody));
+  check("409 TURN_IN_FLIGHT ⇒ the client re-opens the conversation and sends nothing new",
+    /if \(pr\.kind === "IN_FLIGHT" && s\.conversationId\) void openConversation\(s\.conversationId\);/.test(sendBody)
+    && !/IN_FLIGHT[^\n]*send\(/.test(sendBody) && problemFor(409, { code: "TURN_IN_FLIGHT" }).kind === "IN_FLIGHT");
+  check("a transport failure keeps the SAME PendingSend (setRetry(s)), and Try again resends exactly it",
+    /if \(!r\) \{[\s\S]*?setRetry\(s\);/.test(sendBody) && /onRetrySend=\{\(\) => \{ if \(retry\) void send\(retry\); \}\}/.test(cmp));
+  check("an explicit Retry on a FAILED turn mints a NEW id; the only other minting site is a fresh send (onSend)",
+    (cmp.match(/crypto\.randomUUID\(\)/g) ?? []).length === 2
+    && /onRetryFailed=\{\(q\) => \{ void send\(\{ [^}]*clientRequestId: crypto\.randomUUID\(\)/.test(cmp)
+    && /function onSend\(\) \{[\s\S]*?clientRequestId: crypto\.randomUUID\(\)/.test(cmp));
   const expired = renderToStaticMarkup(createElement(Thread, {
     messages: [user("u9", "later question", H3), answer("a9")], areaLabel: "Platform Operations", now: NOW, sendingQuestion: null, earlierExpired: true, busy: false,
   }));

@@ -242,16 +242,29 @@ export const answeredLine = (iso: string, now: Date) => `Answered ${relativeTime
 export const asOfChip = (iso: string, now: Date) => `as of ${relativeTime(iso, now)}`;
 
 /**
- * R1 option (b): messages expire per pair, so a long-lived thread can lose its
- * oldest exchanges. The conversation and its first pair are written in ONE
- * transaction (same `now()`), so a first remaining message written well after
- * the conversation was created means earlier messages are gone. A minute of
- * slack absorbs clock rounding; nothing here is a retention claim.
+ * = PLATFORM_AI_RETENTION_DAYS in lib/platform/intelligence/ai/conversations/constants.ts.
+ * DUPLICATED because this module has no imports; pinned equal in
+ * platform-ai-conversations.test.ts (the migration-pin pattern). Change both together.
  */
-export function earlierMessagesExpired(conversation: Pick<ClientConversation, "createdAt">, messages: readonly Pick<ClientMessage, "createdAt">[]): boolean {
+export const PLATFORM_AI_RETENTION_DAYS_CLIENT = 90;
+const RETENTION_MS = PLATFORM_AI_RETENTION_DAYS_CLIENT * 24 * 60 * 60 * 1000;
+
+/**
+ * R1 option (b): messages expire per pair, so a long-lived thread can lose its
+ * oldest exchanges. Retention is the ONLY way a message disappears, and it can't
+ * act before PLATFORM_AI_RETENTION_DAYS (S2 on #434). So the note shows only when
+ * BOTH hold:
+ *   - the conversation is at least the retention window old (now − createdAt ≥ 90 d);
+ *   - its first remaining message was written well after the conversation was
+ *     created. The conversation and its first pair share ONE transaction (same
+ *     `now()`); a minute of slack absorbs clock rounding.
+ * Nothing here is a retention claim.
+ */
+export function earlierMessagesExpired(conversation: Pick<ClientConversation, "createdAt">, messages: readonly Pick<ClientMessage, "createdAt">[], now: Date): boolean {
   if (messages.length === 0) return false;
   const c = Date.parse(conversation.createdAt), f = Date.parse(messages[0].createdAt);
-  return Number.isFinite(c) && Number.isFinite(f) && f - c > 60_000;
+  if (!Number.isFinite(c) || !Number.isFinite(f)) return false;
+  return now.getTime() - c >= RETENTION_MS && f - c > 60_000;
 }
 
 /** The newest message is a PENDING answer ⇒ a turn is in flight (the composer is disabled). */
