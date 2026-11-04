@@ -18,7 +18,8 @@
  *     exchanges per call; ≤ PLATFORM_AI_PURGE_MAX_CALLS calls per run, then
  *     "more remain" (exhausted: false) and tomorrow's run continues.
  *   · Audited counts only: one AuditLog row PLATFORM_AI_CONVERSATIONS_PURGED per
- *     run with a non-zero count — { conversations, messages, batches, exhausted },
+ *     run with a non-zero count (per run, zero included, for the manual
+ *     dispatch — auditEveryRun) — { conversations, messages, batches, exhausted },
  *     no userId, no content.
  *   · Fail-safe: a throwing call stops THIS rule only (reported as `error`),
  *     deletes nothing it did not already delete, and never blocks the other
@@ -51,6 +52,13 @@ export interface PlatformAiPurgeDeps {
   call(limit: number): Promise<PlatformAiPurgeCounts>;
   /** One AuditLog row (fm_system INSERT): counts only. */
   audit(detail: { conversations: number; messages: number; batches: number; exhausted: boolean }): Promise<void>;
+  /**
+   * Write the counts-only audit row even when nothing was purged. The manual
+   * dispatch (scripts/platform-ai-conversations-purge-dispatch.ts — Preview runs
+   * no crons) sets it so every dispatch leaves proof of the cadence; the
+   * scheduled job leaves it unset (a row only when something was removed).
+   */
+  auditEveryRun?: boolean;
 }
 
 /** The SQL the real seam runs — the ONLY statement fm_system issues against this feature. */
@@ -92,7 +100,7 @@ export async function runPlatformAiConversationPurge(deps: PlatformAiPurgeDeps):
     out.error = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
     console.error("[data-retention] platform-ai-conversations purge failed (others continue)");
   }
-  if (out.conversations > 0 || out.messages > 0) {
+  if (out.conversations > 0 || out.messages > 0 || deps.auditEveryRun) {
     try {
       await deps.audit({ conversations: out.conversations, messages: out.messages, batches: out.batches, exhausted: out.exhausted });
     } catch {

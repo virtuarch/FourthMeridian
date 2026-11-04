@@ -474,6 +474,15 @@ async function main() {
         && on.platformAiConversations?.exhausted === true && audits.length === 1
         && JSON.stringify(audits[0]) === JSON.stringify({ conversations: 3, messages: 8, batches: 1, exhausted: true }), JSON.stringify({ calls, audits, r: on.platformAiConversations }));
     calls.length = 0; audits.length = 0;
+    const zero = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(true, [{ conversations: 0, messages: 0 }]) }));
+    check("SCHEDULED with nothing expired: one call, NO audit row", calls.length === 1 && audits.length === 0 && zero.platformAiConversations?.exhausted === true, JSON.stringify({ calls, audits }));
+    calls.length = 0; audits.length = 0;
+    const { runPlatformAiConversationPurge } = await import("@/lib/platform/intelligence/ai/conversations/purge");
+    const manual = await quiet(() => runPlatformAiConversationPurge({ ...seam(true, [{ conversations: 0, messages: 0 }]), auditEveryRun: true }));
+    check("MANUAL dispatch (auditEveryRun): a counts-only audit row EVERY run, zero included (proof of the Preview cadence)",
+      calls.length === 1 && audits.length === 1 && manual.exhausted === true
+        && JSON.stringify(audits[0]) === JSON.stringify({ conversations: 0, messages: 0, batches: 1, exhausted: true }), JSON.stringify({ calls, audits }));
+    calls.length = 0; audits.length = 0;
     const failing = makeClient({ aiInvocation: [{ id: "x", occurredAt: daysAgo(100) }] });
     const bad = await quiet(() => runDataRetention(failing.client, NOW, undefined, { platformAiPurge: seam(true, [new Error("boom")]) }));
     check("a throwing purge is reported as an error and never blocks the other rules (aiInvocation still pruned)",

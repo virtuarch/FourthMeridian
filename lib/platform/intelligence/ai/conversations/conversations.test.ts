@@ -25,7 +25,7 @@ import {
 } from "./constants";
 import {
   CONVERSATION_ID, NOT_FOUND_BODY, deriveLabel, handleCreateConversation, handleDeleteConversation, handleGetConversation,
-  handleListConversations, parseTurnBody, type AreaAccess, type ConversationDeps, type ConversationStoreSeam, type TurnAdmissionDeps,
+  grantedAreasFrom, handleListConversations, parseTurnBody, type AreaAccess, type ConversationDeps, type ConversationStoreSeam, type TurnAdmissionDeps,
 } from "./handlers";
 import {
   HistoryScopeError, PLATFORM_AI_HISTORY_RULE, assemblePlatformAiHistory, buildConversationTurnMessages, figureMarker,
@@ -190,8 +190,9 @@ console.log("4. the handlers over a fake store and a fake FRESH area guard");
   };
   const grants = new Map<string, Set<PlatformArea>>([["opA", new Set<PlatformArea>(["PLATFORM_OPS", "SECURITY_OPS"])], ["opB", new Set<PlatformArea>(["PLATFORM_OPS"])]]);
   const resolvable = new Set(["PLATFORM_OPS:platform-incidents:open"]);
+  const areaCalls: string[] = [];
   const deps: ConversationDeps = {
-    areaAccess: async (area, op): Promise<AreaAccess | null> => grants.get(op)?.has(area)
+    areaAccess: async (area, op): Promise<AreaAccess | null> => (areaCalls.push(area), grants.get(op)?.has(area))
       ? { resolvePage: (page) => (resolvable.has(page) ? { href: `/dashboard/platform/incidents?view=open` } : null) } : null,
     store,
     now: () => T0,
@@ -208,15 +209,24 @@ console.log("4. the handlers over a fake store and a fake FRESH area guard");
   const sig = (r: { status: number; body: unknown; headers?: unknown }) => JSON.stringify([r.status, r.body, r.headers ?? null]);
 
   // list
-  const l1 = await handleListConversations(A, deps);
+  const dir = (op: string) => grantedAreasFrom([...(grants.get(op) ?? [])].map((area) => ({ area })));
+  const l1 = await handleListConversations(A, dir("opA"), deps);
   const rows = (l1.body as { conversations: Array<{ id: string; label: string; full: boolean }>; limits: { conversations: { used: number; max: number } } });
   check("list: the operator's own conversations, labels derived at read time", l1.status === 200 && rows.conversations.length === 2 && rows.conversations.some((c) => c.label === "How many incidents are broken?"));
   check("list: never another operator's", !rows.conversations.some((c) => c.id === bobs));
   grants.get("opA")!.delete("SECURITY_OPS");
-  const l2 = await handleListConversations(A, deps);
+  const l2 = await handleListConversations(A, dir("opA"), deps);
   const rows2 = l2.body as { conversations: Array<{ id: string }>; limits: { conversations: { used: number; max: number } } };
   check("list: a revoked area's conversations are dropped — neither listed nor counted",
     rows2.conversations.length === 1 && rows2.conversations[0].id === ops && rows2.limits.conversations.used === 1 && rows2.limits.conversations.max === PLATFORM_AI_CONVERSATIONS_MAX, rows2);
+  // S2 NOTED on #424: the list never runs the per-area fresh guard (which records a
+  // platform_access_denied audit row per refused area) — the rows are filtered by
+  // the ONE directory read the route already made.
+  check("list: the per-area fresh guard is NEVER called (no per-area denial writes; one directory read filters)", areaCalls.length === 0, areaCalls);
+  check("grantedAreasFrom: known areas only, deduplicated", (() => {
+    const g = grantedAreasFrom([{ area: "PLATFORM_OPS" }, { area: "PLATFORM_OPS" }, { area: "NOT_AN_AREA" }, { area: "SECURITY_OPS" }]);
+    return g.size === 2 && g.has("PLATFORM_OPS") && g.has("SECURITY_OPS");
+  })());
 
   // get — the ONE 404
   const g = await handleGetConversation(A, ops, deps);
@@ -362,6 +372,13 @@ console.log("6. source pins");
     check(`${r}: a break-glass session (no grant) is refused before any lookup`, (src.match(/if \(!auth\.grant\) return FORBIDDEN\(\);/g) ?? []).length === (src.match(/export async function/g) ?? []).length);
     check(`${r}: no Sentry / request-body echo`, !/Sentry|captureException|JSON\.stringify\(body\)/.test(src));
   }
+  {
+    const listSrc = code(read("app/api/platform/ai/conversations/route.ts"));
+    const get = listSrc.slice(listSrc.indexOf("export async function GET"), listSrc.indexOf("export async function POST"));
+    check("GET list: ONE directory read, rows filtered by it — never conversationAreaAccess (no per-area fresh guard ⇒ no per-area denial rows)",
+      (get.match(/loadPlatformDirectory\(/g) ?? []).length === 1 && (get.match(/requireFreshPlatformAccess\(/g) ?? []).length === 1
+        && !/conversationAreaAccess|areaAccess/.test(get) && /handleListConversations\([^;]*grantedAreasFrom\(directory\)/.test(get), get);
+  }
   const access = code(read("app/api/platform/ai/conversations/area-access.ts"));
   check("step 6 refuses a null grant (no break-glass) and a session that is not the operator", /if \(err \|\| !auth\.grant \|\| auth\.grant\.area !== area \|\| auth\.user\.id !== operatorId\) return null;/.test(access));
   const hist = code(read("lib/platform/intelligence/ai/conversations/history.ts"));
@@ -369,8 +386,8 @@ console.log("6. source pins");
     /export function assemblePlatformAiHistory\(input: \{\s*conversationId: string;/.test(hist) && /if \(m\.conversationId !== conversationId\) throw new HistoryScopeError/.test(hist));
   check("history assembly is pure (no db, env, clock or provider)", !/@\/lib\/db|@\/lib\/env|new Date\(\)|Date\.now|generateWithTools/.test(hist));
   const env = code(read("lib/env.ts"));
-  check("the conversations flag is strict and needs PLATFORM_AI_ENABLED too; the purge flag is strict",
-    /get isPlatformAiConversationsEnabled\(\) \{ return _e\.PLATFORM_AI_ENABLED === "true" && _e\.PLATFORM_AI_CONVERSATIONS_ENABLED === "true"; \}/.test(env)
+  check("the conversations flag is strict and needs PLATFORM_AI_ENABLED AND the purge flag too (storage coupled to the purge in code); the purge flag is strict",
+    /get isPlatformAiConversationsEnabled\(\) \{ return _e\.PLATFORM_AI_ENABLED === "true" && _e\.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e\.PLATFORM_AI_PURGE_ENABLED === "true"; \}/.test(env)
       && /get isPlatformAiPurgeEnabled\(\) \{ return _e\.PLATFORM_AI_PURGE_ENABLED === "true"; \}/.test(env));
   const actions = code(read("lib/audit-actions.ts"));
   const feeds = actions.slice(actions.indexOf("export const PRODUCT_EVENT_ACTIONS"));

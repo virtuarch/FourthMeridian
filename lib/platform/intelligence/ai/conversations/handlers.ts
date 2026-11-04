@@ -178,12 +178,34 @@ const unavailable = (status: number, reason: string, headers?: Record<string, st
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
-/** GET /conversations — fresh READ per DISTINCT area; conversations of a failing area are dropped, neither counted nor hinted at. */
-export async function handleListConversations(v: Viewer, deps: ConversationDeps): Promise<ConversationHttp> {
+/**
+ * The areas an operator's ACTIVE grants reach, from ONE directory read
+ * (loadPlatformDirectory: ACTIVE grants only, read fresh as the tenant). Every
+ * level is ≥ READ, so an ACTIVE grant is a READ grant. Anything that is not a
+ * known area is dropped. PURE.
+ */
+export function grantedAreasFrom(rows: readonly { area: string }[]): ReadonlySet<PlatformArea> {
+  const known = new Set<string>(Object.keys(PLATFORM_AREAS));
+  return new Set(rows.map((r) => r.area).filter((a): a is PlatformArea => known.has(a)));
+}
+
+/**
+ * GET /conversations — conversations of an area the operator no longer holds an
+ * ACTIVE grant on are dropped, neither counted nor hinted at.
+ *
+ * S2 NOTED on #424: the list does NOT run the fresh guard per distinct area.
+ * requireFreshPlatformAccess RECORDS every refusal (OBS-009: a
+ * SECURITY_ANOMALY_DETECTED "platform_access_denied" audit row per (user,
+ * area) per window), so an operator with one old conversation under a revoked
+ * area would raise a false Security Ops detection on every list. The route's
+ * gate has already run the fresh guard once (session revocation, 2FA, the first
+ * area's grant); the per-row filter uses `grantedAreas` — ONE directory read,
+ * no denial writes. Opening, replaying or deleting a conversation still
+ * fresh-checks its own area (deps.areaAccess).
+ */
+export async function handleListConversations(v: Viewer, grantedAreas: ReadonlySet<PlatformArea>, deps: Pick<ConversationDeps, "store">): Promise<ConversationHttp> {
   const rows = await deps.store.listLiveConversations(v.operatorId);
-  const allowed = new Set<PlatformArea>();
-  for (const area of new Set(rows.map((r) => r.area))) if (await deps.areaAccess(area, v.operatorId)) allowed.add(area);
-  const visible = rows.filter((r) => allowed.has(r.area));
+  const visible = rows.filter((r) => grantedAreas.has(r.area));
   return {
     status: 200,
     body: {

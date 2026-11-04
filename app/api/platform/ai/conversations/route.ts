@@ -1,7 +1,7 @@
 /**
  * /api/platform/ai/conversations  (Platform AI conversations — B11, OFF by default)
  *
- *   GET   the operator's live conversations (derived labels, per-area fresh guard)
+ *   GET   the operator's live conversations (derived labels; rows filtered by ONE directory read)
  *   POST  { clientRequestId, question } — create = the first question
  *
  * Design: docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §3, §10. The logic is
@@ -14,7 +14,8 @@
  *   3. ≥ 1 ACTIVE grant with a Platform Space, then the FRESH guard on the
  *      operator's first area; a break-glass SYSTEM_ADMIN (no grant)  → 403
  *   4. POST only: the #352 per-operator limiter                     → 429
- *   then the handler: the conversation's own area FRESH, any refusal → the SAME 404.
+ *   then the handler: POST — the new conversation's area; GET — the rows of areas
+ *   the SAME directory read reaches (no per-area guard, so no per-area denial rows).
  *
  * NO CONTENT IN LOGS: errors are reported by code; no request body, question,
  * answer, label or message id reaches the console or Sentry.
@@ -31,7 +32,7 @@ import { readGlobalCostFreeze } from "@/lib/platform/cost-freeze";
 import { readPlatformAiTurns } from "@/lib/platform/ai/platform-ai-turns";
 import { platformAiAreaFor } from "@/lib/platform/intelligence/ai/core";
 import {
-  NOT_AVAILABLE_BODY, handleCreateConversation, handleListConversations, type ConversationHttp,
+  NOT_AVAILABLE_BODY, grantedAreasFrom, handleCreateConversation, handleListConversations, type ConversationHttp,
 } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
 import { conversationAreaAccess } from "./area-access";
@@ -54,13 +55,16 @@ export async function GET() {
   // 2–3. The viewer, before any lookup.
   const [user, uerr] = await requireUser();
   if (uerr) return uerr;
-  const area = platformAiAreaFor(await loadPlatformDirectory(user.id));
+  // ONE directory read: it picks the gate's area AND filters the rows (S2 NOTED on
+  // #424 — no per-area fresh guard here, so no per-area denial audit rows).
+  const directory = await loadPlatformDirectory(user.id);
+  const area = platformAiAreaFor(directory);
   if (!area) return FORBIDDEN();
   const [auth, err] = await requireFreshPlatformAccess(area, "READ");
   if (err) return err;
   if (!auth.grant) return FORBIDDEN();
   try {
-    return respond(await handleListConversations({ operatorId: auth.user.id, area: auth.grant.area }, deps()));
+    return respond(await handleListConversations({ operatorId: auth.user.id, area: auth.grant.area }, grantedAreasFrom(directory), { store }));
   } catch (e) {
     return INTERNAL("list", e);
   }

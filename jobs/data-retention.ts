@@ -437,15 +437,25 @@ export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date)
 }
 
 /**
- * The production Platform AI purge seams: the definer function and one counts-only
+ * The real Platform AI purge seams: the definer function and one counts-only
  * audit row, both through systemDb (fm_system: EXECUTE on the function, INSERT on
- * AuditLog — nothing on the conversation tables). `enabled` is read at call time.
+ * AuditLog — nothing on the conversation tables).
+ *
+ *   SCHEDULED        the daily job; `enabled` = PLATFORM_AI_PURGE_ENABLED, read at
+ *                    call time; an audit row only when something was removed.
+ *   MANUAL_DISPATCH  scripts/platform-ai-conversations-purge-dispatch.ts — the
+ *                    operator's run on an environment with no crons (Preview).
+ *                    Always enabled (the operator asked for exactly this run; the
+ *                    definer's predicates are fixed, so it can only remove what
+ *                    retention already requires), and an audit row EVERY run,
+ *                    zero included, tagged trigger: "MANUAL_DISPATCH".
  */
-async function realPlatformAiPurgeDeps(): Promise<PlatformAiPurgeDeps> {
-  const { env } = await import("@/lib/env");
-  const enabled = env.isPlatformAiPurgeEnabled;
+export async function platformAiPurgeDeps(trigger: "SCHEDULED" | "MANUAL_DISPATCH"): Promise<PlatformAiPurgeDeps> {
+  const manual = trigger === "MANUAL_DISPATCH";
+  const enabled = manual ? true : (await import("@/lib/env")).env.isPlatformAiPurgeEnabled;
   return {
     enabled,
+    auditEveryRun: manual,
     call: async (limit) => {
       const { systemDb } = await import("@/lib/db");
       return parsePurgeRow(await systemDb.$queryRawUnsafe(PLATFORM_AI_PURGE_SQL, limit));
@@ -453,7 +463,10 @@ async function realPlatformAiPurgeDeps(): Promise<PlatformAiPurgeDeps> {
     audit: async (detail) => {
       const { systemDb } = await import("@/lib/db");
       const { auditInsert } = await import("@/lib/audit");
-      await auditInsert(systemDb, { action: PLATFORM_AI_PURGE_AUDIT_ACTION, metadata: { ...detail, actorType: "SYSTEM" } }).write;
+      await auditInsert(systemDb, {
+        action: PLATFORM_AI_PURGE_AUDIT_ACTION,
+        metadata: { ...detail, actorType: "SYSTEM", ...(manual ? { trigger: "MANUAL_DISPATCH" } : {}) },
+      }).write;
     },
   };
 }
@@ -524,7 +537,7 @@ export async function runDataRetention(
   if (commsClient && !dryRun) out.commsDelivery = await runCommsDeliveryRollup(commsClient, now);
   // B11 — the Platform AI conversation purge: DISABLED by default (no contact while off);
   // never in a dry run (the function has no dry-run mode); never throws.
-  const purgeDeps = opts.platformAiPurge ?? (client ? null : await realPlatformAiPurgeDeps());
+  const purgeDeps = opts.platformAiPurge ?? (client ? null : await platformAiPurgeDeps("SCHEDULED"));
   if (purgeDeps && !dryRun) out.platformAiConversations = await runPlatformAiConversationPurge(purgeDeps);
   return out;
 }

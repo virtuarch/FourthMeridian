@@ -880,12 +880,14 @@ export const env = {
   /**
    * Platform AI conversations (B11; docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md
    * §3.1 step 1) are ON only when PLATFORM_AI_ENABLED === "true" AND
-   * PLATFORM_AI_CONVERSATIONS_ENABLED === "true". Unset ⇒ OFF: every
-   * /api/platform/ai/conversations route answers 404 NOT_AVAILABLE before any
-   * session, grant or database read. Stores operator content — never enabled
-   * without the purge (isPlatformAiPurgeEnabled) and S2's retention clearance.
+   * PLATFORM_AI_CONVERSATIONS_ENABLED === "true" AND PLATFORM_AI_PURGE_ENABLED
+   * === "true" (S2 REQUIRED on #424: storage is COUPLED to the purge in code —
+   * storage with no purge would violate retention by configuration). Any of the
+   * three unset ⇒ OFF: every /api/platform/ai/conversations route answers 404
+   * NOT_AVAILABLE before any session, grant or database read. Still never
+   * enabled without S2's retention clearance (design §13).
    */
-  get isPlatformAiConversationsEnabled() { return _e.PLATFORM_AI_ENABLED === "true" && _e.PLATFORM_AI_CONVERSATIONS_ENABLED === "true"; },
+  get isPlatformAiConversationsEnabled() { return _e.PLATFORM_AI_ENABLED === "true" && _e.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ENABLED === "true"; },
   /**
    * The Platform AI conversation retention purge (jobs/data-retention.ts) runs
    * only when PLATFORM_AI_PURGE_ENABLED === "true". Unset ⇒ OFF: the rule makes

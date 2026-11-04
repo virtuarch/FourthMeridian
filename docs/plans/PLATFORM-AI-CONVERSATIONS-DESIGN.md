@@ -328,7 +328,7 @@ The ASSISTANT plaintext, before encryption, is versioned JSON:
 
 ### 3.1 The gate chain for every conversation route
 
-1. **Flag.** `PLATFORM_AI_ENABLED !== "true"` **or** `PLATFORM_AI_CONVERSATIONS_ENABLED !== "true"` → `404 NOT_AVAILABLE`. It is the first statement and reads nothing. The second flag is new and defaults off, so v0 `/ask` can stay on while conversations stay off.
+1. **Flag.** `PLATFORM_AI_ENABLED !== "true"` **or** `PLATFORM_AI_CONVERSATIONS_ENABLED !== "true"` **or** `PLATFORM_AI_PURGE_ENABLED !== "true"` → `404 NOT_AVAILABLE`. It is the first statement and reads nothing. The second flag is new and defaults off, so v0 `/ask` can stay on while conversations stay off. The third couples storage to the purge **in code** (S2 REQUIRED on #424): storage with no purge would violate retention by configuration, so `env.isPlatformAiConversationsEnabled` is false unless the purge flag is on too.
 2. **Session.** No session → 401.
 3. **Viewer pre-check, independent of any row:** `loadPlatformDirectory` must show at least one ACTIVE grant with a Platform Space, then `requireFreshPlatformAccess(platformAiAreaFor(rows), "READ")`. That covers operator 2FA, live session revocation and break-glass. Failures are v0's own 401 / 403 (including the TOTP header). **This runs before any lookup,** so a 2FA or session refusal never depends on whether a row exists.
 4. **The limiter** (mutations only, §10).
@@ -338,7 +338,7 @@ The ASSISTANT plaintext, before encryption, is versioned JSON:
 
 ### 3.2 The rules this chain enforces
 
-- **Ownership and a fresh grant on every list, read, append and delete.** List evaluates step 6 once per distinct area among the operator's live conversations (at most five areas) and drops every conversation whose area fails. Dropped conversations are neither counted nor hinted at.
+- **Ownership and a fresh grant on every read, append and delete; the list is filtered by ONE directory read.** List runs steps 1–3 once (step 3 is the fresh guard: session revocation, 2FA, the first area's grant), then drops every conversation whose area is not among the operator's ACTIVE grants in the **same** `loadPlatformDirectory` read step 3 made. It does **not** run step 6 per area: `requireFreshPlatformAccess` records every refusal (OBS-009, a `SECURITY_ANOMALY_DETECTED` / `platform_access_denied` audit row per user and area per window), so an operator with an old conversation under a revoked area would raise a false Security Ops detection on every list (S2 NOTED on #424, verified). Dropped conversations are neither counted nor hinted at. Opening, replaying or deleting one still runs step 6 on its own area.
 - **Revoked grant → historical content unreadable.** The rows remain, and retention purges them on schedule. If the grant is reinstated, the conversations become readable again, consistent with every other grant-scoped surface. Purging on revocation is **Q3**.
 - **IDOR-proof.** Ids are cuids, but security never rests on that: the lookup is `id AND operatorUserId` under owner-only RLS. Another operator's id gives the same 404 as a random string.
 - **No cross-operator view (S2 B4).** No route, role or tool reads another operator's conversations: not Customer Success, not System Admin, not break-glass, and not support tooling. A SYSTEM_ADMIN on break-glass gets no grant, so the step-3 binding is null → v0's 403 before any lookup. It gets nothing extra. Any oversight view is an **OWNER DECISION (OD-4)**, and none is designed.
@@ -632,7 +632,7 @@ The schema sketch (§2.1) is drawn for (b). §7.2 gives the (a) variant.
   - one at exactly 90 d is kept, because the predicate is strict `<`.
 
   Time is moved by seeding `createdAt` / `purgeAfter` as the migration principal in the test (the only role that can), and the policy-parse test pins the SQL interval to the code constant.
-- **Activation.** PR D wires the job **disabled** (`PLATFORM_AI_PURGE_ENABLED`, off). It is switched on together with storage, and only after S2 clears retention and the Preview pre-enable check (§2.4) passes. Until then storage is Preview-only, and the conversations flag is off on every environment.
+- **Activation.** PR D wires the job **disabled** (`PLATFORM_AI_PURGE_ENABLED`, off). It is switched on together with storage, and only after S2 clears retention and the Preview pre-enable check (§2.4) passes. Until then storage is Preview-only, and the conversations flag is off on every environment. The code refuses storage without it (§3.1 step 1), and because Preview runs no crons, an operator dispatches the purge by hand at least daily while it is enabled there (§13 enable checklist).
 
 `docs/operations/data-retention.md` gains the row in PR D: "Platform AI conversations: 90 days (tentative) · removed from active systems within 1 day, from backups within M days (OWNER-VERIFY)".
 
@@ -784,7 +784,20 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 3. The owner gives the go: on Preview, the purge flag and the conversations flag are switched on together.
 4. Production follows B11 promotion and a separate owner enable.
 
-Storage is never on without the purge.
+Storage is never on without the purge, **and the code enforces it**: `env.isPlatformAiConversationsEnabled` requires `PLATFORM_AI_ENABLED`, `PLATFORM_AI_CONVERSATIONS_ENABLED` **and** `PLATFORM_AI_PURGE_ENABLED` all `"true"`. With the conversations flag on and the purge flag unset, every conversation route answers its flag-off `404 NOT_AVAILABLE` and reads nothing (pinned by `app/api/platform/ai/conversations/route.test.ts`, phase `off-purge`).
+
+**Enable checklist (per environment).**
+- [ ] S2 retention clearance (R1–R6) recorded.
+- [ ] Migration applied by the guarded path; `npm run report:platform-ai-conversations-precheck -- --env=<env>` PASS, output recorded.
+- [ ] `PLATFORM_AI_PURGE_ENABLED=true` **and** `PLATFORM_AI_CONVERSATIONS_ENABLED=true` set together (with `PLATFORM_AI_ENABLED=true`). Setting only the conversations flag leaves the feature OFF by design.
+- [ ] **Preview only — the purge cadence.** Preview never runs crons, so the scheduled job never purges there. **While conversations are enabled on Preview, an operator runs the purge dispatch at least daily:**
+  - **Who:** the engineering lead on duty (Session 1) or an operator it designates; the owner may run it too.
+  - **How:** with the Preview database env loaded (`DATABASE_URL`, `DIRECT_URL`, `DATABASE_URL_SYSTEM`) and `FM_PRODUCTION_DB_REF` set, run `npm run ops:platform-ai-conversations-purge -- --env=preview`.
+  - **What it does:** `scripts/platform-ai-conversations-purge-dispatch.ts` runs the job's own rule once (`platformAiPurgeDeps("MANUAL_DISPATCH")` → `runPlatformAiConversationPurge` → `fm_purge_platform_ai_conversations` as fm_system: batch-bounded, fixed predicates, counts in and out). It writes one counts-only `PLATFORM_AI_CONVERSATIONS_PURGED` audit row **every** run, zero included (`trigger: "MANUAL_DISPATCH"`, no userId, no content), so the daily cadence is provable from AuditLog. "More remain" ⇒ run it again.
+  - **Refusals (before any contact, exit 2):** `--env` other than `local` / `preview`; `--env=production` **always** (Production runs the scheduled cron); a target the env guard (`scripts/lib/repair-env-guard.ts`) cannot prove non-Production, including an unset `FM_PRODUCTION_DB_REF`; `VERCEL_ENV=production`; `DATABASE_URL_SYSTEM` or `DIRECT_URL` not provably the same database as `DATABASE_URL`.
+  - A missed day is a retention breach on Preview: record it and run the dispatch at once.
+- [ ] **Preview conversations are test data only** (synthetic questions; no real customer or operator-sensitive content). **At the end of acceptance, disable** (unset `PLATFORM_AI_CONVERSATIONS_ENABLED`) **and purge**: soft-delete the remaining conversations, then run the dispatch (grace 0 removes soft-deleted conversations and their messages) until it reports nothing more to remove; record the counts.
+- [ ] Production: the scheduled data-retention cron is live and the purge flag is set **before** or with the conversations flag; separate owner enable.
 
 ---
 

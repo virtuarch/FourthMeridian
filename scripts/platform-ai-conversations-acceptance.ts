@@ -18,10 +18,14 @@
  *           R2 (only an append moves lastActivityAt), audit without content
  *   [job]   jobs/data-retention.ts with PLATFORM_AI_PURGE_ENABLED: the audited
  *           count equals the rows actually removed
+ *   [dispatch] the manual purge dispatch (Preview runs no crons — S2 REQUIRED 2
+ *           on #424): the same rule once, as fm_system, audited counts every
+ *           run (zero included); --env=production refused before any contact
  *
  *   npm run rls:accept:ai-conversations [-- --keep]
  */
 
+import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -370,6 +374,39 @@ async function main(): Promise<number> {
       && Object.keys(meta).sort().join() === "actorType,batches,conversations,exhausted,messages"
       && one(`select count(*) from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and "userId" is not null;`) === "0", `${JSON.stringify(jr.platformAiConversations)} removed=${jobRemoved} audit=${jobAudit}`);
 
+  // ── [dispatch] the manual purge dispatch — the job's own rule, once, audited ──
+  console.log("\n[dispatch] scripts/platform-ai-conversations-purge-dispatch.ts (a child process; PLATFORM_AI_PURGE_ENABLED UNSET there)\n");
+  const dispatch = (...args: string[]) => {
+    const env = { ...process.env, FM_PRODUCTION_DB_REF: "prodprojectref0000001" } as NodeJS.ProcessEnv;
+    delete env.PLATFORM_AI_PURGE_ENABLED; delete env.VERCEL_ENV;
+    return spawnSync(process.execPath, [...process.execArgv, path.join(process.cwd(), "scripts/platform-ai-conversations-purge-dispatch.ts"), ...args], { encoding: "utf8", env });
+  };
+  const auditRows = () => Number(one(`select count(*) from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED';`));
+  const lastManual = () => one(`select coalesce((select metadata::text from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and metadata->>'trigger'='MANUAL_DISPATCH' order by "createdAt" desc, id desc limit 1), '');`);
+  const auditsBefore = auditRows();
+  const refusedRun = dispatch("--env=production");
+  check(62, "the dispatch with --env=production ⇒ exit 2, REFUSED before any contact, no audit row",
+    refusedRun.status === 2 && /nothing was contacted/.test(refusedRun.stderr) && auditRows() === auditsBefore, `${refusedRun.status} ${refusedRun.stderr.slice(0, 200)}`);
+  one(`insert into "PlatformAiConversation" (id,"operatorUserId",area,"createRequestId") values ('cv_dsp','${B}','PLATFORM_OPS','k-dsp');
+    ${seedExchange("cv_dsp", "dsp1", "interval '95 days'")} ${seedExchange("cv_dsp", "dsp2", "interval '3 days'")}
+    select 'ok';`);
+  const dspBefore = total();
+  const run1 = dispatch("--env=local");
+  const dspRemoved = dspBefore - total();
+  const m1 = lastManual() ? JSON.parse(lastManual()) as Record<string, unknown> : {};
+  check(63, "the dispatch with --env=local (flag UNSET in its process) purges the expired exchange as fm_system: removed == audited `messages` == printed count, counts only",
+    run1.status === 0 && dspRemoved === 2 && m1.messages === 2 && m1.trigger === "MANUAL_DISPATCH" && m1.actorType === "SYSTEM"
+      && Object.keys(m1).sort().join() === "actorType,batches,conversations,exhausted,messages,trigger"
+      && /messages removed:\s+2\b/.test(run1.stdout) && one(`select string_agg(id, ',' order by id) from "PlatformAiMessage" where id like 'dsp%';`) === "dsp2a,dsp2u",
+    `${run1.status} removed=${dspRemoved} audit=${JSON.stringify(m1)} ${run1.stderr.slice(0, 300)}`);
+  const n1 = auditRows();
+  const run2 = dispatch("--env=local");
+  const m2 = lastManual() ? JSON.parse(lastManual()) as Record<string, unknown> : {};
+  check(64, "a second dispatch with nothing expired ⇒ exit 0 and STILL one counts-only audit row (zeros) — proof of the daily cadence; no userId on any",
+    run2.status === 0 && auditRows() === n1 + 1 && m2.messages === 0 && m2.conversations === 0
+      && one(`select count(*) from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and "userId" is not null;`) === "0",
+    `${run2.status} ${JSON.stringify(m2)} ${run2.stderr.slice(0, 300)}`);
+
   // ── the read-only pre-enable check, against this throwaway target ─────────
   const { PRECHECK_FUNCTIONS_SQL, PRECHECK_TABLES_SQL, evaluatePrecheck } = await import("./lib/platform-ai-conversations-precheck.core");
   type Pre = typeof import("./lib/platform-ai-conversations-precheck.core");
@@ -386,7 +423,7 @@ async function main(): Promise<number> {
     return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL));
   });
   setOwner("fm_aiconv_owner");
-  check(62, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
+  check(65, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
     pre.ok && !preBad.ok && preBad.lines.filter((l) => !l.ok).every((l) => /OWNER bypasses RLS/.test(l.text)) && preBad.lines.filter((l) => !l.ok).length === 2,
     JSON.stringify(preBad.lines.filter((l) => !l.ok)));
   await db.$disconnect();

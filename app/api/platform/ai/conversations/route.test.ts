@@ -4,9 +4,11 @@
  * The REAL handlers through the route harness over the in-memory Prisma fake.
  *
  *   1. OFF (the default): PLATFORM_AI_CONVERSATIONS_ENABLED unset — and, as a
- *      second case, set while PLATFORM_AI_ENABLED is unset — every handler (GET
- *      list, POST create, GET one, DELETE) answers 404 NOT_AVAILABLE and reads
- *      NOTHING (no session, grant, setting, rate-limit or table read).
+ *      second case, set while PLATFORM_AI_ENABLED is unset — and, as a third,
+ *      BOTH set while PLATFORM_AI_PURGE_ENABLED is unset (storage is coupled to
+ *      the purge in code) — every handler (GET list, POST create, GET one,
+ *      DELETE) answers 404 NOT_AVAILABLE and reads NOTHING (no session, grant,
+ *      setting, rate-limit or table read).
  *   2. ON: the gate chain before any lookup — anonymous ⇒ 401; no grant ⇒ 403;
  *      a REVOKED grant ⇒ 403; an ACTIVE grant without 2FA while enforced ⇒
  *      v0's 403 OPERATOR_TOTP_REQUIRED; a break-glass SYSTEM_ADMIN (no grant) ⇒
@@ -27,7 +29,7 @@ const PHASE = process.env.FM_CONV_ROUTE_PHASE ?? "parent";
 if (PHASE === "parent") {
   // Each phase needs its own env snapshot at import time: run them as children.
   let failed = 0;
-  for (const phase of ["off", "off-v0", "on"]) {
+  for (const phase of ["off", "off-v0", "off-purge", "on"]) {
     const r = spawnSync(process.execPath, [...process.execArgv, path.resolve(__filename)], {
       encoding: "utf8", env: { ...process.env, FM_CONV_ROUTE_PHASE: phase },
     });
@@ -43,9 +45,11 @@ if (PHASE === "parent") {
 async function runPhase(phase: string): Promise<void> {
   await import("@/lib/test-support/route-env");
   delete process.env.OPENAI_API_KEY;
-  if (phase === "off") { process.env.PLATFORM_AI_ENABLED = "true"; delete process.env.PLATFORM_AI_CONVERSATIONS_ENABLED; }
-  if (phase === "off-v0") { delete process.env.PLATFORM_AI_ENABLED; process.env.PLATFORM_AI_CONVERSATIONS_ENABLED = "true"; }
-  if (phase === "on") { process.env.PLATFORM_AI_ENABLED = "true"; process.env.PLATFORM_AI_CONVERSATIONS_ENABLED = "true"; process.env.OPERATOR_TOTP_ENFORCEMENT = "enforce"; }
+  if (phase === "off") { process.env.PLATFORM_AI_ENABLED = "true"; delete process.env.PLATFORM_AI_CONVERSATIONS_ENABLED; process.env.PLATFORM_AI_PURGE_ENABLED = "true"; }
+  if (phase === "off-v0") { delete process.env.PLATFORM_AI_ENABLED; process.env.PLATFORM_AI_CONVERSATIONS_ENABLED = "true"; process.env.PLATFORM_AI_PURGE_ENABLED = "true"; }
+  // S2 REQUIRED 1 on #424: the conversations flag ON with the purge unset ⇒ the feature is OFF.
+  if (phase === "off-purge") { process.env.PLATFORM_AI_ENABLED = "true"; process.env.PLATFORM_AI_CONVERSATIONS_ENABLED = "true"; delete process.env.PLATFORM_AI_PURGE_ENABLED; }
+  if (phase === "on") { process.env.PLATFORM_AI_ENABLED = "true"; process.env.PLATFORM_AI_CONVERSATIONS_ENABLED = "true"; process.env.PLATFORM_AI_PURGE_ENABLED = "true"; process.env.OPERATOR_TOTP_ENFORCEMENT = "enforce"; }
 
   const bcrypt = (await import("bcryptjs")).default;
   const { FakePrisma, installFakePrisma } = await import("@/lib/test-support/fake-prisma");
@@ -73,12 +77,13 @@ async function runPhase(phase: string): Promise<void> {
   ]);
   const touchedConversations = () => fake.calls.some((c) => /^platformAi/i.test(String(c.model)));
 
-  if (phase === "off" || phase === "off-v0") {
+  if (phase === "off" || phase === "off-v0" || phase === "off-purge") {
     const cookie = await cookieOf(op);
     fake.calls.length = 0;
     const anon = await all(null);
     const signed = await all(cookie);
-    t.check(`${phase === "off" ? "PLATFORM_AI_CONVERSATIONS_ENABLED unset" : "PLATFORM_AI_ENABLED unset"}: every handler ⇒ 404 NOT_AVAILABLE, anonymous or a CONTROL operator`,
+    const why = { off: "PLATFORM_AI_CONVERSATIONS_ENABLED unset", "off-v0": "PLATFORM_AI_ENABLED unset", "off-purge": "conversations flag ON but PLATFORM_AI_PURGE_ENABLED unset" }[phase];
+    t.check(`${why}: every handler ⇒ 404 NOT_AVAILABLE, anonymous or a CONTROL operator`,
       [...anon, ...signed].every((r) => r.status === 404 && (r.body as { code?: string }).code === "NOT_AVAILABLE"), [...anon, ...signed].map((r) => r.status));
     t.check("…byte-identical for every caller and route", [...anon, ...signed].every((r) => r.text === anon[0].text));
     t.check("…no-store", signed.every((r) => r.headers.get("cache-control") === "no-store"));

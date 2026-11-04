@@ -1,8 +1,10 @@
 /**
  * app/api/platform/ai/conversations/area-access.ts  (§3.1 step 6 — the conversation's OWN area, FRESH)
  *
- * Not a route (no route.ts). Every list, read, replay and delete re-checks a
- * FRESH grant for the area the conversation was created under:
+ * Not a route (no route.ts). Every read, replay and delete re-checks a FRESH
+ * grant for the area the conversation was created under (the LIST does not — it
+ * filters by one directory read, so it never records a per-area refusal; see
+ * handleListConversations):
  * requireFreshPlatformAccess(area, "READ") — the grant, operator 2FA when
  * enforced, the live session-revocation re-check — for THIS operator. ANY
  * refusal (no grant, revoked, insufficient, 2FA, a different session user,
