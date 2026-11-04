@@ -194,8 +194,11 @@ export interface BtcSyncDeps {
   batchStatsFetcher?: (addresses: string[]) => Promise<Map<string, AddrStat>>;
   /** xpub balance: Esplora reads in flight (default XPUB_BALANCE_CONCURRENCY). */
   xpubBalanceConcurrency?: number;
-  /** xpub balance: per-run Esplora request budget (default XPUB_BALANCE_REQUEST_BUDGET). */
+  /** xpub balance: per-run Esplora request budget (default: scaled to the used
+   *  address count, `xpubBalanceRequestBudget`). */
   xpubBalanceRequestBudget?: number;
+  /** xpub balance: per-wallet per-run hard cap (default XPUB_BALANCE_HARD_CAP). */
+  xpubBalanceHardCap?: number;
   /** xpub discovery: consecutive-unused gap limit (default env BTC_XPUB_GAP_LIMIT or 20). */
   gapLimit?: number;
   /** xpub discovery: max NEW indices scanned PER BRANCH PER RUN (behemoth bound;
@@ -883,7 +886,8 @@ export async function syncBtcWallet(
   //    wallet shapes (FM-AUDIT-053). Single-address: Esplora per address.
   //    xpub: the batch provider (one request per 50) says which addresses are
   //    ACTIVE, and each active address's balance is read from the SAME Esplora
-  //    authority, bounded (XPUB_BALANCE_CONCURRENCY / _REQUEST_BUDGET). The
+  //    authority, bounded (XPUB_BALANCE_CONCURRENCY; a budget scaled to the
+  //    used-address count, clamped to XPUB_BALANCE_HARD_CAP). The
   //    batch provider's `final_balance` includes unconfirmed effects — a pending
   //    send read as already gone, a pending receive as already held — so it is
   //    never summed. For a partially-discovered xpub this is the balance of the
@@ -900,6 +904,7 @@ export async function syncBtcWallet(
       const confirmed = await fetchXpubConfirmedSats(addresses, stats, deps.fetchImpl, {
         ...(deps.xpubBalanceConcurrency ? { concurrency: deps.xpubBalanceConcurrency } : {}),
         ...(deps.xpubBalanceRequestBudget !== undefined ? { requestBudget: deps.xpubBalanceRequestBudget } : {}),
+        ...(deps.xpubBalanceHardCap !== undefined ? { hardCap: deps.xpubBalanceHardCap } : {}),
         ...(injected ? { readAddress: async (a: string, before: () => Promise<void>) => { await before(); return injected(a); } } : {}),
       });
       if (confirmed.status !== "OBSERVED") {

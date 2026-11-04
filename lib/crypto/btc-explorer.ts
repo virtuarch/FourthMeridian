@@ -421,12 +421,25 @@ export async function fetchAddressStatsBatch(addresses: string[], fetchImpl: Fet
 export const XPUB_BALANCE_CONCURRENCY = 3;
 
 /**
- * Max Esplora requests (attempts, retries included) one xpub balance read may
- * issue. Sized above a full discovery step's worth of active addresses (2 × the
- * default 50-per-branch step); a wallet with more active addresses than this
- * cannot be observed in one run and is reported PARTIAL — never summed short.
+ * Absolute ceiling on Esplora requests (attempts, retries included) for ONE
+ * xpub balance read, per wallet per run. A wallet with more USED addresses
+ * than this cannot be observed confirmed-only in one run and is reported
+ * PARTIAL (OVER_READ_CAP) — never summed short. Nothing accumulates across runs.
  */
-export const XPUB_BALANCE_REQUEST_BUDGET = 120;
+export const XPUB_BALANCE_HARD_CAP = 600;
+
+/**
+ * The per-run request budget, SCALED to the wallet: one request per used
+ * address plus 25% + 10 headroom for 429 retries, clamped to the hard cap.
+ * `usedAddressCount` is the number of addresses discovery shows as used
+ * (n_tx > 0) — never the gap-limit scan size, which would charge a small
+ * wallet for addresses it never used. A fixed budget would leave every large
+ * xpub PARTIAL on every run: a regression for the highest-value wallets.
+ */
+export function xpubBalanceRequestBudget(usedAddressCount: number, hardCap: number = XPUB_BALANCE_HARD_CAP): number {
+  const used = Math.max(0, Math.floor(usedAddressCount));
+  return Math.min(Math.ceil(used * 1.25) + 10, hardCap);
+}
 
 /**
  * Outcome of an xpub confirmed-balance read.
@@ -442,7 +455,8 @@ export type XpubConfirmedBalance =
   | { status: "OBSERVED"; sats: number; activeAddresses: number; requests: number }
   | {
       status: "PARTIAL";
-      cause: "BUDGET_EXHAUSTED" | "READ_FAILED";
+      /** OVER_READ_CAP — more used addresses than the hard cap; nothing was read. */
+      cause: "OVER_READ_CAP" | "BUDGET_EXHAUSTED" | "READ_FAILED";
       activeAddresses: number;
       addressesRead: number;
       addressesUnread: number;
@@ -469,16 +483,27 @@ export async function fetchXpubConfirmedSats(
   addresses: string[],
   stats: Map<string, AddrStat>,
   fetchImpl: FetchFn = fetch,
-  opts: { concurrency?: number; requestBudget?: number; readAddress?: ConfirmedSatsReader } = {},
+  opts: { concurrency?: number; requestBudget?: number; hardCap?: number; readAddress?: ConfirmedSatsReader } = {},
 ): Promise<XpubConfirmedBalance> {
   const concurrency = Math.max(1, Math.floor(opts.concurrency ?? XPUB_BALANCE_CONCURRENCY));
-  const budget = Math.max(0, Math.floor(opts.requestBudget ?? XPUB_BALANCE_REQUEST_BUDGET));
+  const hardCap = Math.max(0, Math.floor(opts.hardCap ?? XPUB_BALANCE_HARD_CAP));
   const read: ConfirmedSatsReader = opts.readAddress
     ?? ((a, beforeRequest) => fetchConfirmedSats(a, fetchImpl, { beforeRequest }));
 
   // An address with no usage entry is NOT assumed unused — it is read. Only an
   // explicit n_tx 0 from the discovery provider licenses a structural zero.
   const active = [...new Set(addresses)].filter((a) => (stats.get(a)?.txCount ?? 1) > 0);
+
+  // Over the cap: no read at all this run (a partial read could only be
+  // discarded). The reason carries a COUNT, never an address.
+  if (active.length > hardCap) {
+    return {
+      status: "PARTIAL", cause: "OVER_READ_CAP", activeAddresses: active.length,
+      addressesRead: 0, addressesUnread: active.length, requests: 0,
+      reason: `wallet exceeds the per-run read cap (${active.length} used addresses)`,
+    };
+  }
+  const budget = Math.max(0, Math.floor(opts.requestBudget ?? xpubBalanceRequestBudget(active.length, hardCap)));
 
   let requests = 0;
   const beforeRequest = async () => {
@@ -489,7 +514,7 @@ export async function fetchXpubConfirmedSats(
   let next = 0;
   let total = 0;
   let readCount = 0;
-  let failure: { cause: "BUDGET_EXHAUSTED" | "READ_FAILED"; reason: string; kind?: BtcSyncFailureKind } | null = null;
+  let failure: { cause: "OVER_READ_CAP" | "BUDGET_EXHAUSTED" | "READ_FAILED"; reason: string; kind?: BtcSyncFailureKind } | null = null;
 
   const worker = async () => {
     while (failure === null && next < active.length) {
@@ -518,7 +543,7 @@ export async function fetchXpubConfirmedSats(
   await Promise.all(Array.from({ length: Math.min(concurrency, active.length) }, worker));
 
   if (failure !== null) {
-    const f = failure as { cause: "BUDGET_EXHAUSTED" | "READ_FAILED"; reason: string; kind?: BtcSyncFailureKind };
+    const f = failure as { cause: "OVER_READ_CAP" | "BUDGET_EXHAUSTED" | "READ_FAILED"; reason: string; kind?: BtcSyncFailureKind };
     return {
       status: "PARTIAL", cause: f.cause, activeAddresses: active.length,
       addressesRead: readCount, addressesUnread: active.length - readCount, requests,

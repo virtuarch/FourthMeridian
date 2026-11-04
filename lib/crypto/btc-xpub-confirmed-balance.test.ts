@@ -15,7 +15,8 @@ import {
   fetchXpubConfirmedSats,
   fetchConfirmedSats,
   XPUB_BALANCE_CONCURRENCY,
-  XPUB_BALANCE_REQUEST_BUDGET,
+  XPUB_BALANCE_HARD_CAP,
+  xpubBalanceRequestBudget,
   type AddrStat,
 } from "@/lib/crypto/btc-explorer";
 
@@ -59,8 +60,12 @@ async function main() {
   const savedBase = process.env.BTC_BALANCE_API_URL;
   process.env.BTC_BALANCE_API_URL = "https://esplora.test";
 
-  check("constants: small bounded concurrency and a finite request budget",
-    XPUB_BALANCE_CONCURRENCY >= 1 && XPUB_BALANCE_CONCURRENCY <= 4 && Number.isSafeInteger(XPUB_BALANCE_REQUEST_BUDGET) && XPUB_BALANCE_REQUEST_BUDGET > 0);
+  check("constants: concurrency 3, per-wallet per-run hard cap 600",
+    XPUB_BALANCE_CONCURRENCY === 3 && XPUB_BALANCE_HARD_CAP === 600);
+  check("budget = min(ceil(used × 1.25) + 10, HARD_CAP)",
+    xpubBalanceRequestBudget(0) === 10 && xpubBalanceRequestBudget(1) === 12 && xpubBalanceRequestBudget(200) === 260
+      && xpubBalanceRequestBudget(472) === 600 && xpubBalanceRequestBudget(473) === 600 && xpubBalanceRequestBudget(10_000) === 600,
+    [0, 1, 200, 472, 473, 10_000].map((n) => xpubBalanceRequestBudget(n)).join(","));
 
   // 1. A mempool-only receive is NOT counted.
   {
@@ -123,6 +128,46 @@ async function main() {
     const thrower = await fetchXpubConfirmedSats(["a1"], statsOf({ a1: 1 }), undefined, { readAddress: async () => { throw new Error("boom at a1"); } });
     check("a non-provider error text is reduced to its class (an address can never leak through it)",
       thrower.status === "PARTIAL" && !thrower.reason.includes("a1"), JSON.stringify(thrower));
+  }
+
+  // 8. SCALED BUDGET — a large wallet reads in full; over the cap is PARTIAL by name.
+  {
+    const fx: Record<string, Entry> = {};
+    const st: Record<string, number> = {};
+    for (let i = 0; i < 200; i++) { fx[`a${i}`] = { funded: 1_000 + i, spent: 0 }; st[`a${i}`] = 1; }
+    const net = esplora(fx);
+    const r = await fetchXpubConfirmedSats(Object.keys(fx), statsOf(st), net.f);
+    const expected = Array.from({ length: 200 }, (_, i) => 1_000 + i).reduce((a, b) => a + b, 0);
+    check("200 used addresses ⇒ a FULL confirmed balance (no PARTIAL from a fixed budget)",
+      r.status === "OBSERVED" && r.sats === expected && r.activeAddresses === 200 && net.calls.length === 200, JSON.stringify({ ...r, calls: net.calls.length }));
+
+    const big: Record<string, number> = {};
+    for (let i = 0; i < XPUB_BALANCE_HARD_CAP + 1; i++) big[`b${i}`] = 1;
+    const net2 = esplora({});
+    const over = await fetchXpubConfirmedSats(Object.keys(big), statsOf(big), net2.f);
+    check("above the hard cap ⇒ PARTIAL OVER_READ_CAP, cause names the COUNT, no request, no sum",
+      over.status === "PARTIAL" && over.cause === "OVER_READ_CAP" && !("sats" in over)
+        && over.reason === `wallet exceeds the per-run read cap (${XPUB_BALANCE_HARD_CAP + 1} used addresses)`
+        && net2.calls.length === 0 && !/b\d/.test(over.reason), JSON.stringify(over));
+    const atCap: Record<string, number> = {};
+    for (let i = 0; i < XPUB_BALANCE_HARD_CAP; i++) atCap[`c${i}`] = 1;
+    const fxCap: Record<string, Entry> = Object.fromEntries(Object.keys(atCap).map((a) => [a, { funded: 1, spent: 0 }]));
+    const exact = await fetchXpubConfirmedSats(Object.keys(atCap), statsOf(atCap), esplora(fxCap).f);
+    check("exactly at the hard cap with no retries ⇒ still OBSERVED", exact.status === "OBSERVED" && exact.sats === XPUB_BALANCE_HARD_CAP, JSON.stringify({ ...exact }));
+  }
+  {
+    // The budget follows the DISCOVERED (used) count, not the scan size: 4 used
+    // of 1,000 known ⇒ budget 15. A reader needing 5 requests per address (429
+    // retries) needs 20 — exhausted at 15. Sized by the scan, it would have fit.
+    const st: Record<string, number> = {};
+    for (let i = 0; i < 1_000; i++) st[`s${i}`] = i < 4 ? 2 : 0;
+    let attempts = 0;
+    const retrying = async (_a: string, before: () => Promise<void>) => { for (let k = 0; k < 5; k++) { await before(); attempts++; } return 1; };
+    const r = await fetchXpubConfirmedSats(Object.keys(st), statsOf(st), undefined, { readAddress: retrying });
+    check("budget scales with the used count (4 ⇒ 15), not the 1,000-address scan",
+      r.status === "PARTIAL" && r.cause === "BUDGET_EXHAUSTED" && r.activeAddresses === 4 && r.requests === 15 && attempts === 15, JSON.stringify(r));
+    const ok = await fetchXpubConfirmedSats(Object.keys(st), statsOf(st), undefined, { readAddress: async (_a, before) => { await before(); await before(); return 1; } });
+    check("…and 2 attempts per address (8 ≤ 15) completes", ok.status === "OBSERVED" && ok.sats === 4 && ok.requests === 8, JSON.stringify(ok));
   }
 
   // 7. Concurrency stays within the bound.

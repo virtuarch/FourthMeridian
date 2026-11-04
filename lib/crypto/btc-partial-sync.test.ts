@@ -571,6 +571,25 @@ async function main() {
     check("8e xpub: the SyncIssue names BUDGET_EXHAUSTED", issue?.partial === true && issue?.cause === "BUDGET_EXHAUSTED", JSON.stringify(issue));
   }
   {
+    // OVER THE PER-RUN READ CAP ⇒ PARTIAL by name, a count only, nothing written.
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({
+      "blockchain.info": async () => json({ addresses: [
+        { address: XPUB_ADDRS[0], n_tx: 3, final_balance: 20_000_000 },
+        { address: XPUB_ADDRS[1], n_tx: 1, final_balance: 10_000_000 },
+      ] }),
+      "blockstream.info": esploraFor({ [XPUB_ADDRS[0]]: { funded: 20_000_000, spent: 0 }, [XPUB_ADDRS[1]]: { funded: 10_000_000, spent: 0 } }),
+    });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE, xpubBalanceHardCap: 1 });
+    check("8f xpub: over the read cap ⇒ not ok at balance, cause names the used-address COUNT, no Esplora read, nothing written",
+      r.ok === false && r.stage === "balance" && /wallet exceeds the per-run read cap \(2 used addresses\)/.test(r.reason ?? "")
+        && !net.calls.includes("blockstream.info") && store.observations.length === 0 && store.accountUpdates.length === 0, JSON.stringify(r));
+    const issue = store.syncIssues.find((i) => (i.detail as { stage?: string }).stage === "balance")?.detail as Record<string, unknown> | undefined;
+    check("8f xpub: SyncIssue cause OVER_READ_CAP, no address", issue?.cause === "OVER_READ_CAP"
+      && !XPUB_ADDRS.some((a) => JSON.stringify(store.syncIssues).includes(a)), JSON.stringify(issue));
+  }
+  {
     const store = freshStore([]);
     install(db as unknown as Record<string, unknown>, store);
     const net = network({ "blockchain.info": async () => json({}, 500) });
