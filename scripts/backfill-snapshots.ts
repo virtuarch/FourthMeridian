@@ -242,7 +242,7 @@ function fmtRow(r: { date: Date; cash: number; debt: number; totalAssets: number
   return `date=${d} cash=${r.cash} debt=${r.debt} totalAssets=${r.totalAssets} netWorth=${r.netWorth} isEstimated=${r.isEstimated}`;
 }
 
-async function repairJuly2Christian(): Promise<void> {
+async function repairJuly2Owner(): Promise<void> {
   console.log(`Repair July 2 — Jules' Space — ${APPLY ? "APPLY" : "DRY RUN"}`);
   console.log(`  spaceId=${REPAIR_SPACE_ID}  date=2026-07-02\n`);
 
@@ -295,7 +295,7 @@ async function repairJuly2Christian(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (REPAIR_JULY2) await repairJuly2Christian();
+  if (REPAIR_JULY2) await repairJuly2Owner();
   else if (ROLLBACK) await rollback();
   else if (DEV_SEED) await devSeedTargetSpaces30d();
   else if (FORCE_ALL) await forceMissingEstimatedAll();

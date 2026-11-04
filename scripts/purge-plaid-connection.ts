@@ -5,7 +5,7 @@
  * institution name), for the case where the account needs to come back CLEAN —
  * with no stale/partial rows left behind to collide with a full resync.
  *
- * Immediate motivation (2026-07-13): an Amex connection Jules added tonight only
+ * Immediate motivation (2026-07-13): an Amex connection the operator added that night only
  * got a partial (~32-transaction) sync due to the bug fixed in the
  * transaction-sync / investment-history batch. He wants it gone PERMANENTLY —
  * not soft-deleted-and-reconnectable — so a later clean reconnect can't collide
@@ -131,7 +131,7 @@ async function main() {
     return;
   }
   console.log(`Resolved user: id=${user.id}  email=${user.email}  username=${user.username ?? "—"}  name=${user.name ?? "—"}`);
-  console.log(`(Confirm this is the account Jules is currently logged in as before --apply.)\n`);
+  console.log(`(Confirm this is the account you are currently logged in as before --apply.)\n`);
 
   // ── Global safety baseline: Instrument + PriceObservation must never change ──
   const instrumentsBefore      = await db.instrument.count();
