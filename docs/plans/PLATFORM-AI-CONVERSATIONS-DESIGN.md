@@ -727,6 +727,31 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
   - the disclosure line (§8).
 - **No Markdown parser** runs on stored content (v0's rule).
 
+### 11.1 What PR C shipped
+
+- **Files.** `components/platform/PlatformAiConversations.tsx` (the view and the orchestrator), `components/platform/platform-ai-conversations-model.ts` (pure: defensive parsing, copy, time labels, the disclosure constant), `components/platform/platform-ai-conversations.test.ts`, and one line in `app/(shell)/dashboard/platform/ai/page.tsx`.
+- **Flag gating.** The page decides on the server, after every gate: `if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations … />`, placed after the v0 flag and area lines and before `return <PlatformAiAsk … />`. If any of the three flags is unset, the page is exactly v0, or the placeholder. The page is the component's only importer (pinned), and the component reads no env.
+- **API only.** It calls the PR B / B2 routes (list, create, read, append, delete) with the strict `{ clientRequestId, question }` body, using a fresh UUID per send. A transport failure retries with the **same** id, which the server treats as an idempotent replay (§5.1). "Retry" on a FAILED turn sends a **new** id. No server change was needed.
+- **Reuse decision.**
+  - **Reused as-is:** `MessageCard` (USER messages as plain-text bubbles), `FailedTurn` (FAILED turns, Retry on the newest only), the shared `Panel` (the mobile sheet), `ConfirmDialog` (delete), and v0's `answeringFrom` and `isSameOriginPath`.
+  - **Not reused:** `ConversationView`, because it renders answers through `AnswerCard`, which means the Markdown renderer, and it assumes the customer shell's scroll contract. `Composer`, because it embeds the customer `AiDisclosure` ("Not professional financial advice") and customer copy.
+  - **Never imported:** the transcript cache, Space context and Talk-about-this (pinned).
+- **Layout.**
+  - Mobile: one column, with a `lg:hidden` "Conversations" control that opens the Panel, which is a bottom sheet on a phone.
+  - From `lg`: a collapsible left rail. Its collapsed state sits in `localStorage` under `fm.platform-ai.rail-collapsed`, wrapped in try/catch, and is the only thing stored.
+  - Delete is a labelled per-row button followed by a confirmation, not a swipe gesture.
+- **Thread.**
+  - Answers render the stored typed segments only.
+  - A link is rendered only when the server re-resolved it on this read **and** `isSameOriginPath` passes.
+  - Every prior answer shows "Answered <time>. Figures are as of then.", and every prior figure (and citation row) gets an "as of <time>" chip with a UTC title. When a new pair lands, earlier answers in the session are marked prior.
+  - PENDING disables the composer and offers "Check again".
+  - Full shows a read-only notice plus "Start a new conversation".
+  - At the limit, the page shows "Delete a conversation to start another".
+  - Refusals use v0's copy, and the question is returned to the box, because nothing was stored.
+  - If the first remaining message was written well after the conversation was created, the thread shows "Earlier messages in this conversation have expired".
+- **Disclosure (OD-5 pending).** The disclosure is one constant, `PLATFORM_AI_CONVERSATIONS_DISCLOSURE`, with placeholder wording marked `[OD-5: disclosure wording pending owner]`. It states no retention period, provider term or policy. It renders under v0's privacy hint, which is kept verbatim (`data-platform-ai-privacy-hint`, same id, `aria-describedby`).
+- **Privacy.** There is no draft persistence, no keystroke handler beyond the controlled textarea, no analytics and no console output.
+
 ---
 
 ## 12. Test plan
@@ -777,7 +802,7 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 | *(prereq)* | `feat/platform-ai-structured-claims` plus emitting `figure` segments (§2.5) | S2 C-rulings | develop |
 | **B: schema + server** | The migration (§2.4, §7.2 function); Prisma models; the `PLATFORM_AI_MESSAGE` purpose plus `ENCRYPTED_FIELDS`; column grants and triggers (REQUIRED 1); the BYPASSRLS assertion (REQUIRED 2); the conversation data module (`withTenantDb` only); history assembly; the turn wrapper (§5); routes (§10) behind `PLATFORM_AI_CONVERSATIONS_ENABLED` (off); audit actions; purge-census bucket; tests §12 except UI and export | A **cleared by S2 for PR B** (2026-11-04, with REQUIRED 1–4); the prereq; **OD-7** (R1 shape: columns and purge variant); **OD-10** (grace constant) | develop, then Preview (migration), then **B11** (OD-2) |
 | **B2: turn integration** (stacked on B, its own draft PR) | The resolved answer → `StoredAnswerV1` (figures typed with metric key + window; links as page ids) and evidence refs (keys, windows, page ids; no values); history (§4) through `runPlatformAiTurn`'s `history` input, prior figures masked, refs re-filtered through the current token; the turn inside create and `POST /conversations/[id]/messages` (§5: replay before any gate, one in-flight turn, caps, pre-model refusals store nothing); `AiInvocation.conversationId` + sub-surface `platform_ai:conversation`. **No migration** (`AiInvocation.conversationId` exists since 20261007100000) | B | develop, then B11 with B |
-| **C: UX** | Page, sheet and rail, thread, stale chips, disclosure line (OD-5 wording), 375 px pins | B | develop / Preview |
+| **C: UX** (stacked on B2, its own draft PR) | Page, sheet and rail, thread, stale chips, disclosure line (OD-5 placeholder constant), 375 px pins. **Shipped as §11.1:** no server change, flags still off, v0 unchanged | B, B2 | develop / Preview |
 | **D: lifecycle** | Purge job wiring in `jobs/data-retention.ts` (batches, audit row), **disabled** behind `PLATFORM_AI_PURGE_ENABLED`; export phase (Q5 ruled; soft-deleted excluded); the Preview pre-enable BYPASSRLS check; `docs/operations/data-retention.md` row (M after OWNER-VERIFY); restore-runbook note (§7.3) | B (function exists) | develop, then B11 with B |
 
 **Activation order.**
