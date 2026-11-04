@@ -451,6 +451,35 @@ async function main() {
       JSON.stringify({ commsDelivery: live.commsDelivery, touched: touched.slice(0, 3) }));
   }
 
+  // ── B11: the Platform AI conversation purge — registered DISABLED, fail-safe ──
+  {
+    console.log("\nB11 — the Platform AI conversation purge rule");
+    const calls: number[] = [];
+    const audits: unknown[] = [];
+    const seam = (enabled: boolean, rows: Array<{ conversations: number; messages: number } | Error>) => ({
+      enabled,
+      call: async (limit: number) => { calls.push(limit); const r = rows.shift() ?? { conversations: 0, messages: 0 }; if (r instanceof Error) throw r; return r; },
+      audit: async (d: unknown) => { audits.push(d); },
+    });
+    const { client } = makeClient({});
+    const off = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(false, [{ conversations: 9, messages: 9 }]) }));
+    check("DISABLED: no call, no audit row, result enabled:false", calls.length === 0 && audits.length === 0 && off.platformAiConversations?.enabled === false, JSON.stringify(off.platformAiConversations));
+    const { env } = await import("@/lib/env");
+    check("the flag defaults OFF (PLATFORM_AI_PURGE_ENABLED unset ⇒ false)", process.env.PLATFORM_AI_PURGE_ENABLED === undefined && env.isPlatformAiPurgeEnabled === false);
+    const dry = await quiet(() => runDataRetention(client, NOW, undefined, { dryRun: true, platformAiPurge: seam(true, [{ conversations: 1, messages: 2 }]) }));
+    check("a dry run never calls it (the function has no dry-run mode)", calls.length === 0 && dry.platformAiConversations === undefined);
+    const on = await quiet(() => runDataRetention(client, NOW, undefined, { platformAiPurge: seam(true, [{ conversations: 3, messages: 8 }]) }));
+    check("ENABLED: one call (below both bounds ⇒ exhausted), counts reported, one counts-only audit row",
+      calls.length === 1 && calls[0] === 500 && on.platformAiConversations?.conversations === 3 && on.platformAiConversations?.messages === 8
+        && on.platformAiConversations?.exhausted === true && audits.length === 1
+        && JSON.stringify(audits[0]) === JSON.stringify({ conversations: 3, messages: 8, batches: 1, exhausted: true }), JSON.stringify({ calls, audits, r: on.platformAiConversations }));
+    calls.length = 0; audits.length = 0;
+    const failing = makeClient({ aiInvocation: [{ id: "x", occurredAt: daysAgo(100) }] });
+    const bad = await quiet(() => runDataRetention(failing.client, NOW, undefined, { platformAiPurge: seam(true, [new Error("boom")]) }));
+    check("a throwing purge is reported as an error and never blocks the other rules (aiInvocation still pruned)",
+      bad.platformAiConversations?.error === "boom" && bad.aiInvocation.deleted === 1 && audits.length === 0, JSON.stringify({ p: bad.platformAiConversations, ai: bad.aiInvocation }));
+  }
+
   if (failures > 0) { console.error(`\n❌ data retention: ${failures} check(s) failed`); process.exit(1); }
   console.log("\n✅ data retention: all checks passed");
 }

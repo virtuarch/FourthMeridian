@@ -554,11 +554,14 @@ console.log("\n8. static — no mint, literal surfaces, bounded importers");
     .every((m) => !!m[1]);
   // PB-1 related navigation: the guarded Ops and CS incident detail routes resolve the drawer's "Go to" links
   // (lib/platform/incidents/related-navigation.ts takes only its resolver closure, never the registry).
-  const GUARDED_ROUTES = ["app/api/platform/ai/ask/route.ts", "app/api/platform/platform-ops/incidents/[id]/route.ts", "app/api/platform/customer-success/incidents/[id]/route.ts"];
+  // B11: the Platform AI conversations' step-6 helper (not a route file; every conversation route
+  // calls it) re-resolves stored links through the ACCESSOR with a token minted from its own guard.
+  const GUARDED_ROUTES = ["app/api/platform/ai/ask/route.ts", "app/api/platform/platform-ops/incidents/[id]/route.ts", "app/api/platform/customer-success/incidents/[id]/route.ts",
+    "app/api/platform/ai/conversations/area-access.ts"];
   const strayNav = importers.filter((f) => f !== "lib/platform/intelligence/navigation/access.ts"
     && !(GUARDED_ROUTES.includes(f) && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8")))
     && !(f.startsWith("lib/platform/intelligence/ai/") && typeOnly(f)));
-  check("the navigation registry is imported only by its accessor, the guarded routes (Platform AI, Ops + CS incident detail), and type-only by the AI core",
+  check("the navigation registry is imported only by its accessor, the guarded routes (Platform AI ask + the conversations' area guard, Ops + CS incident detail), and type-only by the AI core",
     strayNav.length === 0 && importers.includes("lib/platform/intelligence/navigation/access.ts"), strayNav.join() || importers.join());
   for (const f of GUARDED_ROUTES) {
     const s = readFileSync(path.join(ROOT, f), "utf8");

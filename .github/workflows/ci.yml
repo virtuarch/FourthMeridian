@@ -215,6 +215,15 @@ jobs:
       - name: AI allowance reservation suite
         run: npm run rls:accept:allowance
 
+      # B11 — Platform AI conversations on REAL PostgreSQL roles (its own
+      # throwaway database): owner-only RLS, writers never choose time (column
+      # grants + triggers), no fm_system table path, the purge definer owned by
+      # a BYPASSRLS non-superuser and its negative control, the R6 boundary,
+      # the rotation's narrow path, the account-purge cascade, and the real
+      # store + retention job (audited count == rows removed).
+      - name: Platform AI conversations suite
+        run: npm run rls:accept:ai-conversations
+
       # PRIV-004 — ENCRYPTION_KEY rotation. Runs scripts/rotate-encryption-key.ts
       # (dry run, --expect, apply, idempotent re-run) and its engine (the CAS
       # conflict seam) against its own throwaway database with keys generated

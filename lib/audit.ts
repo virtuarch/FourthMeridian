@@ -212,7 +212,9 @@ export type OperatorTargetKind =
   | "COMMS_AUTOMATION"
   | "COMMS_TEST_SEND"
   // PB-1 S6 — one sync incident (SyncIssue.id): acknowledge / operator resolve.
-  | "SYNC_INCIDENT";
+  | "SYNC_INCIDENT"
+  // B11 — one operator's own Platform AI conversation (its id): create / delete. Never content.
+  | "PLATFORM_AI_CONVERSATION";
 
 export const OPERATOR_REASON_CODES = [
   "BETA_ONBOARDING", "SUPPORT_REQUEST", "DOGFOOD", "TESTING", "POLICY_ROLLOUT", "INCIDENT", "ABUSE", "OTHER",
