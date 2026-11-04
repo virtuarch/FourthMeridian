@@ -1455,6 +1455,27 @@ These rewrite stored rows. None runs as part of B10, and each needs its own owne
 4. The null-balance $0 review (FIN-A2) and the frozen stale-observed re-open (FM-AUDIT-021) also run before the PB-8 regeneration, so it rebuilds against corrected inputs.
 5. Run the **PB-8 full-window regeneration last**, after all of the above.
 
+#### How the owner gets the numbers
+
+`scripts/b10-5-decision-report.ts` prints the candidate counts for four of these decisions as one markdown table for the morning report. It is **read-only**: there is no apply mode, and each report runs in its own transaction opened with `SET TRANSACTION READ ONLY` (never a session-level SET). It prints **counts and date ranges only**: no ids, amounts, names, emails or institutions.
+
+```
+npm run report:b10-5 -- all --env=preview                       # or: coingecko | fin-a2 | fin-e | audit-021
+npm run report:b10-5 -- coingecko --env=preview --coingecko-fixed-from=<#300 deploy date>
+npm run report:b10-5 -- all --env=production --acknowledge-production-read
+```
+
+- **Who runs it.** Preview/clone: engineering; Production: owner-run or owner-approved. `--acknowledge-production-read` is a safety rail, **not** approval. A Production run needs the owner's explicit approval for that run.
+- **Gates.** `--env` is required, and the connection must prove it, using the same guard as the repair tools (`scripts/lib/repair-env-guard.ts`; `FM_PRODUCTION_DB_REF` must be set for preview and production). `FM_DB_GUARD=clone-only` keeps its meaning. The role must bypass RLS, because a count made under RLS silently misses rows.
+- **UNAVAILABLE.** If the target lacks a column a report needs, that report prints UNAVAILABLE and names the column. For example, before the FIN-A2 or FIN-E migration is applied there, the report shows `FinancialAccount.balanceObserved` or `SpaceSnapshot.restrictedCash`. It never computes from a substitute.
+- **Bound column.** Every figure row ends with its bound kind, literally: `lower bound`, `upper bound`, `review list (includes genuine $0)` or `exact`. `exact` is used only for plain counts of stored rows, such as populations, totals and the separate undetermined or excluded counts. Undetermined is always its own row and is never folded into a bound.
+- **Heuristics.** Each one is printed beside its numbers. In short:
+  - **CoinGecko (FM-AUDIT-025):** rows from one insert batch (same coin, `source` and `fetchedAt`) that span 92 or more days must come from a daily (00:00Z) response, so they are counted as one day late. This is a lower bound. Shorter batches are counted as undetermined.
+  - **FIN-A2:** a live Plaid account with `balance = 0` and `balanceObserved = true` counts as a candidate when it has no observed BALANCES coverage row since creation. Accounts created before the coverage ledger began are shown separately. A genuine $0 also qualifies, so this list is for review.
+  - **FIN-E:** counts estimate rows with a NULL `restrictedCash` in Spaces that have an active account link. This is an upper bound. Frozen observed rows are counted separately, because regeneration never rewrites them.
+  - **FM-AUDIT-021:** counts frozen observed days where a linked Plaid bank account had no observed balance in the 7 days to that day's end. This is an upper bound, because materiality cannot be evaluated historically. Days before the ledger are counted as undetermined.
+- **Proof.** Unit: `scripts/b10-5-decision-report.test.ts`. Throwaway Postgres: `npm run accept:b10-5-report`, which also runs in CI.
+
 **Owner decision (security; PRIV-004):** encryption key rotation. Approve steps b–d after the clone + Preview drill. **Approving step (b) makes B10 roll-forward-only.** (b) set the new key as `ENCRYPTION_KEY` and the old one as `ENCRYPTION_KEY_PREVIOUS`; (c) `rotate-encryption-key` dry run, then apply; (d) only after `--verify-complete` exits 0, remove `ENCRYPTION_KEY_PREVIOUS`. Drill a→d end to end on a restored backup clone first, then on Preview, with a full verified backup before Production (see `docs/operations/key-rotation.md`).
 
 **Tracked follow-ups (FM-AUDIT-053):** a balance-basis column plus a labelled unconfirmed fallback (schema change; owner); a keyed or self-hosted Esplora.

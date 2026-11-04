@@ -75,6 +75,11 @@ export const ARCHITECTURE_JOB = [
   // database with per-run keys: re-encrypts every registered column, CAS-guarded,
   // read-back verified, idempotent, fail-closed on an unknown key id.
   "npm run accept:key-rotation",
+  // B10.5 — the READ-ONLY owner-decision report against a throwaway database:
+  // exact counts and date ranges per case, nothing written, no id / amount /
+  // name / email in the output, a non-bypass principal refused, UNAVAILABLE on
+  // a missing column.
+  "npm run accept:b10-5-report",
 ] as const;
 
 /**
