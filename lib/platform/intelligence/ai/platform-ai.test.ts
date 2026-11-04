@@ -29,6 +29,7 @@ import "@/lib/test-support/route-env";
 
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { buildEconomicsSnapshot } from "@/lib/platform/economics/snapshot-core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UserRole } from "@prisma/client";
@@ -84,6 +85,15 @@ const readers = (over: Partial<RetrievalReaders> = {}): RetrievalReaders => ({
   csOverview: async () => ({ checkedAt: NOW.toISOString(), windowDays: 30, customers: { active: 17, deactivated: 2 }, stages: [], attention: { customers: 5, floor: false, reasons: [{ key: "r", label: `user #3 ${EMAIL}`, count: 5 }] }, incidents: { days: [], floor: false, openByKind: [], open: 0, openFloor: false }, notes: [] }) as never,
   liveSessions: async () => ({ sessions: 7, distinctUsers: 3 }) as never,
   accountsWithLiveSession: async () => 2,
+  // Economics: the pure Overview fold over one synthetic priced day (no Plaid rate card ⇒ providers UNAVAILABLE).
+  economicsSnapshot: async (nowMs) => buildEconomicsSnapshot({
+    nowMs, aiPricingConfigured: true, plaidCycle: null, plaidReadingsAgree: true, plaidRates: [], engagedCustomerRefs: ["user #1"],
+    spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }],
+  }),
+  aiOperations: async () => ({
+    totals: { invocations: 58, usd: 1.45, unpricedTokens: 0 }, failures: { failed: 2, timeouts: 0, rateLimited: 0, quota: 0, total: 2 },
+    pricingConfigured: true, recent: [{ correlationId: CUID, subSurface: INJECT }], checkedAt: NOW.toISOString(),
+  }) as never,
   ...over,
 });
 
