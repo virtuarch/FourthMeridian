@@ -63,8 +63,29 @@ export function scrubOperatorText(value: string, max: number): string {
     .replace(/\bc[a-z0-9]{20,}\b/gi, P.id)
     .replace(/\b(?=[A-Za-z0-9_-]{20,}\b)(?=[A-Za-z_-]*\d)[A-Za-z0-9_-]+\b/g, P.id)
     .replace(/\d(?:[ -]?\d){7,}/g, P.number)
-    .replace(/\d{4,}/g, P.number)
+    .replace(/\d{4,}/g, (run, at: number, text: string) => (isPeriodYear(run, at, text) ? run : P.number))
     .replace(/\s+/g, ' ')
     .trim();
   return cleaned.length > max ? cleaned.slice(0, max) : cleaned;
+}
+
+/**
+ * The ONE exemption from the four-digit rule, operator text only (S2 ruling A′,
+ * 2026-11-05; scrubDescriptor is unchanged): a year 2020–2099 that names a
+ * PERIOD, i.e. immediately preceded by a month (optionally with a day:
+ * "October 2026", "Oct 4, 2026"), Q1–Q4, FY or the word "year". 2020+ keeps
+ * every adult birth year out (born ≤ 2008 in 2026). It never follows "in",
+ * "ending", "card", "acct", "#", "born", "PIN" or anything else, so a last-4,
+ * a birth year or a street number stays [number]; ISO, slash or dotted dates
+ * and longer digit runs stay [number] too (the lookarounds, and the ≥ 8-digit
+ * rule above runs first). The lookarounds win over a dash: "Q3-2026" stays [number]. It reduces, never guarantees: "card ending October
+ * 2026" passes, and that is an expiry date, not a card number.
+ */
+const PERIOD_BEFORE_YEAR = /(?:\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?:\s+\d{1,2}(?:st|nd|rd|th)?,?)?\s+|\bQ[1-4]\s?|\bFY\s?|\byear\s+)$/i;
+
+function isPeriodYear(run: string, at: number, text: string): boolean {
+  if (!/^20[2-9]\d$/.test(run)) return false;
+  const prev = text[at - 1] ?? '', next = text[at + run.length] ?? '';
+  if (/[\d/.-]/.test(prev) || /[\d/.-]/.test(next)) return false;
+  return PERIOD_BEFORE_YEAR.test(text.slice(Math.max(0, at - 24), at));
 }
