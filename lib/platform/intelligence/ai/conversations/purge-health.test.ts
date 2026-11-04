@@ -71,8 +71,8 @@ async function sections(): Promise<void> {
     const never = await getPlatformAiPurgeHealth(NOW, { conversationsOn: true, reads: R([]) });
     check("ON + nothing recorded ⇒ LATE", never.state === "LATE");
     const src = readFileSync("lib/platform/intelligence/ai/conversations/purge-health.server.ts", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    check("the authority reads ONLY JobRun (purge-trash) and the purge AuditLog rows — never a conversation table, never content",
-      !/platformAiConversation|platformAiMessage|contentEncrypted/.test(src) && /db\.jobRun\.findMany/.test(src) && /db\.auditLog\.findMany/.test(src)
+    check("the authority reads ONLY JobRun (purge-trash) and the purge AuditLog rows, through systemDb (fm_system) — never the global db, a conversation table or content",
+      !/platformAiConversation|platformAiMessage|contentEncrypted/.test(src) && /systemDb\.jobRun\.findMany/.test(src) && /systemDb\.auditLog\.findMany/.test(src) && !/\bdb\./.test(src) && !/import \{ db \}/.test(src)
         && /select: \{ startedAt: true, completedAt: true, summary: true \}/.test(src) && /select: \{ createdAt: true, metadata: true \}/.test(src));
     check("ON = the conversations flag set (fully enabled OR misordered without the purge)", /env\.isPlatformAiConversationsEnabled \|\| env\.isPlatformAiConversationsFlagSetWithoutPurge/.test(src));
   }

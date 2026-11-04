@@ -11,14 +11,16 @@
  *     did not fail (no `failed` key): createdAt + those two keys only. A
  *     scheduled run is judged by its JobRun alone (its audit row is written only
  *     when something was removed, and a failed run is a failed JobRun).
- * It never reads a conversation table (fm_system / the operator principal have
+ * Reads go through systemDb (fm_system: SELECT on JobRun + AuditLog, background/
+ * operator work), never the migration principal. It never reads a conversation
+ * table (fm_system / the operator principal have
  * no business there), an id beyond the job name, or any content.
  *
  * With the conversations flag OFF it reads NOTHING and returns state OFF.
  */
 
 import "server-only";
-import { db } from "@/lib/db";
+import { systemDb } from "@/lib/db";
 import { env } from "@/lib/env";
 import { AuditAction } from "@/lib/audit-actions";
 import {
@@ -37,13 +39,13 @@ export interface PurgeHealthReads {
 }
 
 const realReads: PurgeHealthReads = {
-  succeededPurgeRuns: (limit) => db.jobRun.findMany({
+  succeededPurgeRuns: (limit) => systemDb.jobRun.findMany({
     where: { jobName: PLATFORM_AI_PURGE_JOB_NAME, status: "succeeded" },
     orderBy: { startedAt: "desc" },
     take: limit,
     select: { startedAt: true, completedAt: true, summary: true },
   }),
-  recentDispatchAudits: (limit) => db.auditLog.findMany({
+  recentDispatchAudits: (limit) => systemDb.auditLog.findMany({
     where: { action: AuditAction.PLATFORM_AI_CONVERSATIONS_PURGED, metadata: { path: ["trigger"], equals: "MANUAL_DISPATCH" } },
     orderBy: { createdAt: "desc" },
     take: limit,
