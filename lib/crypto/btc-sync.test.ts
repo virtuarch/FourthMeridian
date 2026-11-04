@@ -422,8 +422,11 @@ async function main(): Promise<void> {
     /last_seen|lastSeenTxid/.test(explorer) && /txPageBudget/.test(explorer));
   check("ledger completeness is reconciled against the observed balance",
     /reconcileWalletLedger/.test(code(read("lib", "snapshots", "regenerate-history.ts"))));
-  check("xpub balance uses the batch provider (not per-address probing)",
-    /fetchAddressStatsBatch\(addresses/.test(sync) || /batchStatsFetcher\(addresses\)/.test(sync));
+  // FM-AUDIT-053 — the batch provider decides ACTIVITY; the balance is the
+  // confirmed-only Esplora read of the active addresses, never a final_balance sum.
+  check("xpub activity uses the batch provider; the balance is the bounded confirmed-only Esplora read",
+    (/fetchAddressStatsBatch\(addresses/.test(sync) || /batchStatsFetcher\(addresses\)/.test(sync))
+      && /fetchXpubConfirmedSats\(addresses, stats/.test(sync) && !/\.sats \?\? 0/.test(sync));
   check("discovery writes per-address identities via the KEPT composite unique (not dualWrite)",
     /providerAccountIdentity\.upsert/.test(sync) &&
     /provider_externalAccountId_financialAccountId/.test(sync) &&
@@ -532,10 +535,12 @@ async function main(): Promise<void> {
     ],
   };
   const mstats = parseMultiaddrStats(multiaddrFixture, ["A1", "A2", "A3"]);
-  check("parseMultiaddrStats: used address → txCount + sats",
-    mstats.get("A1")?.txCount === 3 && mstats.get("A1")?.sats === 500000);
-  check("parseMultiaddrStats: an unused address (n_tx 0 entry) reads as zero",
-    mstats.has("A3") && mstats.get("A3")?.txCount === 0 && mstats.get("A2")?.sats === 0);
+  // FM-AUDIT-053 (unconfirmed half) — the parser surfaces USAGE only. Its
+  // `final_balance` includes unconfirmed effects, so no balance leaves it.
+  check("parseMultiaddrStats: used address → txCount, and NO balance field (final_balance is never surfaced)",
+    mstats.get("A1")?.txCount === 3 && !("sats" in (mstats.get("A1") ?? {})));
+  check("parseMultiaddrStats: an unused address (n_tx 0 entry) reads as unused",
+    mstats.has("A3") && mstats.get("A3")?.txCount === 0 && mstats.get("A2")?.txCount === 0);
 
   // FM-AUDIT-053 — a 200 with no / garbled `addresses` is INVALID_DATA, never "0 BTC, unused".
   const invalid = (body: unknown) => {
@@ -555,9 +560,9 @@ async function main(): Promise<void> {
     check("parseMultiaddrStats: a PARTIAL response (requested addresses dropped) throws INVALID_DATA, naming the count", msg === "multiaddr omitted 2 requested address(es)", msg);
   }
   check("parseMultiaddrStats: an empty request with an empty array is valid (nothing asked, nothing missing)", parseMultiaddrStats({ addresses: [] }, []).size === 0);
-  check("parseMultiaddrStats: an extra, unrequested entry is ignored", JSON.stringify([...parseMultiaddrStats({ addresses: [{ address: "A1", n_tx: 1, final_balance: 2 }, { address: "ZZ", n_tx: 9, final_balance: 9 }] }, ["A1"])]) === JSON.stringify([["A1", { txCount: 1, sats: 2 }]]));
+  check("parseMultiaddrStats: an extra, unrequested entry is ignored", JSON.stringify([...parseMultiaddrStats({ addresses: [{ address: "A1", n_tx: 1, final_balance: 2 }, { address: "ZZ", n_tx: 9, final_balance: 9 }] }, ["A1"])]) === JSON.stringify([["A1", { txCount: 1 }]]));
   check("parseMultiaddrStats: a full response including n_tx 0 entries parses (A1 used, A2 and A3 unused)",
-    JSON.stringify([...parseMultiaddrStats(multiaddrFixture, ["A1", "A2", "A3"])]) === JSON.stringify([["A1", { txCount: 3, sats: 500000 }], ["A2", { txCount: 0, sats: 0 }], ["A3", { txCount: 0, sats: 0 }]]));
+    JSON.stringify([...parseMultiaddrStats(multiaddrFixture, ["A1", "A2", "A3"])]) === JSON.stringify([["A1", { txCount: 3 }], ["A2", { txCount: 0 }], ["A3", { txCount: 0 }]]));
   {
     let threw = false;
     const badFetch: typeof fetch = (async () => okResponse({})) as unknown as typeof fetch;
@@ -569,7 +574,7 @@ async function main(): Promise<void> {
   const batchFetch: typeof fetch = (async () => { batchCalls += 1; return okResponse(multiaddrFixture); }) as unknown as typeof fetch;
   const batched = await fetchAddressStatsBatch(["A1", "A2", "A3"], batchFetch);
   check("fetchAddressStatsBatch: ONE request per chunk (vs one-per-address)",
-    batchCalls === 1 && batched.get("A1")?.sats === 500000);
+    batchCalls === 1 && batched.get("A1")?.txCount === 3);
 
   // ═══ PART J — merged from btc-identity.test.ts (V26-PRE B4 era) ─────────────
   //

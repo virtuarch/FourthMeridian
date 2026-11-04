@@ -198,9 +198,10 @@ const OBSERVED_BTC = 0.02028507; // == the three movements, exactly
 
 // ══ THE XPUB BALANCE-BASIS QUESTION, ANSWERED NOT BLESSED ═════════════════════
 //
-// An xpub's current balance is the provider's `final_balance`, whose
-// confirmed/unconfirmed basis is undocumented. Anchoring on a figure whose basis
-// is unknown is exactly what this programme refuses to do.
+// An xpub's current balance WAS the provider's `final_balance`, whose basis
+// included unconfirmed effects. It is now confirmed-only (FM-AUDIT-053), but an
+// anchor observed before that change may carry the old basis, so the refusal
+// below stays pinned.
 {
   const src = read("lib", "crypto", "btc-history-sync.ts");
   check("the unknown basis is refused, not assumed away",
