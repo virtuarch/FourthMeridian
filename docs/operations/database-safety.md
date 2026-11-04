@@ -306,6 +306,8 @@ Notes:
 
 **Rollback:** one statement block. Re-grant `UPDATE, DELETE` to `fm_system`, drop the four policies, and recreate `fm_system_all` with `USING (true) WITH CHECK (true)`. Write it into the migration folder's README before applying.
 
+**Proposed extension (not migrated):** a wider network-identifier minimisation of `AuditLog` (IP and user agent on security rows) needs an additive second UPDATE policy plus a metadata guard trigger. The design and SQL are in `docs/operations/data-retention.md`, "Network identifiers". It is an OWNER DECISION and needs S2 review.
+
 ---
 
 ## 5. For agents specifically
