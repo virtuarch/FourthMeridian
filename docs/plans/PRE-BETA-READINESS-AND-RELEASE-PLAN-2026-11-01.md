@@ -1581,6 +1581,77 @@ Recommended rollout: enable on Preview first (internal operators only), observe 
 
 **Owner decision (billing, not a data step):** auto-holdings for consented-but-uninitialized Investments Items would **start** Plaid Investments billing per Item-month. #312 deliberately does not auto-initialize them; enabling it is an owner decision.
 
+### B10.6 Rollback rehearsal evidence (local, synthetic, 2026-11-04)
+
+**Result: 72/72 checks PASS. No B9-compat claim failed.** Three findings (F1–F3 below) are not B9-compat failures, but the release plan should note them. **F1 is a FIN-E correctness defect** in the live snapshot writer.
+
+**What ran.** `npm run rehearse:b10-rollback -- --b9-tree=<worktree of origin/main> [--scale=N] [--evidence=<file>]` (`scripts/b10-rollback-rehearsal.ts`, with its probes in `scripts/lib/b10-rehearsal/`). It ran locally under the heavy-job lock, on a throwaway `postgres:16-alpine` (the same major as CI), removed afterwards with `docker rm -f -v`. **No Production or Preview database, dump or backup was used.** B9's schema comes from B9's own migrations, applied by B9's own Prisma, and every row is synthetic. The B9 side ran from a detached worktree of `origin/main` (`dc76711`) with its own `npm ci` and `prisma generate`; the B10 side ran from develop (`3b37796` + this PR). Both sides used the real role topology (`fm_app` / `fm_auth` / `fm_system`, `FM_RLS_STRICT=true`).
+
+**Steps.** (1) B9 migrations, then a synthetic seed (scale 1: 100k `SyncIssue` + 200k occurrences, 100k `AuditLog`, 20k `UserSession`, 5k accounts, 50k snapshots). (2) B9-code smoke. (3) Preflight, then a lock inventory: each migration replayed in one transaction on a template clone, reading `pg_locks` before COMMIT. (4) The guarded run: `db-guard --mode=migrate-deploy`, then `prisma migrate deploy`, with a blocked-lock sampler and a B9-shaped incident writer (an `UPDATE "SyncIssue"` every 20 ms) running against the database. (5) B10-code smoke. (6) **App rollback:** B9 code against the kept B10 schema, plus owner-side truth checks. (7) A data-effects inventory.
+
+**Durations** (`_prisma_migrations.finished_at − started_at`, guarded run; synthetic volumes):
+
+| Migration | Scale 1 (100k `SyncIssue`) | Scale 5 (500k `SyncIssue`) |
+|---|---|---|
+| PB-1 `…120000` | 281 ms | 1,420 ms |
+| PB-10 `…130000` | 3 ms | 9 ms |
+| DB-010 `…140000` | 6 ms | 6 ms |
+| FIN-A2 `…150000` | 10 ms | 4 ms |
+| FIN-E `…160000` | 3 ms | 4 ms |
+| `prisma migrate deploy` wall time | 0.9 s | 2.0 s |
+| B9-shaped incident writer, worst statement (p50) | 262 ms (3 ms) | 1,404 ms (3 ms) |
+
+PB-1 scales roughly linearly with `SyncIssue` + `SyncIssueOccurrence` size (its CHECK validation and two index builds). The other four are catalog-only and do not depend on table size.
+
+**Locks taken** (held at COMMIT, existing tables only; the three new PB-1 tables and their indexes also take `AccessExclusiveLock` but are empty):
+
+| Migration | Locks |
+|---|---|
+| PB-1 | `SyncIssue`: `AccessExclusiveLock` + `ShareLock` (CHECK validation scan, two non-concurrent index builds); `SyncIssueOccurrence`: `AccessExclusiveLock` (column adds + size CHECK) |
+| PB-10 | `UserSession`: `AccessExclusiveLock` (catalog-only) |
+| DB-010 | `AuditLog`: `AccessExclusiveLock` (policy DDL) + `AccessShareLock`; `pg_policy` object lock |
+| FIN-A2 | `FinancialAccount`: `AccessExclusiveLock` (constant default, no rewrite); `pg_type`: `ExclusiveLock` (enum add) |
+| FIN-E | `SpaceSnapshot`: `AccessExclusiveLock` (catalog-only) |
+
+The only blocked lock requests the sampler saw were the writer's own `RowExclusiveLock` on `SyncIssue`, while PB-1 ran (13 samples at scale 1, 70 at scale 5). The writer waited and then completed; it never failed. This confirms B10.2a ("incident writes pause briefly") and the cron-pause advice in B10.2. Readers of `SyncIssue` and `SyncIssueOccurrence` wait the same way.
+
+**Pass/fail by claim** (B = B10 code, R = B9 code after the rollback, P = B9 code before the migration, V/C/M = owner-side SQL truth):
+
+| Claim | Checks | Result |
+|---|---|---|
+| Schema build and preflight: tree − ledger = the five; ledger − tree = ∅; db-guard passes; deploy applies all five | M0–M5 | PASS |
+| Post-migration catalog: 12 PB-1 CHECKs validated on B9 rows; DB-010's four per-command policies, with `fm_system_all` dropped; `balanceObserved = true` and `restrictedCash` NULL on every existing row; enum value present; no backfill | C1–C5 | PASS |
+| B9 smoke before the migration (sign-in, session, incidents, automatic recovery, account and snapshot writes, both retention jobs) | P0–P8 | PASS |
+| B10 smoke: sign-in (PB-10 columns), session check (including a session B9 created), presence beat, incident read, operator acknowledge and resolve, B10 observation, AuditLog append, DB-010 refusals (UPDATE `action` denied, non-product DELETE = 0 rows), `balanceObserved`, `restrictedCash` written | B0–B16 | PASS (but see F1) |
+| **v2 ciphertext reads:** B10 with no `ENCRYPTION_KEY_PREVIOUS` writes v2, and B9 decrypts it; B9 TOTP sign-in decrypts a B10-written secret | B15, B16, R2, R1 | PASS |
+| **#256 step-claim rows ignored by B9:** B10 claims the step and refuses a replay; B9 then signs in with the same code while the claim row exists, and writes and removes no claim rows. The replay window reopens under B9, as B10.4 documents | T1, T2, R1, R1b, R1c | PASS |
+| **PB-1 open rows keep NULL `lifecycleState`:** B9-written, B10-acknowledged and B10-opened rows, after B10 and after B9 writes | B4, B7, B8, V1 | PASS |
+| **B9 auto-resolve works, including on an acknowledged row:** CHECKs pass; the row reads `resolved = true`, NULL state, `AUTOMATIC_RECOVERY`, acknowledgement fields kept; the B10-opened row resolves too | R7–R9, V3 | PASS |
+| **No `resolved = false` rewrites:** every row resolved before the rollback is still resolved; B9 leaves the operator-resolved row untouched; a B9 recurrence opens a new episode | R10, R11, V2, V4 | PASS |
+| **DB-010 retention paths work for B9:** `runDataRetention` with no table error, beta-intake minimisation 3/3, product-event retention 3/3, the aged non-product row kept | R14–R16, V8 | PASS |
+| **FinancialAccount / SpaceSnapshot defaults:** B9 inserts succeed and read `balanceObserved = true` / `restrictedCash` NULL; B9 full-row reads succeed; B9 upserts a row B10 wrote | R17–R21, V5, V6 | PASS |
+| **PB-10 sessions and sign-in with the columns present:** B9 sign-in, B9 accepts a B10 session, full-row reads, presence NULL on B9 sessions | R3–R6, V7 | PASS |
+| B9 incident writer and readers on the B10 schema (repeat occurrence, full-row read) | R12, R13 | PASS |
+
+**Data-effects inventory** (after the B10 run and the B9 rollback; these persist, for the B10.4 non-reversible list):
+- `SyncIssue` operator-resolved rows (`OPERATOR_RESOLVED`, `lifecycleState = RESOLVED`, reason, `resolvedById`) stay resolved, and B9 never touches them.
+- Acknowledgement fields (`acknowledgedAt`, `acknowledgedById`, `acknowledgedAuditId`) stay on rows B9 later auto-resolves.
+- `subjectUserId` / `openedBy` stay on B10-opened rows.
+- `SyncIssueEvent` rows stay (ignored by B9).
+- AuditLog `SYNC_INCIDENT_ACKNOWLEDGED` / `SYNC_INCIDENT_RESOLVED` rows stay (append-only under DB-010).
+- `UserSession.lastPresenceAt` / `lastInteractionAt` stay on sessions B10 beat; B9 neither reads nor clears them.
+- `RateLimit` TOTP step-claim rows stay (harmless; B9 ignores them).
+- `FinancialAccount.balanceObserved = false` rows: under B9 they count their stored balance again (the B10.4 caveat, reproduced: today's cash went from 1,000 under B10 to 1,250 under B9 with a synthetic stored 250).
+- `SpaceSnapshot.restrictedCash` values stay on rows B10 wrote (see F3).
+- The `SyncIssueKind` value `BALANCE_UNOBSERVED` stays (an enum value cannot be dropped).
+
+**Findings (not B9-compat failures):**
+- **F1, FIN-E live writer (a defect, to fix before relying on `restrictedCash`).** `regenerateSpaceSnapshot` wrote `restrictedCash = 0` for a Space linking an HSA savings account, and counted the HSA as liquid savings. `readSpaceAccountsForSnapshot` (`lib/snapshots/space-accounts.ts`) does not select `providerSubtype`, so `classifyAccounts` cannot see `hsa`. The backfill and history writers do select it. So every live-written (today) row reads restricted 0, not NULL. That also bears on the Preview "first written value pending" check in B10.2.
+- **F2, B9 retention during a rollback window.** B9's `syncIssue` retention rule deletes resolved incidents older than 90 days with a bare `deleteMany`, so it writes no `SyncIssueArchive` row (B10 archives first). The incidents' `SyncIssueEvent` rows are left orphaned, because PB-1 adds no FK. This matters only if B9 serves long enough for B10-era resolved rows to pass 90 days, but the deletion is not reversible. Add it to B10.4.
+- **F3, stale `restrictedCash` after a B9 upsert.** When B9 regenerates a row B10 wrote, it rewrites `cash` but keeps B10's `restrictedCash` (B9 never writes the column), so the pair disagrees until B10 rewrites the row. B9 does not read the column. Rows B9 inserts read NULL (unknown), as intended.
+
+All figures above are synthetic: they show method and scale only, not Production impact.
+
 ## Beyond B10: carried from ROADMAP (2026-11-03)
 
 *Carried from `docs/plans/ROADMAP.md` (deleted 2026-11-03; recover with `git log -- docs/plans/ROADMAP.md`). Verbatim, except that DF-6's per-transaction details (merchant names, amounts, dates from the owner's accounts) are redacted under the public-repo rule; the original is in the owner's private record. Session 1 carries these into the post-B10 STATUS "Beyond B10 / outstanding obligations".*
