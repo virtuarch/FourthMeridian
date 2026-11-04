@@ -49,20 +49,23 @@
  *     before any scan: under row-level security a filtered table reads without
  *     error, and a rotation that misses rows strands them.
  *   · No session-level SET is sent — every statement autocommits on its own.
- *   · Every --apply run writes ONE AuditLog row (ENCRYPTION_KEY_ROTATED): the
+ *   · Every --apply run that attempts a rotation writes ONE AuditLog row (ENCRYPTION_KEY_ROTATED): the
  *     outcome, old/new kids and per-field counts — never a value.
  *
  * OUTPUT CONTRACT: counts, key ids and (for conflicts / an abort) row ids only.
  * Never a key, a ciphertext, a plaintext, or which key a kid belongs to.
  *
- * Exit: 0 dry run done / apply COMPLETE / VERIFIED COMPLETE · 2 refused (before any
+ * --apply with ENCRYPTION_KEY_PREVIOUS unset (or equal to ENCRYPTION_KEY) is a NO-OP:
+ * "no rotation in progress — nothing to do", no database contact, no AuditLog row, exit 0.
+ *
+ * Exit: 0 dry run done / apply COMPLETE / VERIFIED COMPLETE / apply NO-OP · 2 refused (before any
  *       row is read) · 3 apply INCOMPLETE, --expect mismatch, or NOT COMPLETE ·
  *       4 read-back verification failed (aborted; the failing row was restored) ·
  *       1 could not run.
  */
 
 import { decideRepairEnvGuard, redactConnectionDetails } from "./lib/repair-env-guard";
-import { PRINCIPAL_REFUSAL, runKeyRotation, summarizeRotation } from "./lib/rotate-encryption-key.core";
+import { NO_ROTATION_MESSAGE, PRINCIPAL_REFUSAL, runKeyRotation, summarizeRotation } from "./lib/rotate-encryption-key.core";
 
 const KNOWN_FLAGS = new Set(["apply", "verify-complete", "env", "expect", "batch", "i-have-owner-approval", "acknowledge-production-key-rotation"]);
 const PRODUCTION_ACK_FLAG = "--acknowledge-production-key-rotation";
@@ -117,6 +120,14 @@ async function main(): Promise<void> {
   // Keyring before the database: an unusable key is a refusal, not a half-run.
   const { keyringKeyIds, previousKeyWarning } = await import("@/lib/plaid/encryption");
   try { keyringKeyIds(); } catch (e) { refuse([e instanceof Error ? e.message : "the keyring could not be read"]); }
+  // --apply outside a rotation (PREVIOUS unset, or equal to current — ignored by the
+  // keyring) is a clear NO-OP: nothing to rotate, no database contact, no audit row,
+  // exit 0. The equal case still prints the warning (the old key is probably missing).
+  if (apply && keyringKeyIds().previous === null) {
+    const same = previousKeyWarning(process.env);
+    console.log(`\n  ${NO_ROTATION_MESSAGE}${same ? `\n  warning: ${same}` : ""}\n  Nothing was read or written; no audit row.\n`);
+    process.exit(0);
+  }
   // The app tolerates PREVIOUS === current (ignored, boot warning); a rotation does not:
   // the operator almost certainly pasted the new key twice and the old key is missing.
   if (previousKeyWarning(process.env)) {
@@ -136,7 +147,7 @@ async function main(): Promise<void> {
   console.log(`\n${summarizeRotation(report, gate.env)}\n`);
   if (gate.approvalTicket) console.log(`  owner approval: ${gate.approvalTicket}\n`);
   await db.$disconnect();
-  const code = { DRY_RUN: 0, COMPLETE: 0, VERIFIED_COMPLETE: 0, INCOMPLETE: 3, NOT_COMPLETE: 3, REFUSED_EXPECT_MISMATCH: 3, ABORTED_VERIFY: 4, REFUSED_PRINCIPAL: 2 }[report.outcome];
+  const code = { NO_ROTATION: 0, DRY_RUN: 0, COMPLETE: 0, VERIFIED_COMPLETE: 0, INCOMPLETE: 3, NOT_COMPLETE: 3, REFUSED_EXPECT_MISMATCH: 3, ABORTED_VERIFY: 4, REFUSED_PRINCIPAL: 2 }[report.outcome];
   process.exit(code);
 }
 
