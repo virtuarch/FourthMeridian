@@ -50,6 +50,8 @@ const WRITER_SITES: ReadonlyArray<{ file: string; purpose: keyof typeof Encrypti
   { file: "app/api/auth/register/route.ts",           purpose: "DATE_OF_BIRTH",         count: 1, field: "User.dateOfBirthEncrypted" },
   { file: "app/api/user/profile/route.ts",            purpose: "DATE_OF_BIRTH",         count: 1, field: "User.dateOfBirthEncrypted" },
   { file: "prisma/seed.ts",                           purpose: "DATE_OF_BIRTH",         count: 3, field: "User.dateOfBirthEncrypted" },
+  // B10.6 rollback rehearsal: a synthetic TOTP user in its own throwaway database (the v2 rollback-format check).
+  { file: "scripts/test-b10-rehearsal-b10-probe.ts",  purpose: "TOTP_SECRET",           count: 1, field: "User.totpSecret" },
   { file: "lib/platform/growth/beta-abuse-evidence.ts", purpose: "BETA_ABUSE_EVIDENCE", count: 1, field: "BetaAbuseEvidence.sealedPayload" },
   { file: "lib/ai/conversation/runtime-state.ts",     purpose: "AI_RUNTIME_STATE",      count: 1, field: "NON_STORED" },
 ];
