@@ -103,6 +103,8 @@ console.log("workflow gate: only Vercel's deployments are probed");
   const wf = readFileSync(path.join(process.cwd(), ".github/workflows/post-deploy-smoke.yml"), "utf8");
   check("job if: requires creator vercel[bot] (GitHub's vercel-probe deployment is not probed)",
     /if:\s*github\.event\.deployment_status\.state == 'success' && github\.event\.deployment\.creator\.login == 'vercel\[bot\]'/.test(wf));
+  check("job if: Production deployments only (protected Previews are verified by trusted-deployment-health.yml, never here)",
+    /if:[^\n]*&& startsWith\(github\.event\.deployment\.environment, 'Production'\)\s*$/m.test(wf));
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);
