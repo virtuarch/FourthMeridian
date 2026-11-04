@@ -10,7 +10,7 @@
 - The in-flight placeholder grounding (`feat/platform-ai-structured-claims`, S2 rulings C1–C7).
 - **The S2 conversation requirements B1–B11 (2026-11-04).** Where this document and the S2 requirements differ, S2 wins. Each section cites the B-item it satisfies. Every point that departs from or refines an S2 item is listed in §14 as **S2 QUESTION**.
 - **S2 clearance (2026-11-04):** PR B is cleared, subject to REQUIRED changes 1–4 and the Q1–Q8 rulings. All are folded in, and §14 lists each one with where it landed.
-- **The owner ruling (2026-11-04):** retention is **tentatively 90 days** (pending S2), and the tables ship in **B11**. S2's retention flags R1–R6 are each answered in §7.
+- **The owner rulings (2026-11-04):** retention is **90 days per message from its creation (OD-7 APPROVED)**, and the tables ship in **B11**. Activation still waits for S2's final retention clearance. S2's retention flags R1–R6 are each answered in §7.
 - **Nothing is activated until S2 clears retention.** The conversations flag stays off on every environment, the purge job ships disabled, and storage is Preview-only.
 
 ---
@@ -592,18 +592,18 @@ All three columns are database-written, so the writer still chooses nothing.
   - A restore from backup would bring purged rows back, so any restore runbook must run the purge before the database serves traffic.
 - **The provider's copy (R5).** Our purge does not reach what the AI provider kept of each call. OpenAI's API retention is governed by its own terms, which Fourth Meridian doesn't control, as `content/marketing/legal-ai.md` already says for the customer AI. The operator disclosure (OD-5) must say the same for Platform AI.
 
-### 7.4 Retention: 90 days, TENTATIVE (owner 2026-11-04, pending S2's retention clearance)
+### 7.4 Retention: 90 days per message, APPROVED (owner OD-7, 2026-11-04)
 
-**The window.** Content is retained **90 days** (`PLATFORM_AI_RETENTION_DAYS = 90`), the owner's tentative ruling. It matches `AiInvocation`'s 90 days, so content and cost telemetry age out together. A delete purges after the grace (§7.1), and account deletion purges at the account purge (§7.3).
+**The window.** Content is retained **90 days** (`PLATFORM_AI_RETENTION_DAYS = 90`), per message, from the database-written creation time (owner OD-7). It matches `AiInvocation`'s 90 days, so content and cost telemetry age out together. A delete purges after the grace (§7.1), and account deletion purges at the account purge (§7.3).
 
-**R1: inactivity alone would never expire an active thread. OWNER DECISION OD-7.** Under pure inactivity, an operator who appends once every 89 days keeps the first message forever. The two options:
+**R1: inactivity alone would never expire an active thread. RULED: OD-7 = (b), owner 2026-11-04.** The owner's words: "Each Platform AI message expires 90 days after its creation, regardless of conversation activity. A conversation is removed when its final message expires." This replaces the earlier inactivity-based proposal. Reading, continuing or (if it is ever added) renaming a conversation never extends an existing message's expiry: `purgeAfter` is a database default that no application role can write, and the settle trigger keeps it immutable. The options that were weighed:
 
 | Option | Rule (all database-written columns) | For | Against |
 |---|---|---|---|
 | **(a) Absolute cap per conversation** | purged when `lastActivityAt` is older than 90 d OR `createdAt` is older than 365 d; the whole thread goes at once | A thread is never partly forgotten. | A message can live up to 365 d. A busy thread vanishes all at once. |
 | **(b) Per-message expiry, plus empty shells purged** (**S2 recommends**) | each message's `purgeAfter` = DB default `createdAt + 90 d`, pairs aligned by the shared transaction; the conversation shell is purged once its last message is gone | **No content lives more than 90 d**, which is the simplest honest promise. Matches "removed after N days". | Old exchanges fall out of a long thread (history assembly, §4.1, simply sees fewer messages). The UI shows "Earlier messages expired". |
 
-The schema sketch (§2.1) is drawn for (b). §7.2 gives the (a) variant.
+The schema sketch (§2.1) and the migration implement (b). The (a) variant in §7.2 is not used. A conversation is removed by the purge's empty-shell step on the first run after its last message is purged.
 
 **R2: "activity" means an operator APPEND only.**
 - `lastActivityAt` is written only by the AFTER INSERT trigger on a USER message (§2.4 2b). fm_app has no grant on the column at all.
@@ -635,7 +635,7 @@ The schema sketch (§2.1) is drawn for (b). §7.2 gives the (a) variant.
   Time is moved by seeding `createdAt` / `purgeAfter` as the migration principal in the test (the only role that can), and the policy-parse test pins the SQL interval to the code constant.
 - **Activation.** PR D wires the job **disabled** (`PLATFORM_AI_PURGE_ENABLED`, off). It is switched on together with storage, and only after S2 clears retention and the Preview pre-enable check (§2.4) passes. Until then storage is Preview-only, and the conversations flag is off on every environment. The code refuses storage without it (§3.1 step 1), and because Preview runs no crons, an operator dispatches the purge by hand at least daily while it is enabled there (§13 enable checklist).
 
-`docs/operations/data-retention.md` gains the row in PR D: "Platform AI conversations: 90 days (tentative) · removed from active systems within 1 day, from backups within M days (OWNER-VERIFY)".
+`docs/operations/data-retention.md` gains the row in PR D: "Platform AI conversations: 90 days per message from creation (OD-7) · removed from active systems within 1 day, from backups within M days (OWNER-VERIFY)".
 
 ### 7.5 Audit (S2 B8)
 
@@ -800,6 +800,9 @@ Storage is never on without the purge, **and the code enforces it**: `env.isPlat
   - A missed day is a retention breach on Preview: record it and run the dispatch at once.
 - [ ] **Preview conversations are test data only** (synthetic questions; no real customer or operator-sensitive content). **At the end of acceptance, disable** (unset `PLATFORM_AI_CONVERSATIONS_ENABLED`) **and purge**: soft-delete the remaining conversations, then run the dispatch (grace 0 removes soft-deleted conversations and their messages) until it reports nothing more to remove; record the counts.
 - [ ] Production: the scheduled data-retention cron is live and the purge flag is set **before** or with the conversations flag; separate owner enable.
+- [ ] **Retention proven operational before history is on (S2, OD-7 activation (a)).** The purge leaves evidence on EVERY run, zero-count runs included (the job-run ledger row with counts, no content; on Preview the manual dispatch's always-audit row). Platform Ops flags the job as late if there has been no successful purge run in more than 36 h while the conversations flag is on. **One successful purge run is recorded BEFORE the flag flips.**
+- [ ] **Restores (S2, OD-7 activation (b)).** After restoring any environment that holds the B11 tables, run the purge (dispatch or job) BEFORE the app or flags are enabled, and record the counts. The restore runbook and the DR rehearsal carry this step.
+- [ ] **Disclosure accuracy (S2, OD-7 activation (c)).** The OD-5 and #415 §2 wording says: each message is deleted from our database within about a day after it turns 90 days old; backups may retain it for up to M days (OD-9, OWNER-VERIFY); copies held by the AI provider are governed by its terms (up to 30 days for abuse monitoring under standard API terms). Never "permanently deleted everywhere".
 
 **Disable order (S2).** Turn CONVERSATIONS off first, purge remaining data, THEN the purge flag. Never turn PURGE off while conversation rows exist.
 
@@ -809,9 +812,9 @@ Storage is never on without the purge, **and the code enforces it**: `env.isPlat
 
 ### OWNER DECISIONS
 
-- **OD-1 Retention: RULED TENTATIVELY 90 days** (owner 2026-11-04), pending S2's clearance of R1–R6.
+- **OD-1 Retention: RULED 90 days** (owner 2026-11-04). Its shape is fixed by OD-7. Activation still waits for S2's final clearance of R1–R6.
 - **OD-2 Production batch: RULED B11** (owner 2026-11-04; S2 agrees).
-- **OD-7 (R1) Expiry shape:** (a) an absolute 365-day cap per conversation, or (b) per-message expiry 90 days after writing, plus purging empty shells. **S2 recommends (b).** It blocks PR B leaving draft.
+- **OD-7 (R1) Expiry shape: RULED (b)** (owner 2026-11-04): each message expires 90 days after its creation, regardless of activity; a conversation is removed when its final message expires. Supersedes the inactivity proposal.
 - **OD-8 (R3) Lost grant:** 404 immediately, the normal purge clock, and a regrant restores access. Owner to confirm.
 - **OD-9 (R4) Backup window M: OWNER-VERIFY.** Read the provider's backup and PITR retention, and set a deletion date for encrypted manual dumps.
 - **OD-3 Provider exposure:** follow-ups resend up to 10 prior messages to the AI provider (more operator text per call than v0). Accept, or lower the history bound.

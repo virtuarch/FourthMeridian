@@ -9,7 +9,7 @@
  *
  * ⚠️ SHIPS DISABLED. `PLATFORM_AI_PURGE_ENABLED` (lib/env.ts) defaults OFF; while
  * off this rule makes NO database contact. It is switched on together with
- * storage, only after S2 clears retention (OD-7 pending) and the Preview
+ * storage, only after S2's final retention clearance (OD-7 ruled 2026-11-04) and the Preview
  * pre-enable check passes (scripts/platform-ai-conversations-precheck.ts).
  * Storage is never on without the purge (design §13 activation order).
  *
