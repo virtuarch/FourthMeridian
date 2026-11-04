@@ -962,6 +962,45 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
     && /copy it, don't build it/.test(gmDesc) && /never drill\.href/.test(gmDesc));
 }
 
+// ── 4i. Owner B UNAVAILABLE diagnosis (Preview 2026-11-04) ───────────────────
+// Preview trace for "What's costing me the most money?" (both runs, list_metrics skipped):
+//   steps=get_metric:UNAVAILABLE(economics-operating-cost@1)+drill,get_metric:UNAVAILABLE(economics-ai-cost@1)+drill,
+//         get_metric:UNAVAILABLE(economics-provider-cost@1)+drill …
+// Replayed OFFLINE through the real tool executor, the route-shaped binding and retrieveWith over a
+// synthetic Economics snapshot: which model calls reproduce THAT step list, and which do not.
+console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate get_metric call");
+{
+  const plaidItem = (id: string, o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
+  const cyc = priceCycleBothReadings([plaidItem("p1"), plaidItem("p2", { investmentsConsent: "ENABLED" })], [] as never, { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const snapshot: RetrievalReaders["economicsSnapshot"] = async (nowMs) => buildEconomicsSnapshot({ nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+    spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }] });
+  const good = opsBinding(OPS, readers({ economicsSnapshot: snapshot }));
+  const failing = opsBinding(OPS, readers({ economicsSnapshot: async () => { throw new Error("snapshot read failed"); } }));
+  const B_IDS = ["economics-operating-cost@1", "economics-ai-cost@1", "economics-provider-cost@1"];
+  const Q_B = "What's costing me the most money?";
+  const bTurn = (b: PlatformAiBinding, args: (id: string) => Record<string, unknown>) =>
+    run(Q_B, b, script([{ calls: B_IDS.map((id) => ({ name: "get_metric", args: args(id) })) }, { content: "Operating cost: {{m:economics-operating-cost@1|part=totalUsd}}." }]));
+  const steps = (r: Awaited<ReturnType<typeof bTurn>>) => traceLine(r.result).split(" ")[0];
+  const seenReasons = (r: Awaited<ReturnType<typeof bTurn>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => (JSON.parse((m as { content: string }).content) as MetricEnvelope).reason ?? "");
+  const PREVIEW_B = "steps=get_metric:UNAVAILABLE(economics-operating-cost@1)+drill,get_metric:UNAVAILABLE(economics-ai-cost@1)+drill,get_metric:UNAVAILABLE(economics-provider-cost@1)+drill";
+
+  const plain = await bTurn(good, (id) => ({ id }));
+  const bare = await bTurn(good, (id) => ({ id: id.replace(/@\d+$/, "") }));
+  const nullW = await bTurn(good, (id) => ({ id, window: null }));
+  check("NOT the cause: ids with @1, bare ids (no @1), window null, and no list_metrics first ⇒ all three READ (PARTIAL / ESTIMATED / PARTIAL)",
+    [plain, bare, nullW].every((r) => steps(r) === "steps=get_metric:PARTIAL(economics-operating-cost@1)+drill,get_metric:ESTIMATED(economics-ai-cost@1)+drill,get_metric:PARTIAL(economics-provider-cost@1)+drill"),
+    [plain, bare, nullW].map(steps));
+  const w30 = await bTurn(good, (id) => ({ id, window: 30 }));
+  check("window=30 on all three (an OFFERED window for ai-cost) ⇒ the fixed-window metrics refuse, but ai-cost READS — so this alone does NOT reproduce the Preview trace",
+    steps(w30) !== PREVIEW_B && /get_metric:ESTIMATED\(economics-ai-cost@1\)/.test(steps(w30)) && /takes no window/.test(seenReasons(w30)[0]), steps(w30));
+  const unoffered = await Promise.all([1, 14, 31, 60, 180, 365].map((w) => bTurn(good, (id) => ({ id, window: w }))));
+  check("REPRODUCES: a window ai-cost does NOT offer (∉ 30 / 7 / 90) on all three ⇒ exactly the Preview step list (fixed-window refusal ×2 + window-not-offered ×1)",
+    unoffered.every((r) => steps(r) === PREVIEW_B && /takes no window/.test(seenReasons(r)[0]) && /is not offered/.test(seenReasons(r)[1]) && /takes no window/.test(seenReasons(r)[2])), unoffered.map(steps));
+  const failed = await bTurn(failing, (id) => ({ id }));
+  check("ALSO REPRODUCES: the shared reader (getEconomicsSnapshot) failing ⇒ the same step list — indistinguishable in today's trace",
+    steps(failed) === PREVIEW_B && seenReasons(failed).every((x) => /the reader \(getEconomicsSnapshot\) failed/.test(x)), steps(failed));
+}
+
 // ── 5. links ────────────────────────────────────────────────────────────────
 console.log("\n5. links — only this turn's resolveNavigationTarget hrefs render");
 {
