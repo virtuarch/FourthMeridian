@@ -301,6 +301,8 @@ AI v0 (PRs #395 and #408). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/en
 > - **Your question goes to our AI model provider.** When you ask Platform AI a question, the
 >   question and the Platform figures it looks up are sent to our AI model provider to produce
 >   the answer.
+>   Cost figures you ask about (our AI spend, provider cost and operating-cost parts — aggregates
+>   of our own costs, not customer data) are sent to the AI provider too.
 > - **It reads aggregated platform metrics.** Platform AI reads aggregated platform metrics;
 >   operators are instructed not to enter personal data, and inputs are scrubbed. Before your
 >   question leaves our servers, email addresses, record ids and long digit runs (such as
