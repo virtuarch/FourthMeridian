@@ -126,6 +126,22 @@ not the window.
 - A credit-card purchase and its later debt payment are never counted as spending twice:
   the purchase is ECONOMIC spend (rises `spendGross`, not `cashOut`); the payment is a
   LIQUIDITY `DEBT_PAYMENT` cash-out — different axes, no overlap.
+- **Debt Payments admits on evidence, never on silence** (v2.6-DEBT-1,
+  `isDebtPaymentAttested`, `lib/transactions/debt-payment-attestation.ts`, read by
+  both `liquidity.ts` and `debt-payment-authority.ts`). A row counts only when the
+  destination is an owned liability ACCOUNT, or when the transfer authority proves
+  the destination TYPE is a liability (maturity `DEBT_PAYMENT`, evidence
+  `TYPE_CERTAIN_ACCOUNT_AMBIGUOUS`). An unresolved destination, a provider category,
+  a descriptor that reads like a card payment, or "nothing contradicted it" never
+  admits a row. **Membership is not naming:** paying two cards on the same day for the
+  same amount is ordinary, and leaves no evidence of which source paid which card, so
+  the type is proven while the account is unknowable. Those rows stay in the total.
+  Which creditor was paid is a separate axis (`attributeCreditor`,
+  `debt-payment-authority.ts`). It reads no descriptor or institution string, and it
+  groups every unnameable payment under `UNRESOLVED_CREDITOR_LABEL` ("Debt account not
+  determined") rather than under a descriptor that reads like a creditor. Naming can
+  never remove a payment from the total. Probe: `scripts/audit-unattested-debt-payments.ts`.
+  Tests: `debt-payment-attestation.test.ts`, `debt-payment-authority.test.ts`.
 - `byReason` is effect-partitioned: a straddle reason's NEUTRAL leg is deliberately not
   recorded, so the Cash In / Cash Out reason partition is never corrupted. Every reason
   maps to a single side.
@@ -168,3 +184,18 @@ reconcile by construction. `CalendarHeatmapGrid` is deliberately metric-agnostic
 calendar is a presentation adapter over the projection, not a fourth fold. The contract
 carries only DATA for one window; all control state (perspective, measure filter, view
 mode) lives outside it, so a slice change never triggers a re-projection.
+
+Debt Payments asks "how much did I pay toward debt", not "which card", so its
+membership rule needs the destination type and not the account. Three alternatives
+were measured and rejected:
+
+- **Requiring account certainty** would silently drop genuine payments whenever two
+  cards are paid on the same day for the same amount. That penalises an ordinary
+  pattern, not weak evidence. It repeats the mistake `ACCOUNT_CERTAIN_LEG_AMBIGUOUS`
+  was created to fix: a gate applied at one level of certainty to a claim made at a
+  coarser one.
+- **Descriptor disambiguation** ("ending in …", "transfer to … checking") would
+  resolve most ambiguous rows, and it is the exact error class that once counted a
+  savings deposit as a card payment.
+- **Proportional splitting** across candidate liabilities fabricates a counterparty
+  distribution, and **widening the match window** creates more rivals, not fewer.

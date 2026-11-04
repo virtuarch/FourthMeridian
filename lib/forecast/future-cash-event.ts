@@ -6,15 +6,15 @@
  * Pure: no DB, no model, no clock of its own, no persistence. Substrate only.
  *
  * ── The failure this closes ─────────────────────────────────────────────────
- * Measured live: a user mentions a $15,500 completion bonus and $1,500 vacation
- * pay, neither with any statement about tax treatment, and the answer offered
- * $17,000 of spendable cash. The two amounts were known. Whether either was
+ * Measured live failure (figures illustrative): a $10,000 bonus and $1,000 of
+ * vacation pay, neither with any statement about tax treatment, and the answer
+ * offered $11,000 of spendable cash. The two amounts were known. Whether either was
  * money the user could spend was not known, and the sum silently asserted it.
  *
  * An amount and a spendable amount are different facts. This module refuses to
  * expose them through one number:
  *
- *   nominal stated amounts        $17,000     known, and sayable
+ *   nominal stated amounts        $11,000     known, and sayable
  *   assertable net contribution   NOT ASSERTABLE — basis is unestablished
  *
  * ── Why basis cannot be inferred ────────────────────────────────────────────
@@ -77,7 +77,7 @@ export type AmountBasisKind = typeof AmountBasis[keyof typeof AmountBasis];
  *     minting the value would invite one.
  *
  * ⚠️ PROVENANCE IS ORTHOGONAL TO BASIS. A user-asserted amount can have UNKNOWN
- * basis ("I'm getting a $15,500 bonus" — said with certainty, tax treatment
+ * basis ("I'm getting a $10,000 bonus" — said with certainty, tax treatment
  * unstated). A derived date can carry a user-asserted amount. The two questions
  * are "who says so" and "what is it an amount of", and answering one never
  * answers the other.
@@ -136,7 +136,7 @@ export type FlowRoleKind = typeof FlowRole[keyof typeof FlowRole];
 /**
  * When the movement happens.
  *
- * A user can know "a bonus in October" without knowing October 15th, and
+ * A user can know "a bonus in May" without knowing May 15th, and
  * inventing the 15th to make arithmetic convenient is the same class of error
  * as inventing a pay date. So an unresolved month stays a month.
  *
@@ -196,7 +196,7 @@ export interface EventAmount {
    * occurrence refused for want of a basis assertion about money that had
    * already arrived.
    *
-   * ⚠️ IT NEVER APPLIES TO A STATED FUTURE AMOUNT. A $15,500 bonus the user
+   * ⚠️ IT NEVER APPLIES TO A STATED FUTURE AMOUNT. A $10,000 bonus the user
    * mentions is GROSS and stays GROSS; nothing about it was observed settling
    * anywhere. Only a derived level from settled depository credits sets this.
    */

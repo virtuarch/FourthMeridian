@@ -6,10 +6,10 @@
  *     npx tsx lib/forecast/stream-activity.test.ts
  *
  * ── The failure ─────────────────────────────────────────────────────────────
- * FORECAST-1 gave the system a calendar, and a calendar cannot know the job
- * ended. The Employer B payroll has 35 observations, a textbook SEMIMONTHLY on the
- * 10th and 25th, and no payment since 2014-12-24. `occurrencesBetween` will
- * produce September 2026 dates without hesitation.
+ * FORECAST-1 gave the system a calendar, and a calendar cannot know the
+ * payments stopped. The Employer B payroll has 35 observations, a textbook SEMIMONTHLY on the
+ * 10th and 25th, and no payment since 2039-02-24. `occurrencesBetween` will
+ * produce November 2039 dates without hesitation.
  *
  * ── What is pinned ──────────────────────────────────────────────────────────
  *   schedule generation and forecast licensing are DIFFERENT APIs;
@@ -44,26 +44,32 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
   check(name, JSON.stringify(actual) === JSON.stringify(expected),
     `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 
-const AS_OF = '2015-08-27';
+const AS_OF = '2039-10-27';
 
-// ── Real streams, verbatim from the live income ledger ──────────────────────
-const EMPLOYER_A = ['2014-12-19','2015-01-01','2015-01-16','2015-01-30','2015-02-13','2015-02-27',
-  '2015-03-13','2015-03-14','2015-03-27','2015-04-10','2015-04-24','2015-05-08','2015-05-22',
-  '2015-06-05','2015-06-18','2015-07-02','2015-07-17','2015-07-31','2015-08-14'];
-const EMPLOYER_B = ['2013-07-25','2013-08-09','2013-08-23','2013-09-10','2013-09-25','2013-10-10',
-  '2013-10-25','2013-11-08','2013-11-23','2013-12-10','2013-12-24','2014-01-10','2014-01-24',
-  '2014-02-08','2014-02-25','2014-03-08','2014-03-25','2014-04-10','2014-04-25','2014-05-09',
-  '2014-05-23','2014-06-10','2014-06-25','2014-07-10','2014-07-25','2014-08-08','2014-08-23',
-  '2014-09-10','2014-09-25','2014-10-10','2014-10-24','2014-11-08','2014-11-25','2014-12-10','2014-12-24'];
-const INT_MID = ['2013-08-15','2013-09-17','2013-10-16','2013-11-18','2013-12-16','2014-01-16',
-  '2014-02-18','2014-03-17','2014-04-15','2014-05-15','2014-06-16','2014-07-16','2014-08-15',
-  '2014-09-16','2014-10-16','2014-11-18','2014-12-15','2015-01-16','2015-02-17','2015-03-16',
-  '2015-04-15','2015-05-15','2015-06-15','2015-07-15','2015-08-17'];
-const INT_10 = ['2014-10-10','2014-11-10','2014-12-10','2015-01-10','2015-02-10','2015-03-10',
-  '2015-04-10','2015-05-10','2015-06-10','2015-07-10','2015-08-10'];
+// ── Synthetic streams, shaped like the production income ledger ────────────
+// fixture-census: synthetic-dates — biweekly series moved by a whole-week offset that is not a calendar repeat
+const EMPLOYER_A = ['2039-02-18','2039-03-03','2039-03-18','2039-04-01','2039-04-15','2039-04-29',
+  '2039-05-13','2039-05-14','2039-05-27','2039-06-10','2039-06-24','2039-07-08',
+  '2039-07-22','2039-08-05','2039-08-18','2039-09-01','2039-09-16','2039-09-30',
+  '2039-10-14'];
+// fixture-census: synthetic-dates — invented schedule plus test-placed deviations
+const EMPLOYER_B = ['2037-09-25','2037-10-10','2037-10-25','2037-11-10','2037-11-25','2037-12-10',
+  '2037-12-25','2038-01-10','2038-01-25','2038-02-10','2038-02-25','2038-03-10',
+  '2038-03-25','2038-04-09','2038-04-25','2038-05-10','2038-05-25','2038-06-10',
+  '2038-06-25','2038-07-10','2038-07-25','2038-08-11','2038-08-25','2038-09-10',
+  '2038-09-25','2038-10-10','2038-10-25','2038-11-10','2038-11-26','2038-12-10',
+  '2038-12-25','2039-01-10','2039-01-25','2039-02-10','2039-02-24'];
+// fixture-census: synthetic-dates — invented schedule plus test-placed deviations
+const INT_MID = ['2037-10-15','2037-11-15','2037-12-15','2038-01-15','2038-02-15','2038-03-16',
+  '2038-04-15','2038-05-15','2038-06-15','2038-07-15','2038-08-15','2038-09-17',
+  '2038-10-15','2038-11-15','2038-12-15','2039-01-15','2039-02-15','2039-03-15',
+  '2039-04-15','2039-05-16','2039-06-15','2039-07-15','2039-08-15','2039-09-15',
+  '2039-10-17'];
+const INT_10 = ['2038-12-10','2039-01-10','2039-02-10','2039-03-10','2039-04-10','2039-05-10',
+  '2039-06-10','2039-07-10','2039-08-10','2039-09-10','2039-10-10'];
 
-/** Both payrolls live on EXAMPLE BANK EVERYDAY, whose ledger reaches 2015-08-25. */
-const PAYROLL_LEDGER = '2015-08-25';
+/** Both payrolls live on EXAMPLE BANK EVERYDAY, whose ledger reaches 2039-10-25. */
+const PAYROLL_LEDGER = '2039-10-25';
 
 const cadOf = (dates: readonly string[], key: string): Cadence => {
   const c = deriveCadence(dates, key);
@@ -92,10 +98,10 @@ function biweeklyEnding(lastISO: string, n = 12) {
 const empBActivity = resolve({ cadence: empBCad, settlements: EMPLOYER_B });
 
 check('A1 the raw generator happily produces dates for the ended payroll',
-  occurrencesBetween(empBCad, '2015-09-01', '2015-09-30').length === 2,
-  JSON.stringify(occurrencesBetween(empBCad, '2015-09-01', '2015-09-30')));
+  occurrencesBetween(empBCad, '2039-11-01', '2039-11-30').length === 2,
+  JSON.stringify(occurrencesBetween(empBCad, '2039-11-01', '2039-11-30')));
 eq('A2 the LICENSED generator produces none',
-  expectedOccurrencesBetween(empBActivity, empBCad, '2015-09-01', '2015-09-30'), []);
+  expectedOccurrencesBetween(empBActivity, empBCad, '2039-11-01', '2039-11-30'), []);
 check('A3 the licensed generator cannot be called without an activity decision',
   /export function expectedOccurrencesBetween\(\s*activity: StreamActivity, cadence: CadenceResult/
     .test(readFileSync(join(__dirname, 'stream-activity.ts'), 'utf8')));
@@ -123,22 +129,22 @@ check('A6 the licensed path is the ONLY export that gates on eligibility',
 
 // Employer B is scheduled on the 10th and 25th; the last payment settled the 24th.
 eq('B1 a payment on the 24th satisfies the 25th occurrence',
-  occurrenceSatisfiedBy(empBCad, '2014-12-24'), '2014-12-25');
+  occurrenceSatisfiedBy(empBCad, '2039-02-24'), '2039-02-25');
 eq('B2 a payment on the 26th also satisfies the 25th',
-  occurrenceSatisfiedBy(empBCad, '2015-01-26'), '2015-01-25');
+  occurrenceSatisfiedBy(empBCad, '2039-03-26'), '2039-03-25');
 eq('B3 a payment on the day itself satisfies it',
-  occurrenceSatisfiedBy(empBCad, '2015-01-10'), '2015-01-10');
+  occurrenceSatisfiedBy(empBCad, '2039-03-10'), '2039-03-10');
 eq('B4 a weekend shift of three days still satisfies',
-  occurrenceSatisfiedBy(empBCad, '2015-01-13'), '2015-01-10');
+  occurrenceSatisfiedBy(empBCad, '2039-03-13'), '2039-03-10');
 eq('B5 a genuinely off-cycle payment satisfies NOTHING',
-  occurrenceSatisfiedBy(empBCad, '2015-01-17'), null);
+  occurrenceSatisfiedBy(empBCad, '2039-03-17'), null);
 eq('B6 an interval payroll one day early satisfies its slot',
-  occurrenceSatisfiedBy(empACad, '2015-08-13'), '2015-08-14');
+  occurrenceSatisfiedBy(empACad, '2039-10-13'), '2039-10-14');
 eq('B7 the measured tolerance is 3 days — the corpus maximum',
   ACTIVITY.SETTLEMENT_TOLERANCE_DAYS, 3);
 check('B8 the satisfied occurrence and the settlement travel as SEPARATE fields',
-  empBActivity.lastSatisfiedOccurrenceISO === '2014-12-25'
-  && empBActivity.lastObservedSettlementISO === '2014-12-24');
+  empBActivity.lastSatisfiedOccurrenceISO === '2039-02-25'
+  && empBActivity.lastObservedSettlementISO === '2039-02-24');
 check('B9 the schedule is NOT mutated by the shift — the 25th is still the 25th',
   JSON.stringify(empBCad.daysOfMonth) === '[10,25]');
 
@@ -150,10 +156,10 @@ eq('C1 missedSinceAnchor counts 17 for Employer B', missedSinceAnchor(empBCad, A
 eq('C2 the observable truth is 15', empBActivity.missedOccurrences, 15);
 check('C3 the two phantoms are the paid-early slot and the unreached slot',
   missedSinceAnchor(empBCad, AS_OF) - (empBActivity.missedOccurrences ?? 0) === 2);
-eq('C4 the first genuinely missed occurrence is 2015-01-10',
-  missedOccurrencesSince(empBCad, '2014-12-25', PAYROLL_LEDGER)[0], '2015-01-10');
-eq('C5 the 2015-08-25 occurrence is NOT missed — the ledger has not reached past it',
-  missedOccurrencesSince(empBCad, '2014-12-25', PAYROLL_LEDGER).includes('2015-08-25'), false);
+eq('C4 the first genuinely missed occurrence is 2039-03-10',
+  missedOccurrencesSince(empBCad, '2039-02-25', PAYROLL_LEDGER)[0], '2039-03-10');
+eq('C5 the 2039-10-25 occurrence is NOT missed — the ledger has not reached past it',
+  missedOccurrencesSince(empBCad, '2039-02-25', PAYROLL_LEDGER).includes('2039-10-25'), false);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // D. Silence must be observable
@@ -164,10 +170,10 @@ eq('D1 with no ledger reach, activity is UNKNOWN — not SILENT', noLedger.state
 check('D2 and it says why', /cannot be distinguished from absence of observation/.test(noLedger.reason));
 eq('D3 UNKNOWN never projects', noLedger.mayGenerateExpectedOccurrences, false);
 
-// The feed stopping is evidence about the feed, not the job. Crucially it is
+// The feed stopping is evidence about the feed, not the income. Crucially it is
 // also NOT evidence of continuation: occurrences have come due that nobody
 // could see, and "nobody looked" is not "we looked and nothing came".
-const feedStopped = resolve({ cadence: empBCad, settlements: EMPLOYER_B, observedThroughISO: '2014-12-26' });
+const feedStopped = resolve({ cadence: empBCad, settlements: EMPLOYER_B, observedThroughISO: '2039-02-26' });
 eq('D4 a ledger that stops right after the last payment is UNKNOWN, not SILENT',
   feedStopped.state, ActivityState.UNKNOWN);
 eq('D4b with zero OBSERVED misses, because none were observable',
@@ -180,20 +186,20 @@ check('D5c naming the blind spot, not calling it silence',
 // The blind spot must not swallow the healthy case: as-of close to the newest
 // payment, nothing yet due, feed current.
 const quietButCurrent = resolve({
-  cadence: cadOf(biweeklyEnding('2015-08-14'), 's'), settlements: biweeklyEnding('2015-08-14'),
-  observedThroughISO: '2015-08-20',
+  cadence: cadOf(biweeklyEnding('2039-10-14'), 's'), settlements: biweeklyEnding('2039-10-14'),
+  observedThroughISO: '2039-10-20',
 });
 eq('D5d nothing due yet is still CURRENT', quietButCurrent.state, ActivityState.CURRENT);
 
 // Contrary evidence outranks blindness.
 const missedThenBlind = resolve({
-  cadence: cadOf(biweeklyEnding('2015-05-01'), 's'), settlements: biweeklyEnding('2015-05-01'),
-  observedThroughISO: '2015-06-30',
+  cadence: cadOf(biweeklyEnding('2039-07-01'), 's'), settlements: biweeklyEnding('2039-07-01'),
+  observedThroughISO: '2039-08-30',
 });
 eq('D5e an observed miss is SILENT even when later occurrences are unobserved',
   missedThenBlind.state, ActivityState.SILENT);
 
-const behind = resolve({ cadence: empBCad, settlements: EMPLOYER_B, observedThroughISO: '2014-06-01' });
+const behind = resolve({ cadence: empBCad, settlements: EMPLOYER_B, observedThroughISO: '2038-06-01' });
 eq('D6 a ledger reaching BEFORE the newest settlement is incoherent — UNKNOWN', behind.state, ActivityState.UNKNOWN);
 
 // ── FIN-001 — the blind spot is COUNTED, so a disclosure layer can size it ──
@@ -222,7 +228,7 @@ check('E6 ENDED is reachable ONLY through positive evidence',
   (activitySrc.match(/state: ActivityState\.ENDED/g) ?? []).length === 1
   && /assertion\?\.kind === 'ENDED'/.test(activitySrc));
 check('E7 no amount of silence reaches ENDED', (() => {
-  const ancient = resolve({ cadence: empBCad, settlements: EMPLOYER_B.slice(0, 5).concat(['2009-01-10']), observedThroughISO: PAYROLL_LEDGER });
+  const ancient = resolve({ cadence: empBCad, settlements: EMPLOYER_B.slice(0, 5).concat(['2033-01-10']), observedThroughISO: PAYROLL_LEDGER });
   return ancient.state !== ActivityState.ENDED;
 })());
 
@@ -231,13 +237,13 @@ check('E7 no amount of silence reaches ENDED', (() => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Biweekly, last paid 13 days ago, next due tomorrow — nothing is yet due.
-const recent = resolve({ cadence: cadOf(biweeklyEnding('2015-08-14'), 's'), settlements: biweeklyEnding('2015-08-14') });
+const recent = resolve({ cadence: cadOf(biweeklyEnding('2039-10-14'), 's'), settlements: biweeklyEnding('2039-10-14') });
 eq('F1 a stream with nothing yet due is CURRENT', recent.state, ActivityState.CURRENT);
 eq('F2 and may project', recent.mayGenerateExpectedOccurrences, true);
 eq('F3 with zero missed', recent.missedOccurrences, 0);
 
 // Last paid 29 days ago: ONE occurrence has come and gone inside the ledger.
-const oneLate = resolve({ cadence: cadOf(biweeklyEnding('2015-07-29'), 's'), settlements: biweeklyEnding('2015-07-29') });
+const oneLate = resolve({ cadence: cadOf(biweeklyEnding('2039-09-28'), 's'), settlements: biweeklyEnding('2039-09-28') });
 eq('F4 one fully-observed miss stops the projection', oneLate.mayGenerateExpectedOccurrences, false);
 eq('F5 but only reaches SILENT, never ENDED', oneLate.state, ActivityState.SILENT);
 eq('F6 and reports exactly one', oneLate.missedOccurrences, 1);
@@ -251,7 +257,7 @@ check('F7 the one-miss threshold is measured, not assumed — zero interior miss
   }));
 
 // Long silence.
-const long = resolve({ cadence: cadOf(biweeklyEnding('2015-02-06'), 's'), settlements: biweeklyEnding('2015-02-06') });
+const long = resolve({ cadence: cadOf(biweeklyEnding('2039-04-08'), 's'), settlements: biweeklyEnding('2039-04-08') });
 eq('F8 a long silence is still SILENT, and still not ENDED', long.state, ActivityState.SILENT);
 check('F9 with many missed occurrences reported', (long.missedOccurrences ?? 0) >= 13, String(long.missedOccurrences));
 eq('F10 one miss and many misses have the SAME consequence',
@@ -259,8 +265,8 @@ eq('F10 one miss and many misses have the SAME consequence',
 
 // Recovery: SILENT is not a trap. One payment lands and the stream projects again.
 const recovered = resolve({
-  cadence: cadOf([...biweeklyEnding('2015-07-29'), '2015-08-12'], 's'),
-  settlements: [...biweeklyEnding('2015-07-29'), '2015-08-12'],
+  cadence: cadOf([...biweeklyEnding('2039-09-28'), '2039-10-12'], 's'),
+  settlements: [...biweeklyEnding('2039-09-28'), '2039-10-12'],
 });
 eq('F11 SILENT recovers on its own when a payment lands', recovered.state, ActivityState.CURRENT);
 
@@ -291,7 +297,7 @@ eq('G9 termination beats a perfectly current cadence',
 
 // An assertion cannot manufacture a schedule.
 const noCadence = resolve({
-  cadence: deriveCadence(['2015-05-04'], 'uber'), settlements: ['2015-05-04'],
+  cadence: deriveCadence(['2039-07-04'], 'uber'), settlements: ['2039-07-04'],
   assertion: { kind: 'CONTINUES', assertedOnISO: AS_OF },
 });
 eq('G10 "I still work there" with no derivable cadence is still UNKNOWN', noCadence.state, ActivityState.UNKNOWN);
@@ -330,7 +336,7 @@ check('H6 the resolver sees ONE stream — it takes no list and cannot merge',
 // I. Periodic is not payroll (brief §9, §11)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const midActivity = resolve({ cadence: midCad, settlements: INT_MID, observedThroughISO: '2015-08-25' });
+const midActivity = resolve({ cadence: midCad, settlements: INT_MID, observedThroughISO: '2039-10-25' });
 eq('I1 monthly interest is schedule-eligible — it IS periodic', midActivity.state, ActivityState.CURRENT);
 check('I2 which is a claim about the SCHEDULE, not about salary',
   !/payroll|salary|wage|operating/i.test(midActivity.reason), midActivity.reason);
@@ -347,8 +353,8 @@ check('J1 SILENT renders as not-projectable', /may NOT be projected forward/.tes
 check('J2 and forbids stating a future amount', /No future amount may be stated/.test(renderedSilent));
 check('J3 and disclaims termination', /not evidence that the income ended/i.test(renderedSilent));
 check('J4 and separates settlement from occurrence',
-  /2014-12-24 \(satisfying the 2014-12-25 scheduled occurrence\)/.test(renderedSilent), renderedSilent);
-check('J5 and states the ledger reach', /observed through: 2015-08-25/i.test(renderedSilent));
+  /2039-02-24 \(satisfying the 2039-02-25 scheduled occurrence\)/.test(renderedSilent), renderedSilent);
+check('J5 and states the ledger reach', /observed through: 2039-10-25/i.test(renderedSilent));
 check('J6 ENDED does not repeat the not-evidence caveat — it IS evidence',
   !/not evidence that the income ended/i.test(describeActivity(leftJob).join('\n')));
 check('J7 no rendering carries an amount',
@@ -437,7 +443,7 @@ check('L5 only CURRENT ever projects',
 
 eq('M-A current biweekly payroll is projection-eligible', empAActivity.mayGenerateExpectedOccurrences, true);
 eq('M-B the Employer B fixture generates NO expected future income',
-  expectedOccurrencesBetween(empBActivity, empBCad, AS_OF, '2015-12-31'), []);
+  expectedOccurrencesBetween(empBActivity, empBCad, AS_OF, '2039-12-31'), []);
 check('M-B2 and is not called ENDED', empBActivity.state === ActivityState.SILENT);
 eq('M-C one late payment withholds without terminating',
   [oneLate.mayGenerateExpectedOccurrences, oneLate.state], [false, ActivityState.SILENT]);

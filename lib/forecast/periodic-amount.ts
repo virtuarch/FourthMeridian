@@ -65,8 +65,9 @@ export const ExclusionReason = {
    * slot represents the periodic amount.
    *
    * ⚠️ This is how a supplemental payment is detected — by the SCHEDULE, not by
-   * being small or large. The real stream pays $5,489.85 on 2015-03-13 and
-   * $960.77 on 2015-03-14; both satisfy the same occurrence, and which one is
+   * being small or large. A stream that pays a full payment one day and a small
+   * one the next (the fixture in periodic-amount.test.ts) has both satisfy the
+   * same occurrence, and which one is
    * "the paycheck" is not determinable. Classifying by magnitude would have
    * guessed, and guessed differently on a supplemental bonus.
    */

@@ -79,13 +79,13 @@ function stripLiterals(t: string): string {
   return out;
 }
 const codeOnly = stripLiterals(src);
-const AS_OF = '2015-08-28';
+const AS_OF = '2008-03-28';
 
-// ── The real Space, exactly as FORECAST-7 pinned it ─────────────────────────
+// ── The synthetic fixture Space, exactly as FORECAST-7 pinned it ────────────
 
-const realAccounts = () => ({
-  totalLiquid: 10228.74, totalLiabilities: 549.75,
-  totalInvestments: 5006.557852, totalDigitalAssets: 19014.62555862176,
+const baseAccounts = () => ({
+  totalLiquid: 12000.00, totalLiabilities: 600.00,
+  totalInvestments: 5000.006, totalDigitalAssets: 20000.006,
   redactedCount: 0, totalsUnconverted: false,
   counts: { liquid: 4, liabilities: 2, investments: 3, digitalAssets: 4, realAssets: 0 },
 } as unknown as AccountsSectionData);
@@ -108,7 +108,7 @@ const INTEREST = {
 };
 
 const state = (o: Partial<OperatingStateInput> = {}): CurrentOperatingState => {
-  const acc = realAccounts();
+  const acc = baseAccounts();
   return composeOperatingState({
     asOfISO: AS_OF,
     accounts: {
@@ -146,8 +146,8 @@ const SPEND_10K: PolicyAssumption = {
   origin: AssumptionOrigin.USER_REQUESTED, stance: AssumptionStance.COUNTERFACTUAL,
   statedAs: 'show me a scenario where I spend $10,000/month',
 };
-const HORIZON = { fromISO: AS_OF, toISO: '2015-11-30',
-  origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'through the end of November' };
+const HORIZON = { fromISO: AS_OF, toISO: '2008-06-30',
+  origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'through the end of June' };
 
 const policy = (assumptions: PolicyAssumption[], horizon = null as ForecastPolicy['horizon']):
   ForecastPolicy => ({ horizon, assumptions });
@@ -442,21 +442,21 @@ check('F8 the system-default inventory is exactly one',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const BONUS: FutureCashEvent = {
-  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
+  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2008-05-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
-  amount: { value: 15500, currency: 'USD', basis: AmountBasis.GROSS,
+  amount: { value: 10000, currency: 'USD', basis: AmountBasis.GROSS,
     provenance: EventProvenance.USER_ASSERTED },
 };
 const VACATION: FutureCashEvent = {
-  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
+  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2008-05-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
-  amount: { value: 1500, currency: 'USD', basis: AmountBasis.UNKNOWN,
+  amount: { value: 1000, currency: 'USD', basis: AmountBasis.UNKNOWN,
     provenance: EventProvenance.USER_ASSERTED },
 };
 const EVENTS = [BONUS, VACATION];
 const before = composeFutureCash(EVENTS);
 
-eq('G1 with no assumptions the nominal inflow is stated', before.nominalInflow, 17000);
+eq('G1 with no assumptions the nominal inflow is stated', before.nominalInflow, 11000);
 eq('G2 and spendable cash is REFUSED', before.assertableNet, null);
 
 const netEvent = (id: string, eventId: string, stance: typeof AssumptionStance[keyof typeof AssumptionStance]):
@@ -513,21 +513,21 @@ check('G20 no ratio transformation exists — no percentage field, no rate',
 check('G21 the module estimates no deduction', !/tax|withhold/i.test(codeOnly));
 
 check('G22 a stream-level NET supposition reaches that stream\'s UNKNOWN-basis events', (() => {
-  const payslip: FutureCashEvent = { id: 'employer-a@2015-09-11',
-    timing: { kind: 'EXACT', dateISO: '2015-09-11' }, timingProvenance: EventProvenance.DERIVED,
+  const payslip: FutureCashEvent = { id: 'employer-a@2008-04-11',
+    timing: { kind: 'EXACT', dateISO: '2008-04-11' }, timingProvenance: EventProvenance.DERIVED,
     direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'employer-a',
     amount: { value: 5500.015, currency: 'USD', basis: AmountBasis.UNKNOWN,
       provenance: EventProvenance.DERIVED } };
   const r = applyPolicy(REAL, [payslip, BONUS], policy([EMPLOYER_A_NET]));
-  const pay = r.events.find((e) => e.id === 'employer-a@2015-09-11')!;
+  const pay = r.events.find((e) => e.id === 'employer-a@2008-04-11')!;
   const bonus = r.events.find((e) => e.id === 'bonus')!;
   return pay.assumedBasis === AmountBasis.NET && pay.basisAssumptionId === 'a2'
     // ⚠️ and does NOT reach an event whose basis is already established.
     && bonus.assumedBasis === null;
 })());
 check('G23 nor an event belonging to a different stream', (() => {
-  const other: FutureCashEvent = { id: 'employer-b@2015-09-15',
-    timing: { kind: 'EXACT', dateISO: '2015-09-15' }, timingProvenance: EventProvenance.DERIVED,
+  const other: FutureCashEvent = { id: 'employer-b@2008-04-15',
+    timing: { kind: 'EXACT', dateISO: '2008-04-15' }, timingProvenance: EventProvenance.DERIVED,
     direction: 'INFLOW', role: FlowRole.INCOME, sourceKey: 'employer-b',
     amount: { value: 5200.00, currency: 'USD', basis: AmountBasis.UNKNOWN,
       provenance: EventProvenance.DERIVED } };
@@ -577,7 +577,7 @@ eq('I2 and the conclusion it would have unlocked is REFUSED, not approximated',
   statusOf(bad, Conclusion.MONTHLY_BURN_RATE), ConclusionStatus.REFUSED);
 eq('I3 an invalid policy reproduces the no-policy matrix exactly', countBy(bad), countBy(A));
 check('I4 a bad horizon is dropped and disclosed', (() => {
-  const r = applyPolicy(REAL, [], { horizon: { fromISO: '2015-11-30', toISO: AS_OF,
+  const r = applyPolicy(REAL, [], { horizon: { fromISO: '2008-06-30', toISO: AS_OF,
     origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'backwards' }, assumptions: [] });
   return r.horizon === null && r.rejected[0].code === PolicyIssue.INVALID_HORIZON;
 })());

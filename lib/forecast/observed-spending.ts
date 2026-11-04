@@ -5,9 +5,9 @@
  *
  * ── This is NOT FORECAST-6, and the difference is the whole point ───────────
  * F6 asks "what does this user's ordinary spending LOOK LIKE NOW" and answers
- * UNKNOWN for this user, on evidence: calendar months range 6.1x, 28-day windows
- * 8.3x, 7-day windows 15.1x. No level repeats, so no level is "normal". That
- * verdict is untouched here and must never be restated as a rate.
+ * UNKNOWN for a volatile user, on evidence: calendar months, 28-day windows and
+ * 7-day windows all range several-fold. No level repeats, so no level is
+ * "normal". That verdict is untouched here and must never be restated as a rate.
  *
  * This module asks a strictly weaker question with a strictly weaker answer:
  * over the last N complete months, what did spending AVERAGE? That is a
@@ -16,9 +16,10 @@
  * `OBSERVED_CONTINUATION`, which is the assumption the user can reject.
  *
  * ⚠️ THE WINDOW IS PART OF THE ANSWER, because on real data it IS the answer.
- * Measured on the live Space: 2 complete months give $4,156.68/mo, 3 give
- * $8,349.66, 13 give $6,567.02. A rate quoted without its window is not a
- * weaker claim than a forecast — it is an unfalsifiable one.
+ * Measured in production: averaging 2, 3 or 13 complete months gave three
+ * materially different rates (illustratively $4,000/mo, $8,000 and $6,500). A
+ * rate quoted without its window is not a weaker claim than a forecast — it is
+ * an unfalsifiable one.
  *
  * ⚠️ AND THE WINDOW IS FIXED, NOT CHOSEN. `WINDOW_MONTHS` is a constant and the
  * selection is always "the most recent complete months, up to that many". There
@@ -31,9 +32,9 @@
  * prompt already share, and KD-10 records that a competing spending figure was
  * removed once before. A second, wider read would reintroduce exactly that. So
  * this takes the same complete months everything else uses — which also means
- * DEBT_PAYMENT is already excluded, verified against the ledger: Jul+Aug 2026
- * `expenseTotal` averages $4,156.68, and SPENDING+FEE over those months is
- * $2,290.03 + $6,023.33, the same figure to the cent.
+ * DEBT_PAYMENT is already excluded, verified against the ledger: the two-month
+ * `expenseTotal` average matched the SPENDING+FEE ledger sum over the same
+ * months to the cent.
  */
 
 import { AssumptionOrigin, type AssumptionOriginKind } from './policy';
@@ -87,7 +88,7 @@ export interface ObservedSpendingRate {
   /**
    * max/min across the window. NOT a confidence interval and not a forecast
    * band: a plain statement of how much the averaged months differed from each
-   * other, so a mid-point drawn from $14,060.81 and $2,290.03 cannot be read as
+   * other, so a mid-point drawn from, say, $14,000 and $2,000 cannot be read as
    * a settled level. Null when a single month was averaged.
    */
   dispersionRatio: number | null;
