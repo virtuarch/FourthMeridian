@@ -170,6 +170,67 @@ async function main(): Promise<number> {
   check(19, "FM-AUDIT-021 undetermined: the day before the ledger horizon",
     row(text, "Undetermined").includes("| 1 | 1 | 2026-03-05 | exact |"), row(text, "Undetermined"));
 
+  // 5. frozen-restricted, inside `all`: the one frozen NULL row (Space One, 2026-05-04) has only a plain checking link ⇒ trivially 0
+  check(25, "frozen-restricted is part of `all`: the base fixture's frozen NULL row is trivially 0, nothing derivable",
+    /### 5\. Frozen observed rows: derivable restricted-cash split \(FIN-E\)/.test(text)
+      && row(text, "**Derivable**").includes("| **0** | **0** | — | upper bound |")
+      && row(text, "No restricted-capable").includes("| 1 | 1 | 2026-05-04 | exact |")
+      && row(text, "All frozen observed rows with NULL").includes("| 1 | — | 2026-05-04 | exact |"),
+    `${row(text, "**Derivable**")} / ${row(text, "No restricted-capable")}`);
+
+  // ── 5. frozen-restricted against its own seeded cases (added after the `all` assertions above, so they stay untouched) ──
+  {
+    const S5 = id("se"), S6 = id("sf"), S7 = id("sg");
+    const H = Object.fromEntries(["h1", "h2", "h3", "c1", "i1"].map((k) => [k, id(k)])) as Record<string, string>;
+    // Non-Plaid accounts, so FIN-A2 and FM-AUDIT-021 populations are unaffected.
+    const fa = (k: string, type: string, sub: string | null, deleted: string | null = null) =>
+      `('${H[k]}','Acct ${k}','${type}','${INSTITUTION}','USER','${U}',NULL,500,true,'2026-01-01',${deleted ? `'${deleted}'` : "NULL"},'manual',${sub === null ? "NULL" : `'${sub}'`},now())`;
+    const tx = (k: string, acc: string, date: string, pending = false, deleted: string | null = null) =>
+      `('${id(k)}','${H[acc]}','${date}','${date}','Fixture','Other',-7,${pending},${deleted ? `'${deleted}'` : "NULL"},now())`;
+    one(`
+      insert into "Space" (id,name,type,"updatedAt") values ('${S5}','Space Five','PERSONAL',now()),('${S6}','Space Six','PERSONAL',now()),('${S7}','Space Seven','PERSONAL',now());
+      insert into "FinancialAccount" (id,name,type,institution,"ownerType","ownerUserId","plaidAccountId",balance,"balanceObserved","createdAt","deletedAt","syncStatus","providerSubtype","updatedAt") values
+        ${fa("h1", "checking", " HSA ")}, ${fa("h2", "savings", "hsa", "2026-03-01")}, ${fa("h3", "checking", "hsa")},
+        ${fa("c1", "checking", "checking")}, ${fa("i1", "investment", "401k")};
+      insert into "SpaceAccountLink" (id,"spaceId","financialAccountId",kind,status,"createdAt","revokedAt","updatedAt") values
+        ('${id("l6")}','${S5}','${H.h1}','HOME','ACTIVE','2026-01-01',NULL,now()),
+        ('${id("l7")}','${S6}','${H.h2}','HOME','ACTIVE','2026-01-01',NULL,now()),
+        ('${id("l8")}','${S7}','${H.c1}','HOME','ACTIVE','2026-01-01',NULL,now()),
+        ('${id("l9")}','${S7}','${H.i1}','HOME','ACTIVE','2026-01-01',NULL,now()),
+        ('${id("la")}','${S7}','${H.h3}','HOME','REVOKED','2026-01-01','2026-01-15',now());
+      insert into "Transaction" (id,"financialAccountId",date,"economicDate",merchant,category,amount,pending,"deletedAt","updatedAt") values
+        ${tx("t1", "h1", "2026-01-05")}, ${tx("t2", "h1", "2026-01-02", true)}, ${tx("t3", "h1", "2026-01-01", false, "2026-01-20")},
+        ${tx("t4", "h2", "2026-01-02")}, ${tx("t5", "h3", "2026-01-02")}, ${tx("t6", "c1", "2026-01-02")};
+      insert into "SpaceSnapshot" (id,"spaceId",date,"isEstimated","restrictedCash",cash) values
+        ('${id("s51")}','${S5}','2026-02-01',false,NULL,500),
+        ('${id("s52")}','${S5}','2026-02-02',false,NULL,500),
+        ('${id("s53")}','${S5}','2026-01-03',false,NULL,500),
+        ('${id("s54")}','${S5}','2026-02-03',true,NULL,500),
+        ('${id("s55")}','${S5}','2026-02-04',false,0,500),
+        ('${id("s61")}','${S6}','2026-02-10',false,NULL,500),
+        ('${id("s71")}','${S7}','2026-02-01',false,NULL,500),
+        ('${id("s72")}','${S7}','2026-01-10',false,NULL,500);
+    `);
+    const before5 = fingerprint();
+    const r = cli(["frozen-restricted", "--env=local"]);
+    const t = out(r);
+    console.log(r.stdout);
+    const secrets5 = [S5, S6, S7, ...Object.values(H)];
+    const leaked5 = [...leaked(t), ...secrets5.filter((x) => t.includes(x))];
+    check(26, "`frozen-restricted --env=local` exits 0, writes nothing and leaks nothing",
+      r.status === 0 && fingerprint() === before5 && leaked5.length === 0, `${t.slice(0, 1500)} ${leaked5.join(", ")}`);
+    check(27, "derivable: 3 days, 2 Spaces, 2026-01-10 → 2026-02-02 (posted ledger reaches the day; ' HSA ' normalises; a link live that day counts though revoked since), upper bound",
+      row(t, "**Derivable**").includes("| **3** | **2** | 2026-01-10 → 2026-02-02 | upper bound |"), row(t, "**Derivable**"));
+    check(28, "not derivable: 2 days, 2 Spaces, 2026-01-03 → 2026-02-10 (first POSTED non-deleted row is after the day — pending and deleted rows do not count; an account deleted since), exact",
+      row(t, "Not derivable").includes("| 2 | 2 | 2026-01-03 → 2026-02-10 | exact |"), row(t, "Not derivable"));
+    check(29, "trivially 0: 2 days, 2 Spaces, 2026-02-01 → 2026-05-04 (plain checking, a 401k investment, an HSA link revoked before the day), exact",
+      row(t, "No restricted-capable").includes("| 2 | 2 | 2026-02-01 → 2026-05-04 | exact |"), row(t, "No restricted-capable"));
+    check(30, "population: 7 frozen observed NULL rows (estimate rows and a recorded 0 excluded), exact",
+      row(t, "All frozen observed rows with NULL").includes("| 7 | — | 2026-01-03 → 2026-05-04 | exact |"), row(t, "All frozen observed rows with NULL"));
+    check(31, "it states it is report-only and that any fill is a separate owner-gated repair",
+      /REPORT ONLY: this tool has no fill and no apply\. Any fill of frozen rows .* is a separate owner-gated repair\./.test(t));
+  }
+
   // ── a non-bypass principal is refused (a count under RLS would silently miss rows) ──
   {
     const pw = randomBytes(18).toString("hex");
@@ -189,6 +250,9 @@ async function main(): Promise<number> {
   // ── a missing column ⇒ UNAVAILABLE, never guessed ──
   {
     one(`alter table "SpaceSnapshot" drop column "restrictedCash"; alter table "FinancialAccount" drop column "balanceObserved";`);
+    const fr = cli(["frozen-restricted", "--env=local"]);
+    check(32, "frozen-restricted reads UNAVAILABLE naming SpaceSnapshot.restrictedCash",
+      fr.status === 0 && /\*\*UNAVAILABLE\*\* — the target has no SpaceSnapshot\.restrictedCash/.test(out(fr)) && !/\*Heuristic:\*/.test(out(fr)), out(fr).slice(0, 1500));
     const r = cli(["all", "--env=local"]);
     const t = out(r);
     check(23, "fin-e and fin-a2 read UNAVAILABLE naming the column; the other two still report",

@@ -1457,10 +1457,10 @@ These rewrite stored rows. None runs as part of B10, and each needs its own owne
 
 #### How the owner gets the numbers
 
-`scripts/b10-5-decision-report.ts` prints the candidate counts for four of these decisions as one markdown table for the morning report. It is **read-only**: there is no apply mode, and each report runs in its own transaction opened with `SET TRANSACTION READ ONLY` (never a session-level SET). It prints **counts and date ranges only**: no ids, amounts, names, emails or institutions.
+`scripts/b10-5-decision-report.ts` prints the candidate counts for four of these decisions, plus one follow-up FIN-E question (`frozen-restricted`), as one markdown table for the morning report. It is **read-only**: there is no apply mode, and each report runs in its own transaction opened with `SET TRANSACTION READ ONLY` (never a session-level SET). It prints **counts and date ranges only**: no ids, amounts, names, emails or institutions.
 
 ```
-npm run report:b10-5 -- all --env=preview                       # or: coingecko | fin-a2 | fin-e | audit-021
+npm run report:b10-5 -- all --env=preview                       # or: coingecko | fin-a2 | fin-e | audit-021 | frozen-restricted
 npm run report:b10-5 -- coingecko --env=preview --coingecko-fixed-from=<#300 deploy date>
 npm run report:b10-5 -- all --env=production --acknowledge-production-read
 ```
@@ -1474,6 +1474,7 @@ npm run report:b10-5 -- all --env=production --acknowledge-production-read
   - **FIN-A2:** a live Plaid account with `balance = 0` and `balanceObserved = true` counts as a candidate when it has no observed BALANCES coverage row since creation. Accounts created before the coverage ledger began are shown separately. A genuine $0 also qualifies, so this list is for review.
   - **FIN-E:** counts estimate rows with a NULL `restrictedCash` in Spaces that have an active account link. This is an upper bound. Frozen observed rows are counted separately, because regeneration never rewrites them.
   - **FM-AUDIT-021:** counts frozen observed days where a linked Plaid bank account had no observed balance in the 7 days to that day's end. This is an upper bound, because materiality cannot be evaluated historically. Days before the ledger are counted as undetermined.
+  - **Frozen restricted split (FIN-E follow-up):** answers whether the restricted share of frozen observed rows with a NULL `restrictedCash` could be derived without un-freezing them. No per-day account balance is stored. The as-of path walks back from each account's current posted balance through posted transactions, so derivability depends on transaction coverage. Only checking or savings accounts with an `hsa` subtype enter `restrictedCash`. A day is **derivable** (upper bound) when every such account linked that day still exists and has a posted, non-deleted transaction dated on or before the day. A day with no such account is **trivially 0** (exact). The rest are **not derivable** (exact). It is a report only: any fill of frozen rows is a separate owner-gated repair.
 - **Proof.** Unit: `scripts/b10-5-decision-report.test.ts`. Throwaway Postgres: `npm run accept:b10-5-report`, which also runs in CI.
 
 **Owner decision (security; PRIV-004):** encryption key rotation. Approve steps b–d after the clone + Preview drill. **Approving step (b) makes B10 roll-forward-only.** (b) set the new key as `ENCRYPTION_KEY` and the old one as `ENCRYPTION_KEY_PREVIOUS`; (c) `rotate-encryption-key` dry run, then apply; (d) only after `--verify-complete` exits 0, remove `ENCRYPTION_KEY_PREVIOUS`. Drill a→d end to end on a restored backup clone first, then on Preview, with a full verified backup before Production (see `docs/operations/key-rotation.md`).

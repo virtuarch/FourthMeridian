@@ -16,7 +16,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   BOUND_LABELS, COINGECKO_DEFINITE_DAILY_MIN_SPAN, GOVERNANCE_LINES, READ_ONLY_STATEMENT, REPORTS, REQUIRED_COLUMNS,
-  coinLabel, missingColumns, outputLeaks, renderDocument, runReport, summarizeAudit021, summarizeCoinGecko,
+  FROZEN_RESTRICTED_SQL, RESTRICTED_DEPOSITORY_SUBTYPES,
+  coinLabel, missingColumns, outputLeaks, renderDocument, renderReport, runReport, summarizeAudit021, summarizeCoinGecko,
+  summarizeFrozenRestricted,
   type ReadOnlyClient, type ReportOutcome,
 } from "./lib/b10-5-decision-report.core";
 
@@ -71,6 +73,10 @@ async function runnerSection(): Promise<void> {
           log.push(sql);
           if (/information_schema/.test(sql)) return cols as unknown as T;
           if (/PriceObservation/.test(sql)) return [{ ticker: "BTC", rows: 100, minDate: "2025-01-01", maxDate: "2025-04-10", spanDays: 100, fetchedDate: "2026-09-01" }] as unknown as T;
+          if (/TRIVIAL_ZERO/.test(sql)) return [
+            { verdict: "DERIVABLE", rows: 5, spaces: 1, fromDate: "2026-02-01", toDate: "2026-02-05" },
+            { verdict: "TRIVIAL_ZERO", rows: 2, spaces: 1, fromDate: "2026-02-06", toDate: "2026-02-07" },
+          ] as unknown as T;
           if (/GROUP BY verdict/.test(sql)) return [{ verdict: "CLEAR", rows: 3, spaces: 1, fromDate: "2026-02-01", toDate: "2026-02-03" }] as unknown as T;
           if (/"plaidAccounts"/.test(sql)) return [{ plaidAccounts: 9, candidates: 2, inLedger: 1, preLedger: 1, noInstitutionClock: 2, minCreated: "2026-03-01", maxCreated: "2026-04-01", ledgerStart: "2026-03-15", byType: { checking: 1, debt: 1 } }] as unknown as T;
           return [{ allRows: 10, nullRows: 6, fillableRows: 4, fillableSpaces: 2, fillableFrom: "2026-01-01", fillableTo: "2026-01-04", frozenRows: 2, frozenSpaces: 1, frozenFrom: "2026-01-05", frozenTo: "2026-01-06", noInputRows: 0 }] as unknown as T;
@@ -90,7 +96,7 @@ async function runnerSection(): Promise<void> {
     check("the rendered document carries the governance lines verbatim", GOVERNANCE_LINES.every((l) => doc.includes(l))
       && doc.includes("Preview/clone: engineering; Production: owner-run or owner-approved.") && /safety rail, NOT approval/.test(doc));
     check("the rendered document passes the leak predicate", outputLeaks(doc).length === 0, outputLeaks(doc).join());
-    check("every report prints its heuristic", (doc.match(/\*Heuristic:\*/g) ?? []).length === 4);
+    check("every report prints its heuristic", (doc.match(/\*Heuristic:\*/g) ?? []).length === REPORTS.length);
     // S2 (#370): every figure row names its bound kind literally, as its LAST cell.
     const tableRows = doc.split("\n").filter((l) => l.startsWith("| ") && !/^\|\s*(Coin|Measure|Frozen rows)\s*\|/.test(l));
     const unlabelled = tableRows.filter((l) => !BOUND_LABELS.some((b) => l.trimEnd().endsWith(`| ${b} |`)));
@@ -100,7 +106,17 @@ async function runnerSection(): Promise<void> {
       /\| BTC \| one day late \|.*\| lower bound \|$/m.test(doc)
         && /\| \*\*Candidates\*\* \(\$0.*\| review list \(includes genuine \$0\) \|$/m.test(doc)
         && /\| \*\*Fillable by regeneration\*\*.*\| upper bound \|$/m.test(doc)
-        && /\| \*\*Candidates\*\* \(stale.*\| upper bound \|$/m.test(doc));
+        && /\| \*\*Candidates\*\* \(stale.*\| upper bound \|$/m.test(doc)
+        && /\| \*\*Derivable\*\*.*\| upper bound \|$/m.test(doc)
+        && /\| Not derivable .*\| exact \|$/m.test(doc)
+        && /\| No restricted-capable accounts: the split is trivially 0 .*\| exact \|$/m.test(doc));
+    check("frozen-restricted renders through the fake: derivable 5 (1 Space), trivially 0 = 2, not derivable 0, population 7",
+      /\| \*\*Derivable\*\* .*\| \*\*5\*\* \| \*\*1\*\* \| 2026-02-01 → 2026-02-05 \| upper bound \|$/m.test(doc)
+        && /\| Not derivable .*\| 0 \| 0 \| — \| exact \|$/m.test(doc)
+        && /trivially 0 \| 2 \| 1 \| 2026-02-06 → 2026-02-07 \| exact \|$/m.test(doc)
+        && /\(population\) \| 7 \| — \| 2026-02-01 → 2026-02-07 \| exact \|$/m.test(doc));
+    check("frozen-restricted says it is report-only and that a fill is owner-gated",
+      /REPORT ONLY: this tool has no fill and no apply\. Any fill of frozen rows .* is a separate owner-gated repair\./.test(doc));
     check("undetermined is its own row, labelled exact, never folded into a bound",
       /\| BTC \| undetermined \|.*\| exact \|$/m.test(doc) && /\| Undetermined \(before the balance ledger\).*\| exact \|$/m.test(doc));
     check("the pre-FIN-011 lower-bound note is kept", /before FIN-011 the candidate count is also a lower bound/.test(doc));
@@ -110,6 +126,42 @@ async function runnerSection(): Promise<void> {
         && !statements[statements.length - 1].some((s) => /"plaidAccounts"/.test(s)));
     check("UNAVAILABLE renders", /\*\*UNAVAILABLE\*\*/.test(renderDocument("local", "2026-11-04T06:00:00.000Z", [missing])));
   }
+}
+
+console.log("2b. frozen-restricted (pure)");
+{
+  const s = summarizeFrozenRestricted([
+    { verdict: "NOT_DERIVABLE", rows: 3, spaces: 2, fromDate: "2026-01-10", toDate: "2026-03-01" },
+    { verdict: "DERIVABLE", rows: 4, spaces: 1, fromDate: "2026-02-01", toDate: "2026-02-04" },
+    { verdict: "TRIVIAL_ZERO", rows: 1, spaces: 1, fromDate: "2025-12-31", toDate: "2025-12-31" },
+  ]);
+  check("buckets read through", s.derivable.rows === 4 && s.notDerivable.rows === 3 && s.trivialZero.rows === 1);
+  check("the population is the sum of the buckets, over the widest range", s.total.rows === 8 && s.total.fromDate === "2025-12-31" && s.total.toDate === "2026-03-01");
+  const none = summarizeFrozenRestricted([]);
+  check("no frozen NULL rows ⇒ all zero, no range", none.total.rows === 0 && none.total.fromDate === null && none.derivable.fromDate === null);
+  const text = renderReport({ report: "frozen-restricted", status: "OK", data: s });
+  check("labels: derivable = upper bound; not derivable, trivially 0 and the population = exact",
+    /\| \*\*Derivable\*\*.*\| \*\*4\*\* \| \*\*1\*\* \| 2026-02-01 → 2026-02-04 \| upper bound \|$/m.test(text)
+      && /\| Not derivable .*\| 3 \| 2 \| 2026-01-10 → 2026-03-01 \| exact \|$/m.test(text)
+      && /trivially 0 \| 1 \| 1 \| 2025-12-31 \| exact \|$/m.test(text)
+      && /\(population\) \| 8 \| — \| 2025-12-31 → 2026-03-01 \| exact \|$/m.test(text));
+  check("the heuristic names the walk-back, the posted-ledger rule and the owner gate",
+    /WALKS BACK from each account's current posted balance/.test(text) && /posted ledger reaches the day/.test(text) && /separate owner-gated repair/.test(text));
+  check("the SQL reads frozen observed NULL rows only, posted non-deleted transactions only, and the restricted depository subtypes",
+    /"isEstimated" = false AND s\."restrictedCash" IS NULL/.test(FROZEN_RESTRICTED_SQL)
+      && /t\."deletedAt" IS NULL AND t\.pending = false/.test(FROZEN_RESTRICTED_SQL)
+      && /p\."firstPosted" IS NOT NULL AND p\."firstPosted" <= c\.date/.test(FROZEN_RESTRICTED_SQL)
+      && /l\."createdAt" < f\."dayEnd" AND \(l\."revokedAt" IS NULL OR l\."revokedAt" >= f\."dayEnd"\)/.test(FROZEN_RESTRICTED_SQL)
+      && /fa\.type::text IN \('checking', 'savings'\)/.test(FROZEN_RESTRICTED_SQL) && /IN \('hsa'\)/.test(FROZEN_RESTRICTED_SQL));
+  // The mirror must equal the classifier's set: a subtype added there and not here would make the report under-count.
+  const cls = readFileSync(path.join(ROOT, "lib", "account-classifier.ts"), "utf8");
+  const m = cls.match(/RESTRICTED_DEPOSITORY_SUBTYPES: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)/);
+  const classifierSet = (m?.[1] ?? "").split(",").map((x) => x.trim().replace(/^"|"$/g, "")).filter(Boolean).sort();
+  check("RESTRICTED_DEPOSITORY_SUBTYPES mirrors lib/account-classifier.ts exactly", m !== null && classifierSet.join() === [...RESTRICTED_DEPOSITORY_SUBTYPES].sort().join(), classifierSet.join());
+  check("restrictedCash sums checking + savings only (the classifier's restricted bucket)", /const restrictedCash = \[\.\.\.checking, \.\.\.savings\]\.filter\(isRestricted\)/.test(cls));
+  const present = new Set(REQUIRED_COLUMNS["frozen-restricted"].map(([t, c]) => `${t}.${c}`));
+  present.delete("FinancialAccount.providerSubtype");
+  check("a missing providerSubtype is named", missingColumns("frozen-restricted", present).join() === "FinancialAccount.providerSubtype");
 }
 
 console.log("4. the leak predicate catches what it must");
