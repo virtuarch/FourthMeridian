@@ -970,8 +970,10 @@ console.log("\n10. static — no db, accessors only, literal surfaces, no persis
     check(`${f}: mints nothing, chooses no surface`, !/metricAccessFor\(|incidentAudienceFor\(|retrieveMetric\(|retrieveWith\(|atSurface\(|listNavigationTargets\(|resolveNavigationTarget\(/.test(s));
   }
   const coreImports = [...src(`${dir}/core.ts`).matchAll(/^import\s+(type\s+)?\{[^}]*\}\s+from\s+"([^"]+)";/gm)].map((m) => `${m[1] ? "type " : ""}${m[2]}`).sort();
-  check("core.ts imports: the scrub, the metric registry (definitions), and TYPES only from provider / retrieve-core / navigation registry",
-    coreImports.join() === ["@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
+  // B11 turn integration: core also imports the conversations' PURE history transcript builder
+  // (conversations/history.ts — pinned pure in conversations.test.ts: no db, env, clock or provider).
+  check("core.ts imports: the scrub, the metric registry (definitions), the pure history builder, and TYPES only from provider / retrieve-core / navigation registry",
+    coreImports.join() === ["./conversations/history", "@/lib/ai/privacy/scrub", "@/lib/platform/intelligence/metrics/registry", "@/lib/platform/policy", "type @prisma/client", "type @/lib/ai/provider", "type @/lib/platform/intelligence/metrics/retrieve-core", "type @/lib/platform/intelligence/navigation/registry"].sort().join(), coreImports);
   const ledger = src(`${dir}/ledger.ts`);
   check("ledger.ts calls the ONE provider chokepoint (generateWithTools) inside runWithAiInvocationContext with surface platform_ai — no parallel AI client",
     /runWithAiInvocationContext\(\s*\{[^}]*surface: PLATFORM_AI_ASK_SURFACE/.test(ledger) && /generateWithTools\(/.test(ledger) && !/from "openai"|new OpenAI/.test(ledger));

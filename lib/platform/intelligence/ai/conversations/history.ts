@@ -28,9 +28,8 @@
  *     longer see (describeMetric / pageVisible under the CURRENT token) is
  *     silently omitted.
  *
- * Integration into runPlatformAiTurn is a follow-up commit (after #418, which
- * changes the answer-rendering contract). Nothing here calls a model, a
- * database or a clock.
+ * Wired into runPlatformAiTurn (its `history` input) by ./turn.ts
+ * runConversationTurn. Nothing here calls a model, a database or a clock.
  */
 
 import type { EvidenceRef, StoredAnswerV1 } from "./answer";

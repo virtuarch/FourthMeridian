@@ -2,7 +2,8 @@
  * /api/platform/ai/conversations  (Platform AI conversations — B11, OFF by default)
  *
  *   GET   the operator's live conversations (derived labels; rows filtered by ONE directory read)
- *   POST  { clientRequestId, question } — create = the first question
+ *   POST  { clientRequestId, question } — create = the first question; the turn runs
+ *         (outside any transaction) and is settled before the response
  *
  * Design: docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §3, §10. The logic is
  * lib/platform/intelligence/ai/conversations/handlers.ts; the data module is
@@ -36,6 +37,7 @@ import {
 } from "@/lib/platform/intelligence/ai/conversations/handlers";
 import * as store from "@/lib/platform/intelligence/ai/conversations/store";
 import { conversationAreaAccess } from "./area-access";
+import { runConversationTurnForRoute } from "./turn-runner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,6 +95,7 @@ export async function POST(req: NextRequest) {
       admission: () => readPaidRequestsAdmission(),
       freeze: () => readGlobalCostFreeze(),
       turns: (id, now) => readPlatformAiTurns(id, now),
+      runTurn: runConversationTurnForRoute,
     }));
   } catch (e) {
     return INTERNAL("create", e);

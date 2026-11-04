@@ -64,6 +64,7 @@ import type { PlatformArea } from "@prisma/client";
 import { METRICS, daysWindowLabel, hoursWindowLabel, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
 import type { FigureUnit, MetricEnvelope, RetrievalParams } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
+import { buildConversationTurnMessages, type AssembledHistory } from "./conversations/history";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
 
@@ -191,6 +192,12 @@ export interface ToolEvidence {
   labels: Set<string>;
   /** Metadata only: one step per tool call (see PlatformAiTraceStep). */
   trace: PlatformAiTraceStep[];
+  /**
+   * B11 — every href this turn resolved, mapped to the REGISTRY page id (and
+   * params) it was resolved from, so a stored answer keeps the page id and never
+   * the href (conversations/answer.ts). Optional: v0 callers need not supply it.
+   */
+  pages?: Map<string, { id: string; params: Record<string, string> }>;
 }
 
 export const PLATFORM_AI_TOOLS = ["list_metrics", "get_metric", "find_page", "open_page"] as const;
@@ -232,6 +239,11 @@ export interface PlatformAiTraceStep {
  *     the model can still call open_page.
  */
 export function drillPageOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, "listPages" | "resolvePage">): string | null {
+  return drillPageRefOf(e, binding)?.page ?? null;
+}
+
+/** drillPageOf, plus the registry page id whose resolved href it equals (for a stored link). */
+export function drillPageRefOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, "listPages" | "resolvePage">): { page: string; id: string } | null {
   const d = e.drill;
   if (!d || !("page" in d) || typeof d.page !== "string") return null;
   const page = d.page;
@@ -239,8 +251,8 @@ export function drillPageOf(e: MetricEnvelope, binding: Pick<PlatformAiBinding, 
   const pathname = q >= 0 ? page.slice(0, q) : page;
   if (pathname !== `/dashboard/platform/${e.surface}` || page.includes("#") || /[\\\s]/.test(page)) return null;
   if (q >= 0) for (const k of new URLSearchParams(page.slice(q + 1)).keys()) if (PLATFORM_AI_DENIED_PARAMS.includes(k)) return null;
-  const resolved = binding.listPages({ metric: e.metric }).some((t) => binding.resolvePage(t.id)?.href === page);
-  return resolved ? page : null;
+  const target = binding.listPages({ metric: e.metric }).find((t) => binding.resolvePage(t.id)?.href === page);
+  return target ? { page, id: target.id } : null;
 }
 
 /** null and undefined both mean "not given" for an OPTIONAL argument (models often send null). */
@@ -287,8 +299,9 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       const e = await binding.readMetric(a.id, given(a.window) ? { window: a.window as number } : {});
       if (!e) { step("NOT_FOUND"); return NOT_FOUND; }
       ev.envelopes.push(e);
-      const drill = drillPageOf(e, binding);
-      if (drill) ev.hrefs.add(drill);
+      const drillRef = drillPageRefOf(e, binding);
+      const drill = drillRef?.page ?? null;
+      if (drillRef) { ev.hrefs.add(drillRef.page); ev.pages?.set(drillRef.page, { id: drillRef.id, params: {} }); }
       step(e.status, { refs: [e.metric], drillLink: drill !== null });
       return e;
     }
@@ -308,6 +321,7 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
         const r = binding.resolvePage(t.id);
         if (!r) return [];
         ev.hrefs.add(r.href);
+        ev.pages?.set(r.href, { id: t.id, params: {} });
         for (const l of [t.label, t.workspaceLabel, t.areaLabel]) if (l) ev.labels.add(l);
         return [pageView(t, r.href)];
       });
@@ -330,6 +344,7 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       const r = binding.resolvePage(a.id, params);
       if (!r) { step("NOT_FOUND"); return NOT_FOUND; }
       ev.hrefs.add(r.href);
+      ev.pages?.set(r.href, { id: a.id, params: params ?? {} });
       // The id resolved, so it IS a registry id (not free model text).
       step("OK", { refs: [a.id] });
       return { href: r.href };
@@ -627,8 +642,22 @@ export function matchPlaceholderEnvelope(envelopes: readonly MetricEnvelope[], k
   return windows.size === 1 ? { kind: "MATCH", envelope: same[same.length - 1] } : { kind: "MISMATCH" };
 }
 
+/**
+ * B11 — the answer with every server-rendered FIGURE kept as its own span
+ * (metric key + the window it was read with), so a conversation can store it
+ * typed (conversations/answer.ts StoredSegment) and mask it in history. Text and
+ * links are exactly `segments`; a link's label is flattened (figures inside a
+ * link label stay text).
+ */
+export type TypedAnswerSegment =
+  | { kind: "text"; text: string }
+  | { kind: "figure"; text: string; metric: string; window: number | string | null }
+  | { kind: "link"; text: string; href: string };
+
 export interface PlaceholderOutcome {
   segments: AnswerSegment[];
+  /** The same answer with figures as typed spans (B11). Joining its texts gives `segments`' text. */
+  typed: TypedAnswerSegment[];
   summary: ClaimsSummary;
   /** metric key → the figures rendered for it (only text that is IN the answer). */
   figures: Map<string, string[]>;
@@ -656,7 +685,8 @@ export function resolvePlaceholders(
   const windowStarts = envelopes.map((e) => e.window.start).filter((x): x is string => typeof x === "string");
   const labelList = [...labels].filter((l) => /\d/.test(l)).sort((a, b) => b.length - a.length);
 
-  const resolveText = (text: string): string => {
+  const resolveParts = (text: string): { text: string; parts: TypedAnswerSegment[] } => {
+    const meta: { metric: string; window: number | string | null }[] = [];
     const out = text.replace(PLACEHOLDER, (m, key: string, rawOpts: string, offset: number) => {
       claims++;
       const opts = placeholderOptions(rawOpts);
@@ -671,6 +701,7 @@ export function resolvePlaceholders(
       resolved++;
       if (!placed.includes(e!)) placed.push(e!);
       figures.set(key, [...(figures.get(key) ?? []), fig]);
+      meta.push({ metric: key, window: e!.window.days ?? envelopeWindowText(e!) });
       return `${SENTINEL}${fig}${SENTINEL}`;
     });
     // The model's own prose: placeholders out, then the allowlist, then no digit may remain.
@@ -682,15 +713,29 @@ export function resolvePlaceholders(
     prose = u.prose; admitted += u.admitted; if (u.collision) collision = true;
     if (/\d/.test(prose)) digit = true;
     // A model-written qualifier the server already wrote ("at least at least 5", "about about $1") collapses to one.
-    return out
+    const pieces = out
       .replace(new RegExp(`\\b(at least|about)\\s+${SENTINEL}(?=\\1\\b)`, "gi"), SENTINEL)
-      .split(SENTINEL).join("");
+      .split(SENTINEL);
+    // Odd pieces are the figures, in placeholder order (one per resolved placeholder).
+    const parts: TypedAnswerSegment[] = [];
+    pieces.forEach((piece, i) => {
+      if (i % 2 === 1) { const f = meta[(i - 1) / 2]; parts.push({ kind: "figure", text: piece, metric: f.metric, window: f.window }); }
+      else if (piece) parts.push({ kind: "text", text: piece });
+    });
+    return { text: pieces.join(""), parts };
   };
+  const resolveText = (text: string): string => resolveParts(text).text;
 
-  const out: AnswerSegment[] = segments.map((x) => (x.kind === "link" ? { ...x, text: resolveText(x.text) } : { kind: "text", text: resolveText(x.text) }));
+  const typed: TypedAnswerSegment[] = [];
+  const out: AnswerSegment[] = segments.map((x) => {
+    if (x.kind === "link") { const t = resolveText(x.text); typed.push({ kind: "link", text: t, href: x.href }); return { ...x, text: t }; }
+    const r = resolveParts(x.text);
+    typed.push(...r.parts);
+    return { kind: "text", text: r.text };
+  });
   const verdict: PlaceholderVerdict = malformed ? "MALFORMED_PLACEHOLDER" : unit ? "UNIT_MISMATCH" : windowMismatch ? "WINDOW_MISMATCH"
     : unresolved > 0 ? "UNRESOLVED_PLACEHOLDER" : collision ? "USER_NUMERAL_COLLISION" : digit ? "UNGROUNDED_DIGIT" : claims > 0 ? "RESOLVED" : "NONE";
-  return { segments: out, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed };
+  return { segments: out, typed, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed };
 }
 
 /** The verdicts that keep the answer; every other one is replaced by the fallback. */
@@ -749,6 +794,20 @@ export const UNVERIFIED_FALLBACK = "I couldn't verify that figure";
 export const BUDGET_FALLBACK = "I couldn't finish answering within this question's budget.";
 const UNAVAILABLE_WORDS = /\b(unavailable|not available|no figure)\b/i;
 
+/**
+ * What a conversation stores from a turn (B11): the answer with figures typed,
+ * every link's registry page id, and what the turn READ (metric keys + the
+ * windows they were read with, page ids). Never a value, an href the store keeps,
+ * or a model-written argument. v0 ignores it.
+ */
+export interface PlatformAiTurnRecord {
+  typed: TypedAnswerSegment[];
+  /** href → the registry page id (and params) it was resolved from in this turn. */
+  pages: ReadonlyMap<string, { id: string; params: Record<string, string> }>;
+  /** Metric keys read this turn, with window.days (null = default / fixed window). */
+  metricsRead: { metric: string; days: number | null }[];
+}
+
 export async function runPlatformAiTurn(input: {
   question: string;
   binding: PlatformAiBinding;
@@ -756,16 +815,27 @@ export async function runPlatformAiTurn(input: {
   model: string;
   reasoningModel?: boolean;
   signal?: AbortSignal;
-}): Promise<{ result: PlatformAiAnswer; transcript: unknown[] }> {
+  /**
+   * B11 — a conversation turn: the bounded, masked prior turns of ONE
+   * conversation (conversations/history.ts assemblePlatformAiHistory). They are
+   * UNTRUSTED context between the system prompt and the new question; grounding,
+   * links and every bound stay per turn and unchanged (the 24k ceiling included).
+   */
+  history?: AssembledHistory;
+  /** B11 — the question is ALREADY scrubbed (the stored string IS the sent string; one scrub for both sinks). */
+  questionScrubbed?: boolean;
+}): Promise<{ result: PlatformAiAnswer; transcript: unknown[]; record: PlatformAiTurnRecord }> {
   const { binding } = input;
-  const question = scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
+  const question = input.questionScrubbed ? input.question : scrubOperatorText(input.question, PLATFORM_AI_QUESTION_MAX);
   const paramKeys = modelParamKeys(binding);
   const tools = platformAiToolSchemas(paramKeys);
-  const messages: unknown[] = [
-    { role: "system", content: PLATFORM_AI_SYSTEM_PROMPT },
-    { role: "user", content: question },
-  ];
-  const ev: ToolEvidence = { envelopes: [], hrefs: new Set(), definitions: [], labels: new Set(), trace: [] };
+  const messages: unknown[] = input.history
+    ? buildConversationTurnMessages({ systemPrompt: PLATFORM_AI_SYSTEM_PROMPT, history: input.history, question })
+    : [
+        { role: "system", content: PLATFORM_AI_SYSTEM_PROMPT },
+        { role: "user", content: question },
+      ];
+  const ev: ToolEvidence = { envelopes: [], hrefs: new Set(), definitions: [], labels: new Set(), trace: [], pages: new Map() };
   const maxTokens = input.reasoningModel ? PLATFORM_AI_COMPLETION_TOKENS_REASONING : PLATFORM_AI_COMPLETION_TOKENS;
 
   let rounds = 0, toolCalls = 0, tokens = 0;
@@ -799,7 +869,7 @@ export async function runPlatformAiTurn(input: {
     let href: string | null = null;
     for (const t of binding.listPages({ metric: e.metric })) {
       const r = binding.resolvePage(t.id);
-      if (r) { href = r.href; break; }
+      if (r) { href = r.href; if (!ev.pages!.has(r.href)) ev.pages!.set(r.href, { id: t.id, params: {} }); break; }
     }
     if (href) ev.hrefs.add(href);
     citations.push({ metric: e.metric, label: binding.describeMetric(e.metric)?.label ?? e.metric, status: e.status, reason: e.reason, window: e.window.description, href, figures: [] });
@@ -812,6 +882,7 @@ export async function runPlatformAiTurn(input: {
   const { segments: sanitised, removed, kinds } = sanitiseAnswer(raw ?? BUDGET_FALLBACK, ev.hrefs);
   const placed = resolvePlaceholders(sanitised, ev.envelopes, ev.labels, question, (key) => binding.describeMetric(key)?.provenance.class === "ESTIMATED");
   let answer = placed.segments;
+  let typed: TypedAnswerSegment[] = placed.typed;
   let verdict = placed.summary.verdict;
   // The operator asked for a window a placed metric does not cover ⇒ KEEP the answer
   // (every figure already states its own window) and append ONE server note per
@@ -831,16 +902,19 @@ export async function runPlatformAiTurn(input: {
       return `Note: ${def?.label ?? e.metric} covers ${windowPhrase(e)}, not the ${want} you asked about.`;
     });
     answer = [...answer, { kind: "text", text: ` ${lines.join(" ")}` }];
+    typed = [...typed, { kind: "text", text: ` ${lines.join(" ")}` }];
   } else if (replaced) {
     const href = citations.find((c) => c.href)?.href ?? [...ev.hrefs][0] ?? null;
     answer = href
       ? [{ kind: "text", text: `${UNVERIFIED_FALLBACK} — open ` }, { kind: "link", text: "the page it comes from", href }, { kind: "text", text: "." }]
       : [{ kind: "text", text: `${UNVERIFIED_FALLBACK}. Open the Platform page it comes from.` }];
+    typed = answer.map((x) => ({ ...x }));
   }
   // An UNAVAILABLE metric is SAID as unavailable, whatever the model wrote.
   const unavailable = citations.filter((c) => c.status === "UNAVAILABLE");
   if (unavailable.length > 0 && !UNAVAILABLE_WORDS.test(segmentsText(answer))) {
     answer = [...answer, { kind: "text", text: ` ${unavailable.map((c) => `${c.label} is unavailable.`).join(" ")}` }];
+    typed = [...typed, { kind: "text", text: ` ${unavailable.map((c) => `${c.label} is unavailable.`).join(" ")}` }];
   }
 
   return {
@@ -855,6 +929,7 @@ export async function runPlatformAiTurn(input: {
       trace: ev.trace,
     },
     transcript: messages,
+    record: { typed, pages: ev.pages!, metricsRead: ev.envelopes.map((e) => ({ metric: e.metric, days: e.window.days })) },
   };
 }
 

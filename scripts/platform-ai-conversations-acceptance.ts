@@ -407,6 +407,43 @@ async function main(): Promise<number> {
       && one(`select count(*) from "AuditLog" where action='PLATFORM_AI_CONVERSATIONS_PURGED' and "userId" is not null;`) === "0",
     `${run2.status} ${JSON.stringify(m2)} ${run2.stderr.slice(0, 300)}`);
 
+  // ── [turn] the B11 turn integration through the REAL store (handlers over fm_app) ──
+  console.log("\n[turn] handleCreateConversation / handleAppendMessage over the real store (a scripted turn)\n");
+  {
+    const { handleCreateConversation, handleAppendMessage } = await import("@/lib/platform/intelligence/ai/conversations/handlers");
+    const turns: string[] = [];
+    const binding = {} as never;
+    const answerV1 = { v: 1 as const, segments: [{ kind: "text" as const, text: "AI cost " }, { kind: "figure" as const, text: "$1.50 (in the last 7 days, estimated)", metric: "economics-ai-cost@1", window: 7 },
+      { kind: "text" as const, text: ". See " }, { kind: "link" as const, text: "Economics", page: "PLATFORM_OPS:platform-economics", params: {} }], citations: [], notes: [], stop: "ANSWERED" as const };
+    const deps = {
+      store, now: () => new Date(),
+      areaAccess: async () => ({ resolvePage: () => null, binding }),
+      admission: async () => ({ paused: false }), freeze: async () => ({ frozen: false }), turns: async () => ({ allowed: true }),
+      runTurn: async ({ question }: { question: string }) => { turns.push(question); return { status: "COMPLETE" as const, answer: answerV1, evidenceRefs: [{ k: "m" as const, id: "economics-ai-cost@1", w: 7 }] }; },
+    };
+    const V = { operatorId: B, area: "PLATFORM_OPS" as const };
+    const ck = randomUUID();
+    const cr = await handleCreateConversation(V, { clientRequestId: ck, question: "What's costing me the most money?" }, deps);
+    const conv = (cr.body as { conversation?: { id: string } } | null)?.conversation?.id ?? "";
+    const settledRow = one(`select status || '|' || ("evidenceRefs" = '[{"k":"m","id":"economics-ai-cost@1","w":7}]'::jsonb)::text || '|' || ("completedAt" is not null)::text from "PlatformAiMessage" where "conversationId"='${conv}' and role='ASSISTANT';`);
+    check(65, "create on real PG: stored (tx 1) → the turn → settled COMPLETE (tx 2) with keys + windows only as evidence; 201 carries the settled reply",
+      cr.status === 201 && (cr.body as { assistantMessage: { status: string } }).assistantMessage.status === "COMPLETE" && turns.length === 1 && settledRow === "COMPLETE|true|true", `${cr.status} ${settledRow}`);
+    const replayBefore = turns.length;
+    const cr2 = await handleCreateConversation(V, { clientRequestId: ck, question: "What's costing me the most money?" }, { ...deps, admission: async () => { throw new Error("no gate on replay"); }, turns: async () => { throw new Error("no daily turn on replay"); } });
+    check(66, "a create REPLAY on real PG ⇒ 200, the same conversation, no gate, no turn, nothing written",
+      cr2.status === 200 && (cr2.body as { conversation: { id: string } }).conversation.id === conv && turns.length === replayBefore
+        && one(`select count(*) from "PlatformAiMessage" where "conversationId"='${conv}';`) === "2", `${cr2.status}`);
+    const mk = randomUUID();
+    const ap = await handleAppendMessage(V, conv, { clientRequestId: mk, question: "How does that compare with last month?" }, deps);
+    const ap2 = await handleAppendMessage(V, conv, { clientRequestId: mk, question: "How does that compare with last month?" }, { ...deps, admission: async () => { throw new Error("no gate on replay"); } });
+    const readBack = await store.readConversation(B, conv, new Date());
+    const lastA = readBack?.messages.filter((m) => m.role === "ASSISTANT").at(-1);
+    check(67, "append on real PG: 200 with the settled typed answer (figure typed, link as a page id); its replay ⇒ 200, no gate, no second turn; 4 rows",
+      ap.status === 200 && ap2.status === 200 && turns.length === replayBefore + 1 && readBack?.messages.length === 4 && lastA?.status === "COMPLETE"
+        && typeof lastA.content === "object" && lastA.content !== null && (lastA.content as typeof answerV1).segments.some((x) => x.kind === "figure" && x.window === 7)
+        && (lastA.content as typeof answerV1).segments.some((x) => x.kind === "link" && x.page === "PLATFORM_OPS:platform-economics"), `${ap.status} ${ap2.status} ${turns.length}`);
+  }
+
   // ── the read-only pre-enable check, against this throwaway target ─────────
   const { PRECHECK_FUNCTIONS_SQL, PRECHECK_TABLES_SQL, evaluatePrecheck } = await import("./lib/platform-ai-conversations-precheck.core");
   type Pre = typeof import("./lib/platform-ai-conversations-precheck.core");
@@ -423,7 +460,7 @@ async function main(): Promise<number> {
     return evaluatePrecheck(await tx.$queryRawUnsafe<FnRows>(PRECHECK_FUNCTIONS_SQL), await tx.$queryRawUnsafe<TabRows>(PRECHECK_TABLES_SQL));
   });
   setOwner("fm_aiconv_owner");
-  check(65, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
+  check(68, "the pre-enable check PASSES on the BYPASSRLS-owner shape and FAILS (owner line) on a non-bypass owner",
     pre.ok && !preBad.ok && preBad.lines.filter((l) => !l.ok).every((l) => /OWNER bypasses RLS/.test(l.text)) && preBad.lines.filter((l) => !l.ok).length === 2,
     JSON.stringify(preBad.lines.filter((l) => !l.ok)));
   await db.$disconnect();

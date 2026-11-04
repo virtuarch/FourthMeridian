@@ -25,14 +25,15 @@ import {
 } from "./constants";
 import {
   CONVERSATION_ID, NOT_FOUND_BODY, deriveLabel, handleCreateConversation, handleDeleteConversation, handleGetConversation,
-  grantedAreasFrom, handleListConversations, parseTurnBody, type AreaAccess, type ConversationDeps, type ConversationStoreSeam, type TurnAdmissionDeps,
+  grantedAreasFrom, handleListConversations, parseTurnBody, type AreaAccess, type ConversationDeps, type ConversationStoreSeam, type ConversationTurnStoreSeam, type TurnAdmissionDeps, type TurnRunDeps,
 } from "./handlers";
 import {
   HistoryScopeError, PLATFORM_AI_HISTORY_RULE, assemblePlatformAiHistory, buildConversationTurnMessages, figureMarker,
   type HistoryMessage,
 } from "./history";
 import { parsePurgeRow, runPlatformAiConversationPurge } from "./purge";
-import type { ConversationRecord, CreateOutcome, MessageRecord, TurnPair } from "./store";
+import type { ConversationRecord, CreateOutcome, MessageRecord, SettleOutcome, TurnPair } from "./store";
+import type { PlatformAiBinding } from "../core";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail: unknown = ""): void {
@@ -179,7 +180,24 @@ console.log("4. the handlers over a fake store and a fake FRESH area guard");
   const live = (owner: string, id: string) => convs.find((c) => c.id === id && c.operatorUserId === owner && !c.deleted) ?? null;
   let lastCreate: { scrubbedQuestion: string } | null = null;
   let createResult: (() => CreateOutcome) | null = null;
-  const store: ConversationStoreSeam = {
+  // Turn seams (B11 turn integration): a settled pair is read back from `settled`.
+  const settled = new Map<string, SettleOutcome>();
+  let lastPair: TurnPair | null = null;
+  const turnStore: ConversationTurnStoreSeam = {
+    findCreateReplay: async () => null,
+    findTurnPair: async () => {
+      if (!lastPair) return null;
+      const o = settled.get(lastPair.assistant.id);
+      if (!o) return lastPair;
+      return { user: lastPair.user, assistant: { ...lastPair.assistant, status: o.status, content: o.status === "COMPLETE" ? o.answer : null,
+        failureCode: o.status === "FAILED" ? o.failureCode : null, evidenceRefs: o.status === "COMPLETE" ? [...o.evidenceRefs] : [], completedAt: T0 } };
+    },
+    appendTurn: async () => ({ kind: "NOT_FOUND" }),
+    settleTurn: async (_o, _c, aid, outcome) => { settled.set(aid, outcome); writes.push("settle"); return true; },
+    loadConversationHistory: async () => [],
+  };
+  const store: ConversationStoreSeam & ConversationTurnStoreSeam = {
+    ...turnStore,
     findLiveConversation: async (o, id) => { const c = live(o, id); return c ? { id: c.id, area: c.area, createdAt: c.createdAt, lastActivityAt: c.lastActivityAt } : null; },
     listLiveConversations: async (o) => convs.filter((c) => c.operatorUserId === o && !c.deleted).map((c) => ({
       id: c.id, area: c.area, createdAt: c.createdAt, lastActivityAt: c.lastActivityAt, messageCount: c.messages.length,
@@ -191,11 +209,14 @@ console.log("4. the handlers over a fake store and a fake FRESH area guard");
   const grants = new Map<string, Set<PlatformArea>>([["opA", new Set<PlatformArea>(["PLATFORM_OPS", "SECURITY_OPS"])], ["opB", new Set<PlatformArea>(["PLATFORM_OPS"])]]);
   const resolvable = new Set(["PLATFORM_OPS:platform-incidents:open"]);
   const areaCalls: string[] = [];
-  const deps: ConversationDeps = {
+  const noBinding = {} as PlatformAiBinding;
+  const turnCalls: string[] = [];
+  const deps: ConversationDeps & TurnRunDeps & { store: typeof store } = {
     areaAccess: async (area, op): Promise<AreaAccess | null> => (areaCalls.push(area), grants.get(op)?.has(area))
-      ? { resolvePage: (page) => (resolvable.has(page) ? { href: `/dashboard/platform/incidents?view=open` } : null) } : null,
+      ? { resolvePage: (page) => (resolvable.has(page) ? { href: `/dashboard/platform/incidents?view=open` } : null), binding: noBinding } : null,
     store,
     now: () => T0,
+    runTurn: async ({ question }) => { turnCalls.push(question); return { status: "COMPLETE", answer: answer([{ kind: "text", text: "answered" }]), evidenceRefs: [{ k: "m", id: "incident-broken-now@1", w: null }] }; },
   };
   const A = { operatorId: "opA", area: "PLATFORM_OPS" as PlatformArea };
   const B = { operatorId: "opB", area: "PLATFORM_OPS" as PlatformArea };
@@ -280,10 +301,13 @@ console.log("4. the handlers over a fake store and a fake FRESH area guard");
     return { user: u, assistant: msg(conv.id, "ASSISTANT", status, status === "COMPLETE" ? answer([{ kind: "text", text: "ok" }]) : null, { replyToId: u.id, failureCode: status === "FAILED" ? "PROVIDER" : null }) };
   };
   const done = mk("COMPLETE");
-  createResult = () => ({ kind: "CREATED", conversation: conv, pair: mk("PENDING") });
+  createResult = () => { lastPair = mk("PENDING"); return { kind: "CREATED", conversation: conv, pair: lastPair }; };
+  writes.length = 0;
   const created = await handleCreateConversation(A, body, { ...deps, ...adm });
-  check("create: CREATED ⇒ 201 { conversation, userMessage, assistantMessage (PENDING) }",
-    created.status === 201 && (created.body as { assistantMessage: { status: string } }).assistantMessage.status === "PENDING" && "conversation" in (created.body ?? {}));
+  check("create: CREATED ⇒ the turn runs on the STORED scrubbed question, is settled (transaction 2), and 201 returns the settled reply",
+    created.status === 201 && (created.body as { assistantMessage: { status: string } }).assistantMessage.status === "COMPLETE" && "conversation" in (created.body ?? {})
+      && turnCalls.length === 1 && turnCalls[0] === (lastCreate as { scrubbedQuestion: string } | null)?.scrubbedQuestion && writes.join() === "create,settle", { status: created.status, writes, turnCalls });
+  turnCalls.length = 0; lastPair = null;
   createResult = () => ({ kind: "REPLAY", conversation: conv, pair: done });
   const r1 = await handleCreateConversation(A, body, { ...deps, ...adm });
   const r2 = await handleCreateConversation(A, body, { ...deps, ...adm });
