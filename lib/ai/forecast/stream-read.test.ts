@@ -7,8 +7,8 @@
  *       lib/ai/forecast/stream-read.test.ts
  *
  * PARITY-1 found `loadForecastIncomeStreams` taking the OLDEST page of its
- * 730-day window. On the real Space that page ended 2015-01-21 while the ledger
- * ran to 2015-08-28, so seven months of the current regime were unreadable —
+ * 730-day window. On a Space shaped like this fixture that page ended about seven
+ * months before the ledger did, so seven months of the current regime were unreadable —
  * `observedThroughISO` came from a stale page, FORECAST-2 judged live streams
  * SILENT, and FORECAST-1 saw three scattered dates instead of nineteen biweekly
  * ones. That is not a truncated series but a WRONG one.
@@ -44,7 +44,7 @@ function check(name: string, ok: boolean, detail?: string): void {
   else { failures++; console.log(`[FAIL] ${name}`); if (detail) console.log(`        ${detail}`); }
 }
 
-const AS_OF = '2015-08-28';
+const AS_OF = '2003-03-28';
 const DAY = 86_400_000;
 const iso = (d: number) => new Date(d).toISOString().slice(0, 10);
 const at = (s: string) => Date.parse(`${s}T00:00:00.000Z`);
@@ -63,12 +63,12 @@ const rows: Row[] = [];
 // ⚠️ DENSE, AND INSIDE THE WINDOW. The loader looks back 730 days from the
 // as-of date, so legacy rows older than that are filtered out before paging and
 // cannot push the page boundary anywhere. The first version of this fixture put
-// them weekly from 2013-06-07 and most fell outside the window, so the oldest
-// page still reached 2015-04 and the defect it was built to reproduce did not
-// reproduce. Every-4-days from 2013-09-01 keeps 100+ rows INSIDE the window and
-// before the payroll regime, which is the shape the real Space had.
+// them weekly from 2001-01-05 and most fell outside the window, so the oldest
+// page still reached late 2002 and the defect it was built to reproduce did not
+// reproduce. Every-4-days from 2001-04-01 keeps 100+ rows INSIDE the window and
+// before the payroll regime, which is the shape the production case had.
 for (let i = 0; i < 150; i++) {
-  rows.push({ id: `legacy-${String(i).padStart(3, '0')}`, date: iso(at('2013-09-01') + i * 4 * DAY), amount: 120,
+  rows.push({ id: `legacy-${String(i).padStart(3, '0')}`, date: iso(at('2001-04-01') + i * 4 * DAY), amount: 120,
     accountId: 'acct-legacy', merchant: 'LEGACY DEPOSIT', merchantDisplayName: 'Legacy Deposit',
     flowType: 'INCOME', pending: false });
 }
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
     // not an expectation, and `occurrencesBetween` is inclusive of its window
     // start — so asking from the as-of date returns a date already in the ledger.
     const next = expectedOccurrencesBetween(
-      pay!.activity, pay!.cadence, iso(at(AS_OF) + DAY), '2015-10-31');
+      pay!.activity, pay!.cadence, iso(at(AS_OF) + DAY), '2003-05-31');
     check('S9 which produces the next pay dates on the biweekly rhythm',
       next.length >= 3 && next[0] === iso(at(AS_OF) + 14 * DAY), next.slice(0, 3).join(','));
     // ⚠️ PAIRING. The recent six settlements carry the raised amount; a loader that
@@ -218,15 +218,15 @@ async function main(): Promise<void> {
 
   // ── 5. FIN-001 — the ledger's reach is the FEED'S clock, not the newest income row ──
   //
-  // The runtime audit's fixture: 11 flat biweekly paychecks, newest 2015-10-02,
-  // as-of 2015-10-21 — the 2015-10-16 slot is five days overdue. With the reach
-  // read off the newest INCOME row (= 2015-10-02) the overdue slot was invisible
+  // The runtime audit's fixture: 11 flat biweekly paychecks, newest 2003-05-02,
+  // as-of 2003-05-21 — the 2003-05-16 slot is five days overdue. With the reach
+  // read off the newest INCOME row (= 2003-05-02) the overdue slot was invisible
   // and the stream read UNKNOWN; with the account's sync clock it is an OBSERVED
   // miss (SILENT), which the completeness layer can then disclose as recent.
   {
-    const ASOF2 = '2015-10-21';
+    const ASOF2 = '2003-05-21';
     const payRows: Row[] = Array.from({ length: 11 }, (_, i) => ({
-      id: `fin001-${i}`, date: iso(at('2015-10-02') - (10 - i) * 14 * DAY), amount: 3000,
+      id: `fin001-${i}`, date: iso(at('2003-05-02') - (10 - i) * 14 * DAY), amount: 3000,
       accountId: 'acct-pay', merchant: 'ACME PAYROLL', merchantDisplayName: 'Acme Payroll',
       flowType: 'INCOME', pending: false,
     }));
@@ -244,24 +244,24 @@ async function main(): Promise<void> {
       current?.activity.state === ActivityState.SILENT && current.activity.missedOccurrences === 1
         && current.activity.observedThroughISO === ASOF2, JSON.stringify(current?.activity));
 
-    const stale = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2015-10-10')))[0];
-    check('S17 a feed last synced 2015-10-10 cannot have seen the 10-16 slot: UNKNOWN, reach = the clock',
+    const stale = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2003-05-10')))[0];
+    check('S17 a feed last synced 2003-05-10 cannot have seen the 05-16 slot: UNKNOWN, reach = the clock',
       stale?.activity.state === ActivityState.UNKNOWN && stale.activity.unobservedDueOccurrences === 1
-        && stale.activity.observedThroughISO === '2015-10-10', JSON.stringify(stale?.activity));
+        && stale.activity.observedThroughISO === '2003-05-10', JSON.stringify(stale?.activity));
 
     const noClock = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock(undefined)))[0];
     const nullClock = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock(null)))[0];
     check('S18 with no clock on record the reach falls back to the page\'s newest row (the pre-FIN-001 floor)',
-      noClock?.activity.observedThroughISO === '2015-10-02' && nullClock?.activity.observedThroughISO === '2015-10-02'
+      noClock?.activity.observedThroughISO === '2003-05-02' && nullClock?.activity.observedThroughISO === '2003-05-02'
         && noClock.activity.state === ActivityState.UNKNOWN, JSON.stringify(noClock?.activity));
 
-    const future = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2015-11-15')))[0];
+    const future = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2003-06-15')))[0];
     check('S19 a clock past the as-of date (a retrospective run) is clamped to as-of — slots after the standpoint are never "covered"',
       future?.activity.observedThroughISO === ASOF2, String(future?.activity.observedThroughISO));
 
-    const older = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2015-09-01')))[0];
+    const older = (await loadForecastIncomeStreams(FAKE_CLIENT, 'space', ASOF2, read, withClock('2003-04-01')))[0];
     check('S20 a clock OLDER than the newest row never shortens the reach below the row itself',
-      older?.activity.observedThroughISO === '2015-10-02', String(older?.activity.observedThroughISO));
+      older?.activity.observedThroughISO === '2003-05-02', String(older?.activity.observedThroughISO));
 
     // The production reader selects the canonical connection's clocks — pinned at the source.
     const src = readFileSync(join(__dirname, 'streams.ts'), 'utf8');

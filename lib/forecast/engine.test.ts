@@ -9,7 +9,7 @@
  *   #3/#4  biweekly income counted as two checks a month  → section C
  *   #5/#6  three unlike months averaged into "normal"     → section H
  *   #7     a $10,000 scenario nobody asked for            → section I
- *   #8     $15,500 gross offered as spendable cash        → section G
+ *   #8     $10,000 gross offered as spendable cash        → section G
  *
  * ── What is pinned ──────────────────────────────────────────────────────────
  *   the engine has no parameter through which history could arrive;
@@ -80,16 +80,16 @@ function stripLiterals(t: string): string {
 }
 const codeOnly = stripLiterals(src);
 
-// ── The real Space ──────────────────────────────────────────────────────────
+// ── The fixture Space (synthetic, shaped like the production case) ──────────
 
-const AS_OF = '2015-08-28';
+const AS_OF = '2008-03-28';
 /** 94 days, and deliberately NOT a whole number of months. */
-const HORIZON = { fromISO: AS_OF, toISO: '2015-11-30',
-  origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'through the end of November' };
+const HORIZON = { fromISO: AS_OF, toISO: '2008-06-30',
+  origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'through the end of June' };
 
-const realAccounts = () => ({
-  totalLiquid: 10228.74, totalLiabilities: 549.75,
-  totalInvestments: 5006.557852, totalDigitalAssets: 19014.62555862176,
+const baseAccounts = () => ({
+  totalLiquid: 12000.00, totalLiabilities: 600.00,
+  totalInvestments: 5000.006, totalDigitalAssets: 20000.006,
   redactedCount: 0, totalsUnconverted: false,
   counts: { liquid: 4, liabilities: 2, investments: 3, digitalAssets: 4, realAssets: 0 },
 } as unknown as AccountsSectionData);
@@ -121,7 +121,7 @@ const state = (o: {
     provenance?: string; currency?: string; reason: string };
   accounts?: boolean;
 } = {}): CurrentOperatingState => {
-  const acc = realAccounts();
+  const acc = baseAccounts();
   return composeOperatingState({
     asOfISO: AS_OF,
     accounts: o.accounts === false ? null : {
@@ -140,12 +140,12 @@ const state = (o: {
 // ── Licensed Employer A events, produced by FORECAST-1/2/3 — never by the engine ──
 
 const empACadence: Cadence = {
-  kind: CadenceKind.BIWEEKLY, anchorISO: '2015-08-14', sourceKey: 'employer-a',
+  kind: CadenceKind.BIWEEKLY, anchorISO: '2008-03-14', sourceKey: 'employer-a',
   provenance: CadenceProvenance.DERIVED, observationCount: 19, confidence: 1,
   reason: 'biweekly payroll', toleranceDays: 2,
 } as unknown as Cadence;
 const empAActivity = resolveStreamActivity({
-  cadence: empACadence, settlements: ['2015-07-17', '2015-07-31', '2015-08-14'],
+  cadence: empACadence, settlements: ['2008-02-15', '2008-02-29', '2008-03-14'],
   observedThroughISO: AS_OF, asOfISO: AS_OF,
 });
 const payEvents = (basis: typeof AmountBasis[keyof typeof AmountBasis],
@@ -178,7 +178,7 @@ const run = (s: CurrentOperatingState, e: readonly FutureCashEvent[], p: Forecas
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A. FACTS ONLY — the real Space refuses, and says exactly why
+// A. FACTS ONLY — the fixture Space refuses, and says exactly why
 // ═══════════════════════════════════════════════════════════════════════════
 
 const A = run(state(), PAY_UNKNOWN, policy());
@@ -189,12 +189,12 @@ check('A3 the refusal names the spending baseline',
   A.fullCashPath.missing.some((m) => /discretionary spending/.test(m)), JSON.stringify(A.fullCashPath.missing));
 check('A4 and the income basis',
   A.fullCashPath.missing.some((m) => /net \(after-tax\) basis/.test(m)), JSON.stringify(A.fullCashPath.missing));
-eq('A5 opening cash is still factual', A.openingCash.amount, 10228.74);
-eq('A6 and is liquidity ONLY — not the $24,021.19 of investments', A.openingCash.state,
+eq('A5 opening cash is still factual', A.openingCash.amount, 12000.00);
+eq('A6 and is liquidity ONLY — not the $25,000.02 of investments', A.openingCash.state,
   ComponentState.ASSERTABLE);
 eq('A7 the licensed pay dates are still exposed',
   A.events.map((e) => e.dateISO),
-  ['2015-08-28', '2015-09-11', '2015-09-25', '2015-10-09', '2015-10-23', '2015-11-06', '2015-11-20']);
+  ['2008-03-28', '2008-04-11', '2008-04-25', '2008-05-09', '2008-05-23', '2008-06-06', '2008-06-20']);
 eq('A8 with their nominal amounts visible', A.events[0].authoritativeAmount!.value, 5500.015);
 eq('A9 but NO cash contribution, because the basis is unestablished', A.events[0].cashDelta, null);
 check('A10 and FORECAST-3\'s own words say why',
@@ -213,7 +213,7 @@ const A_NET_EVENTS = run(state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST]
 eq('A15 with NET events, the known-event path computes while spending is unknown',
   A_NET_EVENTS.knownEventPath.status, ConclusionStatus.FACTUALLY_LICENSED);
 near('A16 opening cash plus seven paychecks', A_NET_EVENTS.knownEventPath.closing,
-  10228.74 + 5500.015 * 7);
+  12000.00 + 5500.015 * 7);
 eq('A17 and the FULL path is still REFUSED — it is not the same question',
   A_NET_EVENTS.fullCashPath.status, ConclusionStatus.REFUSED);
 check('A18 the known-event path is never called ending cash',
@@ -261,7 +261,7 @@ near('C4 income total is 7 x 5500.015, at full precision',
 near('C5 baseline consumption is 94 days x the daily rate',
   C.points.reduce((t, p) => t + (p.discretionarySpend ?? 0), 0), (4000 / MEAN_MONTH_DAYS) * 94);
 near('C6 ending cash = opening + income - accrual', C.fullCashPath.closing,
-  10228.74 + 5500.015 * 7 - (4000 / MEAN_MONTH_DAYS) * 94);
+  12000.00 + 5500.015 * 7 - (4000 / MEAN_MONTH_DAYS) * 94);
 eq('C7 the dependencies are exactly the two assumptions the user made',
   [...C.fullCashPath.dependencies].sort(), ['a1', 'a2']);
 check('C7b one sentence about the stream reaches all seven of its occurrences — '
@@ -318,8 +318,8 @@ eq('D7 no counterfactual path is offered when nothing was supposed', D.withoutAs
 // ═══════════════════════════════════════════════════════════════════════════
 
 check('E1 the engine never reads investments', !/investments|digitalAssets|crypto/i.test(codeOnly));
-eq('E2 opening cash is the liquid figure, not the $24,021.19 combined total',
-  A.openingCash.amount, 10228.74);
+eq('E2 opening cash is the liquid figure, not the $25,000.02 combined total',
+  A.openingCash.amount, 12000.00);
 check('E3 unknown liquidity refuses the path rather than substituting zero', (() => {
   const s = state({ accounts: false });
   const f = run(s, PAY_NET, policy([SPEND_4K]));
@@ -338,7 +338,7 @@ check('E5 nor are they liquidated to cover a shortfall',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const RENT: FutureCashEvent = {
-  id: 'rent@2015-09-01', timing: { kind: 'EXACT', dateISO: '2015-09-01' },
+  id: 'rent@2008-04-01', timing: { kind: 'EXACT', dateISO: '2008-04-01' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'OUTFLOW', role: FlowRole.SPENDING,
   amount: { value: 2400, currency: 'USD', basis: AmountBasis.NET,
     provenance: EventProvenance.USER_ASSERTED },
@@ -351,8 +351,8 @@ eq('F2 it appears in outflows, never in discretionary spend',
 check('F3 and the baseline accrual is unchanged by it',
   Math.abs(F.points.reduce((t, p) => t + (p.discretionarySpend ?? 0), 0)
     - D.points.reduce((t, p) => t + (p.discretionarySpend ?? 0), 0)) < 0.005);
-check('F4 the $549.75 debt BALANCE is never an outflow',
-  (D.fullCashPath.closing as number) > 10228.74 - 549.75
+check('F4 the $600.00 debt BALANCE is never an outflow',
+  (D.fullCashPath.closing as number) > 12000.00 - 600.00
   && !/debt|liabilit/i.test(codeOnly.replace(/DEBT_PAYMENT/g, '')));
 eq('F5 debt does not decline over the horizon — this is a cash forecast',
   /debtBalance|payoff|amortis|interestAccrual|minimumPayment/i.test(codeOnly), false);
@@ -361,30 +361,30 @@ check('F6 known outflows and baseline consumption are separately inspectable',
   && /Known outflows:/.test(explainForecast(F).join('\n'))
   && /Baseline spending over the horizon:/.test(explainForecast(F).join('\n')));
 check('F7 no fabricated discretionary events exist',
-  F.events.every((e) => e.id === 'rent@2015-09-01' || e.id.startsWith('employer-a@')));
+  F.events.every((e) => e.id === 'rent@2008-04-01' || e.id.startsWith('employer-a@')));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // G. BONUS / VACATION — live failure #8
 // ═══════════════════════════════════════════════════════════════════════════
 
 const BONUS: FutureCashEvent = {
-  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
+  id: 'bonus', timing: { kind: 'EXACT', dateISO: '2008-05-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
-  amount: { value: 15500, currency: 'USD', basis: AmountBasis.GROSS,
+  amount: { value: 10000, currency: 'USD', basis: AmountBasis.GROSS,
     provenance: EventProvenance.USER_ASSERTED },
 };
 const VACATION: FutureCashEvent = {
-  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2015-10-15' },
+  id: 'vacation', timing: { kind: 'EXACT', dateISO: '2008-05-15' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'INFLOW', role: FlowRole.INCOME,
-  amount: { value: 1500, currency: 'USD', basis: AmountBasis.UNKNOWN,
+  amount: { value: 1000, currency: 'USD', basis: AmountBasis.UNKNOWN,
     provenance: EventProvenance.USER_ASSERTED },
 };
 const G_FACTS = run(FACT_STATE, [...PAY_NET, BONUS, VACATION], policy());
-eq('G1 with no assumptions the full path is REFUSED — $17,000 is not cash',
+eq('G1 with no assumptions the full path is REFUSED — $11,000 is not cash',
   G_FACTS.fullCashPath.status, ConclusionStatus.REFUSED);
 eq('G2 the stated amounts are still visible',
   [G_FACTS.events.find((e) => e.id === 'bonus')!.authoritativeAmount!.value,
-    G_FACTS.events.find((e) => e.id === 'vacation')!.authoritativeAmount!.value], [15500, 1500]);
+    G_FACTS.events.find((e) => e.id === 'vacation')!.authoritativeAmount!.value], [10000, 1000]);
 check('G3 and each says why it is not counted', G_FACTS.events
   .filter((e) => ['bonus', 'vacation'].includes(e.id))
   .every((e) => e.cashDelta === null && (e.refusalReason ?? '').length > 0));
@@ -399,8 +399,8 @@ const netVac: PolicyAssumption = { ...netBonus, id: 'g2', eventId: 'vacation',
   stance: AssumptionStance.SUPPOSED };
 const G = run(FACT_STATE, [...PAY_NET, BONUS, VACATION], policy([netBonus, netVac]));
 
-near('G5 under both assumptions the scenario adds $17,000', G.fullCashPath.closing as number,
-  (D.fullCashPath.closing as number) + 17000);
+near('G5 under both assumptions the scenario adds $11,000', G.fullCashPath.closing as number,
+  (D.fullCashPath.closing as number) + 11000);
 eq('G6 and the result is HYPOTHETICAL, because one contradicts an established GROSS',
   G.fullCashPath.status, ConclusionStatus.HYPOTHETICAL);
 check('G7 naming BOTH basis assumptions', ['g1', 'g2'].every((d) => G.fullCashPath.dependencies.includes(d)),
@@ -430,7 +430,7 @@ check('H2 and no history, average or trailing vocabulary anywhere',
     .test(codeOnly.replace(/MEAN_MONTH_DAYS/g, 'X')));
 check('H3 no database, ledger, model or clock',
   !/lib\/db|prisma|queryTransactions|Date\.now\(\)|Math\.random|toLocale/i.test(codeOnly));
-eq('H4 an unknown baseline refuses; it does not become $8,349.66 or $6,712.88',
+eq('H4 an unknown baseline refuses; it does not become $6,000.00 or $4,500.00',
   [A.spending.amount, A.spending.dailyRate, A.fullCashPath.closing], [null, null, null]);
 near('H5 an explicit $4,000 assumption uses exactly $4,000', B.spending.amount as number, 4000);
 const importTargets = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
@@ -497,7 +497,7 @@ eq('J12 the same inputs produce byte-identical output', JSON.stringify(D1), JSON
 
 eq('K1 the first point is opening cash itself — no accrual, nothing supposed',
   [C.points[0].openingBalance, C.points[0].elapsedDays, C.points[0].discretionarySpend],
-  [10228.74, 0, 0]);
+  [12000.00, 0, 0]);
 check('K2 the known-event path never depends on the spending assumption',
   !C.knownEventPath.dependencies.includes('a1'), JSON.stringify(C.knownEventPath.dependencies));
 check('K3 an event depends only on the assumptions that changed IT',
@@ -704,7 +704,7 @@ async function mutations(): Promise<void> {
     '    state: liq.state, amount: liq.state === ComponentState.UNKNOWN ? null '
     + ': (liq.amount ?? 0) + (state.investments?.combined ?? 0),',
     (m) => via(m, state({ streams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST] }), PAY_NET, policy())
-      .openingCash.amount === 10228.74);
+      .openingCash.amount === 12000.00);
 
   await mutate('M6 the debt balance subtracted as an outflow is caught',
     '  let balance = openingLicensed ? (openingCash.amount as number) : null;',

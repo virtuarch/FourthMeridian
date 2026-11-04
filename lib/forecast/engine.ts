@@ -33,7 +33,7 @@
  *          FORECAST-8, and inherited: an amount reaches this engine only from
  *          an authority or from an assumption carrying the words that asked
  *          for it.
- *   #8     $15,500 gross plus $1,500 of unknown basis offered as $17,000 of
+ *   #8     $10,000 gross plus $1,000 of unknown basis offered as $11,000 of
  *          spendable cash. Closed by routing every event through FORECAST-3's
  *          `netCashContribution`, which refuses both.
  *
@@ -372,8 +372,8 @@ function runForecast(
 
   // ── Opening cash ──────────────────────────────────────────────────────────
   // ⚠️ LIQUIDITY, AND ONLY LIQUIDITY. `state.investments` is right there on the
-  // same object, holding $24,021.19 of which $19,014.63 is crypto, and it is not
-  // cash. Nothing below reads it; a test pins that the identifier never appears.
+  // same object, holding (say) $25,000.02 of which $20,000.01 is crypto, and it
+  // is not cash. Nothing below reads it; a test pins that the identifier never appears.
   const liq = state.liquidity;
   const openingCash = {
     state: liq.state, amount: liq.state === ComponentState.UNKNOWN ? null : liq.amount,
@@ -616,9 +616,9 @@ export function explainForecast(f: CashForecast): string[] {
       const k = e.refusalReason ?? 'no cash contribution is licensed';
       byReason.set(k, [...(byReason.get(k) ?? []), e]);
     }
-    // ⚠️ THE STATED TOTAL, LABELLED AS NOT CASH. Measured: given "$15,500" and
-    // "$1,500" as separate unlicensed events, the model added them and reported
-    // "$17,000 from your completion bonus and vacation payout" — live failure #8
+    // ⚠️ THE STATED TOTAL, LABELLED AS NOT CASH. Measured (figures illustrative):
+    // given "$10,000" and "$1,000" as separate unlicensed events, the model added
+    // them and reported "$11,000 from your bonus and vacation payout" — live failure #8
     // reproduced exactly. Naming the sum HERE, with what it is not, is the only
     // version of that addition the reader can perform without being wrong.
     const nominal = unlicensed.reduce((t, e) => t + (e.authoritativeAmount?.value ?? 0), 0);

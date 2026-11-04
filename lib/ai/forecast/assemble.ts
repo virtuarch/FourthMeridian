@@ -376,8 +376,8 @@ export function assembleForecast(input: ForecastAssemblyInput): AssembledForecas
       const sub = st.subject as Extract<StatementSubject, { kind: 'ONE_OFF_EVENT' }>;
       return {
         // ⚠️ THE ID CARRIES THE AMOUNT. Without it the dedupe map below
-        // collapsed "a $15,500 gross bonus on October 15" and "a $1,500 payout
-        // on October 15" into one event — the programme's own live-failure
+        // collapsed "a $10,000 gross bonus" and "a $1,000 payout" on the same
+        // day (figures illustrative) into one event — the programme's own live-failure
         // fixture, silently losing the payout. Two movements that share a day
         // and a role are still two movements.
         id: `user:${sub.direction}:${sub.role}:${sub.dateISO}:${sub.amount}`,
