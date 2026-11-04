@@ -552,7 +552,9 @@ export function renderPlaceholder(e: MetricEnvelope, part: string | null, estima
     if (n === null) return "unavailable";
   }
   if (!unit || !FIGURE_UNITS.includes(unit) || typeof n !== "number" || !Number.isFinite(n)) return null;
-  const isEstimate = estimated || e.status === "ESTIMATED";
+  // "(estimated)": status ESTIMATED, the definition's provenance (`estimated`), or — once #419 adds it —
+  // the envelope's own basis.kind (read structurally so this file compiles before and after #419).
+  const isEstimate = estimated || e.status === "ESTIMATED" || (e.basis as { kind?: string } | undefined)?.kind === "estimated";
   const days = e.window.days;
   const notes = [...(days !== null ? [`last ${days} day${days === 1 ? "" : "s"}`] : []), ...(isEstimate ? ["estimated"] : [])];
   const fig = `${fmtNumber(n, unit)}${notes.length ? ` (${notes.join(", ")})` : ""}`;

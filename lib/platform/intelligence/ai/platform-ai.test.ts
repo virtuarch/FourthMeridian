@@ -333,6 +333,8 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   const Rs = (status: string, est = false) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv(status)], new Set(), "", () => est).segments);
   check("ESTIMATED ⇒ \"about $12.50 (estimated)\"", Rs("ESTIMATED") === "about $12.50 (estimated)", Rs("ESTIMATED"));
   check("MEASURED ⇒ \"$12.50\" (no qualifier)", Rs("MEASURED") === "$12.50");
+  const basisKind = segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv("PARTIAL", { basis: { kind: "estimated" } })], new Set()).segments);
+  check("an envelope whose basis.kind is \"estimated\" (#419) ⇒ \"(estimated)\" too, PARTIAL included", basisKind === "at least $12.50 (estimated)", basisKind);
   check("PARTIAL ⇒ \"at least $12.50\"", Rs("PARTIAL") === "at least $12.50");
   check("PARTIAL of an ESTIMATED metric (registry provenance) ⇒ \"at least $12.50 (estimated)\"", Rs("PARTIAL", true) === "at least $12.50 (estimated)", Rs("PARTIAL", true));
   check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "about 6 (last 7 days, estimated)");
