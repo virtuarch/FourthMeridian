@@ -8,8 +8,9 @@
  * an unregistered code is shown as the code itself, never guessed.
  */
 
-import { ACTION_CODES, CAUSE_CODES, OUTCOME_CODES, RESOLUTION_REASON_CODES } from "@/lib/platform/incidents/codes";
-import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, RecoveryActionDTO } from "@/lib/platform/incidents/investigation-dto";
+import { ACTION_CODES, CAUSE_CODES, OPERATOR_RESOLUTION_REASON_CODES, OUTCOME_CODES, RESOLUTION_REASON_CODES, type OperatorResolutionReasonCode } from "@/lib/platform/incidents/codes";
+import { OPERATOR_NOTE_MAX, OPERATOR_REASON_CODES, type OperatorReasonCode } from "@/lib/audit";
+import type { IncidentDetailDTO, IncidentListDTO, IncidentRowDTO, LifecycleActionDTO, RecoveryActionDTO } from "@/lib/platform/incidents/investigation-dto";
 import type { IncidentLinkKind, IncidentStatusFilter, IncidentTimelineEvent } from "@/lib/platform/incidents/intelligence/types";
 import type { StatusTone } from "../platform-surface";
 
@@ -173,4 +174,54 @@ export function archiveLine(a: IncidentDetailDTO["archive"]): string {
   if (a.archived) return `Archived ${whenText(a.archivedAt)} · kept until ${whenText(a.retainedUntil)} (13-month retention)`;
   if (a.archiveDueAt) return `Live record · moves to the archive after ${whenText(a.archiveDueAt)} (90 days after resolution)`;
   return "Live record · open incidents are never pruned";
+}
+
+// ── PB-1 S6 — operator lifecycle actions (acknowledge / resolve) ────────────
+
+export const LIFECYCLE_LABEL: Readonly<Record<LifecycleActionDTO, string>> = { acknowledge: "Acknowledge", resolve: "Resolve" };
+
+export const LIFECYCLE_CONFIRM: Readonly<Record<LifecycleActionDTO, { title: string; message: string }>> = {
+  acknowledge: {
+    title: "Acknowledge this incident?",
+    message: "Records that you have taken ownership. The incident stays broken now and keeps alerting until it recovers or is resolved; a new failure is still recorded against it. Audited as an operator action.",
+  },
+  resolve: {
+    title: "Resolve this incident manually?",
+    message: "Closes the incident as resolved by an operator, with your reason. If the operation is still failing, the next failure opens a new episode linked to this one (shown as reopened). Audited as an operator action.",
+  },
+};
+
+/** The audit envelope's reason codes, worded. */
+export const AUDIT_REASON_WORD: Readonly<Record<OperatorReasonCode, string>> = {
+  BETA_ONBOARDING: "Beta onboarding", SUPPORT_REQUEST: "Support request", DOGFOOD: "Dogfooding", TESTING: "Testing",
+  POLICY_ROLLOUT: "Policy rollout", INCIDENT: "Incident handling", ABUSE: "Abuse", OTHER: "Other",
+};
+export const AUDIT_REASON_OPTIONS = OPERATOR_REASON_CODES.map((c) => ({ value: c, label: AUDIT_REASON_WORD[c] }));
+export const RESOLUTION_REASON_OPTIONS = OPERATOR_RESOLUTION_REASON_CODES.map((c) => ({ value: c, label: RESOLUTION_REASON_CODES[c] }));
+export { OPERATOR_NOTE_MAX };
+
+export interface LifecycleForm {
+  auditReason: OperatorReasonCode | "";
+  resolutionReason: OperatorResolutionReasonCode | "";
+  note: string;
+}
+export const EMPTY_LIFECYCLE_FORM: LifecycleForm = { auditReason: "INCIDENT", resolutionReason: "", note: "" };
+
+/** Confirm is enabled when the form is complete: a reason always; resolve also needs its code and a note. */
+export function lifecycleFormValid(action: LifecycleActionDTO, f: LifecycleForm): boolean {
+  if (!f.auditReason || f.note.trim().length > OPERATOR_NOTE_MAX) return false;
+  if (action === "resolve") return f.resolutionReason !== "" && f.note.trim() !== "";
+  return true;
+}
+
+/** The POST body the route parses (operator-route.ts parseIncidentActionBody). */
+export function lifecycleBody(action: LifecycleActionDTO, f: LifecycleForm): Record<string, unknown> {
+  const note = f.note.trim();
+  const reason = { code: f.auditReason, ...(note ? { note } : {}) };
+  return action === "resolve" ? { resolutionReasonCode: f.resolutionReason, reason } : { reason };
+}
+
+/** The route each lifecycle action posts to. */
+export function lifecyclePath(action: LifecycleActionDTO, incidentId: string): string {
+  return `/api/platform/platform-ops/incidents/${encodeURIComponent(incidentId)}/${action}`;
 }

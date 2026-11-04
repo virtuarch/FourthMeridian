@@ -222,7 +222,15 @@ function main() {
       "app/api/platform/platform-ops/incidents/[id]/route.ts",
       "app/api/platform/platform-ops/incidents/route.ts",
     ];
-    check("the only incident API routes are the four PB-1 2B browser reads", JSON.stringify(controlRoutes) === JSON.stringify(BROWSER), controlRoutes.join(", "));
+    // PB-1 S6 — DELIBERATE FENCE UPDATE: the operator controls landed as exactly two
+    // Platform Ops POST routes (guard / limiter / audit pinned in incident-boundary.test.ts §12).
+    // Customer Success gains none: its incident routes stay the two reads above.
+    const S6_CONTROLS = [
+      "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
+    ];
+    check("the only incident API routes are the four PB-1 2B browser reads + the two S6 Ops controls",
+      JSON.stringify(controlRoutes) === JSON.stringify([...BROWSER, ...S6_CONTROLS].sort()), controlRoutes.join(", "));
     for (const f of BROWSER) {
       const s = code(f);
       const area = f.includes("/platform-ops/") ? "PLATFORM_OPS" : "CUSTOMER_SUCCESS";

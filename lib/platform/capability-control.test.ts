@@ -377,6 +377,10 @@ function main() {
       "app/api/platform/customer-success/notifications/automations/[id]/pause/route.ts",
       "app/api/platform/customer-success/notifications/automations/[id]/disable/route.ts",
       "app/api/platform/customer-success/notifications/test-send/route.ts",
+      // PB-1 S6 (S2 ruling 2026-11-04) — incident acknowledge / manual resolve: fresh
+      // PLATFORM_OPS WRITE (never CONTROL), reason required, audited in the transition.
+      "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
+      "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
     ];
     for (const f of WRITE_GATED) {
       const src = code(f);

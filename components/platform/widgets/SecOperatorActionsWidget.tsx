@@ -61,6 +61,8 @@ export const OPERATOR_ACTION_LABEL: Record<string, string> = {
   CONNECTION_REMOVAL_REQUESTED: "Started removing a connection",
   CONNECTION_REMOVED_BY_OPERATOR: "Removed a connection",
   WALLET_HISTORY_RESUMED:       "Resumed wallet history",
+  SYNC_INCIDENT_ACKNOWLEDGED:   "Acknowledged an incident",
+  SYNC_INCIDENT_RESOLVED:       "Resolved an incident",
   ACCOUNT_DEACTIVATED:          "Deactivated an account",
   ACCOUNT_REACTIVATED:          "Reactivated an account",
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.

@@ -54,7 +54,9 @@ import { lifecycleViolation, RESOLUTION_KINDS, type ResolutionKindValue } from "
 import { subjectVerdict } from "./subjects-core";
 import { loadOccurrenceAccounts, loadSubjectFacts, ownerOf } from "./subjects";
 import { buildOccurrenceEvidenceSummary, buildResolutionEvidence, mayAdvanceRecovery, type StageFact } from "./evidence";
-import { isRegistryCode, type IncidentEventType, type ResolutionReasonCode } from "./codes";
+import { isOperatorResolutionReasonCode, isRegistryCode, type IncidentEventType, type OperatorResolutionReasonCode, type ResolutionReasonCode } from "./codes";
+import { AuditAction } from "@/lib/audit-actions";
+import { recordOperatorAction, type OperatorActionInput, type OperatorReason } from "@/lib/audit";
 import { resolveOperationKey } from "./operation-key";
 // The ledger is reached through the canonical row seam — never directly. The
 // OPS-2B read-boundary ratchet enforces this, and caught an earlier version of
@@ -65,7 +67,7 @@ import { getExecutionIdByRunId } from "@/lib/platform/refresh/execution-query";
  * The resolution kinds (PB-1 S2). Each has exactly one writer:
  *   AUTOMATIC_RECOVERY  resolveByAutomaticRecovery (evidence of the same operation succeeding)
  *   SUBJECT_REMOVED     resolveBySubjectRemoval (S3) — the subject is gone; NEVER a recovery
- *   OPERATOR_RESOLVED   declared for the invariant; its writer (applyOperatorTransition) is S6
+ *   OPERATOR_RESOLVED   applyOperatorTransition (S6) — an operator closed it, with a reason and an audit row
  */
 export const RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY" as const;
 export const RESOLUTION_KIND_OPERATOR = "OPERATOR_RESOLVED" as const;
@@ -73,6 +75,8 @@ export const RESOLUTION_KIND_SUBJECT_REMOVED = "SUBJECT_REMOVED" as const;
 /** AUTOMATIC_RECOVERY evidence rules (`resolutionEvidence.rule`), one per proven domain. */
 export const RECOVERY_RULE_TRANSACTIONS_SYNCED = "TRANSACTIONS_SYNC_SUCCEEDED_V1" as const;
 export const RECOVERY_RULE_BALANCE_OBSERVED = "BALANCE_OBSERVED_V1" as const;
+/** OPERATOR_RESOLVED evidence rule (`resolutionEvidence.rule`) — a reference to the audit row, never proof. */
+export const OPERATOR_RESOLVED_RULE = "OPERATOR_RESOLVED_V1" as const;
 export { RESOLUTION_KINDS };
 export type ResolutionKind = ResolutionKindValue;
 
@@ -932,5 +936,167 @@ export async function resolveBySubjectRemoval(
     captureLedgerWriteFailure("SyncIssue", "resolution", e);
     reportWriteFailure(observers, "SyncIssue", "resolution");
     return { resolved: 0 };
+  }
+}
+
+// ── Operator transitions (PB-1 S6 — design §6, S2 binding ruling 2026-11-04) ─
+
+/**
+ * ⚠️ B9-ROLLBACK CONSTRAINTS (S2 ruling; lift only with an owner
+ * roll-forward-only decision — docs/plans/PB1-INCIDENT-LIFECYCLE.md §6.1):
+ *   (a) NO writer sets a non-NULL lifecycleState other than RESOLVED. An open
+ *       incident keeps lifecycleState NULL; "acknowledged" is DERIVED from the
+ *       acknowledged* fields (intelligence/core.ts openStateOf). B9's
+ *       automatic resolution sets resolved=true without touching
+ *       lifecycleState, which satisfies `resolved = (lifecycleState =
+ *       'RESOLVED')` only while open rows are NULL — so an ACKNOWLEDGED value
+ *       would break a B9 rollback.
+ *   (b) NOTHING writes resolved=false on an existing row. A recurrence after
+ *       any closure opens a NEW episode (previousIncidentId), never a reopen.
+ * Both pinned in incident-boundary.test.ts §12.
+ */
+export type OperatorTransition =
+  | { action: "acknowledge" }
+  | { action: "resolve"; resolutionReasonCode: OperatorResolutionReasonCode };
+
+export interface OperatorTransitionInput {
+  incidentId: string;
+  transition: OperatorTransition;
+  actor: OperatorActionInput["actor"];
+  /** REQUIRED (S2): a registry code plus the optional ≤280-char scrubbed note (required by the resolve route). */
+  reason: OperatorReason;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
+export type OperatorTransitionOutcome =
+  | { ok: true; changed: true; auditId: string; eventId: string; fromState: string; toState: string }
+  /** Idempotent acknowledge: already acknowledged and open — nothing written, no audit. */
+  | { ok: true; changed: false }
+  | { ok: false; code: "NOT_FOUND" | "NOT_A_CONDITION" | "ALREADY_RESOLVED" | "CONFLICT" | "INVALID" };
+
+/** The accessors the transition needs: a ROOT client (it opens its own transaction — F7). */
+export type OperatorTransitionClient = Pick<typeof systemDb, "$transaction">;
+
+/**
+ * The ONE operator writer of SyncIssue (design §6). Opens its own transaction
+ * on the root client (F7 — the operator path IS the operation, not telemetry,
+ * so unlike the observers it THROWS nothing silently and returns a typed
+ * refusal). Inside that transaction it:
+ *   1. re-reads the row (the state AS READ is the CAS expectation);
+ *   2. checks the persisted precondition — a CONDITION, not resolved;
+ *      acknowledge on an already-acknowledged open row is an idempotent no-op;
+ *   3. records the operator action (recordOperatorAction, reason required) and
+ *      takes its AuditLog id;
+ *   4. compare-and-sets on {id, resolved:false, lifecycleState, updatedAt} as
+ *      read — a concurrent observation (lastOccurredAt moves ⇒ updatedAt moves),
+ *      recovery or removal makes it match 0 rows, which THROWS and rolls back
+ *      the audit with it (409 CONFLICT);
+ *   5. appends the OPERATOR event (STATE_CHANGED, actionCode ACKNOWLEDGE |
+ *      RESOLVE), stamped with the actor and the audit id.
+ *
+ * ACKNOWLEDGE writes acknowledgedAt + acknowledgedById + acknowledgedAuditId
+ * TOGETHER (SyncIssue_acknowledged_all_or_none_check) and leaves lifecycleState
+ * untouched (NULL) — constraint (a). The event records the DERIVED transition
+ * (e.g. ACTIVE → ACKNOWLEDGED) for the timeline.
+ *
+ * RESOLVE writes lifecycleState RESOLVED with resolved=true, resolvedAt,
+ * resolutionKind OPERATOR_RESOLVED, a registered operator resolutionReasonCode
+ * (SyncIssue_resolved_state_reason_check), resolvedById, resolutionAuditId and
+ * the typed OPERATOR_RESOLVED_V1 evidence ({auditId, via, reasonCode} only).
+ *
+ * REOPEN-BY-RECURRENCE. A manual resolve is a closure like any other: if the
+ * subject is still failing, the next observation finds no open episode for the
+ * key and opens a NEW generation (openedBy RECURRENCE, previousIncidentId = this
+ * row), shown as REOPENED. This row is never mutated back open (constraint b),
+ * and the alert engine sees the new open episode exactly as it sees any
+ * recurrence after an automatic recovery (lib/alerts/recovery.ts).
+ */
+export async function applyOperatorTransition(
+  input: OperatorTransitionInput,
+  client: OperatorTransitionClient = systemDb,
+): Promise<OperatorTransitionOutcome> {
+  const t = input.transition;
+  if (t.action === "resolve" && !isOperatorResolutionReasonCode(t.resolutionReasonCode)) return { ok: false, code: "INVALID" };
+  try {
+    return await client.$transaction(async (tx) => {
+      const row = await tx.syncIssue.findUnique({
+        where: { id: input.incidentId },
+        select: {
+          id: true, kind: true, provider: true, detail: true, plaidTransactionId: true, resolved: true,
+          lifecycleState: true, updatedAt: true, acknowledgedAt: true,
+        },
+      });
+      if (!row) return { ok: false, code: "NOT_FOUND" } as const;
+      const { nature } = classifySyncIssue({ kind: row.kind, provider: row.provider, detail: row.detail, plaidTransactionId: row.plaidTransactionId });
+      if (nature !== "condition") return { ok: false, code: "NOT_A_CONDITION" } as const;
+      if (row.resolved) return { ok: false, code: "ALREADY_RESOLVED" } as const;
+      // The DERIVED open state as read (persisted NULL ⇒ ACTIVE, or ACKNOWLEDGED by its fields).
+      const asRead = row.lifecycleState ?? null;
+      const fromState = asRead ?? (row.acknowledgedAt ? "ACKNOWLEDGED" : "ACTIVE");
+      if (t.action === "acknowledge" && row.acknowledgedAt) return { ok: true, changed: false } as const;
+
+      const toState = t.action === "acknowledge" ? (asRead === "RECOVERING" ? "RECOVERING" : "ACKNOWLEDGED") : "RESOLVED";
+      const now = new Date();
+      const audit = await recordOperatorAction(tx, {
+        actor: input.actor,
+        action: t.action === "acknowledge" ? AuditAction.SYNC_INCIDENT_ACKNOWLEDGED : AuditAction.SYNC_INCIDENT_RESOLVED,
+        target: { kind: "SYNC_INCIDENT", id: row.id },
+        reason: input.reason,
+        change: { before: { state: fromState, resolved: false }, after: { state: toState, resolved: t.action === "resolve" } },
+        result: "SUCCESS",
+        // Ids and enums only — never `detail`, provider text or a customer id.
+        detail: { kind: row.kind, provider: row.provider, ...(t.action === "resolve" ? { resolutionReasonCode: t.resolutionReasonCode } : {}) },
+        ipAddress: input.ipAddress ?? null,
+        userAgent: input.userAgent ?? null,
+      });
+      if (!audit.id) throw new Error("recordOperatorAction returned no AuditLog id");
+
+      let data: Prisma.SyncIssueUpdateManyMutationInput;
+      if (t.action === "acknowledge") {
+        // All three together (the DB CHECK); lifecycleState deliberately NOT written (constraint a).
+        data = { acknowledgedAt: now, acknowledgedById: input.actor.userId, acknowledgedAuditId: audit.id };
+      } else {
+        const evidence = buildResolutionEvidence({
+          rule: OPERATOR_RESOLVED_RULE,
+          operator: { auditId: audit.id, via: input.actor.via, reasonCode: t.resolutionReasonCode },
+        });
+        const fields = {
+          resolved: true, resolvedAt: now,
+          resolutionKind: RESOLUTION_KIND_OPERATOR as string,
+          resolvingExecutionId: null,
+          lifecycleState: "RESOLVED",
+          resolutionReasonCode: t.resolutionReasonCode satisfies ResolutionReasonCode,
+          resolvedById: input.actor.userId,
+          resolutionAuditId: audit.id,
+          resolutionEvidence: evidence as unknown as Prisma.InputJsonValue,
+        };
+        const bad = lifecycleViolation("condition", { ...fields, incidentKey: null });
+        if (bad) throw new Error(`refusing invalid operator resolution write: ${bad}`);
+        data = fields;
+      }
+      const { count } = await tx.syncIssue.updateMany({
+        where: { id: row.id, resolved: false, lifecycleState: row.lifecycleState, updatedAt: row.updatedAt },
+        data,
+      });
+      if (count !== 1) throw new IncidentTransitionConflictError(row.id, row.lifecycleState);
+      const ev = await tx.syncIssueEvent.create({
+        data: eventData({
+          // A RECOVERING row keeps its state when acknowledged: that is an ACTION, not a state change.
+          incidentId: row.id, type: fromState === toState ? "ACTION_TAKEN" : "STATE_CHANGED", actorKind: "OPERATOR",
+          actorId: input.actor.userId, auditId: audit.id,
+          fromState, toState, actionCode: t.action === "acknowledge" ? "ACKNOWLEDGE" : "RESOLVE",
+          outcomeCode: fromState === toState ? "SUCCEEDED" : null,
+        }),
+        select: { id: true },
+      });
+      return { ok: true, changed: true, auditId: audit.id, eventId: ev.id, fromState, toState } as const;
+    });
+  } catch (e) {
+    if (e instanceof IncidentTransitionConflictError) {
+      console.warn(`[incidents] operator ${t.action} CONFLICT on ${input.incidentId} (state moved since read; nothing written)`);
+      return { ok: false, code: "CONFLICT" };
+    }
+    throw e;
   }
 }

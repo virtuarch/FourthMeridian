@@ -362,6 +362,16 @@ export const AuditAction = {
   // chain, the prior and resulting state, and requests consumed. Never an
   // address, a balance, or provider text.
   WALLET_HISTORY_RESUMED:      "WALLET_HISTORY_RESUMED",
+  // PB-1 S6 — an operator acknowledged (took ownership of) ONE incident, or
+  // closed it as OPERATOR_RESOLVED, from Platform Ops (app/api/platform/
+  // platform-ops/incidents/[id]/acknowledge | resolve). Both reason REQUIRED.
+  // Written inside the lifecycle transition's transaction
+  // (lib/platform/incidents/lifecycle.ts applyOperatorTransition), so the row
+  // change, the SyncIssueEvent and this audit commit together. Target =
+  // SYNC_INCIDENT; detail = kind / provider / the resolution reason code. Never
+  // the incident `detail`, provider text or a customer id.
+  SYNC_INCIDENT_ACKNOWLEDGED:  "SYNC_INCIDENT_ACKNOWLEDGED",
+  SYNC_INCIDENT_RESOLVED:      "SYNC_INCIDENT_RESOLVED",
 
   // V25-CLOSE-3 Part 3 — SYSTEM_ADMIN Expand-History operations on a customer's
   // Plaid item. These mutate real customer infrastructure (create a fresh link
@@ -699,6 +709,8 @@ export const OPERATOR_ACTION_FEED_ACTIONS: AuditActionType[] = [
   AuditAction.CONNECTION_REMOVED_BY_OPERATOR,
   AuditAction.PLAID_ITEM_WEBHOOK_UPDATED,
   AuditAction.WALLET_HISTORY_RESUMED,
+  AuditAction.SYNC_INCIDENT_ACKNOWLEDGED,
+  AuditAction.SYNC_INCIDENT_RESOLVED,
   AuditAction.ACCOUNT_DEACTIVATED,
   AuditAction.ACCOUNT_REACTIVATED,
   // P1 — customer policy / cohort, execution cadence, operator refresh-all.

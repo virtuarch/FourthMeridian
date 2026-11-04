@@ -12,9 +12,15 @@
  *   ops  resync          POST /api/platform/platform-ops/connections/[id]/resync          (PLATFORM_OPS WRITE, fresh)
  *        request-reauth  POST /api/platform/platform-ops/connections/[id]/request-reauth  (PLATFORM_OPS WRITE, fresh)
  *   cs   refresh-customer POST /api/platform/customer-success/customers/[userId]/refresh  (CUSTOMER_SUCCESS WRITE, fresh)
- * each recording through recordOperatorAction. Acknowledge / resolve / reopen
- * (the verdict's `availableActions`) have NO route yet (PB-1 S6), so they are
- * never offered. The offer is descriptive; the route's guard decides.
+ * each recording through recordOperatorAction.
+ *
+ * LIFECYCLE ACTIONS (PB-1 S6) — the verdict's `availableActions`, narrowed to
+ * the ones with a route, on the OPS tier only:
+ *   ops  acknowledge  POST /api/platform/platform-ops/incidents/[id]/acknowledge  (PLATFORM_OPS WRITE, fresh)
+ *        resolve      POST /api/platform/platform-ops/incidents/[id]/resolve      (PLATFORM_OPS WRITE, fresh)
+ *   cs   none — Customer Success is read-only for incident state.
+ * Reopen has no route (an operator reopen would open a NEW episode; not built).
+ * The offer is descriptive; the route's guard and the lifecycle CAS decide.
  */
 
 import type {
@@ -30,6 +36,10 @@ import type {
 } from "./intelligence/types";
 
 export type IncidentTier = "ops" | "cs";
+
+/** The lifecycle actions that HAVE a route (PB-1 S6). Reopen is deliberately absent. */
+export type LifecycleActionDTO = "acknowledge" | "resolve";
+const ROUTED_LIFECYCLE_ACTIONS: readonly LifecycleActionDTO[] = ["acknowledge", "resolve"];
 
 /** One incident row on the wire. `subjectUserId` exists ONLY on the cs tier. */
 export interface IncidentRowDTO {
@@ -87,7 +97,15 @@ export interface IncidentDetailDTO {
   recurrencesTruncated: boolean;
   archive: IncidentArchiveState;
   recovery: RecoveryActionDTO[];
+  /** PB-1 S6 — lifecycle actions offered (ops tier only; always [] on cs). */
+  lifecycleActions: LifecycleActionDTO[];
   checkedAt: string;
+}
+
+/** The verdict's available actions that have a route, for this tier. CS: none (read-only). */
+export function lifecycleActionsFor(v: Pick<IncidentVerdict, "availableActions">, tier: IncidentTier): LifecycleActionDTO[] {
+  if (tier !== "ops") return [];
+  return ROUTED_LIFECYCLE_ACTIONS.filter((a) => v.availableActions.includes(a));
 }
 
 /** THE allowlist projection. Copies named fields only; identity only for the cs tier. */
@@ -157,6 +175,7 @@ export function incidentDetailDTO(inv: IncidentInvestigation<IncidentVerdict | C
     recurrencesTruncated: inv.recurrencesTruncated,
     archive: { ...inv.archive },
     recovery: recoveryActionsFor(inv, tier),
+    lifecycleActions: lifecycleActionsFor(inv.verdict, tier),
     checkedAt: now.toISOString(),
   };
 }

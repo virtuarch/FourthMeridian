@@ -137,8 +137,14 @@ function main() {
       && /RESOLUTION_KIND_AUTOMATIC = "AUTOMATIC_RECOVERY"/.test(lc)
       && /RESOLUTION_KIND_SUBJECT_REMOVED = "SUBJECT_REMOVED"/.test(lc)
       && /RESOLUTION_KIND_OPERATOR = "OPERATOR_RESOLVED"/.test(lc));
-    check("OPERATOR_RESOLVED has no writer yet (S6 owns applyOperatorTransition)",
-      !/resolutionKind:\s*RESOLUTION_KIND_OPERATOR/.test(lc) && !/applyOperatorTransition/.test(lc));
+    // PB-1 S6 — DELIBERATE PIN UPDATE (was: "OPERATOR_RESOLVED has no writer yet").
+    // Its ONE writer is applyOperatorTransition, the one operator lifecycle function.
+    const opWriters = lc.match(/resolutionKind:\s*RESOLUTION_KIND_OPERATOR/g) ?? [];
+    const opFn = lc.slice(lc.indexOf("export async function applyOperatorTransition"));
+    check("OPERATOR_RESOLVED has exactly ONE writer, inside applyOperatorTransition",
+      opWriters.length === 1 && /resolutionKind:\s*RESOLUTION_KIND_OPERATOR/.test(opFn), String(opWriters.length));
+    const transitionFns = prod.filter((f) => /export async function applyOperatorTransition/.test(code(f)));
+    check("one operator-transition service", transitionFns.length === 1 && transitionFns[0] === LIFECYCLE, transitionFns.join(", "));
     check("SUBJECT_REMOVED is never written as a recovery (its writer names its own kind)",
       /resolutionKind:\s*RESOLUTION_KIND_SUBJECT_REMOVED/.test(lc));
   }
@@ -408,6 +414,82 @@ function main() {
     const pageBody = page.slice(0, page.indexOf("\n}\n") + 3);
     check("R4: getActiveIncidentPage reads the module (brokenNow) and no SyncIssue row",
       /incidentAccessors\.brokenNow\(token,/.test(pageBody) && !RAW_READ.test(pageBody) && !/resolved/.test(pageBody), pageBody.slice(0, 200));
+  }
+
+  // ── 12. PB-1 S6 — operator transitions, and the B9-rollback constraints ──
+  // S2 BINDING RULING (2026-11-04). B9 (Production) can be rolled back to only
+  // while B10+ never leaves an OPEN row with a non-NULL lifecycleState: B9's
+  // automatic resolution sets resolved=true without touching lifecycleState,
+  // which satisfies SyncIssue_lifecycleState_resolved_check only on NULL rows.
+  //   (a) NO writer sets a non-NULL lifecycleState other than RESOLVED;
+  //   (b) NOTHING writes resolved=false on an existing row.
+  // Lift ONLY with an owner roll-forward-only decision (docs/plans/PB1-INCIDENT-LIFECYCLE.md §6.1).
+  console.log("12. operator transitions are guarded + audited; the B9-rollback constraints hold");
+  {
+    const prod = [...walk("lib"), ...walk("app"), ...walk("jobs"), ...walk("components"), ...walk("scripts")]
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => !/^scripts\/test-[\w-]+\.ts$/.test(f) && f !== "scripts/rls-acceptance.ts");
+    // (a) — every lifecycleState literal assigned anywhere is RESOLVED; raw SQL never sets an open state.
+    const openLiterals = prod.filter((f) => /lifecycleState["']?\s*:\s*["'](ACTIVE|ACKNOWLEDGED|RECOVERING|STALE)["']/.test(code(f))
+      || /"lifecycleState"\s*=\s*'(ACTIVE|ACKNOWLEDGED|RECOVERING|STALE)'/.test(code(f)) && /\bUPDATE\b|\bINSERT\b/.test(code(f)));
+    check("(a) no writer sets lifecycleState to an OPEN value (only RESOLVED, or NULL)", openLiterals.length === 0, openLiterals.join(", "));
+    // In the writers, a non-literal `lifecycleState:` is only ever a CAS expectation (a WHERE), never data.
+    const lc = code(LIFECYCLE);
+    const nonLiteral = [...lc.matchAll(/lifecycleState:\s*([^,\s}]+)/g)].map((m) => m[1]).filter((v) => !/^"RESOLVED"$|^true$/.test(v));
+    check("(a) …lifecycle.ts names lifecycleState otherwise only as the CAS state AS READ",
+      nonLiteral.every((v) => ["asRead", "c.lifecycleState", "row.lifecycleState"].includes(v)), nonLiteral.join(", "));
+    const opFn = lc.slice(lc.indexOf("export async function applyOperatorTransition"));
+    const ackData = opFn.match(/data = \{ acknowledgedAt: now, acknowledgedById: input\.actor\.userId, acknowledgedAuditId: audit\.id \};/);
+    check("(a) acknowledge writes the three acknowledged* fields TOGETHER and no lifecycleState", !!ackData);
+    // (b) — no update data carries resolved:false; every `const data`/`fields` used by an update closes.
+    for (const f of [...LIFECYCLE_INTERNALS]) {
+      const s2 = code(f);
+      check(`(b) ${f}: no update writes resolved=false`,
+        !/\.update(Many)?\(\{[\s\S]{0,200}?data:\s*\{[^}]*resolved:\s*false/.test(s2) && !/"resolved"\s*=\s*false/i.test(s2));
+    }
+    check("(b) the only resolved:false data in lifecycle.ts is a NEW row's create (the condition `fields` spread into syncIssue.create)",
+      (lc.match(/resolved:\s*false,\s*resolvedAt:\s*null/g) ?? []).length === 1
+      && /const fields = \{\s*resolved: false, resolvedAt: null[\s\S]{0,400}client\.syncIssue\.create\(\{\s*data: \{\s*\.\.\.baseData, \.\.\.fields/.test(lc));
+
+    // THE MUTATION-ROUTE PIN: every mutating incident route is fresh WRITE+ on PLATFORM_OPS, rate-limited,
+    // mints its Ops token from that guard, and writes ONLY through the audited lifecycle transition.
+    const incidentRoutes = walk("app/api/platform").filter((f) => /\/(incidents|sync-issues)(\/|$)/.test(f) && f.endsWith("route.ts"));
+    const mutating = incidentRoutes.filter((f) => /export\s+(async\s+)?(function|const)\s+(POST|PUT|PATCH|DELETE)\b/.test(code(f)));
+    check("the mutating incident routes are exactly acknowledge + resolve under platform-ops",
+      JSON.stringify(mutating.sort()) === JSON.stringify([
+        "app/api/platform/platform-ops/incidents/[id]/acknowledge/route.ts",
+        "app/api/platform/platform-ops/incidents/[id]/resolve/route.ts",
+      ]), mutating.join(", "));
+    check("Customer Success has NO mutating incident route (CS is read-only)",
+      !mutating.some((f) => f.startsWith("app/api/platform/customer-success/")));
+    for (const f of mutating) {
+      const s2 = code(f);
+      check(`${f}: fresh PLATFORM_OPS WRITE (S2 ruling) — never a plain/stale guard`,
+        /const \[auth, err\] = await requireFreshPlatformAccess\("PLATFORM_OPS", "(WRITE|CONTROL)"\)/.test(s2) && !/requirePlatformAccess\(/.test(s2));
+      check(`${f}: the #352 per-operator limiter, after the guard`,
+        /const limited = await limitPlatformMutation\(auth\.user\.id, "incident-(acknowledge|resolve)"\);\s*if \(limited\) return limited;/.test(s2)
+        && s2.indexOf("requireFreshPlatformAccess(") < s2.indexOf("limitPlatformMutation("));
+      check(`${f}: token minted from the guard, at the Ops tier`, /atOpsTier\(incidentAudienceFor\(auth\)\)/.test(s2));
+      check(`${f}: writes through the audited runner (no direct SyncIssue / AuditLog access)`,
+        /runIncidentOperatorAction\(/.test(s2) && !/syncIssue\.|auditLog\.|systemDb/.test(s2));
+    }
+    const runner = code("lib/platform/incidents/operator-route.ts");
+    check("the runner reads the verdict through the module and asks ITS rule before writing",
+      /deps\.investigate\(input\.token/.test(runner) && /lifecycleActionsFor\(inv\.verdict, "ops"\)/.test(runner)
+      && runner.indexOf("lifecycleActionsFor(") < runner.indexOf("deps.apply("));
+    check("the runner touches no SyncIssue row itself", !/syncIssue\.|systemDb/.test(runner));
+    check("the transition records the operator action INSIDE its transaction, before the CAS, and stores the audit id",
+      /client\.\$transaction\(async \(tx\)/.test(opFn) && /recordOperatorAction\(tx,/.test(opFn)
+      && opFn.indexOf("recordOperatorAction(tx,") < opFn.indexOf("tx.syncIssue.updateMany(")
+      && /resolutionAuditId: audit\.id/.test(opFn) && /acknowledgedAuditId: audit\.id/.test(opFn));
+    check("the transition's CAS is on the state AND updatedAt as read, and a 0-row CAS throws",
+      /where: \{ id: row\.id, resolved: false, lifecycleState: row\.lifecycleState, updatedAt: row\.updatedAt \}/.test(opFn)
+      && /if \(count !== 1\) throw new IncidentTransitionConflictError\(row\.id/.test(opFn));
+    const callers = prod.filter((f) => /applyOperatorTransition\(/.test(code(f)) && f !== LIFECYCLE);
+    check("applyOperatorTransition is called only by the operator-route runner",
+      callers.join() === "lib/platform/incidents/operator-route.ts", callers.join(", "));
+    const runnerCallers = prod.filter((f) => /runIncidentOperatorAction\(/.test(code(f)) && f !== "lib/platform/incidents/operator-route.ts").sort();
+    check("…and the runner only by the two Platform Ops routes", JSON.stringify(runnerCallers) === JSON.stringify(mutating.sort()), runnerCallers.join(", "));
   }
 
   if (failures > 0) {
