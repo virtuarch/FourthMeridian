@@ -66,13 +66,15 @@ export const ATTENTION_INCIDENT_LIMIT = 20;
 /**
  * Open SyncIssue rows the module scans for the broken-now page (the preview's scan; `truncated` past it).
  *
- * KNOWN LIMIT (S2, PB-1 R6a review). The scan is the 200 most recently seen open rows
- * (lastOccurredAt desc). A critical incident older than 200 newer open rows is not scanned, so it is
- * not ranked here; the floor caption then shows "+" (`truncated`), so the gap is disclosed, never
- * hidden. Acceptable at beta scale. Future fix: a bounded second scan of the critical kinds' open rows,
- * merged in (the R3 convergence pattern: an open incident is included regardless of its age).
+ * The scan is the 200 most recently seen open rows (lastOccurredAt desc). When it is cut, a bounded
+ * SECOND scan (ATTENTION_CRITICAL_SCAN) reads the OPEN rows of the classifier's critical kinds outside
+ * it, merged de-duplicated by id (S2 ruling, PB-1 R6a review — the R3 open-first pattern), so a
+ * critical incident older than 200 newer open rows is still ranked. Either cap reached ⇒ `truncated`
+ * (the floor caption shows "+"), never silent.
  */
 const ATTENTION_INCIDENT_SCAN = 200;
+/** Open critical-kind rows read beyond the recent scan; reaching it is `truncated` (a floor). */
+export const ATTENTION_CRITICAL_SCAN = 100;
 /** How many correlated incidents get a detail read to name their execution. */
 const INCIDENT_EVIDENCE_LOOKUPS = 10;
 /** Delivery-history rows returned (the retained runs hold at most ~10 cycles). */
@@ -122,7 +124,7 @@ async function attempt<T>(what: AttentionAuthority | UserImpactAuthority | "aler
  * correlated. `truncated` is the module's D5 flag.
  */
 async function readIncidents(token: OpsToken): Promise<NonNullable<AttentionInputs["incidents"]>> {
-  const page = await incidentAccessors.brokenNow(token, { limit: ATTENTION_INCIDENT_SCAN });
+  const page = await incidentAccessors.brokenNow(token, { limit: ATTENTION_INCIDENT_SCAN, criticalOpenLimit: ATTENTION_CRITICAL_SCAN });
   const shown = page.items.slice(0, ATTENTION_INCIDENT_LIMIT);
   const subjects = await resolveSubjects(shown);
   const lookups = shown.filter((v) => v.correlatedOccurrenceCount > 0).slice(0, INCIDENT_EVIDENCE_LOOKUPS);

@@ -25,13 +25,13 @@
  */
 
 import "server-only";
-import type { Prisma } from "@prisma/client";
+import { SyncIssueKind, type Prisma } from "@prisma/client";
 import { systemDb } from "@/lib/db";
 import { latestStageAttemptsBySubject } from "@/lib/platform/refresh/projections";
 import { EVIDENCE_DIGEST_SELECT, evidenceDigestOf } from "../evidence";
 import { loadOccurrenceAccounts, loadSubjectFacts } from "../subjects";
 import { assertAudienceToken, type CsToken, type OpsToken, type SystemToken } from "./audience";
-import { deriveIncidentVerdicts, operationOf } from "./core";
+import { criticalCapableKinds, deriveIncidentVerdicts, operationOf } from "./core";
 import {
   archiveDates,
   archivedTimelineOf,
@@ -68,6 +68,13 @@ import type {
 export const WINDOW_SCAN_LIMIT = 500;
 /** Default row cap for one scan (D5 — reported, never silent). */
 export const DEFAULT_SCAN_LIMIT = 200;
+/**
+ * The SyncIssue kinds the classifier can rank `critical` (derived from
+ * classifySyncIssue over the schema enum — never a hand list). The bounded
+ * critical-kind second scan (`ListOptions.criticalOpenLimit`) reads open rows
+ * of these kinds only; the core still decides every verdict's severity.
+ */
+export const CRITICAL_KINDS: readonly string[] = criticalCapableKinds(Object.values(SyncIssueKind));
 
 type Db = typeof systemDb;
 export type IncidentFactsReader = {
@@ -252,11 +259,16 @@ export async function loadIncidentFacts(client: IncidentFactsReader, o: LoadOpti
   };
 }
 
-/** Two disjoint loads as one fact set (rows, subjects, evidence, relations). */
+/**
+ * Two loads as one fact set (rows, subjects, evidence, relations). Rows are
+ * de-duplicated by incident id (the first load's copy wins), so two scans that
+ * may overlap can never list one incident twice.
+ */
 function mergeFacts(a: IncidentFacts, b: IncidentFacts): IncidentFacts {
   const merge = <K, V>(x: ReadonlyMap<K, V> | undefined, y: ReadonlyMap<K, V> | undefined) => new Map([...(x ?? []), ...(y ?? [])]);
+  const seen = new Set(a.rows.map((r) => r.id));
   return {
-    rows: [...a.rows, ...b.rows],
+    rows: [...a.rows, ...b.rows.filter((r) => !seen.has(r.id))],
     archived: [...(a.archived ?? []), ...(b.archived ?? [])],
     subjects: {
       items: merge(a.subjects.items, b.subjects.items),
@@ -313,7 +325,24 @@ export function createIncidentAccessors(client: IncidentFactsReader): IncidentAc
   return {
     async brokenNow<T extends CsToken | OpsToken>(token: T, opts?: ListOptions) {
       const audience = assertAudienceToken(token, READERS);
-      const { facts, set } = await derive(audience, { resolved: false }, opts);
+      const extra = opts?.criticalOpenLimit ?? 0;
+      if (extra <= 0) {
+        const { facts, set } = await derive(audience, { resolved: false }, opts);
+        return list(facts, set.all.filter((v) => v.brokenNow)) as VerdictList<VerdictForToken<T>>;
+      }
+      // CRITICAL-KIND SECOND SCAN (S2 ruling; the R3 `window` open-first pattern): the recent
+      // scan takes its cap; when it was cut, a bounded scan of OPEN critical-kind rows outside
+      // it follows, so an old critical incident is ranked whatever its age. Merged through
+      // mergeFacts (de-duplicated by id); either scan hitting its cap ⇒ `truncated`, never silent.
+      const now = opts?.now ?? new Date();
+      const recent = await loadIncidentFacts(client, { where: { resolved: false }, limit: opts?.limit ?? DEFAULT_SCAN_LIMIT, now });
+      const facts = recent.scanTruncated
+        ? mergeFacts(recent, await loadIncidentFacts(client, {
+          where: { resolved: false, kind: { in: [...CRITICAL_KINDS] as SyncIssueKind[] }, id: { notIn: recent.rows.map((r) => r.id) } },
+          limit: extra, now,
+        }))
+        : recent;
+      const set = deriveIncidentVerdicts(facts, { now, audience });
       return list(facts, set.all.filter((v) => v.brokenNow)) as VerdictList<VerdictForToken<T>>;
     },
     async needsVerification<T extends CsToken | OpsToken>(token: T, opts?: ListOptions) {
