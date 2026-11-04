@@ -31,6 +31,7 @@ import "@/lib/test-support/route-env";
 
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { buildEconomicsSnapshot } from "@/lib/platform/economics/snapshot-core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UserRole } from "@prisma/client";
@@ -45,7 +46,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  admitUserNumerals, drillPageOf, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  admitUserNumerals, drillPageOf, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -88,6 +89,15 @@ const readers = (over: Partial<RetrievalReaders> = {}): RetrievalReaders => ({
   csOverview: async () => ({ checkedAt: NOW.toISOString(), windowDays: 30, customers: { active: 17, deactivated: 2 }, stages: [], attention: { customers: 5, floor: false, reasons: [{ key: "r", label: `user #3 ${EMAIL}`, count: 5 }] }, incidents: { days: [], floor: false, openByKind: [], open: 0, openFloor: false }, notes: [] }) as never,
   liveSessions: async () => ({ sessions: 7, distinctUsers: 3 }) as never,
   accountsWithLiveSession: async () => 2,
+  // Economics: the pure Overview fold over one synthetic priced day (no Plaid rate card ⇒ providers UNAVAILABLE).
+  economicsSnapshot: async (nowMs) => buildEconomicsSnapshot({
+    nowMs, aiPricingConfigured: true, plaidCycle: null, plaidReadingsAgree: true, plaidRates: [], engagedCustomerRefs: ["user #1"],
+    spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }],
+  }),
+  aiOperations: async () => ({
+    totals: { invocations: 58, usd: 1.45, unpricedTokens: 0 }, failures: { failed: 2, timeouts: 0, rateLimited: 0, quota: 0, total: 2 },
+    pricingConfigured: true, recent: [{ correlationId: CUID, subSurface: INJECT }], checkedAt: NOW.toISOString(),
+  }) as never,
   ...over,
 });
 
@@ -275,6 +285,17 @@ console.log("\n3. an UNAVAILABLE metric is SAID as unavailable");
   check("the system prompt states the rule too", /UNAVAILABLE, say it is unavailable/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never present an unavailable figure as 0/.test(PLATFORM_AI_SYSTEM_PROMPT));
 }
 
+// ── 3b. cost-question guidance (PR A2; prompt only — enforcement stays server-side) ──
+console.log("\n3b. cost questions — discoverable economics metrics, estimates labelled, partial rankings hedged");
+{
+  const schemas = platformAiToolSchemas([]) as { function: { name: string; description: string } }[];
+  const lm = schemas.find((x) => x.function.name === "list_metrics")!.function.description;
+  check("list_metrics points cost / 'costing the most' questions at domain \"economics\"", /"economics"/.test(lm) && /costing the most/.test(lm), lm);
+  check("the prompt: estimated figures are called estimated, never billed", /basis\.kind is "estimated"/.test(PLATFORM_AI_SYSTEM_PROMPT) && /never billed/.test(PLATFORM_AI_SYSTEM_PROMPT));
+  check("the prompt: a ranking over PARTIAL / null parts is 'the largest of the measured categories' and unverifiable in full",
+    /largest of the measured categories/.test(PLATFORM_AI_SYSTEM_PROMPT) && /full ranking can't be verified/.test(PLATFORM_AI_SYSTEM_PROMPT));
+}
+
 // ── 4. placeholder grounding (v1, S2 C1–C7) ─────────────────────────────────
 console.log("\n4. placeholder grounding — the model writes {{m:key}}, the server writes the figure");
 {
@@ -285,17 +306,17 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   // A correct placement ⇒ the server's figures, units and the chips pair label ↔ figure.
   const good = await turn("{{m:incident-broken-now@1}} incidents are broken; the fleet made {{m:ai-fleet-spend-status@1|part=invocations}} AI calls costing {{m:ai-fleet-spend-status@1|part=pricedUsd}} ({{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold).");
   check("a correct placement renders the server's figures with server units", !good.result.grounding.replaced && good.result.grounding.verdict === "RESOLVED"
-    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made about 40 (estimated) AI calls costing about $12.50 (estimated) (about 25% (estimated) of the threshold).", segmentsText(good.result.answer));
+    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made 40 AI calls costing about $12.50 (estimated) (about 25% (estimated) of the threshold).", segmentsText(good.result.answer));
   check("…counted: claims 4, resolved 4, unresolved 0", JSON.stringify(good.result.claims) === JSON.stringify({ claims: 4, resolved: 4, unresolved: 0, admitted: 0 }), good.result.claims);
   const chip = (r: typeof good, m: string) => r.result.citations.find((c) => c.metric === m)?.figures.join("|");
-  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "about 40 (estimated)|about $12.50 (estimated)|about 25% (estimated)", good.result.citations);
+  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "40|about $12.50 (estimated)|about 25% (estimated)", good.result.citations);
 
   // C7 the swap: two metrics, values exchanged. v0 passed this (both values exist this turn); v1 refuses it.
   const swap = await turn("40 incidents are broken; the fleet made 3 AI calls.");
   check("SWAP (literal): two real values exchanged between two metrics ⇒ fallback (the model may not type a figure)", swap.result.grounding.replaced && swap.result.grounding.verdict === "UNGROUNDED_DIGIT" && segmentsText(swap.result.answer).startsWith(UNVERIFIED_FALLBACK), swap.result.answer);
   const swapP = await turn("{{m:ai-fleet-spend-status@1|part=invocations}} AI calls; {{m:incident-broken-now@1}} incidents broken.");
   check("SWAP (placeholders): a figure is always the figure of the metric its placeholder names — the chips show each pairing",
-    segmentsText(swapP.result.answer) === "about 40 (estimated) AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "about 40 (estimated)");
+    segmentsText(swapP.result.answer) === "40 AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "40");
   check("SWAP (claimed under the wrong key): X's value cannot be stated as Y — {{m:Y}} renders Y's own figure", !segmentsText((await turn("Broken: {{m:incident-broken-now@1}}.")).result.answer).includes("40"));
 
   // C3: same key AND window, read THIS turn; unknown key / part mismatch.
@@ -337,7 +358,37 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("an envelope whose basis.kind is \"estimated\" (#419) ⇒ \"(estimated)\" too, PARTIAL included", basisKind === "at least $12.50 (estimated)", basisKind);
   check("PARTIAL ⇒ \"at least $12.50\"", Rs("PARTIAL") === "at least $12.50");
   check("PARTIAL of an ESTIMATED metric (registry provenance) ⇒ \"at least $12.50 (estimated)\"", Rs("PARTIAL", true) === "at least $12.50 (estimated)", Rs("PARTIAL", true));
-  check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "about 6 (last 7 days, estimated)");
+  const usdW7 = { ...w7, metric: "c@1", status: "ESTIMATED", value: { spendUsd: 6 }, valueUnits: { spendUsd: "usd" } } as unknown as MetricEnvelope;
+  check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (last 7 days, estimated)");
+
+  // S2 (binding): "(estimated)" is PER FIGURE — estimatedParts is the source of truth; default = usd parts of an estimate.
+  const fleetEnv = good.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === "ai-fleet-spend-status@1") as MetricEnvelope;
+  const fleet = (part: string) => renderPlaceholder(fleetEnv, part);
+  check("ai-fleet-spend-status: invocations renders \"40\" plainly; pricedUsd \"about $12.50 (estimated)\"; utilisationPct (derived from estimated $, listed) \"about 25% (estimated)\"; thresholdUsd (configured, not listed) \"$50.00\"",
+    fleet("invocations") === "40" && fleet("pricedUsd") === "about $12.50 (estimated)" && fleet("utilisationPct") === "about 25% (estimated)" && fleet("thresholdUsd") === "$50.00",
+    ["invocations", "pricedUsd", "utilisationPct", "thresholdUsd"].map(fleet));
+  const mixed = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "m@1", status, window: { ...w7.window, days: null },
+    value: { costUsd: 12.5, sharePct: 25, calls: 40 }, valueUnits: { costUsd: "usd", sharePct: "pct", calls: "count" }, estimatedParts: null, ...over }) as unknown as MetricEnvelope;
+  const rp = (e: MetricEnvelope, part: string, est = false) => renderPlaceholder(e, part, est);
+  check("DEFAULT (no estimatedParts) on an ESTIMATED metric: the usd part is estimated; pct and count render plainly",
+    rp(mixed("ESTIMATED"), "costUsd") === "about $12.50 (estimated)" && rp(mixed("ESTIMATED"), "sharePct") === "25%" && rp(mixed("ESTIMATED"), "calls") === "40");
+  check("DEFAULT on a PARTIAL floor of an estimated metric (provenance): \"at least $12.50 (estimated)\"; counts \"at least 40\"",
+    rp(mixed("PARTIAL"), "costUsd", true) === "at least $12.50 (estimated)" && rp(mixed("PARTIAL"), "calls", true) === "at least 40" && rp(mixed("PARTIAL"), "costUsd") === "at least $12.50");
+  check("LISTED: estimatedParts is the source of truth (a listed pct is estimated; an unlisted usd is not; a count only when listed)",
+    rp(mixed("ESTIMATED", { estimatedParts: ["sharePct"] }), "sharePct") === "about 25% (estimated)" && rp(mixed("ESTIMATED", { estimatedParts: ["sharePct"] }), "costUsd") === "$12.50"
+    && rp(mixed("ESTIMATED", { estimatedParts: ["calls"] }), "calls") === "about 40 (estimated)");
+  check("a MEASURED metric is never labelled estimated, whatever its units", rp(mixed("MEASURED"), "costUsd") === "$12.50" && rp(mixed("MEASURED", { estimatedParts: ["costUsd"] }), "costUsd") === "$12.50");
+  check("basis.kind \"estimated\" (#419) marks the metric an estimate", rp(mixed("PARTIAL", { basis: { kind: "estimated" } }), "costUsd") === "at least $12.50 (estimated)");
+  check("a count scalar of an ESTIMATED metric renders plainly", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "6 (last 7 days)");
+
+  // A2 note: a null part inside a PARTIAL envelope is ACCEPTED (not turned UNAVAILABLE) and renders unavailable, never 0.
+  const opc = await run("x", b, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost" } }] }, { content: "Infrastructure: {{m:economics-operating-cost@1|part=infrastructureUsd}}; total {{m:economics-operating-cost@1|part=totalUsd}}." }]));
+  const opEnv = opc.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content))[0] as MetricEnvelope;
+  const opVal = (opEnv?.value ?? {}) as Record<string, number | null>;
+  check("economics-operating-cost: a null part (unmetered) stays inside a non-UNAVAILABLE envelope — the shape check accepts it",
+    !!opEnv && opEnv.status !== "UNAVAILABLE" && Object.values(opVal).some((v) => v === null) && typeof opVal.totalUsd === "number", opEnv);
+  check("…a placeholder for that null part renders \"unavailable\" (never $0), the total its estimated floor/estimate",
+    !opc.result.grounding.replaced && /^Infrastructure: unavailable; total (at least|about) \$[\d,.]+ \(estimated\)\.$/.test(segmentsText(opc.result.answer)), segmentsText(opc.result.answer));
   const estFloor = await run("x", opsBinding(OPS, readers({ aiBudget: async () => ({ ...(await readers().aiBudget()), unpriced: { invocations: 2, models: ["m"] }, bySurface: [{ surface: "chat", customer: true, unpricedInvocations: 2 }] }) as never })),
     script([{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }, { content: "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd}}." }]));
   const efStatus = estFloor.result.citations[0]?.status;
@@ -345,7 +396,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     efStatus === "PARTIAL" && /^Spend: at least \$[\d,.]+ \(estimated\)\.$/.test(segmentsText(estFloor.result.answer)), { efStatus, a: segmentsText(estFloor.result.answer) });
   // Non-blocking S2 note: a model-written qualifier the server also writes collapses to one.
   check("\"at least {{m:PARTIAL}}\" ⇒ \"at least 5\" once, never \"at least at least\"",
-    segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups" && segmentsText(R("about {{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "about 6 (last 7 days, estimated)");
+    segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups" && segmentsText(R("about {{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (last 7 days, estimated)");
   check("…\"at least\" before a MEASURED figure stays the model's words (no figure invented)", segmentsText(R("at least {{m:engaged-users@1|window=7}}").segments) === "at least 6 (last 7 days)");
 
   // S2 fix 2: units are EXPLICIT (valueUnits), never inferred from a part name.
@@ -440,7 +491,20 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
       }
     }
   }
-  check("every retrievable metric was read with a figure on some surface (so the shape pin covered it)", retrievable.every((k) => seen.has(k)), retrievable.filter((k) => !seen.has(k)));
+  // The fixture world has no Plaid rate card, so provider cost is honestly UNAVAILABLE there (its static units pin above still applies).
+  const UNAVAILABLE_IN_FIXTURE = ["economics-provider-cost@1"];
+  check("every retrievable metric was read with a figure on some surface (so the shape pin covered it)", retrievable.every((k) => seen.has(k) || UNAVAILABLE_IN_FIXTURE.includes(k)), retrievable.filter((k) => !seen.has(k)));
+  for (const k of retrievable) {
+    const e = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
+    const def = METRICS.find((m) => metricKey(m) === k)!;
+    const est = def.provenance.class === "ESTIMATED";
+    const parts = typeof e.valueUnits === "string" ? {} : e.valueUnits;
+    const listed = e.estimatedParts;
+    const ok = listed
+      ? est && listed.length > 0 && listed.every((p) => Object.prototype.hasOwnProperty.call(parts, p))
+      : !est || Object.values(parts).every((u) => u !== "pct");
+    check(`${k}: estimatedParts — listed only on an ESTIMATED metric and every listed part exists in valueUnits; an ESTIMATED metric without a list has no pct part (its estimates are its usd parts)`, ok, { est, listed, parts });
+  }
   check("pct figures are on the 0–100 scale: the fixture's 25% utilisation reads 25 (not 0.25), and every pct is in [0, 100]",
     pcts.length > 0 && pcts.every((p) => p.v >= 0 && p.v <= 100) && pcts.some((p) => p.k === "ai-fleet-spend-status@1" && p.part === "utilisationPct" && p.v === 25), pcts);
   check("the renderer reads units ONLY from valueUnits (no name inference in core.ts)", !/\/Usd\$\/|\/Pct\$\//.test(code(src("lib/platform/intelligence/ai/core.ts"))));
@@ -485,7 +549,7 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
     [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "provider-outcome" } }, { name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }]);
   check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 provider is failing; AI spend is about $12.50 (estimated)"), segmentsText(today.result.answer));
   const most = await ask("What's costing me the most money?", "AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} across {{m:ai-fleet-spend-status@1|part=invocations}} customer calls, {{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold.");
-  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (estimated) across about 40 (estimated) customer calls, about 25% (estimated) of the threshold.", segmentsText(most.result.answer));
+  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (estimated) across 40 customer calls, about 25% (estimated) of the threshold.", segmentsText(most.result.answer));
   const q30 = "What's costing me the most money in the past 30 days";
   const v0 = await ask(q30, "Over the past 30 days, AI spend was {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
   const v0t = segmentsText(v0.result.answer);
