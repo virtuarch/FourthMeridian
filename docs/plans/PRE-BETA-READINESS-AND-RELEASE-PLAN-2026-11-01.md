@@ -1581,6 +1581,7 @@ npm run report:b10-5 -- all --env=production --acknowledge-production-read
   - tests: `lib/transactions/cash-flow-projection.test.ts`, `lib/transactions/liability-payment.test.ts`, `lib/transactions/calendar-tier-net.test.ts`, `lib/transactions/category-spend-authority.test.ts`, `lib/transactions/flow-desync-audit.test.ts`, `lib/transactions/lifecycle-economic-date.test.ts`, `lib/forecast/obligation.test.ts`;
   - production comments: `lib/transactions/economic-date.ts`, `lib/transactions/flow-presentation.ts`, `lib/transactions/liability-inflow.ts`, `lib/transactions/merchant-credit-evidence.ts`, `lib/data/transactions.ts`, `components/transactions/TransactionDetailDrawer.tsx`;
   - docs with earlier-noted figures: `docs/plans/V26-AUDIT-2026-08-31-PRODUCT-REASONING-ARCHITECTURE.md`.
+  - historical investigation documents under `docs/plans/` and `docs/audits/` may contain measured figures (not individually enumerated).
 
 **Owner decision (AI spend; enabling Platform AI, #395):** off by default. When enabled:
 - per turn: at most 6 tool calls, 4 model calls, 24k tokens and 45 s;
