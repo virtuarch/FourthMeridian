@@ -281,9 +281,9 @@ test('XFER-2: the drawer never derives a counterparty name itself', () => {
   // verbatim so it cannot call an account something no other surface calls it.
   const v = cpRow(detail({
     counterpartyType: 'MERCHANT',
-    counterparty: { visible: true, accountId: 'a2', name: 'Ultimate Rewards®' },
+    counterparty: { visible: true, accountId: 'a2', name: 'Example Rewards®' },
   }));
-  assert.equal(v, 'Ultimate Rewards®', 'rendered verbatim, never re-derived or re-formatted');
+  assert.equal(v, 'Example Rewards®', 'rendered verbatim, never re-derived or re-formatted');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ test('XFER-3: a counterparty block about a DIFFERENT account never names the mat
   // fabrication that reads as authoritative — the note must fall back instead.
   const mismatched = withMatch({
     flowType: 'TRANSFER', flowDirection: 'OUTFLOW', amount: -500,
-    counterparty: { visible: true, accountId: 'SOMEONE-ELSE', name: 'Platinum Card®' },
+    counterparty: { visible: true, accountId: 'SOMEONE-ELSE', name: 'Card Product C®' },
   });
   assert.equal(relNote(mismatched), 'Appears to match a transfer between your own accounts.');
   assert.ok(!/Platinum/.test(relNote(mismatched)), 'the wrong account must never be named');

@@ -40,7 +40,7 @@ const derive = (rows: DataHealthAccountInput[]) => deriveSpaceDataHealth(rows, V
 
 console.log('A. everything current');
 {
-  const h = derive([bank(), bank({ key: 'item_SECRET_2', institutionName: 'Example Card' }, { accountName: 'Gold' }), wallet()]);
+  const h = derive([bank(), bank({ key: 'item_SECRET_2', institutionName: 'Example Card' }, { accountName: 'Card Product D' }), wallet()]);
   check('no attention, two bank sources and one wallet', h.attention === 0 && h.sources.length === 3
     && h.sources.every((s) => s.state === 'CURRENT'));
   check('groups by provider kind', JSON.stringify(h.groups.map((g) => [g.kind, g.sources, g.attention])) === '[["BANK",2,0],["WALLET",1,0]]');
@@ -178,7 +178,7 @@ console.log('\nJ. a source says what it feeds — populations, never accounts');
 {
   const h = derive([
     bank({}, { accountName: 'Checking', accountType: 'checking', feedsBankingRows: true }),
-    bank({}, { accountName: 'Sapphire', accountType: 'debt', feedsBankingRows: true }),
+    bank({}, { accountName: 'Card Product A', accountType: 'debt', feedsBankingRows: true }),
     bank({ key: 'item_SECRET_BROKER', institutionName: 'Example Brokerage', status: 'NEEDS_REAUTH' },
       { accountName: 'Brokerage', accountType: 'investment', lastUpdated: daysAgo(34) }),
     wallet({}, { accountType: 'crypto' }),
@@ -200,7 +200,7 @@ console.log('\nJ. a source says what it feeds — populations, never accounts');
 
   check('a caller that supplies no account types gets no `feeds` key at all (existing callers unchanged)',
     derive([bank(), wallet()]).sources.every((s) => !('feeds' in s)));
-  check('no account id, name or amount rides along', !/item_SECRET|conn_SECRET|Sapphire|Brokerage/.test(JSON.stringify(h.sources.map((s) => s.feeds))));
+  check('no account id, name or amount rides along', !/item_SECRET|conn_SECRET|Card Product A|Brokerage/.test(JSON.stringify(h.sources.map((s) => s.feeds))));
 }
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);

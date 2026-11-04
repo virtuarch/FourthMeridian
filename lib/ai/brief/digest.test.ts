@@ -104,7 +104,7 @@ console.log('\n3. what MUST move it');
   differs('a change window becoming measurable or refused', (p) => { delete p.recentChanges.m1; });
   differs('freshness degrading (LIVE → RECENT)', (p) => { p.freshness!.band = 'RECENT'; });
   differs('needsReauth appearing', (p) => { p.freshness!.needsReauth = true; });
-  differs('the knowledge-gap set changing', (p) => { p.dataQuality.knowledgeGaps = [{ account: 'Example Card Gold', missing: 'APR' }]; });
+  differs('the knowledge-gap set changing', (p) => { p.dataQuality.knowledgeGaps = [{ account: 'Example Card Product D', missing: 'APR' }]; });
   differs('an ungraded section appearing', (p) => { p.dataQuality.ungraded = [{ section: 'debt', reason: 'APR_MISSING' }]; });
   differs('a verdict changing', (p) => { p.behavior!.liquidity = { ...p.behavior!.liquidity!, classification: 'WARNING', coverageMonths: 1.1 }; });
   differs('the debt RATE verdict changing (the projection key is still `debt`)',

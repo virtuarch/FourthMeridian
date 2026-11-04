@@ -15,7 +15,7 @@
  *   source  EXAMPLE CARD High Yield Savings (mask 5336)  −500
  *           "Requested transfer to EXAMPLE CARD checking account"
  *   cand A  EXAMPLE CARD Rewards Checking  +500  "Internal Transfer Credit: Savings -5336"
- *   cand B  EXAMPLE CARD Platinum Card®    +500  "MOBILE PAYMENT - THANK YOU"
+ *   cand B  EXAMPLE CARD Card Product C®    +500  "MOBILE PAYMENT - THANK YOU"
  *
  * A names the source account. B is a genuine card payment coinciding in amount,
  * day and institution. Candidates spanned checking + debt ⇒ TYPE_AMBIGUOUS.

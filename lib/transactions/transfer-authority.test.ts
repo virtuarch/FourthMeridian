@@ -448,8 +448,7 @@ test("P5: the deny-listed Plaid fields are never read", () => {
 // ═══ The payment-app ⊥ liability veto ══════════════════════════════════════
 //
 // Found by the repair's cross-authority pre-flight, not by any test here: two
-// live rows — `Zelle payment to Mom` and `APPLE CASH SENT MONE`, both −$1,000 —
-// were about to be written DEBT_PAYMENT because stratification had correctly
+// payment-app sends to a person, both −$1,000, were about to be written DEBT_PAYMENT because stratification had correctly
 // consumed their real savings rivals, leaving a coincidental $1,000
 // `Payment Thank You-Mobile` as the sole surviving candidate.
 

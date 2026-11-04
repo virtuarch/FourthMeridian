@@ -389,8 +389,8 @@ export const BRIEF_SCENARIOS: BriefScenario[] = [
     p.currentState.debt = 5412.80;
     p.currentState.netWorth = 126247.97;
     p.dataQuality.knowledgeGaps = [
-      { account: 'Example Bank Sapphire', missing: 'APR' },
-      { account: 'Example Card Gold', missing: 'APR' },
+      { account: 'Example Bank Card Product A', missing: 'APR' },
+      { account: 'Example Card Product D', missing: 'APR' },
     ];
     p.dataQuality.ungraded = [{ section: 'debt', reason: 'APR_MISSING' }];
   }, {}, { debt: { aprPct: null, accounts: 2 } }),

@@ -295,7 +295,7 @@ console.log("B2. PAYMENT BUDGET > MODELLED REQUIREMENT — information, clamped,
   check("no claim about the DIRECTION of unknown interest ('takes longer') — an unknown APR may be 0%",
     !/takes longer|will take longer|longer once/i.test(src("components/space/sections/DebtPayoffSection.tsx")) && !/takes longer/i.test(src("components/space/widgets/debt/payoff-copy.ts")));
   check("the footnote states only what is known", unk.includes("interest is not included for accounts with an unknown APR"));
-  const oneCard = renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Example Bank Sapphire", 30, { interestRate: 0 })], today: TODAY }));
+  const oneCard = renderToStaticMarkup(createElement(DebtPayoffSection, { accounts: [acct("a", "Example Bank Card Product A", 30, { interestRate: 0 })], today: TODAY }));
   const oneRow = text(oneCard.match(/<li data-liability="a"[\s\S]*?<\/li>/)?.[0] ?? "");
   check("by-account, one-payment card: '$30.00 of $30.00 principal paid', 'Estimated interest: $0.00', 'Paid off with one payment'",
     oneRow.includes("$30.00 of $30.00 principal paid") && oneRow.includes("Estimated interest: $0.00") && oneRow.includes("Paid off with one payment"), oneRow);

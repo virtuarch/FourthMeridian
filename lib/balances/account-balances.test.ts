@@ -100,7 +100,7 @@ console.log("Example Card Platinum — a charge card with a $0 line reports $0, 
     b.available.status === "AVAILABLE");
 }
 
-console.log("EXAMPLE BANK COLLEGE — observed and reachable are separate quantities");
+console.log("EXAMPLE BANK EVERYDAY — observed and reachable are separate quantities");
 {
   const b = build({ id: "exbank-chk", type: "checking", balance: 5_106.77, available: 1_106.77 });
   check("observed is 5,106.77", b.observed.amount === 5_106.77);
