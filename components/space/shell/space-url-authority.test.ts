@@ -68,8 +68,13 @@ check("platform navigation hook performs no direct window.history manipulation",
 check("platform navigation hook registers no popstate listener", !POPSTATE.test(platNavCode));
 check("platform navigation hook uses the canonical authority (useSpaceUrl.commit/subscribe)",
   /useSpaceUrl\(\)/.test(platNavCode) && /spaceUrl\.commit\(/.test(platNavCode) && /spaceUrl\.subscribe\(/.test(platNavCode));
+// The hook READS through the shared core; its link builder (platformWorkspaceHref) moved to the
+// server-safe lib/platform/workspace-href.ts, which the hook re-exports and which WRITES through buildSpaceUrl.
+const workspaceHrefCode = stripComments(read("lib/platform/workspace-href.ts"));
 check("platform navigation hook serializes through the shared core (buildSpaceUrl / readSpaceParam)",
-  /from "@\/lib\/space\/space-url"/.test(platNavCode) && /buildSpaceUrl\(/.test(platNavCode) && /readSpaceParam\(/.test(platNavCode));
+  /from "@\/lib\/space\/space-url"/.test(platNavCode) && /readSpaceParam\(/.test(platNavCode)
+    && /from "@\/lib\/platform\/workspace-href"/.test(platNavCode)
+    && /from "@\/lib\/space\/space-url"/.test(workspaceHrefCode) && /buildSpaceUrl\(/.test(workspaceHrefCode));
 check("platform navigation hook DECLARES history intent (push on user change; replace on hydration/popstate)",
   /historyIntent\.current = "push"/.test(platNavCode) && /historyIntent\.current = "replace"/.test(platNavCode) &&
     /\{ history \}/.test(platNavCode));

@@ -23,7 +23,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { UserRole } from "@prisma/client";
-import { METRICS, metricKey } from "./registry";
+import { METRICS, drillLinkOn, drillLinks, metricKey } from "./registry";
 import { metricAccessFor, type MetricAccessToken } from "./access";
 import {
   NO_DRILL_ON_SURFACE, READER_SYMBOL, RETRIEVAL, atSurface, drillRouteArea, isAggregate, isFleetEntry, retrieveWith,
@@ -403,38 +403,56 @@ console.log("\n7. drill — a descriptor pointing at the registry's records rout
 await (async () => {
   const R = readers(newRec());
   for (const m of retrievable) {
-    const e = await retrieveWith(m.permission[0].area, R, SA, metricKey(m), {}, NOW);
+    const surface = m.permission[0].area;
+    const e = await retrieveWith(surface, R, SA, metricKey(m), {}, NOW);
     const d = e?.drill;
+    const link = drillLinkOn(m.drill, surface);
     const ok = !!d && d.figure === metricKey(m) && ("unavailable" in m.drill
       ? "unavailable" in d && d.unavailable === m.drill.unavailable
-      : "href" in d && d.href === m.drill.api && d.page === m.drill.page);
-    check(`${metricKey(m)}: drill = registry (${"api" in m.drill ? m.drill.api : "unavailable"}), keys only figure/window/href/page`,
+      : !!link && "href" in d && d.href === link.api && d.page === link.page);
+    check(`${metricKey(m)}: drill = registry (${link ? link.api : "unavailable"}), keys only figure/window/href/page`,
       ok && Object.keys(d!).every((x) => ["figure", "window", "href", "page", "unavailable"].includes(x)));
     check(`${metricKey(m)}: basis names the registry's code refs`, e?.basis.compute === `${m.compute.module}#${m.compute.symbol}` && e.basis.reader === m.path[0].calls && e.basis.definition === metricKey(m));
   }
 
   // The drill exists only where the EFFECTIVE surface satisfies the drill route's own gate.
   for (const m of METRICS) {
-    if (!("api" in m.drill)) continue;
-    const area = drillRouteArea(m.drill.api);
-    const route = path.join("app", m.drill.api.split("?")[0], "route.ts");
-    check(`${metricKey(m)}: drill route ${m.drill.api} is gated by its segment's area (${area})`,
-      !!area && new RegExp(`require(?:Fresh)?PlatformAccess\\(\\s*"${area}"`).test(code(src(route))), route);
+    for (const l of drillLinks(m.drill)) {
+      const area = drillRouteArea(l.api);
+      const route = path.join("app", l.api.split("?")[0], "route.ts");
+      check(`${metricKey(m)}: drill route ${l.api} is gated by its segment's area (${area})`,
+        !!area && new RegExp(`require(?:Fresh)?PlatformAccess\\(\\s*"${area}"`).test(code(src(route))), route);
+    }
+    if (!drillLinks(m.drill).length) continue;
     for (const p of m.permission) {
       if (RETRIEVAL[metricKey(m)]?.kind !== "RETRIEVABLE" || !isFleetEntry(p)) continue;
+      // The null-drill rule, unchanged: a drill only where the surface's link is gated by the surface itself.
+      const link = drillLinkOn(m.drill, p.area);
+      const given = !!link && drillRouteArea(link.api) === p.area;
       const e = await retrieveWith(p.area, R, SA, metricKey(m), {}, NOW);
-      check(`${metricKey(m)} on ${p.area}: drill ${p.area === area ? "given" : "null + reason"} (drill route gated by ${area})`,
-        p.area === area ? (!!e?.drill && e.drillReason === null) : (e?.drill === null && e.drillReason === NO_DRILL_ON_SURFACE));
+      check(`${metricKey(m)} on ${p.area}: drill ${given ? "given" : "null + reason"}`,
+        given ? (!!e?.drill && e.drillReason === null && "href" in e.drill && e.drill.href === link!.api) : (e?.drill === null && e.drillReason === NO_DRILL_ON_SURFACE));
     }
   }
   const csInc = await retrieveWith("CUSTOMER_SUCCESS", R, CS, "incident-broken-now", {}, NOW);
   const opsInc = await retrieveWith("PLATFORM_OPS", R, OPS, "incident-broken-now", {}, NOW);
-  check("incident-broken-now on CUSTOMER_SUCCESS ⇒ drill null, drillReason 'no drill on this surface' (the drill route is Platform Ops)",
-    csInc?.drill === null && csInc.drillReason === "no drill on this surface" && csInc.value === 3);
-  check("incident-broken-now on PLATFORM_OPS ⇒ drill non-null, the registry's route",
-    !!opsInc?.drill && "href" in opsInc.drill && opsInc.drill.href === "/api/platform/platform-ops/incidents" && opsInc.drillReason === null);
+  check("incident-broken-now on CUSTOMER_SUCCESS ⇒ the CS incidents route and the CS Broken now view (per-surface drill)",
+    !!csInc?.drill && "href" in csInc.drill && csInc.drill.href === "/api/platform/customer-success/incidents"
+    && csInc.drill.page === "/dashboard/platform/CUSTOMER_SUCCESS?workspace=platform-incidents&view=open" && csInc.drillReason === null && csInc.value === 3);
+  check("incident-broken-now on PLATFORM_OPS ⇒ the Ops incidents route and the Incidents workspace (not the bare area)",
+    !!opsInc?.drill && "href" in opsInc.drill && opsInc.drill.href === "/api/platform/platform-ops/incidents"
+    && opsInc.drill.page === "/dashboard/platform/PLATFORM_OPS?workspace=platform-incidents" && opsInc.drillReason === null);
   check("break-glass gets the same answer (the drill follows the surface, not the token)",
-    (await retrieveWith("CUSTOMER_SUCCESS", R, SA, "incident-broken-now", {}, NOW))?.drill === null);
+    (await retrieveWith("CUSTOMER_SUCCESS", R, SA, "incident-broken-now", {}, NOW))?.drill?.figure === "incident-broken-now@1");
+  {
+    const saOps = await retrieveWith("PLATFORM_OPS", R, SA, "incident-broken-now", {}, NOW);
+    const hrefOf = (e: typeof csInc) => (e?.drill && "href" in e.drill ? e.drill.href : null);
+    check("neither surface gets the other's drill (CS ≠ Ops; break-glass on Ops gets the Ops drill, never the CS one)",
+      hrefOf(csInc) !== hrefOf(opsInc) && hrefOf(saOps) === "/api/platform/platform-ops/incidents");
+    check("an Ops grant reads nothing on CUSTOMER_SUCCESS and a CS grant nothing on PLATFORM_OPS (identity-tier CS drill stays off Ops)",
+      (await retrieveWith("CUSTOMER_SUCCESS", R, OPS, "incident-broken-now", {}, NOW)) === null
+      && (await retrieveWith("PLATFORM_OPS", R, CS, "incident-broken-now", {}, NOW)) === null);
+  }
   const po = METRICS.find((m) => m.id === "provider-outcome")!;
   check("provider-outcome: the ProviderCall attempt-verdict gap is stated in the registry's coverageGaps (and so in the envelope)",
     po.coverageGaps.some((g) => /ProviderCall attempt verdict/.test(g) && /provider-health/.test(g))

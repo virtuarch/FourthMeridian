@@ -87,9 +87,33 @@ export interface MetricPermission {
 /** A Platform tile showing the metric. Pinned: `component` contains `reads`. */
 export interface MetricTile { component: string; reads: string }
 
+/** One records route and the Platform page that opens it. */
+export interface MetricDrillLink { api: string; page: string; note?: string }
+
+/**
+ * Where an operator drills from the figure: one link (served on the surface
+ * whose area gates its route), a stated reason, or — when the metric is shown
+ * on more than one surface — a link PER SURFACE (each still gated by its own
+ * route's area; a surface without an entry has no drill there).
+ */
 export type MetricDrill =
-  | { api: string; page: string; note?: string }
-  | { unavailable: string };
+  | MetricDrillLink
+  | { unavailable: string }
+  | { bySurface: Readonly<Partial<Record<PlatformArea, MetricDrillLink>>> };
+
+/** Every records link a drill names (none for a stated reason). */
+export function drillLinks(d: MetricDrill): readonly MetricDrillLink[] {
+  if ("unavailable" in d) return [];
+  if ("bySurface" in d) return Object.values(d.bySurface).filter((x): x is MetricDrillLink => !!x);
+  return [d];
+}
+
+/** The link a drill offers on `surface` before the route-gate check: the per-surface entry, or the single link. */
+export function drillLinkOn(d: MetricDrill, surface: PlatformArea): MetricDrillLink | null {
+  if ("unavailable" in d) return null;
+  if ("bySurface" in d) return d.bySurface[surface] ?? null;
+  return d;
+}
 
 export interface MetricWindow {
   kind: "ROLLING" | "POINT_IN_TIME" | "UTC_DAYS";
@@ -320,8 +344,17 @@ export const METRICS: readonly MetricDefinition[] = [
     tiles: [
       { component: "lib/platform/customer/customer-core.ts", reads: "issues.filter((i) => i.brokenNow)" },
       { component: "components/platform/widgets/CsCustomersWidget.tsx", reads: "detail.incidents.open.length" },
+      // The incidents workspace's "Broken now" view: its list total (Ops and CS leads alike).
+      { component: "components/platform/incidents/IncidentsLead.tsx", reads: "incidentTotalText(list.data)" },
     ],
-    drill: { api: "/api/platform/platform-ops/incidents", page: page(PO) },
+    // Per surface: each tier drills to its own incidents route and the "Broken now" view
+    // (the navigation registry resolves both pages to the same href — pinned).
+    drill: {
+      bySurface: {
+        PLATFORM_OPS: { api: "/api/platform/platform-ops/incidents", page: `${page(PO)}?workspace=platform-incidents` },
+        CUSTOMER_SUCCESS: { api: "/api/platform/customer-success/incidents", page: `${page(CS)}?workspace=platform-incidents&view=open` },
+      },
+    },
   },
   {
     id: "incident-alertable", version: 1, domain: "incidents",
@@ -499,6 +532,7 @@ export function metricDefinitionProblems(m: MetricDefinition): string[] {
   if (m.provenance.class === "UNAVAILABLE" && !m.provenance.reason?.trim()) p.push(`${k}: UNAVAILABLE provenance must carry a reason`);
   if (m.provenance.class === "ESTIMATED" && !m.provenance.note?.trim()) p.push(`${k}: ESTIMATED provenance must say what is estimated`);
   if (m.tiles.length === 0 && m.provenance.class !== "UNAVAILABLE") p.push(`${k}: a computed metric names the tile that shows it`);
-  if ("unavailable" in m.drill ? !m.drill.unavailable.trim() : !m.drill.api.startsWith("/api/platform/")) p.push(`${k}: drill is a /api/platform/ records route or a stated reason`);
+  if ("unavailable" in m.drill ? !m.drill.unavailable.trim() : drillLinks(m.drill).length === 0 || drillLinks(m.drill).some((l) => !l.api.startsWith("/api/platform/"))) p.push(`${k}: drill is a /api/platform/ records route or a stated reason`);
+  if ("bySurface" in m.drill) for (const a of Object.keys(m.drill.bySurface)) if (!m.permission.some((e) => e.area === a)) p.push(`${k}: a per-surface drill on ${a} needs a permission entry there`);
   return p;
 }

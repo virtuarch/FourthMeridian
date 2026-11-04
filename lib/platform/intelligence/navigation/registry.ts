@@ -15,9 +15,11 @@
  *       PLATFORM_AREA_WORKSPACES (composition, view labels) + PLATFORM_WORKSPACES
  *       (identity labels), labelled through `resolvePlatformDestination`, the
  *       resolver the doorways use;
- *     - the path: lib/platform/directory.ts `platformAreaHref` (a fixed segment
- *       template over the PlatformArea enum, never user input);
- *     - the query: lib/space/space-url.ts `buildSpaceUrl`, the one serializer.
+ *     - the path + workspace / view query: lib/platform/workspace-href.ts
+ *       `platformWorkspaceHref` — the SAME function the sidebar and doorways
+ *       call (a fixed segment template over the PlatformArea enum, never user input);
+ *     - the deep-link params: lib/space/space-url.ts `buildSpaceUrl`, the one
+ *       serializer, over keys typed against SPACE_URL_PARAMS (the one list).
  *   registry.test.ts fails in BOTH directions: a workspace, view or Platform
  *   deep-link param in the sources without a target, or a target / param
  *   without a source. Adding a workspace therefore surfaces here or fails CI.
@@ -85,7 +87,8 @@ import {
   viewComposedKeys,
   type PlatformViewLead,
 } from "@/lib/platform/workspaces";
-import { buildSpaceUrl } from "@/lib/space/space-url";
+import { buildSpaceUrl, type SpaceUrlParam } from "@/lib/space/space-url";
+import { PLATFORM_DEFAULT_WORKSPACE_ID, platformWorkspaceHref } from "@/lib/platform/workspace-href";
 import { METRICS, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import type { IdentityTier } from "@/lib/platform/intelligence/metrics/registry";
 import { SURFACE_TIER } from "@/lib/platform/intelligence/metrics/retrieve-core";
@@ -115,13 +118,13 @@ export const TARGET_IDENTITY_PARAMS = ["workspace", "view"] as const;
 
 export type NavigationParamGroupId = "incidents" | "ai-budget-calls" | "economics-drill" | "merchant-records" | "cs-attention";
 
-/** Where a param group (or a metric tile) renders: a view lead, or a composed section key. */
-export type ComponentHome = { lead: PlatformViewLead } | { section: string };
+/** Where a param group (or a metric tile) renders: a view lead (optionally only on one view of it), or a composed section key. */
+export type ComponentHome = { lead: PlatformViewLead; view?: string } | { section: string };
 
 export interface NavigationParamGroup {
   id: NavigationParamGroupId;
-  /** The owner module's exported key list. */
-  keys: readonly string[];
+  /** The owner module's exported key list — Space-URL params by type (space-url.ts, the one list). */
+  keys: readonly SpaceUrlParam[];
   /** The module that owns the keys (pinned: it exports them, and each home's component imports it). */
   module: string;
   homes: readonly ComponentHome[];
@@ -174,6 +177,8 @@ export const TILE_HOMES: Readonly<Record<string, readonly ComponentHome[] | { no
   "components/platform/widgets/CsCustomersWidget.tsx": [{ section: "cs_customers" }],
   "components/platform/leads/growth-model.ts": [{ lead: "growth" }],
   "components/platform/incidents/incidents-model.ts": [{ lead: "incidents-ops" }, { lead: "incidents-cs" }],
+  // The list total on the "Broken now" view only (each view is one status preset).
+  "components/platform/incidents/IncidentsLead.tsx": [{ lead: "incidents-ops", view: "open" }, { lead: "incidents-cs", view: "open" }],
   "components/platform/leads/merchant-model.ts": [{ lead: "merchant" }],
   "components/platform/leads/CustomerSuccessLead.tsx": [{ lead: "customer-success" }],
   "components/platform/leads/customer-success-model.ts": [{ lead: "customer-success" }],
@@ -212,19 +217,21 @@ export interface NavigationTarget {
 
 // ── Derivation ───────────────────────────────────────────────────────────────
 
-const homeIn = (h: ComponentHome, lead: PlatformViewLead | undefined, sections: readonly string[]) =>
-  "lead" in h ? h.lead === lead : sections.includes(h.section);
+interface At { lead: PlatformViewLead | undefined; viewId: string | null; sections: readonly string[] }
 
-function metricsAt(area: PlatformArea, lead: PlatformViewLead | undefined, sections: readonly string[]): `${string}@${number}`[] {
+const homeIn = (h: ComponentHome, at: At) =>
+  "lead" in h ? h.lead === at.lead && (h.view === undefined || h.view === at.viewId) : at.sections.includes(h.section);
+
+function metricsAt(area: PlatformArea, at: At): `${string}@${number}`[] {
   return METRICS.filter((m) => m.permission.some((p) => p.area === area)
     && m.tiles.some((t) => {
       const homes = TILE_HOMES[t.component];
-      return Array.isArray(homes) && homes.some((h) => homeIn(h, lead, sections));
+      return Array.isArray(homes) && homes.some((h) => homeIn(h, at));
     })).map(metricKey);
 }
 
-function groupsAt(lead: PlatformViewLead | undefined, sections: readonly string[]): NavigationParamGroup[] {
-  return NAVIGATION_PARAM_GROUPS.filter((g) => g.homes.some((h) => homeIn(h, lead, sections)));
+function groupsAt(at: At): NavigationParamGroup[] {
+  return NAVIGATION_PARAM_GROUPS.filter((g) => g.homes.some((h) => homeIn(h, at)));
 }
 
 function derive(): NavigationTarget[] {
@@ -249,24 +256,26 @@ function derive(): NavigationTarget[] {
       if (!ws) continue; // an unidentified composition renders nothing (the coverage test fails on it)
       const views = comp.views ?? [];
       if (views.length === 0) {
-        const groups = groupsAt(undefined, comp.sections);
+        const at: At = { lead: undefined, viewId: null, sections: comp.sections };
+        const groups = groupsAt(at);
         out.push({
           ...base, id: `${area}:${comp.workspaceId}`, kind: "workspace", label: ws.label, workspaceLabel: ws.label,
           workspaceId: comp.workspaceId, viewId: null, isDefault: true,
           params: groups.flatMap((g) => g.keys), paramGroups: groups.map((g) => g.id),
-          sections: comp.sections, metrics: metricsAt(area, undefined, comp.sections),
+          sections: comp.sections, metrics: metricsAt(area, at),
         });
         continue;
       }
       views.forEach((v, i) => {
         const dest = resolvePlatformDestination(platformViewTarget(comp.workspaceId, v.id), area);
         const sections = viewComposedKeys(v);
-        const groups = groupsAt(v.lead, sections);
+        const at: At = { lead: v.lead, viewId: v.id, sections };
+        const groups = groupsAt(at);
         out.push({
           ...base, id: `${area}:${comp.workspaceId}:${v.id}`, kind: "view", label: dest?.label ?? v.label, workspaceLabel: ws.label,
           workspaceId: comp.workspaceId, viewId: v.id, isDefault: i === 0,
           params: groups.flatMap((g) => g.keys), paramGroups: groups.map((g) => g.id),
-          sections, metrics: metricsAt(area, v.lead, sections),
+          sections, metrics: metricsAt(area, at),
         });
       });
     }
@@ -277,23 +286,20 @@ function derive(): NavigationTarget[] {
 /** Every navigation target, in nav → area registry → workspace → view order. Frozen. */
 export const NAVIGATION_TARGETS: readonly NavigationTarget[] = Object.freeze(derive().map((t) => Object.freeze(t)));
 
-/** The workspace that writes no `?workspace=` in an area: its first composition (the server default; pinned). */
-export function defaultWorkspaceOf(area: PlatformArea): string {
-  return getPlatformAreaWorkspaces(area)[0].workspaceId;
-}
+/** The workspace that writes no `?workspace=` (workspace-href.ts; every area's first composition — pinned). */
+export const DEFAULT_WORKSPACE_ID = PLATFORM_DEFAULT_WORKSPACE_ID;
 
 /**
  * The href for a target and ALREADY-VALIDATED params (./access.ts validates).
- * Path from the fixed template, query through the one serializer: the target's
- * own workspace / view (defaults omitted, exactly as the UI writes them), then
- * the params in the target's allowlist order. Exported for ./access.ts only.
+ * The workspace / view link is `platformWorkspaceHref` itself — the UI's own
+ * builder, by identity (defaults omitted exactly as the UI writes them); the
+ * params follow through the one serializer, in the target's allowlist order.
+ * Exported for ./access.ts only.
  */
 export function buildNavigationHref(t: NavigationTarget, params: Readonly<Record<string, string>>): string {
+  const base = t.area && t.workspaceId ? platformWorkspaceHref(t.area, t.workspaceId, t.isDefault ? null : t.viewId) : t.pathname;
+  const q = base.indexOf("?");
   const updates: Record<string, string | null> = {};
-  if (t.area && t.workspaceId) {
-    updates.workspace = t.workspaceId === defaultWorkspaceOf(t.area) ? null : t.workspaceId;
-    updates.view = t.isDefault ? null : t.viewId;
-  }
   for (const k of t.params) if (k in params) updates[k] = params[k];
-  return buildSpaceUrl(t.pathname, "", updates);
+  return buildSpaceUrl(q < 0 ? base : base.slice(0, q), q < 0 ? "" : base.slice(q + 1), updates);
 }

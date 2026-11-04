@@ -20,7 +20,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { UserRole } from "@prisma/client";
-import { METRICS, metricDefinitionProblems, metricKey, type MetricDefinition } from "./registry";
+import { METRICS, drillLinks, metricDefinitionProblems, metricKey, type MetricDefinition } from "./registry";
 import { describeMetric, isMetricAccessToken, listMetrics, metricAccessFor, type MetricAccessToken } from "./access";
 import { PROVIDER_OUTCOME_DEFINITION } from "@/lib/platform/verdicts/provider-outcome";
 import { PROVIDER_CONNECTION_DEFINITION } from "@/lib/platform/verdicts/provider-connection";
@@ -130,9 +130,9 @@ for (const m of METRICS) {
   check(`${k}: the first hop is a permission route (the metric is read only under its gate)`,
     m.permission.some((p) => p.route === m.path[0].file), m.path[0].file);
 
-  if ("api" in m.drill) {
-    const route = path.join("app", m.drill.api.split("?")[0], "route.ts");
-    check(`${k}: the drill records route exists (${m.drill.api})`, existsSync(path.join(ROOT, route)), route);
+  for (const link of drillLinks(m.drill)) {
+    const route = path.join("app", link.api.split("?")[0], "route.ts");
+    check(`${k}: the drill records route exists (${link.api})`, existsSync(path.join(ROOT, route)), route);
   }
 }
 
