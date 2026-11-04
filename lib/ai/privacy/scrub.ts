@@ -42,7 +42,7 @@ export function scrubDescriptorText(value: string | null | undefined): string {
 /**
  * PLATFORM AI v0 — the same rule for an OPERATOR'S FREE TEXT before it leaves
  * the server (S2 binding 3). An operator may paste a customer's details into a
- * question; the model provider never receives them. Each shape is REPLACED by a
+ * question, so these shapes are not sent to the model provider (pattern-based; names, addresses and other free text pass through — it reduces, never guarantees). Each shape is REPLACED by a
  * bracketed placeholder (never silently deleted, so the sentence still reads):
  *   · an email address                    → [email]
  *   · a cuid / uuid / long opaque id       → [id]
