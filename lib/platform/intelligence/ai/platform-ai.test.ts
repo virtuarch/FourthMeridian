@@ -48,7 +48,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -452,9 +452,10 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("…the response's claims are counts; no value in grounding / claims / trace", JSON.stringify((h.body as { claims: unknown }).claims) === JSON.stringify({ claims: 1, resolved: 0, unresolved: 1, admitted: 0 })
     && !/\b40\b|12\.5|provider-outcome@1\.failing/.test(JSON.stringify([h.body.grounding, h.body.claims, h.body.trace]) + traced.join()), [h.body.grounding, traced]);
   check("the route's counter line logs codes and counts only", /countUngrounded: \(verdict, unresolved\) => console\.warn\(`\[platform-ai\] answer replaced: verdict=\$\{verdict\} unresolved=\$\{unresolved\}/.test(src("app/api/platform/ai/ask/route.ts")));
-  check("the prompt and get_metric's description teach the syntax (guidance; enforcement is the server)",
-    /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\{\{m:<metric>\}\}/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
-    && JSON.stringify(platformAiToolSchemas([])).includes("{{m:<metric>}}"));
+  check("the prompt and get_metric's description teach COPYING the server's placeholder string verbatim (guidance; enforcement is the server)",
+    /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /COPY a placeholder string from your get_metric result VERBATIM/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /never type, shorten or edit one/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && JSON.stringify(platformAiToolSchemas([])).includes("copy the placeholder string from this result verbatim"));
 }
 
 // ── 4e. DIAGNOSIS (2026-11-04): why a placeholder did not resolve — reason CODES, counts only ──
@@ -490,6 +491,114 @@ console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (co
     && JSON.stringify(MALFORMED_REASONS) === JSON.stringify(["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"]));
   const h = await handlePlatformAiAsk({ question: "x" }, askDeps({ generate: script([...reads, { content: "{{m:ai-fleet-spend-status@1|part=spend}}" }]).generate }));
   check("…and the HTTP body's grounding carries the codes only", JSON.stringify((h.body as { grounding: unknown }).grounding) === JSON.stringify({ replaced: true, verdict: "UNRESOLVED_PLACEHOLDER", unresolvedBy: { UNKNOWN_PART: 1 }, malformedBy: {} }), h.body.grounding);
+}
+
+// ── 4f. SERVER-BUILT PLACEHOLDERS (main fix, S2-approved 2026-11-04) ─────────────
+console.log("\n4f. get_metric hands the model the exact placeholder strings — round-trip + owner replays with copied placeholders");
+{
+  // ROUND-TRIP: every placeholder placeholdersFor emits is consumed WHOLE by the resolver's grammar and resolves against its OWN envelope.
+  let tried = 0, envs = 0;
+  const bad: unknown[] = [];
+  const all = readers();
+  for (const area of ALL_PLATFORM_AREAS) {
+    const ctx = ctxFor(UserRole.USER, grant(area));
+    for (const m of METRICS) {
+      const key = metricKey(m);
+      const entry = RETRIEVAL[key];
+      const windows: (number | undefined)[] = [undefined, ...(entry?.kind === "RETRIEVABLE" ? entry.windows : [])];
+      for (const w of windows) {
+        const e = await retrieveWith(area, all, ctx, key, w === undefined ? {} : { window: w }, NOW);
+        if (!e) continue;
+        envs++;
+        const p = placeholdersFor(e);
+        const strings = "placeholder" in p ? [p.placeholder] : Object.values(p.placeholders);
+        if (!("placeholder" in p)) {
+          const declared = Object.keys(e.valueUnits as object).sort().join();
+          if (Object.keys(p.placeholders).sort().join() !== declared) bad.push({ key, why: "parts ≠ declared units", got: Object.keys(p.placeholders) });
+        }
+        for (const str of strings) {
+          tried++;
+          const r = resolvePlaceholders([{ kind: "text", text: str }], [e], new Set());
+          const t = segmentsText(r.segments);
+          if (r.summary.verdict !== "RESOLVED" || r.summary.claims !== 1 || /\{\{|\}\}/.test(t) || !t) bad.push({ key, w, str, v: r.summary.verdict, u: r.unresolvedBy });
+          if (e.status === "UNAVAILABLE" && t !== `unavailable — ${e.reason}`) bad.push({ key, str, why: "UNAVAILABLE must render unavailable — reason", t });
+        }
+      }
+    }
+  }
+  check(`ROUND-TRIP: every emitted placeholder (${tried} strings over ${envs} envelopes, every area × metric × window) resolves against its own envelope`, tried > 30 && bad.length === 0, bad.slice(0, 5));
+  check("…the writer and the reader are the same grammar: formatPlaceholder output is one whole PLACEHOLDER match",
+    resolvePlaceholders([{ kind: "text", text: formatPlaceholder("incident-broken-now@1") }], [], new Set()).unresolvedBy.NOT_READ === 1
+    && formatPlaceholder("economics-ai-cost@1", { part: "spendUsd", window: 30 }) === "{{m:economics-ai-cost@1|part=spendUsd|window=30}}"
+    && formatPlaceholder("economics-operating-cost@1", { part: "totalUsd", window: null }) === "{{m:economics-operating-cost@1|part=totalUsd}}");
+
+  // Through get_metric: the tool RESULT carries them; the shapes the owner asked for.
+  const b = opsBinding(OPS);
+  const tr = await run("x", b, script([{ calls: [{ name: "get_metric", args: { id: "economics-ai-cost" } }, { name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "economics-operating-cost" } }, { name: "get_metric", args: { id: "economics-ai-cost", window: 9 } }] }, { content: "ok" }]));
+  const results = tr.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
+  check("get_metric result (one-part object): placeholders: { spendUsd: \"{{m:economics-ai-cost@1|part=spendUsd|window=30}}\" }",
+    JSON.stringify(results[0].placeholders) === JSON.stringify({ spendUsd: "{{m:economics-ai-cost@1|part=spendUsd|window=30}}" }) && !("placeholder" in results[0]), results[0].placeholders);
+  check("…a scalar: one placeholder, no window (point in time)", results[1].placeholder === "{{m:incident-broken-now@1}}" && !("placeholders" in results[1]), results[1]);
+  check("…a fixed-window (billing cycle) object: one per declared part, NEVER |window",
+    JSON.stringify(results[2].placeholders) === JSON.stringify({ totalUsd: "{{m:economics-operating-cost@1|part=totalUsd}}", aiUsd: "{{m:economics-operating-cost@1|part=aiUsd}}", providersUsd: "{{m:economics-operating-cost@1|part=providersUsd}}", infrastructureUsd: "{{m:economics-operating-cost@1|part=infrastructureUsd}}" }), results[2].placeholders);
+  check("…an UNAVAILABLE read (a refused window) still gets its placeholder, which renders \"unavailable — <reason>\"",
+    results[3].status === "UNAVAILABLE" && results[3].placeholder === "{{m:economics-ai-cost@1}}"
+    && renderPlaceholder(results[3] as MetricEnvelope, null) === `unavailable — ${results[3].reason}`, results[3]);
+  check("…the envelopes the RESOLVER uses are the retrieved ones (placeholders are only in the model-facing copy)",
+    tr.transcript.length > 0 && (await (async () => { const r = resolvePlaceholders([{ kind: "text", text: results[0].placeholders.spendUsd }], [results[0] as MetricEnvelope], new Set()); return r.summary.verdict === "RESOLVED"; })()));
+
+  // OWNER REPLAYS with REALISTIC model output: the final answer is composed by COPYING the strings from the tool results in the transcript.
+  const plaidItem = (id: string, o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
+  const cyc = priceCycleBothReadings([plaidItem("p1"), plaidItem("p2", { investmentsConsent: "ENABLED" })], [] as never, { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const econR = readers({
+    providerHealth: async () => { throw new Error("down"); },
+    economicsSnapshot: async (nowMs) => buildEconomicsSnapshot({ nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+      spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }] }),
+  });
+  const eb = opsBinding(OPS, econR);
+  type Copy = (ph: (metric: string, part?: string) => string) => string;
+  /** A fake model: scripted tool rounds, then an answer written by copying placeholders out of the tool messages it was sent. */
+  const copying = (rounds: { name: string; args: unknown }[][], compose: Copy): PlatformAiGenerate => {
+    let i = 0;
+    return async ({ messages }) => {
+      const calls = rounds[i] ?? [];
+      i++;
+      if (calls.length) {
+        const toolCalls = calls.map((c, k) => ({ id: `c${i}_${k}`, name: c.name, arguments: JSON.stringify(c.args) }));
+        return { content: null, toolCalls, raw: { role: "assistant", content: null, tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 } };
+      }
+      const seen = (messages as { role: string; content: string }[]).filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
+      const ph = (metric: string, part?: string) => {
+        const r = seen.find((x) => x.metric === metric);
+        if (!r) throw new Error(`model had no result for ${metric}`);
+        return part && r.placeholders ? r.placeholders[part] : (r.placeholder ?? r.placeholders[part!]);
+      };
+      const content = compose(ph);
+      return { content, toolCalls: [], raw: { role: "assistant", content }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 } };
+    };
+  };
+  const ls = { name: "list_metrics", args: { domain: "economics" } };
+  const gm = (id: string) => ({ name: "get_metric", args: { id } });
+  const owner = async (q: string, rounds: { name: string; args: unknown }[][], compose: Copy) => runPlatformAiTurn({ question: q, binding: eb, generate: copying(rounds, compose), model: "gpt-4o-mini" });
+  const ok = (r: Awaited<ReturnType<typeof owner>>) => !r.result.grounding.replaced && placeholderPassesV(r.result.grounding.verdict) && r.result.claims.unresolved === 0 && r.result.claims.resolved === r.result.claims.claims && r.result.claims.claims > 0;
+  const placeholderPassesV = (v: string) => v === "RESOLVED" || v === "RESOLVED_WITH_WINDOW_NOTE";
+
+  const A = await owner("Are any providers failing, and what are they costing us?", [[gm("provider-outcome"), gm("economics-operating-cost")]],
+    (ph) => `Provider outcomes are ${ph("provider-outcome@1")}. Providers cost ${ph("economics-operating-cost@1", "providersUsd")} of an estimated operating cost of ${ph("economics-operating-cost@1", "totalUsd")}.`);
+  check("OWNER A (copied placeholders: provider-outcome UNAVAILABLE + operating-cost PARTIAL) ⇒ answer KEPT, every placeholder resolved",
+    ok(A) && /^Provider outcomes are unavailable — .+\. Providers cost at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\) of an estimated operating cost of at least \$[\d,.]+/.test(segmentsText(A.result.answer)),
+    { g: A.result.grounding, c: A.result.claims, t: segmentsText(A.result.answer) });
+  const B = await owner("What's costing me the most money?", [[ls], [gm("economics-operating-cost"), gm("economics-ai-cost")]],
+    (ph) => `AI is the largest of the measured categories at ${ph("economics-operating-cost@1", "aiUsd")} of ${ph("economics-operating-cost@1", "totalUsd")}; infrastructure is ${ph("economics-operating-cost@1", "infrastructureUsd")}, so a full ranking can't be verified. Estimated AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`);
+  check("OWNER B (copied placeholders: operating-cost + ai-cost) ⇒ answer KEPT, every placeholder resolved, each figure with its window",
+    ok(B) && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(segmentsText(B.result.answer)) && /infrastructure is unavailable,/.test(segmentsText(B.result.answer)),
+    { g: B.result.grounding, c: B.result.claims, t: segmentsText(B.result.answer) });
+  const C = await owner("Break down what we're spending on AI and providers this month.", [[ls], [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
+    (ph) => `This billing cycle AI is ${ph("economics-operating-cost@1", "aiUsd")} and providers are ${ph("economics-provider-cost@1", "costUsd")}. Over the recent window AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`);
+  check("OWNER C (copied placeholders: operating-cost + ai-cost + provider-cost PARTIAL) ⇒ answer KEPT, every placeholder resolved",
+    ok(C) && /providers are at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)/.test(segmentsText(C.result.answer)),
+    { g: C.result.grounding, c: C.result.claims, t: segmentsText(C.result.answer) });
+  check("…the owner replays' traces carry no reason codes (nothing unresolved)", [A, B, C].every((r) => !traceLine(r.result).includes("By=")), [A, B, C].map((r) => traceLine(r.result)));
 }
 
 // ── 4c. UNITS PIN (S2 fix 2): every registered metric's figures carry an EXPLICIT unit ──
@@ -754,10 +863,9 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
 
   // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
   const gmDesc = JSON.stringify(platformAiToolSchemas([]));
-  check("the prompt teaches: one read ⇒ {{m:<metric>}} is enough; two windows ⇒ |window= on every placeholder; fixed ⇒ never |window; never drill.href",
-    /if you read a metric ONCE, \{\{m:<metric>\}\} is enough/.test(PLATFORM_AI_SYSTEM_PROMPT) && /two windows, every placeholder for it MUST carry \|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
-    && /window\.days is null .* NEVER add \|window/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never link drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
-    && /never when window\.days is null/.test(gmDesc) && /never drill\.href/.test(gmDesc));
+  check("the prompt teaches: copy the placeholder (the server built its window); never drill.href",
+    /copy its string exactly as given/.test(PLATFORM_AI_SYSTEM_PROMPT) && !/if you read a metric ONCE/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never link drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /copy it, don't build it/.test(gmDesc) && /never drill\.href/.test(gmDesc));
 }
 
 // ── 5. links ────────────────────────────────────────────────────────────────

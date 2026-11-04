@@ -130,7 +130,7 @@ export type PlatformAiGenerate = (args: {
 export const PLATFORM_AI_SYSTEM_PROMPT = [
   "You are Fourth Meridian's Platform AI for operators. You are READ-ONLY: no tool you have can change anything, so never claim or offer to take an action.",
   "Answer ONLY from the results of the tools you call in this turn: list_metrics (definitions), get_metric (one metric's value envelope), find_page and open_page (Platform pages).",
-  "NEVER write a number or a digit yourself. Where a figure goes, write a placeholder and the server fills in the figure, its unit and its status wording from your get_metric result: {{m:<metric>}} for a single-number value, {{m:<metric>|part=<name>}} for one part of an object value (e.g. {{m:provider-outcome@1|part=failing}}). <metric> is EXACTLY the get_metric result's \"metric\" field. Windows: if you read a metric ONCE, {{m:<metric>}} is enough (you may add |window=<window.days> when window.days is a number, e.g. {{m:engaged-users@1|window=7}}). If you read the SAME metric with two windows, every placeholder for it MUST carry |window=<window.days>. If window.days is null (a fixed window such as the billing cycle, or none), NEVER add |window. The server states each figure's window itself.",
+  "NEVER write a number or a digit yourself. Where a figure goes, COPY a placeholder string from your get_metric result VERBATIM and the server fills in the figure, its unit, its window and its status wording. Every get_metric result carries either \"placeholder\" (one string, for a single-number or unavailable value) or \"placeholders\" (one exact string per part of an object value, e.g. {\"failing\": \"{{m:provider-outcome@1|part=failing}}\"}): pick the part you mean and copy its string exactly as given — never type, shorten or edit one. (For reference only, the strings follow the form {{m:<metric>|part=<name>|window=<days>}}; the copied string is always right.)",
   "Do not write units ($, %, k, M) or \"at least\" next to a placeholder; the server writes them. Do not add, subtract, divide or estimate figures, and do not write dates, counts or metric ids in your own words: any digit outside a placeholder, or a placeholder for a metric you did not read in this turn, makes the whole answer refused. The one exception: you may repeat a time window the operator wrote in the question (e.g. their \"30 days\").",
   "If a metric's status is UNAVAILABLE, say it is unavailable (its placeholder renders as \"unavailable\" with the reason). Never present an unavailable figure as 0, $0, none or an estimate. PARTIAL means a lower bound; its placeholder renders as \"at least\".",
   "For cost questions (spend, what is costing the most), read the economics metrics. A dollar figure whose basis.kind is \"estimated\" is an estimate: call it estimated, never billed or invoiced. If you compare categories and any figure is PARTIAL or a part is null, say it is the largest of the measured categories and that a full ranking can't be verified.",
@@ -152,7 +152,7 @@ export function platformAiToolSchemas(paramKeys: readonly string[]): unknown[] {
     fn("list_metrics", "List the metric definitions you may read here (ids, labels, windows). No values. Domain \"economics\" holds the cost and spend metrics (AI cost, provider cost, operating cost by category, AI calls and cost per call): use it for questions about cost, spend or what is costing the most.", {
       domain: { type: "string", enum: DOMAINS },
     }),
-    fn("get_metric", "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), and drill.page (a link to the page with that figure's records). To state its figure write {{m:<metric>}} (or {{m:<metric>|part=<name>}} for an object value) — never the number itself. Add |window=<window.days> only when window.days is a number, and always when you read this metric with more than one window; never when window.days is null. Link drill.page, never drill.href.", {
+    fn("get_metric", "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), and placeholder / placeholders. To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (the form is {{m:<metric>|part=<name>|window=<days>}}; copy it, don't build it). Link drill.page, never drill.href.", {
       id: { type: "string", description: "A metric id from list_metrics, e.g. \"provider-outcome@1\" or \"economics-operating-cost@1\"." },
       window: { type: "integer", description: "Days, only one of the metric's listed `windows`; any other is refused. Omit for the default or a fixed window." },
     }, ["id"]),
@@ -290,7 +290,7 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       const drill = drillPageOf(e, binding);
       if (drill) ev.hrefs.add(drill);
       step(e.status, { refs: [e.metric], drillLink: drill !== null });
-      return e;
+      return { ...e, ...placeholdersFor(e) };
     }
     case "find_page": {
       const a = plainArgs(rawArgs, ["query"]);
@@ -427,6 +427,36 @@ export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => 
 
 /** One well-formed placeholder. Anything else that opens `{{` or closes `}}` is MALFORMED. */
 const PLACEHOLDER = /\{\{\s*m:([a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?)((?:\|[a-z]+=[A-Za-z0-9]{1,40}){0,2})\s*\}\}/g;
+
+/**
+ * THE WRITER of the grammar PLACEHOLDER parses (main fix, S2-approved 2026-11-04):
+ * the exact string a get_metric result hands the model to copy. Pinned by a
+ * ROUND-TRIP test: every string placeholdersFor emits is consumed whole by
+ * PLACEHOLDER and resolves against its own envelope.
+ */
+export function formatPlaceholder(key: string, opts: { part?: string | null; window?: number | null } = {}): string {
+  return `{{m:${key}${opts.part ? `|part=${opts.part}` : ""}${typeof opts.window === "number" ? `|window=${opts.window}` : ""}}}`;
+}
+
+/**
+ * The placeholder strings for one envelope, server-built (so attribution stays
+ * exact: each names this envelope's key, part and window):
+ *   · UNAVAILABLE (or no value) or a scalar   ⇒ { placeholder } — UNAVAILABLE renders "unavailable — <reason>"
+ *   · an object value                        ⇒ { placeholders: { <part>: … } } — one per part with a declared unit
+ * |window=<days> is included whenever the envelope's window.days is a number (it
+ * always resolves to this envelope, and keeps two windows of one key apart);
+ * never when it is null (a fixed window, or none).
+ */
+export function placeholdersFor(e: MetricEnvelope): { placeholder: string } | { placeholders: Record<string, string> } {
+  const window = e.window.days;
+  const units = e.valueUnits;
+  if (e.status === "UNAVAILABLE" || e.value === null || typeof e.value === "number" || units === null || typeof units === "string") {
+    return { placeholder: formatPlaceholder(e.metric, { window }) };
+  }
+  const placeholders: Record<string, string> = {};
+  for (const [part, unit] of Object.entries(units)) if (FIGURE_UNITS.includes(unit)) placeholders[part] = formatPlaceholder(e.metric, { part, window });
+  return { placeholders };
+}
 
 /** The options of one placeholder, or null when malformed (unknown / repeated option, bad window). */
 function placeholderOptions(raw: string): { part: string | null; window: number | null } | null {
