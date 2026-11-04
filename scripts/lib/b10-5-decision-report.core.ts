@@ -322,6 +322,19 @@ const TITLES: Record<ReportName, string> = {
   "audit-021": "4. Frozen stale-observed snapshot rows (FM-AUDIT-021)",
 };
 
+/**
+ * S2 (#370): every figure row names its bound kind LITERALLY, so no count is read
+ * as exact by accident. "exact" only where the figure is a plain count of stored
+ * rows (populations, totals, and the separate undetermined / excluded counts).
+ */
+export const BOUND = {
+  LOWER: "lower bound",
+  UPPER: "upper bound",
+  REVIEW: "review list (includes genuine $0)",
+  EXACT: "exact",
+} as const;
+export const BOUND_LABELS: readonly string[] = Object.values(BOUND);
+
 const range = (a: string | null, b: string | null) => (a === null || b === null ? "—" : a === b ? a : `${a} → ${b}`);
 const n = (v: number) => String(Math.trunc(v));
 
@@ -335,43 +348,52 @@ export function renderReport(o: ReportOutcome): string {
   switch (o.report) {
     case "coingecko": {
       const d = o.data;
-      L.push("| Coin | Rows one day late | Late date range | Rows undetermined | Rows excluded (fetched after fix) |", "|---|---:|---|---:|---:|");
-      for (const c of d.coins) L.push(`| ${c.coin} | ${n(c.lateRows)} | ${range(c.lateFrom, c.lateTo)} | ${n(c.undeterminedRows)} | ${n(c.excludedRows)} |`);
+      L.push("| Coin | Measure | Rows | Date range | Bound |", "|---|---|---:|---|---|");
+      for (const c of d.coins) {
+        L.push(`| ${c.coin} | one day late | ${n(c.lateRows)} | ${range(c.lateFrom, c.lateTo)} | ${BOUND.LOWER} |`);
+        L.push(`| ${c.coin} | undetermined | ${n(c.undeterminedRows)} | — | ${BOUND.EXACT} |`);
+        if (c.excludedRows > 0) L.push(`| ${c.coin} | excluded (fetched after fix) | ${n(c.excludedRows)} | — | ${BOUND.EXACT} |`);
+      }
       const t = d.coins.reduce((s, c) => ({ l: s.l + c.lateRows, u: s.u + c.undeterminedRows, x: s.x + c.excludedRows,
         f: minDate(s.f, c.lateFrom), to: maxDate(s.to, c.lateTo) }), { l: 0, u: 0, x: 0, f: null as string | null, to: null as string | null });
-      L.push(`| **All coins** | **${n(t.l)}** | ${range(t.f, t.to)} | ${n(t.u)} | ${n(t.x)} |`, "");
+      L.push(`| **All coins** | **one day late** | **${n(t.l)}** | ${range(t.f, t.to)} | ${BOUND.LOWER} |`,
+        `| **All coins** | undetermined | ${n(t.u)} | — | ${BOUND.EXACT} |`,
+        `| **All coins** | excluded (fetched after fix) | ${n(t.x)} | — | ${BOUND.EXACT} |`, "");
       L.push(d.fixedFrom
         ? `Batches fetched on or after ${d.fixedFrom} excluded (\`--coingecko-fixed-from\`).`
-        : `\`--coingecko-fixed-from\` not given: no batch excluded. Latest fetch date among late batches: ${d.lastLateFetch ?? "—"} (compare with the #300 deploy date on this environment).`, "");
+        : `\`--coingecko-fixed-from\` not given: no batch excluded. Latest fetch date among late batches: ${d.lastLateFetch ?? "—"} (compare with the #300 deploy date on this environment).`,
+        "Undetermined rows are a separate count of rows the heuristic cannot classify; they are never part of the lower bound.", "");
       break;
     }
     case "fin-a2": {
       const d = o.data;
-      L.push("| Measure | Count |", "|---|---:|",
-        `| Live Plaid accounts (population) | ${n(d.plaidAccounts)} |`,
-        `| **Candidates** ($0, observed flag set, no observed balance since creation) | **${n(d.candidates)}** |`,
-        `| — created after the ledger began (higher confidence) | ${n(d.inLedger)} |`,
-        `| — created before the ledger began (ledger-blind) | ${n(d.preLedger)} |`,
-        `| — of which no institution balance clock either | ${n(d.noInstitutionClock)} |`);
-      for (const [type, c] of Object.entries(d.byType).sort()) L.push(`| — type ${/^[a-z_]{1,20}$/.test(type) ? type : "other"} | ${n(c)} |`);
-      L.push("", `Candidates created: ${range(d.minCreated, d.maxCreated)}. Balance ledger begins: ${d.ledgerStart ?? "— (no BALANCES rows)"}.`, "");
+      L.push("| Measure | Count | Bound |", "|---|---:|---|",
+        `| Live Plaid accounts (population) | ${n(d.plaidAccounts)} | ${BOUND.EXACT} |`,
+        `| **Candidates** ($0, observed flag set, no observed balance since creation) | **${n(d.candidates)}** | ${BOUND.REVIEW} |`,
+        `| — created after the ledger began (higher confidence) | ${n(d.inLedger)} | ${BOUND.REVIEW} |`,
+        `| — created before the ledger began (ledger-blind) | ${n(d.preLedger)} | ${BOUND.REVIEW} |`,
+        `| — of which no institution balance clock either | ${n(d.noInstitutionClock)} | ${BOUND.REVIEW} |`);
+      for (const [type, c] of Object.entries(d.byType).sort()) L.push(`| — type ${/^[a-z_]{1,20}$/.test(type) ? type : "other"} | ${n(c)} | ${BOUND.REVIEW} |`);
+      L.push("", `Candidates created: ${range(d.minCreated, d.maxCreated)}. Balance ledger begins: ${d.ledgerStart ?? "— (no BALANCES rows)"}.`,
+        "For accounts refreshed before FIN-011 the candidate count is also a lower bound (a refresh then could mark a null balance as advanced).", "");
       break;
     }
     case "fin-e": {
       const d = o.data;
-      L.push("| Measure | Days (rows) | Spaces | Date range |", "|---|---:|---:|---|",
-        `| **Fillable by regeneration** (estimate, NULL, inputs present) | **${n(d.fillableRows)}** | **${n(d.fillableSpaces)}** | ${range(d.fillableFrom, d.fillableTo)} |`,
-        `| Frozen observed rows with NULL (regeneration never rewrites) | ${n(d.frozenRows)} | ${n(d.frozenSpaces)} | ${range(d.frozenFrom, d.frozenTo)} |`,
-        `| Estimate rows with NULL and no active account inputs | ${n(d.noInputRows)} | — | — |`,
-        `| All rows with NULL / all snapshot rows | ${n(d.nullRows)} / ${n(d.allRows)} | — | — |`, "");
+      L.push("| Measure | Days (rows) | Spaces | Date range | Bound |", "|---|---:|---:|---|---|",
+        `| **Fillable by regeneration** (estimate, NULL, inputs present) | **${n(d.fillableRows)}** | **${n(d.fillableSpaces)}** | ${range(d.fillableFrom, d.fillableTo)} | ${BOUND.UPPER} |`,
+        `| Frozen observed rows with NULL (regeneration never rewrites) | ${n(d.frozenRows)} | ${n(d.frozenSpaces)} | ${range(d.frozenFrom, d.frozenTo)} | ${BOUND.EXACT} |`,
+        `| Estimate rows with NULL and no active account inputs | ${n(d.noInputRows)} | — | — | ${BOUND.EXACT} |`,
+        `| All rows with NULL / all snapshot rows | ${n(d.nullRows)} / ${n(d.allRows)} | — | — | ${BOUND.EXACT} |`, "");
       break;
     }
     case "audit-021": {
       const d = o.data;
-      L.push("| Frozen rows | Days (rows) | Spaces | Date range |", "|---|---:|---:|---|",
-        `| **Candidates** (stale bank input under #302) | **${n(d.candidate.rows)}** | **${n(d.candidate.spaces)}** | ${range(d.candidate.fromDate, d.candidate.toDate)} |`,
-        `| Clear | ${n(d.clear.rows)} | ${n(d.clear.spaces)} | ${range(d.clear.fromDate, d.clear.toDate)} |`,
-        `| Undetermined (before the balance ledger) | ${n(d.undetermined.rows)} | ${n(d.undetermined.spaces)} | ${range(d.undetermined.fromDate, d.undetermined.toDate)} |`, "");
+      L.push("| Frozen rows | Days (rows) | Spaces | Date range | Bound |", "|---|---:|---:|---|---|",
+        `| **Candidates** (stale bank input under #302) | **${n(d.candidate.rows)}** | **${n(d.candidate.spaces)}** | ${range(d.candidate.fromDate, d.candidate.toDate)} | ${BOUND.UPPER} |`,
+        `| Clear | ${n(d.clear.rows)} | ${n(d.clear.spaces)} | ${range(d.clear.fromDate, d.clear.toDate)} | ${BOUND.LOWER} |`,
+        `| Undetermined (before the balance ledger) | ${n(d.undetermined.rows)} | ${n(d.undetermined.spaces)} | ${range(d.undetermined.fromDate, d.undetermined.toDate)} | ${BOUND.EXACT} |`, "",
+        "Undetermined is a separate count, never folded into the candidate upper bound.", "");
       break;
     }
   }

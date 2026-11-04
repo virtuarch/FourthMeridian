@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  COINGECKO_DEFINITE_DAILY_MIN_SPAN, GOVERNANCE_LINES, READ_ONLY_STATEMENT, REPORTS, REQUIRED_COLUMNS,
+  BOUND_LABELS, COINGECKO_DEFINITE_DAILY_MIN_SPAN, GOVERNANCE_LINES, READ_ONLY_STATEMENT, REPORTS, REQUIRED_COLUMNS,
   coinLabel, missingColumns, outputLeaks, renderDocument, runReport, summarizeAudit021, summarizeCoinGecko,
   type ReadOnlyClient, type ReportOutcome,
 } from "./lib/b10-5-decision-report.core";
@@ -91,6 +91,19 @@ async function runnerSection(): Promise<void> {
       && doc.includes("Preview/clone: engineering; Production: owner-run or owner-approved.") && /safety rail, NOT approval/.test(doc));
     check("the rendered document passes the leak predicate", outputLeaks(doc).length === 0, outputLeaks(doc).join());
     check("every report prints its heuristic", (doc.match(/\*Heuristic:\*/g) ?? []).length === 4);
+    // S2 (#370): every figure row names its bound kind literally, as its LAST cell.
+    const tableRows = doc.split("\n").filter((l) => l.startsWith("| ") && !/^\|\s*(Coin|Measure|Frozen rows)\s*\|/.test(l));
+    const unlabelled = tableRows.filter((l) => !BOUND_LABELS.some((b) => l.trimEnd().endsWith(`| ${b} |`)));
+    check("every count row carries exactly one bound label (lower bound | upper bound | review list (includes genuine $0) | exact)",
+      tableRows.length >= 15 && unlabelled.length === 0, unlabelled.join(" / "));
+    check("the mapping: CoinGecko late = lower bound; FIN-A2 candidates = review list; FIN-E fillable = upper bound; FM-AUDIT-021 candidates = upper bound",
+      /\| BTC \| one day late \|.*\| lower bound \|$/m.test(doc)
+        && /\| \*\*Candidates\*\* \(\$0.*\| review list \(includes genuine \$0\) \|$/m.test(doc)
+        && /\| \*\*Fillable by regeneration\*\*.*\| upper bound \|$/m.test(doc)
+        && /\| \*\*Candidates\*\* \(stale.*\| upper bound \|$/m.test(doc));
+    check("undetermined is its own row, labelled exact, never folded into a bound",
+      /\| BTC \| undetermined \|.*\| exact \|$/m.test(doc) && /\| Undetermined \(before the balance ledger\).*\| exact \|$/m.test(doc));
+    check("the pre-FIN-011 lower-bound note is kept", /before FIN-011 the candidate count is also a lower bound/.test(doc));
     const missing = await runReport(fake(allCols.filter((c) => !(c.t === "FinancialAccount" && c.c === "balanceObserved"))), "fin-a2");
     check("a missing column ⇒ UNAVAILABLE naming it, and no report query runs",
       missing.status === "UNAVAILABLE" && /FinancialAccount\.balanceObserved/.test(missing.reason)

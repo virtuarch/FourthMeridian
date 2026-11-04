@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { makeRecorder, prepareHarness, psql, teardownHarness } from "./lib/rls-harness";
-import { outputLeaks } from "./lib/b10-5-decision-report.core";
+import { BOUND_LABELS, outputLeaks } from "./lib/b10-5-decision-report.core";
 
 const KEEP = process.argv.includes("--keep");
 const { check, report } = makeRecorder();
@@ -129,19 +129,28 @@ async function main(): Promise<number> {
   check(3, "no id, amount, name, email, institution or URL in the output", leaked(text).length === 0, leaked(text).join(", "));
   check(4, "nothing was written", fingerprint() === before, `${before} → ${fingerprint()}`);
 
+  {
+    const tableRows = text.split("\n").filter((l) => l.startsWith("| ") && !/^\|\s*(Coin|Measure|Frozen rows)\s*\|/.test(l));
+    const unlabelled = tableRows.filter((l) => !BOUND_LABELS.some((b) => l.trimEnd().endsWith(`| ${b} |`)));
+    check(24, "every figure row in the real output names its bound kind (S2)", tableRows.length > 10 && unlabelled.length === 0, unlabelled.join(" / "));
+  }
+
   // 1. CoinGecko
-  check(5, "BTC: the 120-day batch is late (2025-01-01 → 2025-04-30), the 30-day batch undetermined; INTRADAY ignored",
-    row(text, "BTC").includes("| BTC | 120 | 2025-01-01 → 2025-04-30 | 30 | 0 |"), row(text, "BTC"));
+  check(5, "BTC: the 120-day batch is late (2025-01-01 → 2025-04-30, lower bound), the 30-day batch undetermined (separate row); INTRADAY ignored",
+    row(text, "BTC | one day late").includes("| 120 | 2025-01-01 → 2025-04-30 | lower bound |") && row(text, "BTC | undetermined").includes("| 30 | — | exact |"),
+    `${row(text, "BTC | one day late")} / ${row(text, "BTC | undetermined")}`);
   check(6, "ETH: token + coin batches both late without --coingecko-fixed-from (300 rows)",
-    row(text, "ETH").includes("| ETH | 300 | 2024-01-01 → 2025-07-19 | 0 | 0 |"), row(text, "ETH"));
+    row(text, "ETH | one day late").includes("| 300 | 2024-01-01 → 2025-07-19 | lower bound |") && row(text, "ETH | undetermined").includes("| 0 |"), row(text, "ETH | one day late"));
   check(7, "a non-CoinGecko (Tiingo) instrument is not in the table", !/\| ACME \|/.test(text) && !/\| other \|/.test(text));
   const fixed = cli(["coingecko", "--env=local", "--coingecko-fixed-from=2026-10-15"]);
-  check(8, "--coingecko-fixed-from excludes the post-fix batch", row(out(fixed), "ETH").includes("| ETH | 100 | 2024-01-01 → 2024-04-09 | 0 | 200 |"), row(out(fixed), "ETH"));
+  check(8, "--coingecko-fixed-from excludes the post-fix batch",
+    row(out(fixed), "ETH | one day late").includes("| 100 | 2024-01-01 → 2024-04-09 | lower bound |") && row(out(fixed), "ETH | excluded").includes("| 200 | — | exact |"),
+    `${row(out(fixed), "ETH | one day late")} / ${row(out(fixed), "ETH | excluded")}`);
 
   // 2. FIN-A2
   check(9, "FIN-A2 population: 8 live Plaid accounts", row(text, "Live Plaid accounts").includes("| 8 |"), row(text, "Live Plaid accounts"));
   check(10, "FIN-A2 candidates: 3 (unobserved since creation; an advanced=false row is not an observation)",
-    row(text, "**Candidates** ($0").includes("**3**"), row(text, "**Candidates** ($0"));
+    row(text, "**Candidates** ($0").includes("| **3** | review list (includes genuine $0) |"), row(text, "**Candidates** ($0"));
   check(11, "FIN-A2 split: 2 after the ledger began, 1 before", row(text, "— created after").includes("| 2 |") && row(text, "— created before").includes("| 1 |"));
   check(12, "FIN-A2 no-institution-clock 1; types checking 1, debt 1, savings 1",
     row(text, "— of which no institution").includes("| 1 |") && row(text, "— type checking").includes("| 1 |") && row(text, "— type debt").includes("| 1 |") && row(text, "— type savings").includes("| 1 |"));
@@ -149,17 +158,17 @@ async function main(): Promise<number> {
 
   // 3. FIN-E
   check(14, "FIN-E fillable: 3 days, 1 Space, 2026-05-01 → 2026-05-03",
-    row(text, "**Fillable by regeneration**").includes("| **3** | **1** | 2026-05-01 → 2026-05-03 |"), row(text, "**Fillable by regeneration**"));
+    row(text, "**Fillable by regeneration**").includes("| **3** | **1** | 2026-05-01 → 2026-05-03 | upper bound |"), row(text, "**Fillable by regeneration**"));
   check(15, "FIN-E frozen NULL rows: 1 / 1 Space on 2026-05-04", row(text, "Frozen observed rows with NULL").includes("| 1 | 1 | 2026-05-04 |"), row(text, "Frozen observed rows with NULL"));
   check(16, "FIN-E no-input rows 2 (revoked link only); NULL 6 of 15", row(text, "Estimate rows with NULL and no active").includes("| 2 |") && row(text, "All rows with NULL").includes("| 6 / 15 |"), row(text, "All rows with NULL"));
 
   // 4. FM-AUDIT-021
   check(17, "FM-AUDIT-021 candidates: 2 days, 1 Space, 2026-04-18 → 2026-04-19",
-    row(text, "**Candidates** (stale").includes("| **2** | **1** | 2026-04-18 → 2026-04-19 |"), row(text, "**Candidates** (stale"));
+    row(text, "**Candidates** (stale").includes("| **2** | **1** | 2026-04-18 → 2026-04-19 | upper bound |"), row(text, "**Candidates** (stale"));
   check(18, "FM-AUDIT-021 clear: 5 days (fresh, too-new, manual, revoked, observed), 3 Spaces",
     row(text, "Clear").includes("| 5 | 3 | 2026-03-12 → 2026-05-04 |"), row(text, "Clear"));
   check(19, "FM-AUDIT-021 undetermined: the day before the ledger horizon",
-    row(text, "Undetermined").includes("| 1 | 1 | 2026-03-05 |"), row(text, "Undetermined"));
+    row(text, "Undetermined").includes("| 1 | 1 | 2026-03-05 | exact |"), row(text, "Undetermined"));
 
   // ── a non-bypass principal is refused (a count under RLS would silently miss rows) ──
   {
@@ -185,7 +194,7 @@ async function main(): Promise<number> {
     check(23, "fin-e and fin-a2 read UNAVAILABLE naming the column; the other two still report",
       r.status === 0 && /\*\*UNAVAILABLE\*\* — the target has no SpaceSnapshot\.restrictedCash/.test(t)
         && /\*\*UNAVAILABLE\*\* — the target has no FinancialAccount\.balanceObserved/.test(t)
-        && row(t, "BTC").includes("| BTC | 120 |") && row(t, "**Candidates** (stale").includes("**2**"), t.slice(0, 3000));
+        && row(t, "BTC | one day late").includes("| 120 |") && row(t, "**Candidates** (stale").includes("**2**"), t.slice(0, 3000));
   }
 
   return report("B10.5 DECISION REPORT ACCEPTANCE");
