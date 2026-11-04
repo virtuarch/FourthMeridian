@@ -41,7 +41,7 @@ import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
 import { METRICS, daysWindowLabel, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import { metricAccessFor, describeMetric, listMetrics } from "@/lib/platform/intelligence/metrics/access";
-import { RETRIEVAL, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import { RETRIEVAL, UNAVAILABLE_CODES, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import { listNavigationTargets, resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM_AI_SURFACES } from "@/lib/platform/ai/spend-by-surface-core";
@@ -980,7 +980,9 @@ console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate 
   const Q_B = "What's costing me the most money?";
   const bTurn = (b: PlatformAiBinding, args: (id: string) => Record<string, unknown>) =>
     run(Q_B, b, script([{ calls: B_IDS.map((id) => ({ name: "get_metric", args: args(id) })) }, { content: "Operating cost: {{m:economics-operating-cost@1|part=totalUsd}}." }]));
-  const steps = (r: Awaited<ReturnType<typeof bTurn>>) => traceLine(r.result).split(" ")[0];
+  const stepsWithCodes = (r: Awaited<ReturnType<typeof bTurn>>) => traceLine(r.result).split(" ")[0];
+  /** The step list as the Preview build logged it (before the UNAVAILABLE reason code existed). */
+  const steps = (r: Awaited<ReturnType<typeof bTurn>>) => stepsWithCodes(r).replace(/\[[A-Z_]+\]/g, "");
   const seenReasons = (r: Awaited<ReturnType<typeof bTurn>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => (JSON.parse((m as { content: string }).content) as MetricEnvelope).reason ?? "");
   const PREVIEW_B = "steps=get_metric:UNAVAILABLE(economics-operating-cost@1)+drill,get_metric:UNAVAILABLE(economics-ai-cost@1)+drill,get_metric:UNAVAILABLE(economics-provider-cost@1)+drill";
 
@@ -999,6 +1001,18 @@ console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate 
   const failed = await bTurn(failing, (id) => ({ id }));
   check("ALSO REPRODUCES: the shared reader (getEconomicsSnapshot) failing ⇒ the same step list — indistinguishable in today's trace",
     steps(failed) === PREVIEW_B && seenReasons(failed).every((x) => /the reader \(getEconomicsSnapshot\) failed/.test(x)), steps(failed));
+
+  // Task 2: the trace now carries the retrieval's UNAVAILABLE CODE (closed enum, never the reason text), so the two causes differ.
+  check("REASON CODE: the window cause logs get_metric:UNAVAILABLE[WINDOW_FIXED] ×2 + [WINDOW_NOT_OFFERED] (ai-cost)",
+    unoffered.every((r) => stepsWithCodes(r) === "steps=get_metric:UNAVAILABLE[WINDOW_FIXED](economics-operating-cost@1)+drill,get_metric:UNAVAILABLE[WINDOW_NOT_OFFERED](economics-ai-cost@1)+drill,get_metric:UNAVAILABLE[WINDOW_FIXED](economics-provider-cost@1)+drill"),
+    unoffered.map(stepsWithCodes));
+  check("REASON CODE: the reader cause logs get_metric:UNAVAILABLE[READER_FAILED] ×3",
+    stepsWithCodes(failed) === "steps=get_metric:UNAVAILABLE[READER_FAILED](economics-operating-cost@1)+drill,get_metric:UNAVAILABLE[READER_FAILED](economics-ai-cost@1)+drill,get_metric:UNAVAILABLE[READER_FAILED](economics-provider-cost@1)+drill",
+    stepsWithCodes(failed));
+  check("…the trace step carries the code as a closed-enum field (UNAVAILABLE_CODES), never the reason text; readable steps carry none",
+    failed.result.trace.every((t) => t.unavailable === "READER_FAILED") && [...unoffered, failed].every((r) => r.result.trace.every((t) => (UNAVAILABLE_CODES as readonly string[]).includes(t.unavailable ?? "")))
+    && plain.result.trace.every((t) => !("unavailable" in t)) && !/failed|offered|fixed:/.test(JSON.stringify([failed.result.trace, unoffered[0].result.trace]) + traceLine(failed.result) + traceLine(unoffered[0].result)),
+    failed.result.trace);
 }
 
 // ── 5. links ────────────────────────────────────────────────────────────────

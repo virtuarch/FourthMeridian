@@ -49,7 +49,8 @@
  *   7. persistence — none: no prompt, answer or history is stored (the ledger
  *                   keeps metadata only, as for every AI call).
  *   8. trace      — the answer carries a METADATA-ONLY tool trace (tool name,
- *                   outcome code, registry ids the server itself returned) so an
+ *                   outcome code, for an UNAVAILABLE read its retrieval
+ *                   UnavailableCode, registry ids the server itself returned) so an
  *                   operator or reviewer can see what the turn read; never an
  *                   argument the model wrote, never prompt or answer text.
  *
@@ -62,7 +63,7 @@ import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { ALL_PLATFORM_AREAS, PLATFORM_AREAS } from "@/lib/platform/policy";
 import type { PlatformArea } from "@prisma/client";
 import { METRICS, daysWindowLabel, hoursWindowLabel, metricKey, type MetricDefinition, type MetricDomain } from "@/lib/platform/intelligence/metrics/registry";
-import type { FigureUnit, MetricEnvelope, RetrievalParams } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import type { FigureUnit, MetricEnvelope, RetrievalParams, UnavailableCode } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import type { NavigationTarget } from "@/lib/platform/intelligence/navigation/registry";
 
 // ── Constants (stated in the PR for the owner's enable decision) ────────────
@@ -212,7 +213,17 @@ export interface PlatformAiTraceStep {
   count?: number;
   /** get_metric: true when the envelope's drill page became a link candidate. */
   drillLink?: boolean;
+  /**
+   * get_metric UNAVAILABLE: WHICH path refused (the envelope's UnavailableCode — a
+   * closed enum set by retrieval, never the reason text). Rendered as
+   * `get_metric:UNAVAILABLE[<code>](<key>)` by traceLine.
+   */
+  unavailable?: UnavailableCode;
 }
+
+/** The envelope's UNAVAILABLE code for the trace (set by retrieval from its closed enum — never text). */
+const unavailableCodeOf = (e: MetricEnvelope): { unavailable?: UnavailableCode } =>
+  e.status === "UNAVAILABLE" && e.unavailableCode ? { unavailable: e.unavailableCode } : {};
 
 /**
  * The drill page of an envelope get_metric returned IN THIS TURN, as a link
@@ -289,7 +300,7 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       ev.envelopes.push(e);
       const drill = drillPageOf(e, binding);
       if (drill) ev.hrefs.add(drill);
-      step(e.status, { refs: [e.metric], drillLink: drill !== null });
+      step(e.status, { refs: [e.metric], drillLink: drill !== null, ...unavailableCodeOf(e) });
       return { ...e, ...placeholdersFor(e) };
     }
     case "find_page": {
@@ -894,7 +905,7 @@ const reasonCounts = <R extends string>(order: readonly R[], c: ReasonCounts<R> 
 
 /** The trace as ONE metadata line (codes and registry ids only) for the route's log. */
 export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" | "sanitised" | "grounding" | "claims">): string {
-  const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}`);
+  const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.unavailable ? `[${t.unavailable}]` : ""}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}`);
   const links = r.answer.filter((s) => s.kind === "link").length;
   return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
     + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")

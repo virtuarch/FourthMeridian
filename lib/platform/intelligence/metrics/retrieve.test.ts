@@ -26,7 +26,7 @@ import { UserRole } from "@prisma/client";
 import { METRICS, drillLinkOn, drillLinks, metricKey } from "./registry";
 import { metricAccessFor, type MetricAccessToken } from "./access";
 import {
-  NO_DRILL_ON_SURFACE, READER_SYMBOL, RETRIEVAL, atSurface, drillRouteArea, isAggregate, isFleetEntry, retrieveWith,
+  NO_DRILL_ON_SURFACE, READER_SYMBOL, RETRIEVAL, UNAVAILABLE_CODES, atSurface, drillRouteArea, isAggregate, isFleetEntry, retrieveWith,
   type MetricEnvelope, type RetrievalContext, type RetrievalReaders,
 } from "./retrieve-core";
 import { incidentAudienceFor, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
@@ -539,6 +539,37 @@ await (async () => {
     check(`${metricKey(m)}: reader failure ⇒ UNAVAILABLE, null, reason, and the error text is not echoed`,
       e?.status === "UNAVAILABLE" && e.value === null && !!e.reason && !e.reason.includes(EMAIL) && !JSON.stringify(e).includes(CUID), JSON.stringify(e?.reason));
   }
+})();
+
+// ── 5c. the UNAVAILABLE reason code — one closed-enum code per path ──────────
+console.log("\n5c. UNAVAILABLE reason code — every path that yields UNAVAILABLE carries its own code (enum, never text)");
+await (async () => {
+  const R = readers(newRec());
+  const on = (id: string) => METRICS.find((m) => metricKey(m) === id || m.id === id)!.permission[0].area;
+  const get = (id: string, params = {}, r: RetrievalReaders = R) => retrieveWith(on(id), r, SA, id, params, NOW);
+  check("the enum is closed and exactly the six paths", UNAVAILABLE_CODES.join() === "NOT_RETRIEVABLE,WINDOW_FIXED,WINDOW_NOT_OFFERED,READER_FAILED,PROJECTION_REFUSED,NO_FIGURE");
+
+  const notRetrievable = METRICS.filter((m) => RETRIEVAL[metricKey(m)]?.kind === "NOT_RETRIEVABLE");
+  const nr = (await Promise.all(notRetrievable.map((m) => retrieveWith(m.permission[0].area, R, SA, metricKey(m), {}, NOW)))).filter((e) => e !== null);
+  check("NOT_RETRIEVABLE: a metric listed NOT_RETRIEVABLE ⇒ UNAVAILABLE[NOT_RETRIEVABLE]",
+    nr.length > 0 && nr.every((e) => e!.status === "UNAVAILABLE" && e!.unavailableCode === "NOT_RETRIEVABLE"), JSON.stringify(nr.map((e) => [e!.metric, e!.unavailableCode])));
+  const fixed = await get("economics-operating-cost", { window: 30 });
+  check("WINDOW_FIXED: a window on a metric that takes none (billing cycle) ⇒ UNAVAILABLE[WINDOW_FIXED]", fixed?.status === "UNAVAILABLE" && fixed.unavailableCode === "WINDOW_FIXED", String(fixed?.unavailableCode));
+  const notOffered = await get("economics-ai-cost", { window: 14 });
+  check("WINDOW_NOT_OFFERED: a window outside the declared ones ⇒ UNAVAILABLE[WINDOW_NOT_OFFERED]", notOffered?.status === "UNAVAILABLE" && notOffered.unavailableCode === "WINDOW_NOT_OFFERED", String(notOffered?.unavailableCode));
+  const failed = await get("economics-ai-cost", {}, readers(newRec(), { economicsSnapshot: async () => { throw new Error(`down ${EMAIL}`); } }));
+  check("READER_FAILED: the reader throws ⇒ UNAVAILABLE[READER_FAILED]", failed?.status === "UNAVAILABLE" && failed.unavailableCode === "READER_FAILED", String(failed?.unavailableCode));
+  const refused = await get("live-sessions", {}, readers(newRec(), { liveSessions: async () => ({ sessions: Number.POSITIVE_INFINITY, distinctUsers: 1 }) as never }));
+  check("PROJECTION_REFUSED: a projection that is not an aggregate ⇒ UNAVAILABLE[PROJECTION_REFUSED]", refused?.status === "UNAVAILABLE" && refused.unavailableCode === "PROJECTION_REFUSED" && /projection refused/.test(refused.reason ?? ""), String(refused?.unavailableCode));
+  const noFigure = await get("economics-provider-cost", {}, readers(newRec(), { economicsSnapshot: (n) => getEconomicsSnapshot(n, ecoDeps({ plaidRates: [] })) }));
+  check("NO_FIGURE: the reader ran and gave no figure (its own UNAVAILABLE verdict) ⇒ UNAVAILABLE[NO_FIGURE], its reason text unchanged",
+    noFigure?.status === "UNAVAILABLE" && noFigure.unavailableCode === "NO_FIGURE" && noFigure.reason === "no Plaid rate card configured", String(noFigure?.unavailableCode));
+  const readable = await Promise.all(["economics-operating-cost", "economics-ai-cost", "live-sessions"].map((id) => get(id)));
+  check("a readable envelope carries unavailableCode null", readable.every((e) => e !== null && e.status !== "UNAVAILABLE" && e.unavailableCode === null), JSON.stringify(readable.map((e) => [e?.status, e?.unavailableCode])));
+  const unavailableCalls = [...src("lib/platform/intelligence/metrics/retrieve-core.ts").matchAll(/return unavailable\(([^,]+),/g)].map((m) => m[1].trim());
+  check("static: every unavailable(…) call in retrieveWith names a code (4 calls), and envelope() defaults a reader-side UNAVAILABLE to NO_FIGURE",
+    unavailableCalls.length === 4 && unavailableCalls.every((c) => /^"[A-Z_]+"$|^entry\.windows\.length === 0 \? "WINDOW_FIXED" : "WINDOW_NOT_OFFERED"$/.test(c))
+    && /unavailableCode: status === "UNAVAILABLE" \? code \?\? "NO_FIGURE" : null/.test(src("lib/platform/intelligence/metrics/retrieve-core.ts")), unavailableCalls.join("; "));
 })();
 
 // ── 6. aggregates only ───────────────────────────────────────────────────────
