@@ -23,6 +23,7 @@ import {
   PRODUCT_STATUSES,
   type ProductStatus,
 } from "@/lib/platform-settings";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
@@ -33,6 +34,8 @@ function isProductStatus(v: unknown): v is ProductStatus {
 export async function PUT(req: NextRequest) {
   const [auth, err] = await requireFreshPlatformAccess("GROWTH_REVENUE", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "growth-product-status");
+  if (limited) return limited;
 
   const body = (await req.json().catch(() => ({}))) as { status?: unknown; reason?: unknown };
   const next = body.status;

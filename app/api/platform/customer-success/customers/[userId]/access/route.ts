@@ -37,12 +37,15 @@ import { revokeAllUserSessions } from "@/lib/sessions";
 import { AuditAction } from "@/lib/audit-actions";
 import { OperatorActionValidationError, parseOperatorReason, recordOperatorAction } from "@/lib/audit";
 import { operatorActorFrom } from "@/lib/platform/operator-actor";
+import { limitPlatformMutation } from "@/lib/platform/mutation-rate-limit";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request, ctx: { params: Promise<{ userId: string }> }): Promise<Response> {
   const [auth, err] = await requireFreshPlatformAccess("CUSTOMER_SUCCESS", "WRITE");
   if (err) return err;
+  const limited = await limitPlatformMutation(auth.user.id, "cs-customer-access");
+  if (limited) return limited;
   const { userId } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as { action?: string; reason?: unknown };
   const action = body.action;
