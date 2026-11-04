@@ -1237,7 +1237,7 @@ Checklist additions:
 
 B10 promotes only from `release/batch-10` at `d6a60f7`. Everything below merged to develop after the cut and must not reach a B10 promotion, by cherry-pick or otherwise, without a separate S2 review and owner gate.
 
-**B11 Production precondition (S2 ruling, 2026-11-04): STOP if not met.** Migration `20261104120000_platform_ai_conversations` is applied and verified (`npm run report:platform-ai-conversations-precheck` PASSes) **before** any promotion that contains #435. Reason: the user data export reads the conversation tables whatever the flags are (`lib/export/assemble.ts:366`), so code without the migration fails every user's export. Promoting the code without the migration is a STOP. Local and dev: the standard `prisma migrate` after pulling develop.
+**B11 Production precondition (S2 ruling, 2026-11-04): STOP if not met.** Migration `20261104120000_platform_ai_conversations` is applied and verified (`npm run report:platform-ai-conversations-precheck` PASSes) **before** any promotion that contains #435. Reason: the user data export reads the conversation tables whatever the flags are (`lib/export/assemble.ts:366`), so code without the migration fails every user's export. Promoting the code without the migration is a STOP. Local and dev: the standard `prisma migrate` after pulling develop. On Production this check is a Production database read: owner-run or owner-approved, via `--env=production --acknowledge-production-read` (the flag is a safety rail, not approval).
 
 | PR | Change | State |
 |---|---|---|
