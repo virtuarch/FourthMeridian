@@ -371,7 +371,7 @@ await (async () => {
     const e = await get("economics-ai-cost", w === 30 ? {} : { window: w });
     const f = snap.trend.windows[key];
     check(`economics-ai-cost @ ${w} d: value / status / reason = the tile's figure (${f.status} ${f.value})`,
-      e?.value === f.value && e.status === f.status && e.reason === f.reason && e.window.days === w && e.unit === "usd" && e.basis.kind === "estimated", JSON.stringify(e?.value));
+      (e?.value === null ? f.value === null : (e?.value as Record<string, number>).spendUsd === f.value) && e?.status === f.status && e?.reason === f.reason && e?.window.days === w && e?.unit === "usd" && e?.basis.kind === "estimated", JSON.stringify(e?.value));
   }
   const bad = await get("economics-ai-cost", { window: 14 });
   check("economics-ai-cost: an undeclared window (14) ⇒ UNAVAILABLE naming the declared ones",
@@ -382,7 +382,7 @@ await (async () => {
   const snapP = await getEconomicsSnapshot(NOW.getTime(), ecoDeps({ groups: unpricedGroups }));
   const partial = await get("economics-ai-cost", {}, readers(newRec(), { economicsSnapshot: (n) => getEconomicsSnapshot(n, ecoDeps({ groups: unpricedGroups })) }));
   check("economics-ai-cost: an unpriced day ⇒ PARTIAL (lower bound), missing parts = the tile's coverage.missing",
-    partial?.status === "PARTIAL" && snapP.trend.windows["30d"].status === "PARTIAL" && partial.value === snapP.trend.windows["30d"].value
+    partial?.status === "PARTIAL" && snapP.trend.windows["30d"].status === "PARTIAL" && (partial.value as Record<string, number>).spendUsd === snapP.trend.windows["30d"].value
     && JSON.stringify(partial.coverage.missing) === JSON.stringify(snapP.trend.windows["30d"].coverage.missing) && partial.basis.kind === "estimated", JSON.stringify(partial));
 
   // economics-operating-cost@1 — the Overview hero + its AI / Providers / Infrastructure split tiles.
@@ -401,8 +401,8 @@ await (async () => {
   // economics-provider-cost@1 — the Overview Providers tile (f.provider_cost).
   const pv = await get("economics-provider-cost");
   check("economics-provider-cost: value / status = the Providers tile (PARTIAL: other providers unmetered, never $0)",
-    pv?.value === snap.figures.provider_cost.value && pv.status === "PARTIAL" && snap.figures.provider_cost.status === "PARTIAL"
-    && pv.coverage.missing.some((m) => /other providers are not metered/.test(m)), JSON.stringify(pv));
+    (pv?.value as Record<string, number>).costUsd === snap.figures.provider_cost.value && pv?.status === "PARTIAL" && snap.figures.provider_cost.status === "PARTIAL"
+    && !!pv?.coverage.missing.some((m) => /other providers are not metered/.test(m)), JSON.stringify(pv));
   const pvU = await get("economics-provider-cost", {}, readers(newRec(), { economicsSnapshot: (n) => getEconomicsSnapshot(n, ecoDeps({ plaidRates: [] })) }));
   check("economics-provider-cost: no Plaid rate card ⇒ UNAVAILABLE with the tile's reason", pvU?.status === "UNAVAILABLE" && pvU.value === null && pvU.reason === "no Plaid rate card configured", JSON.stringify(pvU));
 
@@ -426,7 +426,7 @@ await (async () => {
   const cpc = await get("ai-cost-per-call");
   const tileCpc = costPerCall(aiOpsFx());
   check("ai-cost-per-call: value = the tile's estimate ($0.03 per returned call), ESTIMATED",
-    tileCpc.kind === "ESTIMATED" && (cpc?.value as Record<string, number>).usdPerCall === tileCpc.usd && kp.find((k) => k.key === "per-call")!.value === usd((cpc?.value as Record<string, number>).usdPerCall)
+    tileCpc.kind === "ESTIMATED" && (cpc?.value as Record<string, number>).costPerCallUsd === tileCpc.usd && kp.find((k) => k.key === "per-call")!.value === usd((cpc?.value as Record<string, number>).costPerCallUsd)
     && cpc?.status === "ESTIMATED" && cpc.basis.kind === "estimated" && cpc.unit === "usd-and-counts", JSON.stringify(cpc?.value));
   const cpcP = await get("ai-cost-per-call", {}, readers(newRec(), { aiOperations: async () => aiOpsFx({ unpricedTokens: 900 }) }));
   check("ai-cost-per-call: unpriced tokens ⇒ PARTIAL (the tile's 'estimated · partial')", cpcP?.status === "PARTIAL" && (costPerCall(aiOpsFx({ unpricedTokens: 900 })) as { partial: boolean }).partial);
@@ -439,6 +439,9 @@ await (async () => {
   check("cost metrics: every one is served on PLATFORM_OPS only, at the OPS tier (no CS exposure, no new grant)",
     COST.every((k) => { const m = METRICS.find((d) => metricKey(d) === k)!; return m.permission.length === 1 && m.permission[0].area === "PLATFORM_OPS" && m.permission[0].level === "READ" && m.permission[0].identityTier === "OPS"; })
     && envs.every((e) => e?.tier === "OPS"));
+  check("cost metrics: value parts follow the renderer convention — dollars '…Usd', percentages '…Pct', the rest counts; never a bare top-level dollar number",
+    envs.every((e) => e?.value === null || (typeof e?.value === "object" && Object.keys(e.value).every((k) => /Usd$|Pct$/.test(k) || ["calls", "returned", "failed", "returnedCalls"].includes(k))))
+    && envs.filter((e) => e?.unit === "usd").every((e) => e?.value === null || Object.keys(e!.value as object).every((k) => /Usd$/.test(k))), JSON.stringify(envs.map((e) => e?.value)));
   check("cost metrics: value parts are fleet aggregates only (no customer / user / space / group key)",
     envs.every((e) => e?.value === null || typeof e?.value === "number" || Object.keys(e!.value).every((k) => !/customer|user|space|group|member/i.test(k))));
   check("OD-1 / no billing: no per-customer, cost-per-customer, revenue or margin metric is registered",

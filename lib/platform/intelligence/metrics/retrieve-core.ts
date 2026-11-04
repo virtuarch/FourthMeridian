@@ -124,7 +124,11 @@ export interface MetricEnvelope {
   surface: MetricSurface;
   /** The identity tier the value was read at (after the downgrade). */
   tier: IdentityTier;
-  /** "usd" = US dollars (a number, or an object of dollar parts); "usd-and-counts" = dollars beside counts. */
+  /**
+   * "usd" = US dollars; "usd-and-counts" = dollars beside counts. Within an object
+   * value, dollar parts are named `…Usd` and percentages `…Pct` (0–100) — the
+   * placeholder renderer formats by that convention.
+   */
   unit: "count" | "usd" | "usd-and-counts" | "counts";
   /** null ⇔ UNAVAILABLE. A floor / lower bound when PARTIAL. Never a stand-in 0. */
   value: AggregateValue | null;
@@ -328,7 +332,9 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
     kind: "RETRIEVABLE", reader: "economicsSnapshot", unit: "usd", windows: [30, 7, 90],
     async read({ readers, window, now }) {
       const s = await readers.economicsSnapshot(now.getTime());
-      return fromFigure(s.trend.windows[TREND_OF[window ?? 30]], s.checkedAt, window);
+      const p = fromFigure(s.trend.windows[TREND_OF[window ?? 30]], s.checkedAt, window);
+      // Named parts (`…Usd`) so a renderer formats dollars, never a unitless count.
+      return { ...p, value: p.value === null ? null : { spendUsd: p.value as number } };
     },
   },
   "economics-operating-cost@1": {
@@ -347,7 +353,8 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
     kind: "RETRIEVABLE", reader: "economicsSnapshot", unit: "usd", windows: [],
     async read({ readers, now }) {
       const s = await readers.economicsSnapshot(now.getTime());
-      return fromFigure(s.figures.provider_cost, s.checkedAt);
+      const p = fromFigure(s.figures.provider_cost, s.checkedAt);
+      return { ...p, value: p.value === null ? null : { costUsd: p.value as number } };
     },
   },
   "ai-call-outcomes@1": {
@@ -371,7 +378,7 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
       const c = aiCostPerCall(i);
       const base = { asOf: i.checkedAt, days: window };
       if (c.kind === "UNKNOWN") return { ...base, value: null, status: "UNAVAILABLE", reason: c.reason };
-      const value = { usdPerCall: c.usd, pricedUsd: c.pricedUsd, returnedCalls: c.returned };
+      const value = { costPerCallUsd: c.usd, pricedUsd: c.pricedUsd, returnedCalls: c.returned };
       return c.partial
         ? { ...base, value, status: "PARTIAL", reason: "lower bound — some tokens had no rate", missing: ["tokens the rate card could not price (counted, never $0)"] }
         : { ...base, value, status: "ESTIMATED", reason: null };
