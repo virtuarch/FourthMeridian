@@ -5,7 +5,9 @@
  * the alerting engine (lib/alerts — rule `platform-ai-purge-late`, authority
  * `platform-ai-purge`) like every other health authority. READ-ONLY, and it
  * reads only the two ledgers the purge already writes:
- *   · JobRun rows of `purge-trash` (status + timestamps + the counts-only summary);
+ *   · succeeded JobRun rows of `purge-trash` (the scheduled job) and of
+ *     `platform-ai-purge-on-demand` (the on-demand trigger — an on-demand success
+ *     counts as a purge run): job name + timestamps + the counts-only summary;
  *   · the recent PLATFORM_AI_CONVERSATIONS_PURGED AuditLog rows written by the
  *     MANUAL dispatch (trigger MANUAL_DISPATCH — every run, zero included) that
  *     did not fail (no `failed` key): createdAt + those two keys only. A
@@ -24,26 +26,26 @@ import { systemDb } from "@/lib/db";
 import { env } from "@/lib/env";
 import { AuditAction } from "@/lib/audit-actions";
 import {
-  PLATFORM_AI_PURGE_JOB_NAME, evaluatePlatformAiPurgeHealth, isSuccessfulDispatchAudit, isSuccessfulPurgeSummary, newestOf,
+  PLATFORM_AI_PURGE_JOB_NAME, PLATFORM_AI_PURGE_ON_DEMAND_JOB, evaluatePlatformAiPurgeHealth, isSuccessfulDispatchAudit, isSuccessfulPurgeRun, newestOf,
   type PlatformAiPurgeHealth,
 } from "./purge-health";
 
-/** Recent succeeded purge-trash runs examined (daily job ⇒ weeks of history; the window is 36 h). */
+/** Recent succeeded purge runs examined, both jobs together, newest first (the window is 36 h). */
 const RUNS_EXAMINED = 30;
 
 /** The ledger reads, injectable for the unit test. */
 export interface PurgeHealthReads {
-  succeededPurgeRuns(limit: number): Promise<Array<{ startedAt: Date; completedAt: Date | null; summary: unknown }>>;
+  succeededPurgeRuns(limit: number): Promise<Array<{ jobName: string; startedAt: Date; completedAt: Date | null; summary: unknown }>>;
   /** Recent manual-dispatch purge audit rows, newest first: createdAt + the metadata (counts / trigger / failed only). */
   recentDispatchAudits(limit: number): Promise<Array<{ createdAt: Date; metadata: unknown }>>;
 }
 
 const realReads: PurgeHealthReads = {
   succeededPurgeRuns: (limit) => systemDb.jobRun.findMany({
-    where: { jobName: PLATFORM_AI_PURGE_JOB_NAME, status: "succeeded" },
+    where: { jobName: { in: [PLATFORM_AI_PURGE_JOB_NAME, PLATFORM_AI_PURGE_ON_DEMAND_JOB] }, status: "succeeded" },
     orderBy: { startedAt: "desc" },
     take: limit,
-    select: { startedAt: true, completedAt: true, summary: true },
+    select: { jobName: true, startedAt: true, completedAt: true, summary: true },
   }),
   recentDispatchAudits: (limit) => systemDb.auditLog.findMany({
     where: { action: AuditAction.PLATFORM_AI_CONVERSATIONS_PURGED, metadata: { path: ["trigger"], equals: "MANUAL_DISPATCH" } },
@@ -62,7 +64,7 @@ export async function getPlatformAiPurgeHealth(
   if (!conversationsOn) return evaluatePlatformAiPurgeHealth({ conversationsOn: false, lastSuccessAt: null, now });
   const reads = opts.reads ?? realReads;
   const [runs, audits] = await Promise.all([reads.succeededPurgeRuns(RUNS_EXAMINED), reads.recentDispatchAudits(RUNS_EXAMINED)]);
-  const run = runs.find((r) => isSuccessfulPurgeSummary(r.summary));
+  const run = runs.find((r) => isSuccessfulPurgeRun(r));
   const fromRun = run ? (run.completedAt ?? run.startedAt) : null;
   const dispatch = audits.find((a) => isSuccessfulDispatchAudit(a.metadata));
   return evaluatePlatformAiPurgeHealth({ conversationsOn: true, lastSuccessAt: newestOf(fromRun, dispatch?.createdAt ?? null), now });
