@@ -131,8 +131,12 @@ export function PlatformAiAsk({ areaLabel }: { areaLabel: string }) {
             maxLength={MAX}
             rows={3}
             onChange={(e) => setQuestion(e.target.value)}
+            aria-describedby="platform-ai-privacy-hint"
             className="w-full min-w-0 resize-y rounded-xl border border-[var(--border-hairline)] bg-[var(--surface-inset)] p-3 text-sm text-[var(--text-primary)]"
           />
+          <p id="platform-ai-privacy-hint" data-platform-ai-privacy-hint="" className="text-xs text-[var(--text-secondary)]">
+            Don&rsquo;t enter customer names, emails, account numbers or other personal details. Questions are sent to our AI provider.
+          </p>
           <div className="flex min-w-0 items-center justify-between gap-3">
             <span className="text-xs tabular-nums text-[var(--text-muted)]">{question.length}/{MAX}</span>
             <button type="submit" disabled={pending || question.trim().length === 0}
