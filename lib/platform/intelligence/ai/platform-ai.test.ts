@@ -391,7 +391,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("economics-operating-cost: a null part (unmetered) stays inside a non-UNAVAILABLE envelope — the shape check accepts it",
     !!opEnv && opEnv.status !== "UNAVAILABLE" && Object.values(opVal).some((v) => v === null) && typeof opVal.totalUsd === "number", opEnv);
   check("…a placeholder for that null part renders \"unavailable\" (never $0), the total its estimated floor/estimate",
-    !opc.result.grounding.replaced && /^Infrastructure: unavailable; total (at least|about) \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)\.$/.test(segmentsText(opc.result.answer)), segmentsText(opc.result.answer));
+    !opc.result.grounding.replaced && /^Infrastructure: unavailable; total (at least|about) \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(segmentsText(opc.result.answer)), segmentsText(opc.result.answer));
   const estFloor = await run("x", opsBinding(OPS, readers({ aiBudget: async () => ({ ...(await readers().aiBudget()), unpriced: { invocations: 2, models: ["m"] }, bySurface: [{ surface: "chat", customer: true, unpricedInvocations: 2 }] }) as never })),
     script([{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }, { content: "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd}}." }]));
   const efStatus = estFloor.result.citations[0]?.status;
@@ -498,7 +498,8 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
               : new RegExp(`(?<!\\d)${n}(?!\\d)[\\s-]*(?:${num[2]}|h\\b)`, "i").test(env.window.description);
             if (!ok) labelProblems.push(`${k}${w ? `@${w}` : ""}: label ${JSON.stringify(l)} vs days=${env.window.days} hours=${env.window.hours}`);
           }
-          if (env.window.start !== null) labelProblems.push(`${k}: a window start no reader supplies`);
+          const CYCLE_START_METRICS = ["economics-operating-cost@1", "economics-provider-cost@1"];
+          if (env.window.start !== null && !(CYCLE_START_METRICS.includes(k) && /^\d{4}-\d{2}-\d{2}$/.test(env.window.start))) labelProblems.push(`${k}: a window start no reader supplies (${env.window.start})`);
           const regLabel = METRICS.find((m) => metricKey(m) === k)?.window.label;
           if (env.window.hours !== null && regLabel !== l) labelProblems.push(`${k}: registry label ${JSON.stringify(regLabel)} ≠ the read's ${JSON.stringify(l)}`);
         }
@@ -656,10 +657,33 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   check("unwindowedParts: \"$50.00\" (no window, not estimated) next to \"about $12.50 (in the last 24 hours, estimated)\"",
     thr.result.grounding.verdict === "RESOLVED" && txt(thr) === "Spend is about $12.50 (in the last 24 hours, estimated) against a threshold of $50.00.", txt(thr));
   const cyc1 = txt(await turn("Cost?", [[gm("economics-operating-cost")]], "Total {{m:economics-operating-cost@1|part=totalUsd}}."));
-  check("…no derived cycle date: a billing-cycle figure states its label only (\"this calendar month to date (UTC)\", no \"from <date>\")",
-    /\(this calendar month to date \(UTC\), estimated\)\.$/.test(cyc1) && !/from \d{4}-/.test(cyc1), cyc1);
-  check("…a date appears ONLY when the reader gives an explicit window start (window.start)",
-    renderPlaceholder({ ...(aiEnvOf(one)), window: { ...aiEnvOf(one).window, start: "2026-10-06" } } as MetricEnvelope, "spendUsd") === `about ${/\$[\d,.]+/.exec(txt(one))![0]} (in the last 7 days, from 2026-10-06, estimated)`);
+  // window.start (follow-up to #423): the economics cycle metrics carry the snapshot's OWN s.cycle.start.
+  const snap = await econR.economicsSnapshot(NOW.getTime());
+  const opRead = await turn("Cost?", [[gm("economics-operating-cost"), gm("economics-provider-cost")]], "Total {{m:economics-operating-cost@1|part=totalUsd}}; providers {{m:economics-provider-cost@1|part=costUsd}}.");
+  const tool = (r: typeof opRead, k: string) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === k) as MetricEnvelope;
+  check("window.start: operating-cost and provider-cost carry the snapshot's cycle start verbatim (ISO date, the reader's own value)",
+    /^\d{4}-\d{2}-\d{2}$/.test(snap.cycle.start) && tool(opRead, "economics-operating-cost@1").window.start === snap.cycle.start && tool(opRead, "economics-provider-cost@1").window.start === snap.cycle.start,
+    { snap: snap.cycle.start, op: tool(opRead, "economics-operating-cost@1").window.start });
+  const renderedDates = [...txt(opRead).matchAll(/since (\d{4}-\d{2}-\d{2})/g)].map((m) => m[1]);
+  check("…the rendered date EQUALS the snapshot's cycle start, in clean wording (no nested parentheses)",
+    renderedDates.length === 2 && renderedDates.every((d) => d === snap.cycle.start) && txt(opRead).includes(`(this UTC calendar month to date, since ${snap.cycle.start}, estimated)`) && !/\([^()]*\(/.test(txt(opRead)), txt(opRead));
+  check("…the other metrics carry no start (no inference anywhere)", aiEnvOf(one).window.start === null && renderPlaceholder({ ...aiEnvOf(one) } as MetricEnvelope, "spendUsd")!.includes("since") === false);
+  const cycleOnly = (prose: string) => turn("Cost?", [[gm("economics-operating-cost")]], prose);
+  const sameDate = await cycleOnly(`Since ${snap.cycle.start}: {{m:economics-operating-cost@1|part=totalUsd}}.`);
+  check("leftover-digit allowlist: the envelope's EXACT window-start date in the prose is allowed", !sameDate.result.grounding.replaced && sameDate.result.grounding.verdict === "RESOLVED", sameDate.result.grounding);
+  const otherDate = await cycleOnly("Since 2026-10-01: {{m:economics-operating-cost@1|part=totalUsd}}.");
+  const timeTail = await cycleOnly(`Since ${snap.cycle.start}T00:00: {{m:economics-operating-cost@1|part=totalUsd}}.`);
+  check("…a DIFFERENT date, or the start with a time attached, is still a leftover digit (UNGROUNDED_DIGIT ⇒ fallback)",
+    otherDate.result.grounding.replaced && otherDate.result.grounding.verdict === "UNGROUNDED_DIGIT" && timeTail.result.grounding.verdict === "UNGROUNDED_DIGIT", [otherDate.result.grounding, timeTail.result.grounding]);
+  check("…a start is only allowed when an envelope carries it (none read ⇒ the same date is a leftover digit)",
+    resolvePlaceholders([{ kind: "text", text: `Since ${snap.cycle.start}.` }], [aiEnvOf(one)], new Set()).summary.verdict === "UNGROUNDED_DIGIT");
+
+  // Nit: the same key + window read twice ⇒ the LAST read renders.
+  const first = aiEnvOf(one);
+  const last = { ...first, value: { spendUsd: 9.99 } } as MetricEnvelope;
+  check("same key + window read twice ⇒ the LAST read renders (with or without |window)",
+    segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:economics-ai-cost@1|part=spendUsd}}" }], [first, last], new Set()).segments).startsWith("about $9.99")
+    && segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:economics-ai-cost@1|part=spendUsd|window=7}}" }], [first, last], new Set()).segments).startsWith("about $9.99"));
 
   // S2 (d): an asked window the placed metric does not cover ⇒ KEEP + ONE note per metric.
   const q30 = "What's costing me the most money in the past 30 days?";
@@ -667,7 +691,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   const ct = txt(cycleAsked);
   check("asked 30 days + a billing-cycle metric ⇒ answer KEPT (RESOLVED_WITH_WINDOW_NOTE), the cycle stated inline, ONE note",
     !cycleAsked.result.grounding.replaced && cycleAsked.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
-    && /^AI is the largest measured category: at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\) of at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this calendar month to date \(UTC\), not the 30 days you asked about\.$/.test(ct)
+    && /^AI is the largest measured category: at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\.$/.test(ct)
     && notes(ct) === 1, ct);
   check("…the note is server text, so the trace stays counts + the verdict code", traceLine(cycleAsked.result).endsWith("verdict=RESOLVED_WITH_WINDOW_NOTE") && !/billing|Note/.test(traceLine(cycleAsked.result)));
   const thirtyAsked = await turn(q30, [[gm("economics-ai-cost")]], "Estimated AI spend in the past 30 days: {{m:economics-ai-cost@1|part=spendUsd}}.");
@@ -687,7 +711,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
     !B.result.grounding.replaced && B.result.grounding.verdict === "RESOLVED" && JSON.stringify(B.result.claims) === JSON.stringify({ claims: 5, resolved: 5, unresolved: 0, admitted: 0 })
     && B.result.sanitised.removed === 0 && B.result.answer.some((x) => x.kind === "link" && x.href === ECON_PAGE), { g: B.result.grounding, c: B.result.claims, s: B.result.sanitised, t: txt(B) });
   check("…each figure states ITS window: the cycle for operating cost, \"last 30 days\" for AI cost",
-    /at at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)/.test(txt(B)) && /recent window is about \$[\d,.]+ \(in the last 30 days, estimated\)\./.test(txt(B)) && notes(txt(B)) === 0, txt(B));
+    /at at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(txt(B)) && /recent window is about \$[\d,.]+ \(in the last 30 days, estimated\)\./.test(txt(B)) && notes(txt(B)) === 0, txt(B));
   // A: provider-outcome UNAVAILABLE + operating-cost PARTIAL.
   const bA = opsBinding(OPS, { ...econR, providerHealth: async () => { throw new Error("down"); } });
   const A = await run("Are any providers failing, and what are they costing us?", bA, script([{ calls: [gm("provider-outcome"), gm("economics-operating-cost")] },
@@ -696,14 +720,14 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   check("OWNER A replay (provider-outcome UNAVAILABLE + operating-cost PARTIAL) ⇒ answer KEPT, unavailable said, the cycle stated",
     !A.result.grounding.replaced && A.result.grounding.verdict === "RESOLVED" && A.result.citations.find((c) => c.metric === "provider-outcome@1")?.status === "UNAVAILABLE"
     && A.result.citations.find((c) => c.metric === "economics-operating-cost@1")?.status === "PARTIAL"
-    && aT.includes("failing (unavailable — ") && /\(this calendar month to date \(UTC\), estimated\)/.test(aT) && !/\$0\.00/.test(aT), aT);
+    && aT.includes("failing (unavailable — ") && /\(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(aT) && !/\$0\.00/.test(aT), aT);
   // C: operating-cost + ai-cost + provider-cost PARTIAL.
   const C = await turn("Break down what we're spending on AI and providers this month.", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
     `This billing cycle AI is {{m:economics-operating-cost@1|part=aiUsd}} and providers (Plaid) are {{m:economics-provider-cost@1|part=costUsd}}; infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}. The provider figure is a lower bound, so a full ranking can't be verified. Over the recent window AI spend is {{m:economics-ai-cost@1|part=spendUsd}}.`);
   const cT = txt(C);
   check("OWNER C replay (operating-cost + ai-cost + provider-cost PARTIAL) ⇒ answer KEPT, each figure with its window",
     !C.result.grounding.replaced && C.result.grounding.verdict === "RESOLVED" && C.result.citations.find((c) => c.metric === "economics-provider-cost@1")?.status === "PARTIAL"
-    && /providers \(Plaid\) are at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)/.test(cT) && /infrastructure is unavailable\./.test(cT)
+    && /providers \(Plaid\) are at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(cT) && /infrastructure is unavailable\./.test(cT)
     && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(cT), cT);
 
   // The sanitiser's removed count, by CATEGORY (never text) — e.g. a link to drill.href (an API route, not a page).
