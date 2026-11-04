@@ -450,11 +450,19 @@ export function retentionCutoffFor(rule: Pick<RetentionRule, "days">, now: Date)
  *                    retention already requires), and an audit row EVERY run,
  *                    zero included, tagged trigger: "MANUAL_DISPATCH".
  */
-export async function platformAiPurgeDeps(trigger: "SCHEDULED" | "MANUAL_DISPATCH"): Promise<PlatformAiPurgeDeps> {
+export async function platformAiPurgeDeps(
+  trigger: "SCHEDULED" | "MANUAL_DISPATCH",
+  /** Test seam only: the two env facts (default: lib/env, read at call time). */
+  flags?: { isPlatformAiPurgeEnabled: boolean; isPlatformAiConversationsFlagSetWithoutPurge: boolean },
+): Promise<PlatformAiPurgeDeps> {
   const manual = trigger === "MANUAL_DISPATCH";
-  const enabled = manual ? true : (await import("@/lib/env")).env.isPlatformAiPurgeEnabled;
+  const env = flags ?? (await import("@/lib/env")).env;
+  const enabled = manual ? true : env.isPlatformAiPurgeEnabled;
   return {
     enabled,
+    // PR D — the S2 disable-order hazard (purge off, conversations flag still set):
+    // reported, never acted on — it enables nothing (platformAiPurgeJobFailure).
+    misordered: !manual && env.isPlatformAiConversationsFlagSetWithoutPurge,
     auditEveryRun: manual,
     call: async (limit) => {
       const { systemDb } = await import("@/lib/db");

@@ -87,13 +87,17 @@ const MESSAGE_SELECT = {
 
 type MessageRow = Prisma.PlatformAiMessageGetPayload<{ select: typeof MESSAGE_SELECT }>;
 
+/** The one decrypt of message content (a seam so the export test can prove what is — and is NOT — decrypted). */
+export type MessageDecrypt = (ciphertext: string) => string;
+const decryptMessage: MessageDecrypt = (c) => decryptWithPurpose(c, EncryptionPurpose.PLATFORM_AI_MESSAGE);
+
 /** Decrypt one row. Never throws: an unreadable value is reported, never shown, never logged. */
-export function toMessageRecord(row: MessageRow): MessageRecord {
+export function toMessageRecord(row: MessageRow, decrypt: MessageDecrypt = decryptMessage): MessageRecord {
   let content: string | StoredAnswerV1 | null = null;
   let unreadable = false;
   if (row.contentEncrypted) {
     try {
-      const plain = decryptWithPurpose(row.contentEncrypted, EncryptionPurpose.PLATFORM_AI_MESSAGE);
+      const plain = decrypt(row.contentEncrypted);
       if (row.role === QUESTION) content = plain;
       else { content = parseStoredAnswer(plain); unreadable = content === null; }
     } catch {
@@ -178,7 +182,7 @@ export async function readConversation(operatorId: string, id: string, now: Date
     if (!conversation) return null;
     await abandonStale(tx, id, now);
     const rows = await tx.platformAiMessage.findMany({ where: { conversationId: id }, orderBy: MESSAGE_ORDER, select: MESSAGE_SELECT });
-    return { conversation, messages: rows.map(toMessageRecord) };
+    return { conversation, messages: rows.map((r) => toMessageRecord(r)) };
   });
 }
 
@@ -190,10 +194,66 @@ export async function loadConversationHistory(operatorId: string, conversationId
     return tx.platformAiMessage.findMany({ where: { conversationId, status: "COMPLETE" }, orderBy: MESSAGE_ORDER, select: MESSAGE_SELECT });
   });
   if (!read) return null;
-  return read.map(toMessageRecord).filter((m) => !m.unreadable).map((m) => ({
+  return read.map((r) => toMessageRecord(r)).filter((m) => !m.unreadable).map((m) => ({
     id: m.id, conversationId: m.conversationId, role: m.role, status: m.status, createdAt: m.createdAt,
     replyToId: m.replyToId, content: m.content, evidenceRefs: m.evidenceRefs,
   }));
+}
+
+// ── Subject-access export (PR D, design §7.3, S2 STRICT export ruling) ──────
+
+export interface ExportConversationRecord extends ConversationRecord { messages: MessageRecord[] }
+
+export interface ExportConversationsRead {
+  /** Conversations of a HELD area: every message, decrypted. */
+  conversations: ExportConversationRecord[];
+  /** Live conversations of areas NOT held: a COUNT per area — nothing else was read. */
+  omitted: Array<{ area: PlatformArea; count: number }>;
+}
+
+/**
+ * The operator's LIVE conversations for their own data export
+ * (lib/export/assemble.ts — POST /api/user/export, requireFreshUser, the
+ * subject's own id). ONE short tenant transaction, owner-only RLS plus an
+ * explicit owner predicate; SOFT-DELETED conversations are EXCLUDED (S2 REQUIRED
+ * 4).
+ *
+ * S2 STRICT ruling (supersedes Q5): a conversation in an area the operator does
+ * NOT hold today exports NO content — no question, answer, title or derived
+ * label. Its messages are therefore NEVER SELECTED: the first read takes the
+ * conversations' metadata (id + area only for the partition), and only the
+ * HELD conversations' messages are read and decrypted. A lost area yields a
+ * count. Read-only: no stale PENDING turn is abandoned. The decrypt runs AFTER
+ * the transaction closes (the export's phase discipline).
+ */
+export async function readConversationsForExport(
+  operatorId: string,
+  heldAreas: ReadonlySet<PlatformArea>,
+  opts: { decrypt?: MessageDecrypt } = {},
+): Promise<ExportConversationsRead> {
+  const read = await withTenantDb(operatorId, async (tx) => {
+    const metas = await tx.platformAiConversation.findMany({
+      where: { operatorUserId: operatorId, deletedAt: null },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: CONVERSATION_SELECT,
+    });
+    const held = metas.filter((c) => heldAreas.has(c.area));
+    const messages = held.length === 0 ? [] : await tx.platformAiMessage.findMany({
+      where: { conversationId: { in: held.map((c) => c.id) }, conversation: { operatorUserId: operatorId, deletedAt: null } },
+      orderBy: MESSAGE_ORDER,
+      select: MESSAGE_SELECT,
+    });
+    return { metas, held, messages };
+  });
+  const omittedBy = new Map<PlatformArea, number>();
+  for (const c of read.metas) if (!heldAreas.has(c.area)) omittedBy.set(c.area, (omittedBy.get(c.area) ?? 0) + 1);
+  return {
+    conversations: read.held.map((c) => ({
+      id: c.id, area: c.area, createdAt: c.createdAt, lastActivityAt: c.lastActivityAt,
+      messages: read.messages.filter((m) => m.conversationId === c.id).map((m) => toMessageRecord(m, opts.decrypt)),
+    })),
+    omitted: [...omittedBy].map(([area, count]) => ({ area, count })),
+  };
 }
 
 // ── Turn writes (transaction 1 / transaction 2, design §5.2) ─────────────────

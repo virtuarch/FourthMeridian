@@ -119,6 +119,7 @@ export type AlertRuleKind =
   | "ai-spend-anomaly"
   | "ai-spend-user-anomaly"
   | "plaid-call-anomaly"
+  | "platform-ai-purge-late"
   | "quota-low";
 
 /** Two levels only — a solo operator's pager does not need more (alert fatigue
@@ -274,6 +275,16 @@ export const ALERT_RULES: readonly AlertRuleDefinition[] = [
     description:
       "Plaid provider calls on the last complete UTC day are at least 3× the median of the 7 days before it AND at least 20 calls (anomaly@1). Warning only. Not evaluable when no call was recorded that day or fewer than 5 of the prior days show calls. Reads the ApiUsageCounter ledger (provider PLAID, unit calls) the Plaid client writes per call (lib/platform/anomaly/plaid-calls.ts).",
     authority: "provider-usage",
+    live: true,
+    defaultEnabled: true,
+  },
+  {
+    id: "platform-ai-purge-late",
+    kind: "platform-ai-purge-late",
+    title: "Platform AI conversation purge late",
+    description:
+      "B11 PR D (S2 / OD-7 activation (a)): while Platform AI conversations are ON, no successful retention purge run has been recorded for more than 36 hours — a successful run is a succeeded purge-trash JobRun whose summary shows the purge enabled with no error (zero removed counts), or a non-failed manual-dispatch audit row (Preview). Critical: each message must be removed within about a day of turning 90 days old (OD-7). Never fires while conversations are off. Reads the platform-ai-purge authority (lib/platform/intelligence/ai/conversations/purge-health.server.ts) — timestamps and counts-only ledgers, never conversation content.",
+    authority: "platform-ai-purge",
     live: true,
     defaultEnabled: true,
   },

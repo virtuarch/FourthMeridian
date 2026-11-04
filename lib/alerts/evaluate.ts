@@ -30,6 +30,7 @@ import type { ResourceFreshnessResult } from "@/lib/platform/resource-freshness"
 import type { AiFailureHealth } from "@/lib/platform/ai/failures";
 import type { AiSpendHealth } from "@/lib/platform/ai/spend-health";
 import type { PolicyAssignmentHealth } from "@/lib/entitlements/assignment-health-core";
+import type { PlatformAiPurgeHealth } from "@/lib/platform/intelligence/ai/conversations/purge-health";
 import type { AlertFlapRecord, AlertOpenRecord, AlertRecoveredRecord } from "@/lib/alerts/recovery";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -369,6 +370,21 @@ export function evaluateAiSpendUserHigh(rule: AlertRuleDefinition, spend: AiSpen
  *  floor. Critical while the fail-closed switch is enforced (the customer is being
  *  refused now); warning while it is off. The authority decided who is affected; this
  *  only words it. Opaque `user #3fa9c21b` references only — never an email or a name. */
+/**
+ * B11 PR D — the Platform AI conversation purge is LATE (S2 / OD-7 activation
+ * (a)). The authority decides the state; this only classifies it. OFF / OK ⇒
+ * nothing. Timestamps only in the summary.
+ */
+export function evaluatePlatformAiPurgeLate(rule: AlertRuleDefinition, h: PlatformAiPurgeHealth): AlertSignal[] {
+  if (h.state !== "LATE") return [];
+  return [{
+    ruleId: rule.id, kind: rule.kind, severity: "critical",
+    dedupeKey: `${rule.id}:late`,
+    summary: `Platform AI conversations are ON but no successful retention purge run has been recorded in more than ${h.staleAfterHours} h `
+      + `(last success: ${h.lastSuccessAt ?? "never"}). Run the purge (Production: the purge-trash job; Preview: npm run ops:platform-ai-conversations-purge -- --env=preview) or turn conversations OFF.`,
+  }];
+}
+
 export function evaluatePolicyAssignmentInvalid(rule: AlertRuleDefinition, p: PolicyAssignmentHealth): AlertSignal[] {
   if (p.total <= 0) return [];
   // Review fix: while the switch is OFF nothing is refused, and legacy accounts
@@ -549,6 +565,9 @@ export function evaluateAlertRulesDetailed(
         break;
       case "plaid-call-anomaly":
         anomaly(rule, authorities.plaidCallAnomaly, () => evaluatePlaidCallAnomaly(rule, authorities.plaidCallAnomaly!));
+        break;
+      case "platform-ai-purge-late":
+        if (authorities.platformAiPurge) signals.push(...evaluatePlatformAiPurgeLate(rule, authorities.platformAiPurge));
         break;
       case "quota-low":
         // Dormant — no authority to read. `live: false` already excluded it above;

@@ -895,6 +895,15 @@ export const env = {
    */
   get isPlatformAiPurgeEnabled() { return _e.PLATFORM_AI_PURGE_ENABLED === "true"; },
   /**
+   * PR D — the S2 DISABLE-ORDER hazard, as a fact (NEVER an enable): the
+   * conversations flag is set while the purge flag is not. Storage is already OFF
+   * then (isPlatformAiConversationsEnabled needs the purge flag), but rows written
+   * while both were on would sit unpurged. The S2 order (design §13) is
+   * CONVERSATIONS off first, purge what remains, THEN the purge flag; the scheduled
+   * job reports this state as `misordered` and fails its JobRun (jobs/purge-trash.ts).
+   */
+  get isPlatformAiConversationsFlagSetWithoutPurge() { return _e.PLATFORM_AI_CONVERSATIONS_ENABLED === "true" && _e.PLATFORM_AI_PURGE_ENABLED !== "true"; },
+  /**
    * Owner ruling (2026-10-30) — a missing or invalid customer policy-group
    * assignment FAILS CLOSED only when POLICY_ASSIGNMENT_FAIL_CLOSED === "enforce"
    * (set per environment: Preview first; Production only with separate owner

@@ -21,16 +21,25 @@
  * --env=production also needs --acknowledge-production-read (a safety rail,
  * NOT approval — reading Production is owner-approved).
  *
+ * PR D — `--phase=pre-disable` (S2 disable order, design §13): before
+ * PLATFORM_AI_PURGE_ENABLED is unset, prove no conversation row remains — two
+ * COUNTS read by a principal that bypasses RLS (else FAIL: under FORCE RLS a
+ * non-bypassing reader sees 0 and would fake an empty table). Same gates, same
+ * read-only transaction.
+ *
+ *   npm run report:platform-ai-conversations-precheck -- --env=preview --phase=pre-disable
+ *
  * Exit: 0 PASS · 3 FAIL · 2 refused (nothing read) · 1 could not run.
  */
 
 import { decideRepairEnvGuard, redactConnectionDetails } from "./lib/repair-env-guard";
 import {
-  PRECHECK_FUNCTIONS_SQL, PRECHECK_READ_ONLY_STATEMENT, PRECHECK_TABLES_SQL, evaluatePrecheck, renderPrecheck,
-  type FunctionRow, type TableRow,
+  PRECHECK_FUNCTIONS_SQL, PRECHECK_READ_ONLY_STATEMENT, PRECHECK_TABLES_SQL, PREDISABLE_SQL,
+  evaluatePrecheck, evaluatePredisable, parsePrecheckPhase, renderPrecheck, renderPredisable,
+  type FunctionRow, type PredisableRow, type TableRow,
 } from "./lib/platform-ai-conversations-precheck.core";
 
-const KNOWN_FLAGS = new Set(["env", "acknowledge-production-read"]);
+const KNOWN_FLAGS = new Set(["env", "acknowledge-production-read", "phase"]);
 const PRODUCTION_ACK_FLAG = "--acknowledge-production-read";
 
 function refuse(reasons: string[]): never {
@@ -44,6 +53,8 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const unknown = args.filter((a) => !a.startsWith("--") || !KNOWN_FLAGS.has(a.replace(/^--/, "").split("=")[0]));
   if (unknown.length) refuse([`unknown argument(s): ${unknown.map((a) => a.split("=")[0]).join(", ")} — refusing rather than guessing.`]);
+  const phase = parsePrecheckPhase(args);
+  if (!phase) refuse(["--phase must be given at most once, as exactly `pre-enable` or `pre-disable`."]);
   const envArg = args.find((a) => a.startsWith("--env="));
   const envFlag = envArg ? envArg.slice("--env=".length) : null;
   if (!envFlag) refuse(["--env=<local|preview|production> is required."]);
@@ -62,6 +73,16 @@ async function main(): Promise<void> {
   // Imported only after the gates: constructing the client is the first contact with any database.
   const { db } = await import("@/lib/db");
   try {
+    if (phase === "pre-disable") {
+      const rows = await db.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(PRECHECK_READ_ONLY_STATEMENT);
+        return tx.$queryRawUnsafe<PredisableRow[]>(PREDISABLE_SQL);
+      }, { maxWait: 10_000, timeout: 60_000 });
+      const v = evaluatePredisable(rows);
+      console.log(`\n${renderPredisable(gate.env ?? envFlag!, new Date().toISOString(), v)}\n`);
+      process.exitCode = v.ok ? 0 : 3;
+      return;
+    }
     const { fns, tables } = await db.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(PRECHECK_READ_ONLY_STATEMENT);
       return {
