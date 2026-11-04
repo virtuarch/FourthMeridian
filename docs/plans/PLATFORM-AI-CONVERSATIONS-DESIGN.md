@@ -1,6 +1,6 @@
 # Platform AI conversations: persistent, multi-turn, operator-private
 
-> **Owner:** Session 1 · **Status:** DRAFT · **Updated:** 2026-11-04 · **PRs:** docs/platform-ai-conversations-design (this design; S2 review before any schema or migration code)
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #416 (this design; S2 CLEARED for PR B with REQUIRED 1–4, folded in)
 
 **What this is.** The owner approved persistent, multi-turn conversations for Platform AI. This document is the design for S2 security review. No schema change, migration or route ships with it. The parent plan is [PLATFORM-INTELLIGENCE](PLATFORM-INTELLIGENCE.md) (foundation step 4).
 
@@ -9,6 +9,7 @@
 - PR #395's S2 bindings 1–10 (Platform AI v0).
 - The in-flight placeholder grounding (`feat/platform-ai-structured-claims`, S2 rulings C1–C7).
 - **The S2 conversation requirements B1–B11 (2026-11-04).** Where this document and the S2 requirements differ, S2 wins. Each section cites the B-item it satisfies. Every point that departs from or refines an S2 item is listed in §14 as **S2 QUESTION**.
+- **S2 clearance (2026-11-04):** PR B is cleared, subject to REQUIRED changes 1–4 and the Q1–Q8 rulings. All are folded in, and §14 lists each one with where it landed.
 - **The owner ruling (2026-11-04):** retention is **tentatively 90 days** (pending S2), and the tables ship in **B11**. S2's retention flags R1–R6 are each answered in §7.
 - **Nothing is activated until S2 clears retention.** The conversations flag stays off on every environment, the purge job ships disabled, and storage is Preview-only.
 
@@ -33,7 +34,7 @@
 
 | Reused | From | For |
 |---|---|---|
-| `encryptWithPurpose` / `decryptWithPurpose`, the keyring (v2 write, v3 during a rotation, #364) | `lib/plaid/encryption.ts` | message content and titles at rest (§2.3) |
+| `encryptWithPurpose` / `decryptWithPurpose`, the keyring (v2 write, v3 during a rotation, #364) | `lib/plaid/encryption.ts` | message content at rest (§2.3) |
 | `ENCRYPTED_FIELDS` registry plus its writer-site census | `lib/plaid/encrypted-fields.ts` (#357) | rotation coverage and `--verify-complete` (§2.3) |
 | `scrubOperatorText` (SEC-AI-005) | `lib/ai/privacy/scrub.ts` | the question, before the provider AND before storage (§8) |
 | The whole v0 turn: tools, bounds, sanitiser, placeholder grounding, trace | `core.ts`, `ledger.ts` | every turn; history is one more input (§4) |
@@ -41,7 +42,7 @@
 | Provenance: the server says what a figure is and where it came from | `lib/ai/conversation/provenance.ts`, v1 placeholder rendering | stale labels on prior figures (§4.3) |
 | `requireFreshPlatformAccess`, the metric and navigation tokens, `bindingFor` | `lib/platform/authorize.ts`, the metric and navigation access modules | per-conversation area guard (§3) |
 | `limitPlatformMutation` (#352) and the `PLATFORM_AI_DAILY_TURNS` ledger cap | `lib/platform/mutation-rate-limit.ts`, `lib/platform/ai/platform-ai-turns.ts` | rate and cost (§6, §10) |
-| `recordOperatorAction` | `lib/audit.ts` | create, rename and delete audit (§7) |
+| `recordOperatorAction` | `lib/audit.ts` | create and delete audit (§7) |
 | `withTenantDb` (`app.user_id`, transaction-local) and `current_fm_user_id()` | `lib/db/tenant-context.ts`, RLS migration `20261002000100` | owner-only row access (§2.4) |
 | The account-deletion purge census and the data export | `lib/account-deletion/*`, `lib/export/assemble.ts` | lifecycle (§7) |
 
@@ -51,45 +52,49 @@
 
 ### 2.1 Prisma sketch
 
+**S2 REQUIRED 1 governs this model: writers never choose retention or timestamps.**
+- Every timestamp is a database default, `(now() AT TIME ZONE 'UTC')`, written as `dbgenerated` so Prisma omits the column from its INSERT.
+- Each timestamp column is **excluded from fm_app's column-level INSERT grant**, so a writer that names one gets `permission denied`.
+- The timestamps an UPDATE produces (`lastActivityAt`, `completedAt`, `deletedAt`) are set by triggers (§2.4), never by the writer's value.
+
 ```prisma
 /// One operator's private Platform AI conversation. OPERATOR-SCOPED: no
-/// spaceId and no tenant column (see 2.2). Content lives only in
+/// spaceId and no tenant column (see 2.2). No title column (S2 Q1): the list
+/// label is derived at read time (§10). Content lives only in
 /// PlatformAiMessage.contentEncrypted.
 model PlatformAiConversation {
-  id             String       @id @default(cuid())
+  id              String       @id @default(cuid())
   /// The ONLY owner. RLS: operatorUserId = current_fm_user_id().
-  operatorUserId String
-  operator       User         @relation("PlatformAiConversationOwner", fields: [operatorUserId], references: [id], onDelete: Cascade)
+  operatorUserId  String
+  operator        User         @relation("PlatformAiConversationOwner", fields: [operatorUserId], references: [id], onDelete: Cascade)
   /// The authorized area at creation (v0: platformAiAreaFor; later, the A1–A4
-  /// selector). Immutable. Every read and append re-checks a FRESH grant for it.
-  area           PlatformArea
-  /// Null ⇒ the UI shows a derived title ("<area label> · <created date>"),
-  /// computed at read and never stored. Set only by a rename: scrubbed, ≤ 80
-  /// chars, encryptWithPurpose(…, PLATFORM_AI_TITLE). (S2 B1: "derived; encrypted or omitted".)
-  titleEncrypted String?
+  /// selector). Immutable (no UPDATE grant). Every read and append re-checks a FRESH grant for it.
+  area            PlatformArea
   /// Idempotency of the CREATE call (create = first question, §10). Unique per operator.
   createRequestId String
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  /// The last operator APPEND (R2): set only by the turn writer's transaction 1.
-  /// Reads, lists, renames and deletes never move it (pinned, §7.4).
-  lastActivityAt DateTime     @default(now())
-  /// Soft delete: hidden from every read immediately.
-  deletedAt      DateTime?
-  /// The conversation's hard-purge time (§7.2, §7.4). Under R1 option (a):
-  /// min(lastActivityAt + 90 d, createdAt + 365 d). Under option (b): set only by
-  /// a delete (= deletedAt); shells are purged once their last message expires.
-  purgeAfter     DateTime?
+  /// DB default only; not in the INSERT grant.
+  createdAt       DateTime     @default(dbgenerated("(now() AT TIME ZONE 'UTC')"))
+  /// The last operator APPEND (R2). DB default on insert; afterwards set ONLY by
+  /// the AFTER INSERT trigger on a USER message (§2.4). Not in any fm_app grant.
+  lastActivityAt  DateTime     @default(dbgenerated("(now() AT TIME ZONE 'UTC')"))
+  /// Soft delete: hidden from every read immediately. fm_app may UPDATE this
+  /// column only, and the trigger overwrites the value with now() and forbids
+  /// un-deleting or re-dating (§2.4). The purge treats
+  /// deletedAt < now − PLATFORM_AI_DELETE_GRACE as expired (§7.1, OD-10).
+  deletedAt       DateTime?
 
-  messages       PlatformAiMessage[]
+  messages        PlatformAiMessage[]
 
   @@unique([operatorUserId, createRequestId])
   @@index([operatorUserId, deletedAt, lastActivityAt])
-  @@index([purgeAfter])
+  @@index([deletedAt])
+  @@index([createdAt])
 }
 
 enum PlatformAiMessageRole   { USER ASSISTANT }
 enum PlatformAiMessageStatus { PENDING COMPLETE FAILED }
+/// S2 Q6: a closed set of codes, never provider text.
+enum PlatformAiFailureCode   { TIMEOUT PROVIDER KILL_SWITCH ABANDONED }
 
 model PlatformAiMessage {
   id               String                  @id @default(cuid())
@@ -102,23 +107,31 @@ model PlatformAiMessage {
   /// PENDING, or for a FAILED assistant row.
   contentEncrypted String?
   /// ASSISTANT only: what the turn READ. Metric keys, windows and page ids
-  /// ONLY, never a value, status, reason, href or argument the model wrote (S2 B1).
+  /// ONLY, never a value, status, reason, href or argument the model wrote (S2 B1, Q7).
   /// [{ "k": "m", "id": "provider-outcome@1", "w": 7 }, { "k": "p", "id": "<page id>" }]
   evidenceRefs     Json?
   /// USER only: the client's idempotency key. UNIQUE(conversationId, clientRequestId) (S2 B1).
   clientRequestId  String?
-  /// ASSISTANT only: the USER message it answers (1:1).
+  /// ASSISTANT only: the USER message it answers (1:1). S2 Q6: the composite FK
+  /// (conversationId, replyToId) → (conversationId, id) makes a reply into
+  /// another conversation impossible at the database.
   replyToId        String?                 @unique
-  status           PlatformAiMessageStatus @default(COMPLETE)
-  /// FAILED only: a CODE (TIMEOUT | PROVIDER | KILL_SWITCH | ABANDONED), never a message.
-  failureCode      String?
-  createdAt        DateTime                @default(now())
+  replyTo          PlatformAiMessage?      @relation("PlatformAiReply", fields: [conversationId, replyToId], references: [conversationId, id], onDelete: Cascade)
+  reply            PlatformAiMessage?      @relation("PlatformAiReply")
+  status           PlatformAiMessageStatus
+  failureCode      PlatformAiFailureCode?
+  /// DB default only; not in the INSERT grant.
+  createdAt        DateTime                @default(dbgenerated("(now() AT TIME ZONE 'UTC')"))
+  /// Set by the BEFORE UPDATE trigger when a PENDING row settles; not in any fm_app grant.
   completedAt      DateTime?
-  /// R1 option (b), S2's recommendation: per-message expiry = the USER row's
-  /// createdAt + 90 d. The ASSISTANT row copies its USER row's value, so a pair
-  /// always expires together. Unused (null) under option (a).
-  purgeAfter       DateTime?
+  /// R1 option (b), S2's recommendation: per-message expiry. DB default
+  /// (now() AT TIME ZONE 'UTC') + interval '90 days'; not in any fm_app grant.
+  /// The USER and ASSISTANT rows of a turn are inserted in ONE transaction, and
+  /// now() is the transaction's start time, so a pair always expires together.
+  /// The column is omitted under option (a).
+  purgeAfter       DateTime                @default(dbgenerated("((now() AT TIME ZONE 'UTC') + interval '90 days')"))
 
+  @@unique([conversationId, id])
   @@unique([conversationId, clientRequestId])
   @@index([conversationId, createdAt])
   @@index([purgeAfter])
@@ -128,6 +141,8 @@ model PlatformAiMessage {
 **Not stored, on purpose:**
 - **Model id and token counts.** They are already in `AiInvocation`, joined by `correlationId` = the assistant message id and `conversationId` = the conversation id. That keeps cost telemetry in the one fm_system ledger and off the owner-private tables. It is a soft link with no FK, and the ledger keeps its own 90-day retention.
 - **Tool results, envelopes and the trace.** Tool results are never replayed (§4), and the trace stays a metadata log line (S2 B3).
+- **A title** (S2 Q1).
+- **A conversation `purgeAfter` or `updatedAt`.** The conversation's expiry is a fixed predicate in the purge function (§7.2), so no writer stores it (S2 REQUIRED 1). Prisma's client-set `@updatedAt` would be a writer-chosen timestamp, so it is not used.
 
 **The single in-flight turn** is a partial unique index. Prisma can't express it, so it is raw SQL in the same migration (§2.4):
 
@@ -137,10 +152,10 @@ CREATE UNIQUE INDEX "PlatformAiMessage_one_pending_per_conversation"
 ```
 
 **FK and cascade semantics:**
-- `User → PlatformAiConversation`: `onDelete: Cascade`. Account deletion removes every conversation. The purge census bucket is CASCADE. Referential actions run as the table owner and bypass RLS, the same mechanism the DB-010 README relies on for AuditLog `SET NULL`.
-- `PlatformAiConversation → PlatformAiMessage`: `onDelete: Cascade`. The purge deletes conversations only, and their messages go with them.
-- `replyToId`: a plain column, not a relation. Integrity comes from the turn transaction, which writes the pair together. A dangling pointer is impossible because both rows share the conversation and die together.
-- No FK to `PlatformGrant`. A revoked or deleted grant must not delete history (retention decides that), and access is checked live (§3).
+- **`User → PlatformAiConversation`: `onDelete: Cascade`.** Account deletion removes every conversation; the purge census bucket is CASCADE. PostgreSQL runs referential actions as internal triggers that are not subject to row security. S2 REQUIRED 3 asks for proof, not assumption: a real-PG RLS case under FORCE RLS deletes the User and asserts 0 conversation and 0 message rows remain (§12).
+- **`PlatformAiConversation → PlatformAiMessage`: `onDelete: Cascade`.** Purging a conversation takes its messages with it.
+- **`replyTo`: a composite FK** to the same conversation, `ON DELETE CASCADE`. Purging a USER row (option (b)) takes its reply with it; their `purgeAfter` is equal anyway.
+- **No FK to `PlatformGrant`.** A revoked or deleted grant must not delete history (retention decides that), and access is checked live (§3).
 
 ### 2.2 Why no tenant column
 
@@ -151,23 +166,20 @@ The conversation belongs to an **operator acting under a Platform grant**, not t
 
 ### 2.3 Encryption (S2 B2)
 
-- **Two new purposes** in `EncryptionPurpose`:
-  - `PLATFORM_AI_MESSAGE: "platform_ai_message"` for `PlatformAiMessage.contentEncrypted`;
-  - `PLATFORM_AI_TITLE: "platform_ai_title"` for `PlatformAiConversation.titleEncrypted`.
-
-  One purpose per field is the house rule ("adding a new secret field = adding a constant here"). S2 B2 names only the first one; the second is **S2 QUESTION Q1**. The alternative is to omit rename in v1.
-- **Two `ENCRYPTED_FIELDS` entries**, `format: "cipher"`, no `scope`. The model union type gains the two model names. `lib/plaid/encrypted-fields.test.ts` then requires:
+- **One new purpose** in `EncryptionPurpose`: `PLATFORM_AI_MESSAGE: "platform_ai_message"` for `PlatformAiMessage.contentEncrypted`. There is no title purpose: S2 Q1 ruled no stored title.
+- **One `ENCRYPTED_FIELDS` entry**, `format: "cipher"`, no `scope`. The model union type gains `"PlatformAiMessage"`. `lib/plaid/encrypted-fields.test.ts` then requires:
   - each `encryptWithPurpose(` call site to be a classified writer;
-  - each entry to exist in `schema.prisma`.
+  - the entry to exist in `schema.prisma`.
 
-  The writer sites are exactly two functions in one module: the turn writer and the rename writer (pinned).
-- **Format.** `encryptWithPurpose` writes **v2** when no distinct `ENCRYPTION_KEY_PREVIOUS` is set, and **v3** during a rotation (#364). B9 and B10 never read these tables, so rollback safety is about not stranding values. The B9 fixture test (`encryption-b9-compat.test.ts`) must still pass unchanged, and a new case proves B9's frozen code decrypts a v2 value under the new purpose string.
-- **Rotation.** `scripts/rotate-encryption-key.ts` re-encrypts every registry column. It runs as the migration principal and refuses a role that does not bypass RLS (`rolbypassrls OR rolsuper`), so owner-only RLS doesn't hide rows from it. `--verify-complete` must report 0 candidates for both columns. A rotation test fixture gains both columns.
+  The writer sites are exactly the turn writer (USER row, then ASSISTANT completion) in one module (pinned).
+- **Format.** `encryptWithPurpose` writes **v2** when no distinct `ENCRYPTION_KEY_PREVIOUS` is set, and **v3** during a rotation (#364). B9 and B10 never read this table, so rollback safety is about not stranding values. The B9 fixture test (`encryption-b9-compat.test.ts`) must still pass unchanged, and a new case proves B9's frozen code decrypts a v2 value under the new purpose string.
+- **Rotation.** `scripts/rotate-encryption-key.ts` re-encrypts every registry column. It runs as the migration principal and refuses a role that does not bypass RLS (`rolbypassrls OR rolsuper`), so owner-only RLS doesn't hide rows from it. `--verify-complete` must report 0 candidates for the column. A rotation test fixture gains it.
+- **The rotation's write path and the triggers.** The rotation UPDATEs `contentEncrypted` only on settled rows. The settle trigger (§2.4) refuses any UPDATE of a non-PENDING row EXCEPT one that changes `contentEncrypted` alone while the role bypasses RLS. That exception is the rotation's narrow path, pinned by a rotation test on real PG.
 - **Never `sealWithPurpose`** here. The sealed format is for carriers and one compact evidence blob, and the cipher format is the stored-field idiom.
 
 ### 2.4 RLS (S2 B4): fm_app owner-only, no fm_system table path
 
-The GUC is **`app.user_id`**, read through `current_fm_user_id()`. That is the house helper; S2 B4 calls it `app.current_user_id`, the same intent under a different spelling (**Q2**). Requests run through `withTenantDb(auth.user.id, …)`, and the identity comes only from the server session.
+The GUC is **`app.user_id`**, read through `current_fm_user_id()` (**S2 Q2 ruled**). Requests run through `withTenantDb(auth.user.id, …)`, and the identity comes only from the server session.
 
 ```sql
 -- Tables created by the migration principal are granted to nobody by default
@@ -175,18 +187,36 @@ The GUC is **`app.user_id`**, read through `current_fm_user_id()`. That is the h
 -- must list both tables.
 SET lock_timeout = '5s';   -- creating FKs to "User" takes a brief SHARE ROW EXCLUSIVE lock; fail fast, never queue
 
+-- 0. S2 REQUIRED 2: FORCE RLS binds the table OWNER too. A SECURITY DEFINER
+--    function owned by a role WITHOUT BYPASSRLS would see 0 rows and delete
+--    0 rows, silently (fail-OPEN for retention). The migration principal owns
+--    every function below; assert it can bypass RLS, or abort the migration.
+DO $$
+BEGIN
+  IF NOT (SELECT rolbypassrls OR rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+    RAISE EXCEPTION 'Platform AI conversations: migration principal % must have BYPASSRLS (definer functions under FORCE RLS)', current_user;
+  END IF;
+END $$;
+
 ALTER TABLE public."PlatformAiConversation" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public."PlatformAiConversation" FORCE  ROW LEVEL SECURITY;
 ALTER TABLE public."PlatformAiMessage"      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public."PlatformAiMessage"      FORCE  ROW LEVEL SECURITY;
 
--- fm_app: SELECT/INSERT, UPDATE on named columns only, NO DELETE (hard deletion is the purge function's alone).
-GRANT SELECT, INSERT ON public."PlatformAiConversation" TO fm_app;
-GRANT UPDATE ("titleEncrypted", "updatedAt", "lastActivityAt", "deletedAt", "purgeAfter")   -- message "purgeAfter" is INSERT-only: no UPDATE grant, so it can never be extended
+-- 1. fm_app: COLUMN-level INSERT that EXCLUDES every timestamp and retention
+--    column (S2 REQUIRED 1); naming one ⇒ permission denied. UPDATE on the
+--    smallest column sets. NO DELETE (hard deletion is the purge function's alone).
+GRANT SELECT ON public."PlatformAiConversation" TO fm_app;
+GRANT INSERT ("id", "operatorUserId", "area", "createRequestId")
   ON public."PlatformAiConversation" TO fm_app;
-GRANT SELECT, INSERT ON public."PlatformAiMessage" TO fm_app;
-GRANT UPDATE ("contentEncrypted", "evidenceRefs", "status", "failureCode", "completedAt")
-  ON public."PlatformAiMessage" TO fm_app;
+GRANT UPDATE ("deletedAt") ON public."PlatformAiConversation" TO fm_app;     -- no "purgeAfter" (it does not exist), no "lastActivityAt"
+
+GRANT SELECT ON public."PlatformAiMessage" TO fm_app;
+GRANT INSERT ("id", "conversationId", "role", "contentEncrypted", "evidenceRefs",
+              "clientRequestId", "replyToId", "status")
+  ON public."PlatformAiMessage" TO fm_app;                                    -- no "createdAt", "purgeAfter", "completedAt", "failureCode"
+GRANT UPDATE ("contentEncrypted", "evidenceRefs", "status", "failureCode")
+  ON public."PlatformAiMessage" TO fm_app;                                    -- no timestamp, no retention column
 
 CREATE POLICY fm_app_sel ON public."PlatformAiConversation" FOR SELECT TO fm_app
   USING ("operatorUserId" = current_fm_user_id());
@@ -196,7 +226,7 @@ CREATE POLICY fm_app_upd ON public."PlatformAiConversation" FOR UPDATE TO fm_app
   USING      ("operatorUserId" = current_fm_user_id())
   WITH CHECK ("operatorUserId" = current_fm_user_id());
 
--- Messages have no owner column: visibility is the parent's (no self-reference, no definer needed).
+-- Messages have no owner column: visibility is the parent's (no self-reference).
 CREATE POLICY fm_app_sel ON public."PlatformAiMessage" FOR SELECT TO fm_app
   USING (EXISTS (SELECT 1 FROM public."PlatformAiConversation" c
                   WHERE c.id = "conversationId" AND c."operatorUserId" = current_fm_user_id()));
@@ -210,22 +240,65 @@ CREATE POLICY fm_app_upd ON public."PlatformAiMessage" FOR UPDATE TO fm_app
   WITH CHECK (EXISTS (SELECT 1 FROM public."PlatformAiConversation" c
                        WHERE c.id = "conversationId" AND c."operatorUserId" = current_fm_user_id()));
 
--- A buggy writer cannot make a row immortal. Which CHECK ships follows the R1 choice (§7.4):
---   option (b): every message row expires at most 90 d after it was written
-ALTER TABLE public."PlatformAiMessage"
-  ADD CONSTRAINT "PlatformAiMessage_purgeAfter_bounded"
-  CHECK ("purgeAfter" IS NOT NULL AND "purgeAfter" <= "createdAt" + interval '90 days');
---   option (a) instead: the conversation is bounded by the absolute cap
--- ALTER TABLE public."PlatformAiConversation" ADD CONSTRAINT "PlatformAiConversation_purgeAfter_bounded"
---   CHECK ("purgeAfter" IS NOT NULL AND "purgeAfter" <= "createdAt" + interval '365 days');
--- Both intervals are duplicated from code and pinned by a parse test (the DB-010 pattern).
+-- 2. Triggers: the database, not the writer, chooses every derived timestamp.
+-- 2a. Soft delete: the value is always now(); no un-delete, no re-dating.
+CREATE FUNCTION fm_platform_ai_conversation_soft_delete() RETURNS trigger
+  LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF OLD."deletedAt" IS NOT NULL THEN RAISE EXCEPTION 'conversation already deleted'; END IF;
+  IF NEW."deletedAt" IS NOT NULL THEN NEW."deletedAt" := now() AT TIME ZONE 'UTC'; END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER platform_ai_conversation_soft_delete BEFORE UPDATE OF "deletedAt"
+  ON public."PlatformAiConversation" FOR EACH ROW EXECUTE FUNCTION fm_platform_ai_conversation_soft_delete();
 
--- NO grant and NO policy for fm_system, fm_auth, fm_backup-write, anon, authenticated or service_role.
+-- 2b. Activity = an operator APPEND (R2): a USER message insert moves lastActivityAt.
+--     SECURITY DEFINER because fm_app holds no UPDATE on "lastActivityAt"; the
+--     owner bypasses RLS (asserted in 0). The trigger fires only on INSERT of a
+--     USER row; it cannot be called directly.
+CREATE FUNCTION fm_platform_ai_touch_conversation() RETURNS trigger
+  LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+BEGIN
+  UPDATE public."PlatformAiConversation" SET "lastActivityAt" = now() AT TIME ZONE 'UTC'
+   WHERE id = NEW."conversationId";
+  RETURN NULL;
+END $$;
+REVOKE ALL ON FUNCTION fm_platform_ai_touch_conversation() FROM PUBLIC;
+CREATE TRIGGER platform_ai_touch_conversation AFTER INSERT ON public."PlatformAiMessage"
+  FOR EACH ROW WHEN (NEW.role = 'USER') EXECUTE FUNCTION fm_platform_ai_touch_conversation();
+
+-- 2c. Settle: only a PENDING row may change; completedAt is the database's.
+--     The one exception is the key rotation (§2.3): a BYPASSRLS role changing contentEncrypted alone.
+CREATE FUNCTION fm_platform_ai_message_settle() RETURNS trigger
+  LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF OLD.status <> 'PENDING' THEN
+    IF (SELECT rolbypassrls OR rolsuper FROM pg_roles WHERE rolname = current_user)
+       AND (NEW.status, NEW."evidenceRefs", NEW."failureCode") IS NOT DISTINCT FROM (OLD.status, OLD."evidenceRefs", OLD."failureCode")
+    THEN RETURN NEW; END IF;
+    RAISE EXCEPTION 'settled message is immutable';
+  END IF;
+  IF NEW.status <> 'PENDING' THEN NEW."completedAt" := now() AT TIME ZONE 'UTC'; END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER platform_ai_message_settle BEFORE UPDATE ON public."PlatformAiMessage"
+  FOR EACH ROW EXECUTE FUNCTION fm_platform_ai_message_settle();
+
+-- 3. Bounds: no writer can make a row immortal (they cannot write the columns at all;
+--    this is defence in depth against a future grant mistake).
+ALTER TABLE public."PlatformAiMessage" ADD CONSTRAINT "PlatformAiMessage_purgeAfter_bounded"
+  CHECK ("purgeAfter" <= "createdAt" + interval '90 days');
+ALTER TABLE public."PlatformAiMessage" ADD CONSTRAINT "PlatformAiMessage_failure_shape"
+  CHECK ((status = 'FAILED') = ("failureCode" IS NOT NULL));
+-- Intervals are duplicated from code and pinned by a parse test (the DB-010 pattern).
+
+-- NO grant and NO policy for fm_system, fm_auth, anon, authenticated or service_role.
 -- fm_backup keeps its catalog-wide SELECT (BYPASSRLS) for pg_dump; it sees ciphertext only.
 ```
 
 - **Why `deletedAt` is not in the SELECT policy.** Prisma's `update` uses `RETURNING`, which needs the new row to pass the SELECT policy. A soft delete would then fail under its own policy. The "deleted is invisible" rule is enforced in the one data module instead (every query carries `deletedAt: null`). It is pinned by a source scan and by an RLS-suite case: a soft-deleted row is not returned by any route. The INSERT policy on messages does require a live parent, so a deleted conversation can't be appended to even by a buggy writer.
-- **No fm_system path (S2 B4).** Nothing that runs as fm_system can read, write or delete either table, except through the one purge function in §7.2. Operator routes elsewhere run as fm_system (`systemDb`). The conversation data module imports `withTenantDb` only, and a source scan fails the build if it, or any importer of the tables, names `systemDb`.
+- **No fm_system path (S2 B4).** Nothing that runs as fm_system can read, write or delete either table, except through the one purge function in §7.2. Operator routes elsewhere run as fm_system (`systemDb`). The conversation data module imports `withTenantDb` only, and a source scan fails the build if it, or any importer of the two models, names `systemDb`.
+- **The Preview pre-enable check (S2 REQUIRED 2).** Supabase role attributes differ from a local PostgreSQL, where the principal is usually a superuser. Before any flag is set on Preview, a read-only check confirms that the owner of `fm_purge_platform_ai_conversations` and of `fm_platform_ai_touch_conversation` has `rolbypassrls` (`pg_proc.proowner` → `pg_roles`). It runs through the existing read-only report tooling (`npm run report:b10-5`-style, `-1` plus `SET TRANSACTION READ ONLY`, never a session `SET`), and its output is recorded in the PR D enable checklist. The migration's own assertion (block 0) makes a wrong principal fail loudly at apply time. The check proves the same on the live target.
 
 ### 2.5 The stored answer shape
 
@@ -265,7 +338,7 @@ The ASSISTANT plaintext, before encryption, is versioned JSON:
 
 ### 3.2 The rules this chain enforces
 
-- **Ownership and a fresh grant on every list, read, append, rename and delete.** List evaluates step 6 once per distinct area among the operator's live conversations (at most five areas) and drops every conversation whose area fails. Dropped conversations are neither counted nor hinted at.
+- **Ownership and a fresh grant on every list, read, append and delete.** List evaluates step 6 once per distinct area among the operator's live conversations (at most five areas) and drops every conversation whose area fails. Dropped conversations are neither counted nor hinted at.
 - **Revoked grant → historical content unreadable.** The rows remain, and retention purges them on schedule. If the grant is reinstated, the conversations become readable again, consistent with every other grant-scoped surface. Purging on revocation is **Q3**.
 - **IDOR-proof.** Ids are cuids, but security never rests on that: the lookup is `id AND operatorUserId` under owner-only RLS. Another operator's id gives the same 404 as a random string.
 - **No cross-operator view (S2 B4).** No route, role or tool reads another operator's conversations: not Customer Success, not System Admin, not break-glass, and not support tooling. A SYSTEM_ADMIN on break-glass gets no grant, so the step-3 binding is null → v0's 403 before any lookup. It gets nothing extra. Any oversight view is an **OWNER DECISION (OD-4)**, and none is designed.
@@ -356,14 +429,14 @@ The client generates a UUID per send. `UNIQUE(conversationId, clientRequestId)` 
 
 **Transaction 1** (`withTenantDb`, short):
 1. Re-check the caps (§6).
-2. Insert the USER row (COMPLETE, scrubbed content) and the ASSISTANT row (PENDING, no content). Under R1 option (b), both rows get `purgeAfter = USER.createdAt + 90 d`.
-3. Set the conversation's `lastActivityAt = now()`. Under option (a), also set its `purgeAfter`. **This append is the only "activity" (R2).**
+2. Insert the USER row (COMPLETE, scrubbed content) and the ASSISTANT row (PENDING, no content). The writer names no timestamp: `createdAt` and `purgeAfter` are database defaults, equal for the pair because `now()` is the transaction's start time.
+3. The AFTER INSERT trigger on the USER row moves the conversation's `lastActivityAt` (§2.4 2b). **This append is the only "activity" (R2).**
 
 The partial unique index rejects a second PENDING. Prisma's P2002 on that index → 409 `TURN_IN_FLIGHT`.
 
 **Outside any transaction**, the v0 turn runs (≤ 45 s). It must not hold a tenant transaction open, because of the tenant `idle_in_transaction_session_timeout`.
 
-**Transaction 2:** the ASSISTANT row becomes COMPLETE with content, evidence refs and `completedAt`, or FAILED with `failureCode`. It touches no retention column.
+**Transaction 2:** the ASSISTANT row becomes COMPLETE with content and evidence refs, or FAILED with a `failureCode` enum value. The settle trigger sets `completedAt` and makes the row immutable afterwards (§2.4 2c). It touches no retention column.
 
 **Abandoned turns.** A crash between the transactions leaves a PENDING row. Any later read or append of that conversation marks a PENDING row older than 2 × `PLATFORM_AI_TURN_TIMEOUT_MS` as FAILED / `ABANDONED` first. The conversation is never stuck, and no background job is needed.
 
@@ -386,7 +459,6 @@ The daily-cap overshoot documented in v0 remains for parallel turns **across dif
 | Bound | Value | Status |
 |---|---|---|
 | Question length | 500 chars (`PLATFORM_AI_QUESTION_MAX`, unchanged) | existing |
-| Title length | 80 chars, scrubbed | new |
 | Live conversations per operator | 50; create beyond → 409 `CONVERSATION_LIMIT` ("delete one to start another") | new, proposed |
 | Messages per conversation | 40 (20 exchanges; FAILED rows count); beyond → 409 `CONVERSATION_FULL`, read-only, "start a new conversation" | new, proposed |
 | History in context | ≤ 10 messages and ≤ 3,000 estimated tokens | new, proposed |
@@ -405,16 +477,30 @@ The cost of that: history is resent on each of up to 4 rounds (≤ 12,000 of the
 
 ## 7. Deletion and retention (S2 B6, B8)
 
-### 7.1 Operator delete
+### 7.1 Operator delete and the soft-delete grace (S2 REQUIRED 4, OD-10)
 
-`DELETE` sets `deletedAt = now()` and the conversation's `purgeAfter = deletedAt`, in one transaction with the audit row. Messages are not touched; they go with the conversation by cascade.
-- The conversation is hidden from every route immediately.
-- It is hard-deleted on the next purge run, so within a day.
-- There is no restore in v1. Nobody can read a deleted conversation, because no fm_system path exists.
+`DELETE` sets **`deletedAt` only**, in one transaction with the audit row. The trigger (§2.4 2a) writes the value: always `now()`, and never a second time. No writer touches any other retention column (S2 REQUIRED 1).
+- **Hidden immediately.** Every route filters `deletedAt: null`, and a deleted conversation can't be appended to (the INSERT policy).
+- **Hard-deleted** by the purge once `deletedAt < now − PLATFORM_AI_DELETE_GRACE` (§7.2).
+- **The grace is an OWNER DECISION (OD-10):**
+  - **default IMMEDIATE:** grace = 0, so the conversation is purged on the next daily run, within a day;
+  - **alternative: 7 days after `deletedAt`.** It leaves room for a support-assisted recovery, but no such path exists in v1 (nobody can read the rows), so the extra week buys nothing today.
 
-### 7.2 The purge job, and how it deletes without an fm_system table path (S2 B6 note) — S2 QUESTION Q4
+  The interval is a code constant, duplicated in the function body and pinned by the parse test.
+- **No restore in v1.** The trigger refuses an un-delete.
+- **Export excludes soft-deleted conversations** (§7.3).
 
-B4 removes every fm_system grant, so the retention job (`jobs/data-retention.ts`, fm_system) can't `DELETE` the rows. This document proposes **one narrow `SECURITY DEFINER` function**:
+### 7.2 The purge function (S2 Q4: APPROVED)
+
+B4 removes every fm_system grant, so the retention job (`jobs/data-retention.ts`, fm_system) can't `DELETE` the rows. **One narrow `SECURITY DEFINER` function** does it. S2 approved it under these conditions:
+- EXECUTE to fm_system only, REVOKEd from PUBLIC;
+- `search_path = pg_catalog, public`;
+- `p_limit` is the only argument;
+- no dynamic SQL;
+- no ids returned;
+- the body is parse-pinned (the DB-010 pattern).
+
+The body below is the R1 option (b) variant. The variant for option (a) follows it.
 
 ```sql
 CREATE FUNCTION fm_purge_platform_ai_conversations(p_limit integer)
@@ -423,21 +509,26 @@ CREATE FUNCTION fm_purge_platform_ai_conversations(p_limit integer)
   SET search_path = pg_catalog, public
 AS $$
 DECLARE v_now timestamp := now() AT TIME ZONE 'UTC';   -- UTC-to-UTC, as DB-010
-        v_conv text[]; v_msgs integer := 0; v_cmsgs integer := 0;
+        v_users text[]; v_conv text[]; v_msgs integer := 0; v_cmsgs integer := 0;
 BEGIN
   IF p_limit IS NULL OR p_limit < 1 OR p_limit > 500 THEN RAISE EXCEPTION 'p_limit out of range'; END IF;
-  -- 1. Expired MESSAGES (R1 option (b); a no-op under (a), where message purgeAfter is null).
-  WITH doomed AS (
+  -- 1. Expired MESSAGES (per-message expiry; purgeAfter is a DB default, §2.1).
+  --    Select USER rows; each one's reply goes by the composite-FK cascade, and is counted here
+  --    (ROW_COUNT would not see cascaded rows).
+  SELECT array_agg(id) INTO v_users FROM (
     SELECT id FROM public."PlatformAiMessage"
-     WHERE "purgeAfter" < v_now
-     ORDER BY "purgeAfter" LIMIT p_limit * 40 FOR UPDATE SKIP LOCKED)
-  DELETE FROM public."PlatformAiMessage" m USING doomed d WHERE m.id = d.id;
-  GET DIAGNOSTICS v_msgs = ROW_COUNT;
-  -- 2. Expired or deleted CONVERSATIONS, and empty SHELLS (no message left,
+     WHERE role = 'USER' AND "purgeAfter" < v_now
+     ORDER BY "purgeAfter" LIMIT p_limit * 20 FOR UPDATE SKIP LOCKED) s;
+  IF v_users IS NOT NULL THEN
+    SELECT count(*) INTO v_msgs FROM public."PlatformAiMessage"
+     WHERE id = ANY (v_users) OR "replyToId" = ANY (v_users);
+    DELETE FROM public."PlatformAiMessage" WHERE id = ANY (v_users);
+  END IF;
+  -- 2. Deleted conversations past the grace, and empty SHELLS (no message left,
   --    created more than a day ago so a create in flight is never raced).
   SELECT array_agg(id) INTO v_conv FROM (
     SELECT c.id FROM public."PlatformAiConversation" c
-     WHERE c."purgeAfter" < v_now
+     WHERE c."deletedAt" < v_now - interval '0 days'          -- = PLATFORM_AI_DELETE_GRACE (OD-10; pinned)
         OR (c."createdAt" < v_now - interval '1 day'
             AND NOT EXISTS (SELECT 1 FROM public."PlatformAiMessage" m WHERE m."conversationId" = c.id))
      ORDER BY c."createdAt" LIMIT p_limit FOR UPDATE SKIP LOCKED) s;
@@ -451,30 +542,48 @@ REVOKE ALL ON FUNCTION fm_purge_platform_ai_conversations(integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fm_purge_platform_ai_conversations(integer) TO fm_system;
 ```
 
+**Option (a) variant.** Step 1 is dropped, along with the message `purgeAfter` column, and step 2's predicate becomes:
+
+    deletedAt < v_now − grace  OR  lastActivityAt < v_now − interval '90 days'  OR  createdAt < v_now − interval '365 days'
+
+All three columns are database-written, so the writer still chooses nothing.
+
 **What it gives fm_system:**
 - **Counts in, counts out.** No row, id, timestamp or content ever crosses back.
-- **Batch-bounded.** At most 500 per call. The job loops at most N batches per run and logs "more remain".
-- **Fixed predicates only:** a `purgeAfter` in the past, or an empty shell older than a day. fm_system can't choose which rows die, and it can't extend anything: the function never writes a retention column.
-- **Owned by the migration principal,** with a fixed `search_path`. It follows the house definer pattern of `fm_visible_space_ids()`.
+- **Batch-bounded.** At most 500 conversations and 10,000 expired exchanges per call. The job loops at most 20 calls per run and logs "more remain".
+- **Fixed predicates only.** fm_system can't choose which rows die. Nothing extends retention: no writer can write a retention column (§2.4), and the function writes none.
+- **Owned by the migration principal with BYPASSRLS, asserted in the migration** (§2.4 block 0). Under FORCE RLS a non-bypassing owner would match 0 rows and fail open (S2 REQUIRED 2).
 
 **Audit.** Each run with a non-zero count writes one `AuditLog` row: `PLATFORM_AI_CONVERSATIONS_PURGED`, with `detail: { conversations, messages, batches, exhausted }`, no userId and no content (S2 B6).
 
-**Pins:**
-- the function body is parsed by a test, as `auditlog-append-only-policy.test.ts` does for DB-010;
-- an RLS case proves fm_system can't `SELECT` / `DELETE` either table and can execute only this function.
+**Proof on real roles (S2 REQUIRED 2; real PostgreSQL, the `rls:accept` harness, both tables FORCE RLS, the function owned by a BYPASSRLS non-superuser principal as on Preview):**
+- Seed expired and unexpired rows for **two** operators. Call as **fm_system**:
+  - both operators' expired rows are deleted;
+  - the unexpired rows remain;
+  - the returned counts equal the seeded expired counts.
+- **Negative control:** the same seed with the function owned by a role WITHOUT BYPASSRLS returns `(0, 0)`, the fail-open the assertion prevents. The migration's DO block refuses that owner.
+- **fm_system** `SELECT` / `INSERT` / `UPDATE` / `DELETE` on either table → permission denied.
+- **fm_app** `SELECT fm_purge_platform_ai_conversations(10)` → permission denied.
+- The function body is parsed and pinned:
+  - the predicates;
+  - the intervals equal `PLATFORM_AI_RETENTION_DAYS` and `PLATFORM_AI_DELETE_GRACE`;
+  - no `EXECUTE` (dynamic SQL);
+  - the `RETURNS TABLE` shape is counts only.
 
 **Rejected alternatives:**
-- **(b) Column-level `SELECT ("id", "purgeAfter")` plus a `DELETE` policy for fm_system.** It works, but it hands fm_system the existence and timing of every operator's conversations.
+- **(b) Column-level `SELECT ("id", …)` plus a `DELETE` policy for fm_system.** It works, but it hands fm_system the existence and timing of every operator's conversations.
 - **(c) A per-operator purge inside `withTenantDb`.** The job can't enumerate whose rows expired without a read path, and operators who never return would never be purged.
 
-### 7.3 Account deletion, export, and backups
+### 7.3 Account deletion, export, backups and the provider's copy
 
-- **Account deletion (R3).** A deletion request starts the existing grace window (`GRACE_DAYS` in `lib/account-deletion/preflight.ts`), during which sessions are revoked, so the conversations are unreachable. At the account purge, the FK cascade from `User` removes every conversation and message (CASCADE in `purge-census.test.ts`), with no retention wait.
-- **Data export (S2 B6).** `lib/export/assemble.ts` gains one `withTenantDb(userId)` phase that reads the operator's live conversations and decrypts them. **Proposed:**
-  - conversations whose area the operator currently holds a fresh READ grant for are exported in full (questions and rendered answers);
-  - conversations in a revoked area are exported as the operator's own questions plus metadata (area, dates, message count), without answers. The answers are platform data the operator is no longer authorized to read.
-
-  This is **Q5**. Exporting everything is the alternative.
+- **Account deletion (R3, S2 REQUIRED 3).**
+  - A deletion request starts the existing grace window (`GRACE_DAYS` in `lib/account-deletion/preflight.ts`), during which sessions are revoked, so the conversations are unreachable.
+  - At the account purge, the FK cascade from `User` removes every conversation and message (CASCADE in `purge-census.test.ts`), with no retention wait.
+  - **Proven on real PG under FORCE RLS:** delete the User as the account purge's own role, then 0 conversation and 0 message rows remain (§12).
+- **Data export (S2 B6, Q5 ruled).** `lib/export/assemble.ts` gains one `withTenantDb(userId)` phase over the operator's **live** conversations:
+  - **Soft-deleted conversations are EXCLUDED** (S2 REQUIRED 4). The operator deleted them, and they are hidden everywhere.
+  - **Areas the operator currently holds** (a fresh READ grant): exported in full, with questions and rendered answers.
+  - **Areas the operator has lost: QUESTIONS plus timestamps only, answers omitted.** The bundle notes the omission: "Answers omitted: you no longer have access to <area label>." The answers are platform data the operator may no longer read.
 - **Backups mean erasure is not immediate (R4). Stated plainly:** a conversation is removed from active systems within one day of expiring or being deleted (the daily purge, §7.4 R6), and from backups within **M** days.
   - **M = the database provider's backup and point-in-time-recovery retention. OWNER-VERIFY.** `docs/operations/backup-restore-verification.md` lists the provider's backup cadence and PITR status as UNVERIFIED. The owner reads M from the provider dashboard (Database → Backups) and records it there and in `docs/operations/data-retention.md` before any disclosure states it.
   - **Manual dumps are a second, unbounded copy.** `db:backup` dumps follow the local-dump policy (encrypt at rest or delete within 24 h), which sets no deletion date for an **encrypted** dump. Until the owner sets one, M doesn't bound those: **OWNER-VERIFY**.
@@ -482,31 +591,31 @@ GRANT EXECUTE ON FUNCTION fm_purge_platform_ai_conversations(integer) TO fm_syst
   - A restore from backup would bring purged rows back, so any restore runbook must run the purge before the database serves traffic.
 - **The provider's copy (R5).** Our purge does not reach what the AI provider kept of each call. OpenAI's API retention is governed by its own terms, which Fourth Meridian doesn't control, as `content/marketing/legal-ai.md` already says for the customer AI. The operator disclosure (OD-5) must say the same for Platform AI.
 
-### 7.4 Retention: 90 days, TENTATIVE (owner 2026-11-04, pending S2)
+### 7.4 Retention: 90 days, TENTATIVE (owner 2026-11-04, pending S2's retention clearance)
 
-**The window.** Content is retained **90 days** (`PLATFORM_AI_RETENTION_DAYS = 90`), the owner's tentative ruling. It matches `AiInvocation`'s 90 days, so content and cost telemetry age out together. A delete purges at the next run (§7.1), and account deletion purges at the account purge (§7.3).
+**The window.** Content is retained **90 days** (`PLATFORM_AI_RETENTION_DAYS = 90`), the owner's tentative ruling. It matches `AiInvocation`'s 90 days, so content and cost telemetry age out together. A delete purges after the grace (§7.1), and account deletion purges at the account purge (§7.3).
 
 **R1: inactivity alone would never expire an active thread. OWNER DECISION OD-7.** Under pure inactivity, an operator who appends once every 89 days keeps the first message forever. The two options:
 
-| Option | Rule | For | Against |
+| Option | Rule (all database-written columns) | For | Against |
 |---|---|---|---|
-| **(a) Absolute cap per conversation** | conversation `purgeAfter = min(lastActivityAt + 90 d, createdAt + 365 d)`; the whole thread goes at once | A thread is never partly forgotten. One column, one predicate. | A message can live up to 365 d. A busy thread vanishes all at once. |
-| **(b) Per-message expiry, plus empty shells purged** (**S2 recommends**) | each message `purgeAfter = its USER row's createdAt + 90 d`, pairs aligned; the conversation shell is purged once its last message is gone | **No content lives more than 90 d**, which is the simplest honest promise. Matches "removed after N days". | Old exchanges fall out of a long thread (history assembly, §4.1, simply sees fewer messages). The UI shows "Earlier messages expired". |
+| **(a) Absolute cap per conversation** | purged when `lastActivityAt` is older than 90 d OR `createdAt` is older than 365 d; the whole thread goes at once | A thread is never partly forgotten. | A message can live up to 365 d. A busy thread vanishes all at once. |
+| **(b) Per-message expiry, plus empty shells purged** (**S2 recommends**) | each message's `purgeAfter` = DB default `createdAt + 90 d`, pairs aligned by the shared transaction; the conversation shell is purged once its last message is gone | **No content lives more than 90 d**, which is the simplest honest promise. Matches "removed after N days". | Old exchanges fall out of a long thread (history assembly, §4.1, simply sees fewer messages). The UI shows "Earlier messages expired". |
 
-The schema sketch (§2.1) and the purge function (§7.2) support both, and the CHECK that ships follows the choice (§2.4).
+The schema sketch (§2.1) is drawn for (b). §7.2 gives the (a) variant.
 
 **R2: "activity" means an operator APPEND only.**
-- `lastActivityAt` (and, under (a), `purgeAfter`) is written only by transaction 1 of a turn (§5.2), which stores a new USER message.
-- **Reads, lists, renames, deletes, replays and failed pre-provider refusals never extend retention.** A replay stores nothing, and a refusal happens before transaction 1.
+- `lastActivityAt` is written only by the AFTER INSERT trigger on a USER message (§2.4 2b). fm_app has no grant on the column at all.
+- **Reads, lists, deletes, replays and failed pre-provider refusals never extend retention.** A replay stores nothing, a refusal happens before transaction 1, and there is no rename (S2 Q1).
 - **Pins:**
-  - a source scan allows `lastActivityAt` / `purgeAfter` writes only in the append function and the delete function, which only shortens: it sets `purgeAfter = deletedAt`;
-  - unit tests run GET, list, PATCH and a replay against a fixture and assert both columns unchanged;
-  - under (b), a message's `purgeAfter` has no UPDATE grant at all (§2.4), so nothing can extend it.
+  - RLS cases: fm_app UPDATE of `lastActivityAt` / `purgeAfter` / `createdAt` → permission denied; INSERT naming any of them → permission denied;
+  - unit tests run GET, list, DELETE and a replay against a fixture and assert `lastActivityAt` unchanged;
+  - a source scan finds no write of a timestamp or retention column anywhere in the module.
 
 **R3: a lost grant.**
 - The conversation returns **404 immediately** (§3.1 step 6).
 - The **normal purge clock** keeps running, with no early purge, so a regrant within the window restores access.
-- **OWNER to confirm (OD-8).** S2's Q3 asked the same thing.
+- **OWNER to confirm (OD-8).** S2 Q3 agreed.
 - Account deletion or deactivation: purged with the account at the account purge (§7.3).
 
 **R6: the purge job.**
@@ -515,30 +624,29 @@ The schema sketch (§2.1) and the purge function (§7.2) support both, and the C
 - **Audited counts only** (§7.2).
 - **Fail-safe.**
   - A failed or partial run changes nothing it didn't delete and is retried by the next day's run.
-  - No path extends retention: the function never writes a retention column.
+  - No path extends retention.
   - A run that fails is visible as a failed `JobRun`, and **its failure never blocks the other retention rules**: each rule is caught on its own, the existing pattern.
 - **Boundary test:**
-  - a row whose `purgeAfter` was set 90 d + 1 s ago is purged;
-  - a row written 89 d ago is kept;
-  - a row at exactly 90 d is kept, because the predicate is strict `<`.
+  - a message written 90 d + 1 s ago is purged;
+  - one written 89 d ago is kept;
+  - one at exactly 90 d is kept, because the predicate is strict `<`.
 
-  Clocks are injected, and the policy-parse test pins the interval in SQL to the code constant.
-- **Activation.** PR D wires the job **disabled** (`PLATFORM_AI_PURGE_ENABLED`, off). It is switched on together with storage, and only after S2 clears retention. Until then storage is Preview-only, and the conversations flag is off on every environment.
+  Time is moved by seeding `createdAt` / `purgeAfter` as the migration principal in the test (the only role that can), and the policy-parse test pins the SQL interval to the code constant.
+- **Activation.** PR D wires the job **disabled** (`PLATFORM_AI_PURGE_ENABLED`, off). It is switched on together with storage, and only after S2 clears retention and the Preview pre-enable check (§2.4) passes. Until then storage is Preview-only, and the conversations flag is off on every environment.
 
 `docs/operations/data-retention.md` gains the row in PR D: "Platform AI conversations: 90 days (tentative) · removed from active systems within 1 day, from backups within M days (OWNER-VERIFY)".
 
 ### 7.5 Audit (S2 B8)
 
-| Action (new `AuditAction`) | Written | Detail (never content or title text) |
+| Action (new `AuditAction`) | Written | Detail (never content) |
 |---|---|---|
 | `PLATFORM_AI_CONVERSATION_CREATED` | create, same `withTenantDb` transaction (fm_app may INSERT AuditLog) | `area` |
-| `PLATFORM_AI_CONVERSATION_RENAMED` | rename | `area`, `titleSet: true \| false` |
 | `PLATFORM_AI_CONVERSATION_DELETED` | delete | `area`, `messageCount` |
 | `PLATFORM_AI_CONVERSATIONS_PURGED` | purge job, fm_system | counts only (§7.2) |
 
 - The audit rows go through `recordOperatorAction`: actor `{ userId, via: "PLATFORM_GRANT", area }`, and target `{ kind: "platform_ai_conversation", id }`. The target kind is a new `OperatorTargetKind`.
 - **Reads and individual messages are not audited** (S2 B8). The ledger already records each turn's cost.
-- Rename is not in S2 B8's list. It is audited because it is a mutation; it can be dropped if S2 prefers.
+- There is no rename (S2 Q1), so there is no rename audit (Q8 moot).
 
 ---
 
@@ -547,7 +655,7 @@ The schema sketch (§2.1) and the purge function (§7.2) support both, and the C
 - **Minimise content.**
   - **USER content** is stored **after** `scrubOperatorText`. It is the exact string the provider received, one scrub for both sinks (S2 B3), and a test asserts byte equality between the stored plaintext and the provider body. The scrub replaces emails, card and account shapes, 4+ digit runs, and cuid/uuid/opaque ids.
   - **ASSISTANT content** is the sanitised and rendered answer. By construction it holds aggregates from `isAggregate` envelopes, registry text and resolver page ids. The v0 whole-transcript identity scan is extended to the stored plaintext.
-  - **Titles** are scrubbed on rename.
+  - **No stored title** (S2 Q1). The list label is derived at read time (§10).
 - **No content in telemetry or logs (S2 B3).**
   - The `[platform-ai] turn` line stays metadata-only (`traceLine`). It gains no conversation or message id, and no text.
   - `AiInvocation` keeps metadata only and gains `conversationId` (an opaque cuid) for grouping.
@@ -584,15 +692,15 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 
 | Route | Guard (after §3.1 steps 1–3) | Limiter (#352 census) | Audit | Response |
 |---|---|---|---|---|
-| `GET /conversations` | fresh READ per distinct area; failing areas dropped | none (GET; outside the mutation census) | none | `200 { conversations: [{ id, title, titleDerived, area, areaLabel, createdAt, lastActivityAt, messageCount, full }], limits: { conversations: { used, max } } }` |
+| `GET /conversations` | fresh READ per distinct area; failing areas dropped | none (GET; outside the mutation census) | none | `200 { conversations: [{ id, label, area, areaLabel, createdAt, lastActivityAt, messageCount, full }], limits: { conversations: { used, max } } }` |
 | `POST /conversations` `{ clientRequestId, question }` (create = the first turn) | area = `platformAiAreaFor`; fresh READ; conversation cap | `limitPlatformMutation(id, "platform-ai-conversation-create")` + daily turn cap | CREATED | `201 { conversation, userMessage, assistantMessage }`; replay → `200` with the same body; refusals as v0 (400 / 429 / 503); `409 CONVERSATION_LIMIT` |
 | `GET /conversations/[id]` | §3.1 steps 5–6 | none | none | `200 { conversation, messages: [{ id, role, status, createdAt, completedAt, content: Segment[] \| string \| null, citations, notes, failureCode, stale: true }] }` (links re-resolved, §3.4) |
 | `POST /conversations/[id]/messages` `{ clientRequestId, question }` | steps 5–6, then v0's kill switch → freeze → daily cap; message cap | `limitPlatformMutation(id, "platform-ai-message")` + daily turn cap | none (S2 B8) | `200 { userMessage, assistantMessage }`; replay per §5.1; `409 TURN_IN_FLIGHT` / `409 CONVERSATION_FULL`; v0's 400 / 429 / 503 |
-| `PATCH /conversations/[id]` `{ title }` (1–80 chars, or `null` to reset) | steps 5–6 | `"platform-ai-conversation-rename"` | RENAMED | `200 { conversation }` |
 | `DELETE /conversations/[id]` | steps 5–6 | `"platform-ai-conversation-delete"` | DELETED | `204`; already deleted → 404 (invisible) |
 
+- **The list label (S2 Q1).** There is no stored title. `label` is derived at read time: the conversation's earliest remaining USER message is decrypted (it is already scrubbed) and truncated to 60 characters on a word boundary, plus "…". If no message remains (option (b) expiry), the label is "<area label> conversation". The derivation happens in the list handler; the label is never stored, logged or audited.
 - **Bodies are strict.** Unknown keys → 400 `VALIDATION`, as `parseAskBody` does. `clientRequestId` must be a UUID.
-- **Route-guard and limiter pins.** `app/api/platform/mutating-route-limits.test.ts` must list the four mutation keys, and the route-guards audit admits the new files.
+- **Route-guard and limiter pins.** `app/api/platform/mutating-route-limits.test.ts` must list the three mutation keys, and the route-guards audit admits the new files.
 - **v0 `/ask` is unchanged.** Whether it becomes "a conversation of one" or is retired is decided after PR C ships.
 
 ---
@@ -600,8 +708,8 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 ## 11. UX outline
 
 - **Mobile first (375 px, the v0 pin).** The Platform AI page opens on the latest conversation, or on an empty composer.
-  - A header control "Conversations" opens a full-height sheet listing title, area chip and last-activity time, with "New conversation" at the top.
-  - Swipe or the overflow menu gives rename and delete. Delete asks for confirmation: "Deleted conversations can't be recovered."
+  - A header control "Conversations" opens a full-height sheet listing the derived label (§10), area chip and last-activity time, with "New conversation" at the top.
+  - Swipe or the overflow menu gives delete (no rename in v1, S2 Q1). Delete asks for confirmation: "Deleted conversations can't be recovered."
 - **Desktop.** A collapsible left rail inside the AI page holds the same list, and its collapsed state is a per-viewer `localStorage` convenience. The thread fills the rest.
 - **Thread.**
   - The v0 answer renderer (`components/platform/PlatformAiAsk.tsx`: segments, citation chips, notes) renders each ASSISTANT message.
@@ -628,27 +736,33 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 | The fm_system path is absent: no `systemDb` in the conversation module or any importer of the two models | source scan (unit) |
 | Idempotent replay: same `clientRequestId` after COMPLETE → same body, **no** provider call, **no** ledger row; after PENDING → 409; after FAILED → the failure; create replay → same conversation | handler unit (fake model, fake tenant client) + route test |
 | Single in-flight: two concurrent appends → one 200, one 409; abandoned PENDING older than 2 × timeout → ABANDONED on next read | handler unit + RLS/DB case (the partial index on real PG) |
-| Revoked grant → 404 byte-identical to a random id and to another operator's id (status, body, headers), for GET, POST message, PATCH, DELETE; list omits the area | `route-enabled`-style route tests (flag on, fake grants) |
+| Revoked grant → 404 byte-identical to a random id and to another operator's id (status, body, headers), for GET, POST message and DELETE; list omits the area | `route-enabled`-style route tests (flag on, fake grants) |
 | Break-glass System Admin → v0's 403 before any lookup; no oversight read anywhere | route test + source scan |
 | Purge: expired rows deleted in batches ≤ limit; unexpired untouched; empty shells older than a day purged, a just-created one kept; counts returned; audit row carries counts only; function body pinned | RLS/DB case (real PG) + `jobs/` unit + policy-parse test |
-| R6 boundary: `purgeAfter` 90 d + 1 s ago → purged; written 89 d ago → kept; exactly 90 d → kept (strict `<`); the SQL interval equals `PLATFORM_AI_RETENTION_DAYS` | RLS/DB case (injected `now`) + policy-parse test |
+| R6 boundary: a message written 90 d + 1 s ago → purged; 89 d → kept; exactly 90 d → kept (strict `<`); the SQL interval equals `PLATFORM_AI_RETENTION_DAYS` | RLS/DB case (rows seeded by the migration principal) + policy-parse test |
+| **REQUIRED 1, writers never choose time:** fm_app INSERT naming `createdAt` or `purgeAfter` (message) or `createdAt` / `lastActivityAt` (conversation) → permission denied; fm_app UPDATE of any timestamp or retention column → permission denied; a soft delete with a past or future `deletedAt` value stores `now()`; a second delete or an un-delete → refused; UPDATE of a settled message as fm_app → refused; `completedAt` is the database's | `scripts/rls-acceptance.ts` new cases (real PG, fm_app) |
+| **REQUIRED 2, the definer on real roles:** under FORCE RLS, with the function owned by a BYPASSRLS non-superuser, seed expired + unexpired rows for two operators, call as fm_system → exactly the expired rows deleted and counts equal; negative control: a non-BYPASSRLS owner → `(0, 0)`, and the migration's DO block aborts; fm_system SELECT / DELETE on both tables → denied; fm_app EXECUTE → denied; the same for the touch trigger's owner | `scripts/rls-acceptance.ts` new cases + a migration-apply test against a non-bypass principal |
+| **REQUIRED 2, Preview pre-enable:** read-only check that both definer functions' owner has `rolbypassrls` on Preview; output in the PR D checklist | report script (read-only transaction) |
+| **REQUIRED 3, account purge:** under FORCE RLS, delete the User as the account purge's role → 0 conversation and 0 message rows | `scripts/rls-acceptance.ts` new case + `purge-census.test.ts` |
+| **REQUIRED 4, soft-delete grace:** a deleted conversation is purged once `deletedAt < now − grace` (grace 0: the next run; 7 d variant: 7 d − 1 s kept, 7 d + 1 s purged); export excludes it | RLS/DB case + `lib/export` unit |
+| Q6: a reply whose `replyToId` names a message in another conversation → FK violation; a FAILED row without a code, or a code outside the enum → refused | RLS/DB case |
 | R6 fail-safe: a throwing purge leaves rows and other retention rules untouched; the next run purges them | `jobs/data-retention` unit |
-| R2: GET, list, PATCH, DELETE and a replay never move `lastActivityAt` / `purgeAfter` forward; only the append writer does; message `purgeAfter` has no fm_app UPDATE grant | handler unit + source scan + RLS case (UPDATE refused) |
+| R2: GET, list, DELETE and a replay never move `lastActivityAt`; only a USER-message insert does (the trigger); no module code writes a timestamp or retention column | handler unit + source scan + RLS case |
 | R1 option (b): a message pair expires together; the history assembler and the UI handle a thread whose oldest messages expired | pure unit + component test |
 | R3: a lost grant → 404 at once and rows kept; a regrant inside the window → readable again; account purge removes all | route test + RLS/DB case |
-| Encryption round-trip under both purposes; v2 written with no previous key, v3 during a rotation; rotation script covers both columns; `--verify-complete` 0 | unit (`encryption.test.ts`, `rotate-encryption-key.test.ts`) |
+| Encryption round-trip under `PLATFORM_AI_MESSAGE`; v2 written with no previous key, v3 during a rotation; the rotation script re-encrypts settled rows through the settle trigger's rotation exception; `--verify-complete` 0 | unit (`encryption.test.ts`, `rotate-encryption-key.test.ts`) |
 | The B9 fixture still decrypts (v2 under the new purpose string with B9's frozen code) | `encryption-b9-compat.test.ts` new case |
-| `ENCRYPTED_FIELDS` census: both writers classified, both columns in the schema | `encrypted-fields.test.ts` (fails until registered) |
+| `ENCRYPTED_FIELDS` census: the writer classified, the column in the schema | `encrypted-fields.test.ts` (fails until registered) |
 | Scrub before storage: stored USER plaintext === provider body content (byte-equal), on identity-laden fixtures | handler unit (captures both sinks) |
 | History assembly: bounds (messages, tokens, oldest first, whole messages); FAILED pairs excluded; figures masked; links → labels; refs filtered through the current token | pure unit (`history.ts`) |
 | Prior figures never ground: a model answer that copies a prior figure (digit, or a placeholder for a metric not read this turn) → fallback | pure unit over `runPlatformAiTurn` with history |
 | Injection in a prior USER message cannot widen scope, emit a link or a figure | pure unit (the v0 injection suite, extended) |
 | The ceiling includes history: a turn with maximal history stops at `TOKEN_CEILING` within 24,000 | pure unit |
-| No content in logs: log capture across a full turn, a failure and a purge contains no question, answer or title text and no message id | handler unit (console capture) |
-| Caps: 50 conversations, 40 messages, 500 / 80 chars → the stated 409 / 400 | handler unit |
-| Audit rows: create, rename, delete, purge; no content keys | handler unit + `audit` shape pin |
+| No content in logs: log capture across a full turn, a failure and a purge contains no question, answer or label text and no message id | handler unit (console capture) |
+| Caps: 50 conversations, 40 messages, 500 chars → the stated 409 / 400 | handler unit |
+| Audit rows: create, delete, purge; no content keys | handler unit + `audit` shape pin |
 | Account deletion removes both tables (CASCADE bucket) | `purge-census.test.ts` + `deletion-safety.test.ts` |
-| Export includes the operator's conversations (Q5 shape) | `lib/export` unit |
+| Export: current areas in full; lost areas questions + timestamps with the omission note; soft-deleted excluded (Q5 ruled) | `lib/export` unit |
 | Flags: either flag off → 404 before any read | `route.test.ts`-style |
 | UI at 375 px and desktop rail; stale chip; no Markdown parser | component tests (PR C) |
 
@@ -660,12 +774,12 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 |---|---|---|---|
 | **A** (this) | Design doc | none | docs |
 | *(prereq)* | `feat/platform-ai-structured-claims` plus emitting `figure` segments (§2.5) | S2 C-rulings | develop |
-| **B: schema + server** | The migration (§2.4, §7.2 function); Prisma models; purposes plus `ENCRYPTED_FIELDS`; the conversation data module (`withTenantDb` only); history assembly; the turn wrapper (§5); routes (§10) behind `PLATFORM_AI_CONVERSATIONS_ENABLED` (off); audit actions; purge-census bucket; tests §12 except UI and export | A approved by S2; the prereq; **OD-7** (R1 shape: the CHECK and columns) | develop, then Preview (migration), then **B11** (OD-2) |
+| **B: schema + server** | The migration (§2.4, §7.2 function); Prisma models; the `PLATFORM_AI_MESSAGE` purpose plus `ENCRYPTED_FIELDS`; column grants and triggers (REQUIRED 1); the BYPASSRLS assertion (REQUIRED 2); the conversation data module (`withTenantDb` only); history assembly; the turn wrapper (§5); routes (§10) behind `PLATFORM_AI_CONVERSATIONS_ENABLED` (off); audit actions; purge-census bucket; tests §12 except UI and export | A **cleared by S2 for PR B** (2026-11-04, with REQUIRED 1–4); the prereq; **OD-7** (R1 shape: columns and purge variant); **OD-10** (grace constant) | develop, then Preview (migration), then **B11** (OD-2) |
 | **C: UX** | Page, sheet and rail, thread, stale chips, disclosure line (OD-5 wording), 375 px pins | B | develop / Preview |
-| **D: lifecycle** | Purge job wiring in `jobs/data-retention.ts` (batches, audit row), **disabled** behind `PLATFORM_AI_PURGE_ENABLED`; export phase (Q5); `docs/operations/data-retention.md` row (M after OWNER-VERIFY); restore-runbook note (§7.3) | B (function exists) | develop, then B11 with B |
+| **D: lifecycle** | Purge job wiring in `jobs/data-retention.ts` (batches, audit row), **disabled** behind `PLATFORM_AI_PURGE_ENABLED`; export phase (Q5 ruled; soft-deleted excluded); the Preview pre-enable BYPASSRLS check; `docs/operations/data-retention.md` row (M after OWNER-VERIFY); restore-runbook note (§7.3) | B (function exists) | develop, then B11 with B |
 
 **Activation order.**
-1. S2 clears retention (R1–R6).
+1. S2 clears retention (R1–R6) and the Preview pre-enable check passes.
 2. B, C and D are merged.
 3. The owner gives the go: on Preview, the purge flag and the conversations flag are switched on together.
 4. Production follows B11 promotion and a separate owner enable.
@@ -687,14 +801,38 @@ Storage is never on without the purge.
 - **OD-4 Who can see conversations:** recommended the owning operator only. No CS, System Admin, break-glass or support view.
 - **OD-5 Policy coverage:** the privacy policy and AI disclosures cover the customer AI only. Choose a public change, an internal operator notice or an in-page disclosure for stored operator conversations.
 - **OD-6 Enablement:** the per-environment flag `PLATFORM_AI_CONVERSATIONS_ENABLED` (spends AI under the unchanged caps).
+- **OD-10 Soft-delete grace (S2 REQUIRED 4):** **default IMMEDIATE** (purged on the next daily run), or 7 days after `deletedAt` (§7.1).
 
-### S2 QUESTIONS (refinements of B1–B11)
+### S2 REQUIRED CHANGES (2026-11-04, folded in)
 
-- **Q1:** A second purpose `PLATFORM_AI_TITLE` for renamed titles, or no rename in v1.
-- **Q2:** The RLS GUC is the house `app.user_id` via `current_fm_user_id()` (B4 wrote `app.current_user_id`).
-- **Q3:** Revocation keeps rows until retention, and reinstatement restores access. This is now R3 / OD-8: S2's own position, pending the owner's confirmation.
-- **Q4:** Purge through a counts-only `SECURITY DEFINER` function, EXECUTE to fm_system (§7.2), rather than any fm_system table grant.
-- **Q5:** Export of conversations in a revoked area: questions plus metadata only, or everything.
-- **Q6:** Columns beyond B1's list: `status`, `failureCode`, `replyToId`, `completedAt` (needed for §5), a per-message `purgeAfter` (R1 (b)), `lastActivityAt` (R2) and `createRequestId` on the conversation. Model id and token counts are NOT stored; they stay in `AiInvocation` via `correlationId`.
-- **Q7:** `evidenceRefs` omits metric status (B1: keys, page ids, window ONLY), so the stale label relies on `createdAt`.
-- **Q8:** Rename audited although B8 lists only create and delete.
+S2 cleared the design for PR B subject to these four changes. Each is folded in above.
+
+1. **Writers never choose retention or timestamps:**
+   - column-level INSERT grants exclude every timestamp and retention column, which take database defaults;
+   - fm_app has no grant on any retention column;
+   - soft delete writes `deletedAt` only, and the trigger fixes its value;
+   - the purge predicate derives expiry (§2.1, §2.4, §7.1, §7.2; tests §12).
+2. **The purge definer is proven on real roles under FORCE RLS:**
+   - the BYPASSRLS assertion is in the migration;
+   - a two-operator real-PG proof plus a negative control;
+   - fm_system has no table access, and fm_app can't EXECUTE the function;
+   - a Preview pre-enable check (§2.4, §7.2, §12).
+3. **Account purge by FK cascade,** proven on real PG under FORCE RLS (§2.1, §7.3, §12).
+4. **Soft-delete grace defined:** OD-10, default immediate. The export excludes soft-deleted conversations (§7.1, §7.3).
+
+### S2 RULINGS (2026-11-04)
+
+- **Q1: no rename and no stored title in v1.** The list label is derived at read time from the earliest remaining USER message (scrubbed, decrypted, truncated). `PLATFORM_AI_TITLE` is dropped (§2.3, §10).
+- **Q2:** the GUC is `app.user_id` via `current_fm_user_id()`.
+- **Q3: agreed.** OD-8, owner to confirm.
+- **Q4: the definer is approved** under its conditions:
+  - EXECUTE to fm_system only, REVOKEd from PUBLIC;
+  - `search_path = pg_catalog, public`;
+  - `p_limit` is the only argument;
+  - no dynamic SQL;
+  - the body is parse-pinned;
+  - no ids returned (§7.2).
+- **Q5: a lost-area export = questions plus timestamps only,** answers omitted with the omission noted. Current areas export everything (§7.3).
+- **Q6: the extra columns are OK.** `failureCode` is an ENUM (`PlatformAiFailureCode`), never provider text. `replyToId` points into the same conversation, enforced by a composite FK (§2.1).
+- **Q7:** the stale label goes by `createdAt`, with no stored status.
+- **Q8: moot** (no rename).
