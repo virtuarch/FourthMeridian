@@ -247,7 +247,7 @@ export function buildCashAccounts(
         const unex = cs?.unexplained == null ? 0 : conv(cs.unexplained, a.currency);
         const hold = Math.max(unex, 0);
         const raw = value - r - hold;
-        // Sub-cent float residue (e.g. 13500 − 12260.15 − 1239.85) is not a difference.
+        // Sub-cent float residue (e.g. 17000 − 15374.59 − 1625.41) is not a difference.
         const rest = Math.abs(raw) < CENT ? 0 : raw;
         const unproven = basis === "UNPROVEN";
         available = { kind: "amount", value: r, hold, unreconciled: unproven ? rest : 0, other: unproven ? 0 : rest };

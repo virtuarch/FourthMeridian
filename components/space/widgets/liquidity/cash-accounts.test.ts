@@ -54,12 +54,12 @@ function adj(balance: number, a: { reachable: number | null; unexplained?: numbe
 // The brief's fixture: total 62,589 · accessible 55,560 · restricted 6,009 · not reported 1,000 · held 20
 // (two $10 HOLDS — the sandbox evidence; no pending, so adjusted = reported).
 const FIXTURE: CashLedgerAccount[] = [
-  acct("cm",  { name: "Cash Mgmt",    institution: "Bank A", providerSubtype: "cash management", balance: 12060, currentState: cs(12060) }),
-  acct("hsa", { name: "HSA",          institution: "Bank B",    providerSubtype: "hsa",             balance: 6009,  currentState: cs(6009) }),
-  acct("chk", { name: "Checking",     institution: "Bank C",       providerSubtype: "checking",        balance: 110,   currentState: cs(100, 10) }),
-  acct("mm",  { name: "Money Market", institution: "Bank B",    type: "savings", providerSubtype: "money market", balance: 43200, currentState: cs(43200) }),
-  acct("cd",  { name: "12-mo CD",     institution: "Bank C",       type: "savings", providerSubtype: "cd",           balance: 1000,  currentState: cs(null) }),
-  acct("sav", { name: "Savings",      institution: "Bank C",       type: "savings", providerSubtype: "savings",      balance: 210,   currentState: cs(200, 10) }),
+  acct("cm",  { name: "Cash Mgmt",    institution: "Wealthfront", providerSubtype: "cash management", balance: 12060, currentState: cs(12060) }),
+  acct("hsa", { name: "HSA",          institution: "Fidelity",    providerSubtype: "hsa",             balance: 6009,  currentState: cs(6009) }),
+  acct("chk", { name: "Checking",     institution: "Chase",       providerSubtype: "checking",        balance: 110,   currentState: cs(100, 10) }),
+  acct("mm",  { name: "Money Market", institution: "Fidelity",    type: "savings", providerSubtype: "money market", balance: 43200, currentState: cs(43200) }),
+  acct("cd",  { name: "12-mo CD",     institution: "Chase",       type: "savings", providerSubtype: "cd",           balance: 1000,  currentState: cs(null) }),
+  acct("sav", { name: "Savings",      institution: "Chase",       type: "savings", providerSubtype: "savings",      balance: 210,   currentState: cs(200, 10) }),
   // Not cash — must never appear.
   acct("inv", { name: "Brokerage", type: "investment", providerSubtype: "brokerage", balance: 90000 }),
   acct("btc", { name: "Wallet",    type: "crypto",     balance: 5000 }),
@@ -92,38 +92,37 @@ console.log("1. totals — donut + ledger = classifyAccounts total cash; Availab
 
 console.log("\n2. production 10-26 — adjusted total cash (owner-approved P0 contract)");
 {
-  // Synthetic figures shaped like the Production 10-26 claims (real values removed 2026-11-02),
-  // exactly as the Space mount emits them
+  // Anonymized Production 10-26 claims, exactly as the Space mount emits them
   // (the end-to-end derivation from C/A/P lives in lib/balances/adjusted-balance.test.ts).
   const PROD: CashLedgerAccount[] = [
-    acct("a1", { name: "A1 checking", institution: "Bank 1", ...adj(4180.25, { reachable: 929.85, unexplained: 0, pendingCount: 6, pendingSum: -3250.4, adjusted: 929.85, basis: "PENDING_EXCLUDED" }) }),
-    acct("a2", { name: "A2 checking", institution: "Bank 2", ...adj(1200, { reachable: 0, unexplained: 1200, basis: "NO_PENDING" }) }),
-    acct("a3", { name: "A3 checking", institution: "Bank 3", ...adj(800, { reachable: 800, unexplained: 0, basis: "NO_PENDING" }) }),
-    acct("a4", { name: "A4 savings",  institution: "Bank 1", type: "savings", ...adj(4100.3, { reachable: 4100.3, unexplained: 0, basis: "NO_PENDING" }) }),
-    acct("a5", { name: "A5 savings",  institution: "Bank 3", type: "savings", ...adj(13500, { reachable: 12260.15, unexplained: 1239.85, basis: "NO_PENDING" }) }),
+    acct("a1", { name: "A1 checking", institution: "Bank 1", ...adj(5251.68, { reachable: 929.01, unexplained: 0, pendingCount: 6, pendingSum: -4322.67, adjusted: 929.01, basis: "PENDING_EXCLUDED" }) }),
+    acct("a2", { name: "A2 checking", institution: "Bank 2", ...adj(1500, { reachable: 0, unexplained: 1500, basis: "NO_PENDING" }) }),
+    acct("a3", { name: "A3 checking", institution: "Bank 3", ...adj(1000, { reachable: 1000, unexplained: 0, basis: "NO_PENDING" }) }),
+    acct("a4", { name: "A4 savings",  institution: "Bank 1", type: "savings", ...adj(5000.08, { reachable: 5000.08, unexplained: 0, basis: "NO_PENDING" }) }),
+    acct("a5", { name: "A5 savings",  institution: "Bank 3", type: "savings", ...adj(17000, { reachable: 15374.59, unexplained: 1625.41, basis: "NO_PENDING" }) }),
   ];
   const s = buildCashAccounts(PROD);
   const reach = reachableNow(PROD);
   const c = classifyAccounts(PROD);
-  check("reported 23,780.55", near(s.reported, 23780.55), String(s.reported));
-  check("pending correction −3,250.40 (PENDING_EXCLUDED only)", near(s.pendingCorrection, -3250.4), String(s.pendingCorrection));
-  check("total cash 20,530.15 = classifyAccounts cash (adjusted)", near(s.totalCash, 20530.15) && near(s.totalCash, c.totalLiquid + c.totalRestrictedCash));
+  check("reported 29,751.76", near(s.reported, 29751.76), String(s.reported));
+  check("pending correction −4,322.67 (PENDING_EXCLUDED only)", near(s.pendingCorrection, -4322.67), String(s.pendingCorrection));
+  check("total cash 25,429.09 = classifyAccounts cash (adjusted)", near(s.totalCash, 25429.09) && near(s.totalCash, c.totalLiquid + c.totalRestrictedCash));
   check("reported + correction = total cash (exact)", near(s.reported + s.pendingCorrection, s.totalCash));
-  check("accessible 18,090.30 = reachableNow().total (unchanged)", near(s.accessible, 18090.3) && near(s.accessible, reach.total));
-  check("holds 2,439.85 = reachableNow().unexplainedTotal", near(s.holds, 2439.85) && near(s.holds, reach.unexplainedTotal));
+  check("accessible 22,303.68 = reachableNow().total (unchanged)", near(s.accessible, 22303.68) && near(s.accessible, reach.total));
+  check("holds 3,125.41 = reachableNow().unexplainedTotal", near(s.holds, 3125.41) && near(s.holds, reach.unexplainedTotal));
   const terms = reconcileTerms(s);
   check("line: total cash − holds = accessible (exact; pending is NOT a term)", terms.map((t) => t.id).join() === "holds"
     && near(s.totalCash + terms.reduce((t, x) => t + x.amount, 0), reach.total));
   const a1 = s.rows.find((r) => r.account.id === "a1")!;
-  check("A1 row: reported 4,180.25 · total cash 929.85 · Available 929.85 · no hold",
-    near(a1.reported, 4180.25) && near(a1.value, 929.85) && a1.basis === "PENDING_EXCLUDED"
-    && a1.available.kind === "amount" && near(a1.available.value, 929.85) && a1.available.hold === 0);
+  check("A1 row: reported 5,251.68 · total cash 929.01 · Available 929.01 · no hold",
+    near(a1.reported, 5251.68) && near(a1.value, 929.01) && a1.basis === "PENDING_EXCLUDED"
+    && a1.available.kind === "amount" && near(a1.available.value, 929.01) && a1.available.hold === 0);
   const html = renderToStaticMarkup(createElement(CashAccountsLedger, { spaceId: "s1", accounts: PROD, summary: s, currency: "USD" }));
-  check("footer: Reported $23,780.55 − pending not yet deducted $3,250.40 = Total cash $20,530.15",
-    html.includes("Reported $23,780.55 − pending not yet deducted $3,250.40 = Total cash $20,530.15"));
-  check("footer: $20,530.15 total cash − $2,439.85 on hold = $18,090.30 accessible",
-    html.includes("$20,530.15 total cash") && html.includes("− $2,439.85 on hold") && html.includes("= $18,090.30 accessible"));
-  check("A1 pending cell: −$3,250.40, deducted here", html.includes("−$3,250.40") && html.includes("deducted here"));
+  check("footer: Reported $29,751.76 − pending not yet deducted $4,322.67 = Total cash $25,429.09",
+    html.includes("Reported $29,751.76 − pending not yet deducted $4,322.67 = Total cash $25,429.09"));
+  check("footer: $25,429.09 total cash − $3,125.41 on hold = $22,303.68 accessible",
+    html.includes("$25,429.09 total cash") && html.includes("− $3,125.41 on hold") && html.includes("= $22,303.68 accessible"));
+  check("A1 pending cell: −$4,322.67, deducted here", html.includes("−$4,322.67") && html.includes("deducted here"));
   check("no UNPROVEN account ⇒ no badge, no note", !html.includes("data-cash-unproven"));
   const noPending = renderToStaticMarkup(createElement(CashAccountsLedger, { spaceId: "s1", accounts: PROD.slice(1), summary: buildCashAccounts(PROD.slice(1)), currency: "USD" }));
   check("no pending ⇒ no reported → total cash line", !noPending.includes("data-cash-pending-line"));
@@ -159,9 +158,9 @@ console.log("\n4. grouping — institution · account · type (provider subtype 
 {
   const s = buildCashAccounts(FIXTURE);
   const inst = groupCashAccounts(s, "institution");
-  check("by institution: Bank B = MM + HSA (49,209), 2 accounts",
-    inst.find((g) => g.label === "Bank B")?.value === 49209 && inst.find((g) => g.label === "Bank B")?.count === 2);
-  check("by institution: Bank C = 1,320 (3 accounts)", inst.find((g) => g.label === "Bank C")?.value === 1320 && inst.find((g) => g.label === "Bank C")?.count === 3);
+  check("by institution: Fidelity = MM + HSA (49,209), 2 accounts",
+    inst.find((g) => g.label === "Fidelity")?.value === 49209 && inst.find((g) => g.label === "Fidelity")?.count === 2);
+  check("by institution: Chase = 1,320 (3 accounts)", inst.find((g) => g.label === "Chase")?.value === 1320 && inst.find((g) => g.label === "Chase")?.count === 3);
   check("by account: one group per account", groupCashAccounts(s, "account").length === 6);
   const types = groupCashAccounts(s, "type").map((g) => g.label).sort().join();
   check("by type: Plaid subtype labels", types === "CD,Cash management,Checking,HSA,Money market,Savings", types);
@@ -256,7 +255,7 @@ console.log("\n8. markup — desktop table vs compact rows; a11y; detail navigat
   check("donut: default grouping is By account (labelled group with the total)", donut.includes('aria-label="Total cash by account: $62,589.00"'));
   check("donut: each account is a legend row with balance and %", donut.includes("Money Market") && donut.includes("$43,200.00") && donut.includes("69.0%"));
   const byInst = renderToStaticMarkup(createElement(CashDistribution, { summary: s, currency: "USD", grouping: "institution" }));
-  check("donut: controlled grouping By institution groups by institution", byInst.includes('aria-label="Total cash by institution: $62,589.00"') && byInst.includes("Bank B") && byInst.includes("$49,209.00") && byInst.includes("78.6%"));
+  check("donut: controlled grouping By institution groups by institution", byInst.includes('aria-label="Total cash by institution: $62,589.00"') && byInst.includes("Fidelity") && byInst.includes("$49,209.00") && byInst.includes("78.6%"));
   check("grouping options in menu order: By account · By institution · By account type; default By account",
     CASH_GROUPINGS.map((g) => g.label).join(" · ") === "By account · By institution · By account type" && DEFAULT_CASH_GROUPING === "account" && CASH_GROUPINGS[0].id === DEFAULT_CASH_GROUPING);
   const dd = renderToStaticMarkup(createElement(Dropdown, { options: CASH_GROUPINGS, value: DEFAULT_CASH_GROUPING, onChange: () => {}, ariaLabel: "Cash distribution grouping" }));
