@@ -50,7 +50,7 @@ check("non-object payloads yield an empty patch",
   JSON.stringify(clientTokenPatch(undefined)) === "{}" && JSON.stringify(clientTokenPatch("x")) === "{}");
 
 // ── B. the real pipeline ──────────────────────────────────────────────────────
-interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string; totpEnabled: boolean } | null;
+interface Row { userId: string; revokedAt: Date | null; user: { id: string; role: string; totpEnabled: boolean; deactivatedAt: Date | null; deletionScheduledAt: Date | null } | null;
                 createdAt: Date; lastActiveAt: Date }
 const ROWS = new Map<string, Row>();
 let lookups = 0;
@@ -60,7 +60,7 @@ const ADMIN_SESSION = "0b6f2a4e-5c1d-4f8e-9a7b-333333333333";
 const now = () => new Date();
 function seed(totpEnabled: boolean) {
   ROWS.clear();
-  ROWS.set(ADMIN_SESSION, { userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled },
+  ROWS.set(ADMIN_SESSION, { userId: ADMIN, revokedAt: null, user: { id: ADMIN, role: "SYSTEM_ADMIN", totpEnabled, deactivatedAt: null, deletionScheduledAt: null },
     createdAt: now(), lastActiveAt: now() });
 }
 const fakeUserSession = {
