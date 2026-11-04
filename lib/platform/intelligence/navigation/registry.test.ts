@@ -552,13 +552,19 @@ console.log("\n8. static — no mint, literal surfaces, bounded importers");
   // result); the AI core takes only TYPES from the registry. Nothing else may import it.
   const typeOnly = (f: string) => [...readFileSync(path.join(ROOT, f), "utf8").matchAll(/^import\s+(type\s+)?[^;]*?from\s+"@\/lib\/platform\/intelligence\/navigation\/(?:registry|access)";/gm)]
     .every((m) => !!m[1]);
+  // PB-1 related navigation: the guarded Ops incident detail route resolves the drawer's "Related" links
+  // (lib/platform/incidents/related-navigation.ts takes only its resolver closure, never the registry).
+  const GUARDED_ROUTES = ["app/api/platform/ai/ask/route.ts", "app/api/platform/platform-ops/incidents/[id]/route.ts"];
   const strayNav = importers.filter((f) => f !== "lib/platform/intelligence/navigation/access.ts"
-    && !(f === "app/api/platform/ai/ask/route.ts" && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8")))
+    && !(GUARDED_ROUTES.includes(f) && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8")))
     && !(f.startsWith("lib/platform/intelligence/ai/") && typeOnly(f)));
-  check("the navigation registry is imported only by its accessor, the guarded Platform AI route, and type-only by the AI core",
+  check("the navigation registry is imported only by its accessor, the guarded routes (Platform AI, Ops incident detail), and type-only by the AI core",
     strayNav.length === 0 && importers.includes("lib/platform/intelligence/navigation/access.ts"), strayNav.join() || importers.join());
-  check("…the AI route reaches it through the ACCESSOR only (never the registry, never buildNavigationHref)",
-    !/intelligence\/navigation\/registry["']/.test(readFileSync(path.join(ROOT, "app/api/platform/ai/ask/route.ts"), "utf8")));
+  for (const f of GUARDED_ROUTES) {
+    const s = readFileSync(path.join(ROOT, f), "utf8");
+    check(`…${f} reaches it through the ACCESSOR only (never the registry, never buildNavigationHref) and mints from its own guard result`,
+      !/intelligence\/navigation\/registry["']/.test(s) && /metricAccessFor\((\w+)\)/.test(s));
+  }
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
