@@ -69,7 +69,8 @@ const providerFx = (): Pick<ProviderHealthResult, "checkedAt" | "providers"> => 
     { key: "B", label: "B", execution: { verdict: "FAILING" }, connections: { verdict: "FAILING", tally: { active: 4, error: 3, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [] },
     { key: "C", label: "C", execution: { verdict: "NOT_ENOUGH_DATA" }, connections: null, notes: [] },
     { key: "D", label: "D", execution: null, notes: [] },
-    { key: "E", label: "E", execution: { verdict: "DEGRADED" }, connections: { verdict: "DEGRADED", tally: { active: 9, error: 1, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [] },
+    { key: "E", label: "E", execution: { verdict: "DEGRADED" }, connections: { verdict: "DEGRADED", rule: "any-error", tally: { active: 9, error: 1, reauth: 0, unclassified: 0, revoked: 0 } }, notes: [] },
+    { key: "F", label: "F", execution: { verdict: "HEALTHY" }, connections: { verdict: "DEGRADED", rule: "institution-concentrated", tally: { active: 6, error: 4, reauth: 0, unclassified: 0, revoked: 0, institutions: [{ active: 4, error: 4, reauth: 0 }, { active: 2, error: 0, reauth: 0 }] } }, notes: [] },
   ],
 } as unknown as Pick<ProviderHealthResult, "checkedAt" | "providers">);
 
@@ -206,9 +207,12 @@ await (async () => {
   check("provider-outcome: counts = the reader's own execution verdicts (the tile's per-row verdict, tallied)",
     JSON.stringify(po?.value) === JSON.stringify({ healthy: byVerdict("HEALTHY"), degraded: byVerdict("DEGRADED"), failing: byVerdict("FAILING"), notEnoughData: byVerdict("NOT_ENOUGH_DATA"), noRuns: byVerdict(null) })
     && po?.status === "MEASURED", JSON.stringify(po?.value));
-  const pc = await get("PLATFORM_OPS", OPS, "provider-connection@1");
-  check("provider-connection: counts = the reader's own connection verdicts",
-    JSON.stringify(pc?.value) === JSON.stringify({ failing: 1, degraded: 1, noVerdict: 1, noConnections: 2 }) && pc?.status === "MEASURED", JSON.stringify(pc?.value));
+  // Re-pinned (provider-connection@2): the key is @2, and the institution-concentrated
+  // DEGRADED verdicts are counted inside `degraded` AND named on their own.
+  const pc = await get("PLATFORM_OPS", OPS, "provider-connection@2");
+  check("provider-connection@2: counts = the reader's own connection verdicts (institutionConcentrated ⊂ degraded)",
+    JSON.stringify(pc?.value) === JSON.stringify({ failing: 1, degraded: 2, institutionConcentrated: 1, noVerdict: 1, noConnections: 2 }) && pc?.status === "MEASURED", JSON.stringify(pc?.value));
+  check("provider-connection@1 is retired: no longer retrievable", (await get("PLATFORM_OPS", OPS, "provider-connection@1")) === null);
 
   const ai = await get("PLATFORM_OPS", OPS, "ai-fleet-spend-status");
   const tile = fleetSpendStatus(aiFx());

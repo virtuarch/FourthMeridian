@@ -83,7 +83,7 @@ check("owner-inactive rows are retired, not counted", /deactivatedAt != null\) \
 check("the result reports what was retired",
   // UX-P1 — the result gained checkedAt / cap / listedScope (additive); the pin
   // is that `retired` is still reported beside total/counts/unhealthy.
-  // Re-pinned 2026-11-03 (additive, provider-connection@1): `bySource`, the per-source
+  // Re-pinned 2026-11-03 (additive, provider-connection@1; @2 adds anonymous institution refs inside it): `bySource`, the per-source
   // tally provider trust needs as a denominator, rides beside them.
   /return \{\s*total: rows\.length, counts, unhealthy, retired, bySource,\s*checkedAt: new Date\(now\)\.toISOString\(\), cap, listedScope: "unhealthy",\s*\};/.test(src));
 

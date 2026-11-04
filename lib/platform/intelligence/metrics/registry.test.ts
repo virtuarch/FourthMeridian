@@ -70,7 +70,7 @@ console.log("structure");
   const problems = METRICS.flatMap(metricDefinitionProblems);
   check("every definition is structurally sound (explicit version, permission + identity tier, provenance reason, tile, drill)",
     problems.length === 0, problems.join("; "));
-  const REQUIRED = ["provider-outcome@1", "provider-connection@1", "ai-fleet-spend-status@1", "presence-state@1", "engaged-users@1",
+  const REQUIRED = ["provider-outcome@1", "provider-connection@2", "ai-fleet-spend-status@1", "presence-state@1", "engaged-users@1",
     "incident-broken-now@1", "incident-alertable@1", "merchant-identity-linked@1", "cs-needs-help@1", "growth-registrations@1"];
   check("the required existing authorities are all registered", REQUIRED.every((k) => keys.includes(k)), REQUIRED.filter((k) => !keys.includes(k)).join(", "));
 

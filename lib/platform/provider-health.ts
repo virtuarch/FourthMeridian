@@ -167,7 +167,7 @@ export interface ProviderHealth {
   /** The execution half of `trust`: provider-outcome@1 over the window's run
    *  counts (decided / failed / leading failures). null when no run is recorded. */
   execution?: OutcomeAssessment | null;
-  /** provider-connection@1 over the provider's connections (sync providers); null/absent otherwise. */
+  /** provider-connection@2 over the provider's connections (sync providers); null/absent otherwise. */
   connections?: ConnectionAssessment | null;
 
   /** Calls today / last 30 days from ApiUsageCounter. null when the provider is not metered. */
@@ -350,7 +350,7 @@ export function freshnessFromResourceReport(report: ResourceFreshnessReport): Pr
  * authority's `unhealthy` list, so an absence of unhealthy rows is treated as
  * fresh (with a null asOf — the authority does not surface healthy sync times).
  *
- * Connection-scope fix (provider-connection@1): only STALE rows are a recency
+ * Connection-scope fix (provider-connection@1, kept in @2): only STALE rows are a recency
  * signal. Faults (ERROR, NEEDS_REAUTH, REVOKED, DEGRADED) belong to the
  * connection rule, and a customer who must reconnect never makes the provider's
  * freshness "unknown".
@@ -375,13 +375,13 @@ export function freshnessFromConnections(source: string, rows: readonly Connecti
 }
 
 /**
- * provider-connection@1 over one provider's connections. Uses the authority's
+ * provider-connection@2 over one provider's connections. Uses the authority's
  * per-source tally (an unbounded population) when present. Otherwise it tallies
  * the capped unhealthy rows with an UNKNOWN population (active 0), so no share
  * rule can fire: an error still degrades, nothing fails.
  */
 export function connectionAssessmentFor(source: string, rows: readonly ConnectionHealthRow[], tally?: ConnectionSourceTally | null): ConnectionAssessment {
-  if (tally) return assessConnections(tallyConnections(tally.faults, tally.active, tally.revoked));
+  if (tally) return assessConnections(tallyConnections(tally.faults, tally.active, tally.revoked, { institutionActive: tally.institutionActive }));
   const mine = rows.filter((r) => r.source === source);
   return assessConnections(tallyConnections(mine, 0, mine.filter((r) => connectionTrustState(r.healthState, r.errorCode) === "REVOKED").length, { populationUnknown: true }));
 }
@@ -398,14 +398,14 @@ export interface TrustSignals {
   freshnessState: ProviderFreshness["state"];
   /** The freshness authority's one-line detail (for the basis); optional for pure callers. */
   freshnessDetail?: string;
-  /** provider-connection@1 over the provider's connections; null for a provider without any. */
+  /** provider-connection@2 over the provider's connections; null for a provider without any. */
   connections: ConnectionAssessment | null;
 }
 
 /** The trust verdict with the rule and the counts that decided it. */
 export interface ProviderVerdict {
   trust: ProviderTrust;
-  /** One line, rule id included: "4 of 4 connections in provider-side error (provider-connection@1)". */
+  /** One line, rule id included: "4 of 4 connections in provider-side error across 3 institutions (provider-connection@2)". */
   basis: string;
 }
 
@@ -414,12 +414,14 @@ export interface ProviderVerdict {
  * is WORSE (the PLATOPS doctrine). The execution verdict is provider-outcome@1
  * (executionAssessment). Precedence:
  *   FAILING  execution FAILING (last 3 runs failed, or ≥ 50 % of a sufficient
- *            sample), OR connections FAILING (provider-connection@1: ≥ 50 % of
- *            ≥ 2 live connections in provider-side ERROR). A customer who must
+ *            sample), OR connections FAILING (provider-connection@2: ≥ 50 % of
+ *            ≥ 2 live connections in provider-side ERROR, and still ≥ 50 % with
+ *            the worst institution set aside). A customer who must
  *            reconnect, or a REVOKED connection, never makes a provider FAILING.
  *   STALE    the DATA is behind/absent (freshness stale|empty) — the false-green
  *            catch: a green job over a stale archive still reads STALE here.
- *   DEGRADED connections DEGRADED (any provider-side ERROR, a reauth wave,
+ *   DEGRADED connections DEGRADED (any provider-side ERROR, an error share
+ *            concentrated on one institution, a reauth wave,
  *            an unclassified error). This is checked before UNKNOWN: a connection
  *            fault is a signal.
  *   UNKNOWN  no signal at all to judge (no runs AND freshness un-assertable).
