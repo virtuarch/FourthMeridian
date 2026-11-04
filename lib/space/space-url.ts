@@ -37,6 +37,8 @@ export const SPACE_URL_PARAMS = [
   "fcompareto",
   "fpreset",
   "fperiod",
+  // PB-4 — the Customer Success Customers list's "Needs help" filter (REPLACE-written).
+  "attention",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
 

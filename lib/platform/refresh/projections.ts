@@ -37,6 +37,7 @@
 import "server-only";
 import { todayUTCISO } from "@/lib/time/clock";
 import { deriveIngestionActivity, deriveIngestionDeferral, type IngestionActivity, type IngestionDeferral } from "@/lib/sync/deferred-ingestion";
+import { importExecutionFact, type ImportEvidence, type ImportExecutionFact } from "@/lib/platform/onboarding/import-status-core";
 
 // ⚠️ RLS-P-3a — fm_system, NOT the migration principal. Every `db.` in this file
 // read one of the four DF-2 refresh tables and NOTHING else, all four of which
@@ -602,4 +603,67 @@ export async function getIngestionEvidence(
     activity.set(item.id, deriveIngestionActivity({ syncLockedAt: item.syncLockedAt, latestExecution }, now));
   }
   return { deferrals, activity };
+}
+
+// ── PB-7 — onboarding import evidence ────────────────────────────────────────
+
+/** Bound on the rows one evidence read loads (a window holds a handful of executions per item). */
+const IMPORT_EVIDENCE_MAX_ROWS = 5_000;
+
+/**
+ * PB-7 — the evidence behind "how did this connection's first import go?"
+ * (lib/platform/onboarding/import-status-core.ts): each item's RefreshExecution
+ * rows in its first `windowMs` after linking, and when its wealth history was
+ * first rebuilt (the first SUCCEEDED REGENERATION stage). Per-item, like
+ * getIngestionEvidence: it carries NO owner — the caller (Customer Success, or
+ * the identity-free Platform Ops tile) decides who the items belong to.
+ *
+ * Statuses, triggers, timestamps and a failure CATEGORY only; errorSummary is
+ * read solely to recognise a reaped row and is never returned.
+ */
+export async function getImportEvidence(
+  items: readonly { id: string; createdAt: Date }[],
+  windowMs: number,
+): Promise<{ evidence: Map<string, ImportEvidence>; floor: boolean }> {
+  const evidence = new Map<string, ImportEvidence>();
+  if (items.length === 0) return { evidence, floor: false };
+
+  const rows = await systemDb.refreshExecution.findMany({
+    where: {
+      OR: items.map((i) => ({
+        plaidItemId: i.id,
+        startedAt: { gte: new Date(i.createdAt.getTime() - 60_000), lte: new Date(i.createdAt.getTime() + windowMs) },
+      })),
+    },
+    select: {
+      id: true, plaidItemId: true, trigger: true, profile: true, startedAt: true, completedAt: true,
+      overallStatus: true, failureCategory: true, errorSummary: true,
+    },
+    orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+    take: IMPORT_EVIDENCE_MAX_ROWS,
+  });
+  const regen = rows.length === 0 ? [] : await systemDb.refreshEndpointResult.findMany({
+    where: { refreshExecutionId: { in: rows.map((r) => r.id) }, endpoint: "REGENERATION", status: "SUCCEEDED" },
+    select: { refreshExecutionId: true, startedAt: true, completedAt: true },
+    take: IMPORT_EVIDENCE_MAX_ROWS,
+  });
+
+  const itemOf = new Map(rows.map((r) => [r.id, r.plaidItemId] as const));
+  const firstRegen = new Map<string, Date>();
+  for (const s of regen) {
+    const item = itemOf.get(s.refreshExecutionId);
+    const at = s.completedAt ?? s.startedAt;
+    if (!item) continue;
+    const cur = firstRegen.get(item);
+    if (!cur || at < cur) firstRegen.set(item, at);
+  }
+  const byItem = new Map<string, ImportExecutionFact[]>();
+  for (const r of rows) {
+    if (!r.plaidItemId) continue;
+    byItem.set(r.plaidItemId, [...(byItem.get(r.plaidItemId) ?? []), importExecutionFact(r)]);
+  }
+  for (const i of items) {
+    evidence.set(i.id, { executions: byItem.get(i.id) ?? [], firstWealthRegenAt: firstRegen.get(i.id) ?? null });
+  }
+  return { evidence, floor: rows.length >= IMPORT_EVIDENCE_MAX_ROWS };
 }

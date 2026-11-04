@@ -42,6 +42,14 @@ export interface PolicyAssignmentReadClient {
   };
 }
 
+/**
+ * WHO IS UNASSIGNED — an active USER-role account with no assignment row. The
+ * ONE predicate: this alert read and the Customer Success "who needs help"
+ * reader (lib/platform/customer/attention.ts) both use it, so the alert and the
+ * dashboard can never disagree about who is affected.
+ */
+export const UNASSIGNED_CUSTOMER_WHERE = { role: "USER" as const, deactivatedAt: null, policyAssignment: { is: null } };
+
 export async function loadPolicyAssignmentHealth(opts: {
   client?: PolicyAssignmentReadClient; enforced?: boolean; now?: Date; cap?: number;
   /** POLICY EDITOR — the definitions in force (default: the cached catalogue loader). */
@@ -55,7 +63,7 @@ export async function loadPolicyAssignmentHealth(opts: {
   const known = resolvableGroupKeys(opts.catalogue ?? await loadPolicyGroupCatalogue());
   // Review fix: only accounts that can use the product — deactivated (incl.
   // pending-deletion) accounts and non-customer roles are not affected parties.
-  const unassignedWhere = { role: "USER" as const, deactivatedAt: null, policyAssignment: { is: null } };
+  const unassignedWhere = UNASSIGNED_CUSTOMER_WHERE;
   const unknownWhere = { policyGroup: { notIn: known }, user: { role: "USER" as const, deactivatedAt: null } };
   const [unassignedCount, unassignedRows, unknownCount, unknownRows] = await Promise.all([
     client.user.count({ where: unassignedWhere }),

@@ -54,6 +54,7 @@ import {
   type ExecutionScope,
   type SeamAudience,
 } from "@/lib/platform/refresh/execution-query-core";
+import { findRecoveredExecutions, isReapedStaleExecution } from "@/lib/platform/refresh/recovery-core";
 import type {
   CoverageFact,
   EndpointFact,
@@ -112,6 +113,12 @@ export interface ExecutionQueryReaders {
    * recorded. Bounded: one indexed row.
    */
   lastSucceeded(source: { plaidItemId: string | null; sourceRef: string | null; before: Date; excludeId: string }): Promise<ExecutionFact | null>;
+  /**
+   * PB-7 — SUCCEEDED executions for these sources that started after `after`,
+   * oldest first, bounded. Used ONLY to resolve whether a reaped (stale) row was
+   * superseded (recovery-core.ts). Optional: a reader without it resolves none.
+   */
+  laterSucceeded?(sources: { plaidItemIds: readonly string[]; sourceRefs: readonly string[]; after: Date }): Promise<ExecutionFact[]>;
   endpoints(executionId: string): Promise<EndpointFact[]>;
   providerCalls(executionId: string): Promise<ProviderCallFact[]>;
   coverage(executionId: string): Promise<CoverageFact[]>;
@@ -196,6 +203,22 @@ function realReaders(): ExecutionQueryReaders {
         orderBy: [{ startedAt: "desc" }, { id: "desc" }],
       });
     },
+    async laterSucceeded(sources) {
+      if (sources.plaidItemIds.length === 0 && sources.sourceRefs.length === 0) return [];
+      return systemDb.refreshExecution.findMany({
+        where: {
+          overallStatus: "SUCCEEDED",
+          startedAt: { gt: sources.after },
+          OR: [
+            ...(sources.plaidItemIds.length ? [{ plaidItemId: { in: [...sources.plaidItemIds] } }] : []),
+            ...(sources.sourceRefs.length ? [{ sourceRef: { in: [...sources.sourceRefs] } }] : []),
+          ],
+        },
+        select: EXECUTION_SELECT,
+        orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+        take: LATER_SUCCEEDED_MAX,
+      });
+    },
     async endpoints(executionId) {
       return systemDb.refreshEndpointResult.findMany({
         where: { refreshExecutionId: executionId },
@@ -237,6 +260,32 @@ function resolveReaders(deps?: ExecutionQueryDeps): ExecutionQueryReaders {
   return deps?.readers ?? realReaders();
 }
 
+/** PB-7 — bound on the successor read (a page holds at most clampLimit rows; successors are per source). */
+const LATER_SUCCEEDED_MAX = 500;
+
+/**
+ * PB-7 — reaped execution id → the later SUCCEEDED execution that superseded it,
+ * for the reaped rows among `rows`. ONE bounded read, and only when a reaped row
+ * is present (the common page has none, so it costs nothing). The rule itself is
+ * pure (recovery-core.ts); a reader without `laterSucceeded`, or a failed read,
+ * resolves none — the row then reads as the ledger wrote it (FAILED), never as
+ * a guess.
+ */
+async function resolveRecovered(readers: ExecutionQueryReaders, rows: readonly ExecutionFact[]): Promise<Map<string, string>> {
+  const reaped = rows.filter(isReapedStaleExecution);
+  if (reaped.length === 0 || !readers.laterSucceeded) return new Map();
+  const plaidItemIds = [...new Set(reaped.flatMap((r) => (r.plaidItemId ? [r.plaidItemId] : [])))];
+  const sourceRefs = [...new Set(reaped.flatMap((r) => (!r.plaidItemId && r.sourceRef ? [r.sourceRef] : [])))];
+  const after = new Date(Math.min(...reaped.map((r) => r.startedAt.getTime())));
+  try {
+    const successors = await readers.laterSucceeded({ plaidItemIds, sourceRefs, after });
+    return findRecoveredExecutions([...reaped, ...successors]);
+  } catch (e) {
+    console.error("[refresh/execution-query] recovered-execution lookup failed (rows read as written):", e instanceof Error ? e.message : String(e));
+    return new Map();
+  }
+}
+
 /** An empty page, returned whenever scope resolution fails closed. */
 function deniedPage(audience: SeamAudience): ExecutionPageDTO {
   return { rows: [], nextCursor: null, audience, scopeDenied: true };
@@ -275,7 +324,9 @@ export async function queryRefreshExecutions(
   });
 
   const hadMore = rows.length > limit;
-  const page = rows.slice(0, limit).map((row) => projectExecutionRow(row, args.audience));
+  const pageRows = rows.slice(0, limit);
+  const recovered = await resolveRecovered(readers, pageRows);
+  const page = pageRows.map((row) => projectExecutionRow(row, args.audience, recovered.get(row.id) ?? null));
 
   return {
     rows: page,
@@ -314,8 +365,9 @@ export async function getRefreshExecutionDetail(
     readers.coverage(execution.id),
   ]);
 
+  const recovered = await resolveRecovered(readers, [execution]);
   return {
-    execution: projectExecutionRow(execution, args.audience),
+    execution: projectExecutionRow(execution, args.audience, recovered.get(execution.id) ?? null),
     endpoints: endpoints.map((row) => projectEndpointRow(row, args.audience)),
     providerCalls: providerCalls.map(projectProviderCallRow),
     coverage: coverage.map(projectCoverageRow),
