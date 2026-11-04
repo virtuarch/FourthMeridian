@@ -423,8 +423,9 @@ is not published until the owner approves it.
 >   internal id and its area (and, on delete, a message count), never a question, answer, label or
 >   message id (`lib/platform/intelligence/ai/conversations/store.ts:264-270`, `:367-373`). The
 >   purge records counts only (`lib/audit-actions.ts`, B11 block). Successful reads are not
->   audited; a refused access attempt is recorded as a security event, without content
->   (`lib/platform/intelligence/ai/conversations/handlers.ts:198`).
+>   audited. Refused access is recorded as a security event: at most one record per operator and
+>   area in a time window, with a count, and never any content or conversation id
+>   (`lib/platform/ops/access-denied.ts`).
 
 ### 3. Owner decision: the public policy does not cover this flow
 
