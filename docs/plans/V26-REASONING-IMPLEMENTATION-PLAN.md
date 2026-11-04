@@ -196,7 +196,7 @@ export interface Answer { claims: Claim[]; prose: string; }
 **Acceptance — and this is the measurement that justifies the whole plan:**
 - Run `ai:forecast-conformance` and `ai:forecast-multiturn` in both modes.
 - **Hard gate:** under `typed`, zero unlicensed figures reach the user *with no regex involved*. Compare against `repair` mode's redaction rate (the FORECAST-15 baseline: 10 findings → 0 reaching users, via sentence deletion).
-- **The specific case:** the D/I premise echo — 30 samples, `$30,000` printed 30×, deterministic `$30,226.49` cited 0×. Under `typed`, `$30,000` has no `fid`, so it cannot be claimed. Expect 0/30. If it is not 0/30, the schema or the verifier is wrong; fix that before proceeding.
+- **The specific case:** the D/I premise echo — 30 samples, `$30,000` printed 30×, deterministic figure (about `$30,000`, to the cent) cited 0×. Under `typed`, `$30,000` has no `fid`, so it cannot be claimed. Expect 0/30. If it is not 0/30, the schema or the verifier is wrong; fix that before proceeding.
 - **The premise-leak case (new, from REVIEW-1 §2):** user says "assume I spend $5,000/month"; the reply must never contain a bare `$5,000` in any other role. Adversarial prompts: *"so how much will I save?"*, *"what will my debt be?"*, *"what's my investment growth?"*. Expect 0 occurrences of `$5,000` outside a `/month` rendering. **This test must exist before the flag flips**, not after.
 - New `scripts/check-answer-boundary.ts`, wired into `run-audits.ts` as a REQUIRED-tier audit.
 
@@ -326,7 +326,7 @@ export interface Measure {
    **Two hard constraints, and they are what stop this becoming invention:**
 
    - **A fallback may only hold a currently-MEASURED value constant. It may never originate a value.** "Hold today's debt balance flat" is licensed because `debt_balance@NOW` is MEASURED. If today's debt balance were itself unresolved, there is no fallback and the composition is unresolved. There is exactly **one** fallback form — persistence of a measured present value — so the set is closed and cannot grow into a library of guesses.
-   - **A fallback may never be applied to the leg that is the SUBJECT of the question.** Asked "what will my debt be in December?", holding debt flat and answering `$549.75` would answer a different question in the voice of an answer. That is the shape of the defect PROJECTION-3 closed (*"a licensed answer is never overlaid by a weaker one"*), inverted. The planner names the subject; the composer refuses to paper over it.
+   - **A fallback may never be applied to the leg that is the SUBJECT of the question.** Asked "what will my debt be in December?", holding debt flat and answering `$550` would answer a different question in the voice of an answer. That is the shape of the defect PROJECTION-3 closed (*"a licensed answer is never overlaid by a weaker one"*), inverted. The planner names the subject; the composer refuses to paper over it.
 
    **The mechanism already exists — do not build a new one.** `AssumptionOrigin.SYSTEM_POLICY` is already the third origin beside `USER_REQUESTED` and `OBSERVED_CONTINUATION` (`policy.ts:130-144`), and there is a live shipping precedent: the default horizon at `for-request.ts:65-69` carries `origin: SYSTEM_POLICY` with `statedAs: 'no period was named; the default 3-month horizon applies'`. The system already proposes a default, names it in the user's language, and carries it as an assumption rather than smuggling it in as a fact. A persistence fallback is the same move at a different axis.
 
@@ -364,7 +364,7 @@ export interface Measure {
 
 7. **`dispersion` is a product feature, not a diagnostic.** `spending-baseline.ts:16-26` records that this user's discretionary spending has *no current regime*: months from $2,290 to $14,061, a 6.1× spread. Carry that to narration so the answer is *"your spending swings a lot month to month, so I'd give you a range rather than a number"* — not a point estimate, and not a refusal. **This is the guard against "stop refusing" degrading into "always produce a point estimate."**
 
-**Acceptance:** `lib/reasoning/measure/parity.test.ts` — evaluate every measure at `NOW` and at `+4mo` against the synthetic forecast fixture (the one the forecast corpus uses: $12,000.00 liquid, $600.00 owed, $25,000.02 investments of which $20,000.01 crypto, biweekly Employer A payroll at $5,500.015; figures illustrative) and assert each equals what the existing authority produces today. **Parity, not novelty.** Any divergence is either a bug in the adapter or a bug you just found in the original — investigate, never paper over.
+**Acceptance:** `lib/reasoning/measure/parity.test.ts` — evaluate every measure at `NOW` and at `+4mo` against the synthetic forecast fixture (the one the forecast corpus uses: $12,000.00 liquid, $600.00 owed, $25,000.02 investments of which $20,000.01 crypto, biweekly Employer A payroll at $4,928.415; figures illustrative) and assert each equals what the existing authority produces today. **Parity, not novelty.** Any divergence is either a bug in the adapter or a bug you just found in the original — investigate, never paper over.
 
 **Not in this slice:** nothing is wired into the chat route. This is substrate with a test harness.
 

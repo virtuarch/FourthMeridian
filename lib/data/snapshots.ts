@@ -318,7 +318,7 @@ export interface SpaceNetWorthSummary {
    * disagree. Null when there is no comparison point.
    *
    * This replaces a card-local `trendDeltaPct(trend)` that ran over the last 14
-   * SNAPSHOT ROWS — neither a month nor 30 days. On Chris' Space that read 25.0%
+   * SNAPSHOT ROWS — neither a month nor 30 days. On Jules' Space that read 25.0%
    * against the inside view's 49.2%, for the same Space on the same day.
    */
   change: {

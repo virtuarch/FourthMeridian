@@ -48,9 +48,9 @@ async function main(): Promise<void> {
 
   console.log("\nB. valid override → SETTING");
   {
-    const v = composeRefreshPolicyView(wallet({ row: row("12h"), updatedByName: "Chris" }));
+    const v = composeRefreshPolicyView(wallet({ row: row("12h"), updatedByName: "Jules" }));
     check("desired carries the raw value, the clock and the writer's name (never an email)",
-      v.desired.present && v.desired.raw === "12h" && v.desired.updatedAt === "2026-09-13T18:32:00.000Z" && v.desired.updatedBy?.name === "Chris" && !/@/.test(JSON.stringify(v)));
+      v.desired.present && v.desired.raw === "12h" && v.desired.updatedAt === "2026-09-13T18:32:00.000Z" && v.desired.updatedBy?.name === "Jules" && !/@/.test(JSON.stringify(v)));
     check("effective: 12h, overdue after 15h, origin SETTING", v.effective.cadence === "12h" && v.effective.overdueAfterHours === 15 && v.effective.origin === "SETTING");
     check("the version is the resolver's (moves with the row)", v.effective.version === resolveRefreshPolicy({ sourceKind: "WALLET" }, row("12h")).version);
     check("no mismatch", v.mismatch === null);
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     const calls: string[] = [];
     const client = {
       platformSetting: { findMany: async () => { calls.push("platformSetting.findMany"); return [{ key: "refresh_cadence_wallet", value: "12h", updatedAt: new Date("2026-09-13T18:32:00.000Z"), updatedById: "user_1" }]; } },
-      user: { findMany: async () => { calls.push("user.findMany"); return [{ id: "user_1", name: "Chris" }]; } },
+      user: { findMany: async () => { calls.push("user.findMany"); return [{ id: "user_1", name: "Jules" }]; } },
       jobRun: { findFirst: async (args: { where: { jobName: { in: string[] } } }) => {
         calls.push(`jobRun.findFirst:${args.where.jobName.in.join("+")}`);
         return args.where.jobName.in.includes("sync-crypto")
@@ -121,7 +121,7 @@ async function main(): Promise<void> {
     check("the wallet family read names both the primary and its continuation", calls.some((c) => c === "jobRun.findFirst:sync-crypto+sync-crypto-continuation"));
     const w = model.policies.find((p) => p.sourceKind === "WALLET")!;
     const b = model.policies.find((p) => p.sourceKind === "BANK")!;
-    check("wallet: override 12h SETTING, sweep PENDING, writer resolved by name", w.effective.origin === "SETTING" && w.actual.state === "PENDING" && w.desired.updatedBy?.name === "Chris");
+    check("wallet: override 12h SETTING, sweep PENDING, writer resolved by name", w.effective.origin === "SETTING" && w.actual.state === "PENDING" && w.desired.updatedBy?.name === "Jules");
     check("bank: DEFAULT, actual UNKNOWN (no version recorded)", b.effective.origin === "DEFAULT" && b.actual.state === "UNKNOWN");
     check("grace stated once (2h floor, 25%)", model.grace.floorHours === 2 && model.grace.share === 0.25);
     const json = JSON.stringify(model);

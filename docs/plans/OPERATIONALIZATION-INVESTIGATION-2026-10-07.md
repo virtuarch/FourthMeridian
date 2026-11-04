@@ -504,7 +504,7 @@ Infra cost automation (Vercel/Supabase/Sentry telemetry); Slack/pager channels; 
 
 ## Final question
 
-> If Chris invited the first five real beta users tomorrow, what would he still be forced to use Claude Code, SQL, Supabase, Vercel, Plaid, OpenAI, Resend, or other external consoles to understand or operate — and which of those dependencies should Project OPERATIONALIZATION eliminate before he does so?
+> If Jules invited the first five real beta users tomorrow, what would he still be forced to use Claude Code, SQL, Supabase, Vercel, Plaid, OpenAI, Resend, or other external consoles to understand or operate — and which of those dependencies should Project OPERATIONALIZATION eliminate before he does so?
 
 **Forced today:**
 

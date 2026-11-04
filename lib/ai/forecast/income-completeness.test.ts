@@ -50,11 +50,11 @@ function run(streams: ResolvedIncomeStream[], openingCash = 20_000): { c: Income
   return { c, closing: p.closing!, inflow: p.totals!.inflow };
 }
 
-const FLAT = [5479.67, 5479.70, 5500.01, 5500.02, 5500.00, 5499.75, 5520.26, 5500.01, 5500.01, 5500.01, 5500.01];
+const FLAT = [4909.93, 4909.96, 4928.41, 4928.42, 4928.40, 4928.15, 4946.78, 4928.41, 4928.41, 4928.41, 4928.41];
 
 // 1. A stable payroll: COMPLETE, and the per-stream total restates the fold's income term.
 {
-  const { c, inflow } = run([stream('payroll', [...FLAT, 5500.01], '2003-05-09')]);
+  const { c, inflow } = run([stream('payroll', [...FLAT, 4928.41], '2003-05-09')]);
   const pay = c.streams[0];
   check('1a stable payroll ⇒ COMPLETE, PRESENT, every occurrence counted',
     c.status === 'COMPLETE' && pay.status === 'PRESENT' && pay.counted === pay.occurrencesInHorizon && pay.counted > 0,
@@ -67,30 +67,30 @@ const FLAT = [5479.67, 5479.70, 5500.01, 5500.02, 5500.00, 5499.75, 5520.26, 550
 
 // 2. One high newest paycheck: the level stands, the deviation is disclosed with its arithmetic.
 {
-  const { c } = run([stream('payroll', [...FLAT, 7043.55], '2003-05-09')]);
+  const { c } = run([stream('payroll', [...FLAT, 6300.71], '2003-05-09')]);
   const pay = c.streams[0];
   check('2a one high newest paycheck ⇒ PRESENT_LATEST_DEVIATES, still counted, COMPLETE',
     c.status === 'COMPLETE' && pay.status === 'PRESENT_LATEST_DEVIATES' && pay.counted > 0 && pay.level !== null
-      && Math.abs(pay.level - 5500.01) < 0.01, JSON.stringify(pay));
+      && Math.abs(pay.level - 4928.41) < 0.01, JSON.stringify(pay));
   check('2b ifLatestIsNewLevel = (latest − level) × counted, computed — never left to prose',
-    !!pay.ifLatestIsNewLevel && Math.abs(pay.ifLatestIsNewLevel.total - (7043.55 - pay.level!) * pay.counted) < 0.01);
+    !!pay.ifLatestIsNewLevel && Math.abs(pay.ifLatestIsNewLevel.total - (6300.71 - pay.level!) * pay.counted) < 0.01);
 }
 
 // 3. A payroll whose level is NOT established (two at a new level): INCOMPLETE, never silently $0.
 {
-  const { c } = run([stream('payroll', [...FLAT.slice(0, 10), 7043.55, 7043.55], '2003-05-09')]);
+  const { c } = run([stream('payroll', [...FLAT.slice(0, 10), 6300.71, 6300.71], '2003-05-09')]);
   const pay = c.streams[0];
   check('3a amount unestablished on a CURRENT payroll ⇒ AMOUNT_UNESTABLISHED, material, projection INCOMPLETE',
     c.status === 'INCOMPLETE' && pay.status === 'AMOUNT_UNESTABLISHED' && pay.material === true && pay.counted === 0
       && pay.occurrencesInHorizon > 0, JSON.stringify(pay));
   check('3b the omission is sized from the platform\'s own last observed deposit',
-    pay.lastObserved?.amount === 7043.55 && pay.omittedAtLastObserved === Math.round(pay.occurrencesInHorizon * 7043.55 * 100) / 100
+    pay.lastObserved?.amount === 6300.71 && pay.omittedAtLastObserved === Math.round(pay.occurrencesInHorizon * 6300.71 * 100) / 100
       && c.omittedAtLastObserved === pay.omittedAtLastObserved);
 }
 
 // 4. A tiny variable deposit stream with no level: listed, but immaterial ⇒ the projection stays COMPLETE.
 {
-  const { c } = run([stream('payroll', [...FLAT, 5500.01], '2003-05-09'), stream('interest-like', [12.1, 30.5, 8.2, 22.4, 15.0, 9.9, 26.3, 28.84], '2003-05-10')]);
+  const { c } = run([stream('payroll', [...FLAT, 4928.41], '2003-05-09'), stream('interest-like', [12.1, 30.5, 8.2, 22.4, 15.0, 9.9, 26.3, 28.84], '2003-05-10')]);
   const tiny = c.streams.find((l) => l.stream === 'interest-like')!;
   check('4a an unpriced stream below MATERIALITY is listed (AMOUNT_UNESTABLISHED, material false) and does NOT make the projection incomplete',
     c.status === 'COMPLETE' && tiny.status === 'AMOUNT_UNESTABLISHED' && tiny.material === false,
@@ -100,7 +100,7 @@ const FLAT = [5479.67, 5479.70, 5500.01, 5500.02, 5500.00, 5499.75, 5520.26, 550
 
 // 5. A lapsed stream: reported as LAPSED, generates nothing, never makes a projection incomplete.
 {
-  const { c } = run([stream('payroll', [...FLAT, 5500.01], '2003-05-09'), stream('old-job', [5200.00, 5200.00, 5200.00, 5200.00, 5200.00], '2002-07-24')]);
+  const { c } = run([stream('payroll', [...FLAT, 4928.41], '2003-05-09'), stream('old-job', [4656.53, 4656.53, 4656.53, 4656.53, 4656.53], '2002-07-24')]);
   const old = c.streams.find((l) => l.stream === 'old-job')!;
   check('5 a stream that stopped is LAPSED with 0 occurrences and the projection is COMPLETE',
     old.status === 'LAPSED' && old.occurrencesInHorizon === 0 && c.status === 'COMPLETE', JSON.stringify(old));
@@ -108,7 +108,7 @@ const FLAT = [5479.67, 5479.70, 5500.01, 5500.02, 5500.00, 5499.75, 5520.26, 550
 
 // 6. INTEREST role never decides completeness, however unpriced.
 {
-  const { c } = run([stream('payroll', [...FLAT, 5500.01], '2003-05-09'), stream('int', [0.01, 0.09, 0.03, 0.10], '2003-05-01', FlowRole.INTEREST)], 10);
+  const { c } = run([stream('payroll', [...FLAT, 4928.41], '2003-05-09'), stream('int', [0.01, 0.09, 0.03, 0.10], '2003-05-01', FlowRole.INTEREST)], 10);
   check('6 an unpriced INTEREST stream is reported but never makes the projection incomplete',
     c.status === 'COMPLETE' && c.streams.some((l) => l.role === 'INTEREST'));
 }

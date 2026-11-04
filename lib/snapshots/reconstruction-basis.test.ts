@@ -131,7 +131,7 @@ console.log("3. Cash + liability walks share the posted-only basis");
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Regression fixture — the reported EXAMPLE BANK EVERYDAY shape (Part 7).
 //    Anchor = today posted balance; a $5,318.61 posted card-payment outflow near
-//    the boundary; a +$5,500.00 PENDING payroll credit near the boundary; the
+//    the boundary; a +$4,928.40 PENDING payroll credit near the boundary; the
 //    first observed balance. (Real numbers used as a fixture, never as logic.)
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("4. EXAMPLE BANK EVERYDAY regression fixture — posted-only continuity");
@@ -145,9 +145,9 @@ console.log("4. EXAMPLE BANK EVERYDAY regression fixture — posted-only continu
   const posted = new Map<string, Map<string, number>>([
     ["chk", new Map([["2026-07-16", -5318.61]])],
   ]);
-  // OLD query would ALSO fold the 07-17 PENDING payroll (+5500.00) into 07-17.
+  // OLD query would ALSO fold the 07-17 PENDING payroll (+4928.40) into 07-17.
   const buggy = new Map<string, Map<string, number>>([
-    ["chk", new Map([["2026-07-16", -5318.61], ["2026-07-17", 5500.00]])],
+    ["chk", new Map([["2026-07-16", -5318.61], ["2026-07-17", 4928.40]])],
   ]);
 
   const fixed  = reconstructDailyCashBalances([{ id: "chk", balance: ANCHOR }], posted, today, start);
@@ -165,8 +165,8 @@ console.log("4. EXAMPLE BANK EVERYDAY regression fixture — posted-only continu
   // The pending-inclusive walk introduces an unexplained residual = the pending amount.
   check("BUGGY pending-inclusive 07-14 is NOT continuous (phantom = the pending payroll)",
     !isBoundaryContinuous(recon0714Broken, OBSERVED_07_15, 0));
-  check("the unexplained residual equals the pending amount ($5,500.00)",
-    approx(boundaryContinuityResidual(recon0714Broken, OBSERVED_07_15, 0), 5500.00),
+  check("the unexplained residual equals the pending amount ($4,928.40)",
+    approx(boundaryContinuityResidual(recon0714Broken, OBSERVED_07_15, 0), 4928.40),
     `residual ${boundaryContinuityResidual(recon0714Broken, OBSERVED_07_15, 0)}`);
 }
 

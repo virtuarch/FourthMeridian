@@ -84,14 +84,14 @@ const state = (o: Partial<OperatingStateInput> = {}): CurrentOperatingState => {
 const EMPLOYER_A = {
   sourceKey: 'employer-a', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
   activity: ActivityState.CURRENT, projectionEligible: true,
-  amount: { value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 4928.415, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 /** Synthetic Employer B stream: SILENT, with a perfectly good amount. */
 const EMPLOYER_B = {
   sourceKey: 'employer-b', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
   activity: ActivityState.SILENT, projectionEligible: false,
-  amount: { value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
+  amount: { value: 4656.53, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
 /** Synthetic interest stream: CURRENT and periodic, with no amount. */
@@ -181,10 +181,10 @@ const empA = REAL.incomeStreams.find((s) => s.sourceKey === 'employer-a')!;
 const empB = REAL.incomeStreams.find((s) => s.sourceKey === 'employer-b')!;
 const int = REAL.incomeStreams.find((s) => s.sourceKey === 'interest-10th')!;
 
-eq('D1 Employer A has a nominal monthly equivalent', empA.nominalMonthly, monthlyEquivalent(5500.015, CadenceKind.BIWEEKLY));
+eq('D1 Employer A has a nominal monthly equivalent', empA.nominalMonthly, monthlyEquivalent(4928.415, CadenceKind.BIWEEKLY));
 eq('D2 which is 26/12, not "twice a month"', empA.annualOccurrences, 26);
 eq('D3 with UNKNOWN basis — never NET', empA.basis, AmountBasis.UNKNOWN);
-eq('D4 Employer B keeps its amount', empB.amount, 5200.00);
+eq('D4 Employer B keeps its amount', empB.amount, 4656.53);
 eq('D5 but contributes NO monthly income — a good number about a dead stream', empB.nominalMonthly, null);
 eq('D6 because it is not projection-eligible', empB.projectionEligible, false);
 eq('D7 and its activity is preserved', empB.activity, ActivityState.SILENT);
@@ -387,7 +387,7 @@ eq('L4 a fully-blocked state still licenses next pay dates',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const netAmount = assertedAmountBasis(
-  assertedPeriodicAmount(5500.015, 'USD', AS_OF), AmountBasis.NET, AS_OF);
+  assertedPeriodicAmount(4928.415, 'USD', AS_OF), AmountBasis.NET, AS_OF);
 const NET_EMPLOYER_A = { ...EMPLOYER_A, amount: {
   value: netAmount.value, currency: netAmount.currency, provenance: netAmount.provenance,
   basis: netAmount.basis, basisProvenance: netAmount.basisProvenance } };
@@ -421,7 +421,7 @@ eq('N9 nor does an asserted amount with no basis stated', refused(state({
 check('N10 a NET basis on a stream that cannot continue licenses nothing', (() => {
   // Employer B is SILENT: a perfectly good take-home figure about a job that ended
   // has no monthly equivalent, so there is no number to state.
-  const s = state({ incomeStreams: [{ ...EMPLOYER_B, amount: { value: 5200.00, currency: 'USD',
+  const s = state({ incomeStreams: [{ ...EMPLOYER_B, amount: { value: 4656.53, currency: 'USD',
     provenance: EventProvenance.DERIVED, basis: AmountBasis.NET,
     basisProvenance: EventProvenance.USER_ASSERTED } }] });
   return s.incomeStreams[0].basis === AmountBasis.NET
@@ -513,7 +513,7 @@ async function mutations(): Promise<void> {
     '(s) => s.basis === AmountBasis.NET)) {',
     (m) => {
       const dead = m.composeOperatingState({ asOfISO: AS_OF, accounts: null, investments: null,
-        incomeStreams: [{ ...EMPLOYER_B, amount: { value: 5200.00, currency: 'USD',
+        incomeStreams: [{ ...EMPLOYER_B, amount: { value: 4656.53, currency: 'USD',
           provenance: EventProvenance.DERIVED, basis: AmountBasis.NET,
           basisProvenance: EventProvenance.USER_ASSERTED } }],
         obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },

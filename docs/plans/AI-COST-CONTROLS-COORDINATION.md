@@ -1,6 +1,6 @@
 # AI COST CONTROLS + OPENAI ENVIRONMENT SEPARATION — COORDINATION (2026-10-15)
 
-**Milestone:** owner-authorized post-beta milestone (brief of 2026-10-15). **Base:** `aicost/base` = `v2.6` `3e91562` (docs HEAD; verified application baseline `1c04752`) + this coordinator commit. **Agent branches:** `aicost/a` (policy backend + enforcement), `aicost/b` (Platform Ops UI + Economics), `aicost/c` (OpenAI environment separation, docs, tests), each in a worktree under `/Users/chrstn/dev/FourthMeridian-aicost/` with **no `DATABASE_URL`** and `FM_DB_GUARD=clone-only`. **Production is untouched** by every step here: no deployment, migration, configuration, credential or data change on Production is authorized.
+**Milestone:** owner-authorized post-beta milestone (brief of 2026-10-15). **Base:** `aicost/base` = `v2.6` `3e91562` (docs HEAD; verified application baseline `1c04752`) + this coordinator commit. **Agent branches:** `aicost/a` (policy backend + enforcement), `aicost/b` (Platform Ops UI + Economics), `aicost/c` (OpenAI environment separation, docs, tests), each in a worktree under `/Users/devuser/dev/FourthMeridian-aicost/` with **no `DATABASE_URL`** and `FM_DB_GUARD=clone-only`. **Production is untouched** by every step here: no deployment, migration, configuration, credential or data change on Production is authorized.
 
 ## 1. The contract (frozen in the base commit)
 

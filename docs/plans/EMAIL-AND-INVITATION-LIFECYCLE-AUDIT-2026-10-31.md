@@ -1,6 +1,6 @@
 # Email and Beta Invitation Lifecycle Audit (2026-10-31)
 
-**Scope.** This is a read-only audit of Fourth Meridian's transactional email system and beta invitation lifecycle. It covers the worktree `/Users/chrstn/dev/FM-email` at `develop` `bf6b797` (branch `feat/email-invite-audit`).
+**Scope.** This is a read-only audit of Fourth Meridian's transactional email system and beta invitation lifecycle. It covers the worktree `/Users/devuser/dev/FM-email` at `develop` `bf6b797` (branch `feat/email-invite-audit`).
 **Method.** The findings come from static reading of the code. No code was edited, no database or network was touched, no email was sent, and no tsc, test suite or build was run. Every fact cites `file:line`. Anything inferred rather than read directly is marked **INFERRED**. Anything that needs a live environment to confirm is marked **UNVERIFIED**.
 
 ---

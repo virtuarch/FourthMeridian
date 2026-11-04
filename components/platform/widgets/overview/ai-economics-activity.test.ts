@@ -75,7 +75,7 @@ const feed = (over: Partial<OperatorFeedResponse> = {}): OperatorFeedResponse =>
   scope: "PLATFORM_OPS", depth: { requested: 20, returned: 2 },
   note: "Last 20 recorded actions on platform objects; security events live in Security Operations.",
   items: [
-    { id: "a", at: "2026-10-14T11:57:00.000Z", operator: "chris", action: "OPERATOR_REFRESH_ALL", actionLabel: "Refreshed a customer's authorities",
+    { id: "a", at: "2026-10-14T11:57:00.000Z", operator: "jules", action: "OPERATOR_REFRESH_ALL", actionLabel: "Refreshed a customer's authorities",
       target: "user …123456", result: "SUCCESS", reasonCode: "SUPPORT_REQUEST", evidence: { refreshExecutionId: "exec_abc123def456", workspace: "platform-refresh" } },
     { id: "b", at: "2026-10-13T09:00:00.000Z", operator: "dana", action: "PLATFORM_OPERATION_EXECUTED", actionLabel: "Ran a manual operation",
       target: "job …-banks", result: "FAILURE", reasonCode: null, evidence: { jobRunId: "run_000000abc123", workspace: "platform-jobs" } },
@@ -219,7 +219,7 @@ console.log("\n6. Recent operator activity surface");
 {
   const html = renderToStaticMarkup(createElement(ActivityFeedSurface, { state: ok(feed()), nowMs: NOW, onOpenWorkspace: () => {}, onInspectExecution: () => {} }));
   check("one SectionSurface titled Recent operator activity, count pill 2", surfaces(html) === 1 && /Recent operator activity/.test(html) && />2</.test(html));
-  check("rows: when (relative + UTC), operator, action, opaque target, result word", /3 min ago/.test(html) && /14 Oct, 11:57 UTC/.test(html) && /by chris/.test(html) && /user …123456/.test(html) && /succeeded/.test(html) && /failed/.test(html));
+  check("rows: when (relative + UTC), operator, action, opaque target, result word", /3 min ago/.test(html) && /14 Oct, 11:57 UTC/.test(html) && /by jules/.test(html) && /user …123456/.test(html) && /succeeded/.test(html) && /failed/.test(html));
   check("reason code label shown, never a note", /support request/.test(html) && !/note/i.test(html.replace(/footnote/g, "")));
   check("tone dots are aria-hidden beside the result word", (html.match(/aria-hidden="true" class="rounded-full"/g) ?? []).length === 2);
   check("evidence: refresh execution opens the drawer; job run is an Open Jobs doorway", /Inspect refresh execution …def456/.test(html) && /Open Jobs for run …abc123/.test(html));

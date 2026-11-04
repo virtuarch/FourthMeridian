@@ -172,10 +172,10 @@ check('B7 nothing promotes a basis — NET is only ever compared, never assigned
   check('B8c the observed gate still refuses GROSS',
     !observedCashContribution(ev({ value: 10000, basis: AmountBasis.GROSS })).assertable);
   check('B8d it refuses UNKNOWN that was NOT observed settling',
-    !observedCashContribution(ev({ value: 5500.01, basis: AmountBasis.UNKNOWN })).assertable);
+    !observedCashContribution(ev({ value: 4928.41, basis: AmountBasis.UNKNOWN })).assertable);
   check('B8e and admits UNKNOWN that WAS',
     observedCashContribution(
-      ev({ value: 5500.01, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
+      ev({ value: 4928.41, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
   check('B8f an observed marker cannot rescue a GROSS amount',
     !observedCashContribution(
       ev({ value: 10000, basis: AmountBasis.GROSS, observedSettled: true })).assertable);

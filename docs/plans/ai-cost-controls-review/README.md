@@ -4,12 +4,12 @@ Status: visual benchmark implemented and inspected; owner acceptance pending. In
 
 ## Identity
 
-- Worktree: `/Users/chrstn/dev/FourthMeridian-ui`
+- Worktree: `/Users/devuser/dev/FourthMeridian-ui`
 - Branch: `ui/full-platform-responsive-hardening`
 - Starting HEAD: `118a71101e896e942d89f64c628800c2cdff284e`
 - Approved integration target: `c234f3034675c8e215b679a4e92ab8d9a304651e`, not yet integrated.
 - Review URL: http://localhost:3001/dashboard/platform/PLATFORM_OPS?workspace=platform-policies
-- Verified local listener: PID 47180, cwd `/Users/chrstn/dev/FourthMeridian-ui`, Next.js 16.2.7 development server on 3001. Source paths in authenticated browser DevTools also identify this worktree. Version 2.6.0 alone cannot identify a commit; use cwd plus Git HEAD and the redesigned headings.
+- Verified local listener: PID 47180, cwd `/Users/devuser/dev/FourthMeridian-ui`, Next.js 16.2.7 development server on 3001. Source paths in authenticated browser DevTools also identify this worktree. Version 2.6.0 alone cannot identify a commit; use cwd plus Git HEAD and the redesigned headings.
 
 ## This milestone
 

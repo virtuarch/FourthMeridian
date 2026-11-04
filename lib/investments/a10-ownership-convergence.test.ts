@@ -9,7 +9,7 @@
  * carrying the earliest observed quantity BACKWARD so an account connected in
  * 2026 was priced across 2025 as though always held.
  *
- * Measured on Chris' Space at 2025-11-03: the `Individual` account contributed
+ * Measured on Jules' Space at 2025-11-03: the `Individual` account contributed
  * $2,482.12 — six positions, seven months before its first ownership evidence —
  * and that was the ENTIRE gap between the headline ($32,820.13) and the chart,
  * panel and snapshot, which all agreed at $30,338.00.

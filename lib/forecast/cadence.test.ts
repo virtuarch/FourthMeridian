@@ -104,17 +104,17 @@ eq('B4 $5,250 biweekly is $136,500/year', monthlyEquivalent(5250, CadenceKind.BI
 // second, competing money convention.
 eq('B5 the measured case is exact — 5250 x 26 / 12', monthlyEquivalent(5250, CadenceKind.BIWEEKLY), 11375);
 eq('B6 full precision is carried, not rounded mid-computation',
-  monthlyEquivalent(5520.26, CadenceKind.BIWEEKLY), 5520.26 * 26 / 12);
+  monthlyEquivalent(4946.78, CadenceKind.BIWEEKLY), 4946.78 * 26 / 12);
 eq('B7 weekly keeps its repeating third', monthlyEquivalent(1000, CadenceKind.WEEKLY), 1000 * 52 / 12);
-eq('B8 monthly is identity', monthlyEquivalent(4556.57, CadenceKind.MONTHLY), 4556.57);
+eq('B8 monthly is identity', monthlyEquivalent(4047.36, CadenceKind.MONTHLY), 4047.36);
 // The two evaluation orders genuinely disagree for a minority of inputs, which
 // is why ONE of them is canonical and every caller routes through the function
 // rather than multiplying by monthlyFactor itself.
 check('B10 multiplying by monthlyFactor is NOT interchangeable',
-  [999.99, 5520.26, 1234.56].some((a) =>
+  [999.99, 4946.78, 1234.56].some((a) =>
     Object.values(CadenceKind).some((k) => a * annualFactor(k) / 12 !== a * monthlyFactor(k))));
 check('B11 monthlyEquivalent uses the canonical order for every kind and amount',
-  [5250, 999.99, 5520.26, 0.07].every((a) =>
+  [5250, 999.99, 4946.78, 0.07].every((a) =>
     Object.values(CadenceKind).every((k) => monthlyEquivalent(a, k) === a * annualFactor(k) / 12)));
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -424,8 +424,8 @@ check('K1 the payroll derives BIWEEKLY',
 eq('K2 its anchor is the last observed payment', isCadence(empA) ? empA.anchorISO : null, '2036-11-14');
 eq('K3 the next pay date is generated, not invented',
   isCadence(empA) ? nextOccurrences(empA, '2036-11-27', 1) : null, ['2036-11-28']);
-eq('K4 its median $5,520.26 cheque is $11,496.59/month at full precision',
-  isCadence(empA) ? monthlyEquivalent(5520.26, empA.kind) : null, 5520.26 * 26 / 12);
+eq('K4 its median $4,946.78 cheque is $10,718.02/month at full precision',
+  isCadence(empA) ? monthlyEquivalent(4946.78, empA.kind) : null, 4946.78 * 26 / 12);
 check('K5 the one off-cycle payment is REPORTED, not hidden',
   isCadence(empA) && empA.evidence!.irregularGaps.length === 1 && empA.evidence!.irregularGaps[0] === 1,
   JSON.stringify(isCadence(empA) ? empA.evidence : null));

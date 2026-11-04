@@ -180,7 +180,7 @@ test("liquidity reason measures partition Cash Out (no double-count when combine
 });
 
 // ─── CF-3B — drill-down (rowsForMeasures) shows only the rows behind a measure ───
-// Sanitized real "mixed day" (2026-07-08 Christian's Space): posted Lulu +
+// Sanitized real "mixed day" (2026-07-08 Jules' Space): posted Lulu +
 // T-Mobile card purchases share the day with a card debt payment and income.
 // The bug: the Calendar/History drill-down showed EVERY row that day, mixing
 // purchases with payments and burying the Lulu purchase.

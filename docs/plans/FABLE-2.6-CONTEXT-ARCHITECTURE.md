@@ -1,6 +1,6 @@
 # FABLE-2.6 — Ambient Intelligence & Context Architecture
 
-*Product-architecture proposal for Fourth Meridian v2.6. Grounded in a fresh audit of every AI entry point in the repository (snapshot: `feature/v2.5-spaces-completion` + V26-PRE hardening slices). File references are to real code. The centerpiece — the versioned Financial Context — is the architecture Chris proposed mid-review; this document makes it concrete, proves from the code why it is the right move, and sequences it.*
+*Product-architecture proposal for Fourth Meridian v2.6. Grounded in a fresh audit of every AI entry point in the repository (snapshot: `feature/v2.5-spaces-completion` + V26-PRE hardening slices). File references are to real code. The centerpiece — the versioned Financial Context — is the architecture Jules proposed mid-review; this document makes it concrete, proves from the code why it is the right move, and sequences it.*
 
 ---
 

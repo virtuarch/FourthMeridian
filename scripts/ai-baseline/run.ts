@@ -137,7 +137,7 @@ export async function runCase(args: {
  * Blank human-review fields. Deliberately NOT populated by a model.
  *
  * ⚠️ NO LLM JUDGE. The previous architecture's scorers were wrong before the
- * model twice as often, and later ten times. Chris reads the transcripts.
+ * model twice as often, and later ten times. Jules reads the transcripts.
  */
 function blankReview(probe: Probe) {
   return {

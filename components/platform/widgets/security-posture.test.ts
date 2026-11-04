@@ -95,8 +95,8 @@ const audit: PlatformAuditResponse = { events: [
   { id: "a2", action: "LOGIN_FAILED", at: AGO(5).toISOString(), actor: "system" },
 ] };
 const operators: OperatorActionsResponse = { events: [
-  { id: "o1", action: "CUSTOMER_POLICY_ASSIGNED", at: AGO(1).toISOString(), operator: "chris", target: "bob", reasonCode: "SUPPORT_REQUEST", result: "SUCCESS", execution: null },
-  { id: "o2", action: "CONNECTION_RESYNC_TRIGGERED", at: AGO(4).toISOString(), operator: "chris", target: "plaid item …abc123", reasonCode: null, result: "REFUSED", execution: { refreshExecutionId: "exec_zz1234" } },
+  { id: "o1", action: "CUSTOMER_POLICY_ASSIGNED", at: AGO(1).toISOString(), operator: "jules", target: "bob", reasonCode: "SUPPORT_REQUEST", result: "SUCCESS", execution: null },
+  { id: "o2", action: "CONNECTION_RESYNC_TRIGGERED", at: AGO(4).toISOString(), operator: "jules", target: "plaid item …abc123", reasonCode: null, result: "REFUSED", execution: { refreshExecutionId: "exec_zz1234" } },
 ] };
 const sessions: PlatformSessionsResponse = { totalActive: 5, distinctUsers: 3, recent: [{ device: "Desktop", browser: "Chrome", os: "macOS", at: AGO(0.5).toISOString() }] };
 
@@ -245,8 +245,8 @@ function main() {
     const f = feeds();
     const html = f.html + hostHtml, t = f.text + " " + hostText;
     check("end-user auth: action humanised, actor attributed, depth stated", t.includes("Two factor enabled alice") && t.includes("Login failed system") && t.includes(feedDepthText(2, "security events")));
-    check("operator actions: P1 label, operator → target · reason code", t.includes("Assigned a policy group chris → bob · support request"), t);
-    check("operator actions: an execution handle is opaque", t.includes("Resynced a connection chris → plaid item …abc123 · refresh …zz1234"), t);
+    check("operator actions: P1 label, operator → target · reason code", t.includes("Assigned a policy group jules → bob · support request"), t);
+    check("operator actions: an execution handle is opaque", t.includes("Resynced a connection jules → plaid item …abc123 · refresh …zz1234"), t);
     check("operator actions: the result is a WORD in its tone; success is not badged", badgeWords(html).includes("refused") && !badgeWords(html).includes("succeeded"), badgeWords(html).join(","));
     check("operator actions: depth stated; never the note", t.includes(feedDepthText(2, "operator actions")) && !/\.note\b/.test(strip("components/platform/widgets/SecOperatorActionsWidget.tsx")));
     check("sessions: counts with their derivation", t.includes("Live sessions 5") && t.includes("Distinct users with a session 3") && t.includes("revokedAt IS NULL, inside the SEC-010 idle and absolute lifetime"));

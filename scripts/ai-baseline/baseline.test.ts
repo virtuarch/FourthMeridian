@@ -120,9 +120,24 @@ console.log('2. system instruction');
   // stub), so the hermetic guard runs against what the tree keeps of them: the
   // probe conversations drawn from them.
   const probeText = read('scripts/ai-baseline/probes.ts');
+  const leaks = (instruction: string, probes: string): boolean =>
+    instruction.split('\n').filter((l) => l.trim().length > 30).some((s) => probes.includes(s.trim()));
   const sentences = SYSTEM_INSTRUCTION.split('\n').filter((l) => l.trim().length > 30);
+  check('the overlap guard has something to compare (non-empty on both sides)',
+    sentences.length > 0 && PROBES.some((p) => p.turns.some((t) => t.trim().length > 30)));
   check('no sentence of the instruction appears in the probe conversations',
-    sentences.every((s) => !probeText.includes(s.trim())));
+    !leaks(SYSTEM_INSTRUCTION, probeText));
+  // ⚠️ MUTATION SELF-CHECK. The guard above must be able to fail: a probe line
+  // carrying an instruction sentence, or an instruction carrying a probe line,
+  // each trips it. Without this a broken split or an empty read passes silently.
+  {
+    const probeLine = PROBES.flatMap((p) => p.turns).find((t) => t.trim().length > 30 && probeText.includes(t))!;
+    const instructionLine = sentences[0]!;
+    check('mutation: a probe line edited to carry an instruction sentence trips the guard',
+      leaks(SYSTEM_INSTRUCTION, probeText.replace(probeLine, instructionLine.trim())));
+    check('mutation: an instruction edited to carry a probe line trips the guard',
+      leaks(`${SYSTEM_INSTRUCTION}\n${probeLine}`, probeText));
+  }
   check('names no financial figure', !/\$|\d{3,}/.test(SYSTEM_INSTRUCTION));
 }
 

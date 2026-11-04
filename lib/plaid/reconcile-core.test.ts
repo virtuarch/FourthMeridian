@@ -94,15 +94,15 @@ console.log("2. The legacy pending-inclusive rule — reproduces the exact recor
 // ── 3. The detector still catches what it exists for ────────────────────────
 console.log("3. Genuine gaps still detected — the fix is not a suppression");
 {
-  // The July-2 class: a posted payroll (+5,500.02) was delivered but never
+  // The July-2 class: a posted payroll (+4,928.42) was delivered but never
   // stored, while the balance already reflected it. Posted sum does not move.
   const lost = evaluateReconciliation({
     kind: "cash",
-    balanceBefore: 1000, balanceAfter: 1000 + 5500.02,
+    balanceBefore: 1000, balanceAfter: 1000 + 4928.42,
     postedSumBefore: 0,  postedSumAfter: 0,              // the row never landed
   });
   check("missing posted deposit IS flagged", lost.mismatched === true);
-  check("mismatch equals the lost amount", approx(lost.mismatch, 5500.02));
+  check("mismatch equals the lost amount", approx(lost.mismatch, 4928.42));
 
   // A missing posted CARD charge is equally detected.
   const lostCard = evaluateReconciliation({
@@ -146,7 +146,7 @@ console.log("5. Property check — matched bases never manufacture a mismatch");
   // For any posted movement, if the balance moved by exactly what the posted
   // transactions say, mismatch must be 0 — for both account kinds.
   let ok = true;
-  for (const delta of [-421.32, -213.5, 0, 12.52, 5500.02, -1, 99999]) {
+  for (const delta of [-421.32, -213.5, 0, 12.52, 4928.42, -1, 99999]) {
     const cash = evaluateReconciliation({
       kind: "cash", balanceBefore: 0, balanceAfter: delta,
       postedSumBefore: 0, postedSumAfter: delta,

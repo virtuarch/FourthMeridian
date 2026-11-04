@@ -24,8 +24,10 @@
  *     month. Generated schedules look like that; a real ledger, with its
  *     weekend and holiday rolls, does not;
  *   - an irregular long run in income context FAILS unless it is ATTESTED: the
- *     marker `fixture-census: synthetic-dates` in a comment on the run's first
- *     line or within ATTEST_LINES above it. The marker is a claim by the author
+ *     marker `fixture-census: synthetic-dates — <why>` in a comment on the run's
+ *     first line or within ATTEST_LINES above it. The reason is required (at
+ *     least MIN_REASON characters after the dash), so the marker cannot be
+ *     pasted silently: it says how the dates were made. The marker is a claim by the author
  *     that the dates are not a recoverable real history: either invented (a
  *     generated schedule plus test-placed perturbations) or moved by an
  *     undisclosed whole-week offset that is NOT a calendar repeat (a shift by
@@ -50,6 +52,16 @@ const MIN_RUN = 10;
 const CONTEXT_LINES = 4;
 const ATTEST_LINES = 3;
 const MARKER = "fixture-census: synthetic-dates";
+const MIN_REASON = 12;
+/** The marker counts only with a reason: `fixture-census: synthetic-dates — <why>`. */
+export function hasAttestation(text: string): boolean {
+  return text.split("\n").some((line) => {
+    const at = line.indexOf(MARKER);
+    if (at < 0) return false;
+    const m = /^\s*(?:—|--|-)\s*(.*)$/.exec(line.slice(at + MARKER.length));
+    return !!m && m[1].trim().length >= MIN_REASON;
+  });
+}
 
 const DATE_LITERAL = /(['"`])(\d{4}-\d{2}-\d{2})\1/g;
 const FIRST_DATE = /['"`]\d{4}-\d{2}-\d{2}['"`]/;
@@ -111,7 +123,7 @@ export function suspiciousRuns(text: string): Run[] {
     if (!isSeries(r.dates)) return false;
     if (isTemplated(r.dates)) return false;
     const attest = lines.slice(Math.max(0, r.start - ATTEST_LINES), r.start + 1).join("\n");
-    return !attest.includes(MARKER);
+    return !hasAttestation(attest);
   });
 }
 
@@ -158,8 +170,10 @@ console.log("1. the heuristic (invented dates only)");
   check("passes a short irregular run", suspiciousRuns(
     "const EMPLOYER_X = ['2091-01-01','2091-01-16','2091-02-02','2091-02-16'];").length === 0);
   check("an attested run passes; the marker must sit just above it",
-    suspiciousRuns([`// ${MARKER}`, ...irregular].join("\n")).length === 0
-    && suspiciousRuns([`// ${MARKER}`, "", "", "", "", ...irregular].join("\n")).length === 1);
+    suspiciousRuns([`// ${MARKER} — invented schedule for this test`, ...irregular].join("\n")).length === 0
+    && suspiciousRuns([`// ${MARKER} — invented schedule for this test`, "", "", "", "", ...irregular].join("\n")).length === 1);
+  check("a bare marker (no reason) does not attest", suspiciousRuns([`// ${MARKER}`, ...irregular].join("\n")).length === 1);
+  check("a marker with a token reason does not attest", suspiciousRuns([`// ${MARKER} — ok`, ...irregular].join("\n")).length === 1);
   check("lines of calls with dates are not a data run", suspiciousRuns(checks.join("\n")).length === 0);
   check("a new array starts a new run (two short arrays are not one long one)", suspiciousRuns([
     "const EMPLOYER_X = ['2091-01-01','2091-01-16','2091-02-02','2091-02-16','2091-03-01'];",
@@ -195,7 +209,7 @@ console.log("2. this checkout");
     try { text = readFileSync(path.join(process.cwd(), file), "utf8"); } catch { continue; }
     for (const r of suspiciousRuns(text)) violations.push(`${file}:${r.start + 1}: ${r.dates.length} irregular dates beside income vocabulary`);
   }
-  check(`no unattested long irregular date run beside income vocabulary (invent the dates, then mark the run "${MARKER}")`,
+  check(`no unattested long irregular date run beside income vocabulary (invent the dates, then mark the run "${MARKER} — <why>")`,
     violations.length === 0, `\n      ${violations.slice(0, 40).join("\n      ")}`);
 }
 

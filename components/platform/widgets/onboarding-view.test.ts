@@ -46,7 +46,7 @@ for (const k of Object.keys(IMPORT_REASON_LABELS) as ImportReasonCategory[]) {
 console.log("(b) display identity");
 {
   check("username → name → opaque ref (the Customers list's rule)", operatorDisplayName({ id: "cuid_abc123", username: null, name: null }) === "user …abc123"
-    && operatorDisplayName({ id: "x", username: "chris", name: "Chris H" }) === "chris");
+    && operatorDisplayName({ id: "x", username: "jules", name: "Jules E" }) === "jules");
   const panel = strip("components/platform/leads/CsRecentlyJoinedPanel.tsx");
   const list = strip("components/platform/widgets/CsCustomersWidget.tsx");
   check("the Customers list uses operatorDisplayName", /operatorDisplayName\(c\)/.test(list));

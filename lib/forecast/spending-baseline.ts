@@ -15,9 +15,9 @@
  * Measured on the live Space across three time representations, this user's
  * discretionary spending has NO current regime:
  *
- *   calendar months   $2,290 … $14,061 over the last twelve · 6.1x range
- *   28-day windows    $1,943 … $16,144 over the last fourteen · 8.3x range
- *   7-day windows     $370 … $5,594 · 15.1x range
+ *   calendar months   illustratively $2,000 … $12,000 over the last twelve · ~6x range
+ *   28-day windows    illustratively $1,500 … $12,000 over the last fourteen · ~8x range
+ *   7-day windows     illustratively $400 … $6,000 · ~15x range
  *
  * At the band this module considers defensible, the most recent complete
  * period has NO neighbour close enough to join it — at any granularity. A
@@ -31,7 +31,7 @@
  *
  * ── Why category cannot rescue it ───────────────────────────────────────────
  * The tempting fix is to call travel exceptional and strip it. Measured, TRAVEL
- * IS THIS USER'S LARGEST CATEGORY — $55,753 across 26 months, ahead of shopping
+ * IS THIS USER'S LARGEST CATEGORY — tens of thousands over two years, ahead of shopping
  * and dining. A rule that treats travel as exceptional would delete the single
  * biggest component of how they actually live, and report the remainder as
  * their normal. Someone who travels every month is not having an exceptional

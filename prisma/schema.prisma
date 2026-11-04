@@ -493,7 +493,7 @@ model User {
 // Space (renamed from Workspace — Fourth Meridian Phase 1 naming migration)
 // Container for all financial data. Every user auto-receives one PERSONAL
 // Space on registration. Additional SHARED Spaces can be created or
-// joined (Hogan Family, Atlanta Duplex LLC, etc.)
+// joined (Example Family, Atlanta Duplex LLC, etc.)
 // category provides semantic context for the Space (e.g. HOUSEHOLD, BUSINESS).
 // DB1 (2026-07): the physical table was renamed Workspace -> Space, so the
 // @@map is gone and the DB table name now matches the model.

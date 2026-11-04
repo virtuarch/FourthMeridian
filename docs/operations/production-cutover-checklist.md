@@ -45,7 +45,7 @@ Candidate SHA: `________________` (filled at freeze) · Freeze declared: `______
 | D3 | Staged deployment boots with strict mode and the three role URLs (cutover §5 G/G′): `db-authority` 200, strict, 3 roles, residue 0, RLS 56/56 (or the current count) | staged URL + owner session | OWNER | ☐ |
 | D4 | Staged-URL login with TOTP rehearsed on a non-alias host (cutover §6.7) | one login on the staged URL; session lands on that host | OWNER | ☐ |
 | D5 | `registration_mode` row = `invite_only` on Production (G0) | `select value from "PlatformSetting" where key='registration_mode'` | OWNER | ☐ |
-| D6 | Branch rulesets live on `main` and `v2.6` (G2) | `gh api /repos/virtuarch/FourthMeridian/rulesets \| jq length` ≥ 2; `branching-and-protection.md` §4.4 | OWNER | ☐ |
+| D6 | Branch rulesets live on `main` and `v2.6` (G2) | `gh api /repos/{owner}/{repo}/rulesets \| jq length` ≥ 2; `branching-and-protection.md` §4.4 | OWNER | ☐ |
 | D7 | Repository visibility decision recorded (SEC-018, G2) | written decision in STATUS §3 | OWNER | ☐ |
 
 ## E. Jobs, providers, monitoring, alerts

@@ -35,7 +35,7 @@ function envelopeRow(id: string, minsAgo: number, input: Parameters<typeof build
 }
 
 const OP = { userId: "op_000001", via: "PLATFORM_GRANT" as const, area: "PLATFORM_OPS" };
-const label = (id: string) => (id === "op_000001" ? "chris" : id === "op_000002" ? "Dana Ops" : null);
+const label = (id: string) => (id === "op_000001" ? "jules" : id === "op_000002" ? "Dana Ops" : null);
 
 async function main() {
   console.log("1. the ruling: platform objects in, security events out");
@@ -94,7 +94,7 @@ async function main() {
       detail: { started: 2, cooldown: 1 },
     });
     const item = projectOperatorFeedItem(refreshAll, label("op_000001"));
-    check("operator is the resolved label", item.operator === "chris");
+    check("operator is the resolved label", item.operator === "jules");
     check("Refresh All target is OPAQUE (user …last6), never the customer's username", item.target === "user …123456");
     check("action label from the table", item.actionLabel === "Refreshed a customer's authorities");
     check("reason CODE only", item.reasonCode === "SUPPORT_REQUEST");
@@ -142,13 +142,13 @@ async function main() {
       },
       async operators(ids) {
         asked.ids = ids;
-        return [{ id: "op_000001", username: "chris", name: "Chris H", ...({ email: "chris@example.com" } as object) }];
+        return [{ id: "op_000001", username: "jules", name: "Jules E", ...({ email: "jules@example.com" } as object) }];
       },
     };
     const feed = await loadOperatorFeed({ readers });
     check("rows are asked for exactly the allowlist at OPERATOR_FEED_DEPTH", asked.actions?.join() === PLATFORM_OPS_FEED_ACTIONS.join() && asked.take === OPERATOR_FEED_DEPTH);
     check("operators resolved for the acting ids only", asked.ids?.join() === "op_000001");
-    check("username first; an email on the identity row never reaches the payload", feed.items[0].operator === "chris" && !/@/.test(JSON.stringify(feed)));
+    check("username first; an email on the identity row never reaches the payload", feed.items[0].operator === "jules" && !/@/.test(JSON.stringify(feed)));
     check("checkedAt is the reader's clock", feed.checkedAt === NOW.toISOString());
   }
 

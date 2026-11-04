@@ -38,7 +38,7 @@ feature/*, fix/*, chore/*, sec/*  ──PR, 4 required checks──▶  develop 
 | 25690160 `v2.6 — integration (PR + CI required)` | `refs/heads/v2.6` | (unchanged; delete at retirement) |
 
 - All three allow the Repository-admin role to bypass in **pull_request mode only**. No direct-push bypass.
-- Verify with: `gh api repos/virtuarch/FourthMeridian/rulesets` and `gh api repos/virtuarch/FourthMeridian/rules/branches/develop`.
+- Verify with: `gh api repos/{owner}/{repo}/rulesets` and `gh api repos/{owner}/{repo}/rules/branches/develop`.
 
 **Strict `main`:** a `develop → main` PR must contain `main`'s tip. After every promotion (and every hotfix), merge `main` back into `develop` by PR, so the next promotion PR is up to date without a release branch.
 

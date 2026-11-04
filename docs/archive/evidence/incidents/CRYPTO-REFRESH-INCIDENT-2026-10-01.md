@@ -35,7 +35,7 @@ The headline defect is **not** any of the three visible failures. It is this:
 branch        v2.6
 HEAD          e7500550b7b5f3a989ac82f6fa40329b2f847627  (e750055)
 origin/v2.6   0 ahead / 0 behind
-remote        https://github.com/virtuarch/FourthMeridian.git
+remote        https://github.com/<owner>/FourthMeridian.git
 ```
 
 Untracked, **left untouched** (peer work — the brief forbids modifying them):

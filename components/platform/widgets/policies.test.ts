@@ -99,13 +99,13 @@ console.log("\n3. an override with evidence");
   const at = new Date("2026-09-14T06:00:05.000Z");
   const model = composeRefreshPoliciesReadModel([
     input("BANK"),
-    input("WALLET", { row: { value: "12h", updatedAt: new Date("2026-09-13T18:32:00.000Z"), updatedById: "u1" }, updatedByName: "Chris",
+    input("WALLET", { row: { value: "12h", updatedAt: new Date("2026-09-13T18:32:00.000Z"), updatedById: "u1" }, updatedByName: "Jules",
       evidence: { job: "sync-crypto", startedAt: at, policyVersion: "WALLET:6h:default" } }),
   ], NOW);
   const html = render({ data: model, loading: false, error: null });
   check("effective 12h, overdue after 15 hours, legend Override 12 h", /Every 12 hours/.test(html) && /overdue after 15 hours/.test(html) && /Override 12 h/.test(html));
   check("latest sweep is Pending with the next-attempt sentence, on the observation line", /Latest sweep: /.test(html) && /Pending/.test(html) && /next scheduled attempt/.test(html));
-  check("provenance shows the UTC date and the writer's name", /Override set 13 Sept? 2026, 18:32 UTC by Chris/.test(html));
+  check("provenance shows the UTC date and the writer's name", /Override set 13 Sept? 2026, 18:32 UTC by Jules/.test(html));
 }
 
 console.log("\n4. loading and failure states are distinct from data");

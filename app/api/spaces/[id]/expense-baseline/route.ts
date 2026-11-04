@@ -46,7 +46,7 @@
  *
  * So the workspace showed NOTHING whenever a Space had only a measurement —
  * every Space on the corpus — while the engine graded the same position and told
- * the AI about it (Chris' Space: "1.6 months", a WARNING, that no product surface
+ * the AI about it (Jules' Space: "1.6 months", a WARNING, that no product surface
  * mentioned).
  *
  * This route closes that: it resolves the baseline SERVER-side, through the one

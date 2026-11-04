@@ -42,7 +42,7 @@ test("interest earned is not earned income", () => {
 });
 
 test("salary stays earned income, and stays positive", () => {
-  const r = describeRowNature({ flowType: "INCOME", incomeSubtype: "SALARY", amount: 5499.75 });
+  const r = describeRowNature({ flowType: "INCOME", incomeSubtype: "SALARY", amount: 4928.15 });
   assert.equal(r.nature, "EARNED_INCOME");
   assert.equal(r.tone, "positive");
 });

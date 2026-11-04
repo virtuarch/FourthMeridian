@@ -76,7 +76,7 @@ function flowOf(r: Row): FlowType {
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const pendingPayroll: Row = {
-    category: "Other", amount: 5500.00,
+    category: "Other", amount: 4928.40,
     merchant: "EMPLOYER A", description: "EMPLOYER A PAYROLL SEC:PPD",
     pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", accountType: "checking",
   };
@@ -141,12 +141,12 @@ function flowOf(r: Row): FlowType {
   // must land on the SAME economic kind — INCOME — never REFUND for one and
   // INCOME for the other. Pending is a settlement state, not an economic type.
   const pending: Row = {
-    category: "Other", amount: 5500.00,
+    category: "Other", amount: 4928.40,
     merchant: "EMPLOYER A", description: "EMPLOYER A PAYROLL",
     pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", accountType: "checking",
   };
   const posted: Row = {
-    category: "Income", amount: 5500.00,
+    category: "Income", amount: 4928.40,
     merchant: "EMPLOYER A", description: "EMPLOYER A PAYROLL",
     pfcPrimary: "INCOME", pfcDetailed: "INCOME_WAGES", accountType: "checking",
   };
@@ -207,7 +207,7 @@ check("isPayrollIncomeDescriptor matches a real payroll word",
 
 // A descriptor-blind view of the rescued Income row: the classifier's own reason.
 {
-  const c = classifyFlow({ category: "Income", amount: 5500.00 });
+  const c = classifyFlow({ category: "Income", amount: 4928.40 });
   check("classifier stays descriptor-blind: rescued Income → CATEGORY_FLOW_VALUE (not DESCRIPTOR_EVIDENCE)",
     c.reason === "CATEGORY_FLOW_VALUE", `got ${c.reason}`);
 }
@@ -228,7 +228,7 @@ function writeFieldsFor(r: Row, descriptorRescued: boolean) {
 }
 
 {
-  const payroll: Row = { category: "Other", amount: 5500.00, merchant: "EMPLOYER A",
+  const payroll: Row = { category: "Other", amount: 4928.40, merchant: "EMPLOYER A",
     description: "EMPLOYER A PAYROLL SEC:PPD", accountType: "checking" };
   const rescued = resolveCategory(payroll) === "Income";
   check("payroll row rescues to Income", rescued);

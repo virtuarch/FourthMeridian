@@ -13,7 +13,7 @@
  * Plaid-only walk left them behind while Step 2's provider-agnostic snapshot
  * wipe cleared their history, stranding a no-history wallet entry.
  *
- * Scoped to a single user (default chr.hogan1997@gmail.com). Removes:
+ * Scoped to a single user (--email <login-email>, required). Removes:
  *   1. ALL that user's PlaidItems — severed at Plaid first via
  *      disconnectPlaidItemIfOrphaned() (itemRemove), then HARD-deleted so the
  *      FinancialAccount / Transaction / Holding / PositionObservation /
@@ -57,7 +57,11 @@ function argValue(flag: string): string | null {
   const i = process.argv.indexOf(flag);
   return i !== -1 && i + 1 < process.argv.length ? process.argv[i + 1] : null;
 }
-const EMAIL = (argValue("--email") ?? "chr.hogan1997@gmail.com").trim();
+const EMAIL = (argValue("--email") ?? "").trim();
+if (!EMAIL) {
+  console.error("Usage: tsx scripts/dev-reset-test-state.ts --email <login-email> [--apply]");
+  process.exit(1);
+}
 
 function hr() { console.log("──────────────────────────────────────────────────────────"); }
 function isInstitutionMatch(institution: unknown, names: Set<string>): boolean {

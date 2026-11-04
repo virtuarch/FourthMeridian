@@ -22,7 +22,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 console.log("label fallback order — username, then name, then an opaque reference; never email");
 {
   const users = {
-    withUsername: { id: "user_abcdef123456", username: "chris", name: "Chris H", ...({ email: "chris@example.com" } as object) },
+    withUsername: { id: "user_abcdef123456", username: "jules", name: "Jules E", ...({ email: "jules@example.com" } as object) },
     nameOnly:     { id: "user_zzzzzz654321", username: null, name: "Pat Example", ...({ email: "pat@example.com" } as object) },
     bare:         { id: "user_qqqqqq999999", username: "  ", name: "", ...({ email: "bare@example.com" } as object) },
   };
@@ -32,7 +32,7 @@ console.log("label fallback order — username, then name, then an opaque refere
     [{ id: "w1", user: users.nameOnly }, { id: "x1", user: users.bare }],
   );
   const by = new Map(owners.map((o) => [`${o.source}:${o.id}`, o.owner.label]));
-  check("username first", by.get("PLAID:p1") === "chris");
+  check("username first", by.get("PLAID:p1") === "jules");
   check("name when no username", by.get("WALLET:w1") === "Pat Example");
   check("opaque reference when neither (blank username is not a username)", by.get("EXCHANGE:x1") === "user …999999");
   const json = JSON.stringify(owners);
@@ -64,7 +64,7 @@ console.log("request shape — the route's 400 rules");
   check("missing separator ⇒ error", "error" in parseConnectionRefs(["abc"]));
   check("malformed id ⇒ error", "error" in parseConnectionRefs(["PLAID:a b"]) && "error" in parseConnectionRefs(["PLAID:"]));
   check("bounded at CONNECTION_OWNERS_MAX", CONNECTION_OWNERS_MAX === 50 && "error" in parseConnectionRefs(Array.from({ length: 51 }, (_, i) => `PLAID:i${i}`)) && "refs" in parseConnectionRefs(Array.from({ length: 50 }, (_, i) => `PLAID:i${i}`)));
-  check("an email-shaped token is not an id", "error" in parseConnectionRefs(["PLAID:chris@example.com"]));
+  check("an email-shaped token is not an id", "error" in parseConnectionRefs(["PLAID:jules@example.com"]));
 }
 
 if (failures > 0) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

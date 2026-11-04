@@ -83,7 +83,7 @@ Rules: exactly these three names, the same in every environment; **no** `OPENAI_
 
 ### 2.1 Exact configuration locations (owner update 2026-10-15)
 
-**Development** — the owner's local `/Users/chrstn/dev/FourthMeridian/.env.local` (gitignored; "Sensitive" does not apply to a local file — keep the file out of cloud-synced folders, `key-rotation.md` "After ANY rotation"). Three lines, values typed by the owner:
+**Development** — the owner's local `/Users/devuser/dev/FourthMeridian/.env.local` (gitignored; "Sensitive" does not apply to a local file — keep the file out of cloud-synced folders, `key-rotation.md` "After ANY rotation"). Three lines, values typed by the owner:
 
 ```
 OPENAI_API_KEY=<the fm-dev-backend key — never shown anywhere else>
@@ -123,7 +123,7 @@ Never type a key anywhere but the OpenAI dashboard (create) and the Vercel dashb
 
 1. **Collect the three project ids** — platform.openai.com → each project → Settings → General: `proj_…` for `fourth-meridian-dev`, `fourth-meridian-preview`, `fourth-meridian-prod`. These are not secrets and may be shared in chat.
 2. **Budget and alert per project** — in each project: Settings → Limits → Spend: **Edit spend limit** (the hard monthly limit) and a **spend alert** below it, per §6. Also set an organization-level alert as a backstop (Settings → Organization → Limits). (Production's limits may be set now — they are OpenAI-side settings, not a Production deployment change — but its key placement is not.)
-3. **Development — enter, in `/Users/chrstn/dev/FourthMeridian/.env.local`** (§2.1): `OPENAI_API_KEY=` the `fm-dev-backend` key · `OPENAI_PROJECT_ID=` the dev `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT=development`. Restart `next dev`. Confirm with §4 step 1 and the Development check in §4 step 7.
+3. **Development — enter, in `/Users/devuser/dev/FourthMeridian/.env.local`** (§2.1): `OPENAI_API_KEY=` the `fm-dev-backend` key · `OPENAI_PROJECT_ID=` the dev `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT=development`. Restart `next dev`. Confirm with §4 step 1 and the Development check in §4 step 7.
 4. **Preview — enter, in Vercel `fintracker1` → Environment Variables → Preview, branch `develop`, Sensitive** (§2.1 table, or the three `vercel env add … preview develop` commands): `OPENAI_API_KEY` = the `fm-preview-backend` key · `OPENAI_PROJECT_ID` = the preview `proj_…` · `OPENAI_EXPECTED_ENVIRONMENT` = `preview`. **Redeploy `develop`.** Verify per §4 and reconcile per §5.
 5. **Production — OWNER ONLY, NOT AUTHORIZED NOW.** Later, when the owner authorizes it (`production-cutover-plan.md` item 9): the same three names on the **Production** record with the `fm-prod-backend` key, the prod `proj_…`, `production`; redeploy Production; verify per §4; reconcile per §5. Only after that step does §5.1 permit revoking the legacy key.
 6. **Legacy keys — see §5.1 for the ordering.** Nothing is revoked in this milestone.

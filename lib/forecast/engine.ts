@@ -79,7 +79,7 @@ import {
 // rather than introducing minor-unit arithmetic that would disagree with every
 // other total in the codebase.
 //
-// The real Space is exactly why it matters. Employer A derives $5,500.015 — a
+// The real Space is exactly why it matters. Employer A derives $4,928.415 — a
 // genuine half-cent, because the level is the median of two payments a cent
 // apart. Rounding each occurrence to cents and then summing seven of them
 // drifts from the true total; carrying full precision and rounding once, at

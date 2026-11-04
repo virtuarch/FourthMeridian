@@ -620,7 +620,7 @@ SpaceSnapshot
 
 ---
 
-## 12. Screens / components Chris should inspect manually
+## 12. Screens / components Jules should inspect manually
 
 1. **Net Worth with all four metric chips** (`?metric=` netWorth / totalAssets /
    totalLiabilities / liquidNetWorth) — feel how much of the page already re-aims.

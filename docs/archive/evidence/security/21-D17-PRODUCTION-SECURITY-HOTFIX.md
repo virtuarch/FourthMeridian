@@ -4,7 +4,7 @@
 
 **Mode:** prepare, verify, stage. **Not merged, not deployed.**
 
-**PR:** [#6](https://github.com/virtuarch/FourthMeridian/pull/6) (draft): `hotfix/d17-security-deps` → `main`.
+**PR:** [#6](https://github.com/<owner>/FourthMeridian/pull/6) (draft): `hotfix/d17-security-deps` → `main`.
 
 **Recommendation: GO for this security-only hotfix**, subject to the owner's merge approval and the §7 verification. This is independent of the v2.6 release, which stays **NO-GO** (doc 20).
 

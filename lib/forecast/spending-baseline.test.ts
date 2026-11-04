@@ -385,7 +385,7 @@ check('L7 no category decomposition was built', !/byCategory|categoryBaseline/.t
 
 /** Synthetic 28-day consumption totals, newest first. */
 const VOLATILE = [6000.00, 2000.00, 4000.00, 16500.00, 6000.00, 3500.00, 5000.00,
-  6500.00, 4000.00, 7000.00, 4000.00, 9000.00, 5000.00, 5000.00];
+  6500.00, 4000.00, 7000.00, 4000.00, 8038.15, 5000.00, 5000.00];
 const volatileSpace = derive([...VOLATILE].reverse());
 
 eq('M1 the volatile Space yields UNKNOWN', volatileSpace.assertable, false);

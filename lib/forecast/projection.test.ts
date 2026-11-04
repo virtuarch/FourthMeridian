@@ -54,7 +54,7 @@ const near = (name: string, a: number | null | undefined, b: number, tol = 0.01)
 const MONTHS = [
   ['1989-07', 4000.00], ['1989-08', 4000.00], ['1989-09', 4000.00], ['1989-10', 4000.00],
   ['1989-11', 4000.00], ['1989-12', 4000.00], ['1990-01', 4000.00], ['1990-02', 4000.00],
-  ['1990-03', 4000.00], ['1990-04', 4000.00], ['1990-05', 12000.00], ['1990-06', 9000.00],
+  ['1990-03', 4000.00], ['1990-04', 4000.00], ['1990-05', 12000.00], ['1990-06', 8038.15],
   ['1990-07', 3000.00], ['1990-08', 6000.00],
 ].map(([month, expenseTotal]) => ({ month: month as string, expenseTotal: expenseTotal as number }));
 
@@ -65,8 +65,8 @@ const MONTHS = [
   check('S1b and it is the MOST RECENT three, never the most stable',
     r.assertable && r.months.join(',') === '1990-06,1990-07,1990-08', JSON.stringify(r));
   if (r.assertable) {
-    near('S2 the rate is their mean', r.monthlyRate, (9000.00 + 3000.00 + 6000.00) / 3);
-    near('S3 dispersion is stated, not smoothed', r.dispersionRatio, 9000.00 / 3000.00);
+    near('S2 the rate is their mean', r.monthlyRate, (8038.15 + 3000.00 + 6000.00) / 3);
+    near('S3 dispersion is stated, not smoothed', r.dispersionRatio, 8038.15 / 3000.00);
     check('S4 it carries OBSERVED_CONTINUATION, never SYSTEM_POLICY',
       r.origin === AssumptionOrigin.OBSERVED_CONTINUATION);
     // ⚠️ F6 OWNS THE WORD "NORMAL" AND WITHHELD IT FOR THIS USER. A projection
@@ -102,9 +102,9 @@ const ev = (o: { value: number; basis: string; observedSettled?: boolean }): Fut
 } as FutureCashEvent);
 {
   check('O1 an UNKNOWN amount observed settling is cash',
-    observedCashContribution(ev({ value: 5500.01, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
+    observedCashContribution(ev({ value: 4928.41, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
   check('O2 the same amount NOT observed settling is not',
-    !observedCashContribution(ev({ value: 5500.01, basis: AmountBasis.UNKNOWN })).assertable);
+    !observedCashContribution(ev({ value: 4928.41, basis: AmountBasis.UNKNOWN })).assertable);
   // ⚠️ THE BONUS CASE, WHICH THIS SLICE MUST NOT TOUCH. A stated future gross
   // amount is not cash however it is marked; nothing observed it arriving.
   check('O3 a GROSS amount is refused even when marked observed',
@@ -116,7 +116,7 @@ const OPENING = 12000.00;
 const payroll = (dateISO: string): FutureCashEvent => ({
   id: `pay@${dateISO}`, timing: { kind: 'EXACT', dateISO },
   timingProvenance: EventProvenance.DERIVED, direction: 'INFLOW', role: FlowRole.INCOME,
-  amount: { value: 5500.01, currency: 'USD', basis: AmountBasis.UNKNOWN,
+  amount: { value: 4928.41, currency: 'USD', basis: AmountBasis.UNKNOWN,
     provenance: EventProvenance.DERIVED, observedSettled: true },
 } as FutureCashEvent);
 const EVENTS = ['1990-09-07', '1990-09-21', '1990-10-05'].map(payroll);
@@ -130,7 +130,7 @@ const base = { openingCash: OPENING, events: EVENTS, fromISO: '1990-08-31', toIS
     p.status === ConclusionStatus.EVIDENCE_BASED_PROJECTION, p.status);
   const days = 122, monthly = rate.assertable ? rate.monthlyRate : 0;
   near('P2 closing is opening + observed inflows - accrued spending',
-    p.closing, OPENING + 3 * 5500.01 - (monthly / (365 / 12)) * days);
+    p.closing, OPENING + 3 * 4928.41 - (monthly / (365 / 12)) * days);
   check('P3 every component states its derivation',
     p.components.length > 0 && p.components.every((c) => c.derivation.length > 10));
   check('P3b and the spending component names its months',
@@ -210,7 +210,7 @@ const base = { openingCash: OPENING, events: EVENTS, fromISO: '1990-08-31', toIS
   const biweekly: FutureCashEvent[] = [];
   for (let t = Date.parse('1990-09-21T00:00:00Z'); t <= Date.parse('1992-12-31T00:00:00Z'); t += 14 * 86_400_000) {
     const e = payroll(new Date(t).toISOString().slice(0, 10));
-    biweekly.push({ ...e, amount: { ...e.amount, value: 5500.015 } } as FutureCashEvent);
+    biweekly.push({ ...e, amount: { ...e.amount, value: 4928.415 } } as FutureCashEvent);
   }
   const rent = (dateISO: string): FutureCashEvent => ({
     ...payroll(dateISO), id: `rent@${dateISO}`, direction: 'OUTFLOW', role: FlowRole.DEBT_PAYMENT,

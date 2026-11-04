@@ -16,8 +16,7 @@
  *   WEALTH_REGENERATION_ENABLED=true npx tsx scripts/regenerate-wealth-history.ts --space=<id> --apply
  *   flags: --from=YYYY-MM-DD  --to=YYYY-MM-DD  (defaults: --to=yesterday, --from=to−30d)
  *
- * 2026-07-15 — --space is optional: pass --email=<login-email> instead (or
- * nothing at all — defaults to chr.hogan1997@gmail.com) to auto-resolve that
+ * 2026-07-15 — --space is optional: pass --email=<login-email> instead to auto-resolve that
  * user's PERSONAL Space (the convention the since-deleted diagnose-wealth-chart-gap
  * diagnostic established). Lets
  * this run as a one-liner without looking up a Space id first.
@@ -44,8 +43,12 @@ function strFlag(name: string): string | null {
   return a ? (a.split("=")[1] ?? null) : null;
 }
 
-async function resolveSpaceId(explicitSpaceId: string | null, email: string): Promise<string> {
+async function resolveSpaceId(explicitSpaceId: string | null, email: string | null): Promise<string> {
   if (explicitSpaceId) return explicitSpaceId;
+  if (!email) {
+    console.error("Pass --space=<id> or --email=<login-email>.");
+    process.exit(1);
+  }
   const user = await db.user.findUnique({ where: { email }, select: { id: true } });
   if (!user) {
     console.error(`No user found with email "${email}". Pass --space=<id> explicitly.`);
@@ -73,7 +76,7 @@ function minusDays(iso: string, n: number): string {
 }
 
 async function main(): Promise<void> {
-  const email = strFlag("--email") ?? "chr.hogan1997@gmail.com";
+  const email = strFlag("--email");
   const spaceId = await resolveSpaceId(strFlag("--space"), email);
   const apply = has("--apply");
   const yesterday = minusDays(isoDay(new Date()), 1);
