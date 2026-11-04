@@ -190,7 +190,7 @@ export function providerEntities(inp: ProviderInputs): ProviderEntity[] {
     let statusBasis: string;
     if (h) {
       status = trustBadge(h.trust); healthClass = classOfTrust(h.trust);
-      // The rule and the counts that decided the verdict (provider-outcome@1 / provider-connection@1);
+      // The rule and the counts that decided the verdict (provider-outcome@1 / provider-connection@2);
       // an older payload without one falls back to the execution half, then to the authority's name.
       statusBasis = h.trustBasis ?? (h.execution ? `${h.execution.basis} (${h.execution.definition})` : "provider-health verdict");
     }

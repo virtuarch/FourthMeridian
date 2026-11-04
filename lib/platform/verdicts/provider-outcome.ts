@@ -44,7 +44,7 @@
 
 /**
  * THE failing share shared by every provider verdict definition (provider-outcome@1
- * failed outcomes, provider-connection@1 connections in provider-side ERROR, and
+ * failed outcomes, provider-connection@2 connections in provider-side ERROR, and
  * its reauth-wave share): at or above half, the evidence says the provider — not
  * one customer — is the problem. One constant, so the rules cannot drift apart.
  */

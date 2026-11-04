@@ -227,18 +227,19 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
       return { value: v, asOf: iso(r.checkedAt) };
     },
   },
-  "provider-connection@1": {
+  "provider-connection@2": {
     kind: "RETRIEVABLE", reader: "providerHealth", unit: "counts", windows: [],
     async read({ readers }) {
       const r = await readers.providerHealth();
-      const v = { failing: 0, degraded: 0, noVerdict: 0, noConnections: 0 };
+      // institutionConcentrated ⊂ degraded (v2): the error share one institution explains.
+      const v = { failing: 0, degraded: 0, institutionConcentrated: 0, noVerdict: 0, noConnections: 0 };
       let unknownPopulation = 0;
       for (const p of r.providers) {
         const c = p.connections ?? null;
         if (c === null) { v.noConnections++; continue; }
         if (c.tally.populationUnknown) unknownPopulation++;
         if (c.verdict === "FAILING") v.failing++;
-        else if (c.verdict === "DEGRADED") v.degraded++;
+        else if (c.verdict === "DEGRADED") { v.degraded++; if (c.rule === "institution-concentrated") v.institutionConcentrated++; }
         else v.noVerdict++;
       }
       if (unknownPopulation > 0) {

@@ -34,7 +34,7 @@ authorities, an alert engine and the sync-incident lifecycle.
 | Incident lifecycle (the only writer) | `lib/platform/incidents/lifecycle.ts` plus the classifier `lib/platform/sync-issue-semantics.ts` | IMPLEMENTED |
 | Incident intelligence (shared reader) | `lib/platform/incidents/intelligence/*` (PRs #264, #287); parity gate `lib/platform/incidents/parity/*` (PR #263). R1–R6b cut over (§13.1 complete: R1/R2 CS incidents panel + CS detail loader #288; R3 convergence #310; R4 projection + R5 feed #325; R5 fold/evaluate #332; R6a Ops attention #333; R6b CS attention #336); residuals named in `lib/platform/incidents/incident-boundary.test.ts` §11 (member activity feed and CS trend as follow-ups; the sync-control gate as a permanent exception) | IMPLEMENTED (module, R1–R6b) |
 | Scheduler presence (env-aware verdicts) | `lib/jobs/scheduler-presence.ts`, `scheduler-presence.core.ts` (PR #282) | IMPLEMENTED |
-| Provider verdict rules | `provider-outcome@1` `lib/platform/verdicts/provider-outcome.ts` (PR #282); `provider-connection@1` `lib/platform/verdicts/provider-connection.ts` (PRs #285, #286) | IMPLEMENTED |
+| Provider verdict rules | `provider-outcome@1` `lib/platform/verdicts/provider-outcome.ts` (PR #282); `provider-connection@2` `lib/platform/verdicts/provider-connection.ts` (PRs #285, #286; @2 institution concentration) | IMPLEMENTED |
 | Fleet AI spend status | `fleetSpendStatus` (`lib/platform/ai/fleet-spend-status.ts`, PR #281) | IMPLEMENTED |
 | Opaque customer reference (PRIV-ref) | `lib/platform/opaque-user-ref.ts`, `opaque-user-ref-format.ts` (PR #284) | IMPLEMENTED |
 | Operational policy (Policies workspace) | `lib/platform/policies/*` | IMPLEMENTED |
@@ -164,8 +164,9 @@ failures. Evaluation order, first match decides:
 The failure checks run before the sample floor, so the floor can only withhold HEALTHY; it
 never turns a failure into "Not enough data". In-flight rows are not decided outcomes.
 
-**`provider-connection@1`** (PR #285, follow-ups PR #286; `connectionTrustState`,
-`tallyConnections`, `assessConnections`). Before it, one customer's connection in ERROR,
+**`provider-connection@2`** (v1: PR #285, follow-ups PR #286; v2: institution
+concentration, S2 P8 item 5; `connectionTrustState`, `tallyConnections`,
+`concentrationOf`, `assessConnections`). v1 is retired: nothing computes it. Before it, one customer's connection in ERROR,
 REVOKED or NEEDS_REAUTH failed the whole provider. A customer who must reconnect is a
 per-customer state, surfaced by Customer Success and attention, not a provider verdict.
 
@@ -178,10 +179,21 @@ per-customer state, surfaced by Customer Success and attention, not a provider v
 - **Step 2, verdict, first match decides.** The denominator `active` is the live
   population: every connection except REVOKED and those whose owner is inactive or pending
   deletion (`lib/connections/health.ts`).
-  1. **Error share**: error ≥ 0.5 × active, with active ≥ 2 ⇒ FAILING.
+  1. **Error share**: error ≥ 0.5 × active, with active ≥ 2 ⇒ FAILING, unless ONE
+     institution explains it (v2): it holds a strict majority of the errors AND, with its
+     connections set aside, the rest of the fleet no longer meets the same 0.5 share. Then
+     ⇒ DEGRADED, rule `institution-concentrated`, basis "6 of 10 connections in
+     provider-side error, all at 1 institution — institution-concentrated, not
+     provider-wide" (or "10 at 1 institution (1 of 10 connections elsewhere)"). So FAILING
+     needs errors at ≥ 2 institutions. A FAILING basis says "across N institutions".
+     Connections with no recorded institution are never assumed to share one; with no
+     institution split at all (an older payload), concentration is "not assessed", the
+     share alone decides, and the basis says so.
   2. **Any error**: error > 0 (including a lone 1 of 1) ⇒ DEGRADED.
   3. **Reauth wave**: reauth ≥ 0.5 × active, with active ≥ 4 ⇒ DEGRADED ("possible
-     provider-side reauth wave"). Reauth never fails a provider.
+     provider-side reauth wave"). Reauth never fails a provider. v2 applies the same
+     concentration test to the words only: a wave one institution explains reads
+     "… all at 1 institution — institution-side reauth wave". The verdict does not move.
   4. **Unclassified**: any unclassified connection ⇒ DEGRADED. PR #286: the basis names the
      codes, sorted and capped at 3 ("+N more"); only code-shaped values are echoed, anything
      else reads "non-code value".
@@ -189,7 +201,12 @@ per-customer state, surfaced by Customer Success and attention, not a provider v
      are reported as neutral facts.
 - **Unknown population** (PR #286): without the per-source tally, no share is computed and
   the basis says "connection population unavailable — share not computed".
-- **Open follow-up:** a per-institution concentration rule is out of scope for v1.
+- **Identity tier (OPS).** The authority's per-source tally carries institutions as
+  anonymous refs (`institutionActive`, a ref per fault group); the rule sorts them by size
+  and keeps counts only. No institution name reaches the tally, the assessment, the basis,
+  the retrieval value or an alert. The operator opens Connection Health for the name.
+- **Alerts.** No alert reads this verdict: `provider-unhealthy` fires per connection from the
+  connection authority, so recovery and flap handling (#320) are unaffected.
 
 ## AI & Costs: fleet spend status and call drilldown
 

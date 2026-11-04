@@ -124,14 +124,19 @@ async function main(): Promise<void> {
       freshnessState: "fresh", connections: null,
     };
     // Re-pinned (provider-connection@1): connection faults now arrive as the rule's assessment.
-    const connFailing = assessConnections({ active: 4, error: 4, reauth: 0, unclassified: 0, revoked: 0 });
+    // Re-pinned (provider-connection@2): FAILING needs the errors spread over ≥ 2 institutions.
+    const spread4 = [{ active: 2, error: 2, reauth: 0 }, { active: 1, error: 1, reauth: 0 }, { active: 1, error: 1, reauth: 0 }];
+    const connFailing = assessConnections({ active: 4, error: 4, reauth: 0, unclassified: 0, revoked: 0, institutions: spread4 });
+    const connConcentrated = assessConnections({ active: 4, error: 4, reauth: 0, unclassified: 0, revoked: 0, institutions: [{ active: 4, error: 4, reauth: 0 }] });
     const connDegraded = assessConnections({ active: 4, error: 1, reauth: 0, unclassified: 0, revoked: 0 });
     check("clean → OPERATIONAL", deriveProviderTrust(base) === "OPERATIONAL");
     check("idle data + clean execution → OPERATIONAL", deriveProviderTrust({ ...base, freshnessState: "idle" }) === "OPERATIONAL");
     check("failure streak → FAILING",
       deriveProviderTrust({ ...base, consecutiveFailures: PROVIDER_FAILING_STREAK, failedRuns: PROVIDER_FAILING_STREAK }) === "FAILING");
     check("high error rate (≥ 50 % of a sufficient sample) → FAILING", deriveProviderTrust({ ...base, failedRuns: 5 }) === "FAILING");
-    check("connections FAILING (provider-connection@1: all 4 in provider-side ERROR) → FAILING", deriveProviderTrust({ ...base, connections: connFailing }) === "FAILING");
+    check("connections FAILING (provider-connection@2: all 4 in provider-side ERROR across 3 institutions) → FAILING", deriveProviderTrust({ ...base, connections: connFailing }) === "FAILING");
+    check("connections institution-concentrated (all 4 at 1 institution) → DEGRADED, never FAILING", deriveProviderTrust({ ...base, connections: connConcentrated }) === "DEGRADED"
+      && deriveProviderTrust({ ...base, freshnessState: "stale", connections: connConcentrated }) === "STALE");
     check("stale data (green execution) → STALE (false-green catch)",
       deriveProviderTrust({ ...base, freshnessState: "stale" }) === "STALE");
     check("empty archive → STALE", deriveProviderTrust({ ...base, freshnessState: "empty" }) === "STALE");
@@ -195,14 +200,16 @@ async function main(): Promise<void> {
     check("basis words carry the figures", assessOutcomes({ kind: "calls", decided: 20, failed: 1, recentConsecutiveFailures: null }).basis === "1 of 20 calls failed");
   }
 
-  // ── 2c. provider-connection@1 boundaries (S2 rulings) + the code→state pin ──
+  // ── 2c. provider-connection boundaries (S2 rulings; v1 kept where @2 has no split) + the code→state pin ──
   {
     const v = (active: number, error: number, reauth = 0, unclassified = 0, revoked = 0) => assessConnections({ active, error, reauth, unclassified, revoked });
-    check("definition is named + versioned, sharing the failing share with provider-outcome@1",
-      PROVIDER_CONNECTION_DEFINITION_ID === "provider-connection@1" && PROVIDER_CONNECTION_DEFINITION.failingShare === PROVIDER_FAILING_SHARE
+    check("definition is named + versioned (@2), sharing the failing share with provider-outcome@1",
+      PROVIDER_CONNECTION_DEFINITION_ID === "provider-connection@2" && PROVIDER_CONNECTION_DEFINITION.failingShare === PROVIDER_FAILING_SHARE
         && PROVIDER_OUTCOME_DEFINITION.failingRatio === PROVIDER_FAILING_SHARE && PROVIDER_FAILING_SHARE === 0.5);
     check("ERROR 1/1 → DEGRADED (a lone connection never fails a provider)", v(1, 1).verdict === "DEGRADED" && v(1, 1).rule === "any-error");
-    check("ERROR 1/2 → FAILING (≥ 50 % of ≥ 2)", v(2, 1).verdict === "FAILING" && v(2, 1).rule === "error-share");
+    check("ERROR 1/2, no institution split → FAILING (≥ 50 % of ≥ 2; concentration not assessed, said in the basis)",
+      v(2, 1).verdict === "FAILING" && v(2, 1).rule === "error-share" && v(2, 1).concentration === "not-assessed"
+        && v(2, 1).basis === "1 of 2 connections in provider-side error — institution not recorded, concentration not assessed", v(2, 1).basis ?? "");
     check("ERROR 1/3 → DEGRADED", v(3, 1).verdict === "DEGRADED");
     check("ERROR 2/4 → FAILING; 4/4 → FAILING", v(4, 2).verdict === "FAILING" && v(4, 4).verdict === "FAILING");
     check("reauth 2/4 → DEGRADED (possible provider-side reauth wave), with the basis",
@@ -241,7 +248,7 @@ async function main(): Promise<void> {
     check("tally absent → DEGRADED (never FAILING), basis 'connection population unavailable — share not computed'",
       noPop.verdict === "DEGRADED" && noPop.basis === "2 connections in provider-side error — connection population unavailable — share not computed", noPop.basis ?? "");
     check("tally present → the share is computed and the basis carries no such words",
-      connectionAssessmentFor("PLAID", [], { active: 2, revoked: 0, faults: [{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 2 }] }).basis === "2 of 2 connections in provider-side error");
+      connectionAssessmentFor("PLAID", [], { active: 2, revoked: 0, faults: [{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 1, institutionRef: 0 }, { healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 1, institutionRef: 1 }], institutionActive: [1, 1] }).basis === "2 of 2 connections in provider-side error across 2 institutions");
     check("the provider-side list is exactly pinned (adding one is a reviewed change)",
       [...PROVIDER_SIDE_ERROR_CODES].sort().join() === "INSTITUTION_DOWN,INSTITUTION_NOT_AVAILABLE,INSTITUTION_NOT_RESPONDING,INSTITUTION_NO_LONGER_SUPPORTED,INTERNAL_SERVER_ERROR,PLANNED_MAINTENANCE,PRODUCT_NOT_READY,RATE_LIMIT_EXCEEDED");
     check("an unknown or missing code under ERROR is UNCLASSIFIED (degrades, never fails)",
@@ -263,8 +270,9 @@ async function main(): Promise<void> {
     const t = tallyBySource(rows, new Map([["PLAID", 2], ["EXCHANGE", 1]]));
     check("tally: active = the live population per source; REVOKED outside it",
       t.PLAID.active === 4 && t.PLAID.revoked === 2 && t.WALLET.active === 1 && t.EXCHANGE.active === 0 && t.EXCHANGE.revoked === 1);
-    check("tally: faults grouped by (state, code), healthy rows omitted",
-      JSON.stringify(t.PLAID.faults) === JSON.stringify([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 2 }, { healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 1 }]));
+    // Re-pinned (provider-connection@2): a group also carries its anonymous institution ref (null = not recorded).
+    check("tally: faults grouped by (state, code, institution ref), healthy rows omitted",
+      JSON.stringify(t.PLAID.faults) === JSON.stringify([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 2, institutionRef: null }, { healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 1, institutionRef: null }]));
     // S2 follow-up — getConnectionHealth sets bySource for EVERY source present in rows.
     const mixed = [
       { source: "PLAID", healthState: "HEALTHY" as const, errorCode: null },
@@ -280,9 +288,109 @@ async function main(): Promise<void> {
     check("getConnectionHealth builds bySource from the SAME rows it returns (tallyBySource(rows, …)) and returns it",
       /const bySource = tallyBySource\(rows, revokedBySource\);/.test(healthSrc) && /return \{\s*total: rows\.length, counts, unhealthy, retired, bySource,/.test(healthSrc));
     const a = connectionAssessmentFor("PLAID", [], t.PLAID);
-    check("tally → provider-connection@1: 1 of 4 in error ⇒ DEGRADED; 2 reauth + 2 revoked as facts",
+    check("tally → provider-connection@2: 1 of 4 in error ⇒ DEGRADED; 2 reauth + 2 revoked as facts",
       a.verdict === "DEGRADED" && a.basis === "1 of 4 connections in provider-side error"
         && a.facts.join(" | ") === "2 connections need the customer to reconnect | 2 connections revoked by the customer", JSON.stringify(a));
+  }
+
+  // ── 2e. provider-connection@2: institution concentration (S2 P8 item 5) ───
+  {
+    type I = { active: number; error: number; reauth?: number };
+    const inst = (xs: I[]) => xs.map((x) => ({ active: x.active, error: x.error, reauth: x.reauth ?? 0 }));
+    const total = (xs: I[], k: "active" | "error" | "reauth") => xs.reduce((a, x) => a + (x[k] ?? 0), 0);
+    /** A tally over institutions, plus `ua` unattributed live connections of which `uaErr` are in ERROR. */
+    const at = (xs: I[], o: { ua?: number; uaErr?: number; uaReauth?: number; revoked?: number } = {}) => assessConnections({
+      active: total(xs, "active") + (o.ua ?? 0), error: total(xs, "error") + (o.uaErr ?? 0), reauth: total(xs, "reauth") + (o.uaReauth ?? 0),
+      unclassified: 0, revoked: o.revoked ?? 0, institutions: inst(xs),
+    });
+
+    const one = at([{ active: 6, error: 6 }, { active: 4, error: 0 }]);
+    check("one institution all ERROR (6 of 10, ≥ 50 % of the fleet) → DEGRADED, institution-concentrated basis",
+      one.verdict === "DEGRADED" && one.rule === "institution-concentrated" && one.concentration === "institution"
+        && one.basis === "6 of 10 connections in provider-side error, all at 1 institution — institution-concentrated, not provider-wide", one.basis ?? "");
+    const spread = at([{ active: 3, error: 3 }, { active: 3, error: 3 }, { active: 4, error: 0 }]);
+    check("errors across 2 institutions, 6 of 10 (two institutions down side by side, neither a majority) → FAILING",
+      spread.verdict === "FAILING" && spread.rule === "error-share" && spread.concentration === "spread"
+        && spread.basis === "6 of 10 connections in provider-side error across 2 institutions", spread.basis ?? "");
+    const fleetWide = at([{ active: 1, error: 1 }, { active: 1, error: 1 }, { active: 1, error: 1 }, { active: 1, error: 1 }]);
+    check("every connection at every institution in ERROR → FAILING", fleetWide.verdict === "FAILING" && fleetWide.basis === "4 of 4 connections in provider-side error across 4 institutions");
+
+    // Mixed: the overwhelming share falls out of "set the worst institution aside".
+    const overwhelming = at([{ active: 10, error: 10 }, ...Array.from({ length: 10 }, (_, i) => ({ active: 1, error: i === 0 ? 1 : 0 }))]);
+    check("mixed: 11 of 20, 10 at one institution, 1 of 10 elsewhere → DEGRADED (overwhelming share), the rest counted",
+      overwhelming.verdict === "DEGRADED" && overwhelming.rule === "institution-concentrated"
+        && overwhelming.basis === "11 of 20 connections in provider-side error, 10 at 1 institution (1 of 10 connections elsewhere) — institution-concentrated, not provider-wide", overwhelming.basis ?? "");
+    const bigAndRest = at([{ active: 10, error: 10 }, { active: 4, error: 2 }, { active: 4, error: 2 }, { active: 2, error: 1 }]);
+    check("mixed: a provider outage that also hits a large institution still FAILS (rest 5 of 10 ≥ 50 %)",
+      bigAndRest.verdict === "FAILING" && bigAndRest.basis === "15 of 20 connections in provider-side error across 4 institutions", bigAndRest.basis ?? "");
+    const restBelow = at([{ active: 10, error: 10 }, { active: 10, error: 4 }]);
+    check("mixed: 14 of 20 but 4 of 10 outside the worst institution → DEGRADED (the rest is judged by the same share)",
+      restBelow.verdict === "DEGRADED" && restBelow.rule === "institution-concentrated");
+    check("mixed: 50/50 between two institutions is spread, never concentrated (a strict majority is required)",
+      at([{ active: 2, error: 2 }, { active: 2, error: 2 }]).verdict === "FAILING" && at([{ active: 2, error: 2 }, { active: 2, error: 2 }]).concentration === "spread"
+        && at([{ active: 3, error: 3 }, { active: 3, error: 3 }, { active: 20, error: 7 }]).verdict === "FAILING");
+    check("mixed: the institution that explains it is chosen by the smallest rest share, not by name or order",
+      at([{ active: 4, error: 0 }, { active: 6, error: 6 }]).basis === one.basis);
+    check("below the share, errors at one institution → DEGRADED any-error (unchanged from v1)",
+      at([{ active: 2, error: 2 }, { active: 8, error: 0 }]).rule === "any-error");
+
+    // Small samples (guards as today, plus the institution spread).
+    check("small: 1 of 1 → DEGRADED any-error (a lone connection never fails a provider)", at([{ active: 1, error: 1 }]).rule === "any-error");
+    check("small: 2 of 2 at ONE institution → DEGRADED institution-concentrated", at([{ active: 2, error: 2 }]).rule === "institution-concentrated");
+    check("small: 1 of 2, the other at a second healthy institution → DEGRADED (no error left elsewhere)",
+      at([{ active: 1, error: 1 }, { active: 1, error: 0 }]).rule === "institution-concentrated");
+    check("small: 2 of 2 at TWO institutions → FAILING (errors span ≥ 2 institutions)", at([{ active: 1, error: 1 }, { active: 1, error: 1 }]).verdict === "FAILING");
+    check("a whole fleet at one institution is never FAILED by connections", at([{ active: 50, error: 50 }]).verdict === "DEGRADED");
+
+    // Unattributed errors are never assumed to share an institution (a downgrade needs evidence).
+    const ua = at([{ active: 2, error: 2 }], { ua: 2, uaErr: 2 });
+    check("unattributed errors beside one institution stay in the rest → FAILING, the basis says so",
+      ua.verdict === "FAILING" && ua.basis === "4 of 4 connections in provider-side error across 1 institution +2 connections without a recorded institution", ua.basis ?? "");
+    const allUa = at([], { ua: 4, uaErr: 4 });
+    check("an institution split with every error unattributed → FAILING (spread unknown, never assumed concentrated)",
+      allUa.verdict === "FAILING" && allUa.basis === "4 of 4 connections in provider-side error — 4 connections without a recorded institution", allUa.basis ?? "");
+
+    // REVOKED stays neutral; the reauth wave keeps its verdict and changes only its words.
+    const revoked = at([{ active: 3, error: 0 }], { revoked: 9 });
+    check("REVOKED stays neutral (a fact, never a verdict) under @2", revoked.verdict === null && revoked.facts[0] === "9 connections revoked by the customer");
+    const waveOne = at([{ active: 5, error: 0, reauth: 5 }, { active: 5, error: 0 }]);
+    check("reauth wave at ONE institution → DEGRADED (verdict unchanged), named institution-side",
+      waveOne.verdict === "DEGRADED" && waveOne.rule === "reauth-wave" && waveOne.concentration === "institution"
+        && waveOne.basis === "5 of 10 connections need reconnecting, all at 1 institution — institution-side reauth wave", waveOne.basis ?? "");
+    const waveSpread = at([{ active: 5, error: 0, reauth: 3 }, { active: 5, error: 0, reauth: 3 }]);
+    check("reauth wave spread over institutions → DEGRADED 'possible provider-side reauth wave'",
+      waveSpread.verdict === "DEGRADED" && waveSpread.concentration === "spread" && waveSpread.basis === "6 of 10 connections need reconnecting — possible provider-side reauth wave");
+    check("reauth never FAILS a provider, spread or not (10 of 10 at 10 institutions)",
+      at(Array.from({ length: 10 }, () => ({ active: 1, error: 0, reauth: 1 }))).verdict === "DEGRADED");
+
+    // The authority → the rule, end to end, with institution NAMES in the rows.
+    const names = ["Institution A", "Institution B", "Institution C"];
+    const row = (institution: string | null, healthState: "HEALTHY" | "ERROR" | "NEEDS_REAUTH", errorCode: string | null = null) => ({ source: "PLAID", healthState, errorCode, institution });
+    const rowsA = [
+      ...Array.from({ length: 6 }, () => row("Institution A", "ERROR", "INSTITUTION_DOWN")),
+      row("Institution B", "HEALTHY"), row("Institution B", "HEALTHY"), row("Institution C", "HEALTHY"), row(null, "HEALTHY"), row("  ", "HEALTHY"),
+    ];
+    const tA = tallyBySource(rowsA, new Map());
+    check("tallyBySource: institutions become anonymous refs; blank / missing institution ⇒ null ref, outside institutionActive",
+      JSON.stringify(tA.PLAID.institutionActive) === "[6,2,1]" && tA.PLAID.active === 11
+        && JSON.stringify(tA.PLAID.faults) === JSON.stringify([{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 6, institutionRef: 0 }]), JSON.stringify(tA.PLAID));
+    const aA = connectionAssessmentFor("PLAID", [], tA.PLAID);
+    check("authority → rule: one institution's outage (6 of 11) → DEGRADED, institution-concentrated",
+      aA.verdict === "DEGRADED" && aA.basis === "6 of 11 connections in provider-side error, all at 1 institution — institution-concentrated, not provider-wide", aA.basis ?? "");
+    const rowsB = [...rowsA.slice(0, 3), row("Institution B", "ERROR", "INSTITUTION_NOT_RESPONDING"), row("Institution B", "ERROR", "INSTITUTION_NOT_RESPONDING"), row("Institution C", "ERROR", "INTERNAL_SERVER_ERROR"), row("Institution C", "HEALTHY")];
+    const aB = connectionAssessmentFor("PLAID", [], tallyBySource(rowsB, new Map()).PLAID);
+    check("authority → rule: errors at 3 institutions (6 of 7) → FAILING", aB.verdict === "FAILING" && aB.basis === "6 of 7 connections in provider-side error across 3 institutions", aB.basis ?? "");
+    // OPS identity tier: the tally and the assessment carry counts, never an institution name.
+    const payload = JSON.stringify([tA, aA, aB]);
+    check("identity tier: no institution name reaches the tally or the assessment (counts and anonymous refs only)",
+      names.every((n) => !payload.includes(n)) && !/Institution [A-Z]/.test(payload), payload);
+    check("identity tier: every basis says 'institution(s)' with a count, never a name",
+      [aA, aB, one, overwhelming, waveOne].every((a) => /\b1 institution\b|\b\d+ institutions\b/.test(a.basis ?? "") && !/Institution [A-Z]/.test(a.basis ?? "")));
+    check("tallyConnections: the per-institution split is sorted by size (order of first appearance never survives)",
+      JSON.stringify(tallyConnections([{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", institutionRef: 0 }], 3, 0, { institutionActive: [1, 2] }).institutions)
+        === JSON.stringify([{ active: 2, error: 0, reauth: 0 }, { active: 1, error: 1, reauth: 0 }]));
+    check("no institutionActive (older payload) ⇒ no split ⇒ concentration not assessed",
+      tallyConnections([{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", institutionRef: 0 }], 3, 0).institutions === undefined);
   }
 
   // ── 3. Freshness CONSUMPTION (never recomputed) ────────────────────────────
@@ -299,7 +407,7 @@ async function main(): Promise<void> {
     check("stale connection row → stale freshness", stale.state === "stale" && stale.asOf !== null);
     // Re-pinned (provider-connection@1): faults feed the CONNECTION rule, never recency.
     const errored = freshnessFromConnections("PLAID", [connRow({ healthState: "ERROR" })]);
-    check("connection fault → freshness stays 'fresh' (faults feed provider-connection@1, not recency)", errored.state === "fresh");
+    check("connection fault → freshness stays 'fresh' (faults feed provider-connection@2, not recency)", errored.state === "fresh");
     check("a customer who must reconnect never makes freshness 'unknown'",
       freshnessFromConnections("PLAID", [connRow({ healthState: "NEEDS_REAUTH", status: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED" })]).state === "fresh");
     check("freshness ignores other providers' rows",
@@ -347,12 +455,12 @@ async function main(): Promise<void> {
       connectionRows: [connRow({ healthState: "ERROR", status: "ERROR", errorCode: "INSTITUTION_DOWN" })], now: NOW,
     });
     check("Plaid: one provider-side ERROR, population unknown → DEGRADED (never FAILING without a denominator)",
-      plaidError.trust === "DEGRADED" && /^1 connection in provider-side error — connection population unavailable — share not computed \(provider-connection@1\)$/.test(plaidError.trustBasis ?? ""), plaidError.trustBasis);
+      plaidError.trust === "DEGRADED" && /^1 connection in provider-side error — connection population unavailable — share not computed \(provider-connection@2\)$/.test(plaidError.trustBasis ?? ""), plaidError.trustBasis);
 
-    // ── 4b. provider-connection@1 through the assembly (with the authority's per-source tally) ──
+    // ── 4b. provider-connection@2 through the assembly (with the authority's per-source tally) ──
     const runs3 = [run(6, "succeeded"), run(30, "succeeded"), run(54, "succeeded")];
-    const plaidWith = (faults: { healthState: "ERROR" | "NEEDS_REAUTH" | "DEGRADED" | "STALE"; errorCode: string | null; count: number }[], active: number, revoked = 0, rows: ConnectionHealthRow[] = []) =>
-      buildProviderHealth(plaidSpec, { runs: runs3, callsToday: 0, calls30d: 0, freshnessReport: null, connectionRows: rows, connectionTally: { active, revoked, faults }, now: NOW });
+    const plaidWith = (faults: { healthState: "ERROR" | "NEEDS_REAUTH" | "DEGRADED" | "STALE"; errorCode: string | null; count: number; institutionRef?: number | null }[], active: number, revoked = 0, rows: ConnectionHealthRow[] = [], institutionActive?: number[]) =>
+      buildProviderHealth(plaidSpec, { runs: runs3, callsToday: 0, calls30d: 0, freshnessReport: null, connectionRows: rows, connectionTally: { active, revoked, faults, institutionActive }, now: NOW });
     const reauthRow = connRow({ healthState: "NEEDS_REAUTH", status: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED" });
     const oneReauth = plaidWith([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 1 }], 4, 0, [reauthRow]);
     check("1 NEEDS_REAUTH connection → provider NOT Failing (OPERATIONAL, the reconnect a neutral fact)",
@@ -362,12 +470,17 @@ async function main(): Promise<void> {
     const preview = plaidWith([{ healthState: "NEEDS_REAUTH", errorCode: "ITEM_LOGIN_REQUIRED", count: 4 }], 10, 0, [reauthRow]);
     check("the Preview case: 4 reauth of 10 (below the wave share) → neutral, not Failing",
       preview.trust === "OPERATIONAL" && preview.connections?.facts[0] === "4 connections need the customer to reconnect");
-    const allError = plaidWith([{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 4 }], 4);
-    check("all connections in provider-side ERROR → FAILING, with the basis",
-      allError.trust === "FAILING" && allError.trustBasis === "4 of 4 connections in provider-side error (provider-connection@1)", allError.trustBasis);
+    // Re-pinned (provider-connection@2): the same 4 of 4 FAILS only when spread over ≥ 2 institutions.
+    const allError = plaidWith([0, 1, 2].map((i) => ({ healthState: "ERROR" as const, errorCode: "INSTITUTION_DOWN", count: i === 0 ? 2 : 1, institutionRef: i })), 4, 0, [], [2, 1, 1]);
+    check("all connections in provider-side ERROR across 3 institutions → FAILING, with the basis",
+      allError.trust === "FAILING" && allError.trustBasis === "4 of 4 connections in provider-side error across 3 institutions (provider-connection@2)", allError.trustBasis);
+    const oneBank = plaidWith([{ healthState: "ERROR", errorCode: "INSTITUTION_DOWN", count: 4, institutionRef: 0 }], 6, 0, [], [4, 2]);
+    check("4 of 6 in provider-side ERROR, all at one institution → DEGRADED, institution-concentrated basis",
+      oneBank.trust === "DEGRADED" && oneBank.connections?.rule === "institution-concentrated"
+        && oneBank.trustBasis === "4 of 6 connections in provider-side error, all at 1 institution — institution-concentrated, not provider-wide (provider-connection@2)", oneBank.trustBasis);
     const oneOfFour = plaidWith([{ healthState: "ERROR", errorCode: "INSTITUTION_NOT_RESPONDING", count: 1 }], 4);
     check("1 of 4 in provider-side ERROR → DEGRADED, with the basis",
-      oneOfFour.trust === "DEGRADED" && oneOfFour.trustBasis === "1 of 4 connections in provider-side error (provider-connection@1)", oneOfFour.trustBasis);
+      oneOfFour.trust === "DEGRADED" && oneOfFour.trustBasis === "1 of 4 connections in provider-side error (provider-connection@2)", oneOfFour.trustBasis);
     check("an ERROR status whose code is a reauth code counts as reauth, not ERROR",
       plaidWith([{ healthState: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", count: 4 }], 9).trust === "OPERATIONAL");
     check("REVOKED connections are a neutral fact only",

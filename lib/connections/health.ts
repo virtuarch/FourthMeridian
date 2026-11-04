@@ -139,6 +139,13 @@ export interface ConnectionHealthResult {
    * (outside `active`), and `faults` its non-HEALTHY rows grouped by health state
    * and error code. Codes and counts only: no id, label or customer identity.
    * Optional so older fixtures and payloads still type-check. The loader always sets it.
+   *
+   * provider-connection@2 (institution concentration): each fault group also
+   * carries `institutionRef`, an ANONYMOUS per-source ref (an index into
+   * `institutionActive`, null when the row records no institution), and
+   * `institutionActive[k]` is the live population of ref k. The refs are
+   * positions, never names: the institution label stays on the capped,
+   * operator-only `unhealthy` rows (the Connection Health table).
    */
   bySource?: Record<string, ConnectionSourceTally>;
 }
@@ -146,7 +153,9 @@ export interface ConnectionHealthResult {
 export interface ConnectionSourceTally {
   active: number;
   revoked: number;
-  faults: { healthState: HealthState; errorCode: string | null; count: number }[];
+  faults: { healthState: HealthState; errorCode: string | null; count: number; institutionRef?: number | null }[];
+  /** Live connections per anonymous institution ref (the index). Absent on older payloads. */
+  institutionActive?: number[];
 }
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -255,22 +264,32 @@ async function loadBrokenSince(): Promise<Map<string, string>> {
 /**
  * Per-source tallies over the live population (`rows`) plus REVOKED counts by
  * source (outside the population). Unbounded: the denominator provider trust
- * needs. Pure; exported for tests.
+ * needs. Institutions become anonymous refs (0, 1, 2, … in first-seen order per
+ * source); the name never leaves this function. Pure; exported for tests.
  */
 export function tallyBySource(
-  rows: readonly Pick<ConnectionHealthRow, "source" | "healthState" | "errorCode">[],
+  rows: readonly (Pick<ConnectionHealthRow, "source" | "healthState" | "errorCode"> & { institution?: string | null })[],
   revokedBySource: ReadonlyMap<string, number>,
 ): Record<string, ConnectionSourceTally> {
   const bySource: Record<string, ConnectionSourceTally> = {};
-  const tallyOf = (src: string): ConnectionSourceTally => (bySource[src] ??= { active: 0, revoked: revokedBySource.get(src) ?? 0, faults: [] });
+  const refs = new Map<string, Map<string, number>>();
+  const tallyOf = (src: string): ConnectionSourceTally => (bySource[src] ??= { active: 0, revoked: revokedBySource.get(src) ?? 0, faults: [], institutionActive: [] });
   for (const src of revokedBySource.keys()) tallyOf(src);
   for (const r of rows) {
     const t = tallyOf(r.source);
     t.active++;
+    let ref: number | null = null;
+    if (typeof r.institution === "string" && r.institution.trim() !== "") {
+      const m = refs.get(r.source) ?? new Map<string, number>();
+      refs.set(r.source, m);
+      ref = m.get(r.institution) ?? m.size;
+      if (!m.has(r.institution)) { m.set(r.institution, ref); t.institutionActive!.push(0); }
+      t.institutionActive![ref]++;
+    }
     if (r.healthState === "HEALTHY") continue;
-    const f = t.faults.find((x) => x.healthState === r.healthState && x.errorCode === r.errorCode);
+    const f = t.faults.find((x) => x.healthState === r.healthState && x.errorCode === r.errorCode && x.institutionRef === ref);
     if (f) f.count++;
-    else t.faults.push({ healthState: r.healthState, errorCode: r.errorCode, count: 1 });
+    else t.faults.push({ healthState: r.healthState, errorCode: r.errorCode, count: 1, institutionRef: ref });
   }
   return bySource;
 }
