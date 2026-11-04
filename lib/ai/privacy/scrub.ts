@@ -38,3 +38,33 @@ export function scrubDescriptor(value: string | null | undefined): string | unde
 export function scrubDescriptorText(value: string | null | undefined): string {
   return scrubDescriptor(value) ?? UNNAMED_DESCRIPTOR;
 }
+
+/**
+ * PLATFORM AI v0 — the same rule for an OPERATOR'S FREE TEXT before it leaves
+ * the server (S2 binding 3). An operator may paste a customer's details into a
+ * question; the model provider never receives them. Each shape is REPLACED by a
+ * bracketed placeholder (never silently deleted, so the sentence still reads):
+ *   · an email address                    → [email]
+ *   · a cuid / uuid / long opaque id       → [id]
+ *   · an account- / card-number shape (digit groups joined by spaces or
+ *     dashes, ≥ 8 digits in all)           → [number]
+ *   · any run of FOUR OR MORE digits (the descriptor rule above) → [number]
+ * Then whitespace is collapsed and the text clipped to `max`. PURE.
+ */
+export const OPERATOR_TEXT_PLACEHOLDERS = { email: '[email]', id: '[id]', number: '[number]' } as const;
+
+export function scrubOperatorText(value: string, max: number): string {
+  if (typeof value !== 'string') return '';
+  const P = OPERATOR_TEXT_PLACEHOLDERS;
+  const cleaned = value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/[^\s@<>()[\]"',;:]+@[^\s@<>()[\]"',;:]+\.[^\s@<>()[\]"',;:]+/g, P.email)
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, P.id)
+    .replace(/\bc[a-z0-9]{20,}\b/gi, P.id)
+    .replace(/\b(?=[A-Za-z0-9_-]{20,}\b)(?=[A-Za-z_-]*\d)[A-Za-z0-9_-]+\b/g, P.id)
+    .replace(/\d(?:[ -]?\d){7,}/g, P.number)
+    .replace(/\d{4,}/g, P.number)
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > max ? cleaned.slice(0, max) : cleaned;
+}

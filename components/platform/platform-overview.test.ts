@@ -218,7 +218,10 @@ console.log("Platform AI page: guarded like the Overview, honest, no controls, n
   const iGrants = page.indexOf('if (spaces.length === 0) redirect("/dashboard/spaces");');
   const iTotp = page.indexOf("if (env.isOperatorTotpEnforced && !(await operatorHasTotp(session.user.id))) redirect(OPERATOR_TOTP_ENROLMENT_PATH);");
   check("gate order = the Overview's: session → ≥1 ACTIVE grant (tenant read) → operator 2FA", iSession > -1 && iGrants > iSession && iTotp > iGrants && /loadPlatformDirectory\(session\.user\.id\)/.test(page));
-  check("it reads no Platform data and renders only the placeholder", /return <PlatformAiPlaceholder \/>;/.test(page) && !/\/api\/platform|systemDb|@\/lib\/db"/.test(page));
+  check("it reads no Platform data; flag OFF (PLATFORM_AI_ENABLED, default) ⇒ exactly the placeholder",
+    /if \(!env\.isPlatformAiEnabled\) return <PlatformAiPlaceholder \/>;\s*return <PlatformAiAsk \/>;/.test(page) && !/\/api\/platform|systemDb|@\/lib\/db"/.test(page));
+  check("…and the flag is read AFTER every gate (the gate order is unchanged either way)",
+    page.indexOf("env.isPlatformAiEnabled") > iTotp);
   const html = renderToStaticMarkup(createElement(PlatformAiPlaceholder));
   check("titled 'Platform AI', in the AI visual language (AiMark)", /<h1[^>]*>Platform AI<\/h1>/.test(html) && /box-shadow:0 0 10px 1px var\(--accent-info\)/.test(html));
   check("NO input, textarea, form, button, link or contenteditable — nothing that pretends to work",

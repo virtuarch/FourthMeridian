@@ -548,8 +548,17 @@ console.log("\n8. static — no mint, literal surfaces, bounded importers");
     return /intelligence\/navigation\/(registry|access)["']/.test(s)
       || (path.dirname(f) === "lib/platform/intelligence/navigation" && /from "\.\/(registry|access)"/.test(s));
   });
-  check("the navigation registry is imported only by its accessor (no route, UI or chat in this slice)",
-    importers.join() === "lib/platform/intelligence/navigation/access.ts", importers.join() || "(none)");
+  // Platform AI v0: the guarded ask route calls the ACCESSOR (it mints from its own requireFreshPlatformAccess
+  // result); the AI core takes only TYPES from the registry. Nothing else may import it.
+  const typeOnly = (f: string) => [...readFileSync(path.join(ROOT, f), "utf8").matchAll(/^import\s+(type\s+)?[^;]*?from\s+"@\/lib\/platform\/intelligence\/navigation\/(?:registry|access)";/gm)]
+    .every((m) => !!m[1]);
+  const strayNav = importers.filter((f) => f !== "lib/platform/intelligence/navigation/access.ts"
+    && !(f === "app/api/platform/ai/ask/route.ts" && /const \[(\w+), \w+\] = await require(?:Fresh)?PlatformAccess\(/.test(readFileSync(path.join(ROOT, f), "utf8")))
+    && !(f.startsWith("lib/platform/intelligence/ai/") && typeOnly(f)));
+  check("the navigation registry is imported only by its accessor, the guarded Platform AI route, and type-only by the AI core",
+    strayNav.length === 0 && importers.includes("lib/platform/intelligence/navigation/access.ts"), strayNav.join() || importers.join());
+  check("…the AI route reaches it through the ACCESSOR only (never the registry, never buildNavigationHref)",
+    !/intelligence\/navigation\/registry["']/.test(readFileSync(path.join(ROOT, "app/api/platform/ai/ask/route.ts"), "utf8")));
 }
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }

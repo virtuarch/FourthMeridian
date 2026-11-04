@@ -123,6 +123,11 @@ function abortedReason(signal: AbortSignal | undefined, where: string): Error | 
  */
 const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
 
+/** The chat tier, for a caller that runs its own tool loop (Platform AI v0). Same value, no second default. */
+export function chatModel(): string {
+  return CHAT_MODEL;
+}
+
 /**
  * Record one OpenAI call against `ApiUsageCounter` — the ONLY usage-write path
  * in this module.

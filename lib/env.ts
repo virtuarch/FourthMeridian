@@ -168,6 +168,9 @@ const _e = {
   // SEC-PLAT-1 rollout switch — "enforce" makes TOTP mandatory for Platform
   // operators (lib/platform/authorize.ts). Unset/anything else = not enforced.
   OPERATOR_TOTP_ENFORCEMENT: process.env.OPERATOR_TOTP_ENFORCEMENT,
+  // Platform AI v0 — the operator Q&A kill switch (lib/platform/intelligence/ai).
+  // Strict `=== "true"`; unset / anything else = OFF (placeholder page, 404 API).
+  PLATFORM_AI_ENABLED: process.env.PLATFORM_AI_ENABLED,
   // Owner ruling (2026-10-30) rollout switch — "enforce" makes a missing or
   // invalid customer policy-group assignment FAIL CLOSED (lib/entitlements).
   // Unset/anything else = today's behaviour (the catalogue default).
@@ -862,6 +865,14 @@ export const env = {
    * dormant and behaviour is exactly as before.
    */
   get isOperatorTotpEnforced() { return _e.OPERATOR_TOTP_ENFORCEMENT === "enforce"; },
+  /**
+   * Platform AI v0 — read-only operational Q&A for operators is ON only when
+   * PLATFORM_AI_ENABLED === "true". Unset ⇒ OFF: the AI page keeps its
+   * placeholder and POST /api/platform/ai/ask answers 404 NOT_AVAILABLE before
+   * any guard, ledger read or provider call. Enabling it spends AI (overhead,
+   * surface platform_ai) — an owner decision per environment.
+   */
+  get isPlatformAiEnabled() { return _e.PLATFORM_AI_ENABLED === "true"; },
   /**
    * Owner ruling (2026-10-30) — a missing or invalid customer policy-group
    * assignment FAILS CLOSED only when POLICY_ASSIGNMENT_FAIL_CLOSED === "enforce"
