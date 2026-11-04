@@ -63,8 +63,31 @@ export const SPACE_URL_PARAMS = [
   "ito",
   "ipage",
   "iid",
+  // Platform Economics — the open KPI's records drill (components/platform/leads/
+  // economics-model.ts ECONOMICS_URL_PARAMS; REPLACE-written, workspace-scoped).
+  "econ",
+  "econuntil",
 ] as const;
 export type SpaceUrlParam = (typeof SPACE_URL_PARAMS)[number];
+
+/**
+ * The Platform params scoped to ONE workspace's content — deleted by a user
+ * workspace switch (lib/space/use-platform-workspace-navigation.ts) and the
+ * deep-link keys the navigation registry allows. A subset of SPACE_URL_PARAMS
+ * by type, so a Platform deep-link key cannot exist outside the one list.
+ */
+export const PLATFORM_WORKSPACE_SCOPED_PARAMS: readonly SpaceUrlParam[] = [
+  // PB-4 — Customer Success's "Needs help" filter (cs-attention-link.ts CS_ATTENTION_PARAM).
+  "attention",
+  // PB-9 — Merchant Identity period + records table (merchant-records-url.ts MERCHANT_URL_PARAMS).
+  "period", "records", "rq", "rsort", "rpage", "rfilter", "rid",
+  // AI & Costs — the budget KPI's per-call drilldown (ai-budget-calls-url.ts AI_BUDGET_CALLS_URL_PARAMS).
+  "aicalls", "aiuntil", "aipage",
+  // Platform Economics — the open KPI's records (economics-model.ts ECONOMICS_URL_PARAMS).
+  "econ", "econuntil",
+  // PB-1 2B — the incidents workspace filters, page and open incident (incidents-url.ts INCIDENTS_URL_PARAMS).
+  "isev", "iprov", "iop", "icode", "ifrom", "ito", "ipage", "iid",
+];
 
 /**
  * A set of param updates. `null` deletes the key; a string sets/overwrites it.

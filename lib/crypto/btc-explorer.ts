@@ -22,9 +22,12 @@
  * chain_stats.spent_txo_sum (mempool_stats — unconfirmed — intentionally ignored),
  * read from the BALANCE authority (`btcBalanceBaseUrl`, Esplora), which is a
  * different host from the HISTORY explorer (`btcExplorerBaseUrl`).
- * ⚠️ xpub balances come from the batch provider (blockchain.info), whose
- * `final_balance` INCLUDES unconfirmed effects — a known, measured divergence
- * between wallet shapes (see `parseMultiaddrStats`), not an equivalence.
+ * xpub balances are confirmed-only too (FM-AUDIT-053): the batch provider
+ * (blockchain.info multiaddr) is used for DISCOVERY only — which derived
+ * addresses have any activity — and the balance of each active address is read
+ * from the same Esplora authority single-address wallets use
+ * (`fetchXpubConfirmedSats`). multiaddr's `final_balance` INCLUDES unconfirmed
+ * effects and is never summed into a balance.
  */
 
 /** 1 BTC = 100,000,000 satoshis. */
@@ -285,10 +288,14 @@ export async function esploraGetJson(url: string, stage: BtcSyncStage, fetchImpl
   }
 }
 
-/** Confirmed balance (satoshis) for a public BTC address — from the BALANCE authority. */
-export async function fetchConfirmedSats(address: string, fetchImpl: FetchFn = fetch): Promise<number> {
+/**
+ * Confirmed balance (satoshis) for a public BTC address — from the BALANCE
+ * authority. `opts` passes through to the one Esplora transport (the xpub
+ * balance read uses `beforeRequest` to meter its per-run request budget).
+ */
+export async function fetchConfirmedSats(address: string, fetchImpl: FetchFn = fetch, opts: EsploraGetOptions = {}): Promise<number> {
   const url = `${btcBalanceBaseUrl()}/api/address/${encodeURIComponent(address)}`;
-  return parseConfirmedSats(await getJson(url, "balance", fetchImpl));
+  return parseConfirmedSats(await esploraGetJson(url, "balance", fetchImpl, opts));
 }
 
 /** Summed confirmed balance (satoshis) across many addresses (xpub aggregate). */
@@ -311,11 +318,16 @@ export async function fetchAddressTxCount(address: string, fetchImpl: FetchFn = 
 // failures. For xpub discovery we derive locally and look up MANY addresses in a
 // single request via a multiaddr-style provider (blockchain.info by default,
 // keyless), which returns per-address n_tx AND final_balance at once. This is
-// the swappable "batch provider" seam; single-address wallets keep using the
-// per-address mempool path above.
+// the swappable "batch provider" seam, used for USAGE only: the balance of an
+// xpub is read confirmed-only from Esplora (`fetchXpubConfirmedSats`), for the
+// addresses this lookup shows to be active.
 
-/** Per-address usage + confirmed balance from a batch lookup. */
-export interface AddrStat { txCount: number; sats: number }
+/**
+ * Per-address USAGE from a batch lookup. Deliberately no balance: multiaddr's
+ * `final_balance` includes unconfirmed effects (FM-AUDIT-053), so it is
+ * validated as part of the response shape but never surfaced to be summed.
+ */
+export interface AddrStat { txCount: number }
 
 /** Base URL of the multiaddr-style batch provider (env-overridable, keyless default). */
 function batchApiUrl(): string {
@@ -331,9 +343,10 @@ export const BATCH_CHUNK = 50;
  *
  * ⚠️ `final_balance` is NOT confirmed-only: measured 2026-09-21, it equals
  * Esplora's confirmed balance PLUS its mempool delta on every address with
- * pending activity (and it counts the unspendable genesis coinbase). For an
- * address with no pending activity the two agree to the satoshi. xpub balances
- * therefore include unconfirmed effects while single-address balances do not.
+ * pending activity (and it counts the unspendable genesis coinbase). It is
+ * therefore checked as part of the response shape and then DROPPED — only
+ * `n_tx` (usage) leaves this parser. The balance comes from Esplora
+ * (`fetchXpubConfirmedSats`), FM-AUDIT-053.
  *
  * FAIL CLOSED (FM-AUDIT-053). The provider returns an entry for EVERY requested
  * address — a never-used one comes back with n_tx 0 / final_balance 0 (probed
@@ -366,7 +379,7 @@ export function parseMultiaddrStats(json: unknown, requested: string[]): Map<str
     if (!count(nTx) || !count(bal)) {
       throw new BtcSyncError("discovery", "unexpected multiaddr entry (n_tx / final_balance is not a non-negative integer)", "INVALID_DATA");
     }
-    seen.set(addr, { txCount: nTx, sats: bal });
+    seen.set(addr, { txCount: nTx });
   }
   const missing = [...wanted].filter((a) => !seen.has(a)).length;
   if (missing > 0) {
@@ -379,7 +392,7 @@ export function parseMultiaddrStats(json: unknown, requested: string[]): Map<str
 }
 
 /**
- * Batch usage+balance for a set of addresses in ONE request per BATCH_CHUNK
+ * Batch usage for a set of addresses in ONE request per BATCH_CHUNK
  * (with 429 backoff from getJson). The single-request-per-chunk shape is what
  * makes xpub discovery robust vs. one-request-per-address tarpitting.
  */
@@ -394,6 +407,150 @@ export async function fetchAddressStatsBatch(addresses: string[], fetchImpl: Fet
     for (const [k, v] of stats) result.set(k, v);
   }
   return result;
+}
+
+// ── xpub confirmed balance (FM-AUDIT-053) ────────────────────────────────────
+//
+// multiaddr says WHICH derived addresses are active; Esplora says what each one
+// holds, confirmed-only, through the SAME `fetchConfirmedSats` single-address
+// wallets use — so the same coins read the same whichever way the wallet was
+// added. An address multiaddr reports with n_tx 0 has never received anything,
+// so its confirmed balance is 0 by construction and costs no request.
+
+/** Max Esplora address reads in flight at once for one xpub balance read. */
+export const XPUB_BALANCE_CONCURRENCY = 3;
+
+/**
+ * Absolute ceiling on Esplora requests (attempts, retries included) for ONE
+ * xpub balance read, per wallet per run. A wallet with more USED addresses
+ * than this cannot be observed confirmed-only in one run and is reported
+ * PARTIAL (OVER_READ_CAP) — never summed short. Nothing accumulates across runs.
+ */
+export const XPUB_BALANCE_HARD_CAP = 600;
+
+/**
+ * The per-run request budget, SCALED to the wallet: one request per used
+ * address plus 25% + 10 headroom for 429 retries, clamped to the hard cap.
+ * `usedAddressCount` is the number of addresses discovery shows as used
+ * (n_tx > 0) — never the gap-limit scan size, which would charge a small
+ * wallet for addresses it never used. A fixed budget would leave every large
+ * xpub PARTIAL on every run: a regression for the highest-value wallets.
+ */
+export function xpubBalanceRequestBudget(usedAddressCount: number, hardCap: number = XPUB_BALANCE_HARD_CAP): number {
+  const used = Math.max(0, Math.floor(usedAddressCount));
+  return Math.min(Math.ceil(used * 1.25) + 10, hardCap);
+}
+
+/**
+ * Outcome of an xpub confirmed-balance read.
+ *
+ * OBSERVED — every active address was read; `sats` is the complete confirmed sum.
+ * PARTIAL  — the budget ran out or an address read failed. There is NO sum: a
+ *            partial total presented as a balance is the defect this prevents,
+ *            and 0 is not "unknown". The caller records no observation, so the
+ *            wallet keeps its last observation (ageing to STALE) or resolves
+ *            NO_OBSERVATION.
+ */
+export type XpubConfirmedBalance =
+  | { status: "OBSERVED"; sats: number; activeAddresses: number; requests: number }
+  | {
+      status: "PARTIAL";
+      /** OVER_READ_CAP — more used addresses than the hard cap; nothing was read. */
+      cause: "OVER_READ_CAP" | "BUDGET_EXHAUSTED" | "READ_FAILED";
+      activeAddresses: number;
+      addressesRead: number;
+      addressesUnread: number;
+      requests: number;
+      /** Host-only failure text (never an address). */
+      reason: string;
+      kind?: BtcSyncFailureKind;
+    };
+
+/** Reads one address's confirmed sats; MUST await `beforeRequest` before every request it issues. */
+export type ConfirmedSatsReader = (address: string, beforeRequest: () => Promise<void>) => Promise<number>;
+
+class BudgetExhausted extends Error {
+  constructor() { super("xpub balance request budget exhausted"); this.name = "BudgetExhausted"; }
+}
+
+/**
+ * Confirmed-only balance of an xpub's known addresses: Esplora `chain_stats`
+ * for each address `stats` shows as active (n_tx > 0), with bounded concurrency
+ * and a per-run request budget. Never throws for a read failure — it returns
+ * PARTIAL, so a caller cannot mistake a short sum for a balance.
+ */
+export async function fetchXpubConfirmedSats(
+  addresses: string[],
+  stats: Map<string, AddrStat>,
+  fetchImpl: FetchFn = fetch,
+  opts: { concurrency?: number; requestBudget?: number; hardCap?: number; readAddress?: ConfirmedSatsReader } = {},
+): Promise<XpubConfirmedBalance> {
+  const concurrency = Math.max(1, Math.floor(opts.concurrency ?? XPUB_BALANCE_CONCURRENCY));
+  const hardCap = Math.max(0, Math.floor(opts.hardCap ?? XPUB_BALANCE_HARD_CAP));
+  const read: ConfirmedSatsReader = opts.readAddress
+    ?? ((a, beforeRequest) => fetchConfirmedSats(a, fetchImpl, { beforeRequest }));
+
+  // An address with no usage entry is NOT assumed unused — it is read. Only an
+  // explicit n_tx 0 from the discovery provider licenses a structural zero.
+  const active = [...new Set(addresses)].filter((a) => (stats.get(a)?.txCount ?? 1) > 0);
+
+  // Over the cap: no read at all this run (a partial read could only be
+  // discarded). The reason carries a COUNT, never an address.
+  if (active.length > hardCap) {
+    return {
+      status: "PARTIAL", cause: "OVER_READ_CAP", activeAddresses: active.length,
+      addressesRead: 0, addressesUnread: active.length, requests: 0,
+      reason: `wallet exceeds the per-run read cap (${active.length} used addresses)`,
+    };
+  }
+  const budget = Math.max(0, Math.floor(opts.requestBudget ?? xpubBalanceRequestBudget(active.length, hardCap)));
+
+  let requests = 0;
+  const beforeRequest = async () => {
+    if (requests >= budget) throw new BudgetExhausted();
+    requests++;
+  };
+
+  let next = 0;
+  let total = 0;
+  let readCount = 0;
+  let failure: { cause: "OVER_READ_CAP" | "BUDGET_EXHAUSTED" | "READ_FAILED"; reason: string; kind?: BtcSyncFailureKind } | null = null;
+
+  const worker = async () => {
+    while (failure === null && next < active.length) {
+      const address = active[next++];
+      try {
+        const sats = await read(address, beforeRequest);
+        if (!Number.isSafeInteger(sats) || sats < 0) {
+          throw new BtcSyncError("balance", `invalid confirmed balance: ${sats}`, "INVALID_DATA");
+        }
+        total += sats;
+        readCount++;
+      } catch (e) {
+        if (failure !== null) continue;
+        failure = e instanceof BudgetExhausted
+          ? { cause: "BUDGET_EXHAUSTED", reason: `xpub balance needs more than ${budget} explorer requests this run` }
+          : {
+              cause: "READ_FAILED",
+              // BtcSyncError text is host-only by construction; anything else is
+              // reduced to its class so an address can never leak through it.
+              reason: e instanceof BtcSyncError ? e.message : `address read failed (${e instanceof Error ? e.name : "error"})`,
+              kind: e instanceof BtcSyncError ? e.kind : undefined,
+            };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, active.length) }, worker));
+
+  if (failure !== null) {
+    const f = failure as { cause: "OVER_READ_CAP" | "BUDGET_EXHAUSTED" | "READ_FAILED"; reason: string; kind?: BtcSyncFailureKind };
+    return {
+      status: "PARTIAL", cause: f.cause, activeAddresses: active.length,
+      addressesRead: readCount, addressesUnread: active.length - readCount, requests,
+      reason: f.reason, ...(f.kind ? { kind: f.kind } : {}),
+    };
+  }
+  return { status: "OBSERVED", sats: total, activeAddresses: active.length, requests };
 }
 
 // ── Transactions (Wallet Provider v3) ────────────────────────────────────────

@@ -47,6 +47,7 @@ import {
   fetchConfirmedSatsForAddresses,
   fetchAddressTxsRawPaged,
   fetchAddressStatsBatch,
+  fetchXpubConfirmedSats,
   normalizeBtcAddressTxs,
   satsToBtc,
   computeUsdBalance,
@@ -167,7 +168,9 @@ export type BtcTransactionImportOutcome =
 export interface BtcSyncDeps {
   /** Injected fetch (offline tests / alternate transport). */
   fetchImpl?: FetchFn;
-  /** Override the balance fetch — returns confirmed satoshis for an address. */
+  /** Override the per-address balance fetch — returns confirmed satoshis for an
+   *  address (both shapes; for an xpub it replaces the Esplora read of each
+   *  ACTIVE address, still within the bounded reader). */
   balanceFetcher?: (address: string) => Promise<number>;
   /**
    * Override the BTC→USD read (offline tests). Default: the canonical archived
@@ -189,6 +192,13 @@ export interface BtcSyncDeps {
   txFetcher?: (address: string) => Promise<RawBtcTx[]>;
   /** Override the xpub batch address-stats lookup (offline tests). */
   batchStatsFetcher?: (addresses: string[]) => Promise<Map<string, AddrStat>>;
+  /** xpub balance: Esplora reads in flight (default XPUB_BALANCE_CONCURRENCY). */
+  xpubBalanceConcurrency?: number;
+  /** xpub balance: per-run Esplora request budget (default: scaled to the used
+   *  address count, `xpubBalanceRequestBudget`). */
+  xpubBalanceRequestBudget?: number;
+  /** xpub balance: per-wallet per-run hard cap (default XPUB_BALANCE_HARD_CAP). */
+  xpubBalanceHardCap?: number;
   /** xpub discovery: consecutive-unused gap limit (default env BTC_XPUB_GAP_LIMIT or 20). */
   gapLimit?: number;
   /** xpub discovery: max NEW indices scanned PER BRANCH PER RUN (behemoth bound;
@@ -872,20 +882,49 @@ export async function syncBtcWallet(
   const priceFetcher = deps.priceFetcher
     ?? (() => canonicalBtcCloseUsdMaintained((c) => { closeCoverage = c; }, deps));
 
-  // 1) Confirmed balance across every KNOWN address — batch (one request per 50)
-  //    for xpub, per-address for single-address. For a partially-discovered xpub
-  //    this is a PARTIAL balance (completes as discovery advances).
+  // 1) CONFIRMED balance across every KNOWN address — confirmed-only for BOTH
+  //    wallet shapes (FM-AUDIT-053). Single-address: Esplora per address.
+  //    xpub: the batch provider (one request per 50) says which addresses are
+  //    ACTIVE, and each active address's balance is read from the SAME Esplora
+  //    authority, bounded (XPUB_BALANCE_CONCURRENCY; a budget scaled to the
+  //    used-address count, clamped to XPUB_BALANCE_HARD_CAP). The
+  //    batch provider's `final_balance` includes unconfirmed effects — a pending
+  //    send read as already gone, a pending receive as already held — so it is
+  //    never summed. For a partially-discovered xpub this is the balance of the
+  //    addresses found so far (status stays "pending" until discovery completes).
   let sats: number;
   // V26-S1-BTC — retained so the transaction import can select addresses by
   // DEMONSTRATED ACTIVITY rather than by position. See the import call below.
   let statsByAddress: Map<string, AddrStat> | null = null;
   try {
-    if (deps.balanceFetcher) {
-      sats = (await Promise.all(addresses.map(deps.balanceFetcher))).reduce((s, x) => s + x, 0);
-    } else if (isXpub) {
+    if (isXpub) {
       const stats = deps.batchStatsFetcher ? await deps.batchStatsFetcher(addresses) : await fetchAddressStatsBatch(addresses, deps.fetchImpl);
       statsByAddress = stats;
-      sats = addresses.reduce((s, a) => s + (stats.get(a)?.sats ?? 0), 0);
+      const injected = deps.balanceFetcher;
+      const confirmed = await fetchXpubConfirmedSats(addresses, stats, deps.fetchImpl, {
+        ...(deps.xpubBalanceConcurrency ? { concurrency: deps.xpubBalanceConcurrency } : {}),
+        ...(deps.xpubBalanceRequestBudget !== undefined ? { requestBudget: deps.xpubBalanceRequestBudget } : {}),
+        ...(deps.xpubBalanceHardCap !== undefined ? { hardCap: deps.xpubBalanceHardCap } : {}),
+        ...(injected ? { readAddress: async (a: string, before: () => Promise<void>) => { await before(); return injected(a); } } : {}),
+      });
+      if (confirmed.status !== "OBSERVED") {
+        // NO OBSERVATION THIS RUN. Some active addresses were not read, so any
+        // sum would be a guess presented as a balance (and 0 is not "unknown").
+        // Nothing is written: the wallet keeps its last observation and ages
+        // into STALE, or — never observed — resolves NO_OBSERVATION. The
+        // refresh ledger records the run as failed at "balance".
+        const reason = `Partial balance read: ${confirmed.reason} (${confirmed.addressesUnread} of ${confirmed.activeAddresses} active addresses unread) — no balance recorded`;
+        await recordWalletSyncIssue(accountId, "balance", reason, {
+          addresses: addresses.length, xpub: true, partial: true, cause: confirmed.cause,
+          activeAddresses: confirmed.activeAddresses, addressesRead: confirmed.addressesRead,
+          addressesUnread: confirmed.addressesUnread, requests: confirmed.requests,
+          ...(confirmed.cause === "READ_FAILED" && /rate limit/i.test(confirmed.reason) ? { rateLimited: true } : {}),
+        });
+        return { accountId, ok: false, stage: "balance", reason };
+      }
+      sats = confirmed.sats;
+    } else if (deps.balanceFetcher) {
+      sats = (await Promise.all(addresses.map(deps.balanceFetcher))).reduce((s, x) => s + x, 0);
     } else {
       sats = await fetchConfirmedSatsForAddresses(addresses, deps.fetchImpl);
     }
