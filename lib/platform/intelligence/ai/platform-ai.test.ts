@@ -392,19 +392,20 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
   check("\"30 days\" when an envelope VALUE is 30 ⇒ fallback (USER_NUMERAL_COLLISION)", P("In the past 30 days: {{m:x@1|window=30}}.", "past 30 days", [env30]).verdict === "USER_NUMERAL_COLLISION");
   check("…the same with no colliding value passes, and the placeholder renders", P("In the past 30 days: {{m:x@1|window=30}}.", "past 30 days", [env11]).verdict === "RESOLVED");
   check("…the collision uses the rounding rule (29.6 ≈ 30)", P("past 30 days", "past 30 days", [{ ...env30, value: 29.6 } as MetricEnvelope]).verdict === "USER_NUMERAL_COLLISION");
-  check("a year OUT of range (1985) ⇒ not admitted ⇒ fallback; in range (2025) ⇒ admitted (function level)",
-    admitUserNumerals("since 1985", "since 1985", []).admitted === 0 && admitUserNumerals("since 2025", "since 2025", []).admitted === 1 && P("since 1985", "since 1985", []).verdict === "UNGROUNDED_DIGIT");
+  check("NO year branch: a bare year is never admitted, in or out of 1990–2100 (function level)",
+    ["since 1985", "since 2025", "in 2026"].every((t) => admitUserNumerals(t, t, []).admitted === 0 && P(t, t, []).verdict === "UNGROUNDED_DIGIT"));
   const year = await ask("Costs since 2025?", "Costs since 2025 are on the AI costs page.", []);
-  check("…but the scrub replaces 4+ digit runs in the question, so a typed year is never admitted in a real turn (fallback)", year.result.grounding.verdict === "UNGROUNDED_DIGIT");
+  check("…and in a real turn the scrub has already replaced the typed year ([number]), so it can never match (fallback)",
+    !JSON.stringify(year.transcript[1]).includes("2025") && JSON.stringify(year.transcript[1]).includes("[number]") && year.result.grounding.verdict === "UNGROUNDED_DIGIT", year.transcript[1]);
   check("an admitted numeral never admits a VALUE: \"30 calls\" (no time unit) / \"30%\" / \"30.5 days\" stay digits",
     ["30 calls", "30%", "30.5 days", "$30 days"].every((t) => P(t, "past 30 days 30 calls 30%", []).verdict === "UNGROUNDED_DIGIT"));
   check("time units: h, hour(s), day(s), week(s), month(s), year(s); 30-day; never d / w / min",
     ["24h", "24 hours", "1 hour", "7-day", "2 weeks", "3 months", "1 year"].every((t) => admitUserNumerals(t, "24 1 7 2 3", []).admitted === 1)
     && ["7d", "2w", "5 min"].every((t) => admitUserNumerals(t, "7 2 5", []).admitted === 0));
-  check("the allowance is ONE named, exported function with the pinned unit list and year range",
+  check("the allowance is ONE named, exported function with the pinned unit list and no year branch",
     /export function admitUserNumerals\(prose: string, scrubbedQuestion: string, envelopes: readonly MetricEnvelope\[\]\)/.test(src("lib/platform/intelligence/ai/core.ts"))
     && /USER_NUMERAL_TIME_UNIT = \/\^\[\\s-\]\?\(\?:h\|hours\?\|days\?\|weeks\?\|months\?\|years\?\)\\b\/i;/.test(src("lib/platform/intelligence/ai/core.ts"))
-    && /USER_NUMERAL_YEAR_MIN = 1990;/.test(src("lib/platform/intelligence/ai/core.ts")) && /USER_NUMERAL_YEAR_MAX = 2100;/.test(src("lib/platform/intelligence/ai/core.ts")));
+    && !/YEAR_MIN|YEAR_MAX/.test(code(src("lib/platform/intelligence/ai/core.ts"))));
   check("requestedWindows reads the scrubbed question", JSON.stringify(requestedWindows("in the past 30 days or 24h")) === JSON.stringify([{ n: 30, unit: "day", hours: 720 }, { n: 24, unit: "hour", hours: 24 }]));
 
   // OWNER REGRESSIONS (exact strings; a fake model with realistic outputs).

@@ -456,17 +456,16 @@ export interface ClaimsSummary { claims: number; resolved: number; unresolved: n
 // The operator's own window ("in the past 30 days") may be echoed. A digit run
 // in the model's prose is admitted ONLY when ALL hold:
 //   · the same digit run appears verbatim (as a whole digit run) in THIS turn's
-//     SCRUBBED question (scrubOperatorText — note it replaces 4+ digit runs, so a
-//     year in the question never survives to be admitted);
-//   · it is adjacent to a time unit — h, hour(s), day(s), week(s), month(s),
-//     year(s) — OR is a 4-digit year in 1990–2100;
+//     SCRUBBED question (scrubOperatorText);
+//   · it is adjacent to a time unit — h, hour(s), day(s), week(s), month(s), year(s).
+//     There is NO year branch (S2 cross-impact note): the SEC-AI-005 scrub turns
+//     every 4+ digit run into [number] before the model sees the question, so a
+//     typed year can never match. Relaxing the scrub would need its own S2 ruling.
 //   · it does NOT equal any value in this turn's envelopes (numeric compare,
 //     integer rounding: |value − n| ≤ 0.5). If it does ⇒ USER_NUMERAL_COLLISION.
 // It never makes a metric VALUE acceptable: values come only from placeholders.
 
 export const USER_NUMERAL_TIME_UNIT = /^[\s-]?(?:h|hours?|days?|weeks?|months?|years?)\b/i;
-export const USER_NUMERAL_YEAR_MIN = 1990;
-export const USER_NUMERAL_YEAR_MAX = 2100;
 
 function envelopeValueNumbers(envelopes: readonly MetricEnvelope[]): number[] {
   const out: number[] = [];
@@ -485,9 +484,7 @@ export function admitUserNumerals(prose: string, scrubbedQuestion: string, envel
     const after = prose.slice(offset + tok.length);
     if (/^(?:\.\d|,\d|%)/.test(after)) return tok;
     const n = Number(tok);
-    const timed = USER_NUMERAL_TIME_UNIT.test(after);
-    const year = tok.length === 4 && n >= USER_NUMERAL_YEAR_MIN && n <= USER_NUMERAL_YEAR_MAX && !/^[A-Za-z]/.test(after);
-    if (!timed && !year) return tok;
+    if (!USER_NUMERAL_TIME_UNIT.test(after)) return tok;
     if (!new RegExp(`(?<!\\d)${tok}(?!\\d)`).test(scrubbedQuestion)) return tok;
     if (values.some((v) => Math.abs(v - n) <= 0.5)) { collision = true; return tok; }
     admitted++;
