@@ -131,7 +131,7 @@ export type PlatformAiGenerate = (args: {
 export const PLATFORM_AI_SYSTEM_PROMPT = [
   "You are Fourth Meridian's Platform AI for operators. You are READ-ONLY: no tool you have can change anything, so never claim or offer to take an action.",
   "Answer ONLY from the results of the tools you call in this turn: list_metrics (definitions), get_metric (one metric's value envelope), find_page and open_page (Platform pages).",
-  "NEVER write a number or a digit yourself. Where a figure goes, write a placeholder and the server fills in the figure, its unit and its status wording from your get_metric result: {{m:<metric>}} for a single-number value, {{m:<metric>|part=<name>}} for one part of an object value (e.g. {{m:provider-outcome@1|part=failing}}). <metric> is EXACTLY the get_metric result's \"metric\" field. Windows: if you read a metric ONCE, {{m:<metric>}} is enough (you may add |window=<window.days> when window.days is a number, e.g. {{m:engaged-users@1|window=7}}). If you read the SAME metric with two windows, every placeholder for it MUST carry |window=<window.days>. If window.days is null (a fixed window such as the billing cycle, or none), NEVER add |window. The server states each figure's window itself.",
+  "NEVER write a number or a digit yourself. Where a figure goes, COPY a placeholder string from your get_metric result VERBATIM and the server fills in the figure, its unit, its window and its status wording. Every get_metric result carries either \"placeholder\" (one string, for a single-number or unavailable value) or \"placeholders\" (one exact string per part of an object value, e.g. {\"failing\": \"{{m:provider-outcome@1|part=failing}}\"}): pick the part you mean and copy its string exactly as given — never type, shorten or edit one. (For reference only, the strings follow the form {{m:<metric>|part=<name>|window=<days>}}; the copied string is always right.)",
   "Do not write units ($, %, k, M) or \"at least\" next to a placeholder; the server writes them. Do not add, subtract, divide or estimate figures, and do not write dates, counts or metric ids in your own words: any digit outside a placeholder, or a placeholder for a metric you did not read in this turn, makes the whole answer refused. The one exception: you may repeat a time window the operator wrote in the question (e.g. their \"30 days\").",
   "If a metric's status is UNAVAILABLE, say it is unavailable (its placeholder renders as \"unavailable\" with the reason). Never present an unavailable figure as 0, $0, none or an estimate. PARTIAL means a lower bound; its placeholder renders as \"at least\".",
   "For cost questions (spend, what is costing the most), read the economics metrics. A dollar figure whose basis.kind is \"estimated\" is an estimate: call it estimated, never billed or invoiced. If you compare categories and any figure is PARTIAL or a part is null, say it is the largest of the measured categories and that a full ranking can't be verified.",
@@ -153,7 +153,7 @@ export function platformAiToolSchemas(paramKeys: readonly string[]): unknown[] {
     fn("list_metrics", "List the metric definitions you may read here (ids, labels, windows). No values. Domain \"economics\" holds the cost and spend metrics (AI cost, provider cost, operating cost by category, AI calls and cost per call): use it for questions about cost, spend or what is costing the most.", {
       domain: { type: "string", enum: DOMAINS },
     }),
-    fn("get_metric", "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), and drill.page (a link to the page with that figure's records). To state its figure write {{m:<metric>}} (or {{m:<metric>|part=<name>}} for an object value) — never the number itself. Add |window=<window.days> only when window.days is a number, and always when you read this metric with more than one window; never when window.days is null. Link drill.page, never drill.href.", {
+    fn("get_metric", "Read one metric's value envelope: metric (its key), value (or null), status, reason, window, freshness, basis.kind (\"estimated\" or \"measured\"), drill.page (a link to the page with that figure's records), and placeholder / placeholders. To state a figure, copy the placeholder string from this result verbatim (\"placeholder\", or the part's entry in \"placeholders\") — never the number itself, and never a placeholder you typed (the form is {{m:<metric>|part=<name>|window=<days>}}; copy it, don't build it). Link drill.page, never drill.href.", {
       id: { type: "string", description: "A metric id from list_metrics, e.g. \"provider-outcome@1\" or \"economics-operating-cost@1\"." },
       window: { type: "integer", description: "Days, only one of the metric's listed `windows`; any other is refused. Omit for the default or a fixed window." },
     }, ["id"]),
@@ -303,7 +303,7 @@ export async function executePlatformAiTool(name: string, rawArgs: string, bindi
       const drill = drillRef?.page ?? null;
       if (drillRef) { ev.hrefs.add(drillRef.page); ev.pages?.set(drillRef.page, { id: drillRef.id, params: {} }); }
       step(e.status, { refs: [e.metric], drillLink: drill !== null });
-      return e;
+      return { ...e, ...placeholdersFor(e) };
     }
     case "find_page": {
       const a = plainArgs(rawArgs, ["query"]);
@@ -442,7 +442,37 @@ export const segmentsText = (segs: readonly AnswerSegment[]) => segs.map((x) => 
 // attribution gap: a figure can only be the figure of the metric it names.
 
 /** One well-formed placeholder. Anything else that opens `{{` or closes `}}` is MALFORMED. */
-const PLACEHOLDER = /\{\{\s*m:([a-z0-9][a-z0-9-]{0,80}@\d{1,4})((?:\|[a-z]+=[A-Za-z0-9]{1,40}){0,2})\s*\}\}/g;
+const PLACEHOLDER = /\{\{\s*m:([a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?)((?:\|[a-z]+=[A-Za-z0-9]{1,40}){0,2})\s*\}\}/g;
+
+/**
+ * THE WRITER of the grammar PLACEHOLDER parses (main fix, S2-approved 2026-11-04):
+ * the exact string a get_metric result hands the model to copy. Pinned by a
+ * ROUND-TRIP test: every string placeholdersFor emits is consumed whole by
+ * PLACEHOLDER and resolves against its own envelope.
+ */
+export function formatPlaceholder(key: string, opts: { part?: string | null; window?: number | null } = {}): string {
+  return `{{m:${key}${opts.part ? `|part=${opts.part}` : ""}${typeof opts.window === "number" ? `|window=${opts.window}` : ""}}}`;
+}
+
+/**
+ * The placeholder strings for one envelope, server-built (so attribution stays
+ * exact: each names this envelope's key, part and window):
+ *   · UNAVAILABLE (or no value) or a scalar   ⇒ { placeholder } — UNAVAILABLE renders "unavailable — <reason>"
+ *   · an object value                        ⇒ { placeholders: { <part>: … } } — one per part with a declared unit
+ * |window=<days> is included whenever the envelope's window.days is a number (it
+ * always resolves to this envelope, and keeps two windows of one key apart);
+ * never when it is null (a fixed window, or none).
+ */
+export function placeholdersFor(e: MetricEnvelope): { placeholder: string } | { placeholders: Record<string, string> } {
+  const window = e.window.days;
+  const units = e.valueUnits;
+  if (e.status === "UNAVAILABLE" || e.value === null || typeof e.value === "number" || units === null || typeof units === "string") {
+    return { placeholder: formatPlaceholder(e.metric, { window }) };
+  }
+  const placeholders: Record<string, string> = {};
+  for (const [part, unit] of Object.entries(units)) if (FIGURE_UNITS.includes(unit)) placeholders[part] = formatPlaceholder(e.metric, { part, window });
+  return { placeholders };
+}
 
 /** The options of one placeholder, or null when malformed (unknown / repeated option, bad window). */
 function placeholderOptions(raw: string): { part: string | null; window: number | null } | null {
@@ -479,6 +509,108 @@ export type PlaceholderVerdict = (typeof PLACEHOLDER_VERDICTS)[number];
 
 /** Counts and a code only — never a value, a key or model text (C5). */
 export interface ClaimsSummary { claims: number; resolved: number; unresolved: number; admitted: number; verdict: PlaceholderVerdict }
+
+/**
+ * WHY a well-formed placeholder did not resolve (diagnosis, 2026-11-04; trace COUNTS only —
+ * never the key or part text the model wrote):
+ *   UNKNOWN_KEY  — the metric id is in no registry definition
+ *   VERSION      — the id is known (or was read this turn) but not at the written / an unambiguous version
+ *   MISSING_PART — an object value and no |part (and it is not a one-part object, safety net 2)
+ *   UNKNOWN_PART — a part the value does not have (or a part on a scalar, or a part with no declared unit)
+ *   NOT_READ     — a registry key that no get_metric of THIS turn returned
+ */
+export const UNRESOLVED_REASONS = ["UNKNOWN_KEY", "VERSION", "MISSING_PART", "UNKNOWN_PART", "NOT_READ"] as const;
+export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
+/**
+ * The SHAPE of a malformed placeholder (counts only):
+ *   NO_PREFIX     — {{…}} without the "m:" prefix
+ *   NOT_A_KEY     — the text after "m:" is not a metric-key shape (e.g. a label, capitals, spaces)
+ *   BAD_OPTION    — the key is well-shaped but an option is unknown, repeated or badly valued
+ *   STRAY_BRACES  — an unmatched "{{" or "}}"
+ */
+export const MALFORMED_REASONS = ["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"] as const;
+export type MalformedReason = (typeof MALFORMED_REASONS)[number];
+export type ReasonCounts<R extends string> = Partial<Record<R, number>>;
+
+const KNOWN_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
+const KNOWN_IDS: ReadonlySet<string> = new Set(METRICS.map((m) => m.id));
+const idOfKey = (k: string) => { const at = k.lastIndexOf("@"); return at >= 0 ? k.slice(0, at) : k; };
+
+/**
+ * The EXACT envelope key a placeholder's written key names — or why none. The key
+ * match is exact: a written "<id>@N" names only that key. A BARE "<id>" (no @N) is
+ * resolved only by safety net (1) (bareKeyNet). Never a fuzzy / label match.
+ */
+export type PlaceholderKeyMatch = { kind: "KEY"; key: string } | { kind: "UNRESOLVED"; reason: "UNKNOWN_KEY" | "VERSION" | "NOT_READ" };
+export function placeholderKeyOf(envelopes: readonly MetricEnvelope[], written: string): PlaceholderKeyMatch {
+  const versioned = written.includes("@");
+  const id = idOfKey(written);
+  const readOfId = [...new Set(envelopes.map((e) => e.metric as string))].filter((k) => idOfKey(k) === id);
+  if (versioned) {
+    if (readOfId.includes(written)) return { kind: "KEY", key: written };
+    if (readOfId.length > 0) return { kind: "UNRESOLVED", reason: "VERSION" };
+  } else {
+    const net = bareKeyNet(readOfId);
+    if (net !== null) return { kind: "KEY", key: net };
+    if (readOfId.length > 0) return { kind: "UNRESOLVED", reason: "VERSION" };
+  }
+  if (versioned ? KNOWN_KEYS.has(written) : KNOWN_IDS.has(id)) return { kind: "UNRESOLVED", reason: "NOT_READ" };
+  return { kind: "UNRESOLVED", reason: KNOWN_IDS.has(id) ? "VERSION" : "UNKNOWN_KEY" };
+}
+
+/**
+ * SAFETY NET (1), S2-approved 2026-11-04: a BARE id (no @N) resolves iff exactly
+ * ONE version of that id was read this turn — it then names that exact key. Two
+ * versions read ⇒ null (VERSION: ambiguous); none read ⇒ null (NOT_READ / UNKNOWN_KEY).
+ * Dropping this net = `return null`.
+ */
+export function bareKeyNet(readKeysOfId: readonly string[]): string | null {
+  return readKeysOfId.length === 1 ? readKeysOfId[0] : null;
+}
+
+/**
+ * The part a placeholder renders from ONE envelope — or why none. An UNAVAILABLE
+ * envelope renders "unavailable — reason" whatever the part (no figure exists).
+ */
+export function placeholderPartOf(e: MetricEnvelope, part: string | null): { kind: "PART"; part: string | null } | { kind: "UNRESOLVED"; reason: "MISSING_PART" | "UNKNOWN_PART" } {
+  if (e.status === "UNAVAILABLE" || e.value === null) return { kind: "PART", part };
+  if (typeof e.value === "number") return part === null ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
+  const units = e.valueUnits;
+  if (units === null || typeof units === "string") return { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
+  if (part === null) {
+    const only = onePartNet(units);
+    return only !== null ? { kind: "PART", part: only } : { kind: "UNRESOLVED", reason: "MISSING_PART" };
+  }
+  const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+  return own(e.value, part) && own(units, part) ? { kind: "PART", part } : { kind: "UNRESOLVED", reason: "UNKNOWN_PART" };
+}
+
+/**
+ * SAFETY NET (2), S2-approved 2026-11-04: an object value with exactly ONE declared
+ * numeric part (e.g. economics-ai-cost's { spendUsd }) resolves without |part — to
+ * that part. Two or more declared parts ⇒ null (MISSING_PART): a part-less
+ * placeholder never picks a total or a headline for the model (S2 rejected that).
+ * Dropping this net = `return null`.
+ */
+export function onePartNet(units: Readonly<Record<string, FigureUnit>>): string | null {
+  const parts = Object.entries(units).filter(([, u]) => FIGURE_UNITS.includes(u));
+  return parts.length === 1 && Object.keys(units).length === 1 ? parts[0][0] : null;
+}
+
+/** The shape of each malformed placeholder left in the prose (counts only). */
+export function malformedShapes(prose: string): ReasonCounts<MalformedReason> {
+  const out: ReasonCounts<MalformedReason> = {};
+  const add = (r: MalformedReason) => { out[r] = (out[r] ?? 0) + 1; };
+  const rest = prose.replace(/\{\{([^{}]*)\}\}/g, (_m, inner: string) => {
+    const t = inner.trim();
+    if (!/^m:/.test(t)) { add("NO_PREFIX"); return " "; }
+    const key = t.slice(2).split("|")[0].trim();
+    add(/^[a-z0-9][a-z0-9-]{0,80}(?:@\d{1,4})?$/.test(key) ? "BAD_OPTION" : "NOT_A_KEY");
+    return " ";
+  });
+  for (const _ of rest.matchAll(/\{\{|\}\}/g)) add("STRAY_BRACES");
+  return out;
+}
 
 // ── The user-numeral allowance (S2-approved 2026-11-04; one named, pinned function) ──
 //
@@ -663,6 +795,9 @@ export interface PlaceholderOutcome {
   figures: Map<string, string[]>;
   /** The envelopes the resolved placeholders rendered from (for the requested-window check). */
   placed: MetricEnvelope[];
+  /** Diagnosis (counts only): why placeholders were unresolved / malformed. */
+  unresolvedBy: ReasonCounts<UnresolvedReason>;
+  malformedBy: ReasonCounts<MalformedReason>;
 }
 
 /**
@@ -680,6 +815,9 @@ export function resolvePlaceholders(
   let malformed = false, unit = false, digit = false, windowMismatch = false, collision = false;
   const figures = new Map<string, string[]>();
   const placed: MetricEnvelope[] = [];
+  const unresolvedBy: ReasonCounts<UnresolvedReason> = {};
+  const malformedBy: ReasonCounts<MalformedReason> = {};
+  const why = (r: UnresolvedReason) => { unresolvedBy[r] = (unresolvedBy[r] ?? 0) + 1; unresolved++; return " "; };
   const asOfDays = envelopes.map((e) => e.freshness.asOf).filter((x): x is string => typeof x === "string").map((a) => a.slice(0, 10));
   // An envelope's explicit window start (reader-supplied ISO date) — allowed ONLY as that exact date token.
   const windowStarts = envelopes.map((e) => e.window.start).filter((x): x is string => typeof x === "string");
@@ -687,26 +825,35 @@ export function resolvePlaceholders(
 
   const resolveParts = (text: string): { text: string; parts: TypedAnswerSegment[] } => {
     const meta: { metric: string; window: number | string | null }[] = [];
-    const out = text.replace(PLACEHOLDER, (m, key: string, rawOpts: string, offset: number) => {
+    const out = text.replace(PLACEHOLDER, (m, written: string, rawOpts: string, offset: number) => {
       claims++;
       const opts = placeholderOptions(rawOpts);
-      if (!opts) { malformed = true; unresolved++; return " "; }
+      if (!opts) { malformed = true; malformedBy.BAD_OPTION = (malformedBy.BAD_OPTION ?? 0) + 1; unresolved++; return " "; }
       const before = text.slice(0, offset), after = text.slice(offset + m.length);
       if (UNIT_BEFORE.test(before) || UNIT_AFTER.test(after)) { unit = true; unresolved++; return " "; }
+      const k = placeholderKeyOf(envelopes, written);
+      if (k.kind === "UNRESOLVED") return why(k.reason);
+      const key = k.key;
       const match = matchPlaceholderEnvelope(envelopes, key, opts.window);
       if (match.kind === "MISMATCH") { windowMismatch = true; unresolved++; return " "; }
-      const e = match.kind === "MATCH" ? match.envelope : null;
-      const fig = e ? renderPlaceholder(e, opts.part, isEstimated(key)) : null;
-      if (fig === null) { unresolved++; return " "; }
+      if (match.kind === "UNREAD") return why("NOT_READ");
+      const e = match.envelope;
+      const p = placeholderPartOf(e, opts.part);
+      if (p.kind === "UNRESOLVED") return why(p.reason);
+      const fig = renderPlaceholder(e, p.part, isEstimated(key));
+      if (fig === null) return why("UNKNOWN_PART");
       resolved++;
-      if (!placed.includes(e!)) placed.push(e!);
+      if (!placed.includes(e)) placed.push(e);
       figures.set(key, [...(figures.get(key) ?? []), fig]);
-      meta.push({ metric: key, window: e!.window.days ?? envelopeWindowText(e!) });
+      meta.push({ metric: key, window: e.window.days ?? envelopeWindowText(e) });
       return `${SENTINEL}${fig}${SENTINEL}`;
     });
     // The model's own prose: placeholders out, then the allowlist, then no digit may remain.
     let prose = out.replace(new RegExp(`${SENTINEL}[^${SENTINEL}]*${SENTINEL}`, "g"), " ");
-    if (/\{\{|\}\}/.test(prose)) malformed = true;
+    if (/\{\{|\}\}/.test(prose)) {
+      malformed = true;
+      for (const [r, n] of Object.entries(malformedShapes(prose)) as [MalformedReason, number][]) malformedBy[r] = (malformedBy[r] ?? 0) + n;
+    }
     for (const l of labelList) prose = prose.split(l).join(" ");
     prose = prose.replace(/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?\b/g, (d) => (asOfDays.includes(d.slice(0, 10)) || windowStarts.includes(d) ? " " : d));
     const u = admitUserNumerals(prose, scrubbedQuestion, envelopes);
@@ -735,7 +882,7 @@ export function resolvePlaceholders(
   });
   const verdict: PlaceholderVerdict = malformed ? "MALFORMED_PLACEHOLDER" : unit ? "UNIT_MISMATCH" : windowMismatch ? "WINDOW_MISMATCH"
     : unresolved > 0 ? "UNRESOLVED_PLACEHOLDER" : collision ? "USER_NUMERAL_COLLISION" : digit ? "UNGROUNDED_DIGIT" : claims > 0 ? "RESOLVED" : "NONE";
-  return { segments: out, typed, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed };
+  return { segments: out, typed, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed, unresolvedBy, malformedBy };
 }
 
 /** The verdicts that keep the answer; every other one is replaced by the fallback. */
@@ -766,7 +913,11 @@ export interface PlatformAiAnswer {
   /** Deterministic notes (code-written, never model text). */
   notes: string[];
   /** replaced ⇔ the placeholder verdict refused the answer (the fallback was shown). */
-  grounding: { replaced: boolean; verdict: PlaceholderVerdict };
+  grounding: {
+    replaced: boolean; verdict: PlaceholderVerdict;
+    /** Diagnosis: why placeholders did not resolve / were malformed — reason CODES and counts, never text. */
+    unresolvedBy: ReasonCounts<UnresolvedReason>; malformedBy: ReasonCounts<MalformedReason>;
+  };
   /** Placeholder counts (C5): how many the model wrote, resolved and unresolved. Never values or keys. */
   claims: Omit<ClaimsSummary, "verdict">;
   /** What the sanitiser stripped: a total and counts by category (never the stripped text). */
@@ -783,11 +934,16 @@ const removedKinds = (s: { removed: number; kinds?: Partial<Record<SanitiseKind,
   return s.removed > 0 && parts.length ? `(${parts.join(",")})` : "";
 };
 
+/** "MISSING_PART:2,NOT_READ:1" in enum order — reason codes and counts only. */
+const reasonCounts = <R extends string>(order: readonly R[], c: ReasonCounts<R> | undefined) => order.filter((k) => (c?.[k] ?? 0) > 0).map((k) => `${k}:${c![k]}`).join(",");
+
 /** The trace as ONE metadata line (codes and registry ids only) for the route's log. */
 export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" | "sanitised" | "grounding" | "claims">): string {
   const steps = r.trace.map((t) => `${t.tool}:${t.outcome}${t.refs.length && t.tool !== "find_page" ? `(${t.refs.join("|")})` : ""}${t.count !== undefined ? `#${t.count}` : ""}${t.drillLink ? "+drill" : ""}`);
   const links = r.answer.filter((s) => s.kind === "link").length;
-  return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`;
+  return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
+    + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")
+    + (reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy) ? ` malformedBy=${reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy)}` : "");
 }
 
 export const UNVERIFIED_FALLBACK = "I couldn't verify that figure";
@@ -921,7 +1077,7 @@ export async function runPlatformAiTurn(input: {
     result: {
       surface: binding.surfaceLabel,
       answer, citations, notes,
-      grounding: { replaced, verdict },
+      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy },
       claims: { claims: placed.summary.claims, resolved: placed.summary.resolved, unresolved: placed.summary.unresolved, admitted: placed.summary.admitted },
       sanitised: { removed, kinds },
       usage: { rounds, toolCalls, tokens },
