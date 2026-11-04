@@ -11,7 +11,7 @@
  *   2. labels = the UI's own labels (view control, rail via platformMountContext,
  *      nav destinations);
  *   3. real routes — every href resolves to an app/ page route (filesystem scan),
- *      and equals the UI's own link builder (platformWorkspaceHref);
+ *      and is built by the UI's own link builder BY IDENTITY (workspace-href.ts);
  *   4. guards = the destination page's own guard (source scan), incl. the
  *      break-glass refusal;
  *   5. permission filtering per area and level; tier on every surface;
@@ -31,23 +31,22 @@ import path from "node:path";
 import { PlatformArea, UserRole } from "@prisma/client";
 import {
   AI_PAGE, AREA_PAGE, AREA_PAGE_LEVEL, DIRECTORY_PAGE, NAVIGATION_PARAM_GROUPS, NAVIGATION_TARGETS, TARGET_IDENTITY_PARAMS,
-  TILE_HOMES, defaultWorkspaceOf, type ComponentHome, type NavigationTarget,
+  DEFAULT_WORKSPACE_ID, TILE_HOMES, type ComponentHome, type NavigationTarget,
 } from "./registry";
 import { listNavigationTargets, resolveNavigationTarget } from "./access";
 import { metricAccessFor, type MetricAccessToken } from "@/lib/platform/intelligence/metrics/access";
-import { METRICS, metricKey } from "@/lib/platform/intelligence/metrics/registry";
+import { METRICS, drillLinks, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import { drillRouteArea } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import {
-  PLATFORM_AREA_WORKSPACES, PLATFORM_WORKSPACES, PLATFORM_WORKSPACE_ALIASES, viewComposedKeys,
+  PLATFORM_AREA_WORKSPACES, PLATFORM_WORKSPACES, PLATFORM_WORKSPACE_ALIASES,
 } from "@/lib/platform/workspaces";
 import { ALL_PLATFORM_AREAS, ALL_ACCESS_LEVELS, PLATFORM_AREAS } from "@/lib/platform/policy";
 import { PLATFORM_AI_HREF, platformDestinations } from "@/lib/platform/nav";
 import { PLATFORM_DIRECTORY_HREF } from "@/lib/space-nav";
-import { SPACE_URL_PARAMS } from "@/lib/space/space-url";
+import { PLATFORM_WORKSPACE_SCOPED_PARAMS, SPACE_URL_PARAMS } from "@/lib/space/space-url";
 import { platformMountContext } from "@/lib/space/mount-context.server";
-import {
-  PLATFORM_DEFAULT_WORKSPACE_ID, PLATFORM_WORKSPACE_SCOPED_PARAMS, platformWorkspaceHref,
-} from "@/lib/space/use-platform-workspace-navigation";
+import * as hrefModule from "@/lib/platform/workspace-href";
+import * as hookModule from "@/lib/space/use-platform-workspace-navigation";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: string): void {
@@ -118,6 +117,7 @@ const LEAD_FILE = new Map([...objectEntries(DASH, "PLATFORM_VIEW_LEADS")].map(([
 const WIDGET_FILE = new Map([...objectEntries(DASH, "PLATFORM_WIDGET_REGISTRY")].map(([k, c]) => [k, dashImports.get(c) ?? ""]));
 const homeFile = (h: ComponentHome) => ("lead" in h ? LEAD_FILE.get(h.lead) : WIDGET_FILE.get(h.section)) ?? "";
 const homeKey = (h: ComponentHome) => ("lead" in h ? `lead:${h.lead}` : `section:${h.section}`);
+const homeId = (h: ComponentHome) => ("lead" in h ? `lead:${h.lead}${h.view ? `@${h.view}` : ""}` : `section:${h.section}`);
 
 function main(): void {
 // ── 1. derived, both directions ──────────────────────────────────────────────
@@ -152,11 +152,11 @@ console.log("\n1. derived — sources ⇄ targets, both directions");
     navIds.join() === "overview,ai,space" && PAGE_IDS.every((id) => actual.has(id)));
 
   // Params: the Platform deep-link keys ⇄ the groups ⇄ the targets.
-  const scoped = new Set(PLATFORM_WORKSPACE_SCOPED_PARAMS);
+  const scoped = new Set<string>(PLATFORM_WORKSPACE_SCOPED_PARAMS);
   const grouped = NAVIGATION_PARAM_GROUPS.flatMap((g) => g.keys);
   const onTargets = new Set(NAVIGATION_TARGETS.flatMap((t) => t.params));
   check("each param is owned by exactly one group", new Set(grouped).size === grouped.length);
-  check("group keys == PLATFORM_WORKSPACE_SCOPED_PARAMS (both directions)",
+  check("group keys == space-url PLATFORM_WORKSPACE_SCOPED_PARAMS (both directions)",
     grouped.length === scoped.size && grouped.every((k) => scoped.has(k)), `${grouped.join()} vs ${[...scoped].join()}`);
   check("every grouped param is allowed on at least one target", grouped.every((k) => onTargets.has(k)), grouped.filter((k) => !onTargets.has(k)).join());
   // Every other Space-URL key is a personal-Space key, declared here with the reason (S2 binding 3).
@@ -252,16 +252,26 @@ console.log("\n3. real routes — app/**/page.tsx");
   }
   check("every target's href resolves to the page route its guard names", bad.length === 0, bad.join("; "));
 
-  // The UI's own link builder.
-  const parity: string[] = [];
-  for (const t of NAVIGATION_TARGETS) {
-    const r = resolveNavigationTarget(t.area ?? "PLATFORM_OPS", tokenFor(t.area ?? "PLATFORM_OPS"), t.id, undefined, { now: NOW });
-    const ui = t.area ? platformWorkspaceHref(t.area, t.workspaceId!, t.isDefault ? null : t.viewId) : t.id === "platform:ai" ? PLATFORM_AI_HREF : PLATFORM_DIRECTORY_HREF;
-    if (r?.href !== ui) parity.push(`${t.id}: ${r?.href} vs ${ui}`);
-  }
-  check("every href == the UI's own builder (platformWorkspaceHref / nav hrefs)", parity.length === 0, parity.join("; "));
-  check("the default workspace == the UI's PLATFORM_DEFAULT_WORKSPACE_ID in every area",
-    ALL_PLATFORM_AREAS.every((a) => defaultWorkspaceOf(a) === PLATFORM_DEFAULT_WORKSPACE_ID));
+  // The UI's own link builder, by IDENTITY (no equality test): one function, re-exported by the client hook.
+  check("the client hook re-exports the SAME platformWorkspaceHref / default / params (identity)",
+    hookModule.platformWorkspaceHref === hrefModule.platformWorkspaceHref
+    && hookModule.PLATFORM_DEFAULT_WORKSPACE_ID === hrefModule.PLATFORM_DEFAULT_WORKSPACE_ID
+    && hookModule.PLATFORM_WORKSPACE_SCOPED_PARAMS === PLATFORM_WORKSPACE_SCOPED_PARAMS);
+  const hook = code(src("lib/space/use-platform-workspace-navigation.ts"));
+  check("…and defines no link builder of its own (no template, no function body)",
+    !/function platformWorkspaceHref|\/dashboard\/platform\//.test(hook) && /from "@\/lib\/platform\/workspace-href"/.test(hook));
+  const workspaceHref = code(src("lib/platform/workspace-href.ts"));
+  check("workspace-href.ts is server-safe (no \"use client\", no React, no hooks)",
+    !/^\s*["']use client["']|from "react"|\buse[A-Z]\w*\(/m.test(workspaceHref) && /export function platformWorkspaceHref\(/.test(workspaceHref));
+  check("the registry builds area hrefs with that same function (import, no local template)",
+    /import \{[^}]*\bplatformWorkspaceHref\b[^}]*\} from "@\/lib\/platform\/workspace-href"/.test(src("lib/platform/intelligence/navigation/registry.ts"))
+    && /platformWorkspaceHref\(t\.area, t\.workspaceId/.test(code(src("lib/platform/intelligence/navigation/registry.ts")))
+    && !/`\/dashboard\/platform/.test(code(src("lib/platform/intelligence/navigation/registry.ts"))));
+  check("page hrefs are the nav's own constants",
+    byId("platform:overview")?.pathname === PLATFORM_DIRECTORY_HREF && byId("platform:ai")?.pathname === PLATFORM_AI_HREF);
+  check("the default workspace is every area's first composition",
+    DEFAULT_WORKSPACE_ID === hrefModule.PLATFORM_DEFAULT_WORKSPACE_ID
+    && ALL_PLATFORM_AREAS.every((a) => PLATFORM_AREA_WORKSPACES[a][0].workspaceId === DEFAULT_WORKSPACE_ID));
 }
 
 // ── 4. guards = the page's own ──────────────────────────────────────────────
@@ -459,8 +469,8 @@ console.log("\n7. metric links — ids exist, homes real, drills agree");
       if (!hf) badHome.push(`${file}: ${homeKey(h)} is not a lead / widget`);
       else if (!reaches(hf, file, 2)) badHome.push(`${file}: ${homeKey(h)} (${hf}) does not import it within two hops`);
       const composed = ALL_PLATFORM_AREAS.some((a) => PLATFORM_AREA_WORKSPACES[a].some((c) =>
-        "lead" in h ? (c.views ?? []).some((v) => v.lead === h.lead) : c.sections.includes(h.section)));
-      if (!composed) badHome.push(`${file}: ${homeKey(h)} is composed nowhere`);
+        "lead" in h ? (c.views ?? []).some((v) => v.lead === h.lead && (h.view === undefined || v.id === h.view)) : c.sections.includes(h.section)));
+      if (!composed) badHome.push(`${file}: ${homeId(h)} is composed nowhere`);
     }
   }
   check("every tile home is a real lead / widget that renders the tile, composed in some view", badHome.length === 0, badHome.join("; "));
@@ -469,16 +479,26 @@ console.log("\n7. metric links — ids exist, homes real, drills agree");
 
   // One source of truth: a metric drill's page is this registry's href for that area.
   const drift: string[] = [];
-  for (const m of METRICS) {
-    if ("unavailable" in m.drill) continue;
-    const page = m.drill.page;
-    const area = drillRouteArea(m.drill.api);
+  for (const m of METRICS) for (const link of drillLinks(m.drill)) {
+    const page = link.page;
+    const area = drillRouteArea(link.api);
     if (!area) { drift.push(`${metricKey(m)}: drill route has no area`); continue; }
     const hit = listNavigationTargets(area, tokenFor(area)).filter((t) => t.area === area)
       .map((t) => resolveNavigationTarget(area, tokenFor(area), t.id)?.href).filter((h) => h === page);
     if (hit.length === 0) drift.push(`${metricKey(m)}: ${page} is no ${area} target href`);
   }
   check("every metric drill page resolves through this registry to the SAME href, in the drill route's area", drift.length === 0, drift.join("; "));
+  const ib = METRICS.find((m) => m.id === "incident-broken-now")!;
+  const opsOpen = resolveNavigationTarget("PLATFORM_OPS", PO, "PLATFORM_OPS:platform-incidents:open")?.href;
+  const csOpen = resolveNavigationTarget("CUSTOMER_SUCCESS", CS, "CUSTOMER_SUCCESS:platform-incidents:open")?.href;
+  check("incident-broken-now: on PLATFORM_OPS the link and the drill are the Incidents › Broken now view, not the bare area",
+    byId("PLATFORM_OPS:platform-incidents:open")!.metrics.includes("incident-broken-now@1")
+    && !byId("PLATFORM_OPS:platform-overview:overview")!.metrics.includes("incident-broken-now@1")
+    && "bySurface" in ib.drill && ib.drill.bySurface.PLATFORM_OPS?.page === opsOpen && opsOpen !== "/dashboard/platform/PLATFORM_OPS");
+  check("incident-broken-now: on CUSTOMER_SUCCESS the drill is the CS incidents view (and only the open view links it)",
+    "bySurface" in ib.drill && ib.drill.bySurface.CUSTOMER_SUCCESS?.page === csOpen
+    && byId("CUSTOMER_SUCCESS:platform-incidents:open")!.metrics.includes("incident-broken-now@1")
+    && !byId("CUSTOMER_SUCCESS:platform-incidents:verify")!.metrics.includes("incident-broken-now@1"));
 }
 
 // ── 8. static ────────────────────────────────────────────────────────────────
