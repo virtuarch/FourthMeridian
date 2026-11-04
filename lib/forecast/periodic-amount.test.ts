@@ -6,7 +6,7 @@
  *     npx tsx lib/forecast/periodic-amount.test.ts
  *
  * ── The failure ─────────────────────────────────────────────────────────────
- * FORECAST-3 measured the real payroll and declined to name an amount, because
+ * FORECAST-3 measured a payroll stream (fixture below) and declined to name an amount, because
  * every naive answer is wrong differently: the mean ($5,314) averages in a
  * superseded regime, the median ($5,520) is right by luck on a series holding
  * $960.77 and $6,528.32, and the latest is one payment from being anything.
@@ -50,32 +50,33 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
 
 const src = readFileSync(join(__dirname, 'periodic-amount.ts'), 'utf8');
 const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-const AS_OF = '2015-08-27';
+const AS_OF = '2039-10-27';
 
-// ── Real streams, verbatim (date, amount) from the live ledger ──────────────
+// ── Synthetic streams (date, amount), shaped like the production case ──────
+// fixture-census: synthetic-dates — biweekly series moved by a whole-week offset that is not a calendar repeat
 const EMPLOYER_A: [string, number][] = [
-  ['2014-12-19', 2399.50], ['2015-01-01', 6182.69], ['2015-01-16', 6167.91], ['2015-01-30', 6274.50],
-  ['2015-02-13', 6044.69], ['2015-02-27', 5814.80], ['2015-03-13', 5489.85], ['2015-03-14', 960.77],
-  ['2015-03-27', 5571.02], ['2015-04-10', 5530.44], ['2015-04-24', 5530.44], ['2015-05-08', 5479.67],
-  ['2015-05-22', 5479.70], ['2015-06-05', 5500.01], ['2015-06-18', 6528.32], ['2015-07-02', 5500.02],
-  ['2015-07-17', 5500.00], ['2015-07-31', 5499.75], ['2015-08-14', 5520.26],
+  ['2039-02-18', 2399.50], ['2039-03-03', 6182.69], ['2039-03-18', 6167.91], ['2039-04-01', 6274.50],
+  ['2039-04-15', 6044.69], ['2039-04-29', 5814.80], ['2039-05-13', 5489.85], ['2039-05-14', 960.77],
+  ['2039-05-27', 5571.02], ['2039-06-10', 5530.44], ['2039-06-24', 5530.44], ['2039-07-08', 5479.67],
+  ['2039-07-22', 5479.70], ['2039-08-05', 5500.01], ['2039-08-18', 6528.32], ['2039-09-01', 5500.02],
+  ['2039-09-16', 5500.00], ['2039-09-30', 5499.75], ['2039-10-14', 5520.26],
 ];
 const EMPLOYER_B: [string, number][] = [
-  ['2013-07-25', 5667.26], ['2013-08-09', 4231.09], ['2013-08-23', 4231.11], ['2013-09-10', 4231.11],
-  ['2013-09-25', 4231.10], ['2013-10-10', 4231.11], ['2013-10-25', 4231.10], ['2013-11-08', 4231.11],
-  ['2013-11-23', 4231.10], ['2013-12-10', 4231.11], ['2013-12-24', 4550.22], ['2014-01-10', 4550.22],
-  ['2014-01-24', 4550.23], ['2014-02-08', 11060.80], ['2014-02-25', 4550.23], ['2014-03-08', 4550.22],
-  ['2014-03-25', 4550.23], ['2014-04-10', 4556.57], ['2014-04-25', 4652.29], ['2014-05-09', 4652.30],
-  ['2014-05-23', 4652.30], ['2014-06-10', 4170.78], ['2014-06-25', 4010.29], ['2014-07-10', 4652.30],
-  ['2014-07-25', 6088.44], ['2014-08-08', 4652.30], ['2014-08-23', 4652.29], ['2014-09-10', 4652.30],
-  ['2014-09-25', 4652.30], ['2014-10-10', 5747.74], ['2014-10-24', 5200.00], ['2014-11-08', 5200.00],
-  ['2014-11-25', 5200.00], ['2014-12-10', 4875.76], ['2014-12-24', 5252.55],
+  ['2038-01-25', 5667.26], ['2038-02-10', 4231.09], ['2038-02-25', 4231.11], ['2038-03-10', 4231.11],
+  ['2038-03-25', 4231.10], ['2038-04-10', 4231.11], ['2038-04-25', 4231.10], ['2038-05-10', 4231.11],
+  ['2038-05-25', 4231.10], ['2038-06-10', 4231.11], ['2038-06-25', 4550.22], ['2038-07-10', 4550.22],
+  ['2038-07-25', 4550.23], ['2038-08-10', 11060.80], ['2038-08-25', 4550.23], ['2038-09-10', 4550.22],
+  ['2038-09-25', 4550.23], ['2038-10-10', 4556.57], ['2038-10-25', 4652.29], ['2038-11-10', 4652.30],
+  ['2038-11-25', 4652.30], ['2038-12-10', 4170.78], ['2038-12-25', 4010.29], ['2039-01-10', 4652.30],
+  ['2039-01-25', 6088.44], ['2039-02-10', 4652.30], ['2039-02-25', 4652.29], ['2039-03-10', 4652.30],
+  ['2039-03-25', 4652.30], ['2039-04-10', 5747.74], ['2039-04-25', 5200.00], ['2039-05-10', 5200.00],
+  ['2039-05-25', 5200.00], ['2039-06-10', 4875.76], ['2039-06-25', 5252.55],
 ];
-/** Real mid-month interest: genuinely varies with balance, 0.01–0.10. */
+/** Synthetic mid-month interest, shaped like a balance-tracking stream: varies 0.01–0.05. */
 const INTEREST: [string, number][] = [
-  ['2014-10-16', 0.05], ['2014-11-18', 0.05], ['2014-12-15', 0.04], ['2015-01-16', 0.03],
-  ['2015-02-17', 0.03], ['2015-03-16', 0.03], ['2015-04-15', 0.01], ['2015-05-15', 0.01],
-  ['2015-06-15', 0.01], ['2015-07-15', 0.02], ['2015-08-17', 0.02],
+  ['2038-12-15', 0.05], ['2039-01-15', 0.05], ['2039-02-15', 0.04], ['2039-03-15', 0.03],
+  ['2039-04-15', 0.03], ['2039-05-15', 0.03], ['2039-06-15', 0.01], ['2039-07-15', 0.01],
+  ['2039-08-15', 0.01], ['2039-09-15', 0.02], ['2039-10-15', 0.02],
 ];
 
 const obs = (rows: [string, number][], currency = 'USD'): AmountObservation[] =>
@@ -94,12 +95,12 @@ const empB = deriveCurrentPeriodicAmount(obs(EMPLOYER_B), empBCad);
 const interest = deriveCurrentPeriodicAmount(obs(INTEREST), intCad);
 
 const empAAct = resolveStreamActivity({ cadence: empACad, settlements: EMPLOYER_A.map((r) => r[0]),
-  observedThroughISO: '2015-08-25', asOfISO: AS_OF });
+  observedThroughISO: '2039-10-25', asOfISO: AS_OF });
 const empBAct = resolveStreamActivity({ cadence: empBCad, settlements: EMPLOYER_B.map((r) => r[0]),
-  observedThroughISO: '2015-08-25', asOfISO: AS_OF });
+  observedThroughISO: '2039-10-25', asOfISO: AS_OF });
 
 /** A synthetic biweekly stream from a list of amounts, newest last. */
-function stream(amounts: number[], endISO = '2015-08-14'): [string, number][] {
+function stream(amounts: number[], endISO = '2039-10-14'): [string, number][] {
   const t0 = Date.parse(`${endISO}T00:00:00Z`);
   return amounts.map((v, i) => [
     new Date(t0 - (amounts.length - 1 - i) * 14 * 86_400_000).toISOString().slice(0, 10), v,
@@ -107,20 +108,20 @@ function stream(amounts: number[], endISO = '2015-08-14'): [string, number][] {
 }
 /** A fixed biweekly schedule, so short synthetic series exercise the AMOUNT
  *  authority without also needing enough dates to derive a cadence. */
-const biweeklyAt = (endISO = '2015-08-14'): Cadence => ({
+const biweeklyAt = (endISO = '2039-10-14'): Cadence => ({
   kind: CadenceKind.BIWEEKLY, anchorISO: endISO, provenance: 'DERIVED',
 });
 const derive = (amounts: number[]) =>
   deriveCurrentPeriodicAmount(obs(stream(amounts)), biweeklyAt());
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A. THE REAL PAYROLL
+// A. The payroll fixture
 // ═══════════════════════════════════════════════════════════════════════════
 
-check('A1 the real payroll yields an assertable current amount', empA.assertable, JSON.stringify(empA).slice(0, 200));
+check('A1 the payroll fixture yields an assertable current amount', empA.assertable, JSON.stringify(empA).slice(0, 200));
 if (empA.assertable) {
   eq('A2 the amount is the recent level, not the history', empA.value, (5500.01 + 5500.02) / 2);
-  eq('A3 the regime starts after the step down', empA.regimeStartISO, '2015-03-27');
+  eq('A3 the regime starts after the step down', empA.regimeStartISO, '2039-05-27');
   eq('A4 on ten observations', empA.observationCount, 10);
   check('A5 within a tight spread', empA.spread < 0.02, String(empA.spread));
   eq('A6 provenance is DERIVED', empA.provenance, EventProvenance.DERIVED);
@@ -143,23 +144,23 @@ check('A10 the derived amount differs from ALL THREE naive answers',
 const verdictFor = (a: PeriodicAmount, dateISO: string) => a.verdicts.find((v) => v.dateISO === dateISO);
 
 eq('B1 the superseded ~$6,190 regime is OUTSIDE_REGIME, not outliers',
-  ['2015-01-01', '2015-01-16', '2015-01-30', '2015-02-13', '2015-02-27']
+  ['2039-03-03', '2039-03-18', '2039-04-01', '2039-04-15', '2039-04-29']
     .map((d) => verdictFor(empA, d)!.excludedBecause),
   Array(5).fill(ExclusionReason.OUTSIDE_REGIME));
 eq('B2 the $6,528.32 supplemental is an OUTLIER inside the regime',
-  verdictFor(empA, '2015-06-18')!.excludedBecause, ExclusionReason.OUTLIER);
+  verdictFor(empA, '2039-08-18')!.excludedBecause, ExclusionReason.OUTLIER);
 eq('B3 the $960.77 off-cycle payment is caught by SLOT CONTENTION',
-  verdictFor(empA, '2015-03-14')!.excludedBecause, ExclusionReason.SLOT_CONTESTED);
+  verdictFor(empA, '2039-05-14')!.excludedBecause, ExclusionReason.SLOT_CONTESTED);
 eq('B4 and so is the payment it shares the occurrence with — neither is guessed at',
-  verdictFor(empA, '2015-03-13')!.excludedBecause, ExclusionReason.SLOT_CONTESTED);
+  verdictFor(empA, '2039-05-13')!.excludedBecause, ExclusionReason.SLOT_CONTESTED);
 eq('B5 they share one scheduled occurrence',
-  [verdictFor(empA, '2015-03-13')!.slotISO, verdictFor(empA, '2015-03-14')!.slotISO],
-  ['2015-03-13', '2015-03-13']);
+  [verdictFor(empA, '2039-05-13')!.slotISO, verdictFor(empA, '2039-05-14')!.slotISO],
+  ['2039-05-13', '2039-05-13']);
 check('B6 contention is detected from the SCHEDULE, never from magnitude — no amount comparison decides it',
   !/value <|value >|Math\.min|Math\.max\(.*value/.test(
     code.slice(code.indexOf('SLOT_CONTESTED'), code.indexOf('const eligible'))));
 eq('B7 the $2,399.50 opening payment is OUTSIDE_REGIME — no PARTIAL claim is made',
-  verdictFor(empA, '2014-12-19')!.excludedBecause, ExclusionReason.OUTSIDE_REGIME);
+  verdictFor(empA, '2039-02-18')!.excludedBecause, ExclusionReason.OUTSIDE_REGIME);
 check('B8 there is no PARTIAL category at all — it cannot be proven from this data',
   !/PARTIAL/.test(code));
 eq('B9 every observation has a verdict — nothing is silently dropped',
@@ -204,11 +205,11 @@ eq('D3 two observations at a new level are not yet a licensed regime', twoNew.as
 check('D4 and it says the level changed too recently',
   !twoNew.assertable && /changed too recently/.test(twoNew.reason), (twoNew as {reason:string}).reason);
 
-// AI RELIABILITY (2015-10-16) — THE HEAD OBEYS THE SAME OUTLIER RULE AS THE BODY.
+// AI RELIABILITY — THE HEAD OBEYS THE SAME OUTLIER RULE AS THE BODY.
 // Before: the walk seeded its level from the newest payment, so ONE high latest
 // paycheck became the level, the eleven before it "deviated" as a run, and the
 // stream's amount was refused — the projection then counted $0 of payroll. The
-// live shape: an eleven-payment level within ~1.3%, then one payment +28%.
+// production shape (synthesised here): an eleven-payment level within ~1.3%, then one payment +28%.
 const PAYROLL_HEAD = [5479.67, 5479.70, 5500.01, 5500.02, 5500.00, 5499.75, 5520.26, 5500.01, 5500.01, 5500.01, 5500.01, 7043.55];
 const headSpike = derive(PAYROLL_HEAD);
 check('D5 one deviating NEWEST payment on a stable regime is a provisional OUTLIER — the level stands',
@@ -243,7 +244,7 @@ eq('E3 two consecutive departures end a regime', REGIME.BREAK_RUN, 2);
 eq('E4 one observation is never enough', derive([5290]).assertable, false);
 eq('E5 two are never enough', derive([5290, 5288]).assertable, false);
 eq('E6 three stable observations suffice', derive([5290, 5288, 5292]).assertable, true);
-check('E7 the band sits in a PLATEAU, not on an edge — 1%..12% give the same real answer',
+check('E7 the band sits in a PLATEAU, not on an edge — 1%..12% give the same fixture answer',
   empA.assertable && empA.value === (5500.01 + 5500.02) / 2,
   'the measured within-regime spread is 1.29% and the regime step is 12.5%');
 check('E8 the threshold was not widened to rescue a second stream — high volatility stays UNKNOWN',
@@ -271,12 +272,12 @@ eq('F5 an old outlier is attributed to the old regime, not to this one',
 
 check('G1 the dead payroll HAS a derivable current amount', empB.assertable, JSON.stringify(empB).slice(0, 200));
 if (empB.assertable) {
-  eq('G2 at $5,200.00 from 2014-10-24', [empB.value, empB.regimeStartISO], [5200.00, '2014-10-24']);
+  eq('G2 at $5,200.00 from 2039-04-25', [empB.value, empB.regimeStartISO], [5200.00, '2039-04-25']);
   eq('G3 on four observations', empB.observationCount, 4);
 }
 eq('G4 and the stream is nevertheless SILENT', empBAct.state, ActivityState.SILENT);
 eq('G5 so it generates ZERO future events despite a clean amount',
-  periodicCashEvents(empBAct, empBCad, empB, AS_OF, '2015-12-31', FlowRole.INCOME), []);
+  periodicCashEvents(empBAct, empBCad, empB, AS_OF, '2040-02-29', FlowRole.INCOME), []);
 // Scoped to the DERIVATION function's body. The module imports a type for the
 // composition seam at the bottom; the derivation itself must never see it.
 const deriveBody = code.slice(
@@ -290,8 +291,8 @@ check('G6 the derivation never consults activity',
 // H. Basis stays orthogonal too
 // ═══════════════════════════════════════════════════════════════════════════
 
-const empAEvents = periodicCashEvents(empAAct, empACad, empA, AS_OF, '2015-12-31', FlowRole.INCOME);
-check('H1 the live payroll produces dated events with amounts', empAEvents.length === 9
+const empAEvents = periodicCashEvents(empAAct, empACad, empA, AS_OF, '2040-02-29', FlowRole.INCOME);
+check('H1 the current payroll produces dated events with amounts', empAEvents.length === 9
   && empAEvents.every((e) => e.amount !== null), String(empAEvents.length));
 eq('H2 every amount carries UNKNOWN basis — never NET',
   [...new Set(empAEvents.map((e) => e.amount!.basis))], [AmountBasis.UNKNOWN]);
@@ -332,7 +333,7 @@ eq('I5 annual factor still comes from the cadence', annualFactor(CadenceKind.BIW
 // ═══════════════════════════════════════════════════════════════════════════
 
 const mixed = deriveCurrentPeriodicAmount(
-  [...obs(stream([5290, 5285, 5295]).slice(0, 2)), { dateISO: '2015-08-14', value: 5292, currency: 'EUR' }],
+  [...obs(stream([5290, 5285, 5295]).slice(0, 2)), { dateISO: '2039-10-14', value: 5292, currency: 'EUR' }],
   biweeklyAt());
 eq('J1 a mixed-currency stream is UNKNOWN', mixed.assertable, false);
 check('J2 and says a regime must be single-currency',
@@ -355,20 +356,20 @@ eq('K5 derived and asserted are distinguishable by provenance alone',
   empA.assertable && empA.provenance !== userSays.provenance, true);
 check('K6 an assertion is never persisted', !/\.create\(|\.upsert\(|\.update\(/i.test(code));
 eq('K7 an asserted amount still carries UNKNOWN basis through the seam',
-  periodicCashEvents(empAAct, empACad, userSays, AS_OF, '2015-09-30', FlowRole.INCOME)[0].amount!.basis,
+  periodicCashEvents(empAAct, empACad, userSays, AS_OF, '2039-11-30', FlowRole.INCOME)[0].amount!.basis,
   AmountBasis.UNKNOWN);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // L. Interest — periodic, and no periodic amount
 // ═══════════════════════════════════════════════════════════════════════════
 
-eq('L1 a real interest stream has no stable amount', interest.assertable, false);
+eq('L1 an interest stream has no stable amount', interest.assertable, false);
 check('L2 because interest tracks a balance — it genuinely varies 0.01–0.05 here',
   Math.max(...INTEREST.map((r) => r[1])) / Math.min(...INTEREST.map((r) => r[1])) >= 5);
 eq('L3 its events still get dates, with no amount', (() => {
   const act = resolveStreamActivity({ cadence: intCad, settlements: INTEREST.map((r) => r[0]),
-    observedThroughISO: '2015-08-17', asOfISO: AS_OF });
-  const evs = periodicCashEvents(act, intCad, interest, AS_OF, '2015-11-30', FlowRole.INTEREST);
+    observedThroughISO: '2039-10-15', asOfISO: AS_OF });
+  const evs = periodicCashEvents(act, intCad, interest, AS_OF, '2040-01-31', FlowRole.INTEREST);
   return [evs.length > 0, evs.every((e) => e.amount === null), evs[0].role];
 })(), [true, true, FlowRole.INTEREST]);
 
@@ -435,13 +436,13 @@ check('N-D one latest outlier does not redefine the regime',
   !latestSpike.assertable || (latestSpike as {value:number}).value !== 9000);
 eq('N-E two observations only → UNKNOWN', derive([5290, 5288]).assertable, false);
 eq('N-F irregular freelance income → UNKNOWN',
-  deriveCurrentPeriodicAmount(obs([['2014-05-04', 45], ['2014-07-17', 151], ['2015-06-01', 18]]),
-    biweeklyAt('2015-06-01')).assertable, false);
+  deriveCurrentPeriodicAmount(obs([['2038-07-04', 45], ['2038-09-16', 151], ['2039-08-01', 18]]),
+    biweeklyAt('2039-08-01')).assertable, false);
 eq('N-G same cadence, high volatility → UNKNOWN',
   derive([5000, 5600, 4700, 5400, 4900, 5500, 4800]).assertable, false);
 eq('N-H semimonthly payroll → ASSERTABLE historical amount', empB.assertable, true);
 eq('N-I stale Employer B: amount assertable, activity SILENT, zero events',
-  [empB.assertable, empBAct.state, periodicCashEvents(empBAct, empBCad, empB, AS_OF, '2015-12-31', FlowRole.INCOME).length],
+  [empB.assertable, empBAct.state, periodicCashEvents(empBAct, empBCad, empB, AS_OF, '2040-02-29', FlowRole.INCOME).length],
   [true, ActivityState.SILENT, 0]);
 eq('N-J current Employer A: dates + nominal amounts + UNKNOWN basis',
   [empAEvents.length, empAEvents[0].amount!.value, empAEvents[0].amount!.basis],
@@ -500,17 +501,17 @@ check('P16 the invariant holds: a basis has a provenance exactly when it is esta
     || ((a.basis === AmountBasis.UNKNOWN) === (a.basisProvenance === null))));
 
 // EVENT / STATE PARITY — the defect was the same fact arriving as two answers.
-const netEvents = periodicCashEvents(empAAct, empACad, takeHome, AS_OF, '2015-09-30', FlowRole.INCOME);
+const netEvents = periodicCashEvents(empAAct, empACad, takeHome, AS_OF, '2039-11-30', FlowRole.INCOME);
 eq('P17 an asserted NET amount reaches the event layer as NET', netEvents[0].amount!.basis, AmountBasis.NET);
 check('P18 so FORECAST-3 licenses it as spendable cash', netCashContribution(netEvents[0]).assertable);
 eq('P19 while a DERIVED amount still reaches it as UNKNOWN',
-  periodicCashEvents(empAAct, empACad, empA, AS_OF, '2015-09-30', FlowRole.INCOME)[0].amount!.basis,
+  periodicCashEvents(empAAct, empACad, empA, AS_OF, '2039-11-30', FlowRole.INCOME)[0].amount!.basis,
   AmountBasis.UNKNOWN);
 eq('P20 and a GROSS assertion is still not spendable', netCashContribution(
-  periodicCashEvents(empAAct, empACad, grossed, AS_OF, '2015-09-30', FlowRole.INCOME)[0]).assertable, false);
+  periodicCashEvents(empAAct, empACad, grossed, AS_OF, '2039-11-30', FlowRole.INCOME)[0]).assertable, false);
 check('P21 the activity licence still outranks everything — a NET amount on a dead stream is no events',
   periodicCashEvents(empBAct, empBCad, assertedAmountBasis(
-    empB.assertable ? empB : takeHome, AmountBasis.NET, AS_OF), AS_OF, '2015-12-31', FlowRole.INCOME)
+    empB.assertable ? empB : takeHome, AmountBasis.NET, AS_OF), AS_OF, '2040-02-29', FlowRole.INCOME)
     .length === 0);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -550,7 +551,7 @@ async function mutations(): Promise<void> {
     '        basis: AmountBasis.UNKNOWN,',
     (m) => m.periodicCashEvents(empAAct, empACad,
       m.assertedAmountBasis(m.assertedPeriodicAmount(5250, 'USD', AS_OF), AmountBasis.NET, AS_OF),
-      AS_OF, '2015-09-30', FlowRole.INCOME)[0].amount!.basis === AmountBasis.NET);
+      AS_OF, '2039-11-30', FlowRole.INCOME)[0].amount!.basis === AmountBasis.NET);
 
   // An amount assertion quietly granting a basis it was never given.
   await mutate('Q3 an amount assertion granting itself a basis is caught',

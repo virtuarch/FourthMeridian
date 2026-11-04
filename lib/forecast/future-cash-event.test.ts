@@ -6,8 +6,9 @@
  *     npx tsx lib/forecast/future-cash-event.test.ts
  *
  * ── The failure ─────────────────────────────────────────────────────────────
- * Measured live: a $15,500 completion bonus and $1,500 vacation pay, neither
- * with any stated tax treatment, became $17,000 of spendable cash. Both amounts
+ * Measured live failure (figures illustrative): a $10,000 bonus and $1,000 of
+ * vacation pay, neither with any stated tax treatment, became $11,000 of
+ * spendable cash. Both amounts
  * were known. Whether either was money the user could spend was not, and the
  * sum asserted it silently.
  *
@@ -54,7 +55,7 @@ function ev(o: Partial<FutureCashEvent> & { value?: number; basis?: AmountBasisK
   const { value, basis, amountProvenance, currency, observedSettled, ...rest } = o;
   return {
     id: `e${++seq}`,
-    timing: { kind: 'EXACT', dateISO: '2015-10-15' },
+    timing: { kind: 'EXACT', dateISO: '2008-05-15' },
     timingProvenance: EventProvenance.USER_ASSERTED,
     direction: 'INFLOW',
     role: FlowRole.INCOME,
@@ -68,18 +69,21 @@ function ev(o: Partial<FutureCashEvent> & { value?: number; basis?: AmountBasisK
   };
 }
 
-// ── Real streams, verbatim from the live ledger ─────────────────────────────
-const EMPLOYER_A = ['2014-12-19','2015-01-01','2015-01-16','2015-01-30','2015-02-13','2015-02-27',
-  '2015-03-13','2015-03-14','2015-03-27','2015-04-10','2015-04-24','2015-05-08','2015-05-22',
-  '2015-06-05','2015-06-18','2015-07-02','2015-07-17','2015-07-31','2015-08-14'];
-const EMPLOYER_B = ['2013-07-25','2013-08-09','2013-08-23','2013-09-10','2013-09-25','2013-10-10',
-  '2013-10-25','2013-11-08','2013-11-23','2013-12-10','2013-12-24','2014-01-10','2014-01-24',
-  '2014-02-08','2014-02-25','2014-03-08','2014-03-25','2014-04-10','2014-04-25','2014-05-09',
-  '2014-05-23','2014-06-10','2014-06-25','2014-07-10','2014-07-25','2014-08-08','2014-08-23',
-  '2014-09-10','2014-09-25','2014-10-10','2014-10-24','2014-11-08','2014-11-25','2014-12-10','2014-12-24'];
-const INT_10 = ['2014-10-10','2014-11-10','2014-12-10','2015-01-10','2015-02-10','2015-03-10',
-  '2015-04-10','2015-05-10','2015-06-10','2015-07-10','2015-08-10'];
-const AS_OF = '2015-08-27', LEDGER = '2015-08-25';
+// ── Synthetic streams, shaped like the production case ──────────────────────
+// Employer A: biweekly Fridays with a few irregular settlements. Employer B: a nominal 10th/25th semimonthly run (35 observations)
+// that stopped eight months before the as-of. Interest: the 10th of each month.
+// fixture-census: synthetic-dates — biweekly series moved by a whole-week offset that is not a calendar repeat
+const EMPLOYER_A = ['2007-07-20','2007-08-02','2007-08-17','2007-08-31','2007-09-14','2007-09-28',
+  '2007-10-12','2007-10-13','2007-10-26','2007-11-09','2007-11-23','2007-12-07','2007-12-21',
+  '2008-01-04','2008-01-17','2008-01-31','2008-02-15','2008-02-29','2008-03-14'];
+const EMPLOYER_B = ['2006-02-25','2006-03-10','2006-03-25','2006-04-10','2006-04-25','2006-05-10',
+  '2006-05-25','2006-06-10','2006-06-25','2006-07-10','2006-07-25','2006-08-10','2006-08-25',
+  '2006-09-10','2006-09-25','2006-10-10','2006-10-25','2006-11-10','2006-11-25','2006-12-10',
+  '2006-12-25','2007-01-10','2007-01-25','2007-02-10','2007-02-25','2007-03-10','2007-03-25',
+  '2007-04-10','2007-04-25','2007-05-10','2007-05-25','2007-06-10','2007-06-25','2007-07-10','2007-07-25'];
+const INT_10 = ['2007-05-10','2007-06-10','2007-07-10','2007-08-10','2007-09-10','2007-10-10',
+  '2007-11-10','2007-12-10','2008-01-10','2008-02-10','2008-03-10'];
+const AS_OF = '2008-03-27', LEDGER = '2008-03-25';
 
 const cadOf = (d: readonly string[], k: string): Cadence => {
   const c = deriveCadence(d, k); if (!isCadence(c)) throw new Error(k); return c;
@@ -88,21 +92,21 @@ const empACad = cadOf(EMPLOYER_A, 'employer-a'), empBCad = cadOf(EMPLOYER_B, 'em
 const act = (c: Cadence, s: readonly string[], reach = LEDGER): StreamActivity =>
   resolveStreamActivity({ cadence: c, settlements: s, observedThroughISO: reach, asOfISO: AS_OF });
 const empAAct = act(empACad, EMPLOYER_A), empBAct = act(empBCad, EMPLOYER_B);
-const tenAct = act(tenCad, INT_10, '2015-08-17');
+const tenAct = act(tenCad, INT_10, '2008-03-17');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A. THE LIVE FAILURE
 // ═══════════════════════════════════════════════════════════════════════════
 
-const bonus   = ev({ value: 15500, basis: AmountBasis.UNKNOWN });
-const vacation = ev({ value: 1500, basis: AmountBasis.UNKNOWN });
+const bonus   = ev({ value: 10000, basis: AmountBasis.UNKNOWN });
+const vacation = ev({ value: 1000, basis: AmountBasis.UNKNOWN });
 const liveFailure = composeFutureCash([bonus, vacation]);
 
-eq('A1 the stated amounts total $17,000 — that much IS known', liveFailure.nominalInflow, 17000);
+eq('A1 the stated amounts total $11,000 — that much IS known', liveFailure.nominalInflow, 11000);
 eq('A2 the spendable contribution is NOT ASSERTABLE', liveFailure.assertableNet, null);
 check('A3 and it says why', /unestablished basis/.test(liveFailure.netRefusalReason ?? ''), String(liveFailure.netRefusalReason));
-eq('A4 the whole $17,000 sits in unresolved', liveFailure.unresolved.unknownBasis, 17000);
-check('A5 there is NO single field a caller could read $17,000 of spendable cash from',
+eq('A4 the whole $11,000 sits in unresolved', liveFailure.unresolved.unknownBasis, 11000);
+check('A5 there is NO single field a caller could read $11,000 of spendable cash from',
   !/futureCashTotal|totalFutureCash|spendableTotal/.test(code));
 // A6 deleted with `describeFutureCash` (V26-REASONING Slice 0). It asserted
 // that a prose renderer said in English what A2, A3 and A5 already assert
@@ -112,16 +116,16 @@ check('A5 there is NO single field a caller could read $17,000 of spendable cash
 // Mixed basis: the resolved part must not be lost, and the unresolved part must
 // not be absorbed into it.
 const mixed = composeFutureCash([
-  ev({ value: 15500, basis: AmountBasis.GROSS }),
-  ev({ value: 1500,  basis: AmountBasis.NET }),
+  ev({ value: 10000, basis: AmountBasis.GROSS }),
+  ev({ value: 1000,  basis: AmountBasis.NET }),
 ]);
-eq('A7 mixed basis still states $17,000 nominal', mixed.nominalInflow, 17000);
-eq('A8 the net component is NOT silently dropped', mixed.unresolved.gross, 15500);
-eq('A9 but no combined net is asserted while $15,500 is unresolved', mixed.assertableNet, null);
+eq('A7 mixed basis still states $11,000 nominal', mixed.nominalInflow, 11000);
+eq('A8 the net component is NOT silently dropped', mixed.unresolved.gross, 10000);
+eq('A9 but no combined net is asserted while $10,000 is unresolved', mixed.assertableNet, null);
 check('A10 and the refusal names the gross component',
-  /15500 stated as GROSS/.test(mixed.netRefusalReason ?? ''), String(mixed.netRefusalReason));
+  /10000 stated as GROSS/.test(mixed.netRefusalReason ?? ''), String(mixed.netRefusalReason));
 eq('A11 the assertable component is still visible per-event',
-  netCashContribution(ev({ value: 1500, basis: AmountBasis.NET })), { assertable: true, value: 1500, currency: 'USD' });
+  netCashContribution(ev({ value: 1000, basis: AmountBasis.NET })), { assertable: true, value: 1000, currency: 'USD' });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // B. Basis semantics
@@ -129,8 +133,8 @@ eq('A11 the assertable component is still visible per-event',
 
 eq('B1 NET is assertable at its stated amount',
   netCashContribution(ev({ value: 5250, basis: AmountBasis.NET })), { assertable: true, value: 5250, currency: 'USD' });
-check('B2 GROSS is not assertable', !netCashContribution(ev({ value: 15500, basis: AmountBasis.GROSS })).assertable);
-check('B3 UNKNOWN is not assertable', !netCashContribution(ev({ value: 15500, basis: AmountBasis.UNKNOWN })).assertable);
+check('B2 GROSS is not assertable', !netCashContribution(ev({ value: 10000, basis: AmountBasis.GROSS })).assertable);
+check('B3 UNKNOWN is not assertable', !netCashContribution(ev({ value: 10000, basis: AmountBasis.UNKNOWN })).assertable);
 check('B4 no amount at all is not assertable', !netCashContribution(ev({})).assertable);
 check('B5 GROSS and UNKNOWN refuse for DIFFERENT reasons — one is answered, one is open', (() => {
   const g = netCashContribution(ev({ value: 1, basis: AmountBasis.GROSS }));
@@ -166,7 +170,7 @@ check('B7 nothing promotes a basis — NET is only ever compared, never assigned
   // refuses GROSS on exactly the same terms as its sibling — a gross figure is
   // not the cash received no matter which path is asking.
   check('B8c the observed gate still refuses GROSS',
-    !observedCashContribution(ev({ value: 15500, basis: AmountBasis.GROSS })).assertable);
+    !observedCashContribution(ev({ value: 10000, basis: AmountBasis.GROSS })).assertable);
   check('B8d it refuses UNKNOWN that was NOT observed settling',
     !observedCashContribution(ev({ value: 5500.01, basis: AmountBasis.UNKNOWN })).assertable);
   check('B8e and admits UNKNOWN that WAS',
@@ -174,7 +178,7 @@ check('B7 nothing promotes a basis — NET is only ever compared, never assigned
       ev({ value: 5500.01, basis: AmountBasis.UNKNOWN, observedSettled: true })).assertable);
   check('B8f an observed marker cannot rescue a GROSS amount',
     !observedCashContribution(
-      ev({ value: 15500, basis: AmountBasis.GROSS, observedSettled: true })).assertable);
+      ev({ value: 10000, basis: AmountBasis.GROSS, observedSettled: true })).assertable);
 }
 check('B9 no withholding rate or tax estimate exists anywhere',
   !/withhold|taxRate|0\.7|0\.3\b|afterTax/i.test(code));
@@ -186,7 +190,7 @@ check('B9 no withholding rate or tax estimate exists anywhere',
 eq('C1 exactly three provenances', Object.keys(EventProvenance).sort(),
   ['DERIVED', 'HYPOTHETICAL', 'USER_ASSERTED']);
 check('C2 a USER_ASSERTED amount can still have UNKNOWN basis — the live case', (() => {
-  const e = ev({ value: 15500, basis: AmountBasis.UNKNOWN, amountProvenance: EventProvenance.USER_ASSERTED });
+  const e = ev({ value: 10000, basis: AmountBasis.UNKNOWN, amountProvenance: EventProvenance.USER_ASSERTED });
   return e.amount!.provenance === EventProvenance.USER_ASSERTED
     && e.amount!.basis === AmountBasis.UNKNOWN && !netCashContribution(e).assertable;
 })());
@@ -220,16 +224,16 @@ check('D4 a hypothetical is distinguishable after composition',
 // E. The licensed chain: cadence → activity → event
 // ═══════════════════════════════════════════════════════════════════════════
 
-const empBEvents = cadenceDerivedEvents(empBAct, empBCad, AS_OF, '2015-12-31', FlowRole.INCOME);
-const empAEvents = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2015-12-31', FlowRole.INCOME);
+const empBEvents = cadenceDerivedEvents(empBAct, empBCad, AS_OF, '2008-07-31', FlowRole.INCOME);
+const empAEvents = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2008-07-31', FlowRole.INCOME);
 
 check('E1 the raw generator still produces Employer B dates',
-  occurrencesBetween(empBCad, AS_OF, '2015-12-31').length === 8);
+  occurrencesBetween(empBCad, AS_OF, '2008-07-31').length === 8);
 eq('E2 the stale stream produces ZERO expected cash events', empBEvents.length, 0);
 eq('E3 and Employer B is SILENT, not ENDED', empBAct.state, ActivityState.SILENT);
 check('E4 the current payroll produces events', empAEvents.length === 9, String(empAEvents.length));
 eq('E5 on deterministic cadence dates', empAEvents.slice(0, 2).map((e) => exactDateOf(e.timing)),
-  ['2015-08-28', '2015-09-11']);
+  ['2008-03-28', '2008-04-11']);
 check('E6 generation routes through the LICENSED api, never the mechanical one',
   /expectedOccurrencesBetween\(activity, cadence, fromISO, toISO\)/.test(code)
   // The strongest form of this pin: the module does not even IMPORT the
@@ -254,14 +258,14 @@ check('F3 no amount is derived from the observation series',
 check('F4 the module records the measured reason', /CV 24\.6%/.test(src));
 
 // A user-asserted amount attaches, and the DATE stays derived.
-const asserted = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2015-09-30', FlowRole.INCOME,
+const asserted = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2008-04-30', FlowRole.INCOME,
   { value: 5250, currency: 'USD', basis: AmountBasis.NET, provenance: EventProvenance.USER_ASSERTED });
 eq('F5 asserted amount + derived date is representable',
   [asserted[0].amount!.provenance, asserted[0].timingProvenance],
   [EventProvenance.USER_ASSERTED, EventProvenance.DERIVED]);
 eq('F6 and the net contribution is assertable', composeFutureCash(asserted).assertableNet, 5250 * asserted.length);
 check('F7 the same amount with unstated basis is NOT', (() => {
-  const u = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2015-09-30', FlowRole.INCOME,
+  const u = cadenceDerivedEvents(empAAct, empACad, AS_OF, '2008-04-30', FlowRole.INCOME,
     { value: 5250, currency: 'USD', basis: AmountBasis.UNKNOWN, provenance: EventProvenance.USER_ASSERTED });
   return composeFutureCash(u).assertableNet === null;
 })());
@@ -270,16 +274,16 @@ check('F7 the same amount with unstated basis is NOT', (() => {
 // G. Timing
 // ═══════════════════════════════════════════════════════════════════════════
 
-const october: EventTiming = { kind: 'RANGE', fromISO: '2015-10-01', toISO: '2015-10-31' };
-eq('G1 "a bonus in October" keeps its range', describeTiming(october), '2015-10');
-eq('G2 and yields NO exact date — no day is invented', exactDateOf(october), null);
+const may: EventTiming = { kind: 'RANGE', fromISO: '2008-05-01', toISO: '2008-05-31' };
+eq('G1 "a bonus in May" keeps its range', describeTiming(may), '2008-05');
+eq('G2 and yields NO exact date — no day is invented', exactDateOf(may), null);
 eq('G3 unknown timing stays unknown', exactDateOf({ kind: 'UNKNOWN' }), null);
-eq('G4 an exact date is an exact date', exactDateOf({ kind: 'EXACT', dateISO: '2015-09-11' }), '2015-09-11');
+eq('G4 an exact date is an exact date', exactDateOf({ kind: 'EXACT', dateISO: '2008-04-11' }), '2008-04-11');
 check('G5 nothing picks a midpoint', !/midpoint|\/ 2\b|floor\(\(/.test(code));
 eq('G6 a cross-month range shows both ends',
-  describeTiming({ kind: 'RANGE', fromISO: '2015-10-15', toISO: '2015-11-15' }), '2015-10-15..2015-11-15');
+  describeTiming({ kind: 'RANGE', fromISO: '2008-05-15', toISO: '2008-06-15' }), '2008-05-15..2008-06-15');
 check('G7 an unresolved-timing event still composes',
-  composeFutureCash([ev({ value: 15500, timing: october })]).components[0].timing === '2015-10');
+  composeFutureCash([ev({ value: 10000, timing: may })]).components[0].timing === '2008-05');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // H. Economic role — existing vocabulary, no new taxonomy
@@ -295,7 +299,7 @@ check('H2 no invented roles — no BONUS, VACATION_PAY or PAYROLL taxonomy',
   !/BONUS|VACATION_PAY|PAYROLL|SALARY/.test(code));
 
 // Periodic is not payroll.
-const interestEvents = cadenceDerivedEvents(tenAct, tenCad, AS_OF, '2015-12-31', FlowRole.INTEREST);
+const interestEvents = cadenceDerivedEvents(tenAct, tenCad, AS_OF, '2008-07-31', FlowRole.INTEREST);
 check('H3 monthly interest generates events — it is not suppressed', interestEvents.length === 4,
   String(interestEvents.length));
 check('H4 and keeps the INTEREST role, never INCOME',
@@ -343,8 +347,8 @@ check('J2 every event becomes a named component',
 check('J3 each component states whether it counts',
   composeFutureCash([bonus, vacation]).components.every((k) => k.countsTowardNet === false));
 check('J4 an all-NET collection DOES yield a net figure',
-  composeFutureCash([ev({ value: 1500, basis: AmountBasis.NET }), ev({ value: 500, basis: AmountBasis.NET })])
-    .assertableNet === 2000);
+  composeFutureCash([ev({ value: 1000, basis: AmountBasis.NET }), ev({ value: 500, basis: AmountBasis.NET })])
+    .assertableNet === 1500);
 eq('J5 outflows reduce the net contribution',
   composeFutureCash([
     ev({ value: 3000, basis: AmountBasis.NET }),
@@ -412,13 +416,13 @@ check('K7 no forecast, baseline or policy vocabulary leaked in',
 
 const one = (e: FutureCashEvent) => composeFutureCash([e]);
 eq('L-A unknown-basis bonus: amount known, net unknown',
-  [one(ev({ value: 15500 })).nominalInflow, one(ev({ value: 15500 })).assertableNet], [15500, null]);
+  [one(ev({ value: 10000 })).nominalInflow, one(ev({ value: 10000 })).assertableNet], [10000, null]);
 eq('L-B explicit gross bonus is not spendable at face value',
-  one(ev({ value: 15500, basis: AmountBasis.GROSS })).assertableNet, null);
+  one(ev({ value: 10000, basis: AmountBasis.GROSS })).assertableNet, null);
 eq('L-C explicit net payment is assertable',
-  one(ev({ value: 1500, basis: AmountBasis.NET })).assertableNet, 1500);
+  one(ev({ value: 1000, basis: AmountBasis.NET })).assertableNet, 1000);
 eq('L-D mixed basis keeps both components',
-  [mixed.assertableNet, mixed.unresolved.gross, mixed.nominalInflow], [null, 15500, 17000]);
+  [mixed.assertableNet, mixed.unresolved.gross, mixed.nominalInflow], [null, 10000, 11000]);
 eq('L-E asserted biweekly paycheck on derived dates',
   [asserted.length > 0, asserted[0].timingProvenance, asserted[0].amount!.provenance],
   [true, EventProvenance.DERIVED, EventProvenance.USER_ASSERTED]);

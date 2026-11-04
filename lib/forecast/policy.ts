@@ -174,7 +174,7 @@ export type AssumptionStanceKind = typeof AssumptionStance[keyof typeof Assumpti
  *
  *   SPENDING_BASELINE    FORECAST-6 refused; six conclusions block on it.
  *   INCOME_BASIS         FORECAST-3 refused NET; five conclusions block on it.
- *   EVENT_BASIS          the $15,500 GROSS bonus / $1,500 UNKNOWN vacation pay.
+ *   EVENT_BASIS          the $10,000 GROSS bonus / $1,000 UNKNOWN vacation pay.
  *   EVENT_INCLUSION      a known event the user wants out of one scenario.
  *   STREAM_CONTINUATION  which licensed streams a scenario carries forward.
  */
@@ -898,7 +898,7 @@ export function applyPolicy(
     // This is NOT the generic event policy §12 forbids. It is scoped by
     // `sourceKey` — exactly as specific as an event id, and matching only the
     // events that stream generated — and it applies solely to an UNKNOWN basis.
-    // A GROSS event is untouched by it, so the $15,500 bonus still requires its
+    // A GROSS event is untouched by it, so the $10,000 bonus still requires its
     // own explicitly counterfactual assumption and the contradiction guard
     // cannot be walked around by widening the scope.
     const streamBasis = e.sourceKey && e.amount?.basis === AmountBasis.UNKNOWN
@@ -1162,7 +1162,7 @@ export function routeStatement(s: UserStatement, id: string): Routing {
       // ⚠️ NOT A POLICY ASSUMPTION, AND DELIBERATELY NOT GIVEN A DIMENSION.
       // FORECAST-8's assumptions are suppositions ABOUT authorities that already
       // hold something — a basis, a level, an inclusion. "Assume I get $5,000 on
-      // October 15" does not suppose anything about an existing event; it
+      // May 20" does not suppose anything about an existing event; it
       // supposes an event. FORECAST-3 already has somewhere truthful to put
       // that: `EventProvenance.HYPOTHETICAL`, minted for exactly this and
       // reserved in writing for "a later forecast-policy slice". So the

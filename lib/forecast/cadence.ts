@@ -493,8 +493,8 @@ export function deriveCadence(
  * confirmed payment.
  *
  * Measured need: the Employer B payroll's cadence is a clean SEMIMONTHLY, and its
- * last confirmed payment is 2014-12-24 — the job ended. Asked on 2015-08-27,
- * generation happily projects 2015-09-10, because a schedule does not know it
+ * last confirmed payment is months before the as-of — the payments stopped.
+ * Asked months later, generation happily projects the next 10th, because a schedule does not know it
  * has stopped.
  *
  * ⚠️ This does NOT decide whether a stream is active. It reports the size of the

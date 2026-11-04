@@ -21,8 +21,9 @@
  * supposition reaches the POLICY, the later statement wins, two movements that
  * share a day stay two movements, and no sentence is parsed anywhere.
  *
- * The fixture is the real Space, carried over verbatim from the deleted
- * integration suite so the numbers below are the ones production produced.
+ * The fixture is synthetic, shaped like the production Space the deleted
+ * integration suite was built around: a live biweekly payroll, a dormant
+ * semimonthly one, and account totals of the same kind.
  */
 
 import { readFileSync } from 'fs';
@@ -46,35 +47,35 @@ function check(name: string, ok: boolean, detail?: string): void {
   else { failures++; console.log(`[FAIL] ${name}`); if (detail) console.log(`        ${detail}`); }
 }
 
-const AS_OF = '2015-08-28';
+const AS_OF = '2003-03-28';
 
-// ── The real Space ──────────────────────────────────────────────────────────
+// ── The synthetic Space ───────────────────────────────────────────────────
 
-const realAccounts = {
-  totalLiquid: 10228.74, totalLiabilities: 549.75,
-  totalInvestments: 5006.557852, totalDigitalAssets: 19014.62555862176,
+const accounts = {
+  totalLiquid: 12000.00, totalLiabilities: 600.00,
+  totalInvestments: 5000.123456, totalDigitalAssets: 20000.12345678901,
   redactedCount: 0, totalsUnconverted: false,
   counts: { liquid: 4, liabilities: 2, investments: 3, digitalAssets: 4, realAssets: 0 },
 } as unknown as AccountsSectionData;
 
 const ctx = {
   space: { name: 'Personal', reportingCurrency: 'USD' },
-  domains: { [FinanceDomains.ACCOUNTS]: { data: realAccounts } },
+  domains: { [FinanceDomains.ACCOUNTS]: { data: accounts } },
 } as unknown as SpaceContext_AI;
 
 const empACadence: Cadence = {
-  kind: CadenceKind.BIWEEKLY, anchorISO: '2015-08-14', sourceKey: 'employer-a',
+  kind: CadenceKind.BIWEEKLY, anchorISO: '2003-03-14', sourceKey: 'employer-a',
   provenance: CadenceProvenance.DERIVED, observationCount: 19, confidence: 1,
   reason: 'biweekly payroll', toleranceDays: 2,
 } as unknown as Cadence;
 const empAActivity = resolveStreamActivity({
-  cadence: empACadence, settlements: ['2015-07-17', '2015-07-31', '2015-08-14'],
+  cadence: empACadence, settlements: ['2003-02-14', '2003-02-28', '2003-03-14'],
   observedThroughISO: AS_OF, asOfISO: AS_OF,
 });
 // The dormant payroll: a clean semimonthly schedule and no recent settlement.
 const empBCadence = { ...empACadence, kind: CadenceKind.SEMIMONTHLY, sourceKey: 'employer-b' } as Cadence;
 const empBActivity = resolveStreamActivity({
-  cadence: empBCadence, settlements: ['2014-10-24', '2014-11-10', '2014-11-25'],
+  cadence: empBCadence, settlements: ['2002-05-25', '2002-06-10', '2002-06-25'],
   observedThroughISO: AS_OF, asOfISO: AS_OF,
 });
 
@@ -83,7 +84,7 @@ const EMPLOYER_A: ResolvedIncomeStream = {
   activity: empAActivity,
   amount: {
     assertable: true, value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
-    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2015-04-10',
+    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2002-11-08',
     observationCount: 6, spread: 0.0016, verdicts: [], reason: 'six observations hold a level',
   },
   projectionEligible: empAActivity.mayGenerateExpectedOccurrences,
@@ -95,7 +96,7 @@ const EMPLOYER_B: ResolvedIncomeStream = {
   activity: empBActivity,
   amount: {
     assertable: true, value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
-    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2014-10-24',
+    basis: AmountBasis.UNKNOWN, basisProvenance: null, regimeStartISO: '2002-05-25',
     observationCount: 4, spread: 0.001, verdicts: [], reason: 'four observations',
   },
   projectionEligible: empBActivity.mayGenerateExpectedOccurrences,
@@ -105,7 +106,7 @@ const EMPLOYER_B: ResolvedIncomeStream = {
 const STREAMS = [EMPLOYER_A, EMPLOYER_B];
 
 const HORIZON: ForecastHorizon = {
-  fromISO: AS_OF, toISO: '2015-11-28',
+  fromISO: AS_OF, toISO: '2003-06-28',
   origin: AssumptionOrigin.USER_REQUESTED, statedAs: 'over the next 3 months',
 } as unknown as ForecastHorizon;
 
@@ -264,18 +265,18 @@ console.log('E. one-off events');
     mode, statedAs, asOfISO: AS_OF,
     subject: {
       kind: 'ONE_OFF_EVENT', amount, currency: 'USD', basis: AmountBasis.NET,
-      direction: 'INFLOW', role: FlowRole.INCOME, dateISO: '2015-10-15',
+      direction: 'INFLOW', role: FlowRole.INCOME, dateISO: '2003-05-20',
     },
   });
 
-  const asserted = build([evt(1500, StatementMode.ASSERTS_FACT, 'a $1,500 payout on October 15')]);
+  const asserted = build([evt(1000, StatementMode.ASSERTS_FACT, 'a $1,000 payout on May 20')]);
   const one = asserted.events.filter((e) => e.id.startsWith('user:'));
   check('E1 an asserted event carries USER_ASSERTED provenance',
     one.length === 1 && one[0].timingProvenance === EventProvenance.USER_ASSERTED,
     JSON.stringify(one.map((e) => e.timingProvenance)));
 
-  const supposed = build([evt(1500, StatementMode.REQUESTS_ASSUMPTION,
-    'assume a $1,500 payout on October 15')]);
+  const supposed = build([evt(1000, StatementMode.REQUESTS_ASSUMPTION,
+    'assume a $1,000 payout on May 20')]);
   const sup = supposed.events.filter((e) => e.id.startsWith('supposed:'));
   check('E2 a supposed event carries HYPOTHETICAL provenance and never USER_ASSERTED',
     sup.length === 1 && sup[0].timingProvenance === EventProvenance.HYPOTHETICAL
@@ -286,8 +287,8 @@ console.log('E. one-off events');
   // ⚠️ THE MEASURED DEFECT. Same day, same role, different amounts: two
   // movements. An identity without the amount silently merged them and lost one.
   const two = build([
-    evt(15500, StatementMode.ASSERTS_FACT, 'a $15,500 gross bonus on October 15'),
-    evt(1500, StatementMode.ASSERTS_FACT, 'a $1,500 payout on October 15'),
+    evt(10000, StatementMode.ASSERTS_FACT, 'a $10,000 gross bonus on May 20'),
+    evt(1000, StatementMode.ASSERTS_FACT, 'a $1,000 payout on May 20'),
   ]);
   check('E3 two movements sharing a day and a role stay TWO events',
     two.events.filter((e) => e.id.startsWith('user:')).length === 2,
@@ -312,11 +313,11 @@ console.log('F. pay dates');
     upcoming.streams.find((s) => s.sourceKey === 'employer-a')!.dates.length === 5);
 
   const stated = resolvePayDates(STREAMS, AS_OF,
-    { ask: PayDateAsk.UPCOMING, stated: { toISO: '2015-09-30', statedAs: 'through September' } });
+    { ask: PayDateAsk.UPCOMING, stated: { toISO: '2003-04-30', statedAs: 'through April' } });
   check('F4 a stated window replaces the cap rather than being capped by it',
-    stated.toISO === '2015-09-30' && stated.horizonStatedAs === 'through September'
+    stated.toISO === '2003-04-30' && stated.horizonStatedAs === 'through April'
       && stated.streams.find((s) => s.sourceKey === 'employer-a')!.dates
-        .every((d) => d <= '2015-09-30'));
+        .every((d) => d <= '2003-04-30'));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

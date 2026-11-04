@@ -51,19 +51,19 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
 const src = readFileSync(join(__dirname, 'operating-state.ts'), 'utf8');
 const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 const codeOnly = code.replace(/'(?:[^'\\]|\\.)*'/g, "''").replace(/`(?:[^`\\]|\\.)*`/g, '``');
-const AS_OF = '2015-08-28';
+const AS_OF = '2008-03-28';
 
-/** The real Space's account payload. */
-const realAccounts = (o: Partial<AccountsSectionData> = {}) => ({
-  totalLiquid: 10228.74, totalLiabilities: 549.75,
-  totalInvestments: 5006.557852, totalDigitalAssets: 19014.62555862176,
+/** A synthetic account payload, shaped like the production case. */
+const baseAccounts = (o: Partial<AccountsSectionData> = {}) => ({
+  totalLiquid: 12000.00, totalLiabilities: 600.00,
+  totalInvestments: 5000.006, totalDigitalAssets: 20000.006,
   redactedCount: 0, totalsUnconverted: false,
   counts: { liquid: 4, liabilities: 2, investments: 3, digitalAssets: 4, realAssets: 0 },
   ...o,
 } as unknown as AccountsSectionData);
 
 const state = (o: Partial<OperatingStateInput> = {}): CurrentOperatingState => {
-  const acc = (o.accounts === undefined ? realAccounts() : o.accounts) as AccountsSectionData | null;
+  const acc = (o.accounts === undefined ? baseAccounts() : o.accounts) as AccountsSectionData | null;
   return composeOperatingState({
     asOfISO: AS_OF,
     accounts: acc ? {
@@ -80,21 +80,21 @@ const state = (o: Partial<OperatingStateInput> = {}): CurrentOperatingState => {
   });
 };
 
-/** The real Employer A stream: CURRENT, biweekly, assertable amount, unknown basis. */
+/** Synthetic Employer A stream: CURRENT, biweekly, assertable amount, unknown basis. */
 const EMPLOYER_A = {
   sourceKey: 'employer-a', role: FlowRole.INCOME, cadence: CadenceKind.BIWEEKLY,
   activity: ActivityState.CURRENT, projectionEligible: true,
   amount: { value: 5500.015, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
-/** The real Employer B stream: SILENT, with a perfectly good amount. */
+/** Synthetic Employer B stream: SILENT, with a perfectly good amount. */
 const EMPLOYER_B = {
   sourceKey: 'employer-b', role: FlowRole.INCOME, cadence: CadenceKind.SEMIMONTHLY,
   activity: ActivityState.SILENT, projectionEligible: false,
   amount: { value: 5200.00, currency: 'USD', provenance: EventProvenance.DERIVED,
     basis: AmountBasis.UNKNOWN, basisProvenance: null },
 };
-/** A real interest stream: CURRENT and periodic, with no amount. */
+/** Synthetic interest stream: CURRENT and periodic, with no amount. */
 const INTEREST = {
   sourceKey: 'interest-10th', role: FlowRole.INTEREST, cadence: CadenceKind.MONTHLY,
   activity: ActivityState.CURRENT, projectionEligible: true, amount: null,
@@ -209,9 +209,9 @@ check('E1 the broad state carries traditional investments AND digital assets',
 // Null-safe on purpose: if digital assets vanish this must REPORT that, not
 // throw — a crashing guard tells you nothing about what broke.
 eq('E2 crypto does not disappear',
-  REAL.investments?.components.find((c) => c.key === 'DIGITAL_ASSETS')?.amount ?? 'MISSING', 19014.63);
-eq('E3 the combined total is the CF-7 composition', REAL.investments!.combined, 24021.19);
-eq('E4 liquid cash is separate and is NOT the investment figure', REAL.liquidity.amount, 10228.74);
+  REAL.investments?.components.find((c) => c.key === 'DIGITAL_ASSETS')?.amount ?? 'MISSING', 20000.01);
+eq('E3 the combined total is the CF-7 composition', REAL.investments!.combined, 25000.02);
+eq('E4 liquid cash is separate and is NOT the investment figure', REAL.liquidity.amount, 12000.00);
 check('E5 investments are never folded into liquidity — no arithmetic joins them',
   REAL.liquidity.amount !== REAL.investments!.combined
   && !/totalLiquid[^;\n]*\+|combined[^;\n]*\+[^;\n]*liquid/i.test(codeOnly));
@@ -220,11 +220,11 @@ check('E6 the composition is CF-7\'s, not recomputed',
 check('E7 the rendering states that investments are not liquid cash',
   /Investments and digital assets are NOT liquid cash/.test(describeOperatingState(REAL).join('\n')));
 check('E8 a hidden account makes the totals UNKNOWN, not short', (() => {
-  const s = state({ accounts: realAccounts({ redactedCount: 1 }) as never });
+  const s = state({ accounts: baseAccounts({ redactedCount: 1 }) as never });
   return s.liquidity.state === ComponentState.UNKNOWN && s.debt.state === ComponentState.UNKNOWN;
 })());
 eq('E9 and then the balance conclusions are refused',
-  refused(state({ accounts: realAccounts({ redactedCount: 1 }) as never }), Conclusion.CURRENT_LIQUID_BALANCE), true);
+  refused(state({ accounts: baseAccounts({ redactedCount: 1 }) as never }), Conclusion.CURRENT_LIQUID_BALANCE), true);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // F. Current means current
@@ -283,7 +283,7 @@ check('H8 the module never parses prose — assertions arrive already decided',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const rentEvent: FutureCashEvent = {
-  id: 'rent@2015-09-01', timing: { kind: 'EXACT', dateISO: '2015-09-01' },
+  id: 'rent@2008-04-01', timing: { kind: 'EXACT', dateISO: '2008-04-01' },
   timingProvenance: EventProvenance.USER_ASSERTED, direction: 'OUTFLOW', role: FlowRole.SPENDING,
   amount: { value: 2400, currency: 'USD', basis: AmountBasis.NET, provenance: EventProvenance.USER_ASSERTED },
 };
@@ -298,7 +298,7 @@ check('I4 an active-but-undated obligation is disclosed, not counted', (() => {
     && /carry no due date/.test(s.knownObligations.reason);
 })());
 check('I5 a current debt BALANCE never becomes a future obligation',
-  REAL.debt.amount === 549.75 && REAL.knownObligations.licensedEventCount === 0);
+  REAL.debt.amount === 600.00 && REAL.knownObligations.licensedEventCount === 0);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // J. Architecture and isolation
@@ -372,7 +372,7 @@ check('K7 the dead stream is shown as not projection-eligible',
 // ═══════════════════════════════════════════════════════════════════════════
 
 const blockers = forecastBlockers(REAL);
-check('L1 the real Space names its blockers',
+check('L1 the fixture Space names its blockers',
   blockers.includes('current-normal discretionary spending')
   && blockers.some((b) => /net \(after-tax\) basis/.test(b)), JSON.stringify(blockers));
 eq('L2 an assertable baseline removes one blocker',
@@ -400,7 +400,7 @@ eq('N3 and net monthly inflow becomes FACTUALLY licensed — no policy involved'
   licence(asserted_net, Conclusion.NET_MONTHLY_INFLOW).licensed, true);
 eq('N4 the derived streams are untouched by it',
   asserted_net.incomeStreams.filter((s) => s.basis === AmountBasis.NET).length, 1);
-eq('N5 the real Space, with no assertion, still has NO net basis anywhere',
+eq('N5 the fixture Space, with no assertion, still has NO net basis anywhere',
   REAL.incomeStreams.every((s) => s.basis === AmountBasis.UNKNOWN
     && s.basisProvenance === null), true);
 eq('N6 and still refuses net monthly inflow', refused(REAL, Conclusion.NET_MONTHLY_INFLOW), true);
@@ -457,7 +457,7 @@ async function mutate(
 /** Rebuild the asserted-NET fixture against a mutated module. */
 const netStateVia = (m: typeof import('./operating-state')) => m.composeOperatingState({
   asOfISO: AS_OF,
-  accounts: { totalLiquid: 10228.74, totalLiabilities: 549.75, counts: { liquid: 4, liabilities: 2 },
+  accounts: { totalLiquid: 12000.00, totalLiabilities: 600.00, counts: { liquid: 4, liabilities: 2 },
     redactedCount: 0, totalsUnconverted: false, asOfISO: AS_OF },
   investments: null, incomeStreams: [NET_EMPLOYER_A, EMPLOYER_B, INTEREST],
   obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
@@ -465,7 +465,7 @@ const netStateVia = (m: typeof import('./operating-state')) => m.composeOperatin
 });
 const realStateVia = (m: typeof import('./operating-state')) => m.composeOperatingState({
   asOfISO: AS_OF,
-  accounts: { totalLiquid: 10228.74, totalLiabilities: 549.75, counts: { liquid: 4, liabilities: 2 },
+  accounts: { totalLiquid: 12000.00, totalLiabilities: 600.00, counts: { liquid: 4, liabilities: 2 },
     redactedCount: 0, totalsUnconverted: false, asOfISO: AS_OF },
   investments: null, incomeStreams: [EMPLOYER_A, EMPLOYER_B, INTEREST],
   obligations: { licensedEvents: [], activeButUndatedCount: 0, evaluated: true },
