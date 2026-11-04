@@ -5,7 +5,7 @@ Implemented by the daily `purge-trash` job (07:30 UTC) on the beta-1 candidate (
 
 | Table | Kept for | Deleted when | Notes |
 |---|---|---|---|
-| `UserSession` | 30 days after revocation | `revokedAt < now − 30 d` | Live sessions are never touched |
+| `UserSession` | 30 days after revocation or expiry | `revokedAt < now − 30 d`, OR expired (SEC-010: the earlier of `lastActiveAt` + idle timeout and `createdAt` + absolute lifetime) more than 30 d ago | Live sessions are never touched. Expiry uses the `lib/auth/session-proof.ts` constants. Dry run: `npm run report:b10-5 -- expired-sessions --env=preview` |
 | `AiInvocation` | 90 days | `occurredAt < now − 90 d` | `userId` set to null on account purge |
 | `JobRun` | 90 days | `startedAt < now − 90 d` AND status ≠ `running` | |
 | `RefreshExecution` (+ `RefreshEndpointResult`, `ProviderCall`, `RefreshEndpointAccountCoverage` by cascade) | 60 days | `startedAt < now − 60 d` | |
@@ -39,7 +39,7 @@ Trashed Spaces and accounts are restorable and are **not** hard-purged on a time
 | `AuditLog.ipAddress` | IP | Every audit row written with request metadata: login, failed login, 2FA, session and operator actions, `BETA_ACCESS_REQUESTED`. Product events write NULL. | **Indefinite.** `BETA_ACCESS_REQUESTED` rows are nulled at 90 days, with a keyed digest kept in metadata. Product events are deleted at 13 months. | DIGEST, TRUNCATE | DB-010 |
 | `AuditLog.userAgent` | UA | As above. | As above. Beta-intake rows keep `uaFamily`. | UA_FAMILY, NULL | DB-010 |
 | `AuditLog.metadata.key` | IP_KEY | `SECURITY_ANOMALY_DETECTED` rows of type `failed_login_ip`: `ip:<address>` in raw form. The row also carries the salted `keyHash`. | **Indefinite.** | DIGEST, TRUNCATE (or replace with the existing `keyHash`) | DB-010 |
-| `UserSession.ipAddress` | IP | Every session, set at sign-in. | While the session is live, then 30 days after it is revoked. **A session that expires (idle 30 days, or absolute 90 days) without being revoked is never deleted. It is kept until the account is deleted.** | DIGEST, TRUNCATE | owner decision |
+| `UserSession.ipAddress` | IP | Every session, set at sign-in. | While the session is live, then 30 days after it ends: 30 days after it is revoked, or 30 days after it expires (idle or absolute lifetime), whichever comes first. | DIGEST, TRUNCATE | owner decision |
 | `UserSession.userAgent` | UA | As above. | As above. | UA_FAMILY, NULL | owner decision |
 | `RateLimit.key` | IP_KEY | IP-keyed limiter buckets: `ip:<limiter>:<address>`. | 24 hours (`sweep-rate-limits`). | DIGEST, TRUNCATE | owner decision |
 

@@ -79,6 +79,7 @@
  */
 
 import { createHmac } from "node:crypto";
+import { liveSessionCutoffs } from "@/lib/auth/session-proof";
 import { AUTOMATION_RETENTION_DAYS } from "@/lib/notifications/automations/types";
 import { BLOCKLIST_REMOVED_GRACE_DAYS } from "@/lib/platform/growth/beta-blocklist-core";
 import { rollupClientFrom, runCommsDeliveryRollup, type CommsRollupResult, type PrismaRollupLike, type RollupClient } from "@/lib/notifications/delivery/rollup";
@@ -120,10 +121,35 @@ export interface RetentionRule {
   archiveBeforeDelete?: true;
 }
 
+/**
+ * DB-009 + S2 ruling on #374 — the UserSession reaper's predicate, given the
+ * cutoff instant c = now − 30 d. A session is reaped when it is dead and has
+ * been dead for more than 30 days:
+ *   · REVOKED before c (DB-009, unchanged), or
+ *   · EXPIRED before c — its SEC-010 expiry instant, the EARLIER of
+ *     lastActiveAt + SESSION_IDLE_TIMEOUT_MS and createdAt + SESSION_ABSOLUTE_LIFETIME_MS,
+ *     lies before c. That is `createdAt < c − absolute OR lastActiveAt < c − idle`,
+ *     and those two instants are exactly liveSessionCutoffs(c) — the SAME helper,
+ *     constants and comparisons as the auth path (lib/auth/session-proof.ts); no
+ *     number is copied here.
+ * An expiry before c < now means the session is not live now (liveSessionWhere
+ * is `gte` on the very same cutoffs, taken at now), so a live session can never
+ * match; pinned in jobs/data-retention.test.ts against isSessionLive.
+ */
+export function sessionReapWhere(cutoff: Date): Record<string, unknown> {
+  const { createdAfter, activeAfter } = liveSessionCutoffs(cutoff);
+  return { OR: [
+    { revokedAt: { not: null, lt: cutoff } },
+    { createdAt: { lt: createdAfter } },
+    { lastActiveAt: { lt: activeAfter } },
+  ] };
+}
+
 /** THE schedule. Changing a window is a privacy decision — say so in the commit. */
 export const RETENTION_RULES: readonly RetentionRule[] = [
-  { table: "userSession", what: "UserSession revoked more than 30 days ago (IP + user agent)", days: 30,
-    where: (c) => ({ revokedAt: { not: null, lt: c } }), orderBy: "revokedAt" },
+  // Release note (B10): expired sessions are now removed 30 days after they expire, as revoked ones already were.
+  { table: "userSession", what: "UserSession revoked, or expired (SEC-010 idle / absolute lifetime), more than 30 days ago (IP + user agent)", days: 30,
+    where: (c) => sessionReapWhere(c), orderBy: "createdAt" },
   { table: "aiInvocation", what: "AiInvocation older than 90 days", days: 90,
     where: (c) => ({ occurredAt: { lt: c } }), orderBy: "occurredAt" },
   { table: "jobRun", what: "JobRun finished, started more than 90 days ago", days: 90,

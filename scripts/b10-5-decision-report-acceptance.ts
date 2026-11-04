@@ -93,6 +93,14 @@ async function main(): Promise<number> {
       ('${id("s41")}','${S4}','2026-04-18',false,0,10.50);
     insert into "Instrument" (id,"tickerSymbol",name,"assetClass","updatedAt") values
       ('${BTC}','BTC','Bitcoin','CRYPTO',now()),('${ETH}','ETH','Ethereum','CRYPTO',now()),('${EQ}','ACME','Acme Corp','EQUITY',now());
+    insert into "UserSession" (id,"userId","sessionToken","createdAt","lastActiveAt","revokedAt") values
+      ('${id("us1")}','${U}','tok-${id("us1")}', now() - interval '40 days', now() - interval '31 days', now() - interval '31 days'),
+      ('${id("us2")}','${U}','tok-${id("us2")}', now() - interval '70 days', now() - interval '61 days', NULL),
+      ('${id("us3")}','${U}','tok-${id("us3")}', now() - interval '290 days', now() - interval '1 day', NULL),
+      ('${id("us4")}','${U}','tok-${id("us4")}', now() - interval '500 days', now() - interval '500 days', NULL),
+      ('${id("us5")}','${U}','tok-${id("us5")}', now() - interval '45 days', now() - interval '40 days', NULL),
+      ('${id("us6")}','${U}','tok-${id("us6")}', now() - interval '5 days', now() - interval '1 day', NULL),
+      ('${id("us7")}','${U}','tok-${id("us7")}', now() - interval '6 days', now() - interval '2 days', now() - interval '5 days');
     insert into "PriceObservation" (id,"instrumentId",date,price,currency,basis,source,"fetchedAt")
       select 'po_btc_a_'||g, '${BTC}', date '2025-01-01' + g, 43210.12, 'USD', 'RAW_CLOSE'::"PriceBasis", 'coingecko', timestamp '2026-06-01 10:00:00' from generate_series(0,119) g
       union all select 'po_btc_b_'||g, '${BTC}', date '2025-06-01' + g, 43210.12, 'USD', 'RAW_CLOSE'::"PriceBasis", 'coingecko', timestamp '2026-06-01 11:00:00' from generate_series(0,29) g
@@ -117,7 +125,8 @@ async function main(): Promise<number> {
       select 'fa' t, count(*) n from "FinancialAccount" union all select 'ss', count(*) from "SpaceSnapshot"
       union all select 'po', count(*) from "PriceObservation" union all select 'cv', count(*) from "RefreshEndpointAccountCoverage"
       union all select 'rc', count(*) from "SpaceSnapshot" where "restrictedCash" is not null
-      union all select 'bo', count(*) from "FinancialAccount" where "balanceObserved") x;`);
+      union all select 'bo', count(*) from "FinancialAccount" where "balanceObserved"
+      union all select 'us', count(*) from "UserSession") x;`);
   const before = fingerprint();
 
   // ── all four, as the owner's run would ──
@@ -169,6 +178,17 @@ async function main(): Promise<number> {
     row(text, "Clear").includes("| 5 | 3 | 2026-03-12 → 2026-05-04 |"), row(text, "Clear"));
   check(19, "FM-AUDIT-021 undetermined: the day before the ledger horizon",
     row(text, "Undetermined").includes("| 1 | 1 | 2026-03-05 | exact |"), row(text, "Undetermined"));
+
+  // 5. expired sessions (the reaper's dry run): us1 revoked 31 d ago; us2 idle-expired 31 d ago;
+  // us3 absolute-expired 200 d ago; us4 expired 470 d ago; us5 expired 10 d ago (grace); us6 live; us7 revoked 5 d ago.
+  check(25, "expired-sessions: population 7, 1 within lifetime, 4 reapable (1 revoked + 3 newly due), 1 in grace",
+    row(text, "Session rows").includes("| 7 |") && row(text, "Unrevoked and within").includes("| 1 |")
+      && row(text, "**Reapable now**").includes("| **4** |") && row(text, "— already reaped").includes("| 1 |")
+      && row(text, "— **newly due**").includes("| **3** |") && row(text, "Expired, unrevoked, still inside").includes("| 1 |"),
+    text.split("### 5.")[1]?.slice(0, 1500));
+  check(26, "expired-sessions bands: 30–90 d 1, 90–180 d 0, 180–365 d 1, >365 d 1",
+    row(text, "—— expired 30–90").includes("| 1 |") && row(text, "—— expired 90–180").includes("| 0 |")
+      && row(text, "—— expired 180–365").includes("| 1 |") && row(text, "—— expired more than 365").includes("| 1 |"));
 
   // ── a non-bypass principal is refused (a count under RLS would silently miss rows) ──
   {
