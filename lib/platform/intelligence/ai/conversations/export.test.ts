@@ -97,8 +97,10 @@ console.log("2. pins: where the export reads, decrypts and decides");
   const store = code(read("lib/platform/intelligence/ai/conversations/store.ts"));
   const at = store.indexOf("export async function readConversationsForExport");
   const fn = store.slice(at, store.indexOf("async function", at + 30));
-  check("the export read is in the ONE data module, through withTenantDb, owner-scoped AND live-only (soft-deleted EXCLUDED)",
-    /withTenantDb\(operatorId, async \(tx\) => \{\s*const metas = await tx\.platformAiConversation\.findMany\(\{\s*where: \{ operatorUserId: operatorId, deletedAt: null \},[\s\S]*?select: CONVERSATION_SELECT,/.test(fn), fn.slice(0, 400));
+  check("LIVE = not soft-deleted AND at least one VISIBLE (unexpired, migration 20261105120000) message",
+    /const LIVE = \{ deletedAt: null, messages: \{ some: \{\} \} \} as const;/.test(store));
+  check("the export read is in the ONE data module, through withTenantDb, owner-scoped AND live-only (soft-deleted and all-expired EXCLUDED)",
+    /withTenantDb\(operatorId, async \(tx\) => \{\s*const metas = await tx\.platformAiConversation\.findMany\(\{\s*where: \{ operatorUserId: operatorId, \.\.\.LIVE \},[\s\S]*?select: CONVERSATION_SELECT,/.test(fn), fn.slice(0, 400));
   check("S2 STRICT: messages are selected ONLY for HELD conversations (lost areas are never read past metadata)",
     /const held = metas\.filter\(\(c\) => heldAreas\.has\(c\.area\)\);/.test(fn) && /tx\.platformAiMessage\.findMany\(\{\s*where: \{ conversationId: \{ in: held\.map\(\(c\) => c\.id\) \}/.test(fn)
       && (fn.match(/platformAiMessage\./g) ?? []).length === 1 && !/messages: \{/.test(fn));
