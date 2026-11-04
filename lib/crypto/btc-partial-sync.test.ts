@@ -443,25 +443,151 @@ async function main() {
     check(`S7 precision: ${sats} sats round-trips exactly`, r.ok && Math.round(q * SATS) === sats && q === sats / SATS, `q=${q}`);
   }
 
-  // ── XPUB regression: blockchain.info still owns xpub balance ──────────────
+  // ── XPUB: blockchain.info owns ACTIVITY, Esplora owns the CONFIRMED balance ──
+  //
+  // FM-AUDIT-053 (unconfirmed half). The xpub balance used to be the sum of
+  // multiaddr `final_balance`, which includes mempool effects, while a
+  // single-address wallet read Esplora confirmed-only — the same coins read
+  // differently depending on how the wallet was added. multiaddr now decides
+  // only WHICH addresses are active; each active address is read from the same
+  // Esplora authority single-address wallets use.
   shape.walletAddress = XPUB; shape.identities = XPUB_ADDRS;
+  // Esplora by address, with an optional mempool delta (which must never count).
+  const esploraFor = (byAddr: Record<string, { funded: number; spent: number; mFunded?: number; mSpent?: number }>): Route =>
+    async (u) => {
+      const a = decodeURIComponent(u.pathname.split("/").pop() ?? "");
+      const e = byAddr[a];
+      if (!e) return json({ error: "unknown" }, 404);
+      return json({
+        chain_stats: { funded_txo_sum: e.funded, spent_txo_sum: e.spent, tx_count: 1 },
+        mempool_stats: { funded_txo_sum: e.mFunded ?? 0, spent_txo_sum: e.mSpent ?? 0, tx_count: (e.mFunded || e.mSpent) ? 1 : 0 },
+      });
+    };
   {
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({
+      // final_balance deliberately DIFFERS from the confirmed balance: a pending
+      // receive of 0.05 BTC is already in it.
+      "blockchain.info": async () => json({ addresses: [
+        { address: XPUB_ADDRS[0], n_tx: 4, final_balance: 25_000_000 },
+        { address: XPUB_ADDRS[1], n_tx: 0, final_balance: 0 },
+      ] }),
+      "blockstream.info": esploraFor({ [XPUB_ADDRS[0]]: { funded: 20_000_000, spent: 0, mFunded: 5_000_000 } }),
+      "mempool.space": unreachable,
+    });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("8 xpub: balance is Esplora CONFIRMED (0.2), not multiaddr final_balance (0.25) — a mempool receive is NOT counted",
+      r.ok && store.account.nativeBalance === 0.2 && store.observations[0]?.quantity === 0.2, `${JSON.stringify(r)} calls=${net.calls.join(",")}`);
+    check("8 xpub: multiaddr for activity first, then Esplora for ONLY the active address (n_tx 0 costs no request)",
+      net.calls[0] === "blockchain.info" && net.calls.filter((h) => h === "blockstream.info").length === 1, net.calls.join(","));
+    check("9 xpub: mempool.space gone ⇒ 1352d4f partial contract intact (position written, import FAILED)",
+      store.observations[0]?.quantity === 0.2 && r.transactionImport?.status === "FAILED" && store.transactions.length === 0);
+    check("9 xpub: only the ACTIVE address is asked for history", net.calls.filter((h) => h === "mempool.space").length === 1, net.calls.join(","));
+  }
+  {
+    // A PENDING OUTGOING spend: final_balance already shows the coins gone;
+    // the confirmed balance still holds them until the spend confirms.
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({
+      "blockchain.info": async () => json({ addresses: [
+        { address: XPUB_ADDRS[0], n_tx: 3, final_balance: 5_000_000 },
+        { address: XPUB_ADDRS[1], n_tx: 1, final_balance: 10_000_000 },
+      ] }),
+      "blockstream.info": esploraFor({
+        [XPUB_ADDRS[0]]: { funded: 30_000_000, spent: 10_000_000, mSpent: 15_000_000 },
+        [XPUB_ADDRS[1]]: { funded: 10_000_000, spent: 0 },
+      }),
+      "mempool.space": unreachable,
+    });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
+    check("8b xpub: a pending outgoing spend does NOT reduce the confirmed balance (0.3, not final_balance 0.15)",
+      r.ok && store.account.nativeBalance === 0.3 && store.observations[0]?.quantity === 0.3, JSON.stringify(r));
+  }
+  {
+    // THE SAME ADDRESS, ADDED BOTH WAYS, READS THE SAME.
+    const one = XPUB_ADDRS[0];
+    const routes = {
+      "blockchain.info": (async () => json({ addresses: [
+        { address: one, n_tx: 2, final_balance: 17_000_000 },
+        { address: XPUB_ADDRS[1], n_tx: 0, final_balance: 0 },
+      ] })) as Route,
+      "blockstream.info": esploraFor({ [one]: { funded: 12_345_678, spent: 0, mFunded: 4_654_322 } }),
+      "mempool.space": unreachable,
+    };
+    const xs = freshStore([]);
+    install(db as unknown as Record<string, unknown>, xs);
+    const rx = await syncBtcWallet(ACCOUNT, { fetchImpl: network(routes).f, priceFetcher: async () => PRICE });
+    shape.walletAddress = one; shape.identities = [one];
+    const ss = freshStore([]);
+    install(db as unknown as Record<string, unknown>, ss);
+    const rs = await syncBtcWallet(ACCOUNT, { fetchImpl: network(routes).f, priceFetcher: async () => PRICE });
+    shape.walletAddress = XPUB; shape.identities = XPUB_ADDRS;
+    check("8c parity: an xpub and a single-address wallet agree on the same address (confirmed-only both ways)",
+      rx.ok && rs.ok && rx.nativeBalance === rs.nativeBalance && rx.nativeBalance === 0.12345678
+        && xs.observations[0]?.quantity === ss.observations[0]?.quantity, `xpub=${rx.nativeBalance} single=${rs.nativeBalance}`);
+  }
+  {
+    // ONE Esplora failure ⇒ PARTIAL: no sum, no observation, no zero.
     const store = freshStore([]);
     install(db as unknown as Record<string, unknown>, store);
     const net = network({
       "blockchain.info": async () => json({ addresses: [
         { address: XPUB_ADDRS[0], n_tx: 3, final_balance: 20_000_000 },
-        { address: XPUB_ADDRS[1], n_tx: 0, final_balance: 0 },
+        { address: XPUB_ADDRS[1], n_tx: 1, final_balance: 10_000_000 },
       ] }),
-      "mempool.space": unreachable,
+      "blockstream.info": async (u) => u.pathname.endsWith(XPUB_ADDRS[1]) ? json({ error: "down" }, 500)
+        : esploraFor({ [XPUB_ADDRS[0]]: { funded: 20_000_000, spent: 0 } })(u),
     });
     const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE });
-    check("8 xpub: balance from blockchain.info (summed), NOT the single-address authority",
-      r.ok && store.account.nativeBalance === 0.2 && net.calls[0] === "blockchain.info" && !net.calls.includes("blockstream.info"),
-      `${JSON.stringify(r)} calls=${net.calls.join(",")}`);
-    check("9 xpub: mempool.space gone ⇒ 1352d4f partial contract intact (position written, import FAILED)",
-      store.observations[0]?.quantity === 0.2 && r.transactionImport?.status === "FAILED" && store.transactions.length === 0);
-    check("9 xpub: only the ACTIVE address is asked for history", net.calls.filter((h) => h === "mempool.space").length === 1, net.calls.join(","));
+    check("8d xpub: an Esplora failure on one address ⇒ not ok at balance, PARTIAL named — never the other address's sum, never 0",
+      r.ok === false && r.stage === "balance" && /^Partial balance read: HTTP 500 from blockstream\.info/.test(r.reason ?? "")
+        && r.nativeBalance === undefined, JSON.stringify(r));
+    check("8d xpub: nothing written — no observation, no account update (wallet keeps its last observation / NO_OBSERVATION)",
+      store.observations.length === 0 && store.accountUpdates.length === 0 && store.account.nativeBalance === 0.1);
+    const issue = store.syncIssues.find((i) => (i.detail as { stage?: string }).stage === "balance")?.detail as Record<string, unknown> | undefined;
+    check("8d xpub: the SyncIssue records the partial read (cause, read/unread counts) and no address",
+      issue?.partial === true && issue?.cause === "READ_FAILED" && issue?.activeAddresses === 2 && issue?.addressesUnread !== 0
+        && !XPUB_ADDRS.some((a) => JSON.stringify(store.syncIssues).includes(a)), JSON.stringify(issue));
+  }
+  {
+    // BUDGET EXHAUSTED ⇒ PARTIAL, never a sum.
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({
+      "blockchain.info": async () => json({ addresses: [
+        { address: XPUB_ADDRS[0], n_tx: 3, final_balance: 20_000_000 },
+        { address: XPUB_ADDRS[1], n_tx: 1, final_balance: 10_000_000 },
+      ] }),
+      "blockstream.info": esploraFor({ [XPUB_ADDRS[0]]: { funded: 20_000_000, spent: 0 }, [XPUB_ADDRS[1]]: { funded: 10_000_000, spent: 0 } }),
+    });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE, xpubBalanceRequestBudget: 1 });
+    check("8e xpub: budget exhausted ⇒ not ok at balance, PARTIAL, no observation, no sum",
+      r.ok === false && r.stage === "balance" && /budget|more than 1 explorer requests/.test(r.reason ?? "")
+        && store.observations.length === 0 && store.accountUpdates.length === 0 && r.nativeBalance === undefined, JSON.stringify(r));
+    check("8e xpub: the budget is honoured (≤ 1 Esplora request issued)", net.calls.filter((h) => h === "blockstream.info").length <= 1, net.calls.join(","));
+    const issue = store.syncIssues.find((i) => (i.detail as { stage?: string }).stage === "balance")?.detail as Record<string, unknown> | undefined;
+    check("8e xpub: the SyncIssue names BUDGET_EXHAUSTED", issue?.partial === true && issue?.cause === "BUDGET_EXHAUSTED", JSON.stringify(issue));
+  }
+  {
+    // OVER THE PER-RUN READ CAP ⇒ PARTIAL by name, a count only, nothing written.
+    const store = freshStore([]);
+    install(db as unknown as Record<string, unknown>, store);
+    const net = network({
+      "blockchain.info": async () => json({ addresses: [
+        { address: XPUB_ADDRS[0], n_tx: 3, final_balance: 20_000_000 },
+        { address: XPUB_ADDRS[1], n_tx: 1, final_balance: 10_000_000 },
+      ] }),
+      "blockstream.info": esploraFor({ [XPUB_ADDRS[0]]: { funded: 20_000_000, spent: 0 }, [XPUB_ADDRS[1]]: { funded: 10_000_000, spent: 0 } }),
+    });
+    const r = await syncBtcWallet(ACCOUNT, { fetchImpl: net.f, priceFetcher: async () => PRICE, xpubBalanceHardCap: 1 });
+    check("8f xpub: over the read cap ⇒ not ok at balance, cause names the used-address COUNT, no Esplora read, nothing written",
+      r.ok === false && r.stage === "balance" && /wallet exceeds the per-run read cap \(2 used addresses\)/.test(r.reason ?? "")
+        && !net.calls.includes("blockstream.info") && store.observations.length === 0 && store.accountUpdates.length === 0, JSON.stringify(r));
+    const issue = store.syncIssues.find((i) => (i.detail as { stage?: string }).stage === "balance")?.detail as Record<string, unknown> | undefined;
+    check("8f xpub: SyncIssue cause OVER_READ_CAP, no address", issue?.cause === "OVER_READ_CAP"
+      && !XPUB_ADDRS.some((a) => JSON.stringify(store.syncIssues).includes(a)), JSON.stringify(issue));
   }
   {
     const store = freshStore([]);
