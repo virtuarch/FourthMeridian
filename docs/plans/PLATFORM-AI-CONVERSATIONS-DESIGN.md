@@ -799,6 +799,8 @@ Storage is never on without the purge, **and the code enforces it**: `env.isPlat
 - [ ] **Preview conversations are test data only** (synthetic questions; no real customer or operator-sensitive content). **At the end of acceptance, disable** (unset `PLATFORM_AI_CONVERSATIONS_ENABLED`) **and purge**: soft-delete the remaining conversations, then run the dispatch (grace 0 removes soft-deleted conversations and their messages) until it reports nothing more to remove; record the counts.
 - [ ] Production: the scheduled data-retention cron is live and the purge flag is set **before** or with the conversations flag; separate owner enable.
 
+**Disable order (S2).** Turn CONVERSATIONS off first, purge remaining data, THEN the purge flag. Never turn PURGE off while conversation rows exist.
+
 ---
 
 ## 14. Decisions
