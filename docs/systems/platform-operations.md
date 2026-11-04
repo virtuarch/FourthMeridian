@@ -290,7 +290,7 @@ our side cites code), D2 (provider facts only from the provider's current publis
 with URL and retrieval date; anything about our account is OWNER-VERIFY), D3 (internal operators
 only; no public-policy edit), D4 (no "no customer data is sent" claim), R5 (provider retention
 kept separate from ours). Code verified on `develop` at `7ab96db` (2026-11-04), covering Platform
-AI v0 (PRs #395 and #408). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/env.ts:875`).
+AI v0 (PRs #395 and #408). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/env.ts:875`). Enabled on Preview (develop) only since 2026-11-04 for operator acceptance; Production prohibited.
 
 ### 1. Current behaviour (v0, verified in code)
 
@@ -358,7 +358,7 @@ AI v0 (PRs #395 and #408). Platform AI ships OFF (`PLATFORM_AI_ENABLED`, `lib/en
 
 - Question and answer text: **not stored** (above).
 - AiInvocation metadata rows: 90 days, the AI ledger's existing policy
-  (`docs/operations/data-retention.md`, `AiInvocation` row). Platform AI adds no new table.
+  (`docs/operations/data-retention.md`, `AiInvocation` row). AiInvocation `userId` is set to null on account purge (same row). Platform AI adds no new table.
 - Server log lines (the per-turn trace and the counter): kept for the hosting provider's log
   retention window. **OWNER-VERIFY** (the plan's log retention is not recorded in code).
 
