@@ -40,6 +40,7 @@ let auditInsert!: typeof import("@/lib/audit")["auditInsert"];
 let buildAuditData!: typeof import("@/lib/audit")["buildAuditData"];
 let AuditAction!: typeof import("@/lib/audit-actions")["AuditAction"];
 let regenerateSpaceSnapshot!: typeof import("@/lib/snapshots/regenerate")["regenerateSpaceSnapshot"];
+let backfillSpaceSnapshots!: typeof import("@/lib/snapshots/backfill")["backfillSpaceSnapshots"];
 let detectCiphertextVersion!: typeof import("@/lib/plaid/encryption")["detectCiphertextVersion"];
 let encryptWithPurpose!: typeof import("@/lib/plaid/encryption")["encryptWithPurpose"];
 let EncryptionPurpose!: typeof import("@/lib/plaid/encryption")["EncryptionPurpose"];
@@ -53,6 +54,7 @@ async function loadApp(): Promise<void> {
   ({ auditInsert, buildAuditData } = await import("@/lib/audit"));
   ({ AuditAction } = await import("@/lib/audit-actions"));
   ({ regenerateSpaceSnapshot } = await import("@/lib/snapshots/regenerate"));
+  ({ backfillSpaceSnapshots } = await import("@/lib/snapshots/backfill"));
   ({ detectCiphertextVersion, encryptWithPurpose, EncryptionPurpose } = await import("@/lib/plaid/encryption"));
   ({ generateTOTP } = await import("@/lib/totp"));
 }
@@ -164,6 +166,8 @@ async function smoke(): Promise<void> {
     !!today && Math.abs(today.cash - Number(FIX.expectedCashB10)) < 0.005, { cash: today?.cash, expected: Number(FIX.expectedCashB10) });
   out.b10Snapshot = today ? { date: today.date.toISOString().slice(0, 10), cash: today.cash, savings: today.savings, restrictedCash: today.restrictedCash } : null;
 
+  await finEParity();
+
   // ── v2 ciphertext (no rotation in progress ⇒ B10 writes v2) ──
   // ONE registered writer (User.totpSecret, lib/plaid/encrypted-fields.test.ts): the same value
   // proves the format here and is decrypted by B9 twice (directly, and by B9's TOTP sign-in).
@@ -172,6 +176,50 @@ async function smoke(): Promise<void> {
   check("B15", "B10 encryption with no ENCRYPTION_KEY_PREVIOUS writes v2 (rollback-readable): the TOTP user's secret", detectCiphertextVersion(secretCt) === "v2", detectCiphertextVersion(secretCt));
   out.b10Ciphertext = secretCt;
   out.b10Plaintext = FIX.totpSecret;
+}
+
+/**
+ * FIN-E parity on real Postgres (S2, after #411): the LIVE writer and the BACKFILL
+ * writer must agree on restrictedCash / cash / savings / netLiquid for the same
+ * Space. Two dedicated Spaces (so the rollback checks on Space One are untouched):
+ * one links an HSA savings account, one has no HSA. Their accounts have no
+ * transactions, so every day's true balances are today's.
+ *   1. backfillSpaceSnapshots writes the window up to YESTERDAY (it never writes today);
+ *   2. regenerateSpaceSnapshot writes TODAY → compared with backfill's yesterday;
+ *   3. regenerateSpaceSnapshot then rewrites YESTERDAY (the same day backfill wrote)
+ *      → compared with the backfill values read in 1.
+ */
+async function finEParity(): Promise<void> {
+  const COLS = ["restrictedCash", "cash", "savings", "netLiquid"] as const;
+  type Cols = Record<(typeof COLS)[number], number | null>;
+  const now = new Date();
+  const todayD = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const yesterdayD = new Date(todayD.getTime() - 86_400_000);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const rowAt = async (spaceId: string, d: Date): Promise<Cols | null> => {
+    const r = await db.spaceSnapshot.findUnique({ where: { spaceId_date: { spaceId, date: d } }, select: { restrictedCash: true, cash: true, savings: true, netLiquid: true } });
+    return r ? { restrictedCash: r.restrictedCash, cash: r.cash, savings: r.savings, netLiquid: r.netLiquid } : null;
+  };
+  const same = (a: Cols | null, b: Cols | null) => !!a && !!b && COLS.every((k) => a[k] !== null && b[k] !== null && Math.abs(a[k]! - b[k]!) < 0.005);
+  const parity: Record<string, unknown> = {};
+
+  for (const [tag, spaceId, expectedRestricted] of [["hsa", FIX.spaceHsa, Number(FIX.parityHsaBalance)], ["noHsa", FIX.spacePlain, 0]] as const) {
+    const bfRun = await attempt(() => backfillSpaceSnapshots(spaceId));
+    const bf = await rowAt(spaceId, yesterdayD);
+    const liveRun = await attempt(() => regenerateSpaceSnapshot(spaceId));
+    const liveToday = await rowAt(spaceId, todayD);
+    const liveY = await attempt(() => regenerateSpaceSnapshot(spaceId, yesterdayD));
+    const liveYesterday = await rowAt(spaceId, yesterdayD);
+    parity[tag] = { backfillRows: bfRun.ok ? bfRun.value : bfRun.error, backfillYesterday: bf, liveToday, liveYesterday, yesterday: iso(yesterdayD) };
+    const label = tag === "hsa" ? "WITH an HSA" : "with NO HSA";
+    check(`FP-${tag}-1`, `FIN-E parity (${label}): backfill and the live writer both run and write their rows`,
+      bfRun.ok && (bfRun.value ?? 0) > 0 && liveRun.ok && liveY.ok && !!bf && !!liveToday && !!liveYesterday, parity[tag]);
+    check(`FP-${tag}-2`, `FIN-E parity (${label}): live TODAY = backfill's latest day on restrictedCash, cash, savings, netLiquid`, same(liveToday, bf), { liveToday, backfill: bf });
+    check(`FP-${tag}-3`, `FIN-E parity (${label}): live rewrite of the SAME day backfill wrote = backfill, on all four`, same(liveYesterday, bf), { liveYesterday, backfill: bf });
+    check(`FP-${tag}-4`, `FIN-E parity (${label}): restrictedCash = ${expectedRestricted} from both writers`,
+      liveToday?.restrictedCash === expectedRestricted && bf?.restrictedCash === expectedRestricted, { live: liveToday?.restrictedCash, backfill: bf?.restrictedCash });
+  }
+  out.finEParity = parity;
 }
 
 async function totpClaim(): Promise<void> {
