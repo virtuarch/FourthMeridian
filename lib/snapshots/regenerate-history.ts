@@ -308,6 +308,14 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
   // per-account floor: the constant-quantity assumption spans the whole window
   // (a labeled estimate).
   const cryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance != null);
+  // FM-AUDIT-022 follow-up — a crypto wallet with NO native quantity is left out
+  // of `cryptoAccounts`, so nothing above can value it. It must never be valued
+  // by its stored balance column instead, and it must not silently vanish from a
+  // day the OTHER wallets value. Its only remaining effect is as a holder that
+  // is NOT valued: it is handed to the holder-completeness guard
+  // (cryptoHoldersNotValued, quantity null) inside its existence interval, so a
+  // day it belongs to can never be stamped `supported`.
+  const unquantifiedCryptoAccounts = accounts.filter((a) => a.type === "crypto" && a.nativeBalance == null);
 
   // W-M0 — WHICH ASSET DOES EACH WALLET'S nativeBalance DENOMINATE?
   //
@@ -1138,7 +1146,16 @@ export async function regenerateWealthHistory(args: RegenerateWealthHistoryArgs)
       // P1 2026-10-31 — the holder-completeness guard: a holder that existed on
       // the day and is not in the valuation keeps the day off `supported`
       // (regenerateDay reads it as held-but-unvalued, before any evidence).
-      cryptoHoldersMissing = cryptoHoldersNotValued({ accounts: cryptoDayAccounts }, cryptoDayValuation);
+      cryptoHoldersMissing = cryptoHoldersNotValued({
+        accounts: [
+          ...cryptoDayAccounts,
+          ...unquantifiedCryptoAccounts.map((a) => ({
+            financialAccountId: a.id, name: a.name, nativeBalance: null,
+            assetKey: null, symbol: null,
+            applicable: floorByAccount.get(a.id)!.getTime() <= d.getTime(),
+          })),
+        ],
+      }, cryptoDayValuation);
       if (tokenDay.tokensJoin) {
         // classifyAccounts still does the FX to the reporting currency — the SAME
         // conversion path every other total uses (no second FX interpretation).
