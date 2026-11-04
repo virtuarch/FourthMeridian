@@ -283,6 +283,37 @@ async function existingPair(tx: TenantClient, conversationId: string, clientRequ
   return { user: toMessageRecord(user), assistant: toMessageRecord(assistant) };
 }
 
+/**
+ * READ-ONLY replay lookup (B11 turn integration): the pair a clientRequestId
+ * already produced in this LIVE conversation of the operator, or null. Used
+ * BEFORE any admission gate, so a replay calls no model and spends no daily turn,
+ * and again after settling to return the row as the database now holds it.
+ */
+export async function findTurnPair(operatorId: string, conversationId: string, clientRequestId: string): Promise<TurnPair | null> {
+  return withTenantDb(operatorId, async (tx) => {
+    const c = await tx.platformAiConversation.findFirst({ where: { id: conversationId, operatorUserId: operatorId, deletedAt: null }, select: { id: true } });
+    return c ? existingPair(tx, conversationId, clientRequestId) : null;
+  });
+}
+
+/**
+ * READ-ONLY create-replay lookup, CONVERSATION METADATA ONLY (S2 on #431): the
+ * live conversation a createRequestId produced (id, area, timestamps), DELETED,
+ * or null. It reads NO message row and decrypts nothing, so the caller can run
+ * the conversation's OWN area guard first and only then read the pair
+ * (findTurnPair) — a revoked area never reaches stored content.
+ */
+export type CreateReplayLookup = { kind: "FOUND"; conversation: ConversationRecord } | { kind: "DELETED" };
+
+export async function findCreateConversation(operatorId: string, createRequestId: string): Promise<CreateReplayLookup | null> {
+  return withTenantDb(operatorId, async (tx) => {
+    const c = await tx.platformAiConversation.findFirst({ where: { operatorUserId: operatorId, createRequestId }, select: { ...CONVERSATION_SELECT, deletedAt: true } });
+    if (!c) return null;
+    if (c.deletedAt) return { kind: "DELETED" as const };
+    return { kind: "FOUND" as const, conversation: { id: c.id, area: c.area, createdAt: c.createdAt, lastActivityAt: c.lastActivityAt } };
+  });
+}
+
 export type CreateOutcome =
   | { kind: "CREATED" | "REPLAY"; conversation: ConversationRecord; pair: TurnPair }
   /** A replay of a create whose conversation the operator has since deleted: invisible (404). */

@@ -42,7 +42,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import bcrypt from "bcryptjs";
@@ -477,7 +477,8 @@ main()
     teardown();
     const failed = checks.filter((c) => !c.ok);
     evidence.checks = checks;
-    if (EVIDENCE) writeFileSync(EVIDENCE, JSON.stringify(evidence, null, 2));
+    // Evidence is private (0600): mode applies on create only, so chmod an existing file too.
+    if (EVIDENCE) { writeFileSync(EVIDENCE, JSON.stringify(evidence, null, 2), { mode: 0o600 }); chmodSync(EVIDENCE, 0o600); }
     console.log(`\n=== B10 REHEARSAL: ${checks.length - failed.length}/${checks.length} checks passed ===`);
     if (findings.length) {
       console.log(`\n!!! FINDINGS (${findings.length}; not B9-compat failures — for the release plan):`);

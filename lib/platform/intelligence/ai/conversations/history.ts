@@ -28,9 +28,8 @@
  *     longer see (describeMetric / pageVisible under the CURRENT token) is
  *     silently omitted.
  *
- * Integration into runPlatformAiTurn is a follow-up commit (after #418, which
- * changes the answer-rendering contract). Nothing here calls a model, a
- * database or a clock.
+ * Wired into runPlatformAiTurn (its `history` input) by ./turn.ts
+ * runConversationTurn. Nothing here calls a model, a database or a clock.
  */
 
 import type { EvidenceRef, StoredAnswerV1 } from "./answer";
@@ -88,12 +87,21 @@ export const figureMarker = (metric: string, at: Date) => `[figure from ${metric
 /** Digit runs (with separators) in a prior answer's prose. */
 const DIGITS = /[-+]?[$€£]?\d[\d,.]*%?/g;
 
-/** A prior ASSISTANT answer as replay prose: figures → markers, links → labels, stray digits masked. */
+/**
+ * S2 on #431 — every `{` / `}` in REPLAYED text (a prior answer's prose or link
+ * label, a prior question) becomes `(` / `)`, so no placeholder-shaped string
+ * ({{m:<key>…}}) survives into the prompt for the model to copy. (A copied one
+ * could not ground anyway — placeholders resolve only against THIS turn's
+ * envelopes — this keeps the prompt free of usable syntax.) Applied BEFORE the
+ * digit mask.
+ */
+export const neutraliseBraces = (t: string): string => t.replace(/\{/g, "(").replace(/\}/g, ")");
+
+/** A prior ASSISTANT answer as replay prose: figures → markers, links → labels, braces neutralised, stray digits masked. */
 export function replayAnswer(answer: StoredAnswerV1, answeredAt: Date): string {
   return answer.segments.map((s) => {
     if (s.kind === "figure") return figureMarker(s.metric, answeredAt);
-    if (s.kind === "link") return s.text.replace(DIGITS, "[figure]");
-    return s.text.replace(DIGITS, "[figure]");
+    return neutraliseBraces(s.text).replace(DIGITS, "[figure]");
   }).join("");
 }
 
@@ -129,7 +137,7 @@ export function assemblePlatformAiHistory(input: {
     if (q.role !== "USER" || q.status !== "COMPLETE" || typeof q.content !== "string") continue;
     const a = replies.get(q.id);
     if (!a || a.status !== "COMPLETE" || a.content === null || typeof a.content === "string") continue;
-    exchanges.push({ user: q.content, assistant: replayAnswer(a.content, a.createdAt), refs: a.evidenceRefs, at: q.createdAt.getTime() });
+    exchanges.push({ user: neutraliseBraces(q.content), assistant: replayAnswer(a.content, a.createdAt), refs: a.evidenceRefs, at: q.createdAt.getTime() });
   }
   exchanges.sort((x, y) => x.at - y.at);
 
