@@ -19,6 +19,10 @@ import path from "node:path";
 export const CREDENTIALS_FILE = "credentials.json";
 export const RECORD_FILE = "record.json";
 export const CLEANUP_FILE = "cleanup.json";
+/** The TOTP seed and recovery codes the app shows at the operator's first-sign-in enrolment (S2 Fix A): saved here only, by hand, 0600. */
+export const TOTP_FILE = "totp.json";
+/** Every file that can hold a secret; cleanup shreds each one present. */
+export const SECRET_FILES = [CREDENTIALS_FILE, TOTP_FILE] as const;
 
 /** ~/FourthMeridian-private (resolved from the current HOME). */
 export function defaultPrivateBase(): string {

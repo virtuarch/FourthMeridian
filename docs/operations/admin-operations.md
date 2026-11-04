@@ -101,6 +101,22 @@ npm run ops:synthetic-operator -- --env=preview --cleanup --record=<private dir>
   min(provision + 14 days, 2026-11-19T23:59:59Z). Stdout prints PASS lines, the
   private directory and the deadline only. If a synthetic operator already
   exists, provisioning is refused and nothing changes.
+- **Principal (S2 Fix B):** before any provision, revoke or cleanup the script
+  reads `rolbypassrls OR rolsuper` for the connecting principal and refuses
+  (exit 2) when false: the conversation tables are FORCE RLS, so a non-bypass
+  principal would count them as empty. Run it against the direct (migration)
+  principal.
+- **TOTP enrolment (S2 Fix A):** operator 2FA is enforced for Platform access, so
+  the operator enrols at first sign-in through the app's own setup. The seed and
+  recovery codes it shows are saved ONLY as `totp.json` (0600) in the same
+  private directory: never in chat, logs or screenshots. Cleanup shreds it.
+- **Operating conditions (S2):** sign in only through the normal preview-app
+  sign-in. Use Platform pages only: never open `/dashboard/brief` or any
+  customer-AI surface from its Personal Space (Brief generation spends provider
+  money and is not part of acceptance). Platform AI questions only for the
+  acceptance items; they count against Preview's daily cap. After cleanup, run
+  the Preview purge dispatch; `cleanup.json`'s counts stay in the private
+  directory only.
 - **Cleanup, in order:** (1) revoke the remaining ACTIVE grants, audited.
   (2) Delete the account through the account-deletion path. This writes the
   deletion-request stamp with a **zero** grace window (a deviation from the
@@ -111,7 +127,7 @@ npm run ops:synthetic-operator -- --env=preview --cleanup --record=<private dir>
   The purge's after-commit e-mail and its Plaid call are injected as no-ops, so
   nothing is sent. (3) Print the purge-dispatch instruction for the operator to
   run: `npm run ops:platform-ai-conversations-purge -- --env=preview`.
-  (4) Shred `credentials.json` (overwrite, then unlink). (5) Write a counts-only
+  (4) Shred `credentials.json` and `totp.json` (overwrite, then unlink). (5) Write a counts-only
   `cleanup.json` (0600). Removal means our app database only. Backups age out on
   their own schedule.
 - **Acceptance:** `npm run rls:accept:synthetic-operator` runs the real CLI on a

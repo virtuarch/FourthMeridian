@@ -173,7 +173,13 @@ check("audit rows carry actor null/system and the synthetic reason",
   /performedByAdminId: null/.test(src) && /actorType: "SYSTEM", reason: SYNTHETIC_REASON/.test(src) && /grantedById: null/.test(src) && /revokedById: null/.test(src));
 check("cleanup deletes through the account-deletion purge (purgeUser), never a raw user delete",
   /import\("@\/lib\/account-deletion\/purge"\)/.test(src) && /purgeUser\(u\.id, \{ sendEmail: noEmail, plaid: noProvider \}\)/.test(src)
-  && !/\.user\.delete\(|\.user\.deleteMany\(|\$executeRaw|\$queryRaw|DELETE FROM/i.test(src));
+  && !/\.user\.delete\(|\.user\.deleteMany\(|\$executeRaw|\$queryRaw|DELETE FROM/i.test(src.replace("db.$queryRawUnsafe<Array<{ ok: boolean }>>(PRINCIPAL_BYPASS_SQL)", "")));
+check("S2 Fix B: the ONE raw read is the principal assertion, a read-only pg_roles SELECT, run before any command",
+  /export const PRINCIPAL_BYPASS_SQL = `SELECT \(rolbypassrls OR rolsuper\) AS ok FROM pg_roles WHERE rolname = current_user`;/.test(src)
+    && src.indexOf("PRINCIPAL_BYPASS_SQL);") < src.indexOf("const c = decision.command;") && (src.match(/\$queryRaw/g) ?? []).length === 1);
+check("S2 Fix A: cleanup shreds EVERY secret file (credentials.json, totp.json)",
+  /for \(const f of SECRET_FILES\) shredFile\(path\.join\(recordDir, f\)\);/.test(src)
+    && /export const SECRET_FILES = \[CREDENTIALS_FILE, TOTP_FILE\] as const;/.test(readFileSync("scripts/lib/synthetic-operator.files.ts", "utf8")));
 check("the purge dispatch is printed, never run", /ops:platform-ai-conversations-purge -- --env=preview/.test(src) && !/spawn|execSync|exec\(/.test(src));
 check("the role written is SYNTHETIC_ROLE and no SYSTEM_ADMIN appears", /role: SYNTHETIC_ROLE/.test(src) && !/SYSTEM_ADMIN/.test(src));
 check("no session-level SET is issued", !/\bSET\s+(SESSION|LOCAL|default_transaction|role)/i.test(src));

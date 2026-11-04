@@ -41,7 +41,8 @@
  * TOTP, grants, conversations and messages cascade; one ACCOUNT_DELETED audit
  * row). purgeUser's after-commit e-mail and Plaid revocation are INJECTED as
  * refusing no-ops: this script sends nothing and calls no provider; (3) print
- * the Preview purge-dispatch instruction (not run); (4) shred credentials.json;
+ * the Preview purge-dispatch instruction (not run); (4) shred every secret file
+ * (credentials.json, and totp.json if the operator saved the enrolment there);
  * (5) write cleanup.json (counts only) beside it at 0600.
  *
  * Never: app/api/admin/platform-grants, notifyPlatformAccessChange or any other
@@ -59,7 +60,7 @@ import {
   type SyntheticRecord, type CleanupCounts, type SyntheticArea,
 } from "./lib/synthetic-operator.core";
 import {
-  CREDENTIALS_FILE, RECORD_FILE, CLEANUP_FILE, defaultPrivateBase, createPrivateDir, writePrivateJson, readPrivateJson, shredFile,
+  CREDENTIALS_FILE, RECORD_FILE, CLEANUP_FILE, SECRET_FILES, defaultPrivateBase, createPrivateDir, writePrivateJson, readPrivateJson, shredFile,
 } from "./lib/synthetic-operator.files";
 import type { Prisma as PrismaTypes } from "@prisma/client";
 import { redactConnectionDetails } from "./lib/repair-env-guard";
@@ -75,6 +76,9 @@ function refuse(reasons: string[], contacted: boolean): never {
 const pass = (line: string) => console.log(`  PASS  ${line}`);
 
 type Db = typeof import("@/lib/db").db;
+
+/** One read of the connecting principal's RLS posture (S2 Fix B). */
+export const PRINCIPAL_BYPASS_SQL = `SELECT (rolbypassrls OR rolsuper) AS ok FROM pg_roles WHERE rolname = current_user`;
 
 async function countsFor(db: Db, userId: string): Promise<CleanupCounts> {
   const [users, grants, conversations, messages, sessions] = await Promise.all([
@@ -333,9 +337,9 @@ async function cleanup(db: Db, recordDir: string, targetHash: string | null, env
   console.log("\n  NEXT (operator, not run by this script):");
   console.log("    npm run ops:platform-ai-conversations-purge -- --env=preview\n");
 
-  // (4) Shred the credential file.
-  shredFile(path.join(recordDir, CREDENTIALS_FILE));
-  pass("credential file shredded (overwritten, then unlinked)");
+  // (4) Shred every secret file present (credentials.json, and totp.json from the app's enrolment — S2 Fix A).
+  for (const f of SECRET_FILES) shredFile(path.join(recordDir, f));
+  pass(`secret files shredded (overwritten, then unlinked): ${SECRET_FILES.join(", ")}`);
 
   // (5) Counts-only cleanup record.
   writePrivateJson(recordDir, CLEANUP_FILE, cleanupCountsRecord(env, before, after, new Date()));
@@ -352,6 +356,12 @@ async function main(): Promise<void> {
   // Imported only after the gate: constructing the client is the first contact with any database.
   const { db } = await import("@/lib/db");
   try {
+    // S2 Fix B: the conversation tables are FORCE RLS, so a principal that does not bypass RLS
+    // would read them as empty and "zero rows remain" would pass while rows remain. Refuse first.
+    const role = await db.$queryRawUnsafe<Array<{ ok: boolean }>>(PRINCIPAL_BYPASS_SQL);
+    if (role.length !== 1 || role[0].ok !== true) {
+      refuse(["the connecting principal does not bypass RLS (rolbypassrls / rolsuper) — its counts of the FORCE-RLS conversation tables would be vacuous; use the direct (migration) principal."], true);
+    }
     const c = decision.command;
     process.exitCode = c.kind === "provision" ? await provision(db, decision.env, decision.targetHash)
       : c.kind === "revoke-area" ? await revokeArea(db, c.area)

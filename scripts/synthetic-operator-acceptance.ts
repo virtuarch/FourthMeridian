@@ -16,7 +16,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { prepareHarness, teardownHarness, psql, makeRecorder } from "./lib/rls-harness";
@@ -43,6 +43,10 @@ async function main(): Promise<number> {
     PLAID_CLIENT_ID: "synthetic-client", PLAID_SECRET: "synthetic-secret", PLAID_ENV: "sandbox",
     VERCEL_ENV: "", FM_PRODUCTION_DB_REF: "",
   };
+  const runWith = (extra: Record<string, string>, ...args: string[]) => {
+    const r = spawnSync(process.execPath, [...process.execArgv, SCRIPT, ...args], { encoding: "utf8", env: { ...childEnv, ...extra }, cwd: ROOT });
+    return { status: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
+  };
   const run = (...args: string[]) => {
     const r = spawnSync(process.execPath, [...process.execArgv, SCRIPT, ...args], { encoding: "utf8", env: childEnv, cwd: ROOT });
     return { status: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
@@ -56,6 +60,10 @@ async function main(): Promise<number> {
     check(1, "--env=production refused before contact (exit 2)", prod.status === 2 && /nothing was contacted/.test(prod.err), prod.err.slice(0, 200));
     const unk = run("--env=local", "--provision", "--grant=CUSTOMER_SUCCESS");
     check(2, "an unknown flag is refused (exit 2)", unk.status === 2, unk.err.slice(0, 200));
+
+    const nb = runWith({ DATABASE_URL: h.appUrl, DIRECT_URL: h.appUrl }, "--env=local", "--provision");
+    check(30, "S2 Fix B: a principal WITHOUT BYPASSRLS (fm_app) is refused (exit 2) before anything is written",
+      nb.status === 2 && /does not bypass RLS/.test(nb.err) && one(`SELECT count(*) FROM "User" WHERE email = 'synthetic-operator@example.test';`) === "0", nb.err.slice(0, 300));
 
     // 2. Provision.
     const p = run("--env=local", "--provision");
@@ -116,6 +124,9 @@ async function main(): Promise<number> {
     // 5. Cleanup.
     const wrong = run("--env=local", "--cleanup", `--record=${path.join(home, "elsewhere")}`);
     check(21, "cleanup with a record outside the private base is refused (exit 2)", wrong.status === 2 && one(`SELECT count(*) FROM "User" WHERE id = '${uid}';`) === "1");
+    // S2 Fix A: the enrolment seed/recovery codes, saved by hand as totp.json (0600), must be shredded by cleanup.
+    const totpFile = path.join(dir, "totp.json");
+    writeFileSync(totpFile, JSON.stringify({ seed: "SYNTHETIC-TEST-SEED", recoveryCodes: ["x"] }), { mode: 0o600 });
     const c = run("--env=local", "--cleanup", `--record=${dir}`);
     check(22, "cleanup exits 0", c.status === 0, `${c.status} ${c.err.slice(0, 600)} ${c.out.slice(-400)}`);
     check(23, "cleanup prints the Preview purge-dispatch instruction (not run)", /ops:platform-ai-conversations-purge -- --env=preview/.test(c.out));
@@ -132,8 +143,8 @@ async function main(): Promise<number> {
       one(`SELECT count(*) FROM "AuditLog" WHERE action = 'PLATFORM_GRANT_REVOKED' AND metadata->>'area' = 'PLATFORM_OPS';`) === "1");
     const cleanupFile = path.join(dir, "cleanup.json");
     const cleanupRec = existsSync(cleanupFile) ? JSON.parse(readFileSync(cleanupFile, "utf8")) : null;
-    check(27, "credentials.json shredded; cleanup.json 0600 with counts only",
-      !existsSync(credFile) && !!cleanupRec && (statSync(cleanupFile).mode & 0o777) === 0o600
+    check(27, "credentials.json AND totp.json shredded; cleanup.json 0600 with counts only",
+      !existsSync(credFile) && !existsSync(totpFile) && !!cleanupRec && (statSync(cleanupFile).mode & 0o777) === 0o600
       && JSON.stringify(cleanupRec.removed) === JSON.stringify({ users: 1, grants: 2, conversations: 1, messages: 2, sessions: 0 })
       && !/password|totp|@example\.test|userId/i.test(readFileSync(cleanupFile, "utf8")), JSON.stringify(cleanupRec));
     check(28, "no e-mail / notification rows were written by any step", commsRows() === commsBefore, `${commsBefore} → ${commsRows()}`);
