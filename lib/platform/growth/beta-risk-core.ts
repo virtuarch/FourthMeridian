@@ -145,7 +145,7 @@ export interface BetaRiskAssessment {
 /** One forensic submission (an AuditLog BETA_ACCESS_REQUESTED row), already reduced in SQL. */
 export interface BetaRiskAuditFact {
   at: Date;
-  /** Per-read salted digest of the client IP; null when the IP was absent or "unknown". */
+  /** Keyed network group key (./beta-risk-network.ts); null when the IP was absent / "unknown" or no key is configured. */
   networkDigest: string | null;
   uaFamily: UaFamily | null;
 }
