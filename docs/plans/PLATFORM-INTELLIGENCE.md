@@ -130,7 +130,7 @@
 
 - Billing and revenue data has no source. Unit economics stay estimate-only until a billing system exists.
 - Whether to record country at registration (two-letter code only).
-- Minimising identifiers in security audit rows. Session 2 proposes: after 90 days, null the IP and user agent on all auth and security audit rows and keep a keyed digest (the `BETA_INTAKE_HASH_KEY` pattern, with its own versioned key). The rows themselves are kept as security evidence.
+- Minimising identifiers in security audit rows. Session 2 proposes: after 90 days, null the IP and user agent on all auth and security audit rows and keep a keyed digest (the `BETA_INTAKE_HASH_KEY` pattern, with its own versioned key). The rows themselves are kept as security evidence. **OWNER DECISION, engineering half ready (2026-11-04):** inventory, methods (keyed digest or /24·/48 truncation; UA family or null), a dry-run census behind `NETWORK_ID_MINIMISATION_MODE` (default `off`) and the proposed DB-010 policy extension are in `docs/operations/data-retention.md`, "Network identifiers". The owner decides the window, the method and enabling it.
 
 ### Definitions of "active" (inventory 2026-11-03)
 
