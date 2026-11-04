@@ -32,21 +32,23 @@ import "@/lib/test-support/route-env";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildEconomicsSnapshot } from "@/lib/platform/economics/snapshot-core";
+import { priceCycleBothReadings, type PlaidItemFact } from "@/lib/platform/plaid/item-months";
+import { PLAID_RATES } from "@/lib/usage/pricing";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UserRole } from "@prisma/client";
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
-import { METRICS, metricKey } from "@/lib/platform/intelligence/metrics/registry";
+import { METRICS, daysWindowLabel, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import { metricAccessFor, describeMetric, listMetrics } from "@/lib/platform/intelligence/metrics/access";
-import { RETRIEVAL, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
+import { RETRIEVAL, UNAVAILABLE_CODES, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
 import { listNavigationTargets, resolveNavigationTarget } from "@/lib/platform/intelligence/navigation/access";
 import { incidentAudienceFor } from "@/lib/platform/incidents/intelligence/audience";
 import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM_AI_SURFACES } from "@/lib/platform/ai/spend-by-surface-core";
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  admitUserNumerals, drillPageOf, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -306,17 +308,17 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   // A correct placement ⇒ the server's figures, units and the chips pair label ↔ figure.
   const good = await turn("{{m:incident-broken-now@1}} incidents are broken; the fleet made {{m:ai-fleet-spend-status@1|part=invocations}} AI calls costing {{m:ai-fleet-spend-status@1|part=pricedUsd}} ({{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold).");
   check("a correct placement renders the server's figures with server units", !good.result.grounding.replaced && good.result.grounding.verdict === "RESOLVED"
-    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made 40 AI calls costing about $12.50 (estimated) (about 25% (estimated) of the threshold).", segmentsText(good.result.answer));
+    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made 40 (in the last 24 hours) AI calls costing about $12.50 (in the last 24 hours, estimated) (about 25% (in the last 24 hours, estimated) of the threshold).", segmentsText(good.result.answer));
   check("…counted: claims 4, resolved 4, unresolved 0", JSON.stringify(good.result.claims) === JSON.stringify({ claims: 4, resolved: 4, unresolved: 0, admitted: 0 }), good.result.claims);
   const chip = (r: typeof good, m: string) => r.result.citations.find((c) => c.metric === m)?.figures.join("|");
-  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "40|about $12.50 (estimated)|about 25% (estimated)", good.result.citations);
+  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "40 (in the last 24 hours)|about $12.50 (in the last 24 hours, estimated)|about 25% (in the last 24 hours, estimated)", good.result.citations);
 
   // C7 the swap: two metrics, values exchanged. v0 passed this (both values exist this turn); v1 refuses it.
   const swap = await turn("40 incidents are broken; the fleet made 3 AI calls.");
   check("SWAP (literal): two real values exchanged between two metrics ⇒ fallback (the model may not type a figure)", swap.result.grounding.replaced && swap.result.grounding.verdict === "UNGROUNDED_DIGIT" && segmentsText(swap.result.answer).startsWith(UNVERIFIED_FALLBACK), swap.result.answer);
   const swapP = await turn("{{m:ai-fleet-spend-status@1|part=invocations}} AI calls; {{m:incident-broken-now@1}} incidents broken.");
   check("SWAP (placeholders): a figure is always the figure of the metric its placeholder names — the chips show each pairing",
-    segmentsText(swapP.result.answer) === "40 AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "40");
+    segmentsText(swapP.result.answer) === "40 (in the last 24 hours) AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "40 (in the last 24 hours)");
   check("SWAP (claimed under the wrong key): X's value cannot be stated as Y — {{m:Y}} renders Y's own figure", !segmentsText((await turn("Broken: {{m:incident-broken-now@1}}.")).result.answer).includes("40"));
 
   // C3: same key AND window, read THIS turn; unknown key / part mismatch.
@@ -334,23 +336,24 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     [noPart, badPart, partOnScalar].every((r) => r.result.grounding.verdict === "UNRESOLVED_PLACEHOLDER" && r.result.grounding.replaced));
 
   // Windows, on envelopes of the shape retrieveMetric returns (synthetic, so every window case is exact).
+  const PIT = { kind: "POINT_IN_TIME", description: "As of the read.", days: null, hours: null } as const;
   const base = { surface: "GROWTH_REVENUE", tier: "OPS", unit: "count", valueUnits: "count", reason: null, freshness: { asOf: "2026-11-04T12:00:00.000Z", source: "s" }, coverage: { gaps: [], missing: [] }, drill: null, drillReason: null } as const;
   const w7 = { ...base, metric: "engaged-users@1", value: 6, status: "MEASURED", window: { kind: "UTC_DAYS", description: "Trailing 1 / 7 / 30 UTC days", days: 7, hours: null } } as unknown as MetricEnvelope;
   const w30 = { ...w7, value: 11, window: { ...w7.window, days: 30 } } as MetricEnvelope;
   const part = { ...w7, metric: "growth-registrations@1", value: 5, status: "PARTIAL", reason: "a floor", window: { ...w7.window, days: 90 } } as MetricEnvelope;
   const R = (text: string, envs: MetricEnvelope[] = [w7, w30, part], labels: string[] = []) => resolvePlaceholders([{ kind: "text", text }], envs, new Set(labels));
-  check("window: |window=N picks THIS turn's envelope read with that window", segmentsText(R("{{m:engaged-users@1|window=7}} and {{m:engaged-users@1|window=30}}").segments) === "6 (last 7 days) and 11 (last 30 days)");
+  check("window: |window=N picks THIS turn's envelope read with that window", segmentsText(R("{{m:engaged-users@1|window=7}} and {{m:engaged-users@1|window=30}}").segments) === "6 (in the last 7 days) and 11 (in the last 30 days)");
   check("WINDOW MISMATCH: a window not read this turn, or none on a windowed envelope ⇒ UNRESOLVED",
     R("{{m:engaged-users@1|window=1}}").summary.verdict === "WINDOW_MISMATCH" && R("{{m:engaged-users@1}}").summary.verdict === "WINDOW_MISMATCH");
   check("options in either order; a repeated or unknown option is MALFORMED",
-    segmentsText(R("{{m:x@1|window=7|part=n}}", [{ ...w7, metric: "x@1", value: { n: 4 }, valueUnits: { n: "count" } } as unknown as MetricEnvelope]).segments) === "4 (last 7 days)"
+    segmentsText(R("{{m:x@1|window=7|part=n}}", [{ ...w7, metric: "x@1", value: { n: 4 }, valueUnits: { n: "count" } } as unknown as MetricEnvelope]).segments) === "4 (in the last 7 days)"
     && R("{{m:engaged-users@1|window=7|window=7}}").summary.verdict === "MALFORMED_PLACEHOLDER" && R("{{m:engaged-users@1|unit=usd}}").summary.verdict === "MALFORMED_PLACEHOLDER");
-  check("PARTIAL wording: \"at least\" is written by the server", segmentsText(R("{{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups");
-  const nullPart = resolvePlaceholders([{ kind: "text", text: "{{m:x@1|part=utilisationPct}}" }], [{ ...w7, metric: "x@1", value: { utilisationPct: null }, valueUnits: { utilisationPct: "pct" }, window: { ...w7.window, days: null } } as unknown as MetricEnvelope], new Set());
+  check("PARTIAL wording: \"at least\" is written by the server", segmentsText(R("{{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (in the last 90 days) sign-ups");
+  const nullPart = resolvePlaceholders([{ kind: "text", text: "{{m:x@1|part=utilisationPct}}" }], [{ ...w7, metric: "x@1", value: { utilisationPct: null }, valueUnits: { utilisationPct: "pct" }, window: PIT } as unknown as MetricEnvelope], new Set());
   check("a null part renders \"unavailable\", never 0", segmentsText(nullPart.segments) === "unavailable" && nullPart.summary.verdict === "RESOLVED");
 
   // S2 fix 1: ESTIMATED renders a qualifier; PARTIAL stays "at least"; an estimated floor says both.
-  const usdEnv = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "s@1", status, value: { pricedUsd: 12.5 }, valueUnits: { pricedUsd: "usd" }, window: { ...w7.window, days: null }, ...over }) as unknown as MetricEnvelope;
+  const usdEnv = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "s@1", status, value: { pricedUsd: 12.5 }, valueUnits: { pricedUsd: "usd" }, window: PIT, ...over }) as unknown as MetricEnvelope;
   const Rs = (status: string, est = false) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv(status)], new Set(), "", () => est).segments);
   check("ESTIMATED ⇒ \"about $12.50 (estimated)\"", Rs("ESTIMATED") === "about $12.50 (estimated)", Rs("ESTIMATED"));
   check("MEASURED ⇒ \"$12.50\" (no qualifier)", Rs("MEASURED") === "$12.50");
@@ -359,15 +362,15 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("PARTIAL ⇒ \"at least $12.50\"", Rs("PARTIAL") === "at least $12.50");
   check("PARTIAL of an ESTIMATED metric (registry provenance) ⇒ \"at least $12.50 (estimated)\"", Rs("PARTIAL", true) === "at least $12.50 (estimated)", Rs("PARTIAL", true));
   const usdW7 = { ...w7, metric: "c@1", status: "ESTIMATED", value: { spendUsd: 6 }, valueUnits: { spendUsd: "usd" } } as unknown as MetricEnvelope;
-  check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (last 7 days, estimated)");
+  check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (in the last 7 days, estimated)");
 
   // S2 (binding): "(estimated)" is PER FIGURE — estimatedParts is the source of truth; default = usd parts of an estimate.
   const fleetEnv = good.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === "ai-fleet-spend-status@1") as MetricEnvelope;
   const fleet = (part: string) => renderPlaceholder(fleetEnv, part);
   check("ai-fleet-spend-status: invocations renders \"40\" plainly; pricedUsd \"about $12.50 (estimated)\"; utilisationPct (derived from estimated $, listed) \"about 25% (estimated)\"; thresholdUsd (configured, not listed) \"$50.00\"",
-    fleet("invocations") === "40" && fleet("pricedUsd") === "about $12.50 (estimated)" && fleet("utilisationPct") === "about 25% (estimated)" && fleet("thresholdUsd") === "$50.00",
+    fleet("invocations") === "40 (in the last 24 hours)" && fleet("pricedUsd") === "about $12.50 (in the last 24 hours, estimated)" && fleet("utilisationPct") === "about 25% (in the last 24 hours, estimated)" && fleet("thresholdUsd") === "$50.00",
     ["invocations", "pricedUsd", "utilisationPct", "thresholdUsd"].map(fleet));
-  const mixed = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "m@1", status, window: { ...w7.window, days: null },
+  const mixed = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "m@1", status, window: PIT,
     value: { costUsd: 12.5, sharePct: 25, calls: 40 }, valueUnits: { costUsd: "usd", sharePct: "pct", calls: "count" }, estimatedParts: null, ...over }) as unknown as MetricEnvelope;
   const rp = (e: MetricEnvelope, part: string, est = false) => renderPlaceholder(e, part, est);
   check("DEFAULT (no estimatedParts) on an ESTIMATED metric: the usd part is estimated; pct and count render plainly",
@@ -379,7 +382,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     && rp(mixed("ESTIMATED", { estimatedParts: ["calls"] }), "calls") === "about 40 (estimated)");
   check("a MEASURED metric is never labelled estimated, whatever its units", rp(mixed("MEASURED"), "costUsd") === "$12.50" && rp(mixed("MEASURED", { estimatedParts: ["costUsd"] }), "costUsd") === "$12.50");
   check("basis.kind \"estimated\" (#419) marks the metric an estimate", rp(mixed("PARTIAL", { basis: { kind: "estimated" } }), "costUsd") === "at least $12.50 (estimated)");
-  check("a count scalar of an ESTIMATED metric renders plainly", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "6 (last 7 days)");
+  check("a count scalar of an ESTIMATED metric renders plainly", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "6 (in the last 7 days)");
 
   // A2 note: a null part inside a PARTIAL envelope is ACCEPTED (not turned UNAVAILABLE) and renders unavailable, never 0.
   const opc = await run("x", b, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost" } }] }, { content: "Infrastructure: {{m:economics-operating-cost@1|part=infrastructureUsd}}; total {{m:economics-operating-cost@1|part=totalUsd}}." }]));
@@ -388,16 +391,16 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("economics-operating-cost: a null part (unmetered) stays inside a non-UNAVAILABLE envelope — the shape check accepts it",
     !!opEnv && opEnv.status !== "UNAVAILABLE" && Object.values(opVal).some((v) => v === null) && typeof opVal.totalUsd === "number", opEnv);
   check("…a placeholder for that null part renders \"unavailable\" (never $0), the total its estimated floor/estimate",
-    !opc.result.grounding.replaced && /^Infrastructure: unavailable; total (at least|about) \$[\d,.]+ \(estimated\)\.$/.test(segmentsText(opc.result.answer)), segmentsText(opc.result.answer));
+    !opc.result.grounding.replaced && /^Infrastructure: unavailable; total (at least|about) \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\.$/.test(segmentsText(opc.result.answer)), segmentsText(opc.result.answer));
   const estFloor = await run("x", opsBinding(OPS, readers({ aiBudget: async () => ({ ...(await readers().aiBudget()), unpriced: { invocations: 2, models: ["m"] }, bySurface: [{ surface: "chat", customer: true, unpricedInvocations: 2 }] }) as never })),
     script([{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }, { content: "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd}}." }]));
   const efStatus = estFloor.result.citations[0]?.status;
   check("…through a real turn: the ESTIMATED metric's PARTIAL floor renders \"at least … (estimated)\"",
-    efStatus === "PARTIAL" && /^Spend: at least \$[\d,.]+ \(estimated\)\.$/.test(segmentsText(estFloor.result.answer)), { efStatus, a: segmentsText(estFloor.result.answer) });
+    efStatus === "PARTIAL" && /^Spend: at least \$[\d,.]+ \(in the last 24 hours, estimated\)\.$/.test(segmentsText(estFloor.result.answer)), { efStatus, a: segmentsText(estFloor.result.answer) });
   // Non-blocking S2 note: a model-written qualifier the server also writes collapses to one.
   check("\"at least {{m:PARTIAL}}\" ⇒ \"at least 5\" once, never \"at least at least\"",
-    segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups" && segmentsText(R("about {{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (last 7 days, estimated)");
-  check("…\"at least\" before a MEASURED figure stays the model's words (no figure invented)", segmentsText(R("at least {{m:engaged-users@1|window=7}}").segments) === "at least 6 (last 7 days)");
+    segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (in the last 90 days) sign-ups" && segmentsText(R("about {{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (in the last 7 days, estimated)");
+  check("…\"at least\" before a MEASURED figure stays the model's words (no figure invented)", segmentsText(R("at least {{m:engaged-users@1|window=7}}").segments) === "at least 6 (in the last 7 days)");
 
   // S2 fix 2: units are EXPLICIT (valueUnits), never inferred from a part name.
   const named = (u: unknown) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv("MEASURED", { valueUnits: u })], new Set()).segments);
@@ -424,7 +427,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("no figure and no placeholder ⇒ kept (NONE)", R("Providers look fine.").summary.verdict === "NONE");
 
   // C5 malformed ⇒ fallback with NO extra model round.
-  for (const bad of ["{{m:incident-broken-now}} incidents", "{{ m:incident-broken-now@1 | window=7 }}", "{{m:incident-broken-now@1} broken", "{{incident-broken-now@1}}", "{m:incident-broken-now@1}}"]) {
+  for (const bad of ["{{ m:incident-broken-now@1 | window=7 }}", "{{m:incident-broken-now@1} broken", "{{incident-broken-now@1}}", "{m:incident-broken-now@1}}"]) {
     const sc = script([...two, { content: bad }]);
     const r = await run("x", b, sc);
     check(`MALFORMED ${JSON.stringify(bad)} ⇒ fallback, no extra round`, r.result.grounding.replaced && ["MALFORMED_PLACEHOLDER", "UNGROUNDED_DIGIT"].includes(r.result.grounding.verdict) && r.result.usage.rounds === 2 && sc.seen.length === 2, { g: r.result.grounding, rounds: r.result.usage.rounds });
@@ -439,7 +442,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
 
   // The trace: counts only — never values, never unresolved keys.
   const line = traceLine(notRead.result) + traceLine(good.result);
-  check("traceLine carries claims=n resolved=n unresolved=n", traceLine(good.result).endsWith("claims=4 resolved=4 unresolved=0 admitted=0 verdict=RESOLVED") && traceLine(notRead.result).endsWith("claims=1 resolved=0 unresolved=1 admitted=0 verdict=UNRESOLVED_PLACEHOLDER"), line);
+  check("traceLine carries claims=n resolved=n unresolved=n", traceLine(good.result).endsWith("claims=4 resolved=4 unresolved=0 admitted=0 verdict=RESOLVED") && traceLine(notRead.result).endsWith("claims=1 resolved=0 unresolved=1 admitted=0 verdict=UNRESOLVED_PLACEHOLDER unresolvedBy=NOT_READ:1"), line);
   check("…and never a value or an unresolved key", !/\$|12\.5|\b40\b|25%|provider-outcome/.test(line), line);
   const counted: unknown[][] = [];
   const traced: string[] = [];
@@ -449,9 +452,223 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("…the response's claims are counts; no value in grounding / claims / trace", JSON.stringify((h.body as { claims: unknown }).claims) === JSON.stringify({ claims: 1, resolved: 0, unresolved: 1, admitted: 0 })
     && !/\b40\b|12\.5|provider-outcome@1\.failing/.test(JSON.stringify([h.body.grounding, h.body.claims, h.body.trace]) + traced.join()), [h.body.grounding, traced]);
   check("the route's counter line logs codes and counts only", /countUngrounded: \(verdict, unresolved\) => console\.warn\(`\[platform-ai\] answer replaced: verdict=\$\{verdict\} unresolved=\$\{unresolved\}/.test(src("app/api/platform/ai/ask/route.ts")));
-  check("the prompt and get_metric's description teach the syntax (guidance; enforcement is the server)",
-    /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\{\{m:<metric>\}\}/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
-    && JSON.stringify(platformAiToolSchemas([])).includes("{{m:<metric>}}"));
+  check("the prompt and get_metric's description teach COPYING the server's placeholder string verbatim (guidance; enforcement is the server)",
+    /NEVER write a number or a digit yourself/.test(PLATFORM_AI_SYSTEM_PROMPT) && /COPY a placeholder string from your get_metric result VERBATIM/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /never type, shorten or edit one/.test(PLATFORM_AI_SYSTEM_PROMPT) && /\|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && JSON.stringify(platformAiToolSchemas([])).includes("copy the placeholder string from this result verbatim"));
+}
+
+// ── 4e. DIAGNOSIS (2026-11-04): why a placeholder did not resolve — reason CODES, counts only ──
+console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (codes and counts only)");
+{
+  const b = opsBinding(OPS);
+  const reads = [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "ai-fleet-spend-status" } }, { name: "get_metric", args: { id: "economics-operating-cost" } }] }];
+  const turn = (content: string) => run("x", b, script([...reads, { content }]));
+  const why = async (content: string) => { const r = await turn(content); return { v: r.result.grounding.verdict, u: r.result.grounding.unresolvedBy, m: r.result.grounding.malformedBy, line: traceLine(r.result) }; };
+  const is = (x: Awaited<ReturnType<typeof why>>, v: string, u: object, m: object = {}) => x.v === v && JSON.stringify(x.u) === JSON.stringify(u) && JSON.stringify(x.m) === JSON.stringify(m);
+
+  const cases: [string, string, string, object, object?][] = [
+    ["a guessed part name ⇒ UNKNOWN_PART", "{{m:ai-fleet-spend-status@1|part=spend}} spent.", "UNRESOLVED_PLACEHOLDER", { UNKNOWN_PART: 1 }],
+    ["a part on a scalar ⇒ UNKNOWN_PART", "{{m:incident-broken-now@1|part=total}} broken.", "UNRESOLVED_PLACEHOLDER", { UNKNOWN_PART: 1 }],
+    ["no |part on a multi-part object ⇒ MISSING_PART", "{{m:economics-operating-cost@1}} total.", "UNRESOLVED_PLACEHOLDER", { MISSING_PART: 1 }],
+    ["a registry key not read this turn ⇒ NOT_READ", "{{m:provider-outcome@1|part=failing}} failing.", "UNRESOLVED_PLACEHOLDER", { NOT_READ: 1 }],
+    ["a version that does not exist ⇒ VERSION", "{{m:incident-broken-now@2}} broken.", "UNRESOLVED_PLACEHOLDER", { VERSION: 1 }],
+    ["a slug that is no registry id ⇒ UNKNOWN_KEY", "{{m:estimated-ai-cost@1}} spent.", "UNRESOLVED_PLACEHOLDER", { UNKNOWN_KEY: 1 }],
+    ["the label instead of the key ⇒ MALFORMED (NOT_A_KEY)", "{{m:Estimated AI cost}} spent.", "MALFORMED_PLACEHOLDER", {}, { NOT_A_KEY: 1 }],
+    ["a snake_case part ⇒ MALFORMED (BAD_OPTION)", "{{m:ai-fleet-spend-status@1|part=priced_usd}} spent.", "MALFORMED_PLACEHOLDER", {}, { BAD_OPTION: 1 }],
+    ["no m: prefix ⇒ MALFORMED (NO_PREFIX)", "{{incident-broken-now@1}} broken.", "MALFORMED_PLACEHOLDER", {}, { NO_PREFIX: 1 }],
+    ["an unclosed placeholder ⇒ MALFORMED (STRAY_BRACES)", "{{m:incident-broken-now@1} broken.", "MALFORMED_PLACEHOLDER", {}, { STRAY_BRACES: 1 }],
+  ];
+  for (const [name, content, v, u, m] of cases) { const x = await why(content); check(`diagnosis: ${name}`, is(x, v, u, m ?? {}), x); }
+  const mixed = await why("{{m:ai-fleet-spend-status@1|part=spend}}, {{m:ai-fleet-spend-status@1|part=cost}}, {{m:provider-outcome@1|part=failing}} and {{m:incident-broken-now@1}}.");
+  check("…several in one answer are COUNTED per reason (resolved ones are not reasons)", is(mixed, "UNRESOLVED_PLACEHOLDER", { UNKNOWN_PART: 2, NOT_READ: 1 }), mixed);
+  check("…the trace carries the reason codes in enum order: unresolvedBy=UNKNOWN_PART:2,NOT_READ:1 — never a key or part text",
+    mixed.line.endsWith("verdict=UNRESOLVED_PLACEHOLDER unresolvedBy=UNKNOWN_PART:2,NOT_READ:1") && !/spend\b|cost\b|failing|provider-outcome/.test(mixed.line.replace(/get_metric:[A-Z]+\([^)]*\)/g, "")), mixed.line);
+  const mal = await why("{{m:Estimated AI cost}} {{incident-broken-now@1}}");
+  check("…malformed shapes trace as malformedBy=NO_PREFIX:1,NOT_A_KEY:1", mal.line.endsWith("verdict=MALFORMED_PLACEHOLDER malformedBy=NO_PREFIX:1,NOT_A_KEY:1") && !/Estimated/.test(mal.line), mal.line);
+  check("…a resolved answer carries no reason fields in the trace", !(await why("{{m:incident-broken-now@1}} broken.")).line.includes("By="));
+  check("the reason enums are exactly the S2-approved codes", JSON.stringify(UNRESOLVED_REASONS) === JSON.stringify(["UNKNOWN_KEY", "VERSION", "MISSING_PART", "UNKNOWN_PART", "NOT_READ"])
+    && JSON.stringify(MALFORMED_REASONS) === JSON.stringify(["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"]));
+  const h = await handlePlatformAiAsk({ question: "x" }, askDeps({ generate: script([...reads, { content: "{{m:ai-fleet-spend-status@1|part=spend}}" }]).generate }));
+  check("…and the HTTP body's grounding carries the codes only", JSON.stringify((h.body as { grounding: unknown }).grounding) === JSON.stringify({ replaced: true, verdict: "UNRESOLVED_PLACEHOLDER", unresolvedBy: { UNKNOWN_PART: 1 }, malformedBy: {} }), h.body.grounding);
+}
+
+// ── 4f. SERVER-BUILT PLACEHOLDERS (main fix, S2-approved 2026-11-04) ─────────────
+console.log("\n4f. get_metric hands the model the exact placeholder strings — round-trip + owner replays with copied placeholders");
+{
+  // ROUND-TRIP: every placeholder placeholdersFor emits is consumed WHOLE by the resolver's grammar and resolves against its OWN envelope.
+  let tried = 0, envs = 0;
+  const bad: unknown[] = [];
+  const all = readers();
+  for (const area of ALL_PLATFORM_AREAS) {
+    const ctx = ctxFor(UserRole.USER, grant(area));
+    for (const m of METRICS) {
+      const key = metricKey(m);
+      const entry = RETRIEVAL[key];
+      const windows: (number | undefined)[] = [undefined, ...(entry?.kind === "RETRIEVABLE" ? entry.windows : [])];
+      for (const w of windows) {
+        const e = await retrieveWith(area, all, ctx, key, w === undefined ? {} : { window: w }, NOW);
+        if (!e) continue;
+        envs++;
+        const p = placeholdersFor(e);
+        const strings = "placeholder" in p ? [p.placeholder] : Object.values(p.placeholders);
+        if (!("placeholder" in p)) {
+          const declared = Object.keys(e.valueUnits as object).sort().join();
+          if (Object.keys(p.placeholders).sort().join() !== declared) bad.push({ key, why: "parts ≠ declared units", got: Object.keys(p.placeholders) });
+        }
+        for (const str of strings) {
+          tried++;
+          const r = resolvePlaceholders([{ kind: "text", text: str }], [e], new Set());
+          const t = segmentsText(r.segments);
+          if (r.summary.verdict !== "RESOLVED" || r.summary.claims !== 1 || /\{\{|\}\}/.test(t) || !t) bad.push({ key, w, str, v: r.summary.verdict, u: r.unresolvedBy });
+          if (e.status === "UNAVAILABLE" && t !== `unavailable — ${e.reason}`) bad.push({ key, str, why: "UNAVAILABLE must render unavailable — reason", t });
+        }
+      }
+    }
+  }
+  check(`ROUND-TRIP: every emitted placeholder (${tried} strings over ${envs} envelopes, every area × metric × window) resolves against its own envelope`, tried > 30 && bad.length === 0, bad.slice(0, 5));
+  check("…the writer and the reader are the same grammar: formatPlaceholder output is one whole PLACEHOLDER match",
+    resolvePlaceholders([{ kind: "text", text: formatPlaceholder("incident-broken-now@1") }], [], new Set()).unresolvedBy.NOT_READ === 1
+    && formatPlaceholder("economics-ai-cost@1", { part: "spendUsd", window: 30 }) === "{{m:economics-ai-cost@1|part=spendUsd|window=30}}"
+    && formatPlaceholder("economics-operating-cost@1", { part: "totalUsd", window: null }) === "{{m:economics-operating-cost@1|part=totalUsd}}");
+
+  // Through get_metric: the tool RESULT carries them; the shapes the owner asked for.
+  const b = opsBinding(OPS);
+  const tr = await run("x", b, script([{ calls: [{ name: "get_metric", args: { id: "economics-ai-cost" } }, { name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "economics-operating-cost" } }, { name: "get_metric", args: { id: "economics-ai-cost", window: 9 } }] }, { content: "ok" }]));
+  const results = tr.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content));
+  check("get_metric result (one-part object): placeholders: { spendUsd: \"{{m:economics-ai-cost@1|part=spendUsd|window=30}}\" }",
+    JSON.stringify(results[0].placeholders) === JSON.stringify({ spendUsd: "{{m:economics-ai-cost@1|part=spendUsd|window=30}}" }) && !("placeholder" in results[0]), results[0].placeholders);
+  check("…a scalar: one placeholder, no window (point in time)", results[1].placeholder === "{{m:incident-broken-now@1}}" && !("placeholders" in results[1]), results[1]);
+  check("…a fixed-window (billing cycle) object: one per declared part, NEVER |window",
+    JSON.stringify(results[2].placeholders) === JSON.stringify({ totalUsd: "{{m:economics-operating-cost@1|part=totalUsd}}", aiUsd: "{{m:economics-operating-cost@1|part=aiUsd}}", providersUsd: "{{m:economics-operating-cost@1|part=providersUsd}}", infrastructureUsd: "{{m:economics-operating-cost@1|part=infrastructureUsd}}" }), results[2].placeholders);
+  check("…an UNAVAILABLE read (a refused window) still gets its placeholder, which renders \"unavailable — <reason>\"",
+    results[3].status === "UNAVAILABLE" && results[3].placeholder === "{{m:economics-ai-cost@1}}"
+    && renderPlaceholder(results[3] as MetricEnvelope, null) === `unavailable — ${results[3].reason}`, results[3]);
+  check("…the envelopes the RESOLVER uses are the retrieved ones (placeholders are only in the model-facing copy)",
+    tr.transcript.length > 0 && (await (async () => { const r = resolvePlaceholders([{ kind: "text", text: results[0].placeholders.spendUsd }], [results[0] as MetricEnvelope], new Set()); return r.summary.verdict === "RESOLVED"; })()));
+
+  // OWNER REPLAYS with REALISTIC model output: the final answer is composed by COPYING the strings from the tool results in the transcript.
+  const plaidItem = (id: string, o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
+  const cyc = priceCycleBothReadings([plaidItem("p1"), plaidItem("p2", { investmentsConsent: "ENABLED" })], [] as never, { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const econR = readers({
+    providerHealth: async () => { throw new Error("down"); },
+    economicsSnapshot: async (nowMs) => buildEconomicsSnapshot({ nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+      spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }] }),
+  });
+  const eb = opsBinding(OPS, econR);
+  type Copy = (ph: (metric: string, part?: string) => string) => string;
+  /** A fake model: scripted tool rounds, then an answer written by copying placeholders out of the tool messages it was sent. */
+  const copying = (rounds: { name: string; args: unknown }[][], compose: Copy): PlatformAiGenerate => {
+    let i = 0;
+    return async ({ messages }) => {
+      const calls = rounds[i] ?? [];
+      i++;
+      if (calls.length) {
+        const toolCalls = calls.map((c, k) => ({ id: `c${i}_${k}`, name: c.name, arguments: JSON.stringify(c.args) }));
+        return { content: null, toolCalls, raw: { role: "assistant", content: null, tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 } };
+      }
+      const seen = (messages as { role: string; content: string }[]).filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
+      const ph = (metric: string, part?: string) => {
+        const r = seen.find((x) => x.metric === metric);
+        if (!r) throw new Error(`model had no result for ${metric}`);
+        return part && r.placeholders ? r.placeholders[part] : (r.placeholder ?? r.placeholders[part!]);
+      };
+      const content = compose(ph);
+      return { content, toolCalls: [], raw: { role: "assistant", content }, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 } };
+    };
+  };
+  const ls = { name: "list_metrics", args: { domain: "economics" } };
+  const gm = (id: string) => ({ name: "get_metric", args: { id } });
+  const owner = async (q: string, rounds: { name: string; args: unknown }[][], compose: Copy) => runPlatformAiTurn({ question: q, binding: eb, generate: copying(rounds, compose), model: "gpt-4o-mini" });
+  const ok = (r: Awaited<ReturnType<typeof owner>>) => !r.result.grounding.replaced && placeholderPassesV(r.result.grounding.verdict) && r.result.claims.unresolved === 0 && r.result.claims.resolved === r.result.claims.claims && r.result.claims.claims > 0;
+  const placeholderPassesV = (v: string) => v === "RESOLVED" || v === "RESOLVED_WITH_WINDOW_NOTE";
+
+  const A = await owner("Are any providers failing, and what are they costing us?", [[gm("provider-outcome"), gm("economics-operating-cost")]],
+    (ph) => `Provider outcomes are ${ph("provider-outcome@1")}. Providers cost ${ph("economics-operating-cost@1", "providersUsd")} of an estimated operating cost of ${ph("economics-operating-cost@1", "totalUsd")}.`);
+  check("OWNER A (copied placeholders: provider-outcome UNAVAILABLE + operating-cost PARTIAL) ⇒ answer KEPT, every placeholder resolved",
+    ok(A) && /^Provider outcomes are unavailable — .+\. Providers cost at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of an estimated operating cost of at least \$[\d,.]+/.test(segmentsText(A.result.answer)),
+    { g: A.result.grounding, c: A.result.claims, t: segmentsText(A.result.answer) });
+  const B = await owner("What's costing me the most money?", [[ls], [gm("economics-operating-cost"), gm("economics-ai-cost")]],
+    (ph) => `AI is the largest of the measured categories at ${ph("economics-operating-cost@1", "aiUsd")} of ${ph("economics-operating-cost@1", "totalUsd")}; infrastructure is ${ph("economics-operating-cost@1", "infrastructureUsd")}, so a full ranking can't be verified. Estimated AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`);
+  check("OWNER B (copied placeholders: operating-cost + ai-cost) ⇒ answer KEPT, every placeholder resolved, each figure with its window",
+    ok(B) && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(segmentsText(B.result.answer)) && /infrastructure is unavailable,/.test(segmentsText(B.result.answer)),
+    { g: B.result.grounding, c: B.result.claims, t: segmentsText(B.result.answer) });
+  const C = await owner("Break down what we're spending on AI and providers this month.", [[ls], [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
+    (ph) => `This billing cycle AI is ${ph("economics-operating-cost@1", "aiUsd")} and providers are ${ph("economics-provider-cost@1", "costUsd")}. Over the recent window AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`);
+  check("OWNER C (copied placeholders: operating-cost + ai-cost + provider-cost PARTIAL) ⇒ answer KEPT, every placeholder resolved",
+    ok(C) && /providers are at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(segmentsText(C.result.answer)),
+    { g: C.result.grounding, c: C.result.claims, t: segmentsText(C.result.answer) });
+  // S2 (after #426): the two CYCLE metrics carry window.start; their emitted placeholders must round-trip against their own envelopes.
+  for (const key of ["economics-operating-cost@1", "economics-provider-cost@1"]) {
+    const e = (await eb.readMetric(key, {}))!;
+    const p = placeholdersFor(e);
+    const strings = "placeholder" in p ? [p.placeholder] : Object.values(p.placeholders);
+    const rs = strings.map((str) => resolvePlaceholders([{ kind: "text", text: str }], [e], new Set()));
+    check(`ROUND-TRIP (cycle metric ${key}, window.start ${e.window.start}): every emitted placeholder resolves against its own envelope, stating "since <start>", no |window`,
+      e.window.start === "2026-11-01" && e.status !== "UNAVAILABLE" && strings.length === Object.keys(e.valueUnits as object).length && strings.every((x) => !x.includes("|window="))
+      && rs.every((r) => r.summary.verdict === "RESOLVED" && r.summary.claims === 1 && !/\{\{|\}\}/.test(segmentsText(r.segments)))
+      && rs.some((r) => segmentsText(r.segments).includes("since 2026-11-01")), { strings, out: rs.map((r) => [r.summary.verdict, segmentsText(r.segments)]) });
+  }
+  check("…the owner replays' traces carry no reason codes (nothing unresolved)", [A, B, C].every((r) => !traceLine(r.result).includes("By=")), [A, B, C].map((r) => traceLine(r.result)));
+}
+
+// ── 4g. SAFETY NET (1), S2-approved: a bare id resolves iff exactly ONE version of it was read ──
+console.log("\n4g. safety net (1) — a bare key without @N");
+{
+  const b = opsBinding(OPS);
+  const reads = [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }] }];
+  const t = async (content: string) => (await run("x", b, script([...reads, { content }]))).result;
+  const pos = await t("{{m:incident-broken-now}} incidents are broken.");
+  check("net (1) +: {{m:incident-broken-now}} with incident-broken-now@1 read ⇒ RESOLVED, the figure of that exact key",
+    pos.grounding.verdict === "RESOLVED" && segmentsText(pos.answer) === "3 incidents are broken." && pos.citations.find((c) => c.metric === "incident-broken-now@1")?.figures.join() === "3", { g: pos.grounding, t: segmentsText(pos.answer) });
+  const v = (envs: MetricEnvelope[], text: string) => resolvePlaceholders([{ kind: "text", text }], envs, new Set());
+  const k1 = { metric: "k@1", surface: "PLATFORM_OPS", value: 4, valueUnits: "count", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: null, source: "s" } } as unknown as MetricEnvelope;
+  const k2 = { ...k1, metric: "k@2", value: 9 } as MetricEnvelope;
+  const two = v([k1, k2], "{{m:k}} things");
+  check("net (1) −: TWO versions of the id read + a bare key ⇒ still unresolved (VERSION)", two.summary.verdict === "UNRESOLVED_PLACEHOLDER" && JSON.stringify(two.unresolvedBy) === JSON.stringify({ VERSION: 1 }), two.unresolvedBy);
+  check("…with two versions read, each EXACT key still resolves to its own figure", segmentsText(v([k1, k2], "{{m:k@1}} and {{m:k@2}}").segments) === "4 and 9");
+  check("…the same key read twice is ONE version (resolves)", v([k1, k1], "{{m:k}}").summary.verdict === "RESOLVED");
+  const notRead = await t("{{m:provider-outcome|part=failing}} failing.");
+  const unknown = await t("{{m:no-such-metric}} things.");
+  check("net (1) −: a bare REGISTRY id not read ⇒ NOT_READ; a bare non-registry id ⇒ UNKNOWN_KEY (never a fresh read)",
+    JSON.stringify(notRead.grounding.unresolvedBy) === JSON.stringify({ NOT_READ: 1 }) && JSON.stringify(unknown.grounding.unresolvedBy) === JSON.stringify({ UNKNOWN_KEY: 1 })
+    && notRead.trace.every((s) => s.refs.join() !== "provider-outcome@1"), [notRead.grounding, unknown.grounding]);
+  check("net (1) −: no prefix match — a bare id names only ITS id (incident-broken does not match incident-broken-now@1)",
+    JSON.stringify((await t("{{m:incident-broken}} broken.")).grounding.unresolvedBy) === JSON.stringify({ UNKNOWN_KEY: 1 }));
+  check("…the window rule still applies after the net (a bare key with a wrong |window ⇒ WINDOW_MISMATCH)", (await t("{{m:incident-broken-now|window=7}} broken.")).grounding.verdict === "WINDOW_MISMATCH");
+}
+
+// ── 4h. SAFETY NET (2), S2-approved: a ONE-part object resolves without |part ──
+console.log("\n4h. safety net (2) — a one-part object without |part; owner replays with plausible spellings");
+{
+  const v = (envs: MetricEnvelope[], text: string) => resolvePlaceholders([{ kind: "text", text }], envs, new Set());
+  const base = { surface: "PLATFORM_OPS", status: "MEASURED", reason: null, window: { kind: "POINT_IN_TIME", description: "d", days: null, hours: null, label: null, start: null }, freshness: { asOf: null, source: "s" } };
+  const one = { ...base, metric: "o@1", value: { costUsd: 2.5 }, valueUnits: { costUsd: "usd" } } as unknown as MetricEnvelope;
+  const twoPart = { ...base, metric: "t@1", value: { aUsd: 1, bUsd: 2 }, valueUnits: { aUsd: "usd", bUsd: "usd" } } as unknown as MetricEnvelope;
+  check("net (2) +: a one-part object, no |part ⇒ RESOLVED to its only part", segmentsText(v([one], "{{m:o@1}}").segments) === "$2.50" && v([one], "{{m:o@1}}").summary.verdict === "RESOLVED");
+  const tp = v([twoPart], "{{m:t@1}}");
+  check("net (2) −: a TWO-part object, no |part ⇒ still MISSING_PART (no headline / total is picked)", tp.summary.verdict === "UNRESOLVED_PLACEHOLDER" && JSON.stringify(tp.unresolvedBy) === JSON.stringify({ MISSING_PART: 1 }), tp.unresolvedBy);
+  const up = v([one], "{{m:o@1|part=spend}}");
+  check("net (2) −: an UNKNOWN part on a one-part object ⇒ still UNKNOWN_PART (the net only fills an ABSENT part)", up.summary.verdict === "UNRESOLVED_PLACEHOLDER" && JSON.stringify(up.unresolvedBy) === JSON.stringify({ UNKNOWN_PART: 1 }), up.unresolvedBy);
+  check("…renderPlaceholder itself stays strict (the net lives in the resolver's part step only)", renderPlaceholder(one, null) === null);
+
+  // Owner sequences with the spellings a model most plausibly writes (diagnosed: MISSING_PART on the one-part economics metrics).
+  const econR = readers({ providerHealth: async () => { throw new Error("down"); } });
+  const b = opsBinding(OPS, econR);
+  const gm = (id: string) => ({ name: "get_metric", args: { id } });
+  const ls = [{ name: "list_metrics", args: { domain: "economics" } }];
+  const turn = (q: string, calls: { name: string; args: unknown }[][], content: string) => run(q, b, script([...calls.map((c) => ({ calls: c })), { content }]));
+  const kept = (r: Awaited<ReturnType<typeof turn>>) => !r.result.grounding.replaced && r.result.claims.unresolved === 0 && r.result.claims.resolved === r.result.claims.claims;
+  const A = await turn("Are any providers failing, and what are they costing us?", [[gm("provider-outcome"), gm("economics-operating-cost"), gm("economics-provider-cost")]],
+    "Provider outcomes are {{m:provider-outcome}}. Providers cost {{m:economics-provider-cost@1}} of {{m:economics-operating-cost|part=totalUsd}}.");
+  const B = await turn("What's costing me the most money?", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost")]],
+    "AI is the largest measured category: {{m:economics-operating-cost@1|part=aiUsd}}. Estimated AI spend is {{m:economics-ai-cost@1}}, so a full ranking can't be verified.");
+  const C = await turn("Break down what we're spending on AI and providers this month.", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
+    "AI spend is {{m:economics-ai-cost}} and providers are {{m:economics-provider-cost}}; infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}.");
+  check("OWNER A/B/C with bare keys and part-less one-part placeholders ⇒ all KEPT (nets 1 + 2)", [A, B, C].every(kept), [A, B, C].map((r) => [r.result.grounding, r.result.claims]));
+  const total = await turn("What's costing me the most money?", [[gm("economics-operating-cost")]], "Operating cost is {{m:economics-operating-cost@1}}.");
+  check("…but a part-less placeholder on the FOUR-part operating cost stays refused (MISSING_PART; headlinePart rejected by S2)",
+    total.result.grounding.replaced && JSON.stringify(total.result.grounding.unresolvedBy) === JSON.stringify({ MISSING_PART: 1 }), total.result.grounding);
 }
 
 // ── 4c. UNITS PIN (S2 fix 2): every registered metric's figures carry an EXPLICIT unit ──
@@ -471,12 +688,35 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
   // Retrieve every retrievable metric (every window) on every surface the fixtures can read it on.
   const seen = new Set<string>();
   const pcts: { k: string; part: string; v: number }[] = [];
+  const labelProblems: string[] = [];
+  const labelsSeen = new Set<string>();
   for (const area of ALL_PLATFORM_AREAS) {
     const ctx = ctxFor(UserRole.USER, grant(area));
     for (const k of retrievable) {
       const entry = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
       for (const w of entry.windows.length ? entry.windows : [undefined]) {
         const env = await retrieveWith(area, readers(), ctx, k, w === undefined ? {} : { window: w }, NOW);
+        // windowLabel (S2 2026-11-04): non-empty unless POINT_IN_TIME; any number in it equals days / hours
+        // (or, when the read carries neither, a number of the declared description); never a start date unless the reader gave one.
+        if (env) {
+          labelsSeen.add(k);
+          const l = env.window.label;
+          const num = l ? /(\d+)\s*(day|hour)s?\b/.exec(l) : null;
+          const pit = env.window.kind === "POINT_IN_TIME";
+          if (pit ? l !== null : !l?.trim()) labelProblems.push(`${k}${w ? `@${w}` : ""} on ${area}: label ${JSON.stringify(l)} for ${env.window.kind}`);
+          if (l && /\d/.test(l) && !num) labelProblems.push(`${k}: a number in ${JSON.stringify(l)} is not "N days|hours"`);
+          if (num) {
+            const n = Number(num[1]);
+            const ok = env.window.days !== null ? num[2] === "day" && n === env.window.days
+              : env.window.hours !== null ? num[2] === "hour" && n === env.window.hours
+              : new RegExp(`(?<!\\d)${n}(?!\\d)[\\s-]*(?:${num[2]}|h\\b)`, "i").test(env.window.description);
+            if (!ok) labelProblems.push(`${k}${w ? `@${w}` : ""}: label ${JSON.stringify(l)} vs days=${env.window.days} hours=${env.window.hours}`);
+          }
+          const CYCLE_START_METRICS = ["economics-operating-cost@1", "economics-provider-cost@1"];
+          if (env.window.start !== null && !(CYCLE_START_METRICS.includes(k) && /^\d{4}-\d{2}-\d{2}$/.test(env.window.start))) labelProblems.push(`${k}: a window start no reader supplies (${env.window.start})`);
+          const regLabel = METRICS.find((m) => metricKey(m) === k)?.window.label;
+          if (env.window.hours !== null && regLabel !== l) labelProblems.push(`${k}: registry label ${JSON.stringify(regLabel)} ≠ the read's ${JSON.stringify(l)}`);
+        }
         if (!env || env.status === "UNAVAILABLE" || env.value === null) continue;
         seen.add(k);
         const shapeOk = typeof env.value === "number" ? env.valueUnits === "count" : typeof env.valueUnits === "object" && env.valueUnits !== null
@@ -505,6 +745,17 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
       : !est || Object.values(parts).every((u) => u !== "pct");
     check(`${k}: estimatedParts — listed only on an ESTIMATED metric and every listed part exists in valueUnits; an ESTIMATED metric without a list has no pct part (its estimates are its usd parts)`, ok, { est, listed, parts });
   }
+  check("windowLabel: non-empty for every non-POINT_IN_TIME metric (null for point in time), consistent with days / hours, no inferred start date — every retrievable metric, window and surface",
+    labelProblems.length === 0 && retrievable.every((k) => labelsSeen.has(k)), { labelProblems, missing: retrievable.filter((k) => !labelsSeen.has(k)) });
+  check("…the registry's window.label is the DEFAULT read's phrase for a metric with days",
+    METRICS.filter((m) => m.window.days?.length).every((m) => m.window.label === daysWindowLabel(m.window.days![0])), METRICS.filter((m) => m.window.days?.length).map((m) => [metricKey(m), m.window.label]));
+  for (const k of retrievable) {
+    const e = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
+    if (!e.unwindowedParts) continue;
+    const parts = typeof e.valueUnits === "string" ? {} : e.valueUnits;
+    check(`${k}: unwindowedParts — every listed part exists in valueUnits`, e.unwindowedParts.length > 0 && e.unwindowedParts.every((p) => Object.prototype.hasOwnProperty.call(parts, p)), { listed: e.unwindowedParts, parts });
+  }
+  check("rendering never reads the window description (no first-clause phrase; S2 2026-11-04)", !/window\.description/.test(code(src("lib/platform/intelligence/ai/core.ts")).split("export function envelopeWindowText")[1]?.split("export function renderPlaceholder")[0] ?? "x"));
   check("pct figures are on the 0–100 scale: the fixture's 25% utilisation reads 25 (not 0.25), and every pct is in [0, 100]",
     pcts.length > 0 && pcts.every((p) => p.v >= 0 && p.v <= 100) && pcts.some((p) => p.k === "ai-fleet-spend-status@1" && p.part === "utilisationPct" && p.v === 25), pcts);
   check("the renderer reads units ONLY from valueUnits (no name inference in core.ts)", !/\/Usd\$\/|\/Pct\$\//.test(code(src("lib/platform/intelligence/ai/core.ts"))));
@@ -547,20 +798,323 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
   // OWNER REGRESSIONS (exact strings; a fake model with realistic outputs).
   const today = await ask("How are we looking today?", "Right now {{m:incident-broken-now@1}} incidents are broken and {{m:provider-outcome@1|part=failing}} provider is failing; AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} over the trailing window.",
     [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "provider-outcome" } }, { name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }]);
-  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 provider is failing; AI spend is about $12.50 (estimated)"), segmentsText(today.result.answer));
+  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 (in the last 7 days) provider is failing; AI spend is about $12.50 (in the last 24 hours, estimated)"), segmentsText(today.result.answer));
   const most = await ask("What's costing me the most money?", "AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} across {{m:ai-fleet-spend-status@1|part=invocations}} customer calls, {{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold.");
-  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (estimated) across 40 customer calls, about 25% (estimated) of the threshold.", segmentsText(most.result.answer));
+  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (in the last 24 hours, estimated) across 40 (in the last 24 hours) customer calls, about 25% (in the last 24 hours, estimated) of the threshold.", segmentsText(most.result.answer));
   const q30 = "What's costing me the most money in the past 30 days";
   const v0 = await ask(q30, "Over the past 30 days, AI spend was {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
   const v0t = segmentsText(v0.result.answer);
-  check("OWNER \"…in the past 30 days\": NOT the generic fallback; the 24 h metric is never passed off as 30 days (WINDOW_UNSUPPORTED)",
-    v0.result.grounding.verdict === "WINDOW_UNSUPPORTED" && !v0t.startsWith(UNVERIFIED_FALLBACK) && /covers only the last 24 hours, so it cannot answer for the 30 days you asked about\./.test(v0t) && !v0t.includes("12.50"), v0t);
-  check("…and the chip shows no figure (nothing substituted)", v0.result.citations.every((c) => c.figures.length === 0) && v0.result.answer.some((x) => x.kind === "link"));
-  const forced = await ask(q30, "Over the past 30 days: {{m:ai-fleet-spend-status@1}}.", [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }]);
-  check("…a window the metric does not take (get_metric window=30) ⇒ the limitation from its DECLARED window, never another window's figure",
-    forced.result.grounding.verdict === "WINDOW_UNSUPPORTED" && /covers only its declared window \(.*24 h.*\), so it cannot answer for the 30 days you asked about\./.test(segmentsText(forced.result.answer)) && !segmentsText(forced.result.answer).includes("12.50"), segmentsText(forced.result.answer));
+  check("OWNER \"…in the past 30 days\" (S2 (d)): the answer is KEPT, the figure states its own 24 h window, and ONE server note says it is not the 30 days asked",
+    v0.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !v0.result.grounding.replaced
+    && v0t === "Over the past 30 days, AI spend was about $12.50 (in the last 24 hours, estimated). Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about.", v0t);
+  check("…the chip shows the rendered figure (nothing substituted: never another window's figure)", JSON.stringify(v0.result.citations.map((c) => c.figures)) === JSON.stringify([["about $12.50 (in the last 24 hours, estimated)"]]), v0.result.citations);
+  const forced = await ask(q30, "Over the past 30 days: {{m:ai-fleet-spend-status@1|part=pricedUsd}}.", [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }]);
+  // Changed by S2 option (a) (2026-11-04): a window on a FIXED-window metric is ignored, so the metric's OWN 24 h figure is
+  // read and rendered with its own window, and the note states the mismatch. Before (a) the read was refused (UNAVAILABLE).
+  check("…a window the metric does not take (get_metric window=30 on a fixed 24 h metric) ⇒ ignored: its OWN 24 h figure, stated as such, plus the note — never another window's figure",
+    forced.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && forced.result.trace[0]?.windowIgnored === true
+    && segmentsText(forced.result.answer) === "Over the past 30 days: about $12.50 (in the last 24 hours, estimated). Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about.", segmentsText(forced.result.answer));
   check("trace: the verdict is an ENUM code and admitted a COUNT (no text, no value)",
-    traceLine(v0.result).endsWith("admitted=1 verdict=WINDOW_UNSUPPORTED") && (PLACEHOLDER_VERDICTS as readonly string[]).includes(v0.result.grounding.verdict) && !/30 days|12\.5/.test(traceLine(v0.result)), traceLine(v0.result));
+    traceLine(v0.result).endsWith("admitted=1 verdict=RESOLVED_WITH_WINDOW_NOTE") && (PLACEHOLDER_VERDICTS as readonly string[]).includes(v0.result.grounding.verdict) && !/30 days|12\.5/.test(traceLine(v0.result)), traceLine(v0.result));
+}
+
+// ── 4d. window resolution (S2 ruling 2026-11-04) + owner cost-question replays ──
+console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window stated inline, window notes, owner A/B/C replays");
+{
+  // Economics with a Plaid cycle: one Transactions Item (priced) + one with Investments consent (counted, never priced ⇒ PARTIAL).
+  const plaidItem = (id: string, o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
+  const cyc = priceCycleBothReadings([plaidItem("p1"), plaidItem("p2", { investmentsConsent: "ENABLED" })], [{ plaidItemId: "zz", at: "2026-08-15T00:00:00Z", from: "ACTIVE", to: "REVOKED" }] as never,
+    { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const econR = readers({
+    economicsSnapshot: async (nowMs) => buildEconomicsSnapshot({
+      nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+      spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }],
+    }),
+  });
+  const b = opsBinding(OPS, econR);
+  const ECON_PAGE = "/dashboard/platform/PLATFORM_OPS?workspace=platform-economics";
+  const gm = (id: string, window?: number) => ({ name: "get_metric", args: window === undefined ? { id } : { id, window } });
+  const turn = (q: string, calls: { name: string; args: unknown }[][], content: string) => run(q, b, script([...calls.map((c) => ({ calls: c })), { content }]));
+  const txt = (r: Awaited<ReturnType<typeof turn>>) => segmentsText(r.result.answer);
+  const notes = (t: string) => t.match(/Note: /g)?.length ?? 0;
+  const aiEnvOf = (r: Awaited<ReturnType<typeof turn>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === "economics-ai-cost@1") as MetricEnvelope;
+
+  // The pure rule, one named exported function.
+  const e = (days: number | null, hours: number | null = null) => ({ metric: "k@1", window: { kind: days === null && hours === null ? "UTC_DAYS" : "ROLLING", description: "d", days, hours } }) as unknown as MetricEnvelope;
+  const M = (envs: MetricEnvelope[], w: number | null) => matchPlaceholderEnvelope(envs, "k@1", w).kind;
+  check("matchPlaceholderEnvelope: no |window + ONE envelope of the key (any window) ⇒ MATCH",
+    M([e(30)], null) === "MATCH" && M([e(7)], null) === "MATCH" && M([e(null)], null) === "MATCH" && M([e(null, 24)], null) === "MATCH");
+  check("…the same window read twice counts once (MATCH); two DIFFERENT windows of the key ⇒ MISMATCH", M([e(30), e(30)], null) === "MATCH" && M([e(7), e(30)], null) === "MISMATCH");
+  check("…|window=N must equal window.days (else MISMATCH); a fixed-window (days null) metric takes NO |window",
+    M([e(7), e(30)], 7) === "MATCH" && M([e(30)], 7) === "MISMATCH" && M([e(null)], 30) === "MISMATCH" && M([e(null, 24)], 24) === "MISMATCH");
+  check("…a key not read this turn ⇒ UNREAD; the key match is exact", M([], null) === "UNREAD" && matchPlaceholderEnvelope([e(30)], "k@2", null).kind === "UNREAD" && matchPlaceholderEnvelope([e(30)], "K@1", null).kind === "UNREAD");
+  check("the rule lives in ONE exported function the resolver calls",
+    /export function matchPlaceholderEnvelope\(envelopes: readonly MetricEnvelope\[\], key: string, window: number \| null\): PlaceholderEnvelopeMatch/.test(src("lib/platform/intelligence/ai/core.ts"))
+    && /matchPlaceholderEnvelope\(envelopes, key, opts\.window\)/.test(src("lib/platform/intelligence/ai/core.ts")) && !/const envelopeFor\b/.test(code(src("lib/platform/intelligence/ai/core.ts"))));
+
+  // Through real turns (fake model).
+  const one = await turn("AI spend this week?", [[gm("economics-ai-cost", 7)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
+  check("SINGLE read, placeholder WITHOUT a window ⇒ resolves, and the figure states the envelope's window (server text)",
+    one.result.grounding.verdict === "RESOLVED" && /^Estimated AI spend: about \$[\d,.]+ \(in the last 7 days, estimated\)\.$/.test(txt(one)), txt(one));
+  const twoW = await turn("AI spend?", [[gm("economics-ai-cost", 7), gm("economics-ai-cost", 30)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
+  check("TWO windows of one key read, placeholder WITHOUT a window ⇒ fallback (WINDOW_MISMATCH: ambiguous)",
+    twoW.result.grounding.replaced && twoW.result.grounding.verdict === "WINDOW_MISMATCH" && txt(twoW).startsWith(UNVERIFIED_FALLBACK), twoW.result.grounding);
+  const twoOk = await turn("AI spend?", [[gm("economics-ai-cost", 7), gm("economics-ai-cost", 30)]], "Week {{m:economics-ai-cost@1|part=spendUsd|window=7}}, month {{m:economics-ai-cost@1|part=spendUsd|window=30}}.");
+  check("…the same two reads, each placeholder WITH its window ⇒ resolves, each figure with its own window",
+    twoOk.result.grounding.verdict === "RESOLVED" && /\(in the last 7 days, estimated\).*\(in the last 30 days, estimated\)/.test(txt(twoOk)), txt(twoOk));
+  const wrong = await turn("AI spend?", [[gm("economics-ai-cost")]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd|window=7}}.");
+  check("a WRONG window (read 30 by default, placeholder says 7) ⇒ fallback (WINDOW_MISMATCH)", wrong.result.grounding.replaced && wrong.result.grounding.verdict === "WINDOW_MISMATCH", wrong.result.grounding);
+  const fixed = await turn("Cost this cycle?", [[gm("economics-operating-cost")]], "Operating cost: {{m:economics-operating-cost@1|part=totalUsd|window=30}}.");
+  check("a FIXED-window metric (billing cycle) with |window= ⇒ fallback (WINDOW_MISMATCH)", fixed.result.grounding.replaced && fixed.result.grounding.verdict === "WINDOW_MISMATCH", fixed.result.grounding);
+  const hours = await turn("Fleet spend?", [[gm("ai-fleet-spend-status")]], "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd|window=1}}.");
+  check("…an hours-window metric (window.days null) with |window= ⇒ fallback too (the grammar is days only)", hours.result.grounding.verdict === "WINDOW_MISMATCH");
+
+  // unwindowedParts: a configuration value (the threshold) renders with its unit and NO window label.
+  const thr = await turn("Fleet spend vs budget?", [[gm("ai-fleet-spend-status")]], "Spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} against a threshold of {{m:ai-fleet-spend-status@1|part=thresholdUsd}}.");
+  check("unwindowedParts: \"$50.00\" (no window, not estimated) next to \"about $12.50 (in the last 24 hours, estimated)\"",
+    thr.result.grounding.verdict === "RESOLVED" && txt(thr) === "Spend is about $12.50 (in the last 24 hours, estimated) against a threshold of $50.00.", txt(thr));
+  const cyc1 = txt(await turn("Cost?", [[gm("economics-operating-cost")]], "Total {{m:economics-operating-cost@1|part=totalUsd}}."));
+  // window.start (follow-up to #423): the economics cycle metrics carry the snapshot's OWN s.cycle.start.
+  const snap = await econR.economicsSnapshot(NOW.getTime());
+  const opRead = await turn("Cost?", [[gm("economics-operating-cost"), gm("economics-provider-cost")]], "Total {{m:economics-operating-cost@1|part=totalUsd}}; providers {{m:economics-provider-cost@1|part=costUsd}}.");
+  const tool = (r: typeof opRead, k: string) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === k) as MetricEnvelope;
+  check("window.start: operating-cost and provider-cost carry the snapshot's cycle start verbatim (ISO date, the reader's own value)",
+    /^\d{4}-\d{2}-\d{2}$/.test(snap.cycle.start) && tool(opRead, "economics-operating-cost@1").window.start === snap.cycle.start && tool(opRead, "economics-provider-cost@1").window.start === snap.cycle.start,
+    { snap: snap.cycle.start, op: tool(opRead, "economics-operating-cost@1").window.start });
+  const renderedDates = [...txt(opRead).matchAll(/since (\d{4}-\d{2}-\d{2})/g)].map((m) => m[1]);
+  check("…the rendered date EQUALS the snapshot's cycle start, in clean wording (no nested parentheses)",
+    renderedDates.length === 2 && renderedDates.every((d) => d === snap.cycle.start) && txt(opRead).includes(`(this UTC calendar month to date, since ${snap.cycle.start}, estimated)`) && !/\([^()]*\(/.test(txt(opRead)), txt(opRead));
+  check("…the other metrics carry no start (no inference anywhere)", aiEnvOf(one).window.start === null && renderPlaceholder({ ...aiEnvOf(one) } as MetricEnvelope, "spendUsd")!.includes("since") === false);
+  const cycleOnly = (prose: string) => turn("Cost?", [[gm("economics-operating-cost")]], prose);
+  const sameDate = await cycleOnly(`Since ${snap.cycle.start}: {{m:economics-operating-cost@1|part=totalUsd}}.`);
+  check("leftover-digit allowlist: the envelope's EXACT window-start date in the prose is allowed", !sameDate.result.grounding.replaced && sameDate.result.grounding.verdict === "RESOLVED", sameDate.result.grounding);
+  const otherDate = await cycleOnly("Since 2026-10-01: {{m:economics-operating-cost@1|part=totalUsd}}.");
+  const timeTail = await cycleOnly(`Since ${snap.cycle.start}T00:00: {{m:economics-operating-cost@1|part=totalUsd}}.`);
+  check("…a DIFFERENT date, or the start with a time attached, is still a leftover digit (UNGROUNDED_DIGIT ⇒ fallback)",
+    otherDate.result.grounding.replaced && otherDate.result.grounding.verdict === "UNGROUNDED_DIGIT" && timeTail.result.grounding.verdict === "UNGROUNDED_DIGIT", [otherDate.result.grounding, timeTail.result.grounding]);
+  check("…a start is only allowed when an envelope carries it (none read ⇒ the same date is a leftover digit)",
+    resolvePlaceholders([{ kind: "text", text: `Since ${snap.cycle.start}.` }], [aiEnvOf(one)], new Set()).summary.verdict === "UNGROUNDED_DIGIT");
+
+  // Nit: the same key + window read twice ⇒ the LAST read renders.
+  const first = aiEnvOf(one);
+  const last = { ...first, value: { spendUsd: 9.99 } } as MetricEnvelope;
+  check("same key + window read twice ⇒ the LAST read renders (with or without |window)",
+    segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:economics-ai-cost@1|part=spendUsd}}" }], [first, last], new Set()).segments).startsWith("about $9.99")
+    && segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:economics-ai-cost@1|part=spendUsd|window=7}}" }], [first, last], new Set()).segments).startsWith("about $9.99"));
+
+  // S2 (d): an asked window the placed metric does not cover ⇒ KEEP + ONE note per metric.
+  const q30 = "What's costing me the most money in the past 30 days?";
+  const cycleAsked = await turn(q30, [[gm("economics-operating-cost")]], "AI is the largest measured category: {{m:economics-operating-cost@1|part=aiUsd}} of {{m:economics-operating-cost@1|part=totalUsd}}.");
+  const ct = txt(cycleAsked);
+  check("asked 30 days + a billing-cycle metric ⇒ answer KEPT (RESOLVED_WITH_WINDOW_NOTE), the cycle stated inline, ONE note",
+    !cycleAsked.result.grounding.replaced && cycleAsked.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
+    && /^AI is the largest measured category: at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\) of at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\.$/.test(ct)
+    && notes(ct) === 1, ct);
+  check("…the note is server text, so the trace stays counts + the verdict code", traceLine(cycleAsked.result).endsWith("verdict=RESOLVED_WITH_WINDOW_NOTE") && !/billing|Note/.test(traceLine(cycleAsked.result)));
+  const thirtyAsked = await turn(q30, [[gm("economics-ai-cost")]], "Estimated AI spend in the past 30 days: {{m:economics-ai-cost@1|part=spendUsd}}.");
+  check("asked 30 days + a 30-day metric ⇒ no note (RESOLVED)", thirtyAsked.result.grounding.verdict === "RESOLVED" && notes(txt(thirtyAsked)) === 0 && /\(in the last 30 days, estimated\)\.$/.test(txt(thirtyAsked)), txt(thirtyAsked));
+  const noneMatch = await turn(q30, [[gm("economics-operating-cost"), gm("ai-fleet-spend-status")]], "Cycle total {{m:economics-operating-cost@1|part=totalUsd}}; fleet spend {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
+  check("…no placed figure matches the asked window ⇒ still KEPT, one note per affected metric (two)",
+    !noneMatch.result.grounding.replaced && notes(txt(noneMatch)) === 2 && /covers the last 24 hours, not the 30 days you asked about\./.test(txt(noneMatch)), txt(noneMatch));
+
+  // OWNER REPLAYS — the exact tool sequences seen on Preview, with realistic model output.
+  const ls = [{ name: "list_metrics", args: { domain: "economics" } }];
+  // B: "What's costing me the most money?" ⇒ operating-cost (fixed cycle) + ai-cost (NO window arg ⇒ the 30-day default).
+  const B = await turn("What's costing me the most money?", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost")]],
+    `AI is the largest of the measured categories this billing cycle at {{m:economics-operating-cost@1|part=aiUsd}}, out of an estimated operating cost of {{m:economics-operating-cost@1|part=totalUsd}}. Providers (Plaid) are {{m:economics-operating-cost@1|part=providersUsd}} and infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}, so a full ranking can't be verified. Estimated AI spend over the recent window is {{m:economics-ai-cost@1|part=spendUsd}}. See [Economics](${ECON_PAGE}).`);
+  const aiEnv = B.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === "economics-ai-cost@1") as MetricEnvelope;
+  check("OWNER B replay: the ai-cost read with no window arg carries window.days 30 (the false-positive precondition)", aiEnv?.window.days === 30, aiEnv?.window);
+  check("OWNER B \"What's costing me the most money?\" ⇒ answer KEPT (RESOLVED), every placeholder resolved, the link kept",
+    !B.result.grounding.replaced && B.result.grounding.verdict === "RESOLVED" && JSON.stringify(B.result.claims) === JSON.stringify({ claims: 5, resolved: 5, unresolved: 0, admitted: 0 })
+    && B.result.sanitised.removed === 0 && B.result.answer.some((x) => x.kind === "link" && x.href === ECON_PAGE), { g: B.result.grounding, c: B.result.claims, s: B.result.sanitised, t: txt(B) });
+  check("…each figure states ITS window: the cycle for operating cost, \"last 30 days\" for AI cost",
+    /at at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(txt(B)) && /recent window is about \$[\d,.]+ \(in the last 30 days, estimated\)\./.test(txt(B)) && notes(txt(B)) === 0, txt(B));
+  // A: provider-outcome UNAVAILABLE + operating-cost PARTIAL.
+  const bA = opsBinding(OPS, { ...econR, providerHealth: async () => { throw new Error("down"); } });
+  const A = await run("Are any providers failing, and what are they costing us?", bA, script([{ calls: [gm("provider-outcome"), gm("economics-operating-cost")] },
+    { content: `The provider outcome verdict is unavailable right now, so I can't say which providers are failing ({{m:provider-outcome@1|part=failing}}). Provider cost this billing cycle is {{m:economics-operating-cost@1|part=providersUsd}} of an estimated operating cost of {{m:economics-operating-cost@1|part=totalUsd}}. See [Economics](${ECON_PAGE}).` }]));
+  const aT = segmentsText(A.result.answer);
+  check("OWNER A replay (provider-outcome UNAVAILABLE + operating-cost PARTIAL) ⇒ answer KEPT, unavailable said, the cycle stated",
+    !A.result.grounding.replaced && A.result.grounding.verdict === "RESOLVED" && A.result.citations.find((c) => c.metric === "provider-outcome@1")?.status === "UNAVAILABLE"
+    && A.result.citations.find((c) => c.metric === "economics-operating-cost@1")?.status === "PARTIAL"
+    && aT.includes("failing (unavailable — ") && /\(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(aT) && !/\$0\.00/.test(aT), aT);
+  // C: operating-cost + ai-cost + provider-cost PARTIAL.
+  const C = await turn("Break down what we're spending on AI and providers this month.", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
+    `This billing cycle AI is {{m:economics-operating-cost@1|part=aiUsd}} and providers (Plaid) are {{m:economics-provider-cost@1|part=costUsd}}; infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}. The provider figure is a lower bound, so a full ranking can't be verified. Over the recent window AI spend is {{m:economics-ai-cost@1|part=spendUsd}}.`);
+  const cT = txt(C);
+  check("OWNER C replay (operating-cost + ai-cost + provider-cost PARTIAL) ⇒ answer KEPT, each figure with its window",
+    !C.result.grounding.replaced && C.result.grounding.verdict === "RESOLVED" && C.result.citations.find((c) => c.metric === "economics-provider-cost@1")?.status === "PARTIAL"
+    && /providers \(Plaid\) are at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(cT) && /infrastructure is unavailable\./.test(cT)
+    && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(cT), cT);
+
+  // The sanitiser's removed count, by CATEGORY (never text) — e.g. a link to drill.href (an API route, not a page).
+  const api = (aiEnv?.drill && "href" in aiEnv.drill ? aiEnv.drill.href : "") as string;
+  const hrefLink = await turn("AI spend?", [[gm("economics-ai-cost")]], `Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}. See [the records](${api}).`);
+  check("a Markdown link to drill.href (API route) is stripped, counted as category \"link\"; the answer is kept",
+    api.startsWith("/api/") && hrefLink.result.sanitised.removed === 1 && JSON.stringify(hrefLink.result.sanitised.kinds) === JSON.stringify({ link: 1 }) && !hrefLink.result.grounding.replaced
+    && traceLine(hrefLink.result).includes(" removed=1(link:1) "), traceLine(hrefLink.result));
+  const mixedKinds = sanitiseAnswer("a https://x.test b <b>c</b> ![i](/p) [r][x] [l](/q)\n[x]: /y\nand /dashboard/forged", new Set());
+  const sorted = (o: Record<string, unknown>) => JSON.stringify(Object.fromEntries(Object.entries(o).sort()));
+  check("sanitiser categories: url / html / image / reference / link / path, counts only (the total is their sum)",
+    sorted(mixedKinds.kinds) === sorted({ url: 1, html: 2, image: 1, reference: 2, link: 1, path: 1 }) && mixedKinds.removed === 8, mixedKinds.kinds);
+
+  // Finding 2 (Preview: every turn logs removed=1(link:1)) — WHICH target each stripped Markdown link had, as a closed enum.
+  // Offline the category alone cannot tell these apart: each form below is stripped as exactly link:1.
+  check("…the trace names the stripped link's TARGET KIND (linkTo=DRILL_HREF:1), a code — never the target text",
+    JSON.stringify(hrefLink.result.sanitised.linkTargets) === JSON.stringify({ DRILL_HREF: 1 }) && traceLine(hrefLink.result).includes(" removed=1(link:1) linkTo=DRILL_HREF:1 replaced=")
+    && !traceLine(hrefLink.result).includes("/api/"), traceLine(hrefLink.result));
+  const allowedB = new Set([ECON_PAGE]);
+  const envB = [aiEnv!];
+  const FORMS: [string, string, Record<string, number>][] = [
+    ["drill.href as a Markdown link", `See [records](${api}).`, { DRILL_HREF: 1 }],
+    ["another /api/ path", "See [records](/api/platform/platform-ops/providers).", { API_PATH: 1 }],
+    ["the drill page with an extra param", `See [Economics](${ECON_PAGE}&figure=ai_cost).`, { PAGE_VARIANT: 1 }],
+    ["a page path this turn never returned", "See [Economics](/dashboard/platform/economics).", { PAGE_NOT_RETURNED: 1 }],
+    ["an absolute URL", `See [Economics](https://app.example.test${ECON_PAGE}).`, { ABSOLUTE_URL: 1 }],
+    ["a placeholder as the target", "See [cost]({{m:economics-ai-cost@1|part=spendUsd}}).", { PLACEHOLDER: 1 }],
+    ["a metric key as the target", "See [AI cost](economics-ai-cost@1).", { METRIC_ID: 1 }],
+    ["an empty target", "See [Economics Overview]().", { EMPTY: 1 }],
+    ["a page id as the target", "See [Economics](PLATFORM_OPS:platform-economics).", { OTHER: 1 }],
+  ];
+  const formOut = FORMS.map(([what, text, want]) => {
+    const san = sanitiseAnswer(text, allowedB);
+    const got = strippedLinkTargets(text, allowedB, envB);
+    return { what, ok: JSON.stringify(san.kinds) === JSON.stringify({ link: 1 }) && JSON.stringify(got) === JSON.stringify(want), kinds: san.kinds, got };
+  });
+  check("every one of these forms is stripped as exactly link:1 by the (unchanged) sanitiser — and strippedLinkTargets tells them apart",
+    formOut.every((x) => x.ok), formOut.filter((x) => !x.ok));
+  const notLink = ["See [Economics](" + ECON_PAGE + ").", "See " + api + ".", "See https://app.example.test/x.", "![i](/p)"].map((t) => strippedLinkTargets(t, allowedB, envB));
+  check("…a kept link, a raw path, a raw URL or an image is not a stripped Markdown link (no target kind counted)", notLink.every((o) => Object.keys(o).length === 0), notLink);
+  const mixed = "a [x](/q) b [y](https://e.test) c [z](" + ECON_PAGE + ") <b>[w](/api/x)</b> ![i](/p)";
+  check("…the target-kind total equals the sanitiser's link count (same pre-steps, same pattern)",
+    Object.values(strippedLinkTargets(mixed, allowedB, envB)).reduce((a, n) => a + n, 0) === sanitiseAnswer(mixed, allowedB).kinds.link, strippedLinkTargets(mixed, allowedB, envB));
+  check("the sanitiser itself is unchanged by the diagnosis (sanitiseAnswer has no target-kind logic)",
+    !/LINK_TARGET_KINDS|strippedLinkTargets/.test(code(src("lib/platform/intelligence/ai/core.ts")).slice(code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export function sanitiseAnswer"), code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export const segmentsText"))));
+
+  // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
+  const gmDesc = JSON.stringify(platformAiToolSchemas([]));
+  check("the prompt teaches: copy the placeholder (the server built its window); never drill.href",
+    /copy its string exactly as given/.test(PLATFORM_AI_SYSTEM_PROMPT) && !/if you read a metric ONCE/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never link drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /copy it, don't build it/.test(gmDesc) && /never drill\.href/.test(gmDesc));
+}
+
+// ── 4i. Owner B UNAVAILABLE diagnosis (Preview 2026-11-04) ───────────────────
+// Preview trace for "What's costing me the most money?" (both runs, list_metrics skipped):
+//   steps=get_metric:UNAVAILABLE(economics-operating-cost@1)+drill,get_metric:UNAVAILABLE(economics-ai-cost@1)+drill,
+//         get_metric:UNAVAILABLE(economics-provider-cost@1)+drill …
+// Replayed OFFLINE through the real tool executor, the route-shaped binding and retrieveWith over a
+// synthetic Economics snapshot: which model calls reproduce THAT step list, and which do not.
+console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate get_metric call");
+{
+  const plaidItem = (id: string, o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
+  const cyc = priceCycleBothReadings([plaidItem("p1"), plaidItem("p2", { investmentsConsent: "ENABLED" })], [] as never, { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const snapshot: RetrievalReaders["economicsSnapshot"] = async (nowMs) => buildEconomicsSnapshot({ nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+    spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }] });
+  const good = opsBinding(OPS, readers({ economicsSnapshot: snapshot }));
+  const failing = opsBinding(OPS, readers({ economicsSnapshot: async () => { throw new Error("snapshot read failed"); } }));
+  const B_IDS = ["economics-operating-cost@1", "economics-ai-cost@1", "economics-provider-cost@1"];
+  const Q_B = "What's costing me the most money?";
+  const bTurn = (b: PlatformAiBinding, args: (id: string) => Record<string, unknown>) =>
+    run(Q_B, b, script([{ calls: B_IDS.map((id) => ({ name: "get_metric", args: args(id) })) }, { content: "Operating cost: {{m:economics-operating-cost@1|part=totalUsd}}." }]));
+  const stepsWithCodes = (r: Awaited<ReturnType<typeof bTurn>>) => traceLine(r.result).split(" ")[0];
+  /** The step list as the Preview build logged it (before the UNAVAILABLE reason code existed). */
+  const steps = (r: Awaited<ReturnType<typeof bTurn>>) => stepsWithCodes(r).replace(/\[[A-Z_]+\]/g, "");
+  const seenReasons = (r: Awaited<ReturnType<typeof bTurn>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => (JSON.parse((m as { content: string }).content) as MetricEnvelope).reason ?? "");
+  const PREVIEW_B = "steps=get_metric:UNAVAILABLE(economics-operating-cost@1)+drill,get_metric:UNAVAILABLE(economics-ai-cost@1)+drill,get_metric:UNAVAILABLE(economics-provider-cost@1)+drill";
+
+  const plain = await bTurn(good, (id) => ({ id }));
+  const bare = await bTurn(good, (id) => ({ id: id.replace(/@\d+$/, "") }));
+  const nullW = await bTurn(good, (id) => ({ id, window: null }));
+  check("NOT the cause: ids with @1, bare ids (no @1), window null, and no list_metrics first ⇒ all three READ (PARTIAL / ESTIMATED / PARTIAL)",
+    [plain, bare, nullW].every((r) => steps(r) === "steps=get_metric:PARTIAL(economics-operating-cost@1)+drill,get_metric:ESTIMATED(economics-ai-cost@1)+drill,get_metric:PARTIAL(economics-provider-cost@1)+drill"),
+    [plain, bare, nullW].map(steps));
+  // The WINDOW candidates at the retrieval layer: before option (a) get_metric passed the model's window
+  // straight to readMetric, so these are exactly the envelopes the Preview build's tool returned.
+  const asBuilt = async (w: number) => Promise.all(B_IDS.map((id) => good.readMetric(id, { window: w })));
+  const statusLine = (es: (MetricEnvelope | null)[]) => es.map((e) => `${e?.status}[${e?.unavailableCode ?? ""}]`).join();
+  const w30 = await asBuilt(30);
+  check("window=30 on all three (an OFFERED window for ai-cost) ⇒ the fixed-window metrics refuse, but ai-cost READS — so this alone does NOT reproduce the Preview trace",
+    statusLine(w30) === "UNAVAILABLE[WINDOW_FIXED],ESTIMATED[],UNAVAILABLE[WINDOW_FIXED]" && /takes no window/.test(w30[0]?.reason ?? ""), statusLine(w30));
+  const unofferedW = [1, 14, 31, 60, 180, 365];
+  const unoffered = await Promise.all(unofferedW.map(asBuilt));
+  check("REPRODUCES (as built): a window ai-cost does NOT offer (∉ 30 / 7 / 90) on all three ⇒ UNAVAILABLE ×3 — fixed-window refusal ×2 + window-not-offered ×1",
+    unoffered.every((es) => statusLine(es) === "UNAVAILABLE[WINDOW_FIXED],UNAVAILABLE[WINDOW_NOT_OFFERED],UNAVAILABLE[WINDOW_FIXED]" && /is not offered/.test(es[1]?.reason ?? "")), unoffered.map(statusLine));
+  const failed = await bTurn(failing, (id) => ({ id }));
+  check("ALSO REPRODUCES: the shared reader (getEconomicsSnapshot) failing ⇒ exactly the Preview step list (codes aside) — indistinguishable in the old trace",
+    steps(failed) === PREVIEW_B && seenReasons(failed).every((x) => /the reader \(getEconomicsSnapshot\) failed/.test(x)), steps(failed));
+
+  // Task 2: the trace now carries the retrieval's UNAVAILABLE CODE (closed enum, never the reason text), so the causes differ.
+  check("REASON CODE: the reader cause logs get_metric:UNAVAILABLE[READER_FAILED] ×3",
+    stepsWithCodes(failed) === "steps=get_metric:UNAVAILABLE[READER_FAILED](economics-operating-cost@1)+drill,get_metric:UNAVAILABLE[READER_FAILED](economics-ai-cost@1)+drill,get_metric:UNAVAILABLE[READER_FAILED](economics-provider-cost@1)+drill",
+    stepsWithCodes(failed));
+  const dayBad = await Promise.all(unofferedW.map((w) => bTurn(good, (id) => ({ id, window: w }))));
+  check("REASON CODE: an un-offered window on the DAY-window metric logs get_metric:UNAVAILABLE[WINDOW_NOT_OFFERED](economics-ai-cost@1)",
+    dayBad.every((r) => stepsWithCodes(r).includes(",get_metric:UNAVAILABLE[WINDOW_NOT_OFFERED](economics-ai-cost@1)+drill,")), dayBad.map(stepsWithCodes));
+  check("…the trace step carries the code as a closed-enum field (UNAVAILABLE_CODES), never the reason text; readable steps carry none",
+    failed.result.trace.every((t) => t.unavailable === "READER_FAILED") && [...dayBad, failed].every((r) => r.result.trace.filter((t) => t.outcome === "UNAVAILABLE").every((t) => (UNAVAILABLE_CODES as readonly string[]).includes(t.unavailable ?? "")))
+    && [plain, ...dayBad].every((r) => r.result.trace.filter((t) => t.outcome !== "UNAVAILABLE").every((t) => !("unavailable" in t)))
+    && !/failed|offered|fixed:/.test(JSON.stringify([failed.result.trace, dayBad[0].result.trace]) + traceLine(failed.result) + traceLine(dayBad[0].result)),
+    failed.result.trace);
+
+  // ── Task 3 — S2 option (a): a `window` on a FIXED-window metric is ignored (treated as absent). ──
+  check("isFixedWindow agrees with retrieval for EVERY registered metric: fixed ⇔ the retrieval contract offers no window",
+    METRICS.every((m) => { const r = RETRIEVAL[metricKey(m)]; return r?.kind !== "RETRIEVABLE" || isFixedWindow(m) === (r.windows.length === 0); })
+    && isFixedWindow(null) === false);
+  const ECON_PAGE = "/dashboard/platform/PLATFORM_OPS?workspace=platform-economics";
+  const fx = await run("What's costing me the most money in the last 30 days?", good, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost", window: 30 } }] },
+    { content: "Operating cost is {{m:economics-operating-cost@1|part=totalUsd}}." }]));
+  const fxT = segmentsText(fx.result.answer);
+  check("FIXED-window + window arg ⇒ the REAL read (PARTIAL, no UNAVAILABLE), the figure states its own window, and the window NOTE states the mismatch",
+    fx.result.trace[0]?.outcome === "PARTIAL" && fx.result.trace[0]?.windowIgnored === true && fx.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
+    && /^Operating cost is at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this UTC calendar month to date, since 2026-11-01, not the 30 days you asked about\.$/.test(fxT), fxT);
+  check("…traceLine flags it (+windowIgnored, a flag — never the value the model sent)",
+    traceLine(fx.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored ") && !/=30\b|window=/.test(traceLine(fx.result).split(" ")[0]), traceLine(fx.result));
+  const fxTool = JSON.parse((fx.transcript.find((m) => (m as { role: string }).role === "tool") as { content: string }).content) as MetricEnvelope;
+  check("…nothing substituted: the envelope is the metric's own cycle read (window.days null, start = the cycle start), its placeholders carry no |window",
+    fxTool.window.days === null && fxTool.window.start === "2026-11-01" && fxTool.unavailableCode === null && !JSON.stringify((fxTool as unknown as { placeholders: unknown }).placeholders).includes("|window="), fxTool.window);
+  const dayW = await run("AI spend?", good, script([{ calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 14 } }] }, { content: "AI spend is {{m:economics-ai-cost@1}}." }]));
+  check("DAY-window + an un-offered window ⇒ STILL refused (UNAVAILABLE[WINDOW_NOT_OFFERED], unchanged; not ignored)",
+    dayW.result.trace[0]?.outcome === "UNAVAILABLE" && dayW.result.trace[0]?.unavailable === "WINDOW_NOT_OFFERED" && !dayW.result.trace[0]?.windowIgnored
+    && /^AI spend is unavailable — window must be one of 30, 7, 90 \(days\) — 14 is not offered\.$/.test(segmentsText(dayW.result.answer)), segmentsText(dayW.result.answer));
+  const dayOk = await run("AI spend?", good, script([{ calls: [{ name: "get_metric", args: { id: "economics-ai-cost", window: 7 } }] }, { content: "AI spend is {{m:economics-ai-cost@1|part=spendUsd}}." }]));
+  check("…an OFFERED window on a day-window metric is honoured (7 d read, not ignored)", dayOk.result.trace[0]?.outcome === "ESTIMATED" && !dayOk.result.trace[0]?.windowIgnored && /\(in the last 7 days, estimated\)/.test(segmentsText(dayOk.result.answer)), segmentsText(dayOk.result.answer));
+  const hrs = await run("Fleet spend?", good, script([{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }, { content: "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd}}." }]));
+  check("…an HOURS-window metric (24 h, no day windows) is fixed too: the window is ignored and its own 24 h figure is read",
+    hrs.result.trace[0]?.outcome === "ESTIMATED" && hrs.result.trace[0]?.windowIgnored === true && segmentsText(hrs.result.answer) === "Spend: about $12.50 (in the last 24 hours, estimated).", segmentsText(hrs.result.answer));
+  const unknownW = await run("x", good, script([{ calls: [{ name: "get_metric", args: { id: "no-such-metric", window: 30 } }, { name: "get_metric", args: { id: "cs-needs-help", window: 30 } }] }, { content: "x" }]));
+  check("…an unknown or invisible id with a window is still the ONE not-found (no oracle; never flagged)",
+    unknownW.result.trace.map((t) => `${t.outcome}${t.windowIgnored ? "+w" : ""}`).join() === "NOT_FOUND,NOT_FOUND", unknownW.result.trace);
+
+  // OWNER-B REPLAY after (a): the plausible B calls, answer composed by COPYING the placeholders it was handed.
+  const copyB = (args: (id: string) => Record<string, unknown>): PlatformAiGenerate => {
+    let i = 0;
+    return async ({ messages }) => {
+      const u = { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 };
+      if (i++ === 0) {
+        const toolCalls = B_IDS.map((id, k) => ({ id: `b${k}`, name: "get_metric", arguments: JSON.stringify(args(id)) }));
+        return { content: null, toolCalls, raw: { role: "assistant", content: null, tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) }, usage: u };
+      }
+      const seen = (messages as { role: string; content: string }[]).filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
+      const ph = (metric: string, part: string) => { const r = seen.find((x) => x.metric === metric); return r.placeholders?.[part] ?? r.placeholder; };
+      const content = `AI is the largest measured category at ${ph("economics-operating-cost@1", "aiUsd")} of ${ph("economics-operating-cost@1", "totalUsd")}; providers are ${ph("economics-provider-cost@1", "costUsd")}, so a full ranking can't be verified. Estimated AI spend is ${ph("economics-ai-cost@1", "spendUsd")}.`;
+      return { content, toolCalls: [], raw: { role: "assistant", content }, usage: u };
+    };
+  };
+  const replayB = (args: (id: string) => Record<string, unknown>) => runPlatformAiTurn({ question: Q_B, binding: good, generate: copyB(args), model: "gpt-4o-mini" });
+  const b30 = await replayB((id) => ({ id, window: 30 }));
+  const b30T = segmentsText(b30.result.answer);
+  check("OWNER-B replay, window=30 on all three ⇒ every figure RESOLVES (operating + provider: window ignored; ai-cost: its 30 d read), answer kept",
+    !b30.result.grounding.replaced && b30.result.grounding.verdict === "RESOLVED" && b30.result.claims.unresolved === 0 && b30.result.claims.resolved === 4
+    && b30.result.trace.every((t) => t.outcome !== "UNAVAILABLE")
+    && traceLine(b30.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored,get_metric:ESTIMATED(economics-ai-cost@1)+drill,get_metric:PARTIAL(economics-provider-cost@1)+drill+windowIgnored ")
+    && /providers are at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(b30T) && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(b30T), { t: b30T, l: traceLine(b30.result) });
+  const b365 = await replayB((id) => ({ id, window: 365 }));
+  const b365T = segmentsText(b365.result.answer);
+  check("OWNER-B replay, an un-offered window (365) on all three ⇒ operating + provider RESOLVE; ai-cost (day-window) stays refused and is SAID as unavailable",
+    !b365.result.grounding.replaced && b365.result.claims.unresolved === 0
+    && traceLine(b365.result).startsWith("steps=get_metric:PARTIAL(economics-operating-cost@1)+drill+windowIgnored,get_metric:UNAVAILABLE[WINDOW_NOT_OFFERED](economics-ai-cost@1)+drill,get_metric:PARTIAL(economics-provider-cost@1)+drill+windowIgnored ")
+    && /of at least \$[\d,.]+ \(this UTC calendar month to date/.test(b365T) && /Estimated AI spend is unavailable — window must be one of 30, 7, 90 \(days\) — 365 is not offered\.$/.test(b365T), { t: b365T, l: traceLine(b365.result) });
+  check("…both replays keep the drill page as the only link candidate (unchanged)", [b30, b365].every((r) => r.result.trace.every((t) => t.drillLink === true)) && [...good.listPages({ metric: "economics-operating-cost@1" })].some((t) => good.resolvePage(t.id)?.href === ECON_PAGE));
 }
 
 // ── 5. links ────────────────────────────────────────────────────────────────

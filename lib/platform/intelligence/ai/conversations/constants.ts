@@ -16,7 +16,7 @@
 const PLATFORM_AI_QUESTION_MAX = 500;        // = core.PLATFORM_AI_QUESTION_MAX
 const PLATFORM_AI_TURN_TIMEOUT_MS = 45_000;  // = core.PLATFORM_AI_TURN_TIMEOUT_MS
 
-/** OD-1 (owner, TENTATIVE pending S2's retention clearance): content is kept 90 days. */
+/** OD-1 + OD-7 (owner, APPROVED 2026-11-04): each message is kept 90 days from its creation. */
 export const PLATFORM_AI_RETENTION_DAYS = 90;
 /** OD-10 (owner): soft-delete grace. Default IMMEDIATE — purged on the next daily run. */
 export const PLATFORM_AI_DELETE_GRACE_DAYS = 0;
