@@ -786,6 +786,8 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 
 Storage is never on without the purge.
 
+**Disable order (S2).** Turn CONVERSATIONS off first, purge remaining data, THEN the purge flag. Never turn PURGE off while conversation rows exist.
+
 ---
 
 ## 14. Decisions
