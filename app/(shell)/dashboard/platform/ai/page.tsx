@@ -21,6 +21,14 @@
  * (components/platform/PlatformAiAsk), whose API (POST /api/platform/ai/ask)
  * re-applies every gate server-side. The flag is read after the gates, so the
  * gate order is unchanged either way.
+ *
+ * Platform AI conversations (B11, PR C) — ONLY when env.isPlatformAiConversationsEnabled
+ * (PLATFORM_AI_ENABLED + PLATFORM_AI_CONVERSATIONS_ENABLED + PLATFORM_AI_PURGE_ENABLED,
+ * all default OFF), decided HERE, server-side, after every gate: the page renders
+ * components/platform/PlatformAiConversations (whose routes,
+ * /api/platform/ai/conversations/*, re-apply every gate). Any of the three unset
+ * ⇒ exactly v0 (PlatformAiAsk) as before. Design:
+ * docs/plans/PLATFORM-AI-CONVERSATIONS-DESIGN.md §11.
  */
 
 import { getServerSession } from "next-auth";
@@ -32,6 +40,7 @@ import { OPERATOR_TOTP_ENROLMENT_PATH } from "@/lib/platform/authorize";
 import { env } from "@/lib/env";
 import { PlatformAiPlaceholder } from "@/components/platform/PlatformAiPlaceholder";
 import { PlatformAiAsk } from "@/components/platform/PlatformAiAsk";
+import { PlatformAiConversations } from "@/components/platform/PlatformAiConversations";
 import { platformAiAreaFor, platformAiAreaLabel } from "@/lib/platform/intelligence/ai/core";
 
 export const runtime = "nodejs";
@@ -48,5 +57,6 @@ export default async function PlatformAiPage() {
   // The ONE area the API answers from (the same function the route uses), stated on the page.
   const area = platformAiAreaFor(spaces);
   if (!area) redirect("/dashboard/spaces");
+  if (env.isPlatformAiConversationsEnabled) return <PlatformAiConversations areaLabel={platformAiAreaLabel(area)} />;
   return <PlatformAiAsk areaLabel={platformAiAreaLabel(area)} />;
 }
