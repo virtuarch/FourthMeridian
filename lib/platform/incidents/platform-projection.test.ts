@@ -42,8 +42,8 @@ const verdict = {
 
 console.log("subject label");
 {
-  check("institution · account", subjectLabel({ primary: "Chase", secondary: "Checking" }) === "Chase · Checking");
-  check("institution only", subjectLabel({ primary: "Chase", secondary: null }) === "Chase");
+  check("institution · account", subjectLabel({ primary: "Example Bank", secondary: "Checking" }) === "Example Bank · Checking");
+  check("institution only", subjectLabel({ primary: "Example Bank", secondary: null }) === "Example Bank");
   check("unknown → null, never a guess", subjectLabel({ primary: null, secondary: null }) === null);
   check("blank strings are not a label", subjectLabel({ primary: "  ", secondary: "" }) === null);
 }
@@ -51,14 +51,14 @@ console.log("subject label");
 console.log("projection");
 {
   check("fixture: a CS-tier verdict that names the customer and the opaque ids", verdict.subjectUserId === "user_123" && verdict.plaidItemId === "item_123" && verdict.brokenNow);
-  const p = projectVerdictForPlatform(verdict, { primary: "Chase", secondary: "Checking" }, "exec_abc123");
+  const p = projectVerdictForPlatform(verdict, { primary: "Example Bank", secondary: "Checking" }, "exec_abc123");
   const json = JSON.stringify(p);
   check("carries exactly the declared keys", Object.keys(p).sort().join(",") === [...PLATFORM_INCIDENT_KEYS].sort().join(","), Object.keys(p).join(","));
   for (const leak of ["owner@example.test", "user_123", "bc1qSECRET", "tok_SECRET", "item_123", "acct_123"]) {
     check(`drops ${leak}`, !json.includes(leak));
   }
   check("no key named email/userId/address/token", !/"(email|userId|subjectUserId|walletAddress|accessToken|plaidItemId|financialAccountId)"/.test(json));
-  check("subject is the institution · account label", p.subject === "Chase · Checking");
+  check("subject is the institution · account label", p.subject === "Example Bank · Checking");
   check("severity, effectiveSeverity, state, freshness and brokenNow are READ from the verdict, not re-derived",
     p.severity === verdict.severity && p.effectiveSeverity === verdict.effectiveSeverity && p.state === verdict.state && p.freshness === verdict.freshness && p.brokenNow === verdict.brokenNow);
   check("label and operation label are the module's", p.label === verdict.label && p.operationLabel === verdict.operationLabel);

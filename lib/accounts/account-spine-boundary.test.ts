@@ -255,8 +255,8 @@ function makeRootClient(w: World, opts: { failFoldOf?: string } = {}) {
 
 const FP = {
   ownerUserId: "alice", type: "checking", mask: "4321",
-  institution: "Chase", institutionId: "ins_1", name: "Chase Checking",
-  officialName: "Chase Total Checking", plaidName: "Chase Checking",
+  institution: "Example Bank", institutionId: "ins_1", name: "Example Bank Checking",
+  officialName: "Example Bank Total Checking", plaidName: "Example Bank Checking",
 };
 
 /** Three ACTIVE siblings, oldest first, with 5 / 3 / 1 live transactions. */

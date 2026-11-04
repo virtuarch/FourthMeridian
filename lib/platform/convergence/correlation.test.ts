@@ -10,8 +10,8 @@
  * Events carrying a `correlationKey` cluster with that key and NOTHING else;
  * keyless ledgers keep the original 6-hour proximity behaviour.
  *
- * The bug this closes, from the Platform Ops investigation: a Chase sync run at
- * 11:03 and an unrelated American Express run at 12:08 were folded into ONE
+ * The bug this closes, from the Platform Ops investigation: a Example Bank sync run at
+ * 11:03 and an unrelated Example Card run at 12:08 were folded into ONE
  * episode purely because they fell inside six hours of each other — while a
  * single incident spanning a longer retry gap split into several.
  */
@@ -26,27 +26,27 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 const ev = (at: string, over: Partial<ConvergenceEvent> = {}): ConvergenceEvent => ({
-  at, ledger: "syncIssue", kind: "sync-issue", subject: "Chase",
+  at, ledger: "syncIssue", kind: "sync-issue", subject: "Example Bank",
   outcome: "degraded", detail: "critical · transactions · upsert error", tier: "observed",
   ...over,
 });
-const KEY_CHASE_R1 = "plaidItem:item_chase|run:r1";
-const KEY_AMEX_R2  = "plaidItem:item_amex|run:r2";
+const KEY_EXBANK_R1 = "plaidItem:item_exbank|run:r1";
+const KEY_EXCARD_R2  = "plaidItem:item_excard|run:r2";
 
 // ── 1. The exact real-world false merge ─────────────────────────────────────
-console.log("1. Chase 11:03 and Amex 12:08 must NOT be one episode");
+console.log("1. Example Bank 11:03 and Example Card 12:08 must NOT be one episode");
 {
   const eps = correlateEpisodes([
-    ev("2026-07-22T11:03:58.241Z", { correlationKey: KEY_CHASE_R1, subject: "Chase" }),
-    ev("2026-07-22T11:03:58.272Z", { correlationKey: KEY_CHASE_R1, subject: "Chase" }),
-    ev("2026-07-22T11:03:58.275Z", { correlationKey: KEY_CHASE_R1, subject: "Chase" }),
-    ev("2026-07-22T12:08:32.260Z", { correlationKey: KEY_AMEX_R2,  subject: "American Express" }),
+    ev("2026-07-22T11:03:58.241Z", { correlationKey: KEY_EXBANK_R1, subject: "Example Bank" }),
+    ev("2026-07-22T11:03:58.272Z", { correlationKey: KEY_EXBANK_R1, subject: "Example Bank" }),
+    ev("2026-07-22T11:03:58.275Z", { correlationKey: KEY_EXBANK_R1, subject: "Example Bank" }),
+    ev("2026-07-22T12:08:32.260Z", { correlationKey: KEY_EXCARD_R2,  subject: "Example Card" }),
   ]);
   check("two episodes, not one", eps.length === 2, `${eps.length}`);
-  const chase = eps.find((e) => e.subjects.includes("Chase"));
-  const amex  = eps.find((e) => e.subjects.includes("American Express"));
-  check("the Chase run keeps its 3 events together", chase?.events.length === 3, `${chase?.events.length}`);
-  check("the Amex run stands alone", amex?.events.length === 1);
+  const exbank = eps.find((e) => e.subjects.includes("Example Bank"));
+  const excard  = eps.find((e) => e.subjects.includes("Example Card"));
+  check("the Example Bank run keeps its 3 events together", exbank?.events.length === 3, `${exbank?.events.length}`);
+  check("the Example Card run stands alone", excard?.events.length === 1);
   check("no episode spans both institutions",
     eps.every((e) => e.subjects.length === 1), JSON.stringify(eps.map((e) => e.subjects)));
 }
@@ -55,8 +55,8 @@ console.log("1. Chase 11:03 and Amex 12:08 must NOT be one episode");
 console.log("2. Same PlaidItem, different sync runs — separate incidents");
 {
   const eps = correlateEpisodes([
-    ev("2026-07-22T11:00:00.000Z", { correlationKey: "plaidItem:item_chase|run:r1" }),
-    ev("2026-07-22T11:00:05.000Z", { correlationKey: "plaidItem:item_chase|run:r2" }),
+    ev("2026-07-22T11:00:00.000Z", { correlationKey: "plaidItem:item_exbank|run:r1" }),
+    ev("2026-07-22T11:00:05.000Z", { correlationKey: "plaidItem:item_exbank|run:r2" }),
   ]);
   check("five seconds apart but different runs ⇒ 2 episodes", eps.length === 2, `${eps.length}`);
 }
@@ -66,8 +66,8 @@ console.log("3. A retry 9 hours later still belongs to its own run's episode");
 {
   // Same run id, far apart in time — proximity clustering would have split this.
   const eps = correlateEpisodes([
-    ev("2026-07-22T01:00:00.000Z", { correlationKey: KEY_CHASE_R1 }),
-    ev("2026-07-22T10:00:00.000Z", { correlationKey: KEY_CHASE_R1 }),
+    ev("2026-07-22T01:00:00.000Z", { correlationKey: KEY_EXBANK_R1 }),
+    ev("2026-07-22T10:00:00.000Z", { correlationKey: KEY_EXBANK_R1 }),
   ]);
   check("9-hour gap does NOT split a keyed episode", eps.length === 1, `${eps.length}`);
   check("both events are in it", eps[0].events.length === 2);
@@ -77,8 +77,8 @@ console.log("3. A retry 9 hours later still belongs to its own run's episode");
 console.log("4. Pre-Phase-4 rows (run:legacy) remain item-scoped");
 {
   const eps = correlateEpisodes([
-    ev("2026-07-20T22:08:11.000Z", { correlationKey: "plaidItem:item_amex|run:legacy",  subject: "American Express" }),
-    ev("2026-07-20T22:08:12.000Z", { correlationKey: "plaidItem:item_chase|run:legacy", subject: "Chase" }),
+    ev("2026-07-20T22:08:11.000Z", { correlationKey: "plaidItem:item_excard|run:legacy",  subject: "Example Card" }),
+    ev("2026-07-20T22:08:12.000Z", { correlationKey: "plaidItem:item_exbank|run:legacy", subject: "Example Bank" }),
   ]);
   check("the legacy fallback does NOT merge two items", eps.length === 2, `${eps.length}`);
   check("each keeps its own institution",
@@ -106,8 +106,8 @@ console.log("6. Mixed feed — keyed and keyless coexist, episodes stay chronolo
 {
   const eps = correlateEpisodes([
     ev("2026-07-22T09:00:00.000Z", { ledger: "jobRun", subject: "sync-banks", correlationKey: undefined }),
-    ev("2026-07-22T11:03:58.241Z", { correlationKey: KEY_CHASE_R1, subject: "Chase" }),
-    ev("2026-07-22T12:08:32.260Z", { correlationKey: KEY_AMEX_R2,  subject: "American Express" }),
+    ev("2026-07-22T11:03:58.241Z", { correlationKey: KEY_EXBANK_R1, subject: "Example Bank" }),
+    ev("2026-07-22T12:08:32.260Z", { correlationKey: KEY_EXCARD_R2,  subject: "Example Card" }),
   ]);
   check("three distinct episodes", eps.length === 3, `${eps.length}`);
   check("a keyed sync issue never absorbs a keyless job event",
@@ -123,7 +123,7 @@ console.log("7. Degenerate inputs");
 {
   check("empty feed ⇒ no episodes", correlateEpisodes([]).length === 0);
   check("a single keyed event ⇒ one episode",
-    correlateEpisodes([ev("2026-07-22T11:00:00.000Z", { correlationKey: KEY_CHASE_R1 })]).length === 1);
+    correlateEpisodes([ev("2026-07-22T11:00:00.000Z", { correlationKey: KEY_EXBANK_R1 })]).length === 1);
 }
 
 console.log(failures === 0

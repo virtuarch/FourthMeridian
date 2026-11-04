@@ -257,7 +257,7 @@ console.log("10. bank transfer");
 
 console.log("11. cashback / reward / statement credit — existing semantics: an issuer credit is NOT a purchase refund");
 {
-  const reward = ingest({ id: "pts", date: "2026-09-11", amount: 76.06, account: "card", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", merchant: "POINTS FOR AMEX TRVL" });
+  const reward = ingest({ id: "pts", date: "2026-09-11", amount: 76.06, account: "card", pfcPrimary: "OTHER", pfcDetailed: "OTHER_OTHER", merchant: "POINTS FOR EXAMPLE CARD TRVL" });
   check("Other / UNKNOWN — the provider named no spend family, so nothing is reversed", reward.category === "Other" && reward.flowType === "UNKNOWN");
   const rows = [ingest(purchase("p1", "2026-09-05", 1500)), reward];
   check("Travel stays 1,500 even though the descriptor says TRVL (no descriptor decides a category here)", eq(line(rows, "Travel")!.net, 1500));

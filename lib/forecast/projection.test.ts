@@ -17,7 +17,7 @@
  * ── The debt finding, pinned as an exclusion ───────────────────────────────
  * Measured before this was implemented: DEBT_PAYMENT since 2026-06-01 totals
  * $55,710 against $16,920 of SPENDING. Investigated rather than assumed —
- * every payment appears TWICE (a debit on `CHASE COLLEGE`, a credit on the card,
+ * every payment appears TWICE (a debit on `EXAMPLE BANK COLLEGE`, a credit on the card,
  * same date and amount), so the economic total is roughly half; and the cards
  * carry $16,854 of the period's $17,012 of spending while checking carries $157,
  * so the purchases behind those settlements are ALREADY in the spending

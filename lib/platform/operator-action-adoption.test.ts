@@ -93,8 +93,8 @@ console.log("feed — projects the envelope, never the note, never email");
   check("result projected", e.result === "SUCCESS");
   check("execution handle projected", e.execution?.jobRunId === "jr_abcdef123456");
   const legacy = projectOperatorActionEvent({ id: "a2", action: "CONNECTION_RESYNC_TRIGGERED", createdAt: new Date(), performedByAdminId: null,
-    metadata: { connectionId: "x", institution: "Chase", outcome: "synced" }, subjectUsername: null }, null);
-  check("legacy rows fall back to the non-PII token and 'operator'", legacy.target === "Chase" && legacy.operator === "operator" && legacy.reasonCode === null);
+    metadata: { connectionId: "x", institution: "Example Bank", outcome: "synced" }, subjectUsername: null }, null);
+  check("legacy rows fall back to the non-PII token and 'operator'", legacy.target === "Example Bank" && legacy.operator === "operator" && legacy.reasonCode === null);
   const subj = projectOperatorActionEvent({ ...row, subjectUsername: "alice" }, "chris");
   check("a subject username wins over the opaque label", subj.target === "alice");
   const fr = strip(FEED_ROUTE), fw = src(FEED_WIDGET);

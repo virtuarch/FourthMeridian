@@ -5,7 +5,7 @@
  *
  * Every fixture below is a REAL row from the live corpus (2026-08-04), because
  * the whole point of this module is that the column's meaning varies by account
- * and only real accounts prove that. The load-bearing case is the Chase card:
+ * and only real accounts prove that. The load-bearing case is the Example Bank card:
  * $562.37 owed and $33,022.48 of unused credit line, from one column, and those
  * two numbers must never be interchangeable.
  */
@@ -59,11 +59,11 @@ function build(o: {
 
 // ── THE case: one column, three meanings ─────────────────────────────────────
 
-console.log("Chase CREDIT CARD — owed and available credit are never interchangeable");
+console.log("Example Bank CREDIT CARD — owed and available credit are never interchangeable");
 {
   // Live row: balance 562.37, availableBalance 33,022.48, creditLimit 33,700,
   // debtSubtype NULL (which is why the rule keys on creditLimit, not subtype).
-  const b = build({ id: "chase-cc", type: "debt", balance: 562.37, available: 33_022.48, creditLimit: 33_700 });
+  const b = build({ id: "exbank-cc", type: "debt", balance: 562.37, available: 33_022.48, creditLimit: 33_700 });
 
   check("observed ledger balance is 562.37", b.observed.amount === 562.37);
   check("amount owed is 562.37", b.debt?.owed.amount === 562.37);
@@ -89,10 +89,10 @@ console.log("Chase CREDIT CARD — owed and available credit are never interchan
     noEvidence.available.reason === "SEMANTICS_UNATTESTED");
 }
 
-console.log("Amex Platinum — a charge card with a $0 line reports $0, not 'unknown'");
+console.log("Example Card Platinum — a charge card with a $0 line reports $0, not 'unknown'");
 {
   // Live row: balance 203.25, available 0.00, creditLimit 0.00.
-  const b = build({ id: "amex-plat", type: "debt", balance: 203.25, available: 0, creditLimit: 0 });
+  const b = build({ id: "excard-plat", type: "debt", balance: 203.25, available: 0, creditLimit: 0 });
   check("owed is 203.25", b.debt?.owed.amount === 203.25);
   check("available credit is the provider's 0, reported as a real figure",
     availableCredit(b) === 0);
@@ -100,9 +100,9 @@ console.log("Amex Platinum — a charge card with a $0 line reports $0, not 'unk
     b.available.status === "AVAILABLE");
 }
 
-console.log("CHASE COLLEGE — observed and reachable are separate quantities");
+console.log("EXAMPLE BANK COLLEGE — observed and reachable are separate quantities");
 {
-  const b = build({ id: "chase-chk", type: "checking", balance: 5_106.77, available: 1_106.77 });
+  const b = build({ id: "exbank-chk", type: "checking", balance: 5_106.77, available: 1_106.77 });
   check("observed is 5,106.77", b.observed.amount === 5_106.77);
   check("reachable cash is 1,106.77", reachableCash(b) === 1_106.77);
   // Float tolerance: 5106.77 − 1106.77 is 4000.0000000000005 in IEEE-754.
@@ -114,31 +114,31 @@ console.log("CHASE COLLEGE — observed and reachable are separate quantities");
   check("checking is never read as available credit", availableCredit(b) === null);
 }
 
-console.log("Amex HYSA — savings behaves as depository");
+console.log("Example Card HYSA — savings behaves as depository");
 {
-  const b = build({ id: "amex-hysa", type: "savings", balance: 6_315.04, available: 2_315.04 });
+  const b = build({ id: "excard-hysa", type: "savings", balance: 6_315.04, available: 2_315.04 });
   check("observed is 6,315.04", b.observed.amount === 6_315.04);
   check("reachable cash is 2,315.04", reachableCash(b) === 2_315.04);
   check("the $4,000 gap is visible, not smoothed", b.observed.amount - reachableCash(b)! === 4_000);
 }
 
-console.log("Schwab Individual — account VALUE is not available cash");
+console.log("Example Brokerage Individual — account VALUE is not available cash");
 {
   // Live row: balance 901.66 (six security holdings, zero cash), available 0.00.
-  const b = build({ id: "schwab-ind", type: "investment", balance: 901.66, available: 0 });
+  const b = build({ id: "exbroker-ind", type: "investment", balance: 901.66, available: 0 });
   check("observed value is 901.66", b.observed.amount === 901.66);
   check("settled cash is 0.00 — the provider's own number", settledCash(b) === 0);
   check("the value did NOT become available cash", settledCash(b) !== b.observed.amount);
   check("investment settled cash is not liquidity's reachable cash", reachableCash(b) === null);
 }
 
-console.log("Schwab LLC — settled cash EQUALS value, because it holds no securities");
+console.log("Example Brokerage LLC — settled cash EQUALS value, because it holds no securities");
 {
-  const b = build({ id: "schwab-llc", type: "investment", balance: 3_557.72, available: 3_557.72 });
+  const b = build({ id: "exbroker-llc", type: "investment", balance: 3_557.72, available: 3_557.72 });
   check("settled cash is the provider's 3,557.72", settledCash(b) === 3_557.72);
   // Equality here is the provider's claim about an all-cash account, NOT a
   // fallback by us — the distinction that matters is that a NULL never does this.
-  const nulled = build({ id: "schwab-llc-null", type: "investment", balance: 3_557.72, available: null });
+  const nulled = build({ id: "exbroker-llc-null", type: "investment", balance: 3_557.72, available: null });
   check("a NULL available never becomes the balance", nulled.available.status === "UNAVAILABLE");
   check("...and says the provider reported nothing",
     nulled.available.status === "UNAVAILABLE" && nulled.available.reason === "PROVIDER_DID_NOT_REPORT");
@@ -146,7 +146,7 @@ console.log("Schwab LLC — settled cash EQUALS value, because it holds no secur
     !("amount" in nulled.available));
 }
 
-console.log("Robinhood — uninvested cash inside a brokerage");
+console.log("Institution F — uninvested cash inside a brokerage");
 {
   const b = build({ id: "rh", type: "investment", balance: 484.25, available: 471.21 });
   check("settled cash is 471.21", settledCash(b) === 471.21);
@@ -162,7 +162,7 @@ console.log("Crypto — no available amount ever escapes");
     wallet.available.status === "UNAVAILABLE" && wallet.available.reason === "NOT_APPLICABLE");
   check("the wallet's value is still observed", wallet.observed.amount === 15_283.79);
 
-  // Robinhood Crypto: an exchange row that DOES carry a figure.
+  // Institution F Crypto: an exchange row that DOES carry a figure.
   const exch = build({ id: "rh-crypto", type: "crypto", balance: 0, available: 0 });
   check("an exchange figure is refused as unattested, not named",
     exch.available.status === "UNAVAILABLE" && exch.available.reason === "SEMANTICS_UNATTESTED");

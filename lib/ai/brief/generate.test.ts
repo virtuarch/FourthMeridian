@@ -99,7 +99,7 @@ async function main() {
   {
     const payoff = fixture('04-card-payoff');
     const r = acceptNarration(payoff, narration({ quiet: false, observations: [
-      ob({ kind: 'SPENDING', title: 'Big spend', body: 'You spent $3,210.55 at Chase.', evidence: ['recentActivity.top.0'] }),
+      ob({ kind: 'SPENDING', title: 'Big spend', body: 'You spent $3,210.55 at Example Bank.', evidence: ['recentActivity.top.0'] }),
       ob({ kind: 'DEBT', title: 'Card paid off', body: 'You paid your card down to $0.', evidence: ['recentActivity.top.0', 'currentState.debt'] }),
     ] }));
     check('SPENDING citing a DEBT_PAYMENT row is dropped', r.ok
@@ -214,7 +214,7 @@ async function main() {
     check('a leg between own accounts is exempt from WHERE, never from WHEN', legD1.ok && legD1.validation.droppedObservations[0]?.reason === 'UNCONNECTED_MOVEMENT');
 
     const freshOnly = acceptNarration(onCard, narration({ observations: [ob({ kind: 'DATA_QUALITY', title: 'Brokerage is behind',
-      body: 'Charles Schwab has not updated recently.', evidence: ['claimEvidence.investments', 'freshness.staleSources.0'] })] }));
+      body: 'Example Brokerage has not updated recently.', evidence: ['claimEvidence.investments', 'freshness.staleSources.0'] })] }));
     check('an observation resting only on claim evidence is freshness-only too — the page already says it',
       freshOnly.ok && freshOnly.validation.droppedObservations[0]?.reason === 'SHOWN_ON_PAGE');
   }

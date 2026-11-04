@@ -186,7 +186,7 @@ console.log("4. No Completeness / Evidence pills in the shell — caveats still 
   const DEFAULT_CAP = { asOf: "full", compareTo: "full", period: "none" };
   const full = render(TIME, DEFAULT_CAP, {
     completeness: { tier: "observed", label: "Observed", tone: "positive", detail: "A provider or you stated this value for this date." },
-    evidence: { label: "2 accounts", rows: [{ label: "Chase", tier: "observed" }, { label: "Amex", tier: "observed" }] },
+    evidence: { label: "2 accounts", rows: [{ label: "Example Bank", tier: "observed" }, { label: "Example Card", tier: "observed" }] },
   });
   check("no 'Completeness' pill", !full.includes("Completeness"));
   check("no 'Observed' status pill", !full.includes("Observed"));

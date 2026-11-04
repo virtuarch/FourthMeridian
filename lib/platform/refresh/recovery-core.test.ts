@@ -32,7 +32,7 @@ function check(name: string, cond: boolean, detail?: string): void {
   else { failures++; console.error(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 const D = (iso: string) => new Date(iso);
-const ITEM = "item-wells-fargo";
+const ITEM = "item-instd";
 
 function exec(over: Partial<ExecutionFact>): ExecutionFact {
   return {

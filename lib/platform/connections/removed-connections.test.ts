@@ -52,17 +52,17 @@ function fixture(): RemovedConnectionsInputs {
   return {
     plaidItems: [
       // p-op: removed by an operator, Plaid confirmed REMOVED.
-      { id: "p-op", userId: OWNER_A, institutionName: "Chase", status: "REVOKED", links: [link("fa1", 5), link("fa2", 5)] },
+      { id: "p-op", userId: OWNER_A, institutionName: "Example Bank", status: "REVOKED", links: [link("fa1", 5), link("fa2", 5)] },
       // p-cust: customer disconnect that NAMES the connection; Plaid owes cleanup (2 attempts).
-      { id: "p-cust", userId: OWNER_A, institutionName: "Amex", status: "REVOKED", links: [link("fa3", 30)] },
+      { id: "p-cust", userId: OWNER_A, institutionName: "Example Card", status: "REVOKED", links: [link("fa3", 30)] },
       // p-legacy: customer disconnect pre-connectionId (institution only), ALREADY_GONE.
-      { id: "p-legacy", userId: OWNER_B, institutionName: "Schwab", status: "REVOKED", links: [link("fa4", 50)] },
+      { id: "p-legacy", userId: OWNER_B, institutionName: "Example Brokerage", status: "REVOKED", links: [link("fa4", 50)] },
       // p-webhook: REVOKED by the provider with its accounts still live; no marker.
-      { id: "p-webhook", userId: OWNER_B, institutionName: "Citi", status: "REVOKED", links: [link("fa5", null)] },
+      { id: "p-webhook", userId: OWNER_B, institutionName: "Institution C", status: "REVOKED", links: [link("fa5", null)] },
       // p-system: an orphan revoked by a job: marker, no customer act.
       { id: "p-system", userId: OWNER_B, institutionName: "Wells", status: "REVOKED", links: [link("fa6", 200)] },
       // p-relinked: removed (CONFIRMED) and since re-linked (ACTIVE again).
-      { id: "p-relinked", userId: OWNER_A, institutionName: "Ally", status: "ACTIVE", links: [link("fa7", null)] },
+      { id: "p-relinked", userId: OWNER_A, institutionName: "Institution E", status: "ACTIVE", links: [link("fa7", null)] },
       // p-live: a live item — never in the list.
       { id: "p-live", userId: OWNER_A, institutionName: "Live Bank", status: "ACTIVE", links: [link("fa8", null)] },
     ],
@@ -89,8 +89,8 @@ function fixture(): RemovedConnectionsInputs {
       { action: AuditAction.PLAID_ITEM_STATUS_CHANGED, userId: OWNER_A, createdAt: at(1), metadata: { plaidItemId: "p-cust", from: "REVOKED", to: "ERROR" } },
     ],
     customerActs: [
-      { action: AuditAction.CONNECTION_DISCONNECTED, userId: OWNER_A, createdAt: at(30), metadata: { institution: "Amex", provider: "PLAID", accountCount: 1, connectionId: "p-cust" } },
-      { action: AuditAction.CONNECTION_DISCONNECTED, userId: OWNER_B, createdAt: new Date(at(50).getTime() + 60_000), metadata: { institution: "Schwab", provider: "PLAID", accountCount: 1 } },
+      { action: AuditAction.CONNECTION_DISCONNECTED, userId: OWNER_A, createdAt: at(30), metadata: { institution: "Example Card", provider: "PLAID", accountCount: 1, connectionId: "p-cust" } },
+      { action: AuditAction.CONNECTION_DISCONNECTED, userId: OWNER_B, createdAt: new Date(at(50).getTime() + 60_000), metadata: { institution: "Example Brokerage", provider: "PLAID", accountCount: 1 } },
       { action: AuditAction.CONNECTION_DISCONNECTED, userId: OWNER_A, createdAt: new Date(at(3).getTime() - 30_000), metadata: { institution: "Self-custody wallet", provider: "WALLET", accountCount: 1 } },
     ],
     operatorActs: [
@@ -124,7 +124,7 @@ const rows = foldRemovedConnections(input);
 console.log("2. the DTO");
 {
   const op = byId(rows, "p-op")!;
-  check("source = institution label; account count = distinct accounts", op.source === "Chase" && op.accountCount === 2);
+  check("source = institution label; account count = distinct accounts", op.source === "Example Bank" && op.accountCount === 2);
   check("owner = the OPAQUE reference connection diagnostics shows (never an id or email)", op.ownerRef === opaqueUserRef(OWNER_A) && !op.ownerRef.includes("aaaaaa"));
   check("removed at = the → REVOKED transition", op.removedAtISO === at(5).toISOString());
   check("removed at falls back to the FIRST marker (not the newest retry)", byId(rows, "p-cust")!.removedAtISO === at(30).toISOString());
@@ -151,15 +151,15 @@ console.log("3. removed BY");
   check("nothing recorded → UNKNOWN", by("w-revoked").kind === "UNKNOWN");
 
   const base = {
-    connectionId: "x", provider: "PLAID" as const, ownerUserId: OWNER_A, source: "Chase", removedAt: at(10),
+    connectionId: "x", provider: "PLAID" as const, ownerUserId: OWNER_A, source: "Example Bank", removedAt: at(10),
     hasLiveAccounts: false, hasMarker: false, operatorActs: [] as AuditFact[], operatorLabel: () => null,
   };
   const legacy = (minutes: number, extra: Record<string, unknown> = {}): AuditFact =>
-    ({ action: AuditAction.CONNECTION_DISCONNECTED, userId: OWNER_A, createdAt: new Date(at(10).getTime() + minutes * 60_000), metadata: { institution: "Chase", ...extra } });
+    ({ action: AuditAction.CONNECTION_DISCONNECTED, userId: OWNER_A, createdAt: new Date(at(10).getTime() + minutes * 60_000), metadata: { institution: "Example Bank", ...extra } });
   check("outside the match window → not attributed",
     deriveRemovedBy({ ...base, customerActs: [legacy(REMOVAL_MATCH_WINDOW_MS / 60_000 + 1)] }).kind === "UNKNOWN");
   check("another owner's act never attributes", deriveRemovedBy({ ...base, customerActs: [{ ...legacy(0), userId: OWNER_B }] }).kind === "UNKNOWN");
-  check("a different institution never attributes", deriveRemovedBy({ ...base, customerActs: [legacy(0, { institution: "Amex" })] }).kind === "UNKNOWN");
+  check("a different institution never attributes", deriveRemovedBy({ ...base, customerActs: [legacy(0, { institution: "Example Card" })] }).kind === "UNKNOWN");
   check("a row that names ANOTHER connection never attributes", deriveRemovedBy({ ...base, customerActs: [legacy(0, { connectionId: "other" })] }).kind === "UNKNOWN");
   check("an ACCOUNT_REMOVE by the owner inside the window → CUSTOMER (INFERRED)",
     deriveRemovedBy({ ...base, customerActs: [{ action: AuditAction.ACCOUNT_REMOVE, userId: OWNER_A, createdAt: at(10), metadata: {} }] }).kind === "CUSTOMER");
@@ -227,7 +227,7 @@ console.log("5. filters, paging, parsing");
       === JSON.stringify({ query: { owner: "3fa9c21b", page: 2, pageSize: 25, provider: "PLAID", outcome: "CLEANUP_OWED" } }));
   check("ownerTokenOf: only the opaque form yields a token", ownerTokenOf("user #3fa9c21b") === "3fa9c21b" && ownerTokenOf("user …aaaaaa") === null && ownerTokenOf("customer") === null && ownerTokenOf("—") === null && ownerTokenOf("alice") === null);
   check("confirm copy names the customer AND the institution",
-    /Chase/.test(removeConfirmMessage({ owner: "alice", source: "Chase", provider: "PLAID" })) && /alice's account/.test(removeConfirmMessage({ owner: "alice", source: "Chase", provider: "PLAID" })));
+    /Example Bank/.test(removeConfirmMessage({ owner: "alice", source: "Example Bank", provider: "PLAID" })) && /alice's account/.test(removeConfirmMessage({ owner: "alice", source: "Example Bank", provider: "PLAID" })));
 }
 
 console.log("6a. inferred attribution is display-only (S2 flag 3)");
@@ -251,12 +251,12 @@ console.log("6a. inferred attribution is display-only (S2 flag 3)");
 
 console.log("6b. the Remove confirmation (S2 flag 1)");
 {
-  check("Confirm needs the TYPED institution AND a reason", !canConfirmRemoval({ typed: "", source: "Chase", reason: "abuse" })
-    && !canConfirmRemoval({ typed: "Chase", source: "Chase", reason: "" })
-    && !canConfirmRemoval({ typed: "Chas", source: "Chase", reason: "abuse" })
-    && canConfirmRemoval({ typed: "  chase ", source: "Chase", reason: "abuse" }));
-  check("whitespace is collapsed, not ignored", canConfirmRemoval({ typed: "Bank  of   America", source: "Bank of America", reason: "cost" })
-    && !canConfirmRemoval({ typed: "BankofAmerica", source: "Bank of America", reason: "cost" }));
+  check("Confirm needs the TYPED institution AND a reason", !canConfirmRemoval({ typed: "", source: "Example Bank", reason: "abuse" })
+    && !canConfirmRemoval({ typed: "Example Bank", source: "Example Bank", reason: "" })
+    && !canConfirmRemoval({ typed: "Example Ban", source: "Example Bank", reason: "abuse" })
+    && canConfirmRemoval({ typed: "  example bank ", source: "Example Bank", reason: "abuse" }));
+  check("whitespace is collapsed, not ignored", canConfirmRemoval({ typed: "Institution   J", source: "Institution J", reason: "cost" })
+    && !canConfirmRemoval({ typed: "InstitutionJ", source: "Institution J", reason: "cost" }));
   check("an empty source can never be confirmed by typing nothing", !canConfirmRemoval({ typed: "", source: "", reason: "abuse" }));
   check("the Plaid consequence line, verbatim", removeConsequenceLine("PLAID") === "Removes the bank link at Plaid; the customer must reconnect; history is kept.");
   const ui = code("components/platform/widgets/RemoveConnectionAction.tsx");

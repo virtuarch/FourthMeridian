@@ -173,7 +173,7 @@ const investmentFixtures: TransactionRowLike[] = [
     financialAccountId: 'fa_inv',
     date: new Date('2026-03-10T00:00:00.000Z'),
     merchant: 'VOO',
-    description: 'BUY 2.5 VANGUARD S&P 500 ETF',
+    description: 'BUY 2.5 INSTITUTION B S&P 500 ETF',
     category: 'Buy',
     amount: -1250.75,
     pending: false,

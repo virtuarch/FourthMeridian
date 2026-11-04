@@ -85,7 +85,7 @@ console.log("activity — PB-10: presence buckets, never the session-use clock")
 
 console.log("connections — health from the shared derivation, no secrets");
 {
-  const plaid = [{ id: "p1", institutionName: "Chase", status: "ACTIVE", errorCode: null, lastSyncedAt: T("2026-10-08T11:00:00Z"), createdAt: T("2026-09-04T00:00:00Z"), investmentsConsent: "ENABLED",
+  const plaid = [{ id: "p1", institutionName: "Example Bank", status: "ACTIVE", errorCode: null, lastSyncedAt: T("2026-10-08T11:00:00Z"), createdAt: T("2026-09-04T00:00:00Z"), investmentsConsent: "ENABLED",
     ...({ encryptedToken: "v2:TOKEN", cursor: "CURSOR", balance: 123.45 } as object) }];
   const wallets = [{ id: "c1", provider: "WALLET", externalConnectionId: "bc1qabcdef123456", status: "ACTIVE", errorCode: null, lastSyncedAt: T("2026-10-01T00:00:00Z"), createdAt: T("2026-09-10T00:00:00Z"),
     ...({ credential: "xpubSECRET" } as object) }];

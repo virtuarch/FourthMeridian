@@ -29,9 +29,9 @@ function check(name: string, cond: boolean, detail?: string) {
 const code = (rel: string) =>
   readFileSync(rel, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
 
-const APR: AiKnowledgeGap = { accountId: 'a1', accountName: 'Amex Platinum',
+const APR: AiKnowledgeGap = { accountId: 'a1', accountName: 'Example Card Platinum',
   field: 'apr', label: 'APR', debtSubtype: 'credit_card' };
-const MIN: AiKnowledgeGap = { accountId: 'a1', accountName: 'Amex Platinum',
+const MIN: AiKnowledgeGap = { accountId: 'a1', accountName: 'Example Card Platinum',
   field: 'minimumPayment', label: 'Minimum Payment', debtSubtype: 'credit_card' };
 const MORTGAGE: AiKnowledgeGap = { accountId: 'a2', accountName: 'Home Loan',
   field: 'apr', label: 'Mortgage Rate', debtSubtype: 'mortgage' };

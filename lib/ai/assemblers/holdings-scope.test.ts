@@ -27,7 +27,7 @@
  * statistic from a portfolio one.
  *
  * ⚠️ EVERY CHECK BELOW IS ABOUT SEMANTICS, NOT ABOUT CHRIS. No test asserts
- * $8.72, TTWO, Robinhood or Bitcoin. They assert that a narrow population
+ * $8.72, TTWO, Institution F or Bitcoin. They assert that a narrow population
  * declares itself, that exclusions survive as data, and that a subset cannot
  * present as a whole.
  */

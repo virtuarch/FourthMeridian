@@ -360,7 +360,7 @@ const janRows: Row[] = [
 {
   const jan = janBreakdown([
     // D-1: rows the legacy category filter could never see.
-    row(5,  TransactionCategory.Dividend, +120.50, 'Vanguard'),        // → INCOME
+    row(5,  TransactionCategory.Dividend, +120.50, 'Institution B'),        // → INCOME
     row(6,  TransactionCategory.Fee,      -35.00,  'Wire fee'),        // → FEE
     // Existing banking flows.
     row(7,  TransactionCategory.Dining,   -60.00),                     // → SPENDING

@@ -60,14 +60,14 @@ check("merchant preserved", rows[0]?.merchant === "Coffee Bar");
 
 // ── Other serialisers produce headered, non-empty CSV ─────────────────────────
 const accounts = [
-  { id: "a1", name: "Checking", type: "checking", institution: "Chase", balance: 100, currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z", spaceId: "s1", spaceName: "Personal" },
+  { id: "a1", name: "Checking", type: "checking", institution: "Example Bank", balance: 100, currency: "USD", lastUpdated: "2026-03-01T00:00:00.000Z", spaceId: "s1", spaceName: "Personal" },
 ] as unknown as ExportAccount[];
 const accountsCsv = toAccountsCsv(accounts);
 check("accounts.csv has id + balance headers", accountsCsv.split("\n")[0]?.includes("id") === true && accountsCsv.includes("balance"));
 
 const holdings: ExportHolding[] = [
   // A canonical, fully-valued position (native value + FX-converted reporting value).
-  { id: "a2:i-vti", accountId: "a2", symbol: "VTI", name: "Vanguard", quantity: 3,
+  { id: "a2:i-vti", accountId: "a2", symbol: "VTI", name: "Institution B", quantity: 3,
     price: 250, value: 750, currency: "USD", reportingValue: 600, reportingCurrency: "GBP",
     costBasis: 500, isCash: false, spaceId: "s1", source: "canonical" },
   // An UNVALUED canonical position — retained, value/price BLANK (never 0).

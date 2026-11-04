@@ -24,7 +24,7 @@ const VIEWER = 'user_viewer';
 
 const bank = (over: Partial<NonNullable<DataHealthAccountInput['plaid']>> = {}, acct: Partial<DataHealthAccountInput> = {}): DataHealthAccountInput => ({
   detailVisible: true, accountName: 'Checking 1234', lastUpdated: daysAgo(0.2), syncStatus: 'synced',
-  plaid: { key: 'item_SECRET_1', ownerUserId: VIEWER, institutionName: 'Chase', status: 'ACTIVE',
+  plaid: { key: 'item_SECRET_1', ownerUserId: VIEWER, institutionName: 'Example Bank', status: 'ACTIVE',
     lastSyncedAt: daysAgo(0.2), syncIncompleteAt: null, historyBuildStartedAt: null, ...over },
   wallet: null, ...acct,
 });
@@ -40,7 +40,7 @@ const derive = (rows: DataHealthAccountInput[]) => deriveSpaceDataHealth(rows, V
 
 console.log('A. everything current');
 {
-  const h = derive([bank(), bank({ key: 'item_SECRET_2', institutionName: 'Amex' }, { accountName: 'Gold' }), wallet()]);
+  const h = derive([bank(), bank({ key: 'item_SECRET_2', institutionName: 'Example Card' }, { accountName: 'Gold' }), wallet()]);
   check('no attention, two bank sources and one wallet', h.attention === 0 && h.sources.length === 3
     && h.sources.every((s) => s.state === 'CURRENT'));
   check('groups by provider kind', JSON.stringify(h.groups.map((g) => [g.kind, g.sources, g.attention])) === '[["BANK",2,0],["WALLET",1,0]]');
@@ -48,11 +48,11 @@ console.log('A. everything current');
 
 console.log('\nB. a provider summary never hides a degraded child');
 {
-  const h = derive([bank(), bank({ key: 'item_SECRET_2', institutionName: 'Chase Business', lastSyncedAt: daysAgo(12) }, { lastUpdated: daysAgo(12) })]);
+  const h = derive([bank(), bank({ key: 'item_SECRET_2', institutionName: 'Example Bank Business', lastSyncedAt: daysAgo(12) }, { lastUpdated: daysAgo(12) })]);
   const g = h.groups[0];
   check('one of two banks out of date → the BANK group reports 1 needing attention', g.attention === 1 && g.sources === 2);
   check('…and its date is the OLDEST child, not the freshest', g.oldestUpdatedAt === daysAgo(12).toISOString());
-  check('the stale source is named, dated and first', h.sources[0].label === 'Chase Business' && h.sources[0].state === 'OUT_OF_DATE'
+  check('the stale source is named, dated and first', h.sources[0].label === 'Example Bank Business' && h.sources[0].state === 'OUT_OF_DATE'
     && h.sources[0].lastUpdatedAt === daysAgo(12).toISOString());
 }
 
@@ -106,7 +106,7 @@ console.log('\nG. names follow the detail grant');
   const hidden = derive([bank({}, { detailVisible: false }), wallet({}, { detailVisible: false })]);
   check('a bank the viewer cannot see in detail is "A bank connection"', hidden.sources.some((s) => s.label === 'A bank connection'));
   check('…a wallet is "A crypto wallet"', hidden.sources.some((s) => s.label === 'A crypto wallet'));
-  check('…and neither name appears anywhere', !/Chase|Cold storage/.test(JSON.stringify(hidden)));
+  check('…and neither name appears anywhere', !/Example Bank|Cold storage/.test(JSON.stringify(hidden)));
 }
 
 console.log('\nH. manual balances');
@@ -166,12 +166,12 @@ console.log('\nJ. cadence-aware health — expected cadence is policy, overdue i
     { detailVisible: true, accountName: 'Cold storage', lastUpdated: ago(10), syncStatus: 'synced', plaid: null,
       wallet: { key: 'w', ownerUserId: VIEWER, status: 'ACTIVE', errorCode: null, lastSyncedAt: ago(10), discoveryCursor: false } },
     { detailVisible: true, accountName: 'Checking', lastUpdated: ago(19), syncStatus: 'synced', wallet: null,
-      plaid: { key: 'p', ownerUserId: VIEWER, institutionName: 'Chase', status: 'ACTIVE', lastSyncedAt: ago(19), syncIncompleteAt: null, historyBuildStartedAt: null } },
+      plaid: { key: 'p', ownerUserId: VIEWER, institutionName: 'Example Bank', status: 'ACTIVE', lastSyncedAt: ago(19), syncIncompleteAt: null, historyBuildStartedAt: null } },
     { detailVisible: true, accountName: 'House', lastUpdated: ago(24 * 10), syncStatus: 'manual', plaid: null, wallet: null },
   ], VIEWER, NOW, { BANK, WALLET });
   const by = (label: string) => space.sources.find((s) => s.label === label)?.state;
   check('the Space derivation applies each kind\'s policy: wallet 10h OUT_OF_DATE, bank 19h CURRENT, manual untouched',
-    by('Cold storage') === 'OUT_OF_DATE' && by('Chase') === 'CURRENT' && by('House') === 'CURRENT');
+    by('Cold storage') === 'OUT_OF_DATE' && by('Example Bank') === 'CURRENT' && by('House') === 'CURRENT');
 }
 
 console.log('\nJ. a source says what it feeds — populations, never accounts');
@@ -179,16 +179,16 @@ console.log('\nJ. a source says what it feeds — populations, never accounts');
   const h = derive([
     bank({}, { accountName: 'Checking', accountType: 'checking', feedsBankingRows: true }),
     bank({}, { accountName: 'Sapphire', accountType: 'debt', feedsBankingRows: true }),
-    bank({ key: 'item_SECRET_BROKER', institutionName: 'Charles Schwab', status: 'NEEDS_REAUTH' },
+    bank({ key: 'item_SECRET_BROKER', institutionName: 'Example Brokerage', status: 'NEEDS_REAUTH' },
       { accountName: 'Brokerage', accountType: 'investment', lastUpdated: daysAgo(34) }),
     wallet({}, { accountType: 'crypto' }),
     { ...manual(3), accountType: 'other' },
   ]);
   const feeds = (label: string) => JSON.stringify(h.sources.find((s) => s.label === label)?.feeds);
   check('one connection feeding checking and a card feeds liquid, liabilities and the banking rows',
-    feeds('Chase') === '["liquid","liabilities","bankingRows"]', feeds('Chase'));
+    feeds('Example Bank') === '["liquid","liabilities","bankingRows"]', feeds('Example Bank'));
   check('a brokerage that posts no banking rows feeds investments ONLY (M1: it cannot qualify a spending figure)',
-    feeds('Charles Schwab') === '["investments"]', feeds('Charles Schwab'));
+    feeds('Example Brokerage') === '["investments"]', feeds('Example Brokerage'));
   check('a wallet feeds digital assets; a manual asset feeds real assets',
     feeds('Cold storage') === '["digitalAssets"]' && feeds('House') === '["realAssets"]');
   check('the buckets are the account classifier\'s own (crypto is never an investment)',

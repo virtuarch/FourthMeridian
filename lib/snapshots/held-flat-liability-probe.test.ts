@@ -36,7 +36,7 @@ const FROM = "2026-07-01";
 const TO = "2026-10-31";
 
 const CARD: AsOfAccountInput = { id: "card", type: "debt", balance: 1_000, debtSubtype: null, creditLimit: 5_000, floorISO: FROM };
-const CAPONE: AsOfAccountInput = { id: "capone", type: "debt", balance: 12_800, debtSubtype: null, creditLimit: null, floorISO: "2026-10-30" };
+const CAPONE: AsOfAccountInput = { id: "instk", type: "debt", balance: 12_800, debtSubtype: null, creditLimit: null, floorISO: "2026-10-30" };
 const MORTGAGE: AsOfAccountInput = { id: "mortgage", type: "debt", balance: 323_800, debtSubtype: null, creditLimit: null, floorISO: "2026-10-30" };
 const ACCOUNTS = [CARD, CAPONE, MORTGAGE];
 
@@ -78,8 +78,8 @@ const walkedOwedOn = (dISO: string, id: string) => amountOwed(byDate.get(dISO)?.
   assert.equal(legacy[0].dateISO, CAPONE_WRITER_FLOOR, "the former probe first fails on the held-flat card's writer floor");
   assert.equal(legacy.at(-1)!.dateISO, "2026-10-29", "…and last fails the day before the connection floor");
   assert.equal(byDate.get("2026-10-15")!.get("mortgage")!.method, "before-coverage", "the resolver reports the held-flat mortgage as 0 before connection");
-  assert.equal(byDate.get("2026-10-15")!.get("capone")!.method, "before-coverage");
-  assert.equal(byDate.get("2026-10-30")!.get("capone")!.method, "held-flat");
+  assert.equal(byDate.get("2026-10-15")!.get("instk")!.method, "before-coverage");
+  assert.equal(byDate.get("2026-10-30")!.get("instk")!.method, "held-flat");
   ok("0 · fixture reproduces the 2026-11-01 false positive under the former rule");
 }
 
@@ -88,7 +88,7 @@ const walkedOwedOn = (dISO: string, id: string) => amountOwed(byDate.get(dISO)?.
   const r = auditDebtReplay(storedRows(), probeAccounts, walkedOwedOn);
   assert.deepEqual(r.violations, []);
   assert.deepEqual(r.walkedAccountIds, ["card"]);
-  assert.deepEqual(r.unverifiableAccountIds, ["capone", "mortgage"]);
+  assert.deepEqual(r.unverifiableAccountIds, ["instk", "mortgage"]);
   assert.equal(r.checked, 123);
   // Every row from the held-flat card's writer floor (Aug 4 … Oct 31) rests on
   // an account the walked replay does not see.

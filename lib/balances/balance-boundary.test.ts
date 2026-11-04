@@ -6,7 +6,7 @@
  *
  * Probe 1 is the load-bearing one: `FinancialAccount.availableBalance` carries
  * reachable cash, settled cash, and an unused CREDIT LINE in one column, and on
- * the Chase card a uniform reader is wrong by $32,460. This probe is what keeps
+ * the Example Bank card a uniform reader is wrong by $32,460. This probe is what keeps
  * that column sealed behind lib/balances/account-balances.ts.
  */
 

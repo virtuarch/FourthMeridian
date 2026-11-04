@@ -50,8 +50,8 @@ const connections: ConnectionHealthResult = {
   total: 5,
   counts: { HEALTHY: 2, STALE: 1, DEGRADED: 0, NEEDS_REAUTH: 1, ERROR: 1, REVOKED: 0 },
   unhealthy: [
-    { source: "PLAID", id: "item_err", label: "Chase", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
-    { source: "PLAID", id: "item_reauth", label: "Wells Fargo", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+    { source: "PLAID", id: "item_err", label: "Example Bank", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", healthState: "ERROR", lastSyncedAt: AGO(30), since: AGO(26), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
+    { source: "PLAID", id: "item_reauth", label: "Institution D", status: "NEEDS_REAUTH", errorCode: null, healthState: "NEEDS_REAUTH", lastSyncedAt: AGO(50), since: AGO(48), kind: "BANK", institution: null, network: null, overdueAfterHours: 24, neverSynced: false, availableActions: ["request-reauth", "resync"] },
     { source: "WALLET", id: "conn_w", label: "Wallet …abc123", status: "ACTIVE", errorCode: null, healthState: "STALE", lastSyncedAt: AGO(10), since: null, kind: "WALLET", institution: null, network: "ETH", overdueAfterHours: 6, neverSynced: false, availableActions: [] },
   ],
   retired: { revoked: 1, ownerInactive: 0 }, checkedAt: "2026-10-14T12:00:00.000Z", cap: 20, listedScope: "unhealthy",
@@ -114,7 +114,7 @@ const alerts: NonNullable<AttentionInputs["alerts"]> = {
 };
 
 const incident = (over: Partial<PlatformIncidentProjection> & { id: string }): PlatformIncidentProjection => ({
-  label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Chase · Checking",
+  label: "Transaction persistence failed", operationLabel: "storing delivered transactions", subject: "Example Bank · Checking",
   domain: "transactions", severity: "critical", effectiveSeverity: "critical", freshness: "current", state: "active", brokenNow: true,
   firstOccurredAt: AGO(100), lastOccurredAt: AGO(2),
   occurrenceCount: 4, occurrenceCountKnown: true, refreshExecutionId: "exec_1", ...over,
@@ -159,7 +159,7 @@ console.log("restatements, never new verdicts");
   check("ERROR Plaid connection offers resync + request-reauth", by("connection:PLAID:item_err")?.actions.map((a) => a.kind).join(",") === "resync,request-reauth,open-workspace");
   check("a wallet offers no Plaid write, only the doorway", by("connection:WALLET:conn_w")?.actions.map((a) => a.kind).join(",") === "open-workspace");
   check("a stale row's since falls back to its last sync", by("connection:WALLET:conn_w")?.since === connections.unhealthy[2].lastSyncedAt);
-  check("the connection entity carries the institution label and an opaque ref", by("connection:PLAID:item_err")?.entity.label === "Chase" && by("connection:PLAID:item_err")?.entity.ref === "item_err");
+  check("the connection entity carries the institution label and an opaque ref", by("connection:PLAID:item_err")?.entity.label === "Example Bank" && by("connection:PLAID:item_err")?.entity.ref === "item_err");
   // Jobs
   check("dead → critical, failing → error, overdue → warning", by("job:purge-trash")?.severity === "critical" && by("job:sync-banks")?.severity === "error" && by("job:fetch-fx-rates")?.severity === "warning");
   check("healthy and never-ran jobs are not rows", !by("job:evaluate-alerts") && !by("job:sync-crypto"));
@@ -234,7 +234,7 @@ console.log("privacy · the emitted DTO carries no customer identity");
   const json = JSON.stringify(out);
   check("no email-shaped string", !/[\w.+-]+@[\w-]+\.[\w.]+/.test(json));
   check("no key named email/userId/address/token", !/"(email|userId|walletAddress|address|accessToken|token)"\s*:/.test(json));
-  check("the incident subject is the institution · account label", json.includes("Chase · Checking"));
+  check("the incident subject is the institution · account label", json.includes("Example Bank · Checking"));
 }
 
 console.log("relative age");

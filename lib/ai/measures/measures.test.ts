@@ -413,15 +413,15 @@ console.log('\nL. incomplete evidence propagates — by population and by window
   check('a comparison whose right side predates history is incomplete AS A WHOLE, and the clean side stays observed',
     c.completeness.tier === 'incomplete' && c.right.completeness.tier === 'incomplete' && c.left.completeness.tier === 'observed');
   const behind = cov(P.steady.rows, { components: [
-    { key: 'checking:Chase', tier: 'observed', deliveredThrough: null },
-    { key: 'credit:Amex', tier: 'incomplete', deliveredThrough: '2026-08-17' }] });
+    { key: 'checking:Example Bank', tier: 'observed', deliveredThrough: null },
+    { key: 'credit:Example Card', tier: 'incomplete', deliveredThrough: '2026-08-17' }] });
   const stale = run(P.steady.rows, 'spending', { preset: 'PAST_MONTH' }, behind);
   check('a card that stopped delivering on 08-17 makes a window ENDING 09-16 incomplete, by component',
-    stale.completeness.tier === 'incomplete' && stale.completeness.byComponent?.['credit:Amex'] === 'incomplete' && /rows through 2026-08-17/.test(stale.completeness.reason));
+    stale.completeness.tier === 'incomplete' && stale.completeness.byComponent?.['credit:Example Card'] === 'incomplete' && /rows through 2026-08-17/.test(stale.completeness.reason));
   const before = run(P.steady.rows, 'spending', { month: '2026-07' }, behind);
   check('…but July, which closed before it stopped, is still OBSERVED — a gap belongs to the days it covers',
-    before.completeness.tier === 'observed' && before.completeness.byComponent?.['credit:Amex'] === 'incomplete');
-  const brokerageOnly = cov(P.steady.rows, { components: [{ key: 'checking:Chase', tier: 'observed', deliveredThrough: null }] });
+    before.completeness.tier === 'observed' && before.completeness.byComponent?.['credit:Example Card'] === 'incomplete');
+  const brokerageOnly = cov(P.steady.rows, { components: [{ key: 'checking:Example Bank', tier: 'observed', deliveredThrough: null }] });
   check('a stale brokerage with NO banking rows is not a component at all — spending stays observed',
     run(P.steady.rows, 'spending', { preset: 'PAST_MONTH' }, brokerageOnly).completeness.tier === 'observed');
   const cap = run(P.steady.rows, 'spending', { preset: 'PAST_YEAR' }, cov(P.steady.rows, { fetchCapHit: true }));

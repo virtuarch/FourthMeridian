@@ -23,7 +23,7 @@ function check(name: string, ok: boolean, detail?: string): void {
 const ACCOUNTS = [
   { id: "chk",  type: "checking" },  // liquid
   { id: "sav",  type: "savings" },   // liquid
-  { id: "cb",   type: "crypto" },    // asset (Coinbase)
+  { id: "cb",   type: "crypto" },    // asset (Example Exchange)
   { id: "card", type: "debt" },      // liability (credit card)
 ];
 const ctx = tierResolver(ACCOUNTS);
@@ -38,7 +38,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
   } as LiquidityTx;
 }
 
-// ── Feb 27 Coinbase → Chase: two transfers → Asset Liquidation under Cash In ────
+// ── Feb 27 Example Exchange → Example Bank: two transfers → Asset Liquidation under Cash In ────
 {
   const rows: LiquidityTx[] = [
     tx({ ownAccount: "chk", amount: 8141.98, flowType: "TRANSFER", counterpartyAccountId: "cb" }),
@@ -46,7 +46,7 @@ function tx(over: Partial<LiquidityTx> & { ownAccount: string; amount: number; f
   ];
   const f = aggregateDayFacts(rows, ctx);
   const bd = groupLiquidityByReason(f);
-  check("Feb 27 Coinbase→Chase: Cash In = 8141.98 + 1902.12 = 10044.10",
+  check("Feb 27 Example Exchange→Example Bank: Cash In = 8141.98 + 1902.12 = 10044.10",
     Math.abs(f.cashIn - 10044.10) < 1e-9, JSON.stringify(f));
   check("Feb 27: breakdown line is Asset liquidation with the full total",
     bd.cashIn.length === 1 && bd.cashIn[0].reason === "ASSET_LIQUIDATION" &&

@@ -86,7 +86,7 @@ function baseWorld(): World {
       { id: "A4", ownerUserId: null, ownerSpaceId: "P1", syncStatus: "synced" },
       { id: "A5", ownerUserId: OTHER, ownerSpaceId: null, syncStatus: "synced" },
     ],
-    items: [{ id: "pi_1", userId: USER, status: "ACTIVE", encryptedToken: TOKEN, institutionName: "Chase" }],
+    items: [{ id: "pi_1", userId: USER, status: "ACTIVE", encryptedToken: TOKEN, institutionName: "Example Bank" }],
     audits: [],
     links: [{ id: "L1", addedByUserId: USER, status: "ACTIVE" }],
     aiInvocations: [{ id: "ai1", userId: USER }, { id: "ai2", userId: OTHER }],

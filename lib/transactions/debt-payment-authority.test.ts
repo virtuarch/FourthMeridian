@@ -26,7 +26,7 @@ import { convertMoney, identityContext } from "../money/convert";
 import type { ConversionContext } from "../money/types";
 import { DEFAULT_DISPLAY_CURRENCY } from "../currency";
 
-// v2.6-DEBT-1 — cardA..cardE (and amex/chase for the rollup fixtures) MUST be
+// v2.6-DEBT-1 — cardA..cardE (and excard/exbank for the rollup fixtures) MUST be
 // declared. The golden fixtures below use them as debt-payment destinations;
 // membership requires positive evidence, so an undeclared destination is
 // correctly refused. The fixtures always meant these to be cards.
@@ -37,7 +37,7 @@ const TIERS = tierResolver([
   { id: "brk", type: "investment" },
   { id: "cardA", type: "debt" }, { id: "cardB", type: "debt" }, { id: "cardC", type: "debt" },
   { id: "cardD", type: "debt" }, { id: "cardE", type: "debt" },
-  { id: "amex", type: "debt" }, { id: "chase", type: "debt" },
+  { id: "excard", type: "debt" }, { id: "exbank", type: "debt" },
 ]);
 
 const row = (o: Partial<LiquidityTx> & { own: string; amount: number }): LiquidityTx => ({
@@ -118,7 +118,7 @@ test("v2.6-DEBT-1: an unconnected liability with NO evidence at all does NOT cou
 });
 
 test("a savings transfer is never a debt payment", () => {
-  // The $4,000 Amex HYSA row: TRANSFER, savings ← checking, both owned.
+  // The $4,000 Example Card HYSA row: TRANSFER, savings ← checking, both owned.
   const savingsIn = row({ own: "sav", amount: 4000, flowType: "TRANSFER", counterpartyAccountId: "chk" });
   const savingsOut = row({ own: "chk", amount: -4000, flowType: "TRANSFER", counterpartyAccountId: "sav" });
   const r = totalDebtPaid([savingsIn, savingsOut], TIERS, abs);
@@ -357,11 +357,11 @@ test("empty input → empty rollup", () => {
 });
 
 const baseRollupRows = [
-  tx("amex", -300, "DEBT_PAYMENT"),
-  tx("chase", 500, "DEBT_PAYMENT"),
-  tx("amex", -100, "DEBT_PAYMENT"),
-  tx("amex", -20, "SPENDING"), // purchase on the card — not a payment
-  tx("chase", -15, null), // unclassified — excluded
+  tx("excard", -300, "DEBT_PAYMENT"),
+  tx("exbank", 500, "DEBT_PAYMENT"),
+  tx("excard", -100, "DEBT_PAYMENT"),
+  tx("excard", -20, "SPENDING"), // purchase on the card — not a payment
+  tx("exbank", -15, null), // unclassified — excluded
 ];
 
 test("groups by account id", () => {
@@ -370,13 +370,13 @@ test("groups by account id", () => {
 
 test("sorted descending by total", () => {
   const rollup = rollupDebtPaymentsByAccount(baseRollupRows);
-  assert.equal(rollup[0]?.accountId, "chase");
+  assert.equal(rollup[0]?.accountId, "exbank");
   assert.equal(rollup[0]?.total, 500);
 });
 
 test("per-account total + count (abs-summed)", () => {
   const rollup = rollupDebtPaymentsByAccount(baseRollupRows);
-  assert.equal(rollup[1]?.accountId, "amex");
+  assert.equal(rollup[1]?.accountId, "excard");
   assert.equal(rollup[1]?.total, 400);
   assert.equal(rollup[1]?.count, 2);
 });

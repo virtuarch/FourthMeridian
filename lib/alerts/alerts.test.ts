@@ -177,15 +177,15 @@ console.log("engine · provider-unhealthy");
   // rule id, so a second failing connection inside the 20 h window was silent.
   console.log("engine · provider-unhealthy · per connection (OBS-004)");
   const row = (id: string, healthState: HealthState, over: Partial<ConnectionHealthRow> = {}): ConnectionHealthRow => ({
-    source: "PLAID", id, label: "Chase Bank", status: "ERROR", errorCode: healthState === "ERROR" ? "ITEM_LOGIN_REQUIRED" : null, healthState,
-    lastSyncedAt: null, since: "2026-07-15T08:00:00.000Z", kind: "BANK", institution: "Chase", network: null, overdueAfterHours: 30, neverSynced: false, availableActions: [], ...over,
+    source: "PLAID", id, label: "Example Bank Bank", status: "ERROR", errorCode: healthState === "ERROR" ? "ITEM_LOGIN_REQUIRED" : null, healthState,
+    lastSyncedAt: null, since: "2026-07-15T08:00:00.000Z", kind: "BANK", institution: "Example Bank", network: null, overdueAfterHours: 30, neverSynced: false, availableActions: [], ...over,
   });
   const withRows = (counts: Partial<Record<HealthState, number>>, rows: ConnectionHealthRow[], cap = 20): ConnectionHealthResult => ({ ...connHealth(counts), unhealthy: rows, cap });
   const two = evaluateAlertRules(outputs({ connectionHealth: withRows({ HEALTHY: 3, ERROR: 1, STALE: 1 }, [row("item_aaaaaa111111", "ERROR"), row("wallet_bbbbbb222222", "STALE", { source: "WALLET", kind: "WALLET" })]) }), ALL_ON).filter((s) => s.kind === "provider-unhealthy");
   check("two unhealthy connections ⇒ two signals", two.length === 2);
   check("each keyed on its own connection id", two.map((s) => s.dedupeKey).sort().join(",") === "provider-unhealthy:item_aaaaaa111111,provider-unhealthy:wallet_bbbbbb222222");
   check("ERROR row critical, STALE row warning", two.find((s) => s.dedupeKey.endsWith("aaaaaa111111"))!.severity === "critical" && two.find((s) => s.dedupeKey.endsWith("bbbbbb222222"))!.severity === "warning");
-  check("summary names source/kind/state/code and an OPAQUE ref — never the institution", two.every((s) => !/Chase/.test(s.summary)) && /…111111 \(PLAID, BANK\) is ERROR \(ITEM_LOGIN_REQUIRED\)/.test(two[0].summary));
+  check("summary names source/kind/state/code and an OPAQUE ref — never the institution", two.every((s) => !/Example Bank/.test(s.summary)) && /…111111 \(PLAID, BANK\) is ERROR \(ITEM_LOGIN_REQUIRED\)/.test(two[0].summary));
   const firstDelivered = new Map([["provider-unhealthy:item_aaaaaa111111", NOW_MS - 2 * HOUR]]);
   const second = decideDeliveries(two, firstDelivered, NOW_MS);
   check("a SECOND connection failing inside the first's 20 h window is delivered on its own clock", second.toSend.length === 1 && second.toSend[0].dedupeKey.endsWith("bbbbbb222222") && second.suppressed.length === 1);

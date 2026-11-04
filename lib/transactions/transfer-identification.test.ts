@@ -10,12 +10,12 @@
  * that names the right one, so among survivors "names the counterparty" and
  * "names nothing" counted the same — a tie where the evidence had a winner.
  *
- * Live, three AMEX savings→checking transfers ($6,500), all refused:
+ * Live, three EXAMPLE CARD savings→checking transfers ($6,500), all refused:
  *
- *   source  AMEX High Yield Savings (mask 5336)  −500
- *           "Requested transfer to AMEX checking account"
- *   cand A  AMEX Rewards Checking  +500  "Internal Transfer Credit: Savings -5336"
- *   cand B  AMEX Platinum Card®    +500  "MOBILE PAYMENT - THANK YOU"
+ *   source  EXAMPLE CARD High Yield Savings (mask 5336)  −500
+ *           "Requested transfer to EXAMPLE CARD checking account"
+ *   cand A  EXAMPLE CARD Rewards Checking  +500  "Internal Transfer Credit: Savings -5336"
+ *   cand B  EXAMPLE CARD Platinum Card®    +500  "MOBILE PAYMENT - THANK YOU"
  *
  * A names the source account. B is a genuine card payment coinciding in amount,
  * day and institution. Candidates spanned checking + debt ⇒ TYPE_AMBIGUOUS.

@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     addedByUserId:   over.owner ?? "user_bob",
     addedByUser:     { firstName: "Bob", name: "Bob B" },
     financialAccount: {
-      id: over.id, name: `Real ${over.id}`, type: "debt", institution: "Chase",
+      id: over.id, name: `Real ${over.id}`, type: "debt", institution: "Example Bank",
       balance: over.balance, currency: "USD", lastUpdated: T,
       creditLimit: null, debtSubtype: "credit_card", interestRate: null, minimumPayment: null,
     },
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
       addedByUserId:   over.owner ?? "user_bob",
       addedByUser:     { firstName: "Bob", name: "Bob B" },
       financialAccount: {
-        id: over.id, name: `Real ${over.id}`, type: "checking", institution: "Chase",
+        id: over.id, name: `Real ${over.id}`, type: "checking", institution: "Example Bank",
         balance: over.balance, currency: "USD", lastUpdated: T,
         creditLimit: null, debtSubtype: null, interestRate: null, minimumPayment: null,
       },

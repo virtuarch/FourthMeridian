@@ -34,13 +34,13 @@ const A = (
 ): WealthAdapterAccount => ({ id, name, type, institution, balance, currency: "USD" });
 
 const ACCOUNTS: WealthAdapterAccount[] = [
-  A("a1", "Chase Checking",  "Chase",    1000),
-  A("a2", "Chase Savings",   "Chase",    2500, "savings"),
-  A("a3", "Ally Savings",    "Ally",      800, "savings"),
-  A("a4", "Brokerage",       "Vanguard", 5000, "investment"),
+  A("a1", "Example Bank Checking",  "Example Bank",    1000),
+  A("a2", "Example Bank Savings",   "Example Bank",    2500, "savings"),
+  A("a3", "Institution E Savings",    "Institution E",      800, "savings"),
+  A("a4", "Brokerage",       "Institution B", 5000, "investment"),
   A("a5", "Cold Wallet",     "",          300, "crypto"),   // no institution
-  A("a6", "Credit Card",     "Chase",   -1200, "debt"),      // liability
-  A("a7", "Closed Account",  "Ally",        0, "savings"),   // zero
+  A("a6", "Credit Card",     "Example Bank",   -1200, "debt"),      // liability
+  A("a7", "Closed Account",  "Institution E",        0, "savings"),   // zero
 ];
 
 function main(): void {
@@ -64,8 +64,8 @@ function main(): void {
   check("one group per distinct institution",
     new Set(labels).size === labels.length && labels.length === 4,
     `got ${labels.join()}`);
-  check("Chase groups its two asset accounts (not the credit card)",
-    groups.find((g) => g.label === "Chase")?.accounts.length === 2);
+  check("Example Bank groups its two asset accounts (not the credit card)",
+    groups.find((g) => g.label === "Example Bank")?.accounts.length === 2);
 
   console.log("RECONCILIATION — a segment equals the panel behind it");
   for (const g of groups) {
@@ -83,10 +83,10 @@ function main(): void {
     `${grouped.join()} vs ${rows.map((r) => r.id).sort().join()}`);
 
   console.log("known values");
-  check("Chase totals 3500", groups.find((g) => g.label === "Chase")?.value === 3500);
-  check("Vanguard leads at 5000", groups[0]?.label === "Vanguard" && groups[0]?.value === 5000);
+  check("Example Bank totals 3500", groups.find((g) => g.label === "Example Bank")?.value === 3500);
+  check("Institution B leads at 5000", groups[0]?.label === "Institution B" && groups[0]?.value === 5000);
   check("accounts within a group are largest first",
-    groups.find((g) => g.label === "Chase")?.accounts[0]?.id === "a2");
+    groups.find((g) => g.label === "Example Bank")?.accounts[0]?.id === "a2");
 
   console.log("edges");
   check("no accounts ⇒ no rows", wealthAccountRows([]).length === 0);

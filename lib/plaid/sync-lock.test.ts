@@ -27,7 +27,7 @@
  *     own internals goes through the lock, and runDeferredHistorySync is only
  *     ever invoked from its sanctioned guarded wrapper. This is the exact gap
  *     F1 found (5 of 7 trigger paths were unlocked); regressing any one of
- *     these back to a bare call reproduces the "Amex 363 UPSERT_ERROR" race.
+ *     these back to a bare call reproduces the "Example Card 363 UPSERT_ERROR" race.
  */
 
 import { readFileSync } from "node:fs";

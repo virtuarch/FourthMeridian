@@ -33,9 +33,9 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 const ITEMS: BreakdownItem[] = [
-  { id: "chase",    label: "Chase",    value: 60, meta: "Bank" },
-  { id: "vanguard", label: "Vanguard", value: 30 },
-  { id: "ally",     label: "Ally",     value: 10 },
+  { id: "exbank",    label: "Example Bank",    value: 60, meta: "Bank" },
+  { id: "instb", label: "Institution B", value: 30 },
+  { id: "inste",     label: "Institution E",     value: 10 },
 ];
 
 const MODES: BreakdownViewMode[] = ["donut", "bar", "list"];
@@ -85,7 +85,7 @@ function main(): void {
   }
 
   console.log("selected state");
-  const selHtml = render({ viewMode: "donut", onSelect: () => {}, selectedId: "vanguard" });
+  const selHtml = render({ viewMode: "donut", onSelect: () => {}, selectedId: "instb" });
   check("aria-pressed is present once selectedId is tracked", selHtml.includes("aria-pressed"));
   check("exactly one row is pressed", (selHtml.match(/aria-pressed="true"/g) ?? []).length === 1);
   const unselHtml = render({ viewMode: "donut", onSelect: () => {}, selectedId: null });
@@ -102,7 +102,7 @@ function main(): void {
     selectLabel: (i: BreakdownItem) => `${i.label} — show contributing accounts`,
   });
   check("selectLabel overrides the accessible name",
-    labelled.includes('aria-label="Chase — show contributing accounts"'));
+    labelled.includes('aria-label="Example Bank — show contributing accounts"'));
 
   console.log("colour is identity-keyed, not position-keyed");
   // The regression: these lists sort value-descending and drop empties, so a
@@ -122,7 +122,7 @@ function main(): void {
 
   const dropped = renderToStaticMarkup(
     createElement(BreakdownWidget, {
-      items: ITEMS.filter((i) => i.id !== "vanguard"),
+      items: ITEMS.filter((i) => i.id !== "instb"),
       viewMode: "list",
     } as never),
   );

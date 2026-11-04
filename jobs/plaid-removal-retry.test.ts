@@ -22,7 +22,7 @@ function check(name: string, cond: boolean, detail?: string): void {
 }
 
 const owedItem = (id: string, over: Partial<ProviderCleanupItem> = {}): ProviderCleanupItem => ({
-  plaidItemId: id, institution: "Chase", ownerRef: "abc123", productStatus: "REVOKED", itemGone: false,
+  plaidItemId: id, institution: "Example Bank", ownerRef: "abc123", productStatus: "REVOKED", itemGone: false,
   owedSinceISO: "2026-10-01T00:00:00.000Z", owedForHours: 300, attemptCount: 1,
   lastAttemptAtISO: "2026-10-01T00:00:00.000Z", latestErrorCode: "INTERNAL_SERVER_ERROR", inProgress: false, ...over,
 });
@@ -102,10 +102,10 @@ async function main(): Promise<void> {
 
   console.log("\n5. the summary carries counts only — no ids, institutions or owner refs");
   {
-    const w = world([owedItem("secret-item-id", { institution: "Amex", ownerRef: "zz9999" })], new Set());
+    const w = world([owedItem("secret-item-id", { institution: "Example Card", ownerRef: "zz9999" })], new Set());
     const r = await retryPlaidRemovals({ status: w.status, disconnect: w.disconnect });
     const json = JSON.stringify(r);
-    check("no item id, institution or owner ref in the JobRun summary", !/secret-item-id|Amex|zz9999/.test(json), json);
+    check("no item id, institution or owner ref in the JobRun summary", !/secret-item-id|Example Card|zz9999/.test(json), json);
     check("the summary is JSON-safe (what runJob writes)", JSON.parse(json).attempted === 1);
   }
 

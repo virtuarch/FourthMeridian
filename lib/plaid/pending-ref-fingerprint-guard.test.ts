@@ -9,7 +9,7 @@
  *
  * ── The production shape this manufactures ──────────────────────────────────
  *
- * Measured on the dev corpus (Chase "TAP TALABAT food", −12.05):
+ * Measured on the dev corpus (Example Bank "TAP TALABAT food", −12.05):
  *
  *   two pending rows, one day apart, same amount   → two events, correctly
  *   two posted deliveries, same day/amount/descriptor,
@@ -87,7 +87,7 @@ function makeFakeDb(opts: { cursor: string | null; accounts: Record<string, stri
   const txns: Row[] = [];
   const obs: Obs[] = [];
   const events: Evt[] = [];
-  const item = { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Chase" };
+  const item = { id: "item_1", cursor: opts.cursor, encryptedToken: FAKE_TOKEN, institutionName: "Example Bank" };
   let seq = 0, oseq = 0, eseq = 0;
 
   return {

@@ -291,7 +291,7 @@ expectFlow('CCPAY-2B: Qlub (restaurant app) tagged LOAN_PAYMENTS_CAR_PAYMENT',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_CAR_PAYMENT' },
   'SPENDING', 'OUTFLOW');
 
-expectFlow('CCPAY-2B: Amex Travel booking tagged LOAN_PAYMENTS_CREDIT_CARD_PAYMENT',
+expectFlow('CCPAY-2B: Example Card Travel booking tagged LOAN_PAYMENTS_CREDIT_CARD_PAYMENT',
   { category: 'Payment', amount: -506.98, accountType: 'debt',
     pfcPrimary: 'LOAN_PAYMENTS', pfcDetailed: 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' },
   'SPENDING', 'OUTFLOW');

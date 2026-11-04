@@ -135,22 +135,22 @@ const sliceOf = (rows: Transaction[], ids: readonly string[]) => {
   // v2.6-TRUTH-9 — grouped by CREDITOR ACCOUNT, not by descriptor. The guarantee
   // under test is unchanged: an FX-unavailable row leaves the total AND the slice.
   const CREDITORS = new Map([
-    ["chaseCard", { id: "chaseCard", name: "Chase Card", type: "debt" }],
-    ["amexCard",  { id: "amexCard",  name: "Amex Card",  type: "debt" }],
+    ["exbankCard", { id: "exbankCard", name: "Example Bank Card", type: "debt" }],
+    ["excardCard",  { id: "excardCard",  name: "Example Card Card",  type: "debt" }],
   ]);
   const rows = [
-    tx({ id: "d1", amount: -200, counterpartyAccountId: "chaseCard" }),
-    tx({ id: "d2", amount: -100, counterpartyAccountId: "chaseCard" }),
-    tx({ id: "d3", amount: -75,  counterpartyAccountId: "amexCard" }),
-    tx({ id: "d4", amount: -999, counterpartyAccountId: "chaseCard" }), // FX-unavailable
+    tx({ id: "d1", amount: -200, counterpartyAccountId: "exbankCard" }),
+    tx({ id: "d2", amount: -100, counterpartyAccountId: "exbankCard" }),
+    tx({ id: "d3", amount: -75,  counterpartyAccountId: "excardCard" }),
+    tx({ id: "d4", amount: -999, counterpartyAccountId: "exbankCard" }), // FX-unavailable
   ];
   const groups = groupDebtPaymentsByCreditor(rows as never, CREDITORS, (t: { id: string; amount: number }) => (t.id === "d4" ? null : Math.abs(t.amount)));
-  const chase = groups.find((g) => g.creditorAccountId === "chaseCard")!;
+  const exbank = groups.find((g) => g.creditorAccountId === "exbankCard")!;
 
-  assert.equal(chase.label, "Chase Card", "the heading is the ACCOUNT's name");
-  assert.equal(chase.value, 300, "the FX-unavailable row is excluded from the total");
-  assert.ok(!chase.transactionIds.includes("d4"), "…and from the slice");
-  assert.equal(chase.count, chase.transactionIds.length, "count === the ids it counted");
+  assert.equal(exbank.label, "Example Bank Card", "the heading is the ACCOUNT's name");
+  assert.equal(exbank.value, 300, "the FX-unavailable row is excluded from the total");
+  assert.ok(!exbank.transactionIds.includes("d4"), "…and from the slice");
+  assert.equal(exbank.count, exbank.transactionIds.length, "count === the ids it counted");
   ok("DEBT PAYMENTS · an FX-unavailable row leaves both the total and the slice");
 }
 

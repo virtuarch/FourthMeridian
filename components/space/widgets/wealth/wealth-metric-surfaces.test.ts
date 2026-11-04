@@ -58,10 +58,10 @@ const RESULT: WealthResult = {
 } as unknown as WealthResult;
 
 const ACCOUNTS = [
-  { id: "a1", name: "Chase Checking", type: "checking",   institution: "Chase",    balance: 20_000, currency: "USD" },
-  { id: "a2", name: "Brokerage",      type: "investment",  institution: "Vanguard", balance: 30_000, currency: "USD" },
-  { id: "d1", name: "Chase Card",     type: "debt",        institution: "Chase",    balance: 5_000,  currency: "USD", interestRate: 19.99 },
-  { id: "d2", name: "Auto Loan",      type: "debt",        institution: "Ally",     balance: 12_000, currency: "USD" },
+  { id: "a1", name: "Example Bank Checking", type: "checking",   institution: "Example Bank",    balance: 20_000, currency: "USD" },
+  { id: "a2", name: "Brokerage",      type: "investment",  institution: "Institution B", balance: 30_000, currency: "USD" },
+  { id: "d1", name: "Example Bank Card",     type: "debt",        institution: "Example Bank",    balance: 5_000,  currency: "USD", interestRate: 19.99 },
+  { id: "d2", name: "Auto Loan",      type: "debt",        institution: "Institution E",     balance: 12_000, currency: "USD" },
 ] as never;
 
 const ledger = (metric: WealthMetricKey) =>
@@ -116,7 +116,7 @@ function main(): void {
     centre(assets) === null && assets.includes("$300,000.00") && !assets.includes("−$200,000.00"));
 
   check("Liabilities mode shows debt composition (a debt account)",
-    liab.includes("Chase Card") || liab.includes("Auto Loan"));
+    liab.includes("Example Bank Card") || liab.includes("Auto Loan"));
   check("Liabilities mode draws NO asset-class donut (no 'asset class' noun)",
     !liab.toLowerCase().includes("asset class"));
   check("Liabilities mode shows the current-only note",

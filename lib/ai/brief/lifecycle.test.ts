@@ -355,11 +355,11 @@ async function main() {
   {
     const r = harness();
     r.state.pkg.freshness = { ...r.state.pkg.freshness!, band: 'VERY_STALE', oldestBalanceAgeDays: 26, needsReauth: true,
-      staleSources: [{ label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
+      staleSources: [{ label: 'Example Bank', state: 'NEEDS_RECONNECT', lastUpdated: '2026-08-18' }] };
     const t = (h: number) => new Date(T0.getTime() + h * 3_600_000);
     await r.ensure(t(0));
     check('the day\'s Brief is written over the connection that needs reconnecting', r.state.generations === 1
-      && r.state.lastInput?.freshness?.staleSources?.[0]?.label === 'Chase');
+      && r.state.lastInput?.freshness?.staleSources?.[0]?.label === 'Example Bank');
 
     r.state.watermark = 'wm-reauth-attempt';   // a reconnect that failed: a row was touched, nothing material moved
     const failedAttempt = await r.ensure(t(1));
@@ -518,7 +518,7 @@ async function main() {
   console.log('\n15. v2.7-P0 — the resolved-nature change cannot, by itself, regenerate a stored Brief');
   {
     const DP = 'DEBT_PAYMENT' as Transaction['flowType'];
-    const types: Record<string, string> = { chk: 'checking', hysa: 'savings', amexChk: 'checking' };
+    const types: Record<string, string> = { chk: 'checking', hysa: 'savings', excardChk: 'checking' };
     const txRow = (id: string, date: string, amount: number, over: Partial<Transaction>): Transaction => ({
       id, accountId: 'chk', date, amount, merchant: 'RAW', category: 'Payment' as Transaction['category'], pending: false,
       flowAuthority: 'CLASSIFIER', ...over } as Transaction);
@@ -527,8 +527,8 @@ async function main() {
       // No transfer evidence: before this PR it reached the package as DEBT_PAYMENT (a
       // material SIGNAL flow); the contract now resolves it to an unclassified movement.
       txRow('a', '2026-09-11', -1500, { flowType: DP }),
-      // Matured to Amex checking: TRANSFER before and after.
-      txRow('b', '2026-09-12', -747.26, { flowType: DP, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'amexChk' }),
+      // Matured to Example Card checking: TRANSFER before and after.
+      txRow('b', '2026-09-12', -747.26, { flowType: DP, transferMaturity: 'CASH_TRANSFER', counterpartyAccountId: 'excardChk' }),
       txRow('c', '2026-09-10', 4812.66, { flowType: 'INCOME' as Transaction['flowType'], category: 'Income' as Transaction['category'] }),
     ];
     const window = recentActivityWindow('2026-09-13');

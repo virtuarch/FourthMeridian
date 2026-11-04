@@ -33,7 +33,7 @@ console.log("v2.6-TRUTH-4 INCOME. Earned income");
 
 console.log("v2.6-TRUTH-4 INCOME. Interest is NOT earned, and keeps its source account");
 {
-  // HYSA "Interest Payment" $6.03; CHASE SAVINGS "INTEREST PAYMENT" $0.01.
+  // HYSA "Interest Payment" $6.03; EXAMPLE BANK SAVINGS "INTEREST PAYMENT" $0.01.
   const i = attributeIncome(ev({ providerDetail: "INCOME_INTEREST_EARNED", amount: 6.03,
     accountType: "savings", sourceAccountId: "hysa" }));
   check("interest ⇒ INTEREST_INCOME", i.incomeClass === "INTEREST_INCOME");

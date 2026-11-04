@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   // Throwing lens: error text carrying a sentinel must never reach the
   // result. Registered under the "debt" id (fake for the same reason as the
   // "liquidity" fake above — keep this test DB-free).
-  const SENTINEL = "LEAKCANARY_CHASE_SAVINGS_9931";
+  const SENTINEL = "LEAKCANARY_EXBANK_SAVINGS_9931";
   const throwingId = "debt" as const;
   registerLens(throwingId, async () => {
     throw new Error(`db exploded for account ${SENTINEL}`);

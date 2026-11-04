@@ -111,15 +111,15 @@ function plaidTxn(over: Record<string, any> = {}): any {
   const txn = plaidTxn({
     counterparties: [
       {
-        name: "Chase", entity_id: "ent_chase", type: "financial_institution",
-        website: "chase.com", logo_url: "https://x/chase.png", confidence_level: "HIGH",
+        name: "Example Bank", entity_id: "ent_exbank", type: "financial_institution",
+        website: "exbank.com", logo_url: "https://x/exbank.png", confidence_level: "HIGH",
         account_numbers: { account: "1234567890", routing: "021000021" },
       },
     ],
   });
   const { captured } = buildPlaidFlowInput(txn, { category: "Payment", amount: -300 });
   check("counterparty captured", captured.counterparties.length === 1);
-  check("counterparty name kept", captured.counterparties[0].name === "Chase");
+  check("counterparty name kept", captured.counterparties[0].name === "Example Bank");
   check("counterparty type stringified", captured.counterparties[0].type === "financial_institution");
   check("counterparty confidence kept", captured.counterparties[0].confidenceLevel === "HIGH");
   // The deny-list guarantee: no account/routing number anywhere in the captured struct.
@@ -194,7 +194,7 @@ for (const over of [
 
   const summary = summarizeShadow(acc);
   check("summary is non-PII (no merchant/counterparty tokens)",
-    !/Blue Bottle|Chase|021000021|1234567890/.test(summary));
+    !/Blue Bottle|Example Bank|021000021|1234567890/.test(summary));
   check("summary reports agreement", summary.includes("legacyBucketAgreement=5/5"));
   check("summary reports 100%", summary.includes("(100%)"), summary);
 }
@@ -333,7 +333,7 @@ const NO_META: CapturedPlaidMetadata = {
     pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD",
   };
   const captured: CapturedPlaidMetadata = {
-    pfcConfidenceLevel: "HIGH", merchantEntityId: "ent_chase", counterparties: [],
+    pfcConfidenceLevel: "HIGH", merchantEntityId: "ent_exbank", counterparties: [],
   };
   const classification = classifyFlow(input);
   const w = buildFlowWriteFields(classification, input, captured, FLOW_CLASSIFIER_VERSION);
@@ -349,7 +349,7 @@ const NO_META: CapturedPlaidMetadata = {
   check("pfcPrimary pass-through", w.pfcPrimary === "LOAN_PAYMENTS");
   check("pfcDetailed pass-through", w.pfcDetailed === "LOAN_PAYMENTS_CREDIT_CARD");
   check("pfcConfidenceLevel from captured", w.pfcConfidenceLevel === "HIGH");
-  check("merchantEntityId from captured", w.merchantEntityId === "ent_chase");
+  check("merchantEntityId from captured", w.merchantEntityId === "ent_exbank");
   // v2.6-OWN-1 — the builder names its author on every field-set it returns, so
   // no classifier write site can produce a flow value without an owner.
   check("flowAuthority stamped CLASSIFIER", w.flowAuthority === "CLASSIFIER");

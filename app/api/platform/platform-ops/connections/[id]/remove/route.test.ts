@@ -98,7 +98,7 @@ async function main() {
     const c = (await signIn(fake, ADMIN)).cookie;
     const r = await call(c, "nope", { reason: "customer_request" });
     t.check("unknown id → 404", r.status === 404, r);
-    const item = fake.seed("PlaidItem", { userId: OWNER, institutionId: "ins_1", institutionName: "Chase", encryptedToken: "", status: "REVOKED" });
+    const item = fake.seed("PlaidItem", { userId: OWNER, institutionId: "ins_1", institutionName: "Example Bank", encryptedToken: "", status: "REVOKED" });
     const r2 = await call(c, item.id as string, { reason: "customer_request" });
     t.check("a connection with no live accounts → 409 ALREADY_REMOVED", r2.status === 409 && (r2.body as { code?: string })?.code === "ALREADY_REMOVED", r2);
     const r3 = await call(c, item.id as string, { reason: "customer_request" });

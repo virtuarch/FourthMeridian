@@ -47,7 +47,7 @@ const FIXTURES: Fixture[] = [
   { name: "1. one fresh account", provider: "PLAID", plaid: plaid(), accounts: [daysAgo(0.2)], expect: "CURRENT" },
   { name: "2. multi-account source, all fresh", provider: "PLAID", plaid: plaid(), accounts: [daysAgo(0.2), daysAgo(0.5), daysAgo(0.3)], expect: "CURRENT" },
   { name: "3. multi-account source, one stale (A recent, B 12 days)", provider: "PLAID", plaid: plaid(), accounts: [daysAgo(0.1), daysAgo(12)], expect: "OUT_OF_DATE" },
-  { name: "4. reconnect required (Schwab)", provider: "PLAID", plaid: plaid({ status: "NEEDS_REAUTH", lastSyncedAt: daysAgo(26) }), accounts: [daysAgo(26), daysAgo(26)], expect: "NEEDS_RECONNECT" },
+  { name: "4. reconnect required (Example Brokerage)", provider: "PLAID", plaid: plaid({ status: "NEEDS_REAUTH", lastSyncedAt: daysAgo(26) }), accounts: [daysAgo(26), daysAgo(26)], expect: "NEEDS_RECONNECT" },
   { name: "5. connection error", provider: "PLAID", plaid: plaid({ status: "ERROR" }), accounts: [daysAgo(0.2)], expect: "CONNECTION_ERROR" },
   { name: "6. stale wallet, not errored (Ethereum)", provider: "WALLET", wallet: wallet({ lastSyncedAt: daysAgo(17) }), accounts: [daysAgo(17)], expect: "OUT_OF_DATE" },
   { name: "7. never-updated wallet", provider: "WALLET", wallet: wallet({ lastSyncedAt: null }), accounts: [null], expect: "NEVER_UPDATED" },

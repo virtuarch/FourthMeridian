@@ -44,7 +44,7 @@ const inspection = (decision: Partial<ArtifactDecision> & Pick<ArtifactDecision,
 });
 // Carries extra keys a careless spread would leak.
 const dataHealth = {
-  sources: [{ kind: 'BANK', label: 'Chase', state: 'NEEDS_RECONNECT', lastUpdatedAt: '2026-08-18T09:00:00.000Z', accountCount: 2,
+  sources: [{ kind: 'BANK', label: 'Example Bank', state: 'NEEDS_RECONNECT', lastUpdatedAt: '2026-08-18T09:00:00.000Z', accountCount: 2,
     needsAttention: true, actionable: true, key: 'item_secret', errorCode: 'ITEM_LOGIN_REQUIRED_SECRET' }],
   groups: [{ kind: 'BANK', sources: 1, attention: 1, oldestUpdatedAt: '2026-08-18T09:00:00.000Z', ownerUserId: 'owner_secret' }],
   attention: 1,
@@ -63,7 +63,7 @@ console.log('1. GET — every state');
   check('…the metrics, the Space echoed, and when it was checked',
     fresh.spaceId === 'space_A' && fresh.metrics?.netWorth === 128450.22 && fresh.checkedAt === NOW.toISOString());
   check('…and, separately, when each source last delivered',
-    fresh.dataHealth?.attention === 1 && fresh.dataHealth.sources[0].label === 'Chase' && fresh.dataHealth.sources[0].state === 'NEEDS_RECONNECT'
+    fresh.dataHealth?.attention === 1 && fresh.dataHealth.sources[0].label === 'Example Bank' && fresh.dataHealth.sources[0].state === 'NEEDS_RECONNECT'
       && fresh.dataHealth.groups[0].oldestUpdatedAt === '2026-08-18T09:00:00.000Z');
   check('data health is null, not invented, when it could not be read',
     responseFromInspection({ spaceId: 'space_A', inspection: inspection({ state: { kind: 'FRESH', row: row() } }), now: NOW, metrics }).dataHealth === null);

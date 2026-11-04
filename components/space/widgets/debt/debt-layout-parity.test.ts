@@ -48,12 +48,12 @@ const debt = (over: Partial<DebtPerspectiveAccount>): DebtPerspectiveAccount =>
   ({ id: `d${uid++}`, name: "Card", type: "debt", institution: "Bank", balance: 0, currency: "USD", ...over } as DebtPerspectiveAccount);
 
 const ACCOUNTS: DebtPerspectiveAccount[] = [
-  debt({ id: "visa", name: "Visa", institution: "Chase", balance: 1200, debtSubtype: "credit_card" } as never),
-  debt({ id: "amex", name: "Gold", institution: "American Express", balance: 300, debtSubtype: "credit_card" } as never),
-  debt({ id: "auto", name: "Auto loan", institution: "Chase", balance: 8000, debtSubtype: "auto_loan" } as never),
-  debt({ id: "paid", name: "Paid card", institution: "Citi", balance: 0, debtSubtype: "credit_card" } as never),
-  debt({ id: "credit", name: "Overpaid", institution: "Citi", balance: -50, debtSubtype: "credit_card" } as never),
-  { id: "chk", name: "Checking", type: "checking", institution: "Chase", balance: 9999, currency: "USD" } as DebtPerspectiveAccount,
+  debt({ id: "visa", name: "Visa", institution: "Example Bank", balance: 1200, debtSubtype: "credit_card" } as never),
+  debt({ id: "excard", name: "Gold", institution: "Example Card", balance: 300, debtSubtype: "credit_card" } as never),
+  debt({ id: "auto", name: "Auto loan", institution: "Example Bank", balance: 8000, debtSubtype: "auto_loan" } as never),
+  debt({ id: "paid", name: "Paid card", institution: "Institution C", balance: 0, debtSubtype: "credit_card" } as never),
+  debt({ id: "credit", name: "Overpaid", institution: "Institution C", balance: -50, debtSubtype: "credit_card" } as never),
+  { id: "chk", name: "Checking", type: "checking", institution: "Example Bank", balance: 9999, currency: "USD" } as DebtPerspectiveAccount,
 ];
 
 console.log("1. section rhythm — Debt root matches the Net Worth / Assets root");
@@ -77,13 +77,13 @@ console.log("\n3. Where it's owed — debtCompositionItems");
   const byAcct = debtCompositionItems(ACCOUNTS, ctx, "account");
   const kpis = computeDebtKpis(ACCOUNTS, ctx);
   check("by account: one slice per OWING liability (paid-off, in-credit and non-debt absent)",
-    byAcct.map((i) => i.id).join() === "auto,visa,amex", byAcct.map((i) => i.id).join());
+    byAcct.map((i) => i.id).join() === "auto,visa,excard", byAcct.map((i) => i.id).join());
   check("Σ slices === computeDebtKpis().totalDebt (no recomputation, no double count)",
     near(byAcct.reduce((s, i) => s + i.value, 0), kpis.totalDebt), `${byAcct.reduce((s, i) => s + i.value, 0)} vs ${kpis.totalDebt}`);
   const byType = debtCompositionItems(ACCOUNTS, ctx, "type");
   check("by type: presentation classes, largest first", byType.map((i) => `${i.label}=${i.value}`).join() === "Loans=8000,Credit cards=1500", byType.map((i) => `${i.label}=${i.value}`).join());
   const byInst = debtCompositionItems(ACCOUNTS, ctx, "institution");
-  check("by institution: grouped and summed", byInst.map((i) => `${i.label}=${i.value}`).join() === "Chase=9200,American Express=300", byInst.map((i) => `${i.label}=${i.value}`).join());
+  check("by institution: grouped and summed", byInst.map((i) => `${i.label}=${i.value}`).join() === "Example Bank=9200,Example Card=300", byInst.map((i) => `${i.label}=${i.value}`).join());
   check("every grouping sums to the same total", [byType, byInst].every((g) => near(g.reduce((s, i) => s + i.value, 0), kpis.totalDebt)));
   check("every slice has a colour", byAcct.every((i) => !!i.color));
   const eur = debtCompositionItems(ACCOUNTS, EUR_CTX, "account");

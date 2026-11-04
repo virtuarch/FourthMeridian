@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     clearCapturedEmails();
     const res = await emailNotificationAdapter.deliver({
       userId: "u", email: "owner@example.invalid", type: "SYNC_FAILED", category: "FINANCIAL", priority: "HIGH",
-      title: "We couldn't sync Chase", body: "b", href: "/dashboard/connections", actionLabel: "Review connection",
+      title: "We couldn't sync Example Bank", body: "b", href: "/dashboard/connections", actionLabel: "Review connection",
     });
     const msg = lastCapturedEmail();
     process.env.NEXT_PUBLIC_APP_URL = prev;
@@ -188,25 +188,25 @@ async function main(): Promise<void> {
     check("ACTIVE / null / junk → sync-failed", ["ACTIVE", null, undefined, "WHATEVER"].every((s) => connectionStateFromItemStatus(s) === "sync-failed"));
     check("parse: unknown values → sync-failed", [undefined, null, 7, "", "DISCONNECTED", "disconnected "].every((v) => parseConnectionState(v) === "sync-failed"));
 
-    const reauth = connectionAttentionCopy("reauth-required", "Chase");
-    check("reauth copy + CTA", reauth.title === "Chase needs you to sign in again" && reauth.actionLabel === "Reconnect Chase");
-    const disc = connectionAttentionCopy("disconnected", "Chase");
-    check("disconnected copy + CTA", disc.title === "Chase is disconnected" && disc.actionLabel === "Reconnect");
-    const fail = connectionAttentionCopy("sync-failed", "Chase");
-    check("sync-failed copy + CTA", fail.title === "We couldn't sync Chase" && fail.actionLabel === "Review connection");
+    const reauth = connectionAttentionCopy("reauth-required", "Example Bank");
+    check("reauth copy + CTA", reauth.title === "Example Bank needs you to sign in again" && reauth.actionLabel === "Reconnect Example Bank");
+    const disc = connectionAttentionCopy("disconnected", "Example Bank");
+    check("disconnected copy + CTA", disc.title === "Example Bank is disconnected" && disc.actionLabel === "Reconnect");
+    const fail = connectionAttentionCopy("sync-failed", "Example Bank");
+    check("sync-failed copy + CTA", fail.title === "We couldn't sync Example Bank" && fail.actionLabel === "Review connection");
     for (const junk of [undefined, "stale", "DISCONNECTED", 42]) {
-      const c = connectionAttentionCopy(junk, "Chase");
+      const c = connectionAttentionCopy(junk, "Example Bank");
       check(`unknown state ${JSON.stringify(junk)} → the sync-failed copy, never "disconnected"`,
         c.title === fail.title && c.actionLabel === fail.actionLabel && !/disconnect/i.test(c.title + c.body));
     }
-    const all = ["sync-failed", "reauth-required", "disconnected"].map((s) => connectionAttentionCopy(s, "Chase"));
+    const all = ["sync-failed", "reauth-required", "disconnected"].map((s) => connectionAttentionCopy(s, "Example Bank"));
     check("no state claims a reconnection succeeded", all.every((c) => !/reconnected|successfully|is back|restored/i.test(c.title + c.body)));
     check("sync-failed copy never promises an automatic retry (ERROR items are not re-synced by the cron)",
       !/retry|automatically/i.test(fail.title + fail.body));
     check("no copy carries numbers (no balances / account numbers)", all.every((c) => !/\d/.test(c.title + c.body)));
 
     const def = getNotificationDefinition("SYNC_FAILED")!;
-    check("registry: legacy row (no state) renders the sync-failed copy", def.render({ plaidItemId: "i", institutionName: "Chase" }).title === "We couldn't sync Chase");
+    check("registry: legacy row (no state) renders the sync-failed copy", def.render({ plaidItemId: "i", institutionName: "Example Bank" }).title === "We couldn't sync Example Bank");
     check("registry: empty data still renders a title + href", def.render({}).title === "We couldn't sync your institution" && def.render({}).href === "/dashboard/connections");
     check("registry: dedupe/channels unchanged",
       def.dedupe === "suppress" && def.dedupeKeyTemplate === "SYNC_FAILED:item:{plaidItemId}:open" &&
@@ -219,7 +219,7 @@ async function main(): Promise<void> {
         plaidItem: {
           async findUnique(args) {
             selects.push(args.select);
-            return { userId: "u1", institutionName: "Chase", ...(status ? { status } : {}) };
+            return { userId: "u1", institutionName: "Example Bank", ...(status ? { status } : {}) };
           },
         },
       };
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
       });
       check(`producer: status ${status ?? "(absent)"} → connectionState ${expected}`,
         calls.length === 1 && calls[0].type === "SYNC_FAILED" && calls[0].userId === "u1" &&
-        JSON.stringify(calls[0].data) === JSON.stringify({ plaidItemId: "item_1", institutionName: "Chase", connectionState: expected }), calls);
+        JSON.stringify(calls[0].data) === JSON.stringify({ plaidItemId: "item_1", institutionName: "Example Bank", connectionState: expected }), calls);
       check("producer reads status from the row it already reads", JSON.stringify(selects[0]) === JSON.stringify({ userId: true, institutionName: true, status: true }));
     }
   }
@@ -244,7 +244,7 @@ async function main(): Promise<void> {
     async function produce(status: string, conns: { live: number; removed: number } | "throws" | null) {
       const counted: unknown[] = [];
       const client: PlaidItemReadClient = {
-        plaidItem: { async findUnique() { return { userId: "u1", institutionName: "Chase", status }; } },
+        plaidItem: { async findUnique() { return { userId: "u1", institutionName: "Example Bank", status }; } },
         ...(conns
           ? {
               accountConnection: {
@@ -275,13 +275,13 @@ async function main(): Promise<void> {
     const userRemoved = await produce("REVOKED", { live: 0, removed: 2 });
     check("user removal mid-sync (REVOKED, every connection soft-deleted) → no notification", userRemoved.calls.length === 0, userRemoved.calls);
     check("…recorded as a suppression with a reason and no PII",
-      userRemoved.logs.length === 1 && /suppressed for item item_9 \(REVOKED\): removed by the user/.test(userRemoved.logs[0]) && !/Chase|u1/.test(userRemoved.logs[0]), userRemoved.logs);
+      userRemoved.logs.length === 1 && /suppressed for item item_9 \(REVOKED\): removed by the user/.test(userRemoved.logs[0]) && !/Example Bank|u1/.test(userRemoved.logs[0]), userRemoved.logs);
     check("…the marker reads live AND soft-deleted connections of THIS item",
       JSON.stringify(userRemoved.counted) === JSON.stringify([{ plaidItemDbId: "item_9", deletedAt: null }, { plaidItemDbId: "item_9", deletedAt: { not: null } }]), userRemoved.counted);
     const provider = await produce("REVOKED", { live: 2, removed: 0 });
     check("provider revocation (REVOKED, connections still live) → notifies with the disconnected copy",
       provider.calls.length === 1 && provider.calls[0].data?.connectionState === "disconnected" &&
-      getNotificationDefinition("SYNC_FAILED")!.render(provider.calls[0].data!).title === "Chase is disconnected");
+      getNotificationDefinition("SYNC_FAILED")!.render(provider.calls[0].data!).title === "Example Bank is disconnected");
     const partial = await produce("REVOKED", { live: 1, removed: 3 });
     check("REVOKED with a live connection left → still notifies (not a full removal)", partial.calls.length === 1);
     const noRows = await produce("REVOKED", { live: 0, removed: 0 });

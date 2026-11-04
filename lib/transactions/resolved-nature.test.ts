@@ -6,9 +6,9 @@
  *     A transfer between two owned depository accounts NEVER reduces debt.
  *
  * Pure, in-memory. No DB, no Plaid, no model. The fixture is the anonymised
- * Production pattern of 2026-10-23..26 (docs/plans/P1-AMEX-TRANSFER-
- * CLASSIFICATION-AUDIT-2026-10-27.md §2): Chase checking legs out to an Amex HYSA,
- * Amex checking, Schwab checking, a Chase card, an Apple Cash P2P send, plus a real
+ * Production pattern of 2026-10-23..26 (docs/plans/P1-EXAMPLE CARD-TRANSFER-
+ * CLASSIFICATION-AUDIT-2026-10-27.md §2): Example Bank checking legs out to an Example Card HYSA,
+ * Example Card checking, Example Brokerage checking, a Example Bank card, an Apple Cash P2P send, plus a real
  * loan payment. "Before" = the HISTORICAL UNREPAIRED rows (provider DEBT_PAYMENT);
  * "after" = the same rows once the transfer authority's write
  * (decideTransferDebtPaymentCorrection) has reached them.
@@ -33,11 +33,11 @@ import { decideTransferDebtPaymentCorrection, CORRECTION_SHAPES } from "./transf
 // ── The anonymised Production fixture ────────────────────────────────────────
 
 const ACCOUNTS = [
-  { id: "chaseChk", type: "checking" },
-  { id: "schwabChk", type: "checking" },
-  { id: "amexChk", type: "checking" },
-  { id: "amexHysa", type: "savings" },
-  { id: "chaseCard", type: "debt" },
+  { id: "exbankChk", type: "checking" },
+  { id: "exbrokerChk", type: "checking" },
+  { id: "excardChk", type: "checking" },
+  { id: "excardHysa", type: "savings" },
+  { id: "exbankCard", type: "debt" },
   { id: "autoLoan", type: "debt" },
 ];
 const TYPE = new Map(ACCOUNTS.map((a) => [a.id, a.type]));
@@ -53,50 +53,50 @@ interface Row {
   classificationReason?: string; classificationConfidence?: number;
 }
 
-/** BEFORE the repair: exactly as stored on Production (provider DEBT_PAYMENT on the Amex pulls). */
+/** BEFORE the repair: exactly as stored on Production (provider DEBT_PAYMENT on the Example Card pulls). */
 const BEFORE: Row[] = [
-  // Chase checking → Amex HYSA, unpaired (type-certain), pending, provider "Payment".
-  { id: "hysa1500", own: "chaseChk", amount: -1500, flowType: "DEBT_PAYMENT", category: "Payment",
+  // Example Bank checking → Example Card HYSA, unpaired (type-certain), pending, provider "Payment".
+  { id: "hysa1500", own: "exbankChk", amount: -1500, flowType: "DEBT_PAYMENT", category: "Payment",
     maturity: "SAVINGS_TRANSFER", cp: null, evidenceLevel: "TYPE_CERTAIN_ACCOUNT_AMBIGUOUS",
     pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_OTHER_PAYMENT", pending: true },
-  // Chase checking → Amex HYSA, paired.
-  { id: "hysa125", own: "chaseChk", amount: -125.41, flowType: "DEBT_PAYMENT", category: "Payment",
-    maturity: "SAVINGS_TRANSFER", cp: "amexHysa", evidenceLevel: "ACCOUNT_CERTAIN",
+  // Example Bank checking → Example Card HYSA, paired.
+  { id: "hysa125", own: "exbankChk", amount: -125.41, flowType: "DEBT_PAYMENT", category: "Payment",
+    maturity: "SAVINGS_TRANSFER", cp: "excardHysa", evidenceLevel: "ACCOUNT_CERTAIN",
     pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_OTHER_PAYMENT", pending: true },
-  // Chase checking → Amex checking, paired.
-  { id: "amexChk747", own: "chaseChk", amount: -747.26, flowType: "DEBT_PAYMENT", category: "Payment",
-    maturity: "CASH_TRANSFER", cp: "amexChk", evidenceLevel: "ACCOUNT_CERTAIN",
+  // Example Bank checking → Example Card checking, paired.
+  { id: "excardChk747", own: "exbankChk", amount: -747.26, flowType: "DEBT_PAYMENT", category: "Payment",
+    maturity: "CASH_TRANSFER", cp: "excardChk", evidenceLevel: "ACCOUNT_CERTAIN",
     pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_OTHER_PAYMENT", pending: true },
-  // Chase checking → Schwab checking (always TRANSFER).
-  { id: "schwab1500", own: "chaseChk", amount: -1500, flowType: "TRANSFER", category: "Transfer",
-    maturity: "CASH_TRANSFER", cp: "schwabChk", evidenceLevel: "ACCOUNT_CERTAIN", pfcPrimary: "TRANSFER_OUT" },
-  // Chase checking → Chase card — a GENUINE card payment.
-  { id: "card300", own: "chaseChk", amount: -300, flowType: "DEBT_PAYMENT", category: "Payment",
-    maturity: "DEBT_PAYMENT", cp: "chaseCard", evidenceLevel: "ACCOUNT_CERTAIN",
+  // Example Bank checking → Example Brokerage checking (always TRANSFER).
+  { id: "exbroker1500", own: "exbankChk", amount: -1500, flowType: "TRANSFER", category: "Transfer",
+    maturity: "CASH_TRANSFER", cp: "exbrokerChk", evidenceLevel: "ACCOUNT_CERTAIN", pfcPrimary: "TRANSFER_OUT" },
+  // Example Bank checking → Example Bank card — a GENUINE card payment.
+  { id: "card300", own: "exbankChk", amount: -300, flowType: "DEBT_PAYMENT", category: "Payment",
+    maturity: "DEBT_PAYMENT", cp: "exbankCard", evidenceLevel: "ACCOUNT_CERTAIN",
     pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT" },
-  // Chase checking → auto loan — a GENUINE loan payment.
-  { id: "loan450", own: "chaseChk", amount: -450, flowType: "DEBT_PAYMENT", category: "Payment",
+  // Example Bank checking → auto loan — a GENUINE loan payment.
+  { id: "loan450", own: "exbankChk", amount: -450, flowType: "DEBT_PAYMENT", category: "Payment",
     maturity: "DEBT_PAYMENT", cp: "autoLoan", evidenceLevel: "ACCOUNT_CERTAIN",
     pfcPrimary: "LOAN_PAYMENTS", pfcDetailed: "LOAN_PAYMENTS_CAR_PAYMENT" },
   // Apple Cash person-to-person send — external, purpose unknown.
-  { id: "apple150", own: "chaseChk", amount: -150, flowType: "TRANSFER", category: "Transfer",
+  { id: "apple150", own: "exbankChk", amount: -150, flowType: "TRANSFER", category: "Transfer",
     maturity: "EXTERNAL_PERSON_TRANSFER", disposition: "PAYMENT_APP_MOVEMENT", pfcPrimary: "TRANSFER_OUT" },
   // The matching destination credits.
-  { id: "hysaIn1500", own: "amexHysa", amount: 1500, flowType: "TRANSFER", category: "Transfer",
-    maturity: "CASH_TRANSFER", cp: "chaseChk" },
-  { id: "hysaIn125", own: "amexHysa", amount: 125.41, flowType: "TRANSFER", category: "Transfer",
-    maturity: "CASH_TRANSFER", cp: "chaseChk" },
-  { id: "amexChkIn", own: "amexChk", amount: 747.26, flowType: "TRANSFER", category: "Transfer",
-    maturity: "CASH_TRANSFER", cp: "chaseChk" },
-  { id: "schwabIn", own: "schwabChk", amount: 1500, flowType: "TRANSFER", category: "Transfer",
-    maturity: "CASH_TRANSFER", cp: "chaseChk" },
-  { id: "cardIn300", own: "chaseCard", amount: 300, flowType: "DEBT_PAYMENT", category: "Payment",
-    maturity: "DEBT_PAYMENT", cp: "chaseChk" },
-  { id: "loanIn450", own: "autoLoan", amount: 450, flowType: "DEBT_PAYMENT", category: "Payment", cp: "chaseChk" },
+  { id: "hysaIn1500", own: "excardHysa", amount: 1500, flowType: "TRANSFER", category: "Transfer",
+    maturity: "CASH_TRANSFER", cp: "exbankChk" },
+  { id: "hysaIn125", own: "excardHysa", amount: 125.41, flowType: "TRANSFER", category: "Transfer",
+    maturity: "CASH_TRANSFER", cp: "exbankChk" },
+  { id: "excardChkIn", own: "excardChk", amount: 747.26, flowType: "TRANSFER", category: "Transfer",
+    maturity: "CASH_TRANSFER", cp: "exbankChk" },
+  { id: "exbrokerIn", own: "exbrokerChk", amount: 1500, flowType: "TRANSFER", category: "Transfer",
+    maturity: "CASH_TRANSFER", cp: "exbankChk" },
+  { id: "cardIn300", own: "exbankCard", amount: 300, flowType: "DEBT_PAYMENT", category: "Payment",
+    maturity: "DEBT_PAYMENT", cp: "exbankChk" },
+  { id: "loanIn450", own: "autoLoan", amount: 450, flowType: "DEBT_PAYMENT", category: "Payment", cp: "exbankChk" },
   // Ordinary economic activity, so the totals are not trivially zero.
-  { id: "salary", own: "chaseChk", amount: 4800, flowType: "INCOME", category: "Income" },
-  { id: "grocer", own: "chaseChk", amount: -212.5, flowType: "SPENDING", category: "Groceries" },
-  { id: "cardBuy", own: "chaseCard", amount: -640, flowType: "SPENDING", category: "Shopping" },
+  { id: "salary", own: "exbankChk", amount: 4800, flowType: "INCOME", category: "Income" },
+  { id: "grocer", own: "exbankChk", amount: -212.5, flowType: "SPENDING", category: "Groceries" },
+  { id: "cardBuy", own: "exbankCard", amount: -640, flowType: "SPENDING", category: "Shopping" },
 ].map((r) => ({ flowAuthority: "CLASSIFIER", categorySource: null, ...r }));
 
 /** AFTER: apply the transfer authority's write rule to every row, exactly as the sync / repair would. */
@@ -134,9 +134,9 @@ const asLiquidityTx = (r: Row): LiquidityTx => ({
 
 // ── 1. Natures ───────────────────────────────────────────────────────────────
 
-test("1. the fixture correction actually rewrote the three mislabelled Amex pulls (and nothing else)", () => {
+test("1. the fixture correction actually rewrote the three mislabelled Example Card pulls (and nothing else)", () => {
   const changed = AFTER.filter((r, i) => r.flowType !== BEFORE[i].flowType).map((r) => r.id).sort();
-  assert.deepEqual(changed, ["amexChk747", "hysa125", "hysa1500"]);
+  assert.deepEqual(changed, ["excardChk747", "hysa125", "hysa1500"]);
   assert.ok(AFTER.filter((r) => changed.includes(r.id)).every((r) => r.flowType === "TRANSFER"
     && r.category === CORRECTION_SHAPES.TRANSFER_CERTAIN.category));
 });
@@ -144,8 +144,8 @@ test("1. the fixture correction actually rewrote the three mislabelled Amex pull
 const EXPECTED: Record<string, TransactionNature> = {
   hysa1500: "INTERNAL_SAVINGS_TRANSFER",
   hysa125: "INTERNAL_SAVINGS_TRANSFER",
-  amexChk747: "INTERNAL_CHECKING_TRANSFER",
-  schwab1500: "INTERNAL_CHECKING_TRANSFER",
+  excardChk747: "INTERNAL_CHECKING_TRANSFER",
+  exbroker1500: "INTERNAL_CHECKING_TRANSFER",
   card300: "LIABILITY_PAYMENT",
   loan450: "LIABILITY_PAYMENT",
   apple150: "EXTERNAL_TRANSFER",
@@ -163,8 +163,8 @@ for (const [label, rows] of [["BEFORE repair (historical rows)", BEFORE], ["AFTE
     }
   });
 
-  test(`3. ${label}: internal transfers (Amex HYSA, Amex checking, Schwab checking) never reduce debt and are never spending/income`, () => {
-    for (const id of ["hysa1500", "hysa125", "amexChk747", "schwab1500", "hysaIn1500", "hysaIn125", "amexChkIn", "schwabIn"]) {
+  test(`3. ${label}: internal transfers (Example Card HYSA, Example Card checking, Example Brokerage checking) never reduce debt and are never spending/income`, () => {
+    for (const id of ["hysa1500", "hysa125", "excardChk747", "exbroker1500", "hysaIn1500", "hysaIn125", "excardChkIn", "exbrokerIn"]) {
       const n = natureOf(rows, id);
       assert.equal(n.reducesDebt, false, id);
       assert.equal(n.flow, "TRANSFER", id);
@@ -174,7 +174,7 @@ for (const [label, rows] of [["BEFORE repair (historical rows)", BEFORE], ["AFTE
     }
   });
 
-  test(`4. ${label}: the Chase card and the loan payment still reduce debt — cash leg once, card/loan leg named`, () => {
+  test(`4. ${label}: the Example Bank card and the loan payment still reduce debt — cash leg once, card/loan leg named`, () => {
     for (const id of ["card300", "loan450"]) {
       const n = natureOf(rows, id);
       assert.equal(n.reducesDebt, true, id); assert.equal(n.leg, "CASH", id); assert.equal(n.flow, "DEBT_PAYMENT", id);
@@ -268,13 +268,13 @@ test("13. a TRANSFER-typed cash leg into an owned card is a payment (the money l
   const n = resolveTransactionNature({ flowType: "TRANSFER", amount: -200, ownAccountType: "checking",
     counterpartyAccountType: "debt", hasOwnedCounterparty: true });
   assert.equal(n.nature, "LIABILITY_PAYMENT"); assert.equal(n.flow, "DEBT_PAYMENT"); assert.equal(n.leg, "CASH");
-  const liq = classifyLiquidity(asLiquidityTx({ id: "x", own: "chaseChk", amount: -200, flowType: "TRANSFER", category: "Transfer", cp: "chaseCard" }), CTX);
+  const liq = classifyLiquidity(asLiquidityTx({ id: "x", own: "exbankChk", amount: -200, flowType: "TRANSFER", category: "Transfer", cp: "exbankCard" }), CTX);
   assert.equal(liq.reason, "DEBT_PAYMENT");
 });
 
 test("14. natureEvidenceFromRow reads only what the DTO carries and the caller's account lookup", () => {
-  const e = natureEvidenceFromRow({ flowType: "DEBT_PAYMENT", amount: -125.41, accountId: "chaseChk",
-    transferMaturity: "SAVINGS_TRANSFER", counterpartyAccountId: "amexHysa" }, typeOf);
+  const e = natureEvidenceFromRow({ flowType: "DEBT_PAYMENT", amount: -125.41, accountId: "exbankChk",
+    transferMaturity: "SAVINGS_TRANSFER", counterpartyAccountId: "excardHysa" }, typeOf);
   assert.equal(e.ownAccountType, "checking"); assert.equal(e.counterpartyAccountType, "savings"); assert.equal(e.hasOwnedCounterparty, true);
   assert.equal(resolveTransactionNature(e).nature, "INTERNAL_SAVINGS_TRANSFER");
 });
@@ -311,7 +311,7 @@ test("15. Production-pattern fixture: income, spending, net cash flow, debt tota
   // …and they are the right numbers: only the $300 card and $450 loan payments are debt paid.
   assert.equal(before.debtPaid, 750); assert.equal(before.debtPaidCount, 2);
   assert.equal(before.income, 4800); assert.equal(before.spending, 852.5);
-  assert.equal(before.rollup, "autoLoan:450,chaseCard:300");
+  assert.equal(before.rollup, "autoLoan:450,exbankCard:300");
 });
 
 test("16. contract debt reductions on the fixture sum to the debt-payment authority's total (cash legs)", () => {

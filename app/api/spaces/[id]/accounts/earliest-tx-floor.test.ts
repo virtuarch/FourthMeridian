@@ -51,14 +51,14 @@ function attachFloors(floors: GroupRow[], normalized: Acct[]): (Acct & { earlies
 
 {
   const floors: GroupRow[] = [
-    { financialAccountId: "acc_chase",   _min: { date: new Date("2024-07-15T00:00:00.000Z") } },
+    { financialAccountId: "acc_exbank",   _min: { date: new Date("2024-07-15T00:00:00.000Z") } },
     { financialAccountId: "acc_bitcoin", _min: { date: new Date("2023-03-24T00:00:00.000Z") } },
     // An account that exists but has no dated transactions — groupBy can still
     // return a row with a null _min; it must NOT produce a floor.
     { financialAccountId: "acc_nodate",  _min: { date: null } },
   ];
   const normalized: Acct[] = [
-    { id: "acc_chase",   name: "CHASE COLLEGE" },
+    { id: "acc_exbank",   name: "EXAMPLE BANK COLLEGE" },
     { id: "acc_bitcoin", name: "Bitcoin Ledger" },
     { id: "acc_nodate",  name: "Empty" },
     { id: "acc_notx",    name: "No transactions at all" }, // absent from groupBy entirely
@@ -66,7 +66,7 @@ function attachFloors(floors: GroupRow[], normalized: Acct[]): (Acct & { earlies
   const out = attachFloors(floors, normalized);
   const by = (id: string) => out.find((a) => a.id === id)!.earliestTxDate;
 
-  check("FULL row gets its earliest tx date as YYYY-MM-DD", by("acc_chase") === "2024-07-15", String(by("acc_chase")));
+  check("FULL row gets its earliest tx date as YYYY-MM-DD", by("acc_exbank") === "2024-07-15", String(by("acc_exbank")));
   check("second FULL row maps to its own floor", by("acc_bitcoin") === "2023-03-24", String(by("acc_bitcoin")));
   check("groupBy row with null _min.date → null floor", by("acc_nodate") === null, String(by("acc_nodate")));
   check("account absent from groupBy (no tx) → null floor", by("acc_notx") === null, String(by("acc_notx")));

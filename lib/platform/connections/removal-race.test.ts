@@ -57,7 +57,7 @@ const NOW = new Date("2026-11-02T07:30:00.000Z"); // the retry's cadence slot
 const minsAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
 const pre = (id: string, m: number): MarkerRow => ({ action: AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED, createdAt: minsAgo(m), metadata: { provider: "PLAID", plaidItemId: id, phase: PRE_PROVIDER_PHASE } });
 const unconfirmed = (id: string, m: number): MarkerRow => ({ action: AuditAction.PLAID_ITEM_REVOCATION_UNCONFIRMED, createdAt: minsAgo(m), metadata: { provider: "PLAID", plaidItemId: id, plaidErrorCode: "INTERNAL_SERVER_ERROR" } });
-const item = (id: string) => ({ id, status: "REVOKED", institutionName: "Chase", userId: "user_owner_aaaaaa" });
+const item = (id: string) => ({ id, status: "REVOKED", institutionName: "Example Bank", userId: "user_owner_aaaaaa" });
 
 async function main() {
   console.log("(a) the grace window — an in-flight operator removal is never raced");
@@ -110,7 +110,7 @@ async function main() {
     const plaidError = (c: string) => ({ isAxiosError: true, response: { status: 400, data: { error_code: c, error_type: "ITEM_ERROR" } }, message: `Plaid ${c}` });
     const world = () => {
       const audits: MarkerRow[] = [];
-      const row = { id: "p1", userId: "u1", encryptedToken: TOKEN, status: "REVOKED", institutionName: "Chase" };
+      const row = { id: "p1", userId: "u1", encryptedToken: TOKEN, status: "REVOKED", institutionName: "Example Bank" };
       let tick = 0;
       const db = {
         accountConnection: { count: async () => 0 },

@@ -106,7 +106,7 @@ const ACCOUNTS = [
   { id: "chk",  type: "checking" },   // liquid
   { id: "sav",  type: "savings" },    // liquid
   { id: "brk",  type: "investment" }, // asset
-  { id: "cb",   type: "crypto" },     // asset (Coinbase-like wallet)
+  { id: "cb",   type: "crypto" },     // asset (Example Exchange-like wallet)
   { id: "card", type: "debt" },       // liability
   { id: "loan", type: "debt" },       // liability
   // "ext" is deliberately absent → tierOf("ext") === "unknown" (external / not owned)

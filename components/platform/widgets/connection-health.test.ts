@@ -49,9 +49,9 @@ const NOW = Date.parse(CHECKED) + 5 * 60_000; // the browser clock is 5 min afte
 
 function row(over: Partial<ConnectionHealthRow> = {}): ConnectionHealthRow {
   return {
-    source: "PLAID", id: "item1", label: "Chase", status: "ACTIVE", errorCode: null, healthState: "STALE",
+    source: "PLAID", id: "item1", label: "Example Bank", status: "ACTIVE", errorCode: null, healthState: "STALE",
     lastSyncedAt: "2026-10-13T09:30:00.000Z", since: null,
-    kind: "BANK", institution: "Chase", network: null, overdueAfterHours: 24, neverSynced: false,
+    kind: "BANK", institution: "Example Bank", network: null, overdueAfterHours: 24, neverSynced: false,
     availableActions: ["resync", "request-reauth"],
     ...over,
   };
@@ -133,7 +133,7 @@ console.log("4. identity never reaches the row; the owner column exists only whe
 
 console.log("5. the connection cell and the actions follow the reader's derivations");
 {
-  check("bank: institution over 'Bank · Plaid'", JSON.stringify(describeConnection(row())) === JSON.stringify({ title: "Chase", qualifier: "Bank · Plaid" }));
+  check("bank: institution over 'Bank · Plaid'", JSON.stringify(describeConnection(row())) === JSON.stringify({ title: "Example Bank", qualifier: "Bank · Plaid" }));
   check("wallet: label over 'Wallet · ETH'", describeConnection(row({ source: "WALLET", label: "Wallet …abc123", network: "ETH" })).qualifier === "Wallet · ETH");
   check("wallet without a recorded chain says so", describeConnection(row({ source: "WALLET", label: "Wallet …abc123", network: null })).qualifier === "Wallet · chain not recorded");
   check("exchange is named by its source word", describeConnection(row({ source: "EXCHANGE", label: "Exchange …x", network: null })).qualifier === "Exchange · chain not recorded");
@@ -180,16 +180,16 @@ console.log("7. the surfaces: loading is loading; populated lists the authority'
   const rows = [row({ id: "err", healthState: "ERROR", status: "ERROR", errorCode: "ITEM_LOGIN_REQUIRED", availableActions: ["resync", "request-reauth"] }), row({ id: "st" })];
   const data = result({ unhealthy: rows, counts: { HEALTHY: 3, STALE: 1, DEGRADED: 0, NEEDS_REAUTH: 0, ERROR: 1, REVOKED: 0 } });
   const populated = renderToStaticMarkup(createElement(ConnectionHealthSurface, { title: "Connection health", data, loading: false, error: null, filter: "all", onFilter: noop, onMutated: noop, nowMs: NOW }));
-  check("populated: the authority's order is kept (no client sort)", populated.indexOf("Inspect Chase") >= 0 && !/\.sort\(/.test(strip("components/platform/widgets/connection-health-table.tsx")));
+  check("populated: the authority's order is kept (no client sort)", populated.indexOf("Inspect Example Bank") >= 0 && !/\.sort\(/.test(strip("components/platform/widgets/connection-health-table.tsx")));
   check("populated: state words render with tones (never colour alone)", populated.includes(">Error<") && populated.includes(">Stale<"));
   check("populated: the filter group is present", populated.includes('aria-label="Connection filter"') && populated.includes("Needs action 1"));
   check("populated: no Owner column on the first frame (owners resolve after a CS read)", !populated.includes(">Owner<"));
   const filtered = renderToStaticMarkup(createElement(ConnectionHealthSurface, { title: "Connection health", data, loading: false, error: null, filter: "needs-action", onFilter: noop, onMutated: noop, nowMs: NOW }));
-  check("'Needs action' hides the merely-late row", filtered.includes("Inspect Chase") && (filtered.match(/Inspect Chase/g) ?? []).length === 1);
+  check("'Needs action' hides the merely-late row", filtered.includes("Inspect Example Bank") && (filtered.match(/Inspect Example Bank/g) ?? []).length === 1);
 
   const blockPop = renderToStaticMarkup(createElement(ConnectionHealthBlockSurface, { data, loading: false, error: null, onOpenWorkspace: noop, nowMs: NOW }));
   check("block: doorway names the Providers workspace", blockPop.includes("Open Providers →"));
-  check("block: unhealthy rows render through the same renderer", blockPop.includes("Inspect Chase") && blockPop.includes("24 h policy"));
+  check("block: unhealthy rows render through the same renderer", blockPop.includes("Inspect Example Bank") && blockPop.includes("24 h policy"));
   const blockNoHost = renderToStaticMarkup(createElement(ConnectionHealthBlockSurface, { data, loading: false, error: null, nowMs: NOW }));
   check("block: no doorway without a host switcher", !blockNoHost.includes("Open Providers →"));
 }

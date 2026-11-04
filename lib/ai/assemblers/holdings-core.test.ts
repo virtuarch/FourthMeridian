@@ -125,7 +125,7 @@ console.log("4. concentration parity — same helper + per-instrument aggregatio
   const canonical: CanonicalPositionRow[] = [
     { instrumentId: "i1", symbol: "NVDA", name: "Nvidia", reportingValue: 5000, isCash: false },
     { instrumentId: "i1", symbol: "NVDA", name: "Nvidia", reportingValue: 3000, isCash: false }, // second account
-    { instrumentId: "i2", symbol: "VTI",  name: "Vanguard Total", reportingValue: 4000, isCash: false },
+    { instrumentId: "i2", symbol: "VTI",  name: "Institution B Total", reportingValue: 4000, isCash: false },
     { instrumentId: "i3", symbol: "BND",  name: "Bonds", reportingValue: 2000, isCash: false },
     { instrumentId: "iCash", symbol: "CASH", name: "Cash", reportingValue: 1000, isCash: true }, // excluded
   ];
