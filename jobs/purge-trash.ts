@@ -23,6 +23,7 @@
  */
 
 import { runDataRetention, type DataRetentionResult } from "@/jobs/data-retention";
+import { platformAiPurgeJobFailure } from "@/lib/platform/intelligence/ai/conversations/purge";
 
 export interface PurgeTrashResult {
   /** Trashed goals permanently deleted this run — always 0 since W2 (see header). */
@@ -37,5 +38,11 @@ export interface PurgeTrashResult {
  * scripts and tests.
  */
 export async function purgeTrash(opts: { dryRun?: boolean } = {}): Promise<PurgeTrashResult> {
-  return { purgedGoals: 0, retention: await runDataRetention(undefined, new Date(), undefined, { dryRun: !!opts.dryRun }) };
+  const retention = await runDataRetention(undefined, new Date(), undefined, { dryRun: !!opts.dryRun });
+  // B11 PR D — design §7.4 R6: a failed (or misordered) Platform AI conversation
+  // purge is a FAILED JobRun. Thrown only AFTER every retention rule has run, so
+  // it never blocks one; the message is a fixed code (no error text, id or content).
+  const purgeFailure = platformAiPurgeJobFailure(retention.platformAiConversations);
+  if (purgeFailure) throw new Error(purgeFailure);
+  return { purgedGoals: 0, retention };
 }

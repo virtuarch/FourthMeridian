@@ -1,6 +1,6 @@
 # Platform AI conversations: persistent, multi-turn, operator-private
 
-> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #416 (this design; S2 CLEARED for PR B with REQUIRED 1–4, folded in)
+> **Owner:** Session 1 · **Status:** ACTIVE · **Updated:** 2026-11-04 · **PRs:** #416 (this design; S2 CLEARED for PR B with REQUIRED 1–4, folded in) · #424 (PR B) · PR D (lifecycle, draft, stacked on #424)
 
 **What this is.** The owner approved persistent, multi-turn conversations for Platform AI. This document is the design for S2 security review. No schema change, migration or route ships with it. The parent plan is [PLATFORM-INTELLIGENCE](PLATFORM-INTELLIGENCE.md) (foundation step 4).
 
@@ -584,11 +584,18 @@ All three columns are database-written, so the writer still chooses nothing.
   - **Soft-deleted conversations are EXCLUDED** (S2 REQUIRED 4). The operator deleted them, and they are hidden everywhere.
   - **Areas the operator currently holds** (a fresh READ grant): exported in full, with questions and rendered answers.
   - **Areas the operator has lost: QUESTIONS plus timestamps only, answers omitted.** The bundle notes the omission: "Answers omitted: you no longer have access to <area label>." The answers are platform data the operator may no longer read.
+  - **As built (PR D).**
+    - **The read.** `readConversationsForExport` in the one data module (`store.ts`) runs one `withTenantDb` read, owner-scoped and `deletedAt: null`. It writes nothing: a stale PENDING turn is not abandoned. The decrypt runs after the transaction closes.
+    - **The projection.** `export.ts` (pure) decides what the bundle carries. A held area exports its answers as **rendered text**, with citations and the code-written notes. A link exports as its text only, with no href or page id. Message ids and evidence refs are not exported.
+    - **"Held".** Held means an ACTIVE grant in **one** directory read, the list route's rule. There is no per-area fresh guard, so no false OBS-009 denial rows. When operator 2FA is enforced and the operator has none, no area is held (the guard's own SEC-PLAT-1 decision).
+    - **Flags.** The phase is not gated on the flags: subject access covers what is stored, and with the flags off nothing is.
+    - **The bundle.** It lands in `data.json` as `platformAiConversations` and in the manifest counts, with a manifest note.
+    - **Authorization.** The only authorization path is `POST /api/user/export` (`requireFreshUser`, the subject's own id).
 - **Backups mean erasure is not immediate (R4). Stated plainly:** a conversation is removed from active systems within one day of expiring or being deleted (the daily purge, §7.4 R6), and from backups within **M** days.
   - **M = the database provider's backup and point-in-time-recovery retention. OWNER-VERIFY.** `docs/operations/backup-restore-verification.md` lists the provider's backup cadence and PITR status as UNVERIFIED. The owner reads M from the provider dashboard (Database → Backups) and records it there and in `docs/operations/data-retention.md` before any disclosure states it.
   - **Manual dumps are a second, unbounded copy.** `db:backup` dumps follow the local-dump policy (encrypt at rest or delete within 24 h), which sets no deletion date for an **encrypted** dump. Until the owner sets one, M doesn't bound those: **OWNER-VERIFY**.
   - Backup copies hold **ciphertext** (`fm_backup` reads the column as stored). The root key that opens them persists until a rotation removes `ENCRYPTION_KEY_PREVIOUS`.
-  - A restore from backup would bring purged rows back, so any restore runbook must run the purge before the database serves traffic.
+  - A restore from backup would bring purged rows back, so any restore runbook must run the purge before the database serves traffic. **PR D:** written as `docs/operations/backup-restore-verification.md` §4.1. First prove the definer owner bypasses RLS on the restored target, because `--no-owner` re-owns the functions. Then purge until nothing more is removed. On a Production target, hold traffic until one `purge-trash` run has succeeded. No on-demand Production trigger exists for that job, which is an owner gap noted with OD-9.
 - **The provider's copy (R5).** Our purge does not reach what the AI provider kept of each call. OpenAI's API retention is governed by its own terms, which Fourth Meridian doesn't control, as `content/marketing/legal-ai.md` already says for the customer AI. The operator disclosure (OD-5) must say the same for Platform AI.
 
 ### 7.4 Retention: 90 days, TENTATIVE (owner 2026-11-04, pending S2's retention clearance)
@@ -625,7 +632,7 @@ The schema sketch (§2.1) is drawn for (b). §7.2 gives the (a) variant.
 - **Fail-safe.**
   - A failed or partial run changes nothing it didn't delete and is retried by the next day's run.
   - No path extends retention.
-  - A run that fails is visible as a failed `JobRun`, and **its failure never blocks the other retention rules**: each rule is caught on its own, the existing pattern.
+  - A run that fails is visible as a failed `JobRun`, and **its failure never blocks the other retention rules**: each rule is caught on its own, the existing pattern. **PR D:** the rule still never throws. After every rule has run, `jobs/purge-trash.ts` throws the fixed message from `platformAiPurgeJobFailure` when the purge errored or is misordered (§13). The registered job's `JobRun` is then `failed` and the job wrapper reports it. The message never carries the error text, an id or content.
 - **Boundary test:**
   - a message written 90 d + 1 s ago is purged;
   - one written 89 d ago is kept;
@@ -634,7 +641,7 @@ The schema sketch (§2.1) is drawn for (b). §7.2 gives the (a) variant.
   Time is moved by seeding `createdAt` / `purgeAfter` as the migration principal in the test (the only role that can), and the policy-parse test pins the SQL interval to the code constant.
 - **Activation.** PR D wires the job **disabled** (`PLATFORM_AI_PURGE_ENABLED`, off). It is switched on together with storage, and only after S2 clears retention and the Preview pre-enable check (§2.4) passes. Until then storage is Preview-only, and the conversations flag is off on every environment. The code refuses storage without it (§3.1 step 1), and because Preview runs no crons, an operator dispatches the purge by hand at least daily while it is enabled there (§13 enable checklist).
 
-`docs/operations/data-retention.md` gains the row in PR D: "Platform AI conversations: 90 days (tentative) · removed from active systems within 1 day, from backups within M days (OWNER-VERIFY)".
+`docs/operations/data-retention.md` gains the row in PR D: "Platform AI conversations: 90 days (tentative) · removed from active systems within 1 day, from backups within M days (OWNER-VERIFY)". **Landed in PR D.** It marks retention **TENTATIVE** pending S2, gives M as pending OWNER-VERIFY (OD-9), and states the rule is not active.
 
 ### 7.5 Audit (S2 B8)
 
@@ -742,7 +749,7 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 | R6 boundary: a message written 90 d + 1 s ago → purged; 89 d → kept; exactly 90 d → kept (strict `<`); the SQL interval equals `PLATFORM_AI_RETENTION_DAYS` | RLS/DB case (rows seeded by the migration principal) + policy-parse test |
 | **REQUIRED 1, writers never choose time:** fm_app INSERT naming `createdAt` or `purgeAfter` (message) or `createdAt` / `lastActivityAt` (conversation) → permission denied; fm_app UPDATE of any timestamp or retention column → permission denied; a soft delete with a past or future `deletedAt` value stores `now()`; a second delete or an un-delete → refused; UPDATE of a settled message as fm_app → refused; `completedAt` is the database's | `scripts/rls-acceptance.ts` new cases (real PG, fm_app) |
 | **REQUIRED 2, the definer on real roles:** under FORCE RLS, with the function owned by a BYPASSRLS non-superuser, seed expired + unexpired rows for two operators, call as fm_system → exactly the expired rows deleted and counts equal; negative control: a non-BYPASSRLS owner → `(0, 0)`, and the migration's DO block aborts; fm_system SELECT / DELETE on both tables → denied; fm_app EXECUTE → denied; the same for the touch trigger's owner | `scripts/rls-acceptance.ts` new cases + a migration-apply test against a non-bypass principal |
-| **REQUIRED 2, Preview pre-enable:** read-only check that both definer functions' owner has `rolbypassrls` on Preview; output in the PR D checklist | report script (read-only transaction) |
+| **REQUIRED 2, Preview pre-enable:** read-only check that both definer functions' owner has `rolbypassrls` on Preview; output in the PR D checklist | report script (read-only transaction); verdicts pinned by `scripts/platform-ai-conversations-precheck.test.ts`; real PG `rls:accept` case 65. **Not yet run on Preview** (OWNER go, §13). |
 | **REQUIRED 3, account purge:** under FORCE RLS, delete the User as the account purge's role → 0 conversation and 0 message rows | `scripts/rls-acceptance.ts` new case + `purge-census.test.ts` |
 | **REQUIRED 4, soft-delete grace:** a deleted conversation is purged once `deletedAt < now − grace` (grace 0: the next run; 7 d variant: 7 d − 1 s kept, 7 d + 1 s purged); export excludes it | RLS/DB case + `lib/export` unit |
 | Q6: a reply whose `replyToId` names a message in another conversation → FK violation; a FAILED row without a code, or a code outside the enum → refused | RLS/DB case |
@@ -762,7 +769,8 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 | Caps: 50 conversations, 40 messages, 500 chars → the stated 409 / 400 | handler unit |
 | Audit rows: create, delete, purge; no content keys | handler unit + `audit` shape pin |
 | Account deletion removes both tables (CASCADE bucket) | `purge-census.test.ts` + `deletion-safety.test.ts` |
-| Export: current areas in full; lost areas questions + timestamps with the omission note; soft-deleted excluded (Q5 ruled) | `lib/export` unit |
+| Export: current areas in full; lost areas questions + timestamps with the omission note; soft-deleted excluded (Q5 ruled) | `conversations/export.test.ts` (pure + pins) + `rls:accept:ai-conversations` cases 66–74 (real PG, the REAL `assembleUserExport`: no grant, an ACTIVE grant, a revoked grant; read-only) |
+| **PR D, the S2 disable order:** with the purge off and the conversations flag set, the job contacts nothing, reports `misordered` and fails its `JobRun`. The pre-disable check FAILS while rows remain, FAILS CLOSED for a non-bypass reader (who sees 0), and PASSES only when empty. | `jobs/data-retention.test.ts` + `scripts/platform-ai-conversations-precheck.test.ts` (pure) + `rls:accept` cases 75–77 (real PG) |
 | Flags: either flag off → 404 before any read | `route.test.ts`-style |
 | UI at 375 px and desktop rail; stale chip; no Markdown parser | component tests (PR C) |
 
@@ -777,6 +785,16 @@ All routes live under `app/api/platform/ai/conversations/` and are `runtime = "n
 | **B: schema + server** | The migration (§2.4, §7.2 function); Prisma models; the `PLATFORM_AI_MESSAGE` purpose plus `ENCRYPTED_FIELDS`; column grants and triggers (REQUIRED 1); the BYPASSRLS assertion (REQUIRED 2); the conversation data module (`withTenantDb` only); history assembly; the turn wrapper (§5); routes (§10) behind `PLATFORM_AI_CONVERSATIONS_ENABLED` (off); audit actions; purge-census bucket; tests §12 except UI and export | A **cleared by S2 for PR B** (2026-11-04, with REQUIRED 1–4); the prereq; **OD-7** (R1 shape: columns and purge variant); **OD-10** (grace constant) | develop, then Preview (migration), then **B11** (OD-2) |
 | **C: UX** | Page, sheet and rail, thread, stale chips, disclosure line (OD-5 wording), 375 px pins | B | develop / Preview |
 | **D: lifecycle** | Purge job wiring in `jobs/data-retention.ts` (batches, audit row), **disabled** behind `PLATFORM_AI_PURGE_ENABLED`; export phase (Q5 ruled; soft-deleted excluded); the Preview pre-enable BYPASSRLS check; `docs/operations/data-retention.md` row (M after OWNER-VERIFY); restore-runbook note (§7.3) | B (function exists) | develop, then B11 with B |
+
+**PR D as built (draft, stacked on #424; nothing enabled).**
+- **Already in #424.** The job wiring (batches, a counts-only audit row), the manual dispatch and the pre-enable check shipped there.
+- **Added by PR D:**
+  - **The disable-order guard.** `env.isPlatformAiConversationsFlagSetWithoutPurge` is a fact and never an enable. The rule reports `misordered` and `purge-trash` fails its `JobRun`.
+  - **The `--phase=pre-disable` check.** It reads counts only and fails closed on a non-bypass reader.
+  - **The JobRun failure** for an errored purge (§7.4 R6).
+  - **The export phase** (§7.3).
+  - **The docs:** the `data-retention.md` row and the restore note (`backup-restore-verification.md` §4.1).
+- **No migration, no schema change.** No flag default changes. No env var is set anywhere.
 
 **Activation order.**
 1. S2 clears retention (R1–R6) and the Preview pre-enable check passes.
@@ -798,6 +816,26 @@ Storage is never on without the purge, **and the code enforces it**: `env.isPlat
   - A missed day is a retention breach on Preview: record it and run the dispatch at once.
 - [ ] **Preview conversations are test data only** (synthetic questions; no real customer or operator-sensitive content). **At the end of acceptance, disable** (unset `PLATFORM_AI_CONVERSATIONS_ENABLED`) **and purge**: soft-delete the remaining conversations, then run the dispatch (grace 0 removes soft-deleted conversations and their messages) until it reports nothing more to remove; record the counts.
 - [ ] Production: the scheduled data-retention cron is live and the purge flag is set **before** or with the conversations flag; separate owner enable.
+
+**Disable order (S2, per environment). Never turn the purge off while conversation rows exist.**
+1. Unset `PLATFORM_AI_CONVERSATIONS_ENABLED` **first**. Storage stops at once, and the purge keeps running.
+2. Remove what remains:
+   - soft-delete the remaining conversations, or let them expire;
+   - let the purge run: the scheduled job, or on Preview the manual dispatch, until it reports nothing more to remove.
+3. Run `npm run report:platform-ai-conversations-precheck -- --env=<env> --phase=pre-disable`.
+   - It runs in one read-only transaction and reads two **counts** only.
+   - It PASSES only when the reader bypasses RLS **and** no conversation or message row remains.
+   - A non-bypass reader sees 0 under FORCE RLS, so it FAILS rather than proving an empty table.
+   - Record the output.
+4. Only then unset `PLATFORM_AI_PURGE_ENABLED`.
+
+**What the code enforces.** If the purge flag is unset while the conversations flag is still set (the wrong order, or a half enable), the scheduled job does the following:
+- it contacts nothing;
+- it reports `platformAiConversations.misordered`;
+- it **fails its `purge-trash` JobRun** with a fixed message, so the state cannot go unnoticed;
+- it never turns the purge on by itself.
+
+The routes are already off in that state (the §3.1 coupling). The code cannot see rows from the job (fm_system has no read path), so whether rows remain is proved by the step-3 check, not by the job.
 
 ---
 

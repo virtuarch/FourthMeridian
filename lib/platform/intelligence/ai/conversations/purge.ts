@@ -44,6 +44,13 @@ export interface PlatformAiPurgeResult {
   /** True when the last call saturated neither bound (nothing more expired right now). */
   exhausted: boolean;
   error?: string;
+  /**
+   * PR D — the S2 disable-order hazard: the purge is OFF while the conversations
+   * flag is still set (design §13: CONVERSATIONS off first, purge what remains,
+   * THEN the purge flag). Nothing is contacted; the scheduled job fails its
+   * JobRun so the state cannot go unnoticed (platformAiPurgeJobFailure).
+   */
+  misordered?: true;
 }
 
 export interface PlatformAiPurgeDeps {
@@ -59,6 +66,12 @@ export interface PlatformAiPurgeDeps {
    * scheduled job leaves it unset (a row only when something was removed).
    */
   auditEveryRun?: boolean;
+  /**
+   * PR D — true when the conversations flag is set but the purge flag is not
+   * (env.isPlatformAiConversationsFlagSetWithoutPurge). Only meaningful while
+   * `enabled` is false; it never enables anything.
+   */
+  misordered?: boolean;
 }
 
 /** The SQL the real seam runs — the ONLY statement fm_system issues against this feature. */
@@ -82,7 +95,13 @@ export function parsePurgeRow(rows: unknown): PlatformAiPurgeCounts {
 
 export async function runPlatformAiConversationPurge(deps: PlatformAiPurgeDeps): Promise<PlatformAiPurgeResult> {
   const out: PlatformAiPurgeResult = { enabled: deps.enabled, conversations: 0, messages: 0, batches: 0, exhausted: false };
-  if (!deps.enabled) return out;
+  if (!deps.enabled) {
+    if (deps.misordered) {
+      out.misordered = true;
+      console.error("[data-retention] platform-ai-conversations purge is DISABLED while PLATFORM_AI_CONVERSATIONS_ENABLED is set — S2 disable order: conversations off first, purge, then the purge flag (design §13)");
+    }
+    return out;
+  }
   try {
     while (out.batches < PLATFORM_AI_PURGE_MAX_CALLS) {
       const r = await deps.call(PLATFORM_AI_PURGE_BATCH);
@@ -109,4 +128,20 @@ export async function runPlatformAiConversationPurge(deps: PlatformAiPurgeDeps):
     console.log(`[data-retention] platform-ai-conversations: purged ${out.conversations} conversation(s), ${out.messages} message(s)${out.exhausted ? "" : " (more remain)"}`);
   }
   return out;
+}
+
+/**
+ * PR D — design §7.4 R6 "a run that fails is visible as a failed JobRun". The
+ * rule itself never throws (so it never blocks the other retention rules);
+ * jobs/purge-trash.ts calls THIS after every rule has run and throws its
+ * message, so the registered job's JobRun is `failed` (and reported by the job
+ * wrapper) whenever the purge errored or is misordered. A fixed code only —
+ * never the underlying error text, an id or content. Null ⇒ healthy (including
+ * the normal DISABLED state, and a dry run, where the rule is absent).
+ */
+export function platformAiPurgeJobFailure(r: PlatformAiPurgeResult | undefined): string | null {
+  if (!r) return null;
+  if (r.misordered) return "platform-ai-conversations purge MISORDERED: the purge flag is off while the conversations flag is set (design §13 disable order); the other retention rules completed";
+  if (r.error !== undefined) return "platform-ai-conversations purge FAILED (the result carries the error); the other retention rules completed";
+  return null;
 }

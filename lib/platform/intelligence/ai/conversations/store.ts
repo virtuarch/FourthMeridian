@@ -196,6 +196,32 @@ export async function loadConversationHistory(operatorId: string, conversationId
   }));
 }
 
+// ── Subject-access export (PR D, design §7.3, S2 Q5) ─────────────────────────
+
+export interface ExportConversationRecord extends ConversationRecord { messages: MessageRecord[] }
+
+/**
+ * The operator's LIVE conversations with every message, for their own data
+ * export (lib/export/assemble.ts — POST /api/user/export, requireFreshUser, the
+ * subject's own id). ONE short tenant transaction, owner-only RLS plus an
+ * explicit owner predicate; SOFT-DELETED conversations are EXCLUDED (S2 REQUIRED
+ * 4). Read-only: no stale PENDING turn is abandoned here (the export never
+ * writes the subject's data). The decrypt runs AFTER the transaction closes (the
+ * export's phase discipline). Which answers the bundle may carry is NOT decided
+ * here (./export.ts, by the areas the operator holds today).
+ */
+export async function readConversationsForExport(operatorId: string): Promise<ExportConversationRecord[]> {
+  const rows = await withTenantDb(operatorId, (tx) => tx.platformAiConversation.findMany({
+    where: { operatorUserId: operatorId, deletedAt: null },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { ...CONVERSATION_SELECT, messages: { orderBy: MESSAGE_ORDER, select: MESSAGE_SELECT } },
+  }));
+  return rows.map((r) => ({
+    id: r.id, area: r.area, createdAt: r.createdAt, lastActivityAt: r.lastActivityAt,
+    messages: r.messages.map(toMessageRecord),
+  }));
+}
+
 // ── Turn writes (transaction 1 / transaction 2, design §5.2) ─────────────────
 
 /** Insert the USER row (COMPLETE, the scrubbed question) and its PENDING ASSISTANT row. No timestamp is named. */

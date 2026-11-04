@@ -14,6 +14,17 @@
  * session SET through a pooler — the 2026-10-25 incident).
  *
  * Output: one PASS / FAIL line per check, no host, URL, id or content.
+ *
+ * ── PR D: THE PRE-DISABLE PHASE (S2 disable order, design §13) ─────────────
+ * `--phase=pre-disable` answers ONE question before PLATFORM_AI_PURGE_ENABLED is
+ * unset: are there still conversation rows the purge would have to remove? The
+ * S2 order is CONVERSATIONS off first, purge what remains, THEN the purge flag
+ * — never the purge flag while rows exist. It reads two COUNTS (no id, no
+ * timestamp, no content) as the connecting principal, in the same read-only
+ * transaction, and it FAILS CLOSED unless that principal bypasses RLS: under
+ * FORCE RLS a non-bypassing reader sees 0 rows and would "prove" an empty table
+ * (the same fail-open the definer assertion prevents). The counts are printed
+ * to the operator's terminal only, never written anywhere.
  */
 
 /** The four functions the migration creates, and the SECURITY mode each must have. */
@@ -111,4 +122,62 @@ export function renderPrecheck(env: string, at: string, v: { ok: boolean; lines:
       ? "  RESULT: PASS — record this output in the PR D enable checklist before any flag is set."
       : "  RESULT: FAIL — do NOT enable PLATFORM_AI_CONVERSATIONS_ENABLED or PLATFORM_AI_PURGE_ENABLED.",
   ].join("\n");
+}
+
+// ── PR D — the pre-disable phase ─────────────────────────────────────────────
+
+export type PrecheckPhase = "pre-enable" | "pre-disable";
+
+/** Counts only, plus the reader's own RLS posture (pg_roles for current_user). */
+export const PREDISABLE_SQL = `
+SELECT (SELECT count(*) FROM public."PlatformAiConversation")::integer AS conversations,
+       (SELECT count(*) FROM public."PlatformAiMessage")::integer AS messages,
+       r.rolbypassrls AS reader_bypassrls,
+       r.rolsuper AS reader_super
+  FROM pg_roles r
+ WHERE r.rolname = current_user`;
+
+export interface PredisableRow { conversations: number; messages: number; reader_bypassrls: boolean; reader_super: boolean }
+
+/**
+ * PURE — the pre-disable verdict. PASS only when the reader bypasses RLS (so a
+ * zero is a real zero) AND no conversation or message row remains. Anything
+ * else ⇒ keep PLATFORM_AI_PURGE_ENABLED on: soft-delete what remains, run the
+ * purge (Preview: the manual dispatch) and check again.
+ */
+export function evaluatePredisable(rows: readonly PredisableRow[]): { ok: boolean; lines: PrecheckLine[] } {
+  const lines: PrecheckLine[] = [];
+  const add = (ok: boolean, text: string) => lines.push({ ok, text });
+  if (rows.length !== 1) {
+    add(false, "the reader's role was found (exactly one pg_roles row for current_user)");
+    return { ok: false, lines };
+  }
+  const r = rows[0];
+  const sees = r.reader_bypassrls === true || r.reader_super === true;
+  add(sees, `the reader bypasses RLS, so a count of 0 is real (rolbypassrls=${r.reader_bypassrls}, rolsuper=${r.reader_super})`);
+  const n = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : Number.NaN);
+  const conversations = n(r.conversations), messages = n(r.messages);
+  add(sees && conversations === 0, `no PlatformAiConversation row remains (count=${Number.isNaN(conversations) ? "unreadable" : conversations})`);
+  add(sees && messages === 0, `no PlatformAiMessage row remains (count=${Number.isNaN(messages) ? "unreadable" : messages})`);
+  return { ok: lines.every((l) => l.ok), lines };
+}
+
+export function renderPredisable(env: string, at: string, v: { ok: boolean; lines: PrecheckLine[] }): string {
+  return [
+    `PLATFORM AI CONVERSATIONS — PRE-DISABLE CHECK (read-only, counts only) · env=${env} · ${at}`,
+    ...v.lines.map((l) => `  ${l.ok ? "PASS" : "FAIL"}  ${l.text}`),
+    "",
+    v.ok
+      ? "  RESULT: PASS — no conversation data remains; PLATFORM_AI_PURGE_ENABLED may now be unset (after PLATFORM_AI_CONVERSATIONS_ENABLED)."
+      : "  RESULT: FAIL — keep PLATFORM_AI_PURGE_ENABLED ON. Unset PLATFORM_AI_CONVERSATIONS_ENABLED first, soft-delete what remains, run the purge until nothing more is removed, then check again.",
+  ].join("\n");
+}
+
+/** PURE — `--phase=<pre-enable|pre-disable>`; absent ⇒ pre-enable (the documented default). Null ⇒ refused. */
+export function parsePrecheckPhase(args: readonly string[]): PrecheckPhase | null {
+  const given = args.filter((a) => a.startsWith("--phase="));
+  if (given.length === 0) return "pre-enable";
+  if (given.length !== 1) return null;
+  const v = given[0].slice("--phase=".length);
+  return v === "pre-enable" || v === "pre-disable" ? v : null;
 }
