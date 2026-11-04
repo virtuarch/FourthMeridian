@@ -100,7 +100,7 @@ async function runnerSection(): Promise<void> {
     // S2 (#370): every figure row names its bound kind literally, as its LAST cell.
     const tableRows = doc.split("\n").filter((l) => l.startsWith("| ") && !/^\|\s*(Coin|Measure|Frozen rows)\s*\|/.test(l));
     const unlabelled = tableRows.filter((l) => !BOUND_LABELS.some((b) => l.trimEnd().endsWith(`| ${b} |`)));
-    check("every count row carries exactly one bound label (lower bound | upper bound | review list (includes genuine $0) | exact)",
+    check("every count row carries exactly one bound label (lower bound | upper bound | review list (includes genuine $0) | exact | exact for retained data (purged accounts can't be seen))",
       tableRows.length >= 15 && unlabelled.length === 0, unlabelled.join(" / "));
     check("the mapping: CoinGecko late = lower bound; FIN-A2 candidates = review list; FIN-E fillable = upper bound; FM-AUDIT-021 candidates = upper bound",
       /\| BTC \| one day late \|.*\| lower bound \|$/m.test(doc)
@@ -109,11 +109,11 @@ async function runnerSection(): Promise<void> {
         && /\| \*\*Candidates\*\* \(stale.*\| upper bound \|$/m.test(doc)
         && /\| \*\*Derivable\*\*.*\| upper bound \|$/m.test(doc)
         && /\| Not derivable .*\| exact \|$/m.test(doc)
-        && /\| No restricted-capable accounts: the split is trivially 0 .*\| exact \|$/m.test(doc));
+        && /\| No restricted-capable accounts: the split is trivially 0 .*\| exact for retained data \(purged accounts can't be seen\) \|$/m.test(doc));
     check("frozen-restricted renders through the fake: derivable 5 (1 Space), trivially 0 = 2, not derivable 0, population 7",
       /\| \*\*Derivable\*\* .*\| \*\*5\*\* \| \*\*1\*\* \| 2026-02-01 → 2026-02-05 \| upper bound \|$/m.test(doc)
         && /\| Not derivable .*\| 0 \| 0 \| — \| exact \|$/m.test(doc)
-        && /trivially 0 \| 2 \| 1 \| 2026-02-06 → 2026-02-07 \| exact \|$/m.test(doc)
+        && /trivially 0 \| 2 \| 1 \| 2026-02-06 → 2026-02-07 \| exact for retained data \(purged accounts can't be seen\) \|$/m.test(doc)
         && /\(population\) \| 7 \| — \| 2026-02-01 → 2026-02-07 \| exact \|$/m.test(doc));
     check("frozen-restricted says it is report-only and that a fill is owner-gated",
       /REPORT ONLY: this tool has no fill and no apply\. Any fill of frozen rows .* is a separate owner-gated repair\./.test(doc));
@@ -140,13 +140,17 @@ console.log("2b. frozen-restricted (pure)");
   const none = summarizeFrozenRestricted([]);
   check("no frozen NULL rows ⇒ all zero, no range", none.total.rows === 0 && none.total.fromDate === null && none.derivable.fromDate === null);
   const text = renderReport({ report: "frozen-restricted", status: "OK", data: s });
-  check("labels: derivable = upper bound; not derivable, trivially 0 and the population = exact",
+  check("labels: derivable = upper bound; not derivable and the population = exact; trivially 0 = exact for retained data (S2 #376)",
     /\| \*\*Derivable\*\*.*\| \*\*4\*\* \| \*\*1\*\* \| 2026-02-01 → 2026-02-04 \| upper bound \|$/m.test(text)
       && /\| Not derivable .*\| 3 \| 2 \| 2026-01-10 → 2026-03-01 \| exact \|$/m.test(text)
-      && /trivially 0 \| 1 \| 1 \| 2025-12-31 \| exact \|$/m.test(text)
+      && /trivially 0 \| 1 \| 1 \| 2025-12-31 \| exact for retained data \(purged accounts can't be seen\) \|$/m.test(text)
       && /\(population\) \| 8 \| — \| 2025-12-31 → 2026-03-01 \| exact \|$/m.test(text));
   check("the heuristic names the walk-back, the posted-ledger rule and the owner gate",
     /WALKS BACK from each account's current posted balance/.test(text) && /posted ledger reaches the day/.test(text) && /separate owner-gated repair/.test(text));
+  check("the heuristic names the hard-delete paths that can hide a linked HSA, and says purge is not the only one",
+    /lib\/account-deletion\/purge\.ts\) is NOT the only hard-delete path/.test(text) && /scripts\/purge-plaid-connection\.ts/.test(text)
+      && /scripts\/dev-reset-test-state\.ts/.test(text) && /links are revoked \(status \+ revokedAt\), never deleted/.test(text));
+  check("the allowed-label set includes the retained-data label", BOUND_LABELS.includes("exact for retained data (purged accounts can't be seen)") && BOUND_LABELS.length === 5);
   check("the SQL reads frozen observed NULL rows only, posted non-deleted transactions only, and the restricted depository subtypes",
     /"isEstimated" = false AND s\."restrictedCash" IS NULL/.test(FROZEN_RESTRICTED_SQL)
       && /t\."deletedAt" IS NULL AND t\.pending = false/.test(FROZEN_RESTRICTED_SQL)

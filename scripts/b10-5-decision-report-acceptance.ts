@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { makeRecorder, prepareHarness, psql, teardownHarness } from "./lib/rls-harness";
-import { BOUND_LABELS, outputLeaks } from "./lib/b10-5-decision-report.core";
+import { BOUND, BOUND_LABELS, outputLeaks } from "./lib/b10-5-decision-report.core";
 
 const KEEP = process.argv.includes("--keep");
 const { check, report } = makeRecorder();
@@ -174,7 +174,7 @@ async function main(): Promise<number> {
   check(25, "frozen-restricted is part of `all`: the base fixture's frozen NULL row is trivially 0, nothing derivable",
     /### 5\. Frozen observed rows: derivable restricted-cash split \(FIN-E\)/.test(text)
       && row(text, "**Derivable**").includes("| **0** | **0** | — | upper bound |")
-      && row(text, "No restricted-capable").includes("| 1 | 1 | 2026-05-04 | exact |")
+      && row(text, "No restricted-capable").includes(`| 1 | 1 | 2026-05-04 | ${BOUND.RETAINED} |`)
       && row(text, "All frozen observed rows with NULL").includes("| 1 | — | 2026-05-04 | exact |"),
     `${row(text, "**Derivable**")} / ${row(text, "No restricted-capable")}`);
 
@@ -223,8 +223,8 @@ async function main(): Promise<number> {
       row(t, "**Derivable**").includes("| **3** | **2** | 2026-01-10 → 2026-02-02 | upper bound |"), row(t, "**Derivable**"));
     check(28, "not derivable: 2 days, 2 Spaces, 2026-01-03 → 2026-02-10 (first POSTED non-deleted row is after the day — pending and deleted rows do not count; an account deleted since), exact",
       row(t, "Not derivable").includes("| 2 | 2 | 2026-01-03 → 2026-02-10 | exact |"), row(t, "Not derivable"));
-    check(29, "trivially 0: 2 days, 2 Spaces, 2026-02-01 → 2026-05-04 (plain checking, a 401k investment, an HSA link revoked before the day), exact",
-      row(t, "No restricted-capable").includes("| 2 | 2 | 2026-02-01 → 2026-05-04 | exact |"), row(t, "No restricted-capable"));
+    check(29, "trivially 0: 2 days, 2 Spaces, 2026-02-01 → 2026-05-04 (plain checking, a 401k investment, an HSA link revoked before the day), exact for retained data",
+      row(t, "No restricted-capable").includes("| 2 | 2 | 2026-02-01 → 2026-05-04 | exact for retained data (purged accounts can't be seen) |"), row(t, "No restricted-capable"));
     check(30, "population: 7 frozen observed NULL rows (estimate rows and a recorded 0 excluded), exact",
       row(t, "All frozen observed rows with NULL").includes("| 7 | — | 2026-01-03 → 2026-05-04 | exact |"), row(t, "All frozen observed rows with NULL"));
     check(31, "it states it is report-only and that any fill is a separate owner-gated repair",

@@ -106,7 +106,9 @@ export const HEURISTICS: Record<ReportName, string> = {
     "Among frozen observed rows (`isEstimated = false`) with NULL `restrictedCash`, a restricted-capable account counts for a day when its link to the Space was live at that day's end (created before, not revoked by) and it was not deleted by then. " +
     "A day is derivable when every such account is still live (its current balance is the walk's anchor) and its posted ledger reaches the day: it has a posted, non-deleted transaction dated on or before that day (the existence evidence lib/data/account-coverage.core.ts uses; the resolver's own floor, max(account created, link created), is always met on a linked day, so it cannot discriminate). " +
     "Derivable is an UPPER bound: the walk treats a day with no posted rows as no movement, so a gap in the synced transaction history after the day, a pending-to-posted change or an anchor that was never observed (FIN-A2) still yields a number, which may be wrong. " +
-    "A day with no restricted-capable account has a restricted share of exactly 0 (the classification uses the subtype stored today). The rest are not derivable. REPORT ONLY: no fill and no apply exist; filling frozen rows is a separate owner-gated repair.",
+    "A day with no restricted-capable account has a restricted share of 0 (the classification uses the subtype stored today), exact for RETAINED data only: links are revoked (status + revokedAt), never deleted, but a HARD-deleted FinancialAccount cascades its SpaceAccountLink and Transaction rows away while another Space's frozen snapshot rows survive, so a purged HSA that Space linked is invisible here. " +
+    "Account purge after the deletion grace period (lib/account-deletion/purge.ts) is NOT the only hard-delete path that can do this: the operator scripts scripts/purge-plaid-connection.ts (one user's Plaid accounts at one institution) and scripts/dev-reset-test-state.ts (one user's connected accounts) hard-delete accounts too. " +
+    "The permanent manual-account delete cannot (it accepts type `other` only), and a Space delete takes that Space's snapshots with it. The rest are not derivable. REPORT ONLY: no fill and no apply exist; filling frozen rows is a separate owner-gated repair.",
 };
 
 // ── client seam ──────────────────────────────────────────────────────────────
@@ -432,6 +434,8 @@ export const BOUND = {
   UPPER: "upper bound",
   REVIEW: "review list (includes genuine $0)",
   EXACT: "exact",
+  /** S2 (#376): a hard-deleted account takes its links and transactions with it, so "no restricted-capable account" is exact only over what was retained. */
+  RETAINED: "exact for retained data (purged accounts can't be seen)",
 } as const;
 export const BOUND_LABELS: readonly string[] = Object.values(BOUND);
 
@@ -501,7 +505,7 @@ export function renderReport(o: ReportOutcome): string {
       L.push("| Frozen rows | Days (rows) | Spaces | Date range | Bound |", "|---|---:|---:|---|---|",
         `| **Derivable** (every restricted-capable account linked that day is inside its walk-back coverage) | **${n(d.derivable.rows)}** | **${n(d.derivable.spaces)}** | ${range(d.derivable.fromDate, d.derivable.toDate)} | ${BOUND.UPPER} |`,
         `| Not derivable (a restricted-capable account's posted ledger does not reach the day, or it is deleted since) | ${n(d.notDerivable.rows)} | ${n(d.notDerivable.spaces)} | ${range(d.notDerivable.fromDate, d.notDerivable.toDate)} | ${BOUND.EXACT} |`,
-        `| No restricted-capable accounts: the split is trivially 0 | ${n(d.trivialZero.rows)} | ${n(d.trivialZero.spaces)} | ${range(d.trivialZero.fromDate, d.trivialZero.toDate)} | ${BOUND.EXACT} |`,
+        `| No restricted-capable accounts: the split is trivially 0 | ${n(d.trivialZero.rows)} | ${n(d.trivialZero.spaces)} | ${range(d.trivialZero.fromDate, d.trivialZero.toDate)} | ${BOUND.RETAINED} |`,
         `| All frozen observed rows with NULL restrictedCash (population) | ${n(d.total.rows)} | — | ${range(d.total.fromDate, d.total.toDate)} | ${BOUND.EXACT} |`, "",
         "REPORT ONLY: this tool has no fill and no apply. Any fill of frozen rows (which regeneration never rewrites) is a separate owner-gated repair.", "");
       break;
