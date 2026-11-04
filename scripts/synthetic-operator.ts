@@ -11,7 +11,7 @@
  *   npm run ops:synthetic-operator -- --env=<preview|local> --cleanup --record=<private dir>
  *
  * PROVISION — one User (role USER, "Synthetic Operator", an @example.test
- * address, email pre-verified, TOTP enabled) created in the SAME shape the
+ * address, email pre-verified, NO TOTP) created in the SAME shape the
  * registration route creates (app/api/auth/register/route.ts: Personal Space
  * from the `personal` template, OWNER membership, preferredSpaceId, AiAgent,
  * default CustomerPolicyAssignment, REGISTER audit row) — no other Space, no
@@ -19,10 +19,11 @@
  * (PLATFORM_OPS READ, GROWTH_REVENUE READ), each with its canonical
  * PLATFORM_GRANT_CREATED AuditLog row, all in ONE transaction. Password: 32
  * random characters, bcryptjs cost 12 (exactly the registration route's
- * `bcrypt.hash(password, 12)` — the app has no shared hash helper). TOTP: the
- * app's own generateSecret(20) (lib/totp, node crypto) sealed with
- * encryptWithPurpose(…, TOTP_SECRET) into User.totpSecret, totpEnabled = true —
- * the storage shape of app/api/user/totp/setup + verify. Secrets go ONLY to
+ * `bcrypt.hash(password, 12)` — the app has no shared hash helper). TOTP: NOT
+ * provisioned here — a seed sealed with this process's ENCRYPTION_KEY would not
+ * open under the target deployment's key (Preview's is Vercel Sensitive, never
+ * pulled); where operator 2FA is enforced the operator enrols through the app's
+ * own /api/user/totp setup at first sign-in. The password goes ONLY to
  * ~/FourthMeridian-private/synthetic-operator-<UTC stamp>/credentials.json
  * (umask 077, dir 0700, file 0600); stdout carries PASS lines, the private
  * directory and the cleanup deadline — never a secret, id, host or ref.
@@ -129,8 +130,6 @@ async function provision(db: Db, env: "local" | "preview", targetHash: string | 
   if (deadline.getTime() <= now.getTime()) refuse(["the owner's hard cleanup deadline has passed — no new synthetic operator."], true);
 
   const bcrypt = (await import("bcryptjs")).default;
-  const { generateSecret, otpauthUri } = await import("@/lib/totp");
-  const { encryptWithPurpose, EncryptionPurpose } = await import("@/lib/plaid/encryption");
   const { AuditAction } = await import("@/lib/audit-actions");
   const { auditEmailHash } = await import("@/lib/audit");
   const { possessive } = await import("@/lib/format");
@@ -140,10 +139,8 @@ async function provision(db: Db, env: "local" | "preview", targetHash: string | 
   const { Prisma, SpaceMemberRole } = await import("@prisma/client");
 
   const password = passwordFromBytes(randomBytes(24));
-  const totpSeed = generateSecret(20);
-  secrets.push(password, totpSeed);
+  secrets.push(password);
   const passwordHash = await bcrypt.hash(password, 12);
-  const totpSecret = encryptWithPurpose(totpSeed, EncryptionPurpose.TOTP_SECRET);
   const defaultPolicyGroup = (await loadPolicyGroupCatalogue()).defaultKey;
   const personalTemplate = getTemplateForCategory("PERSONAL");
   if (!personalTemplate) throw new Error("space-templates registry has no PERSONAL template");
@@ -159,7 +156,7 @@ async function provision(db: Db, env: "local" | "preview", targetHash: string | 
   };
   const credentials = (userId: string | null, grantIds: Record<string, string>) => ({
     kind: "synthetic-operator-credentials", ...base, userId, grantIds,
-    password, totpSecret: totpSeed, otpauthUri: otpauthUri(SYNTHETIC_EMAIL, totpSeed),
+    password,
   });
   writePrivateJson(dir, CREDENTIALS_FILE, credentials(null, {}), true);
 
@@ -175,8 +172,11 @@ async function provision(db: Db, env: "local" | "preview", targetHash: string | 
           lastName: SYNTHETIC_LAST_NAME,
           role: SYNTHETIC_ROLE,
           passwordHash,
-          totpSecret,
-          totpEnabled: true,
+          // NO TOTP here (S1, 2026-11-05): a seed sealed with THIS process's ENCRYPTION_KEY
+          // would not open under the target deployment's key (Preview's key is a Vercel
+          // Sensitive value and is never pulled). If operator 2FA is enforced, the
+          // operator enrols through the app's own /api/user/totp setup at first sign-in.
+          totpEnabled: false,
           emailVerifiedAt: now,
         },
         select: { id: true },
@@ -240,7 +240,7 @@ async function provision(db: Db, env: "local" | "preview", targetHash: string | 
   });
   const ok = (label: string, cond: boolean) => { if (!cond) throw new Error(`post-provision check failed: ${label}`); pass(label); };
   ok("user exists with role USER and an @example.test address", !!u && u.role === "USER" && isSyntheticEmailAllowed(u.email));
-  ok("TOTP enabled; seed stored sealed for TOTP_SECRET (never plaintext)", !!u?.totpEnabled && !!u.totpSecret && u.totpSecret !== totpSeed && /^v[23]:/.test(u.totpSecret));
+  ok("no TOTP provisioned (enrolment, if enforced, is the app's own flow)", !u?.totpEnabled && !u?.totpSecret);
   ok("password stored as a bcrypt cost-12 hash", !!u?.passwordHash && /^\$2[aby]\$12\$/.test(u.passwordHash));
   const held = (u?.platformGrants ?? []).map((g) => `${g.area}:${g.level}:${g.status}`).sort();
   ok("grants are exactly PLATFORM_OPS READ + GROWTH_REVENUE READ, both ACTIVE",

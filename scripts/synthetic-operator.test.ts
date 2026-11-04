@@ -160,8 +160,8 @@ check("app/api/admin/platform-grants is never imported", !allSpecs.some((s) => /
 check("no static database import (lib/db only after the gate)",
   !/^import[^\n]*["']@\/lib\/db["']/m.test(src) && src.indexOf("decideSyntheticOperator(") < src.indexOf('await import("@/lib/db")'));
 check("uses the registration hash (bcryptjs cost 12)", /import\("bcryptjs"\)/.test(src) && /bcrypt\.hash\(password, 12\)/.test(src));
-check("uses the app's TOTP helpers (lib/totp generateSecret + encryptWithPurpose TOTP_SECRET)",
-  /import\("@\/lib\/totp"\)/.test(src) && /generateSecret\(20\)/.test(src) && /encryptWithPurpose\(totpSeed, EncryptionPurpose\.TOTP_SECRET\)/.test(src) && /totpEnabled: true/.test(src));
+check("provisions NO TOTP (no seed sealed with the local key; enrolment is the app's own flow)",
+  !/@\/lib\/totp/.test(src) && !/TOTP_SECRET/.test(src) && /totpEnabled: false/.test(src) && !/totpSecret[,:]/.test(src.replace(/select: \{[^}]*\}/g, "")));
 const provisionBody = src.slice(src.indexOf("async function provision("), src.indexOf("async function revokeArea("));
 const provisionTx = provisionBody.slice(provisionBody.indexOf("db.$transaction("));
 check("each grant and its PLATFORM_GRANT_CREATED audit row are written in ONE $transaction",

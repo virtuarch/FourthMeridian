@@ -79,15 +79,14 @@ npm run ops:synthetic-operator -- --env=preview --cleanup --record=<private dir>
   DATABASE_URL/DIRECT_URL mismatch and any unknown flag. Refusals name the rule
   only.
 - **Account:** one `USER` with the fabricated name "Synthetic Operator" and a
-  reserved `@example.test` address. Its email is pre-verified and TOTP is
-  enabled. The account has the same shape registration creates: Personal Space,
+  reserved `@example.test` address. Its email is pre-verified. **No TOTP is
+  provisioned:** a seed sealed with the script's own `ENCRYPTION_KEY` would not
+  open under the deployment's key, and Preview's key (a Vercel Sensitive value)
+  is never pulled. Where operator 2FA is enforced, the operator enrols through
+  the app's own `/api/user/totp` setup at first sign-in. The account has the same shape registration creates: Personal Space,
   OWNER membership, agent, default policy group and a `REGISTER` audit row. It
   has no other Space, no provider connection and no customer data. The password
-  is hashed the way registration does it (bcryptjs, cost 12). The TOTP seed comes
-  from `lib/totp` `generateSecret`, sealed with
-  `encryptWithPurpose(…, TOTP_SECRET)`, the same as `/api/user/totp/setup`.
-  Preview's `ENCRYPTION_KEY` must be in the operator's env, or login cannot open
-  the seed.
+  is hashed the way registration does it (bcryptjs, cost 12).
 - **Grants (hard-coded allowlist):** `PLATFORM_OPS` READ and `GROWTH_REVENUE`
   READ. It never grants CUSTOMER_SUCCESS, MERCHANT_OPS, WRITE/CONTROL or
   SYSTEM_ADMIN. Each grant or revocation is written in one transaction with its
@@ -97,7 +96,7 @@ npm run ops:synthetic-operator -- --env=preview --cleanup --record=<private dir>
   notification or e-mail module.
 - **Secrets:** they go only to
   `~/FourthMeridian-private/synthetic-operator-<UTC stamp>/credentials.json`
-  (umask 077, dir 0700, file 0600): the password, TOTP seed, otpauth URI, user
+  (umask 077, dir 0700, file 0600): the password, user
   and grant ids, and the cleanup deadline. The deadline is
   min(provision + 14 days, 2026-11-19T23:59:59Z). Stdout prints PASS lines, the
   private directory and the deadline only. If a synthetic operator already

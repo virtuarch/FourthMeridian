@@ -69,27 +69,19 @@ async function main(): Promise<number> {
     const stdoutLines = p.out.split("\n").map((l) => l.trim()).filter(Boolean);
     check(6, "stdout carries only PASS lines, the private directory and the deadline",
       stdoutLines.every((l) => /^PASS  /.test(l) || /^private directory: /.test(l) || /^cleanup deadline: /.test(l)), JSON.stringify(stdoutLines));
-    check(7, "no secret on stdout/stderr (password, TOTP seed, otpauth)",
-      typeof cred.password === "string" && cred.password.length === 32 && typeof cred.totpSecret === "string"
-      && !(p.out + p.err).includes(cred.password) && !(p.out + p.err).includes(cred.totpSecret) && !/otpauth:/.test(p.out + p.err));
+    check(7, "no secret on stdout/stderr (the password); the record holds no TOTP seed",
+      typeof cred.password === "string" && cred.password.length === 32 && cred.totpSecret === undefined && cred.otpauthUri === undefined
+      && !(p.out + p.err).includes(cred.password));
     check(8, "credential record carries the deadline (≤ 2026-11-19T23:59:59Z), user id and grant ids",
       typeof cred.cleanupDeadline === "string" && new Date(cred.cleanupDeadline).getTime() <= Date.parse("2026-11-19T23:59:59Z")
-      && typeof cred.userId === "string" && Object.keys(cred.grantIds ?? {}).sort().join(",") === "GROWTH_REVENUE,PLATFORM_OPS"
-      && /^otpauth:\/\/totp\//.test(cred.otpauthUri ?? ""));
+      && typeof cred.userId === "string" && Object.keys(cred.grantIds ?? {}).sort().join(",") === "GROWTH_REVENUE,PLATFORM_OPS");
 
     const uid = one(`SELECT id FROM "User" WHERE email = '${EMAIL}';`);
-    check(9, "the user exists, role USER, email verified, TOTP enabled",
-      one(`SELECT role || '|' || "totpEnabled" || '|' || ("emailVerifiedAt" IS NOT NULL) FROM "User" WHERE id = '${uid}';`) === "USER|true|true");
+    check(9, "the user exists, role USER, email verified, NO TOTP (no seed sealed with the script's key)",
+      one(`SELECT role || '|' || "totpEnabled" || '|' || ("emailVerifiedAt" IS NOT NULL) || '|' || ("totpSecret" IS NULL) FROM "User" WHERE id = '${uid}';`) === "USER|false|true|true");
     const { default: bcrypt } = await import("bcryptjs");
-    const { decryptWithPurpose, EncryptionPurpose } = await import("@/lib/plaid/encryption");
-    const { generateTOTP, verifyTOTP } = await import("@/lib/totp");
     const hash = one(`SELECT "passwordHash" FROM "User" WHERE id = '${uid}';`);
-    const sealed = one(`SELECT "totpSecret" FROM "User" WHERE id = '${uid}';`);
     check(10, "password hash is bcrypt cost 12 and verifies the private password", /^\$2[aby]\$12\$/.test(hash) && await bcrypt.compare(cred.password, hash));
-    let opened = "";
-    try { opened = decryptWithPurpose(sealed, EncryptionPurpose.TOTP_SECRET); } catch (e) { opened = `ERR ${String(e)}`; }
-    check(11, "TOTP secret is sealed (v2) and opens — with the app's decrypt — to the private seed; a live code verifies",
-      /^v2:/.test(sealed) && opened === cred.totpSecret && verifyTOTP(generateTOTP(cred.totpSecret), opened));
     check(12, "grants are exactly PLATFORM_OPS READ + GROWTH_REVENUE READ, ACTIVE, no grantor",
       one(`SELECT string_agg(area || ':' || level || ':' || status || ':' || coalesce("grantedById", '-'), ',' ORDER BY area::text) FROM "PlatformGrant" WHERE "userId" = '${uid}';`)
       === "GROWTH_REVENUE:READ:ACTIVE:-,PLATFORM_OPS:READ:ACTIVE:-");
@@ -145,7 +137,7 @@ async function main(): Promise<number> {
       && JSON.stringify(cleanupRec.removed) === JSON.stringify({ users: 1, grants: 2, conversations: 1, messages: 2, sessions: 0 })
       && !/password|totp|@example\.test|userId/i.test(readFileSync(cleanupFile, "utf8")), JSON.stringify(cleanupRec));
     check(28, "no e-mail / notification rows were written by any step", commsRows() === commsBefore, `${commsBefore} → ${commsRows()}`);
-    check(29, "no secret printed by cleanup", !(c.out + c.err).includes(cred.password) && !(c.out + c.err).includes(cred.totpSecret));
+    check(29, "no secret printed by cleanup", !(c.out + c.err).includes(cred.password));
   } finally {
     rmSync(home, { recursive: true, force: true });
     teardownHarness(KEEP);
