@@ -115,6 +115,10 @@ export function drillLinkOn(d: MetricDrill, surface: PlatformArea): MetricDrillL
   return d;
 }
 
+/** The short server phrase for a window of N days / hours ("in the last 7 days") — MetricWindow.label's form. */
+export const daysWindowLabel = (n: number) => `in the last ${n} day${n === 1 ? "" : "s"}`;
+export const hoursWindowLabel = (n: number) => `in the last ${n} hour${n === 1 ? "" : "s"}`;
+
 export interface MetricWindow {
   kind: "ROLLING" | "POINT_IN_TIME" | "UTC_DAYS";
   description: string;
@@ -127,6 +131,14 @@ export interface MetricWindow {
    * contract's declared windows (retrieve.test.ts); any other window is refused.
    */
   days?: readonly number[];
+  /**
+   * The short server phrase a renderer states beside a figure (S2, 2026-11-04),
+   * e.g. "in the last 7 days", "this calendar month to date (UTC)". Required for
+   * every kind except POINT_IN_TIME. For a metric with `days`, it is the DEFAULT
+   * window's phrase (a read with another window states that window's phrase). Any
+   * number in it must equal the envelope's days / hours (pinned).
+   */
+  label?: string;
 }
 
 export interface MetricDefinition {
@@ -181,7 +193,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Provider outcome verdict",
     summary: "A provider's verdict (Healthy / Degraded / Failing / Not enough data) from its recorded outcome counts, one evidence kind at a time.",
     answerClass: "CALCULATED",
-    window: { kind: "ROLLING", timezone: "UTC", description: "Producing-job runs in the 7-day provider window; ProviderCall attempts in the 7-day roll-up." },
+    window: { kind: "ROLLING", timezone: "UTC", description: "Producing-job runs in the 7-day provider window; ProviderCall attempts in the 7-day roll-up.", label: "in the last 7 days" },
     numerator: { description: "Failed decided outcomes (failed job runs, or failed ProviderCall attempts).", source: { module: "lib/platform/verdicts/provider-outcome.ts", symbol: "assessOutcomes" } },
     denominator: { description: "Decided outcomes: succeeded + failed (in-flight excluded). A verdict needs PROVIDER_OUTCOME_DEFINITION.minSample of them.", source: { module: "lib/platform/verdicts/provider-outcome.ts", symbol: "PROVIDER_OUTCOME_DEFINITION" } },
     compute: { module: "lib/platform/verdicts/provider-outcome.ts", symbol: "assessOutcomes" },
@@ -234,7 +246,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "AI fleet spend vs budget (24 h)",
     summary: "How priced the fleet's rolling 24-hour customer AI spend is, and what share of the fleet alert threshold it uses. A budget check over 24 hours, not a cost breakdown: for what the platform is costing, read economics-operating-cost@1 and economics-ai-cost@1.",
     answerClass: "CALCULATED",
-    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing BUDGET_WINDOW_HOURS (24 h) from the reader's now.", source: { module: "lib/platform/ai/ai-budget.ts", symbol: "BUDGET_WINDOW_HOURS" } },
+    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing BUDGET_WINDOW_HOURS (24 h) from the reader's now.", label: "in the last 24 hours", source: { module: "lib/platform/ai/ai-budget.ts", symbol: "BUDGET_WINDOW_HOURS" } },
     numerator: { description: "Σ rate-card-priced spend of customer-surface AiInvocations in the window (a lower bound when some are unpriced).", source: { module: "lib/platform/ai/fleet-spend-status.ts", symbol: "fleetSpendStatus" } },
     denominator: { description: "The fleet alert threshold (USD). 0 or unset is NO threshold: utilisation is null, never 0%.", source: { module: "lib/platform/ai/fleet-spend-status.ts", symbol: "NO_THRESHOLD" } },
     compute: { module: "lib/platform/ai/fleet-spend-status.ts", symbol: "fleetSpendStatus" },
@@ -266,7 +278,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Estimated AI cost (7 / 30 / 90 d)",
     summary: "Estimated AI spend (cost) over the last 7, 30 or 90 UTC days, every surface: the invocation ledger's RETURNED calls priced by the code-owned rate card. An estimate, never a bill.",
     answerClass: "CALCULATED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The last 7, 30 or 90 UTC calendar days ending today (window=30 default, or 7 or 90).", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "TREND_WINDOWS" }, days: [30, 7, 90] },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The last 7, 30 or 90 UTC calendar days ending today (window=30 default, or 7 or 90).", label: "in the last 30 days", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "TREND_WINDOWS" }, days: [30, 7, 90] },
     numerator: { description: "Σ rate-card-priced cost of RETURNED AiInvocation rows per (model, UTC day) in the window; days with unpriced calls make it a lower bound.", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "aiDayRows" } },
     denominator: null,
     compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "aiCostFigure" },
@@ -289,7 +301,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Estimated operating cost this cycle (by category)",
     summary: "What the platform is costing this billing cycle, estimated: the total and its categories — AI, providers (Plaid) and infrastructure — exactly as the Economics Overview shows them. PARTIAL while any component is unmetered (other providers, infrastructure), so a ranking of categories covers only the measured ones.",
     answerClass: "CALCULATED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window." },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window.", label: "this calendar month to date (UTC)" },
     numerator: { description: "Σ of the operating-cost components that could be priced: AI (customer, overhead, Platform AI) and Plaid Item-months; the parts are the Overview's AI / Providers / Infrastructure split figures.", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "operatingCostRows" } },
     denominator: null,
     compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "economicsFigure" },
@@ -315,7 +327,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Estimated provider cost this cycle (Plaid)",
     summary: "Estimated third-party provider cost this billing cycle: Plaid Item-months × the invoice-derived rate. PARTIAL whenever another provider is unmetered (always today), never $0 for an unknown part.",
     answerClass: "CALCULATED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window." },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window.", label: "this calendar month to date (UTC)" },
     numerator: { description: "Σ priced Plaid product Item-months present during the cycle (Transactions; Investments only when evidenced as billed).", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "providerCostRows" } },
     denominator: null,
     compute: { module: "lib/platform/economics/snapshot-core.ts", symbol: "economicsFigure" },
@@ -338,7 +350,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "AI calls and error rate (7 / 30 d)",
     summary: "Fleet AI provider calls over the last 7 or 30 days: calls, returned, failed, and the error rate (failed ÷ calls). Counted, not priced.",
     answerClass: "CALCULATED",
-    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing 7 or 30 days (7 × 24 h or 30 × 24 h) from the reader's now (window=7 default, or 30).", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "AI_WINDOWS" }, days: [7, 30] },
+    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing 7 or 30 days (7 × 24 h or 30 × 24 h) from the reader's now (window=7 default, or 30).", label: "in the last 7 days", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "AI_WINDOWS" }, days: [7, 30] },
     numerator: { description: "Failed calls: non-RETURNED AiInvocation rows (FAILED, TIMEOUT, RATE_LIMITED, QUOTA).", source: { module: "lib/platform/ai/invocations.ts", symbol: "buildAiFailureCounts" } },
     denominator: { description: "Every call in the window: RETURNED + failed. No call ⇒ the error rate is null, never 0%.", source: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCallStats" } },
     compute: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCallStats" },
@@ -360,7 +372,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Estimated AI cost per call (7 / 30 d)",
     summary: "Estimated AI cost per RETURNED call over the last 7 or 30 days, fleet-wide: priced spend ÷ returned calls. An aggregate estimate, never per customer and never a bill.",
     answerClass: "CALCULATED",
-    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing 7 or 30 days (7 × 24 h or 30 × 24 h) from the reader's now (window=7 default, or 30).", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "AI_WINDOWS" }, days: [7, 30] },
+    window: { kind: "ROLLING", timezone: "UTC", description: "Trailing 7 or 30 days (7 × 24 h or 30 × 24 h) from the reader's now (window=7 default, or 30).", label: "in the last 7 days", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "AI_WINDOWS" }, days: [7, 30] },
     numerator: { description: "Σ rate-card-priced spend of RETURNED calls in the window.", source: { module: "lib/platform/ai/invocations-core.ts", symbol: "buildAiOperations" } },
     denominator: { description: "RETURNED calls in the window (failures cost nothing and are not in the denominator).", source: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCostPerCall" } },
     compute: { module: "lib/platform/ai/call-stats.ts", symbol: "aiCostPerCall" },
@@ -383,7 +395,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Customer presence (Active now / Online, idle / Offline)",
     summary: "One customer's presence bucket from the visible-tab heartbeat clocks — presence, never engagement.",
     answerClass: "CALCULATED",
-    window: { kind: "ROLLING", timezone: "UTC", description: "PRESENCE_CONFIG windows from the reader's now (database clock).", source: { module: "lib/presence/definitions.ts", symbol: "PRESENCE_CONFIG" } },
+    window: { kind: "ROLLING", timezone: "UTC", description: "PRESENCE_CONFIG windows from the reader's now (database clock).", label: "right now (presence cut-offs)", source: { module: "lib/presence/definitions.ts", symbol: "PRESENCE_CONFIG" } },
     numerator: { description: "Per customer: the newest presence and interaction clocks across their sessions.", source: { module: "lib/presence/definitions.ts", symbol: "foldPresenceClocks" } },
     denominator: null,
     compute: { module: "lib/presence/definitions.ts", symbol: "derivePresenceState" },
@@ -406,7 +418,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Engaged users (DAU / WAU / MAU)",
     summary: "Distinct users with at least one MEANINGFUL ENGAGEMENT fact (server-side product events or customer AI turns) in the trailing 1 / 7 / 30 UTC days.",
     answerClass: "OBSERVED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "Trailing 1 / 7 / 30 UTC calendar days (ENGAGEMENT_WINDOW_DAYS); Growth's tile shows the 30-day figure.", source: { module: "lib/presence/definitions.ts", symbol: "ENGAGEMENT_WINDOW_DAYS" }, days: [30, 7, 1] },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "Trailing 1 / 7 / 30 UTC calendar days (ENGAGEMENT_WINDOW_DAYS); Growth's tile shows the 30-day figure.", label: "in the last 30 days", source: { module: "lib/presence/definitions.ts", symbol: "ENGAGEMENT_WINDOW_DAYS" }, days: [30, 7, 1] },
     numerator: { description: "Distinct users with an engagement day inside the window.", source: { module: "lib/platform/growth/product-analytics-core.ts", symbol: "engagementDays" } },
     denominator: null,
     compute: { module: "lib/platform/growth/product-analytics-core.ts", symbol: "activeUsers" },
@@ -431,7 +443,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Registrations",
     summary: "Accounts created per UTC day in the selected 30- or 90-day window, and their total.",
     answerClass: "OBSERVED",
-    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The last 30 or 90 UTC days (?window=30|90).", days: [90, 30] },
+    window: { kind: "UTC_DAYS", timezone: "UTC", description: "The last 30 or 90 UTC days (?window=30|90).", label: "in the last 90 days", days: [90, 30] },
     numerator: { description: "User rows by User.createdAt UTC day inside the window.", source: { module: "lib/platform/growth/acquisition-core.ts", symbol: "buildAcquisition" } },
     denominator: null,
     compute: { module: "lib/platform/growth/acquisition-core.ts", symbol: "buildAcquisition" },
@@ -591,7 +603,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Live sessions",
     summary: "A SESSION count (UserSession rows, never accounts): sessions that can still authenticate now: not revoked, inside the SEC-010 idle and absolute lifetime, and owned by an open account (not deactivated, not scheduled for deletion).",
     answerClass: "CALCULATED",
-    window: { kind: "ROLLING", timezone: "UTC", description: "Idle and absolute cut-offs measured back from the reader's now (SESSION_IDLE_TIMEOUT_MS, SESSION_ABSOLUTE_LIFETIME_MS).", source: { module: "lib/auth/session-proof.ts", symbol: "SESSION_IDLE_TIMEOUT_MS" } },
+    window: { kind: "ROLLING", timezone: "UTC", description: "Idle and absolute cut-offs measured back from the reader's now (SESSION_IDLE_TIMEOUT_MS, SESSION_ABSOLUTE_LIFETIME_MS).", label: "live now (session cut-offs)", source: { module: "lib/auth/session-proof.ts", symbol: "SESSION_IDLE_TIMEOUT_MS" } },
     numerator: { description: "Sessions matching liveSessionWhere(now): revokedAt IS NULL ∧ createdAt ≥ now − absolute ∧ lastActiveAt ≥ now − idle ∧ owner not locked out.", source: { module: "lib/auth/session-proof.ts", symbol: "liveSessionWhere" } },
     denominator: null,
     compute: { module: "lib/auth/session-proof.ts", symbol: "liveSessionWhere" },
@@ -619,7 +631,7 @@ export const METRICS: readonly MetricDefinition[] = [
     label: "Accounts with a live session",
     summary: "An ACCOUNT count: distinct customer (role USER) accounts holding at least one live session (live-sessions@1's rule) now.",
     answerClass: "CALCULATED",
-    window: { kind: "ROLLING", timezone: "UTC", description: "As live-sessions@1: idle and absolute cut-offs measured back from the reader's now.", source: { module: "lib/auth/session-proof.ts", symbol: "SESSION_IDLE_TIMEOUT_MS" } },
+    window: { kind: "ROLLING", timezone: "UTC", description: "As live-sessions@1: idle and absolute cut-offs measured back from the reader's now.", label: "live now (session cut-offs)", source: { module: "lib/auth/session-proof.ts", symbol: "SESSION_IDLE_TIMEOUT_MS" } },
     numerator: { description: "Distinct userId over sessions matching liveSessionWhere(now, { userWhere: CUSTOMER_WHERE }) (a groupBy by userId).", source: { module: "lib/auth/session-proof.ts", symbol: "liveSessionWhere" } },
     denominator: null,
     compute: { module: "lib/auth/session-proof.ts", symbol: "liveSessionWhere" },
@@ -650,6 +662,7 @@ export function metricDefinitionProblems(m: MetricDefinition): string[] {
   if (!Number.isInteger(m.version) || m.version < 1) p.push(`${k}: version must be an explicit integer ≥ 1`);
   if (!m.label.trim() || !m.summary.trim()) p.push(`${k}: label and summary are required`);
   if (m.window.timezone !== "UTC" || !m.window.description.trim()) p.push(`${k}: window needs a UTC timezone and a description`);
+  if (m.window.kind !== "POINT_IN_TIME" && !m.window.label?.trim()) p.push(`${k}: a ${m.window.kind} window needs a label (the phrase stated beside its figures)`);
   if (!m.numerator.description.trim()) p.push(`${k}: numerator needs a description`);
   if (m.denominator && !m.denominator.description.trim()) p.push(`${k}: denominator needs a description`);
   if (m.path.length === 0) p.push(`${k}: path must name at least the route hop`);

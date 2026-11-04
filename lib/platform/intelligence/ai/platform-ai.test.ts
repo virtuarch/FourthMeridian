@@ -32,11 +32,13 @@ import "@/lib/test-support/route-env";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildEconomicsSnapshot } from "@/lib/platform/economics/snapshot-core";
+import { priceCycleBothReadings, type PlaidItemFact } from "@/lib/platform/plaid/item-months";
+import { PLAID_RATES } from "@/lib/usage/pricing";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UserRole } from "@prisma/client";
 import { ALL_PLATFORM_AREAS } from "@/lib/platform/policy";
-import { METRICS, metricKey } from "@/lib/platform/intelligence/metrics/registry";
+import { METRICS, daysWindowLabel, metricKey } from "@/lib/platform/intelligence/metrics/registry";
 import { FakePrisma, installFakePrisma } from "@/lib/test-support/fake-prisma";
 import { metricAccessFor, describeMetric, listMetrics } from "@/lib/platform/intelligence/metrics/access";
 import { RETRIEVAL, retrieveWith, type MetricEnvelope, type RetrievalContext, type RetrievalReaders } from "@/lib/platform/intelligence/metrics/retrieve-core";
@@ -46,7 +48,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  admitUserNumerals, drillPageOf, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  admitUserNumerals, drillPageOf, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -306,17 +308,17 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   // A correct placement ⇒ the server's figures, units and the chips pair label ↔ figure.
   const good = await turn("{{m:incident-broken-now@1}} incidents are broken; the fleet made {{m:ai-fleet-spend-status@1|part=invocations}} AI calls costing {{m:ai-fleet-spend-status@1|part=pricedUsd}} ({{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold).");
   check("a correct placement renders the server's figures with server units", !good.result.grounding.replaced && good.result.grounding.verdict === "RESOLVED"
-    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made 40 AI calls costing about $12.50 (estimated) (about 25% (estimated) of the threshold).", segmentsText(good.result.answer));
+    && segmentsText(good.result.answer) === "3 incidents are broken; the fleet made 40 (in the last 24 hours) AI calls costing about $12.50 (in the last 24 hours, estimated) (about 25% (in the last 24 hours, estimated) of the threshold).", segmentsText(good.result.answer));
   check("…counted: claims 4, resolved 4, unresolved 0", JSON.stringify(good.result.claims) === JSON.stringify({ claims: 4, resolved: 4, unresolved: 0, admitted: 0 }), good.result.claims);
   const chip = (r: typeof good, m: string) => r.result.citations.find((c) => c.metric === m)?.figures.join("|");
-  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "40|about $12.50 (estimated)|about 25% (estimated)", good.result.citations);
+  check("each cited metric's chip pairs with ITS rendered figure(s)", chip(good, "incident-broken-now@1") === "3" && chip(good, "ai-fleet-spend-status@1") === "40 (in the last 24 hours)|about $12.50 (in the last 24 hours, estimated)|about 25% (in the last 24 hours, estimated)", good.result.citations);
 
   // C7 the swap: two metrics, values exchanged. v0 passed this (both values exist this turn); v1 refuses it.
   const swap = await turn("40 incidents are broken; the fleet made 3 AI calls.");
   check("SWAP (literal): two real values exchanged between two metrics ⇒ fallback (the model may not type a figure)", swap.result.grounding.replaced && swap.result.grounding.verdict === "UNGROUNDED_DIGIT" && segmentsText(swap.result.answer).startsWith(UNVERIFIED_FALLBACK), swap.result.answer);
   const swapP = await turn("{{m:ai-fleet-spend-status@1|part=invocations}} AI calls; {{m:incident-broken-now@1}} incidents broken.");
   check("SWAP (placeholders): a figure is always the figure of the metric its placeholder names — the chips show each pairing",
-    segmentsText(swapP.result.answer) === "40 AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "40");
+    segmentsText(swapP.result.answer) === "40 (in the last 24 hours) AI calls; 3 incidents broken." && chip(swapP, "incident-broken-now@1") === "3" && chip(swapP, "ai-fleet-spend-status@1") === "40 (in the last 24 hours)");
   check("SWAP (claimed under the wrong key): X's value cannot be stated as Y — {{m:Y}} renders Y's own figure", !segmentsText((await turn("Broken: {{m:incident-broken-now@1}}.")).result.answer).includes("40"));
 
   // C3: same key AND window, read THIS turn; unknown key / part mismatch.
@@ -334,23 +336,24 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     [noPart, badPart, partOnScalar].every((r) => r.result.grounding.verdict === "UNRESOLVED_PLACEHOLDER" && r.result.grounding.replaced));
 
   // Windows, on envelopes of the shape retrieveMetric returns (synthetic, so every window case is exact).
+  const PIT = { kind: "POINT_IN_TIME", description: "As of the read.", days: null, hours: null } as const;
   const base = { surface: "GROWTH_REVENUE", tier: "OPS", unit: "count", valueUnits: "count", reason: null, freshness: { asOf: "2026-11-04T12:00:00.000Z", source: "s" }, coverage: { gaps: [], missing: [] }, drill: null, drillReason: null } as const;
   const w7 = { ...base, metric: "engaged-users@1", value: 6, status: "MEASURED", window: { kind: "UTC_DAYS", description: "Trailing 1 / 7 / 30 UTC days", days: 7, hours: null } } as unknown as MetricEnvelope;
   const w30 = { ...w7, value: 11, window: { ...w7.window, days: 30 } } as MetricEnvelope;
   const part = { ...w7, metric: "growth-registrations@1", value: 5, status: "PARTIAL", reason: "a floor", window: { ...w7.window, days: 90 } } as MetricEnvelope;
   const R = (text: string, envs: MetricEnvelope[] = [w7, w30, part], labels: string[] = []) => resolvePlaceholders([{ kind: "text", text }], envs, new Set(labels));
-  check("window: |window=N picks THIS turn's envelope read with that window", segmentsText(R("{{m:engaged-users@1|window=7}} and {{m:engaged-users@1|window=30}}").segments) === "6 (last 7 days) and 11 (last 30 days)");
+  check("window: |window=N picks THIS turn's envelope read with that window", segmentsText(R("{{m:engaged-users@1|window=7}} and {{m:engaged-users@1|window=30}}").segments) === "6 (in the last 7 days) and 11 (in the last 30 days)");
   check("WINDOW MISMATCH: a window not read this turn, or none on a windowed envelope ⇒ UNRESOLVED",
     R("{{m:engaged-users@1|window=1}}").summary.verdict === "WINDOW_MISMATCH" && R("{{m:engaged-users@1}}").summary.verdict === "WINDOW_MISMATCH");
   check("options in either order; a repeated or unknown option is MALFORMED",
-    segmentsText(R("{{m:x@1|window=7|part=n}}", [{ ...w7, metric: "x@1", value: { n: 4 }, valueUnits: { n: "count" } } as unknown as MetricEnvelope]).segments) === "4 (last 7 days)"
+    segmentsText(R("{{m:x@1|window=7|part=n}}", [{ ...w7, metric: "x@1", value: { n: 4 }, valueUnits: { n: "count" } } as unknown as MetricEnvelope]).segments) === "4 (in the last 7 days)"
     && R("{{m:engaged-users@1|window=7|window=7}}").summary.verdict === "MALFORMED_PLACEHOLDER" && R("{{m:engaged-users@1|unit=usd}}").summary.verdict === "MALFORMED_PLACEHOLDER");
-  check("PARTIAL wording: \"at least\" is written by the server", segmentsText(R("{{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups");
-  const nullPart = resolvePlaceholders([{ kind: "text", text: "{{m:x@1|part=utilisationPct}}" }], [{ ...w7, metric: "x@1", value: { utilisationPct: null }, valueUnits: { utilisationPct: "pct" }, window: { ...w7.window, days: null } } as unknown as MetricEnvelope], new Set());
+  check("PARTIAL wording: \"at least\" is written by the server", segmentsText(R("{{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (in the last 90 days) sign-ups");
+  const nullPart = resolvePlaceholders([{ kind: "text", text: "{{m:x@1|part=utilisationPct}}" }], [{ ...w7, metric: "x@1", value: { utilisationPct: null }, valueUnits: { utilisationPct: "pct" }, window: PIT } as unknown as MetricEnvelope], new Set());
   check("a null part renders \"unavailable\", never 0", segmentsText(nullPart.segments) === "unavailable" && nullPart.summary.verdict === "RESOLVED");
 
   // S2 fix 1: ESTIMATED renders a qualifier; PARTIAL stays "at least"; an estimated floor says both.
-  const usdEnv = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "s@1", status, value: { pricedUsd: 12.5 }, valueUnits: { pricedUsd: "usd" }, window: { ...w7.window, days: null }, ...over }) as unknown as MetricEnvelope;
+  const usdEnv = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "s@1", status, value: { pricedUsd: 12.5 }, valueUnits: { pricedUsd: "usd" }, window: PIT, ...over }) as unknown as MetricEnvelope;
   const Rs = (status: string, est = false) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv(status)], new Set(), "", () => est).segments);
   check("ESTIMATED ⇒ \"about $12.50 (estimated)\"", Rs("ESTIMATED") === "about $12.50 (estimated)", Rs("ESTIMATED"));
   check("MEASURED ⇒ \"$12.50\" (no qualifier)", Rs("MEASURED") === "$12.50");
@@ -359,15 +362,15 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("PARTIAL ⇒ \"at least $12.50\"", Rs("PARTIAL") === "at least $12.50");
   check("PARTIAL of an ESTIMATED metric (registry provenance) ⇒ \"at least $12.50 (estimated)\"", Rs("PARTIAL", true) === "at least $12.50 (estimated)", Rs("PARTIAL", true));
   const usdW7 = { ...w7, metric: "c@1", status: "ESTIMATED", value: { spendUsd: 6 }, valueUnits: { spendUsd: "usd" } } as unknown as MetricEnvelope;
-  check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (last 7 days, estimated)");
+  check("…a window and the estimate share one parenthesis", segmentsText(R("{{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (in the last 7 days, estimated)");
 
   // S2 (binding): "(estimated)" is PER FIGURE — estimatedParts is the source of truth; default = usd parts of an estimate.
   const fleetEnv = good.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === "ai-fleet-spend-status@1") as MetricEnvelope;
   const fleet = (part: string) => renderPlaceholder(fleetEnv, part);
   check("ai-fleet-spend-status: invocations renders \"40\" plainly; pricedUsd \"about $12.50 (estimated)\"; utilisationPct (derived from estimated $, listed) \"about 25% (estimated)\"; thresholdUsd (configured, not listed) \"$50.00\"",
-    fleet("invocations") === "40" && fleet("pricedUsd") === "about $12.50 (estimated)" && fleet("utilisationPct") === "about 25% (estimated)" && fleet("thresholdUsd") === "$50.00",
+    fleet("invocations") === "40 (in the last 24 hours)" && fleet("pricedUsd") === "about $12.50 (in the last 24 hours, estimated)" && fleet("utilisationPct") === "about 25% (in the last 24 hours, estimated)" && fleet("thresholdUsd") === "$50.00",
     ["invocations", "pricedUsd", "utilisationPct", "thresholdUsd"].map(fleet));
-  const mixed = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "m@1", status, window: { ...w7.window, days: null },
+  const mixed = (status: string, over: Record<string, unknown> = {}) => ({ ...w7, metric: "m@1", status, window: PIT,
     value: { costUsd: 12.5, sharePct: 25, calls: 40 }, valueUnits: { costUsd: "usd", sharePct: "pct", calls: "count" }, estimatedParts: null, ...over }) as unknown as MetricEnvelope;
   const rp = (e: MetricEnvelope, part: string, est = false) => renderPlaceholder(e, part, est);
   check("DEFAULT (no estimatedParts) on an ESTIMATED metric: the usd part is estimated; pct and count render plainly",
@@ -379,7 +382,7 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
     && rp(mixed("ESTIMATED", { estimatedParts: ["calls"] }), "calls") === "about 40 (estimated)");
   check("a MEASURED metric is never labelled estimated, whatever its units", rp(mixed("MEASURED"), "costUsd") === "$12.50" && rp(mixed("MEASURED", { estimatedParts: ["costUsd"] }), "costUsd") === "$12.50");
   check("basis.kind \"estimated\" (#419) marks the metric an estimate", rp(mixed("PARTIAL", { basis: { kind: "estimated" } }), "costUsd") === "at least $12.50 (estimated)");
-  check("a count scalar of an ESTIMATED metric renders plainly", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "6 (last 7 days)");
+  check("a count scalar of an ESTIMATED metric renders plainly", segmentsText(R("{{m:engaged-users@1|window=7}}", [{ ...w7, status: "ESTIMATED" } as MetricEnvelope]).segments) === "6 (in the last 7 days)");
 
   // A2 note: a null part inside a PARTIAL envelope is ACCEPTED (not turned UNAVAILABLE) and renders unavailable, never 0.
   const opc = await run("x", b, script([{ calls: [{ name: "get_metric", args: { id: "economics-operating-cost" } }] }, { content: "Infrastructure: {{m:economics-operating-cost@1|part=infrastructureUsd}}; total {{m:economics-operating-cost@1|part=totalUsd}}." }]));
@@ -388,16 +391,16 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("economics-operating-cost: a null part (unmetered) stays inside a non-UNAVAILABLE envelope — the shape check accepts it",
     !!opEnv && opEnv.status !== "UNAVAILABLE" && Object.values(opVal).some((v) => v === null) && typeof opVal.totalUsd === "number", opEnv);
   check("…a placeholder for that null part renders \"unavailable\" (never $0), the total its estimated floor/estimate",
-    !opc.result.grounding.replaced && /^Infrastructure: unavailable; total (at least|about) \$[\d,.]+ \(estimated\)\.$/.test(segmentsText(opc.result.answer)), segmentsText(opc.result.answer));
+    !opc.result.grounding.replaced && /^Infrastructure: unavailable; total (at least|about) \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)\.$/.test(segmentsText(opc.result.answer)), segmentsText(opc.result.answer));
   const estFloor = await run("x", opsBinding(OPS, readers({ aiBudget: async () => ({ ...(await readers().aiBudget()), unpriced: { invocations: 2, models: ["m"] }, bySurface: [{ surface: "chat", customer: true, unpricedInvocations: 2 }] }) as never })),
     script([{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }, { content: "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd}}." }]));
   const efStatus = estFloor.result.citations[0]?.status;
   check("…through a real turn: the ESTIMATED metric's PARTIAL floor renders \"at least … (estimated)\"",
-    efStatus === "PARTIAL" && /^Spend: at least \$[\d,.]+ \(estimated\)\.$/.test(segmentsText(estFloor.result.answer)), { efStatus, a: segmentsText(estFloor.result.answer) });
+    efStatus === "PARTIAL" && /^Spend: at least \$[\d,.]+ \(in the last 24 hours, estimated\)\.$/.test(segmentsText(estFloor.result.answer)), { efStatus, a: segmentsText(estFloor.result.answer) });
   // Non-blocking S2 note: a model-written qualifier the server also writes collapses to one.
   check("\"at least {{m:PARTIAL}}\" ⇒ \"at least 5\" once, never \"at least at least\"",
-    segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (last 90 days) sign-ups" && segmentsText(R("about {{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (last 7 days, estimated)");
-  check("…\"at least\" before a MEASURED figure stays the model's words (no figure invented)", segmentsText(R("at least {{m:engaged-users@1|window=7}}").segments) === "at least 6 (last 7 days)");
+    segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (in the last 90 days) sign-ups" && segmentsText(R("about {{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (in the last 7 days, estimated)");
+  check("…\"at least\" before a MEASURED figure stays the model's words (no figure invented)", segmentsText(R("at least {{m:engaged-users@1|window=7}}").segments) === "at least 6 (in the last 7 days)");
 
   // S2 fix 2: units are EXPLICIT (valueUnits), never inferred from a part name.
   const named = (u: unknown) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv("MEASURED", { valueUnits: u })], new Set()).segments);
@@ -471,12 +474,34 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
   // Retrieve every retrievable metric (every window) on every surface the fixtures can read it on.
   const seen = new Set<string>();
   const pcts: { k: string; part: string; v: number }[] = [];
+  const labelProblems: string[] = [];
+  const labelsSeen = new Set<string>();
   for (const area of ALL_PLATFORM_AREAS) {
     const ctx = ctxFor(UserRole.USER, grant(area));
     for (const k of retrievable) {
       const entry = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
       for (const w of entry.windows.length ? entry.windows : [undefined]) {
         const env = await retrieveWith(area, readers(), ctx, k, w === undefined ? {} : { window: w }, NOW);
+        // windowLabel (S2 2026-11-04): non-empty unless POINT_IN_TIME; any number in it equals days / hours
+        // (or, when the read carries neither, a number of the declared description); never a start date unless the reader gave one.
+        if (env) {
+          labelsSeen.add(k);
+          const l = env.window.label;
+          const num = l ? /(\d+)\s*(day|hour)s?\b/.exec(l) : null;
+          const pit = env.window.kind === "POINT_IN_TIME";
+          if (pit ? l !== null : !l?.trim()) labelProblems.push(`${k}${w ? `@${w}` : ""} on ${area}: label ${JSON.stringify(l)} for ${env.window.kind}`);
+          if (l && /\d/.test(l) && !num) labelProblems.push(`${k}: a number in ${JSON.stringify(l)} is not "N days|hours"`);
+          if (num) {
+            const n = Number(num[1]);
+            const ok = env.window.days !== null ? num[2] === "day" && n === env.window.days
+              : env.window.hours !== null ? num[2] === "hour" && n === env.window.hours
+              : new RegExp(`(?<!\\d)${n}(?!\\d)[\\s-]*(?:${num[2]}|h\\b)`, "i").test(env.window.description);
+            if (!ok) labelProblems.push(`${k}${w ? `@${w}` : ""}: label ${JSON.stringify(l)} vs days=${env.window.days} hours=${env.window.hours}`);
+          }
+          if (env.window.start !== null) labelProblems.push(`${k}: a window start no reader supplies`);
+          const regLabel = METRICS.find((m) => metricKey(m) === k)?.window.label;
+          if (env.window.hours !== null && regLabel !== l) labelProblems.push(`${k}: registry label ${JSON.stringify(regLabel)} ≠ the read's ${JSON.stringify(l)}`);
+        }
         if (!env || env.status === "UNAVAILABLE" || env.value === null) continue;
         seen.add(k);
         const shapeOk = typeof env.value === "number" ? env.valueUnits === "count" : typeof env.valueUnits === "object" && env.valueUnits !== null
@@ -505,6 +530,17 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
       : !est || Object.values(parts).every((u) => u !== "pct");
     check(`${k}: estimatedParts — listed only on an ESTIMATED metric and every listed part exists in valueUnits; an ESTIMATED metric without a list has no pct part (its estimates are its usd parts)`, ok, { est, listed, parts });
   }
+  check("windowLabel: non-empty for every non-POINT_IN_TIME metric (null for point in time), consistent with days / hours, no inferred start date — every retrievable metric, window and surface",
+    labelProblems.length === 0 && retrievable.every((k) => labelsSeen.has(k)), { labelProblems, missing: retrievable.filter((k) => !labelsSeen.has(k)) });
+  check("…the registry's window.label is the DEFAULT read's phrase for a metric with days",
+    METRICS.filter((m) => m.window.days?.length).every((m) => m.window.label === daysWindowLabel(m.window.days![0])), METRICS.filter((m) => m.window.days?.length).map((m) => [metricKey(m), m.window.label]));
+  for (const k of retrievable) {
+    const e = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
+    if (!e.unwindowedParts) continue;
+    const parts = typeof e.valueUnits === "string" ? {} : e.valueUnits;
+    check(`${k}: unwindowedParts — every listed part exists in valueUnits`, e.unwindowedParts.length > 0 && e.unwindowedParts.every((p) => Object.prototype.hasOwnProperty.call(parts, p)), { listed: e.unwindowedParts, parts });
+  }
+  check("rendering never reads the window description (no first-clause phrase; S2 2026-11-04)", !/window\.description/.test(code(src("lib/platform/intelligence/ai/core.ts")).split("export function envelopeWindowText")[1]?.split("export function renderPlaceholder")[0] ?? "x"));
   check("pct figures are on the 0–100 scale: the fixture's 25% utilisation reads 25 (not 0.25), and every pct is in [0, 100]",
     pcts.length > 0 && pcts.every((p) => p.v >= 0 && p.v <= 100) && pcts.some((p) => p.k === "ai-fleet-spend-status@1" && p.part === "utilisationPct" && p.v === 25), pcts);
   check("the renderer reads units ONLY from valueUnits (no name inference in core.ts)", !/\/Usd\$\/|\/Pct\$\//.test(code(src("lib/platform/intelligence/ai/core.ts"))));
@@ -547,20 +583,146 @@ console.log("\n4b. user numerals (S2 rule), unsupported windows (stated, never s
   // OWNER REGRESSIONS (exact strings; a fake model with realistic outputs).
   const today = await ask("How are we looking today?", "Right now {{m:incident-broken-now@1}} incidents are broken and {{m:provider-outcome@1|part=failing}} provider is failing; AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} over the trailing window.",
     [{ calls: [{ name: "get_metric", args: { id: "incident-broken-now" } }, { name: "get_metric", args: { id: "provider-outcome" } }, { name: "get_metric", args: { id: "ai-fleet-spend-status" } }] }]);
-  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 provider is failing; AI spend is about $12.50 (estimated)"), segmentsText(today.result.answer));
+  check("OWNER \"How are we looking today?\" ⇒ answered with the server's figures", !today.result.grounding.replaced && segmentsText(today.result.answer).startsWith("Right now 3 incidents are broken and 1 (in the last 7 days) provider is failing; AI spend is about $12.50 (in the last 24 hours, estimated)"), segmentsText(today.result.answer));
   const most = await ask("What's costing me the most money?", "AI spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} across {{m:ai-fleet-spend-status@1|part=invocations}} customer calls, {{m:ai-fleet-spend-status@1|part=utilisationPct}} of the threshold.");
-  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (estimated) across 40 customer calls, about 25% (estimated) of the threshold.", segmentsText(most.result.answer));
+  check("OWNER \"What's costing me the most money?\" ⇒ answered", !most.result.grounding.replaced && segmentsText(most.result.answer) === "AI spend is about $12.50 (in the last 24 hours, estimated) across 40 (in the last 24 hours) customer calls, about 25% (in the last 24 hours, estimated) of the threshold.", segmentsText(most.result.answer));
   const q30 = "What's costing me the most money in the past 30 days";
   const v0 = await ask(q30, "Over the past 30 days, AI spend was {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
   const v0t = segmentsText(v0.result.answer);
-  check("OWNER \"…in the past 30 days\": NOT the generic fallback; the 24 h metric is never passed off as 30 days (WINDOW_UNSUPPORTED)",
-    v0.result.grounding.verdict === "WINDOW_UNSUPPORTED" && !v0t.startsWith(UNVERIFIED_FALLBACK) && /covers only the last 24 hours, so it cannot answer for the 30 days you asked about\./.test(v0t) && !v0t.includes("12.50"), v0t);
-  check("…and the chip shows no figure (nothing substituted)", v0.result.citations.every((c) => c.figures.length === 0) && v0.result.answer.some((x) => x.kind === "link"));
+  check("OWNER \"…in the past 30 days\" (S2 (d)): the answer is KEPT, the figure states its own 24 h window, and ONE server note says it is not the 30 days asked",
+    v0.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && !v0.result.grounding.replaced
+    && v0t === "Over the past 30 days, AI spend was about $12.50 (in the last 24 hours, estimated). Note: AI fleet spend vs budget (24 h) covers the last 24 hours, not the 30 days you asked about.", v0t);
+  check("…the chip shows the rendered figure (nothing substituted: never another window's figure)", JSON.stringify(v0.result.citations.map((c) => c.figures)) === JSON.stringify([["about $12.50 (in the last 24 hours, estimated)"]]), v0.result.citations);
   const forced = await ask(q30, "Over the past 30 days: {{m:ai-fleet-spend-status@1}}.", [{ calls: [{ name: "get_metric", args: { id: "ai-fleet-spend-status", window: 30 } }] }]);
-  check("…a window the metric does not take (get_metric window=30) ⇒ the limitation from its DECLARED window, never another window's figure",
-    forced.result.grounding.verdict === "WINDOW_UNSUPPORTED" && /covers only its declared window \(.*24 h.*\), so it cannot answer for the 30 days you asked about\./.test(segmentsText(forced.result.answer)) && !segmentsText(forced.result.answer).includes("12.50"), segmentsText(forced.result.answer));
+  check("…a window the metric does not take (get_metric window=30) ⇒ the note states its registry window label, never another window's figure",
+    forced.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE" && /Note: .* covers the last 24 hours, not the 30 days you asked about\.$/.test(segmentsText(forced.result.answer)) && !segmentsText(forced.result.answer).includes("12.50"), segmentsText(forced.result.answer));
   check("trace: the verdict is an ENUM code and admitted a COUNT (no text, no value)",
-    traceLine(v0.result).endsWith("admitted=1 verdict=WINDOW_UNSUPPORTED") && (PLACEHOLDER_VERDICTS as readonly string[]).includes(v0.result.grounding.verdict) && !/30 days|12\.5/.test(traceLine(v0.result)), traceLine(v0.result));
+    traceLine(v0.result).endsWith("admitted=1 verdict=RESOLVED_WITH_WINDOW_NOTE") && (PLACEHOLDER_VERDICTS as readonly string[]).includes(v0.result.grounding.verdict) && !/30 days|12\.5/.test(traceLine(v0.result)), traceLine(v0.result));
+}
+
+// ── 4d. window resolution (S2 ruling 2026-11-04) + owner cost-question replays ──
+console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window stated inline, window notes, owner A/B/C replays");
+{
+  // Economics with a Plaid cycle: one Transactions Item (priced) + one with Investments consent (counted, never priced ⇒ PARTIAL).
+  const plaidItem = (id: string, o: Partial<PlaidItemFact> = {}): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production", ...o });
+  const cyc = priceCycleBothReadings([plaidItem("p1"), plaidItem("p2", { investmentsConsent: "ENABLED" })], [{ plaidItemId: "zz", at: "2026-08-15T00:00:00Z", from: "ACTIVE", to: "REVOKED" }] as never,
+    { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const econR = readers({
+    economicsSnapshot: async (nowMs) => buildEconomicsSnapshot({
+      nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+      spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 1_000_000, cachedPromptTokens: 0, completionTokens: 500_000 }],
+    }),
+  });
+  const b = opsBinding(OPS, econR);
+  const ECON_PAGE = "/dashboard/platform/PLATFORM_OPS?workspace=platform-economics";
+  const gm = (id: string, window?: number) => ({ name: "get_metric", args: window === undefined ? { id } : { id, window } });
+  const turn = (q: string, calls: { name: string; args: unknown }[][], content: string) => run(q, b, script([...calls.map((c) => ({ calls: c })), { content }]));
+  const txt = (r: Awaited<ReturnType<typeof turn>>) => segmentsText(r.result.answer);
+  const notes = (t: string) => t.match(/Note: /g)?.length ?? 0;
+  const aiEnvOf = (r: Awaited<ReturnType<typeof turn>>) => r.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === "economics-ai-cost@1") as MetricEnvelope;
+
+  // The pure rule, one named exported function.
+  const e = (days: number | null, hours: number | null = null) => ({ metric: "k@1", window: { kind: days === null && hours === null ? "UTC_DAYS" : "ROLLING", description: "d", days, hours } }) as unknown as MetricEnvelope;
+  const M = (envs: MetricEnvelope[], w: number | null) => matchPlaceholderEnvelope(envs, "k@1", w).kind;
+  check("matchPlaceholderEnvelope: no |window + ONE envelope of the key (any window) ⇒ MATCH",
+    M([e(30)], null) === "MATCH" && M([e(7)], null) === "MATCH" && M([e(null)], null) === "MATCH" && M([e(null, 24)], null) === "MATCH");
+  check("…the same window read twice counts once (MATCH); two DIFFERENT windows of the key ⇒ MISMATCH", M([e(30), e(30)], null) === "MATCH" && M([e(7), e(30)], null) === "MISMATCH");
+  check("…|window=N must equal window.days (else MISMATCH); a fixed-window (days null) metric takes NO |window",
+    M([e(7), e(30)], 7) === "MATCH" && M([e(30)], 7) === "MISMATCH" && M([e(null)], 30) === "MISMATCH" && M([e(null, 24)], 24) === "MISMATCH");
+  check("…a key not read this turn ⇒ UNREAD; the key match is exact", M([], null) === "UNREAD" && matchPlaceholderEnvelope([e(30)], "k@2", null).kind === "UNREAD" && matchPlaceholderEnvelope([e(30)], "K@1", null).kind === "UNREAD");
+  check("the rule lives in ONE exported function the resolver calls",
+    /export function matchPlaceholderEnvelope\(envelopes: readonly MetricEnvelope\[\], key: string, window: number \| null\): PlaceholderEnvelopeMatch/.test(src("lib/platform/intelligence/ai/core.ts"))
+    && /matchPlaceholderEnvelope\(envelopes, key, opts\.window\)/.test(src("lib/platform/intelligence/ai/core.ts")) && !/const envelopeFor\b/.test(code(src("lib/platform/intelligence/ai/core.ts"))));
+
+  // Through real turns (fake model).
+  const one = await turn("AI spend this week?", [[gm("economics-ai-cost", 7)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
+  check("SINGLE read, placeholder WITHOUT a window ⇒ resolves, and the figure states the envelope's window (server text)",
+    one.result.grounding.verdict === "RESOLVED" && /^Estimated AI spend: about \$[\d,.]+ \(in the last 7 days, estimated\)\.$/.test(txt(one)), txt(one));
+  const twoW = await turn("AI spend?", [[gm("economics-ai-cost", 7), gm("economics-ai-cost", 30)]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}.");
+  check("TWO windows of one key read, placeholder WITHOUT a window ⇒ fallback (WINDOW_MISMATCH: ambiguous)",
+    twoW.result.grounding.replaced && twoW.result.grounding.verdict === "WINDOW_MISMATCH" && txt(twoW).startsWith(UNVERIFIED_FALLBACK), twoW.result.grounding);
+  const twoOk = await turn("AI spend?", [[gm("economics-ai-cost", 7), gm("economics-ai-cost", 30)]], "Week {{m:economics-ai-cost@1|part=spendUsd|window=7}}, month {{m:economics-ai-cost@1|part=spendUsd|window=30}}.");
+  check("…the same two reads, each placeholder WITH its window ⇒ resolves, each figure with its own window",
+    twoOk.result.grounding.verdict === "RESOLVED" && /\(in the last 7 days, estimated\).*\(in the last 30 days, estimated\)/.test(txt(twoOk)), txt(twoOk));
+  const wrong = await turn("AI spend?", [[gm("economics-ai-cost")]], "Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd|window=7}}.");
+  check("a WRONG window (read 30 by default, placeholder says 7) ⇒ fallback (WINDOW_MISMATCH)", wrong.result.grounding.replaced && wrong.result.grounding.verdict === "WINDOW_MISMATCH", wrong.result.grounding);
+  const fixed = await turn("Cost this cycle?", [[gm("economics-operating-cost")]], "Operating cost: {{m:economics-operating-cost@1|part=totalUsd|window=30}}.");
+  check("a FIXED-window metric (billing cycle) with |window= ⇒ fallback (WINDOW_MISMATCH)", fixed.result.grounding.replaced && fixed.result.grounding.verdict === "WINDOW_MISMATCH", fixed.result.grounding);
+  const hours = await turn("Fleet spend?", [[gm("ai-fleet-spend-status")]], "Spend: {{m:ai-fleet-spend-status@1|part=pricedUsd|window=1}}.");
+  check("…an hours-window metric (window.days null) with |window= ⇒ fallback too (the grammar is days only)", hours.result.grounding.verdict === "WINDOW_MISMATCH");
+
+  // unwindowedParts: a configuration value (the threshold) renders with its unit and NO window label.
+  const thr = await turn("Fleet spend vs budget?", [[gm("ai-fleet-spend-status")]], "Spend is {{m:ai-fleet-spend-status@1|part=pricedUsd}} against a threshold of {{m:ai-fleet-spend-status@1|part=thresholdUsd}}.");
+  check("unwindowedParts: \"$50.00\" (no window, not estimated) next to \"about $12.50 (in the last 24 hours, estimated)\"",
+    thr.result.grounding.verdict === "RESOLVED" && txt(thr) === "Spend is about $12.50 (in the last 24 hours, estimated) against a threshold of $50.00.", txt(thr));
+  const cyc1 = txt(await turn("Cost?", [[gm("economics-operating-cost")]], "Total {{m:economics-operating-cost@1|part=totalUsd}}."));
+  check("…no derived cycle date: a billing-cycle figure states its label only (\"this calendar month to date (UTC)\", no \"from <date>\")",
+    /\(this calendar month to date \(UTC\), estimated\)\.$/.test(cyc1) && !/from \d{4}-/.test(cyc1), cyc1);
+  check("…a date appears ONLY when the reader gives an explicit window start (window.start)",
+    renderPlaceholder({ ...(aiEnvOf(one)), window: { ...aiEnvOf(one).window, start: "2026-10-06" } } as MetricEnvelope, "spendUsd") === `about ${/\$[\d,.]+/.exec(txt(one))![0]} (in the last 7 days, from 2026-10-06, estimated)`);
+
+  // S2 (d): an asked window the placed metric does not cover ⇒ KEEP + ONE note per metric.
+  const q30 = "What's costing me the most money in the past 30 days?";
+  const cycleAsked = await turn(q30, [[gm("economics-operating-cost")]], "AI is the largest measured category: {{m:economics-operating-cost@1|part=aiUsd}} of {{m:economics-operating-cost@1|part=totalUsd}}.");
+  const ct = txt(cycleAsked);
+  check("asked 30 days + a billing-cycle metric ⇒ answer KEPT (RESOLVED_WITH_WINDOW_NOTE), the cycle stated inline, ONE note",
+    !cycleAsked.result.grounding.replaced && cycleAsked.result.grounding.verdict === "RESOLVED_WITH_WINDOW_NOTE"
+    && /^AI is the largest measured category: at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\) of at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)\. Note: Estimated operating cost this cycle \(by category\) covers this calendar month to date \(UTC\), not the 30 days you asked about\.$/.test(ct)
+    && notes(ct) === 1, ct);
+  check("…the note is server text, so the trace stays counts + the verdict code", traceLine(cycleAsked.result).endsWith("verdict=RESOLVED_WITH_WINDOW_NOTE") && !/billing|Note/.test(traceLine(cycleAsked.result)));
+  const thirtyAsked = await turn(q30, [[gm("economics-ai-cost")]], "Estimated AI spend in the past 30 days: {{m:economics-ai-cost@1|part=spendUsd}}.");
+  check("asked 30 days + a 30-day metric ⇒ no note (RESOLVED)", thirtyAsked.result.grounding.verdict === "RESOLVED" && notes(txt(thirtyAsked)) === 0 && /\(in the last 30 days, estimated\)\.$/.test(txt(thirtyAsked)), txt(thirtyAsked));
+  const noneMatch = await turn(q30, [[gm("economics-operating-cost"), gm("ai-fleet-spend-status")]], "Cycle total {{m:economics-operating-cost@1|part=totalUsd}}; fleet spend {{m:ai-fleet-spend-status@1|part=pricedUsd}}.");
+  check("…no placed figure matches the asked window ⇒ still KEPT, one note per affected metric (two)",
+    !noneMatch.result.grounding.replaced && notes(txt(noneMatch)) === 2 && /covers the last 24 hours, not the 30 days you asked about\./.test(txt(noneMatch)), txt(noneMatch));
+
+  // OWNER REPLAYS — the exact tool sequences seen on Preview, with realistic model output.
+  const ls = [{ name: "list_metrics", args: { domain: "economics" } }];
+  // B: "What's costing me the most money?" ⇒ operating-cost (fixed cycle) + ai-cost (NO window arg ⇒ the 30-day default).
+  const B = await turn("What's costing me the most money?", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost")]],
+    `AI is the largest of the measured categories this billing cycle at {{m:economics-operating-cost@1|part=aiUsd}}, out of an estimated operating cost of {{m:economics-operating-cost@1|part=totalUsd}}. Providers (Plaid) are {{m:economics-operating-cost@1|part=providersUsd}} and infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}, so a full ranking can't be verified. Estimated AI spend over the recent window is {{m:economics-ai-cost@1|part=spendUsd}}. See [Economics](${ECON_PAGE}).`);
+  const aiEnv = B.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === "economics-ai-cost@1") as MetricEnvelope;
+  check("OWNER B replay: the ai-cost read with no window arg carries window.days 30 (the false-positive precondition)", aiEnv?.window.days === 30, aiEnv?.window);
+  check("OWNER B \"What's costing me the most money?\" ⇒ answer KEPT (RESOLVED), every placeholder resolved, the link kept",
+    !B.result.grounding.replaced && B.result.grounding.verdict === "RESOLVED" && JSON.stringify(B.result.claims) === JSON.stringify({ claims: 5, resolved: 5, unresolved: 0, admitted: 0 })
+    && B.result.sanitised.removed === 0 && B.result.answer.some((x) => x.kind === "link" && x.href === ECON_PAGE), { g: B.result.grounding, c: B.result.claims, s: B.result.sanitised, t: txt(B) });
+  check("…each figure states ITS window: the cycle for operating cost, \"last 30 days\" for AI cost",
+    /at at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)/.test(txt(B)) && /recent window is about \$[\d,.]+ \(in the last 30 days, estimated\)\./.test(txt(B)) && notes(txt(B)) === 0, txt(B));
+  // A: provider-outcome UNAVAILABLE + operating-cost PARTIAL.
+  const bA = opsBinding(OPS, { ...econR, providerHealth: async () => { throw new Error("down"); } });
+  const A = await run("Are any providers failing, and what are they costing us?", bA, script([{ calls: [gm("provider-outcome"), gm("economics-operating-cost")] },
+    { content: `The provider outcome verdict is unavailable right now, so I can't say which providers are failing ({{m:provider-outcome@1|part=failing}}). Provider cost this billing cycle is {{m:economics-operating-cost@1|part=providersUsd}} of an estimated operating cost of {{m:economics-operating-cost@1|part=totalUsd}}. See [Economics](${ECON_PAGE}).` }]));
+  const aT = segmentsText(A.result.answer);
+  check("OWNER A replay (provider-outcome UNAVAILABLE + operating-cost PARTIAL) ⇒ answer KEPT, unavailable said, the cycle stated",
+    !A.result.grounding.replaced && A.result.grounding.verdict === "RESOLVED" && A.result.citations.find((c) => c.metric === "provider-outcome@1")?.status === "UNAVAILABLE"
+    && A.result.citations.find((c) => c.metric === "economics-operating-cost@1")?.status === "PARTIAL"
+    && aT.includes("failing (unavailable — ") && /\(this calendar month to date \(UTC\), estimated\)/.test(aT) && !/\$0\.00/.test(aT), aT);
+  // C: operating-cost + ai-cost + provider-cost PARTIAL.
+  const C = await turn("Break down what we're spending on AI and providers this month.", [ls, [gm("economics-operating-cost"), gm("economics-ai-cost"), gm("economics-provider-cost")]],
+    `This billing cycle AI is {{m:economics-operating-cost@1|part=aiUsd}} and providers (Plaid) are {{m:economics-provider-cost@1|part=costUsd}}; infrastructure is {{m:economics-operating-cost@1|part=infrastructureUsd}}. The provider figure is a lower bound, so a full ranking can't be verified. Over the recent window AI spend is {{m:economics-ai-cost@1|part=spendUsd}}.`);
+  const cT = txt(C);
+  check("OWNER C replay (operating-cost + ai-cost + provider-cost PARTIAL) ⇒ answer KEPT, each figure with its window",
+    !C.result.grounding.replaced && C.result.grounding.verdict === "RESOLVED" && C.result.citations.find((c) => c.metric === "economics-provider-cost@1")?.status === "PARTIAL"
+    && /providers \(Plaid\) are at least \$[\d,.]+ \(this calendar month to date \(UTC\), estimated\)/.test(cT) && /infrastructure is unavailable\./.test(cT)
+    && /AI spend is about \$[\d,.]+ \(in the last 30 days, estimated\)\.$/.test(cT), cT);
+
+  // The sanitiser's removed count, by CATEGORY (never text) — e.g. a link to drill.href (an API route, not a page).
+  const api = (aiEnv?.drill && "href" in aiEnv.drill ? aiEnv.drill.href : "") as string;
+  const hrefLink = await turn("AI spend?", [[gm("economics-ai-cost")]], `Estimated AI spend: {{m:economics-ai-cost@1|part=spendUsd}}. See [the records](${api}).`);
+  check("a Markdown link to drill.href (API route) is stripped, counted as category \"link\"; the answer is kept",
+    api.startsWith("/api/") && hrefLink.result.sanitised.removed === 1 && JSON.stringify(hrefLink.result.sanitised.kinds) === JSON.stringify({ link: 1 }) && !hrefLink.result.grounding.replaced
+    && traceLine(hrefLink.result).includes(" removed=1(link:1) "), traceLine(hrefLink.result));
+  const mixedKinds = sanitiseAnswer("a https://x.test b <b>c</b> ![i](/p) [r][x] [l](/q)\n[x]: /y\nand /dashboard/forged", new Set());
+  const sorted = (o: Record<string, unknown>) => JSON.stringify(Object.fromEntries(Object.entries(o).sort()));
+  check("sanitiser categories: url / html / image / reference / link / path, counts only (the total is their sum)",
+    sorted(mixedKinds.kinds) === sorted({ url: 1, html: 2, image: 1, reference: 2, link: 1, path: 1 }) && mixedKinds.removed === 8, mixedKinds.kinds);
+
+  // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
+  const gmDesc = JSON.stringify(platformAiToolSchemas([]));
+  check("the prompt teaches: one read ⇒ {{m:<metric>}} is enough; two windows ⇒ |window= on every placeholder; fixed ⇒ never |window; never drill.href",
+    /if you read a metric ONCE, \{\{m:<metric>\}\} is enough/.test(PLATFORM_AI_SYSTEM_PROMPT) && /two windows, every placeholder for it MUST carry \|window=/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /window\.days is null .* NEVER add \|window/.test(PLATFORM_AI_SYSTEM_PROMPT) && /Never link drill\.href/.test(PLATFORM_AI_SYSTEM_PROMPT)
+    && /never when window\.days is null/.test(gmDesc) && /never drill\.href/.test(gmDesc));
 }
 
 // ── 5. links ────────────────────────────────────────────────────────────────
