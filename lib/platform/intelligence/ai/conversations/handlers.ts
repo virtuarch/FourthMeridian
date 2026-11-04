@@ -28,6 +28,7 @@
 import type { PlatformArea } from "@prisma/client";
 import { scrubOperatorText } from "@/lib/ai/privacy/scrub";
 import { PLATFORM_AREAS } from "@/lib/platform/policy";
+import type { PlatformAiBinding } from "../core";
 import type { StoredAnswerV1 } from "./answer";
 import {
   PLATFORM_AI_CONVERSATION_MESSAGES_MAX,
@@ -36,7 +37,9 @@ import {
   PLATFORM_AI_LABEL_MAX,
   PLATFORM_AI_MESSAGE_MAX,
 } from "./constants";
-import type { ConversationRecord, ConversationSummary, CreateOutcome, MessageRecord, TurnPair } from "./store";
+import type { HistoryMessage } from "./history";
+import type { AppendOutcome, ConversationRecord, ConversationSummary, CreateOutcome, CreateReplayLookup, MessageRecord, SettleOutcome, TurnPair } from "./store";
+import type { ConversationTurnOutcome } from "./turn";
 
 export interface ConversationHttp { status: number; body: Record<string, unknown> | null; headers?: Record<string, string> }
 
@@ -52,6 +55,12 @@ export interface Viewer { operatorId: string; area: PlatformArea }
 export interface AreaAccess {
   /** Re-resolve a stored link through the CURRENT token (resolveNavigationTarget, string-literal surface). */
   resolvePage(page: string, params: Readonly<Record<string, string>>): { href: string } | null;
+  /**
+   * The turn's binding, built from THE SAME fresh guard result (retrieveMetric /
+   * listNavigationTargets / resolveNavigationTarget with a string-literal surface
+   * per area). The ONLY scope a conversation turn can read.
+   */
+  binding: PlatformAiBinding;
 }
 
 export interface ConversationStoreSeam {
@@ -60,6 +69,25 @@ export interface ConversationStoreSeam {
   readConversation(operatorId: string, id: string, now: Date): Promise<{ conversation: ConversationRecord; messages: MessageRecord[] } | null>;
   createConversation(input: { operatorId: string; area: PlatformArea; createRequestId: string; scrubbedQuestion: string }): Promise<CreateOutcome>;
   softDeleteConversation(operatorId: string, id: string): Promise<{ deleted: true; messageCount: number } | { deleted: false }>;
+}
+
+/** The turn seams of the store (B11 turn integration). */
+export interface ConversationTurnStoreSeam {
+  /** Metadata only — reads no message and decrypts nothing (the area guard runs before any content read). */
+  findCreateConversation(operatorId: string, createRequestId: string): Promise<CreateReplayLookup | null>;
+  findTurnPair(operatorId: string, conversationId: string, clientRequestId: string): Promise<TurnPair | null>;
+  appendTurn(input: { operatorId: string; conversationId: string; clientRequestId: string; scrubbedQuestion: string; now: Date }): Promise<AppendOutcome>;
+  settleTurn(operatorId: string, conversationId: string, assistantId: string, outcome: SettleOutcome): Promise<boolean>;
+  loadConversationHistory(operatorId: string, conversationId: string): Promise<HistoryMessage[] | null>;
+}
+
+/**
+ * Runs the model turn for a stored question (outside any transaction, §5.2):
+ * history from the store, the binding from `access` (the conversation's own
+ * area, FRESH). Expected never to throw; a throw is treated as PROVIDER.
+ */
+export interface TurnRunDeps {
+  runTurn(input: { operatorId: string; conversationId: string; question: string; access: AreaAccess }): Promise<ConversationTurnOutcome>;
 }
 
 export interface ConversationDeps {
@@ -221,19 +249,23 @@ export async function handleListConversations(v: Viewer, grantedAreas: ReadonlyS
 }
 
 /**
- * POST /conversations `{ clientRequestId, question }` — create = the first
- * question. The area is the server's (platformAiAreaFor, via the viewer gate).
- * Stores the conversation, the scrubbed USER message and a PENDING ASSISTANT
- * row (transaction 1). Running the turn and settling it (transaction 2) is the
- * turn-integration follow-up (after #418); until then the reply stays PENDING
- * and is ABANDONED by the next read after 2 × the turn timeout.
+ * Run the stored question's turn and settle it (transaction 2), then return the
+ * pair as the database now holds it. A run that throws ⇒ FAILED / PROVIDER; a
+ * settle that fails leaves the row PENDING (abandoned by the next read).
  */
-export async function handleCreateConversation(v: Viewer, body: unknown, deps: ConversationDeps & TurnAdmissionDeps): Promise<ConversationHttp> {
-  const parsed = parseTurnBody(body);
-  if (!parsed) {
-    return { status: 400, body: { error: `Send { clientRequestId: <uuid>, question: 1–${PLATFORM_AI_MESSAGE_MAX} characters }.`, code: "VALIDATION" } };
-  }
-  // Pre-provider refusals store nothing (§5.3): kill switch → global freeze → daily cap.
+async function runAndSettle(
+  v: Viewer, conversationId: string, pair: TurnPair, clientRequestId: string, question: string, access: AreaAccess,
+  deps: { store: ConversationTurnStoreSeam } & TurnRunDeps,
+): Promise<TurnPair> {
+  let outcome: ConversationTurnOutcome;
+  try { outcome = await deps.runTurn({ operatorId: v.operatorId, conversationId, question, access }); }
+  catch { outcome = { status: "FAILED", failureCode: "PROVIDER" }; }
+  try { await deps.store.settleTurn(v.operatorId, conversationId, pair.assistant.id, outcome); } catch { /* stays PENDING ⇒ ABANDONED later */ }
+  return (await deps.store.findTurnPair(v.operatorId, conversationId, clientRequestId)) ?? pair;
+}
+
+/** v0's pre-provider gates (§5.3): kill switch → global freeze → daily cap. null = admitted. */
+async function admit(v: Viewer, deps: TurnAdmissionDeps & { now(): Date }): Promise<ConversationHttp | null> {
   let adm: { paused: boolean };
   try { adm = await deps.admission(); } catch { adm = { paused: true }; }
   if (adm.paused) return unavailable(503, "KILL_SWITCH");
@@ -248,7 +280,52 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: C
       ? unavailable(429, "DAILY_TURNS", { "Retry-After": String(secondsToUtcMidnight(now)) })
       : unavailable(503, "ALLOWANCE_UNAVAILABLE");
   }
-  // One scrub for both sinks (S2 B3): this exact string is stored and, in the follow-up, sent.
+  return null;
+}
+
+const VALIDATION = (): ConversationHttp =>
+  ({ status: 400, body: { error: `Send { clientRequestId: <uuid>, question: 1–${PLATFORM_AI_MESSAGE_MAX} characters }.`, code: "VALIDATION" } });
+
+type TurnDeps = ConversationDeps & TurnAdmissionDeps & TurnRunDeps & { store: ConversationStoreSeam & ConversationTurnStoreSeam };
+
+/**
+ * POST /conversations `{ clientRequestId, question }` — create = the first
+ * question. The area is the server's (platformAiAreaFor, via the viewer gate).
+ *
+ * GATE ORDER (pinned in turn.test.ts; S2 on #431). The route has run: the flag
+ * (404) → the session → the fresh route guard → the #352 limiter. Then here:
+ *   1. body validation (400);
+ *   2. replay lookup, METADATA ONLY (findCreateConversation: no message read,
+ *      nothing decrypted); a known key ⇒ the conversation's OWN area fresh check
+ *      (refused ⇒ the ONE 404) and only THEN the stored pair (findTurnPair);
+ *   3. admission gates: kill switch → freeze → daily cap;
+ *   4. the area guard for the new conversation's area, then create + the turn.
+ *   · a REPLAY of a known createRequestId is answered from the store: no
+ *     admission gate, no model call, no daily turn (§5.1);
+ *   · v0's gates, then the area's FRESH guard (its binding) — every refusal
+ *     BEFORE anything is stored (§5.3);
+ *   · transaction 1 stores the conversation, the scrubbed USER row and a PENDING
+ *     ASSISTANT row; the turn runs OUTSIDE any transaction; transaction 2 settles
+ *     it COMPLETE (answer + evidence refs) or FAILED (a closed code).
+ */
+export async function handleCreateConversation(v: Viewer, body: unknown, deps: TurnDeps): Promise<ConversationHttp> {
+  const parsed = parseTurnBody(body);
+  if (!parsed) return VALIDATION();
+  const prior = await deps.store.findCreateConversation(v.operatorId, parsed.clientRequestId);
+  if (prior) {
+    if (prior.kind === "DELETED") return notFound();
+    // The replayed conversation's OWN area, fresh (step 6) — BEFORE any content is read or decrypted.
+    const access = await deps.areaAccess(prior.conversation.area, v.operatorId);
+    if (!access) return notFound();
+    const pair = await deps.store.findTurnPair(v.operatorId, prior.conversation.id, parsed.clientRequestId);
+    if (!pair) return notFound();
+    return pairResponse(200, prior.conversation, pair, access);
+  }
+  const refused = await admit(v, deps);
+  if (refused) return refused;
+  const access = await deps.areaAccess(v.area, v.operatorId);
+  if (!access) return notFound();
+  // One scrub for both sinks (S2 B3): this exact string is stored AND sent.
   const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
   const out = await deps.store.createConversation({ operatorId: v.operatorId, area: v.area, createRequestId: parsed.clientRequestId, scrubbedQuestion });
   switch (out.kind) {
@@ -257,14 +334,64 @@ export async function handleCreateConversation(v: Viewer, body: unknown, deps: C
     case "DELETED":
       return notFound();
     case "REPLAY": {
-      // The replayed conversation's OWN area, fresh (step 6) — its area may differ from today's first area.
-      const access = await deps.areaAccess(out.conversation.area, v.operatorId);
-      if (!access) return notFound();
-      return pairResponse(200, out.conversation, out.pair, access);
+      // A concurrent create with the same key won: answer as a replay (no turn here).
+      const a = out.conversation.area === v.area ? access : await deps.areaAccess(out.conversation.area, v.operatorId);
+      if (!a) return notFound();
+      return pairResponse(200, out.conversation, out.pair, a);
     }
     case "CREATED": {
-      const access = await deps.areaAccess(out.conversation.area, v.operatorId);
-      return pairResponse(201, out.conversation, out.pair, access);
+      const pair = await runAndSettle(v, out.conversation.id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+      return pairResponse(201, out.conversation, pair, access);
+    }
+  }
+}
+
+/**
+ * POST /conversations/[id]/messages `{ clientRequestId, question }` — the next
+ * question of a live conversation (design §10).
+ *
+ * GATE ORDER (pinned in turn.test.ts; S2 on #431). The route has run: the flag
+ * (404) → the session → the fresh route guard → the #352 limiter. Then here:
+ * id shape → the live OWNED conversation (metadata only) → the conversation's
+ * OWN area fresh check (404) → body validation → replay lookup (the only read
+ * of stored content) → admission gates (kill → freeze → cap) → append / turn.
+ *   steps 5–6  owner-scoped lookup, then the conversation's OWN area FRESH; any
+ *              refusal (not found, not the operator's, deleted, area revoked
+ *              between turns) ⇒ the ONE 404, and no turn runs;
+ *   replay     a known clientRequestId ⇒ the stored pair (COMPLETE / FAILED ⇒
+ *              200, PENDING ⇒ 409 TURN_IN_FLIGHT): no gate, no model, no daily turn;
+ *   gates      kill switch → freeze → daily cap (nothing stored on refusal);
+ *   append     transaction 1 (abandon a stale PENDING, one in-flight turn per
+ *              conversation ⇒ 409 TURN_IN_FLIGHT, the 40-message cap ⇒ 409
+ *              CONVERSATION_FULL), then the turn, then transaction 2.
+ * No audit row (S2 B8): the AiInvocation ledger records the turn's calls.
+ */
+export async function handleAppendMessage(v: Viewer, id: string, body: unknown, deps: TurnDeps): Promise<ConversationHttp> {
+  if (!CONVERSATION_ID.test(id)) return notFound();
+  const meta = await deps.store.findLiveConversation(v.operatorId, id);
+  if (!meta) return notFound();
+  const access = await deps.areaAccess(meta.area, v.operatorId);
+  if (!access) return notFound();
+  const parsed = parseTurnBody(body);
+  if (!parsed) return VALIDATION();
+  const prior = await deps.store.findTurnPair(v.operatorId, id, parsed.clientRequestId);
+  if (prior) return pairResponse(200, null, prior, access);
+  const refused = await admit(v, deps);
+  if (refused) return refused;
+  const scrubbedQuestion = scrubOperatorText(parsed.question, PLATFORM_AI_MESSAGE_MAX);
+  const out = await deps.store.appendTurn({ operatorId: v.operatorId, conversationId: id, clientRequestId: parsed.clientRequestId, scrubbedQuestion, now: deps.now() });
+  switch (out.kind) {
+    case "NOT_FOUND":
+      return notFound();
+    case "IN_FLIGHT":
+      return { status: 409, body: { error: "This conversation is still answering a question.", code: "TURN_IN_FLIGHT" }, headers: { "Retry-After": String(PLATFORM_AI_IN_FLIGHT_RETRY_AFTER_S) } };
+    case "FULL":
+      return { status: 409, body: { error: "This conversation is full. Start a new one.", code: "CONVERSATION_FULL", limits: { messages: { max: PLATFORM_AI_CONVERSATION_MESSAGES_MAX } } } };
+    case "REPLAY":
+      return pairResponse(200, null, out.pair, access);
+    case "APPENDED": {
+      const pair = await runAndSettle(v, id, out.pair, parsed.clientRequestId, scrubbedQuestion, access, deps);
+      return pairResponse(200, null, pair, access);
     }
   }
 }

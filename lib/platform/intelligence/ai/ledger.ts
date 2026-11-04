@@ -25,12 +25,25 @@ import { runWithAiInvocationContext } from "@/lib/ai/invocation-context";
 import { TurnTimeoutError } from "@/lib/ai/turn-deadline";
 import { PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_SUB_SURFACE, type PlatformAiGenerate } from "./core";
 
-export function makePlatformAiGenerate(args: { operatorId: string; turnId?: string; client?: StructuredClient; sinks?: UsageSinks }): PlatformAiGenerate {
+/** B11 — the sub-surface a stored conversation's turn is recorded under (same surface: overhead, same daily cap). */
+export const PLATFORM_AI_CONVERSATION_SUB_SURFACE = "platform_ai:conversation";
+
+export function makePlatformAiGenerate(args: {
+  operatorId: string; turnId?: string; client?: StructuredClient; sinks?: UsageSinks;
+  /**
+   * B11 — the stored conversation's id (an opaque grouping key on
+   * AiInvocation.conversationId; metadata only). Present ⇒ the sub-surface is
+   * PLATFORM_AI_CONVERSATION_SUB_SURFACE. Each turn keeps its OWN random
+   * correlationId, so the daily cap still counts turns, not conversations.
+   */
+  conversationId?: string;
+}): PlatformAiGenerate {
   const correlationId = args.turnId ?? randomUUID();
   const deps = args.client || args.sinks ? { client: args.client, sinks: args.sinks } : undefined;
+  const subSurface = args.conversationId ? PLATFORM_AI_CONVERSATION_SUB_SURFACE : PLATFORM_AI_SUB_SURFACE;
   return ({ model, messages, tools, maxTokens, signal }) =>
     runWithAiInvocationContext(
-      { correlationId, turnIndex: 0, surface: PLATFORM_AI_ASK_SURFACE, subSurface: PLATFORM_AI_SUB_SURFACE, userId: args.operatorId },
+      { correlationId, turnIndex: 0, surface: PLATFORM_AI_ASK_SURFACE, subSurface, userId: args.operatorId, ...(args.conversationId ? { conversationId: args.conversationId } : {}) },
       () => generateWithTools({ model, messages, tools, maxTokens, signal }, deps),
     );
 }
