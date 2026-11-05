@@ -48,7 +48,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, LINK_LABEL_MAX, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -401,6 +401,27 @@ console.log("\n4. placeholder grounding — the model writes {{m:key}}, the serv
   check("\"at least {{m:PARTIAL}}\" ⇒ \"at least 5\" once, never \"at least at least\"",
     segmentsText(R("At least {{m:growth-registrations@1|window=90}} sign-ups").segments) === "at least 5 (in the last 90 days) sign-ups" && segmentsText(R("about {{m:c@1|part=spendUsd|window=7}}", [usdW7]).segments) === "about $6.00 (in the last 7 days, estimated)");
   check("…\"at least\" before a MEASURED figure stays the model's words (no figure invented)", segmentsText(R("at least {{m:engaged-users@1|window=7}}").segments) === "at least 6 (in the last 7 days)");
+  // S2 ruling 2026-11-05 (FIX 2): "at {{m:PARTIAL}}" read "at at least $0.03" on Preview — collapsed at the text→figure join only.
+  const P = "{{m:growth-registrations@1|window=90}}";
+  const fix2 = {
+    atAt: segmentsText(R(`AI costs at ${P} now`).segments),
+    atAtTyped: R(`AI costs at ${P} now`).typed,
+    capAt: segmentsText(R(`At ${P} sign-ups`).segments),
+    capAtTyped: R(`At ${P} sign-ups`).typed.find((x) => x.kind === "figure")?.text,
+    allCapsish: segmentsText(R(`costs. aT ${P}`).segments),
+    of: segmentsText(R(`a share of ${P}`).segments),
+    is: segmentsText(R(`the count is ${P}`).segments),
+    that: segmentsText(R(`that ${P}`).segments),
+    noFig: segmentsText(R("costs at least something, at the end").segments),
+    measured: segmentsText(R("costs at {{m:engaged-users@1|window=7}}").segments),
+  };
+  // S2 ruling 2026-11-05 (ii): a dropped "At" (capital A) ⇒ the figure's lead reads "At least"; any other casing ⇒ "at least".
+  check("FIX 2: \"at {{m:PARTIAL}}\" ⇒ \"at least …\" once (never \"at at least\"); the typed figure span is unchanged",
+    fix2.atAt === "AI costs at least 5 (in the last 90 days) now" && JSON.stringify(fix2.atAtTyped.map((x) => [x.kind, x.text])) === JSON.stringify([["text", "AI costs "], ["figure", "at least 5 (in the last 90 days)"], ["text", " now"]])
+    && fix2.capAt === "At least 5 (in the last 90 days) sign-ups" && fix2.capAtTyped === "At least 5 (in the last 90 days)" && fix2.allCapsish === "costs. at least 5 (in the last 90 days)", fix2);
+  check("FIX 2 pins: \"of at least\", \"is at least\", \"that at least\" unchanged; \"at\" before a non-\"at least\" figure unchanged; prose with no figure unchanged",
+    fix2.of === "a share of at least 5 (in the last 90 days)" && fix2.is === "the count is at least 5 (in the last 90 days)" && fix2.that === "that at least 5 (in the last 90 days)"
+    && fix2.measured === "costs at 6 (in the last 7 days)" && fix2.noFig === "costs at least something, at the end", fix2);
 
   // S2 fix 2: units are EXPLICIT (valueUnits), never inferred from a part name.
   const named = (u: unknown) => segmentsText(resolvePlaceholders([{ kind: "text", text: "{{m:s@1|part=pricedUsd}}" }], [usdEnv("MEASURED", { valueUnits: u })], new Set()).segments);
@@ -928,7 +949,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
     !B.result.grounding.replaced && B.result.grounding.verdict === "RESOLVED" && JSON.stringify(B.result.claims) === JSON.stringify({ claims: 5, resolved: 5, unresolved: 0, admitted: 0 })
     && B.result.sanitised.removed === 0 && B.result.answer.some((x) => x.kind === "link" && x.href === ECON_PAGE), { g: B.result.grounding, c: B.result.claims, s: B.result.sanitised, t: txt(B) });
   check("…each figure states ITS window: the cycle for operating cost, \"last 30 days\" for AI cost",
-    /at at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(txt(B)) && /recent window is about \$[\d,.]+ \(in the last 30 days, estimated\)\./.test(txt(B)) && notes(txt(B)) === 0, txt(B));
+    /[^t] at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)/.test(txt(B)) && !/\bat at least\b/.test(txt(B)) && /recent window is about \$[\d,.]+ \(in the last 30 days, estimated\)\./.test(txt(B)) && notes(txt(B)) === 0, txt(B));
   // A: provider-outcome UNAVAILABLE + operating-cost PARTIAL.
   const bA = opsBinding(OPS, { ...econR, providerHealth: async () => { throw new Error("down"); } });
   const A = await run("Are any providers failing, and what are they costing us?", bA, script([{ calls: [gm("provider-outcome"), gm("economics-operating-cost")] },
@@ -970,7 +991,7 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
     ["another /api/ path", "See [records](/api/platform/platform-ops/providers).", { API_PATH: 1 }],
     ["the drill page with an extra param", `See [Economics](${ECON_PAGE}&figure=ai_cost).`, { PAGE_VARIANT: 1 }],
     ["a page path this turn never returned", "See [Economics](/dashboard/platform/economics).", { PAGE_NOT_RETURNED: 1 }],
-    ["an absolute URL", `See [Economics](https://app.example.test${ECON_PAGE}).`, { ABSOLUTE_URL: 1 }],
+    ["an absolute URL (its path + query not returned)", `See [Economics](https://app.example.test${ECON_PAGE}&x=1).`, { ABSOLUTE_URL: 1 }],
     ["a placeholder as the target", "See [cost]({{m:economics-ai-cost@1|part=spendUsd}}).", { PLACEHOLDER: 1 }],
     ["a metric key as the target", "See [AI cost](economics-ai-cost@1).", { METRIC_ID: 1 }],
     ["an empty target", "See [Economics Overview]().", { EMPTY: 1 }],
@@ -986,10 +1007,110 @@ console.log("\n4d. window resolution — matchPlaceholderEnvelope, the window st
   const notLink = ["See [Economics](" + ECON_PAGE + ").", "See " + api + ".", "See https://app.example.test/x.", "![i](/p)"].map((t) => strippedLinkTargets(t, allowedB, envB));
   check("…a kept link, a raw path, a raw URL or an image is not a stripped Markdown link (no target kind counted)", notLink.every((o) => Object.keys(o).length === 0), notLink);
   const mixed = "a [x](/q) b [y](https://e.test) c [z](" + ECON_PAGE + ") <b>[w](/api/x)</b> ![i](/p)";
-  check("…the target-kind total equals the sanitiser's link count (same pre-steps, same pattern)",
-    Object.values(strippedLinkTargets(mixed, allowedB, envB)).reduce((a, n) => a + n, 0) === sanitiseAnswer(mixed, allowedB).kinds.link, strippedLinkTargets(mixed, allowedB, envB));
+  const mixedRw = mixed + " [v](https://e.test/dashboard/platform/PLATFORM_OPS)";
+  const allowedRw = new Set([...allowedB, "/dashboard/platform/PLATFORM_OPS"]);
+  const strippedTotal = (o: Record<string, number>) => Object.entries(o).filter(([k]) => k !== "ABSOLUTE_URL_REWRITTEN").reduce((a, [, n]) => a + n, 0);
+  check("…the target-kind total (less ABSOLUTE_URL_REWRITTEN, which is kept) equals the sanitiser's link count (same pre-steps, same pattern)",
+    strippedTotal(strippedLinkTargets(mixed, allowedB, envB)) === sanitiseAnswer(mixed, allowedB).kinds.link
+    && strippedTotal(strippedLinkTargets(mixedRw, allowedRw, envB)) === sanitiseAnswer(mixedRw, allowedRw).kinds.link && strippedLinkTargets(mixedRw, allowedRw, envB).ABSOLUTE_URL_REWRITTEN === 1,
+    strippedLinkTargets(mixedRw, allowedRw, envB));
   check("the sanitiser itself is unchanged by the diagnosis (sanitiseAnswer has no target-kind logic)",
     !/LINK_TARGET_KINDS|strippedLinkTargets/.test(code(src("lib/platform/intelligence/ai/core.ts")).slice(code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export function sanitiseAnswer"), code(src("lib/platform/intelligence/ai/core.ts")).indexOf("export const segmentsText"))));
+
+  // S2 ruling 2026-11-05 (FIX 3, re-ruled): an absolute Markdown link whose EXACT pathname + search this turn returned ⇒ OUR href.
+  {
+    const bx = opsBinding(OPS);
+    const bare = bx.listPages({}).map((t) => ({ id: t.id, r: bx.resolvePage(t.id) })).filter((x) => x.r && !x.r.href.includes("?"));
+    const hrefsAll = bx.listPages({}).map((t) => bx.resolvePage(t.id)?.href ?? "");
+    // The bare href that also has a one-param sibling on the same path (the misroute fixture needs both).
+    const pick = bare.find((x) => x.r!.href.startsWith("/dashboard/platform/") && hrefsAll.some((h) => h.startsWith(`${x.r!.href}?`) && !h.includes("&")))!;
+    const P0 = pick?.r?.href ?? "";
+    const other = bx.listPages({}).map((t) => ({ id: t.id, r: bx.resolvePage(t.id) })).find((x) => x.r && x.r.href !== P0)!;
+    const all = bx.listPages({}).map((t) => ({ id: t.id, r: bx.resolvePage(t.id) })).filter((x) => x.r);
+    const qPick = all.find((x) => x.r!.href.startsWith(`${P0}?`) && !x.r!.href.includes("&"))!;
+    const Q0 = qPick?.r?.href ?? "";
+    const Q2 = all.find((x) => x.r!.href.includes("&"))?.r?.href ?? "";
+    check("FIX 3 fixtures: a bare href, a one-param href on the same path, and a two-param href",
+      P0.startsWith("/dashboard/platform/") && !!other && Q0.startsWith(`${P0}?`) && /\?[^&]+&[^&]+$/.test(Q2), { P0, Q0, Q2 });
+    const A = new Set([P0]);
+    const one = (text: string, allowed: ReadonlySet<string> = A) => { const r = sanitiseAnswer(text, allowed); return { r, links: r.segments.filter((x) => x.kind === "link"), t: segmentsText(r.segments), all: JSON.stringify(r.segments) }; };
+    const foreign = one(`See [the overview](https://evil.test:8443${P0}#frag).`);
+    check("FIX 3: exact path match (no query) on a FOREIGN host ⇒ rendered as OUR href; host, port and fragment dropped; not counted as removed",
+      foreign.links.length === 1 && foreign.links[0].kind === "link" && foreign.links[0].href === P0 && foreign.links[0].text === "the overview"
+      && !/evil|8443|secret|frag|\?/.test(foreign.all) && foreign.r.removed === 0 && foreign.t === "See the overview.", foreign.r);
+    const AQ = new Set([P0, Q0, Q2]);
+    const qm = one(`See [Economics](https://evil.test${Q0}#frag).`, AQ);
+    check("FIX 3 (re-ruled): a matching path + query on a foreign host, plus #frag ⇒ OUR href byte for byte, no fragment",
+      qm.links.length === 1 && qm.links[0].kind === "link" && qm.links[0].href === Q0 && !/evil|frag/.test(qm.all) && qm.r.removed === 0, qm.r);
+    const [p2path, p2query] = Q2.split("?");
+    const reordered = `${p2path}?${p2query.split("&").reverse().join("&")}`;
+    const qBad = [
+      ["an extra param", `[x](https://e.test${Q0}&x=1)`],
+      ["a secret param", `[x](https://e.test${P0}?x=secret)`],
+      ["reordered params", `[x](https://e.test${reordered})`],
+      ["an encoded variant of the query", `[x](https://e.test${Q0.replace("=", "%3D")})`],
+      ["an encoded variant of a query character", `[x](https://e.test${Q0.replace(/([a-z])$/, (c) => `%${c.charCodeAt(0).toString(16)}`)})`],
+      ["the MISROUTE: a query-carrying URL whose path is a returned bare href", `[x](https://e.test${Q0})`],
+    ].map(([what, t]) => ({ what, o: one(t, what.startsWith("the MISROUTE") ? new Set([P0]) : AQ) }));
+    check("FIX 3 (re-ruled): an extra param / a non-returned query / reordered params / an encoded query variant ⇒ stripped; a query-carrying URL never rewrites to a bare href",
+      reordered !== Q2 && qBad.every((x) => x.o.links.length === 0 && x.o.r.kinds.link === 1), qBad.map((x) => ({ w: x.what, s: x.o.r.segments })));
+    check("…the encoded variant really keeps its encoding in url.search (the exact compare is what refuses it)",
+      new URL(`https://e.test${Q0.replace("=", "%3D")}`).search !== new URL(`https://e.test${Q0}`).search);
+    const emptyQ = one(`[x](https://e.test${P0}?)`);
+    check("…PIN: \"…?\" (an empty query) against a returned bare href ⇒ WHATWG serialises search as \"\" ⇒ rewritten to the bare href",
+      new URL(`https://e.test${P0}?`).search === "" && emptyQ.links.length === 1 && emptyQ.links[0].kind === "link" && emptyQ.links[0].href === P0, emptyQ.r);
+    const userinfo = one(`[o](http://u:pw@app.example.test${P0})`);
+    check("…http: too; userinfo dropped", userinfo.links.length === 1 && userinfo.links[0].kind === "link" && userinfo.links[0].href === P0 && !/pw|u:/.test(userinfo.all), userinfo.r);
+    const img = one(`![chart](https://app.example.test${P0}) and ![c2](${P0})`);
+    check("…an IMAGE with a matching path ⇒ still stripped (image category, no link)", img.links.length === 0 && img.r.kinds.image === 2 && !img.t.includes(P0), img.r);
+    const bad = [
+      `[x](javascript:${P0})`, `[x](javascript://x${P0})`, `[x](data:text/html,${P0})`, `[x](//evil.test${P0})`, `[x](ftp://evil.test${P0})`,
+      `[x](https://evil.test/dashboard/platform/not-returned)`, `[x](https://evil.test${P0.replace("/platform/", "/%70latform/")})`,
+      `[x](https://evil.test${P0}/)`, `[x](https://)`, `[x](https://evil.test${P0.toUpperCase()})`,
+    ].map((t) => ({ t, o: one(t) }));
+    check("…javascript: / data: / ftp: / protocol-relative / a non-returned path / a percent-encoded variant / a trailing slash / unparseable / case variant ⇒ stripped",
+      bad.every((x) => x.o.links.length === 0 && (x.o.r.kinds.link ?? 0) + (x.o.r.kinds.url ?? 0) >= 1 && !x.o.t.includes(P0)), bad.map((x) => ({ t: x.t, s: x.o.r.segments, k: x.o.r.kinds })));
+    check("…the percent-encoded case really parses with its encoding kept (so the exact compare is what refuses it)",
+      new URL(`https://e.test${P0.replace("/platform/", "/%70latform/")}`).pathname === P0.replace("/platform/", "/%70latform/"));
+    const dot = one(`[o](https://evil.test/a/../${P0.slice(1)})`);
+    check("…a dot-segment path the WHATWG parser normalises to an allowed path ⇒ rewritten to OUR href",
+      new URL(`https://evil.test/a/../${P0.slice(1)}`).pathname === P0 && dot.links.length === 1 && dot.links[0].kind === "link" && dot.links[0].href === P0 && !dot.all.includes("/a/"), dot.r);
+    const lbl = one(`[<b>Over</b>view https://evil.test/x](https://evil.test${P0})`);
+    check("…the label is the model's text through the existing label sanitisation (HTML and URLs out)",
+      lbl.links.length === 1 && lbl.links[0].text === `Overview ${LINK_REMOVED}` && !/evil|<b>/.test(lbl.all), lbl.r);
+    check("…a raw absolute URL (not Markdown link syntax) keeps today's handling (stripped as url)",
+      one(`See https://evil.test${P0} now.`).links.length === 0 && one(`See https://evil.test${P0} now.`).r.kinds.url === 1 && one(`<https://evil.test${P0}>`).links.length === 0);
+    check("…the trace counts it separately: linkTo=ABSOLUTE_URL_REWRITTEN:n vs ABSOLUTE_URL:n (stripped), codes only",
+      JSON.stringify(strippedLinkTargets(`[a](https://e.test${P0}) [b](https://e.test/nope)`, A, [])) === JSON.stringify({ ABSOLUTE_URL_REWRITTEN: 1, ABSOLUTE_URL: 1 }));
+
+    // Through real turns: this turn's open_page ⇒ rewritten; a path returned only in an EARLIER turn (history) ⇒ stripped.
+    const t1 = await run("x", bx, script([{ calls: [{ name: "open_page", args: { id: pick.id } }] }, { content: `See [the page](https://app.example.test${P0}#top).` }]));
+    const l1 = t1.result.answer.filter((x) => x.kind === "link");
+    check("…through a turn: open_page returned the path ⇒ link to OUR href; trace removed=0 linkTo=ABSOLUTE_URL_REWRITTEN:1",
+      l1.length === 1 && l1[0].kind === "link" && l1[0].href === P0 && t1.result.sanitised.removed === 0 && traceLine(t1.result).includes(" removed=0 linkTo=ABSOLUTE_URL_REWRITTEN:1 replaced="), traceLine(t1.result));
+    const history = { messages: [{ role: "user" as const, content: "where is it?" }, { role: "assistant" as const, content: `It is at ${P0} — see [the page](${P0}).` }],
+      earlierEvidence: `Earlier evidence: page ${pick.id} (${P0}).`, exchangesUsed: 1, exchangesDropped: 0, estimatedTokens: 10 };
+    const sc2 = script([{ calls: [{ name: "open_page", args: { id: other.id } }] }, { content: `Again: [the page](https://app.example.test${P0}).` }]);
+    const t2 = await runPlatformAiTurn({ question: "and now?", binding: bx, generate: sc2.generate, model: "gpt-4o-mini", history });
+    check("…a path present only in an EARLIER turn's evidence (history), not this turn's hrefs ⇒ stripped (linkTo=ABSOLUTE_URL:1)",
+      JSON.stringify(sc2.seen[0].messages).includes(P0) && t2.result.answer.every((x) => x.kind !== "link" || x.href !== P0) && !segmentsText(t2.result.answer).includes(P0)
+      && t2.result.sanitised.kinds.link === 1 && traceLine(t2.result).includes(" removed=1(link:1) linkTo=ABSOLUTE_URL:1 "), { a: t2.result.answer, l: traceLine(t2.result) });
+    const t3 = await run("x", bx, script([{ calls: [{ name: "open_page", args: { id: qPick.id } }] }, { content: `See [Economics](https://app.example.test${Q0}) and [home](https://app.example.test${P0}).` }]));
+    const l3 = t3.result.answer.filter((x) => x.kind === "link");
+    check("…through a turn: open_page returned the query href ⇒ that URL rewritten; the bare path (not returned) stripped",
+      l3.length === 1 && l3[0].kind === "link" && l3[0].href === Q0 && traceLine(t3.result).includes(" removed=1(link:1) linkTo=ABSOLUTE_URL_REWRITTEN:1,ABSOLUTE_URL:1 "), traceLine(t3.result));
+
+    // S2 ruling 2026-11-05 (i): the label cap — 120 keeps the link, 121 is plain text (counted as a stripped link).
+    const L120 = "a".repeat(LINK_LABEL_MAX), L121 = "a".repeat(LINK_LABEL_MAX + 1);
+    const cap = [one(`[${L120}](${P0})`), one(`[${L121}](${P0})`), one(`[${L120}](https://e.test${P0})`), one(`[${L121}](https://e.test${P0})`)];
+    check("label cap: 120 chars ⇒ link kept; 121 ⇒ the label as plain text, no link (relative and rewritten targets alike)",
+      LINK_LABEL_MAX === 120 && [cap[0], cap[2]].every((x) => x.links.length === 1 && x.links[0].text === L120 && x.r.removed === 0)
+      && [cap[1], cap[3]].every((x) => x.links.length === 0 && x.t === L121 && x.r.kinds.link === 1), cap.map((x) => ({ s: x.r.segments.map((y) => [y.kind, y.text.length]), k: x.r.kinds })));
+    check("…the cap measures the SANITISED label (HTML out first): 120 visible chars inside a tag still link",
+      one(`[<b>${L120}</b>](${P0})`).links.length === 1);
+    check("…and the trace names it LABEL_OVER_CAP (the target-kind total still equals the link count)",
+      JSON.stringify(strippedLinkTargets(`[${L121}](${P0}) [${L121}](https://e.test${P0}) [${L120}](${P0})`, A, [])) === JSON.stringify({ LABEL_OVER_CAP: 2 }));
+  }
 
   // Guidance (the prompt and tool text teach the form; enforcement stays server-side).
   const gmDesc = JSON.stringify(platformAiToolSchemas([]));
