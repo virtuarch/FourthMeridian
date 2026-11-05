@@ -511,7 +511,21 @@ console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (co
   check("the reason enums are exactly the S2-approved codes", JSON.stringify(UNRESOLVED_REASONS) === JSON.stringify(["UNKNOWN_KEY", "VERSION", "MISSING_PART", "UNKNOWN_PART", "NOT_READ"])
     && JSON.stringify(MALFORMED_REASONS) === JSON.stringify(["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"]));
   const h = await handlePlatformAiAsk({ question: "x" }, askDeps({ generate: script([...reads, { content: "{{m:ai-fleet-spend-status@1|part=spend}}" }]).generate }));
-  check("…and the HTTP body's grounding carries the codes only", JSON.stringify((h.body as { grounding: unknown }).grounding) === JSON.stringify({ replaced: true, verdict: "UNRESOLVED_PLACEHOLDER", unresolvedBy: { UNKNOWN_PART: 1 }, malformedBy: {} }), h.body.grounding);
+  check("…and the HTTP body's grounding carries the codes only", JSON.stringify((h.body as { grounding: unknown }).grounding) === JSON.stringify({ replaced: true, verdict: "UNRESOLVED_PLACEHOLDER", unresolvedBy: { UNKNOWN_PART: 1 }, malformedBy: {}, digitBy: {} }), h.body.grounding);
+  // S2 2026-11-05 — the UNGROUNDED_DIGIT diagnosis: counts by kind, never the digits or the text.
+  {
+    const { classifyDigitRuns, DIGIT_KINDS } = await import("./core");
+    check("DIGIT_KINDS is the closed list WINDOW_LIKE, MONEY_LIKE, PERCENT_LIKE, OTHER", JSON.stringify(DIGIT_KINDS) === JSON.stringify(["WINDOW_LIKE", "MONEY_LIKE", "PERCENT_LIKE", "OTHER"]));
+    const k = (t: string) => JSON.stringify(classifyDigitRuns(t));
+    check("time units ⇒ WINDOW_LIKE (30 days, 7d, 24 hours, 3-month, 2 weeks)", k("over 30 days and 7d, 24 hours, 3-month, 2 weeks") === JSON.stringify({ WINDOW_LIKE: 5 }), k("over 30 days and 7d, 24 hours, 3-month, 2 weeks"));
+    check("currency ⇒ MONEY_LIKE ($3.33, $ 1,200, 5 dollars, 9 USD)", k("$3.33 and $ 1,200 then 5 dollars or 9 USD") === JSON.stringify({ MONEY_LIKE: 4 }), k("$3.33 and $ 1,200 then 5 dollars or 9 USD"));
+    check("percent ⇒ PERCENT_LIKE (12%, 4 percent)", k("12% and 4 percent") === JSON.stringify({ PERCENT_LIKE: 2 }));
+    check("anything else ⇒ OTHER (a bare count, 'top 3')", k("there are 4 providers, top 3") === JSON.stringify({ OTHER: 2 }));
+    check("no digits ⇒ empty", k("no figures here") === "{}");
+    const dig = await why("Costs over the last 30 days were high.");
+    check("a turn that writes \"30 days\" ⇒ UNGROUNDED_DIGIT with digitBy=WINDOW_LIKE:1 in the trace (the verdict is unchanged: a diagnosis, never an allowance)",
+      dig.v === "UNGROUNDED_DIGIT" && dig.line.endsWith("verdict=UNGROUNDED_DIGIT digitBy=WINDOW_LIKE:1") && !/30/.test(dig.line.replace(/digitBy=\S+/, "")), dig.line);
+  }
 }
 
 // ── 4f. SERVER-BUILT PLACEHOLDERS (main fix, S2-approved 2026-11-04) ─────────────
