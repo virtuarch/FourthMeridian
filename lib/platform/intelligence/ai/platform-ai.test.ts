@@ -522,6 +522,9 @@ console.log("\n4e. diagnosis — UNRESOLVED sub-reasons and MALFORMED shapes (co
     check("percent ⇒ PERCENT_LIKE (12%, 4 percent)", k("12% and 4 percent") === JSON.stringify({ PERCENT_LIKE: 2 }));
     check("anything else ⇒ OTHER (a bare count, 'top 3')", k("there are 4 providers, top 3") === JSON.stringify({ OTHER: 2 }));
     check("no digits ⇒ empty", k("no figures here") === "{}");
+    const leak = await why("The largest is with a placeholder of something.");
+    check("a turn whose prose says \"placeholder\" traces mechanismLeak=1 and its verdict is unchanged (a diagnosis, never a rewrite)",
+      / mechanismLeak=1$/.test(leak.line) && leak.v === "NONE", leak.line);
     const dig = await why("Costs over the last 30 days were high.");
     check("a turn that writes \"30 days\" ⇒ UNGROUNDED_DIGIT with digitBy=WINDOW_LIKE:1 in the trace (the verdict is unchanged: a diagnosis, never an allowance)",
       dig.v === "UNGROUNDED_DIGIT" && dig.line.endsWith("verdict=UNGROUNDED_DIGIT digitBy=WINDOW_LIKE:1") && !/30/.test(dig.line.replace(/digitBy=\S+/, "")), dig.line);
@@ -1513,6 +1516,14 @@ console.log("\n7. prompt injection — no write tools exist; no image exfil");
     PLATFORM_AI_SYSTEM_PROMPT.includes("The operating cost total is the sum of its categories, never a category; for 'most' or 'largest', use the largest measured category the tool returns."));
   const lmDesc = (platformAiToolSchemas([]) as { function: { name: string; description: string } }[]).find((x) => x.function.name === "list_metrics")!.function.description;
   check("…and list_metrics names largestMeasuredCategory for 'most' / 'largest' questions", /largestMeasuredCategory/.test(lmDesc) && /never a category/.test(lmDesc), lmDesc);
+  check("S2 2026-11-05: the prompt forbids mentioning placeholders and repeating a ranked figure's category",
+    /Never mention placeholders\. A ranked figure already names its category, so do not repeat the category name before it\./.test(PLATFORM_AI_SYSTEM_PROMPT));
+  {
+    const { mechanismLeakCount } = await import("./core");
+    check("mechanismLeakCount: whole word, case-insensitive, plural too; not inside another word",
+      mechanismLeakCount([{ kind: "text", text: "with a placeholder of X; Placeholders are fine?" }, { kind: "link", text: "placeholder", href: "/x" }]) === 3
+        && mechanismLeakCount([{ kind: "text", text: "placeholdering placeholderX no leak" }]) === 0);
+  }
   check("the prompt stays within its word budget (≤ 520 words)", PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length <= 520, String(PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length));
 }
 
