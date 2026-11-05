@@ -299,7 +299,7 @@ export const METRICS: readonly MetricDefinition[] = [
   {
     id: "economics-operating-cost", version: 1, domain: "economics",
     label: "Estimated operating cost this cycle (by category)",
-    summary: "What the platform is costing this billing cycle, estimated: the total and its categories — AI, providers (Plaid) and infrastructure — exactly as the Economics Overview shows them. PARTIAL while any component is unmetered (other providers, infrastructure), so a ranking of categories covers only the measured ones.",
+    summary: "What the platform is costing this billing cycle, estimated: the total and its categories — AI, providers (Plaid) and infrastructure — exactly as the Economics Overview shows them. The total is the sum of its categories, never a category; for what is costing the most, read largestMeasuredCategory — the largest MEASURED category, computed by the server (ties: the first in declared order). PARTIAL while any component is unmetered (other providers, infrastructure), so a ranking of categories covers only the measured ones.",
     answerClass: "CALCULATED",
     window: { kind: "UTC_DAYS", timezone: "UTC", description: "The current billing cycle: the calendar month to date (UTC). Fixed — no other window.", label: "this UTC calendar month to date" },
     numerator: { description: "Σ of the operating-cost components that could be priced: AI (customer, overhead, Platform AI) and Plaid Item-months; the parts are the Overview's AI / Providers / Infrastructure split figures.", source: { module: "lib/platform/economics/snapshot-core.ts", symbol: "operatingCostRows" } },
@@ -314,7 +314,7 @@ export const METRICS: readonly MetricDefinition[] = [
     exclusion: ["Revenue and margin (no billing source — not registered)", "Per-customer and cost-per-customer figures (pending owner definition OD-1 — not registered)", "Consented Plaid Investments Item-months not evidenced as billed (named, never priced)"],
     freshnessSource: "AiInvocation rows and the PlaidItem census, read on request",
     provenance: { class: "ESTIMATED", note: "Rate-card estimates (AI tokens × rate card; Plaid Item-months × invoice-derived rate). No invoice is read: never a bill." },
-    coverageGaps: ["Always PARTIAL today: other providers and infrastructure (hosting, database) are not metered — their parts are null, never $0", "A ranking of categories is a ranking of the MEASURED ones; the unmetered parts could be larger", "UNAVAILABLE when no component could be priced"],
+    coverageGaps: ["Always PARTIAL today: other providers and infrastructure (hosting, database) are not metered — their parts are null, never $0", "A ranking of categories is a ranking of the MEASURED ones; the unmetered parts could be larger (largestMeasuredCategory then carries the qualifier \"ranking among measured categories; some categories are incomplete\"; S2 ruling 2026-11-05)", "UNAVAILABLE when no component could be priced"],
     permission: [{ area: PO, level: "READ", identityTier: "OPS", route: "app/api/platform/platform-ops/economics/route.ts" }],
     tiles: [
       { component: "components/platform/leads/EconomicsOverviewLead.tsx", reads: "s.figures.operating_cost" },

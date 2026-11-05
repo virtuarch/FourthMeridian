@@ -26,8 +26,9 @@ import { UserRole } from "@prisma/client";
 import { METRICS, drillLinkOn, drillLinks, metricKey } from "./registry";
 import { metricAccessFor, type MetricAccessToken } from "./access";
 import {
-  NO_DRILL_ON_SURFACE, READER_SYMBOL, RETRIEVAL, UNAVAILABLE_CODES, atSurface, drillRouteArea, isAggregate, isFleetEntry, retrieveWith,
-  type MetricEnvelope, type RetrievalContext, type RetrievalReaders,
+  NO_DRILL_ON_SURFACE, RANKING_QUALIFIER, READER_SYMBOL, RETRIEVAL, UNAVAILABLE_CODES, atSurface, drillRouteArea, isAggregate, isFleetEntry, isRankedCategory,
+  largestMeasuredCategory, retrieveWith,
+  type MetricEnvelope, type PartDeclarations, type RankedCategory, type RetrievalContext, type RetrievalReaders,
 } from "./retrieve-core";
 import { incidentAudienceFor, type CsToken, type OpsToken } from "@/lib/platform/incidents/intelligence/audience";
 import { fleetSpendStatus } from "@/lib/platform/ai/fleet-spend-status";
@@ -129,9 +130,9 @@ const ecoGroup = (day: string, surface: string | null, o: Partial<SpendGroup> = 
 });
 const ECO_GROUPS: SpendGroup[] = [ecoGroup("2026-11-01", "chat"), ecoGroup("2026-11-02", "brief"), ecoGroup("2026-11-04", "harness"), ecoGroup("2026-10-20", "chat"), ecoGroup("2026-09-10", "chat")];
 const ecoItem = (id: string): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production" } as PlaidItemFact);
-const ecoDeps = (o: { groups?: SpendGroup[]; aiPricingConfigured?: boolean; plaidRates?: EconomicsDeps["plaidRates"] } = {}): EconomicsDeps => ({
+const ecoDeps = (o: { groups?: SpendGroup[]; aiPricingConfigured?: boolean; plaidRates?: EconomicsDeps["plaidRates"]; items?: number } = {}): EconomicsDeps => ({
   groups: async () => o.groups ?? ECO_GROUPS,
-  plaidReaders: { items: async () => [ecoItem("p1"), ecoItem("p2")], transitions: async () => [] },
+  plaidReaders: { items: async () => Array.from({ length: o.items ?? 2 }, (_, i) => ecoItem(`p${i + 1}`)), transitions: async () => [] },
   engagedSince: async () => new Set([CUID]),
   aiPricingConfigured: o.aiPricingConfigured ?? true,
   plaidRates: o.plaidRates ?? PLAID_RATES,
@@ -439,14 +440,98 @@ await (async () => {
   check("cost metrics: every one is served on PLATFORM_OPS only, at the OPS tier (no CS exposure, no new grant)",
     COST.every((k) => { const m = METRICS.find((d) => metricKey(d) === k)!; return m.permission.length === 1 && m.permission[0].area === "PLATFORM_OPS" && m.permission[0].level === "READ" && m.permission[0].identityTier === "OPS"; })
     && envs.every((e) => e?.tier === "OPS"));
+  // A declared RANKING part (S2 ruling 2026-11-05: largestMeasuredCategory) is exempt from the suffix rule; its unit is pinned in 3d.
+  const notRanking = (e: (typeof envs)[number], k: string) => e?.partRoles?.[k] !== "ranking";
   check("cost metrics: value parts follow the renderer convention — dollars '…Usd', percentages '…Pct', the rest counts; never a bare top-level dollar number",
-    envs.every((e) => e?.value === null || (typeof e?.value === "object" && Object.keys(e.value).every((k) => /Usd$|Pct$/.test(k) || ["calls", "returned", "failed", "returnedCalls"].includes(k))))
-    && envs.filter((e) => e?.unit === "usd").every((e) => e?.value === null || Object.keys(e!.value as object).every((k) => /Usd$/.test(k))), JSON.stringify(envs.map((e) => e?.value)));
+    envs.every((e) => e?.value === null || (typeof e?.value === "object" && Object.keys(e.value).filter((k) => notRanking(e, k)).every((k) => /Usd$|Pct$/.test(k) || ["calls", "returned", "failed", "returnedCalls"].includes(k))))
+    && envs.filter((e) => e?.unit === "usd").every((e) => e?.value === null || Object.keys(e!.value as object).filter((k) => notRanking(e, k)).every((k) => /Usd$/.test(k))), JSON.stringify(envs.map((e) => e?.value)));
   check("cost metrics: value parts are fleet aggregates only (no customer / user / space / group key)",
     envs.every((e) => e?.value === null || typeof e?.value === "number" || Object.keys(e!.value).every((k) => !/customer|user|space|group|member/i.test(k))));
   check("OD-1 / no billing: no per-customer, cost-per-customer, revenue or margin metric is registered",
     !METRICS.some((m) => /per-customer|per-active|active-customer|revenue|margin|entitlement|group-cost/.test(m.id)));
   check("cost metrics are discoverable under domain \"economics\"", COST.every((k) => METRICS.find((d) => metricKey(d) === k)!.domain === "economics"));
+})();
+
+// ── 3d. part roles + the largest measured category (S2 ruling 2026-11-05) ────
+console.log("\n3d. part roles — the total is never a category; largestMeasuredCategory is server-computed from the measured categories");
+await (async () => {
+  const get = (id: string, r: RetrievalReaders = readers(newRec())) => retrieveWith("PLATFORM_OPS", r, OPS, id, {}, NOW);
+  type Entry = Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
+  const declared = Object.entries(RETRIEVAL).filter((x): x is [string, Entry] => x[1].kind === "RETRIEVABLE" && !!(x[1] as Entry).parts);
+  check("economics-operating-cost@1 is the metric that declares part roles", declared.map(([k]) => k).includes("economics-operating-cost@1"), declared.map(([k]) => k).join());
+  for (const [k, e] of declared) {
+    const parts = e.parts!;
+    const units = typeof e.valueUnits === "string" ? {} : e.valueUnits;
+    const roles = Object.values(parts).map((d) => d.role);
+    const cats = Object.entries(parts).filter(([, d]) => d.role === "category");
+    const rank = Object.entries(parts).filter(([, d]) => d.role === "ranking").map(([p]) => p);
+    check(`${k}: every declared part is a unit part and every unit part is declared (one role each)`, Object.keys(parts).sort().join() === Object.keys(units).sort().join(), JSON.stringify({ parts: Object.keys(parts), units: Object.keys(units) }));
+    check(`${k}: at most one total; a ranking part needs ≥ 1 category`, roles.filter((r) => r === "total").length <= 1 && (rank.length === 0 || cats.length > 0));
+    check(`${k}: each ranking part carries its categories' unit, and is an estimate exactly when they are`,
+      rank.every((p) => cats.every(([c]) => (units as Record<string, string>)[c] === (units as Record<string, string>)[p]) && (e.estimatedParts ?? []).includes(p) === cats.every(([c]) => (e.estimatedParts ?? []).includes(c))));
+    check(`${k}: category labels are server labels (letters only — no digit, no identifier) and distinct`,
+      cats.every(([, d]) => d.role === "category" && /^[A-Za-z][A-Za-z ()&/-]{0,47}$/.test(d.label)) && new Set(cats.map(([, d]) => (d as { label: string }).label)).size === cats.length);
+  }
+
+  // Through the REAL reader (getEconomicsSnapshot), the fixture world: AI (~$3.75) > Providers ($0.60) > Infrastructure (unmetered).
+  const op = await get("economics-operating-cost");
+  const v = op?.value as Record<string, number | null> & { largestMeasuredCategory: RankedCategory | null };
+  check("the envelope carries the part roles: totalUsd = total, AI / Providers / Infrastructure = category, largestMeasuredCategory = ranking",
+    JSON.stringify(op?.partRoles) === JSON.stringify({ totalUsd: "total", aiUsd: "category", providersUsd: "category", infrastructureUsd: "category", largestMeasuredCategory: "ranking" }), JSON.stringify(op?.partRoles));
+  check("NORMAL: the largest measured category is AI — its figure IS the aiUsd part (same unit, basis), the window is the envelope's label",
+    v.largestMeasuredCategory?.label === "AI" && v.largestMeasuredCategory.figure === v.aiUsd && (v.aiUsd as number) > (v.providersUsd as number)
+    && v.largestMeasuredCategory.window === op?.window.label && op?.window.label === "this UTC calendar month to date", JSON.stringify(v));
+  check("…PARTIAL + an unmetered category (infrastructure null) ⇒ the fixed qualifier", v.largestMeasuredCategory?.qualifier === RANKING_QUALIFIER && RANKING_QUALIFIER === "ranking among measured categories; some categories are incomplete");
+  check("…the TOTAL is never chosen (it is larger than every category, and the ranked figure is not it)", (v.totalUsd as number) > (v.aiUsd as number) && v.largestMeasuredCategory?.figure !== v.totalUsd);
+  check("…the other parts are untouched (still the split tiles), and the envelope stays an aggregate under its declared ranking part",
+    v.infrastructureUsd === null && isAggregate(op!.value, ["largestMeasuredCategory"]) && !isAggregate(op!.value), JSON.stringify(op?.value));
+
+  // Providers (Plaid) larger than AI — the owner's live shape (Plaid ≫ AI).
+  const plaidHeavy = readers(newRec(), { economicsSnapshot: (n) => getEconomicsSnapshot(n, ecoDeps({ groups: [ecoGroup("2026-11-02", "chat", { promptTokens: 10_000, completionTokens: 5_000 })], items: 11 })) });
+  const op2 = await get("economics-operating-cost", plaidHeavy);
+  const v2 = op2?.value as Record<string, number | null> & { largestMeasuredCategory: RankedCategory | null };
+  check("Providers (Plaid) larger than AI ⇒ the ranking is Providers (Plaid), with the providersUsd figure",
+    v2.largestMeasuredCategory?.label === "Providers (Plaid)" && v2.largestMeasuredCategory.figure === v2.providersUsd && (v2.providersUsd as number) > (v2.aiUsd as number), JSON.stringify(v2));
+
+  // ALL categories null (no AI priced, no provider priced) but a total — no category measured ⇒ null, never $0.
+  const snap = await getEconomicsSnapshot(NOW.getTime(), ecoDeps());
+  const blank = { ...snap, figures: { ...snap.figures, ai_cost: { ...snap.figures.ai_cost, value: null }, provider_cost: { ...snap.figures.provider_cost, value: null } } };
+  const op3 = await get("economics-operating-cost", readers(newRec(), { economicsSnapshot: async () => blank }));
+  check("ALL categories null ⇒ largestMeasuredCategory null (the envelope keeps its total; no category is invented)",
+    op3?.status === "PARTIAL" && (op3.value as Record<string, unknown>).largestMeasuredCategory === null && (op3.value as Record<string, unknown>).totalUsd === snap.figures.operating_cost.value, JSON.stringify(op3?.value));
+  const opU = await get("economics-operating-cost", readers(newRec(), { economicsSnapshot: async () => { throw new Error("x"); } }));
+  check("an UNAVAILABLE envelope has no value at all (no ranking), and still states its part roles", opU?.status === "UNAVAILABLE" && opU.value === null && opU.partRoles?.totalUsd === "total");
+
+  // A projection may NEVER supply the ranking part (it is server-computed) ⇒ PROJECTION_REFUSED.
+  const entry = RETRIEVAL["economics-operating-cost@1"] as Entry;
+  const orig = entry.read;
+  try {
+    (entry as { read: Entry["read"] }).read = async (i) => { const p = await orig(i); return { ...p, value: { ...(p.value as object), largestMeasuredCategory: 99 } }; };
+    const forged = await get("economics-operating-cost");
+    check("a projection that supplies largestMeasuredCategory itself ⇒ UNAVAILABLE[PROJECTION_REFUSED] (never trusted)",
+      forged?.status === "UNAVAILABLE" && forged.unavailableCode === "PROJECTION_REFUSED" && forged.value === null && /server-computed/.test(forged.reason ?? ""), JSON.stringify(forged?.reason));
+  } finally { (entry as { read: Entry["read"] }).read = orig; }
+
+  // The pure rule (one named function).
+  const P: PartDeclarations = { totalUsd: { role: "total" }, aUsd: { role: "category", label: "Alpha" }, bUsd: { role: "category", label: "Beta" }, cUsd: { role: "category", label: "Gamma" }, top: { role: "ranking" } };
+  const L = (val: Record<string, number | null>, status: "MEASURED" | "ESTIMATED" | "PARTIAL" = "MEASURED") => largestMeasuredCategory(val, P, { status, window: "w" });
+  check("pure: the largest category wins; MEASURED + every category measured ⇒ no qualifier",
+    JSON.stringify(L({ totalUsd: 6, aUsd: 1, bUsd: 3, cUsd: 2 })) === JSON.stringify({ label: "Beta", figure: 3, window: "w", qualifier: null }));
+  check("pure: TIE ⇒ the FIRST category in declared order (Alpha before Beta; Beta before Gamma)",
+    L({ totalUsd: 6, aUsd: 3, bUsd: 3, cUsd: 0 })?.label === "Alpha" && L({ totalUsd: 6, aUsd: 1, bUsd: 2.5, cUsd: 2.5 })?.label === "Beta");
+  check("pure: ALL categories null ⇒ null (whatever the total)", L({ totalUsd: 9, aUsd: null, bUsd: null, cUsd: null }) === null && L({ totalUsd: null, aUsd: null, bUsd: null, cUsd: null }) === null);
+  check("pure: a null category, PARTIAL or ESTIMATED ⇒ the qualifier; the null part is skipped, never $0",
+    L({ totalUsd: 3, aUsd: 1, bUsd: null, cUsd: 2 })?.qualifier === RANKING_QUALIFIER && L({ totalUsd: 3, aUsd: 1, bUsd: null, cUsd: 2 })?.label === "Gamma"
+    && L({ totalUsd: 6, aUsd: 1, bUsd: 3, cUsd: 2 }, "PARTIAL")?.qualifier === RANKING_QUALIFIER && L({ totalUsd: 6, aUsd: 1, bUsd: 3, cUsd: 2 }, "ESTIMATED")?.qualifier === RANKING_QUALIFIER);
+  check("pure: the TOTAL is never chosen, even as the only measured part", L({ totalUsd: 100, aUsd: null, bUsd: null, cUsd: null }) === null && L({ totalUsd: 100, aUsd: 1, bUsd: 2, cUsd: 3 })?.figure === 3);
+
+  // The aggregate guard: a ranked category only under a DECLARED ranking key, and only in its exact shape.
+  const rc: RankedCategory = { label: "Providers (Plaid)", figure: 3.3, window: "this UTC calendar month to date", qualifier: RANKING_QUALIFIER };
+  check("aggregate guard: a ranked category passes ONLY under a declared ranking part",
+    isAggregate({ totalUsd: 4, top: rc }, ["top"]) && !isAggregate({ totalUsd: 4, top: rc }) && !isAggregate({ totalUsd: 4, other: rc }, ["top"]) && isAggregate({ totalUsd: 4, top: null }, ["top"]));
+  check("aggregate guard: a malformed ranked category is refused (extra key, digit / identifier label, foreign qualifier, non-finite figure)",
+    isRankedCategory(rc) && !isRankedCategory({ ...rc, extra: 1 }) && !isRankedCategory({ ...rc, label: "user #1" }) && !isRankedCategory({ ...rc, label: EMAIL })
+    && !isRankedCategory({ ...rc, qualifier: "anything else" }) && !isRankedCategory({ ...rc, figure: NaN }) && !isRankedCategory({ label: rc.label, figure: 1, window: null }));
 })();
 
 // ── 3b. fleet vs per-subject (S2) ────────────────────────────────────────────

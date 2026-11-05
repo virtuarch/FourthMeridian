@@ -48,7 +48,7 @@ import { buildAiSpendBySurface, isCustomerSurface, isPlatformAiSurface, PLATFORM
 import {
   BUDGET_FALLBACK, LINK_REMOVED, NOT_FOUND, PLATFORM_AI_ASK_SURFACE, PLATFORM_AI_DAILY_TURNS, PLATFORM_AI_MAX_ROUNDS,
   PLATFORM_AI_MAX_TOOL_CALLS, PLATFORM_AI_SUB_SURFACE, PLATFORM_AI_SYSTEM_PROMPT, PLATFORM_AI_TURN_TOKEN_CEILING, UNVERIFIED_FALLBACK,
-  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, LINK_LABEL_MAX, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText,
+  MALFORMED_REASONS, UNRESOLVED_REASONS, admitUserNumerals, drillPageOf, LINK_LABEL_MAX, isFixedWindow, strippedLinkTargets, formatPlaceholder, placeholdersFor, matchPlaceholderEnvelope, renderPlaceholder, requestedWindows, resolvePlaceholders, PLACEHOLDER_VERDICTS, handlePlatformAiAsk, platformAiAreaFor, traceLine, platformAiAreaLabel, modelParamKeys, platformAiToolSchemas, runPlatformAiTurn, sanitiseAnswer, segmentsText, windowMixNote,
   type PlatformAiAskDeps, type PlatformAiBinding, type PlatformAiGenerate,
 } from "./core";
 
@@ -561,7 +561,7 @@ console.log("\n4f. get_metric hands the model the exact placeholder strings — 
     JSON.stringify(results[0].placeholders) === JSON.stringify({ spendUsd: "{{m:economics-ai-cost@1|part=spendUsd|window=30}}" }) && !("placeholder" in results[0]), results[0].placeholders);
   check("…a scalar: one placeholder, no window (point in time)", results[1].placeholder === "{{m:incident-broken-now@1}}" && !("placeholders" in results[1]), results[1]);
   check("…a fixed-window (billing cycle) object: one per declared part, NEVER |window",
-    JSON.stringify(results[2].placeholders) === JSON.stringify({ totalUsd: "{{m:economics-operating-cost@1|part=totalUsd}}", aiUsd: "{{m:economics-operating-cost@1|part=aiUsd}}", providersUsd: "{{m:economics-operating-cost@1|part=providersUsd}}", infrastructureUsd: "{{m:economics-operating-cost@1|part=infrastructureUsd}}" }), results[2].placeholders);
+    JSON.stringify(results[2].placeholders) === JSON.stringify({ totalUsd: "{{m:economics-operating-cost@1|part=totalUsd}}", aiUsd: "{{m:economics-operating-cost@1|part=aiUsd}}", providersUsd: "{{m:economics-operating-cost@1|part=providersUsd}}", infrastructureUsd: "{{m:economics-operating-cost@1|part=infrastructureUsd}}", largestMeasuredCategory: "{{m:economics-operating-cost@1|part=largestMeasuredCategory}}" }), results[2].placeholders);
   check("…an UNAVAILABLE read (a refused window) still gets its placeholder, which renders \"unavailable — <reason>\"",
     results[3].status === "UNAVAILABLE" && results[3].placeholder === "{{m:economics-ai-cost@1}}"
     && renderPlaceholder(results[3] as MetricEnvelope, null) === `unavailable — ${results[3].reason}`, results[3]);
@@ -701,9 +701,12 @@ console.log("\n4c. units — every registered metric declares valueUnits; the su
   for (const k of retrievable) {
     const e = RETRIEVAL[k] as Extract<(typeof RETRIEVAL)[string], { kind: "RETRIEVABLE" }>;
     const u = e.valueUnits;
+    // S2 ruling 2026-11-05: a declared RANKING part (e.g. largestMeasuredCategory) is named for what it is, and
+    // carries its categories' unit (pinned in retrieve.test.ts) — the suffix rule covers every other part.
+    const isRanking = (part: string) => e.parts?.[part]?.role === "ranking";
     const ok = typeof u === "string"
       ? u === "count"
-      : Object.keys(u).length > 0 && Object.entries(u).every(([part, unit]) => (/Usd$/.test(part) ? unit === "usd" : /Pct$/.test(part) ? unit === "pct" : unit === "count"));
+      : Object.keys(u).length > 0 && Object.entries(u).every(([part, unit]) => (isRanking(part) ? true : /Usd$/.test(part) ? unit === "usd" : /Pct$/.test(part) ? unit === "pct" : unit === "count"));
     check(`${k}: declared units — a top-level number is a unitless count; every part follows …Usd ⇔ usd, …Pct ⇔ pct, else count`, ok, u);
   }
   // Retrieve every retrievable metric (every window) on every surface the fixtures can read it on.
@@ -1238,6 +1241,85 @@ console.log("\n4i. owner B UNAVAILABLE diagnosis — replays of every candidate 
   check("…both replays keep the drill page as the only link candidate (unchanged)", [b30, b365].every((r) => r.result.trace.every((t) => t.drillLink === true)) && [...good.listPages({ metric: "economics-operating-cost@1" })].some((t) => good.resolvePage(t.id)?.href === ECON_PAGE));
 }
 
+// ── 4j. Owner B "What's costing me the most money?" — the TOTAL is not a category (S2 ruling 2026-11-05) ──
+// Preview: the model read economics-operating-cost@1 + economics-ai-cost@1 and called the TOTAL the largest
+// cost. The contract fix: part roles + the server-computed largestMeasuredCategory. Replayed OFFLINE through
+// the real executor + retrieveWith over a synthetic snapshot shaped like the owner's (Plaid ≫ AI).
+console.log("\n4j. owner B replay — largestMeasuredCategory resolves, the qualifier is server text; window-mixing note");
+{
+  const plaidItem = (id: string): PlaidItemFact => ({ id, externalItemId: `ext_${id}`, createdAt: "2026-08-01T00:00:00Z", status: "ACTIVE", investmentsConsent: null, environment: "production", plaidEnvironment: "production" });
+  const cyc = priceCycleBothReadings(Array.from({ length: 11 }, (_, i) => plaidItem(`p${i + 1}`)), [] as never, { start: "2026-11-01", end: "2026-11-30" }, { today: "2026-11-04", rates: PLAID_RATES });
+  const snapshot: RetrievalReaders["economicsSnapshot"] = async (nowMs) => buildEconomicsSnapshot({ nowMs, aiPricingConfigured: true, plaidCycle: cyc.during, plaidReadingsAgree: cyc.agree, plaidRates: PLAID_RATES, engagedCustomerRefs: ["user #1"],
+    spendGroups: [{ provider: "OPENAI", model: "gpt-5-mini", surface: "chat", day: "2026-11-03", invocations: 2, promptTokens: 20_000, cachedPromptTokens: 0, completionTokens: 10_000 }] });
+  const good = opsBinding(OPS, readers({ economicsSnapshot: snapshot }));
+  const Q_B = "What's costing me the most money?";
+  const MIX = "These figures cover different periods (this UTC calendar month to date vs. the last 30 days) and are not directly comparable.";
+  /** A model that reads `ids` and composes its answer by COPYING the placeholders it was handed. */
+  const copying = (ids: string[], compose: (ph: (metric: string, part: string) => string) => string): PlatformAiGenerate => {
+    let i = 0;
+    return async ({ messages }) => {
+      const u = { promptTokens: 0, completionTokens: 0, totalTokens: 100, reasoningTokens: 0 };
+      if (i++ === 0) {
+        const toolCalls = [{ id: "l0", name: "list_metrics", arguments: JSON.stringify({ domain: "economics" }) }, ...ids.map((id, k) => ({ id: `g${k}`, name: "get_metric", arguments: JSON.stringify({ id }) }))];
+        return { content: null, toolCalls, raw: { role: "assistant", content: null, tool_calls: toolCalls.map((t) => ({ id: t.id, type: "function", function: { name: t.name, arguments: t.arguments } })) }, usage: u };
+      }
+      const seen = (messages as { role: string; content: string }[]).filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
+      const ph = (metric: string, part: string) => { const r = seen.find((x) => x.metric === metric); return r.placeholders?.[part] ?? r.placeholder; };
+      const content = compose(ph);
+      return { content, toolCalls: [], raw: { role: "assistant", content }, usage: u };
+    };
+  };
+  const turnWith = (ids: string[], compose: Parameters<typeof copying>[1], q = Q_B) => runPlatformAiTurn({ question: q, binding: good, generate: copying(ids, compose), model: "gpt-4o-mini" });
+  const OP = "economics-operating-cost@1", AI = "economics-ai-cost@1", PV = "economics-provider-cost@1";
+
+  const B = await turnWith(["economics-operating-cost", "economics-ai-cost"],
+    (ph) => `The largest measured cost is ${ph(OP, "largestMeasuredCategory")}. Estimated AI spend is ${ph(AI, "spendUsd")}.`);
+  const bT = segmentsText(B.result.answer);
+  const opEnv = B.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === OP) as MetricEnvelope & { placeholders: Record<string, string> };
+  const ranked = (opEnv.value as Record<string, unknown>).largestMeasuredCategory as { label: string; figure: number; window: string; qualifier: string };
+  const vals = opEnv.value as Record<string, number>;
+  check("the tool result marks totalUsd as role \"total\" (distinct from the categories) and hands a largestMeasuredCategory placeholder",
+    opEnv.partRoles?.totalUsd === "total" && opEnv.partRoles?.providersUsd === "category" && opEnv.partRoles?.largestMeasuredCategory === "ranking"
+    && opEnv.placeholders.largestMeasuredCategory === "{{m:economics-operating-cost@1|part=largestMeasuredCategory}}", { roles: opEnv.partRoles, ph: opEnv.placeholders });
+  check("…the server computed Providers (Plaid) — the largest MEASURED category (Plaid ≫ AI), never the total",
+    ranked.label === "Providers (Plaid)" && ranked.figure === vals.providersUsd && vals.providersUsd > vals.aiUsd && ranked.figure !== vals.totalUsd && vals.infrastructureUsd === null, opEnv.value);
+  check("OWNER B replay: answer KEPT (RESOLVED), both placeholders resolved",
+    !B.result.grounding.replaced && B.result.grounding.verdict === "RESOLVED" && JSON.stringify(B.result.claims) === JSON.stringify({ claims: 2, resolved: 2, unresolved: 0, admitted: 0 }), { g: B.result.grounding, c: B.result.claims, t: bT });
+  const providerFig = renderPlaceholder(opEnv, "providersUsd")!;
+  check("…the ranking renders label + the category's OWN figure wording (status, window, estimated) + the fixed qualifier — all server text",
+    bT === `The largest measured cost is Providers (Plaid), ${providerFig}; ranking among measured categories; some categories are incomplete. Estimated AI spend is ${renderPlaceholder(B.transcript.filter((m) => (m as { role: string }).role === "tool").map((m) => JSON.parse((m as { content: string }).content)).find((x) => x.metric === AI), "spendUsd")}.`
+    && /^at least \$[\d,.]+ \(this UTC calendar month to date, since 2026-11-01, estimated\)$/.test(providerFig), bT);
+  check("…the rendered figure span is typed as an operating-cost figure (stored answers keep it as a figure, B11)",
+    B.record.typed.some((x) => x.kind === "figure" && x.metric === OP && x.text.startsWith("Providers (Plaid), at least $")), B.record.typed);
+  check("…the cited figures cover two windows (cycle MTD + 30 d) ⇒ exactly ONE window-mixing note, code-written", B.result.notes.filter((n) => n === MIX).length === 1 && B.result.notes.filter((n) => /different periods/.test(n)).length === 1, B.result.notes);
+
+  // Window mixing (S2 ruling 2026-11-05): decided from the PLACED envelopes, never prose.
+  const same = await turnWith(["economics-operating-cost", "economics-provider-cost"], (ph) => `The largest measured category is ${ph(OP, "largestMeasuredCategory")}; providers are ${ph(PV, "costUsd")}.`);
+  check("SAME window (two cycle metrics) ⇒ no window-mixing note", !same.result.grounding.replaced && !same.result.notes.some((n) => /different periods/.test(n)), same.result.notes);
+  const single = await turnWith(["economics-operating-cost", "economics-ai-cost"], (ph) => `The largest measured category is ${ph(OP, "largestMeasuredCategory")}.`);
+  check("a SINGLE figure (the 30 d metric read but not cited) ⇒ no note", !single.result.grounding.replaced && single.result.claims.resolved === 1 && !single.result.notes.some((n) => /different periods/.test(n)), single.result.notes);
+  const prose = await turnWith(["economics-operating-cost"], (ph) => `Over the last month and the last week, the largest is ${ph(OP, "largestMeasuredCategory")}.`);
+  check("…prose naming other periods does not trigger it (envelopes decide)", !prose.result.notes.some((n) => /different periods/.test(n)), prose.result.notes);
+  const refused = await turnWith(["economics-operating-cost", "economics-ai-cost"], (ph) => `Total 5 dollars: ${ph(OP, "totalUsd")} and ${ph(AI, "spendUsd")}.`);
+  check("…a REPLACED answer (fallback) carries no window-mixing note", refused.result.grounding.replaced && !refused.result.notes.some((n) => /different periods/.test(n)), refused.result.notes);
+  const env = (label: string | null, days: number | null = null) => ({ metric: "k@1", window: { kind: label ? "UTC_DAYS" : "POINT_IN_TIME", description: "d", days, hours: null, label, start: null } }) as unknown as MetricEnvelope;
+  check("pure windowMixNote: MTD + 30 d ⇒ the pinned note; same window twice / one figure / a point in time ⇒ null",
+    windowMixNote([env("this UTC calendar month to date"), env("in the last 30 days", 30)]) === MIX
+    && windowMixNote([env("this UTC calendar month to date"), env("this UTC calendar month to date")]) === null && windowMixNote([env("in the last 30 days", 30)]) === null
+    && windowMixNote([]) === null && windowMixNote([env(null), env("in the last 30 days", 30)]) === null);
+  check("…three windows are listed in first-placed order",
+    windowMixNote([env("in the last 7 days", 7), env("this UTC calendar month to date"), env("in the last 30 days", 30)]) === "These figures cover different periods (the last 7 days vs. this UTC calendar month to date vs. the last 30 days) and are not directly comparable.");
+  check("S2 (2026-11-05): no 'the total is not a category' NOTE is shipped (the contract + prompt line carry it)", !/is not a category|never a category/.test(code(src("lib/platform/intelligence/ai/core.ts")).split("export async function runPlatformAiTurn")[1] ?? ""));
+
+  // Ranking edge renders.
+  const noCat = { ...opEnv, value: { ...vals, aiUsd: null, providersUsd: null, largestMeasuredCategory: null } } as unknown as MetricEnvelope;
+  check("no category measured ⇒ the ranking placeholder renders \"unavailable\" (never $0, never the total)", renderPlaceholder(noCat, "largestMeasuredCategory") === "unavailable");
+  const undeclared = { ...opEnv, partRoles: null } as unknown as MetricEnvelope;
+  check("a ranked object under a part NOT declared \"ranking\" is unresolvable (null — the fallback)", renderPlaceholder(undeclared, "largestMeasuredCategory") === null);
+  const measured = { ...opEnv, status: "MEASURED", basis: { ...opEnv.basis, kind: "measured" }, window: { ...opEnv.window, start: null }, value: { ...vals, largestMeasuredCategory: { ...ranked, qualifier: null } } } as unknown as MetricEnvelope;
+  check("…a complete ranking (no qualifier) renders label + figure only", /^Providers \(Plaid\), \$[\d,.]+ \(this UTC calendar month to date\)$/.test(renderPlaceholder(measured, "largestMeasuredCategory") ?? ""), renderPlaceholder(measured, "largestMeasuredCategory"));
+}
+
 // ── 5. links ────────────────────────────────────────────────────────────────
 console.log("\n5. links — only this turn's resolveNavigationTarget hrefs render");
 {
@@ -1413,6 +1495,10 @@ console.log("\n7. prompt injection — no write tools exist; no image exfil");
   check("S2 B (2026-11-05): the prompt explains a scrubbed [number] and asks for the period in relative terms",
     /A \[number\], \[id\] or \[email\] in the question is something the server removed/.test(PLATFORM_AI_SYSTEM_PROMPT)
       && /ask the operator which period they mean, in relative terms/.test(PLATFORM_AI_SYSTEM_PROMPT));
+  check("S2 (2026-11-05): the cost sentence states the total is never a category and points 'most' / 'largest' at the largest measured category",
+    PLATFORM_AI_SYSTEM_PROMPT.includes("The operating cost total is the sum of its categories, never a category; for 'most' or 'largest', use the largest measured category the tool returns."));
+  const lmDesc = (platformAiToolSchemas([]) as { function: { name: string; description: string } }[]).find((x) => x.function.name === "list_metrics")!.function.description;
+  check("…and list_metrics names largestMeasuredCategory for 'most' / 'largest' questions", /largestMeasuredCategory/.test(lmDesc) && /never a category/.test(lmDesc), lmDesc);
   check("the prompt stays within its word budget (≤ 520 words)", PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length <= 520, String(PLATFORM_AI_SYSTEM_PROMPT.split(/\s+/).length));
 }
 
