@@ -653,6 +653,29 @@ export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
  */
 export const MALFORMED_REASONS = ["NO_PREFIX", "NOT_A_KEY", "BAD_OPTION", "STRAY_BRACES"] as const;
 export type MalformedReason = (typeof MALFORMED_REASONS)[number];
+/**
+ * S2 2026-11-05 — what kind of digit run made an answer UNGROUNDED_DIGIT (counts only,
+ * never the digits or the text): next to a time unit, a currency sign / "dollars", a
+ * percent sign / "percent", or anything else. A diagnosis, never an allowance: the
+ * verdict is unchanged whatever the kind.
+ */
+export const DIGIT_KINDS = ["WINDOW_LIKE", "MONEY_LIKE", "PERCENT_LIKE", "OTHER"] as const;
+export type DigitKind = (typeof DIGIT_KINDS)[number];
+
+/** PURE — classify each leftover digit run in the model's own prose (after every allowance). */
+export function classifyDigitRuns(prose: string): ReasonCounts<DigitKind> {
+  const out: ReasonCounts<DigitKind> = {};
+  for (const m of prose.matchAll(/\d+(?:[.,]\d+)*/g)) {
+    const before = prose.slice(Math.max(0, m.index - 3), m.index);
+    const after = prose.slice(m.index + m[0].length, m.index + m[0].length + 12);
+    const kind: DigitKind = /[$€£]\s*$/.test(before) || /^\s*(?:dollars?|usd)\b/i.test(after) ? "MONEY_LIKE"
+      : /^\s*(?:%|percent\b)/i.test(after) ? "PERCENT_LIKE"
+      : /^\s*-?\s*(?:h|hrs?|hours?|d|days?|wks?|weeks?|mos?|months?|yrs?|years?)\b/i.test(after) ? "WINDOW_LIKE"
+      : "OTHER";
+    out[kind] = (out[kind] ?? 0) + 1;
+  }
+  return out;
+}
 export type ReasonCounts<R extends string> = Partial<Record<R, number>>;
 
 const KNOWN_KEYS: ReadonlySet<string> = new Set(METRICS.map(metricKey));
@@ -955,6 +978,8 @@ export interface PlaceholderOutcome {
   /** Diagnosis (counts only): why placeholders were unresolved / malformed. */
   unresolvedBy: ReasonCounts<UnresolvedReason>;
   malformedBy: ReasonCounts<MalformedReason>;
+  /** Diagnosis (counts only): the kinds of leftover digit runs behind UNGROUNDED_DIGIT. */
+  digitBy: ReasonCounts<DigitKind>;
 }
 
 /**
@@ -974,6 +999,7 @@ export function resolvePlaceholders(
   const placed: MetricEnvelope[] = [];
   const unresolvedBy: ReasonCounts<UnresolvedReason> = {};
   const malformedBy: ReasonCounts<MalformedReason> = {};
+  const digitBy: ReasonCounts<DigitKind> = {};
   const why = (r: UnresolvedReason) => { unresolvedBy[r] = (unresolvedBy[r] ?? 0) + 1; unresolved++; return " "; };
   const asOfDays = envelopes.map((e) => e.freshness.asOf).filter((x): x is string => typeof x === "string").map((a) => a.slice(0, 10));
   // An envelope's explicit window start (reader-supplied ISO date) — allowed ONLY as that exact date token.
@@ -1015,7 +1041,10 @@ export function resolvePlaceholders(
     prose = prose.replace(/\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?\b/g, (d) => (asOfDays.includes(d.slice(0, 10)) || windowStarts.includes(d) ? " " : d));
     const u = admitUserNumerals(prose, scrubbedQuestion, envelopes);
     prose = u.prose; admitted += u.admitted; if (u.collision) collision = true;
-    if (/\d/.test(prose)) digit = true;
+    if (/\d/.test(prose)) {
+      digit = true;
+      for (const [k, n] of Object.entries(classifyDigitRuns(prose)) as [DigitKind, number][]) digitBy[k] = (digitBy[k] ?? 0) + n;
+    }
     // A model-written qualifier the server already wrote ("at least at least 5", "about about $1") collapses to one.
     const pieces = out
       .replace(new RegExp(`\\b(at least|about)\\s+${SENTINEL}(?=\\1\\b)`, "gi"), SENTINEL)
@@ -1049,7 +1078,9 @@ export function resolvePlaceholders(
   });
   const verdict: PlaceholderVerdict = malformed ? "MALFORMED_PLACEHOLDER" : unit ? "UNIT_MISMATCH" : windowMismatch ? "WINDOW_MISMATCH"
     : unresolved > 0 ? "UNRESOLVED_PLACEHOLDER" : collision ? "USER_NUMERAL_COLLISION" : digit ? "UNGROUNDED_DIGIT" : claims > 0 ? "RESOLVED" : "NONE";
-  return { segments: out, typed, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed, unresolvedBy, malformedBy };
+  return { segments: out, typed, summary: { claims, resolved, unresolved, admitted, verdict }, figures, placed, unresolvedBy, malformedBy,
+    // The digit diagnosis describes UNGROUNDED_DIGIT only (another verdict decided the answer first).
+    digitBy: verdict === "UNGROUNDED_DIGIT" ? digitBy : {} };
 }
 
 /** The verdicts that keep the answer; every other one is replaced by the fallback. */
@@ -1084,6 +1115,8 @@ export interface PlatformAiAnswer {
     replaced: boolean; verdict: PlaceholderVerdict;
     /** Diagnosis: why placeholders did not resolve / were malformed — reason CODES and counts, never text. */
     unresolvedBy: ReasonCounts<UnresolvedReason>; malformedBy: ReasonCounts<MalformedReason>;
+    /** Counts by DigitKind of the leftover digit runs (UNGROUNDED_DIGIT diagnosis). */
+    digitBy: ReasonCounts<DigitKind>;
   };
   /** Placeholder counts (C5): how many the model wrote, resolved and unresolved. Never values or keys. */
   claims: Omit<ClaimsSummary, "verdict">;
@@ -1111,7 +1144,8 @@ export function traceLine(r: Pick<PlatformAiAnswer, "trace" | "stop" | "answer" 
   const linkTo = reasonCounts(LINK_TARGET_KINDS, r.sanitised.linkTargets);
   return `steps=${steps.join(",") || "none"} stop=${r.stop} links=${links} removed=${r.sanitised.removed}${removedKinds(r.sanitised)}${linkTo ? ` linkTo=${linkTo}` : ""} replaced=${r.grounding.replaced} claims=${r.claims.claims} resolved=${r.claims.resolved} unresolved=${r.claims.unresolved} admitted=${r.claims.admitted} verdict=${r.grounding.verdict}`
     + (reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy) ? ` unresolvedBy=${reasonCounts(UNRESOLVED_REASONS, r.grounding.unresolvedBy)}` : "")
-    + (reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy) ? ` malformedBy=${reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy)}` : "");
+    + (reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy) ? ` malformedBy=${reasonCounts(MALFORMED_REASONS, r.grounding.malformedBy)}` : "")
+    + (reasonCounts(DIGIT_KINDS, r.grounding.digitBy) ? ` digitBy=${reasonCounts(DIGIT_KINDS, r.grounding.digitBy)}` : "");
 }
 
 export const UNVERIFIED_FALLBACK = "I couldn't verify that figure";
@@ -1248,7 +1282,7 @@ export async function runPlatformAiTurn(input: {
     result: {
       surface: binding.surfaceLabel,
       answer, citations, notes,
-      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy },
+      grounding: { replaced, verdict, unresolvedBy: placed.unresolvedBy, malformedBy: placed.malformedBy, digitBy: placed.digitBy },
       claims: { claims: placed.summary.claims, resolved: placed.summary.resolved, unresolved: placed.summary.unresolved, admitted: placed.summary.admitted },
       sanitised: { removed, kinds, linkTargets: strippedLinkTargets(raw ?? BUDGET_FALLBACK, ev.hrefs, ev.envelopes) },
       usage: { rounds, toolCalls, tokens },
