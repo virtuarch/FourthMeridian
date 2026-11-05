@@ -42,7 +42,11 @@
  * AGGREGATES ONLY (S2 condition 4)
  *   `value` is a number, null, or a small fixed object of numbers (each entry a
  *   finite number or null). `assertAggregate` refuses anything else at runtime
- *   (the envelope becomes UNAVAILABLE). No per-user row, no identifier, no
+ *   (the envelope becomes UNAVAILABLE). The one structured entry is a declared
+ *   RANKING part (S2 ruling 2026-11-05, PartRole below): computed HERE from the
+ *   projection's own category parts, never by a projection, and its strings are
+ *   registry / module text (a declared category label, the window label, the
+ *   fixed RANKING_QUALIFIER). No per-user row, no identifier, no
  *   label from a payload ever enters the envelope: every string in it comes
  *   from the registry or from this module. Per-row and per-subject readers are
  *   NOT_RETRIEVABLE with a stated reason (the table below), and a permission
@@ -107,8 +111,43 @@ export type RetrievalStatus = "MEASURED" | "ESTIMATED" | "PARTIAL" | "UNAVAILABL
 export const UNAVAILABLE_CODES = ["NOT_RETRIEVABLE", "WINDOW_FIXED", "WINDOW_NOT_OFFERED", "READER_FAILED", "PROJECTION_REFUSED", "NO_FIGURE"] as const;
 export type UnavailableCode = (typeof UNAVAILABLE_CODES)[number];
 
-/** A number, or a small fixed object of numbers (null = that part has no figure, never 0). */
-export type AggregateValue = number | Readonly<Record<string, number | null>>;
+/**
+ * PART ROLES (S2 ruling 2026-11-05 — "fix the contract, not prose"). An object
+ * value whose parts are a TOTAL and the CATEGORIES it sums declares each part's
+ * role, so no reader (the Platform AI included) can present the total as a
+ * category:
+ *   total    — the sum of the categories; NEVER a category, never ranked
+ *   category — one category of the total, with its server label
+ *   ranking  — SERVER-COMPUTED by envelope() (largestMeasuredCategory), never
+ *              projected: the largest MEASURED (non-null) category part
+ * Pinned (retrieve.test.ts): every declared part exists in valueUnits and every
+ * unit part is declared; at most one total; a ranking part needs ≥ 1 category and
+ * carries the categories' unit.
+ */
+export type PartRole = "total" | "category" | "ranking";
+export type PartDeclaration = { role: "total" } | { role: "category"; label: string } | { role: "ranking" };
+export type PartDeclarations = Readonly<Record<string, PartDeclaration>>;
+
+/**
+ * The FIXED qualifier a ranking carries when the ranking cannot be complete (S2
+ * ruling 2026-11-05): any category part is null (unmetered / unpriced) or the
+ * envelope is not MEASURED (PARTIAL = a floor; ESTIMATED = a rate-card estimate).
+ */
+export const RANKING_QUALIFIER = "ranking among measured categories; some categories are incomplete";
+
+/**
+ * A ranking part's value: the largest MEASURED category — its server label, its
+ * figure (the category part's own value: same unit, same basis) and the
+ * envelope's window label — plus the qualifier (null only when every category is
+ * measured and the envelope is MEASURED). Never the total.
+ */
+export interface RankedCategory { label: string; figure: number; window: string | null; qualifier: typeof RANKING_QUALIFIER | null }
+
+/**
+ * A number, or a small fixed object of numbers (null = that part has no figure,
+ * never 0); a declared ranking part holds a RankedCategory (or null: no category measured).
+ */
+export type AggregateValue = number | Readonly<Record<string, number | null | RankedCategory>>;
 
 /**
  * THE EXPLICIT UNIT of a figure — what a renderer (Platform AI's placeholder
@@ -176,6 +215,8 @@ export interface MetricEnvelope {
   estimatedParts: EstimatedParts | null;
   /** Configuration parts rendered with no window label (UnwindowedParts); null = none. */
   unwindowedParts: UnwindowedParts | null;
+  /** Each part's role (PartRole: total / category / ranking); null = not declared (S2 ruling 2026-11-05). */
+  partRoles: Readonly<Record<string, PartRole>> | null;
   /** null ⇔ UNAVAILABLE. A floor / lower bound when PARTIAL. Never a stand-in 0. */
   value: AggregateValue | null;
   status: RetrievalStatus;
@@ -277,6 +318,8 @@ interface Retrievable {
   estimatedParts?: EstimatedParts;
   /** Configuration parts rendered without a window label — see UnwindowedParts. */
   unwindowedParts?: UnwindowedParts;
+  /** Each part's role (total / category / ranking) — see PartRole. Ranking parts are computed by envelope(). */
+  parts?: PartDeclarations;
   /** Windows the metric accepts, the first being the tile's default; [] = no window parameter. */
   windows: readonly number[];
   /** Needs an incident token at the effective tier. */
@@ -410,7 +453,18 @@ export const RETRIEVAL: Readonly<Record<string, RetrievalEntry>> = {
   "economics-operating-cost@1": {
     // The Overview's hero (s.figures.operating_cost) and its split tiles (SPLIT_KEYS: AI / Providers / Infrastructure).
     kind: "RETRIEVABLE", reader: "economicsSnapshot", unit: "usd", windows: [],
-    valueUnits: { totalUsd: "usd", aiUsd: "usd", providersUsd: "usd", infrastructureUsd: "usd" }, estimatedParts: ["totalUsd", "aiUsd", "providersUsd", "infrastructureUsd"],
+    valueUnits: { totalUsd: "usd", aiUsd: "usd", providersUsd: "usd", infrastructureUsd: "usd", largestMeasuredCategory: "usd" },
+    estimatedParts: ["totalUsd", "aiUsd", "providersUsd", "infrastructureUsd", "largestMeasuredCategory"],
+    // S2 ruling 2026-11-05: the total is the SUM of the categories, never a category. The
+    // category labels are the Overview's split tiles; largestMeasuredCategory is computed by
+    // envelope() from the three category parts (declared order = the tie order), never the total.
+    parts: {
+      totalUsd: { role: "total" },
+      aiUsd: { role: "category", label: "AI" },
+      providersUsd: { role: "category", label: "Providers (Plaid)" },
+      infrastructureUsd: { role: "category", label: "Infrastructure" },
+      largestMeasuredCategory: { role: "ranking" },
+    },
     async read({ readers, now }) {
       const s = await readers.economicsSnapshot(now.getTime());
       const op = s.figures.operating_cost;
@@ -629,14 +683,69 @@ function incidentAt(tier: IdentityTier, token: CsToken | OpsToken | null | undef
 const MAX_PARTS = 8;
 const PART_KEY = /^[a-z][A-Za-z]{0,31}$/;
 
-/** True for a number, or a flat object of ≤ 8 camelCase keys whose values are finite numbers or null. */
-export function isAggregate(v: unknown): v is AggregateValue {
+/**
+ * True for a number, or a flat object of ≤ 8 camelCase keys whose values are finite
+ * numbers or null. `rankingParts` (S2 ruling 2026-11-05) names the declared ranking
+ * parts that may instead hold a RankedCategory (isRankedCategory) — only those keys;
+ * a projection is checked with none (it never supplies one).
+ */
+export function isAggregate(v: unknown, rankingParts: readonly string[] = []): v is AggregateValue {
   if (typeof v === "number") return Number.isFinite(v);
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const entries = Object.entries(v);
   return entries.length > 0 && entries.length <= MAX_PARTS
-    && entries.every(([k, x]) => PART_KEY.test(k) && (x === null || (typeof x === "number" && Number.isFinite(x))));
+    && entries.every(([k, x]) => PART_KEY.test(k) && (x === null || (typeof x === "number" && Number.isFinite(x)) || (rankingParts.includes(k) && isRankedCategory(x))));
 }
+
+/** A server label: letters, spaces and ( ) & / - only — no digit, no identifier shape. */
+const SERVER_LABEL = /^[A-Za-z][A-Za-z ()&/-]{0,47}$/;
+
+/** EXACTLY { label, figure, window, qualifier }: a server label, a finite figure, a short window label or null, the fixed qualifier or null. */
+export function isRankedCategory(x: unknown): x is RankedCategory {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
+  const r = x as Record<string, unknown>;
+  return Object.keys(r).sort().join() === "figure,label,qualifier,window"
+    && typeof r.label === "string" && SERVER_LABEL.test(r.label)
+    && typeof r.figure === "number" && Number.isFinite(r.figure)
+    && (r.window === null || (typeof r.window === "string" && r.window.length <= 80))
+    && (r.qualifier === null || r.qualifier === RANKING_QUALIFIER);
+}
+
+/**
+ * THE RANKING RULE (S2 ruling 2026-11-05), one named pure function: the largest
+ * MEASURED category of an object value.
+ *   · only parts declared role "category" are candidates — the total is NEVER one;
+ *   · a null (unmetered / unpriced) or non-finite part is not measured: skipped, never $0;
+ *   · the largest figure wins; a TIE (exactly equal figures) goes to the FIRST
+ *     category in declared order (the `parts` declaration's key order);
+ *   · no category measured ⇒ null;
+ *   · the qualifier (RANKING_QUALIFIER) is set when any category part is null or
+ *     the envelope status is not MEASURED (PARTIAL or ESTIMATED).
+ * `window` is the envelope's own window label (server text).
+ */
+export function largestMeasuredCategory(
+  value: Readonly<Record<string, number | null | RankedCategory>>, parts: PartDeclarations,
+  opts: { status: RetrievalStatus; window: string | null },
+): RankedCategory | null {
+  let best: { label: string; figure: number } | null = null;
+  let incomplete = opts.status !== "MEASURED";
+  for (const [part, d] of Object.entries(parts)) {
+    if (d.role !== "category") continue;
+    const v = value[part];
+    if (typeof v !== "number" || !Number.isFinite(v)) { incomplete = true; continue; }
+    if (best === null || v > best.figure) best = { label: d.label, figure: v };
+  }
+  if (best === null) return null;
+  return { label: best.label, figure: best.figure, window: opts.window, qualifier: incomplete ? RANKING_QUALIFIER : null };
+}
+
+/** The declared ranking parts of a declaration (none when it declares no parts). */
+export const rankingPartsOf = (parts: PartDeclarations | undefined): string[] =>
+  Object.entries(parts ?? {}).filter(([, d]) => d.role === "ranking").map(([k]) => k);
+
+/** The role map an envelope carries (null when the metric declares no parts). */
+const partRolesOf = (parts: PartDeclarations | undefined): Readonly<Record<string, PartRole>> | null =>
+  parts ? Object.fromEntries(Object.entries(parts).map(([k, d]) => [k, d.role])) : null;
 
 // ── Retrieval ────────────────────────────────────────────────────────────────
 
@@ -694,15 +803,31 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
   let value = p.value;
   let status: RetrievalStatus = p.status ?? base;
   let reason = p.reason ?? null;
-  if (value !== null && !isAggregate(value)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: not an aggregate"; code = "PROJECTION_REFUSED"; }
-  if (value !== null && !unitsMatch(value, valueUnits)) { value = null; status = "UNAVAILABLE"; reason = "projection refused: its parts do not match the declared units"; code = "PROJECTION_REFUSED"; }
+  const days = p.days ?? null;
+  const hours = p.hours ?? null;
+  const windowLabel = days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null;
+  const entry = RETRIEVAL[metricKey(m)];
+  const unwindowedParts = entry?.kind === "RETRIEVABLE" ? entry.unwindowedParts ?? null : null;
+  const parts = entry?.kind === "RETRIEVABLE" ? entry.parts : undefined;
+  const ranking = rankingPartsOf(parts);
+  const refuse = (why: string) => { value = null; status = "UNAVAILABLE"; reason = `projection refused: ${why}`; code = "PROJECTION_REFUSED"; };
+  // The projection itself is a flat aggregate (no ranking entry may come from a reader).
+  if (value !== null && !isAggregate(value)) refuse("not an aggregate");
+  // S2 ruling 2026-11-05: a declared ranking part is SERVER-COMPUTED here from the
+  // projection's own category parts — a projection that supplies one is refused.
+  if (value !== null && ranking.length > 0) {
+    const v = value;
+    if (typeof v === "number" || ranking.some((k) => Object.prototype.hasOwnProperty.call(v, k))) refuse("a ranking part is server-computed, never projected");
+    else {
+      const ranked = largestMeasuredCategory(v, parts!, { status, window: windowLabel });
+      value = { ...v, ...Object.fromEntries(ranking.map((k) => [k, ranked])) };
+      if (!isAggregate(value, ranking)) refuse("not an aggregate");
+    }
+  }
+  if (value !== null && !unitsMatch(value, valueUnits)) refuse("its parts do not match the declared units");
   if (value === null && status !== "UNAVAILABLE") status = "UNAVAILABLE";
   if (status === "UNAVAILABLE") { value = null; reason = reason ?? "no figure"; }
   if (status === "PARTIAL" && !reason) reason = "a floor";
-  const days = p.days ?? null;
-  const hours = p.hours ?? null;
-  const entry = RETRIEVAL[metricKey(m)];
-  const unwindowedParts = entry?.kind === "RETRIEVABLE" ? entry.unwindowedParts ?? null : null;
   return {
     metric: metricKey(m),
     surface: scope.surface,
@@ -711,11 +836,12 @@ function envelope(scope: SurfaceScope, unit: MetricEnvelope["unit"], p: Projecte
     valueUnits,
     estimatedParts,
     unwindowedParts,
+    partRoles: partRolesOf(parts),
     value,
     status,
     reason,
     unavailableCode: status === "UNAVAILABLE" ? code ?? "NO_FIGURE" : null,
-    window: { kind: m.window.kind, description: m.window.description, days, hours, label: days !== null ? daysWindowLabel(days) : hours !== null ? hoursWindowLabel(hours) : m.window.label ?? null, start: isoDateOrNull(p.start) },
+    window: { kind: m.window.kind, description: m.window.description, days, hours, label: windowLabel, start: isoDateOrNull(p.start) },
     freshness: { asOf: p.asOf, source: m.freshnessSource },
     coverage: { gaps: m.coverageGaps, missing: p.missing ?? [] },
     basis: { kind: m.provenance.class === "ESTIMATED" ? "estimated" : "measured", definition: metricKey(m), compute: `${m.compute.module}#${m.compute.symbol}`, reader: m.path[0].calls, answerClass: m.answerClass },
