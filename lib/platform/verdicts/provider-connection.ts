@@ -146,7 +146,6 @@ export const CUSTOMER_REAUTH_CODES: ReadonlySet<string> = new Set([
   "INVALID_MFA",
   "INSUFFICIENT_CREDENTIALS",
   "MFA_NOT_SUPPORTED",
-  "NO_ACCOUNTS",
 ]);
 
 export type ConnectionTrustState = "ERROR" | "NEEDS_REAUTH" | "UNCLASSIFIED" | "REVOKED" | "NONE";
